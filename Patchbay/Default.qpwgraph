@@ -1,0 +1,38 @@
+<!DOCTYPE patchbay>
+<patchbay name="Default" version="0.9.9">
+ <items>
+  <item node-type="pipewire" port-type="pipewire-audio">
+   <output node="sushi" port="sushi:audio_output_2"/>
+   <input node="Audient iD14 Pro" port="Audient iD14:playback_AUX2"/>
+  </item>
+  <item node-type="pipewire" port-type="pipewire-audio">
+   <output node="Audient iD14 Pro" port="Audient iD14:capture_AUX1"/>
+   <input node="sushi" port="sushi:audio_input_1"/>
+  </item>
+  <item node-type="pipewire" port-type="pipewire-audio">
+   <output node="sushi" port="sushi:audio_output_0"/>
+   <input node="Audient iD14 Pro" port="Audient iD14:playback_AUX0"/>
+  </item>
+  <item node-type="pipewire" port-type="pipewire-audio">
+   <output node="sushi" port="sushi:audio_output_3"/>
+   <input node="Audient iD14 Pro" port="Audient iD14:playback_AUX3"/>
+  </item>
+  <item node-type="pipewire" port-type="pipewire-audio">
+   <output node="Audient iD14 Pro" port="Audient iD14:capture_AUX3"/>
+   <input node="sushi" port="sushi:audio_input_3"/>
+  </item>
+  <item node-type="pipewire" port-type="pipewire-audio">
+   <output node="Audient iD14 Pro" port="Audient iD14:capture_AUX2"/>
+   <input node="sushi" port="sushi:audio_input_2"/>
+  </item>
+  <item node-type="pipewire" port-type="pipewire-audio">
+   <output node="sushi" port="sushi:audio_output_1"/>
+   <input node="Audient iD14 Pro" port="Audient iD14:playback_AUX1"/>
+  </item>
+  <item node-type="pipewire" port-type="pipewire-audio">
+   <output node="Audient iD14 Pro" port="Audient iD14:capture_AUX0"/>
+   <input node="sushi" port="sushi:audio_input_0"/>
+  </item>
+ </items>
+</patchbay>
+

@@ -1,0 +1,13 @@
+# Ignore heavy runtime binaries and archives
+*.AppImage
+sushi
+*.zip
+*.tar.xz
+*.tar.gz
+
+# Ignore temporary runtime logs
+*.log
+
+# Allow tracking all configs, scripts, and plugin bundles
+!plugins/
+!config/
