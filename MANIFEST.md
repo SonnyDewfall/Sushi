@@ -565,3 +565,10 @@ patchbay-style graph view — is deferred until the workflow is proven.
 **Sushi is the authoring host, not just the deployment target.** Rejected
 converting from a desktop host session format; see README for the three
 compounding reasons. *(Pre-dates this repo — from the implementation brief.)*
+
+**Two personas frame the backlog: rig builder and rig user.** Rig builder
+models sound and generates configs (everything built so far serves this one).
+Rig user runs the headless rig and switches between configs at runtime —
+defining this persona surfaced a real gap: nothing in the backlog covered
+runtime config-switching itself, only building and deploying configs. Added
+as [#11](https://github.com/SonnyDewfall/Sushi/issues/11). *(2026-09-13)*
