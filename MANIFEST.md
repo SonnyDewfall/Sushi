@@ -29,33 +29,46 @@ next session (human or model) can pick it up cold.
 
 ---
 
-## 2. ⚪ Modelling → config workflow
+## 2. 🟡 Modelling → config workflow
 
 The core of the project: a stable loop from *tweaking sound by ear* to *a
 committed Sushi config*.
 
-Build order from brief §10 — each step depends on the one before:
+Build order (deliberately reordered from the brief's dependency-safe §10 order
+to reach a working tweak-by-ear loop as fast as possible — see the plan at
+`Project_files` history / chat for the tradeoff discussion):
 
-| Step | Module | Depends on | Offline-testable |
+| Phase | Module | Depends on | Offline-testable |
 |---|---|---|---|
-| 1 | `spec.py` — rig.yaml model + validation | PyYAML | ✅ |
-| 2 | `emit.py` — spec + state → Sushi JSON | PyYAML | ✅ |
-| 3 | `dump.py` / `verify.py` — cross-check names against Sushi | — | ✅ |
-| 4 | `probe.py` — LV2 metadata catalogue | lilv | ❌ |
-| 5 | `live.py` — push and capture over gRPC | elkpy | ❌ |
-| 6 | `panel.py` — Open Stage Control faders | — | ✅ |
+| A | environment + package scaffold | — | — |
+| B1 | `dump.py` — fix the 1.3.0 trailing-text parse break | — | ✅ |
+| B2 | `panel.py` — OSC faders, using `osc_path` verbatim | — | ✅ |
+| C1 | `live.py capture` | elkpy | ❌ |
+| C2 | `spec.py` — rig.yaml model + validation | PyYAML | ✅ |
+| C3 | `emit.py` — spec + state → Sushi JSON | PyYAML | ✅ |
+| D | prove the loop on the real rig; fix the 🔴 defect | elkpy | ❌ |
+| E1 | `verify.py` | — | ✅ |
+| E2 | `probe.py` — LV2 metadata catalogue | lilv | ❌ |
+| E3 | config test suite | — | mixed |
 
-**Stop after step 3.** The open questions below must be answered against the
-real Sushi 1.3.0 install before `live.py` and `panel.py` are built on an
-assumption about them.
-
-A working single-file prototype of all six already exists at
+A working single-file prototype of all these already exists at
 `tool/sushi_rig.py`. Treat it as reference for data shapes and emit logic, not
-as the target structure — the first task here is splitting it into the module
-layout above under `tool/src/sushi_rig/`, with `pyproject.toml` and `tool/tests/`.
+as the target structure — it is being split into `tool/src/sushi_rig/` with
+`pyproject.toml` and `tool/tests/`.
 
-**Blocked on:** `lilv` and `elkpy` are not installed (steps 4–5 only; steps 1–3
-need neither).
+- [x] Environment ready: `python3-pip`, `python3-venv`, `python3-lilv`,
+      `lv2-dev`, `lilv-utils`, and `liblilv-dev` installed system-wide (the
+      unversioned `liblilv-0.so` symlink lilv's ctypes binding needs ships in
+      `liblilv-dev`, not `lv2-dev` — tripped this up initially). `tool/.venv`
+      created with `--system-site-packages` so it sees `python3-lilv`; `pyyaml`
+      and `elkpy` installed into it and both import cleanly on Python 3.14 —
+      the brief's predicted 3.14 risk didn't materialise.
+- [x] All open questions from the brief (§7) settled empirically against a live
+      Sushi 1.3.0 — see *Open questions* below. Two more elkpy-vs-brief
+      mismatches found along the way, on top of the ones already known:
+      `create_processor_on_track`'s real argument names, and the correct
+      synchronous wait pattern for graph-editing calls. Nothing left blocking
+      `live.py`, `probe.py`, or `panel.py`.
 
 ---
 
@@ -90,20 +103,70 @@ Worth wiring up first — it is what surfaced the defects below.
 
 ---
 
-## 4. ⚪ Config library structure and versioning
+## 4. 🟡 Config library structure and versioning
 
 - [x] Physically separated the kinds of file that were mixed in `config/`:
       patchbay routing → `Patchbay/`, plugin inventory → `plugin-manifest.txt`,
       leaving `config/` holding only Sushi JSON configs.
+- [x] Naming and versioning convention agreed (below). Applying it to the four
+      existing configs happens in item 2, phase D.
 
-Remaining: a convention for naming and versioning rig variants, and where the
-hand-authored `rig.yaml` sources sit relative to their emitted JSON.
+### Naming
 
-Open: whether `rig.yaml` sources live alongside their emitted JSON (e.g.
-`config/*.yaml` next to `config/*.json`) or in a parallel tree, and whether
-emitted configs are committed at all or regenerated on demand. Committing them
-is probably right — they are the deployable artefact, and diffing them is how
-parameter drift becomes visible.
+Shared `<instrument>_<character>` stem across the hand-authored source, the
+deployable config, and any archived snapshot:
+
+```
+config/src/acoustic_chorus.yaml            hand-authored source
+config/acoustic_chorus.json                emitted, deployable — what start-rig.sh loads
+config/archive/acoustic_chorus/v1.2.json   frozen snapshot
+```
+
+Utility/test configs get a `test_` prefix (`test_passthrough.json`, currently
+`empty.json`). Live configs drop the redundant `_fx` suffix
+(`acoustic_chorus_fx.json` → `acoustic_chorus.json`).
+
+### Versioning — three layers, each doing a different job
+
+1. **Git** is the version of record for the project and for every change to a
+   sound. Live config *filenames* stay stable forever — `start-rig.sh` never
+   needs editing on a tonal change, and `git diff` on the JSON is exactly how
+   parameter drift becomes visible.
+2. **`MAJOR.MINOR` in a metadata header**, so a config self-identifies without
+   consulting git log: **MAJOR** bumps when the plugin chain changes (added,
+   removed, reordered); **MINOR** bumps when only parameter values changed.
+3. **`config/archive/<name>/v<MAJOR>.<MINOR>.json`** — a deliberate, named
+   snapshot taken when a tone is worth keeping before moving on. Since the
+   emitted JSON carries the full chain plus `initial_state`, an archived file
+   alone reproduces that exact tone.
+
+### Metadata header
+
+A top-level `_meta` block — confirmed empirically that Sushi 1.3.0 tolerates an
+unrecognised top-level key (exit 0, no schema complaint). Only stable fields;
+deliberately no timestamp or commit hash, which would diff on every emit and
+defeat layer 1:
+
+```json
+{
+  "_meta": {
+    "name": "acoustic_chorus",
+    "version": "1.2",
+    "source": "config/src/acoustic_chorus.yaml",
+    "description": "Acoustic guitar — compressor, EQ, chorus, light reverb",
+    "status": "wip"
+  },
+  "host_config": { ... }
+}
+```
+
+Archived copies additionally carry `archived_at`. `emit` copies `_meta` through
+verbatim from the YAML source; nothing bumps the version automatically — that's
+a deliberate act when a change is worth calling MAJOR or MINOR.
+
+Sources live at `config/src/<name>.yaml` — separate from the generated JSON
+they produce, sharing a stem so the pairing is obvious, without changing where
+`start-rig.sh` looks for the configs it loads.
 
 ---
 
@@ -163,14 +226,58 @@ literal line `Parameter dump completed - exiting.`. Captured verbatim as
 verbatim rather than constructing paths from names — the prototype constructs
 them and would produce addresses that never match.
 
-### Still open
+**`get_parameter_value` is normalised; `get_parameter_value_in_domain` is
+real-world.** elkpy's own docstring on `get_parameter_value_in_domain` claims it
+returns "the normalised value" — that is backwards. Proven against a live Sushi
+1.3.0 (dummy frontend, `compressor_mono`'s `Ratio`, domain `[1.0, 100.0]`):
+`get_parameter_value` returned `0.030303`, `get_parameter_value_in_domain`
+returned `4.0`, and `get_parameter_value_as_string` agreed (`"4.000000"`). The
+`sushi_rpc.proto` message `ParameterInfo` carries `min_domain_value` /
+`max_domain_value`, confirming "domain" means real-world plugin units.
+`capture` must use `get_parameter_value` — which is what the prototype already
+does; this was a risk in the prototype's design, not a bug in it.
+*(2026-09-13, elkpy on Sushi API 1.2.0.)*
 
-| Question | How to settle it |
-|---|---|
-| How does Sushi normalise logarithmic ports? | Set a log port to 0.5 over gRPC, read back the formatted value, compare against the probed range |
-| Which elkpy getter returns the normalised value? | `python3 -m pydoc elkpy.parametercontroller` |
-| What are `create_processor_on_track`'s real argument names? | `python3 -m pydoc elkpy.audiographcontroller` — they have moved between releases |
-| Do toggled and integer ports normalise as expected? | Confirm Sushi does not expose toggled ports as two-value enumerations |
+**Sushi ignores the LV2 `pprops:logarithmic` hint and normalises every control
+port linearly against `[min, max]`.** Checked four log-tagged ports on the real
+compressor (`Ratio` 1–100, `Attack time` 0–2000, `High-pass filter frequency`
+10–20000, `Knee` 0.063–1.0) — in every case, measured normalised value equalled
+`(domain_value − min) / (max − min)` to 4+ decimal places. `probe.py`'s planned
+warning-not-guess stance for logarithmic ports (brief §2.3) can be relaxed: the
+existing linear `normalise()` helper in the prototype is correct as-is, no
+special-casing needed. *(2026-09-13, empirical, same session as above.)*
+
+**Toggled ports are exposed as ordinary `FLOAT` parameters** (`ParameterType.FLOAT
+= 3`, not a distinct `BOOL`), domain `[0, 1]`, normalisation therefore identity.
+Confirmed on `compressor_mono`'s `Enabled`. Not exposed as a two-value
+enumeration — the brief's suspicion was unfounded. *(2026-09-13)*
+
+**`create_processor_on_track`'s real signature** (this elkpy version, source-read
+in `audiographcontroller.py:525`):
+
+```python
+create_processor_on_track(name, uid, path, processor_type, track_id, before_processor, add_to_back)
+```
+
+Two argument names differ from the prototype's call: `processor_type` (not
+`plugin_type`) and `before_processor` (not `before_processor_id`) — the
+prototype's `push()` would raise `TypeError` immediately. `PluginType` enum
+members (`INTERNAL`, `LV2`, `VST2X`, `VST3X`) do match what the prototype
+assumes. *(2026-09-13)*
+
+**Graph-editing calls return a `SushiCommandResponse` (an `asyncio.Event`
+subclass with `.id`, `.error`, `.result`), not the brief's `ElkpyEvent` shape
+(`.sushi_id`, `.data`, `.params`)** — API drift between elkpy versions, exactly
+as §2.8 warned. Its own docstring is explicit about the sync-context contract:
+*"await it in an asynchronous program, or check `.is_set()` on it in a
+[synchronous one]"*. The prototype's `_wait()` helper calls `.wait()` directly
+and, on seeing an awaitable back, just returns — it never actually blocks in
+sync code, so `push()` races exactly as brief §2.8 warned it might. `live.py`
+needs a real poll loop on `.is_set()` with a timeout. *(2026-09-13, source-read
++ docstring)*
+
+All open questions from the brief are now settled. No more empirical checks
+block `live.py`, `probe.py`, or `panel.py`.
 
 ---
 
