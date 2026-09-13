@@ -140,6 +140,21 @@ as the target structure — it is being split into `tool/src/sushi_rig/` with
       normalised / `90.1` real-world — matching `1 + 0.9×99` on the `[1,100]`
       domain exactly).
 
+**Future direction for phase D:** the tweak-by-ear step currently runs as an
+interactive session — launch Sushi, open Open Stage Control, tweak, then a
+person (or Claude) manually runs `sushi-rig capture` at the point the sound is
+right. That's fine for now, but it's not something a script can repeat
+unattended, and it puts a Claude Code session in the loop every time a config
+needs re-tuning.
+
+The direction to move in later: a deterministic tool that captures state
+directly from an Open Stage Control action — e.g. a "save" button in the panel
+that fires an OSC message the tool listens for, or a small always-running
+listener that snapshots on request — rather than a human deciding when to run
+`capture` from a terminal. Not scoped or built yet; revisit once the loop above
+has been used for real a few times and it's clear what "capture now" should
+actually be triggered by.
+
 ---
 
 ## 3. ⚪ Headless runs and a config test suite
