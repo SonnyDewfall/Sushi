@@ -1,0 +1,54 @@
+{
+  "host_config": {
+    "samplerate": 48000
+  },
+  "tracks": [
+    {
+      "name": "fx_track",
+      "channels": 2,
+      "inputs": [
+        {
+          "engine_bus": 0,
+          "track_bus": 0
+        }
+      ],
+      "outputs": [
+        {
+          "engine_bus": 0,
+          "track_bus": 0
+        }
+      ],
+      "plugins": [
+        {
+          "uri": "http://lsp-plug.in/plugins/lv2/compressor_mono",
+          "name": "compressor_mono",
+          "type": "lv2",
+          "properties": {
+            "Attack threshold": -30.0,
+            "Ratio": 4.0,
+            "Knee": -6.00
+          }
+        },
+        {
+          "uri": "http://lsp-plug.in/plugins/lv2/graph_equalizer_x16_stereo",
+          "name": "graph_equalizer_x16_stereo",
+          "type": "lv2",
+          "properties": {
+            "Band gain 16": -9.5,
+            "Band gain 25": -9.5,
+            "Band gain 40": -4.5,
+            "Band gain 1.6K": -0.6,
+            "Band gain 6.3K": 0.5,
+            "Band gain 10K": 0.5
+            }
+
+        },
+        {
+          "uid": "sushi.testing.freeverb",
+          "name": "internal_reverb",
+          "type": "internal"
+        }
+      ]
+    }
+  ]
+}

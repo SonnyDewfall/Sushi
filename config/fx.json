@@ -19,11 +19,7 @@
         }
       ],
       "plugins": [
-        {
-          "uid": "sushi.testing.freeverb",
-          "name": "internal_reverb",
-          "type": "internal"
-        }
+        { "uid": "sushi.testing.freeverb","name": "internal_reverb","type": "internal" }
       ]
     }
   ],

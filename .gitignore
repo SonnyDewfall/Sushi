@@ -1,13 +1,27 @@
-# Ignore heavy runtime binaries and archives
+# Heavy runtime binaries and archives
 *.AppImage
 sushi
 *.zip
 *.tar.xz
 *.tar.gz
 
-# Ignore temporary runtime logs
+# Runtime logs
 *.log
 
-# Allow tracking all configs, scripts, and plugin bundles
-!plugins/
-!config/
+# Third-party plugin binaries. These are installed per-machine (see README:
+# Portability) and catalogued by URI in config/Plugin manifest.txt, which is
+# what the rig configs actually reference.
+plugins/
+
+# Python
+__pycache__/
+*.py[cod]
+.venv/
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+.ruff_cache/
+
+# Generated rig artefacts (regenerate with `sushi-rig emit` / `capture`)
+catalogue.json
+state.json

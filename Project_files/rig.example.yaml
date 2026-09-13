@@ -1,0 +1,76 @@
+# sushi-rig specification.
+#
+# The only file you hand-author. Plugin and track names must be globally
+# unique — Sushi addresses processors by name, not by path.
+#
+# Find LV2 URIs with `lv2ls`. If a URI is not in that list, Sushi cannot
+# load it regardless of what is on disk.
+
+host:
+  samplerate: 48000
+  midi_inputs: 1
+  midi_outputs: 1
+  tempo: 120
+  playing_mode: stopped
+  tempo_sync: internal
+  audio_clip_detection:
+    inputs: true
+    outputs: true
+  master_limiter: true
+
+tracks:
+  - name: gtr_in
+    channels: 2
+    inputs:
+      - engine_channel: 0
+        track_channel: 0
+      - engine_channel: 1
+        track_channel: 1
+    outputs:
+      - engine_bus: 0
+        track_bus: 0
+    plugins:
+      - name: gtr_gate
+        type: lv2
+        uri: http://calf.sourceforge.net/plugins/Gate
+      - name: gtr_comp
+        type: lv2
+        uri: http://calf.sourceforge.net/plugins/Compressor
+      - name: gtr_eq
+        type: lv2
+        uri: http://calf.sourceforge.net/plugins/Equalizer8Band
+
+  - name: synth
+    channels: 2
+    outputs:
+      - engine_bus: 0
+        track_bus: 0
+    plugins:
+      - name: jx10
+        type: lv2
+        uri: http://drobilla.net/plugins/mda/JX10
+      - name: synth_reverb
+        type: lv2
+        uri: http://calf.sourceforge.net/plugins/Reverb
+
+# Optional: a post track processes everything after the tracks are mixed.
+# Handy for a single master chain. Declare it as a normal track here and
+# move it in the emitted config if you want post_track semantics.
+
+midi:
+  track_connections:
+    - port: 0
+      channel: all
+      track: synth
+  cc_mappings:
+    - port: 0
+      channel: all
+      plugin_name: gtr_comp
+      cc_number: 7
+      parameter_name: Threshold
+      min_range: 0.0
+      max_range: 1.0
+      mode: absolute
+
+osc:
+  enable_all_processor_outputs: true
