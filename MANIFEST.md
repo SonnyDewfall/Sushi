@@ -52,7 +52,7 @@ to reach a working tweak-by-ear loop as fast as possible — see the plan at
 | E3 | config test suite | — | mixed |
 
 A working single-file prototype of all these already exists at
-`tool/sushi_rig.py`. Treat it as reference for data shapes and emit logic, not
+`tool/prototype_reference.py`. Treat it as reference for data shapes and emit logic, not
 as the target structure — it is being split into `tool/src/sushi_rig/` with
 `pyproject.toml` and `tool/tests/`.
 
@@ -69,6 +69,22 @@ as the target structure — it is being split into `tool/src/sushi_rig/` with
       `create_processor_on_track`'s real argument names, and the correct
       synchronous wait pattern for graph-editing calls. Nothing left blocking
       `live.py`, `probe.py`, or `panel.py`.
+- [x] Package scaffold: `tool/pyproject.toml` (src layout, `pytest` dev group,
+      `sushi-rig` console script), `tool/src/sushi_rig/`, `tool/tests/`.
+      Renamed `tool/sushi_rig.py` → `tool/prototype_reference.py` — its old name
+      collided with the new package's import name and, since `tool/` sits on
+      `sys.path` at runtime, silently shadowed it. Left in place as reference
+      until item 2 phase D deletes it.
+- [x] **B1 `dump.py`** — fixed break, parses with `JSONDecoder().raw_decode`
+      from the first `{`, ignoring the trailing `Parameter dump completed -
+      exiting.` line. `collect_parameter_info` added alongside the prototype's
+      `collect_parameter_names`, keeping each parameter's full record
+      (`osc_path` included) rather than just its name.
+- [x] **B2 `panel.py`** — rebuilt to use each parameter's `osc_path` from the
+      dump verbatim instead of constructing one from the name.
+- [x] 13 offline tests passing (`cd tool && source .venv/bin/activate && pytest`),
+      run against the real `dump.example.json` fixture plus a synthetic
+      differently-nested one for the generic-walk claim.
 
 ---
 

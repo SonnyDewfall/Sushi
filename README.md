@@ -94,10 +94,13 @@ then.
 ├── plugin-manifest.txt         every LV2 URI available on this machine
 │
 ├── tool/                       ── TOOL: generates the configs above
-│   ├── sushi_rig.py             single-file prototype of the whole toolchain
-│   └── examples/
-│       ├── rig.example.yaml       annotated rig spec
-│       └── dump.example.json      real --dump-plugins output, test fixture
+│   ├── pyproject.toml
+│   ├── src/sushi_rig/            spec, emit, dump, verify, probe, live, panel, cli
+│   ├── tests/
+│   ├── examples/
+│   │   ├── rig.example.yaml       annotated rig spec
+│   │   └── dump.example.json      real --dump-plugins output, test fixture
+│   └── prototype_reference.py    single-file prototype; superseded by src/, kept for reference
 │
 ├── IMPLEMENTATION_BRIEF.md     authoritative spec — read before writing code
 ├── MANIFEST.md                 what is being worked on and what is next
@@ -107,10 +110,11 @@ then.
 Untracked but required at runtime: `Sushi-x86_64.AppImage` (symlinked as
 `sushi`) and `plugins/`. See [Plugins and portability](#plugins-and-portability).
 
-`tool/sushi_rig.py` is a prototype. Its target structure — split into `spec`,
-`emit`, `probe`, `live`, `dump`, `verify`, `panel` modules under `tool/src/`
-with a `pyproject.toml` and a real test suite — is specified in §3 of the
-implementation brief and tracked as work item 2 in [MANIFEST.md](MANIFEST.md).
+`tool/prototype_reference.py` (previously `sushi_rig.py`) is the original
+single-file prototype, kept as reference for data shapes and emit logic while
+`tool/src/sushi_rig/` is built out module by module per §3 of the implementation
+brief — tracked as work item 2 in [MANIFEST.md](MANIFEST.md). It will be deleted
+once the package supersedes it.
 
 ---
 
@@ -159,23 +163,29 @@ Verified on this machine:
 | Sushi 1.3.0 | ✅ built with `vst3, lv2, jack, rpc control, ableton link` |
 | LV2 plugins discoverable | ✅ 648 via `lv2ls` |
 | PipeWire / JACK, qpwgraph, fmit | ✅ |
-| `lilv` Python bindings | ❌ needed by `probe` |
-| `elkpy` | ❌ needed by `push` and `capture` |
+| `lilv` Python bindings (system) | ✅ `python3-lilv` + `liblilv-dev` |
+| `elkpy` (in `tool/.venv`) | ✅ imports cleanly on Python 3.14 |
 
 Sushi's LV2 support is **Linux-only** — it is excluded from the macOS and Windows
 builds. Authoring has to happen here.
 
-To fill the gaps:
+To set this up from scratch:
 
 ```bash
-sudo apt install python3-lilv lv2-dev lilv-utils
-pip install pyyaml elkpy
+sudo apt install python3-pip python3-venv python3-lilv lv2-dev lilv-utils liblilv-dev
+cd tool && python3 -m venv --system-site-packages .venv
+source .venv/bin/activate
+pip install -e ".[dev]"
 ```
 
-Two known snags. A venv will not see the system `python3-lilv` unless created
-with `--system-site-packages`. And this machine runs Python 3.14, which is ahead
-of what elkpy is likely tested against — if it misbehaves, a 3.11/3.12 venv is
-the first thing to try.
+Two snags this hit in practice. **`lv2-dev` alone is not enough** —
+`python3-lilv`'s ctypes binding looks for the unversioned `liblilv-0.so`, which
+is shipped by `liblilv-dev`, not `lv2-dev`; without it, `import lilv` fails with
+`OSError: liblilv-0.so: cannot open shared object file`. And a venv will not see
+the system `python3-lilv` at all unless created with `--system-site-packages`.
+
+The brief's predicted risk — Python 3.14 being too new for `elkpy` — did not
+materialise; it installs and imports cleanly.
 
 ### Preflight
 

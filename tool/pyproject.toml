@@ -1,0 +1,26 @@
+[project]
+name = "sushi-rig"
+version = "0.1.0"
+description = "Author an LV2 rig live in Sushi, then capture it back as a config file."
+requires-python = ">=3.10"
+dependencies = [
+    "pyyaml>=6.0",
+]
+
+[project.optional-dependencies]
+live = ["elkpy"]
+probe = []  # lilv has no PyPI wheel; install python3-lilv via apt (see README)
+dev = ["pytest>=7.0"]
+
+[project.scripts]
+sushi-rig = "sushi_rig.cli:main"
+
+[build-system]
+requires = ["setuptools>=61.0"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools.packages.find]
+where = ["src"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
