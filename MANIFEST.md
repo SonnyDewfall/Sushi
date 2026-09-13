@@ -295,6 +295,49 @@ discovering it late changes the shape of the rig.
 
 ---
 
+## 7. ⚪ Choose which parameters a panel actually shows
+
+Requested by the user (2026-09-13). Right now `panel.py` shows every
+automatable parameter on every plugin — for `graph_equalizer_x16_stereo` alone
+that's 79 faders, most of them things like "Show pre-mix overlay" or "Clear
+graph analysis" that are irrelevant to tweaking a tone and just add scrolling
+and clutter.
+
+Needs a way to say "these are the parameters I actually want faders for" per
+plugin. Open design question: a hand-authored allow-list (e.g. in `rig.yaml`,
+per plugin) versus something inferred (a curated default set per known plugin
+URI, with an override). An explicit list in `rig.yaml` is probably the right
+starting point — it fits the existing "hand-authored source, generated
+everything else" shape of the workflow, and doesn't need a database of
+per-plugin curation to bootstrap.
+
+## 8. ⚪ Manage tracks and plugin chains from outside (or inside) the panel
+
+Requested by the user (2026-09-13): a way to change how many tracks exist and
+which plugins sit on each — not just tweak the parameters of a fixed chain
+that's already running.
+
+Two different shapes this could take, not mutually exclusive:
+
+- **Ahead of running it** — this is largely what `spec.py`/`emit.py` already
+  do (`rig.yaml` describes tracks and plugins; `push` can build that graph
+  into a running Sushi over gRPC). What's missing is making that loop
+  convenient to iterate on — edit `rig.yaml`, re-`push`, without restarting
+  Sushi each time.
+- **From inside the panel, live** — graph editing (add/remove a track,
+  add/remove a plugin on a track) triggered from Open Stage Control itself
+  while Sushi is running, rather than by editing YAML and re-running the
+  tool. Bigger scope: needs panel-side controls that call back into
+  `create_track`/`create_processor_on_track`/`delete_processor_from_track`
+  (all already used or available via `live.py`/elkpy), and a way for the
+  panel to be regenerated or updated once the graph itself has changed
+  underneath it.
+
+Not scoped in detail yet — revisit once item 7 (parameter selection) has
+landed, since both touch how the panel is generated from the rig spec.
+
+---
+
 ## Open questions
 
 Blocking item 2, steps 4–6. Each has a command that settles it; none should be
