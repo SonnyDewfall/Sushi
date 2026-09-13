@@ -1,0 +1,952 @@
+{
+    "plugins": [
+        {
+            "name": "compressor_mono",
+            "label": "LSP Compressor Mono",
+            "processor_id": 1,
+            "parent_track_id": 0,
+            "parameters": [
+                {
+                    "name": "Show pre-mix overlay",
+                    "label": "Show pre-mix overlay",
+                    "osc_path": "/parameter/compressor_mono/Show_pre-mix_overlay",
+                    "id": 2
+                },
+                {
+                    "name": "Input to Link mix",
+                    "label": "Input to Link mix",
+                    "osc_path": "/parameter/compressor_mono/Input_to_Link_mix",
+                    "id": 3
+                },
+                {
+                    "name": "Link to Input mix",
+                    "label": "Link to Input mix",
+                    "osc_path": "/parameter/compressor_mono/Link_to_Input_mix",
+                    "id": 4
+                },
+                {
+                    "name": "Link to Sidechain mix",
+                    "label": "Link to Sidechain mix",
+                    "osc_path": "/parameter/compressor_mono/Link_to_Sidechain_mix",
+                    "id": 5
+                },
+                {
+                    "name": "Enabled",
+                    "label": "Enabled",
+                    "osc_path": "/parameter/compressor_mono/Enabled",
+                    "id": 6
+                },
+                {
+                    "name": "Input gain",
+                    "label": "Input gain",
+                    "osc_path": "/parameter/compressor_mono/Input_gain",
+                    "id": 7
+                },
+                {
+                    "name": "Output gain",
+                    "label": "Output gain",
+                    "osc_path": "/parameter/compressor_mono/Output_gain",
+                    "id": 8
+                },
+                {
+                    "name": "Show mix overlay",
+                    "label": "Show mix overlay",
+                    "osc_path": "/parameter/compressor_mono/Show_mix_overlay",
+                    "id": 9
+                },
+                {
+                    "name": "Show sidechain overlay",
+                    "label": "Show sidechain overlay",
+                    "osc_path": "/parameter/compressor_mono/Show_sidechain_overlay",
+                    "id": 10
+                },
+                {
+                    "name": "Pause graph analysis",
+                    "label": "Pause graph analysis",
+                    "osc_path": "/parameter/compressor_mono/Pause_graph_analysis",
+                    "id": 11
+                },
+                {
+                    "name": "Clear graph analysis",
+                    "label": "Clear graph analysis",
+                    "osc_path": "/parameter/compressor_mono/Clear_graph_analysis",
+                    "id": 12
+                },
+                {
+                    "name": "Sidechain type",
+                    "label": "Sidechain type",
+                    "osc_path": "/parameter/compressor_mono/Sidechain_type",
+                    "id": 13
+                },
+                {
+                    "name": "Sidechain mode",
+                    "label": "Sidechain mode",
+                    "osc_path": "/parameter/compressor_mono/Sidechain_mode",
+                    "id": 14
+                },
+                {
+                    "name": "Sidechain lookahead",
+                    "label": "Sidechain lookahead",
+                    "osc_path": "/parameter/compressor_mono/Sidechain_lookahead",
+                    "id": 15
+                },
+                {
+                    "name": "Sidechain listen",
+                    "label": "Sidechain listen",
+                    "osc_path": "/parameter/compressor_mono/Sidechain_listen",
+                    "id": 16
+                },
+                {
+                    "name": "Sidechain reactivity",
+                    "label": "Sidechain reactivity",
+                    "osc_path": "/parameter/compressor_mono/Sidechain_reactivity",
+                    "id": 17
+                },
+                {
+                    "name": "Sidechain preamp",
+                    "label": "Sidechain preamp",
+                    "osc_path": "/parameter/compressor_mono/Sidechain_preamp",
+                    "id": 18
+                },
+                {
+                    "name": "High-pass filter mode",
+                    "label": "High-pass filter mode",
+                    "osc_path": "/parameter/compressor_mono/High-pass_filter_mode",
+                    "id": 19
+                },
+                {
+                    "name": "High-pass filter frequency",
+                    "label": "High-pass filter frequency",
+                    "osc_path": "/parameter/compressor_mono/High-pass_filter_frequency",
+                    "id": 20
+                },
+                {
+                    "name": "Low-pass filter mode",
+                    "label": "Low-pass filter mode",
+                    "osc_path": "/parameter/compressor_mono/Low-pass_filter_mode",
+                    "id": 21
+                },
+                {
+                    "name": "Low-pass filter frequency",
+                    "label": "Low-pass filter frequency",
+                    "osc_path": "/parameter/compressor_mono/Low-pass_filter_frequency",
+                    "id": 22
+                },
+                {
+                    "name": "Compression mode",
+                    "label": "Compression mode",
+                    "osc_path": "/parameter/compressor_mono/Compression_mode",
+                    "id": 23
+                },
+                {
+                    "name": "Attack threshold",
+                    "label": "Attack threshold",
+                    "osc_path": "/parameter/compressor_mono/Attack_threshold",
+                    "id": 24
+                },
+                {
+                    "name": "Attack time",
+                    "label": "Attack time",
+                    "osc_path": "/parameter/compressor_mono/Attack_time",
+                    "id": 25
+                },
+                {
+                    "name": "Release threshold",
+                    "label": "Release threshold",
+                    "osc_path": "/parameter/compressor_mono/Release_threshold",
+                    "id": 26
+                },
+                {
+                    "name": "Release time",
+                    "label": "Release time",
+                    "osc_path": "/parameter/compressor_mono/Release_time",
+                    "id": 27
+                },
+                {
+                    "name": "Hold time",
+                    "label": "Hold time",
+                    "osc_path": "/parameter/compressor_mono/Hold_time",
+                    "id": 28
+                },
+                {
+                    "name": "Ratio",
+                    "label": "Ratio",
+                    "osc_path": "/parameter/compressor_mono/Ratio",
+                    "id": 29
+                },
+                {
+                    "name": "Knee",
+                    "label": "Knee",
+                    "osc_path": "/parameter/compressor_mono/Knee",
+                    "id": 30
+                },
+                {
+                    "name": "Boost threshold",
+                    "label": "Boost threshold",
+                    "osc_path": "/parameter/compressor_mono/Boost_threshold",
+                    "id": 31
+                },
+                {
+                    "name": "Boost signal amount",
+                    "label": "Boost signal amount",
+                    "osc_path": "/parameter/compressor_mono/Boost_signal_amount",
+                    "id": 32
+                },
+                {
+                    "name": "Makeup gain",
+                    "label": "Makeup gain",
+                    "osc_path": "/parameter/compressor_mono/Makeup_gain",
+                    "id": 33
+                },
+                {
+                    "name": "Dry gain",
+                    "label": "Dry gain",
+                    "osc_path": "/parameter/compressor_mono/Dry_gain",
+                    "id": 34
+                },
+                {
+                    "name": "Wet gain",
+                    "label": "Wet gain",
+                    "osc_path": "/parameter/compressor_mono/Wet_gain",
+                    "id": 35
+                },
+                {
+                    "name": "Dry/Wet balance",
+                    "label": "Dry/Wet balance",
+                    "osc_path": "/parameter/compressor_mono/DryWet_balance",
+                    "id": 36
+                },
+                {
+                    "name": "Release level",
+                    "label": "Release level",
+                    "osc_path": "/parameter/compressor_mono/Release_level",
+                    "id": 37
+                },
+                {
+                    "name": "Sidechain level visibility",
+                    "label": "Sidechain level visibility",
+                    "osc_path": "/parameter/compressor_mono/Sidechain_level_visibility",
+                    "id": 38
+                },
+                {
+                    "name": "Envelope level visibility",
+                    "label": "Envelope level visibility",
+                    "osc_path": "/parameter/compressor_mono/Envelope_level_visibility",
+                    "id": 39
+                },
+                {
+                    "name": "Gain reduction visibility",
+                    "label": "Gain reduction visibility",
+                    "osc_path": "/parameter/compressor_mono/Gain_reduction_visibility",
+                    "id": 40
+                },
+                {
+                    "name": "Input level visibility",
+                    "label": "Input level visibility",
+                    "osc_path": "/parameter/compressor_mono/Input_level_visibility",
+                    "id": 41
+                },
+                {
+                    "name": "Output level visibility",
+                    "label": "Output level visibility",
+                    "osc_path": "/parameter/compressor_mono/Output_level_visibility",
+                    "id": 42
+                },
+                {
+                    "name": "Sidechain level meter",
+                    "label": "Sidechain level meter",
+                    "osc_path": "/parameter/compressor_mono/Sidechain_level_meter",
+                    "id": 43
+                },
+                {
+                    "name": "Curve level meter",
+                    "label": "Curve level meter",
+                    "osc_path": "/parameter/compressor_mono/Curve_level_meter",
+                    "id": 44
+                },
+                {
+                    "name": "Envelope level meter",
+                    "label": "Envelope level meter",
+                    "osc_path": "/parameter/compressor_mono/Envelope_level_meter",
+                    "id": 45
+                },
+                {
+                    "name": "Reduction level meter",
+                    "label": "Reduction level meter",
+                    "osc_path": "/parameter/compressor_mono/Reduction_level_meter",
+                    "id": 46
+                },
+                {
+                    "name": "Input level meter",
+                    "label": "Input level meter",
+                    "osc_path": "/parameter/compressor_mono/Input_level_meter",
+                    "id": 47
+                },
+                {
+                    "name": "Output level meter",
+                    "label": "Output level meter",
+                    "osc_path": "/parameter/compressor_mono/Output_level_meter",
+                    "id": 48
+                },
+                {
+                    "name": "Latency OUT",
+                    "label": "Latency OUT",
+                    "osc_path": "/parameter/compressor_mono/Latency_OUT",
+                    "id": 51
+                }
+            ]
+        },
+        {
+            "name": "graph_equalizer_x16_stereo",
+            "label": "LSP Graphic Equalizer x16 Stereo",
+            "processor_id": 2,
+            "parent_track_id": 0,
+            "parameters": [
+                {
+                    "name": "Enabled",
+                    "label": "Enabled",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Enabled",
+                    "id": 4
+                },
+                {
+                    "name": "Input gain",
+                    "label": "Input gain",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Input_gain",
+                    "id": 5
+                },
+                {
+                    "name": "Output gain",
+                    "label": "Output gain",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Output_gain",
+                    "id": 6
+                },
+                {
+                    "name": "Equalizer mode",
+                    "label": "Equalizer mode",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Equalizer_mode",
+                    "id": 7
+                },
+                {
+                    "name": "Filter slope",
+                    "label": "Filter slope",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Filter_slope",
+                    "id": 8
+                },
+                {
+                    "name": "FFT reactivity",
+                    "label": "FFT reactivity",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/FFT_reactivity",
+                    "id": 9
+                },
+                {
+                    "name": "Shift gain",
+                    "label": "Shift gain",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Shift_gain",
+                    "id": 10
+                },
+                {
+                    "name": "Graph zoom",
+                    "label": "Graph zoom",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Graph_zoom",
+                    "id": 11
+                },
+                {
+                    "name": "Input FFT graph enable Left",
+                    "label": "Input FFT graph enable Left",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Input_FFT_graph_enable_Left",
+                    "id": 12
+                },
+                {
+                    "name": "Output FFT graph enable Left",
+                    "label": "Output FFT graph enable Left",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Output_FFT_graph_enable_Left",
+                    "id": 13
+                },
+                {
+                    "name": "Return FFT graph enable Left",
+                    "label": "Return FFT graph enable Left",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Return_FFT_graph_enable_Left",
+                    "id": 14
+                },
+                {
+                    "name": "Input FFT graph enable Right",
+                    "label": "Input FFT graph enable Right",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Input_FFT_graph_enable_Right",
+                    "id": 15
+                },
+                {
+                    "name": "Output FFT graph enable Right",
+                    "label": "Output FFT graph enable Right",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Output_FFT_graph_enable_Right",
+                    "id": 16
+                },
+                {
+                    "name": "Return FFT graph enable Right",
+                    "label": "Return FFT graph enable Right",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Return_FFT_graph_enable_Right",
+                    "id": 17
+                },
+                {
+                    "name": "Output balance",
+                    "label": "Output balance",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Output_balance",
+                    "id": 18
+                },
+                {
+                    "name": "Input signal meter Left",
+                    "label": "Input signal meter Left",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Input_signal_meter_Left",
+                    "id": 19
+                },
+                {
+                    "name": "Output signal meter Left",
+                    "label": "Output signal meter Left",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Output_signal_meter_Left",
+                    "id": 20
+                },
+                {
+                    "name": "Input signal meter Right",
+                    "label": "Input signal meter Right",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Input_signal_meter_Right",
+                    "id": 21
+                },
+                {
+                    "name": "Output signal meter Right",
+                    "label": "Output signal meter Right",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Output_signal_meter_Right",
+                    "id": 22
+                },
+                {
+                    "name": "Band solo 16",
+                    "label": "Band solo 16",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_solo_16",
+                    "id": 23
+                },
+                {
+                    "name": "Band mute 16",
+                    "label": "Band mute 16",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_mute_16",
+                    "id": 24
+                },
+                {
+                    "name": "Band on 16",
+                    "label": "Band on 16",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_on_16",
+                    "id": 25
+                },
+                {
+                    "name": "Filter visibility  16",
+                    "label": "Filter visibility  16",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Filter_visibility__16",
+                    "id": 26
+                },
+                {
+                    "name": "Band gain 16",
+                    "label": "Band gain 16",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_gain_16",
+                    "id": 27
+                },
+                {
+                    "name": "Band solo 25",
+                    "label": "Band solo 25",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_solo_25",
+                    "id": 28
+                },
+                {
+                    "name": "Band mute 25",
+                    "label": "Band mute 25",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_mute_25",
+                    "id": 29
+                },
+                {
+                    "name": "Band on 25",
+                    "label": "Band on 25",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_on_25",
+                    "id": 30
+                },
+                {
+                    "name": "Filter visibility  25",
+                    "label": "Filter visibility  25",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Filter_visibility__25",
+                    "id": 31
+                },
+                {
+                    "name": "Band gain 25",
+                    "label": "Band gain 25",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_gain_25",
+                    "id": 32
+                },
+                {
+                    "name": "Band solo 40",
+                    "label": "Band solo 40",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_solo_40",
+                    "id": 33
+                },
+                {
+                    "name": "Band mute 40",
+                    "label": "Band mute 40",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_mute_40",
+                    "id": 34
+                },
+                {
+                    "name": "Band on 40",
+                    "label": "Band on 40",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_on_40",
+                    "id": 35
+                },
+                {
+                    "name": "Filter visibility  40",
+                    "label": "Filter visibility  40",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Filter_visibility__40",
+                    "id": 36
+                },
+                {
+                    "name": "Band gain 40",
+                    "label": "Band gain 40",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_gain_40",
+                    "id": 37
+                },
+                {
+                    "name": "Band solo 63",
+                    "label": "Band solo 63",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_solo_63",
+                    "id": 38
+                },
+                {
+                    "name": "Band mute 63",
+                    "label": "Band mute 63",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_mute_63",
+                    "id": 39
+                },
+                {
+                    "name": "Band on 63",
+                    "label": "Band on 63",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_on_63",
+                    "id": 40
+                },
+                {
+                    "name": "Filter visibility  63",
+                    "label": "Filter visibility  63",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Filter_visibility__63",
+                    "id": 41
+                },
+                {
+                    "name": "Band gain 63",
+                    "label": "Band gain 63",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_gain_63",
+                    "id": 42
+                },
+                {
+                    "name": "Band solo 100",
+                    "label": "Band solo 100",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_solo_100",
+                    "id": 43
+                },
+                {
+                    "name": "Band mute 100",
+                    "label": "Band mute 100",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_mute_100",
+                    "id": 44
+                },
+                {
+                    "name": "Band on 100",
+                    "label": "Band on 100",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_on_100",
+                    "id": 45
+                },
+                {
+                    "name": "Filter visibility  100",
+                    "label": "Filter visibility  100",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Filter_visibility__100",
+                    "id": 46
+                },
+                {
+                    "name": "Band gain 100",
+                    "label": "Band gain 100",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_gain_100",
+                    "id": 47
+                },
+                {
+                    "name": "Band solo 160",
+                    "label": "Band solo 160",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_solo_160",
+                    "id": 48
+                },
+                {
+                    "name": "Band mute 160",
+                    "label": "Band mute 160",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_mute_160",
+                    "id": 49
+                },
+                {
+                    "name": "Band on 160",
+                    "label": "Band on 160",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_on_160",
+                    "id": 50
+                },
+                {
+                    "name": "Filter visibility  160",
+                    "label": "Filter visibility  160",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Filter_visibility__160",
+                    "id": 51
+                },
+                {
+                    "name": "Band gain 160",
+                    "label": "Band gain 160",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_gain_160",
+                    "id": 52
+                },
+                {
+                    "name": "Band solo 250",
+                    "label": "Band solo 250",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_solo_250",
+                    "id": 53
+                },
+                {
+                    "name": "Band mute 250",
+                    "label": "Band mute 250",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_mute_250",
+                    "id": 54
+                },
+                {
+                    "name": "Band on 250",
+                    "label": "Band on 250",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_on_250",
+                    "id": 55
+                },
+                {
+                    "name": "Filter visibility  250",
+                    "label": "Filter visibility  250",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Filter_visibility__250",
+                    "id": 56
+                },
+                {
+                    "name": "Band gain 250",
+                    "label": "Band gain 250",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_gain_250",
+                    "id": 57
+                },
+                {
+                    "name": "Band solo 400",
+                    "label": "Band solo 400",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_solo_400",
+                    "id": 58
+                },
+                {
+                    "name": "Band mute 400",
+                    "label": "Band mute 400",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_mute_400",
+                    "id": 59
+                },
+                {
+                    "name": "Band on 400",
+                    "label": "Band on 400",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_on_400",
+                    "id": 60
+                },
+                {
+                    "name": "Filter visibility  400",
+                    "label": "Filter visibility  400",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Filter_visibility__400",
+                    "id": 61
+                },
+                {
+                    "name": "Band gain 400",
+                    "label": "Band gain 400",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_gain_400",
+                    "id": 62
+                },
+                {
+                    "name": "Band solo 630",
+                    "label": "Band solo 630",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_solo_630",
+                    "id": 63
+                },
+                {
+                    "name": "Band mute 630",
+                    "label": "Band mute 630",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_mute_630",
+                    "id": 64
+                },
+                {
+                    "name": "Band on 630",
+                    "label": "Band on 630",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_on_630",
+                    "id": 65
+                },
+                {
+                    "name": "Filter visibility  630",
+                    "label": "Filter visibility  630",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Filter_visibility__630",
+                    "id": 66
+                },
+                {
+                    "name": "Band gain 630",
+                    "label": "Band gain 630",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_gain_630",
+                    "id": 67
+                },
+                {
+                    "name": "Band solo 1K",
+                    "label": "Band solo 1K",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_solo_1K",
+                    "id": 68
+                },
+                {
+                    "name": "Band mute 1K",
+                    "label": "Band mute 1K",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_mute_1K",
+                    "id": 69
+                },
+                {
+                    "name": "Band on 1K",
+                    "label": "Band on 1K",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_on_1K",
+                    "id": 70
+                },
+                {
+                    "name": "Filter visibility  1K",
+                    "label": "Filter visibility  1K",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Filter_visibility__1K",
+                    "id": 71
+                },
+                {
+                    "name": "Band gain 1K",
+                    "label": "Band gain 1K",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_gain_1K",
+                    "id": 72
+                },
+                {
+                    "name": "Band solo 1.6K",
+                    "label": "Band solo 1.6K",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_solo_16K",
+                    "id": 73
+                },
+                {
+                    "name": "Band mute 1.6K",
+                    "label": "Band mute 1.6K",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_mute_16K",
+                    "id": 74
+                },
+                {
+                    "name": "Band on 1.6K",
+                    "label": "Band on 1.6K",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_on_16K",
+                    "id": 75
+                },
+                {
+                    "name": "Filter visibility  1.6K",
+                    "label": "Filter visibility  1.6K",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Filter_visibility__16K",
+                    "id": 76
+                },
+                {
+                    "name": "Band gain 1.6K",
+                    "label": "Band gain 1.6K",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_gain_16K",
+                    "id": 77
+                },
+                {
+                    "name": "Band solo 2.5K",
+                    "label": "Band solo 2.5K",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_solo_25K",
+                    "id": 78
+                },
+                {
+                    "name": "Band mute 2.5K",
+                    "label": "Band mute 2.5K",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_mute_25K",
+                    "id": 79
+                },
+                {
+                    "name": "Band on 2.5K",
+                    "label": "Band on 2.5K",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_on_25K",
+                    "id": 80
+                },
+                {
+                    "name": "Filter visibility  2.5K",
+                    "label": "Filter visibility  2.5K",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Filter_visibility__25K",
+                    "id": 81
+                },
+                {
+                    "name": "Band gain 2.5K",
+                    "label": "Band gain 2.5K",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_gain_25K",
+                    "id": 82
+                },
+                {
+                    "name": "Band solo 4K",
+                    "label": "Band solo 4K",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_solo_4K",
+                    "id": 83
+                },
+                {
+                    "name": "Band mute 4K",
+                    "label": "Band mute 4K",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_mute_4K",
+                    "id": 84
+                },
+                {
+                    "name": "Band on 4K",
+                    "label": "Band on 4K",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_on_4K",
+                    "id": 85
+                },
+                {
+                    "name": "Filter visibility  4K",
+                    "label": "Filter visibility  4K",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Filter_visibility__4K",
+                    "id": 86
+                },
+                {
+                    "name": "Band gain 4K",
+                    "label": "Band gain 4K",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_gain_4K",
+                    "id": 87
+                },
+                {
+                    "name": "Band solo 6.3K",
+                    "label": "Band solo 6.3K",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_solo_63K",
+                    "id": 88
+                },
+                {
+                    "name": "Band mute 6.3K",
+                    "label": "Band mute 6.3K",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_mute_63K",
+                    "id": 89
+                },
+                {
+                    "name": "Band on 6.3K",
+                    "label": "Band on 6.3K",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_on_63K",
+                    "id": 90
+                },
+                {
+                    "name": "Filter visibility  6.3K",
+                    "label": "Filter visibility  6.3K",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Filter_visibility__63K",
+                    "id": 91
+                },
+                {
+                    "name": "Band gain 6.3K",
+                    "label": "Band gain 6.3K",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_gain_63K",
+                    "id": 92
+                },
+                {
+                    "name": "Band solo 10K",
+                    "label": "Band solo 10K",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_solo_10K",
+                    "id": 93
+                },
+                {
+                    "name": "Band mute 10K",
+                    "label": "Band mute 10K",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_mute_10K",
+                    "id": 94
+                },
+                {
+                    "name": "Band on 10K",
+                    "label": "Band on 10K",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_on_10K",
+                    "id": 95
+                },
+                {
+                    "name": "Filter visibility  10K",
+                    "label": "Filter visibility  10K",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Filter_visibility__10K",
+                    "id": 96
+                },
+                {
+                    "name": "Band gain 10K",
+                    "label": "Band gain 10K",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_gain_10K",
+                    "id": 97
+                },
+                {
+                    "name": "Band solo 16K",
+                    "label": "Band solo 16K",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_solo_16K",
+                    "id": 98
+                },
+                {
+                    "name": "Band mute 16K",
+                    "label": "Band mute 16K",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_mute_16K",
+                    "id": 99
+                },
+                {
+                    "name": "Band on 16K",
+                    "label": "Band on 16K",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_on_16K",
+                    "id": 100
+                },
+                {
+                    "name": "Filter visibility  16K",
+                    "label": "Filter visibility  16K",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Filter_visibility__16K",
+                    "id": 101
+                },
+                {
+                    "name": "Band gain 16K",
+                    "label": "Band gain 16K",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Band_gain_16K",
+                    "id": 102
+                },
+                {
+                    "name": "Latency OUT",
+                    "label": "Latency OUT",
+                    "osc_path": "/parameter/graph_equalizer_x16_stereo/Latency_OUT",
+                    "id": 105
+                }
+            ]
+        },
+        {
+            "name": "internal_reverb",
+            "label": "Freeverb",
+            "processor_id": 3,
+            "parent_track_id": 0,
+            "parameters": [
+                {
+                    "name": "freeze",
+                    "label": "Freeze",
+                    "osc_path": "/parameter/internal_reverb/freeze",
+                    "id": 0
+                },
+                {
+                    "name": "dry",
+                    "label": "Dry Level",
+                    "osc_path": "/parameter/internal_reverb/dry",
+                    "id": 1
+                },
+                {
+                    "name": "wet",
+                    "label": "Wet Level",
+                    "osc_path": "/parameter/internal_reverb/wet",
+                    "id": 2
+                },
+                {
+                    "name": "room_size",
+                    "label": "Room Size",
+                    "osc_path": "/parameter/internal_reverb/room_size",
+                    "id": 3
+                },
+                {
+                    "name": "width",
+                    "label": "Width",
+                    "osc_path": "/parameter/internal_reverb/width",
+                    "id": 4
+                },
+                {
+                    "name": "damp",
+                    "label": "Damping",
+                    "osc_path": "/parameter/internal_reverb/damp",
+                    "id": 5
+                }
+            ]
+        }
+    ]
+}Parameter dump completed - exiting.

@@ -17,6 +17,8 @@ next session (human or model) can pick it up cold.
 - [x] Read the implementation brief and prototype; audit the live environment
 - [x] `README.md` — goal, architecture, workflow, layout, environment
 - [x] `MANIFEST.md` — this file
+- [x] Smoke-tested every tracked config against the real Sushi 1.3.0 — surfaced
+      the defects recorded below
 - [ ] Reconcile the brief's target layout (`src/sushi_rig/`) with the current
       flat repo — deferred until item 2 starts, since the layout only matters
       once the tooling is split out
@@ -69,8 +71,19 @@ guitar, so edits can be made with confidence.
 - Unit tests per brief §8, driven from committed fixtures — priority order is
   spec validation, emit, dump parsing, verify, panel
 
-**Highest-value artefact to capture early:** a real `--dump-plugins` output
-committed as a test fixture. Everything offline can be tested against it.
+- [x] Real `--dump-plugins` output captured as `examples/dump.example.json` —
+      the brief's highest-value offline fixture. Everything in the offline group
+      can be tested against it.
+
+The smoke test is available today and needs no new dependencies:
+
+```bash
+export LV2_PATH="$HOME/Sushi/plugins/lv2:$HOME/Sushi/plugins:/usr/lib/lv2"
+for c in config/*.json; do ./sushi --dump-plugins -c "$c" >/dev/null 2>&1 \
+  && echo "ok   $c" || echo "FAIL $c"; done
+```
+
+Worth wiring up first — it is what surfaced the defects below.
 
 ---
 
@@ -119,14 +132,108 @@ discovering it late changes the shape of the rig.
 Blocking item 2, steps 4–6. Each has a command that settles it; none should be
 guessed.
 
+### Settled
+
+**Sushi names LV2 parameters from `lv2:name`, not the port symbol.** Spaces and
+capitalisation are preserved verbatim — `"Attack threshold"`, `"Band gain 1.6K"`,
+`"Show pre-mix overlay"`. No symbol-to-name mapping layer is needed. Internal
+plugins differ from LV2 in that `name` and `label` diverge (Freeverb reports
+name `room_size`, label `Room Size`); for LV2 the two were identical throughout.
+*(2026-09-13, via `--dump-plugins` on Sushi 1.3.0.)*
+
+**`--dump-plugins` output shape on 1.3.0** is `{"plugins": [{name, label,
+parameters: [{name, label, osc_path, id}]}]}` — followed on **stdout** by the
+literal line `Parameter dump completed - exiting.`. Captured verbatim as
+`examples/dump.example.json`.
+
+> ⚠️ This breaks the prototype. `sushi_rig.py:dump_plugins()` handles *leading*
+> log lines but not a *trailing* message, so both `json.loads` paths raise
+> `Extra data`. `verify` and `panel` cannot work on 1.3.0 until it parses with
+> `JSONDecoder().raw_decode()` from the first `{`. First thing to fix in item 2.
+
+**`osc_path` is provided per parameter**, with spaces replaced by underscores
+(`/parameter/compressor_mono/Show_pre-mix_overlay`). `panel.py` must use these
+verbatim rather than constructing paths from names — the prototype constructs
+them and would produce addresses that never match.
+
+### Still open
+
 | Question | How to settle it |
 |---|---|
-| Does Sushi name LV2 parameters from `lv2:name` or the port symbol? | Run `probe` and `--dump-plugins` on the same plugin, compare |
 | How does Sushi normalise logarithmic ports? | Set a log port to 0.5 over gRPC, read back the formatted value, compare against the probed range |
 | Which elkpy getter returns the normalised value? | `python3 -m pydoc elkpy.parametercontroller` |
 | What are `create_processor_on_track`'s real argument names? | `python3 -m pydoc elkpy.audiographcontroller` — they have moved between releases |
-| Exact shape of `--dump-plugins` on 1.3.0? | Capture one and commit it as a fixture |
 | Do toggled and integer ports normalise as expected? | Confirm Sushi does not expose toggled ports as two-value enumerations |
+
+---
+
+## Known defects
+
+### 🔴 The plugin settings in both acoustic configs do nothing
+
+Affects `config/acoustic_reverb_fx.json` and `config/acoustic_chorus_fx.json`
+— every `properties` block in `config/` is of this form.
+
+
+Both plugins carry a `properties` block *inside the plugin entry*, holding
+real-world values:
+
+```json
+{ "name": "compressor_mono", "type": "lv2",
+  "properties": { "Attack threshold": -30.0, "Ratio": 4.0, "Knee": -6.00 } }
+```
+
+That is not a mechanism Sushi implements. Startup parameter values belong in a
+**top-level `initial_state` array**, and every value must be **normalised
+0.0–1.0** — `-30.0 dB` is not a value Sushi can interpret.
+
+Proven, not inferred: replacing the block with a fabricated parameter name
+(`"Totally Fake Parameter": 999999.0`) still exits **0**, while the same
+fabricated name inside `initial_state` exits **7**. `initial_state` is
+validated; `properties` here is silently discarded.
+
+The parameter *names* are all correct and do exist on the plugins — only the
+placement and the value domain are wrong. This is exactly the "loads cleanly,
+sounds wrong" failure the whole project exists to prevent, and it is sitting in
+the rig that `start-rig.sh` launches today.
+
+**Fix requires knowing each port's range to normalise against, so it is blocked
+on `probe` (item 2 step 4) or a live `capture` (step 5).** Do not hand-convert:
+LSP gain ports are frequently logarithmic, and the brief is explicit that
+guessing those is worse than refusing.
+
+### 🟠 `start-rig.sh` does not put the bundled plugins on `LV2_PATH`
+
+The script sets `LV2_PATH="$HOME/Sushi/plugins:…"`, but `LV2_PATH` entries must
+be directories *containing* `.lv2` bundles. Only `plugins/lsp-plugins.lv2` sits
+at that level. The 262 bundles in `plugins/lv2/` are never seen — lilv treats
+`plugins/lv2` as a single malformed bundle and logs
+`Error reading …/plugins/lv2/manifest.ttl` on every launch.
+
+The rig works anyway, because the fallback `/usr/lib/lv2` is also on the path —
+which means the "portable plugins directory" is not actually supplying anything
+except the newer LSP build. Relevant to item 5: portability here is currently
+illusory.
+
+### 🟠 Two LSP versions are installed simultaneously
+
+`plugins/lsp-plugins.lv2` is v0.26; `plugins/lv2/lsp-plugins.lv2` and
+`/usr/lib/lv2/lsp-plugins.lv2` are v0.22. lilv resolves this by silently
+preferring 0.26. Which build a config resolves against therefore depends on
+`LV2_PATH` ordering — precisely the version drift the catalogue diff in item 5
+is meant to catch.
+
+Also note `plugins/lv2/` is a byte-identical copy of `/usr/lib/lv2/` (262 of
+262 bundles, no extras either way), so it is ~358 MB of pure redundancy that is
+shadowed on the current path anyway.
+
+### 🟡 Sushi requires `LV2_PATH` to be set explicitly
+
+With `LV2_PATH` unset, Sushi loads no LV2 plugins at all and exits 4
+(`Failed to load tracks from the Json config file`) — even though `lv2ls` finds
+648 plugins using lilv's built-in defaults. Running `./sushi -c <config>` by
+hand, outside `start-rig.sh`, fails for this reason and the error does not
+mention `LV2_PATH`.
 
 ---
 

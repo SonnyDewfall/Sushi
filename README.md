@@ -81,6 +81,8 @@ The tweak → capture → emit loop at the bottom is where the time actually goe
 │   ├── empty.json                passthrough, for verifying the audio path
 │   ├── rig.qpwgraph              patchbay routing loaded at startup
 │   └── Plugin manifest.txt       every LV2 URI available on this machine
+├── examples/
+│   └── dump.example.json      real --dump-plugins output, offline test fixture
 ├── Patchbay/                   saved qpwgraph sessions
 ├── Project_files/              design docs and the working prototype
 │   ├── IMPLEMENTATION_BRIEF.md   authoritative spec — read before writing code
@@ -109,12 +111,34 @@ tracked as work item 2 in [MANIFEST.md](MANIFEST.md).
 ./stop-rig.sh      # clean shutdown, releases JACK ports
 ```
 
-`start-rig.sh` points `LV2_PATH` at the local `plugins/` directory, kills any
-stale instances, launches `fmit` (tuner) and `qpwgraph` (patchbay, restoring
-saved connections), then starts Sushi under PipeWire's JACK shim.
+`start-rig.sh` sets `LV2_PATH`, kills any stale instances, launches `fmit`
+(tuner) and `qpwgraph` (patchbay, restoring saved connections), then starts
+Sushi under PipeWire's JACK shim.
 
 To run a different rig, change the config path on the last line of
 `start-rig.sh`.
+
+> **`LV2_PATH` must be set, or Sushi loads no LV2 plugins at all.** It exits 4
+> with `Failed to load tracks from the Json config file` — an error that never
+> mentions `LV2_PATH`. `lv2ls` is not a proxy for this: it finds 648 plugins
+> using lilv's defaults while Sushi finds none. Running `./sushi -c <config>`
+> by hand, outside the script, hits this every time:
+>
+> ```bash
+> export LV2_PATH="$HOME/Sushi/plugins/lv2:$HOME/Sushi/plugins:/usr/lib/lv2"
+> ```
+
+### Checking a config loads
+
+No guitar, no audio interface, no extra dependencies needed:
+
+```bash
+./sushi --dump-plugins -c config/acoustic_reverb_fx.json
+```
+
+This starts Sushi with the dummy frontend, prints every hosted plugin's
+parameters as JSON, and exits. It is the authoritative source for parameter
+names, and the cheapest way to know a config is loadable.
 
 ## Environment
 
@@ -171,6 +195,12 @@ available here. Since Sushi addresses plugins by URI and never by path, that
 manifest plus a package install is enough to reconstruct the environment. Making
 this reproducible on a fresh machine is work item 5 in
 [MANIFEST.md](MANIFEST.md).
+
+Be aware that the rig currently depends on the **system** LV2 installation, not
+the bundled directory — `start-rig.sh` puts `plugins/` on `LV2_PATH`, but the
+262 bundles live one level down in `plugins/lv2/` and are never seen. The rig
+works only because `/usr/lib/lv2` is also on the path. See *Known defects* in
+the manifest before relying on `plugins/` for portability.
 
 ---
 
