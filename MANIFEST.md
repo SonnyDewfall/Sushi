@@ -368,6 +368,39 @@ block `live.py`, `probe.py`, or `panel.py`.
 
 ## Known defects
 
+### 🟢 `panel.py` defaulted every fader to 0.5 normalised — real clipping on real hardware
+
+Found by testing with an actual guitar and audio interface, not in review.
+Touching almost any fader on the compressor, chorus or EQ tabs caused a sudden,
+dramatic gain increase into clipping — including faders with no obvious
+connection to level, because the parameters affected were graphic EQ band
+gains, not anything obviously labelled "output".
+
+Root cause, confirmed with real numbers: many LSP parameters described as
+"gain" are **linear amplitude multipliers with wide domains** — every graphic
+EQ band gain has domain `[~0.016, ~63]`; `Input gain`, `Output gain` and
+`Makeup gain` on the compressor and chorus have domain `[0, 1000]`. Their real
+default sits near the *bottom* of that range (`~1.0`, i.e. unity gain). The
+panel generator hardcoded every fader's starting value to `0.5` normalised —
+on a `[0, 1000]` domain that's real-world `500`: **500x amplification**,
+instantly clipping, the moment that fader's value was touched or sent.
+
+Fixed by sourcing each fader's starting value from `live.get_live_parameter_info`
+— the parameter's actual current value in the running Sushi, captured over
+gRPC at panel-generation time — rather than a guessed constant. Verified
+against a live instance: `Input gain`/`Output gain` now default to `0.001`,
+`Makeup gain` to `0.000999`, matching unity gain exactly, and confirmed
+visually in real open-stage-control that these faders now sit near the bottom
+of their track rather than at the dangerous midpoint. Read-only meter/
+visibility parameters (which were also present as draggable-but-meaningless
+faders) are now excluded from the panel entirely, using the same
+`automatable` filter `capture()` already applied.
+
+**Takeaway for the future:** anything that puts a number in front of Sushi and
+lets a value be set needs to reason about the parameter's actual domain, not
+just its normalised range. `0.0–1.0` is uniform; what a plugin actually does
+with that range is very much not.
+
 ### 🔴 The plugin settings in both acoustic configs do nothing
 
 Affects `config/acoustic_reverb_fx.json` and `config/acoustic_chorus_fx.json`

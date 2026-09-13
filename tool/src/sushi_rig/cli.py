@@ -38,9 +38,18 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--address", default=DEFAULT_GRPC_ADDRESS)
     p.add_argument("-o", "--out", type=Path, default=Path("state.json"))
 
-    p = sub.add_parser("panel", help="Open Stage Control panel from a config")
+    p = sub.add_parser(
+        "panel",
+        help="Open Stage Control panel from a config, using live values from a running Sushi",
+    )
     p.add_argument("config", type=Path)
     p.add_argument("--sushi", default="sushi")
+    p.add_argument(
+        "--address",
+        default=DEFAULT_GRPC_ADDRESS,
+        help="the running Sushi to read current parameter values from — "
+        "must already be running this same config",
+    )
     p.add_argument(
         "--osc-port",
         type=int,
@@ -64,8 +73,11 @@ def main(argv: list[str] | None = None) -> int:
 
         write_json(args.out, capture(args.address))
     elif args.command == "panel":
+        from .live import get_live_parameter_info
+
         dump = dump_plugins(args.config, args.sushi)
-        write_json(args.out, build_osc_panel(dump))
+        live_info = get_live_parameter_info(args.address)
+        write_json(args.out, build_osc_panel(dump, live_info))
         print(
             f"open with: open-stage-control --load {args.out} "
             f"--send 127.0.0.1:{args.osc_port}"

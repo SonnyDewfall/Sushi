@@ -103,6 +103,43 @@ def capture(address: str = DEFAULT_GRPC_ADDRESS) -> dict[str, Any]:
     return {"processors": processors}
 
 
+def get_live_parameter_info(address: str = DEFAULT_GRPC_ADDRESS) -> dict[str, dict[str, dict]]:
+    """Per-processor, per-parameter {"automatable": bool, "value": float}.
+
+    `value` is the current normalised value, i.e. whatever Sushi actually has
+    loaded right now — the plugin's own default if nothing has changed it
+    yet, or a baked-in `initial_state` value otherwise. This exists for
+    `panel.py`: a fader's starting value must come from here, never from a
+    guessed constant like 0.5. Proven necessary the hard way — many LSP gain
+    parameters are linear amplitude multipliers with domains up to 1000
+    (`Input gain`, `Output gain`, `Makeup gain`) or 63 (every graphic EQ band
+    gain), where the real default sits near the *bottom* of the range. `0.5`
+    normalised on `Input gain`'s `[0, 1000]` domain is real-world `500` —
+    500x amplification, instant clipping — for a fader whose sane starting
+    point is `~0.001` normalised (real-world `1.0`, unity gain).
+    """
+    controller = _controller(address)
+    result: dict[str, dict[str, dict]] = {}
+    try:
+        for track in controller.audio_graph.get_all_tracks():
+            targets = [(track.id, track.name)]
+            for proc in controller.audio_graph.get_track_processors(track.id):
+                targets.append((proc.id, proc.name))
+
+            for proc_id, proc_name in targets:
+                params: dict[str, dict] = {}
+                for param in controller.parameters.get_processor_parameters(proc_id):
+                    params[param.name] = {
+                        "automatable": bool(getattr(param, "automatable", True)),
+                        "value": controller.parameters.get_parameter_value(proc_id, param.id),
+                    }
+                result[proc_name] = params
+    finally:
+        controller.close()
+
+    return result
+
+
 def _wait(response: Any, timeout: float = 5.0, interval: float = 0.02) -> None:
     """Poll a SushiCommandResponse until Sushi confirms the command.
 
