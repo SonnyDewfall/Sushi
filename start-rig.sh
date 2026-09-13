@@ -11,7 +11,7 @@ killall -q fmit sushi
 fmit &
 
 # 4. Launch qpwgraph minimized with saved auto-connections
-qpwgraph -a "$HOME/Sushi/config/rig.qpwgraph" -m &
+qpwgraph -a "$HOME/Sushi/Patchbay/rig.qpwgraph" -m &
 
 # 5. Launch SUSHI via PipeWire-JACK
-pw-jack ./sushi -j -c config/acoustic_reverb_fx.json
+pw-jack ./sushi -j -c config/acoustic_chorus_fx.json

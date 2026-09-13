@@ -72,24 +72,34 @@ The tweak → capture → emit loop at the bottom is where the time actually goe
 
 ## Repository layout
 
+This is a **monorepo with two zones**: the *rig* (personal, machine-specific —
+the configs and scripts you run daily) at the root, and the *tool* (reusable
+software that generates the configs) under `tool/`. They share one workflow, so
+they share one repo; if the tool ever needs to stand alone, it can be split out
+then.
+
 ```
-.
-├── config/                     Sushi configs — the deployable artefacts
-│   ├── acoustic_reverb_fx.json   current rig (what start-rig.sh launches)
-│   ├── acoustic_chorus_fx.json
-│   ├── fx.json                   minimal internal-reverb rig
-│   ├── empty.json                passthrough, for verifying the audio path
-│   ├── rig.qpwgraph              patchbay routing loaded at startup
-│   └── Plugin manifest.txt       every LV2 URI available on this machine
-├── examples/
-│   └── dump.example.json      real --dump-plugins output, offline test fixture
-├── Patchbay/                   saved qpwgraph sessions
-├── Project_files/              design docs and the working prototype
-│   ├── IMPLEMENTATION_BRIEF.md   authoritative spec — read before writing code
-│   ├── rig.example.yaml          annotated rig spec
-│   └── sushi_rig.py              single-file prototype of the whole toolchain
+.                               ── RIG (root): what you run daily
 ├── start-rig.sh                launch tuner + patchbay + Sushi
 ├── stop-rig.sh                 interrupt, settle, force-kill
+├── config/                     Sushi configs — the deployable artefacts
+│   ├── acoustic_reverb_fx.json
+│   ├── acoustic_chorus_fx.json   current rig (what start-rig.sh launches)
+│   ├── fx.json                   minimal internal-reverb rig
+│   └── empty.json                passthrough, for verifying the audio path
+├── Patchbay/                   qpwgraph sessions
+│   ├── rig.qpwgraph              routing loaded at startup
+│   ├── Default.qpwgraph
+│   └── Test_1.qpwgraph
+├── plugin-manifest.txt         every LV2 URI available on this machine
+│
+├── tool/                       ── TOOL: generates the configs above
+│   ├── sushi_rig.py             single-file prototype of the whole toolchain
+│   └── examples/
+│       ├── rig.example.yaml       annotated rig spec
+│       └── dump.example.json      real --dump-plugins output, test fixture
+│
+├── IMPLEMENTATION_BRIEF.md     authoritative spec — read before writing code
 ├── MANIFEST.md                 what is being worked on and what is next
 └── README.md
 ```
@@ -97,10 +107,10 @@ The tweak → capture → emit loop at the bottom is where the time actually goe
 Untracked but required at runtime: `Sushi-x86_64.AppImage` (symlinked as
 `sushi`) and `plugins/`. See [Plugins and portability](#plugins-and-portability).
 
-The tooling in `Project_files/sushi_rig.py` is a prototype. Its target structure
-— split into `spec`, `emit`, `probe`, `live`, `dump`, `verify`, `panel` modules
-with a real test suite — is specified in §3 of the implementation brief and
-tracked as work item 2 in [MANIFEST.md](MANIFEST.md).
+`tool/sushi_rig.py` is a prototype. Its target structure — split into `spec`,
+`emit`, `probe`, `live`, `dump`, `verify`, `panel` modules under `tool/src/`
+with a `pyproject.toml` and a real test suite — is specified in §3 of the
+implementation brief and tracked as work item 2 in [MANIFEST.md](MANIFEST.md).
 
 ---
 
@@ -190,7 +200,7 @@ LV2 installation (262 of 262 bundles match `/usr/lib/lv2`), so tracking it would
 add ~358 MB of third-party GPL binaries that are reproducible from a package
 manager in seconds.
 
-What *is* tracked is `config/Plugin manifest.txt` — the full list of LV2 URIs
+What *is* tracked is `plugin-manifest.txt` — the full list of LV2 URIs
 available here. Since Sushi addresses plugins by URI and never by path, that
 manifest plus a package install is enough to reconstruct the environment. Making
 this reproducible on a fresh machine is work item 5 in
@@ -207,8 +217,8 @@ the manifest before relying on `plugins/` for portability.
 ## Where to start reading
 
 1. **[MANIFEST.md](MANIFEST.md)** — current state and what is being worked on.
-2. **[Project_files/IMPLEMENTATION_BRIEF.md](Project_files/IMPLEMENTATION_BRIEF.md)**
-   — the authoritative spec. §2 lists the domain facts that are easy to get
-   wrong; several contradict a reasonable first guess.
-3. **[Project_files/rig.example.yaml](Project_files/rig.example.yaml)** — what a
+2. **[IMPLEMENTATION_BRIEF.md](IMPLEMENTATION_BRIEF.md)** — the authoritative
+   spec. §2 lists the domain facts that are easy to get wrong; several contradict
+   a reasonable first guess.
+3. **[tool/examples/rig.example.yaml](tool/examples/rig.example.yaml)** — what a
    rig spec looks like.

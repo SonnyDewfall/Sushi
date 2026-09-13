@@ -2,8 +2,8 @@
 
 What is being worked on, in what order, and why. Updated as work lands.
 
-> Not to be confused with `config/Plugin manifest.txt`, which is the list of
-> available LV2 plugin URIs.
+> Not to be confused with `plugin-manifest.txt`, which is the list of available
+> LV2 plugin URIs.
 
 **Status:** 🟢 done · 🟡 in progress · ⚪ not started · 🔵 ongoing
 
@@ -19,9 +19,11 @@ next session (human or model) can pick it up cold.
 - [x] `MANIFEST.md` — this file
 - [x] Smoke-tested every tracked config against the real Sushi 1.3.0 — surfaced
       the defects recorded below
-- [ ] Reconcile the brief's target layout (`src/sushi_rig/`) with the current
-      flat repo — deferred until item 2 starts, since the layout only matters
-      once the tooling is split out
+- [x] Restructured into a two-zone monorepo: rig at root, tool under `tool/`.
+      Split `config/` (patchbay → `Patchbay/`, inventory → `plugin-manifest.txt`,
+      leaving only Sushi JSON), and moved the prototype + examples under `tool/`.
+      Full package layout (`tool/src/sushi_rig/`, `pyproject.toml`, `tool/tests/`)
+      lands with item 2.
 
 **Done when** someone unfamiliar can clone, read the README, and run the rig.
 
@@ -48,8 +50,9 @@ real Sushi 1.3.0 install before `live.py` and `panel.py` are built on an
 assumption about them.
 
 A working single-file prototype of all six already exists at
-`Project_files/sushi_rig.py`. Treat it as reference for data shapes and emit
-logic, not as the target structure.
+`tool/sushi_rig.py`. Treat it as reference for data shapes and emit logic, not
+as the target structure — the first task here is splitting it into the module
+layout above under `tool/src/sushi_rig/`, with `pyproject.toml` and `tool/tests/`.
 
 **Blocked on:** `lilv` and `elkpy` are not installed (steps 4–5 only; steps 1–3
 need neither).
@@ -71,7 +74,7 @@ guitar, so edits can be made with confidence.
 - Unit tests per brief §8, driven from committed fixtures — priority order is
   spec validation, emit, dump parsing, verify, panel
 
-- [x] Real `--dump-plugins` output captured as `examples/dump.example.json` —
+- [x] Real `--dump-plugins` output captured as `tool/examples/dump.example.json` —
       the brief's highest-value offline fixture. Everything in the offline group
       can be tested against it.
 
@@ -89,14 +92,18 @@ Worth wiring up first — it is what surfaced the defects below.
 
 ## 4. ⚪ Config library structure and versioning
 
-Currently `config/` mixes deployable rigs, a passthrough test config, patchbay
-routing and the plugin manifest in one flat directory. Needs separating, with a
-convention for naming and versioning rig variants.
+- [x] Physically separated the kinds of file that were mixed in `config/`:
+      patchbay routing → `Patchbay/`, plugin inventory → `plugin-manifest.txt`,
+      leaving `config/` holding only Sushi JSON configs.
 
-Open: whether `rig.yaml` sources live alongside their emitted JSON or in a
-parallel tree, and whether emitted configs are committed at all or regenerated
-on demand. Committing them is probably right — they are the deployable
-artefact, and diffing them is how parameter drift becomes visible.
+Remaining: a convention for naming and versioning rig variants, and where the
+hand-authored `rig.yaml` sources sit relative to their emitted JSON.
+
+Open: whether `rig.yaml` sources live alongside their emitted JSON (e.g.
+`config/*.yaml` next to `config/*.json`) or in a parallel tree, and whether
+emitted configs are committed at all or regenerated on demand. Committing them
+is probably right — they are the deployable artefact, and diffing them is how
+parameter drift becomes visible.
 
 ---
 
@@ -106,7 +113,7 @@ The rig currently hard-codes `$HOME/Sushi` and depends on an untracked 358 MB
 `plugins/` directory copied from the system LV2 install.
 
 - Derive paths from the script location rather than `$HOME`
-- Reconstruct `plugins/` from `config/Plugin manifest.txt` plus a package
+- Reconstruct `plugins/` from `plugin-manifest.txt` plus a package
   install, rather than by copying binaries
 - Capture a plugin catalogue per machine and diff them — brief §5.3 exists
   specifically to catch version drift between the authoring machine and the
@@ -144,7 +151,7 @@ name `room_size`, label `Room Size`); for LV2 the two were identical throughout.
 **`--dump-plugins` output shape on 1.3.0** is `{"plugins": [{name, label,
 parameters: [{name, label, osc_path, id}]}]}` — followed on **stdout** by the
 literal line `Parameter dump completed - exiting.`. Captured verbatim as
-`examples/dump.example.json`.
+`tool/examples/dump.example.json`.
 
 > ⚠️ This breaks the prototype. `sushi_rig.py:dump_plugins()` handles *leading*
 > log lines but not a *trailing* message, so both `json.loads` paths raise
@@ -242,9 +249,15 @@ mention `LV2_PATH`.
 **Plugin binaries are not tracked in git.** `plugins/` is an exact copy of
 `/usr/lib/lv2` (262 of 262 bundles). Tracking it meant ~358 MB of third-party
 GPL binaries in a public repo, reproducible from a package manager in seconds.
-Configs address plugins by URI, so `config/Plugin manifest.txt` is the artefact
+Configs address plugins by URI, so `plugin-manifest.txt` is the artefact
 worth versioning. *(2026-09-13 — purged from history; repo went from 141 MB to
 under 1 MB.)*
+
+**One monorepo, two zones — not two repos.** The rig (personal, machine-specific
+configs and scripts, at the root) and the tool (reusable config-generating
+software, under `tool/`) are separate concerns but share one workflow, so they
+share one repo while this is a personal project. If the tool needs to be
+operationalised independently later, it can be split out then. *(2026-09-13)*
 
 **Open Stage Control, not a bespoke web GUI.** Generated OSC fader panels close
 the loop with far less code and match the brief. A custom UI — and any
