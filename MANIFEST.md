@@ -82,6 +82,28 @@ as the target structure — it is being split into `tool/src/sushi_rig/` with
       (`osc_path` included) rather than just its name.
 - [x] **B2 `panel.py`** — rebuilt to use each parameter's `osc_path` from the
       dump verbatim instead of constructing one from the name.
+- [x] **B2 revisited: `panel.py`'s session schema verified against real
+      open-stage-control 1.31.1**, not just against the brief's description.
+      Installed it (`.deb` from openstagecontrol.ammd.net — apt/snap don't
+      package it; note its `_apt` sandbox needs the `.deb` somewhere
+      world-traversable, `$HOME` at `750` blocks it, copy to `/tmp` first),
+      then actually loaded generated panels into it and watched them render.
+      Two real defects found this way, neither visible from reading docs:
+      - `sendPort` on the root object **is not a real property** — the
+        prototype invented it. The actual send target is set via
+        open-stage-control's own `--send ip:port` CLI flag at launch.
+        Removed; `cli.py panel` now prints the matching launch command
+        instead.
+      - `layout: "grid"` on a container **collapses every fader inside it to
+        a sliver** — confirmed by isolating one fader (renders correctly at
+        its set height alone) against the same fader inside a grid container
+        (collapses to near-nothing). Switched to plain flow layout (`layout`
+        left unset — `"default"` is already open-stage-control's own
+        default), which was confirmed to wrap same-sized widgets correctly
+        at full height.
+      Final result — generated from the live `acoustic_chorus_fx.json` dump,
+      loaded into real open-stage-control, all 4 tabs and all faders
+      rendered and were confirmed draggable (watched a handle move on drag).
 - [x] 13 offline tests passing (`cd tool && source .venv/bin/activate && pytest`),
       run against the real `dump.example.json` fixture plus a synthetic
       differently-nested one for the generic-walk claim.

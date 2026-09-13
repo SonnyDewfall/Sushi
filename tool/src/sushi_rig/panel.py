@@ -4,6 +4,25 @@ One tab per processor, one fader per parameter. Addresses come from each
 parameter's `osc_path` in the dump, used verbatim — Sushi replaces spaces with
 underscores in these paths, so constructing an address from the parameter name
 instead would silently produce one that never matches.
+
+The session schema here was verified against real open-stage-control 1.31.1
+(loaded into it directly, not inferred from docs alone): `root`, `panel` and
+`tab` are all containers taking a `widgets` array (`root`/`panel` can use
+`tabs` instead); `fader` takes `range`, `default`, `label`, `address`. There is
+no `sendPort` property on `root` — the prototype this was ported from invented
+it; the actual send target is set via open-stage-control's own `--send`
+CLI flag (`ip:port`) at launch time, not from the session file. Manual
+`left`/`top` pixel placement on every fader (also inherited from the
+prototype) rendered as a tiny, near-unusable panel with no visible size on the
+containers.
+
+`layout: "grid"` on a container collapses every fader inside it down to a
+sliver — confirmed by isolating a single fader (renders correctly at its set
+height on its own) from the same fader inside a `layout: "grid"` container
+(collapses). `layout: "default"` (plain flow — also the documented default,
+so it can simply be omitted) wraps same-width widgets left-to-right, top-to-
+bottom exactly like a flexbox, and was confirmed to render two side-by-side
+faders at their full set height. That's what's used here instead.
 """
 
 from __future__ import annotations
@@ -13,12 +32,12 @@ from typing import Any
 from .dump import collect_parameter_info
 
 
-def build_osc_panel(dump: Any, osc_port: int = 24024) -> dict[str, Any]:
+def build_osc_panel(dump: Any) -> dict[str, Any]:
     """Build a tabbed Open Stage Control panel structure: one tab per processor."""
     tabs = []
     for processor, params in sorted(collect_parameter_info(dump).items()):
         widgets = []
-        for i, (param_name, info) in enumerate(sorted(params.items())):
+        for param_name, info in sorted(params.items()):
             address = info.get("osc_path")
             if not address:
                 # No osc_path in the dump for this parameter — skip rather than
@@ -33,19 +52,22 @@ def build_osc_panel(dump: Any, osc_port: int = 24024) -> dict[str, Any]:
                     "range": {"min": 0, "max": 1},
                     "default": 0.5,
                     "width": 90,
-                    "height": 260,
-                    "left": 10 + (i % 8) * 100,
-                    "top": 10 + (i // 8) * 280,
+                    "height": 220,
                 }
             )
         if widgets:
-            tabs.append(
-                {"type": "tab", "id": processor, "label": processor, "widgets": widgets}
-            )
+            tabs.append({"type": "tab", "id": processor, "label": processor, "widgets": widgets})
 
     return {
         "type": "root",
         "id": "sushi-rig",
-        "sendPort": str(osc_port),
-        "widgets": [{"type": "panel", "id": "tabs", "tabs": tabs}],
+        "widgets": [
+            {
+                "type": "panel",
+                "id": "tabs",
+                "width": "100%",
+                "height": "100%",
+                "tabs": tabs,
+            }
+        ],
     }

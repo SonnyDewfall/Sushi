@@ -41,7 +41,13 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("panel", help="Open Stage Control panel from a config")
     p.add_argument("config", type=Path)
     p.add_argument("--sushi", default="sushi")
-    p.add_argument("--osc-port", type=int, default=24024)
+    p.add_argument(
+        "--osc-port",
+        type=int,
+        default=24024,
+        help="Sushi's OSC receive port (--osc-rcv-port), just to print the matching "
+        "open-stage-control --send value — not written into the panel file",
+    )
     p.add_argument("-o", "--out", type=Path, default=Path("panel.json"))
 
     args = parser.parse_args(argv)
@@ -59,7 +65,11 @@ def main(argv: list[str] | None = None) -> int:
         write_json(args.out, capture(args.address))
     elif args.command == "panel":
         dump = dump_plugins(args.config, args.sushi)
-        write_json(args.out, build_osc_panel(dump, args.osc_port))
+        write_json(args.out, build_osc_panel(dump))
+        print(
+            f"open with: open-stage-control --load {args.out} "
+            f"--send 127.0.0.1:{args.osc_port}"
+        )
 
     return 0
 
