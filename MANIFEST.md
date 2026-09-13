@@ -1,6 +1,11 @@
 # Work manifest
 
-What is being worked on, in what order, and why. Updated as work lands.
+What is being worked on, why, and what's been learned along the way. The live
+backlog of what's left to do now lives in
+[GitHub Issues](https://github.com/SonnyDewfall/Sushi/issues) — this file is
+the narrative record: decisions, defects found and fixed, and facts settled
+empirically about Sushi and its ecosystem. Work items below that still have
+open issues link to them rather than duplicating the task description.
 
 > Not to be confused with `plugin-manifest.txt`, which is the list of available
 > LV2 plugin URIs.
@@ -46,10 +51,10 @@ to reach a working tweak-by-ear loop as fast as possible — see the plan at
 | C1 | `live.py capture` | elkpy | ❌ |
 | C2 | `spec.py` — rig.yaml model + validation | PyYAML | ✅ |
 | C3 | `emit.py` — spec + state → Sushi JSON | PyYAML | ✅ |
-| D | prove the loop on the real rig; fix the defect — 🟢 `acoustic_chorus`, ⚪ `acoustic_reverb` | elkpy | ❌ |
-| E1 | `verify.py` | — | ✅ |
-| E2 | `probe.py` — LV2 metadata catalogue | lilv | ❌ |
-| E3 | config test suite | — | mixed |
+| D | prove the loop on the real rig; fix the defect — 🟢 `acoustic_chorus` ([#1](https://github.com/SonnyDewfall/Sushi/issues/1) for `acoustic_reverb`) | elkpy | ❌ |
+| E1 | `verify.py` — [#2](https://github.com/SonnyDewfall/Sushi/issues/2) | — | ✅ |
+| E2 | `probe.py` — LV2 metadata catalogue — [#3](https://github.com/SonnyDewfall/Sushi/issues/3) | lilv | ❌ |
+| E3 | config test suite — [#4](https://github.com/SonnyDewfall/Sushi/issues/4) | — | mixed |
 
 A working single-file prototype of all these already exists at
 `tool/prototype_reference.py`. Treat it as reference for data shapes and emit logic, not
@@ -152,48 +157,24 @@ as the target structure — it is being split into `tool/src/sushi_rig/` with
 **Future direction for phase D:** the tweak-by-ear step currently runs as an
 interactive session — launch Sushi, open Open Stage Control, tweak, then a
 person (or Claude) manually runs `sushi-rig capture` at the point the sound is
-right. That's fine for now, but it's not something a script can repeat
-unattended, and it puts a Claude Code session in the loop every time a config
-needs re-tuning.
-
-The direction to move in later: a deterministic tool that captures state
-directly from an Open Stage Control action — e.g. a "save" button in the panel
-that fires an OSC message the tool listens for, or a small always-running
-listener that snapshots on request — rather than a human deciding when to run
-`capture` from a terminal. Not scoped or built yet; revisit once the loop above
-has been used for real a few times and it's clear what "capture now" should
-actually be triggered by.
+right. Backlog moved to GitHub Issues (2026-09-13) — see
+[#10](https://github.com/SonnyDewfall/Sushi/issues/10).
 
 ---
 
-## 3. ⚪ Headless runs and a config test suite
+## 3. Headless runs and a config test suite
 
-Every config in `config/` should be provably loadable without plugging in a
-guitar, so edits can be made with confidence.
-
-- Smoke test: `sushi --dump-plugins -c <config>` over every tracked config —
-  exercises the full load path, needs no audio hardware, exits immediately
-- `verify` over any config carrying `initial_state`, to catch parameter-name
-  drift
-- Offline render regression: `sushi -o -i input.wav -c rig.json`, hashing the
-  output. A short committed input file makes this a cheap guard against silent
-  parameter drift
-- Unit tests per brief §8, driven from committed fixtures — priority order is
-  spec validation, emit, dump parsing, verify, panel
-
-- [x] Real `--dump-plugins` output captured as `tool/examples/dump.example.json` —
-      the brief's highest-value offline fixture. Everything in the offline group
-      can be tested against it.
-
-The smoke test is available today and needs no new dependencies:
+Backlog moved to GitHub Issues (2026-09-13) — see
+[#4](https://github.com/SonnyDewfall/Sushi/issues/4). The real
+`--dump-plugins` fixture this depends on already exists at
+`tool/examples/dump.example.json`, and the smoke test itself is runnable by
+hand today (no new dependencies):
 
 ```bash
 export LV2_PATH="$HOME/Sushi/plugins/lv2:$HOME/Sushi/plugins:/usr/lib/lv2"
 for c in config/*.json; do ./sushi --dump-plugins -c "$c" >/dev/null 2>&1 \
   && echo "ok   $c" || echo "FAIL $c"; done
 ```
-
-Worth wiring up first — it is what surfaced the defects below.
 
 ---
 
@@ -206,8 +187,11 @@ Worth wiring up first — it is what surfaced the defects below.
       the first config in item 2 phase D (2026-09-13): `acoustic_chorus`, all
       three layers — source (`config/src/acoustic_chorus.yaml`), live config
       (`config/acoustic_chorus.json`, `_meta` populated), and an archived
-      `v1.0` snapshot. The remaining three configs (`acoustic_reverb_fx.json`,
-      `empty.json`, `fx.json`) still use the old names.
+      `v1.0` snapshot.
+- [ ] Remaining three configs (`acoustic_reverb_fx.json` as part of
+      [#1](https://github.com/SonnyDewfall/Sushi/issues/1); `empty.json`,
+      `fx.json` as [#5](https://github.com/SonnyDewfall/Sushi/issues/5))
+      still use the old names — tracked on GitHub, not here.
 
 ### Naming
 
@@ -268,73 +252,40 @@ they produce, sharing a stem so the pairing is obvious, without changing where
 
 ---
 
-## 5. ⚪ Portability to other machines
+## 5. Portability to other machines
 
-The rig currently hard-codes `$HOME/Sushi` and depends on an untracked 358 MB
-`plugins/` directory copied from the system LV2 install.
-
-- Derive paths from the script location rather than `$HOME`
-- Reconstruct `plugins/` from `plugin-manifest.txt` plus a package
-  install, rather than by copying binaries
-- Capture a plugin catalogue per machine and diff them — brief §5.3 exists
-  specifically to catch version drift between the authoring machine and the
-  target before it produces a wrong-sounding rig
+Backlog moved to GitHub Issues (2026-09-13) — see
+[#6](https://github.com/SonnyDewfall/Sushi/issues/6). Folds in two open
+defects (`start-rig.sh`'s `LV2_PATH` and the duplicate LSP versions) —
+see *Known defects* below for the diagnosis; the fix is tracked on the issue.
 
 ---
 
-## 6. 🔵 Grow the rig
+## 6. Grow the rig
 
-Ongoing, once the loop above is stable: more plugins, more tracks, other
-instruments.
+Backlog moved to GitHub Issues (2026-09-13) — see
+[#7](https://github.com/SonnyDewfall/Sushi/issues/7): an open-ended place to
+hang specific plugin/track/instrument additions as they come up.
 
-Constraint worth knowing up front: **Sushi does not support the LV2 `patch:`
-extension.** Any plugin whose state lives outside control ports — convolution
-reverbs, sample players, sfz loaders, anything taking a file path — cannot be
-configured from a JSON config at all. `probe` should flag these, because
-discovering it late changes the shape of the rig.
+Constraint worth knowing up front regardless of what lands there: **Sushi
+does not support the LV2 `patch:` extension.** Any plugin whose state lives
+outside control ports — convolution reverbs, sample players, sfz loaders,
+anything taking a file path — cannot be configured from a JSON config at all.
+`probe` (issue [#3](https://github.com/SonnyDewfall/Sushi/issues/3)) should
+flag these, because discovering it late changes the shape of the rig.
 
 ---
 
-## 7. ⚪ Choose which parameters a panel actually shows
+## 7. Choose which parameters a panel actually shows
 
-Requested by the user (2026-09-13). Right now `panel.py` shows every
-automatable parameter on every plugin — for `graph_equalizer_x16_stereo` alone
-that's 79 faders, most of them things like "Show pre-mix overlay" or "Clear
-graph analysis" that are irrelevant to tweaking a tone and just add scrolling
-and clutter.
+Requested by the user (2026-09-13). Backlog moved to GitHub Issues — see
+[#8](https://github.com/SonnyDewfall/Sushi/issues/8).
 
-Needs a way to say "these are the parameters I actually want faders for" per
-plugin. Open design question: a hand-authored allow-list (e.g. in `rig.yaml`,
-per plugin) versus something inferred (a curated default set per known plugin
-URI, with an override). An explicit list in `rig.yaml` is probably the right
-starting point — it fits the existing "hand-authored source, generated
-everything else" shape of the workflow, and doesn't need a database of
-per-plugin curation to bootstrap.
+## 8. Manage tracks and plugin chains from outside (or inside) the panel
 
-## 8. ⚪ Manage tracks and plugin chains from outside (or inside) the panel
-
-Requested by the user (2026-09-13): a way to change how many tracks exist and
-which plugins sit on each — not just tweak the parameters of a fixed chain
-that's already running.
-
-Two different shapes this could take, not mutually exclusive:
-
-- **Ahead of running it** — this is largely what `spec.py`/`emit.py` already
-  do (`rig.yaml` describes tracks and plugins; `push` can build that graph
-  into a running Sushi over gRPC). What's missing is making that loop
-  convenient to iterate on — edit `rig.yaml`, re-`push`, without restarting
-  Sushi each time.
-- **From inside the panel, live** — graph editing (add/remove a track,
-  add/remove a plugin on a track) triggered from Open Stage Control itself
-  while Sushi is running, rather than by editing YAML and re-running the
-  tool. Bigger scope: needs panel-side controls that call back into
-  `create_track`/`create_processor_on_track`/`delete_processor_from_track`
-  (all already used or available via `live.py`/elkpy), and a way for the
-  panel to be regenerated or updated once the graph itself has changed
-  underneath it.
-
-Not scoped in detail yet — revisit once item 7 (parameter selection) has
-landed, since both touch how the panel is generated from the rig spec.
+Requested by the user (2026-09-13). Backlog moved to GitHub Issues — see
+[#9](https://github.com/SonnyDewfall/Sushi/issues/9). Depends on #7 landing
+first, since both touch how the panel is generated from the rig spec.
 
 ---
 
@@ -535,11 +486,11 @@ suffix), `start-rig.sh` updated to load it, the old broken file removed
 (nothing in it ever worked, so nothing was lost), and a `v1.0` snapshot saved
 to `config/archive/acoustic_chorus/v1.0.json`.
 
-**`acoustic_reverb_fx.json` still needs the same treatment** — not yet
-started. Values can be computed directly from each port's domain (`probe`, or
-`get_parameter_value_in_domain` live) without the caution the brief urged
-around logarithmic ports, since Sushi's linear normalisation is now confirmed
-regardless of that hint.
+**`acoustic_reverb_fx.json` still needs the same treatment** — tracked as
+[#1](https://github.com/SonnyDewfall/Sushi/issues/1). Values can be computed
+directly from each port's domain (`probe`, or `get_parameter_value_in_domain`
+live) without the caution the brief urged around logarithmic ports, since
+Sushi's linear normalisation is now confirmed regardless of that hint.
 
 ### 🟠 `start-rig.sh` does not put the bundled plugins on `LV2_PATH`
 
@@ -551,16 +502,16 @@ at that level. The 262 bundles in `plugins/lv2/` are never seen — lilv treats
 
 The rig works anyway, because the fallback `/usr/lib/lv2` is also on the path —
 which means the "portable plugins directory" is not actually supplying anything
-except the newer LSP build. Relevant to item 5: portability here is currently
-illusory.
+except the newer LSP build. Portability here is currently illusory — fix
+tracked as [#6](https://github.com/SonnyDewfall/Sushi/issues/6).
 
 ### 🟠 Two LSP versions are installed simultaneously
 
 `plugins/lsp-plugins.lv2` is v0.26; `plugins/lv2/lsp-plugins.lv2` and
 `/usr/lib/lv2/lsp-plugins.lv2` are v0.22. lilv resolves this by silently
 preferring 0.26. Which build a config resolves against therefore depends on
-`LV2_PATH` ordering — precisely the version drift the catalogue diff in item 5
-is meant to catch.
+`LV2_PATH` ordering — precisely the version drift the catalogue diff in
+[#6](https://github.com/SonnyDewfall/Sushi/issues/6) is meant to catch.
 
 Also note `plugins/lv2/` is a byte-identical copy of `/usr/lib/lv2/` (262 of
 262 bundles, no extras either way), so it is ~358 MB of pure redundancy that is
