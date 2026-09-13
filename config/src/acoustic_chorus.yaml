@@ -1,0 +1,42 @@
+# Hand-authored source for config/acoustic_chorus.json.
+#
+# Emit with:
+#   cd tool && source .venv/bin/activate
+#   sushi-rig emit ../config/src/acoustic_chorus.yaml -o ../config/acoustic_chorus.json
+#   sushi-rig emit ../config/src/acoustic_chorus.yaml --state <captured>.json \
+#     -o ../config/acoustic_chorus.json      # after a tweak-by-ear + capture session
+#
+# Plugin parameter values are never written here. They live in initial_state,
+# generated from a captured live session — see MANIFEST.md, item 2.
+
+meta:
+  name: acoustic_chorus
+  version: "1.0"
+  description: Acoustic guitar — compressor, EQ, chorus, light reverb
+  status: wip
+
+host:
+  samplerate: 48000
+
+tracks:
+  - name: fx_track
+    channels: 2
+    inputs:
+      - engine_bus: 0
+        track_bus: 0
+    outputs:
+      - engine_bus: 0
+        track_bus: 0
+    plugins:
+      - name: compressor_mono
+        type: lv2
+        uri: http://lsp-plug.in/plugins/lv2/compressor_mono
+      - name: graph_equalizer_x16_stereo
+        type: lv2
+        uri: http://lsp-plug.in/plugins/lv2/graph_equalizer_x16_stereo
+      - name: chorus_stereo
+        type: lv2
+        uri: http://lsp-plug.in/plugins/lv2/chorus_stereo
+      - name: internal_reverb
+        type: internal
+        uid: sushi.testing.freeverb

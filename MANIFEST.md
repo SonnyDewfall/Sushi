@@ -46,7 +46,7 @@ to reach a working tweak-by-ear loop as fast as possible — see the plan at
 | C1 | `live.py capture` | elkpy | ❌ |
 | C2 | `spec.py` — rig.yaml model + validation | PyYAML | ✅ |
 | C3 | `emit.py` — spec + state → Sushi JSON | PyYAML | ✅ |
-| D | prove the loop on the real rig; fix the 🔴 defect | elkpy | ❌ |
+| D | prove the loop on the real rig; fix the defect — 🟢 `acoustic_chorus`, ⚪ `acoustic_reverb` | elkpy | ❌ |
 | E1 | `verify.py` | — | ✅ |
 | E2 | `probe.py` — LV2 metadata catalogue | lilv | ❌ |
 | E3 | config test suite | — | mixed |
@@ -139,6 +139,15 @@ as the target structure — it is being split into `tool/src/sushi_rig/` with
       normalised, restarted Sushi from the baked config, read back `0.9`
       normalised / `90.1` real-world — matching `1 + 0.9×99` on the `[1,100]`
       domain exactly).
+- [x] **Phase D done for `acoustic_chorus`, for real, on real hardware
+      (2026-09-13):** two hardware-only bugs found and fixed along the way —
+      see *Known defects*, `panel.py` fader defaults and `logScale`. Once
+      those were fixed, tweaked by ear through a real guitar + audio
+      interface, captured, emitted, and adopted the naming convention in the
+      same pass: `config/acoustic_chorus.json` (renamed from the never-working
+      `acoustic_chorus_fx.json`), `config/src/acoustic_chorus.yaml`,
+      `config/archive/acoustic_chorus/v1.0.json`, `start-rig.sh` updated.
+      `acoustic_reverb_fx.json` still needs the same pass.
 
 **Future direction for phase D:** the tweak-by-ear step currently runs as an
 interactive session — launch Sushi, open Open Stage Control, tweak, then a
@@ -193,8 +202,12 @@ Worth wiring up first — it is what surfaced the defects below.
 - [x] Physically separated the kinds of file that were mixed in `config/`:
       patchbay routing → `Patchbay/`, plugin inventory → `plugin-manifest.txt`,
       leaving `config/` holding only Sushi JSON configs.
-- [x] Naming and versioning convention agreed (below). Applying it to the four
-      existing configs happens in item 2, phase D.
+- [x] Naming and versioning convention agreed (below). Applied for real to
+      the first config in item 2 phase D (2026-09-13): `acoustic_chorus`, all
+      three layers — source (`config/src/acoustic_chorus.yaml`), live config
+      (`config/acoustic_chorus.json`, `_meta` populated), and an archived
+      `v1.0` snapshot. The remaining three configs (`acoustic_reverb_fx.json`,
+      `empty.json`, `fx.json`) still use the old names.
 
 ### Naming
 
@@ -436,10 +449,14 @@ Needed `"label": false` on the readout to stop it from falling back to
 showing its own (long, processor-qualified) `id` as a label, which had been
 overlapping the row above it.
 
-### 🔴 The plugin settings in both acoustic configs do nothing
+### 🟡 The plugin settings in `acoustic_reverb_fx.json` do nothing (chorus fixed)
 
-Affects `config/acoustic_reverb_fx.json` and `config/acoustic_chorus_fx.json`
-— every `properties` block in `config/` is of this form.
+Affects `config/acoustic_reverb_fx.json` only now — `acoustic_chorus_fx.json`
+was fixed for real on 2026-09-13 (see below) and renamed to
+`config/acoustic_chorus.json` in the process. `acoustic_reverb_fx.json` still
+has the exact defect described below and needs the same treatment: author
+`config/src/acoustic_reverb.yaml`, tweak by ear through a generated panel,
+capture, emit.
 
 
 Both plugins carry a `properties` block *inside the plugin entry*, holding
@@ -464,12 +481,22 @@ placement and the value domain are wrong. This is exactly the "loads cleanly,
 sounds wrong" failure the whole project exists to prevent, and it is sitting in
 the rig that `start-rig.sh` launches today.
 
-**No longer blocked.** The linear-normalisation finding above means every
-value here can now be computed directly from each port's domain (from `probe`,
-or read live via `get_parameter_value_in_domain`), without the caution the
-brief urged around logarithmic ports. Fixing the two live configs — replacing
-the bogus `properties` block with a real, correctly-shaped `initial_state` —
-happens in item 2 phase D, using the now-working `capture`/`emit` loop.
+**`acoustic_chorus` fixed and proven, end to end, on real hardware
+(2026-09-13):** authored `config/src/acoustic_chorus.yaml` (D1); ran it via
+`start-rig.sh` with a real guitar and audio interface through the panel/logScale
+tooling above, tweaked by ear, and captured the result once the sound was
+right (D2); emitted with that captured `initial_state`, verified it loads
+(`--dump-plugins`, exit 0), and adopted the naming convention in the same
+pass — written as `config/acoustic_chorus.json` (dropping the dead `_fx`
+suffix), `start-rig.sh` updated to load it, the old broken file removed
+(nothing in it ever worked, so nothing was lost), and a `v1.0` snapshot saved
+to `config/archive/acoustic_chorus/v1.0.json`.
+
+**`acoustic_reverb_fx.json` still needs the same treatment** — not yet
+started. Values can be computed directly from each port's domain (`probe`, or
+`get_parameter_value_in_domain` live) without the caution the brief urged
+around logarithmic ports, since Sushi's linear normalisation is now confirmed
+regardless of that hint.
 
 ### 🟠 `start-rig.sh` does not put the bundled plugins on `LV2_PATH`
 
@@ -503,6 +530,21 @@ With `LV2_PATH` unset, Sushi loads no LV2 plugins at all and exits 4
 648 plugins using lilv's built-in defaults. Running `./sushi -c <config>` by
 hand, outside `start-rig.sh`, fails for this reason and the error does not
 mention `LV2_PATH`.
+
+### 🟢 `stop-rig.sh` never actually stopped Sushi
+
+Reported by the user (2026-09-13): "doesn't seem to work". `killall` matches a
+process's short `comm` name, but Sushi runs as an AppImage — the process
+actually doing the work is `sushi.bin`, re-exec'd from a randomly-named mount
+(`/tmp/.mount_sushiXXXXXX/usr/bin/sushi.bin`), not `sushi`, which is just the
+wrapper. `killall -INT sushi` (and the force-kill `killall -9 sushi` after it)
+therefore never touched the real process, leaving it running and holding the
+JACK ports open — exactly the AppImage process-naming trap this session hit
+repeatedly while testing (`pgrep`/`killall` against `sushi` matching nothing,
+`pgrep -f "sushi.bin"` matching correctly). Fixed by switching those two lines
+to `pkill -f sushi.bin`, which matches on the full command line rather than
+the truncated comm name. Verified directly: launched a real instance, ran the
+new kill command, confirmed via `ps` that `sushi.bin` was gone.
 
 ---
 

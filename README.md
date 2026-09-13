@@ -83,10 +83,12 @@ then.
 ├── start-rig.sh                launch tuner + patchbay + Sushi
 ├── stop-rig.sh                 interrupt, settle, force-kill
 ├── config/                     Sushi configs — the deployable artefacts
+│   ├── acoustic_chorus.json      current rig (what start-rig.sh launches)
 │   ├── acoustic_reverb_fx.json
-│   ├── acoustic_chorus_fx.json   current rig (what start-rig.sh launches)
 │   ├── fx.json                   minimal internal-reverb rig
-│   └── empty.json                passthrough, for verifying the audio path
+│   ├── empty.json                passthrough, for verifying the audio path
+│   ├── src/acoustic_chorus.yaml  hand-authored source for acoustic_chorus.json
+│   └── archive/                  frozen snapshots, config/archive/<name>/vX.Y.json
 ├── Patchbay/                   qpwgraph sessions
 │   ├── rig.qpwgraph              routing loaded at startup
 │   ├── Default.qpwgraph
