@@ -22,6 +22,11 @@ __pycache__/
 .mypy_cache/
 .ruff_cache/
 
+# elkpy compiles sushi_rpc.proto into the current working directory on first
+# import (see grpc_gen.py) — lands in tool/ whenever elkpy runs from there.
+*_pb2.py
+*_pb2_grpc.py
+
 # Generated rig artefacts (regenerate with `sushi-rig emit` / `capture`)
 catalogue.json
 state.json

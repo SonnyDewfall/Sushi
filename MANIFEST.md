@@ -85,6 +85,38 @@ as the target structure — it is being split into `tool/src/sushi_rig/` with
 - [x] 13 offline tests passing (`cd tool && source .venv/bin/activate && pytest`),
       run against the real `dump.example.json` fixture plus a synthetic
       differently-nested one for the generic-walk claim.
+- [x] **C1 `live.py capture`** — fixed a real API break found only by running
+      it: `AudioGraphController` has no `get_tracks` in elkpy 1.2.0, the real
+      method is `get_all_tracks()`. Also fixed a second, more consequential
+      bug: `capture` was pulling in every parameter Sushi reports, including
+      non-automatable (read-only) ones like `"Latency OUT"` and the various
+      `*_meter`/`*_visibility` params — baking one of those into
+      `initial_state` makes Sushi **refuse to load the config at all**
+      (exit 7, not a silent no-op). `capture` now filters on
+      `ParameterInfo.automatable`. `push()` also written (kwarg-name fixes
+      from the earlier session, plus the `.is_set()` poll loop), though the
+      chosen workflow (launch Sushi on a full config, tweak, capture, emit)
+      doesn't require it for the core loop.
+- [x] **C2 `spec.py`, C3 `emit.py`** — ported and tested; 36 offline tests
+      passing in total.
+- [x] **A schema bug bigger than anything found so far**: `initial_state`'s
+      `parameters` and `properties` are **dicts** of `{name: value}`, not a
+      list of `{"name", "value"}` objects. Both the brief §2.4's own example
+      and the prototype used the list form — confirmed wrong against Sushi's
+      *own* shipped example configs (extracted from inside the AppImage,
+      `usr/share/config_files/*.json`, five different files, unanimous). The
+      list form doesn't error loudly on its own shape; it fails with the same
+      "Failed to load the initial processor states." Sushi gives for a
+      genuinely bad parameter name, which is what made this take real
+      bisection to find rather than a quick read of an error message. Fixed
+      in `emit.py`.
+- [x] **The full loop proven against a live Sushi 1.3.0**, not just unit
+      tested: `emit` → config loads → `capture` → `emit` with real captured
+      state → **that config also loads**, with the captured values actually
+      applied on startup (set `Ratio` to a deliberately non-default `0.9`
+      normalised, restarted Sushi from the baked config, read back `0.9`
+      normalised / `90.1` real-world — matching `1 + 0.9×99` on the `[1,100]`
+      domain exactly).
 
 ---
 
@@ -327,10 +359,12 @@ placement and the value domain are wrong. This is exactly the "loads cleanly,
 sounds wrong" failure the whole project exists to prevent, and it is sitting in
 the rig that `start-rig.sh` launches today.
 
-**Fix requires knowing each port's range to normalise against, so it is blocked
-on `probe` (item 2 step 4) or a live `capture` (step 5).** Do not hand-convert:
-LSP gain ports are frequently logarithmic, and the brief is explicit that
-guessing those is worse than refusing.
+**No longer blocked.** The linear-normalisation finding above means every
+value here can now be computed directly from each port's domain (from `probe`,
+or read live via `get_parameter_value_in_domain`), without the caution the
+brief urged around logarithmic ports. Fixing the two live configs — replacing
+the bogus `properties` block with a real, correctly-shaped `initial_state` —
+happens in item 2 phase D, using the now-working `capture`/`emit` loop.
 
 ### 🟠 `start-rig.sh` does not put the bundled plugins on `LV2_PATH`
 
