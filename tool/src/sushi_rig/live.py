@@ -104,7 +104,8 @@ def capture(address: str = DEFAULT_GRPC_ADDRESS) -> dict[str, Any]:
 
 
 def get_live_parameter_info(address: str = DEFAULT_GRPC_ADDRESS) -> dict[str, dict[str, dict]]:
-    """Per-processor, per-parameter {"automatable": bool, "value": float}.
+    """Per-processor, per-parameter {"automatable", "value", "min_domain_value",
+    "max_domain_value"}.
 
     `value` is the current normalised value, i.e. whatever Sushi actually has
     loaded right now — the plugin's own default if nothing has changed it
@@ -117,6 +118,13 @@ def get_live_parameter_info(address: str = DEFAULT_GRPC_ADDRESS) -> dict[str, di
     normalised on `Input gain`'s `[0, 1000]` domain is real-world `500` —
     500x amplification, instant clipping — for a fader whose sane starting
     point is `~0.001` normalised (real-world `1.0`, unity gain).
+
+    The domain bounds are for a second, related problem: even with a safe
+    starting value, dragging a fader across a domain that wide is nearly
+    unusable — the entire musically useful ±12dB range of a graphic EQ band
+    (domain `[~0.016, ~63]`) occupies the bottom ~6% of the fader's linear
+    travel. `panel.py` uses these bounds to decide which faders need
+    `logScale`.
     """
     controller = _controller(address)
     result: dict[str, dict[str, dict]] = {}
@@ -132,6 +140,8 @@ def get_live_parameter_info(address: str = DEFAULT_GRPC_ADDRESS) -> dict[str, di
                     params[param.name] = {
                         "automatable": bool(getattr(param, "automatable", True)),
                         "value": controller.parameters.get_parameter_value(proc_id, param.id),
+                        "min_domain_value": getattr(param, "min_domain_value", 0.0),
+                        "max_domain_value": getattr(param, "max_domain_value", 1.0),
                     }
                 result[proc_name] = params
     finally:

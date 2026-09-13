@@ -401,6 +401,41 @@ lets a value be set needs to reason about the parameter's actual domain, not
 just its normalised range. `0.0–1.0` is uniform; what a plugin actually does
 with that range is very much not.
 
+### 🟢 Same root cause, second symptom: those faders were still unusable to drag
+
+Reported immediately after the fix above shipped — the *starting* values were
+now safe, but "something funky" remained on the frequency-band gain faders
+specifically. Same root cause as the defect above, different consequence:
+Sushi normalises every port **linearly** regardless of domain (a separate
+confirmed finding — it ignores LV2's `pprops:logarithmic` hint entirely), so
+on a `[~0.016, ~63]` domain the entire musically useful ±12dB range occupies
+the **bottom ~6% of the fader's travel**. Barely anything happens for most of
+a drag, then a small movement near the bottom swings wildly — annoying rather
+than dangerous now that the starting point is safe, but still not usable for
+actually dialling in a tone.
+
+Fixed with open-stage-control's own `logScale` fader property, applied to any
+fader whose real-world domain spans `10x` or more
+(`LOG_SCALE_DOMAIN_THRESHOLD` in `panel.py`). Verified two ways before
+trusting it: read the actual client-side implementation
+(`mapToScale()` in open-stage-control's `client/index.js`, not just its docs)
+to confirm `logScale` only reshapes how *drag distance* maps to the widget's
+own `[0,1]` output — the value Sushi receives is unaffected, still a plain
+float in `[0,1]`, interpreted exactly as before. Then dragged two otherwise-
+identical faders the same pixel distance: the plain one read back `0.25`, the
+`logScale` one `0.09` — confirming it genuinely redistributes resolution
+toward the low end rather than just changing a visual label.
+
+Also added, at the same time and for the same reason (letting the operator
+see what they're about to send rather than only feel it): a small read-only
+value readout paired with every fader, via open-stage-control's `@{widgetId}`
+live-reference syntax. A bare shared `id` between the fader and a
+differently-typed widget — which the docs describe as an equivalent "clone"
+mechanism — was tried first and did not visibly update; `@{...}` did.
+Needed `"label": false` on the readout to stop it from falling back to
+showing its own (long, processor-qualified) `id` as a label, which had been
+overlapping the row above it.
+
 ### 🔴 The plugin settings in both acoustic configs do nothing
 
 Affects `config/acoustic_reverb_fx.json` and `config/acoustic_chorus_fx.json`
