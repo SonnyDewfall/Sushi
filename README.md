@@ -169,8 +169,9 @@ once the package supersedes it.
 ## Running the rig
 
 ```bash
-./start-rig.sh     # tuner, patchbay, and Sushi on the current config
-./stop-rig.sh      # clean shutdown, releases JACK ports
+./start-rig.sh              # tuner, patchbay, and Sushi on the current config
+./start-rig-and-panel.sh    # the above, plus a generated Open Stage Control panel
+./stop-rig.sh               # clean shutdown, releases JACK ports
 ```
 
 `start-rig.sh` sets `LV2_PATH`, kills any stale instances, launches `fmit`
@@ -179,6 +180,14 @@ Sushi under PipeWire's JACK shim.
 
 To run a different rig, change the config path on the last line of
 `start-rig.sh`.
+
+`start-rig-and-panel.sh` is for tweaking a tone rather than just playing
+through the rig: it does everything `start-rig.sh` does, but backgrounds Sushi
+instead of holding the terminal, waits for its gRPC to come up, then generates
+a fresh panel from the live instance and opens it in Open Stage Control — the
+name field and save button reach `sushi-rig listen` directly, so a tweak can be
+saved as a new named config without a second terminal (issue #10). Ctrl+C stops
+the panel and the whole rig together.
 
 > **`LV2_PATH` must be set, or Sushi loads no LV2 plugins at all.** It exits 4
 > with `Failed to load tracks from the Json config file` — an error that never
