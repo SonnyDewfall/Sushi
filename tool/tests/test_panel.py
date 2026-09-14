@@ -1,4 +1,6 @@
+from sushi_rig.listen import DEFAULT_LISTEN_PORT, NAME_ADDRESS, SAVE_ADDRESS, STATUS_ADDRESS
 from sushi_rig.panel import LOG_SCALE_DOMAIN_THRESHOLD, build_osc_panel
+from sushi_rig.save import NAME_PATTERN
 
 
 def _live_info_for(real_dump, *, override=None):
@@ -28,10 +30,21 @@ def _faders(tab):
     return [w for w in tab["widgets"] if w["type"] == "fader"]
 
 
+def _root_widget(panel, widget_id):
+    # Root-level widgets are looked up by id rather than a fixed list index,
+    # since the save bar (added alongside the tabs panel) shares that list —
+    # position isn't something callers should have to assume.
+    return next(w for w in panel["widgets"] if w["id"] == widget_id)
+
+
+def _tabs(panel):
+    return _root_widget(panel, "tabs")["tabs"]
+
+
 def test_panel_one_tab_per_processor(real_dump):
     live_info = _live_info_for(real_dump)
     panel = build_osc_panel(real_dump, live_info)
-    tabs = panel["widgets"][0]["tabs"]
+    tabs = _tabs(panel)
     assert {t["id"] for t in tabs} == {
         "compressor_mono",
         "graph_equalizer_x16_stereo",
@@ -42,7 +55,7 @@ def test_panel_one_tab_per_processor(real_dump):
 def test_panel_fader_count_matches_automatable_parameter_count(real_dump):
     live_info = _live_info_for(real_dump)
     panel = build_osc_panel(real_dump, live_info)
-    tabs = {t["id"]: t for t in panel["widgets"][0]["tabs"]}
+    tabs = {t["id"]: t for t in _tabs(panel)}
     compressor_params = next(p for p in real_dump["plugins"] if p["name"] == "compressor_mono")
     assert len(_faders(tabs["compressor_mono"])) == len(compressor_params["parameters"])
 
@@ -53,7 +66,7 @@ def test_panel_uses_osc_path_verbatim_not_a_constructed_address(real_dump):
     constructed address (still containing spaces) would never match."""
     live_info = _live_info_for(real_dump)
     panel = build_osc_panel(real_dump, live_info)
-    tabs = {t["id"]: t for t in panel["widgets"][0]["tabs"]}
+    tabs = {t["id"]: t for t in _tabs(panel)}
     widget = next(
         w for w in _faders(tabs["compressor_mono"]) if w["label"] == "Show pre-mix overlay"
     )
@@ -64,7 +77,7 @@ def test_panel_uses_osc_path_verbatim_not_a_constructed_address(real_dump):
 def test_panel_range_is_normalised_zero_to_one(real_dump):
     live_info = _live_info_for(real_dump)
     panel = build_osc_panel(real_dump, live_info)
-    widget = _faders(panel["widgets"][0]["tabs"][0])[0]
+    widget = _faders(_tabs(panel)[0])[0]
     assert widget["range"] == {"min": 0, "max": 1}
 
 
@@ -79,12 +92,12 @@ def test_panel_has_no_invented_sendport_property(real_dump):
     assert "sendPort" not in panel
 
 
-def test_panel_outer_container_is_sized_to_fill_the_window(real_dump):
+def test_panel_tabs_container_is_sized_to_fill_the_window(real_dump):
     """Verified against real open-stage-control: an unsized panel/tab renders
     as a tiny, near-unusable box regardless of how many widgets it holds."""
     live_info = _live_info_for(real_dump)
     panel = build_osc_panel(real_dump, live_info)
-    outer = panel["widgets"][0]
+    outer = _root_widget(panel, "tabs")
     assert outer["width"] == "100%"
     assert outer["height"] == "100%"
 
@@ -100,7 +113,7 @@ def test_panel_widgets_have_no_manual_pixel_coordinates(real_dump):
     set height."""
     live_info = _live_info_for(real_dump)
     panel = build_osc_panel(real_dump, live_info)
-    for tab in panel["widgets"][0]["tabs"]:
+    for tab in _tabs(panel):
         assert "layout" not in tab or tab["layout"] == "default"
         for widget in tab["widgets"]:
             assert "left" not in widget
@@ -128,7 +141,7 @@ def test_panel_fader_default_is_the_live_current_value_not_a_guessed_constant(re
         },
     )
     panel = build_osc_panel(real_dump, live_info)
-    tabs = {t["id"]: t for t in panel["widgets"][0]["tabs"]}
+    tabs = {t["id"]: t for t in _tabs(panel)}
     ratio_widget = next(w for w in _faders(tabs["compressor_mono"]) if w["label"] == "Ratio")
     assert ratio_widget["default"] == 0.030303
     # every other compressor fader in this test carries the synthetic 0.3
@@ -153,7 +166,7 @@ def test_panel_drops_non_automatable_parameters(real_dump):
         },
     )
     panel = build_osc_panel(real_dump, live_info)
-    tabs = {t["id"]: t for t in panel["widgets"][0]["tabs"]}
+    tabs = {t["id"]: t for t in _tabs(panel)}
     labels = {w["label"] for w in _faders(tabs["compressor_mono"])}
     assert "Show pre-mix overlay" not in labels
 
@@ -165,7 +178,7 @@ def test_panel_skips_a_processor_missing_from_live_info(real_dump, capsys):
     live_info = _live_info_for(real_dump)
     del live_info["internal_reverb"]
     panel = build_osc_panel(real_dump, live_info)
-    tabs = {t["id"] for t in panel["widgets"][0]["tabs"]}
+    tabs = {t["id"] for t in _tabs(panel)}
     assert "internal_reverb" not in tabs
     assert "internal_reverb" in capsys.readouterr().err
 
@@ -191,7 +204,7 @@ def test_panel_applies_logscale_to_wide_domain_parameters(real_dump):
         },
     )
     panel = build_osc_panel(real_dump, live_info)
-    tabs = {t["id"]: t for t in panel["widgets"][0]["tabs"]}
+    tabs = {t["id"]: t for t in _tabs(panel)}
     widget = next(w for w in _faders(tabs["compressor_mono"]) if w["label"] == "Output gain")
     assert widget["logScale"] is True
 
@@ -199,7 +212,7 @@ def test_panel_applies_logscale_to_wide_domain_parameters(real_dump):
 def test_panel_does_not_apply_logscale_to_narrow_domain_parameters(real_dump):
     live_info = _live_info_for(real_dump)  # every synthetic param has domain [0, 1]
     panel = build_osc_panel(real_dump, live_info)
-    for tab in panel["widgets"][0]["tabs"]:
+    for tab in _tabs(panel):
         for widget in _faders(tab):
             assert "logScale" not in widget
 
@@ -218,7 +231,7 @@ def test_panel_each_fader_has_a_paired_value_readout(real_dump):
     visibly update; the `@{widgetId}` live-reference syntax did."""
     live_info = _live_info_for(real_dump)
     panel = build_osc_panel(real_dump, live_info)
-    tab = panel["widgets"][0]["tabs"][0]
+    tab = _tabs(panel)[0]
     fader = _faders(tab)[0]
     readout = next(w for w in tab["widgets"] if w["type"] == "text")
     assert readout["value"] == f"@{{{fader['id']}}}"
@@ -227,3 +240,106 @@ def test_panel_each_fader_has_a_paired_value_readout(real_dump):
     # widget's id as a label — confirmed on real hardware, where every
     # readout's long processor/parameter id overlapped the row above it.
     assert readout["label"] is False
+
+
+# --- save bar (issue #10) ---------------------------------------------------
+
+
+def _save_bar(panel):
+    return _root_widget(panel, "save_bar")
+
+
+def test_panel_save_bar_present_at_root_alongside_tabs(real_dump):
+    """Outside the tabs container, so it's visible regardless of which
+    plugin tab is open."""
+    live_info = _live_info_for(real_dump)
+    panel = build_osc_panel(real_dump, live_info)
+    ids = {w["id"] for w in panel["widgets"]}
+    assert {"tabs", "save_bar"} <= ids
+
+
+def test_panel_save_bar_has_name_input_with_shared_validation_pattern(real_dump):
+    """The input's regex is UX only — save.py enforces the same pattern
+    server-side, since the name arrives over unauthenticated UDP and becomes
+    a file path. Sharing the pattern (rather than restating it) is what
+    keeps the two from drifting apart."""
+    live_info = _live_info_for(real_dump)
+    panel = build_osc_panel(real_dump, live_info)
+    name_input = next(w for w in _save_bar(panel)["widgets"] if w["id"] == "config_name")
+    assert name_input["type"] == "input"
+    assert name_input["validation"] == NAME_PATTERN.pattern
+
+
+def test_panel_name_input_sends_its_own_value_not_via_preargs(real_dump):
+    """The obvious design — carry the name on the save button's preArgs,
+    referencing the input's live value with @{...} — was tried first and
+    does not work: verified against real open-stage-control 1.31.1 with an
+    isolated test panel and a raw OSC listener, preArgs on a button is not
+    re-evaluated per send; only the button's own tap value ever arrived.
+    An input sending its own value via its own address/target does work,
+    confirmed the same way. So the name is its own message (NAME_ADDRESS),
+    independent of the save trigger."""
+    live_info = _live_info_for(real_dump)
+    panel = build_osc_panel(real_dump, live_info, listener_port=24099)
+    name_input = next(w for w in _save_bar(panel)["widgets"] if w["id"] == "config_name")
+    assert name_input["address"] == NAME_ADDRESS
+    assert name_input["target"] == ["127.0.0.1:24099"]
+    assert name_input["ignoreDefaults"] is True
+    assert "preArgs" not in name_input
+
+
+def test_panel_save_button_uses_tap_mode_not_toggle(real_dump):
+    """toggle also fires a second message on release; tap fires exactly once
+    per press, which is what a save action needs."""
+    live_info = _live_info_for(real_dump)
+    panel = build_osc_panel(real_dump, live_info)
+    button = next(w for w in _save_bar(panel)["widgets"] if w["id"] == "save_button")
+    assert button["mode"] == "tap"
+    assert button["address"] == SAVE_ADDRESS
+
+
+def test_panel_save_button_targets_the_listener_only(real_dump):
+    """target + ignoreDefaults means pressing save never also fires a stray
+    message at Sushi's own parameter port."""
+    live_info = _live_info_for(real_dump)
+    panel = build_osc_panel(real_dump, live_info, listener_port=24099)
+    button = next(w for w in _save_bar(panel)["widgets"] if w["id"] == "save_button")
+    assert button["target"] == ["127.0.0.1:24099"]
+    assert button["ignoreDefaults"] is True
+
+
+def test_panel_save_button_carries_no_payload(real_dump):
+    """The button no longer carries the name — see the preArgs finding
+    above. It fires bare; the listener uses whatever name it last received
+    on NAME_ADDRESS."""
+    live_info = _live_info_for(real_dump)
+    panel = build_osc_panel(real_dump, live_info)
+    button = next(w for w in _save_bar(panel)["widgets"] if w["id"] == "save_button")
+    assert "preArgs" not in button
+
+
+def test_panel_save_status_reflects_the_listener_status_address(real_dump):
+    live_info = _live_info_for(real_dump)
+    panel = build_osc_panel(real_dump, live_info)
+    status = next(w for w in _save_bar(panel)["widgets"] if w["id"] == "save_status")
+    assert status["address"] == STATUS_ADDRESS
+    assert status["interaction"] is False
+
+
+def test_panel_listener_port_defaults_match_the_listen_module(real_dump):
+    live_info = _live_info_for(real_dump)
+    panel = build_osc_panel(real_dump, live_info)
+    button = next(w for w in _save_bar(panel)["widgets"] if w["id"] == "save_button")
+    name_input = next(w for w in _save_bar(panel)["widgets"] if w["id"] == "config_name")
+    assert button["target"] == [f"127.0.0.1:{DEFAULT_LISTEN_PORT}"]
+    assert name_input["target"] == [f"127.0.0.1:{DEFAULT_LISTEN_PORT}"]
+
+
+def test_panel_root_uses_vertical_layout(real_dump):
+    """Root defaults to left-to-right flow and does not wrap on a 100%-width
+    child — confirmed against real open-stage-control: the tabs panel
+    rendered entirely off-screen to the right of the save bar instead of
+    below it. "vertical" stacks root's children top-to-bottom instead."""
+    live_info = _live_info_for(real_dump)
+    panel = build_osc_panel(real_dump, live_info)
+    assert panel["layout"] == "vertical"

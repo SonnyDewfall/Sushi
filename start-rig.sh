@@ -13,5 +13,14 @@ fmit &
 # 4. Launch qpwgraph minimized with saved auto-connections
 qpwgraph -a "$HOME/Sushi/Patchbay/rig.qpwgraph" -m &
 
-# 5. Launch SUSHI via PipeWire-JACK
+# 5. Launch the OSC listener so the panel's save button can write a config
+# without a terminal in the loop (issue #10). --rig must match whichever
+# config is loaded below — config/src/acoustic_chorus.yaml describes
+# config/acoustic_chorus.json's structure.
+"$HOME/Sushi/tool/.venv/bin/sushi-rig" listen \
+  --rig "$HOME/Sushi/config/src/acoustic_chorus.yaml" \
+  --out-dir "$HOME/Sushi/config" \
+  --archive-dir "$HOME/Sushi/config/archive" &
+
+# 6. Launch SUSHI via PipeWire-JACK
 pw-jack ./sushi -j -c config/acoustic_chorus.json

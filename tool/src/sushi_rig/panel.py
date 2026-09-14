@@ -64,6 +64,31 @@ real open-stage-control — a bare shared `id` between differently-typed
 widgets, which the docs describe as an equivalent "clone" mechanism, was
 tried first and did *not* visibly update; `@{...}` did). So the operator can
 see what value they're actually about to send, not just feel it.
+
+A save bar (name input, save button, status readout) sits at root level,
+outside the tabs container, so it's visible regardless of which plugin tab is
+open. Root defaults to left-to-right flow and does not wrap on a 100%-width
+child the way a real flexbox would — confirmed against real open-stage-
+control: the tabs panel rendered at `x:1024`, entirely off a 1024px viewport,
+instead of wrapping below the save bar. `"layout": "vertical"` on root fixes
+it, stacking its children top-to-bottom instead.
+
+The name input and the save button are **two independent messages, not one**.
+The obvious design — carry the name via the button's `preArgs`, referencing
+the input's live value with `@{...}` — was tried first and does not work:
+verified with an isolated two-widget test panel and a raw OSC listener that
+only ever printed the button's own tap value (`1.0`), never the input's text,
+regardless of what was typed or how the value was committed. `preArgs`
+apparently isn't re-evaluated per send for a button in this version, contrary
+to what the advanced-syntax docs describe. Confirmed instead, with the same
+isolated test: an `input` widget with its own `address`/`target` sends its
+*own* value correctly (a real string) on blur/commit. So the input reports its
+value directly to the listener at `NAME_ADDRESS`, which remembers it; the
+button carries no payload at all and just triggers a save with whatever name
+was last received. `target`/`ignoreDefaults` on both keeps every message
+routed to the listener only, never at Sushi's own parameter port. `mode:
+"tap"` on the button fires once per press; `toggle` would also fire a second
+message on release.
 """
 
 from __future__ import annotations
@@ -72,6 +97,8 @@ import sys
 from typing import Any
 
 from .dump import collect_parameter_info
+from .listen import DEFAULT_LISTEN_PORT, NAME_ADDRESS, SAVE_ADDRESS, STATUS_ADDRESS
+from .save import NAME_PATTERN
 
 # A fader's value is always normalised 0-1; this is about the real-world
 # domain that 0-1 maps onto. Above this ratio, linear drag response
@@ -79,8 +106,21 @@ from .dump import collect_parameter_info
 # travel — see the module docstring's EQ-band-gain example.
 LOG_SCALE_DOMAIN_THRESHOLD = 10.0
 
+# The outer save-bar container needs to be taller than its own children's
+# declared height — confirmed against real open-stage-control: each child
+# widget renders with a ~30px offset above its own content (room for a label
+# row, even on the "text" readout with label:false), so a container sized to
+# exactly match its children's height clips them. 70/40 was the smallest gap
+# that stopped the input/button/status from overflowing the bar visibly.
+SAVE_BAR_HEIGHT = 70
+SAVE_BAR_WIDGET_HEIGHT = 40
 
-def build_osc_panel(dump: Any, live_info: dict[str, dict[str, dict]]) -> dict[str, Any]:
+
+def build_osc_panel(
+    dump: Any,
+    live_info: dict[str, dict[str, dict]],
+    listener_port: int = DEFAULT_LISTEN_PORT,
+) -> dict[str, Any]:
     """Build a tabbed Open Stage Control panel structure: one tab per processor."""
     tabs = []
     for processor, params in sorted(collect_parameter_info(dump).items()):
@@ -140,16 +180,65 @@ def build_osc_panel(dump: Any, live_info: dict[str, dict[str, dict]]) -> dict[st
         if widgets:
             tabs.append({"type": "tab", "id": processor, "label": processor, "widgets": widgets})
 
+    save_bar = {
+        "type": "panel",
+        "id": "save_bar",
+        "width": "100%",
+        "height": SAVE_BAR_HEIGHT,
+        "widgets": [
+            {
+                "type": "input",
+                "id": "config_name",
+                "label": "name",
+                "value": "",
+                "validation": NAME_PATTERN.pattern,
+                "address": NAME_ADDRESS,
+                "target": [f"127.0.0.1:{listener_port}"],
+                "ignoreDefaults": True,
+                "width": 220,
+                "height": SAVE_BAR_WIDGET_HEIGHT,
+            },
+            {
+                "type": "button",
+                "id": "save_button",
+                "label": "SAVE",
+                "mode": "tap",
+                "address": SAVE_ADDRESS,
+                "target": [f"127.0.0.1:{listener_port}"],
+                "ignoreDefaults": True,
+                "width": 90,
+                "height": SAVE_BAR_WIDGET_HEIGHT,
+            },
+            {
+                "type": "text",
+                "id": "save_status",
+                "label": False,
+                "address": STATUS_ADDRESS,
+                "interaction": False,
+                "width": 320,
+                "height": SAVE_BAR_WIDGET_HEIGHT,
+            },
+        ],
+    }
+
     return {
         "type": "root",
         "id": "sushi-rig",
+        # Root defaults to left-to-right flow ("default" layout does not
+        # wrap on a 100%-width child the way a real flexbox would — confirmed
+        # against real open-stage-control: the tabs panel rendered at
+        # x:1024, immediately to the right of the save bar, entirely off the
+        # 1024px viewport, rather than wrapping below it). "vertical" stacks
+        # root's own two children (save_bar, tabs) top-to-bottom instead.
+        "layout": "vertical",
         "widgets": [
+            save_bar,
             {
                 "type": "panel",
                 "id": "tabs",
                 "width": "100%",
                 "height": "100%",
                 "tabs": tabs,
-            }
+            },
         ],
     }

@@ -107,6 +107,12 @@ rig.yaml + state.json ──emit──> rig.json  (now carrying initial_state)
 that matters.
 
 The tweak → capture → emit loop at the bottom is where the time actually goes.
+`start-rig.sh` runs an OSC listener (`sushi-rig listen`) alongside Sushi, and
+the generated panel carries a name field and a save button that trigger that
+loop directly — type a name, tweak, press save, and `config/<name>.json`
+appears with the current sound baked in. `sushi-rig save <name>` on the CLI
+does the same thing without the panel, since the save button is just one
+caller of that same underlying capture-and-write step (see issue #10).
 
 ---
 
@@ -207,6 +213,7 @@ Verified on this machine:
 | PipeWire / JACK, qpwgraph, fmit | ✅ |
 | `lilv` Python bindings (system) | ✅ `python3-lilv` + `liblilv-dev` |
 | `elkpy` (in `tool/.venv`) | ✅ imports cleanly on Python 3.14 |
+| `python-osc` (in `tool/.venv`) | ✅ for `sushi-rig listen` — the panel's save button |
 
 Sushi's LV2 support is **Linux-only** — it is excluded from the macOS and Windows
 builds. Authoring has to happen here.
@@ -217,8 +224,12 @@ To set this up from scratch:
 sudo apt install python3-pip python3-venv python3-lilv lv2-dev lilv-utils liblilv-dev
 cd tool && python3 -m venv --system-site-packages .venv
 source .venv/bin/activate
-pip install -e ".[dev]"
+pip install -e ".[dev,live]"
 ```
+
+If you already have a `tool/.venv` from before `python-osc` was added, re-run
+that last `pip install -e ".[dev,live]"` to pick it up — `start-rig.sh` now
+launches `sushi-rig listen`, which needs it.
 
 Two snags this hit in practice. **`lv2-dev` alone is not enough** —
 `python3-lilv`'s ctypes binding looks for the unversioned `liblilv-0.so`, which
