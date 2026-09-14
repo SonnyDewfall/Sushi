@@ -115,6 +115,21 @@ LOG_SCALE_DOMAIN_THRESHOLD = 10.0
 SAVE_BAR_HEIGHT = 70
 SAVE_BAR_WIDGET_HEIGHT = 40
 
+# A flat {type: "root", ...} file with no `version` field reads as version
+# "0.0.0" to open-stage-control — below its lowest migration threshold — which
+# pops a "session was created with an older version" warning on every load.
+# That migration step is also what wraps a bare root object into the
+# `{content: root}` shape the loader actually expects internally; declaring a
+# `version` high enough to skip the warning skips that wrapping too, and the
+# loader crashes on load ("Cannot read properties of undefined (reading
+# 'type')") because `content` is never populated — confirmed on real
+# open-stage-control, not inferred from source alone. So both parts of the
+# fix are required together: declare `content` ourselves (see the wrapping
+# return below) *and* declare `version` high enough to skip the warning.
+# Bump this if the schema is re-verified against a newer open-stage-control
+# release.
+SCHEMA_VERSION = "1.31.1"
+
 
 def build_osc_panel(
     dump: Any,
@@ -221,7 +236,7 @@ def build_osc_panel(
         ],
     }
 
-    return {
+    root = {
         "type": "root",
         "id": "sushi-rig",
         # Root defaults to left-to-right flow ("default" layout does not
@@ -242,3 +257,7 @@ def build_osc_panel(
             },
         ],
     }
+
+    # Wrapped under `content` alongside `version` — see SCHEMA_VERSION above
+    # for why the flat root object can't be returned directly.
+    return {"version": SCHEMA_VERSION, "content": root}

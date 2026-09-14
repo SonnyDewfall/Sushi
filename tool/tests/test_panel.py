@@ -33,8 +33,11 @@ def _faders(tab):
 def _root_widget(panel, widget_id):
     # Root-level widgets are looked up by id rather than a fixed list index,
     # since the save bar (added alongside the tabs panel) shares that list —
-    # position isn't something callers should have to assume.
-    return next(w for w in panel["widgets"] if w["id"] == widget_id)
+    # position isn't something callers should have to assume. `panel` is the
+    # {version, content} wrapper build_osc_panel returns; the actual root
+    # widget tree lives under "content" (see SCHEMA_VERSION in panel.py for
+    # why it's wrapped).
+    return next(w for w in panel["content"]["widgets"] if w["id"] == widget_id)
 
 
 def _tabs(panel):
@@ -254,7 +257,7 @@ def test_panel_save_bar_present_at_root_alongside_tabs(real_dump):
     plugin tab is open."""
     live_info = _live_info_for(real_dump)
     panel = build_osc_panel(real_dump, live_info)
-    ids = {w["id"] for w in panel["widgets"]}
+    ids = {w["id"] for w in panel["content"]["widgets"]}
     assert {"tabs", "save_bar"} <= ids
 
 
@@ -342,4 +345,19 @@ def test_panel_root_uses_vertical_layout(real_dump):
     below it. "vertical" stacks root's children top-to-bottom instead."""
     live_info = _live_info_for(real_dump)
     panel = build_osc_panel(real_dump, live_info)
-    assert panel["layout"] == "vertical"
+    assert panel["content"]["layout"] == "vertical"
+
+
+def test_panel_declares_schema_version(real_dump):
+    """A missing `version` reads as "0.0.0" to open-stage-control, which pops
+    an "older version of this software" warning on every load regardless of
+    content — confirmed against real open-stage-control. Declaring one avoids
+    it, but also skips the migration step that otherwise wraps a bare root
+    object into the shape the loader expects, so the root widget tree has to
+    be nested under "content" ourselves once "version" is present — also
+    confirmed against real open-stage-control (a bare root + version alone
+    crashes the loader on load)."""
+    live_info = _live_info_for(real_dump)
+    panel = build_osc_panel(real_dump, live_info)
+    assert panel["version"]
+    assert panel["content"]["type"] == "root"
