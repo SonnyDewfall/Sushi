@@ -30,6 +30,13 @@ def _faders(tab):
     return [w for w in tab["widgets"] if w["type"] == "fader"]
 
 
+def _param_name(fader):
+    # Faders have no `label` property in real open-stage-control (see
+    # SCHEMA_VERSION-adjacent comment in panel.py) — the parameter name is
+    # only recoverable from the id, as "processor/param name".
+    return fader["id"].split("/", 1)[1]
+
+
 def _root_widget(panel, widget_id):
     # Root-level widgets are looked up by id rather than a fixed list index,
     # since the save bar (added alongside the tabs panel) shares that list —
@@ -71,7 +78,7 @@ def test_panel_uses_osc_path_verbatim_not_a_constructed_address(real_dump):
     panel = build_osc_panel(real_dump, live_info)
     tabs = {t["id"]: t for t in _tabs(panel)}
     widget = next(
-        w for w in _faders(tabs["compressor_mono"]) if w["label"] == "Show pre-mix overlay"
+        w for w in _faders(tabs["compressor_mono"]) if _param_name(w) == "Show pre-mix overlay"
     )
     assert widget["address"] == "/parameter/compressor_mono/Show_pre-mix_overlay"
     assert " " not in widget["address"]
@@ -145,10 +152,10 @@ def test_panel_fader_default_is_the_live_current_value_not_a_guessed_constant(re
     )
     panel = build_osc_panel(real_dump, live_info)
     tabs = {t["id"]: t for t in _tabs(panel)}
-    ratio_widget = next(w for w in _faders(tabs["compressor_mono"]) if w["label"] == "Ratio")
+    ratio_widget = next(w for w in _faders(tabs["compressor_mono"]) if _param_name(w) == "Ratio")
     assert ratio_widget["default"] == 0.030303
     # every other compressor fader in this test carries the synthetic 0.3
-    other_widget = next(w for w in _faders(tabs["compressor_mono"]) if w["label"] != "Ratio")
+    other_widget = next(w for w in _faders(tabs["compressor_mono"]) if _param_name(w) != "Ratio")
     assert other_widget["default"] == 0.3
 
 
@@ -170,8 +177,8 @@ def test_panel_drops_non_automatable_parameters(real_dump):
     )
     panel = build_osc_panel(real_dump, live_info)
     tabs = {t["id"]: t for t in _tabs(panel)}
-    labels = {w["label"] for w in _faders(tabs["compressor_mono"])}
-    assert "Show pre-mix overlay" not in labels
+    names = {_param_name(w) for w in _faders(tabs["compressor_mono"])}
+    assert "Show pre-mix overlay" not in names
 
 
 def test_panel_skips_a_processor_missing_from_live_info(real_dump, capsys):
@@ -208,7 +215,7 @@ def test_panel_applies_logscale_to_wide_domain_parameters(real_dump):
     )
     panel = build_osc_panel(real_dump, live_info)
     tabs = {t["id"]: t for t in _tabs(panel)}
-    widget = next(w for w in _faders(tabs["compressor_mono"]) if w["label"] == "Output gain")
+    widget = next(w for w in _faders(tabs["compressor_mono"]) if _param_name(w) == "Output gain")
     assert widget["logScale"] is True
 
 
@@ -231,18 +238,61 @@ def test_panel_each_fader_has_a_paired_value_readout(real_dump):
     not just feel it via drag position. A bare shared `id` between a fader
     and a differently-typed widget (the docs describe this as a "clone"
     mechanism) was tried first against real open-stage-control and did not
-    visibly update; the `@{widgetId}` live-reference syntax did."""
+    visibly update; the `@{widgetId}` live-reference syntax did.
+
+    The readout also carries the parameter's name, not just its value:
+    `fader` has no `label` property in real open-stage-control 1.31.1
+    (confirmed by inspecting a live widget's own resolved `props`, which
+    doesn't include the key at all — a "label" on a fader is silently
+    dropped), so this readout is the only place the name is actually
+    visible."""
     live_info = _live_info_for(real_dump)
     panel = build_osc_panel(real_dump, live_info)
     tab = _tabs(panel)[0]
     fader = _faders(tab)[0]
     readout = next(w for w in tab["widgets"] if w["type"] == "text")
-    assert readout["value"] == f"@{{{fader['id']}}}"
+    assert readout["value"] == f"{_param_name(fader)}\n@{{{fader['id']}}}"
     assert readout["interaction"] is False
     # Without label: false, open-stage-control falls back to showing the
     # widget's id as a label — confirmed on real hardware, where every
     # readout's long processor/parameter id overlapped the row above it.
     assert readout["label"] is False
+
+
+def test_panel_widget_id_has_no_dot_for_a_dotted_parameter_name(real_dump):
+    """A "." in a widget id breaks the "@{id}" live-value binding — it reads
+    as "undefined" — confirmed against real open-stage-control on the EQ's
+    "1.6K"/"2.5K" band-gain parameters, the only ones with a "." in their
+    name. `id` is purely an internal open-stage-control reference (real OSC
+    traffic uses `address`, built from `osc_path` and untouched by this),
+    so it's safe to sanitize."""
+    live_info = _live_info_for(
+        real_dump,
+        override={
+            ("graph_equalizer_x16_stereo", "Band gain 1.6K"): {
+                "automatable": True,
+                "value": 0.3,
+                "min_domain_value": 0.0,
+                "max_domain_value": 1.0,
+            }
+        },
+    )
+    panel = build_osc_panel(real_dump, live_info)
+    tabs = {t["id"]: t for t in _tabs(panel)}
+    widget = next(
+        w
+        for w in _faders(tabs["graph_equalizer_x16_stereo"])
+        if _param_name(w) == "Band gain 1_6K"
+    )
+    assert "." not in widget["id"]
+    readout = next(
+        w
+        for w in tabs["graph_equalizer_x16_stereo"]["widgets"]
+        if w["type"] == "text" and w["id"] == f"{widget['id']}/readout"
+    )
+    # The display name keeps its "." (still "1.6K" to the eye); only the
+    # live-value binding needs to be dot-free.
+    assert readout["value"] == f"Band gain 1.6K\n@{{{widget['id']}}}"
 
 
 # --- save bar (issue #10) ---------------------------------------------------

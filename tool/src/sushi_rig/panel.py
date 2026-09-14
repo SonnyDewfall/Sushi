@@ -166,12 +166,26 @@ def build_osc_panel(
                 # Read-only (meters, "Latency OUT") — not a control to expose.
                 continue
 
-            fader_id = f"{processor}/{param_name}"
+            # A "." in a widget id breaks the "@{id}" live-value binding used
+            # below (it reads as "undefined") — confirmed against real
+            # open-stage-control on the EQ tab's "1.6K"/"2.5K" band-gain
+            # params, the only ones with a "." in their name. `id` is purely
+            # an internal open-stage-control reference — real OSC traffic
+            # uses `address` below, untouched — so it's safe to sanitize.
+            fader_id = f"{processor}/{param_name}".replace(".", "_")
             domain_max = live.get("max_domain_value", 1.0)
+            # `fader` has no `label` property in real open-stage-control 1.31.1
+            # — confirmed by inspecting a live widget's own resolved `props`,
+            # which simply doesn't include the key, so a "label" here is
+            # silently dropped rather than shown. The parameter name has to
+            # go in the readout text below instead, which does render (its
+            # `value` becomes visible content, not a caption prop) — the
+            # only reason this looked fine before was that faders were never
+            # actually checked for a visible label, only for the warning
+            # dialog and the save bar.
             fader: dict[str, Any] = {
                 "type": "fader",
                 "id": fader_id,
-                "label": param_name,
                 "address": address,
                 "range": {"min": 0, "max": 1},
                 "default": round(live["value"], 6),
@@ -186,10 +200,11 @@ def build_osc_panel(
                     "type": "text",
                     "id": f"{fader_id}/readout",
                     "label": False,
-                    "value": f"@{{{fader_id}}}",
+                    "wrap": True,
+                    "value": f"{param_name}\n@{{{fader_id}}}",
                     "interaction": False,
                     "width": 90,
-                    "height": 20,
+                    "height": 40,
                 }
             )
         if widgets:

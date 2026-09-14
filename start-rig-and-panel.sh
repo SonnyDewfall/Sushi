@@ -9,7 +9,15 @@
 # this script exists because generating and opening the panel by hand needs
 # Sushi to already be live, which means juggling two terminals otherwise.
 
-cd "$HOME/Sushi" || exit 1
+# This script lives inside a git worktree/checkout of the rig, and must run
+# from its OWN directory (not $HOME/Sushi) — otherwise "tool/.venv/bin/
+# sushi-rig" below resolves to whichever tool package happens to be
+# installed at $HOME/Sushi instead of the one that ships with this checkout,
+# silently running old code with no error (confirmed the hard way: this
+# produced a panel with no save bar and no listener, from the main
+# checkout's pre-issue-10 sushi-rig, while this script quietly kept running).
+SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+cd "$SCRIPT_DIR" || exit 1
 
 CONFIG="config/acoustic_chorus.json"
 RIG_YAML="config/src/acoustic_chorus.yaml"
@@ -38,7 +46,7 @@ pkill -f "open-stage-control --load $PANEL_FILE" 2>/dev/null
 fmit &
 
 # 4. Launch qpwgraph minimized with saved auto-connections
-qpwgraph -a "$HOME/Sushi/Patchbay/rig.qpwgraph" -m &
+qpwgraph -a "$SCRIPT_DIR/Patchbay/rig.qpwgraph" -m &
 
 # 5. Launch the save listener (issue #10) so the panel's save button works
 tool/.venv/bin/sushi-rig listen \
