@@ -12,6 +12,7 @@ echo "Initiating rig shutdown..."
 
 # 1. Send a polite interrupt signal to cleanly unhook JACK ports
 pkill -INT -f sushi.bin
+pkill -INT -f "sushi-rig listen"
 killall -INT fmit qpwgraph pw-jack 2>/dev/null
 
 # 2. Give the audio backend a second to release the ports
@@ -19,6 +20,7 @@ sleep 1
 
 # 3. Force kill any processes that hung or refused to close
 pkill -9 -f sushi.bin
+pkill -9 -f "sushi-rig listen"
 killall -9 fmit qpwgraph pw-jack 2>/dev/null
 
 echo "Rig offline."

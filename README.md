@@ -46,6 +46,46 @@ The cost: Sushi is headless, so plugins' own GUIs are unavailable. Parameters ar
 tweaked through generated [Open Stage Control](https://openstagecontrol.ammd.net/)
 faders instead. That was an accepted trade-off when scoping the project.
 
+## What this project owns (and what it doesn't)
+
+Several projects already drive Sushi — [`elk-audio/sushi-gui`](https://github.com/elk-audio/sushi-gui)
+(official, Qt, live parameter and graph editing),
+[`scraporchestra`](https://github.com/OlivierSch755/scraporchestra) (web app,
+project manager for Elk Pi), and Sushi's own native session save/restore. They
+were evaluated deliberately rather than ignored.
+
+They all share one assumption: **live Sushi state is the source of truth.** You
+drive a UI, state lives in the engine, and persistence dumps whatever is
+currently loaded.
+
+This project inverts that. **A hand-authored `rig.yaml` is the source of truth**,
+and configs are versioned, readable, diffable artefacts. That's not a UI
+preference — it's what makes a tone reviewable, revertable and reproducible.
+
+The difference is not academic. Deriving structure from a live session is
+*lossy*: `sushi-gui` reconstructs internal plugins as
+`uid = "sushi.testing." + name`, so a plugin named `internal_reverb` comes back
+as `sushi.testing.internal_reverb` rather than `sushi.testing.freeverb` — a
+config that will not load. A live session records **observed state, not
+intent**. It cannot know what you meant; a source file can.
+
+So the split is:
+
+| | Tool | Why |
+|---|---|---|
+| **Exploration** — trying plugins, building chains | `sushi-gui` and other live tools | Fast and live. Hand-editing YAML to audition a plugin is friction worth removing, and not friction worth *building* a solution for |
+| **Persistence** — this tone is good, keep it | This project | Determinism and version control. Nothing surveyed produces readable, git-diffable, versioned configs |
+
+The bridge between them is `capture` → versioned config. Everything here is
+built to keep that bridge tool-agnostic, so adopting a better live editor later
+costs nothing.
+
+Where those projects do something well, this one borrows rather than reinvents —
+Sushi's native `SaveSession`/`RestoreSession` for runtime switching, and
+`sushi-gui`'s live-session-to-config derivation for the cases where no
+`rig.yaml` exists yet. Full rationale in
+[issue #12](https://github.com/SonnyDewfall/Sushi/issues/12).
+
 ## The workflow
 
 ```
@@ -67,6 +107,12 @@ rig.yaml + state.json ──emit──> rig.json  (now carrying initial_state)
 that matters.
 
 The tweak → capture → emit loop at the bottom is where the time actually goes.
+`start-rig.sh` runs an OSC listener (`sushi-rig listen`) alongside Sushi, and
+the generated panel carries a name field and a save button that trigger that
+loop directly — type a name, tweak, press save, and `config/<name>.json`
+appears with the current sound baked in. `sushi-rig save <name>` on the CLI
+does the same thing without the panel, since the save button is just one
+caller of that same underlying capture-and-write step (see issue #10).
 
 ---
 
@@ -123,8 +169,9 @@ once the package supersedes it.
 ## Running the rig
 
 ```bash
-./start-rig.sh     # tuner, patchbay, and Sushi on the current config
-./stop-rig.sh      # clean shutdown, releases JACK ports
+./start-rig.sh              # tuner, patchbay, and Sushi on the current config
+./start-rig-and-panel.sh    # the above, plus a generated Open Stage Control panel
+./stop-rig.sh               # clean shutdown, releases JACK ports
 ```
 
 `start-rig.sh` sets `LV2_PATH`, kills any stale instances, launches `fmit`
@@ -133,6 +180,14 @@ Sushi under PipeWire's JACK shim.
 
 To run a different rig, change the config path on the last line of
 `start-rig.sh`.
+
+`start-rig-and-panel.sh` is for tweaking a tone rather than just playing
+through the rig: it does everything `start-rig.sh` does, but backgrounds Sushi
+instead of holding the terminal, waits for its gRPC to come up, then generates
+a fresh panel from the live instance and opens it in Open Stage Control — the
+name field and save button reach `sushi-rig listen` directly, so a tweak can be
+saved as a new named config without a second terminal (issue #10). Ctrl+C stops
+the panel and the whole rig together.
 
 > **`LV2_PATH` must be set, or Sushi loads no LV2 plugins at all.** It exits 4
 > with `Failed to load tracks from the Json config file` — an error that never
@@ -167,6 +222,7 @@ Verified on this machine:
 | PipeWire / JACK, qpwgraph, fmit | ✅ |
 | `lilv` Python bindings (system) | ✅ `python3-lilv` + `liblilv-dev` |
 | `elkpy` (in `tool/.venv`) | ✅ imports cleanly on Python 3.14 |
+| `python-osc` (in `tool/.venv`) | ✅ for `sushi-rig listen` — the panel's save button |
 
 Sushi's LV2 support is **Linux-only** — it is excluded from the macOS and Windows
 builds. Authoring has to happen here.
@@ -177,8 +233,12 @@ To set this up from scratch:
 sudo apt install python3-pip python3-venv python3-lilv lv2-dev lilv-utils liblilv-dev
 cd tool && python3 -m venv --system-site-packages .venv
 source .venv/bin/activate
-pip install -e ".[dev]"
+pip install -e ".[dev,live]"
 ```
+
+If you already have a `tool/.venv` from before `python-osc` was added, re-run
+that last `pip install -e ".[dev,live]"` to pick it up — `start-rig.sh` now
+launches `sushi-rig listen`, which needs it.
 
 Two snags this hit in practice. **`lv2-dev` alone is not enough** —
 `python3-lilv`'s ctypes binding looks for the unversioned `liblilv-0.so`, which

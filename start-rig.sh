@@ -10,8 +10,28 @@ killall -q fmit sushi
 # 3. Launch Visual Tuner in the background
 fmit &
 
-# 4. Launch qpwgraph minimized with saved auto-connections
+# 4. Launch qpwgraph minimized with saved auto-connections. It can exit
+# silently within ~1s of starting — no error printed anywhere — if it races
+# fmit/Sushi for the PipeWire session at the same moment; without it nothing
+# gets auto-connected, and Sushi runs with no audio in or out while looking
+# otherwise fine. Check and warn rather than fail silently.
 qpwgraph -a "$HOME/Sushi/Patchbay/rig.qpwgraph" -m &
+QPWGRAPH_PID=$!
+sleep 1.5
+if ! kill -0 "$QPWGRAPH_PID" 2>/dev/null; then
+    echo "WARNING: qpwgraph exited immediately — the patchbay is not connected," >&2
+    echo "so you likely won't hear anything even though Sushi is running." >&2
+    echo "Run manually: qpwgraph -a $HOME/Sushi/Patchbay/rig.qpwgraph" >&2
+fi
 
-# 5. Launch SUSHI via PipeWire-JACK
+# 5. Launch the OSC listener so the panel's save button can write a config
+# without a terminal in the loop (issue #10). --rig must match whichever
+# config is loaded below — config/src/acoustic_chorus.yaml describes
+# config/acoustic_chorus.json's structure.
+"$HOME/Sushi/tool/.venv/bin/sushi-rig" listen \
+  --rig "$HOME/Sushi/config/src/acoustic_chorus.yaml" \
+  --out-dir "$HOME/Sushi/config" \
+  --archive-dir "$HOME/Sushi/config/archive" &
+
+# 6. Launch SUSHI via PipeWire-JACK
 pw-jack ./sushi -j -c config/acoustic_chorus.json

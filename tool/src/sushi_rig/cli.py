@@ -7,11 +7,13 @@ from __future__ import annotations
 
 import argparse
 import json
+import sys
 from pathlib import Path
 
 from .dump import dump_plugins
 from .emit import emit
 from .live import DEFAULT_GRPC_ADDRESS
+from .listen import DEFAULT_LISTEN_PORT, DEFAULT_STATUS_HOST, DEFAULT_STATUS_PORT
 from .panel import build_osc_panel
 from .spec import RigSpec
 
@@ -57,7 +59,41 @@ def main(argv: list[str] | None = None) -> int:
         help="Sushi's OSC receive port (--osc-rcv-port), just to print the matching "
         "open-stage-control --send value — not written into the panel file",
     )
+    p.add_argument(
+        "--listener-port",
+        type=int,
+        default=DEFAULT_LISTEN_PORT,
+        help="port the save button targets — must match 'sushi-rig listen --port'",
+    )
     p.add_argument("-o", "--out", type=Path, default=Path("panel.json"))
+
+    p = sub.add_parser("save", help="capture live state and write it as a named config")
+    p.add_argument("name", help="config name — becomes config/<name>.json")
+    p.add_argument("--rig", type=Path, required=True, help="rig.yaml this config is built from")
+    p.add_argument("--out-dir", type=Path, default=Path("../config"))
+    p.add_argument("--archive-dir", type=Path, default=Path("../config/archive"))
+    p.add_argument("--address", default=DEFAULT_GRPC_ADDRESS)
+
+    p = sub.add_parser(
+        "listen",
+        help="run an OSC listener that saves a config on request (for the panel's save button)",
+    )
+    p.add_argument("--rig", type=Path, required=True, help="rig.yaml every save is built from")
+    p.add_argument("--out-dir", type=Path, default=Path("../config"))
+    p.add_argument("--archive-dir", type=Path, default=Path("../config/archive"))
+    p.add_argument("--address", default=DEFAULT_GRPC_ADDRESS, help="Sushi's gRPC address")
+    p.add_argument(
+        "--host",
+        default="127.0.0.1",
+        help="address to listen on — defaults to loopback-only; widen deliberately",
+    )
+    p.add_argument("--port", type=int, default=DEFAULT_LISTEN_PORT)
+    p.add_argument(
+        "--status-host",
+        default=DEFAULT_STATUS_HOST,
+        help="where to send save-outcome messages — open-stage-control's OSC input",
+    )
+    p.add_argument("--status-port", type=int, default=DEFAULT_STATUS_PORT)
 
     args = parser.parse_args(argv)
 
@@ -77,10 +113,33 @@ def main(argv: list[str] | None = None) -> int:
 
         dump = dump_plugins(args.config, args.sushi)
         live_info = get_live_parameter_info(args.address)
-        write_json(args.out, build_osc_panel(dump, live_info))
+        write_json(args.out, build_osc_panel(dump, live_info, args.listener_port))
         print(
             f"open with: open-stage-control --load {args.out} "
             f"--send 127.0.0.1:{args.osc_port}"
+        )
+    elif args.command == "save":
+        from .save import SaveError, save_config
+
+        try:
+            out_path = save_config(
+                args.name, args.rig, args.out_dir, args.archive_dir, args.address
+            )
+        except SaveError as exc:
+            sys.exit(str(exc))
+        print(f"saved {out_path}")
+    elif args.command == "listen":
+        from .listen import serve
+
+        serve(
+            args.rig,
+            args.out_dir,
+            args.archive_dir,
+            address=args.address,
+            host=args.host,
+            port=args.port,
+            status_host=args.status_host,
+            status_port=args.status_port,
         )
 
     return 0

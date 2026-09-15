@@ -8,7 +8,7 @@ dependencies = [
 ]
 
 [project.optional-dependencies]
-live = ["elkpy"]
+live = ["elkpy", "python-osc"]
 probe = []  # lilv has no PyPI wheel; install python3-lilv via apt (see README)
 dev = ["pytest>=7.0"]
 
