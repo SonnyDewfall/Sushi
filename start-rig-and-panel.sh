@@ -8,6 +8,11 @@
 # For just running the rig with no tweaking UI, use start-rig.sh instead —
 # this script exists because generating and opening the panel by hand needs
 # Sushi to already be live, which means juggling two terminals otherwise.
+#
+# Usage: ./start-rig-and-panel.sh [config-name]
+#   config-name defaults to "acoustic_chorus" and names config/<name>.json —
+#   e.g. `./start-rig-and-panel.sh acoustic_reverb` loads
+#   config/acoustic_reverb.json instead.
 
 # This script lives inside a git worktree/checkout of the rig, and must run
 # from its OWN directory (not $HOME/Sushi) — otherwise "tool/.venv/bin/
@@ -19,12 +24,30 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR" || exit 1
 
-CONFIG="config/acoustic_chorus.json"
-RIG_YAML="config/src/acoustic_chorus.yaml"
+CONFIG_NAME="${1:-acoustic_chorus}"
+CONFIG="config/${CONFIG_NAME}.json"
 PANEL_FILE="/tmp/sushi-rig-panel.json"
 GRPC_HOST="127.0.0.1"
 GRPC_PORT="51051"
 OSC_SEND_PORT="24024"
+
+if [ ! -f "$CONFIG" ]; then
+    echo "No such config: $CONFIG" >&2
+    exit 1
+fi
+
+# A saved variant (via `sushi-rig save`/the panel's SAVE button) records the
+# rig.yaml it was built from in its own _meta.source, since variants share
+# their originating yaml rather than getting one of their own (see issue
+# #10's design notes) — read that back so a save made *from* this config
+# is attributed to the right source instead of always assuming
+# acoustic_chorus. Falls back to acoustic_chorus.yaml for the canonical,
+# hand-authored configs, which don't carry a _meta.source themselves.
+RIG_YAML="$(tool/.venv/bin/python -c "
+import json
+with open('$CONFIG') as f:
+    print(json.load(f).get('_meta', {}).get('source', 'config/src/acoustic_chorus.yaml'))
+")"
 
 # 1. Point LV2 path to your local portable plugins directory
 export LV2_PATH="$HOME/Sushi/plugins:${LV2_PATH:-/usr/lib/lv2:/usr/local/lib/lv2}"
@@ -45,8 +68,23 @@ pkill -f "open-stage-control --load $PANEL_FILE" 2>/dev/null
 # 3. Launch Visual Tuner in the background
 fmit &
 
-# 4. Launch qpwgraph minimized with saved auto-connections
+# 4. Launch qpwgraph minimized with saved auto-connections. Found this
+# session while chasing a "no playback" report: qpwgraph can exit silently
+# within ~1s of starting — no error printed anywhere — if it races another
+# app (fmit, Sushi) for the PipeWire session at the same moment. Without it,
+# nothing gets auto-connected and Sushi runs with no audio in or out, which
+# looks identical to everything working. A retry didn't reliably help in
+# testing, so this just checks and warns loudly instead of pretending to
+# have fixed it — if you see the warning, run
+# `qpwgraph -a Patchbay/rig.qpwgraph` by hand in another terminal.
 qpwgraph -a "$SCRIPT_DIR/Patchbay/rig.qpwgraph" -m &
+QPWGRAPH_PID=$!
+sleep 1.5
+if ! kill -0 "$QPWGRAPH_PID" 2>/dev/null; then
+    echo "WARNING: qpwgraph exited immediately — the patchbay is not connected," >&2
+    echo "so you likely won't hear anything even though Sushi is running." >&2
+    echo "Run manually: qpwgraph -a $SCRIPT_DIR/Patchbay/rig.qpwgraph" >&2
+fi
 
 # 5. Launch the save listener (issue #10) so the panel's save button works
 tool/.venv/bin/sushi-rig listen \
