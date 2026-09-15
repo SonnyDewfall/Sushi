@@ -61,22 +61,21 @@ cleanup() {
 trap cleanup EXIT INT TERM
 
 # 2. Kill any existing instances (mirrors start-rig.sh)
-killall -q fmit sushi 2>/dev/null
+killall -q sushi 2>/dev/null
 pkill -f "sushi-rig listen" 2>/dev/null
 pkill -f "open-stage-control --load $PANEL_FILE" 2>/dev/null
 
-# 3. Launch Visual Tuner in the background
-fmit &
-
-# 4. Launch qpwgraph minimized with saved auto-connections. Found this
+# 3. Launch qpwgraph minimized with saved auto-connections. Found this
 # session while chasing a "no playback" report: qpwgraph can exit silently
 # within ~1s of starting — no error printed anywhere — if it races another
-# app (fmit, Sushi) for the PipeWire session at the same moment. Without it,
-# nothing gets auto-connected and Sushi runs with no audio in or out, which
-# looks identical to everything working. A retry didn't reliably help in
-# testing, so this just checks and warns loudly instead of pretending to
-# have fixed it — if you see the warning, run
-# `qpwgraph -a Patchbay/rig.qpwgraph` by hand in another terminal.
+# app for the PipeWire session at the same moment. Without it, nothing gets
+# auto-connected and Sushi runs with no audio in or out, which looks
+# identical to everything working. fmit (the tuner) was dropped from this
+# script entirely on the theory that it's the other side of that race —
+# tune manually instead for now. A retry didn't reliably help either, so
+# this still checks and warns loudly rather than pretending to have fixed
+# it — if you see the warning, run `qpwgraph -a Patchbay/rig.qpwgraph` by
+# hand in another terminal.
 qpwgraph -a "$SCRIPT_DIR/Patchbay/rig.qpwgraph" -m &
 QPWGRAPH_PID=$!
 sleep 1.5
@@ -86,17 +85,17 @@ if ! kill -0 "$QPWGRAPH_PID" 2>/dev/null; then
     echo "Run manually: qpwgraph -a $SCRIPT_DIR/Patchbay/rig.qpwgraph" >&2
 fi
 
-# 5. Launch the save listener (issue #10) so the panel's save button works
+# 4. Launch the save listener (issue #10) so the panel's save button works
 tool/.venv/bin/sushi-rig listen \
   --rig "$RIG_YAML" \
   --out-dir config \
   --archive-dir config/archive &
 
-# 6. Launch SUSHI via PipeWire-JACK, backgrounded so this script can carry
+# 5. Launch SUSHI via PipeWire-JACK, backgrounded so this script can carry
 # on to generate and open the panel once it's up
 pw-jack ./sushi -j -c "$CONFIG" &
 
-# 7. Wait for Sushi's gRPC to actually accept connections before asking
+# 6. Wait for Sushi's gRPC to actually accept connections before asking
 # sushi-rig for a panel — it needs a live instance to read current values
 # from (see `sushi-rig panel --help`)
 echo "Waiting for Sushi..."
@@ -114,7 +113,7 @@ if [ "$ready" != true ]; then
     exit 1
 fi
 
-# 8. Generate a panel from the live rig and open it in Open Stage Control
+# 7. Generate a panel from the live rig and open it in Open Stage Control
 tool/.venv/bin/sushi-rig panel "$CONFIG" --sushi ./sushi -o "$PANEL_FILE"
 open-stage-control --load "$PANEL_FILE" --send "$GRPC_HOST:$OSC_SEND_PORT" &
 
