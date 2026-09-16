@@ -1,0 +1,155 @@
+{
+  "_meta": {
+    "name": "electric-test",
+    "version": "1.0",
+    "description": "Electric guitar \u2014 compressor, overdrive, octave, EQ, chorus, delay, reverb",
+    "status": "wip",
+    "source": "config/src/electric_board.yaml"
+  },
+  "host_config": {
+    "samplerate": 48000
+  },
+  "tracks": [
+    {
+      "name": "board",
+      "channels": 2,
+      "inputs": [
+        {
+          "engine_bus": 0,
+          "track_bus": 0
+        }
+      ],
+      "outputs": [
+        {
+          "engine_bus": 0,
+          "track_bus": 0
+        }
+      ],
+      "plugins": [
+        {
+          "name": "compressor",
+          "type": "lv2",
+          "uri": "http://guitarix.sourceforge.net/plugins/gx_compressor#_compressor"
+        },
+        {
+          "name": "overdrive",
+          "type": "lv2",
+          "uri": "http://guitarix.sourceforge.net/plugins/gxts9#ts9sim"
+        },
+        {
+          "name": "octave",
+          "type": "lv2",
+          "uri": "http://guitarix.sourceforge.net/plugins/gx_oc_2_#_oc_2_"
+        },
+        {
+          "name": "eq",
+          "type": "lv2",
+          "uri": "http://distrho.sf.net/plugins/3BandEQ"
+        },
+        {
+          "name": "chorus",
+          "type": "lv2",
+          "uri": "http://guitarix.sourceforge.net/plugins/gx_chorus_stereo#_chorus_stereo"
+        },
+        {
+          "name": "delay",
+          "type": "lv2",
+          "uri": "http://drobilla.net/plugins/mda/Delay"
+        },
+        {
+          "name": "reverb",
+          "type": "lv2",
+          "uri": "http://drobilla.net/plugins/mda/Ambience"
+        }
+      ]
+    }
+  ],
+  "initial_state": [
+    {
+      "processor": "board",
+      "bypassed": false,
+      "parameters": {
+        "gain": 0.833333,
+        "pan": 0.5,
+        "mute": 0.0
+      }
+    },
+    {
+      "processor": "compressor",
+      "bypassed": false,
+      "parameters": {
+        "RATIO": 0.23,
+        "KNEE": 0.11,
+        "THRESHOLD": 0.14,
+        "RELEASE": 0.05,
+        "ATTACK": 0.02,
+        "BYPASS": 0.0
+      }
+    },
+    {
+      "processor": "overdrive",
+      "bypassed": false,
+      "parameters": {
+        "Level": 0.72,
+        "Tone": 0.58,
+        "Drive": 0.04,
+        "BYPASS": 1.0
+      }
+    },
+    {
+      "processor": "octave",
+      "bypassed": false,
+      "parameters": {
+        "DIRECT": 0.5,
+        "OCTAVE1": 0.0,
+        "OCTAVE2": 0.0
+      }
+    },
+    {
+      "processor": "eq",
+      "bypassed": false,
+      "program": 0,
+      "parameters": {
+        "Low": 0.35,
+        "Mid": 0.13,
+        "High": 0.35,
+        "Master": 0.56,
+        "Low-Mid Freq": 0.25,
+        "Mid-High Freq": 0.14
+      }
+    },
+    {
+      "processor": "chorus",
+      "bypassed": false,
+      "parameters": {
+        "Level": 0.38,
+        "Delay": 0.1,
+        "Depth": 0.08,
+        "Freq": 0.19,
+        "BYPASS": 1.0
+      }
+    },
+    {
+      "processor": "delay",
+      "bypassed": false,
+      "parameters": {
+        "L Delay": 0.5,
+        "R Delay": 0.27,
+        "Feedback": 0.7,
+        "Fb Tone": 0.5,
+        "FX Mix": 0.0,
+        "Output": 0.5
+      }
+    },
+    {
+      "processor": "reverb",
+      "bypassed": false,
+      "parameters": {
+        "Size": 0.87,
+        "HF Damp": 0.7,
+        "Mix": 1.0,
+        "Output": 0.5
+      }
+    }
+  ]
+}

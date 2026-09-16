@@ -10,9 +10,9 @@
 # Sushi to already be live, which means juggling two terminals otherwise.
 #
 # Usage: ./start-rig-and-panel.sh [config-name]
-#   config-name defaults to "acoustic_chorus" and names config/<name>.json —
-#   e.g. `./start-rig-and-panel.sh acoustic_reverb` loads
-#   config/acoustic_reverb.json instead.
+#   config-name defaults to "electric_board" and names config/<name>.json —
+#   e.g. `./start-rig-and-panel.sh empty` loads config/empty.json instead
+#   (the passthrough config, useful for checking the audio path alone).
 
 # This script lives inside a git worktree/checkout of the rig, and must run
 # from its OWN directory (not $HOME/Sushi) — otherwise "tool/.venv/bin/
@@ -24,7 +24,7 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR" || exit 1
 
-CONFIG_NAME="${1:-acoustic_chorus}"
+CONFIG_NAME="${1:-electric_board}"
 CONFIG="config/${CONFIG_NAME}.json"
 PANEL_FILE="/tmp/sushi-rig-panel.json"
 GRPC_HOST="127.0.0.1"
@@ -41,16 +41,20 @@ fi
 # their originating yaml rather than getting one of their own (see issue
 # #10's design notes) — read that back so a save made *from* this config
 # is attributed to the right source instead of always assuming
-# acoustic_chorus. Falls back to acoustic_chorus.yaml for the canonical,
+# electric_board. Falls back to electric_board.yaml for the canonical,
 # hand-authored configs, which don't carry a _meta.source themselves.
 RIG_YAML="$(tool/.venv/bin/python -c "
 import json
 with open('$CONFIG') as f:
-    print(json.load(f).get('_meta', {}).get('source', 'config/src/acoustic_chorus.yaml'))
+    print(json.load(f).get('_meta', {}).get('source', 'config/src/electric_board.yaml'))
 ")"
 
 # 1. Point LV2 path to your local portable plugins directory
-export LV2_PATH="$HOME/Sushi/plugins:${LV2_PATH:-/usr/lib/lv2:/usr/local/lib/lv2}"
+# Deliberately the ONLY entry: no /usr/lib/lv2 fallback. plugins/ now holds
+# exactly the bundles this rig uses (everything else is in plugins/archive/,
+# off the path), so a missing or renamed plugin fails loudly here instead of
+# silently resolving against the system copy and hiding a portability break.
+export LV2_PATH="$HOME/Sushi/plugins"
 
 cleanup() {
     echo
@@ -68,15 +72,29 @@ pkill -f "open-stage-control --load $PANEL_FILE" 2>/dev/null
 # 3. Launch Visual Tuner in the background
 fmit &
 
-# 4. Launch qpwgraph minimized with saved auto-connections. Found this
-# session while chasing a "no playback" report: qpwgraph can exit silently
-# within ~1s of starting — no error printed anywhere — if it races another
-# app (fmit, Sushi) for the PipeWire session at the same moment. Without it,
-# nothing gets auto-connected and Sushi runs with no audio in or out, which
-# looks identical to everything working. A retry didn't reliably help in
-# testing, so this just checks and warns loudly instead of pretending to
-# have fixed it — if you see the warning, run
-# `qpwgraph -a Patchbay/rig.qpwgraph` by hand in another terminal.
+# 4. Launch qpwgraph minimized with saved auto-connections.
+# qpwgraph is SINGLE-INSTANCE. Launching a second one while another is
+# already running makes the *new* one exit immediately and silently — no
+# error, no crash, nothing in the journal. Without it the patchbay never
+# auto-connects, so Sushi runs with no audio in or out while looking
+# completely healthy.
+#
+# This was issue #14, and it looked for a long time like a random ~50% race
+# against fmit or PipeWire. It was neither: the rate was simply how often a
+# qpwgraph happened to already be running — a leftover from a previous run
+# that had not finished exiting, or one the user had opened by hand. That is
+# also why retrying never helped (the existing instance was still there) and
+# why dropping fmit changed nothing.
+#
+# So: stop any existing instance and *wait for it to actually be gone*
+# before starting ours. Waiting is the part that matters — a killed
+# qpwgraph takes a moment to exit, and starting into that window loses the
+# new instance to the same silent exit.
+pkill -x qpwgraph 2>/dev/null
+for _ in $(seq 1 20); do
+    pgrep -x qpwgraph >/dev/null 2>&1 || break
+    sleep 0.25
+done
 qpwgraph -a "$SCRIPT_DIR/Patchbay/rig.qpwgraph" -m &
 QPWGRAPH_PID=$!
 sleep 1.5

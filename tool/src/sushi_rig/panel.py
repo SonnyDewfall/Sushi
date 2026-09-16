@@ -82,10 +82,24 @@ regardless of what was typed or how the value was committed. `preArgs`
 apparently isn't re-evaluated per send for a button in this version, contrary
 to what the advanced-syntax docs describe. Confirmed instead, with the same
 isolated test: an `input` widget with its own `address`/`target` sends its
-*own* value correctly (a real string) on blur/commit. So the input reports its
-value directly to the listener at `NAME_ADDRESS`, which remembers it; the
-button carries no payload at all and just triggers a save with whatever name
-was last received. `target`/`ignoreDefaults` on both keeps every message
+*own* value correctly (a real string). So the input reports its value directly
+to the listener at `NAME_ADDRESS`, which remembers it; the button carries no
+payload at all and just triggers a save with whatever name was last received.
+
+That makes *when* the input sends critical, and the default is wrong for this
+design. open-stage-control's own property help says `asYouType` "make[s] the
+input send its value at each keystroke", and it defaults to **false** — so the
+input sends only on commit (Enter, or focus leaving the field). Nothing forces
+a commit before the save button fires, so typing a name and clicking SAVE sent
+whatever had been committed *previously*. Found on real hardware: a user typed
+"electric-test" and the config saved as `electric-.json`, the earlier
+committed value, with otherwise perfectly correct contents. The listener
+cannot detect this — it receives a stale name and writes it. Hence
+`asYouType: True` on the input below. Worth noting every automated test of
+this feature pressed Tab before saving, which commits the field and hides the
+bug completely.
+
+`target`/`ignoreDefaults` on both keeps every message
 routed to the listener only, never at Sushi's own parameter port. `mode:
 "tap"` on the button fires once per press; `toggle` would also fire a second
 message on release.
@@ -225,6 +239,19 @@ def build_osc_panel(
                 "address": NAME_ADDRESS,
                 "target": [f"127.0.0.1:{listener_port}"],
                 "ignoreDefaults": True,
+                # Without this an input only sends on *commit* — Enter, or
+                # clicking away — so typing a name and pressing SAVE directly
+                # sends whatever was committed before, not what's on screen.
+                # Found on real hardware: "electric-test" was typed and the
+                # file saved as "electric-.json", the last committed value.
+                # The listener has no way to detect this; it just receives a
+                # stale name and writes it.
+                #
+                # Every automated test of this feature pressed Tab before
+                # saving, which commits the field and hides the bug entirely —
+                # worth remembering when a test procedure and a human's
+                # actual behaviour diverge.
+                "asYouType": True,
                 "width": 220,
                 "height": SAVE_BAR_WIDGET_HEIGHT,
             },

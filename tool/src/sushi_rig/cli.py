@@ -67,6 +67,24 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("-o", "--out", type=Path, default=Path("panel.json"))
 
+    p = sub.add_parser(
+        "probe",
+        help="what an LV2 plugin declares about itself — parameters, ranges, "
+        "and whether it can be driven from a config at all",
+    )
+    p.add_argument(
+        "uri",
+        nargs="?",
+        help="plugin URI. Omit to list every plugin visible on LV2_PATH, which "
+        "is how you find candidates in the first place",
+    )
+    p.add_argument(
+        "--json",
+        action="store_true",
+        dest="as_json",
+        help="full detail as JSON, including every parameter's range and flags",
+    )
+
     p = sub.add_parser("save", help="capture live state and write it as a named config")
     p.add_argument("name", help="config name — becomes config/<name>.json")
     p.add_argument("--rig", type=Path, required=True, help="rig.yaml this config is built from")
@@ -118,6 +136,54 @@ def main(argv: list[str] | None = None) -> int:
             f"open with: open-stage-control --load {args.out} "
             f"--send 127.0.0.1:{args.osc_port}"
         )
+    elif args.command == "probe":
+        from .probe import probe, summarise
+
+        described = probe(args.uri)
+        if args.as_json:
+            print(json.dumps(described if args.uri is None else described[0], indent=2))
+        elif args.uri is None:
+            print(summarise(described))
+            drivable = sum(1 for d in described if d["config_drivable"])
+            print(
+                f"\n{len(described)} plugins, {drivable} config-drivable. "
+                "STATE marks the rest: they keep state outside their control "
+                "ports (a file, a model, a sample), which Sushi cannot set "
+                "from a config.",
+                file=sys.stderr,
+            )
+        else:
+            d = described[0]
+            print(f"{d['name']}  ({d['class'] or 'no class declared'})")
+            print(f"  uri     {d['uri']}")
+            print(f"  bundle  {d['bundle']}")
+            print(f"  audio   {d['audio_in']} in / {d['audio_out']} out")
+            if d["config_drivable"]:
+                print("  config  drivable — all state lives in control ports")
+            else:
+                reasons = []
+                if d["atom_ports"]:
+                    reasons.append(f"{d['atom_ports']} atom port(s)")
+                if d["patch_writables"]:
+                    reasons.append(f"{len(d['patch_writables'])} patch:writable")
+                if d["state_interface"]:
+                    reasons.append("state:interface")
+                print(
+                    "  config  NOT fully drivable — " + ", ".join(reasons) + "."
+                    " Sushi cannot set state held outside control ports."
+                )
+            print(f"  {len(d['parameters'])} parameter(s):")
+            for prm in d["parameters"]:
+                flags = " ".join(
+                    f for f in ("toggled", "integer", "enumeration", "logarithmic")
+                    if prm[f]
+                )
+                rng = f"[{prm['min']}, {prm['max']}]"
+                print(
+                    f"    {prm['name'][:28]:30s} {rng:24s} "
+                    f"default={prm['default']}{'  ' + flags if flags else ''}"
+                )
+
     elif args.command == "save":
         from .save import SaveError, save_config
 

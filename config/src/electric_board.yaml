@@ -1,0 +1,64 @@
+# Hand-authored source for config/electric_board.json.
+#
+# Emit with:
+#   tool/.venv/bin/sushi-rig emit config/src/electric_board.yaml \
+#     -o config/electric_board.json
+#   tool/.venv/bin/sushi-rig emit config/src/electric_board.yaml \
+#     --state <captured>.json -o config/electric_board.json   # after tweak + capture
+#
+# Plugin parameter values are never written here. They live in initial_state,
+# generated from a captured live session — or, as on the first emit, left out
+# entirely so every plugin starts at its own TTL-declared defaults.
+#
+# Plugins are named by ROLE, not by vendor id. The name below becomes Sushi's
+# processor name, which becomes both the OSC path prefix and the panel's tab
+# label — "overdrive" is a far more usable tab than "gxts9".
+#
+# The set is deliberately simple: seven plugins, ~34 parameters in total. The
+# rig this replaced used three LSP plugins and produced ~130 panel faders.
+# Every plugin here is control-port-only (no atom ports), so none of them keep
+# state outside the config — nothing needs a file loaded, and nothing depends
+# on the LV2 patch: extension that Sushi doesn't support.
+
+meta:
+  name: electric_board
+  version: "1.0"
+  description: Electric guitar — compressor, overdrive, octave, EQ, chorus, delay, reverb
+  status: wip
+
+host:
+  samplerate: 48000
+
+tracks:
+  - name: board
+    channels: 2
+    inputs:
+      - engine_bus: 0
+        track_bus: 0
+    outputs:
+      - engine_bus: 0
+        track_bus: 0
+    plugins:
+      # Conventional pedalboard order: dynamics and dirt first, tone shaping
+      # in the middle, time-based effects last.
+      - name: compressor
+        type: lv2
+        uri: http://guitarix.sourceforge.net/plugins/gx_compressor#_compressor
+      - name: overdrive
+        type: lv2
+        uri: http://guitarix.sourceforge.net/plugins/gxts9#ts9sim
+      - name: octave
+        type: lv2
+        uri: http://guitarix.sourceforge.net/plugins/gx_oc_2_#_oc_2_
+      - name: eq
+        type: lv2
+        uri: http://distrho.sf.net/plugins/3BandEQ
+      - name: chorus
+        type: lv2
+        uri: http://guitarix.sourceforge.net/plugins/gx_chorus_stereo#_chorus_stereo
+      - name: delay
+        type: lv2
+        uri: http://drobilla.net/plugins/mda/Delay
+      - name: reverb
+        type: lv2
+        uri: http://drobilla.net/plugins/mda/Ambience
