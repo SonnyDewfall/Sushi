@@ -14,11 +14,31 @@ killall -q fmit sushi
 # 3. Launch Visual Tuner in the background
 fmit &
 
-# 4. Launch qpwgraph minimized with saved auto-connections. It can exit
-# silently within ~1s of starting — no error printed anywhere — if it races
-# fmit/Sushi for the PipeWire session at the same moment; without it nothing
-# gets auto-connected, and Sushi runs with no audio in or out while looking
-# otherwise fine. Check and warn rather than fail silently.
+# 4. Launch qpwgraph minimized with saved auto-connections.
+#
+# qpwgraph is SINGLE-INSTANCE. Launching a second one while another is
+# already running makes the *new* one exit immediately and silently — no
+# error, no crash, nothing in the journal. Without it the patchbay never
+# auto-connects, so Sushi runs with no audio in or out while looking
+# completely healthy.
+#
+# This was issue #14, and it looked for a long time like a random ~50% race
+# against fmit or PipeWire. It was neither: the rate was simply how often a
+# qpwgraph happened to already be running — a leftover from a previous run
+# that had not finished exiting, or one opened by hand. That is also why
+# retrying never helped (the existing instance was still there) and why
+# dropping fmit changed nothing.
+#
+# So: stop any existing instance and *wait for it to actually be gone*
+# before starting ours. The waiting is the part that matters — a killed
+# qpwgraph takes a moment to exit, and starting into that window loses the
+# new instance to the same silent exit.
+pkill -x qpwgraph 2>/dev/null
+for _ in $(seq 1 20); do
+    pgrep -x qpwgraph >/dev/null 2>&1 || break
+    sleep 0.25
+done
+
 qpwgraph -a "$HOME/Sushi/Patchbay/rig.qpwgraph" -m &
 QPWGRAPH_PID=$!
 sleep 1.5
