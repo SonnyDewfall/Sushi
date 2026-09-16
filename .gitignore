@@ -30,3 +30,8 @@ __pycache__/
 # Generated rig artefacts (regenerate with `sushi-rig emit` / `capture`)
 catalogue.json
 state.json
+
+# Claude Code session state and worktrees. Worktrees are full checkouts, so
+# this grows to tens of MB and is per-machine scratch, never shared history.
+.claude/
+
