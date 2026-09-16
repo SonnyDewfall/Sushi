@@ -1,5 +1,9 @@
 from sushi_rig.listen import DEFAULT_LISTEN_PORT, NAME_ADDRESS, SAVE_ADDRESS, STATUS_ADDRESS
-from sushi_rig.panel import LOG_SCALE_DOMAIN_THRESHOLD, build_osc_panel
+from sushi_rig.panel import (
+    BYPASS_ADDRESS_PREFIX,
+    LOG_SCALE_DOMAIN_THRESHOLD,
+    build_osc_panel,
+)
 from sushi_rig.save import NAME_PATTERN
 
 
@@ -405,6 +409,59 @@ def test_panel_name_input_sends_on_every_keystroke(real_dump):
         w for w in _save_bar(panel)["widgets"] if w["id"] == "config_name"
     )
     assert name_input["asYouType"] is True
+
+
+def _bypass_toggle(tab):
+    return next(w for w in tab["widgets"] if w["id"].endswith("/bypass"))
+
+
+def test_every_plugin_tab_has_a_bypass_toggle(real_dump):
+    """Bypass is host-level in Sushi, available for every processor whether or
+    not the plugin offers its own. That's deliberately what this uses: plugin
+    BYPASS parameters exist only on some plugins, and where they exist the
+    semantics can be undiscoverable (Guitarix exposes BYPASS defaulting to 1.0
+    over a 0-1 range with no scale points, so nothing says which end is on)."""
+    live_info = _live_info_for(real_dump)
+    panel = build_osc_panel(real_dump, live_info)
+    for tab in _tabs(panel):
+        toggle = _bypass_toggle(tab)
+        assert toggle["address"] == BYPASS_ADDRESS_PREFIX + tab["id"]
+        assert toggle["mode"] == "toggle"
+
+
+def test_bypass_toggle_reflects_live_state_rather_than_forcing_it(real_dump):
+    """Opening a panel must not change the rig. The toggle starts at whatever
+    Sushi currently reports, and ignoreDefaults stops it sending on load —
+    otherwise opening the panel would silently un-bypass a pedal that a saved
+    config deliberately had switched off."""
+    live_info = _live_info_for(real_dump)
+    panel = build_osc_panel(
+        real_dump, live_info, bypass_info={"compressor_mono": True}
+    )
+    tabs = {t["id"]: t for t in _tabs(panel)}
+    assert _bypass_toggle(tabs["compressor_mono"])["default"] == 1
+    assert _bypass_toggle(tabs["internal_reverb"])["default"] == 0
+    for tab in _tabs(panel):
+        assert _bypass_toggle(tab)["ignoreDefaults"] is True
+
+
+def test_bypass_toggle_targets_sushi_not_the_save_listener(real_dump):
+    """The save bar's widgets carry an explicit target so they reach the
+    listener. Bypass must go to Sushi itself, which means having no target at
+    all and riding open-stage-control's --send, exactly like the faders do."""
+    live_info = _live_info_for(real_dump)
+    panel = build_osc_panel(real_dump, live_info)
+    for tab in _tabs(panel):
+        assert "target" not in _bypass_toggle(tab)
+
+
+def test_bypass_toggle_comes_before_the_faders(real_dump):
+    """It reads as the pedal's on/off switch, so it belongs above its
+    controls rather than buried after them."""
+    live_info = _live_info_for(real_dump)
+    panel = build_osc_panel(real_dump, live_info)
+    for tab in _tabs(panel):
+        assert tab["widgets"][0]["id"].endswith("/bypass")
 
 
 def test_panel_root_uses_vertical_layout(real_dump):

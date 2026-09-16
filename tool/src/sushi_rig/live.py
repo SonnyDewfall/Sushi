@@ -150,6 +150,43 @@ def get_live_parameter_info(address: str = DEFAULT_GRPC_ADDRESS) -> dict[str, di
     return result
 
 
+def get_live_bypass_state(address: str = DEFAULT_GRPC_ADDRESS) -> dict[str, bool]:
+    """Per-processor bypass state, as `{processor_name: bypassed}`.
+
+    Separate from `get_live_parameter_info` rather than folded into it,
+    because that function's values are keyed by parameter name and callers
+    iterate them as parameters — bypass is a property of the processor, not
+    one of its parameters, and Sushi treats it that way too.
+
+    This exists for `panel.py`'s bypass toggles. They need to *reflect* the
+    current state rather than impose one: a panel opening must not silently
+    un-bypass a pedal the saved config deliberately had switched off.
+
+    Bypass is a host-level facility, not a plugin feature — Sushi provides it
+    for every processor regardless of whether the plugin has its own bypass
+    parameter. That matters because plugin-provided bypass is unreliable to
+    build on: only some plugins have it (Guitarix does, MDA doesn't), and
+    where it exists its semantics can be undiscoverable — the Guitarix
+    pedals expose `BYPASS` with a default of 1.0, range 0-1 and no scale
+    points, so nothing in the metadata says whether 1 means active or
+    bypassed.
+    """
+    controller = _controller(address)
+    result: dict[str, bool] = {}
+    try:
+        for track in controller.audio_graph.get_all_tracks():
+            for proc in controller.audio_graph.get_track_processors(track.id):
+                state = _safe(
+                    controller.audio_graph.get_processor_bypass_state, proc.id
+                )
+                if state is not None:
+                    result[proc.name] = bool(state)
+    finally:
+        controller.close()
+
+    return result
+
+
 def _wait(response: Any, timeout: float = 5.0, interval: float = 0.02) -> None:
     """Poll a SushiCommandResponse until Sushi confirms the command.
 
