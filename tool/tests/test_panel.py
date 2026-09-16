@@ -388,6 +388,25 @@ def test_panel_listener_port_defaults_match_the_listen_module(real_dump):
     assert name_input["target"] == [f"127.0.0.1:{DEFAULT_LISTEN_PORT}"]
 
 
+def test_panel_name_input_sends_on_every_keystroke(real_dump):
+    """Without asYouType an open-stage-control input sends only when its value
+    is committed (Enter, or focus leaving the field), and nothing forces a
+    commit before the save button fires — so typing a name and clicking SAVE
+    sends the *previously* committed value.
+
+    Found on real hardware: a user typed "electric-test" and the config saved
+    as "electric-.json", the earlier committed value, with otherwise perfectly
+    correct contents. The listener cannot detect a stale name; it just writes
+    it. Note every automated test of the save flow pressed Tab first, which
+    commits the field and hides this completely."""
+    live_info = _live_info_for(real_dump)
+    panel = build_osc_panel(real_dump, live_info)
+    name_input = next(
+        w for w in _save_bar(panel)["widgets"] if w["id"] == "config_name"
+    )
+    assert name_input["asYouType"] is True
+
+
 def test_panel_root_uses_vertical_layout(real_dump):
     """Root defaults to left-to-right flow and does not wrap on a 100%-width
     child — confirmed against real open-stage-control: the tabs panel
