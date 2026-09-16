@@ -28,7 +28,7 @@ from __future__ import annotations
 import sys
 from pathlib import Path
 
-from .live import DEFAULT_GRPC_ADDRESS
+from .live import DEFAULT_GRPC_ADDRESS, move_processor
 from .save import SaveError, save_config
 
 DEFAULT_LISTEN_PORT = 24025
@@ -37,6 +37,13 @@ DEFAULT_STATUS_PORT = 8080  # open-stage-control's own OSC input (its HTTP port)
 STATUS_ADDRESS = "/sushi-rig/status"
 SAVE_ADDRESS = "/sushi-rig/save"
 NAME_ADDRESS = "/sushi-rig/name"
+
+# The processor is in the address rather than an argument, mirroring how Sushi
+# itself addresses per-processor operations (/bypass/<processor>). That keeps
+# the button's payload a bare int and avoids `preArgs` entirely — panel.py
+# documents preArgs as not being re-evaluated per send for a button, which is
+# what broke the first attempt at the save bar.
+MOVE_ADDRESS_PREFIX = "/sushi-rig/move/"
 
 
 def handle_save(
@@ -109,9 +116,28 @@ def serve(
         # why the name arrives as its own message instead.
         _report(handle_save(last_name, rig_path, out_dir, archive_dir, address))
 
+    def _on_move(osc_address: str, *args) -> None:
+        processor = osc_address[len(MOVE_ADDRESS_PREFIX):]
+        if not processor:
+            _report("move failed: no processor in address")
+            return
+        try:
+            direction = int(float(args[0])) if args else 0
+        except (TypeError, ValueError):
+            _report(f"move failed: {processor} got a non-numeric direction")
+            return
+        if direction == 0:
+            _report(f"move failed: {processor} got no direction")
+            return
+        try:
+            _report(move_processor(processor, direction, address))
+        except Exception as exc:  # noqa: BLE001 - a bad move must not kill the listener
+            _report(f"move failed: {exc}")
+
     dispatcher = Dispatcher()
     dispatcher.map(NAME_ADDRESS, _on_name)
     dispatcher.map(SAVE_ADDRESS, _on_save)
+    dispatcher.map(MOVE_ADDRESS_PREFIX + "*", _on_move)
 
     server = BlockingOSCUDPServer((host, port), dispatcher)
     print(

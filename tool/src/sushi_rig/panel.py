@@ -111,7 +111,13 @@ import sys
 from typing import Any
 
 from .dump import collect_parameter_info
-from .listen import DEFAULT_LISTEN_PORT, NAME_ADDRESS, SAVE_ADDRESS, STATUS_ADDRESS
+from .listen import (
+    DEFAULT_LISTEN_PORT,
+    MOVE_ADDRESS_PREFIX,
+    NAME_ADDRESS,
+    SAVE_ADDRESS,
+    STATUS_ADDRESS,
+)
 from .save import NAME_PATTERN
 
 # A fader's value is always normalised 0-1; this is about the real-world
@@ -306,11 +312,51 @@ def build_osc_panel(
                 "width": 90,
                 "height": BYPASS_HEIGHT,
             }
+            # Chain-order controls, next to the bypass toggle. Pedal order is
+            # a tonal decision, so it should be triable by ear rather than by
+            # editing yaml and relaunching.
+            #
+            # These go to the *listener*, not Sushi: reordering is gRPC-only
+            # (move_processor_on_track), so the listener bridges it exactly as
+            # it already bridges saving. Hence an explicit `target`, and hence
+            # `ignoreDefaults` being correct here where it was wrong on the
+            # bypass toggle — the flag means "ignore the server's default
+            # targets", so it needs a target of its own to be meaningful.
+            #
+            # `typeTags: "i"` because the direction must arrive as an int.
+            # Sushi silently discarded float bypass messages; our own listener
+            # is lenient about it, but being explicit is what stops that class
+            # of bug coming back.
+            move_buttons = [
+                {
+                    "type": "button",
+                    "id": f"{processor}/move-{name}",
+                    "label": label,
+                    "mode": "tap",
+                    "address": f"{MOVE_ADDRESS_PREFIX}{processor}",
+                    # `on`, not `value`: a tap button sends its `on` property
+                    # (default 1) and ignores `value`. Checked against
+                    # open-stage-control's own property help rather than
+                    # assumed — the bypass toggle shipped broken twice from
+                    # exactly this kind of guess.
+                    "on": direction,
+                    "target": [f"127.0.0.1:{listener_port}"],
+                    "ignoreDefaults": True,
+                    "typeTags": "i",
+                    "width": 70,
+                    "height": BYPASS_HEIGHT,
+                }
+                for name, label, direction in (
+                    ("earlier", "< EARLIER", -1),
+                    ("later", "LATER >", 1),
+                )
+            ]
+
             tabs.append({
                 "type": "tab",
                 "id": processor,
                 "label": processor,
-                "widgets": [bypass_toggle] + widgets,
+                "widgets": [bypass_toggle] + move_buttons + widgets,
             })
 
     save_bar = {

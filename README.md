@@ -106,6 +106,13 @@ rig.yaml + state.json ──emit──> rig.json  (now carrying initial_state)
 `verify` runs after every `emit` — it is cheap and it catches the failure mode
 that matters.
 
+A captured session overrides the yaml in two ways, not one: parameter **values**
+(via `initial_state`) and plugin **order**. Pedal order is a tonal decision, so
+the panel can reorder the chain live and a save keeps it. The consequence worth
+knowing: the yaml's plugin order and a saved config's order can drift apart,
+exactly as their values already do. The yaml declares where a rig starts; a
+capture records where it got to.
+
 The tweak → capture → emit loop at the bottom is where the time actually goes.
 `start-rig.sh` runs an OSC listener (`sushi-rig listen`) alongside Sushi, and
 the generated panel carries a name field and a save button that trigger that

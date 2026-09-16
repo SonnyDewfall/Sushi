@@ -516,6 +516,47 @@ def test_plugin_own_bypass_parameter_is_hidden_from_the_faders(real_dump):
             assert _param_name(fader).lower() not in PLUGIN_BYPASS_PARAMETER_NAMES
 
 
+def _move_buttons(tab):
+    return [w for w in tab["widgets"] if "/move-" in w["id"]]
+
+
+def test_every_tab_has_earlier_and_later_move_buttons(real_dump):
+    live_info = _live_info_for(real_dump)
+    panel = build_osc_panel(real_dump, live_info)
+    for tab in _tabs(panel):
+        buttons = _move_buttons(tab)
+        assert len(buttons) == 2
+        assert {b["on"] for b in buttons} == {-1, 1}
+        for b in buttons:
+            assert b["address"].endswith(tab["id"])
+            assert b["mode"] == "tap"
+
+
+def test_move_buttons_go_to_the_listener_not_sushi(real_dump):
+    """Reordering is gRPC-only, so the listener has to bridge it — the same
+    job it already does for saving. These need an explicit target, and
+    ignoreDefaults is correct *here* precisely because a target is supplied:
+    the flag means "ignore the server's default targets", so it is only
+    meaningful alongside one."""
+    live_info = _live_info_for(real_dump)
+    panel = build_osc_panel(real_dump, live_info, listener_port=24025)
+    for tab in _tabs(panel):
+        for b in _move_buttons(tab):
+            assert b["target"] == ["127.0.0.1:24025"]
+            assert b["ignoreDefaults"] is True
+
+
+def test_move_buttons_send_an_int_direction(real_dump):
+    """The direction must arrive as an int. Sushi silently discarded float
+    bypass messages; the listener is lenient about it, but being explicit is
+    what stops that class of bug recurring."""
+    live_info = _live_info_for(real_dump)
+    panel = build_osc_panel(real_dump, live_info)
+    for tab in _tabs(panel):
+        for b in _move_buttons(tab):
+            assert b["typeTags"] == "i"
+
+
 def test_bypass_toggle_comes_before_the_faders(real_dump):
     """It reads as the pedal's on/off switch, so it belongs above its
     controls rather than buried after them."""

@@ -133,3 +133,77 @@ def test_emit_state_with_program_and_properties():
     entry = config["initial_state"][0]
     assert entry["program"] == 3
     assert entry["properties"] == {"filename": "kick.wav"}
+
+
+# --- captured chain order ---------------------------------------------------
+
+
+def _three_plugin_rig():
+    """A rig whose yaml order is deliberately different from what the captured
+    states below ask for, so an assertion can't pass by accident."""
+    from sushi_rig.spec import PluginSpec, RigSpec, TrackSpec
+
+    return RigSpec(
+        host={"samplerate": 48000},
+        tracks=[
+            TrackSpec(
+                name="board",
+                plugins=[
+                    PluginSpec(name="compressor", type="lv2", uri="urn:a"),
+                    PluginSpec(name="overdrive", type="lv2", uri="urn:b"),
+                    PluginSpec(name="reverb", type="lv2", uri="urn:c"),
+                ],
+            )
+        ],
+    )
+
+
+def _plugin_names(config):
+    return [p["name"] for p in config["tracks"][0]["plugins"]]
+
+
+def test_captured_order_overrides_the_yaml_order():
+    """Pedal order is a tonal decision, so a session reordered live and then
+    saved has to keep that order — otherwise the save writes the new values
+    under the old order and silently loses the change."""
+    rig = _three_plugin_rig()
+    state = {"tracks": {"board": ["reverb", "compressor", "overdrive"]}}
+    assert _plugin_names(emit(rig, state)) == ["reverb", "compressor", "overdrive"]
+
+
+def test_state_without_a_tracks_key_leaves_order_alone():
+    """A state file written before order was captured is not an instruction to
+    reorder."""
+    rig = _three_plugin_rig()
+    state = {"processors": {"compressor": {"parameters": {}}}}
+    assert _plugin_names(emit(rig, state)) == ["compressor", "overdrive", "reverb"]
+
+
+def test_captured_order_naming_an_unknown_processor_warns_and_skips(capsys):
+    rig = _three_plugin_rig()
+    state = {"tracks": {"board": ["reverb", "ghost", "compressor", "overdrive"]}}
+    names = _plugin_names(emit(rig, state))
+    assert names == ["reverb", "compressor", "overdrive"]
+    assert "ghost" in capsys.readouterr().err
+
+
+def test_plugin_missing_from_the_captured_order_is_kept_not_dropped(capsys):
+    """A stale capture must not silently remove a plugin the spec asks for —
+    that would change the rig rather than just its order."""
+    rig = _three_plugin_rig()
+    state = {"tracks": {"board": ["reverb", "compressor"]}}
+    names = _plugin_names(emit(rig, state))
+    assert set(names) == {"compressor", "overdrive", "reverb"}
+    assert names[:2] == ["reverb", "compressor"]
+    assert names[-1] == "overdrive"
+    assert "overdrive" in capsys.readouterr().err
+
+
+def test_emit_does_not_mutate_the_rig_spec():
+    """emit is called more than once in some flows; a function that quietly
+    reorders its own input would make the second call disagree with the
+    first."""
+    rig = _three_plugin_rig()
+    before = [p.name for p in rig.tracks[0].plugins]
+    emit(rig, {"tracks": {"board": ["reverb", "overdrive", "compressor"]}})
+    assert [p.name for p in rig.tracks[0].plugins] == before

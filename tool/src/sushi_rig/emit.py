@@ -8,6 +8,14 @@ A processor present in captured state but absent from the spec means the spec
 and the live session have diverged; that is surfaced as a warning and skipped,
 never silently resolved.
 
+Captured state also carries chain order (`state["tracks"]`), and when present it
+**overrides the order the yaml declares** — the same relationship the yaml and a
+capture already have over parameter values: the yaml declares the starting
+structure, a capture refines it. Pedal order is a tonal decision, so a session
+reordered live and then saved has to keep that order or the save silently loses
+it. The cost, accepted deliberately, is that the yaml's order and an emitted
+config's order can drift apart exactly as their values already do.
+
 `parameters` and `properties` inside each `initial_state` entry are **dicts**
 of `{name: value}`, not a list of `{"name", "value"}` objects — confirmed
 against Sushi's own shipped example configs (`usr/share/config_files/` inside
@@ -35,7 +43,9 @@ def emit(rig: RigSpec, state: dict[str, Any] | None = None) -> dict[str, Any]:
     if rig.meta:
         config["_meta"] = dict(rig.meta)
     config["host_config"] = dict(rig.host)
-    config["tracks"] = [t.to_sushi() for t in rig.tracks]
+    config["tracks"] = [
+        _ordered_track(track, (state or {}).get("tracks", {})) for track in rig.tracks
+    ]
     if rig.midi:
         config["midi"] = rig.midi
     if rig.osc:
@@ -49,6 +59,48 @@ def emit(rig: RigSpec, state: dict[str, Any] | None = None) -> dict[str, Any]:
             config["initial_state"] = initial_state
 
     return config
+
+
+def _ordered_track(track, captured_order: dict[str, Any]) -> dict[str, Any]:
+    """`track.to_sushi()`, with its plugins reordered to match captured state.
+
+    Returns the track untouched when the capture says nothing about it — a
+    state file predating order capture is not an instruction to reorder.
+
+    Never mutates the `TrackSpec`. `emit` is called more than once in some
+    flows, and a function that quietly reorders its own input would make the
+    second call disagree with the first.
+    """
+    wanted = captured_order.get(track.name)
+    if not wanted:
+        return track.to_sushi()
+
+    by_name = {p.name: p for p in track.plugins}
+    ordered = []
+    for name in wanted:
+        plugin = by_name.pop(name, None)
+        if plugin is None:
+            print(
+                f"warning: captured order for track {track.name!r} lists "
+                f"{name!r}, which is not in the rig spec — skipping",
+                file=sys.stderr,
+            )
+            continue
+        ordered.append(plugin)
+
+    # Anything the capture didn't mention is kept rather than dropped: a stale
+    # capture must not silently remove a plugin the spec asks for.
+    for name, plugin in by_name.items():
+        print(
+            f"warning: {name!r} is in the rig spec but absent from the captured "
+            f"order for track {track.name!r} — appending it to the end",
+            file=sys.stderr,
+        )
+        ordered.append(plugin)
+
+    entry = track.to_sushi()
+    entry["plugins"] = [p.to_sushi() for p in ordered]
+    return entry
 
 
 def _build_initial_state(rig: RigSpec, state: dict[str, Any]) -> list[dict[str, Any]]:

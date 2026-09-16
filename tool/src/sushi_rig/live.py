@@ -56,13 +56,27 @@ def capture(address: str = DEFAULT_GRPC_ADDRESS) -> dict[str, Any]:
     Returns the shape documented in the brief §5.2: a dict of processor name
     to {"parameters": {...}, "program": int?, "bypassed": bool?}. Tracks are
     included alongside plugins, since tracks carry parameters too (gain, pan).
+
+    Also returns `"tracks"`: `{track_name: [processor names, in chain order]}`.
+    Processor *values* alone are not enough to describe a session, because
+    pedal order is itself a tonal decision — a compressor before a drive is a
+    different sound from one after it. Without this, reordering the chain live
+    and then saving would write the new values under the old order and lose the
+    change silently.
+
+    The order costs nothing to collect: `get_track_processors` already returns
+    chain order, and this function already walks it. The key is additive, so
+    state files written before it existed stay valid and simply don't reorder.
     """
     controller = _controller(address)
     processors: dict[str, Any] = {}
+    track_order: dict[str, list[str]] = {}
     try:
         for track in controller.audio_graph.get_all_tracks():
             targets = [(track.id, track.name)]
-            for proc in controller.audio_graph.get_track_processors(track.id):
+            chain = list(controller.audio_graph.get_track_processors(track.id))
+            track_order[track.name] = [proc.name for proc in chain]
+            for proc in chain:
                 targets.append((proc.id, proc.name))
 
             for proc_id, proc_name in targets:
@@ -100,7 +114,7 @@ def capture(address: str = DEFAULT_GRPC_ADDRESS) -> dict[str, Any]:
     finally:
         controller.close()
 
-    return {"processors": processors}
+    return {"processors": processors, "tracks": track_order}
 
 
 def get_live_parameter_info(address: str = DEFAULT_GRPC_ADDRESS) -> dict[str, dict[str, dict]]:
@@ -185,6 +199,82 @@ def get_live_bypass_state(address: str = DEFAULT_GRPC_ADDRESS) -> dict[str, bool
         controller.close()
 
     return result
+
+
+def plan_move(chain: list[str], processor: str, direction: int) -> dict[str, Any] | None:
+    """Where `processor` should land to move one step through `chain`.
+
+    Pure, so the position maths is testable without a running Sushi — it is
+    fiddly enough to be worth pinning, and getting it wrong silently rearranges
+    someone's signal chain.
+
+    Returns `None` when the move is a no-op (already at that end, or the
+    processor isn't on the track), otherwise the `move_processor_on_track`
+    arguments that achieve it: `{"before": <processor name or None>,
+    "add_to_back": bool}`.
+
+    Sushi's API expresses position as "before this processor" or "at the back",
+    so moving *later* past the final element has to become `add_to_back`
+    rather than "before" anything.
+    """
+    if processor not in chain:
+        return None
+    index = chain.index(processor)
+
+    if direction < 0:
+        if index == 0:
+            return None
+        return {"before": chain[index - 1], "add_to_back": False}
+
+    if index >= len(chain) - 1:
+        return None
+    if index + 1 == len(chain) - 1:
+        # The neighbour is last, so "after it" is the end of the chain.
+        return {"before": None, "add_to_back": True}
+    return {"before": chain[index + 2], "add_to_back": False}
+
+
+def move_processor(
+    processor: str, direction: int, address: str = DEFAULT_GRPC_ADDRESS
+) -> str:
+    """Move `processor` one step earlier (direction < 0) or later through its
+    track's chain. Returns a human-readable outcome for the panel's status line.
+
+    Pedal order is a tonal decision, so this exists to let it be tried by ear
+    rather than by editing yaml and relaunching. `emit` persists whatever order
+    results, via the `tracks` key `capture` records.
+    """
+    controller = _controller(address)
+    try:
+        for track in controller.audio_graph.get_all_tracks():
+            procs = list(controller.audio_graph.get_track_processors(track.id))
+            chain = [p.name for p in procs]
+            if processor not in chain:
+                continue
+
+            target = plan_move(chain, processor, direction)
+            where = "earlier" if direction < 0 else "later"
+            if target is None:
+                edge = "first" if direction < 0 else "last"
+                return f"{processor} is already {edge} in the chain"
+
+            by_name = {p.name: p.id for p in procs}
+            before_id = by_name[target["before"]] if target["before"] else 0
+            response = controller.audio_graph.move_processor_on_track(
+                by_name[processor],
+                track.id,
+                track.id,
+                before_id,
+                target["add_to_back"],
+            )
+            _wait(response)
+            return (
+                f"moved {processor} {where} — regenerate the panel to reorder tabs"
+            )
+
+        return f"no processor named {processor!r} on any track"
+    finally:
+        controller.close()
 
 
 def _wait(response: Any, timeout: float = 5.0, interval: float = 0.02) -> None:
