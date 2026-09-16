@@ -142,6 +142,23 @@ SAVE_BAR_WIDGET_HEIGHT = 40
 BYPASS_ADDRESS_PREFIX = "/bypass/"
 BYPASS_HEIGHT = 30
 
+# Parameter names that are a plugin's *own* bypass control, which the panel
+# hides in favour of the host-level toggle above. Matched case-insensitively
+# against the whole name, so a parameter merely mentioning bypass is kept.
+#
+# Hiding it avoids a genuine trap found while playing: the Guitarix pedals
+# expose a BYPASS parameter, so those tabs showed two controls both labelled
+# BYPASS — the host toggle and the plugin's own — running in *opposite*
+# directions. Toggle on means bypassed; the Guitarix parameter is 1 = active,
+# 0 = bypassed (established by ear, since the TTL declares no scale points to
+# say which end is which). Two identically named controls with inverted
+# polarity on one tab is worse than no control at all.
+#
+# Only the panel hides it. `capture` still records the parameter, so a saved
+# config keeps whatever value it holds — normally the plugin's own default,
+# which is "active".
+PLUGIN_BYPASS_PARAMETER_NAMES = {"bypass"}
+
 # A flat {type: "root", ...} file with no `version` field reads as version
 # "0.0.0" to open-stage-control — below its lowest migration threshold — which
 # pops a "session was created with an older version" warning on every load.
@@ -194,6 +211,11 @@ def build_osc_panel(
                 # Read-only (meters, "Latency OUT") — not a control to expose.
                 continue
 
+            if param_name.strip().lower() in PLUGIN_BYPASS_PARAMETER_NAMES:
+                # The plugin's own bypass, superseded by the host toggle at the
+                # top of this tab. See PLUGIN_BYPASS_PARAMETER_NAMES.
+                continue
+
             # A "." in a widget id breaks the "@{id}" live-value binding used
             # below (it reads as "undefined") — confirmed against real
             # open-stage-control on the EQ tab's "1.6K"/"2.5K" band-gain
@@ -237,14 +259,22 @@ def build_osc_panel(
             )
         if widgets:
             # Bypass toggle first, so it reads as the pedal's on/off switch
-            # above its controls. `default` reflects Sushi's current state and
-            # `ignoreDefaults` stops the widget sending on load — opening a
-            # panel must never silently un-bypass a pedal that a saved config
-            # deliberately had switched off.
+            # above its controls. `default` reflects Sushi's current state, so
+            # the toggle shows how the rig actually is when the panel opens.
             #
-            # No `target`: unlike the save bar (which must reach the listener),
-            # this goes to Sushi itself via open-stage-control's own --send,
-            # exactly like the faders.
+            # Deliberately NO `target` and NO `ignoreDefaults`: this must go to
+            # Sushi via open-stage-control's own --send, exactly like the
+            # faders do.
+            #
+            # `ignoreDefaults` was set here originally, on the mistaken belief
+            # that it suppressed sending on load. It does not — open-stage-
+            # control's own help for it reads "ignore the server's default
+            # targets". With no `target` of its own to fall back on, the toggle
+            # ignored the only destination it had and sent nowhere at all, so
+            # bypass silently did nothing in the panel while working perfectly
+            # over OSC from anything else. The save bar uses the flag correctly
+            # because those widgets *do* name a target (the listener); this one
+            # copied the flag without the target.
             bypass_toggle = {
                 "type": "button",
                 "id": f"{processor}/bypass",
@@ -252,7 +282,18 @@ def build_osc_panel(
                 "mode": "toggle",
                 "address": f"{BYPASS_ADDRESS_PREFIX}{processor}",
                 "default": 1 if (bypass_info or {}).get(processor) else 0,
-                "ignoreDefaults": True,
+                # Sushi's /bypass/ handler accepts an OSC **int** only — a
+                # float is parsed and then silently ignored, no error, no log.
+                # open-stage-control sends floats by default, so without this
+                # every bypass message was dropped on the floor while the
+                # identical address worked perfectly from any other OSC client.
+                # Proven by sending both types at the same address and reading
+                # the bypass state back: 1.0 did nothing, 1 worked.
+                #
+                # Note the faders don't need this — /parameter/ genuinely takes
+                # a float, which is why they worked throughout and made the
+                # panel look healthy.
+                "typeTags": "i",
                 "width": 90,
                 "height": BYPASS_HEIGHT,
             }

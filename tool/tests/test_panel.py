@@ -2,6 +2,7 @@ from sushi_rig.listen import DEFAULT_LISTEN_PORT, NAME_ADDRESS, SAVE_ADDRESS, ST
 from sushi_rig.panel import (
     BYPASS_ADDRESS_PREFIX,
     LOG_SCALE_DOMAIN_THRESHOLD,
+    PLUGIN_BYPASS_PARAMETER_NAMES,
     build_osc_panel,
 )
 from sushi_rig.save import NAME_PATTERN
@@ -441,18 +442,59 @@ def test_bypass_toggle_reflects_live_state_rather_than_forcing_it(real_dump):
     tabs = {t["id"]: t for t in _tabs(panel)}
     assert _bypass_toggle(tabs["compressor_mono"])["default"] == 1
     assert _bypass_toggle(tabs["internal_reverb"])["default"] == 0
-    for tab in _tabs(panel):
-        assert _bypass_toggle(tab)["ignoreDefaults"] is True
 
 
 def test_bypass_toggle_targets_sushi_not_the_save_listener(real_dump):
     """The save bar's widgets carry an explicit target so they reach the
     listener. Bypass must go to Sushi itself, which means having no target at
-    all and riding open-stage-control's --send, exactly like the faders do."""
+    all and riding open-stage-control's --send, exactly like the faders do.
+
+    It must also NOT set ignoreDefaults. That flag means "ignore the server's
+    default targets", not "don't send on load" — setting it on a widget with
+    no target of its own leaves nowhere to send, and bypass silently did
+    nothing in the panel while working fine over OSC from anything else.
+    Found by playing through the rig, not by any test."""
     live_info = _live_info_for(real_dump)
     panel = build_osc_panel(real_dump, live_info)
     for tab in _tabs(panel):
-        assert "target" not in _bypass_toggle(tab)
+        toggle = _bypass_toggle(tab)
+        assert "target" not in toggle
+        assert "ignoreDefaults" not in toggle
+
+
+def test_bypass_toggle_sends_an_int_not_a_float(real_dump):
+    """Sushi's /bypass/ handler accepts an OSC int only — a float is parsed
+    and then silently ignored, with no error and nothing logged.
+    open-stage-control sends floats by default, so without typeTags every
+    bypass message was dropped while the identical address worked fine from
+    any other OSC client. Proven by sending both types and reading the state
+    back: 1.0 did nothing, 1 worked.
+
+    The faders need no equivalent because /parameter/ genuinely takes a
+    float — which is exactly why they kept working and made the panel look
+    healthy while bypass silently did nothing."""
+    live_info = _live_info_for(real_dump)
+    panel = build_osc_panel(real_dump, live_info)
+    for tab in _tabs(panel):
+        assert _bypass_toggle(tab)["typeTags"] == "i"
+
+
+def test_plugin_own_bypass_parameter_is_hidden_from_the_faders(real_dump):
+    """The Guitarix pedals expose their own BYPASS parameter, so those tabs
+    showed two controls both labelled BYPASS — the host toggle and the
+    plugin's — running in opposite directions (toggle on = bypassed, the
+    Guitarix parameter 1 = active). Two identically named controls with
+    inverted polarity on one tab is worse than no control at all, so the
+    plugin's is hidden in favour of the host toggle, which behaves the same
+    way for every plugin.
+
+    Only the panel hides it; capture still records it, so a saved config keeps
+    whatever value it holds."""
+    live_info = _live_info_for(real_dump)
+    panel = build_osc_panel(real_dump, live_info)
+    for tab in _tabs(panel):
+        for fader in _faders(tab):
+            assert _param_name(fader).lower() not in PLUGIN_BYPASS_PARAMETER_NAMES
 
 
 def test_bypass_toggle_comes_before_the_faders(real_dump):
