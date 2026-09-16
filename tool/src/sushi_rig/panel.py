@@ -183,7 +183,16 @@ def build_osc_panel(
 ) -> dict[str, Any]:
     """Build a tabbed Open Stage Control panel structure: one tab per processor."""
     tabs = []
-    for processor, params in sorted(collect_parameter_info(dump).items()):
+    # Deliberately NOT sorted: `--dump-plugins` lists processors in the order
+    # they sit on the track, so iterating it as-is puts the tabs in signal
+    # chain order — compressor, overdrive, octave, eq, chorus, delay, reverb —
+    # and the panel reads left to right like the pedalboard it represents.
+    #
+    # This used to be sorted alphabetically, which produced chorus, compressor,
+    # delay, eq, octave, overdrive, reverb: an order with no relationship to
+    # the audio path, so neighbouring tabs told you nothing about what feeds
+    # what. The chain order was already in the dump and was being discarded.
+    for processor, params in collect_parameter_info(dump).items():
         live_params = live_info.get(processor)
         if live_params is None:
             print(

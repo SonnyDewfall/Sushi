@@ -67,6 +67,25 @@ def test_panel_one_tab_per_processor(real_dump):
     }
 
 
+def test_tabs_follow_signal_chain_order_not_alphabetical(real_dump):
+    """The panel should read left to right like the pedalboard it represents,
+    so neighbouring tabs tell you what feeds what.
+
+    `--dump-plugins` lists processors in track order, so iterating it as-is
+    gives chain order for free. This was previously sorted alphabetically,
+    which threw that away and produced an order with no relationship to the
+    audio path."""
+    live_info = _live_info_for(real_dump)
+    panel = build_osc_panel(real_dump, live_info)
+    tab_ids = [t["id"] for t in _tabs(panel)]
+    dump_order = [p["name"] for p in real_dump["plugins"]]
+    # Order must track the dump, whatever that order happens to be. Note the
+    # fixture's own processors are coincidentally alphabetical, so asserting
+    # "not sorted" here would pass or fail on an accident of the fixture
+    # rather than on the behaviour.
+    assert tab_ids == [n for n in dump_order if n in tab_ids]
+
+
 def test_panel_fader_count_matches_automatable_parameter_count(real_dump):
     live_info = _live_info_for(real_dump)
     panel = build_osc_panel(real_dump, live_info)
