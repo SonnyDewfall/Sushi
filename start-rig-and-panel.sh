@@ -10,9 +10,9 @@
 # Sushi to already be live, which means juggling two terminals otherwise.
 #
 # Usage: ./start-rig-and-panel.sh [config-name]
-#   config-name defaults to "acoustic_chorus" and names config/<name>.json —
-#   e.g. `./start-rig-and-panel.sh acoustic_reverb` loads
-#   config/acoustic_reverb.json instead.
+#   config-name defaults to "electric_board" and names config/<name>.json —
+#   e.g. `./start-rig-and-panel.sh empty` loads config/empty.json instead
+#   (the passthrough config, useful for checking the audio path alone).
 
 # This script lives inside a git worktree/checkout of the rig, and must run
 # from its OWN directory (not $HOME/Sushi) — otherwise "tool/.venv/bin/
@@ -24,7 +24,7 @@
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 cd "$SCRIPT_DIR" || exit 1
 
-CONFIG_NAME="${1:-acoustic_chorus}"
+CONFIG_NAME="${1:-electric_board}"
 CONFIG="config/${CONFIG_NAME}.json"
 PANEL_FILE="/tmp/sushi-rig-panel.json"
 GRPC_HOST="127.0.0.1"
@@ -41,16 +41,20 @@ fi
 # their originating yaml rather than getting one of their own (see issue
 # #10's design notes) — read that back so a save made *from* this config
 # is attributed to the right source instead of always assuming
-# acoustic_chorus. Falls back to acoustic_chorus.yaml for the canonical,
+# electric_board. Falls back to electric_board.yaml for the canonical,
 # hand-authored configs, which don't carry a _meta.source themselves.
 RIG_YAML="$(tool/.venv/bin/python -c "
 import json
 with open('$CONFIG') as f:
-    print(json.load(f).get('_meta', {}).get('source', 'config/src/acoustic_chorus.yaml'))
+    print(json.load(f).get('_meta', {}).get('source', 'config/src/electric_board.yaml'))
 ")"
 
 # 1. Point LV2 path to your local portable plugins directory
-export LV2_PATH="$HOME/Sushi/plugins:${LV2_PATH:-/usr/lib/lv2:/usr/local/lib/lv2}"
+# Deliberately the ONLY entry: no /usr/lib/lv2 fallback. plugins/ now holds
+# exactly the bundles this rig uses (everything else is in plugins/archive/,
+# off the path), so a missing or renamed plugin fails loudly here instead of
+# silently resolving against the system copy and hiding a portability break.
+export LV2_PATH="$HOME/Sushi/plugins"
 
 cleanup() {
     echo

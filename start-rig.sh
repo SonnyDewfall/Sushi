@@ -2,7 +2,11 @@
 cd "$HOME/Sushi" || exit 1
 
 # 1. Point LV2 path to your local portable plugins directory
-export LV2_PATH="$HOME/Sushi/plugins:${LV2_PATH:-/usr/lib/lv2:/usr/local/lib/lv2}"
+# Deliberately the ONLY entry: no /usr/lib/lv2 fallback. plugins/ now holds
+# exactly the bundles this rig uses (everything else is in plugins/archive/,
+# off the path), so a missing or renamed plugin fails loudly here instead of
+# silently resolving against the system copy and hiding a portability break.
+export LV2_PATH="$HOME/Sushi/plugins"
 
 # 2. Kill any existing instances
 killall -q fmit sushi
@@ -26,12 +30,12 @@ fi
 
 # 5. Launch the OSC listener so the panel's save button can write a config
 # without a terminal in the loop (issue #10). --rig must match whichever
-# config is loaded below — config/src/acoustic_chorus.yaml describes
-# config/acoustic_chorus.json's structure.
+# config is loaded below — config/src/electric_board.yaml describes
+# config/electric_board.json's structure.
 "$HOME/Sushi/tool/.venv/bin/sushi-rig" listen \
-  --rig "$HOME/Sushi/config/src/acoustic_chorus.yaml" \
+  --rig "$HOME/Sushi/config/src/electric_board.yaml" \
   --out-dir "$HOME/Sushi/config" \
   --archive-dir "$HOME/Sushi/config/archive" &
 
 # 6. Launch SUSHI via PipeWire-JACK
-pw-jack ./sushi -j -c config/acoustic_chorus.json
+pw-jack ./sushi -j -c config/electric_board.json

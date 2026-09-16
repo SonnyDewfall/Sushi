@@ -1,0 +1,257 @@
+{
+  "_meta": {
+    "name": "acoustic_reverb",
+    "version": "1.0",
+    "description": "Acoustic guitar \u2014 compressor, EQ, chorus, light reverb",
+    "status": "wip",
+    "source": "config/src/acoustic_chorus.yaml"
+  },
+  "host_config": {
+    "samplerate": 48000
+  },
+  "tracks": [
+    {
+      "name": "fx_track",
+      "channels": 2,
+      "inputs": [
+        {
+          "engine_bus": 0,
+          "track_bus": 0
+        }
+      ],
+      "outputs": [
+        {
+          "engine_bus": 0,
+          "track_bus": 0
+        }
+      ],
+      "plugins": [
+        {
+          "name": "compressor_mono",
+          "type": "lv2",
+          "uri": "http://lsp-plug.in/plugins/lv2/compressor_mono"
+        },
+        {
+          "name": "graph_equalizer_x16_stereo",
+          "type": "lv2",
+          "uri": "http://lsp-plug.in/plugins/lv2/graph_equalizer_x16_stereo"
+        },
+        {
+          "name": "chorus_stereo",
+          "type": "lv2",
+          "uri": "http://lsp-plug.in/plugins/lv2/chorus_stereo"
+        },
+        {
+          "name": "internal_reverb",
+          "type": "internal",
+          "uid": "sushi.testing.freeverb"
+        }
+      ]
+    }
+  ],
+  "initial_state": [
+    {
+      "processor": "fx_track",
+      "bypassed": false,
+      "parameters": {
+        "gain": 0.833333,
+        "pan": 0.5,
+        "mute": 0.0
+      }
+    },
+    {
+      "processor": "compressor_mono",
+      "bypassed": false,
+      "parameters": {
+        "Show pre-mix overlay": 0.0,
+        "Input to Link mix": 0.0,
+        "Link to Input mix": 0.0,
+        "Link to Sidechain mix": 0.0,
+        "Enabled": 1.0,
+        "Input gain": 0.001,
+        "Output gain": 0.001,
+        "Show mix overlay": 0.0,
+        "Show sidechain overlay": 0.0,
+        "Pause graph analysis": 0.0,
+        "Clear graph analysis": 0.0,
+        "Sidechain type": 0.0,
+        "Sidechain mode": 0.333333,
+        "Sidechain lookahead": 0.0,
+        "Sidechain listen": 0.0,
+        "Sidechain reactivity": 0.04,
+        "Sidechain preamp": 0.01,
+        "High-pass filter mode": 0.0,
+        "High-pass filter frequency": 0.0,
+        "Low-pass filter mode": 0.0,
+        "Low-pass filter frequency": 1.0,
+        "Compression mode": 0.0,
+        "Attack threshold": 0.25044,
+        "Attack time": 0.01,
+        "Release threshold": 0.0,
+        "Release time": 0.02,
+        "Hold time": 0.0,
+        "Ratio": 0.27,
+        "Knee": 0.467585,
+        "Boost threshold": 0.25025,
+        "Boost signal amount": 0.000501,
+        "Makeup gain": 0.000999,
+        "Dry gain": 0.0,
+        "Wet gain": 0.1,
+        "Dry/Wet balance": 1.0,
+        "Sidechain level visibility": 1.0,
+        "Envelope level visibility": 1.0,
+        "Gain reduction visibility": 1.0,
+        "Input level visibility": 1.0,
+        "Output level visibility": 1.0
+      }
+    },
+    {
+      "processor": "graph_equalizer_x16_stereo",
+      "bypassed": false,
+      "parameters": {
+        "Enabled": 1.0,
+        "Input gain": 0.1,
+        "Output gain": 0.1,
+        "Equalizer mode": 0.0,
+        "Filter slope": 0.0,
+        "FFT reactivity": 0.2,
+        "Shift gain": 0.01,
+        "Graph zoom": 0.00797,
+        "Input FFT graph enable Left": 1.0,
+        "Output FFT graph enable Left": 1.0,
+        "Return FFT graph enable Left": 1.0,
+        "Input FFT graph enable Right": 1.0,
+        "Output FFT graph enable Right": 1.0,
+        "Return FFT graph enable Right": 1.0,
+        "Output balance": 0.5,
+        "Band solo 16": 0.0,
+        "Band mute 16": 0.0,
+        "Band on 16": 0.17,
+        "Band gain 16": 0.015602,
+        "Band solo 25": 0.0,
+        "Band mute 25": 0.0,
+        "Band on 25": 0.17,
+        "Band gain 25": 0.015602,
+        "Band solo 40": 0.0,
+        "Band mute 40": 0.0,
+        "Band on 40": 0.14,
+        "Band gain 40": 0.015602,
+        "Band solo 63": 0.0,
+        "Band mute 63": 0.0,
+        "Band on 63": 0.1,
+        "Band gain 63": 0.015602,
+        "Band solo 100": 0.0,
+        "Band mute 100": 0.0,
+        "Band on 100": 1.0,
+        "Band gain 100": 0.015602,
+        "Band solo 160": 0.0,
+        "Band mute 160": 0.0,
+        "Band on 160": 1.0,
+        "Band gain 160": 0.03,
+        "Band solo 250": 0.0,
+        "Band mute 250": 0.0,
+        "Band on 250": 1.0,
+        "Band gain 250": 0.015602,
+        "Band solo 400": 0.0,
+        "Band mute 400": 0.0,
+        "Band on 400": 1.0,
+        "Band gain 400": 0.015602,
+        "Band solo 630": 0.0,
+        "Band mute 630": 0.0,
+        "Band on 630": 1.0,
+        "Band gain 630": 0.015602,
+        "Band solo 1K": 0.0,
+        "Band mute 1K": 0.0,
+        "Band on 1K": 1.0,
+        "Band gain 1K": 0.015602,
+        "Band solo 1.6K": 0.0,
+        "Band mute 1.6K": 0.0,
+        "Band on 1.6K": 1.0,
+        "Band gain 1.6K": 0.015602,
+        "Band solo 2.5K": 0.0,
+        "Band mute 2.5K": 0.0,
+        "Band on 2.5K": 1.0,
+        "Band gain 2.5K": 0.015602,
+        "Band solo 4K": 0.0,
+        "Band mute 4K": 0.0,
+        "Band on 4K": 1.0,
+        "Band gain 4K": 0.015602,
+        "Band solo 6.3K": 0.0,
+        "Band mute 6.3K": 0.0,
+        "Band on 6.3K": 1.0,
+        "Band gain 6.3K": 0.015602,
+        "Band solo 10K": 0.0,
+        "Band mute 10K": 0.0,
+        "Band on 10K": 1.0,
+        "Band gain 10K": 0.015602,
+        "Band solo 16K": 0.0,
+        "Band mute 16K": 0.0,
+        "Band on 16K": 1.0,
+        "Band gain 16K": 0.015602
+      }
+    },
+    {
+      "processor": "chorus_stereo",
+      "bypassed": false,
+      "parameters": {
+        "Enabled": 0.0,
+        "Test for mono compatibility": 0.0,
+        "Mid/Side mode switch": 0.0,
+        "Signal phase switch": 0.0,
+        "Oversampling": 0.0,
+        "High-pass filter mode": 0.0,
+        "High-pass filter frequency": 0.0,
+        "Low-pass filter mode": 0.0,
+        "Low-pass filter frequency": 1.0,
+        "Rate": 0.012006,
+        "Time fraction": 0.123288,
+        "Time fraction denominator": 0.047619,
+        "Tempo": 0.294118,
+        "Tempo sync": 0.0,
+        "Time computing method": 0.0,
+        "Reset phase to initial": 0.0,
+        "Number of voices": 0.142857,
+        "Depth": 0.29,
+        "Crossfade": 0.0,
+        "Crossfade Type": 1.0,
+        "Enable second LFO": 0.0,
+        "LFO type 1": 0.083333,
+        "LFO period 1": 0.0,
+        "LFO overlap 1": 1.0,
+        "LFO delay 1": 0.246231,
+        "Initial phase 1": 0.0,
+        "Inter-voice phase range 1": 0.5,
+        "Inter-channel phase 1": 0.5,
+        "LFO type 2": 0.0,
+        "LFO period 2": 0.0,
+        "LFO overlap 2": 1.0,
+        "LFO delay 2": 0.748744,
+        "Initial phase 2": 0.5,
+        "Inter-voice phase range 2": 0.5,
+        "Inter-channel phase 2": 0.5,
+        "Feedback on": 0.0,
+        "Feedback gain": 0.562333,
+        "Feedback drive": 0.0,
+        "Feedback delay": 0.0,
+        "Feedback phase switch": 0.0,
+        "Input gain": 0.001,
+        "Dry amount": 0.1,
+        "Wet amount": 0.12,
+        "Dry/Wet balance": 1.0,
+        "Output gain": 0.001
+      }
+    },
+    {
+      "processor": "internal_reverb",
+      "bypassed": false,
+      "parameters": {
+        "freeze": 0.0,
+        "dry": 0.32,
+        "wet": 0.26,
+        "room_size": 0.2,
+        "width": 0.5,
+        "damp": 0.33
+      }
+    }
+  ]
+}

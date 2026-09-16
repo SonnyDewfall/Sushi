@@ -127,19 +127,20 @@ then.
 ```
 .                               ── RIG (root): what you run daily
 ├── start-rig.sh                launch tuner + patchbay + Sushi
+├── start-rig-and-panel.sh      the above plus a generated control panel
 ├── stop-rig.sh                 interrupt, settle, force-kill
 ├── config/                     Sushi configs — the deployable artefacts
-│   ├── acoustic_chorus.json      current rig (what start-rig.sh launches)
-│   ├── acoustic_reverb_fx.json
-│   ├── fx.json                   minimal internal-reverb rig
+│   ├── electric_board.json       current rig (what start-rig.sh launches)
 │   ├── empty.json                passthrough, for verifying the audio path
-│   ├── src/acoustic_chorus.yaml  hand-authored source for acoustic_chorus.json
-│   └── archive/                  frozen snapshots, config/archive/<name>/vX.Y.json
+│   ├── src/electric_board.yaml   hand-authored source for electric_board.json
+│   ├── archive/                  auto-written version snapshots,
+│   │                             config/archive/<name>/vX.Y.json
+│   └── retired/                  hand-retired configs, kept for recovery only
 ├── Patchbay/                   qpwgraph sessions
 │   ├── rig.qpwgraph              routing loaded at startup
 │   ├── Default.qpwgraph
 │   └── Test_1.qpwgraph
-├── plugin-manifest.txt         every LV2 URI available on this machine
+├── plugin-manifest.txt         every LV2 URI this rig can load (see Plugins below)
 │
 ├── tool/                       ── TOOL: generates the configs above
 │   ├── pyproject.toml
@@ -191,20 +192,26 @@ the panel and the whole rig together.
 
 > **`LV2_PATH` must be set, or Sushi loads no LV2 plugins at all.** It exits 4
 > with `Failed to load tracks from the Json config file` — an error that never
-> mentions `LV2_PATH`. `lv2ls` is not a proxy for this: it finds 648 plugins
-> using lilv's defaults while Sushi finds none. Running `./sushi -c <config>`
-> by hand, outside the script, hits this every time:
+> mentions `LV2_PATH`. `lv2ls` is not a proxy for this: it finds plugins using
+> lilv's own defaults while Sushi finds none. Running `./sushi -c <config>` by
+> hand, outside the scripts, hits this every time:
 >
 > ```bash
-> export LV2_PATH="$HOME/Sushi/plugins/lv2:$HOME/Sushi/plugins:/usr/lib/lv2"
+> export LV2_PATH="$HOME/Sushi/plugins"
 > ```
+>
+> That single path is deliberate and complete — see
+> [Plugins and portability](#plugins-and-portability). Do not add
+> `/usr/lib/lv2`: it would let a config load against system plugins that
+> `plugins/` doesn't carry, which is exactly the silent portability break the
+> current layout exists to prevent.
 
 ### Checking a config loads
 
 No guitar, no audio interface, no extra dependencies needed:
 
 ```bash
-./sushi --dump-plugins -c config/acoustic_reverb_fx.json
+./sushi --dump-plugins -c config/electric_board.json
 ```
 
 This starts Sushi with the dummy frontend, prints every hosted plugin's
@@ -218,7 +225,7 @@ Verified on this machine:
 | | Status |
 |---|---|
 | Sushi 1.3.0 | ✅ built with `vst3, lv2, jack, rpc control, ableton link` |
-| LV2 plugins discoverable | ✅ 648 via `lv2ls` |
+| LV2 plugins discoverable | ✅ 41 via `lv2ls`, from the six bundles in `plugins/` |
 | PipeWire / JACK, qpwgraph, fmit | ✅ |
 | `lilv` Python bindings (system) | ✅ `python3-lilv` + `liblilv-dev` |
 | `elkpy` (in `tool/.venv`) | ✅ imports cleanly on Python 3.14 |
@@ -267,22 +274,43 @@ checking first every time.
 
 ## Plugins and portability
 
-`plugins/` is **not tracked in git**. It is a byte-for-byte copy of the system
-LV2 installation (262 of 262 bundles match `/usr/lib/lv2`), so tracking it would
-add ~358 MB of third-party GPL binaries that are reproducible from a package
-manager in seconds.
+`plugins/` is **not tracked** — it holds third-party GPL binaries that a package
+manager reproduces in seconds, and tracking it would add hundreds of MB for no
+benefit.
 
-What *is* tracked is `plugin-manifest.txt` — the full list of LV2 URIs
-available here. Since Sushi addresses plugins by URI and never by path, that
-manifest plus a package install is enough to reconstruct the environment. Making
-this reproducible on a fresh machine is work item 5 in
-[MANIFEST.md](MANIFEST.md).
+It is structured deliberately:
 
-Be aware that the rig currently depends on the **system** LV2 installation, not
-the bundled directory — `start-rig.sh` puts `plugins/` on `LV2_PATH`, but the
-262 bundles live one level down in `plugins/lv2/` and are never seen. The rig
-works only because `/usr/lib/lv2` is also on the path. See *Known defects* in
-the manifest before relying on `plugins/` for portability.
+```
+plugins/
+├── 3BandEQ.lv2       the bundles this rig actually uses, at the top level
+├── gx_chorus.lv2     where LV2_PATH looks
+├── gx_compressor.lv2
+├── gx_oc_2.lv2
+├── gxts9.lv2
+├── mda.lv2
+└── archive/          everything else — off the path, ignored by lilv
+```
+
+**`LV2_PATH` is set to `plugins/` and nothing else** — no `/usr/lib/lv2`
+fallback. That is the whole point: a missing or renamed plugin now fails loudly
+at startup instead of silently resolving against the system copy and hiding the
+fact that the rig is not actually self-contained.
+
+`plugin-manifest.txt` means **every LV2 URI this rig can load** — 41 of them,
+from six bundles. Since Sushi addresses plugins by URI and never by path, that
+manifest plus those six bundles is the whole dependency set.
+
+`plugins/archive/manifest.ttl` is an intentionally empty LV2 manifest. `archive/`
+sits inside a directory on `LV2_PATH`, and lilv probes every subdirectory there
+for one; without it, every startup logs a spurious "failed to open
+.../archive/manifest.ttl". An empty manifest parses fine and declares nothing,
+so lilv reads it and stays quiet — which keeps a real plugin-loading error
+visible instead of buried in known noise.
+
+> **This replaces a long-standing defect.** `plugins/` used to be a flat copy of
+> the system LV2 tree with all 262 bundles one level *down* in `plugins/lv2/`,
+> where `LV2_PATH` never looked. The rig worked only because `/usr/lib/lv2` was
+> also on the path, so portability was never actually being tested.
 
 ---
 
