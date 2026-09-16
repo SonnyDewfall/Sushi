@@ -206,6 +206,50 @@ the panel and the whole rig together.
 > `plugins/` doesn't carry, which is exactly the silent portability break the
 > current layout exists to prevent.
 
+### Choosing a plugin
+
+Before a plugin goes into a rig, `probe` answers what you'd otherwise only
+find out by trying it:
+
+```bash
+sushi-rig probe                 # everything on LV2_PATH, one line each
+sushi-rig probe <uri>           # full detail for one plugin
+sushi-rig probe <uri> --json    # same, machine-readable
+```
+
+It reads the plugin's own TTL through lilv, so every value is the plugin
+author's declaration rather than our inference:
+
+```
+GxTubeScreamer  (Distortion Plugin)
+  uri     http://guitarix.sourceforge.net/plugins/gxts9#ts9sim
+  audio   1 in / 1 out
+  config  drivable — all state lives in control ports
+  4 parameter(s):
+    Level                          [-20.0, 4.0]             default=-16.0
+    Tone                           [100.0, 1000.0]          default=400.0
+    Drive                          [0.0, 1.0]               default=0.5
+    BYPASS                         [0.0, 1.0]               default=1.0  toggled
+```
+
+Two things there are invisible everywhere downstream. **Real-world ranges** —
+Tone is 100–1000 Hz, which in a Sushi config appears only as a normalised
+`0.0–1.0`. And **`config drivable`**, which is the question that actually
+decides whether a plugin can be used at all.
+
+A plugin is drivable only if all of its state lives in control ports. If it
+keeps state elsewhere — a file, a model, an impulse response — it reaches it
+through the LV2 `patch:`/`state:` extensions, which **Sushi does not support**.
+Such a plugin loads without complaint and then silently ignores the part you
+cared about. `probe` checks three signals for this (atom ports,
+`patch:writable`, `state:interface`), because any one alone is insufficient:
+`zeroconvolv` declares no atom ports and no `patch:writable` yet is entirely
+driven by an IR file, and only `state:interface` reveals it.
+
+Note that `probe` reads and reports — it doesn't write a catalogue or decide
+which parameters are worth showing. Those are judgment calls, and keeping them
+out of generated data is what makes the generated half safe to regenerate.
+
 ### Checking a config loads
 
 No guitar, no audio interface, no extra dependencies needed:
