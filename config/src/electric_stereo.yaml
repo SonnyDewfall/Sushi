@@ -1,0 +1,87 @@
+# Hand-authored source for config/electric_stereo.json.
+#
+# Emit with:
+#   tool/.venv/bin/sushi-rig emit config/src/electric_stereo.yaml \
+#     -o config/electric_stereo.json
+#
+# The stereo counterpart to electric_board. Same seven roles, same chain
+# order, but every plugin that had a credible stereo equivalent has been
+# swapped for it, and the thinner plugins upgraded at the same time.
+#
+# Why stereo at all: the track is 2-channel and both channels are fed from
+# the same guitar input, so a mono plugin raises the question of what Sushi
+# does with the second channel — an unknown that has cost real debugging
+# time twice. Going stereo deletes the question rather than answering it.
+# The audio argument is weaker (a doubled-mono signal processed by a stereo
+# plugin is just identical work done twice until the chorus introduces a
+# genuine stereo difference), but the certainty is worth the DSP.
+#
+# The overdrive is the deliberate exception — see its note below.
+#
+# Every plugin here was checked with `sushi-rig probe` before being chosen:
+# all are control-port-only (no atom ports, no patch:writable, no
+# state:interface), so a config can fully describe them and the save/restore
+# loop can't silently lose part of the sound.
+
+meta:
+  name: electric_stereo
+  version: "1.0"
+  description: Electric guitar — stereo chain, compressor through reverb
+  status: wip
+
+host:
+  samplerate: 48000
+
+tracks:
+  - name: board
+    channels: 2
+    inputs:
+      - engine_bus: 0
+        track_bus: 0
+    outputs:
+      - engine_bus: 0
+        track_bus: 0
+    plugins:
+      # Conventional pedalboard order: dynamics and dirt first, tone shaping
+      # in the middle, time-based effects last.
+      - name: compressor
+        type: lv2
+        uri: http://gareus.org/oss/lv2/darc#stereo
+
+      # The one mono plugin left, kept deliberately. There is no stereo
+      # Tube Screamer, and the stereo alternatives are a different animal
+      # (Gxjcm800preST is an amp preamp, not a boost pedal). Distortion of a
+      # mono guitar is also the physically honest thing to do. This does mean
+      # the mono-on-stereo-track question survives here — if the chain ever
+      # sounds like it collapses to one side, this plugin is the first
+      # suspect.
+      - name: overdrive
+        type: lv2
+        uri: http://guitarix.sourceforge.net/plugins/gxts9#ts9sim
+
+      # "Live" engine, not "R3". This is the only plugin in the rig that
+      # declares an lv2:reportsLatency port, and Rubber Band ships three
+      # engines: R3 is the high-quality one intended for offline work, while
+      # the Live variants exist specifically for real-time use. In a guitar
+      # chain latency is the thing you notice first, so quality loses here.
+      - name: octave
+        type: lv2
+        uri: http://breakfastquay.com/rdf/lv2-rubberband#livestereo
+
+      # Kept: every parametric or graphic EQ available is mono-only, so a
+      # stereo swap would mean losing bands rather than gaining them.
+      - name: eq
+        type: lv2
+        uri: http://distrho.sf.net/plugins/3BandEQ
+
+      - name: chorus
+        type: lv2
+        uri: http://zynaddsubfx.sourceforge.net/fx#Chorus
+
+      - name: delay
+        type: lv2
+        uri: http://guitarix.sourceforge.net/plugins/gx_echo_stereo#_echo_stereo
+
+      - name: reverb
+        type: lv2
+        uri: http://distrho.sf.net/plugins/MVerb

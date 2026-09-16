@@ -129,6 +129,19 @@ LOG_SCALE_DOMAIN_THRESHOLD = 10.0
 SAVE_BAR_HEIGHT = 70
 SAVE_BAR_WIDGET_HEIGHT = 40
 
+# Sushi's own OSC address for host-level processor bypass, verified live:
+# sending 1 to /bypass/<processor> bypasses it, 0 restores it.
+#
+# This is deliberately Sushi's bypass rather than any plugin's own BYPASS
+# parameter. Sushi provides it uniformly for every processor, so it works
+# regardless of what the plugin offers — and plugin-provided bypass is a bad
+# thing to build on: only some have it, and where it exists the semantics can
+# be undiscoverable (the Guitarix pedals expose BYPASS defaulting to 1.0,
+# range 0-1, with no scale points, so nothing states whether 1 means active
+# or bypassed).
+BYPASS_ADDRESS_PREFIX = "/bypass/"
+BYPASS_HEIGHT = 30
+
 # A flat {type: "root", ...} file with no `version` field reads as version
 # "0.0.0" to open-stage-control — below its lowest migration threshold — which
 # pops a "session was created with an older version" warning on every load.
@@ -149,6 +162,7 @@ def build_osc_panel(
     dump: Any,
     live_info: dict[str, dict[str, dict]],
     listener_port: int = DEFAULT_LISTEN_PORT,
+    bypass_info: dict[str, bool] | None = None,
 ) -> dict[str, Any]:
     """Build a tabbed Open Stage Control panel structure: one tab per processor."""
     tabs = []
@@ -222,7 +236,32 @@ def build_osc_panel(
                 }
             )
         if widgets:
-            tabs.append({"type": "tab", "id": processor, "label": processor, "widgets": widgets})
+            # Bypass toggle first, so it reads as the pedal's on/off switch
+            # above its controls. `default` reflects Sushi's current state and
+            # `ignoreDefaults` stops the widget sending on load — opening a
+            # panel must never silently un-bypass a pedal that a saved config
+            # deliberately had switched off.
+            #
+            # No `target`: unlike the save bar (which must reach the listener),
+            # this goes to Sushi itself via open-stage-control's own --send,
+            # exactly like the faders.
+            bypass_toggle = {
+                "type": "button",
+                "id": f"{processor}/bypass",
+                "label": "BYPASS",
+                "mode": "toggle",
+                "address": f"{BYPASS_ADDRESS_PREFIX}{processor}",
+                "default": 1 if (bypass_info or {}).get(processor) else 0,
+                "ignoreDefaults": True,
+                "width": 90,
+                "height": BYPASS_HEIGHT,
+            }
+            tabs.append({
+                "type": "tab",
+                "id": processor,
+                "label": processor,
+                "widgets": [bypass_toggle] + widgets,
+            })
 
     save_bar = {
         "type": "panel",

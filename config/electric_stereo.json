@@ -1,0 +1,66 @@
+{
+  "_meta": {
+    "name": "electric_stereo",
+    "version": "1.0",
+    "description": "Electric guitar \u2014 stereo chain, compressor through reverb",
+    "status": "wip"
+  },
+  "host_config": {
+    "samplerate": 48000
+  },
+  "tracks": [
+    {
+      "name": "board",
+      "channels": 2,
+      "inputs": [
+        {
+          "engine_bus": 0,
+          "track_bus": 0
+        }
+      ],
+      "outputs": [
+        {
+          "engine_bus": 0,
+          "track_bus": 0
+        }
+      ],
+      "plugins": [
+        {
+          "name": "compressor",
+          "type": "lv2",
+          "uri": "http://gareus.org/oss/lv2/darc#stereo"
+        },
+        {
+          "name": "overdrive",
+          "type": "lv2",
+          "uri": "http://guitarix.sourceforge.net/plugins/gxts9#ts9sim"
+        },
+        {
+          "name": "octave",
+          "type": "lv2",
+          "uri": "http://breakfastquay.com/rdf/lv2-rubberband#livestereo"
+        },
+        {
+          "name": "eq",
+          "type": "lv2",
+          "uri": "http://distrho.sf.net/plugins/3BandEQ"
+        },
+        {
+          "name": "chorus",
+          "type": "lv2",
+          "uri": "http://zynaddsubfx.sourceforge.net/fx#Chorus"
+        },
+        {
+          "name": "delay",
+          "type": "lv2",
+          "uri": "http://guitarix.sourceforge.net/plugins/gx_echo_stereo#_echo_stereo"
+        },
+        {
+          "name": "reverb",
+          "type": "lv2",
+          "uri": "http://distrho.sf.net/plugins/MVerb"
+        }
+      ]
+    }
+  ]
+}

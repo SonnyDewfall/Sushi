@@ -1,4 +1,11 @@
+http://breakfastquay.com/rdf/lv2-rubberband#livemono
+http://breakfastquay.com/rdf/lv2-rubberband#livestereo
+http://breakfastquay.com/rdf/lv2-rubberband#mono
+http://breakfastquay.com/rdf/lv2-rubberband#r3mono
+http://breakfastquay.com/rdf/lv2-rubberband#r3stereo
+http://breakfastquay.com/rdf/lv2-rubberband#stereo
 http://distrho.sf.net/plugins/3BandEQ
+http://distrho.sf.net/plugins/MVerb
 http://drobilla.net/plugins/mda/Ambience
 http://drobilla.net/plugins/mda/Bandisto
 http://drobilla.net/plugins/mda/BeatBox
@@ -35,7 +42,11 @@ http://drobilla.net/plugins/mda/Tracker
 http://drobilla.net/plugins/mda/Transient
 http://drobilla.net/plugins/mda/VocInput
 http://drobilla.net/plugins/mda/Vocoder
+http://gareus.org/oss/lv2/darc#mono
+http://gareus.org/oss/lv2/darc#stereo
 http://guitarix.sourceforge.net/plugins/gx_chorus_stereo#_chorus_stereo
 http://guitarix.sourceforge.net/plugins/gx_compressor#_compressor
+http://guitarix.sourceforge.net/plugins/gx_echo_stereo#_echo_stereo
 http://guitarix.sourceforge.net/plugins/gx_oc_2_#_oc_2_
 http://guitarix.sourceforge.net/plugins/gxts9#ts9sim
+http://zynaddsubfx.sourceforge.net/fx#Chorus
