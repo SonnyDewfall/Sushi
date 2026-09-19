@@ -4,7 +4,8 @@
     "version": "1.0",
     "description": "Electric guitar \u2014 compressor, overdrive, octave, EQ, chorus, delay, and two reverbs \u2014 a clean room and a big hall",
     "status": "stable",
-    "source": "config/src/electric_board.yaml"
+    "source": "config/src/electric_board.yaml",
+    "archived_at": "2026-09-19"
   },
   "host_config": {
     "samplerate": 48000
@@ -95,22 +96,22 @@
       "bypassed": false,
       "program": 0,
       "parameters": {
-        "Low": 0.58,
-        "Mid": 0.24,
-        "High": 0.6,
+        "Low": 0.47,
+        "Mid": 0.57,
+        "High": 0.54,
         "Master": 0.5,
-        "Low-Mid Freq": 0.2,
-        "Mid-High Freq": 0.0
+        "Low-Mid Freq": 0.22,
+        "Mid-High Freq": 0.052632
       }
     },
     {
       "processor": "chorus",
       "bypassed": true,
       "parameters": {
-        "Level": 0.91,
-        "Delay": 0.77,
-        "Depth": 0.03,
-        "Freq": 0.08,
+        "Level": 0.5,
+        "Delay": 0.1,
+        "Depth": 0.02,
+        "Freq": 0.292929,
         "BYPASS": 1.0
       }
     },
@@ -119,17 +120,17 @@
       "bypassed": true,
       "parameters": {
         "DIRECT": 0.5,
-        "OCTAVE1": 0.77,
-        "OCTAVE2": 0.0
+        "OCTAVE1": 0.5,
+        "OCTAVE2": 0.5
       }
     },
     {
       "processor": "overdrive",
       "bypassed": true,
       "parameters": {
-        "Level": 0.93,
-        "Tone": 0.13,
-        "Drive": 0.0,
+        "Level": 0.166667,
+        "Tone": 0.333333,
+        "Drive": 0.5,
         "BYPASS": 1.0
       }
     },
@@ -163,8 +164,8 @@
       "processor": "room",
       "bypassed": false,
       "parameters": {
-        "Blend": 0.2,
-        "Room Size": 0.51,
+        "Blend": 0.3,
+        "Room Size": 0.0,
         "Enable": 1.0
       }
     }
