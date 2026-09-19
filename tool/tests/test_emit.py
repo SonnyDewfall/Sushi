@@ -207,3 +207,34 @@ def test_emit_does_not_mutate_the_rig_spec():
     before = [p.name for p in rig.tracks[0].plugins]
     emit(rig, {"tracks": {"board": ["reverb", "overdrive", "compressor"]}})
     assert [p.name for p in rig.tracks[0].plugins] == before
+
+
+def _write_rig(tmp_path):
+    path = tmp_path / "rig.yaml"
+    path.write_text(
+        "meta:\n  name: t\n  version: '1.0'\n"
+        "tracks:\n  - name: board\n    channels: 2\n    plugins:\n"
+        "      - name: reverb\n        type: lv2\n        uri: urn:x\n"
+    )
+    return path
+
+
+def test_a_tracks_bypass_is_never_written_to_initial_state(tmp_path):
+    """Sushi cascades a track's bypass to every processor on it, so one
+    `"bypassed": false` on the track silently undoes every per-plugin flag in
+    the same file. Reported as bypass simply not being restored on load; the
+    parameter values and chain order in that same file all applied correctly,
+    which is what disguised it.
+
+    Isolated against a running Sushi: with the track entry present the plugin
+    flags are wiped whether it comes first or last, and removing only that key
+    makes them apply."""
+    rig = RigSpec.load(_write_rig(tmp_path))
+    state = {"processors": {
+        "board": {"bypassed": False, "parameters": {"gain": 0.8}},
+        "reverb": {"bypassed": True, "parameters": {}},
+    }}
+    entries = {e["processor"]: e for e in emit(rig, state)["initial_state"]}
+    assert "bypassed" not in entries["board"], "a track's bypass must not be written"
+    assert entries["board"]["parameters"] == {"gain": 0.8}, "its parameters still are"
+    assert entries["reverb"]["bypassed"] is True, "a plugin's bypass still is"

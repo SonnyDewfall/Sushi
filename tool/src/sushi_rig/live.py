@@ -75,13 +75,16 @@ def capture(address: str = DEFAULT_GRPC_ADDRESS) -> dict[str, Any]:
     track_order: dict[str, list[str]] = {}
     try:
         for track in controller.audio_graph.get_all_tracks():
-            targets = [(track.id, track.name)]
+            # The track itself is captured first, then its plugins in chain
+            # order. `is_track` matters below: a track's bypass is not just its
+            # own state.
+            targets = [(track.id, track.name, True)]
             chain = list(controller.audio_graph.get_track_processors(track.id))
             track_order[track.name] = [proc.name for proc in chain]
             for proc in chain:
-                targets.append((proc.id, proc.name))
+                targets.append((proc.id, proc.name, False))
 
-            for proc_id, proc_name in targets:
+            for proc_id, proc_name, is_track in targets:
                 param_infos = controller.parameters.get_processor_parameters(proc_id)
                 if not param_infos:
                     print(f"warning: {proc_name!r} returned no parameters", file=sys.stderr)
@@ -108,9 +111,29 @@ def capture(address: str = DEFAULT_GRPC_ADDRESS) -> dict[str, Any]:
                     if program is not None:
                         entry["program"] = program
 
-                bypassed = _safe(controller.audio_graph.get_processor_bypass_state, proc_id)
-                if bypassed is not None:
-                    entry["bypassed"] = bool(bypassed)
+                # Deliberately NOT captured for a track. Setting `bypassed` on
+                # a track in initial_state cascades to every processor on it,
+                # so a single `"bypassed": false` on the track silently undoes
+                # the per-plugin bypass flags in the same file — which is
+                # exactly what happened: a saved config recorded four bypassed
+                # pedals correctly and loaded with all of them active.
+                #
+                # Isolated against a running Sushi. With a track entry carrying
+                # `bypassed: false` the plugin's own flag is wiped, whether that
+                # entry comes first or last; remove just that one key and the
+                # plugin flags apply. Everything else in the file — every
+                # parameter value, and the chain order — applied correctly
+                # throughout, which is what made it look like bypass was simply
+                # unsupported.
+                #
+                # Nothing needs a track's bypass state today, and writing it
+                # destroys state we do need.
+                if not is_track:
+                    bypassed = _safe(
+                        controller.audio_graph.get_processor_bypass_state, proc_id
+                    )
+                    if bypassed is not None:
+                        entry["bypassed"] = bool(bypassed)
 
                 processors[proc_name] = entry
     finally:

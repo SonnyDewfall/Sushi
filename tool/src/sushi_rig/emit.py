@@ -105,6 +105,7 @@ def _ordered_track(track, captured_order: dict[str, Any]) -> dict[str, Any]:
 
 def _build_initial_state(rig: RigSpec, state: dict[str, Any]) -> list[dict[str, Any]]:
     known = set(rig.plugin_names()) | {t.name for t in rig.tracks}
+    track_names = {t.name for t in rig.tracks}
     initial_state = []
     for processor, values in state.get("processors", {}).items():
         if processor not in known:
@@ -116,7 +117,17 @@ def _build_initial_state(rig: RigSpec, state: dict[str, Any]) -> list[dict[str, 
             continue
 
         entry: dict[str, Any] = {"processor": processor}
-        if values.get("bypassed") is not None:
+        # A track's `bypassed` is never written, even if the captured state has
+        # one. Sushi cascades a track's bypass to every processor on it, so a
+        # single `"bypassed": false` on the track silently undoes every
+        # per-plugin bypass flag in the same file.
+        #
+        # `capture` no longer records it, but state files captured before that
+        # still carry one — and re-emitting such a file is exactly how someone
+        # would try to fix a config that loads with the wrong pedals on. Dropped
+        # here too, so an old capture repairs itself rather than reproducing the
+        # bug.
+        if values.get("bypassed") is not None and processor not in track_names:
             entry["bypassed"] = values["bypassed"]
         if values.get("program") is not None:
             entry["program"] = values["program"]

@@ -83,9 +83,9 @@
       "processor": "compressor",
       "bypassed": false,
       "parameters": {
-        "RATIO": 0.052632,
+        "RATIO": 0.1,
         "KNEE": 0.15,
-        "THRESHOLD": 0.716981,
+        "THRESHOLD": 0.74,
         "RELEASE": 0.05,
         "ATTACK": 0.002,
         "BYPASS": 1.0
@@ -96,12 +96,12 @@
       "bypassed": false,
       "program": 0,
       "parameters": {
-        "Low": 0.5,
-        "Mid": 0.5,
-        "High": 0.5,
+        "Low": 0.52,
+        "Mid": 0.35,
+        "High": 0.53,
         "Master": 0.5,
-        "Low-Mid Freq": 0.44,
-        "Mid-High Freq": 0.0
+        "Low-Mid Freq": 0.52,
+        "Mid-High Freq": 0.07
       }
     },
     {
@@ -136,7 +136,7 @@
     },
     {
       "processor": "delay",
-      "bypassed": false,
+      "bypassed": true,
       "parameters": {
         "L Delay": 0.5,
         "R Delay": 0.27,
@@ -166,8 +166,8 @@
       "program": 0,
       "parameters": {
         "Master level": 0.5,
-        "Wet / Dry": 0.5,
-        "Room": 0.0
+        "Wet / Dry": 0.41,
+        "Room": 0.09
       }
     }
   ]
