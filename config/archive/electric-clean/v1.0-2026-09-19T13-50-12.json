@@ -4,7 +4,8 @@
     "version": "1.0",
     "description": "Electric guitar \u2014 compressor, overdrive, octave, EQ, chorus, delay, and two reverbs \u2014 a clean room and a big hall",
     "status": "stable",
-    "source": "config/src/electric_board.yaml"
+    "source": "config/src/electric_board.yaml",
+    "archived_at": "2026-09-19"
   },
   "host_config": {
     "samplerate": 48000
@@ -95,11 +96,11 @@
       "bypassed": false,
       "program": 0,
       "parameters": {
-        "Low": 0.15,
-        "Mid": 0.56,
-        "High": 0.33,
-        "Master": 0.57,
-        "Low-Mid Freq": 0.22,
+        "Low": 0.58,
+        "Mid": 0.24,
+        "High": 0.6,
+        "Master": 0.5,
+        "Low-Mid Freq": 0.2,
         "Mid-High Freq": 0.0
       }
     },
@@ -171,10 +172,10 @@
   ],
   "_amp": {
     "plugin": "nam",
-    "model": "amp/models/Neve 2.nam",
+    "model": "amp/models/Neve 1.nam",
     "parameters": {
-      "Input Lvl": -4.0,
-      "Output Lvl": -0.4,
+      "Input Lvl": 4.0,
+      "Output Lvl": -2.0,
       "Quality": 1.0
     }
   }
