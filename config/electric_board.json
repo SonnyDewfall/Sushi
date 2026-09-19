@@ -3,7 +3,7 @@
     "name": "electric_board",
     "version": "1.0",
     "description": "Electric guitar \u2014 compressor, overdrive, octave, EQ, chorus, delay, and two reverbs \u2014 a clean room and a big hall",
-    "status": "wip"
+    "status": "stable"
   },
   "host_config": {
     "samplerate": 48000

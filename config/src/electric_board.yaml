@@ -25,7 +25,7 @@ meta:
   version: "1.0"
   description: Electric guitar — compressor, overdrive, octave, EQ, chorus, delay,
     and two reverbs — a clean room and a big hall
-  status: wip
+  status: stable
 
 host:
   samplerate: 48000
