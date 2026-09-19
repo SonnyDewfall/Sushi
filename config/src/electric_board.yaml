@@ -14,7 +14,7 @@
 # processor name, which becomes both the OSC path prefix and the panel's tab
 # label — "overdrive" is a far more usable tab than "gxts9".
 #
-# The set is deliberately simple: seven plugins, ~34 parameters in total. The
+# The set is deliberately simple: eight plugins, ~41 parameters in total. The
 # rig this replaced used three LSP plugins and produced ~130 panel faders.
 # Every plugin here is control-port-only (no atom ports), so none of them keep
 # state outside the config — nothing needs a file loaded, and nothing depends
@@ -23,7 +23,8 @@
 meta:
   name: electric_board
   version: "1.0"
-  description: Electric guitar — compressor, overdrive, octave, EQ, chorus, delay, reverb
+  description: Electric guitar — compressor, overdrive, octave, EQ, chorus, delay,
+    and two reverbs being auditioned against each other
   status: wip
 
 host:
@@ -59,6 +60,23 @@ tracks:
       - name: delay
         type: lv2
         uri: http://drobilla.net/plugins/mda/Delay
-      - name: reverb
+      # Two reverbs, in series, for auditioning against each other — untick
+      # one plugin's "Active" box in the panel to hear the other on its own.
+      #
+      # These two break the name-by-role rule above, deliberately: with two
+      # plugins filling the same role, the vendor name is the only thing that
+      # distinguishes the tabs. Rename the survivor to "reverb" once one wins.
+      #
+      # They replace mda Ambience, which was measured and found unusable: its
+      # entire impulse response dies in about 11 ms, so there is no tail for its
+      # Size control to lengthen, and Size read as a broken control because of
+      # it. Both of these decay for around a second or more.
+      - name: gigaverb
         type: lv2
-        uri: http://drobilla.net/plugins/mda/Ambience
+        uri: http://distrho.sf.net/plugins/MaGigaverb
+      # Convolution, with seven baked-in impulse responses selected by "Room"
+      # — hence the 11 MB binary. Still config-drivable: the IR choice is an
+      # ordinary control port, not a file it has to load.
+      - name: zamverb
+        type: lv2
+        uri: urn:zamaudio:ZamVerb

@@ -2,7 +2,7 @@
   "_meta": {
     "name": "electric_board",
     "version": "1.0",
-    "description": "Electric guitar \u2014 compressor, overdrive, octave, EQ, chorus, delay, reverb",
+    "description": "Electric guitar \u2014 compressor, overdrive, octave, EQ, chorus, delay, and two reverbs being auditioned against each other",
     "status": "wip"
   },
   "host_config": {
@@ -56,9 +56,14 @@
           "uri": "http://drobilla.net/plugins/mda/Delay"
         },
         {
-          "name": "reverb",
+          "name": "gigaverb",
           "type": "lv2",
-          "uri": "http://drobilla.net/plugins/mda/Ambience"
+          "uri": "http://distrho.sf.net/plugins/MaGigaverb"
+        },
+        {
+          "name": "zamverb",
+          "type": "lv2",
+          "uri": "urn:zamaudio:ZamVerb"
         }
       ]
     }
