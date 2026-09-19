@@ -134,6 +134,13 @@ def main(argv: list[str] | None = None) -> int:
         action="store_false",
         help="skip the neural amp even if the config describes one",
     )
+    p.add_argument(
+        "--amp-model",
+        metavar="NAME",
+        help="use this model instead of the one in the config — a filename in "
+        "amp/models/ or a path. For auditioning without editing the config; "
+        "a save then records whichever was actually used",
+    )
 
     p = sub.add_parser("down", help="stop a running rig and verify it stopped")
     p.add_argument(
@@ -295,18 +302,24 @@ def main(argv: list[str] | None = None) -> int:
             sys.exit(str(exc))
         print(f"saved {out_path}")
     elif args.command in ("up", "down", "status"):
+        from .amp import AmpError
         from .rig import RigError, down, status, up
 
+        # AmpError is caught alongside RigError rather than subclassing it:
+        # amp.py is imported *by* rig.py, so inheriting the other way round
+        # would be circular. Both mean "something the user needs to fix", and
+        # both should read as a message rather than a traceback.
         try:
             if args.command == "up":
                 return up(
                     args.config_name, headless=args.headless,
                     tuner=args.tuner, amp=args.amp,
+                    amp_model=args.amp_model,
                 )
             if args.command == "down":
                 return down(args.force)
             return status()
-        except RigError as exc:
+        except (RigError, AmpError) as exc:
             sys.exit(str(exc))
     elif args.command == "listen":
         from .listen import serve

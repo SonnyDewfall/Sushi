@@ -157,10 +157,20 @@ def resolve_model(model: str, root: Path) -> Path:
     if not path.is_absolute():
         path = Path(root) / path
     if not path.is_file():
+        # Listing what is actually there turns "that file is missing" into
+        # "here is the name you meant" — models are renamed and replaced far
+        # more often than configs are edited.
+        library = Path(root) / "amp" / "models"
+        available = sorted(p.name for p in library.glob("*.nam")) if library.is_dir() else []
+        found = (
+            "\n\nModels in amp/models/:\n  " + "\n  ".join(available)
+            if available else "\n\nThere are no models in amp/models/ at all."
+        )
         raise AmpError(
-            f"amp model not found: {path}\n"
-            "The config names a model that is not on this machine. Put it in "
-            "amp/models/ or change the config."
+            f"amp model not found: {path}"
+            f"{found}\n\n"
+            "Point the config's _amp.model at one of these, or start without "
+            "the amp:\n  sushi-rig up <config> --no-amp"
         )
     return path
 

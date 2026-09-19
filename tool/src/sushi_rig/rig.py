@@ -638,6 +638,7 @@ def up(
     headless: bool = False,
     tuner: bool = True,
     amp: bool = True,
+    amp_model: str | None = None,
 ) -> int:
     """Start the rig and return to the prompt.
 
@@ -702,8 +703,19 @@ def up(
         from .amp import amp_from_config_file, carla_project, resolve_model
 
         described = amp_from_config_file(config)
+        if amp_model and not described:
+            # --amp-model on a config with no amp section still gets an amp:
+            # auditioning a model against a rig that has never had one is a
+            # perfectly reasonable thing to want.
+            described = {"model": amp_model, "parameters": {}}
         if described:
             amp_model_stored = described.get("model")
+            if amp_model:
+                # A bare filename means amp/models/, which is where they live —
+                # typing the directory every time would be tedious.
+                amp_model_stored = (
+                    amp_model if "/" in amp_model else f"amp/models/{amp_model}"
+                )
             amp_values = dict(described.get("parameters") or {})
             model_path = resolve_model(amp_model_stored, root)
             amp_project = runtime_dir() / "amp.carxp"
