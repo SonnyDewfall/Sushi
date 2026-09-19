@@ -94,12 +94,12 @@
       "processor": "eq",
       "bypassed": false,
       "parameters": {
-        "Low": 0.5,
-        "Mid": 0.53,
-        "High": 0.5,
+        "Low": 0.35,
+        "Mid": 0.56,
+        "High": 0.19,
         "Master": 0.51,
         "Low-Mid Freq": 0.22,
-        "Mid-High Freq": 0.052632
+        "Mid-High Freq": 0.03
       }
     },
     {
@@ -172,7 +172,7 @@
     "plugin": "nam",
     "model": "amp/models/Neve 2.nam",
     "parameters": {
-      "Input Lvl": -4.0,
+      "Input Lvl": 0.0,
       "Output Lvl": -0.4,
       "Quality": 1.0
     }

@@ -1,10 +1,11 @@
 {
   "_meta": {
-    "name": "electric-chorus",
+    "name": "electric-clean",
     "version": "1.0",
     "description": "Electric guitar \u2014 compressor, overdrive, octave, EQ, chorus, delay, and two reverbs \u2014 a clean room and a big hall",
     "status": "stable",
-    "source": "config/src/electric_board.yaml"
+    "source": "config/src/electric_board.yaml",
+    "archived_at": "2026-09-19"
   },
   "host_config": {
     "samplerate": 48000
@@ -94,17 +95,17 @@
       "processor": "eq",
       "bypassed": false,
       "parameters": {
-        "Low": 0.4,
-        "Mid": 0.56,
-        "High": 0.21,
+        "Low": 0.5,
+        "Mid": 0.53,
+        "High": 0.5,
         "Master": 0.51,
-        "Low-Mid Freq": 0.26,
-        "Mid-High Freq": 0.03
+        "Low-Mid Freq": 0.22,
+        "Mid-High Freq": 0.052632
       }
     },
     {
       "processor": "chorus",
-      "bypassed": false,
+      "bypassed": true,
       "parameters": {
         "Level": 0.91,
         "Delay": 0.77,
@@ -163,7 +164,7 @@
       "bypassed": false,
       "parameters": {
         "Blend": 0.2,
-        "Room Size": 0.41,
+        "Room Size": 0.51,
         "Enable": 1.0
       }
     }
@@ -172,7 +173,7 @@
     "plugin": "nam",
     "model": "amp/models/Neve 2.nam",
     "parameters": {
-      "Input Lvl": 0.0,
+      "Input Lvl": -4.0,
       "Output Lvl": -0.4,
       "Quality": 1.0
     }

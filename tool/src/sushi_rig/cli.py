@@ -153,6 +153,17 @@ def main(argv: list[str] | None = None) -> int:
     sub.add_parser("status", help="what is running, if anything")
 
     p = sub.add_parser(
+        "top",
+        help="live CPU load per rig component, and whether xruns are climbing",
+    )
+    p.add_argument(
+        "--interval", type=float, default=1.0, help="seconds between samples"
+    )
+    p.add_argument(
+        "--once", action="store_true", help="print one reading and exit"
+    )
+
+    p = sub.add_parser(
         "listen",
         help="run an OSC listener that saves a config on request (for the panel's save button)",
     )
@@ -301,6 +312,10 @@ def main(argv: list[str] | None = None) -> int:
         except SaveError as exc:
             sys.exit(str(exc))
         print(f"saved {out_path}")
+    elif args.command == "top":
+        from .top import top
+
+        return top(args.interval, args.once)
     elif args.command in ("up", "down", "status"):
         from .amp import AmpError
         from .rig import RigError, down, status, up
