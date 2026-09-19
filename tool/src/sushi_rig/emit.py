@@ -129,7 +129,11 @@ def _build_initial_state(rig: RigSpec, state: dict[str, Any]) -> list[dict[str, 
         # bug.
         if values.get("bypassed") is not None and processor not in track_names:
             entry["bypassed"] = values["bypassed"]
-        if values.get("program") is not None:
+        # Dropped when the same entry carries parameters, for the reason in
+        # live.py's capture: Sushi applies a program over them and the captured
+        # values are lost. Guarded here too so a state file captured before that
+        # fix repairs itself on the next emit rather than reproducing the bug.
+        if values.get("program") is not None and not values.get("parameters"):
             entry["program"] = values["program"]
         if values.get("parameters"):
             # Rounded to ~6dp: full float repr makes the diff unreadable and

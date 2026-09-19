@@ -82,9 +82,9 @@
       "processor": "compressor",
       "bypassed": false,
       "parameters": {
-        "RATIO": 0.07,
+        "RATIO": 0.11,
         "KNEE": 0.1,
-        "THRESHOLD": 0.76,
+        "THRESHOLD": 0.8,
         "RELEASE": 0.05,
         "ATTACK": 0.002,
         "BYPASS": 1.0
@@ -93,14 +93,13 @@
     {
       "processor": "eq",
       "bypassed": false,
-      "program": 0,
       "parameters": {
-        "Low": 0.15,
-        "Mid": 0.56,
-        "High": 0.33,
-        "Master": 0.57,
+        "Low": 0.5,
+        "Mid": 0.53,
+        "High": 0.5,
+        "Master": 0.51,
         "Low-Mid Freq": 0.22,
-        "Mid-High Freq": 0.0
+        "Mid-High Freq": 0.052632
       }
     },
     {

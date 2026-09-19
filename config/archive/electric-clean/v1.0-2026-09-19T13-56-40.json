@@ -3,7 +3,7 @@
     "name": "electric-clean",
     "version": "1.0",
     "description": "Electric guitar \u2014 compressor, overdrive, octave, EQ, chorus, delay, and two reverbs \u2014 a clean room and a big hall",
-    "status": "wip",
+    "status": "stable",
     "source": "config/src/electric_board.yaml",
     "archived_at": "2026-09-19"
   },
@@ -58,14 +58,14 @@
           "uri": "http://drobilla.net/plugins/mda/Delay"
         },
         {
-          "name": "room",
-          "type": "lv2",
-          "uri": "urn:ardour:a-reverb"
-        },
-        {
           "name": "hall",
           "type": "lv2",
           "uri": "http://distrho.sf.net/plugins/MaGigaverb"
+        },
+        {
+          "name": "room",
+          "type": "lv2",
+          "uri": "urn:ardour:a-reverb"
         }
       ]
     }
@@ -95,22 +95,22 @@
       "processor": "eq",
       "bypassed": false,
       "parameters": {
-        "Low": 0.5,
-        "Mid": 0.64,
-        "High": 0.53,
-        "Master": 0.5,
-        "Low-Mid Freq": 0.24,
-        "Mid-High Freq": 0.06
+        "Low": 0.15,
+        "Mid": 0.56,
+        "High": 0.33,
+        "Master": 0.57,
+        "Low-Mid Freq": 0.22,
+        "Mid-High Freq": 0.0
       }
     },
     {
       "processor": "chorus",
       "bypassed": true,
       "parameters": {
-        "Level": 0.5,
-        "Delay": 0.1,
-        "Depth": 0.02,
-        "Freq": 0.292929,
+        "Level": 0.91,
+        "Delay": 0.77,
+        "Depth": 0.03,
+        "Freq": 0.08,
         "BYPASS": 1.0
       }
     },
@@ -119,17 +119,17 @@
       "bypassed": true,
       "parameters": {
         "DIRECT": 0.5,
-        "OCTAVE1": 0.5,
-        "OCTAVE2": 0.5
+        "OCTAVE1": 0.77,
+        "OCTAVE2": 0.0
       }
     },
     {
       "processor": "overdrive",
       "bypassed": true,
       "parameters": {
-        "Level": 0.166667,
-        "Tone": 0.333333,
-        "Drive": 0.5,
+        "Level": 0.93,
+        "Tone": 0.13,
+        "Drive": 0.0,
         "BYPASS": 1.0
       }
     },
@@ -146,15 +146,6 @@
       }
     },
     {
-      "processor": "room",
-      "bypassed": false,
-      "parameters": {
-        "Blend": 0.3,
-        "Room Size": 0.0,
-        "Enable": 1.0
-      }
-    },
-    {
       "processor": "hall",
       "bypassed": true,
       "parameters": {
@@ -167,6 +158,24 @@
         "dry": 1.0,
         "early": 0.25
       }
+    },
+    {
+      "processor": "room",
+      "bypassed": false,
+      "parameters": {
+        "Blend": 0.2,
+        "Room Size": 0.51,
+        "Enable": 1.0
+      }
     }
-  ]
+  ],
+  "_amp": {
+    "plugin": "nam",
+    "model": "amp/models/Neve 2.nam",
+    "parameters": {
+      "Input Lvl": -4.0,
+      "Output Lvl": -0.4,
+      "Quality": 1.0
+    }
+  }
 }

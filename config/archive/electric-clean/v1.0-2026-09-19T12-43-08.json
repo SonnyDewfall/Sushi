@@ -94,7 +94,6 @@
     {
       "processor": "eq",
       "bypassed": false,
-      "program": 0,
       "parameters": {
         "Low": 0.5,
         "Mid": 0.5,

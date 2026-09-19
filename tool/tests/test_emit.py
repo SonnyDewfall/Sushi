@@ -238,3 +238,31 @@ def test_a_tracks_bypass_is_never_written_to_initial_state(tmp_path):
     assert "bypassed" not in entries["board"], "a track's bypass must not be written"
     assert entries["board"]["parameters"] == {"gain": 0.8}, "its parameters still are"
     assert entries["reverb"]["bypassed"] is True, "a plugin's bypass still is"
+
+
+def test_a_program_is_not_written_alongside_parameters(tmp_path):
+    """Sushi applies a program *over* the parameters in the same initial_state
+    entry, so recording both destroys the captured values on the next load.
+
+    Reported as "the EQ params are not getting saved": they were saved
+    perfectly, and then overwritten at load time by the preset index written
+    beside them. Isolated against a running Sushi — with the program key every
+    parameter came back as the factory preset; remove only that key and they all
+    applied."""
+    rig = RigSpec.load(_write_rig(tmp_path))
+    state = {"processors": {
+        "reverb": {"program": 0, "parameters": {"Blend": 0.8}},
+    }}
+    entry = emit(rig, state)["initial_state"][0]
+    assert "program" not in entry, "the captured values are the better record"
+    assert entry["parameters"] == {"Blend": 0.8}
+
+
+def test_a_program_is_still_written_when_there_is_nothing_else(tmp_path):
+    """Where there is no choice, the program is the only handle on a
+    processor's state — a preset convolver exposes presets and no automatable
+    parameters at all."""
+    rig = RigSpec.load(_write_rig(tmp_path))
+    state = {"processors": {"reverb": {"program": 2, "parameters": {}}}}
+    entry = emit(rig, state)["initial_state"][0]
+    assert entry["program"] == 2

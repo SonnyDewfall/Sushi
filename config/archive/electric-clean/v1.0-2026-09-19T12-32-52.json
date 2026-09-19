@@ -94,7 +94,6 @@
     {
       "processor": "eq",
       "bypassed": false,
-      "program": 0,
       "parameters": {
         "Low": 0.52,
         "Mid": 0.35,
@@ -163,7 +162,6 @@
     {
       "processor": "zamverb",
       "bypassed": false,
-      "program": 0,
       "parameters": {
         "Master level": 0.5,
         "Wet / Dry": 0.41,

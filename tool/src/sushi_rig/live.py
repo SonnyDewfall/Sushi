@@ -103,13 +103,32 @@ def capture(address: str = DEFAULT_GRPC_ADDRESS) -> dict[str, Any]:
 
                 entry: dict[str, Any] = {"parameters": params}
 
-                info_obj = _safe(controller.audio_graph.get_processor_info, proc_id)
-                if info_obj is not None and getattr(info_obj, "program_count", 0) > 0:
-                    program = _safe(
-                        controller.programs.get_processor_current_program, proc_id
+                # A program is only recorded for a processor we captured no
+                # parameters for. Sushi applies a program *over* the parameters
+                # in the same initial_state entry, so recording both silently
+                # destroys the captured values on the next load — a saved EQ
+                # came back as the plugin's factory preset every time, because
+                # the preset index was written alongside the very values it
+                # overwrites.
+                #
+                # Isolated against a running Sushi: with the program key the
+                # parameters are ignored entirely; remove only that key and they
+                # all apply. Captured parameters are the actual observed state,
+                # so they are the better record when there is a choice.
+                #
+                # Programs still matter where there is no choice — a preset
+                # convolver exposes presets and no automatable parameters at
+                # all, and then the program is the only handle on its state.
+                if not params:
+                    info_obj = _safe(
+                        controller.audio_graph.get_processor_info, proc_id
                     )
-                    if program is not None:
-                        entry["program"] = program
+                    if info_obj is not None and getattr(info_obj, "program_count", 0) > 0:
+                        program = _safe(
+                            controller.programs.get_processor_current_program, proc_id
+                        )
+                        if program is not None:
+                            entry["program"] = program
 
                 # Deliberately NOT captured for a track. Setting `bypassed` on
                 # a track in initial_state cascades to every processor on it,

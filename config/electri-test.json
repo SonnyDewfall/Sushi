@@ -89,7 +89,6 @@
     {
       "processor": "eq",
       "bypassed": false,
-      "program": 0,
       "parameters": {
         "Low": 0.66,
         "Mid": 0.5,
