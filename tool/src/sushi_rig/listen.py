@@ -25,10 +25,11 @@ package stays importable and testable without it.
 
 from __future__ import annotations
 
+import json
 import sys
 from pathlib import Path
 
-from .live import DEFAULT_GRPC_ADDRESS, move_processor
+from .live import DEFAULT_GRPC_ADDRESS, move_processor, refresh_panel
 from .save import SaveError, save_config
 
 DEFAULT_LISTEN_PORT = 24025
@@ -78,6 +79,9 @@ def serve(
     port: int = DEFAULT_LISTEN_PORT,
     status_host: str = DEFAULT_STATUS_HOST,
     status_port: int = DEFAULT_STATUS_PORT,
+    panel_config: Path | None = None,
+    panel_out: Path | None = None,
+    sushi_bin: str = "sushi",
 ) -> None:
     """Block, handling `NAME_ADDRESS`/`SAVE_ADDRESS` messages until interrupted.
 
@@ -130,9 +134,44 @@ def serve(
             _report(f"move failed: {processor} got no direction")
             return
         try:
-            _report(move_processor(processor, direction, address))
+            outcome = move_processor(processor, direction, address)
         except Exception as exc:  # noqa: BLE001 - a bad move must not kill the listener
             _report(f"move failed: {exc}")
+            return
+
+        _report(outcome)
+        if outcome.startswith("moved "):
+            _rebuild_panel(processor)
+
+    def _rebuild_panel(select_tab: str) -> None:
+        """Regenerate the panel and have open-stage-control reload it, so the
+        tabs end up in the rig's new order.
+
+        Needs the panel arguments to have been supplied; without them a move
+        still works, it just leaves the tabs stale — which is how this behaved
+        before the panel could be refreshed at all.
+
+        Never fatal. A move that succeeded followed by a panel that failed to
+        refresh is a cosmetic problem; an exception here would take down the
+        listener and with it the save button.
+        """
+        if panel_config is None or panel_out is None:
+            return
+        try:
+            from .dump import dump_plugins
+            from .live import get_live_bypass_state, get_live_parameter_info
+            from .panel import build_osc_panel
+
+            panel = build_osc_panel(
+                dump_plugins(panel_config, sushi_bin),
+                get_live_parameter_info(address),
+                port,
+                get_live_bypass_state(address),
+            )
+            Path(panel_out).write_text(json.dumps(panel, indent=2) + "\n")
+            refresh_panel(str(panel_out), select_tab, status_host, status_port)
+        except Exception as exc:  # noqa: BLE001 - see docstring
+            _report(f"panel refresh failed (the move still applied): {exc}")
 
     dispatcher = Dispatcher()
     dispatcher.map(NAME_ADDRESS, _on_name)

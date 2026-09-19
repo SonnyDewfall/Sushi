@@ -105,10 +105,16 @@ if ! kill -0 "$QPWGRAPH_PID" 2>/dev/null; then
 fi
 
 # 5. Launch the save listener (issue #10) so the panel's save button works
+# --panel-* turn on auto-refresh: after a chain reorder the panel is
+# regenerated and open-stage-control is told to reload it, so the tabs end up
+# in the rig's new order rather than silently showing the old one.
 tool/.venv/bin/sushi-rig listen \
   --rig "$RIG_YAML" \
   --out-dir config \
-  --archive-dir config/archive &
+  --archive-dir config/archive \
+  --panel-config "$CONFIG" \
+  --panel-out "$PANEL_FILE" \
+  --sushi ./sushi &
 
 # 6. Launch SUSHI via PipeWire-JACK, backgrounded so this script can carry
 # on to generate and open the panel once it's up

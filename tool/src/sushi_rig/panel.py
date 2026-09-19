@@ -189,16 +189,28 @@ def build_osc_panel(
 ) -> dict[str, Any]:
     """Build a tabbed Open Stage Control panel structure: one tab per processor."""
     tabs = []
-    # Deliberately NOT sorted: `--dump-plugins` lists processors in the order
-    # they sit on the track, so iterating it as-is puts the tabs in signal
-    # chain order — compressor, overdrive, octave, eq, chorus, delay, reverb —
-    # and the panel reads left to right like the pedalboard it represents.
+    parameter_info = collect_parameter_info(dump)
+
+    # Tab order comes from the LIVE rig, not the dump. `get_live_parameter_info`
+    # walks tracks then processors, so its keys arrive in chain order and the
+    # panel reads left to right like the pedalboard it represents.
     #
-    # This used to be sorted alphabetically, which produced chorus, compressor,
-    # delay, eq, octave, overdrive, reverb: an order with no relationship to
-    # the audio path, so neighbouring tabs told you nothing about what feeds
-    # what. The chain order was already in the dump and was being discarded.
-    for processor, params in collect_parameter_info(dump).items():
+    # It has to be the live rig rather than the dump, even though the dump is
+    # also ordered: the dump is a separate `sushi --dump-plugins -c <config>`
+    # subprocess reading the config *file*, so it reports the order on disk.
+    # Reorder the chain live and the dump still returns the old order — which
+    # is exactly why regenerating a panel appeared not to work, and why moving
+    # a plugin seemed to do nothing in either direction.
+    #
+    # Keys in live_info but not in the dump are tracks: they carry parameters
+    # (gain, pan, mute) but are not plugins, so they get no tab. Anything in
+    # the dump with no live counterpart is appended so the existing
+    # "not found in the live rig" warning below still fires for it.
+    ordered = [name for name in live_info if name in parameter_info]
+    ordered += [name for name in parameter_info if name not in ordered]
+
+    for processor in ordered:
+        params = parameter_info[processor]
         live_params = live_info.get(processor)
         if live_params is None:
             print(
@@ -273,29 +285,50 @@ def build_osc_panel(
                 }
             )
         if widgets:
-            # Bypass toggle first, so it reads as the pedal's on/off switch
-            # above its controls. `default` reflects Sushi's current state, so
-            # the toggle shows how the rig actually is when the panel opens.
+            # Reads "Active", ticked when the plugin is doing something —
+            # not "BYPASS", which means the plugin is *off* when it is on. That
+            # double negative has already caught this project out: the Guitarix
+            # pedals expose their own BYPASS parameter running the opposite way
+            # (1 = active), which is why that parameter is hidden from the
+            # faders. Label the state you want, not the one you suppress.
+            #
+            # The inversion lives in the widget, not in code: a toggle sends
+            # `on` when ticked and `off` when not, so ticked sends bypass 0.
+            #
+            # `default` reflects Sushi's current state, so the tick shows how
+            # the rig actually is when the panel opens.
             #
             # Deliberately NO `target` and NO `ignoreDefaults`: this must go to
             # Sushi via open-stage-control's own --send, exactly like the
-            # faders do.
-            #
-            # `ignoreDefaults` was set here originally, on the mistaken belief
-            # that it suppressed sending on load. It does not — open-stage-
-            # control's own help for it reads "ignore the server's default
-            # targets". With no `target` of its own to fall back on, the toggle
-            # ignored the only destination it had and sent nowhere at all, so
-            # bypass silently did nothing in the panel while working perfectly
-            # over OSC from anything else. The save bar uses the flag correctly
-            # because those widgets *do* name a target (the listener); this one
-            # copied the flag without the target.
+            # faders do. `ignoreDefaults` was set here originally on the
+            # mistaken belief that it suppressed sending on load. It does not —
+            # its own help reads "ignore the server's default targets", and
+            # with no `target` to fall back on the toggle ignored the only
+            # destination it had and sent nowhere at all.
             bypass_toggle = {
                 "type": "button",
                 "id": f"{processor}/bypass",
-                "label": "BYPASS",
+                "label": "Active",
                 "mode": "toggle",
+                # Drawn as a tickbox rather than a lit-up button: a toggle
+                # button only tells you its state by its own shading, which
+                # says nothing about which way round it means. A tick next to
+                # the word "Active" says it outright. open-stage-control has no
+                # checkbox widget (its `switch` is a value selector), so the box
+                # is a glyph on the label, swapped by the `on` class the client
+                # puts on an active button.
+                "css": (
+                    "label:before { content: '\\2610'; margin-right: 0.4em; "
+                    "font-size: 1.15em; line-height: 1; }\n"
+                    "&.on label:before { content: '\\2611'; }"
+                ),
                 "address": f"{BYPASS_ADDRESS_PREFIX}{processor}",
+                "on": 0,
+                "off": 1,
+                # Ticked = active, so the default follows `on`/`off` above:
+                # a bypassed plugin defaults to `off` (1, unticked), a running
+                # one to `on` (0, ticked). Easy to get backwards — 0 reads like
+                # "off" until you remember `on` is 0 here.
                 "default": 1 if (bypass_info or {}).get(processor) else 0,
                 # Sushi's /bypass/ handler accepts an OSC **int** only — a
                 # float is parsed and then silently ignored, no error, no log.

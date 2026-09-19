@@ -113,6 +113,26 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("--status-port", type=int, default=DEFAULT_STATUS_PORT)
 
+    # Supplying these turns on panel auto-refresh: after a move, the panel is
+    # regenerated and open-stage-control is told to reload it, so the tabs end
+    # up in the rig's new order. Optional — without them a move still works, it
+    # just leaves the tabs showing the old order.
+    p.add_argument(
+        "--panel-config",
+        type=Path,
+        help="config to regenerate the panel from after a chain reorder",
+    )
+    p.add_argument(
+        "--panel-out",
+        type=Path,
+        help="panel file to rewrite and reload (the one open-stage-control loaded)",
+    )
+    p.add_argument(
+        "--sushi",
+        default="sushi",
+        help="sushi binary, used to re-dump plugin parameters when regenerating",
+    )
+
     args = parser.parse_args(argv)
 
     if args.command == "emit":
@@ -210,6 +230,9 @@ def main(argv: list[str] | None = None) -> int:
             port=args.port,
             status_host=args.status_host,
             status_port=args.status_port,
+            panel_config=args.panel_config,
+            panel_out=args.panel_out,
+            sushi_bin=args.sushi,
         )
 
     return 0

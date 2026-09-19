@@ -25,6 +25,8 @@ load the config at all ("Failed to load the initial processor states.", exit
 
 from __future__ import annotations
 
+import threading
+
 import sys
 import time
 from typing import Any
@@ -201,6 +203,66 @@ def get_live_bypass_state(address: str = DEFAULT_GRPC_ADDRESS) -> dict[str, bool
     return result
 
 
+# How long to wait after `/SESSION/OPEN` before re-selecting the tab. Long
+# enough for open-stage-control to rebuild its widget tree (measured well under
+# half a second for a seven-plugin panel), short enough not to be noticed.
+TAB_RESELECT_DELAY = 0.75
+
+
+def refresh_panel(
+    panel_path: str,
+    select_tab: str | None = None,
+    host: str = "127.0.0.1",
+    port: int = 8080,
+    tab_delay: float = TAB_RESELECT_DELAY,
+) -> None:
+    """Tell a running open-stage-control to reload `panel_path`.
+
+    Uses open-stage-control's remote-control OSC API, which is documented in
+    the app's own bundled docs (`docs/docs/remote-control`) rather than
+    anywhere obvious in its source — this project previously concluded from
+    grepping the minified client that no remote reload existed, and wrote that
+    wrong conclusion into a status message and a comment.
+
+    `/SESSION/OPEN` reloads the whole session, which resets the visible tab to
+    the first one. `/TABS` then re-selects the tab the caller came from,
+    otherwise moving the reverb would bounce you to the compressor tab every
+    time.
+
+    The two messages cannot be sent back to back. `/SESSION/OPEN` returns
+    immediately while the client is still tearing down and rebuilding the
+    widget tree, and a `/TABS` that lands during that window is silently
+    dropped — verified against the running rig, where the reload worked but the
+    selection always fell back to the first tab. Sent on its own once the
+    rebuild has settled, the very same message selects the tab correctly. So
+    the re-select is deferred by `tab_delay`, on a timer rather than a sleep so
+    the caller (the OSC listener, which must stay responsive) isn't blocked.
+
+    Fire-and-forget: OSC is unacknowledged, so there is nothing to await and no
+    confirmation to check. A panel that failed to reload is a cosmetic problem;
+    the caller's actual work has already succeeded by this point.
+    """
+    from pythonosc.udp_client import SimpleUDPClient
+
+    client = SimpleUDPClient(host, port)
+    client.send_message("/SESSION/OPEN", str(panel_path))
+    if not select_tab:
+        return
+
+    def _reselect() -> None:
+        try:
+            SimpleUDPClient(host, port).send_message("/TABS", select_tab)
+        except Exception:  # noqa: BLE001,S110 - nobody is listening on this thread
+            pass
+
+    if tab_delay <= 0:
+        _reselect()
+    else:
+        timer = threading.Timer(tab_delay, _reselect)
+        timer.daemon = True
+        timer.start()
+
+
 def plan_move(chain: list[str], processor: str, direction: int) -> dict[str, Any] | None:
     """Where `processor` should land to move one step through `chain`.
 
@@ -268,9 +330,12 @@ def move_processor(
                 target["add_to_back"],
             )
             _wait(response)
-            return (
-                f"moved {processor} {where} — regenerate the panel to reorder tabs"
-            )
+            # Deliberately says only what happened. It used to append
+            # "regenerate the panel to reorder tabs", which was both a chore to
+            # read on every move and based on a wrong belief that
+            # open-stage-control could not be told to reload — see
+            # refresh_panel above. The listener now refreshes the panel itself.
+            return f"moved {processor} {where}"
 
         return f"no processor named {processor!r} on any track"
     finally:

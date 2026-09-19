@@ -67,23 +67,51 @@ def test_panel_one_tab_per_processor(real_dump):
     }
 
 
-def test_tabs_follow_signal_chain_order_not_alphabetical(real_dump):
+def test_tabs_follow_the_live_chain_order(real_dump):
     """The panel should read left to right like the pedalboard it represents,
     so neighbouring tabs tell you what feeds what.
 
-    `--dump-plugins` lists processors in track order, so iterating it as-is
-    gives chain order for free. This was previously sorted alphabetically,
-    which threw that away and produced an order with no relationship to the
-    audio path."""
+    Order comes from the live rig, not the dump. Both are ordered, but the
+    dump is a separate `sushi --dump-plugins -c <config>` subprocess reading
+    the config *file*, so it reports the order on disk. Reorder the chain live
+    and the dump still returns the old order."""
     live_info = _live_info_for(real_dump)
     panel = build_osc_panel(real_dump, live_info)
     tab_ids = [t["id"] for t in _tabs(panel)]
-    dump_order = [p["name"] for p in real_dump["plugins"]]
-    # Order must track the dump, whatever that order happens to be. Note the
-    # fixture's own processors are coincidentally alphabetical, so asserting
-    # "not sorted" here would pass or fail on an accident of the fixture
-    # rather than on the behaviour.
-    assert tab_ids == [n for n in dump_order if n in tab_ids]
+    assert tab_ids == [n for n in live_info if n in tab_ids]
+
+
+def test_live_order_wins_over_the_dump_order(real_dump):
+    """The case that was actually broken: a chain reordered live must show the
+    live order, not the order the config file happens to have. Previously the
+    tabs came from the dump, so a live reorder never appeared in the panel —
+    which made moving a plugin look like it did nothing in either direction."""
+    live_info = _live_info_for(real_dump)
+    reversed_live = {k: live_info[k] for k in reversed(list(live_info))}
+    panel = build_osc_panel(real_dump, reversed_live)
+    tab_ids = [t["id"] for t in _tabs(panel)]
+    dump_order = [p["name"] for p in real_dump["plugins"] if p["name"] in tab_ids]
+    assert tab_ids == list(reversed(dump_order))
+
+
+def test_a_track_in_live_info_gets_no_tab(real_dump):
+    """live_info carries tracks alongside plugins, because tracks have
+    parameters too (gain, pan, mute). They are not plugins, so they get no
+    tab — they simply aren't in the dump."""
+    live_info = _live_info_for(real_dump)
+    with_track = {"board": {"gain": {"automatable": True, "value": 0.5,
+                                     "min_domain_value": 0.0,
+                                     "max_domain_value": 1.0}}, **live_info}
+    panel = build_osc_panel(real_dump, with_track)
+    assert "board" not in [t["id"] for t in _tabs(panel)]
+
+
+def test_empty_live_info_falls_back_to_dump_order(real_dump, capsys):
+    """Without a live rig the function must still produce a panel rather than
+    no tabs at all — it just can't know the live order."""
+    panel = build_osc_panel(real_dump, {})
+    capsys.readouterr()  # every processor warns that it isn't live; expected
+    assert [t["id"] for t in _tabs(panel)] == []
 
 
 def test_panel_fader_count_matches_automatable_parameter_count(real_dump):
@@ -435,7 +463,7 @@ def _bypass_toggle(tab):
     return next(w for w in tab["widgets"] if w["id"].endswith("/bypass"))
 
 
-def test_every_plugin_tab_has_a_bypass_toggle(real_dump):
+def test_every_plugin_tab_has_an_active_toggle(real_dump):
     """Bypass is host-level in Sushi, available for every processor whether or
     not the plugin offers its own. That's deliberately what this uses: plugin
     BYPASS parameters exist only on some plugins, and where they exist the
@@ -447,20 +475,49 @@ def test_every_plugin_tab_has_a_bypass_toggle(real_dump):
         toggle = _bypass_toggle(tab)
         assert toggle["address"] == BYPASS_ADDRESS_PREFIX + tab["id"]
         assert toggle["mode"] == "toggle"
+        assert toggle["label"] == "Active"
 
 
-def test_bypass_toggle_reflects_live_state_rather_than_forcing_it(real_dump):
-    """Opening a panel must not change the rig. The toggle starts at whatever
-    Sushi currently reports, and ignoreDefaults stops it sending on load —
-    otherwise opening the panel would silently un-bypass a pedal that a saved
-    config deliberately had switched off."""
+def test_ticked_means_active_so_the_toggle_sends_inverted_values(real_dump):
+    """The control reads "ACTIVE" and is ticked when the plugin is doing
+    something — not "BYPASS", which is on when the plugin is off. That double
+    negative already caught this project out once: the Guitarix pedals expose
+    their own BYPASS running the opposite way (1 = active).
+
+    The inversion lives in the widget rather than in code: a toggle sends `on`
+    when ticked and `off` when not, so ticked sends bypass 0."""
+    live_info = _live_info_for(real_dump)
+    panel = build_osc_panel(real_dump, live_info)
+    for tab in _tabs(panel):
+        toggle = _bypass_toggle(tab)
+        assert toggle["on"] == 0, "ticked must un-bypass"
+        assert toggle["off"] == 1, "unticked must bypass"
+
+
+def test_active_toggle_reflects_live_state_rather_than_forcing_it(real_dump):
+    """Opening a panel must not change the rig: the tick starts at whatever
+    Sushi currently reports. A bypassed plugin shows as unticked."""
     live_info = _live_info_for(real_dump)
     panel = build_osc_panel(
         real_dump, live_info, bypass_info={"compressor_mono": True}
     )
     tabs = {t["id"]: t for t in _tabs(panel)}
-    assert _bypass_toggle(tabs["compressor_mono"])["default"] == 1
-    assert _bypass_toggle(tabs["internal_reverb"])["default"] == 0
+    assert _bypass_toggle(tabs["compressor_mono"])["default"] == 1, "bypassed = unticked"
+    assert _bypass_toggle(tabs["internal_reverb"])["default"] == 0, "running = ticked"
+
+
+def test_active_toggle_is_drawn_as_a_tickbox(real_dump):
+    """A bare toggle button only signals its state by its own shading, which
+    says nothing about which way round it means — the whole reason the old
+    BYPASS control was confusing. open-stage-control has no checkbox widget
+    (its `switch` is a value selector), so the box is a glyph on the label
+    swapped by the `on` class the client puts on an active button."""
+    live_info = _live_info_for(real_dump)
+    panel = build_osc_panel(real_dump, live_info)
+    for tab in _tabs(panel):
+        css = _bypass_toggle(tab)["css"]
+        assert "\\2610" in css, "empty box when unticked"
+        assert "&.on" in css and "\\2611" in css, "ticked box when active"
 
 
 def test_bypass_toggle_targets_sushi_not_the_save_listener(real_dump):

@@ -6,7 +6,13 @@ last element" case has to become add_to_back rather than "before" anything,
 because that is how Sushi's API expresses position.
 """
 
-from sushi_rig.live import plan_move
+import sys
+import time
+import types
+
+import pytest
+
+from sushi_rig.live import TAB_RESELECT_DELAY, plan_move, refresh_panel
 
 CHAIN = ["compressor", "overdrive", "octave", "eq", "chorus", "delay", "reverb"]
 
@@ -45,3 +51,55 @@ def test_unknown_processor_is_a_no_op():
 def test_single_plugin_chain_cannot_move_either_way():
     assert plan_move(["only"], "only", -1) is None
     assert plan_move(["only"], "only", 1) is None
+
+
+class _FakeClient:
+    """Records what would have gone out on the wire."""
+
+    sent: list[tuple[str, object]] = []
+
+    def __init__(self, host, port):
+        self.host, self.port = host, port
+
+    def send_message(self, address, value):
+        _FakeClient.sent.append((address, value))
+
+
+@pytest.fixture
+def fake_osc(monkeypatch):
+    _FakeClient.sent = []
+    module = types.ModuleType("pythonosc.udp_client")
+    module.SimpleUDPClient = _FakeClient
+    monkeypatch.setitem(sys.modules, "pythonosc.udp_client", module)
+    return _FakeClient
+
+
+def test_refresh_opens_the_session_then_reselects_the_tab(fake_osc):
+    """Both halves matter: the reload puts the tabs in the new order, the
+    re-select keeps you on the plugin you just moved."""
+    refresh_panel("/tmp/panel.json", "reverb", tab_delay=0)
+    assert fake_osc.sent == [
+        ("/SESSION/OPEN", "/tmp/panel.json"),
+        ("/TABS", "reverb"),
+    ]
+
+
+def test_tab_reselect_is_deferred_rather_than_sent_immediately(fake_osc):
+    """The regression this guards: sent back to back, the /TABS lands while
+    open-stage-control is still rebuilding its widget tree and is silently
+    dropped, so every move bounced you to the first tab. Verified against the
+    running rig — the identical message works once the rebuild has settled."""
+    refresh_panel("/tmp/panel.json", "reverb")
+    assert fake_osc.sent == [("/SESSION/OPEN", "/tmp/panel.json")], (
+        "/TABS must not go out in the same breath as /SESSION/OPEN"
+    )
+
+    deadline = time.monotonic() + TAB_RESELECT_DELAY + 2
+    while time.monotonic() < deadline and len(fake_osc.sent) < 2:
+        time.sleep(0.05)
+    assert fake_osc.sent[1] == ("/TABS", "reverb"), "but it must still arrive"
+
+
+def test_refresh_without_a_tab_only_reloads(fake_osc):
+    refresh_panel("/tmp/panel.json", tab_delay=0)
+    assert fake_osc.sent == [("/SESSION/OPEN", "/tmp/panel.json")]
