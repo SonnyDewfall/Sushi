@@ -2,7 +2,7 @@
   "_meta": {
     "name": "electric_board",
     "version": "1.0",
-    "description": "Electric guitar \u2014 compressor, overdrive, octave, EQ, chorus, delay, and two reverbs being auditioned against each other",
+    "description": "Electric guitar \u2014 compressor, overdrive, octave, EQ, chorus, delay, and two reverbs \u2014 a clean room and a big hall",
     "status": "wip"
   },
   "host_config": {
@@ -56,14 +56,14 @@
           "uri": "http://drobilla.net/plugins/mda/Delay"
         },
         {
-          "name": "gigaverb",
+          "name": "room",
           "type": "lv2",
-          "uri": "http://distrho.sf.net/plugins/MaGigaverb"
+          "uri": "urn:ardour:a-reverb"
         },
         {
-          "name": "zamverb",
+          "name": "hall",
           "type": "lv2",
-          "uri": "urn:zamaudio:ZamVerb"
+          "uri": "http://distrho.sf.net/plugins/MaGigaverb"
         }
       ]
     }

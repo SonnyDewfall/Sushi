@@ -24,7 +24,7 @@ meta:
   name: electric_board
   version: "1.0"
   description: Electric guitar — compressor, overdrive, octave, EQ, chorus, delay,
-    and two reverbs being auditioned against each other
+    and two reverbs — a clean room and a big hall
   status: wip
 
 host:
@@ -60,23 +60,19 @@ tracks:
       - name: delay
         type: lv2
         uri: http://drobilla.net/plugins/mda/Delay
-      # Two reverbs, in series, for auditioning against each other — untick
-      # one plugin's "Active" box in the panel to hear the other on its own.
+      # Two reverbs, doing two different jobs — named for those jobs, per the
+      # role-naming rule above. Untick one plugin's "Active" box in the panel
+      # to hear the other on its own.
       #
-      # These two break the name-by-role rule above, deliberately: with two
-      # plugins filling the same role, the vendor name is the only thing that
-      # distinguishes the tabs. Rename the survivor to "reverb" once one wins.
-      #
-      # They replace mda Ambience, which was measured and found unusable: its
-      # entire impulse response dies in about 11 ms, so there is no tail for its
-      # Size control to lengthen, and Size read as a broken control because of
-      # it. Both of these decay for around a second or more.
-      - name: gigaverb
+      # ACE Reverb: small, clean, almost free. Two useful controls (Blend and
+      # Room Size; its third, Enable, is the plugin's own on/off and is hidden
+      # from the panel in favour of the host tickbox). ~0.9 s tail.
+      - name: room
+        type: lv2
+        uri: urn:ardour:a-reverb
+      # MaGigaverb for the big echoey end: revtime goes to 360 s and roomsize
+      # to 300, so it reaches well past anything useful. Starts at an 11 s
+      # revtime, which is its own TTL default and will want pulling back.
+      - name: hall
         type: lv2
         uri: http://distrho.sf.net/plugins/MaGigaverb
-      # Convolution, with seven baked-in impulse responses selected by "Room"
-      # — hence the 11 MB binary. Still config-drivable: the IR choice is an
-      # ordinary control port, not a file it has to load.
-      - name: zamverb
-        type: lv2
-        uri: urn:zamaudio:ZamVerb

@@ -718,3 +718,11 @@ def test_panel_declares_schema_version(real_dump):
     panel = build_osc_panel(real_dump, live_info)
     assert panel["version"]
     assert panel["content"]["type"] == "root"
+
+
+def test_a_plugins_own_enable_switch_is_hidden_too(real_dump):
+    """The same trap as BYPASS, spelled the other way round: a toggled `Enable`
+    port would sit beside the host's Active tickbox as a fader doing the
+    opposite thing. ACE Reverb has one."""
+    assert "enable" in PLUGIN_BYPASS_PARAMETER_NAMES
+    assert "bypass" in PLUGIN_BYPASS_PARAMETER_NAMES

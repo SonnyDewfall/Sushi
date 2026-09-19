@@ -161,10 +161,15 @@ BYPASS_HEIGHT = 30
 # say which end is which). Two identically named controls with inverted
 # polarity on one tab is worse than no control at all.
 #
-# Only the panel hides it. `capture` still records the parameter, so a saved
+# "enable" is the same trap spelled the other way round: ACE Reverb exposes a
+# toggled `Enable` port, which would sit next to the host tickbox as a *fader*
+# doing the opposite thing. Hidden for the same reason, and hiding it is also
+# what leaves it at its TTL default of 1, i.e. on.
+#
+# Only the panel hides these. `capture` still records the parameter, so a saved
 # config keeps whatever value it holds — normally the plugin's own default,
 # which is "active".
-PLUGIN_BYPASS_PARAMETER_NAMES = {"bypass"}
+PLUGIN_BYPASS_PARAMETER_NAMES = {"bypass", "enable"}
 
 # A flat {type: "root", ...} file with no `version` field reads as version
 # "0.0.0" to open-stage-control — below its lowest migration threshold — which

@@ -1,0 +1,174 @@
+{
+  "_meta": {
+    "name": "electric-clean",
+    "version": "1.0",
+    "description": "Electric guitar \u2014 compressor, overdrive, octave, EQ, chorus, delay, and two reverbs being auditioned against each other",
+    "status": "wip",
+    "source": "config/src/electric_board.yaml"
+  },
+  "host_config": {
+    "samplerate": 48000
+  },
+  "tracks": [
+    {
+      "name": "board",
+      "channels": 2,
+      "inputs": [
+        {
+          "engine_bus": 0,
+          "track_bus": 0
+        }
+      ],
+      "outputs": [
+        {
+          "engine_bus": 0,
+          "track_bus": 0
+        }
+      ],
+      "plugins": [
+        {
+          "name": "compressor",
+          "type": "lv2",
+          "uri": "http://guitarix.sourceforge.net/plugins/gx_compressor#_compressor"
+        },
+        {
+          "name": "eq",
+          "type": "lv2",
+          "uri": "http://distrho.sf.net/plugins/3BandEQ"
+        },
+        {
+          "name": "chorus",
+          "type": "lv2",
+          "uri": "http://guitarix.sourceforge.net/plugins/gx_chorus_stereo#_chorus_stereo"
+        },
+        {
+          "name": "octave",
+          "type": "lv2",
+          "uri": "http://guitarix.sourceforge.net/plugins/gx_oc_2_#_oc_2_"
+        },
+        {
+          "name": "overdrive",
+          "type": "lv2",
+          "uri": "http://guitarix.sourceforge.net/plugins/gxts9#ts9sim"
+        },
+        {
+          "name": "delay",
+          "type": "lv2",
+          "uri": "http://drobilla.net/plugins/mda/Delay"
+        },
+        {
+          "name": "gigaverb",
+          "type": "lv2",
+          "uri": "http://distrho.sf.net/plugins/MaGigaverb"
+        },
+        {
+          "name": "zamverb",
+          "type": "lv2",
+          "uri": "urn:zamaudio:ZamVerb"
+        }
+      ]
+    }
+  ],
+  "initial_state": [
+    {
+      "processor": "board",
+      "bypassed": false,
+      "parameters": {
+        "gain": 0.833333,
+        "pan": 0.5,
+        "mute": 0.0
+      }
+    },
+    {
+      "processor": "compressor",
+      "bypassed": false,
+      "parameters": {
+        "RATIO": 0.1,
+        "KNEE": 0.15,
+        "THRESHOLD": 0.74,
+        "RELEASE": 0.05,
+        "ATTACK": 0.002,
+        "BYPASS": 1.0
+      }
+    },
+    {
+      "processor": "eq",
+      "bypassed": false,
+      "program": 0,
+      "parameters": {
+        "Low": 0.52,
+        "Mid": 0.35,
+        "High": 0.53,
+        "Master": 0.5,
+        "Low-Mid Freq": 0.52,
+        "Mid-High Freq": 0.07
+      }
+    },
+    {
+      "processor": "chorus",
+      "bypassed": true,
+      "parameters": {
+        "Level": 0.5,
+        "Delay": 0.1,
+        "Depth": 0.02,
+        "Freq": 0.292929,
+        "BYPASS": 1.0
+      }
+    },
+    {
+      "processor": "octave",
+      "bypassed": true,
+      "parameters": {
+        "DIRECT": 0.5,
+        "OCTAVE1": 0.5,
+        "OCTAVE2": 0.5
+      }
+    },
+    {
+      "processor": "overdrive",
+      "bypassed": true,
+      "parameters": {
+        "Level": 0.166667,
+        "Tone": 0.333333,
+        "Drive": 0.5,
+        "BYPASS": 1.0
+      }
+    },
+    {
+      "processor": "delay",
+      "bypassed": true,
+      "parameters": {
+        "L Delay": 0.5,
+        "R Delay": 0.27,
+        "Feedback": 0.7,
+        "Fb Tone": 0.5,
+        "FX Mix": 0.33,
+        "Output": 0.5
+      }
+    },
+    {
+      "processor": "gigaverb",
+      "bypassed": true,
+      "parameters": {
+        "damping": 0.7,
+        "revtime": 0.030286,
+        "roomsize": 0.24975,
+        "spread": 0.23,
+        "bandwidth": 0.5,
+        "tail": 0.25,
+        "dry": 1.0,
+        "early": 0.25
+      }
+    },
+    {
+      "processor": "zamverb",
+      "bypassed": false,
+      "program": 0,
+      "parameters": {
+        "Master level": 0.5,
+        "Wet / Dry": 0.41,
+        "Room": 0.09
+      }
+    }
+  ]
+}
