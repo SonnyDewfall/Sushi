@@ -215,9 +215,24 @@ def panel_amp(config_path: Path) -> dict[str, Any] | None:
     described = amp_from_config_file(config_path)
     if not described or not described.get("model"):
         return None
+
+    # How many inference paths the model actually has. A control that picks
+    # between them is meaningless on a model that only has one, so the panel is
+    # told the count rather than assuming two. Best effort: an unreadable model
+    # is a problem for `up` to report, not for the panel to fail on.
+    tiers = 0
+    try:
+        tiers = len(describe_model(Path(config_path).parent.parent / described["model"])["tiers"])
+    except (AmpError, OSError, ValueError, IndexError):
+        try:
+            tiers = len(describe_model(described["model"])["tiers"])
+        except Exception:  # noqa: BLE001 - genuinely optional
+            tiers = 0
+
     return {
         "model_name": Path(described["model"]).stem,
         "parameters": dict(described.get("parameters") or {}),
+        "tiers": tiers,
     }
 
 

@@ -267,6 +267,39 @@ def _amp_tab(amp: dict[str, Any], listener_port: int) -> dict[str, Any]:
     }]
 
     values = amp.get("parameters") or {}
+
+    # A NAM A2 model carries more than one inference path and its `Quality`
+    # control picks between them — below 0.5 the lite one, above it the full
+    # one. Worth a control: it measured as a clean 2x in CPU on this rig, which
+    # makes it the one lever that buys real headroom without changing the tone
+    # deliberately.
+    #
+    # Shown only when the model actually has paths to choose between. An older
+    # A1 model has one, and `Quality` does nothing at all for it — a control
+    # that silently does nothing is worse than no control.
+    if amp.get("tiers", 0) > 1:
+        widgets.append({
+            "type": "button",
+            "id": "amp/Quality",
+            "label": "Full quality",
+            "mode": "toggle",
+            # Same tickbox treatment as the plugins' Active control, so the two
+            # state controls in the panel read the same way.
+            "css": (
+                "label:before { content: '\\2610'; margin-right: 0.4em; "
+                "font-size: 1.15em; line-height: 1; }\n"
+                "&.on label:before { content: '\\2611'; }"
+            ),
+            "address": f"{AMP_ADDRESS_PREFIX}Quality",
+            "target": [f"127.0.0.1:{listener_port}"],
+            "ignoreDefaults": True,
+            "on": 1.0,
+            "off": 0.0,
+            "default": 1.0 if float(values.get("Quality", 1.0)) > 0.5 else 0.0,
+            "width": 130,
+            "height": BYPASS_HEIGHT,
+        })
+
     for name in PANEL_PARAMETERS:
         low, high = PARAMETER_RANGE[name]
         unit = PARAMETER_UNIT.get(name, "")

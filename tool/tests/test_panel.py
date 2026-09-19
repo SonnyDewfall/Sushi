@@ -726,3 +726,56 @@ def test_a_plugins_own_enable_switch_is_hidden_too(real_dump):
     opposite thing. ACE Reverb has one."""
     assert "enable" in PLUGIN_BYPASS_PARAMETER_NAMES
     assert "bypass" in PLUGIN_BYPASS_PARAMETER_NAMES
+
+
+def _amp_tab_of(panel):
+    return next(t for t in _tabs(panel) if t["id"] == "amp")
+
+
+def test_quality_is_offered_when_the_model_has_paths_to_choose_between(real_dump):
+    """A NAM A2 model carries a lite and a full inference path, and Quality
+    picks between them — measured as a clean 2x in CPU, which makes it the one
+    lever that buys real headroom."""
+    panel = build_osc_panel(
+        real_dump, _live_info_for(real_dump),
+        amp={"model_name": "M", "parameters": {"Quality": 1.0}, "tiers": 2},
+    )
+    quality = next(
+        w for w in _amp_tab_of(panel)["widgets"] if w["id"] == "amp/Quality"
+    )
+    assert quality["on"] == 1.0 and quality["off"] == 0.0
+    assert quality["default"] == 1.0, "ticked = the full path"
+
+
+def test_quality_is_hidden_on_a_model_that_ignores_it(real_dump):
+    """An older A1 model has a single path, so the control would do nothing at
+    all — worse than not being there."""
+    panel = build_osc_panel(
+        real_dump, _live_info_for(real_dump),
+        amp={"model_name": "M", "parameters": {"Quality": 1.0}, "tiers": 1},
+    )
+    assert not [w for w in _amp_tab_of(panel)["widgets"] if w["id"] == "amp/Quality"]
+
+
+def test_the_lite_path_shows_as_unticked(real_dump):
+    panel = build_osc_panel(
+        real_dump, _live_info_for(real_dump),
+        amp={"model_name": "M", "parameters": {"Quality": 0.0}, "tiers": 2},
+    )
+    quality = next(
+        w for w in _amp_tab_of(panel)["widgets"] if w["id"] == "amp/Quality"
+    )
+    assert quality["default"] == 0.0
+
+
+def test_the_amp_controls_reach_the_listener_not_sushi(real_dump):
+    """They go to the listener so it can forward them to Carla and remember
+    them for the save button — Carla cannot be asked what it holds."""
+    panel = build_osc_panel(
+        real_dump, _live_info_for(real_dump), 24025,
+        amp={"model_name": "M", "parameters": {}, "tiers": 2},
+    )
+    for widget in _amp_tab_of(panel)["widgets"]:
+        if widget["type"] in ("fader", "button"):
+            assert widget["target"] == ["127.0.0.1:24025"]
+            assert widget["ignoreDefaults"] is True
