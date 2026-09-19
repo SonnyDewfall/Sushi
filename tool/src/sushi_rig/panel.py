@@ -147,6 +147,10 @@ SAVE_BAR_WIDGET_HEIGHT = 40
 # range 0-1, with no scale points, so nothing states whether 1 means active
 # or bypassed).
 BYPASS_ADDRESS_PREFIX = "/bypass/"
+# The amp's controls go to the listener, which forwards them to Carla and
+# remembers them for the save button. See `_amp_tab`.
+AMP_ADDRESS_PREFIX = "/sushi-rig/amp/"
+MODEL_LABEL_HEIGHT = 40
 BYPASS_HEIGHT = 30
 
 # Parameter names that are a plugin's *own* bypass control, which the panel
@@ -231,12 +235,81 @@ def _readout_value(
     )
 
 
+def _amp_tab(amp: dict[str, Any], listener_port: int) -> dict[str, Any]:
+    """A tab for the neural amp, which is not in Sushi at all.
+
+    The amp runs in Carla as its own JACK client, because Sushi cannot set its
+    model (see `amp.py`). Its knobs, though, are ordinary LV2 control ports, so
+    they can be driven remotely — and there is no reason the player should have
+    to know that two different hosts are involved.
+
+    These widgets target the **listener**, not Carla directly, for two reasons.
+    The listener has to see the values anyway in order to save them, and it is
+    already the rig's control plane for saving and reordering. Sending straight
+    to Carla would be one hop shorter and would leave the save button with
+    nothing to record.
+
+    Unlike the plugin tabs, these faders carry **real values, not Sushi's
+    normalised 0-1** — dB here is dB, because Carla takes the plugin's own
+    units. The readout is correspondingly simpler.
+    """
+    from .amp import PANEL_PARAMETERS, PARAMETER_RANGE, PARAMETER_UNIT
+
+    widgets: list[dict[str, Any]] = [{
+        "type": "text",
+        "id": "amp/model",
+        "label": False,
+        "wrap": True,
+        "value": f"model\n{amp.get('model_name', 'none')}",
+        "interaction": False,
+        "width": 260,
+        "height": MODEL_LABEL_HEIGHT,
+    }]
+
+    values = amp.get("parameters") or {}
+    for name in PANEL_PARAMETERS:
+        low, high = PARAMETER_RANGE[name]
+        unit = PARAMETER_UNIT.get(name, "")
+        fader_id = f"amp/{name}"
+        widgets.append({
+            "type": "fader",
+            "id": fader_id,
+            "address": f"{AMP_ADDRESS_PREFIX}{name}",
+            "target": [f"127.0.0.1:{listener_port}"],
+            # Correct here, unlike on the bypass toggle: these widgets DO name a
+            # target, so ignoring the server's default one is what keeps them
+            # off Sushi.
+            "ignoreDefaults": True,
+            "range": {"min": low, "max": high},
+            "default": round(float(values.get(name, 0.0)), 4),
+            "width": 90,
+            "height": 220,
+        })
+        widgets.append({
+            "type": "text",
+            "id": f"{fader_id}/readout",
+            "label": False,
+            "wrap": True,
+            "value": (
+                f"JS{{return {json.dumps(name + chr(10))} + "
+                f"@{{{fader_id}}}.toFixed(1)"
+                f" + {json.dumps(' ' + unit if unit else '')}}}"
+            ),
+            "interaction": False,
+            "width": 90,
+            "height": 40,
+        })
+
+    return {"type": "tab", "id": "amp", "label": "amp", "widgets": widgets}
+
+
 def build_osc_panel(
     dump: Any,
     live_info: dict[str, dict[str, dict]],
     listener_port: int = DEFAULT_LISTEN_PORT,
     bypass_info: dict[str, bool] | None = None,
     units: dict[str, dict[str, str]] | None = None,
+    amp: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """Build a tabbed Open Stage Control panel structure: one tab per processor."""
     tabs = []
@@ -453,6 +526,9 @@ def build_osc_panel(
                 "label": processor,
                 "widgets": [bypass_toggle] + move_buttons + widgets,
             })
+
+    if amp:
+        tabs.append(_amp_tab(amp, listener_port))
 
     save_bar = {
         "type": "panel",

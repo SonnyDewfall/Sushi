@@ -35,3 +35,8 @@ state.json
 # this grows to tens of MB and is per-machine scratch, never shared history.
 .claude/
 
+
+# Carla writes its plugin state next to whatever project it loads. The
+# supervisor generates projects in the runtime dir, so this should stay empty —
+# it appears only if a project is run from here by hand.
+amp/Carla/

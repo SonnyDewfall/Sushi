@@ -152,6 +152,10 @@ def plan_children(
     *,
     headless: bool,
     tuner: bool,
+    amp_project: Path | None = None,
+    amp_model: str | None = None,
+    amp_values: dict[str, float] | None = None,
+    patchbay: Path | None = None,
 ) -> list[dict[str, Any]]:
     """The children to start, in order, as data.
 
@@ -167,7 +171,7 @@ def plan_children(
 
     children.append({
         "name": "qpwgraph",
-        "command": ["qpwgraph", "-a", str(root / "Patchbay" / "rig.qpwgraph"), "-m"],
+        "command": ["qpwgraph", "-a", str(patchbay or root / "Patchbay" / "rig.qpwgraph"), "-m"],
         "optional": True,
         # qpwgraph is a Qt app that registers with the desktop session manager
         # over ICE. The supervisor runs in its own session (see `_supervise`),
@@ -199,12 +203,28 @@ def plan_children(
             ],
             "optional": False,
         })
+        if amp_model:
+            # So the save button can write the amp into the config it saves.
+            children[-1]["command"] += ["--amp-model", amp_model]
+            for name, value in (amp_values or {}).items():
+                children[-1]["command"] += ["--amp-parameter", f"{name}={value}"]
 
     children.append({
         "name": "sushi",
         "command": ["pw-jack", "./sushi", "-j", "-c", str(config)],
         "optional": False,
     })
+
+    if amp_project is not None:
+        # The neural amp, in Carla, because Sushi cannot set its model — see
+        # amp.py. Optional in the same sense the tuner is: the rig is perfectly
+        # playable without it, and a missing Carla should say so rather than
+        # stop the rig coming up.
+        children.append({
+            "name": "amp",
+            "command": ["carla", "-n", str(amp_project)],
+            "optional": True,
+        })
 
     return children
 
@@ -424,6 +444,8 @@ def _supervise(
     headless: bool,
     config_name: str,
     ready_w: int,
+    amp_model: str | None = None,
+    amp_values: dict[str, float] | None = None,
 ) -> None:
     """The supervisor process: own the group, start the children, then wait.
 
@@ -538,6 +560,16 @@ def _supervise(
                 )
             started["open-stage-control"] = osc.pid
 
+        if amp_model and "amp" in procs:
+            # Carla starts with the model but with the plugin's own default
+            # knob positions; the saved values have to be sent once it is
+            # listening. Never fatal — a rig with an amp at its defaults is
+            # much better than no rig.
+            try:
+                _replay_amp(amp_values or {})
+            except Exception as exc:  # noqa: BLE001 - see above
+                problems.append(f"amp parameters not restored: {exc}")
+
         write_state({
             "supervisor_pid": os.getpid(),
             "pgid": os.getpgrp(),
@@ -547,6 +579,7 @@ def _supervise(
             "started_at": datetime.now(timezone.utc).isoformat(),
             "children": started,
             "log_dir": str(logs),
+            "amp_model": amp_model,
         })
 
         for problem in problems:
@@ -567,11 +600,45 @@ def _supervise(
             continue
 
 
+def _replay_amp(values: dict[str, float], timeout: float = 5.0) -> None:
+    """Send the saved knob positions to a freshly started Carla.
+
+    Carla starts with the model loaded but with the plugin's own default knob
+    positions, so the saved values have to be sent once it is listening.
+
+    The wait is a TCP connect. Carla serves OSC over *both* TCP and UDP on the
+    same port, and our sends are UDP — where a send to a closed port succeeds
+    silently and tells you nothing. The TCP side gives a readiness signal the
+    UDP side cannot.
+    """
+    from pythonosc.udp_client import SimpleUDPClient
+
+    from .amp import CARLA_OSC_PORT, parameter_message
+
+    deadline = time.monotonic() + timeout
+    while time.monotonic() < deadline:
+        if port_is_open("127.0.0.1", CARLA_OSC_PORT):
+            break
+        time.sleep(0.2)
+    else:
+        raise RuntimeError("Carla's OSC server never came up")
+
+    client = SimpleUDPClient("127.0.0.1", CARLA_OSC_PORT)
+    for name, value in values.items():
+        try:
+            address, payload = parameter_message(name, value)
+        except Exception:  # noqa: BLE001 - an unknown name is not fatal
+            continue
+        client.send_message(address, payload)
+
+
 def up(
     config_name: str = DEFAULT_CONFIG_NAME,
     *,
     headless: bool = False,
     tuner: bool = True,
+    amp: bool = True,
+    amp_model: str | None = None,
 ) -> int:
     """Start the rig and return to the prompt.
 
@@ -623,8 +690,54 @@ def up(
         )
 
     rig_yaml = resolve_rig_yaml(config)
+
+    # The amp is described in the config's `_amp` section, which Sushi ignores.
+    # The Carla project is generated from it rather than kept as a file, because
+    # the model changes with the config — that is the whole point of carrying it
+    # in there. A config with no `_amp`, or `--no-amp`, simply starts no amp.
+    amp_project = None
+    amp_patch = None
+    amp_values: dict[str, float] = {}
+    amp_model_stored = None
+    if amp:
+        from .amp import amp_from_config_file, carla_project, resolve_model
+
+        described = amp_from_config_file(config)
+        if amp_model and not described:
+            # --amp-model on a config with no amp section still gets an amp:
+            # auditioning a model against a rig that has never had one is a
+            # perfectly reasonable thing to want.
+            described = {"model": amp_model, "parameters": {}}
+        if described:
+            amp_model_stored = described.get("model")
+            if amp_model:
+                # A bare filename means amp/models/, which is where they live —
+                # typing the directory every time would be tedious.
+                amp_model_stored = (
+                    amp_model if "/" in amp_model else f"amp/models/{amp_model}"
+                )
+            amp_values = dict(described.get("parameters") or {})
+            model_path = resolve_model(amp_model_stored, root)
+            amp_project = runtime_dir() / "amp.carxp"
+            amp_project.parent.mkdir(parents=True, exist_ok=True)
+            amp_project.write_text(carla_project(model_path))
+
+            # qpwgraph maintains whatever patch it loaded, so the amp needs its
+            # own file rather than extra connections layered on the saved one —
+            # otherwise the direct guitar-to-Sushi route stays live too and the
+            # dry signal sits under the amped one. Generated from the saved
+            # patchbay so the two cannot drift apart.
+            from .amp import amp_patchbay
+
+            base = root / "Patchbay" / "rig.qpwgraph"
+            if base.is_file():
+                amp_patch = runtime_dir() / "rig-amp.qpwgraph"
+                amp_patch.write_text(amp_patchbay(base.read_text()))
+
     children_plan = plan_children(
-        root, config, rig_yaml, headless=headless, tuner=tuner
+        root, config, rig_yaml, headless=headless, tuner=tuner,
+        amp_project=amp_project, amp_model=amp_model_stored,
+        amp_values=amp_values, patchbay=amp_patch,
     )
 
     ready_r, ready_w = os.pipe()
@@ -635,6 +748,7 @@ def up(
             _supervise(
                 root, config, children_plan,
                 headless=headless, config_name=config_name, ready_w=ready_w,
+                amp_model=amp_model_stored, amp_values=amp_values,
             )
         finally:
             os._exit(0)
@@ -768,5 +882,7 @@ def status() -> int:
     print(f"  group      {pgid}")
     for name, pid in (state.get("children") or {}).items():
         print(f"  {name:10} pid {pid} {'' if pid_alive(pid) else '(DEAD)'}")
+    if state.get("amp_model"):
+        print(f"  amp model  {state['amp_model']}")
     print(f"  logs       {state.get('log_dir')}")
     return 0

@@ -345,3 +345,74 @@ def test_giving_up_is_reported_rather_than_retried_forever(fake_launch, tmp_path
     )
     assert proc is None
     assert fake_launch["launched"] == 3
+
+
+# --- the neural amp ----------------------------------------------------------
+
+
+def test_the_amp_is_planned_only_when_a_project_exists(plan_args):
+    """A config with no `_amp` section describes a rig with no amp, and should
+    start one no more than --no-amp does."""
+    root, config, rig_yaml = plan_args
+    without = _names(plan_children(root, config, rig_yaml, headless=False, tuner=True))
+    assert "amp" not in without
+
+    with_amp = _names(plan_children(
+        root, config, rig_yaml, headless=False, tuner=True,
+        amp_project=root / "amp.carxp",
+    ))
+    assert "amp" in with_amp
+
+
+def test_a_missing_carla_does_not_stop_the_rig(plan_args):
+    """Optional in the same sense the tuner is: the rig is perfectly playable
+    without an amp, so Carla failing should be reported, not fatal."""
+    root, config, rig_yaml = plan_args
+    amp = next(
+        c for c in plan_children(
+            root, config, rig_yaml, headless=False, tuner=True,
+            amp_project=root / "amp.carxp",
+        ) if c["name"] == "amp"
+    )
+    assert amp["optional"] is True
+    assert amp["command"][:2] == ["carla", "-n"]
+
+
+def test_the_amp_starts_after_sushi(plan_args):
+    """Nothing depends on the ordering for correctness, but Sushi is the part
+    worth getting up first if anything is slow."""
+    root, config, rig_yaml = plan_args
+    names = _names(plan_children(
+        root, config, rig_yaml, headless=False, tuner=True,
+        amp_project=root / "amp.carxp",
+    ))
+    assert names.index("sushi") < names.index("amp")
+
+
+def test_the_listener_is_told_the_amp_so_saves_can_record_it(plan_args):
+    """The save button writes the amp into the config it saves, and the only
+    record of the amp's values is what the listener was told — Carla cannot be
+    asked."""
+    root, config, rig_yaml = plan_args
+    listener = next(
+        c for c in plan_children(
+            root, config, rig_yaml, headless=False, tuner=True,
+            amp_project=root / "amp.carxp", amp_model="amp/models/M.nam",
+            amp_values={"Input Lvl": 3.0},
+        ) if c["name"] == "listen"
+    )
+    command = listener["command"]
+    assert command[command.index("--amp-model") + 1] == "amp/models/M.nam"
+    assert "Input Lvl=3.0" in command
+
+
+def test_headless_has_no_listener_to_tell(plan_args):
+    """Headless runs the amp but no panel and no listener, so there is nothing
+    to record values for — and nothing that would change them."""
+    root, config, rig_yaml = plan_args
+    names = _names(plan_children(
+        root, config, rig_yaml, headless=True, tuner=True,
+        amp_project=root / "amp.carxp", amp_model="amp/models/M.nam",
+    ))
+    assert "listen" not in names
+    assert "amp" in names

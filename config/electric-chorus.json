@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "name": "electric-clean",
+    "name": "electric-chorus",
     "version": "1.0",
     "description": "Electric guitar \u2014 compressor, overdrive, octave, EQ, chorus, delay, and two reverbs \u2014 a clean room and a big hall",
     "status": "stable",
@@ -105,7 +105,7 @@
     },
     {
       "processor": "chorus",
-      "bypassed": true,
+      "bypassed": false,
       "parameters": {
         "Level": 0.91,
         "Delay": 0.77,
