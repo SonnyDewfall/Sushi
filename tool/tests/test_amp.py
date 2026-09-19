@@ -258,3 +258,110 @@ def test_the_result_is_still_valid_xml():
     ElementTree.fromstring(
         amp_patchbay(BASE_PATCHBAY).replace("<!DOCTYPE patchbay>", "")
     )
+
+
+# --- reading a .nam model ---------------------------------------------------
+
+
+def _a2_model():
+    """A NAM A2 container: two WaveNet paths, lite and full."""
+    return {
+        "version": "0.7.0",
+        "architecture": "SlimmableContainer",
+        "sample_rate": 48000,
+        "metadata": {"name": "Test Amp", "gear_make": "Acme", "gear_type": "amp"},
+        "config": {"submodels": [
+            {"max_value": 0.5, "model": {
+                "architecture": "WaveNet",
+                "config": {"layers": [{"channels": 3}]},
+                "weights": [0.0] * 1871,
+            }},
+            {"max_value": 1, "model": {
+                "architecture": "WaveNet",
+                "config": {"layers": [{"channels": 8}]},
+                "weights": [0.0] * 12146,
+            }},
+        ]},
+    }
+
+
+def _write(tmp_path, payload, name="m.nam"):
+    path = tmp_path / name
+    path.write_text(json.dumps(payload))
+    return path
+
+
+def test_an_a2_container_reports_its_separate_quality_tiers(tmp_path):
+    """A2 is not one model but a container, and NAM's Quality control picks
+    which path runs — which is why that control does something on an A2 model
+    and nothing at all on an A1 one."""
+    from sushi_rig.amp import describe_model
+
+    d = describe_model(_write(tmp_path, _a2_model()))
+    assert d["slimmable"] is True
+    assert [t["channels"] for t in d["tiers"]] == [[3], [8]]
+    assert [t["weights"] for t in d["tiers"]] == [1871, 12146]
+
+
+def test_an_a1_model_reports_a_single_path(tmp_path):
+    """Older models name their architecture directly and carry one set of
+    weights, so there is no tier to choose between."""
+    from sushi_rig.amp import describe_model
+
+    d = describe_model(_write(tmp_path, {
+        "architecture": "WaveNet",
+        "sample_rate": 48000,
+        "config": {"layers": [{"channels": 16}]},
+        "weights": [0.0] * 500,
+    }))
+    assert d["slimmable"] is False
+    assert len(d["tiers"]) == 1
+    assert d["tiers"][0]["channels"] == [16]
+
+
+def test_quality_hints_name_the_setting_that_selects_each_path(tmp_path):
+    from sushi_rig.amp import quality_hint
+
+    assert quality_hint(2, 0) == "Quality < 0.5"
+    assert quality_hint(2, 1) == "Quality > 0.5"
+    assert "no effect" in quality_hint(1, 0), "a single-path model ignores it"
+
+
+def test_a_sample_rate_mismatch_is_shouted_about(tmp_path):
+    """NAM does no resampling. A 44.1 kHz model in a 48 kHz rig plays at the
+    wrong pitch and speed, and nothing else warns you."""
+    from sushi_rig.amp import describe_model, summarise_model
+
+    payload = _a2_model() | {"sample_rate": 44100}
+    out = summarise_model(describe_model(_write(tmp_path, payload)), rig_rate=48000)
+    assert "MISMATCH" in out and "44100" in out
+    assert "wrong pitch" in out
+
+
+def test_a_matching_sample_rate_says_so(tmp_path):
+    from sushi_rig.amp import describe_model, summarise_model
+
+    out = summarise_model(describe_model(_write(tmp_path, _a2_model())), rig_rate=48000)
+    assert "MISMATCH" not in out and "matches the rig" in out
+
+
+def test_a_float_sample_rate_is_read_as_a_rate(tmp_path):
+    """Models from different toolchains write 48000.0 rather than 48000."""
+    from sushi_rig.amp import describe_model
+
+    assert describe_model(
+        _write(tmp_path, _a2_model() | {"sample_rate": 48000.0})
+    )["sample_rate"] == 48000
+
+
+def test_something_that_is_not_a_model_is_refused_clearly(tmp_path):
+    from sushi_rig.amp import AmpError, describe_model
+
+    broken = tmp_path / "broken.nam"
+    broken.write_text("{not json")
+    with pytest.raises(AmpError, match="not valid JSON"):
+        describe_model(broken)
+    with pytest.raises(AmpError, match="architecture"):
+        describe_model(_write(tmp_path, {"hello": "world"}, "wrong.nam"))
+    with pytest.raises(AmpError, match="cannot read"):
+        describe_model(tmp_path / "absent.nam")

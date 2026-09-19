@@ -4,7 +4,8 @@
     "version": "1.0",
     "description": "Electric guitar \u2014 compressor, overdrive, octave, EQ, chorus, delay, and two reverbs \u2014 a clean room and a big hall",
     "status": "stable",
-    "source": "config/src/electric_board.yaml"
+    "source": "config/src/electric_board.yaml",
+    "archived_at": "2026-09-19"
   },
   "host_config": {
     "samplerate": 48000
@@ -92,14 +93,14 @@
     },
     {
       "processor": "eq",
-      "bypassed": true,
+      "bypassed": false,
       "parameters": {
         "Low": 0.4,
         "Mid": 0.56,
-        "High": 0.32,
+        "High": 0.21,
         "Master": 0.51,
         "Low-Mid Freq": 0.26,
-        "Mid-High Freq": 0.05
+        "Mid-High Freq": 0.03
       }
     },
     {
@@ -107,7 +108,7 @@
       "bypassed": false,
       "parameters": {
         "Level": 0.91,
-        "Delay": 0.56,
+        "Delay": 0.77,
         "Depth": 0.03,
         "Freq": 0.08,
         "BYPASS": 1.0
@@ -117,8 +118,8 @@
       "processor": "octave",
       "bypassed": true,
       "parameters": {
-        "DIRECT": 0.25,
-        "OCTAVE1": 0.47,
+        "DIRECT": 0.5,
+        "OCTAVE1": 0.77,
         "OCTAVE2": 0.0
       }
     },
@@ -136,26 +137,26 @@
       "processor": "delay",
       "bypassed": true,
       "parameters": {
-        "L Delay": 0.52,
-        "R Delay": 0.53,
-        "Feedback": 0.66,
+        "L Delay": 0.5,
+        "R Delay": 0.27,
+        "Feedback": 0.7,
         "Fb Tone": 0.5,
-        "FX Mix": 0.77,
-        "Output": 0.73
+        "FX Mix": 0.33,
+        "Output": 0.5
       }
     },
     {
       "processor": "hall",
       "bypassed": true,
       "parameters": {
-        "damping": 0.0,
-        "revtime": 0.01,
-        "roomsize": 0.29,
-        "spread": 0.01,
-        "bandwidth": 0.62,
-        "tail": 0.09,
-        "dry": 0.81,
-        "early": 0.0
+        "damping": 0.7,
+        "revtime": 0.030286,
+        "roomsize": 0.24975,
+        "spread": 0.23,
+        "bandwidth": 0.5,
+        "tail": 0.25,
+        "dry": 1.0,
+        "early": 0.25
       }
     },
     {

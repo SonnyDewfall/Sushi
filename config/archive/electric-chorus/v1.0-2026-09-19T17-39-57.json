@@ -4,7 +4,8 @@
     "version": "1.0",
     "description": "Electric guitar \u2014 compressor, overdrive, octave, EQ, chorus, delay, and two reverbs \u2014 a clean room and a big hall",
     "status": "stable",
-    "source": "config/src/electric_board.yaml"
+    "source": "config/src/electric_board.yaml",
+    "archived_at": "2026-09-19"
   },
   "host_config": {
     "samplerate": 48000
@@ -146,7 +147,7 @@
     },
     {
       "processor": "hall",
-      "bypassed": true,
+      "bypassed": false,
       "parameters": {
         "damping": 0.0,
         "revtime": 0.01,

@@ -91,8 +91,9 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "uri",
         nargs="?",
-        help="plugin URI. Omit to list every plugin visible on LV2_PATH, which "
-        "is how you find candidates in the first place",
+        help="plugin URI, or the path to a .nam amp model. Omit to list every "
+        "plugin visible on LV2_PATH, which is how you find candidates in the "
+        "first place",
     )
     p.add_argument(
         "--json",
@@ -256,6 +257,20 @@ def main(argv: list[str] | None = None) -> int:
         )
     elif args.command == "probe":
         from .probe import probe, summarise
+
+        # A .nam amp model is probed too. It answers the same question a plugin
+        # URI does — what is this, and can the rig actually use it — and the
+        # answer is equally undiscoverable without opening the file.
+        if args.uri and (args.uri.endswith(".nam") or Path(args.uri).is_file()):
+            from .amp import AmpError, describe_model, summarise_model
+
+            try:
+                described = describe_model(args.uri)
+            except AmpError as exc:
+                sys.exit(str(exc))
+            print(json.dumps(described, indent=2) if args.as_json
+                  else summarise_model(described))
+            return 0
 
         described = probe(args.uri)
         if args.as_json:

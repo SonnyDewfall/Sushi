@@ -297,3 +297,135 @@ def amp_patchbay(base_xml: str, sushi_node: str = "sushi") -> str:
         in_node=AMP_NODE, in_port=AMP_INPUT,
     )
     return rewired.replace("</items>", feed + "</items>", 1)
+
+
+# --- reading a .nam model ---------------------------------------------------
+
+# The rig runs at this rate, and NAM does no resampling: a model trained at a
+# different rate plays at the wrong pitch and speed with nothing to warn you.
+RIG_SAMPLE_RATE = 48000
+
+# NAM A2. Not one model but a container holding several, and the plugin's
+# `Quality` control picks which one runs — below 0.5 the first, above it the
+# last. An A1 model names its architecture directly ("WaveNet", "LSTM") and has
+# a single set of weights, so `Quality` does nothing at all for it.
+SLIMMABLE = "SlimmableContainer"
+
+
+def describe_model(path: Path | str) -> dict[str, Any]:
+    """What a `.nam` file declares about itself.
+
+    A `.nam` is plain JSON, and it carries everything worth knowing before
+    loading it: the architecture, the sample rate it was trained at, what was
+    modelled, and — for A2 — the separate quality tiers inside it.
+    """
+    path = Path(path)
+    try:
+        model = json.loads(path.read_text())
+    except OSError as exc:
+        raise AmpError(f"cannot read {path}: {exc}") from exc
+    except ValueError as exc:
+        raise AmpError(
+            f"{path.name} is not valid JSON, so it is not a .nam model: {exc}"
+        ) from exc
+
+    if not isinstance(model, dict) or "architecture" not in model:
+        raise AmpError(f"{path.name} has no 'architecture' — not a NAM model file")
+
+    meta = model.get("metadata") or {}
+    architecture = model["architecture"]
+    tiers = []
+    if architecture == SLIMMABLE:
+        for index, submodel in enumerate(model.get("config", {}).get("submodels", [])):
+            inner = submodel.get("model", {})
+            layers = inner.get("config", {}).get("layers", []) or []
+            tiers.append({
+                "index": index,
+                "architecture": inner.get("architecture", "?"),
+                "channels": [layer.get("channels") for layer in layers],
+                "weights": len(inner.get("weights") or []),
+            })
+    else:
+        layers = model.get("config", {}).get("layers", []) or []
+        tiers.append({
+            "index": 0,
+            "architecture": architecture,
+            "channels": [layer.get("channels") for layer in layers],
+            "weights": len(model.get("weights") or []),
+        })
+
+    try:
+        rate = int(float(model.get("sample_rate", 0))) or None
+    except (TypeError, ValueError):
+        rate = None
+
+    return {
+        "name": meta.get("name") or path.stem,
+        "path": str(path),
+        "architecture": architecture,
+        "slimmable": architecture == SLIMMABLE,
+        "sample_rate": rate,
+        "gear_make": meta.get("gear_make"),
+        "gear_type": meta.get("gear_type"),
+        "modeled_by": meta.get("modeled_by"),
+        "trainer": meta.get("trainer"),
+        "tiers": tiers,
+    }
+
+
+def quality_hint(tier_count: int, index: int) -> str:
+    """Which `Quality` setting selects a tier."""
+    if tier_count < 2:
+        return "Quality has no effect — this model has a single path"
+    if index == 0:
+        return "Quality < 0.5"
+    if index == tier_count - 1:
+        return "Quality > 0.5"
+    return "intermediate"
+
+
+def summarise_model(described: dict[str, Any], rig_rate: int = RIG_SAMPLE_RATE) -> str:
+    """`describe_model` as something to read."""
+    lines = [f"{described['name']}  ({described['path']})"]
+    gear = " / ".join(x for x in (described["gear_make"], described["gear_type"]) if x)
+    if gear:
+        lines.append(f"  gear      {gear}")
+    by = " / ".join(x for x in (described["modeled_by"], described["trainer"]) if x)
+    if by:
+        lines.append(f"  by        {by}")
+    lines.append(
+        f"  format    {described['architecture']}"
+        + ("  (NAM A2 — Quality selects a tier)" if described["slimmable"] else "")
+    )
+
+    rate = described["sample_rate"]
+    if rate is None:
+        lines.append("  rate      not declared")
+    elif rate != rig_rate:
+        lines.append(
+            f"  rate      {rate} Hz  ** MISMATCH: the rig runs at {rig_rate} Hz **\n"
+            "            NAM does no resampling, so this will play at the wrong "
+            "pitch and speed."
+        )
+    else:
+        lines.append(f"  rate      {rate} Hz  (matches the rig)")
+
+    tiers = described["tiers"]
+    lines.append(f"  {len(tiers)} path(s):")
+    for tier in tiers:
+        channels = ",".join(str(c) for c in tier["channels"] if c is not None) or "?"
+        lines.append(
+            f"    [{tier['index']}] {tier['architecture']:8} "
+            f"channels={channels:6} {tier['weights']:>8,} weights"
+            f"   {quality_hint(len(tiers), tier['index'])}"
+        )
+    if len(tiers) > 1:
+        heaviest = max(t["weights"] for t in tiers)
+        lightest = min(t["weights"] for t in tiers)
+        if lightest:
+            lines.append(
+                f"\n  The full path has {heaviest / lightest:.1f}x the parameters of "
+                "the lite one.\n  Compare `channels` against other models to judge "
+                "relative cost; measure with `sushi-rig top`."
+            )
+    return "\n".join(lines)
