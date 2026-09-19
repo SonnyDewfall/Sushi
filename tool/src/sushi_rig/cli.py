@@ -24,6 +24,21 @@ def write_json(path: Path, payload) -> None:
     print(f"wrote {path}")
 
 
+def _amp_parameters(pairs: list[str]) -> dict[str, float]:
+    """Parse repeated `--amp-parameter NAME=VALUE` into a dict.
+
+    Names carry spaces ("Input Lvl"), so splitting on the first `=` only.
+    """
+    values: dict[str, float] = {}
+    for pair in pairs:
+        name, _, raw = pair.partition("=")
+        try:
+            values[name] = float(raw)
+        except ValueError:
+            sys.exit(f"bad --amp-parameter {pair!r}: expected NAME=VALUE")
+    return values
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="sushi-rig", description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -113,6 +128,12 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "--no-tuner", dest="tuner", action="store_false", help="skip fmit"
     )
+    p.add_argument(
+        "--no-amp",
+        dest="amp",
+        action="store_false",
+        help="skip the neural amp even if the config describes one",
+    )
 
     p = sub.add_parser("down", help="stop a running rig and verify it stopped")
     p.add_argument(
@@ -165,6 +186,20 @@ def main(argv: list[str] | None = None) -> int:
         help="sushi binary, used to re-dump plugin parameters when regenerating",
     )
 
+    # The amp runs outside Sushi and cannot be captured from it, so the save
+    # button can only record what it was told. See sushi_rig/amp.py.
+    p.add_argument(
+        "--amp-model",
+        help="model path to record in a saved config's _amp section",
+    )
+    p.add_argument(
+        "--amp-parameter",
+        action="append",
+        default=[],
+        metavar="NAME=VALUE",
+        help="starting value for an amp control, repeatable",
+    )
+
     args = parser.parse_args(argv)
 
     if args.command == "emit":
@@ -180,6 +215,7 @@ def main(argv: list[str] | None = None) -> int:
         write_json(args.out, capture(args.address))
     elif args.command == "panel":
         from .live import get_live_bypass_state, get_live_parameter_info
+        from .amp import panel_amp
         from .probe import units_for_config
 
         dump = dump_plugins(args.config, args.sushi)
@@ -193,6 +229,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.listener_port,
                 bypass_info,
                 units_for_config(args.config),
+                panel_amp(args.config),
             ),
         )
         print(
@@ -262,7 +299,10 @@ def main(argv: list[str] | None = None) -> int:
 
         try:
             if args.command == "up":
-                return up(args.config_name, headless=args.headless, tuner=args.tuner)
+                return up(
+                    args.config_name, headless=args.headless,
+                    tuner=args.tuner, amp=args.amp,
+                )
             if args.command == "down":
                 return down(args.force)
             return status()
@@ -283,6 +323,8 @@ def main(argv: list[str] | None = None) -> int:
             panel_config=args.panel_config,
             panel_out=args.panel_out,
             sushi_bin=args.sushi,
+            amp_model=args.amp_model,
+            amp_parameters=_amp_parameters(args.amp_parameter),
         )
 
     return 0

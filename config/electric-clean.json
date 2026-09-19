@@ -168,5 +168,14 @@
         "Enable": 1.0
       }
     }
-  ]
+  ],
+  "_amp": {
+    "plugin": "nam",
+    "model": "amp/models/Rupert Neve Design RNDI-M.nam",
+    "parameters": {
+      "Input Lvl": 4.0,
+      "Output Lvl": -2.0,
+      "Quality": 1.0
+    }
+  }
 }

@@ -23,6 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
+from .amp import write_amp
 from .emit import emit
 from .live import DEFAULT_GRPC_ADDRESS, capture
 from .spec import RigSpec
@@ -60,6 +61,8 @@ def save_config(
     out_dir: Path,
     archive_dir: Path,
     address: str = DEFAULT_GRPC_ADDRESS,
+    amp_model: str | None = None,
+    amp_parameters: dict[str, float] | None = None,
 ) -> Path:
     """Capture the running Sushi's state and write it as `<out_dir>/<name>.json`.
 
@@ -84,6 +87,12 @@ def save_config(
         version = _archive_existing(out_path, Path(archive_dir), name)
     else:
         version = "1.0"
+
+    # The amp rides in the same file as the rig it belongs to, so one config
+    # describes the whole sound. It cannot be captured the way Sushi's state is
+    # — Carla cannot be asked what it currently holds — so these are the values
+    # the listener last sent. See amp.py.
+    write_amp(config, amp_model, amp_parameters or {})
 
     meta = dict(config.get("_meta", {}))
     meta["name"] = name

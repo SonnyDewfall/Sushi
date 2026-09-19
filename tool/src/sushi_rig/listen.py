@@ -46,6 +46,11 @@ NAME_ADDRESS = "/sushi-rig/name"
 # what broke the first attempt at the save bar.
 MOVE_ADDRESS_PREFIX = "/sushi-rig/move/"
 
+# The amp's faders come here rather than going straight to Carla, because
+# the listener has to see the values in order to save them — Carla cannot be
+# asked what it currently holds. See amp.py.
+AMP_ADDRESS_PREFIX = "/sushi-rig/amp/"
+
 
 def handle_save(
     name: str,
@@ -53,6 +58,8 @@ def handle_save(
     out_dir: Path,
     archive_dir: Path,
     address: str = DEFAULT_GRPC_ADDRESS,
+    amp_model: str | None = None,
+    amp_parameters: dict[str, float] | None = None,
 ) -> str:
     """Run `save_config` and return a human-readable outcome message.
 
@@ -62,7 +69,10 @@ def handle_save(
     socket or `python-osc` installed at all.
     """
     try:
-        out_path = save_config(name, rig_path, out_dir, archive_dir, address)
+        out_path = save_config(
+            name, rig_path, out_dir, archive_dir, address,
+            amp_model=amp_model, amp_parameters=amp_parameters,
+        )
     except SaveError as exc:
         return f"save failed: {exc}"
     except Exception as exc:  # noqa: BLE001 - keep the listener alive
@@ -82,6 +92,8 @@ def serve(
     panel_config: Path | None = None,
     panel_out: Path | None = None,
     sushi_bin: str = "sushi",
+    amp_model: str | None = None,
+    amp_parameters: dict[str, float] | None = None,
 ) -> None:
     """Block, handling `NAME_ADDRESS`/`SAVE_ADDRESS` messages until interrupted.
 
@@ -106,6 +118,8 @@ def serve(
 
     status_client = SimpleUDPClient(status_host, status_port)
     last_name = ""
+    # What we last sent the amp. Not what Carla holds — see amp.py.
+    amp_state: dict[str, float] = dict(amp_parameters or {})
 
     def _report(message: str) -> None:
         print(message, file=sys.stderr)
@@ -118,7 +132,35 @@ def serve(
     def _on_save(_osc_address: str, *_args) -> None:
         # The save button carries no payload — see the module docstring for
         # why the name arrives as its own message instead.
-        _report(handle_save(last_name, rig_path, out_dir, archive_dir, address))
+        _report(handle_save(
+            last_name, rig_path, out_dir, archive_dir, address,
+            amp_model=amp_model, amp_parameters=amp_state,
+        ))
+
+    def _on_amp(osc_address: str, *args) -> None:
+        """Forward an amp control to Carla, and remember what we sent.
+
+        Remembering is the reason this goes through the listener at all. Carla's
+        OSC is write-only from here, so the value we last sent is the only
+        record there is of where the amp is set — and the save button needs it.
+        """
+        from .amp import AmpError, CARLA_OSC_PORT, clamp, parameter_message
+
+        name = osc_address[len(AMP_ADDRESS_PREFIX):]
+        if not args:
+            _report(f"amp: {name} sent no value")
+            return
+        try:
+            osc_path, payload = parameter_message(name, float(args[0]))
+        except (AmpError, TypeError, ValueError) as exc:
+            _report(f"amp: {exc}")
+            return
+        try:
+            SimpleUDPClient("127.0.0.1", CARLA_OSC_PORT).send_message(osc_path, payload)
+        except Exception as exc:  # noqa: BLE001 - a dead amp must not kill the listener
+            _report(f"amp: could not reach Carla ({exc})")
+            return
+        amp_state[name] = clamp(name, float(args[0]))
 
     def _on_move(osc_address: str, *args) -> None:
         processor = osc_address[len(MOVE_ADDRESS_PREFIX):]
@@ -161,6 +203,7 @@ def serve(
             from .dump import dump_plugins
             from .live import get_live_bypass_state, get_live_parameter_info
             from .panel import build_osc_panel
+            from .amp import panel_amp
             from .probe import units_for_config
 
             panel = build_osc_panel(
@@ -169,6 +212,7 @@ def serve(
                 port,
                 get_live_bypass_state(address),
                 units_for_config(panel_config),
+                panel_amp(panel_config),
             )
             Path(panel_out).write_text(json.dumps(panel, indent=2) + "\n")
             refresh_panel(str(panel_out), select_tab, status_host, status_port)
@@ -179,6 +223,7 @@ def serve(
     dispatcher.map(NAME_ADDRESS, _on_name)
     dispatcher.map(SAVE_ADDRESS, _on_save)
     dispatcher.map(MOVE_ADDRESS_PREFIX + "*", _on_move)
+    dispatcher.map(AMP_ADDRESS_PREFIX + "*", _on_amp)
 
     server = BlockingOSCUDPServer((host, port), dispatcher)
     print(
