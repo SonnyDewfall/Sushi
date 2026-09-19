@@ -298,7 +298,23 @@ sudo apt install python3-pip python3-venv python3-lilv lv2-dev lilv-utils liblil
 cd tool && python3 -m venv --system-site-packages .venv
 source .venv/bin/activate
 pip install -e ".[dev,live]"
+
+# put `sushi-rig` on PATH, so `up`/`down` work from any directory
+mkdir -p ~/.local/bin
+ln -sf "$PWD/.venv/bin/sushi-rig" ~/.local/bin/sushi-rig
 ```
+
+That last step links only the `sushi-rig` entry point, not the venv's `python`
+and `pip`. Debian and Ubuntu's stock `~/.profile` already adds `~/.local/bin` to
+`PATH` when the directory exists — but it is read at **login**, so an existing
+terminal will not see it until you log out and back in. For this shell only:
+
+```bash
+export PATH="$HOME/.local/bin:$PATH"
+```
+
+The command resolves the rig from its own install location, not your working
+directory, so it does the same thing from anywhere.
 
 If you already have a `tool/.venv` from before `python-osc` was added, re-run
 that last `pip install -e ".[dev,live]"` to pick it up — `sushi-rig up`
