@@ -107,6 +107,7 @@ message on release.
 
 from __future__ import annotations
 
+import json
 import sys
 from typing import Any
 
@@ -181,11 +182,56 @@ PLUGIN_BYPASS_PARAMETER_NAMES = {"bypass"}
 SCHEMA_VERSION = "1.31.1"
 
 
+def _readout_value(
+    param_name: str,
+    fader_id: str,
+    domain_min: float | None,
+    domain_max: float | None,
+    unit: str | None,
+) -> str:
+    """The readout's text: the parameter name over its value in real units.
+
+    Faders send and receive Sushi's normalised 0-1, so a readout bound straight
+    to the fader shows "0.49" for 490 Hz and "0.52" for +1 dB. That is not just
+    ugly — it actively misleads. A 3-band EQ's crossover controls do nothing at
+    all while the band gains sit at 0 dB, and with everything reading 0.5 there
+    is no way to tell a control that is flat from one that is broken. That is
+    exactly how it was reported: "low mid frequency doesn't seem to work".
+
+    Sushi hands us the real range in the same gRPC call that gives the value, so
+    the conversion is free. It does not give us the unit — its LV2 wrapper
+    leaves ParameterInfo.unit empty — so that comes from the plugin's turtle via
+    `probe.units_for_config`, and is simply omitted when unavailable.
+
+    Done as a `JS{}` property because the arithmetic has to rerun every time the
+    fader moves; open-stage-control evaluates these against the live value the
+    same way it resolves a bare `@{id}`.
+
+    Falls back to the raw normalised value when Sushi reports no range, rather
+    than inventing one.
+    """
+    label = json.dumps(f"{param_name}\n")
+    if domain_min is None or domain_max is None:
+        return f"{param_name}\n@{{{fader_id}}}"
+
+    span = domain_max - domain_min
+    # Enough precision to see a change, not so much that it jitters: dB spans
+    # ~48 and wants a decimal, Hz spans thousands and wants none.
+    decimals = 0 if abs(span) >= 100 else (1 if abs(span) >= 10 else 2)
+    suffix = json.dumps(f" {unit}" if unit else "")
+    return (
+        f"JS{{return {label} + "
+        f"({domain_min} + @{{{fader_id}}} * {span}).toFixed({decimals})"
+        f" + {suffix}}}"
+    )
+
+
 def build_osc_panel(
     dump: Any,
     live_info: dict[str, dict[str, dict]],
     listener_port: int = DEFAULT_LISTEN_PORT,
     bypass_info: dict[str, bool] | None = None,
+    units: dict[str, dict[str, str]] | None = None,
 ) -> dict[str, Any]:
     """Build a tabbed Open Stage Control panel structure: one tab per processor."""
     tabs = []
@@ -250,7 +296,12 @@ def build_osc_panel(
             # an internal open-stage-control reference — real OSC traffic
             # uses `address` below, untouched — so it's safe to sanitize.
             fader_id = f"{processor}/{param_name}".replace(".", "_")
-            domain_max = live.get("max_domain_value", 1.0)
+            # `.get(..., 1.0)` is not enough: Sushi can report the key with a
+            # null value, which sails past the default and then fails the
+            # comparison below.
+            domain_max = live.get("max_domain_value")
+            if domain_max is None:
+                domain_max = 1.0
             # `fader` has no `label` property in real open-stage-control 1.31.1
             # — confirmed by inspecting a live widget's own resolved `props`,
             # which simply doesn't include the key, so a "label" here is
@@ -278,7 +329,13 @@ def build_osc_panel(
                     "id": f"{fader_id}/readout",
                     "label": False,
                     "wrap": True,
-                    "value": f"{param_name}\n@{{{fader_id}}}",
+                    "value": _readout_value(
+                        param_name,
+                        fader_id,
+                        live.get("min_domain_value"),
+                        live.get("max_domain_value"),
+                        (units or {}).get(processor, {}).get(param_name),
+                    ),
                     "interaction": False,
                     "width": 90,
                     "height": 40,

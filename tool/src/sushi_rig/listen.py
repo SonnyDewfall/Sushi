@@ -161,12 +161,14 @@ def serve(
             from .dump import dump_plugins
             from .live import get_live_bypass_state, get_live_parameter_info
             from .panel import build_osc_panel
+            from .probe import units_for_config
 
             panel = build_osc_panel(
                 dump_plugins(panel_config, sushi_bin),
                 get_live_parameter_info(address),
                 port,
                 get_live_bypass_state(address),
+                units_for_config(panel_config),
             )
             Path(panel_out).write_text(json.dumps(panel, indent=2) + "\n")
             refresh_panel(str(panel_out), select_tab, status_host, status_port)

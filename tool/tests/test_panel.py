@@ -35,6 +35,13 @@ def _faders(tab):
     return [w for w in tab["widgets"] if w["type"] == "fader"]
 
 
+def _readout_for(tab, fader_id):
+    return next(
+        w for w in tab["widgets"]
+        if w["type"] == "text" and w["id"] == f"{fader_id}/readout"
+    )
+
+
 def _param_name(fader):
     # Faders have no `label` property in real open-stage-control (see
     # SCHEMA_VERSION-adjacent comment in panel.py) — the parameter name is
@@ -303,7 +310,8 @@ def test_panel_each_fader_has_a_paired_value_readout(real_dump):
     tab = _tabs(panel)[0]
     fader = _faders(tab)[0]
     readout = next(w for w in tab["widgets"] if w["type"] == "text")
-    assert readout["value"] == f"{_param_name(fader)}\n@{{{fader['id']}}}"
+    assert _param_name(fader) in readout["value"]
+    assert f"@{{{fader['id']}}}" in readout["value"], "bound to its own fader"
     assert readout["interaction"] is False
     # Without label: false, open-stage-control falls back to showing the
     # widget's id as a label — confirmed on real hardware, where every
@@ -344,7 +352,71 @@ def test_panel_widget_id_has_no_dot_for_a_dotted_parameter_name(real_dump):
     )
     # The display name keeps its "." (still "1.6K" to the eye); only the
     # live-value binding needs to be dot-free.
-    assert readout["value"] == f"Band gain 1.6K\n@{{{widget['id']}}}"
+    assert "Band gain 1.6K" in readout["value"]
+    assert f"@{{{widget['id']}}}" in readout["value"]
+
+
+
+def test_readout_converts_to_the_real_domain_value(real_dump):
+    """Faders carry Sushi's normalised 0-1, so a readout bound straight to one
+    shows 0.49 for 490 Hz and 0.52 for +1 dB. Reported as a bug in the rig —
+    an EQ's crossover controls do nothing while the band gains sit at 0 dB, and
+    with every fader reading ~0.5 there is no way to tell a flat control from a
+    broken one."""
+    live_info = _live_info_for(
+        real_dump,
+        override={
+            ("graph_equalizer_x16_stereo", "Band gain 1.6K"): {
+                "automatable": True,
+                "value": 0.5,
+                "min_domain_value": 0.0,
+                "max_domain_value": 1000.0,
+            }
+        },
+    )
+    panel = build_osc_panel(
+        real_dump,
+        live_info,
+        units={"graph_equalizer_x16_stereo": {"Band gain 1.6K": "Hz"}},
+    )
+    tab = {t["id"]: t for t in _tabs(panel)}["graph_equalizer_x16_stereo"]
+    readout = _readout_for(tab, "graph_equalizer_x16_stereo/Band gain 1_6K")
+    value = readout["value"]
+    assert value.startswith("JS{"), "the maths has to rerun as the fader moves"
+    assert "* 1000.0" in value and "0.0 +" in value, "scaled to the real range"
+    assert '" Hz"' in value, "and labelled with the unit"
+
+
+def test_readout_omits_the_unit_when_the_plugin_declares_none(real_dump):
+    """Units come from the plugin's turtle, not from Sushi — its LV2 wrapper
+    leaves ParameterInfo.unit empty — so plenty of parameters have none. A bare
+    number is still far better than a normalised one."""
+    live_info = _live_info_for(real_dump)
+    panel = build_osc_panel(real_dump, live_info)
+    readout = next(
+        w for w in _tabs(panel)[0]["widgets"] if w["type"] == "text"
+    )
+    assert readout["value"].startswith("JS{")
+    assert "Hz" not in readout["value"] and "dB" not in readout["value"]
+
+
+def test_readout_falls_back_to_raw_value_without_a_range(real_dump):
+    """No invented ranges: if Sushi reports no domain, show what it does give."""
+    live_info = _live_info_for(
+        real_dump,
+        override={
+            ("graph_equalizer_x16_stereo", "Band gain 1.6K"): {
+                "automatable": True,
+                "value": 0.3,
+                "min_domain_value": None,
+                "max_domain_value": None,
+            }
+        },
+    )
+    panel = build_osc_panel(real_dump, live_info)
+    tab = {t["id"]: t for t in _tabs(panel)}["graph_equalizer_x16_stereo"]
+    readout = _readout_for(tab, "graph_equalizer_x16_stereo/Band gain 1_6K")
+    assert readout["value"] == "Band gain 1.6K\n@{graph_equalizer_x16_stereo/Band gain 1_6K}"
 
 
 # --- save bar (issue #10) ---------------------------------------------------

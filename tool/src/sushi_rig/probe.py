@@ -200,3 +200,69 @@ def summarise(described: list[dict[str, Any]]) -> str:
             f"{(d['class'] or '-')[:22]:24s} {d['name'][:28]:30s} {d['uri']}"
         )
     return "\n".join(lines)
+
+
+_UNITS_NS = "http://lv2plug.in/ns/extensions/units#"
+
+
+def parameter_units(uri: str) -> dict[str, str]:
+    """Unit symbols ("dB", "Hz", "ms") for a plugin's ports, keyed by parameter name.
+
+    Sushi's gRPC ParameterInfo has a `unit` field, but its LV2 wrapper leaves it
+    empty — checked against a running rig on a plugin whose ports all declare
+    `units:unit`. The units are only in the plugin's own turtle, so reading them
+    means going to lilv, as `probe` already does.
+
+    Returns `{}` rather than raising if lilv is missing or the plugin isn't
+    installed: units are a labelling nicety, and a panel with bare numbers is
+    far better than no panel at all.
+    """
+    try:
+        import lilv  # noqa: F401 - presence check; _world does the import
+    except ImportError:
+        return {}
+
+    world = _world()
+    matches = [p for p in world.get_all_plugins() if str(p.get_uri()) == uri]
+    if not matches:
+        return {}
+    plugin = matches[0]
+
+    units = {}
+    symbol_uri = world.new_uri(_UNITS_NS + "symbol")
+    for index in range(plugin.get_num_ports()):
+        port = plugin.get_port_by_index(index)
+        declared = port.get_value(world.new_uri(_UNITS_NS + "unit"))
+        for node in declared or []:
+            symbol = world.get(world.new_uri(str(node)), symbol_uri, None)
+            if symbol is not None:
+                units[str(port.get_name())] = str(symbol)
+    return units
+
+
+def units_for_config(config_path) -> dict[str, dict[str, str]]:
+    """Unit symbols for every LV2 plugin in a Sushi config, keyed by processor.
+
+    The panel needs units per *processor* ("eq"), but they live per *plugin URI*
+    — and the `--dump-plugins` output the panel is otherwise built from doesn't
+    carry URIs. The config does, so the mapping is made here.
+    """
+    import json
+    from pathlib import Path
+
+    try:
+        config = json.loads(Path(config_path).read_text())
+    except (OSError, ValueError):
+        return {}
+
+    by_uri: dict[str, dict[str, str]] = {}
+    units = {}
+    for track in config.get("tracks", []):
+        for plugin in track.get("plugins", []):
+            uri = plugin.get("uri")
+            if not uri:
+                continue
+            if uri not in by_uri:
+                by_uri[uri] = parameter_units(uri)
+            units[plugin["name"]] = by_uri[uri]
+    return units

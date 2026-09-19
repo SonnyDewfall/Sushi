@@ -258,9 +258,11 @@ def refresh_panel(
     if tab_delay <= 0:
         _reselect()
     else:
-        timer = threading.Timer(tab_delay, _reselect)
-        timer.daemon = True
-        timer.start()
+        # Deliberately NOT a daemon thread. A daemon dies with the process,
+        # and a one-shot caller (`sushi-rig panel`, a script) exits long before
+        # the delay is up — the reload lands, the re-select never goes out.
+        # Non-daemon costs a long-lived caller at most `tab_delay` on shutdown.
+        threading.Timer(tab_delay, _reselect).start()
 
 
 def plan_move(chain: list[str], processor: str, direction: int) -> dict[str, Any] | None:

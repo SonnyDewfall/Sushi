@@ -148,13 +148,20 @@ def main(argv: list[str] | None = None) -> int:
         write_json(args.out, capture(args.address))
     elif args.command == "panel":
         from .live import get_live_bypass_state, get_live_parameter_info
+        from .probe import units_for_config
 
         dump = dump_plugins(args.config, args.sushi)
         live_info = get_live_parameter_info(args.address)
         bypass_info = get_live_bypass_state(args.address)
         write_json(
             args.out,
-            build_osc_panel(dump, live_info, args.listener_port, bypass_info),
+            build_osc_panel(
+                dump,
+                live_info,
+                args.listener_port,
+                bypass_info,
+                units_for_config(args.config),
+            ),
         )
         print(
             f"open with: open-stage-control --load {args.out} "
