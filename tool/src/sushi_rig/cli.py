@@ -15,6 +15,7 @@ from .emit import emit
 from .live import DEFAULT_GRPC_ADDRESS
 from .listen import DEFAULT_LISTEN_PORT, DEFAULT_STATUS_HOST, DEFAULT_STATUS_PORT
 from .panel import build_osc_panel
+from .rig import DEFAULT_CONFIG_NAME
 from .spec import RigSpec
 
 
@@ -91,6 +92,37 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("--out-dir", type=Path, default=Path("../config"))
     p.add_argument("--archive-dir", type=Path, default=Path("../config/archive"))
     p.add_argument("--address", default=DEFAULT_GRPC_ADDRESS)
+
+    p = sub.add_parser(
+        "up",
+        help="start the whole rig — patchbay, tuner, Sushi, and (by default) "
+        "the control panel — then return to the prompt",
+    )
+    p.add_argument(
+        "config_name",
+        nargs="?",
+        default=DEFAULT_CONFIG_NAME,
+        help=f"names config/<name>.json [default: {DEFAULT_CONFIG_NAME}]",
+    )
+    p.add_argument(
+        "--headless",
+        action="store_true",
+        help="no panel and no save listener — for playing through the rig "
+        "rather than authoring a tone",
+    )
+    p.add_argument(
+        "--no-tuner", dest="tuner", action="store_false", help="skip fmit"
+    )
+
+    p = sub.add_parser("down", help="stop a running rig and verify it stopped")
+    p.add_argument(
+        "--force",
+        action="store_true",
+        help="skip straight to SIGKILL, giving Sushi no chance to release its "
+        "JACK ports cleanly — for a rig that is already wedged",
+    )
+
+    sub.add_parser("status", help="what is running, if anything")
 
     p = sub.add_parser(
         "listen",
@@ -225,6 +257,17 @@ def main(argv: list[str] | None = None) -> int:
         except SaveError as exc:
             sys.exit(str(exc))
         print(f"saved {out_path}")
+    elif args.command in ("up", "down", "status"):
+        from .rig import RigError, down, status, up
+
+        try:
+            if args.command == "up":
+                return up(args.config_name, headless=args.headless, tuner=args.tuner)
+            if args.command == "down":
+                return down(args.force)
+            return status()
+        except RigError as exc:
+            sys.exit(str(exc))
     elif args.command == "listen":
         from .listen import serve
 

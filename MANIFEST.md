@@ -525,6 +525,57 @@ With `LV2_PATH` unset, Sushi loads no LV2 plugins at all and exits 4
 hand, outside `start-rig.sh`, fails for this reason and the error does not
 mention `LV2_PATH`.
 
+### 🟢 qpwgraph's silent exit: two causes, not the one assumed (issue #14)
+
+qpwgraph fails to start by exiting with status 2 within a second, writing
+nothing — no error, no crash, an empty log. The patchbay then never
+auto-connects, so Sushi runs with no audio in or out while looking perfectly
+healthy.
+
+The standing explanation was that the ~50% rate was simply how often a qpwgraph
+happened to be running already, since it is single-instance. That was
+incomplete, and its fix — kill, then wait for the process to disappear — could
+not work on its own. Two causes were found by bisecting against the real thing:
+
+1. **The lock socket survives SIGKILL.** qpwgraph is single-instance via
+   `/tmp/qpwgraph:<user>@<host>`. Kill one and the file stays; the next instance
+   exits immediately. Waiting for the *process* to go does nothing about the
+   *socket*. Proved directly: SIGKILL, relaunch → dies; delete the socket first
+   → the identical command survives. It also explains what the old theory could
+   not — why retrying never helped, and why the failure rate tracked how the
+   previous instance had exited, since a clean quit removes the socket and a
+   kill does not.
+
+2. **The desktop session manager.** qpwgraph registers over ICE, and from a
+   detached session (which the supervisor runs in) that registration makes Qt
+   quit silently. Isolated by A/B: same command, same environment, new session →
+   dies; `SESSION_MANAGER` removed from that same new session → lives.
+
+Both are fixed at source in `tool/src/sushi_rig/rig.py`. Neither accounts for
+all of it: with both applied and no socket present it still failed
+intermittently, tracking nothing the supervisor controls. Rather than
+reverse-engineer someone else's GUI app further, `start_qpwgraph` verifies the
+process is still alive after launching and retries up to three times, clearing
+the socket before each. Five consecutive up/down cycles then connected the
+patchbay every time with no warning. Issue #14 stays open: the underlying
+flakiness is upstream's, and this makes it either work or say so loudly.
+
+### 🟢 The shell scripts were replaced by a supervisor
+
+`start-rig.sh`, `start-rig-and-panel.sh` and `stop-rig.sh` are gone, replaced by
+`sushi-rig up` / `down` / `status`. Every lifecycle failure logged here was the
+same underlying bug: identifying processes by *pattern* rather than by
+*identity*. `killall sushi` missed `sushi.bin`; `pkill -f "sushi-rig listen"`
+matched the command line of the shell invoking it and killed its own caller;
+`stop-rig.sh` had no pattern for open-stage-control and routinely left it and
+its Electron helpers running.
+
+The supervisor puts every child in one process group and signals that group by
+the id recorded when it was created, so a process is reachable regardless of
+what it renames itself to or whether anyone remembered a pattern for it. The
+`$HOME/Sushi` hard-coding and the `LV2_PATH` defects below also go with it: the
+checkout root is now resolved from the package's own location.
+
 ### 🟢 `stop-rig.sh` never actually stopped Sushi
 
 Reported by the user (2026-09-13): "doesn't seem to work". `killall` matches a

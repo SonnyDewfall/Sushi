@@ -114,7 +114,7 @@ exactly as their values already do. The yaml declares where a rig starts; a
 capture records where it got to.
 
 The tweak → capture → emit loop at the bottom is where the time actually goes.
-`start-rig.sh` runs an OSC listener (`sushi-rig listen`) alongside Sushi, and
+`sushi-rig up` runs an OSC listener (`sushi-rig listen`) alongside Sushi, and
 the generated panel carries a name field and a save button that trigger that
 loop directly — type a name, tweak, press save, and `config/<name>.json`
 appears with the current sound baked in. `sushi-rig save <name>` on the CLI
@@ -133,11 +133,8 @@ then.
 
 ```
 .                               ── RIG (root): what you run daily
-├── start-rig.sh                launch tuner + patchbay + Sushi
-├── start-rig-and-panel.sh      the above plus a generated control panel
-├── stop-rig.sh                 interrupt, settle, force-kill
 ├── config/                     Sushi configs — the deployable artefacts
-│   ├── electric_board.json       current rig (what start-rig.sh launches)
+│   ├── electric_board.json       current rig (what `sushi-rig up` launches)
 │   ├── empty.json                passthrough, for verifying the audio path
 │   ├── src/electric_board.yaml   hand-authored source for electric_board.json
 │   ├── archive/                  auto-written version snapshots,
@@ -177,25 +174,34 @@ once the package supersedes it.
 ## Running the rig
 
 ```bash
-./start-rig.sh              # tuner, patchbay, and Sushi on the current config
-./start-rig-and-panel.sh    # the above, plus a generated Open Stage Control panel
-./stop-rig.sh               # clean shutdown, releases JACK ports
+sushi-rig up                # tuner, patchbay, Sushi, and a generated panel
+sushi-rig up --headless     # the same rig with no panel — for playing, not tweaking
+sushi-rig up acoustic_hall  # any config/<name>.json; defaults to electric_board
+sushi-rig status            # what is running, and where its logs are
+sushi-rig down              # stop everything, and verify it stopped
 ```
 
-`start-rig.sh` sets `LV2_PATH`, kills any stale instances, launches `fmit`
-(tuner) and `qpwgraph` (patchbay, restoring saved connections), then starts
-Sushi under PipeWire's JACK shim.
+`up` starts everything and hands the prompt back — the rig is detached, so it
+survives closing the terminal. Child output goes to log files rather than your
+terminal; `status` prints the paths. It refuses to start a second rig on top of
+a running one.
 
-To run a different rig, change the config path on the last line of
-`start-rig.sh`.
+**Two modes, for two ways of using the rig.** The default gives you the Open
+Stage Control panel and the save listener behind it, which is what you want when
+dialling in a tone: tweak, type a name, press save, and `config/<name>.json`
+appears with the current sound baked in (issue #10). `--headless` skips both and
+just runs the rig.
 
-`start-rig-and-panel.sh` is for tweaking a tone rather than just playing
-through the rig: it does everything `start-rig.sh` does, but backgrounds Sushi
-instead of holding the terminal, waits for its gRPC to come up, then generates
-a fresh panel from the live instance and opens it in Open Stage Control — the
-name field and save button reach `sushi-rig listen` directly, so a tweak can be
-saved as a new named config without a second terminal (issue #10). Ctrl+C stops
-the panel and the whole rig together.
+`down` signals the rig's **process group**, which is why it can be trusted where
+the old `stop-rig.sh` could not: `sushi.bin` (Sushi re-execs itself out of a
+randomly-named AppImage mount), open-stage-control's Electron helpers and the
+listener are all group members, so none of them need a pattern to match and none
+get left behind. It then checks, and tells you if anything survived.
+
+> Replaced `start-rig.sh`, `start-rig-and-panel.sh` and `stop-rig.sh`. Those
+> used bash as a supervisor and identified processes by command-line pattern,
+> which is how `killall sushi` came to miss Sushi entirely, how a shutdown could
+> kill its own shell, and how open-stage-control was routinely left running.
 
 > **`LV2_PATH` must be set, or Sushi loads no LV2 plugins at all.** It exits 4
 > with `Failed to load tracks from the Json config file` — an error that never
@@ -295,7 +301,7 @@ pip install -e ".[dev,live]"
 ```
 
 If you already have a `tool/.venv` from before `python-osc` was added, re-run
-that last `pip install -e ".[dev,live]"` to pick it up — `start-rig.sh` now
+that last `pip install -e ".[dev,live]"` to pick it up — `sushi-rig up`
 launches `sushi-rig listen`, which needs it.
 
 Two snags this hit in practice. **`lv2-dev` alone is not enough** —
