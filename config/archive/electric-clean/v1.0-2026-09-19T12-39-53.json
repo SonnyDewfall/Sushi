@@ -4,7 +4,8 @@
     "version": "1.0",
     "description": "Electric guitar \u2014 compressor, overdrive, octave, EQ, chorus, delay, and two reverbs \u2014 a clean room and a big hall",
     "status": "wip",
-    "source": "config/src/electric_board.yaml"
+    "source": "config/src/electric_board.yaml",
+    "archived_at": "2026-09-19"
   },
   "host_config": {
     "samplerate": 48000
@@ -57,14 +58,14 @@
           "uri": "http://drobilla.net/plugins/mda/Delay"
         },
         {
-          "name": "hall",
-          "type": "lv2",
-          "uri": "http://distrho.sf.net/plugins/MaGigaverb"
-        },
-        {
           "name": "room",
           "type": "lv2",
           "uri": "urn:ardour:a-reverb"
+        },
+        {
+          "name": "hall",
+          "type": "lv2",
+          "uri": "http://distrho.sf.net/plugins/MaGigaverb"
         }
       ]
     }
@@ -96,11 +97,11 @@
       "program": 0,
       "parameters": {
         "Low": 0.5,
-        "Mid": 0.5,
-        "High": 0.5,
+        "Mid": 0.64,
+        "High": 0.53,
         "Master": 0.5,
-        "Low-Mid Freq": 0.22,
-        "Mid-High Freq": 0.052632
+        "Low-Mid Freq": 0.24,
+        "Mid-High Freq": 0.06
       }
     },
     {
@@ -146,6 +147,15 @@
       }
     },
     {
+      "processor": "room",
+      "bypassed": false,
+      "parameters": {
+        "Blend": 0.3,
+        "Room Size": 0.0,
+        "Enable": 1.0
+      }
+    },
+    {
       "processor": "hall",
       "bypassed": true,
       "parameters": {
@@ -157,15 +167,6 @@
         "tail": 0.25,
         "dry": 1.0,
         "early": 0.25
-      }
-    },
-    {
-      "processor": "room",
-      "bypassed": false,
-      "parameters": {
-        "Blend": 0.3,
-        "Room Size": 0.0,
-        "Enable": 1.0
       }
     }
   ]
