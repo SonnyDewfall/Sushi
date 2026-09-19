@@ -209,3 +209,81 @@ def panel_amp(config_path: Path) -> dict[str, Any] | None:
         "model_name": Path(described["model"]).stem,
         "parameters": dict(described.get("parameters") or {}),
     }
+
+
+# The JACK client and ports Carla gives the amp. "NAM" is the <Name> in the
+# generated project, and Carla names its ports after it.
+AMP_NODE = "NAM"
+AMP_INPUT = "NAM:Input"
+AMP_OUTPUT = "NAM:Output"
+
+_PATCHBAY_ITEM = (
+    '  <item node-type="pipewire" port-type="pipewire-audio">\n'
+    '   <output node="{out_node}" port="{out_port}"/>\n'
+    '   <input node="{in_node}" port="{in_port}"/>\n'
+    '  </item>\n'
+)
+
+
+def amp_patchbay(base_xml: str, sushi_node: str = "sushi") -> str:
+    """The base patchbay, rewired to put the amp in front of the guitar.
+
+    Whatever feeds `sushi:audio_input_0` is taken to be the guitar. That source
+    is redirected into the amp, the amp feeds the inputs it used to feed, and
+    everything else is left exactly as it was — Sushi's outputs, the tuner's dry
+    feed, and any other source feeding other inputs.
+
+    Deliberately *not* "redirect everything that feeds Sushi". The saved
+    patchbay also wires a second interface channel into Sushi's unused inputs
+    2 and 3, and NAM is mono — so that rule summed two physical inputs into one
+    amp. Caught by generating it and reading the result.
+
+    Derived from the saved patchbay rather than kept as a second file, so it
+    cannot drift out of step with it. The saved file stays the one thing to edit
+    when routing changes.
+
+    Two files are needed rather than one because qpwgraph *maintains* its saved
+    patch: it reconnects anything missing, so a single file holding both the
+    direct and the through-the-amp routes would keep both live and you would
+    hear the dry guitar under the amped one. Confirmed the hard way — qpwgraph
+    repeatedly undid a by-hand rewiring during testing.
+    """
+    import re
+
+    item_re = re.compile(
+        r'[ \t]*<item[^>]*>\s*'
+        r'<output node="([^"]*)" port="([^"]*)"/>\s*'
+        r'<input node="([^"]*)" port="([^"]*)"/>\s*'
+        r'</item>\s*',
+        re.S,
+    )
+
+    first_input = f"{sushi_node}:audio_input_0"
+    guitar: tuple[str, str] | None = None
+    for match in item_re.finditer(base_xml):
+        out_node, out_port, _in_node, in_port = match.groups()
+        if in_port == first_input:
+            guitar = (out_node, out_port)
+            break
+    if guitar is None:
+        # Nothing feeds Sushi's first input, so there is nothing to put an amp
+        # in front of. Better an unchanged patchbay than a guessed one.
+        return base_xml
+
+    def redirect(match: re.Match) -> str:
+        out_node, out_port, in_node, in_port = match.groups()
+        if (out_node, out_port) == guitar and in_port.startswith(
+            f"{sushi_node}:audio_input_"
+        ):
+            return _PATCHBAY_ITEM.format(
+                out_node=AMP_NODE, out_port=AMP_OUTPUT,
+                in_node=in_node, in_port=in_port,
+            )
+        return match.group(0)
+
+    rewired = item_re.sub(redirect, base_xml)
+    feed = _PATCHBAY_ITEM.format(
+        out_node=guitar[0], out_port=guitar[1],
+        in_node=AMP_NODE, in_port=AMP_INPUT,
+    )
+    return rewired.replace("</items>", feed + "</items>", 1)

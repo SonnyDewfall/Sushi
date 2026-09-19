@@ -155,6 +155,7 @@ def plan_children(
     amp_project: Path | None = None,
     amp_model: str | None = None,
     amp_values: dict[str, float] | None = None,
+    patchbay: Path | None = None,
 ) -> list[dict[str, Any]]:
     """The children to start, in order, as data.
 
@@ -170,7 +171,7 @@ def plan_children(
 
     children.append({
         "name": "qpwgraph",
-        "command": ["qpwgraph", "-a", str(root / "Patchbay" / "rig.qpwgraph"), "-m"],
+        "command": ["qpwgraph", "-a", str(patchbay or root / "Patchbay" / "rig.qpwgraph"), "-m"],
         "optional": True,
         # qpwgraph is a Qt app that registers with the desktop session manager
         # over ICE. The supervisor runs in its own session (see `_supervise`),
@@ -694,6 +695,7 @@ def up(
     # the model changes with the config — that is the whole point of carrying it
     # in there. A config with no `_amp`, or `--no-amp`, simply starts no amp.
     amp_project = None
+    amp_patch = None
     amp_values: dict[str, float] = {}
     amp_model_stored = None
     if amp:
@@ -708,10 +710,22 @@ def up(
             amp_project.parent.mkdir(parents=True, exist_ok=True)
             amp_project.write_text(carla_project(model_path))
 
+            # qpwgraph maintains whatever patch it loaded, so the amp needs its
+            # own file rather than extra connections layered on the saved one —
+            # otherwise the direct guitar-to-Sushi route stays live too and the
+            # dry signal sits under the amped one. Generated from the saved
+            # patchbay so the two cannot drift apart.
+            from .amp import amp_patchbay
+
+            base = root / "Patchbay" / "rig.qpwgraph"
+            if base.is_file():
+                amp_patch = runtime_dir() / "rig-amp.qpwgraph"
+                amp_patch.write_text(amp_patchbay(base.read_text()))
+
     children_plan = plan_children(
         root, config, rig_yaml, headless=headless, tuner=tuner,
         amp_project=amp_project, amp_model=amp_model_stored,
-        amp_values=amp_values,
+        amp_values=amp_values, patchbay=amp_patch,
     )
 
     ready_r, ready_w = os.pipe()

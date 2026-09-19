@@ -165,3 +165,96 @@ def test_a_missing_model_is_refused_loudly(tmp_path):
     produce, so it must not be allowed to happen quietly."""
     with pytest.raises(AmpError, match="not found"):
         resolve_model("amp/models/gone.nam", tmp_path)
+
+
+# --- patchbay rewiring ------------------------------------------------------
+
+
+BASE_PATCHBAY = """<!DOCTYPE patchbay>
+<patchbay name="rig" version="0.9.9">
+ <items>
+  <item node-type="pipewire" port-type="pipewire-audio">
+   <output node="iface" port="iface:capture_AUX0"/>
+   <input node="sushi" port="sushi:audio_input_0"/>
+  </item>
+  <item node-type="pipewire" port-type="pipewire-audio">
+   <output node="iface" port="iface:capture_AUX0"/>
+   <input node="sushi" port="sushi:audio_input_1"/>
+  </item>
+  <item node-type="pipewire" port-type="pipewire-audio">
+   <output node="iface" port="iface:capture_AUX1"/>
+   <input node="sushi" port="sushi:audio_input_2"/>
+  </item>
+  <item node-type="pipewire" port-type="pipewire-audio">
+   <output node="sushi" port="sushi:audio_output_0"/>
+   <input node="iface" port="iface:playback_AUX0"/>
+  </item>
+  <item node-type="pipewire" port-type="pipewire-audio">
+   <output node="iface" port="iface:capture_AUX0"/>
+   <input node="fmit" port="fmit:input"/>
+  </item>
+ </items>
+</patchbay>
+"""
+
+
+def _links(xml):
+    import re
+    return [
+        (m.group(1), m.group(2))
+        for m in re.finditer(
+            r'<output node="[^"]*" port="([^"]*)"/>\s*<input node="[^"]*" port="([^"]*)"/>',
+            xml,
+        )
+    ]
+
+
+def test_the_guitar_goes_through_the_amp_instead_of_straight_in():
+    from sushi_rig.amp import amp_patchbay
+
+    links = _links(amp_patchbay(BASE_PATCHBAY))
+    assert ("iface:capture_AUX0", "NAM:Input") in links
+    assert ("NAM:Output", "sushi:audio_input_0") in links
+    assert ("NAM:Output", "sushi:audio_input_1") in links
+    assert ("iface:capture_AUX0", "sushi:audio_input_0") not in links, "no dry path"
+    assert ("iface:capture_AUX0", "sushi:audio_input_1") not in links
+
+
+def test_a_second_input_channel_is_not_summed_into_a_mono_amp():
+    """NAM is mono. The saved patchbay also wires a second interface channel
+    into Sushi's spare inputs, and a naive 'redirect everything feeding Sushi'
+    rule summed both physical inputs into one amp input. Caught by generating it
+    and reading the result."""
+    from sushi_rig.amp import amp_patchbay
+
+    links = _links(amp_patchbay(BASE_PATCHBAY))
+    assert ("iface:capture_AUX1", "NAM:Input") not in links
+    assert ("iface:capture_AUX1", "sushi:audio_input_2") in links, "left alone"
+
+
+def test_outputs_and_the_tuner_are_untouched():
+    """The tuner wants the dry signal, not the amped one, and Sushi's outputs
+    have nothing to do with the amp."""
+    from sushi_rig.amp import amp_patchbay
+
+    links = _links(amp_patchbay(BASE_PATCHBAY))
+    assert ("sushi:audio_output_0", "iface:playback_AUX0") in links
+    assert ("iface:capture_AUX0", "fmit:input") in links
+
+
+def test_a_patchbay_feeding_nothing_into_sushi_is_left_alone():
+    """Better an unchanged patchbay than a guessed one."""
+    from sushi_rig.amp import amp_patchbay
+
+    empty = '<!DOCTYPE patchbay>\n<patchbay name="rig">\n <items>\n </items>\n</patchbay>\n'
+    assert amp_patchbay(empty) == empty
+
+
+def test_the_result_is_still_valid_xml():
+    from xml.etree import ElementTree
+
+    from sushi_rig.amp import amp_patchbay
+
+    ElementTree.fromstring(
+        amp_patchbay(BASE_PATCHBAY).replace("<!DOCTYPE patchbay>", "")
+    )
