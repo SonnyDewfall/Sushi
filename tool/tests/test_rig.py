@@ -416,3 +416,38 @@ def test_headless_has_no_listener_to_tell(plan_args):
     ))
     assert "listen" not in names
     assert "amp" in names
+
+
+# --- restart (principle 9: fail loudly, recover instantly) -------------------
+
+
+def test_restart_brings_back_the_same_rig():
+    """Recovery is the whole answer to a failure here, so it has to return what
+    was running — not a default."""
+    from sushi_rig.rig import restart_arguments
+
+    name, options = restart_arguments({
+        "config_name": "electric-chorus-2", "mode": "panel",
+        "children": {"fmit": 1, "sushi": 2, "amp": 3, "open-stage-control": 4},
+    })
+    assert name == "electric-chorus-2"
+    assert options == {"headless": False, "tuner": True, "amp": True}
+
+
+def test_restart_preserves_the_choices_the_rig_was_started_with():
+    """A rig started --headless --no-amp --no-tuner must not quietly gain a
+    panel, an amp and a tuner on the way back."""
+    from sushi_rig.rig import restart_arguments
+
+    _, options = restart_arguments({
+        "config_name": "x", "mode": "headless", "children": {"sushi": 1},
+    })
+    assert options == {"headless": True, "tuner": False, "amp": False}
+
+
+def test_restart_falls_back_to_the_default_config_rather_than_failing():
+    """A state file missing its config name is damaged, not a reason to refuse
+    to bring the rig back."""
+    from sushi_rig.rig import DEFAULT_CONFIG_NAME, restart_arguments
+
+    assert restart_arguments({"children": {}})[0] == DEFAULT_CONFIG_NAME

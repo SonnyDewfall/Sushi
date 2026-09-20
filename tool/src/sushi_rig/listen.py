@@ -205,6 +205,7 @@ def serve(
             from .panel import build_osc_panel
             from .amp import panel_amp
             from .probe import units_for_config
+            from .rig import checkout_root
 
             panel = build_osc_panel(
                 dump_plugins(panel_config, sushi_bin),
@@ -212,7 +213,7 @@ def serve(
                 port,
                 get_live_bypass_state(address),
                 units_for_config(panel_config),
-                panel_amp(panel_config),
+                panel_amp(panel_config, checkout_root()),
             )
             Path(panel_out).write_text(json.dumps(panel, indent=2) + "\n")
             refresh_panel(str(panel_out), select_tab, status_host, status_port)

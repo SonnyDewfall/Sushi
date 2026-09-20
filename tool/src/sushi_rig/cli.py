@@ -152,6 +152,10 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     sub.add_parser("status", help="what is running, if anything")
+    sub.add_parser(
+        "restart",
+        help="stop the running rig and bring the same one back — same config, same mode, same amp and tuner choices",
+    )
 
     p = sub.add_parser(
         "top",
@@ -236,6 +240,7 @@ def main(argv: list[str] | None = None) -> int:
         from .live import get_live_bypass_state, get_live_parameter_info
         from .amp import panel_amp
         from .probe import units_for_config
+        from .rig import checkout_root
 
         dump = dump_plugins(args.config, args.sushi)
         live_info = get_live_parameter_info(args.address)
@@ -248,7 +253,7 @@ def main(argv: list[str] | None = None) -> int:
                 args.listener_port,
                 bypass_info,
                 units_for_config(args.config),
-                panel_amp(args.config),
+                panel_amp(args.config, checkout_root()),
             ),
         )
         print(
@@ -331,9 +336,9 @@ def main(argv: list[str] | None = None) -> int:
         from .top import top
 
         return top(args.interval, args.once)
-    elif args.command in ("up", "down", "status"):
+    elif args.command in ("up", "down", "status", "restart"):
         from .amp import AmpError
-        from .rig import RigError, down, status, up
+        from .rig import RigError, down, restart, status, up
 
         # AmpError is caught alongside RigError rather than subclassing it:
         # amp.py is imported *by* rig.py, so inheriting the other way round
@@ -348,6 +353,8 @@ def main(argv: list[str] | None = None) -> int:
                 )
             if args.command == "down":
                 return down(args.force)
+            if args.command == "restart":
+                return restart()
             return status()
         except (RigError, AmpError) as exc:
             sys.exit(str(exc))

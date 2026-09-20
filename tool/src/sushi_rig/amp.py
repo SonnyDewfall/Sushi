@@ -28,6 +28,7 @@ described as if they were.
 from __future__ import annotations
 
 import json
+import sys
 from pathlib import Path
 from typing import Any
 from xml.sax.saxutils import escape
@@ -206,28 +207,36 @@ def amp_from_config_file(config_path: Path) -> dict[str, Any] | None:
         return None
 
 
-def panel_amp(config_path: Path) -> dict[str, Any] | None:
+def panel_amp(config_path: Path, root: Path | None = None) -> dict[str, Any] | None:
     """What the panel needs to draw an amp tab, from a config's `_amp`.
 
     Returns None when the config describes no amp, which is the signal for the
     panel to have no amp tab at all rather than an empty one.
+
+    `root` is where a relative model path resolves from. It is optional only so
+    that callers without one still get a usable tab — but then the model cannot
+    be read, so the Quality control is left off rather than guessed at, and the
+    reason is said out loud. An earlier version guessed the root from the config
+    path and swallowed every failure, which meant an unreadable model made that
+    control vanish with no explanation at all.
     """
     described = amp_from_config_file(config_path)
     if not described or not described.get("model"):
         return None
 
-    # How many inference paths the model actually has. A control that picks
-    # between them is meaningless on a model that only has one, so the panel is
-    # told the count rather than assuming two. Best effort: an unreadable model
-    # is a problem for `up` to report, not for the panel to fail on.
+    # How many inference paths the model has. A control that picks between them
+    # is meaningless on a model that only has one, so the panel is told the
+    # count rather than assuming two.
     tiers = 0
-    try:
-        tiers = len(describe_model(Path(config_path).parent.parent / described["model"])["tiers"])
-    except (AmpError, OSError, ValueError, IndexError):
+    if root is not None:
         try:
-            tiers = len(describe_model(described["model"])["tiers"])
-        except Exception:  # noqa: BLE001 - genuinely optional
-            tiers = 0
+            tiers = len(describe_model(resolve_model(described["model"], root))["tiers"])
+        except AmpError as exc:
+            # Not fatal — the panel is still worth drawing without the Quality
+            # control. But it must not be silent: `up` refuses to start on this,
+            # so a panel generated from a config that cannot start should say so.
+            print(f"warning: amp model unreadable, Quality control omitted — {exc}",
+                  file=sys.stderr)
 
     return {
         "model_name": Path(described["model"]).stem,
