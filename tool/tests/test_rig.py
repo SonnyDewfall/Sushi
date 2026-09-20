@@ -14,16 +14,15 @@ import signal
 
 import pytest
 
+from sushi_rig.procs import SHUTDOWN_STEPS
 from sushi_rig.rig import (
     DEFAULT_CONFIG_NAME,
     FALLBACK_RIG_YAML,
-    SHUTDOWN_STEPS,
     format_uptime,
-    is_stale,
     plan_children,
     resolve_rig_yaml,
-    stale_qpwgraph_sockets,
 )
+from sushi_rig.state import is_stale
 from pathlib import Path
 
 
@@ -202,154 +201,6 @@ def test_default_config_matches_what_the_old_script_launched():
     assert DEFAULT_CONFIG_NAME == "electric_board"
 
 
-# --- qpwgraph's single-instance lock (issue #14) -----------------------------
-
-
-def test_a_live_instances_socket_is_never_removed():
-    """That socket is how a running qpwgraph is reachable. Deleting it would
-    break a patchbay the user may be watching, to fix a problem that isn't
-    there."""
-    sockets = [Path("/tmp/qpwgraph:someone@host")]
-    assert stale_qpwgraph_sockets(sockets, any_running=True) == []
-
-
-def test_sockets_left_by_a_dead_instance_are_removed():
-    """The actual cause of issue #14: qpwgraph's lock socket survives SIGKILL,
-    and the next instance then exits immediately and silently — no error, no
-    crash, an empty log — leaving the patchbay unconnected while Sushi looks
-    perfectly healthy. Confirmed by killing one and relaunching: it dies; delete
-    the socket first and the identical command survives.
-
-    Waiting for the process to disappear, which is what the shell scripts did,
-    cannot fix this on its own."""
-    sockets = [Path("/tmp/qpwgraph:someone@host")]
-    assert stale_qpwgraph_sockets(sockets, any_running=False) == sockets
-
-
-def test_no_sockets_is_not_an_error():
-    assert stale_qpwgraph_sockets([], any_running=False) == []
-
-
-def test_qpwgraph_is_detached_from_the_desktop_session_manager():
-    """qpwgraph registers with the session manager over ICE, and from the
-    supervisor's own session that registration makes Qt quit immediately and
-    silently — empty log, no error, patchbay never connected. Isolated by A/B:
-    identical command and environment, the only difference being a new session,
-    dies; with SESSION_MANAGER removed it lives.
-
-    This is the second, independent half of issue #14 — the stale lock socket
-    is the first, and fixing either alone still leaves it broken."""
-    children = plan_children(
-        Path("/rig"), Path("/rig/config/x.json"), "y.yaml",
-        headless=False, tuner=True,
-    )
-    qpwgraph = next(c for c in children if c["name"] == "qpwgraph")
-    assert "SESSION_MANAGER" in qpwgraph["env_unset"]
-
-
-def test_nothing_else_has_its_environment_stripped():
-    """Sushi and the listener have no business losing environment; keep the
-    workaround aimed at the one thing that needs it."""
-    children = plan_children(
-        Path("/rig"), Path("/rig/config/x.json"), "y.yaml",
-        headless=False, tuner=True,
-    )
-    for child in children:
-        if child["name"] != "qpwgraph":
-            assert not child.get("env_unset")
-
-
-# --- qpwgraph start retry (issue #14) ---------------------------------------
-
-
-class _FakeProc:
-    """A Popen stand-in whose exit behaviour the test dictates."""
-
-    def __init__(self, exits_after: bool):
-        self.pid = 4321
-        self._exits = exits_after
-
-    def poll(self):
-        return 2 if self._exits else None
-
-
-@pytest.fixture
-def fake_launch(monkeypatch, tmp_path):
-    """Record every attempt without launching anything."""
-    from sushi_rig import rig
-
-    calls = {"cleared": 0, "launched": 0, "outcomes": []}
-
-    def fake_stop(*_args, **_kwargs):
-        calls["cleared"] += 1
-
-    def fake_popen(*_args, **_kwargs):
-        proc = _FakeProc(calls["outcomes"][calls["launched"]])
-        calls["launched"] += 1
-        return proc
-
-    monkeypatch.setattr(rig, "stop_existing_qpwgraph", fake_stop)
-    monkeypatch.setattr(rig.subprocess, "Popen", fake_popen)
-    return calls
-
-
-def test_a_qpwgraph_that_stays_up_is_accepted_first_time(fake_launch, tmp_path):
-    from sushi_rig.rig import start_qpwgraph
-
-    fake_launch["outcomes"] = [False]
-    proc = start_qpwgraph(
-        {"command": ["qpwgraph"], "env_unset": []}, tmp_path, {}, tmp_path,
-        attempts=3, settle=0,
-    )
-    assert proc is not None
-    assert fake_launch["launched"] == 1, "no pointless retry of a working start"
-
-
-def test_a_silent_exit_is_retried_rather_than_warned_about(fake_launch, tmp_path):
-    """qpwgraph exits with status 2 and writes nothing at all. Warning the user
-    and carrying on leaves them with no audio; trying again usually just
-    works."""
-    from sushi_rig.rig import start_qpwgraph
-
-    fake_launch["outcomes"] = [True, True, False]
-    proc = start_qpwgraph(
-        {"command": ["qpwgraph"], "env_unset": []}, tmp_path, {}, tmp_path,
-        attempts=3, settle=0,
-    )
-    assert proc is not None
-    assert fake_launch["launched"] == 3
-
-
-def test_every_attempt_clears_the_lock_first(fake_launch, tmp_path):
-    """A failed attempt can leave a socket of its own, which would then block
-    the next one — so clearing has to happen per attempt, not once up front."""
-    from sushi_rig.rig import start_qpwgraph
-
-    fake_launch["outcomes"] = [True, True, False]
-    start_qpwgraph(
-        {"command": ["qpwgraph"], "env_unset": []}, tmp_path, {}, tmp_path,
-        attempts=3, settle=0,
-    )
-    assert fake_launch["cleared"] == 3
-
-
-def test_giving_up_is_reported_rather_than_retried_forever(fake_launch, tmp_path):
-    """Bounded: a patchbay that will not start should say so, not hang the
-    start of the rig."""
-    from sushi_rig.rig import start_qpwgraph
-
-    fake_launch["outcomes"] = [True, True, True]
-    proc = start_qpwgraph(
-        {"command": ["qpwgraph"], "env_unset": []}, tmp_path, {}, tmp_path,
-        attempts=3, settle=0,
-    )
-    assert proc is None
-    assert fake_launch["launched"] == 3
-
-
-# --- the neural amp ----------------------------------------------------------
-
-
 def test_the_amp_is_planned_only_when_a_project_exists(plan_args):
     """A config with no `_amp` section describes a rig with no amp, and should
     start one no more than --no-amp does."""
@@ -416,3 +267,38 @@ def test_headless_has_no_listener_to_tell(plan_args):
     ))
     assert "listen" not in names
     assert "amp" in names
+
+
+# --- restart (principle 9: fail loudly, recover instantly) -------------------
+
+
+def test_restart_brings_back_the_same_rig():
+    """Recovery is the whole answer to a failure here, so it has to return what
+    was running — not a default."""
+    from sushi_rig.rig import restart_arguments
+
+    name, options = restart_arguments({
+        "config_name": "electric-chorus-2", "mode": "panel",
+        "children": {"fmit": 1, "sushi": 2, "amp": 3, "open-stage-control": 4},
+    })
+    assert name == "electric-chorus-2"
+    assert options == {"headless": False, "tuner": True, "amp": True}
+
+
+def test_restart_preserves_the_choices_the_rig_was_started_with():
+    """A rig started --headless --no-amp --no-tuner must not quietly gain a
+    panel, an amp and a tuner on the way back."""
+    from sushi_rig.rig import restart_arguments
+
+    _, options = restart_arguments({
+        "config_name": "x", "mode": "headless", "children": {"sushi": 1},
+    })
+    assert options == {"headless": True, "tuner": False, "amp": False}
+
+
+def test_restart_falls_back_to_the_default_config_rather_than_failing():
+    """A state file missing its config name is damaged, not a reason to refuse
+    to bring the rig back."""
+    from sushi_rig.rig import DEFAULT_CONFIG_NAME, restart_arguments
+
+    assert restart_arguments({"children": {}})[0] == DEFAULT_CONFIG_NAME

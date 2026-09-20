@@ -46,6 +46,86 @@ The cost: Sushi is headless, so plugins' own GUIs are unavailable. Parameters ar
 tweaked through generated [Open Stage Control](https://openstagecontrol.ammd.net/)
 faders instead. That was an accepted trade-off when scoping the project.
 
+## Quality principles
+
+What "good" means here. These are meant to be **usable in a review** — a change
+should be arguable against them, and an audit should be able to fail one.
+
+**1. Isolate decisions from effects.** Unit-test every decision; verify effects
+against the real thing.
+
+Most of the value in this codebase is decisions — what to start, where a plugin
+should move to, which OSC message means what. Those are kept pure and pinned by
+tests. The effects around them, mostly glue to external processes, are verified
+by running them.
+
+This replaced "all code covered by unit tests", which was the wrong target here.
+Large parts of this project supervise processes, spawn Carla and send OSC; a unit
+test for those means mocking everything and proves only that the mocks were
+called. Meanwhile the tests that have genuinely earned their place encode
+*discovered facts* — that Sushi's `/bypass` accepts an int only, that a `program`
+overrides `parameters`, that Carla numbers plugins from zero. None of them came
+from chasing coverage.
+
+**2. Every feature is covered by a functional test.** Verified by driving the
+real thing, not by a human saying it worked.
+
+**3. Architectural simplicity wherever possible.** Few moving parts, a shape you
+can hold in your head. This is about architecture, not line count — see 5.
+
+**4. Customise external components as little as possible.** Prefer configuration
+and composition over modification, and record every workaround with what it works
+around.
+
+**5. Annotated for human and machine readers.** Comments say *why*, not what: the
+constraint that forced the shape, the thing that was tried and failed, the
+behaviour that is undiscoverable from the API. Much of this project's hardest-won
+knowledge is unobvious and expensive to rediscover.
+
+Some files here are a third comment, and that does not violate 3. Comments are
+not moving parts.
+
+**6. Modular and composable wherever possible.** One job per module, and
+composition over coupling.
+
+**7. An intuitive and simple user experience.** The rig is played by a musician,
+not operated by an engineer. A failure should be understandable without reading
+the source.
+
+**8. Failures must be loud.** Prefer a loud failure to silent degradation.
+
+Every serious bug this project has had was silent. qpwgraph exiting with no error
+and no log. A track's bypass flag wiping every plugin's. A preset index quietly
+overwriting the parameters saved beside it. An amp running with no model loaded,
+processing silence while looking perfectly healthy. Not one announced itself, and
+each cost hours.
+
+**9. Fail loudly, recover instantly.** The rig may die — it must come straight
+back with the state it had.
+
+This is deliberately *recovery*, not self-healing. A rig that quietly compensates
+is a rig running at half quality on stage with nobody aware, which puts it
+straight at odds with 8. It works because state lives in config files and is not
+changed at runtime during performance, only while building a configuration.
+
+It also settles a design question: the supervisor deliberately does **not**
+restart children. Under this principle that is right, and the effort belongs in
+making restart fast and faithful instead.
+
+### Where these disagree
+
+They are not all compatible, and pretending otherwise would make them useless in
+a review.
+
+**3 against 4.** Running the neural amp in Carla, rather than adding `patch:`
+support to Sushi's LV2 wrapper, follows 4 — but it buys a smaller *diff* at the
+cost of a more complex *architecture*. Both are "simplicity" and they point
+different ways. Say which won and why.
+
+**8 against 9.** Resolved above, by making 9 about recovery. The shape to copy is
+`start_qpwgraph` in `rig.py`: retry a few times, then report loudly and leave the
+rig usable.
+
 ## What this project owns (and what it doesn't)
 
 Several projects already drive Sushi — [`elk-audio/sushi-gui`](https://github.com/elk-audio/sushi-gui)
@@ -102,9 +182,27 @@ rig.yaml ──emit──> rig.json ──verify──> names confirmed against 
 rig.yaml + state.json ──emit──> rig.json  (now carrying initial_state)
 ```
 
-`rig.yaml` is the only hand-authored file. Everything below it is generated, and
-`verify` runs after every `emit` — it is cheap and it catches the failure mode
-that matters.
+`rig.yaml` is the only hand-authored file; everything below it is generated.
+
+`verify` answers the question that has caught this project out twice: a config
+can load cleanly, name only things that exist, and still not do what it says.
+Both times the cause was one key in `initial_state` silently overriding another,
+and both times it looked like a save bug rather than a load bug.
+
+```bash
+sushi-rig verify config/electric-clean.json   # loads, names exist, and it applies
+sushi-rig verify --all                        # every config, about six seconds each
+sushi-rig verify --quick                      # skip the check that starts Sushi
+```
+
+The deep check loads the config into a throwaway Sushi — `--dummy`, so no audio
+hardware, no JACK — and compares the running rig against the file, naming every
+parameter, bypass and chain-order difference. It uses a free port and its own
+process group, so it is safe to run while you are playing.
+
+The two cheap checks run automatically after `emit` and after the panel's SAVE.
+The deep one stays explicit: five seconds on every SAVE would be felt while
+dialling in a tone.
 
 A captured session overrides the yaml in two ways, not one: parameter **values**
 (via `initial_state`) and plugin **order**. Pedal order is a tonal decision, so
@@ -148,7 +246,8 @@ then.
 │
 ├── tool/                       ── TOOL: generates the configs above
 │   ├── pyproject.toml
-│   ├── src/sushi_rig/            spec, emit, dump, verify, probe, live, panel, cli
+│   ├── src/sushi_rig/            spec, emit, dump, probe, live, panel, listen,
+│   │                             save, rig, amp, top, cli
 │   ├── tests/
 │   ├── examples/
 │   │   ├── rig.example.yaml       annotated rig spec
@@ -174,12 +273,17 @@ once the package supersedes it.
 ## Running the rig
 
 ```bash
-sushi-rig up                # tuner, patchbay, Sushi, and a generated panel
+sushi-rig up                # tuner, patchbay, Sushi, the amp, and a generated panel
 sushi-rig up --headless     # the same rig with no panel — for playing, not tweaking
-sushi-rig up acoustic_hall  # any config/<name>.json; defaults to electric_board
+sushi-rig up electric-clean # any config/<name>.json; defaults to electric_board
 sushi-rig status            # what is running, and where its logs are
+sushi-rig top               # live CPU load per component, and whether xruns are climbing
+sushi-rig restart           # stop and bring the same rig straight back
 sushi-rig down              # stop everything, and verify it stopped
 ```
+
+`up` also takes `--no-amp`, `--no-tuner`, and `--amp-model "Some Model.nam"` to
+audition a different amp capture without editing the config.
 
 `up` starts everything and hands the prompt back — the rig is detached, so it
 survives closing the terminal. Child output goes to log files rather than your
@@ -191,6 +295,17 @@ Stage Control panel and the save listener behind it, which is what you want when
 dialling in a tone: tweak, type a name, press save, and `config/<name>.json`
 appears with the current sound baked in (issue #10). `--headless` skips both and
 just runs the rig.
+
+**Recovery is the answer to failure, not self-healing** (principle 9). `restart`
+stops the rig and brings back the same one — same config, same mode, and the same
+`--no-amp` / `--no-tuner` choices, read from the state file rather than from you,
+since after a crash you may not remember them. Measured end to end at around five
+seconds.
+
+`top` answers the question that predicts trouble: how close to the block deadline
+each component is running. It is not total CPU — 100% means a node used its whole
+time budget for one block and the rig will drop audio. Xruns are reported as a
+change rather than a total, since the cumulative count never resets.
 
 `down` signals the rig's **process group**, which is why it can be trusted where
 the old `stop-rig.sh` could not: `sushi.bin` (Sushi re-execs itself out of a
@@ -228,6 +343,8 @@ find out by trying it:
 sushi-rig probe                 # everything on LV2_PATH, one line each
 sushi-rig probe <uri>           # full detail for one plugin
 sushi-rig probe <uri> --json    # same, machine-readable
+sushi-rig probe amp/models/X.nam  # a NAM amp model: architecture, quality tiers,
+                                  # and whether its sample rate matches the rig
 ```
 
 It reads the plugin's own TTL through lilv, so every value is the plugin

@@ -197,7 +197,7 @@ def sample() -> list[dict[str, Any]]:
 
 def top(interval: float = 1.0, once: bool = False) -> int:
     """Show the rig's load, refreshing until interrupted."""
-    from .rig import read_state
+    from .state import read_state
 
     previous: dict[str, int] = {}
     try:
