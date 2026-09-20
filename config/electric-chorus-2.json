@@ -1,9 +1,9 @@
 {
   "_meta": {
-    "name": "electric-chorus",
+    "name": "electric-chorus-2",
     "version": "1.0",
-    "description": "Electric guitar \u2014 compressor, overdrive, octave, EQ, chorus, delay, and two reverbs \u2014 a clean room and a big hall",
-    "status": "stable",
+    "description": "electric-chorus on the new chain \u2014 L/C/R Delay, two-stage GxDetune octave",
+    "status": "wip",
     "source": "config/src/electric_board.yaml"
   },
   "host_config": {
@@ -32,6 +32,21 @@
           "uri": "http://guitarix.sourceforge.net/plugins/gx_compressor#_compressor"
         },
         {
+          "name": "overdrive",
+          "type": "lv2",
+          "uri": "http://guitarix.sourceforge.net/plugins/gxts9#ts9sim"
+        },
+        {
+          "name": "octave_down",
+          "type": "lv2",
+          "uri": "http://guitarix.sourceforge.net/plugins/gx_detune_#_detune_"
+        },
+        {
+          "name": "octave_up",
+          "type": "lv2",
+          "uri": "http://guitarix.sourceforge.net/plugins/gx_detune_#_detune_"
+        },
+        {
           "name": "eq",
           "type": "lv2",
           "uri": "http://distrho.sf.net/plugins/3BandEQ"
@@ -42,29 +57,19 @@
           "uri": "http://guitarix.sourceforge.net/plugins/gx_chorus_stereo#_chorus_stereo"
         },
         {
-          "name": "octave",
-          "type": "lv2",
-          "uri": "http://guitarix.sourceforge.net/plugins/gx_oc_2_#_oc_2_"
-        },
-        {
-          "name": "overdrive",
-          "type": "lv2",
-          "uri": "http://guitarix.sourceforge.net/plugins/gxts9#ts9sim"
-        },
-        {
           "name": "delay",
           "type": "lv2",
-          "uri": "http://drobilla.net/plugins/mda/Delay"
-        },
-        {
-          "name": "hall",
-          "type": "lv2",
-          "uri": "http://distrho.sf.net/plugins/MaGigaverb"
+          "uri": "http://plugin.org.uk/swh-plugins/lcrDelay"
         },
         {
           "name": "room",
           "type": "lv2",
           "uri": "urn:ardour:a-reverb"
+        },
+        {
+          "name": "hall",
+          "type": "lv2",
+          "uri": "http://distrho.sf.net/plugins/MaGigaverb"
         }
       ]
     }
@@ -87,6 +92,16 @@
         "THRESHOLD": 0.74,
         "RELEASE": 0.05,
         "ATTACK": 0.002,
+        "BYPASS": 1.0
+      }
+    },
+    {
+      "processor": "overdrive",
+      "bypassed": true,
+      "parameters": {
+        "Level": 0.93,
+        "Tone": 0.13,
+        "Drive": 0.0,
         "BYPASS": 1.0
       }
     },
@@ -114,34 +129,12 @@
       }
     },
     {
-      "processor": "octave",
-      "bypassed": true,
+      "processor": "room",
+      "bypassed": false,
       "parameters": {
-        "DIRECT": 0.25,
-        "OCTAVE1": 0.47,
-        "OCTAVE2": 0.0
-      }
-    },
-    {
-      "processor": "overdrive",
-      "bypassed": true,
-      "parameters": {
-        "Level": 0.93,
-        "Tone": 0.13,
-        "Drive": 0.0,
-        "BYPASS": 1.0
-      }
-    },
-    {
-      "processor": "delay",
-      "bypassed": true,
-      "parameters": {
-        "L Delay": 0.52,
-        "R Delay": 0.53,
-        "Feedback": 0.66,
-        "Fb Tone": 0.5,
-        "FX Mix": 0.77,
-        "Output": 0.73
+        "Blend": 0.2,
+        "Room Size": 0.41,
+        "Enable": 1.0
       }
     },
     {
@@ -156,15 +149,6 @@
         "tail": 0.09,
         "dry": 0.81,
         "early": 0.16
-      }
-    },
-    {
-      "processor": "room",
-      "bypassed": false,
-      "parameters": {
-        "Blend": 0.2,
-        "Room Size": 0.41,
-        "Enable": 1.0
       }
     }
   ],

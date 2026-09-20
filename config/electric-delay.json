@@ -1,6 +1,6 @@
 {
   "_meta": {
-    "name": "electric-chorus",
+    "name": "electric-delay",
     "version": "1.0",
     "description": "Electric guitar \u2014 compressor, overdrive, octave, EQ, chorus, delay, and two reverbs \u2014 a clean room and a big hall",
     "status": "stable",
@@ -37,34 +37,39 @@
           "uri": "http://distrho.sf.net/plugins/3BandEQ"
         },
         {
-          "name": "chorus",
-          "type": "lv2",
-          "uri": "http://guitarix.sourceforge.net/plugins/gx_chorus_stereo#_chorus_stereo"
-        },
-        {
-          "name": "octave",
-          "type": "lv2",
-          "uri": "http://guitarix.sourceforge.net/plugins/gx_oc_2_#_oc_2_"
-        },
-        {
           "name": "overdrive",
           "type": "lv2",
           "uri": "http://guitarix.sourceforge.net/plugins/gxts9#ts9sim"
         },
         {
-          "name": "delay",
+          "name": "octave_down",
           "type": "lv2",
-          "uri": "http://drobilla.net/plugins/mda/Delay"
+          "uri": "http://guitarix.sourceforge.net/plugins/gx_detune_#_detune_"
         },
         {
-          "name": "hall",
+          "name": "octave_up",
           "type": "lv2",
-          "uri": "http://distrho.sf.net/plugins/MaGigaverb"
+          "uri": "http://guitarix.sourceforge.net/plugins/gx_detune_#_detune_"
+        },
+        {
+          "name": "chorus",
+          "type": "lv2",
+          "uri": "http://guitarix.sourceforge.net/plugins/gx_chorus_stereo#_chorus_stereo"
+        },
+        {
+          "name": "delay",
+          "type": "lv2",
+          "uri": "http://plugin.org.uk/swh-plugins/lcrDelay"
         },
         {
           "name": "room",
           "type": "lv2",
           "uri": "urn:ardour:a-reverb"
+        },
+        {
+          "name": "hall",
+          "type": "lv2",
+          "uri": "http://distrho.sf.net/plugins/MaGigaverb"
         }
       ]
     }
@@ -103,6 +108,50 @@
       }
     },
     {
+      "processor": "overdrive",
+      "bypassed": true,
+      "parameters": {
+        "Level": 0.93,
+        "Tone": 0.13,
+        "Drive": 0.0,
+        "BYPASS": 1.0
+      }
+    },
+    {
+      "processor": "octave_down",
+      "bypassed": true,
+      "parameters": {
+        "DETUNE": 0.5,
+        "OCTAVE": 0.0,
+        "COMPENSATE": 0.0,
+        "LATENCY": 0.0,
+        "WET": 0.5,
+        "DRY": 0.5,
+        "LOW": 0.5,
+        "MIDDLELOW": 0.5,
+        "MIDDLETREBLE": 0.5,
+        "TREBLE": 0.5,
+        "BYPASS": 1.0
+      }
+    },
+    {
+      "processor": "octave_up",
+      "bypassed": true,
+      "parameters": {
+        "DETUNE": 0.5,
+        "OCTAVE": 0.0,
+        "COMPENSATE": 0.0,
+        "LATENCY": 0.0,
+        "WET": 0.5,
+        "DRY": 0.5,
+        "LOW": 0.5,
+        "MIDDLELOW": 0.5,
+        "MIDDLETREBLE": 0.5,
+        "TREBLE": 0.5,
+        "BYPASS": 1.0
+      }
+    },
+    {
       "processor": "chorus",
       "bypassed": false,
       "parameters": {
@@ -114,34 +163,29 @@
       }
     },
     {
-      "processor": "octave",
-      "bypassed": true,
-      "parameters": {
-        "DIRECT": 0.25,
-        "OCTAVE1": 0.47,
-        "OCTAVE2": 0.0
-      }
-    },
-    {
-      "processor": "overdrive",
-      "bypassed": true,
-      "parameters": {
-        "Level": 0.93,
-        "Tone": 0.13,
-        "Drive": 0.0,
-        "BYPASS": 1.0
-      }
-    },
-    {
       "processor": "delay",
-      "bypassed": true,
+      "bypassed": false,
       "parameters": {
-        "L Delay": 0.52,
-        "R Delay": 0.53,
-        "Feedback": 0.66,
-        "Fb Tone": 0.5,
-        "FX Mix": 0.77,
-        "Output": 0.73
+        "L delay (ms)": 0.15,
+        "L level": 0.5,
+        "C delay (ms)": 0.15,
+        "C level": 0.63,
+        "R delay (ms)": 0.15,
+        "R level": 0.5,
+        "Feedback": 0.87,
+        "High damp (%)": 0.22,
+        "Low damp (%)": 0.5,
+        "Spread": 0.5,
+        "Dry/Wet level": 0.61
+      }
+    },
+    {
+      "processor": "room",
+      "bypassed": false,
+      "parameters": {
+        "Blend": 0.2,
+        "Room Size": 0.41,
+        "Enable": 1.0
       }
     },
     {
@@ -156,15 +200,6 @@
         "tail": 0.09,
         "dry": 0.81,
         "early": 0.16
-      }
-    },
-    {
-      "processor": "room",
-      "bypassed": false,
-      "parameters": {
-        "Blend": 0.2,
-        "Room Size": 0.41,
-        "Enable": 1.0
       }
     }
   ],
