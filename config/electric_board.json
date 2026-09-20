@@ -36,9 +36,14 @@
           "uri": "http://guitarix.sourceforge.net/plugins/gxts9#ts9sim"
         },
         {
-          "name": "octave",
+          "name": "octave_down",
           "type": "lv2",
-          "uri": "http://guitarix.sourceforge.net/plugins/gx_oc_2_#_oc_2_"
+          "uri": "http://guitarix.sourceforge.net/plugins/gx_detune_#_detune_"
+        },
+        {
+          "name": "octave_up",
+          "type": "lv2",
+          "uri": "http://guitarix.sourceforge.net/plugins/gx_detune_#_detune_"
         },
         {
           "name": "eq",
@@ -53,7 +58,7 @@
         {
           "name": "delay",
           "type": "lv2",
-          "uri": "http://drobilla.net/plugins/mda/Delay"
+          "uri": "http://plugin.org.uk/swh-plugins/lcrDelay"
         },
         {
           "name": "room",

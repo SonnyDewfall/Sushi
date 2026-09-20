@@ -48,18 +48,40 @@ tracks:
       - name: overdrive
         type: lv2
         uri: http://guitarix.sourceforge.net/plugins/gxts9#ts9sim
-      - name: octave
+      # Two GxDetune in series, one shifting down and one up, replacing the
+      # Guitarix OC-2 model. That pedal is a sub-octave *divider*: octave down
+      # only, and monophonic by design, so it falls apart on anything more than
+      # a single note. Neither is a fault in the model — the hardware never did
+      # either.
+      #
+      # Each GxDetune has its own WET and DRY, which is what makes stacking
+      # them work rather than simply shifting twice: the first outputs
+      # dry + down, the second outputs that plus its own octave up. The result
+      # carries the dry note, an octave below and an octave above together.
+      #
+      # Both are mono (1 in / 1 out), as the OC-2 model was.
+      - name: octave_down
         type: lv2
-        uri: http://guitarix.sourceforge.net/plugins/gx_oc_2_#_oc_2_
+        uri: http://guitarix.sourceforge.net/plugins/gx_detune_#_detune_
+      - name: octave_up
+        type: lv2
+        uri: http://guitarix.sourceforge.net/plugins/gx_detune_#_detune_
       - name: eq
         type: lv2
         uri: http://distrho.sf.net/plugins/3BandEQ
       - name: chorus
         type: lv2
         uri: http://guitarix.sourceforge.net/plugins/gx_chorus_stereo#_chorus_stereo
+      # Three independent taps in milliseconds up to 2.7 seconds, with
+      # feedback, damping and a stereo Spread control — the big spacious end.
+      #
+      # It replaces mda Delay, whose L/R Delay controls were bare 0-1 with no
+      # units at all: there was no time to set, only a fraction of some
+      # undisclosed maximum. Reported as "I need something where I can set the
+      # timing", and that is exactly why.
       - name: delay
         type: lv2
-        uri: http://drobilla.net/plugins/mda/Delay
+        uri: http://plugin.org.uk/swh-plugins/lcrDelay
       # Two reverbs, doing two different jobs — named for those jobs, per the
       # role-naming rule above. Untick one plugin's "Active" box in the panel
       # to hear the other on its own.
