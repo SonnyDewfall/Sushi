@@ -184,11 +184,25 @@ rig.yaml + state.json ──emit──> rig.json  (now carrying initial_state)
 
 `rig.yaml` is the only hand-authored file; everything below it is generated.
 
-`verify` is **not built yet** — it is the next piece of work (#2, #4). It will
-answer the question that has caught this project out twice: a config can load
-cleanly, name only things that exist, and still not do what it says. Both times
-the cause was one key in `initial_state` silently overriding another, and both
-times it looked like a save bug rather than a load bug.
+`verify` answers the question that has caught this project out twice: a config
+can load cleanly, name only things that exist, and still not do what it says.
+Both times the cause was one key in `initial_state` silently overriding another,
+and both times it looked like a save bug rather than a load bug.
+
+```bash
+sushi-rig verify config/electric-clean.json   # loads, names exist, and it applies
+sushi-rig verify --all                        # every config, about six seconds each
+sushi-rig verify --quick                      # skip the check that starts Sushi
+```
+
+The deep check loads the config into a throwaway Sushi — `--dummy`, so no audio
+hardware, no JACK — and compares the running rig against the file, naming every
+parameter, bypass and chain-order difference. It uses a free port and its own
+process group, so it is safe to run while you are playing.
+
+The two cheap checks run automatically after `emit` and after the panel's SAVE.
+The deep one stays explicit: five seconds on every SAVE would be felt while
+dialling in a tone.
 
 A captured session overrides the yaml in two ways, not one: parameter **values**
 (via `initial_state`) and plugin **order**. Pedal order is a tonal decision, so

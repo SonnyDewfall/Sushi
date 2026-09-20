@@ -60,6 +60,7 @@ def handle_save(
     address: str = DEFAULT_GRPC_ADDRESS,
     amp_model: str | None = None,
     amp_parameters: dict[str, float] | None = None,
+    sushi_bin: str = "sushi",
 ) -> str:
     """Run `save_config` and return a human-readable outcome message.
 
@@ -77,6 +78,21 @@ def handle_save(
         return f"save failed: {exc}"
     except Exception as exc:  # noqa: BLE001 - keep the listener alive
         return f"save failed: unexpected error: {exc}"
+
+    # The cheap checks on what was just written. Reported rather than raised:
+    # the save has already happened, and losing it would be worse than a config
+    # with a problem the player can now see and fix. Never fatal, for the same
+    # reason the rest of this function never raises.
+    try:
+        from .verify import verify
+
+        problems = verify(out_path, sushi_bin, quick=True)
+    except SystemExit as exc:
+        return f"saved {out_path.name}, but it does not load: {exc}"
+    except Exception as exc:  # noqa: BLE001 - keep the listener alive
+        return f"saved {out_path.name} (could not check it: {exc})"
+    if problems:
+        return f"saved {out_path.name} — {len(problems)} problem(s): {problems[0]}"
     return f"saved {out_path.name}"
 
 
@@ -134,7 +150,7 @@ def serve(
         # why the name arrives as its own message instead.
         _report(handle_save(
             last_name, rig_path, out_dir, archive_dir, address,
-            amp_model=amp_model, amp_parameters=amp_state,
+            amp_model=amp_model, amp_parameters=amp_state, sushi_bin=sushi_bin,
         ))
 
     def _on_amp(osc_address: str, *args) -> None:

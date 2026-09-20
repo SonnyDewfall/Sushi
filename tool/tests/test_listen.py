@@ -51,7 +51,30 @@ def fake_capture(monkeypatch):
 
 def test_handle_save_reports_success(tmp_path, rig_path):
     message = handle_save("bright", rig_path, tmp_path / "config", tmp_path / "archive")
-    assert message == "saved bright.json"
+    assert message.startswith("saved bright.json")
+
+
+def test_a_save_that_cannot_be_checked_says_so(tmp_path, rig_path):
+    """The save is reported as done — it is — but an unchecked config must not
+    pass for a checked one. There is no Sushi binary in a test environment, so
+    this is also the path every unit test takes."""
+    message = handle_save(
+        "bright", rig_path, tmp_path / "config", tmp_path / "archive",
+        sushi_bin="definitely-not-a-real-binary",
+    )
+    assert message.startswith("saved bright.json")
+    assert "could not check it" in message
+
+
+def test_a_save_is_never_lost_to_a_failing_check(tmp_path, rig_path):
+    """The file is written before anything is checked. Losing a dialled-in tone
+    because the checker fell over would be far worse than a config with a
+    problem the player can see."""
+    handle_save(
+        "bright", rig_path, tmp_path / "config", tmp_path / "archive",
+        sushi_bin="definitely-not-a-real-binary",
+    )
+    assert (tmp_path / "config" / "bright.json").is_file()
     assert (tmp_path / "config" / "bright.json").exists()
 
 

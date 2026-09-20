@@ -47,6 +47,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("rig", type=Path)
     p.add_argument("--state", type=Path, help="captured state file to fold in")
     p.add_argument("-o", "--out", type=Path, default=Path("rig.json"))
+    p.add_argument("--sushi", default="sushi")
+    p.add_argument(
+        "--no-verify", dest="verify", action="store_false",
+        help="skip the load and parameter-name checks run after writing",
+    )
 
     p = sub.add_parser("push", help="build the rig in a running Sushi")
     p.add_argument("rig", type=Path)
@@ -151,6 +156,22 @@ def main(argv: list[str] | None = None) -> int:
         "JACK ports cleanly — for a rig that is already wedged",
     )
 
+    p = sub.add_parser(
+        "verify",
+        help="check a config loads, names things that exist, and actually "
+        "applies what it says",
+    )
+    p.add_argument("config", type=Path, nargs="?", help="config to check")
+    p.add_argument(
+        "--all", action="store_true", dest="check_all",
+        help="every config in config/, skipping retired ones",
+    )
+    p.add_argument(
+        "--quick", action="store_true",
+        help="skip the check that starts Sushi — loads and names only",
+    )
+    p.add_argument("--sushi", default="sushi")
+
     sub.add_parser("status", help="what is running, if anything")
     sub.add_parser(
         "restart",
@@ -228,6 +249,20 @@ def main(argv: list[str] | None = None) -> int:
     if args.command == "emit":
         state = json.loads(args.state.read_text()) if args.state else None
         write_json(args.out, emit(RigSpec.load(args.rig), state))
+        if args.verify:
+            # The cheap checks only: they cost milliseconds and catch a bad
+            # config at the moment it is created. The check that starts Sushi
+            # stays an explicit `sushi-rig verify`.
+            from .verify import VerifyError, verify
+
+            try:
+                problems = verify(args.out, args.sushi, quick=True)
+            except (VerifyError, SystemExit) as exc:
+                sys.exit(f"{args.out} was written, but does not load: {exc}")
+            if problems:
+                for problem in problems:
+                    print(f"  {problem}", file=sys.stderr)
+                sys.exit(f"{args.out} was written, but {len(problems)} problem(s) above")
     elif args.command == "push":
         from .live import push
 
@@ -332,6 +367,35 @@ def main(argv: list[str] | None = None) -> int:
         except SaveError as exc:
             sys.exit(str(exc))
         print(f"saved {out_path}")
+    elif args.command == "verify":
+        from .paths import checkout_root
+        from .verify import VerifyError, configs_to_check, verify
+
+        if args.check_all:
+            targets = configs_to_check(checkout_root())
+        elif args.config:
+            targets = [args.config]
+        else:
+            sys.exit("give a config to verify, or --all")
+
+        failed = 0
+        for target in targets:
+            try:
+                problems = verify(target, args.sushi, args.quick)
+            except VerifyError as exc:
+                print(f"{target.name}: CANNOT CHECK — {exc}", file=sys.stderr)
+                failed += 1
+                continue
+            if problems:
+                failed += 1
+                print(f"{target.name}: {len(problems)} problem(s)")
+                for problem in problems:
+                    print(f"   {problem}")
+            else:
+                print(f"{target.name}: ok")
+        if failed:
+            print(f"\n{failed} of {len(targets)} config(s) have problems", file=sys.stderr)
+        return 1 if failed else 0
     elif args.command == "top":
         from .top import top
 

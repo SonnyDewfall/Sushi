@@ -24,3 +24,6 @@ where = ["src"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]
+# The deep config checks each start a real Sushi and take about six seconds.
+# Run the fast suite with:  pytest -m "not slow"
+markers = ["slow: starts a real Sushi and takes seconds, not milliseconds"]
