@@ -453,3 +453,54 @@ def summarise_model(described: dict[str, Any], rig_rate: int = RIG_SAMPLE_RATE) 
                 "relative cost; measure with `sushi-rig top`."
             )
     return "\n".join(lines)
+
+
+def prepare(
+    config: Path, root: Path, runtime: Path, override_model: str | None = None
+) -> dict[str, Any]:
+    """Everything a run needs for the amp, written out and ready.
+
+    Lives here rather than in the supervisor because all of it is knowledge about
+    Carla and about how the amp is wired — the supervisor's job is starting
+    processes, not knowing what a `.carxp` contains.
+
+    Returns `{}` when the config describes no amp and none was asked for, which
+    is the supervisor's signal to start none.
+
+    Both files are generated per run rather than kept on disk. The Carla project
+    has to be, since the model changes with the config; the patchbay has to be so
+    it cannot drift from the saved one it is derived from.
+    """
+    described = amp_from_config_file(config)
+    if override_model and not described:
+        # --amp-model against a config with no amp section still gets an amp:
+        # auditioning a model on a rig that has never had one is reasonable.
+        described = {"model": override_model, "parameters": {}}
+    if not described or not described.get("model"):
+        return {}
+
+    model = described["model"]
+    if override_model:
+        # A bare filename means amp/models/, which is where they live.
+        model = override_model if "/" in override_model else f"amp/models/{override_model}"
+
+    runtime.mkdir(parents=True, exist_ok=True)
+    project = runtime / "amp.carxp"
+    project.write_text(carla_project(resolve_model(model, root)))
+
+    # qpwgraph maintains whatever patch it loaded, so the amp needs its own file
+    # rather than extra connections layered onto the saved one — otherwise the
+    # direct guitar-to-Sushi route stays live too and the dry signal sits under
+    # the amped one.
+    patchbay = None
+    base = Path(root) / "Patchbay" / "rig.qpwgraph"
+    if base.is_file():
+        patchbay = runtime / "rig-amp.qpwgraph"
+        patchbay.write_text(amp_patchbay(base.read_text()))
+
+    return {
+        "model": model,
+        "values": dict(described.get("parameters") or {}),
+        "project": project,
+        "patchbay": patchbay,
+    }

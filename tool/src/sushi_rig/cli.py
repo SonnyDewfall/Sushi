@@ -240,7 +240,7 @@ def main(argv: list[str] | None = None) -> int:
         from .live import get_live_bypass_state, get_live_parameter_info
         from .amp import panel_amp
         from .probe import units_for_config
-        from .rig import checkout_root
+        from .paths import checkout_root
 
         dump = dump_plugins(args.config, args.sushi)
         live_info = get_live_parameter_info(args.address)

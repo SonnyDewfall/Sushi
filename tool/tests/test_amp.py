@@ -365,3 +365,76 @@ def test_something_that_is_not_a_model_is_refused_clearly(tmp_path):
         describe_model(_write(tmp_path, {"hello": "world"}, "wrong.nam"))
     with pytest.raises(AmpError, match="cannot read"):
         describe_model(tmp_path / "absent.nam")
+
+
+# --- preparing the amp for a run --------------------------------------------
+
+
+def _rig_tree(tmp_path, model_name="M.nam"):
+    (tmp_path / "amp" / "models").mkdir(parents=True)
+    (tmp_path / "amp" / "models" / model_name).write_text(json.dumps({
+        "architecture": "WaveNet", "sample_rate": 48000,
+        "config": {"layers": [{"channels": 8}]}, "weights": [0.0] * 10,
+    }))
+    (tmp_path / "Patchbay").mkdir()
+    (tmp_path / "Patchbay" / "rig.qpwgraph").write_text(BASE_PATCHBAY)
+    return tmp_path
+
+
+def test_a_config_with_no_amp_prepares_nothing(tmp_path):
+    """The supervisor's signal to start no amp at all."""
+    from sushi_rig.amp import prepare
+
+    config = tmp_path / "c.json"
+    config.write_text(json.dumps({"tracks": []}))
+    assert prepare(config, tmp_path, tmp_path / "run") == {}
+
+
+def test_preparing_writes_a_project_and_a_patchbay(tmp_path):
+    """Both are generated per run — the project because the model changes with
+    the config, the patchbay so it cannot drift from the saved one."""
+    from sushi_rig.amp import prepare
+
+    root = _rig_tree(tmp_path)
+    config = root / "c.json"
+    config.write_text(json.dumps({"_amp": {"model": "amp/models/M.nam",
+                                           "parameters": {"Input Lvl": 3.0}}}))
+    out = prepare(config, root, root / "run")
+    assert out["project"].read_text().count("neural-amp-modeler") >= 1
+    assert "NAM:Input" in out["patchbay"].read_text()
+    assert out["values"] == {"Input Lvl": 3.0}
+
+
+def test_an_override_model_wins_over_the_config(tmp_path):
+    """--amp-model is for auditioning without editing the config."""
+    from sushi_rig.amp import prepare
+
+    root = _rig_tree(tmp_path, "Other.nam")
+    (root / "amp" / "models" / "M.nam").write_text(
+        (root / "amp" / "models" / "Other.nam").read_text())
+    config = root / "c.json"
+    config.write_text(json.dumps({"_amp": {"model": "amp/models/M.nam", "parameters": {}}}))
+    assert prepare(config, root, root / "run", "Other.nam")["model"] == "amp/models/Other.nam"
+
+
+def test_an_override_works_on_a_config_that_has_never_had_an_amp(tmp_path):
+    """Trying a model on a rig with no amp section is a reasonable thing to
+    want, and refusing would be surprising."""
+    from sushi_rig.amp import prepare
+
+    root = _rig_tree(tmp_path)
+    config = root / "c.json"
+    config.write_text(json.dumps({"tracks": []}))
+    assert prepare(config, root, root / "run", "M.nam")["model"] == "amp/models/M.nam"
+
+
+def test_a_missing_model_still_refuses_loudly(tmp_path):
+    """A Carla started without its model processes silence while looking
+    healthy — the loudness has to survive the move into prepare()."""
+    from sushi_rig.amp import AmpError, prepare
+
+    root = _rig_tree(tmp_path)
+    config = root / "c.json"
+    config.write_text(json.dumps({"_amp": {"model": "amp/models/gone.nam", "parameters": {}}}))
+    with pytest.raises(AmpError, match="not found"):
+        prepare(config, root, root / "run")

@@ -205,7 +205,7 @@ def serve(
             from .panel import build_osc_panel
             from .amp import panel_amp
             from .probe import units_for_config
-            from .rig import checkout_root
+            from .paths import checkout_root
 
             panel = build_osc_panel(
                 dump_plugins(panel_config, sushi_bin),

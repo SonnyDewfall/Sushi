@@ -29,13 +29,17 @@ from __future__ import annotations
 import json
 import os
 import signal
-import socket
 import subprocess
 import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Callable
+from typing import Any
+
+from .paths import checkout_root, log_dir, runtime_dir
+from .procs import SHUTDOWN_STEPS, pgid_alive, pid_alive, port_is_open, wait_for_grpc
+from .qpwgraph import start_qpwgraph
+from .state import clear_state, is_stale, read_state, write_state
 
 DEFAULT_CONFIG_NAME = "electric_board"
 FALLBACK_RIG_YAML = "config/src/electric_board.yaml"
@@ -47,18 +51,6 @@ OSC_SEND_PORT = 24024
 # Shutdown escalation. SIGINT first because that is what lets Sushi unhook its
 # JACK ports cleanly rather than leaving them held; the later signals exist for
 # anything that ignores the polite one.
-SHUTDOWN_STEPS: tuple[tuple[signal.Signals, float], ...] = (
-    (signal.SIGINT, 3.0),
-    (signal.SIGTERM, 3.0),
-    (signal.SIGKILL, 2.0),
-)
-
-# How long to wait for a killed qpwgraph to actually exit before starting ours.
-QPWGRAPH_EXIT_TIMEOUT = 5.0
-# How many times to try starting qpwgraph, and how long to watch each attempt
-# before believing it. See `start_qpwgraph`.
-QPWGRAPH_ATTEMPTS = 3
-QPWGRAPH_SETTLE = 1.5
 # How long to wait for Sushi's gRPC to start accepting connections.
 GRPC_TIMEOUT = 15.0
 
@@ -68,45 +60,6 @@ class RigError(Exception):
 
 
 # --- paths ------------------------------------------------------------------
-
-
-def checkout_root() -> Path:
-    """The rig checkout this package was installed from.
-
-    Resolved from the package's own location, never from `$HOME`. The old
-    `start-rig.sh` did `cd "$HOME/Sushi"`, which meant running it from a
-    worktree silently drove the *main* checkout's config and tool — and the same
-    assumption, baked into `LV2_PATH`, is the logged defect where a rig started
-    outside the script finds no plugins at all.
-
-    src/sushi_rig/rig.py -> src/sushi_rig -> src -> tool -> <root>
-    """
-    return Path(__file__).resolve().parents[3]
-
-
-def runtime_dir() -> Path:
-    """Where the state file and logs live.
-
-    `XDG_RUNTIME_DIR` is tmpfs and is cleared when the user logs out, so a
-    machine that crashed with a rig up cannot come back claiming one is still
-    running. The `~/.cache` fallback is for systems without it, and is the one
-    case where a stale file can outlive a reboot — which the liveness check
-    below handles anyway.
-    """
-    base = os.environ.get("XDG_RUNTIME_DIR")
-    root = Path(base) if base else Path.home() / ".cache"
-    return root / "sushi-rig"
-
-
-def state_path() -> Path:
-    return runtime_dir() / "rig.json"
-
-
-def log_dir() -> Path:
-    return runtime_dir() / "logs"
-
-
-# --- pure logic -------------------------------------------------------------
 
 
 def resolve_rig_yaml(config_path: Path, root: Path | None = None) -> str:
@@ -128,21 +81,6 @@ def resolve_rig_yaml(config_path: Path, root: Path | None = None) -> str:
         return FALLBACK_RIG_YAML
     source = config.get("_meta", {}).get("source")
     return source if isinstance(source, str) and source else FALLBACK_RIG_YAML
-
-
-def is_stale(state: dict[str, Any] | None, pid_alive: Callable[[int], bool]) -> bool:
-    """Whether a recorded rig is gone and its state file can be ignored.
-
-    No state is not stale state — there is simply nothing there. A state file
-    naming a supervisor that no longer exists is stale, and `up` clears it and
-    carries on rather than refusing forever after a crash.
-    """
-    if not state:
-        return False
-    pid = state.get("supervisor_pid")
-    if not isinstance(pid, int):
-        return True
-    return not pid_alive(pid)
 
 
 def plan_children(
@@ -239,201 +177,6 @@ def format_uptime(seconds: float) -> str:
 
 
 # --- process helpers --------------------------------------------------------
-
-
-def pid_alive(pid: int) -> bool:
-    """Whether a pid exists, without caring whether we may signal it."""
-    try:
-        os.kill(pid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        # Exists, owned by someone else. Still alive for our purposes.
-        return True
-    return True
-
-
-def pgid_alive(pgid: int) -> bool:
-    try:
-        os.killpg(pgid, 0)
-    except ProcessLookupError:
-        return False
-    except PermissionError:
-        return True
-    return True
-
-
-def read_state() -> dict[str, Any] | None:
-    try:
-        return json.loads(state_path().read_text())
-    except (OSError, ValueError):
-        return None
-
-
-def write_state(state: dict[str, Any]) -> None:
-    path = state_path()
-    path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, indent=2) + "\n")
-
-
-def clear_state() -> None:
-    try:
-        state_path().unlink()
-    except FileNotFoundError:
-        pass
-
-
-def port_is_open(host: str, port: int, timeout: float = 0.5) -> bool:
-    try:
-        with socket.create_connection((host, port), timeout=timeout):
-            return True
-    except OSError:
-        return False
-
-
-def wait_for_grpc(
-    host: str,
-    port: int,
-    timeout: float,
-    still_starting: Callable[[], bool] | None = None,
-) -> bool:
-    """Block until Sushi's gRPC accepts a connection, or give up.
-
-    The panel is generated from the *live* rig, so asking for one before Sushi
-    is listening fails in a way that looks like a tool bug rather than a timing
-    problem.
-
-    `still_starting` reports whether *our* Sushi is alive. Without it this waits
-    for a port rather than for a process, and a port is not proof of anything:
-    caught in testing, where a Sushi left over from an earlier start already
-    held 51051, so the check passed instantly and the rig was declared up while
-    its own Sushi had already exited. It also turns "the config is broken" from
-    a full timeout into an immediate, accurate failure.
-    """
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline:
-        if still_starting is not None and not still_starting():
-            return False
-        if port_is_open(host, port):
-            return True
-        time.sleep(0.25)
-    return False
-
-
-def stale_qpwgraph_sockets(paths: list[Path], any_running: bool) -> list[Path]:
-    """Which qpwgraph single-instance sockets are safe to remove.
-
-    None of them while a qpwgraph is running — that socket is how the live
-    instance is reachable, and deleting it would break a patchbay the user may
-    be watching. Once nothing is running, any socket left behind is by
-    definition stale.
-
-    Pure, so the "never touch a live instance's socket" rule is pinned by a test
-    rather than by care.
-    """
-    return [] if any_running else list(paths)
-
-
-def qpwgraph_running() -> bool:
-    return subprocess.run(
-        ["pgrep", "-x", "qpwgraph"], check=False,
-        stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,
-    ).returncode == 0
-
-
-def stop_existing_qpwgraph(timeout: float = QPWGRAPH_EXIT_TIMEOUT) -> None:
-    """Clear the way for our own qpwgraph: stop any instance AND remove the
-    lock it leaves behind.
-
-    This is issue #14, and the second half is the part that was missing.
-
-    qpwgraph is single-instance via a Unix socket at
-    `/tmp/qpwgraph:<user>@<host>`. That socket **survives SIGKILL** — the
-    process dies, the socket file stays, and the next instance exits
-    immediately and silently. No error, no crash, nothing in the journal, and an
-    empty log file. The patchbay then never auto-connects, so Sushi runs with no
-    audio in or out while looking completely healthy.
-
-    Confirmed directly: SIGKILL a running qpwgraph, relaunch, and it dies. Delete
-    the socket first and the identical command survives.
-
-    The previous explanation — that the ~50% failure rate was just how often a
-    qpwgraph happened to already be running — was incomplete, and its fix
-    (kill, then wait for the process to disappear) could not work on its own:
-    waiting for the *process* to go does nothing about the *socket* it left.
-    It also explains what that theory could not: why retrying never helped, and
-    why the failure rate tracked how the previous instance had exited — a clean
-    quit removes the socket, a kill does not.
-    """
-    subprocess.run(["pkill", "-x", "qpwgraph"], check=False,
-                   stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
-
-    deadline = time.monotonic() + timeout
-    while time.monotonic() < deadline and qpwgraph_running():
-        time.sleep(0.25)
-
-    for socket_path in stale_qpwgraph_sockets(
-        sorted(Path("/tmp").glob("qpwgraph:*")), qpwgraph_running()
-    ):
-        try:
-            if socket_path.owner() == os.environ.get("USER", socket_path.owner()):
-                socket_path.unlink()
-        except (OSError, KeyError):
-            # Someone else's socket, or already gone. Not ours to worry about;
-            # a qpwgraph that then fails is reported by the caller anyway.
-            pass
-
-
-def start_qpwgraph(
-    child: dict[str, Any],
-    root: Path,
-    env: dict[str, str],
-    logs: Path,
-    attempts: int = QPWGRAPH_ATTEMPTS,
-    settle: float = QPWGRAPH_SETTLE,
-) -> subprocess.Popen | None:
-    """Start qpwgraph, and keep trying until it actually stays up.
-
-    qpwgraph fails to start far more often than anything else here, and always
-    the same way: it exits within a second or so with status 2, writing nothing
-    at all — no error, no crash, an empty log. The patchbay then never
-    auto-connects, so Sushi runs with no audio in or out while looking perfectly
-    healthy. That is issue #14.
-
-    Two causes are known and fixed at source: a lock socket left behind by an
-    unclean exit (`stop_existing_qpwgraph`) and the desktop session manager
-    (`env_unset` on the child). Neither explains all of it — with both fixed and
-    no socket present, it still fails sometimes, and whether it does tracks
-    nothing this code controls. It looks like a race inside qpwgraph or
-    PipeWire, and it is not worth reverse-engineering someone else's GUI app to
-    chase the rest.
-
-    So: verify rather than assume, and retry rather than warn. Every attempt
-    clears the socket first, because a failed attempt can leave one of its own.
-    An honest bounded retry turns a silently broken patchbay into either a
-    working one or a loud message, which is the outcome that actually matters.
-    """
-    child_env = dict(env)
-    for key in child.get("env_unset", ()):
-        child_env.pop(key, None)
-
-    for attempt in range(attempts):
-        stop_existing_qpwgraph()
-        with open(logs / "qpwgraph.log", "wb") as sink:
-            try:
-                proc = subprocess.Popen(
-                    child["command"], cwd=root, env=child_env,
-                    stdin=subprocess.DEVNULL, stdout=sink, stderr=sink,
-                )
-            except OSError:
-                return None
-        time.sleep(settle)
-        if proc.poll() is None:
-            return proc
-    return None
-
-
-# --- up ---------------------------------------------------------------------
 
 
 def _supervise(
@@ -695,44 +438,15 @@ def up(
     # The Carla project is generated from it rather than kept as a file, because
     # the model changes with the config — that is the whole point of carrying it
     # in there. A config with no `_amp`, or `--no-amp`, simply starts no amp.
-    amp_project = None
-    amp_patch = None
-    amp_values: dict[str, float] = {}
-    amp_model_stored = None
+    prepared = {}
     if amp:
-        from .amp import amp_from_config_file, carla_project, resolve_model
+        from .amp import prepare as prepare_amp
 
-        described = amp_from_config_file(config)
-        if amp_model and not described:
-            # --amp-model on a config with no amp section still gets an amp:
-            # auditioning a model against a rig that has never had one is a
-            # perfectly reasonable thing to want.
-            described = {"model": amp_model, "parameters": {}}
-        if described:
-            amp_model_stored = described.get("model")
-            if amp_model:
-                # A bare filename means amp/models/, which is where they live —
-                # typing the directory every time would be tedious.
-                amp_model_stored = (
-                    amp_model if "/" in amp_model else f"amp/models/{amp_model}"
-                )
-            amp_values = dict(described.get("parameters") or {})
-            model_path = resolve_model(amp_model_stored, root)
-            amp_project = runtime_dir() / "amp.carxp"
-            amp_project.parent.mkdir(parents=True, exist_ok=True)
-            amp_project.write_text(carla_project(model_path))
-
-            # qpwgraph maintains whatever patch it loaded, so the amp needs its
-            # own file rather than extra connections layered on the saved one —
-            # otherwise the direct guitar-to-Sushi route stays live too and the
-            # dry signal sits under the amped one. Generated from the saved
-            # patchbay so the two cannot drift apart.
-            from .amp import amp_patchbay
-
-            base = root / "Patchbay" / "rig.qpwgraph"
-            if base.is_file():
-                amp_patch = runtime_dir() / "rig-amp.qpwgraph"
-                amp_patch.write_text(amp_patchbay(base.read_text()))
+        prepared = prepare_amp(config, root, runtime_dir(), amp_model)
+    amp_project = prepared.get("project")
+    amp_patch = prepared.get("patchbay")
+    amp_values = prepared.get("values", {})
+    amp_model_stored = prepared.get("model")
 
     children_plan = plan_children(
         root, config, rig_yaml, headless=headless, tuner=tuner,
