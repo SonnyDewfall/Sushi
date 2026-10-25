@@ -1,5 +1,3 @@
-http://breakfastquay.com/rdf/lv2-rubberband#livemono
-http://breakfastquay.com/rdf/lv2-rubberband#livestereo
 http://breakfastquay.com/rdf/lv2-rubberband#mono
 http://breakfastquay.com/rdf/lv2-rubberband#r3mono
 http://breakfastquay.com/rdf/lv2-rubberband#r3stereo

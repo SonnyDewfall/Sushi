@@ -20,12 +20,10 @@
 #     starts it. So this image proves the Sushi half of the rig and says
 #     nothing about the amp half. If that ever needs covering, NAM has to be
 #     built from source (mikeoliphant/neural-amp-modeler-lv2) -- not done.
-#   - The rubberband "live" plugins. See the --waive lines below.
 #
-# VERIFIED SO FAR: the image builds end to end with a stand-in in place of the
-# Sushi AppImage (apt packages, the tool and elkpy on Python 3.12, plugins
-# assemble + check, the preflight). The real Sushi binary is first exercised
-# by CI, which fetches it before the build (see the Sushi section).
+# VERIFIED: CI (.github/workflows/rig-container.yml) builds this image with the
+# real Sushi 1.3.0, then runs the slow suite and `sushi-rig verify --all` in
+# it. It also builds locally with a stand-in in place of the Sushi AppImage.
 
 FROM ubuntu:24.04
 
@@ -33,11 +31,10 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # --- system packages --------------------------------------------------------
 #
-# The first group is the plugin set. guitarix/mda/dpf/x42/zynaddsubfx/rubberband
-# provide 50 of the 52 URIs in plugin-manifest.txt. swh-lv2 and
-# ardour-lv2-plugins are NOT in the manifest but are needed all the same: the
-# configs in config/ load `lcrDelay` and `urn:ardour:a-reverb`. Checked by
-# unpacking both .debs and listing them with lilv, not assumed.
+# The first group is the plugin set: together these packages provide all 54
+# URIs in plugin-manifest.txt. swh-lv2 and ardour-lv2-plugins are there for
+# `lcrDelay` and `urn:ardour:a-reverb`, which the configs load. Checked with
+# `sushi-rig plugins check` against a real Ubuntu 24.04 LV2 tree, not assumed.
 #
 # The second group is what the tool needs. `liblilv-dev` and `lv2-dev` are both
 # required: python3-lilv's ctypes binding looks for the unversioned
@@ -47,8 +44,8 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         guitarix-lv2 mda-lv2 dpf-plugins-lv2 x42-plugins zynaddsubfx-lv2 \
         rubberband-lv2 swh-lv2 ardour-lv2-plugins \
         # Sushi is built with JACK and ALSA support and links those libraries
-        # dynamically. AppImages usually leave them out, so the binary would not
-        # start without them even with --dummy. (Unverified: no build has run yet.)
+        # dynamically, and AppImages usually leave them out. With them, the
+        # real Sushi starts here (CI); without them it would likely not.
         libjack-jackd2-0 libasound2t64 \
         python3 python3-venv python3-pip python3-lilv \
         lilv-utils liblilv-dev lv2-dev \
@@ -89,8 +86,8 @@ RUN ./Sushi.AppImage --appimage-extract >/dev/null \
 # them in the wrong place.
 #
 # --system-site-packages is how the venv sees apt's python3-lilv, which has no
-# PyPI wheel. Whether `elkpy` installs cleanly on Ubuntu's Python 3.12 is
-# UNVERIFIED -- the README reports it working on 3.14 only.
+# PyPI wheel. `elkpy` installs cleanly on Ubuntu's Python 3.12 (checked in this
+# image; the README reports 3.14 too).
 COPY . /rig
 WORKDIR /rig
 RUN python3 -m venv --system-site-packages /opt/venv \
@@ -102,20 +99,9 @@ RUN ln -s /opt/sushi/squashfs-root/AppRun /rig/sushi
 
 # --- plugins/ ---------------------------------------------------------------
 #
-# The two rubberband "live" plugins are waived by name. The distro's rubberband
-# (3.3.0) predates them, and the only config that loads one is the retired
-# config/retired/electric_stereo.json, which `verify --all` skips.
-#
-# A waiver is not silent: assemble and check print every waived URI on every
-# run, and a config that did use one would fail `verify --all`, because Sushi
-# cannot load a plugin that is not there. Revisit these lines if the manifest
-# or a live config starts depending on them.
+# Every URI the rig needs comes from the packages above, so nothing is waived.
 RUN sushi-rig plugins assemble --from /usr/lib/lv2 --to /rig/plugins \
-        --waive 'http://breakfastquay.com/rdf/lv2-rubberband#livemono' \
-        --waive 'http://breakfastquay.com/rdf/lv2-rubberband#livestereo' \
-    && sushi-rig plugins check /rig/plugins \
-        --waive 'http://breakfastquay.com/rdf/lv2-rubberband#livemono' \
-        --waive 'http://breakfastquay.com/rdf/lv2-rubberband#livestereo'
+    && sushi-rig plugins check /rig/plugins
 
 # --- preflight --------------------------------------------------------------
 #
