@@ -392,6 +392,16 @@ This starts Sushi with the dummy frontend, prints every hosted plugin's
 parameters as JSON, and exits. It is the authoritative source for parameter
 names, and the cheapest way to know a config is loadable.
 
+### Running the tests
+
+```bash
+cd tool && python -m pytest -m "not slow"   # fast suite, no Sushi needed
+cd tool && python -m pytest -m slow         # starts a real Sushi, seconds per test
+```
+
+CI runs the fast suite on every PR. The slow suite needs the Sushi binary and
+the rig's `plugins/`, so it isn't in CI yet (#26).
+
 ## Environment
 
 Verified on this machine:
@@ -415,6 +425,7 @@ sudo apt install python3-pip python3-venv python3-lilv lv2-dev lilv-utils liblil
 cd tool && python3 -m venv --system-site-packages .venv
 source .venv/bin/activate
 pip install -e ".[dev,live]"
+pip install -e ".[audio]"   # optional: numpy, for the audio test signals and analysis (#40)
 
 # put `sushi-rig` on PATH, so `up`/`down` work from any directory
 mkdir -p ~/.local/bin

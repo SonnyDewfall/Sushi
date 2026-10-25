@@ -165,6 +165,24 @@ def main(argv: list[str] | None = None) -> int:
         help="full detail as JSON, including every parameter's range and flags",
     )
 
+    p = sub.add_parser(
+        "profile",
+        help="component profiles: how one plugin is presented, checked against probe",
+    )
+    profile_sub = p.add_subparsers(dest="profile_command", required=True)
+    p = profile_sub.add_parser(
+        "validate",
+        help="check a profile's facts against the plugin, and its judgements "
+        "against those facts; exit 1 on any error",
+    )
+    p.add_argument("file", type=Path)
+    p.add_argument(
+        "--facts",
+        type=Path,
+        help="probe output saved with 'probe URI --json', to check against "
+        "instead of probing — for machines without lilv, and for fixtures",
+    )
+
     p = sub.add_parser("save", help="capture live state and write it as a named config")
     p.add_argument("name", help="config name — becomes config/<name>.json")
     p.add_argument("--rig", type=Path, required=True, help="rig.yaml this config is built from")
@@ -228,7 +246,10 @@ def main(argv: list[str] | None = None) -> int:
         "--quick", action="store_true",
         help="skip the check that starts Sushi — loads and names only",
     )
-    p.add_argument("--sushi", default="sushi")
+    p.add_argument(
+        "--sushi",
+        help="Sushi binary [default: ./sushi in the rig checkout, the one `up` runs]",
+    )
 
     p = sub.add_parser(
         "plugins",
@@ -467,6 +488,32 @@ def main(argv: list[str] | None = None) -> int:
                     f"default={prm['default']}{'  ' + flags if flags else ''}"
                 )
 
+    elif args.command == "profile":
+        from .profile import ProfileError, errors, load_profile, validate
+
+        try:
+            profile = load_profile(args.file)
+            if args.facts:
+                facts = json.loads(args.facts.read_text())
+            else:
+                from .probe import probe
+
+                uri = (profile.get("plugin") or {}).get("uri")
+                if not isinstance(uri, str):
+                    sys.exit(f"{args.file}: plugin.uri is missing, so there is nothing to probe")
+                facts = probe(uri)[0]
+        except (ProfileError, OSError, ValueError) as exc:
+            sys.exit(str(exc))
+
+        findings = validate(profile, facts)
+        for finding in findings:
+            print(f"  {finding}", file=sys.stderr if finding.severity == "warning" else sys.stdout)
+        failed = errors(findings)
+        print(
+            f"{args.file.name}: {len(failed)} error(s), "
+            f"{len(findings) - len(failed)} warning(s)"
+        )
+        return 1 if failed else 0
     elif args.command == "save":
         from .save import SaveError, save_config
 
@@ -488,10 +535,16 @@ def main(argv: list[str] | None = None) -> int:
         else:
             sys.exit("give a config to verify, or --all")
 
+        # The rig's own ./sushi, not whatever `sushi` is on PATH: verify should
+        # check the Sushi the rig actually plays through, and with a PATH
+        # default it failed with "No such file" on any machine where Sushi is
+        # not also installed system-wide.
+        sushi = args.sushi or str(checkout_root() / "sushi")
+
         failed = 0
         for target in targets:
             try:
-                problems = verify(target, args.sushi, args.quick)
+                problems = verify(target, sushi, args.quick)
             except VerifyError as exc:
                 print(f"{target.name}: CANNOT CHECK — {exc}", file=sys.stderr)
                 failed += 1
