@@ -188,7 +188,10 @@ def main(argv: list[str] | None = None) -> int:
         "--quick", action="store_true",
         help="skip the check that starts Sushi — loads and names only",
     )
-    p.add_argument("--sushi", default="sushi")
+    p.add_argument(
+        "--sushi",
+        help="Sushi binary [default: ./sushi in the rig checkout, the one `up` runs]",
+    )
 
     sub.add_parser("status", help="what is running, if anything")
     sub.add_parser(
@@ -422,10 +425,16 @@ def main(argv: list[str] | None = None) -> int:
         else:
             sys.exit("give a config to verify, or --all")
 
+        # The rig's own ./sushi, not whatever `sushi` is on PATH: verify should
+        # check the Sushi the rig actually plays through, and with a PATH
+        # default it failed with "No such file" on any machine where Sushi is
+        # not also installed system-wide.
+        sushi = args.sushi or str(checkout_root() / "sushi")
+
         failed = 0
         for target in targets:
             try:
-                problems = verify(target, args.sushi, args.quick)
+                problems = verify(target, sushi, args.quick)
             except VerifyError as exc:
                 print(f"{target.name}: CANNOT CHECK — {exc}", file=sys.stderr)
                 failed += 1
