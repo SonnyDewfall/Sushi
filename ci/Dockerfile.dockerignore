@@ -1,0 +1,12 @@
+# Keep the build context to what the image uses. .git and the venv are the big
+# ones; plugins/ and the Sushi binary are rebuilt inside the image, so a copy
+# from the host must not shadow them.
+.git
+.claude
+plugins
+sushi
+*.AppImage
+tool/.venv
+**/__pycache__
+**/.pytest_cache
+**/*_pb2*.py

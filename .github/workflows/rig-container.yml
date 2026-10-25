@@ -1,0 +1,71 @@
+# Builds the "dummy rig" image (ci/Dockerfile) and runs, inside it, the checks
+# that need a real Sushi: the slow pytest suite and `sushi-rig verify --all`.
+# The fast suite lives in ci.yml and needs none of this.
+#
+# NOT VERIFIED: written without a Docker daemon and with GitHub release
+# downloads blocked, so this has never run. The step most likely to fail first
+# is the image build, specifically the Sushi fetch: the release tag, asset name
+# and even the repository it comes from are guesses documented as such in
+# ci/Dockerfile. Everything after that step (running the suites) depends on it
+# having worked. That failure is intended to be loud and obvious, not skipped.
+name: rig-container
+
+on:
+  pull_request:
+    paths:
+      - ci/**
+      - .github/workflows/rig-container.yml
+      - plugin-manifest.txt
+      - config/**
+      - tool/**
+  push:
+    branches: [main]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  slow:
+    runs-on: ubuntu-24.04
+    steps:
+      - uses: actions/checkout@v4
+
+      # BuildKit is needed for the Dockerfile's build secret and heredoc; it is
+      # the default builder on current Docker, but stated so a change of runner
+      # image does not silently switch it.
+      #
+      # The token is for api.github.com only (the Sushi release lookup),
+      # because anonymous calls are rate-limited per runner IP. It is passed as
+      # a build secret, so it is not written into an image layer.
+      - name: Build the image
+        env:
+          DOCKER_BUILDKIT: "1"
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          docker build -f ci/Dockerfile \
+            --secret id=gh_token,env=GITHUB_TOKEN \
+            -t sushi-rig-ci .
+
+      # The image's CMD is `pytest -m slow -rs`; spelled out here so the
+      # workflow reads without opening the Dockerfile.
+      #
+      # A skipped test is a failure here. tests/test_configs.py skips itself
+      # when ./sushi or plugins/ is missing, which is right on a laptop and
+      # exactly wrong in CI: a green run that checked nothing is the silent
+      # failure this project exists to avoid. -rs lists every skip with its
+      # reason, and the grep turns any into a failed step.
+      - name: Slow suite
+        run: |
+          set -o pipefail
+          docker run --rm sushi-rig-ci pytest -m slow -rs | tee slow.log
+          if grep -q '^SKIPPED' slow.log; then
+            echo "::error::slow tests were skipped; the image is missing something they need"
+            exit 1
+          fi
+
+      # Overlaps the slow suite (each slow test is a verify of one config) on
+      # purpose: this is the command a person runs, and its output names every
+      # difference between a config and the running rig.
+      - name: verify --all
+        run: docker run --rm -w /rig sushi-rig-ci sushi-rig verify --all
