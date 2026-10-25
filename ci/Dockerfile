@@ -87,11 +87,12 @@ RUN ./Sushi.AppImage --appimage-extract >/dev/null \
 #
 # --system-site-packages is how the venv sees apt's python3-lilv, which has no
 # PyPI wheel. `elkpy` installs cleanly on Ubuntu's Python 3.12 (checked in this
-# image; the README reports 3.14 too).
+# image; the README reports 3.14 too). `audio` brings numpy, without which the
+# signal and analysis tests skip -- and a skip fails the slow job.
 COPY . /rig
 WORKDIR /rig
 RUN python3 -m venv --system-site-packages /opt/venv \
-    && /opt/venv/bin/pip install --no-cache-dir -e "/rig/tool[dev,live]"
+    && /opt/venv/bin/pip install --no-cache-dir -e "/rig/tool[dev,live,audio]"
 ENV PATH="/opt/venv/bin:${PATH}"
 
 # `./sushi` at the repo root is where tests/test_configs.py and the README look.
