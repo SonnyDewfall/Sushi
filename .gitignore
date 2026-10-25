@@ -40,3 +40,6 @@ state.json
 # supervisor generates projects in the runtime dir, so this should stay empty —
 # it appears only if a project is run from here by hand.
 amp/Carla/
+
+# Sushi AppImage fetched for a local container build (ci/Dockerfile)
+ci/dl/

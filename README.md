@@ -497,16 +497,35 @@ fallback. That is the whole point: a missing or renamed plugin now fails loudly
 at startup instead of silently resolving against the system copy and hiding the
 fact that the rig is not actually self-contained.
 
-`plugin-manifest.txt` means **every LV2 URI this rig can load** — 41 of them,
-from six bundles. Since Sushi addresses plugins by URI and never by path, that
-manifest plus those six bundles is the whole dependency set.
+`plugin-manifest.txt` means **every LV2 URI this rig can load** — 54 of them,
+from fifteen bundles — and it must include every plugin a config in `config/`
+uses; `sushi-rig plugins check` fails if one is missing. Since Sushi addresses
+plugins by URI and never by path, that manifest plus those bundles is the whole
+dependency set.
 
-`plugins/archive/manifest.ttl` is an intentionally empty LV2 manifest. `archive/`
-sits inside a directory on `LV2_PATH`, and lilv probes every subdirectory there
-for one; without it, every startup logs a spurious "failed to open
-.../archive/manifest.ttl". An empty manifest parses fine and declares nothing,
-so lilv reads it and stays quiet — which keeps a real plugin-loading error
-visible instead of buried in known noise.
+`plugins/archive/manifest.ttl` is an LV2 manifest that declares nothing: a
+single comment line. `archive/` sits inside a directory on `LV2_PATH`, and lilv
+probes every subdirectory there for one; without it, every startup logs a
+spurious "failed to open .../archive/manifest.ttl". A zero-byte file used to do
+the job, but with serd 0.32 (Ubuntu 24.04) lilv logs "Error loading file" for
+it on every startup, while a comment-only file parses cleanly and stays quiet —
+which keeps a real plugin-loading error visible instead of buried in known
+noise.
+
+To rebuild `plugins/` from distro packages, and to prove it is self-contained:
+
+```bash
+sushi-rig plugins assemble --from /usr/lib/lv2 --to plugins
+sushi-rig plugins check            # every URI resolves with LV2_PATH = plugins/ alone
+```
+
+`assemble` copies exactly the bundles the rig needs and nothing else, and fails
+without copying if any required URI has no provider, listing all of them. "Needed"
+is the manifest **plus every plugin the configs in `config/` use**, because the
+manifest can fall behind them; both commands say which URIs it is missing. A URI the
+packages cannot provide can be accepted by name with `--waive URI`, and is
+reported on every run. `ci/Dockerfile` does this inside a container with a real
+Sushi, so the slow suite can run without the rig machine.
 
 > **This replaces a long-standing defect.** `plugins/` used to be a flat copy of
 > the system LV2 tree with all 262 bundles one level *down* in `plugins/lv2/`,
