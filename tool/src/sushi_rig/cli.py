@@ -39,6 +39,64 @@ def _amp_parameters(pairs: list[str]) -> dict[str, float]:
     return values
 
 
+def _plugins(args: argparse.Namespace) -> int:
+    """`plugins assemble` and `plugins check`, which share how they find what the
+    rig requires and differ only in what they do with it."""
+    from .paths import checkout_root
+    from .plugins import (
+        SYSTEM_LV2_DIR, PluginsError, assemble, check, config_uris, read_manifest,
+    )
+    from .verify import configs_to_check
+
+    root = checkout_root()
+    manifest_path = args.manifest or root / "plugin-manifest.txt"
+    try:
+        manifest = read_manifest(manifest_path.read_text())
+    except OSError as exc:
+        sys.exit(f"cannot read the plugin manifest: {exc}")
+
+    used: set[str] = set()
+    configs = (
+        sorted(args.config_dir.glob("*.json")) if args.config_dir
+        else configs_to_check(root)
+    )
+    for config in configs:
+        used |= config_uris(json.loads(config.read_text()))
+
+    waived = set(args.waive)
+    try:
+        if args.plugins_command == "assemble":
+            to = args.to or root / "plugins"
+            plan = assemble(
+                manifest, used, args.from_dirs or [SYSTEM_LV2_DIR], to, waived,
+                args.replace,
+            )
+            print(f"copied {len(plan.bundles)} bundle(s) into {to}")
+        else:
+            plugins_dir = args.plugins_dir or root / "plugins"
+            plan = check(manifest, used, plugins_dir, waived)
+            print(
+                f"{plugins_dir}: {plan.resolved} required plugin URI(s) all resolve "
+                "with LV2_PATH set to it alone"
+            )
+    except PluginsError as exc:
+        sys.exit(str(exc))
+
+    # Neither is a failure of this command, but both mean the next person to
+    # trust the output is trusting something untrue, so they are not buried.
+    for uri in plan.waived:
+        print(f"waived, not provided: {uri}", file=sys.stderr)
+    if plan.undeclared:
+        print(
+            f"{manifest_path.name} is out of date: {len(plan.undeclared)} URI(s) are used "
+            "by configs but not listed:",
+            file=sys.stderr,
+        )
+        for uri in plan.undeclared:
+            print(f"  {uri}", file=sys.stderr)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="sushi-rig", description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -171,6 +229,58 @@ def main(argv: list[str] | None = None) -> int:
         help="skip the check that starts Sushi — loads and names only",
     )
     p.add_argument("--sushi", default="sushi")
+
+    p = sub.add_parser(
+        "plugins",
+        help="build the rig's plugins/ folder from installed packages, and "
+        "check it is self-contained",
+    )
+    plugins_sub = p.add_subparsers(dest="plugins_command", required=True)
+
+    def add_requirement_args(q):
+        q.add_argument(
+            "--manifest", type=Path,
+            help="LV2 URIs the rig can load [default: plugin-manifest.txt at the repo root]",
+        )
+        q.add_argument(
+            "--config-dir", type=Path,
+            help="also require every plugin these configs use, because the manifest "
+            "does not list them all [default: config/ at the repo root]",
+        )
+        q.add_argument(
+            "--waive", action="append", default=[], metavar="URI",
+            help="accept that this required URI is missing, by name. Repeatable. "
+            "An error if the rig does not require it, so stale waivers cannot linger",
+        )
+
+    q = plugins_sub.add_parser(
+        "assemble",
+        help="copy exactly the bundles the rig needs from a system LV2 tree into plugins/",
+    )
+    q.add_argument(
+        "--from", dest="from_dirs", type=Path, action="append", metavar="DIR",
+        help="LV2 directory to take bundles from. Repeatable, earlier wins "
+        "[default: /usr/lib/lv2]",
+    )
+    q.add_argument(
+        "--to", type=Path,
+        help="folder to build [default: plugins/ at the repo root, where LV2_PATH points]",
+    )
+    q.add_argument(
+        "--replace", action="store_true",
+        help="delete --to first if it is not empty",
+    )
+    add_requirement_args(q)
+
+    q = plugins_sub.add_parser(
+        "check",
+        help="every required plugin URI resolves with LV2_PATH set to plugins/ alone",
+    )
+    q.add_argument(
+        "plugins_dir", type=Path, nargs="?",
+        help="folder to check [default: plugins/ at the repo root]",
+    )
+    add_requirement_args(q)
 
     sub.add_parser("status", help="what is running, if anything")
     sub.add_parser(
@@ -396,6 +506,8 @@ def main(argv: list[str] | None = None) -> int:
         if failed:
             print(f"\n{failed} of {len(targets)} config(s) have problems", file=sys.stderr)
         return 1 if failed else 0
+    elif args.command == "plugins":
+        return _plugins(args)
     elif args.command == "top":
         from .top import top
 

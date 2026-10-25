@@ -497,6 +497,21 @@ for one; without it, every startup logs a spurious "failed to open
 so lilv reads it and stays quiet — which keeps a real plugin-loading error
 visible instead of buried in known noise.
 
+To rebuild `plugins/` from distro packages, and to prove it is self-contained:
+
+```bash
+sushi-rig plugins assemble --from /usr/lib/lv2 --to plugins
+sushi-rig plugins check            # every URI resolves with LV2_PATH = plugins/ alone
+```
+
+`assemble` copies exactly the bundles the rig needs and nothing else, and fails
+without copying if any required URI has no provider, listing all of them. "Needed"
+is the manifest **plus every plugin the configs in `config/` use**, because the
+manifest is not complete; both commands say which URIs it is missing. A URI the
+packages cannot provide can be accepted by name with `--waive URI`, and is
+reported on every run. `ci/Dockerfile` does this inside a container with a real
+Sushi, so the slow suite can run without the rig machine.
+
 > **This replaces a long-standing defect.** `plugins/` used to be a flat copy of
 > the system LV2 tree with all 262 bundles one level *down* in `plugins/lv2/`,
 > where `LV2_PATH` never looked. The rig worked only because `/usr/lib/lv2` was
