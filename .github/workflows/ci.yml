@@ -1,0 +1,28 @@
+name: CI
+
+on:
+  pull_request:
+  push:
+    branches: [master]
+
+jobs:
+  fast-tests:
+    runs-on: ubuntu-latest
+    strategy:
+      matrix:
+        python-version: ["3.11", "3.13"]
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: ${{ matrix.python-version }}
+
+      - name: Install the tool with dev extras
+        run: pip install -e "tool[dev]"
+
+      # Slow tests are excluded on purpose: they start a real Sushi binary,
+      # which this runner does not have. Run them locally until CI can supply it.
+      - name: Run the fast test suite
+        working-directory: tool
+        run: python -m pytest -q -m "not slow"
