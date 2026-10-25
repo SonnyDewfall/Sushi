@@ -10,3 +10,5 @@ tool/.venv
 **/__pycache__
 **/.pytest_cache
 **/*_pb2*.py
+# The Sushi download goes in through its own build context, not this one.
+ci/dl

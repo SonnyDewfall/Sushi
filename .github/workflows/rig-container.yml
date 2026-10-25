@@ -2,12 +2,9 @@
 # that need a real Sushi: the slow pytest suite and `sushi-rig verify --all`.
 # The fast suite lives in ci.yml and needs none of this.
 #
-# NOT VERIFIED: written without a Docker daemon and with GitHub release
-# downloads blocked, so this has never run. The step most likely to fail first
-# is the image build, specifically the Sushi fetch: the release tag, asset name
-# and even the repository it comes from are guesses documented as such in
-# ci/Dockerfile. Everything after that step (running the suites) depends on it
-# having worked. That failure is intended to be loud and obvious, not skipped.
+# Every step that can fail puts the tail of its output into a CI annotation.
+# The full log is there too, but annotations are what the check-run API returns,
+# so a failure can be read and fixed without opening the log viewer.
 name: rig-container
 
 on:
@@ -25,47 +22,65 @@ on:
 permissions:
   contents: read
 
+env:
+  # Where Sushi comes from. The tag is real (elk-audio/sushi has a 1.3.0 tag,
+  # matching the README's "Sushi 1.3.0"); whether that release carries an
+  # AppImage under this name is what the fetch step finds out, and if it does
+  # not, its annotation lists what the release does carry.
+  SUSHI_REPO: elk-audio/sushi
+  SUSHI_TAG: "1.3.0"
+  SUSHI_ASSET: Sushi-x86_64.AppImage
+
 jobs:
   slow:
     runs-on: ubuntu-24.04
     steps:
       - uses: actions/checkout@v4
 
-      # BuildKit is needed for the Dockerfile's build secret and heredoc; it is
-      # the default builder on current Docker, but stated so a change of runner
-      # image does not silently switch it.
-      #
-      # The token is for api.github.com only (the Sushi release lookup),
-      # because anonymous calls are rate-limited per runner IP. It is passed as
-      # a build secret, so it is not written into an image layer.
-      - name: Build the image
+      - name: Fetch Sushi
         env:
-          DOCKER_BUILDKIT: "1"
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          GH_TOKEN: ${{ github.token }}
         run: |
-          docker build -f ci/Dockerfile \
-            --secret id=gh_token,env=GITHUB_TOKEN \
-            -t sushi-rig-ci .
+          mkdir -p ci/dl
+          if ! gh release download "$SUSHI_TAG" --repo "$SUSHI_REPO" \
+                --pattern "$SUSHI_ASSET" --dir ci/dl 2> fetch.err; then
+            assets="$(gh release view "$SUSHI_TAG" --repo "$SUSHI_REPO" \
+                --json assets --jq '[.assets[].name] | join(", ")' 2>&1 || true)"
+            releases="$(gh release list --repo "$SUSHI_REPO" --limit 8 2>&1 \
+                | cut -f1,3 | tr '\t\n' ' ;' || true)"
+            echo "::error title=Sushi fetch failed::$(tr '\n' ' ' < fetch.err) | assets on ${SUSHI_TAG}: ${assets:-none} | recent releases: ${releases:-none}"
+            exit 1
+          fi
+          mv "ci/dl/$SUSHI_ASSET" ci/dl/Sushi.AppImage
 
-      # The image's CMD is `pytest -m slow -rs`; spelled out here so the
-      # workflow reads without opening the Dockerfile.
-      #
-      # A skipped test is a failure here. tests/test_configs.py skips itself
-      # when ./sushi or plugins/ is missing, which is right on a laptop and
-      # exactly wrong in CI: a green run that checked nothing is the silent
-      # failure this project exists to avoid. -rs lists every skip with its
-      # reason, and the grep turns any into a failed step.
-      - name: Slow suite
+      - name: Build the image
         run: |
           set -o pipefail
-          docker run --rm sushi-rig-ci pytest -m slow -rs | tee slow.log
-          if grep -q '^SKIPPED' slow.log; then
-            echo "::error::slow tests were skipped; the image is missing something they need"
+          if ! docker build --progress=plain -f ci/Dockerfile \
+                --build-context sushi=ci/dl -t sushi-rig-ci . 2>&1 | tee build.log; then
+            echo "::error title=Image build failed::$(tail -n 40 build.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
             exit 1
           fi
 
-      # Overlaps the slow suite (each slow test is a verify of one config) on
-      # purpose: this is the command a person runs, and its output names every
-      # difference between a config and the running rig.
+      - name: Slow suite
+        run: |
+          set -o pipefail
+          if ! docker run --rm sushi-rig-ci pytest -m slow -rs 2>&1 | tee slow.log; then
+            echo "::error title=Slow suite failed::$(tail -n 40 slow.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
+            exit 1
+          fi
+          # test_configs.py skips itself when ./sushi or plugins/ is missing,
+          # which would turn a broken image into a green run. In here nothing
+          # should be missing, so any skip is a failure.
+          if grep -q '^SKIPPED' slow.log; then
+            echo "::error title=Slow tests were skipped::$(grep '^SKIPPED' slow.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
+            exit 1
+          fi
+
       - name: verify --all
-        run: docker run --rm -w /rig sushi-rig-ci sushi-rig verify --all
+        run: |
+          set -o pipefail
+          if ! docker run --rm -w /rig sushi-rig-ci sushi-rig verify --all 2>&1 | tee verify.log; then
+            echo "::error title=verify --all failed::$(tail -n 40 verify.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
+            exit 1
+          fi

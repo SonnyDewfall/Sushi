@@ -22,10 +22,10 @@
 #     built from source (mikeoliphant/neural-amp-modeler-lv2) -- not done.
 #   - The rubberband "live" plugins. See the --waive lines below.
 #
-# NOT VERIFIED: this file has never been built. The environment it was written
-# in has no Docker daemon and blocks GitHub release downloads. The plugin
-# half (apt package names, `plugins assemble`/`check`) was run for real against
-# an Ubuntu 24.04 LV2 tree; the Sushi fetch and everything after it was not.
+# VERIFIED SO FAR: the image builds end to end with a stand-in in place of the
+# Sushi AppImage (apt packages, the tool and elkpy on Python 3.12, plugins
+# assemble + check, the preflight). The real Sushi binary is first exercised
+# by CI, which fetches it before the build (see the Sushi section).
 
 FROM ubuntu:24.04
 
@@ -43,7 +43,6 @@ ENV DEBIAN_FRONTEND=noninteractive
 # required: python3-lilv's ctypes binding looks for the unversioned
 # liblilv-0.so (README: Environment).
 #
-# curl + jq fetch Sushi below; ca-certificates is what lets curl trust GitHub.
 RUN apt-get update && apt-get install -y --no-install-recommends \
         guitarix-lv2 mda-lv2 dpf-plugins-lv2 x42-plugins zynaddsubfx-lv2 \
         rubberband-lv2 swh-lv2 ardour-lv2-plugins \
@@ -53,65 +52,30 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libjack-jackd2-0 libasound2t64 \
         python3 python3-venv python3-pip python3-lilv \
         lilv-utils liblilv-dev lv2-dev \
-        ca-certificates curl jq \
+        ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 
 # --- Sushi ------------------------------------------------------------------
 #
-# UNVERIFIED. GitHub release downloads are blocked where this was written, so
-# none of the three values below, nor the lookup itself, has ever run. The
-# README says only that Sushi 1.3.0 is used and that the file is
-# `Sushi-x86_64.AppImage`. It does not say where that file is published or
-# under what release tag. The repo below is the upstream project's; whether it
-# attaches an AppImage to its releases is exactly what is unknown, and the file
-# may be a build of the rig owner's own.
+# The AppImage arrives through a named build context, `sushi`, holding one file,
+# Sushi.AppImage. It is fetched BEFORE the build rather than in here, for two
+# reasons:
 #
-# So rather than guess a download URL, the build asks the GitHub API for the
-# release by tag and picks the asset by name, and FAILS if either is absent.
-# If this breaks, fix the ARGs (or point them at wherever the AppImage is
-# really hosted). Do not paper over it.
-ARG SUSHI_REPO=elk-audio/sushi
-# Release tag, as GitHub names it. UNVERIFIED: could equally be "v1.3.0".
-ARG SUSHI_TAG=1.3.0
-# Regex (jq `test`) the release asset's name must match. UNVERIFIED.
-ARG SUSHI_ASSET_REGEX=^Sushi-x86_64\.AppImage$
-
-# The API is rate-limited for anonymous callers and CI runners share IPs, so a
-# token is optional: pass `--secret id=gh_token,env=GITHUB_TOKEN`. It is a build
-# secret, so it never lands in a layer.
-RUN --mount=type=secret,id=gh_token,required=false <<'EOF'
-set -eu
-
-token=""
-if [ -s /run/secrets/gh_token ]; then token="$(cat /run/secrets/gh_token)"; fi
-
-# curl, with the token attached when there is one.
-gh_curl() {
-    if [ -n "$token" ]; then
-        curl -fsSL -H "Authorization: Bearer $token" "$@"
-    else
-        curl -fsSL "$@"
-    fi
-}
-
-release_url="https://api.github.com/repos/${SUSHI_REPO}/releases/tags/${SUSHI_TAG}"
-gh_curl -H "Accept: application/vnd.github+json" "$release_url" -o /tmp/release.json \
-    || { echo "ERROR: could not fetch release ${SUSHI_TAG} of ${SUSHI_REPO} (${release_url}). Check SUSHI_REPO and SUSHI_TAG." >&2; exit 1; }
-
-# -e makes jq exit non-zero when nothing matches (first of [] is null).
-asset_url="$(jq -er --arg re "$SUSHI_ASSET_REGEX" \
-    '[.assets[] | select(.name | test($re))] | first | .url' /tmp/release.json)" \
-    || { echo "ERROR: release ${SUSHI_TAG} has no asset matching ${SUSHI_ASSET_REGEX}. Its assets: $(jq -r '[.assets[].name] | join(", ")' /tmp/release.json)" >&2; exit 1; }
-
-mkdir -p /opt/sushi
-gh_curl -H "Accept: application/octet-stream" "$asset_url" -o /opt/sushi/Sushi.AppImage
-chmod +x /opt/sushi/Sushi.AppImage
-rm /tmp/release.json
-EOF
-
+#   - A failed fetch has to say why. Inside `docker build` a failing RUN reaches
+#     CI as "exit code 1" and nothing else; on the runner, `gh release download`
+#     can put the release's real asset list into a CI annotation.
+#   - The image then needs no network credentials or build secrets.
+#
+# The workflow does the fetch (.github/workflows/rig-container.yml). Locally:
+#   gh release download 1.3.0 --repo elk-audio/sushi \
+#       --pattern 'Sushi-x86_64.AppImage' --dir ci/dl
+#   mv ci/dl/Sushi-x86_64.AppImage ci/dl/Sushi.AppImage
+#   docker build -f ci/Dockerfile --build-context sushi=ci/dl -t sushi-rig-ci .
+#
 # Containers have no FUSE, so the AppImage cannot mount itself. Extracting it
 # unpacks to ./squashfs-root, whose AppRun is the real entry point.
 WORKDIR /opt/sushi
+COPY --from=sushi --chmod=755 Sushi.AppImage /opt/sushi/Sushi.AppImage
 RUN ./Sushi.AppImage --appimage-extract >/dev/null \
     && rm Sushi.AppImage \
     && test -x squashfs-root/AppRun
