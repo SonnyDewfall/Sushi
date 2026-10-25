@@ -68,8 +68,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
 #
 # The workflow does the fetch (.github/workflows/rig-container.yml). Locally:
 #   gh release download 1.3.0 --repo elk-audio/sushi \
-#       --pattern 'Sushi-x86_64.AppImage' --dir ci/dl
-#   mv ci/dl/Sushi-x86_64.AppImage ci/dl/Sushi.AppImage
+#       --pattern 'sushi-linux-x86_64_1_3_0.zip' --dir ci/dl
+#   unzip ci/dl/sushi-linux-x86_64_1_3_0.zip -d ci/dl/unzipped
+#   mv "$(find ci/dl/unzipped -name '*.AppImage')" ci/dl/Sushi.AppImage
 #   docker build -f ci/Dockerfile --build-context sushi=ci/dl -t sushi-rig-ci .
 #
 # Containers have no FUSE, so the AppImage cannot mount itself. Extracting it
