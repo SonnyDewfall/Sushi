@@ -392,6 +392,16 @@ This starts Sushi with the dummy frontend, prints every hosted plugin's
 parameters as JSON, and exits. It is the authoritative source for parameter
 names, and the cheapest way to know a config is loadable.
 
+### Running the tests
+
+```bash
+cd tool && python -m pytest -m "not slow"   # fast suite, no Sushi needed
+cd tool && python -m pytest -m slow         # starts a real Sushi, seconds per test
+```
+
+CI runs the fast suite on every PR. The slow suite needs the Sushi binary and
+the rig's `plugins/`, so it isn't in CI yet (#26).
+
 ## Environment
 
 Verified on this machine:

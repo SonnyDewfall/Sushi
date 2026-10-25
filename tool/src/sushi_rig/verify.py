@@ -42,6 +42,21 @@ from .dump import collect_parameter_names, dump_plugins
 from .paths import checkout_root
 from .procs import pgid_alive, port_is_open
 
+def sushi_env(root: Path, base: dict[str, str] | None = None) -> dict[str, str]:
+    """The environment every Sushi this module starts runs in.
+
+    LV2_PATH is plugins/ alone, as the rig runs. A wider path would hide exactly
+    the portability break the rig cares about; an inherited one makes the result
+    depend on whoever's shell ran the check. Both of verify's launches -- the
+    plugin dump and the headless rig -- take it from here, because the dump once
+    inherited the caller's LV2_PATH while the rig set its own: fine on a machine
+    whose shell exports it, "Failed to load tracks" on a clean one.
+    """
+    env = dict(os.environ if base is None else base)
+    env["LV2_PATH"] = str(root / "plugins")
+    return env
+
+
 # Values are rounded to 6dp on write and Sushi quantises, so an exact comparison
 # would report differences that are not differences.
 TOLERANCE = 0.005
@@ -189,10 +204,7 @@ def capture_headless(config: Path, sushi_bin: str, root: Path) -> dict[str, Any]
     from .live import capture
 
     grpc_port = free_port()
-    env = dict(os.environ)
-    # plugins/ alone, as the rig runs. A wider path would hide exactly the
-    # portability break the rig cares about.
-    env["LV2_PATH"] = str(root / "plugins")
+    env = sushi_env(root)
 
     process = subprocess.Popen(
         [sushi_bin, "-d", "-c", str(config),
@@ -282,7 +294,7 @@ def verify(config: Path, sushi_bin: str = "sushi", quick: bool = False) -> list[
     # Stripped of its state the config always loads, the dump lists every
     # parameter each processor really has, and the offending name can be named
     # along with a near miss.
-    dump = dump_plugins(_without_state(config), sushi_bin)
+    dump = dump_plugins(_without_state(config), sushi_bin, env=sushi_env(root))
 
     problems = check_names(parsed, dump)
     if quick:

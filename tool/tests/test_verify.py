@@ -176,3 +176,75 @@ def test_a_tracks_parameters_are_not_checked_against_the_plugin_dump():
     config = _config()
     config["initial_state"][0]["parameters"] = {"gain": 0.8, "pan": 0.5}
     assert check_names(config, DUMP) == []
+
+
+# --- the environment Sushi runs in -----------------------------------------
+
+
+def test_sushi_env_points_lv2_path_at_plugins_alone(tmp_path):
+    from sushi_rig.verify import sushi_env
+
+    env = sushi_env(tmp_path, base={"LV2_PATH": "/usr/lib/lv2", "HOME": "/home/x"})
+    assert env["LV2_PATH"] == str(tmp_path / "plugins")
+    assert env["HOME"] == "/home/x"
+
+
+def test_the_plugin_dump_runs_with_the_rigs_lv2_path(tmp_path, monkeypatch):
+    """The dump used to inherit the caller's LV2_PATH while the headless rig set
+    its own. On a clean machine -- the CI container, a fresh deploy -- Sushi
+    then loaded no plugins and exited 4, "Failed to load tracks from the Json
+    config file", for every config."""
+    import json
+    from sushi_rig import verify as verify_module
+
+    monkeypatch.delenv("LV2_PATH", raising=False)
+    monkeypatch.setattr(verify_module, "checkout_root", lambda: tmp_path)
+    seen = {}
+
+    def fake_dump(config_path, sushi_bin="sushi", env=None):
+        seen["env"] = env
+        return {"plugins": []}
+
+    monkeypatch.setattr(verify_module, "dump_plugins", fake_dump)
+    config = tmp_path / "rig.json"
+    config.write_text(json.dumps({"tracks": []}))
+
+    verify_module.verify(config, quick=True)
+
+    assert seen["env"] is not None, "the dump inherited the caller's environment"
+    assert seen["env"]["LV2_PATH"] == str(tmp_path / "plugins")
+
+
+# --- which Sushi `sushi-rig verify` runs -------------------------------------
+
+
+def _run_verify_cli(tmp_path, monkeypatch, *extra):
+    """Run `sushi-rig verify` with verify() stubbed, returning the binary it got."""
+    from sushi_rig import cli, paths
+    from sushi_rig import verify as verify_module
+
+    monkeypatch.setattr(paths, "checkout_root", lambda: tmp_path)
+    seen = []
+    monkeypatch.setattr(
+        verify_module, "verify", lambda target, sushi, quick=False: seen.append(sushi) or []
+    )
+    config = tmp_path / "rig.json"
+    config.write_text("{}")
+    try:
+        cli.main(["verify", str(config), "--quick", *extra])
+    except SystemExit as exc:
+        assert not exc.code, f"verify exited {exc.code}"
+    return seen
+
+
+def test_verify_defaults_to_the_rigs_own_sushi(tmp_path, monkeypatch):
+    """It used to default to a `sushi` on PATH, which fails with "No such file"
+    wherever Sushi is not also installed system-wide -- the rig keeps its own
+    at ./sushi, and that is the one `sushi-rig up` runs."""
+    assert _run_verify_cli(tmp_path, monkeypatch) == [str(tmp_path / "sushi")]
+
+
+def test_an_explicit_sushi_still_wins(tmp_path, monkeypatch):
+    assert _run_verify_cli(tmp_path, monkeypatch, "--sushi", "/opt/other/sushi") == [
+        "/opt/other/sushi"
+    ]
