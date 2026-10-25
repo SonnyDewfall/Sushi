@@ -80,3 +80,15 @@ def test_collect_parameter_info_every_param_has_osc_path(real_dump):
     for processor, params in info.items():
         for name, record in params.items():
             assert "osc_path" in record, f"{processor}.{name} missing osc_path"
+
+
+def test_dump_plugins_runs_sushi_in_the_environment_it_is_given():
+    seen = {}
+
+    def run(*args, **kwargs):
+        seen.update(kwargs)
+        return _fake_run('{"plugins": []}')(*args, **kwargs)
+
+    with patch("subprocess.run", run):
+        dump_plugins(Path("irrelevant.json"), env={"LV2_PATH": "/rig/plugins"})
+    assert seen["env"] == {"LV2_PATH": "/rig/plugins"}
