@@ -29,8 +29,9 @@ for _ in $(seq 50); do xdpyinfo >/dev/null 2>&1 && break; sleep 0.1; done
 python3 "$HERE/prime_x.py" >/dev/null || { echo "prime_x failed"; exit 1; }
 sleep 1  # let jackd come up; the host fails loudly if it did not
 
-# stdin held open by a long sleep so the host's optional stdin reader sees no EOF
-/usr/bin/python3.12 "$HERE/carla_ui_host.py" "$URI" >"$TMP/host.log" 2>&1 < <(sleep 3600) & PIDS+=($!)
+# stdin is /dev/null: the host copes with EOF on its optional stdin control.
+# (An earlier version held stdin open with `sleep 3600` and leaked the sleep.)
+/usr/bin/python3.12 "$HERE/carla_ui_host.py" "$URI" >"$TMP/host.log" 2>&1 </dev/null & PIDS+=($!)
 for _ in $(seq 100); do grep -q -E '^(READY|FAIL)' "$TMP/host.log" && break; sleep 0.1; done
 if ! grep -q '^READY' "$TMP/host.log"; then echo "host did not start:"; cat "$TMP/host.log" "$TMP/jackd.log"; exit 1; fi
 sleep 1  # first paint
