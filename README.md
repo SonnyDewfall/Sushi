@@ -415,6 +415,7 @@ sudo apt install python3-pip python3-venv python3-lilv lv2-dev lilv-utils liblil
 cd tool && python3 -m venv --system-site-packages .venv
 source .venv/bin/activate
 pip install -e ".[dev,live]"
+pip install -e ".[audio]"   # optional: numpy, for the audio test signals and analysis (#40)
 
 # put `sushi-rig` on PATH, so `up`/`down` work from any directory
 mkdir -p ~/.local/bin
