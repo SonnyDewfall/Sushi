@@ -4,7 +4,13 @@ from pathlib import Path
 
 import pytest
 
-from sushi_rig.probe import is_config_drivable, summarise
+from sushi_rig.probe import (
+    is_config_drivable,
+    parameter_units,
+    scale_points_from,
+    summarise,
+    version_from_literals,
+)
 
 pytest_plugins = ()
 
@@ -94,6 +100,175 @@ def test_summarise_tolerates_a_plugin_declaring_no_class():
         }
     ]
     assert "Unclassed" in summarise(described)
+
+
+# --- version, units and scale points: the decisions, pure -------------------
+
+
+def test_version_joins_minor_and_micro():
+    assert version_from_literals(["43"], ["0"]) == "43.0"
+
+
+def test_version_is_omitted_unless_both_parts_are_declared():
+    assert version_from_literals([], ["0"]) is None
+    assert version_from_literals(["43"], []) is None
+
+
+def test_version_is_omitted_when_declared_twice():
+    """None of the installed plugins does this. If one did, neither value would
+    be its version, and picking one would be a guess."""
+    assert version_from_literals(["1", "2"], ["0"]) is None
+
+
+def test_version_is_omitted_when_not_an_integer():
+    assert version_from_literals(["43.0"], ["0"]) is None
+
+
+def test_scale_point_values_are_floats_in_value_order():
+    """Integer literals must still come out as floats. lilv's own float
+    conversion refuses them, and rubberband's crispness points are integers."""
+    points = scale_points_from(
+        [("2", "2. Two sources"), ("0", "0. Smooth"), ("0.5", "half")]
+    )
+    assert points == [
+        {"value": 0.0, "label": "0. Smooth"},
+        {"value": 0.5, "label": "half"},
+        {"value": 2.0, "label": "2. Two sources"},
+    ]
+
+
+def test_scale_point_with_a_non_numeric_value_is_left_out():
+    assert scale_points_from([("loud", "Loud"), ("1", "One")]) == [
+        {"value": 1.0, "label": "One"}
+    ]
+
+
+# --- version, units and scale points: against the installed plugins -----------
+#
+# These run on any machine with the system LV2 plugins. Each skips, rather than
+# fails, when its plugin is not installed.
+
+GXTS9 = "http://guitarix.sourceforge.net/plugins/gxts9#ts9sim"
+EQ3BAND = "http://distrho.sf.net/plugins/3BandEQ"
+MABITCRUSH = "http://distrho.sf.net/plugins/MaBitcrush"
+COMBO = "http://drobilla.net/plugins/mda/Combo"
+RUBBERBAND = "http://breakfastquay.com/rdf/lv2-rubberband#mono"
+UNVERSIONED = "http://plugin.org.uk/swh-plugins/amp"
+
+
+def _describe_installed(uri):
+    """describe() of an installed plugin, or skip if it isn't installed.
+
+    probe() exits when a plugin is missing, which is right for the CLI and wrong
+    for a test that should skip, so this goes to lilv directly.
+    """
+    from sushi_rig.probe import _world, describe
+
+    world = _world()
+    plugin = world.get_all_plugins().get_by_uri(world.new_uri(uri))
+    if plugin is None:
+        pytest.skip(f"{uri} is not installed")
+    return describe(plugin, world)
+
+
+def _param(described, name):
+    return next(p for p in described["parameters"] if p["name"] == name)
+
+
+def test_plugin_version_is_read_from_its_own_declaration():
+    assert _describe_installed(GXTS9)["version"] == "43.0"
+
+
+def test_plugin_declaring_no_version_has_no_version_key():
+    assert "version" not in _describe_installed(UNVERSIONED)
+
+
+def test_unit_is_the_symbol_not_the_unit_uri():
+    """3BandEQ declares dB on its gains and Hz on its crossovers."""
+    eq = _describe_installed(EQ3BAND)
+    assert _param(eq, "Low")["unit"] == "dB"
+    assert _param(eq, "Low-Mid Freq")["unit"] == "Hz"
+
+
+def test_integer_ranges_are_read_not_dropped():
+    """3BandEQ declares its gains as `lv2:minimum -24`, `lv2:maximum 24`,
+    `lv2:default 0` -- integer literals, which lilv's float() refuses. They
+    used to come back None."""
+    low = _param(_describe_installed(EQ3BAND), "Low")
+    assert (low["min"], low["max"], low["default"]) == (-24.0, 24.0, 0.0)
+
+
+def test_node_float_falls_back_to_the_literal_text():
+    from sushi_rig.probe import _node_float
+
+    class IntegerLiteral:
+        """Behaves like a lilv integer node: float() refuses, str() is the text."""
+        def __float__(self):
+            raise TypeError("not a float literal")
+
+        def __str__(self):
+            return "-24"
+
+    class NotANumber(IntegerLiteral):
+        def __str__(self):
+            return "http://example.org/not-a-number"
+
+    assert _node_float(IntegerLiteral()) == -24.0
+    assert _node_float(NotANumber()) is None
+    assert _node_float(None) is None
+
+
+def test_port_declaring_no_unit_has_no_unit_key():
+    assert "unit" not in _param(_describe_installed(COMBO), "Model")
+
+
+def test_inline_unit_is_read_from_its_blank_node():
+    """MaBitcrush declares its unit inline, as a blank node carrying
+    unit:symbol "bits", rather than naming a units: URI. parameter_units()
+    used to raise on such a plugin, though its docstring promises it never
+    does, so this is pinned against the real plugin."""
+    assert _param(_describe_installed(MABITCRUSH), "resolution")["unit"] == "bits"
+    assert parameter_units(MABITCRUSH) == {"resolution": "bits"}
+
+
+def test_describe_and_parameter_units_agree_on_units():
+    """They share one lookup, so for every parameter with a unit they must give
+    the same answer."""
+    uri = EQ3BAND
+    described = _describe_installed(uri)
+    from_describe = {
+        p["name"]: p["unit"] for p in described["parameters"] if "unit" in p
+    }
+    assert from_describe == parameter_units(uri)
+    assert parameter_units(uri)["Low-Mid Freq"] == "Hz"
+
+
+def test_integer_scale_points_come_back_as_floats_in_order():
+    """Rubberband's crispness declares integer-valued points, which lilv's own
+    float conversion refuses. Labels are as the plugin states them."""
+    crispness = _param(_describe_installed(RUBBERBAND), "Crispness")
+    assert crispness["scale_points"] == [
+        {"value": 0.0, "label": "0. Smooth"},
+        {"value": 1.0, "label": "1. Multitimbral"},
+        {"value": 2.0, "label": "2. Two sources"},
+        {"value": 3.0, "label": "3. Standard"},
+    ]
+
+
+def test_fractional_scale_points_are_sorted_by_value():
+    model = _param(_describe_installed(COMBO), "Model")
+    values = [p["value"] for p in model["scale_points"]]
+    assert values == sorted(values)
+    assert model["scale_points"][0] == {
+        "value": 0.0,
+        "label": "D.I. (flat frequency response)",
+    }
+
+
+def test_port_without_scale_points_has_no_scale_points_key():
+    assert all(
+        "scale_points" not in p for p in _describe_installed(EQ3BAND)["parameters"]
+    )
 
 
 # --- against the real installed plugins ------------------------------------
