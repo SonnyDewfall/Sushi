@@ -62,6 +62,9 @@ _PORT_PROPS = "http://lv2plug.in/ns/ext/port-props#"
 _LOGARITHMIC = _PORT_PROPS + "logarithmic"
 _PATCH_WRITABLE = "http://lv2plug.in/ns/ext/patch#writable"
 _STATE_INTERFACE = "http://lv2plug.in/ns/ext/state#interface"
+_LV2_MINOR = "http://lv2plug.in/ns/lv2core#minorVersion"
+_LV2_MICRO = "http://lv2plug.in/ns/lv2core#microVersion"
+_UNITS_NS = "http://lv2plug.in/ns/extensions/units#"
 
 
 def _world():
@@ -79,6 +82,11 @@ def _world():
 
 
 def _node_float(node) -> float | None:
+    # Known gap: lilv's Node.__float__ refuses integer literals, so a range or
+    # default declared as `lv2:minimum 1` comes back None here, not 1.0. In the
+    # installed plugins that hits 996 of 2212 control input ports. Not fixed
+    # here, because changing it changes existing min/max/default values; see
+    # scale_points_from for the read that does handle integers.
     if node is None:
         return None
     try:
@@ -87,10 +95,76 @@ def _node_float(node) -> float | None:
         return None
 
 
+def _unit_symbol(world, port) -> str | None:
+    """The `units:symbol` of the unit a port declares, or None if it declares
+    no unit or the symbol doesn't resolve.
+
+    The one lookup shared by describe() and parameter_units(), so the two can't
+    disagree. The unit node is used as-is: a unit may be declared inline as a
+    blank node (MaBitcrush's `bits`), and going through its string form and
+    new_uri() raises on those. parameter_units() then crashed on plugins its
+    docstring promises it tolerates. If a port names several units, the last
+    that resolves wins, as it always has.
+    """
+    symbol_pred = world.new_uri(_UNITS_NS + "symbol")
+    symbol = None
+    for node in port.get_value(world.new_uri(_UNITS_NS + "unit")) or []:
+        resolved = world.get(node, symbol_pred, None)
+        if resolved is not None:
+            symbol = str(resolved)
+    return symbol
+
+
+def _port_scale_points(port) -> list[dict[str, Any]]:
+    """The port's scale points (its named detents), as read from lilv."""
+    return scale_points_from(
+        [
+            (str(point.get_value()), str(point.get_label()))
+            for point in port.get_scale_points()
+            if point.get_value() is not None and point.get_label() is not None
+        ]
+    )
+
+
+def version_from_literals(minor: list[str], micro: list[str]) -> str | None:
+    """`"<minor>.<micro>"` from the lexical values of lv2:minorVersion and
+    lv2:microVersion, or None unless each is declared exactly once as an integer.
+
+    Pure, so the rule is testable without an LV2 install. None of the installed
+    plugins declares two values. If one did, neither would be the plugin's
+    version, and picking one would be a guess.
+    """
+    if len(minor) != 1 or len(micro) != 1:
+        return None
+    try:
+        return f"{int(minor[0])}.{int(micro[0])}"
+    except ValueError:
+        return None
+
+
+def scale_points_from(pairs: list[tuple[str, str]]) -> list[dict[str, Any]]:
+    """`{"value", "label"}` dicts from (value, label) lexical pairs, sorted by value.
+
+    Values go through float() on their lexical form, not lilv's Node.__float__:
+    lilv refuses integer literals there ("node 0 is not a float"), and
+    rubberband's crispness points are integers. A point whose value isn't
+    numeric is left out rather than aborting a whole scan, the same tolerance
+    describe() gives a missing plugin class.
+    """
+    points = []
+    for raw_value, label in pairs:
+        try:
+            value = float(raw_value)
+        except ValueError:
+            continue
+        points.append({"value": value, "label": label})
+    return sorted(points, key=lambda p: p["value"])
+
+
 def _describe_port(world, plugin, port) -> dict[str, Any]:
     lv2 = world.ns.lv2
     default, minimum, maximum = port.get_range()
-    return {
+    described = {
         "symbol": str(port.get_symbol()),
         "name": str(port.get_name()),
         "min": _node_float(minimum),
@@ -101,6 +175,17 @@ def _describe_port(world, plugin, port) -> dict[str, Any]:
         "enumeration": port.has_property(world.new_uri(str(lv2.enumeration))),
         "logarithmic": port.has_property(world.new_uri(_LOGARITHMIC)),
     }
+    # The profile validator checks restated facts against probe. Without units
+    # and option labels it cannot verify them, so a profile that says "dB" or
+    # names a detent would go unchecked. Absent means the plugin declares
+    # nothing, so the key is omitted rather than set to null.
+    unit = _unit_symbol(world, port)
+    if unit is not None:
+        described["unit"] = unit
+    points = _port_scale_points(port)
+    if points:
+        described["scale_points"] = points
+    return described
 
 
 def is_config_drivable(
@@ -150,7 +235,7 @@ def describe(plugin, world) -> dict[str, Any]:
     ]
     state_interface = _STATE_INTERFACE in extension_data
 
-    return {
+    described = {
         "uri": str(plugin.get_uri()),
         "name": str(plugin.get_name()),
         "class": plugin_class,
@@ -165,6 +250,15 @@ def describe(plugin, world) -> dict[str, Any]:
         ),
         "parameters": parameters,
     }
+    # Same purpose as the per-port units and scale points: the profile validator
+    # checks a restated version against this. Absent stays absent, never guessed.
+    version = version_from_literals(
+        [str(n) for n in plugin.get_value(world.new_uri(_LV2_MINOR))],
+        [str(n) for n in plugin.get_value(world.new_uri(_LV2_MICRO))],
+    )
+    if version is not None:
+        described["version"] = version
+    return described
 
 
 def probe(uri: str | None = None) -> list[dict[str, Any]]:
@@ -202,9 +296,6 @@ def summarise(described: list[dict[str, Any]]) -> str:
     return "\n".join(lines)
 
 
-_UNITS_NS = "http://lv2plug.in/ns/extensions/units#"
-
-
 def parameter_units(uri: str) -> dict[str, str]:
     """Unit symbols ("dB", "Hz", "ms") for a plugin's ports, keyed by parameter name.
 
@@ -229,14 +320,11 @@ def parameter_units(uri: str) -> dict[str, str]:
     plugin = matches[0]
 
     units = {}
-    symbol_uri = world.new_uri(_UNITS_NS + "symbol")
     for index in range(plugin.get_num_ports()):
         port = plugin.get_port_by_index(index)
-        declared = port.get_value(world.new_uri(_UNITS_NS + "unit"))
-        for node in declared or []:
-            symbol = world.get(world.new_uri(str(node)), symbol_uri, None)
-            if symbol is not None:
-                units[str(port.get_name())] = str(symbol)
+        symbol = _unit_symbol(world, port)
+        if symbol is not None:
+            units[str(port.get_name())] = symbol
     return units
 
 
