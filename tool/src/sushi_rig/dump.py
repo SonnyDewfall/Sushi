@@ -19,13 +19,22 @@ from pathlib import Path
 from typing import Any
 
 
-def dump_plugins(config_path: Path, sushi_bin: str = "sushi") -> Any:
-    """Run Sushi's own introspection and parse the JSON payload it prints."""
+def dump_plugins(
+    config_path: Path, sushi_bin: str = "sushi", env: dict[str, str] | None = None
+) -> Any:
+    """Run Sushi's own introspection and parse the JSON payload it prints.
+
+    `env` is Sushi's whole environment, or None to inherit this process's. It
+    matters because of LV2_PATH: without it Sushi loads no LV2 plugins and exits
+    4 with "Failed to load tracks from the Json config file", which never
+    mentions the path.
+    """
     result = subprocess.run(
         [sushi_bin, "--dump-plugins", "-c", str(config_path)],
         capture_output=True,
         text=True,
         check=False,
+        env=env,
     )
     if result.returncode != 0:
         sys.exit(
