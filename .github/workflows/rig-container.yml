@@ -19,7 +19,7 @@ on:
       - config/**
       - tool/**
   push:
-    branches: [main]
+    branches: [master]
   workflow_dispatch:
 
 permissions:

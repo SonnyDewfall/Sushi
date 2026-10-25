@@ -47,6 +47,10 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
         guitarix-lv2 mda-lv2 dpf-plugins-lv2 x42-plugins zynaddsubfx-lv2 \
         rubberband-lv2 swh-lv2 ardour-lv2-plugins \
+        # Sushi is built with JACK and ALSA support and links those libraries
+        # dynamically. AppImages usually leave them out, so the binary would not
+        # start without them even with --dummy. (Unverified: no build has run yet.)
+        libjack-jackd2-0 libasound2t64 \
         python3 python3-venv python3-pip python3-lilv \
         lilv-utils liblilv-dev lv2-dev \
         ca-certificates curl jq \
