@@ -1,0 +1,113 @@
+# sushi-rig component profile (schema 1).
+# Machine-written and canonical: edit by hand if you like, but comments
+# do not survive the next rewrite. Facts are checked against `sushi-rig
+# probe`; judgements carry provenance (draft / reviewed / fact).
+# Check with:  sushi-rig profile validate <this file>
+schema_version: 1
+
+plugin:
+  uri: http://guitarix.sourceforge.net/plugins/gxts9#ts9sim
+  version: '43.0'
+  name: GxTubeScreamer
+kind: effect
+host: sushi-lv2
+
+ports:
+  audio_in: 1
+  audio_out: 1
+  config_drivable: true
+
+groups:
+  - id: dirt
+    label: Drive and tone
+    provenance: draft
+  - id: output
+    label: Output
+    provenance: draft
+
+parameters:
+  - name: Drive
+    symbol: fslider2_
+    facts:
+      min: 0.0
+      max: 1.0
+      default: 0.5
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: primary, provenance: draft}
+    group: {value: dirt, provenance: draft}
+    order: {value: 1, provenance: draft}
+    label: {value: Drive, provenance: fact}
+    description:
+      value: How hard the tube-screamer stage is pushed.
+      provenance: draft
+    scale: {value: linear, provenance: fact}
+    control: {value: knob, provenance: draft}
+    phone: {value: 1, provenance: draft}
+
+  - name: Tone
+    symbol: fslider1_
+    facts:
+      min: 100.0
+      max: 1000.0
+      default: 400.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: primary, provenance: draft}
+    group: {value: dirt, provenance: draft}
+    order: {value: 2, provenance: draft}
+    label: {value: Tone, provenance: fact}
+    description:
+      value: Tone control; the range suggests a corner frequency, but the plugin declares no unit.
+      provenance: draft
+    scale: {value: linear, provenance: fact}
+    control: {value: knob, provenance: draft}
+    phone: {value: 2, provenance: draft}
+
+  - name: Level
+    symbol: fslider0_
+    facts:
+      min: -20.0
+      max: 4.0
+      default: -16.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: primary, provenance: draft}
+    group: {value: output, provenance: draft}
+    order: {value: 1, provenance: draft}
+    label: {value: Level, provenance: fact}
+    description:
+      value: Output level; the range suggests decibels, but the plugin declares no unit.
+      provenance: draft
+    scale: {value: linear, provenance: fact}
+    control: {value: fader, provenance: draft}
+    phone: {value: 1, provenance: draft}
+
+  - name: BYPASS
+    symbol: BYPASS
+    facts:
+      min: 0.0
+      max: 1.0
+      default: 1.0
+      toggled: true
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: hidden, provenance: draft}
+    label: {value: Bypass, provenance: draft}
+    description:
+      value: The plugin's own bypass switch; the rig bypasses through Sushi instead. Polarity not checked.
+      provenance: draft
+    scale: {value: toggle, provenance: fact}
+    control: {value: toggle, provenance: draft}
+    phone: {value: 3, provenance: draft}
