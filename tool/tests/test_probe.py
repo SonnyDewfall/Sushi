@@ -190,6 +190,34 @@ def test_unit_is_the_symbol_not_the_unit_uri():
     assert _param(eq, "Low-Mid Freq")["unit"] == "Hz"
 
 
+def test_integer_ranges_are_read_not_dropped():
+    """3BandEQ declares its gains as `lv2:minimum -24`, `lv2:maximum 24`,
+    `lv2:default 0` -- integer literals, which lilv's float() refuses. They
+    used to come back None."""
+    low = _param(_describe_installed(EQ3BAND), "Low")
+    assert (low["min"], low["max"], low["default"]) == (-24.0, 24.0, 0.0)
+
+
+def test_node_float_falls_back_to_the_literal_text():
+    from sushi_rig.probe import _node_float
+
+    class IntegerLiteral:
+        """Behaves like a lilv integer node: float() refuses, str() is the text."""
+        def __float__(self):
+            raise TypeError("not a float literal")
+
+        def __str__(self):
+            return "-24"
+
+    class NotANumber(IntegerLiteral):
+        def __str__(self):
+            return "http://example.org/not-a-number"
+
+    assert _node_float(IntegerLiteral()) == -24.0
+    assert _node_float(NotANumber()) is None
+    assert _node_float(None) is None
+
+
 def test_port_declaring_no_unit_has_no_unit_key():
     assert "unit" not in _param(_describe_installed(COMBO), "Model")
 

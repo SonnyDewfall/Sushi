@@ -82,15 +82,19 @@ def _world():
 
 
 def _node_float(node) -> float | None:
-    # Known gap: lilv's Node.__float__ refuses integer literals, so a range or
-    # default declared as `lv2:minimum 1` comes back None here, not 1.0. In the
-    # installed plugins that hits 996 of 2212 control input ports. Not fixed
-    # here, because changing it changes existing min/max/default values; see
-    # scale_points_from for the read that does handle integers.
+    # lilv's Node.__float__ refuses integer literals, so a range or default
+    # declared as `lv2:minimum -24` used to come back None rather than -24.0.
+    # On a stock Ubuntu LV2 install that was 996 of 2212 control input ports,
+    # DISTRHO's 3-band EQ among them (declared -24..24 dB, reported as None).
+    # The literal's own text is the value, so fall back to parsing it.
     if node is None:
         return None
     try:
         return float(node)
+    except (TypeError, ValueError):
+        pass
+    try:
+        return float(str(node))
     except (TypeError, ValueError):
         return None
 
