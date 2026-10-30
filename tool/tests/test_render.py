@@ -81,6 +81,39 @@ def test_an_unknown_stimulus_kind_is_refused_rather_than_guessed():
         Stimulus(kind="white_noise").render(SR)
 
 
+def test_a_sine_stimulus_describes_itself_by_its_own_frequency():
+    """A sine uses neither sweep endpoint, so neither appears in its identity —
+    two sines that sound the same must not compare as different."""
+    described = Stimulus(kind="sine", frequency_hz=220.0, duration_s=1.0).describe()
+    for part in ("sine", "220Hz", "1s", "-20dBFS", "2ch"):
+        assert part in described, f"{part!r} missing from {described!r}"
+    assert "20-20000Hz" not in described
+    assert Stimulus(kind="sine", frequency_hz=440.0).describe() != described
+
+
+def test_a_sine_renders_at_the_frequency_it_names():
+    rendered = Stimulus(kind="sine", frequency_hz=220.0, duration_s=1.0).render(SR)
+    assert rendered.shape == (SR, 2)
+    from sushi_rig import analysis
+
+    assert analysis.harmonic_distortion(
+        rendered[:, 0], SR, 220.0
+    ).fundamental_dbfs == pytest.approx(-23.01, abs=0.01), "peak -20 dBFS is -23.01 RMS"
+
+
+def test_a_sine_without_a_frequency_is_refused_rather_than_defaulted():
+    """Defaulting it would put a tone nobody chose into a reference's identity."""
+    with pytest.raises(RenderError, match="needs frequency_hz"):
+        Stimulus(kind="sine").render(SR)
+
+
+def test_an_incomplete_sine_is_refused_by_its_description_too():
+    """A reference's identity is sometimes asked for without rendering anything,
+    and `:g` on None raises a TypeError that says nothing about stimuli."""
+    with pytest.raises(RenderError, match="needs frequency_hz"):
+        Stimulus(kind="sine").describe()
+
+
 # --- rendering --------------------------------------------------------------
 
 
