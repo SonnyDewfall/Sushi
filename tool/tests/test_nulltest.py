@@ -266,3 +266,38 @@ def test_delay_still_works_on_a_mono_render():
     mono = signals.log_sweep(SR, 1.0, level_dbfs=-20.0, channels=1)
     fp = _fp(np.roll(mono, 100, axis=0), against=mono)
     assert fp.delay_samples == 100
+
+
+
+# --- a recalibration never quietly tightens what someone widened -------------
+
+def test_no_committed_tolerance_means_the_measured_one():
+    from sushi_rig.nulltest import Tolerance, keep_wider
+
+    measured = Tolerance(0.0001, 0.0001, 0, "measured")
+    assert keep_wider(measured, None) == measured
+
+
+def test_a_wider_committed_tolerance_and_its_reason_survive():
+    from sushi_rig.nulltest import Tolerance, keep_wider
+
+    kept = keep_wider(Tolerance(0.0001, 0.0001, 0, "measured"),
+                      Tolerance(0.01, 0.01, 0, "set by hand"))
+    assert kept == Tolerance(0.01, 0.01, 0, "set by hand")
+
+
+def test_a_wider_measurement_replaces_a_narrower_commitment():
+    """It never goes below what is measured now, either."""
+    from sushi_rig.nulltest import Tolerance, keep_wider
+
+    measured = Tolerance(0.02, 0.02, 3, "measured")
+    assert keep_wider(measured, Tolerance(0.01, 0.01, 0, "set by hand")) == measured
+
+
+def test_each_field_takes_the_wider_of_the_two():
+    from sushi_rig.nulltest import Tolerance, keep_wider
+
+    kept = keep_wider(Tolerance(0.0001, 0.05, 0, "measured"),
+                      Tolerance(0.01, 0.01, 0, "set by hand"))
+    assert (kept.band_db, kept.level_db) == (0.01, 0.05)
+    assert kept.note == "set by hand", "a field of it is still the judgement in force"

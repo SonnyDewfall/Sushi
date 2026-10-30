@@ -958,9 +958,11 @@ def main(argv: list[str] | None = None) -> int:
 
         import yaml
 
-        from .nulltest import compare, from_dict, to_dict
+        from .nulltest import compare, from_dict, keep_wider, to_dict
         from .paths import checkout_root
-        from .render import RenderError, calibrate, measure, reference_path
+        from .render import (
+            RenderError, calibrate, measure, offline_problem, reference_path,
+        )
         from .verify import configs_to_check
 
         root = checkout_root()
@@ -973,15 +975,59 @@ def main(argv: list[str] | None = None) -> int:
 
         sushi = args.sushi or str(root / "sushi")
         failed = 0
+        unrenderable = []
         with tempfile.TemporaryDirectory(prefix="sushi-rig-nulltest-") as tmp:
             for target in targets:
                 ref_file = reference_path(root, target)
                 work = Path(tmp) / target.stem
                 try:
+                    problem = offline_problem(json.loads(target.read_text()))
+                    if problem is not None:
+                        if ref_file.exists():
+                            # It was protected and silently stopped being. A
+                            # derived exemption must not be a way to lose one —
+                            # nor `--calibrate`, which used to report it as
+                            # unrenderable, exit 0 and leave the stale
+                            # reference to fail the next run.
+                            print(
+                                f"{target.name}: NO LONGER RENDERABLE — it has a "
+                                f"reference, so it used to be checked, but {problem}. "
+                                f"Fix the routing, or if the move was meant, delete "
+                                f"{ref_file.relative_to(root)}: its sound can no "
+                                f"longer be checked here",
+                                file=sys.stderr,
+                            )
+                            failed += 1
+                        else:
+                            print(
+                                f"{target.name}: NOT RENDERABLE OFFLINE — {problem}. "
+                                "A change in its sound would not fail this check",
+                                file=sys.stderr,
+                            )
+                            unrenderable.append(target.name)
+                        continue
                     if args.calibrate:
                         fp, tolerance = calibrate(
                             target, root, work, sushi_bin=sushi
                         )
+                        committed = None
+                        if ref_file.exists():
+                            try:
+                                committed = from_dict(yaml.safe_load(ref_file.read_text()))[1]
+                            except (ValueError, KeyError, TypeError, AttributeError,
+                                    yaml.YAMLError):
+                                # An unreadable reference has no tolerance worth
+                                # keeping; this calibration replaces it whole.
+                                committed = None
+                        measured = tolerance
+                        tolerance = keep_wider(measured, committed)
+                        if tolerance != measured:
+                            print(
+                                f"{target.name}: kept the committed tolerance, wider "
+                                f"than this calibration's floor — delete the reference "
+                                f"first to tighten it",
+                                file=sys.stderr,
+                            )
                         ref_file.parent.mkdir(parents=True, exist_ok=True)
                         ref_file.write_text(
                             yaml.dump(
@@ -1040,6 +1086,14 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     print(f"{target.name}: sounds the same")
 
+        if unrenderable:
+            # Every run, not only the first: a gap in coverage that is reported
+            # once and then goes quiet is a gap nobody remembers.
+            print(
+                f"\n{len(unrenderable)} config(s) cannot be rendered offline, so their "
+                f"sound is not protected: {', '.join(unrenderable)}",
+                file=sys.stderr,
+            )
         if failed:
             print(
                 f"\n{failed} of {len(targets)} config(s) could not be confirmed",

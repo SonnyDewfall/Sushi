@@ -1,0 +1,38 @@
+schema_version: 1
+config: electric-octave-up
+stimulus: log_sweep 20-20000Hz 5s -20dBFS 2ch
+sample_rate: 48000
+frames: 240000
+measured:
+  peak_dbfs: -8.1229
+  rms_dbfs: -24.8798
+  delay_samples: 0
+  bands:
+  - low_hz: 20.0
+    high_hz: 80.0
+    level_dbfs: -43.0678
+  - low_hz: 80.0
+    high_hz: 250.0
+    level_dbfs: -32.4629
+  - low_hz: 250.0
+    high_hz: 800.0
+    level_dbfs: -26.457
+  - low_hz: 800.0
+    high_hz: 2500.0
+    level_dbfs: -27.4509
+  - low_hz: 2500.0
+    high_hz: 8000.0
+    level_dbfs: -36.6174
+  - low_hz: 8000.0
+    high_hz: 20000.0
+    level_dbfs: -59.2264
+tolerance:
+  band_db: 0.01
+  level_db: 0.01
+  delay_samples: 0
+  note: 'set by hand, 2026-10-30: 0.01 dB, four times the largest difference any of
+    four calibrations in the CI container showed for this config or for the other
+    non-deterministic one (electric_board, up to 0.0025 dB in a band; electric-octave-up,
+    up to 0.0021 dB in peak level). Not fitted to this config''s own spread: a tolerance
+    fitted to three calibrations was overtaken by the fourth by five times, so this
+    is set well above all of it instead'

@@ -62,12 +62,9 @@ class RenderError(Exception):
 class Stimulus:
     """What gets pushed through the graph.
 
-    `channels` is the one value here I could not verify: how many channels
-    Sushi's offline frontend wants when the engine has more inputs than the file
-    has channels is undocumented, and this container has no Sushi to ask. Two is
-    the rig's track width. If CI shows the engine wants its full input count, this
-    is the knob to turn, and `render_offline` reports the output's channel count
-    so a mismatch is visible rather than silently mixed down.
+    `channels` is two because that is all Sushi's offline frontend has
+    (`OFFLINE_CHANNELS`). Wider is refused by `render_offline`, because Sushi
+    does not refuse it: it overflows a stack buffer instead.
     """
 
     kind: str = "log_sweep"
@@ -128,6 +125,58 @@ class Stimulus:
         )
 
 
+# Sushi 1.3.0's offline frontend has exactly two audio channels, fixed at
+# compile time: `set_audio_channels(OFFLINE_FRONTEND_CHANNELS, ...)` with
+# `OFFLINE_FRONTEND_CHANNELS = 2` (src/audio_frontends/offline_frontend.h). The
+# dummy frontend `verify` uses has ten. Read from the source rather than
+# inferred, after CI showed the two disagreeing about the same config.
+OFFLINE_CHANNELS = 2
+
+
+def offline_problem(config: dict[str, Any]) -> str | None:
+    """Why Sushi's offline frontend cannot host `config` at all, or None.
+
+    Two channels is one stereo engine bus, bus 0. A track on any other bus names
+    channels the offline engine does not have, and Sushi refuses the whole
+    config with "Failed to load tracks from the Json config file" — the same
+    message an unloadable plugin gives, which is why this is decided from the
+    config rather than read off the error.
+
+    `guitar_vocal` is the case that found it: its vocal track listens on bus 1,
+    so no stimulus of any width can render it offline.
+    """
+    # Both routing forms the rig accepts (spec.py, patchbay.routes_from_rig):
+    # `engine_bus: n` is channels 2n and 2n+1, `engine_channel: n` is channel n.
+    # Checking only the bus form let a track on `engine_channel: 2` pass as
+    # renderable, and Sushi then refused it with the plugin-shaped error.
+    for track in config.get("tracks", []):
+        if not isinstance(track, dict):
+            continue
+        for side in ("inputs", "outputs"):
+            entries = track.get(side)
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                for key, width in (("engine_bus", 2), ("engine_channel", 1)):
+                    value = entry.get(key)
+                    # A malformed index is verify's to refuse — it runs first in
+                    # CI — and the rule for one is patchbay._index_problem's:
+                    # a non-negative int, with bool excluded.
+                    if type(value) is not int or value < 0:
+                        continue
+                    if value * width + width > OFFLINE_CHANNELS:
+                        return (
+                            f"track {track.get('name')!r} uses "
+                            f"{key.replace('_', ' ')} {value} for its "
+                            f"{side}, and Sushi's offline frontend has "
+                            f"{OFFLINE_CHANNELS} channels — bus 0 only — so it "
+                            f"cannot load this config"
+                        )
+    return None
+
+
 def sushi_argv(
     config: Path, stimulus_wav: Path, out_wav: Path, sushi_bin: str = "./sushi"
 ) -> list[str]:
@@ -168,6 +217,17 @@ def render_offline(
     bug that cost a CI cycle in #47.
     """
     stimulus = stimulus or Stimulus()
+    if stimulus.channels > OFFLINE_CHANNELS:
+        # Not a limitation worth working around: Sushi reads AUDIO_CHUNK_SIZE
+        # frames of the file into `float file_buffer[OFFLINE_FRONTEND_CHANNELS *
+        # AUDIO_CHUNK_SIZE]` on the stack and checks only for mono, so a wider
+        # file overflows it. CI saw "*** stack smashing detected ***" from a
+        # four-channel stimulus on a config that uses bus 0 alone.
+        raise RenderError(
+            f"a {stimulus.channels}-channel stimulus would overflow Sushi's offline "
+            f"frontend, which reads every file into a {OFFLINE_CHANNELS}-channel "
+            f"buffer; use {OFFLINE_CHANNELS} channels or fewer"
+        )
     work.mkdir(parents=True, exist_ok=True)
     in_wav = work / "stimulus.wav"
     out_wav = work / "rendered.wav"

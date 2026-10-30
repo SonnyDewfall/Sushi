@@ -918,3 +918,64 @@ design rather than to the take folder. In the meantime `take.start_take` refuses
 two stems captured from one port, so the routing that ships cannot produce a
 take whose file names lie about what is in them. The dry taps are unaffected —
 they come straight off the interface. *(2026-10-30)*
+
+### 🟢 Sushi's offline frontend: one stereo bus, and a stack overflow past it (2026-10-30)
+
+Found calibrating #40's references in CI, then settled from Sushi 1.3.0's own
+source (`src/audio_frontends/offline_frontend.{h,cpp}`), not inferred:
+
+- **The offline engine has exactly two channels**, fixed at compile time:
+  `set_audio_channels(OFFLINE_FRONTEND_CHANNELS, ...)` with
+  `OFFLINE_FRONTEND_CHANNELS = 2`. The dummy frontend `verify` uses has ten. So
+  a config with a track on engine bus 1 loads under `verify` and is refused
+  offline with "Failed to load tracks from the Json config file" — the same
+  message an unloadable plugin gives. `guitar_vocal`, whose vocal track is on
+  bus 1, cannot be rendered offline by any stimulus.
+- **A file wider than two channels overflows Sushi's stack.** It reads
+  `AUDIO_CHUNK_SIZE` frames into `float file_buffer[OFFLINE_FRONTEND_CHANNELS *
+  AUDIO_CHUNK_SIZE]` and checks only for mono, so a four-channel file writes
+  256 floats into 128. CI saw `*** stack smashing detected ***` from a
+  four-channel stimulus on `electric_board`, which uses bus 0 alone. Sushi does
+  not refuse such a file, so `render_offline` does.
+
+Isolated by rendering two configs at two channel counts in one CI step, because
+the obvious reading of the first failure — that a four-channel stimulus would
+reach bus 1 — was wrong twice over.
+
+**What it costs: `guitar_vocal`'s sound is not null-tested.** `nulltest`
+reports it as NOT RENDERABLE OFFLINE on every run rather than failing for ever.
+A config that *has* a reference and becomes unrenderable does fail, so moving a
+track to bus 1 by mistake cannot quietly drop a config's protection. The way to
+close the gap is to render each track on its own through a single-bus copy of
+the config, which would also say *which* chain moved; not done, because it
+changes what a reference is. It matters more with every multi-channel rig, and
+recording makes those the normal case.
+
+### 🟡 Three configs are one tone under three names (2026-10-30)
+
+`electric-chorus-2`, `electric-chorus-hall` and `hard-feelings` are identical
+apart from `_meta`: the same tracks, parameters and amp. Their sound references
+are identical to four decimals, which is the null test working rather than
+failing. Whether that is intended is for whoever saved them.
+
+### 🟢 One calibration understates a config's spread (2026-10-30)
+
+Eight configs rendered bit-identically, to the 0.0001 dB a reference is written
+at, in all three CI calibrations. Two did not: `electric_board` differed from
+itself by 0.0025, 0.0007 and 0.0001 dB in a band across the three, and
+`electric-octave-up` by 0.0005, 0.0001 and 0.0001. A tolerance taken from one
+calibration — which `--calibrate` does — would have been 0.0001 for both and
+failed at random.
+
+Nor did three calibrations settle it. Their references first carried four times
+the largest spread those three had shown — and the very next CI run measured
+`electric-octave-up`'s peak 0.0021 dB from its reference, five times the
+tolerance. The peak is a single sample, the most sensitive figure in a
+fingerprint, and the first three runs had all shown it steady. So both now carry
+0.01 dB for band and level, set by hand and saying so in the file: four times
+the worst difference either showed in four calibrations, rather than a fit to a
+spread that had already been overtaken once. That is the visible judgement
+`floor_between` leaves to whoever commits a reference.
+
+Not explained: the other configs carrying the same octave plugins are
+deterministic, so the octave pair alone is not the cause.

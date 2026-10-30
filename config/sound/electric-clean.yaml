@@ -1,0 +1,35 @@
+schema_version: 1
+config: electric-clean
+stimulus: log_sweep 20-20000Hz 5s -20dBFS 2ch
+sample_rate: 48000
+frames: 240000
+measured:
+  peak_dbfs: -17.0428
+  rms_dbfs: -29.5608
+  delay_samples: 0
+  bands:
+  - low_hz: 20.0
+    high_hz: 80.0
+    level_dbfs: -50.4006
+  - low_hz: 80.0
+    high_hz: 250.0
+    level_dbfs: -36.0099
+  - low_hz: 250.0
+    high_hz: 800.0
+    level_dbfs: -30.0854
+  - low_hz: 800.0
+    high_hz: 2500.0
+    level_dbfs: -32.3222
+  - low_hz: 2500.0
+    high_hz: 8000.0
+    level_dbfs: -42.8622
+  - low_hz: 8000.0
+    high_hz: 20000.0
+    level_dbfs: -63.7835
+tolerance:
+  band_db: 0.0001
+  level_db: 0.0001
+  delay_samples: 0
+  note: 'measured in the CI container on 2026-10-30: in each of three calibrations,
+    two renders of this config were identical to the 0.0001 dB this file is written
+    at'
