@@ -1,6 +1,9 @@
 # Builds the "dummy rig" image (ci/Dockerfile) and runs, inside it, the checks
-# that need a real Sushi: the slow pytest suite and `sushi-rig verify --all`.
-# The fast suite lives in ci.yml and needs none of this.
+# that need a real Sushi or a system lilv: the WHOLE pytest suite and
+# `sushi-rig verify --all`. ci.yml runs the fast suite on a bare runner, where
+# the lilv- and Sushi-guarded tests skip; this job is the only place they run.
+# Between the two workflows every test must run somewhere (README: Running the
+# tests), so a test that skips here is a failure, not a footnote.
 #
 # Every step that can fail puts the tail of its output into a CI annotation.
 # The full log is there too, but annotations are what the check-run API returns,
@@ -32,6 +35,8 @@ env:
   SUSHI_ASSET: sushi-linux-x86_64_1_3_0.zip
 
 jobs:
+  # The id is still `slow`: it is the check's name on the PR, so renaming it
+  # would orphan any branch-protection rule that requires it.
   slow:
     runs-on: ubuntu-24.04
     steps:
@@ -70,18 +75,20 @@ jobs:
             exit 1
           fi
 
-      - name: Slow suite
+      - name: Full suite
         run: |
           set -o pipefail
-          if ! docker run --rm sushi-rig-ci pytest -m slow -rs 2>&1 | tee slow.log; then
-            echo "::error title=Slow suite failed::$(tail -n 40 slow.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
+          if ! docker run --rm sushi-rig-ci pytest -rs 2>&1 | tee suite.log; then
+            echo "::error title=Full suite failed::$(tail -n 40 suite.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
             exit 1
           fi
-          # test_configs.py skips itself when ./sushi or plugins/ is missing,
-          # which would turn a broken image into a green run. In here nothing
-          # should be missing, so any skip is a failure.
-          if grep -q '^SKIPPED' slow.log; then
-            echo "::error title=Slow tests were skipped::$(grep '^SKIPPED' slow.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
+          # The guards (needs_sushi, needs_lilv, importorskip) skip themselves
+          # when ./sushi, plugins/ or lilv is missing, which would turn a broken
+          # image into a green run. In here nothing should be missing, so any
+          # skip is a failure. Do not narrow this to `-m slow`: that is how 51
+          # tests ran in neither workflow without anyone being told.
+          if grep -q '^SKIPPED' suite.log; then
+            echo "::error title=Tests were skipped::$(grep '^SKIPPED' suite.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
             exit 1
           fi
 

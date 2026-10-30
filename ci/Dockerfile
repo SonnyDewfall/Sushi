@@ -1,6 +1,6 @@
 # syntax=docker/dockerfile:1
 #
-# A "dummy rig": everything the slow suite and `sushi-rig verify --all` need,
+# A "dummy rig": everything the full test suite and `sushi-rig verify --all` need,
 # with no audio hardware, no JACK and no GUI -- so CI can run them without the
 # rig machine. Build from the repository root:
 #
@@ -22,7 +22,7 @@
 #     built from source (mikeoliphant/neural-amp-modeler-lv2) -- not done.
 #
 # VERIFIED: CI (.github/workflows/rig-container.yml) builds this image with the
-# real Sushi 1.3.0, then runs the slow suite and `sushi-rig verify --all` in
+# real Sushi 1.3.0, then runs the full suite and `sushi-rig verify --all` in
 # it. It also builds locally with a stand-in in place of the Sushi AppImage.
 
 FROM ubuntu:24.04
@@ -31,8 +31,8 @@ ENV DEBIAN_FRONTEND=noninteractive
 
 # --- system packages --------------------------------------------------------
 #
-# The first group is the plugin set: together these packages provide all 54
-# URIs in plugin-manifest.txt. swh-lv2 and ardour-lv2-plugins are there for
+# The first group is the plugin set: together these packages provide every URI
+# in plugin-manifest.txt (55) except the neural amp's, which is waived below. swh-lv2 and ardour-lv2-plugins are there for
 # `lcrDelay` and `urn:ardour:a-reverb`, which the configs load. Checked with
 # `sushi-rig plugins check` against a real Ubuntu 24.04 LV2 tree, not assumed.
 #
@@ -88,7 +88,7 @@ RUN ./Sushi.AppImage --appimage-extract >/dev/null \
 # --system-site-packages is how the venv sees apt's python3-lilv, which has no
 # PyPI wheel. `elkpy` installs cleanly on Ubuntu's Python 3.12 (checked in this
 # image; the README reports 3.14 too). `audio` brings numpy, without which the
-# signal and analysis tests skip -- and a skip fails the slow job.
+# signal and analysis tests skip -- and a skip fails the job.
 COPY . /rig
 WORKDIR /rig
 RUN python3 -m venv --system-site-packages /opt/venv \
@@ -117,6 +117,18 @@ ARG NAM_URI=http://github.com/mikeoliphant/neural-amp-modeler-lv2
 RUN sushi-rig plugins assemble --from /usr/lib/lv2 --to /rig/plugins --waive "$NAM_URI" \
     && sushi-rig plugins check /rig/plugins --waive "$NAM_URI"
 
+# --- the rig machine's layout, for tests/test_probe.py ----------------------
+#
+# Those tests look for the rig where the rig machine keeps it, not relative to
+# the checkout: plugins at ~/Sushi/plugins (machine-wide and untracked, so that
+# a git worktree can share it) and the CLI at tool/.venv/bin/sushi-rig. Without
+# these two links the five tests marked needs_rig_plugins skip with "folder not
+# present" -- found by running the whole suite here, where it had never run --
+# and a skip fails the job. Linking is cheaper than teaching the tests about
+# the container, and keeps them asserting against the layout the rig really has.
+RUN ln -s /rig /root/Sushi \
+    && ln -s /opt/venv /rig/tool/.venv
+
 # --- preflight --------------------------------------------------------------
 #
 # README: "./sushi --version must list lv2". `test -x` follows the symlink, so a
@@ -126,4 +138,4 @@ RUN test -x /rig/sushi \
     && /rig/sushi --version | tee /dev/stderr | grep -qi lv2
 
 WORKDIR /rig/tool
-CMD ["pytest", "-m", "slow", "-rs"]
+CMD ["pytest", "-rs"]
