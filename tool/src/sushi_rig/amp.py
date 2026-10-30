@@ -270,13 +270,27 @@ _PATCHBAY_ITEM = (
 )
 
 
-def amp_patchbay(base_xml: str, sushi_node: str = "sushi") -> str:
+def amp_patchbay(
+    base_xml: str, guitar_port: str | None = None, sushi_node: str = "sushi"
+) -> str:
     """The base patchbay, rewired to put the amp in front of the guitar.
 
-    Whatever feeds `sushi:audio_input_0` is taken to be the guitar. That source
-    is redirected into the amp, the amp feeds the inputs it used to feed, and
-    everything else is left exactly as it was — Sushi's outputs, the tuner's dry
-    feed, and any other source feeding other inputs.
+    `guitar_port` is the physical port the machine file gives the guitar role.
+    Whatever feeds it into Sushi is redirected through the amp; the amp feeds the
+    inputs that port used to feed, and everything else is left exactly as it was
+    — Sushi's outputs, the tuner's tap, and every other source.
+
+    **Why a role and not a port index.** This used to take whatever fed
+    `sushi:audio_input_0` to be the guitar, which was true only while the rig
+    had one channel. With a microphone on a second channel, "input 0" is a
+    position, and positions move: put the vocal track on bus 0 and the guitar
+    on bus 1 and the amp would be reprofiling the singer. Issue #18's whole
+    point is that the amp, the tuner, the panel and the recorder all key off
+    the same declared channel.
+
+    With no `guitar_port` the old positional rule still applies, because a rig
+    with no machine file must keep working. `prepare` says so out loud when it
+    falls back.
 
     Deliberately *not* "redirect everything that feeds Sushi". The saved
     patchbay also wires a second interface channel into Sushi's unused inputs
@@ -307,12 +321,21 @@ def amp_patchbay(base_xml: str, sushi_node: str = "sushi") -> str:
     guitar: tuple[str, str] | None = None
     for match in item_re.finditer(base_xml):
         out_node, out_port, _in_node, in_port = match.groups()
-        if in_port == first_input:
+        if not in_port.startswith(f"{sushi_node}:audio_input_"):
+            # The tuner tap leaves the same port, and the amp must not be put in
+            # front of it: the tuner wants the dry string, and NAM's output is
+            # mono anyway. Only what reaches Sushi is rerouted.
+            continue
+        is_guitar = (
+            out_port == guitar_port if guitar_port else in_port == first_input
+        )
+        if is_guitar:
             guitar = (out_node, out_port)
             break
     if guitar is None:
-        # Nothing feeds Sushi's first input, so there is nothing to put an amp
-        # in front of. Better an unchanged patchbay than a guessed one.
+        # The guitar's port does not feed Sushi at all, so there is nothing to
+        # put an amp in front of. Better an unchanged patchbay than a guessed
+        # one -- and `up` reports the amp as unwired rather than silently dry.
         return base_xml
 
     def redirect(match: re.Match) -> str:
@@ -466,6 +489,42 @@ def summarise_model(described: dict[str, Any], rig_rate: int = RIG_SAMPLE_RATE) 
     return "\n".join(lines)
 
 
+def guitar_port(root: Path) -> str | None:
+    """The physical port the machine file gives the guitar, if it says.
+
+    None when there is no machine file for this host, or it names no guitar
+    role — and then `amp_patchbay` falls back to its old positional rule. That
+    fallback is said out loud rather than taken quietly: it is right for a
+    single-channel rig and wrong the moment a second channel moves the guitar
+    off input 0, and a silently misrouted amp sounds like a broken amp.
+    """
+    from .machine import MachineError, MachineSpec, machine_path
+    from .patchbay import GUITAR_ROLE
+
+    path = machine_path(Path(root))
+    if not path.is_file():
+        print(
+            f"warning: no machine file at {path.name}, so the amp is wired to "
+            "whatever feeds Sushi's first input rather than to the guitar role",
+            file=sys.stderr,
+        )
+        return None
+    try:
+        ports = MachineSpec.load(path).role_ports().get(GUITAR_ROLE) or []
+    except MachineError as exc:
+        print(f"warning: {exc}; wiring the amp by input position instead",
+              file=sys.stderr)
+        return None
+    if len(ports) != 1:
+        print(
+            f"warning: {path.name} gives {GUITAR_ROLE!r} {len(ports)} ports and "
+            "NAM has one input; wiring the amp by input position instead",
+            file=sys.stderr,
+        )
+        return None
+    return ports[0]
+
+
 def prepare(
     config: Path, root: Path, runtime: Path, override_model: str | None = None
 ) -> dict[str, Any]:
@@ -507,7 +566,7 @@ def prepare(
     base = Path(root) / "Patchbay" / "rig.qpwgraph"
     if base.is_file():
         patchbay = runtime / "rig-amp.qpwgraph"
-        patchbay.write_text(amp_patchbay(base.read_text()))
+        patchbay.write_text(amp_patchbay(base.read_text(), guitar_port(Path(root))))
 
     return {
         "model": model,

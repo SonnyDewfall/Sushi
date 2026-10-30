@@ -29,6 +29,26 @@ PATCHBAY_VERSION = "0.9.9"
 
 SUSHI_NODE = "sushi"
 
+# The tuner, as PipeWire and qpwgraph name it. Both halves read off a real
+# pw-dump taken with the rig running (tests/fixtures/pw-dump-rig.json), not
+# inferred:
+#
+# - the node is `application.name` + "/" + `node.description`, which is exactly
+#   the string qpwgraph wrote for it in the hand-made patchbay;
+# - the port is `input_MONO`, singular. With `node.autoconnect` off (#52) fmit
+#   negotiates the one port it actually wants instead of the stereo pair the
+#   default source imposed on it -- so the hand-made patchbay's `input_FL` and
+#   `input_FR` links name ports that no longer exist, and the tuner on that
+#   machine has been fed by nothing at all since #52 landed.
+TUNER_NODE = "PipeWire ALSA [fmit]/ALSA Capture [fmit]"
+TUNER_PORT = "ALSA Capture [fmit]:input_MONO"
+
+# Which role the tuner listens to. Not a port and not a position: #18's whole
+# point is that the amp, the tuner, the panel and the recorder all key off the
+# same declared channel, so a third channel is a declaration rather than an edit
+# in five places.
+GUITAR_ROLE = "guitar-in"
+
 # pw-dump is a one-shot snapshot of the whole graph; a hung PipeWire is the only
 # way it takes long, and a check that blocks forever is worse than one that fails.
 PW_DUMP_TIMEOUT = 5.0
@@ -155,6 +175,7 @@ def generate_patchbay(
     mono_to_stereo: Collection[str] = (),
     nodes: Mapping[str, str] | None = None,
     sushi_node: str = SUSHI_NODE,
+    tuner_role: str | None = None,
     name: str = "rig",
 ) -> str:
     """qpwgraph patchbay XML from role -> ports and role -> where on Sushi.
@@ -191,6 +212,12 @@ def generate_patchbay(
     which is precisely what changes between profiles. Without it the node falls
     back to the port's own client name, which is right for Sushi and not for a
     device.
+
+    `tuner_role` taps that role's port into the tuner as well as into Sushi.
+    Without it a generated patchbay is complete except for the tuner, and
+    replacing the hand-made file with one would leave `fmit` deaf — the kind of
+    quiet regression a generator is supposed to remove. The tuner follows a
+    *role*, so it moves with the guitar rather than sitting on a port index.
     """
     nodes = nodes or {}
     sinks = sinks or {}
@@ -246,6 +273,23 @@ def generate_patchbay(
             outs = ", ".join(f"{sushi_node}:audio_output_{i}" for i in sorted(indexes))
             problems.append(f"playback port {port!r} would be fed by {outs} — summed")
 
+    tuner_port: str | None = None
+    if tuner_role is not None:
+        tuner_ports = roles.get(tuner_role)
+        if tuner_ports is None:
+            problems.append(_unknown_role(tuner_role, roles, "feeds the tuner"))
+        elif len(tuner_ports) != 1:
+            # The tuner has one input port, so two would be summed into it. Which
+            # of a stereo pair to tune is a judgement, and this module refuses
+            # those rather than picking -- see `_pair_source`.
+            problems.append(
+                f"role {tuner_role!r} has {len(tuner_ports)} ports but the tuner "
+                f"has one input ({TUNER_PORT}); give the tuner a role with a "
+                "single port"
+            )
+        else:
+            tuner_port = tuner_ports[0]
+
     if problems:
         raise PatchbayError(problems)
 
@@ -263,6 +307,8 @@ def generate_patchbay(
             links.append(
                 Link(sushi_node, f"{sushi_node}:audio_output_{index}", node_of(port), port)
             )
+    if tuner_port is not None:
+        links.append(Link(node_of(tuner_port), tuner_port, TUNER_NODE, TUNER_PORT))
     return render_patchbay(links, name)
 
 

@@ -48,6 +48,12 @@ from sushi_rig.paths import checkout_root
 from sushi_rig.spec import RigSpec, TrackSpec
 
 COMMITTED = checkout_root() / "Patchbay" / "rig.qpwgraph"
+# The patchbay as it was hand-wired in qpwgraph's GUI, kept now that the
+# committed one is generated (#18). It is what the check was written against,
+# and the stale links in it are real ones rather than invented: a dead `Pro`
+# ALSA profile, and a bare `fmit` from before the tuner reached PipeWire
+# through the ALSA layer.
+HANDMADE = (Path(__file__).parent / "fixtures" / "patchbay-handmade.qpwgraph").read_text()
 CAPTURED = (Path(__file__).parent / "fixtures" / "pw-dump-rig.json").read_text()
 
 ROLES = {
@@ -240,16 +246,21 @@ def test_generation_is_deterministic_whatever_order_the_roles_arrive_in():
 
 
 def test_the_amp_rewrite_understands_a_generated_patchbay():
-    """`amp_patchbay` finds the guitar as whatever feeds sushi:audio_input_0 and
-    is out of scope to change. If generation produced something it could not read,
-    switching to generated patchbays would silently drop the amp."""
-    xml = _gen(ROLES, {"guitar-in": [bus(0)]}, {"monitor-out": [bus(0)]})
-    amped = amp_patchbay(xml)
-    pairs = _pairs(amped)
-    assert ("Audient iD14:capture_AUX0", "NAM:Input") in pairs
+    """The two halves have to fit: if generation produced something
+    `amp_patchbay` could not read, switching to generated patchbays would
+    silently drop the amp. Both key off the same role now, so this reads the
+    port out of the machine file's roles rather than off an input index."""
+    xml = _gen(
+        ROLES, {"guitar-in": [bus(0)]}, {"monitor-out": [bus(0)]},
+        tuner_role="guitar-in",
+    )
+    (guitar,) = ROLES["guitar-in"]
+    pairs = _pairs(amp_patchbay(xml, guitar))
+    assert (guitar, "NAM:Input") in pairs
     assert ("NAM:Output", "sushi:audio_input_0") in pairs
     assert ("NAM:Output", "sushi:audio_input_1") in pairs
-    assert not any(src == "Audient iD14:capture_AUX0" and dst.startswith("sushi:") for src, dst in pairs)
+    assert not any(src == guitar and dst.startswith("sushi:") for src, dst in pairs)
+    assert (guitar, patchbay.TUNER_PORT) in pairs, "the tuner keeps the dry string"
 
 
 # --- reading routes off a rig -------------------------------------------------
@@ -518,16 +529,23 @@ def test_the_slashed_form_is_application_name_joined_to_node_description():
     assert "PipeWire ALSA [fmit]/ALSA Capture [fmit]" in live_node_names(CAPTURED)
 
 
-def test_checking_the_committed_patchbay_against_the_running_rig():
-    """With the rig up, two names in the committed patchbay are genuinely dead:
+def test_checking_the_handmade_patchbay_against_the_running_rig():
+    """With the rig up, two names in the hand-wired patchbay are genuinely dead:
     the `Pro` ALSA profile, and the bare `fmit` — because under PipeWire's ALSA
-    layer the tuner is `ALSA Capture [fmit]` and never `fmit`. Both are findings
-    and #54's generated patchbay is what fixes them."""
-    result = check_nodes(parse_patchbay(COMMITTED.read_text()), live_node_names(CAPTURED))
+    layer the tuner is `ALSA Capture [fmit]` and never `fmit`. Both were real,
+    and generating the file is what fixed them."""
+    result = check_nodes(parse_patchbay(HANDMADE), live_node_names(CAPTURED))
     assert set(result.missing) == {"Audient iD14 Pro", "fmit"}
     assert result.not_running == {}
     # Five links leave the dead Pro profile and four enter it.
     assert len(result.missing["Audient iD14 Pro"]) == 9
+
+
+def test_the_committed_patchbay_is_clean_against_the_capture():
+    """The point of generating it. Every node it names was in the graph on the
+    machine the capture came from, so nothing in it is a dead link."""
+    result = check_nodes(parse_patchbay(COMMITTED.read_text()), live_node_names(CAPTURED))
+    assert result.missing == {} and result.not_running == {}
 
 
 def test_the_same_check_with_the_rig_down_does_not_report_the_rigs_own_nodes_as_gone():
@@ -535,7 +553,7 @@ def test_the_same_check_with_the_rig_down_does_not_report_the_rigs_own_nodes_as_
     "definitely not in the graph" when one was, which buries the only finding
     that mattered."""
     result = check_nodes(
-        parse_patchbay(COMMITTED.read_text()),
+        parse_patchbay(HANDMADE),
         live_node_names(_with_the_rig_stopped(CAPTURED)),
     )
     assert set(result.missing) == {"Audient iD14 Pro"}, "the finding is still the finding"
@@ -781,14 +799,14 @@ def test_generate_prints_to_stdout_by_default(files, capsys):
     assert code == 0
     out = capsys.readouterr().out
     assert out.startswith("<!DOCTYPE patchbay>\n")
-    assert len(parse_patchbay(out)) == 4
+    assert len(parse_patchbay(out)) == 5, "two in, two out, and the tuner tap"
 
 
 def test_generate_writes_only_where_told(files, capsys):
     target = files / "out.qpwgraph"
     cli.main(["patchbay", "generate", str(files / "rig.yaml"),
               "--machine", str(files / "m.yaml"), "--offline", "-o", str(target)])
-    assert len(parse_patchbay(target.read_text())) == 4
+    assert len(parse_patchbay(target.read_text())) == 5
     assert "<" not in capsys.readouterr().out
 
 
@@ -884,9 +902,11 @@ def test_the_committed_example_passes_machine_check(capsys):
     assert cli.main(["machine", "check", str(checkout_root() / "machines" / "example.yaml")]) == 0
 
 
-def test_check_lists_missing_nodes_and_exits_nonzero(monkeypatch, capsys):
+def test_check_lists_missing_nodes_and_exits_nonzero(tmp_path, monkeypatch, capsys):
+    stale = tmp_path / "handmade.qpwgraph"
+    stale.write_text(HANDMADE)
     monkeypatch.setattr(patchbay, "read_pw_dump", lambda *a, **k: LIVE)
-    assert cli.main(["patchbay", "check", str(COMMITTED)]) == 1
+    assert cli.main(["patchbay", "check", str(stale)]) == 1
     out = capsys.readouterr().out
     assert "no live node 'Audient iD14 Pro'" in out
     assert "Audient iD14:capture_AUX0 -> sushi:audio_input_0" in out
@@ -905,15 +925,19 @@ def test_check_fails_on_a_link_to_a_client_that_has_gone(tmp_path, monkeypatch, 
     assert "MISSING no live node 'Chromium/Playback'" in capsys.readouterr().out
 
 
-def test_check_run_before_the_rig_is_up_says_so_and_does_not_fail(monkeypatch, capsys):
+def test_check_run_before_the_rig_is_up_says_so_and_does_not_fail(
+    tmp_path, monkeypatch, capsys
+):
     """The run that exposed this: `patchbay check` with the rig down reported
     `sushi` and the tuner as "definitely not in the graph" alongside one real
     finding, and exited 1. The real finding still shows; the rig's own nodes are
     reported as unchecked, and a check run at the wrong moment does not fail."""
+    stale = tmp_path / "handmade.qpwgraph"
+    stale.write_text(HANDMADE)
     monkeypatch.setattr(
         patchbay, "read_pw_dump", lambda *a, **k: _with_the_rig_stopped(CAPTURED)
     )
-    assert cli.main(["patchbay", "check", str(COMMITTED)]) == 1, "the dead profile still fails"
+    assert cli.main(["patchbay", "check", str(stale)]) == 1, "the dead profile still fails"
     captured = capsys.readouterr()
     assert "MISSING no live node 'Audient iD14 Pro'" in captured.out
     assert "rig down: node 'sushi'" in captured.out
@@ -976,3 +1000,103 @@ def test_check_that_cannot_ask_says_so_rather_than_passing(monkeypatch):
     monkeypatch.setattr(patchbay, "read_pw_dump", unavailable)
     with pytest.raises(SystemExit, match="cannot check"):
         cli.main(["patchbay", "check", str(COMMITTED)])
+
+
+# --- the tuner follows the guitar (#18) ---------------------------------------
+
+
+def test_the_tuner_taps_the_role_rather_than_a_port():
+    """What makes a generated patchbay complete. Without the tap, replacing the
+    hand-wired file with a generated one would leave fmit hearing nothing — a
+    quiet regression, since nothing else in either file mentions the tuner."""
+    xml = _gen(ROLES, {"guitar-in": [bus(0)]}, tuner_role="guitar-in")
+    assert (
+        "Audient iD14:capture_AUX0",
+        patchbay.TUNER_PORT,
+    ) in _pairs(xml), _pairs(xml)
+
+
+def test_the_tuner_taps_the_dry_input_not_sushis_output():
+    """A tuner wants the string, not the chain: reading a pitch through a reverb
+    and a delay is reading the tail as well as the note."""
+    links = parse_patchbay(
+        _gen(ROLES, {"guitar-in": [bus(0)]}, {"monitor-out": [bus(0)]},
+             tuner_role="guitar-in")
+    )
+    (tap,) = [l for l in links if l.in_port == patchbay.TUNER_PORT]
+    assert tap.out_port == "Audient iD14:capture_AUX0"
+
+
+def test_the_tuner_has_one_input_so_a_two_port_role_is_refused():
+    """Which half of a stereo pair to tune is a judgement, and this module
+    refuses those rather than picking — the same rule as `_pair_source`."""
+    with pytest.raises(PatchbayError, match="one input"):
+        _gen(ROLES, {"stereo-in": [bus(0)]}, tuner_role="stereo-in")
+
+
+def test_a_tuner_role_the_machine_file_does_not_define_is_refused():
+    with pytest.raises(PatchbayError, match="feeds the tuner"):
+        _gen(ROLES, {"guitar-in": [bus(0)]}, tuner_role="nonexistent")
+
+
+def test_no_tuner_role_means_no_tap_at_all():
+    xml = _gen(ROLES, {"guitar-in": [bus(0)]})
+    assert patchbay.TUNER_PORT not in xml
+
+
+def test_generate_warns_rather_than_silently_omitting_the_tuner(files, capsys):
+    """A machine file with no guitar role gets a patchbay with no tap. That is
+    the right file and the wrong silence: a deaf tuner looks like a broken one."""
+    (files / "m.yaml").write_text(MACHINE.replace("guitar-in", "lead-in"))
+    (files / "rig.yaml").write_text(RIG.replace("guitar-in", "lead-in"))
+    assert cli.main(["patchbay", "generate", str(files / "rig.yaml"),
+                     "--machine", str(files / "m.yaml"), "--offline"]) == 0
+    captured = capsys.readouterr()
+    assert patchbay.TUNER_PORT not in captured.out
+    assert "no 'guitar-in' role" in captured.err and "fmit" in captured.err
+
+
+def test_no_tuner_leaves_the_tap_out_on_request(files, capsys):
+    cli.main(["patchbay", "generate", str(files / "rig.yaml"),
+              "--machine", str(files / "m.yaml"), "--offline", "--no-tuner"])
+    assert patchbay.TUNER_PORT not in capsys.readouterr().out
+
+
+# --- the committed patchbay is generated, not hand-wired ----------------------
+
+
+def test_the_committed_patchbay_is_what_generate_produces(monkeypatch, capsys):
+    """The claim this whole exercise rests on, checked rather than asserted: the
+    committed file is byte-for-byte what the command produces from the committed
+    rig, the committed machine file and the captured graph. If someone edits it
+    in qpwgraph's GUI, this fails and says to regenerate it instead."""
+    root = checkout_root()
+    monkeypatch.setattr(patchbay, "read_pw_dump", lambda *a, **k: CAPTURED)
+    assert cli.main([
+        "patchbay", "generate", str(root / "config" / "src" / "guitar_vocal.yaml"),
+        "--machine", str(root / "machines" / "sonny-dewfall-XPS-9320.yaml"),
+    ]) == 0
+    assert capsys.readouterr().out == COMMITTED.read_text()
+
+
+def test_the_committed_patchbay_centres_the_guitar():
+    """The symptom that started this: the guitar came out of the left speaker
+    only, because one capture port fed Sushi's input 0 and nothing fed input 1."""
+    into = {
+        l.in_port: l.out_port for l in parse_patchbay(COMMITTED.read_text())
+        if l.in_node == "sushi"
+    }
+    assert into["sushi:audio_input_0"] == into["sushi:audio_input_1"]
+
+
+def test_the_committed_patchbay_keeps_the_two_channels_apart():
+    """#18's measurable claim. The vocal microphone must not reach the guitar's
+    inputs, and the guitar must not reach the vocal track's."""
+    into = {
+        l.in_port: l.out_port for l in parse_patchbay(COMMITTED.read_text())
+        if l.in_node == "sushi"
+    }
+    guitar = {into["sushi:audio_input_0"], into["sushi:audio_input_1"]}
+    vocal = {into["sushi:audio_input_2"], into["sushi:audio_input_3"]}
+    assert len(guitar) == 1 and len(vocal) == 1
+    assert guitar.isdisjoint(vocal), f"guitar {guitar} and vocal {vocal} share a port"

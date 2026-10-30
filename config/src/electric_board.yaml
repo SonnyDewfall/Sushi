@@ -33,6 +33,11 @@ host:
 tracks:
   - name: board
     channels: 2
+    # Machine-file roles, invisible to Sushi (`TrackSpec.to_sushi` drops them).
+    # They let `patchbay generate` wire the physical ports, and they are what
+    # the amp and the tuner follow instead of an input index (#18).
+    source: guitar-in
+    sink: monitor-out
     inputs:
       - engine_bus: 0
         track_bus: 0
