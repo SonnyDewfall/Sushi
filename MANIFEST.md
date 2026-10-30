@@ -860,7 +860,8 @@ into the live PipeWire graph and capturing back out of it is deliberately a
 second piece of work: it can only be verified on the rig machine, and this
 project has shipped enough "I have not run this" to know how that ends. Two of
 the three thresholds come from the 2026-10-26 figures above (1 % THD against
-NAM's 4.06 %, two blocks against 257-at-256 and 2049-at-256); the third,
+NAM's 4.06 %, a one-to-two-block window against 257-at-256 and 2049-at-2048);
+the third,
 `MAX_NOISE_PERCENT`, has nothing measured behind it and says so where it is
 defined. [#49](https://github.com/SonnyDewfall/Sushi/issues/49) also assumed
 `signals.py` and `analysis.py` between them already had everything needed —

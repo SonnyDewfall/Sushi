@@ -86,6 +86,12 @@ class Stimulus:
     def describe(self) -> str:
         """The identity a reference records. Compared, never parsed."""
         if self.kind == "sine":
+            if self.frequency_hz is None:
+                # `render()` refuses this too. Both have to: a reference's
+                # identity is sometimes asked for without rendering anything,
+                # and formatting None with :g raises a TypeError that says
+                # nothing about stimuli.
+                raise RenderError("a sine stimulus needs frequency_hz")
             return (
                 f"sine {self.frequency_hz:g}Hz {self.duration_s:g}s "
                 f"{self.level_dbfs:g}dBFS {self.channels}ch"

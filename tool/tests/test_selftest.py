@@ -114,6 +114,40 @@ def test_a_probe_that_injected_nothing_and_returned_nothing_names_the_cause_only
     assert checks(selftest.level_findings(levels)) == ["nothing-injected"]
 
 
+def test_a_plugin_blown_up_to_nan_is_not_read_as_a_healthy_rig():
+    """The quiet way this check could have failed. NaN compares False against
+    every threshold, so without an explicit finite check a component emitting
+    NaN passes the silence check, the gain check and the distortion check — and
+    the rig reads as healthy, the one answer this must never give."""
+    returned = sine()
+    returned[5000] = np.nan
+    levels = selftest.measure_levels(probe(sine(), returned))
+    findings = selftest.level_findings(levels)
+    assert checks(findings) == ["not-finite"]
+    assert "blown up" in findings[0].message
+    # The thing the check exists for: the numbers alone say nothing.
+    assert math.isnan(levels.returned_peak_dbfs)
+    assert not levels.gain_db <= selftest.MIN_GAIN_DB, "NaN passes a silence check"
+
+
+def test_a_non_finite_stimulus_is_reported_as_the_tests_own_problem():
+    injected = sine()
+    injected[5000] = np.inf
+    levels = selftest.measure_levels(probe(injected, sine()))
+    findings = selftest.level_findings(levels)
+    assert checks(findings) == ["stimulus-not-finite"]
+    assert "not the rig's" in findings[0].message
+
+
+def test_a_non_finite_capture_is_refused_by_the_distortion_measurement_too():
+    """So a caller that skipped the gate still fails loudly rather than reading
+    NaN as 0 % THD."""
+    returned = sine()
+    returned[5000] = np.nan
+    with pytest.raises(ValueError, match="not finite"):
+        selftest.measure_nonlinearity(probe(sine(), returned))
+
+
 def test_a_quiet_but_working_component_is_not_called_silent():
     """A chain is allowed to have 40 dB of loss in it."""
     injected = sine()
@@ -154,11 +188,46 @@ def test_the_desktops_two_thousand_sample_quantum_is_found():
     assert "restarting the rig" in findings[0].message, "the quantum is sticky"
 
 
+def test_exactly_one_block_of_delay_is_accepted():
+    """NAM in to NAM out measured 256 samples at a quantum of 256, so the floor
+    has to admit it."""
+    delay = selftest.Delay(name="amp", sample_rate=SR, samples=256)
+    assert selftest.delay_findings(delay, expected_quantum=256) == []
+
+
+def test_no_delay_at_all_cannot_have_gone_through_the_graph():
+    """The most convincing wrong answer available: the capture hearing the
+    injection instead of the component. `pw-record --target` is silently
+    ignored, which once produced a measurement off a webcam."""
+    delay = selftest.Delay(name="sushi", sample_rate=SR, samples=0)
+    findings = selftest.delay_findings(delay, expected_quantum=256)
+    assert checks(findings) == ["delay-too-short-for-the-graph"]
+    assert "pw-record --target" in findings[0].message
+
+
+def test_a_negative_lag_is_caught_by_the_same_floor():
+    """Which is what the two channels being the wrong way round looks like."""
+    delay = selftest.Delay(name="sushi", sample_rate=SR, samples=-120)
+    assert checks(selftest.delay_findings(delay, expected_quantum=256)) == [
+        "delay-too-short-for-the-graph"
+    ]
+
+
+def test_a_delay_far_under_a_large_requested_quantum_is_found():
+    """65 samples against a requested 2048 is not a small discrepancy — the
+    graph cannot be running at the quantum that was asked for."""
+    delay = selftest.Delay(name="sushi", sample_rate=SR, samples=65)
+    assert checks(selftest.delay_findings(delay, expected_quantum=2048)) == [
+        "delay-too-short-for-the-graph"
+    ]
+
+
 def test_no_quantum_to_compare_against_leaves_the_delay_merely_reported():
     """An offline render has an internal block size of its own and is not in a
     PipeWire graph at all."""
-    delay = selftest.Delay(name="sushi", sample_rate=SR, samples=2049)
-    assert selftest.delay_findings(delay, expected_quantum=None) == []
+    for samples in (0, 2049):
+        delay = selftest.Delay(name="sushi", sample_rate=SR, samples=samples)
+        assert selftest.delay_findings(delay, expected_quantum=None) == []
 
 
 def test_a_silent_response_has_no_delay_rather_than_a_delay_of_zero():

@@ -466,6 +466,16 @@ def test_a_signal_too_short_to_separate_the_harmonics_is_refused():
         analysis.harmonic_distortion(x, SR, 220.0)
 
 
+def test_a_non_finite_signal_is_refused_rather_than_measured_as_nan():
+    """Returning NaN figures would be worse than raising: every threshold a
+    caller compares them against answers False, so a blown-up plugin reads as a
+    clean one."""
+    x = signals.sine(SR, 1.0, 220.0)[:, 0]
+    x[1000] = np.nan
+    with pytest.raises(ValueError, match="not finite"):
+        analysis.harmonic_distortion(x, SR, 220.0)
+
+
 def test_silence_is_refused_rather_than_measured():
     with pytest.raises(ValueError, match="digitally silent"):
         analysis.harmonic_distortion(signals.silence(SR, 1.0)[:, 0], SR, 220.0)

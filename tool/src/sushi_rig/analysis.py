@@ -541,6 +541,15 @@ def harmonic_distortion(signal, sample_rate: int, fundamental_hz: float, *,
     np = require_numpy()
     x = _mono(signal, "signal")
     n = len(x)
+    if not np.all(np.isfinite(x)):
+        # Without this, NaN runs straight through: the total power is NaN, which
+        # is not <= 0, and every figure below comes back NaN. A caller comparing
+        # those against a threshold gets False from every comparison and reads a
+        # blown-up plugin as a healthy one.
+        raise ValueError(
+            "the signal is not finite, so no distortion figure from it would mean "
+            "anything — `check_finite` says where the NaN or Inf is"
+        )
     if harmonics < 2:
         raise ValueError(f"harmonics must be at least 2 to measure any, got {harmonics}")
     if not 0 < fundamental_hz < sample_rate / 2:
@@ -598,9 +607,10 @@ def harmonic_distortion(signal, sample_rate: int, fundamental_hz: float, *,
             f"measure harmonics against"
         )
     harmonic_power = [around(fundamental_hz * h) for h in range(2, harmonics + 1)]
-    # Whatever is left over. Clamped at zero because the harmonic windows can
-    # overlap the fundamental's for a low fundamental in a short signal, which
-    # would otherwise make this very slightly negative.
+    # Whatever is left over. Clamped at zero against rounding only: the windows
+    # are disjoint, guaranteed by the resolution check above, but summing a few
+    # of them and subtracting from a separately summed total can land a hair
+    # below zero.
     noise = max(0.0, total - fundamental - sum(harmonic_power))
 
     return Harmonics(

@@ -107,6 +107,13 @@ def test_a_sine_without_a_frequency_is_refused_rather_than_defaulted():
         Stimulus(kind="sine").render(SR)
 
 
+def test_an_incomplete_sine_is_refused_by_its_description_too():
+    """A reference's identity is sometimes asked for without rendering anything,
+    and `:g` on None raises a TypeError that says nothing about stimuli."""
+    with pytest.raises(RenderError, match="needs frequency_hz"):
+        Stimulus(kind="sine").describe()
+
+
 # --- rendering --------------------------------------------------------------
 
 

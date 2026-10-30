@@ -31,10 +31,15 @@ this project has shipped enough "I have not run this" to know how that ends.
 
 ## The order the checks run in
 
-`level_findings` first, always. If the test's own injection never arrived, or
-nothing came back at all, every other number is about nothing: a delay measured
-on silence, a THD measured on a signal that is not there. Measure the rest only
-once it comes back empty.
+`level_findings` first, always. If the capture is not finite, if the test's own
+injection never arrived, or if nothing came back at all, every other number is
+about nothing: a delay measured on silence, a THD measured on a signal that is
+not there. Measure the rest only once it comes back empty.
+
+The finite check is in there and not left to the caller because of what NaN does
+to a threshold. Every comparison against NaN is False, so a plugin blown up to
+NaN passes a silence check, passes a gain check and passes a distortion check —
+it reads as a healthy rig, which is the one answer this module must never give.
 
 ## Two channels of one stream, never two recordings
 
@@ -56,6 +61,7 @@ from .analysis import (
     DEFAULT_HARMONICS,
     Finding,
     Harmonics,
+    check_finite,
     find_delays,
     harmonic_distortion,
     peak_dbfs,
@@ -84,9 +90,10 @@ MIN_NONLINEAR_THD_PERCENT = 1.0
 # half runs.
 MAX_NOISE_PERCENT = 100.0
 
-# How far past the quantum a port-to-port delay may read before the graph is
-# not running at the buffer size the rig asked for. See `delay_findings`.
+# The window, in blocks of the requested quantum, a port-to-port delay has to
+# land in. See `delay_findings` for where both numbers come from.
 MAX_DELAY_BLOCKS = 2.0
+MIN_DELAY_BLOCKS = 1.0
 
 # The injected signal's own peak must clear this, or the test is reporting on
 # its own plumbing rather than on the rig. Peak and not RMS: an impulse's RMS
@@ -120,13 +127,21 @@ class Probe:
 
 @dataclass(frozen=True)
 class Levels:
-    """What arrived and what came back, in dBFS."""
+    """What arrived and what came back, in dBFS.
+
+    The two `nonfinite` fields are `analysis.check_finite`'s verdict on each
+    side, carried here because this is the step that sees the samples. A level
+    in dBFS cannot express "this array has NaN in it": it comes out as NaN and
+    then compares False against everything.
+    """
 
     name: str
     injected_peak_dbfs: float
     injected_rms_dbfs: float
     returned_peak_dbfs: float
     returned_rms_dbfs: float
+    injected_nonfinite: Finding | None = None
+    returned_nonfinite: Finding | None = None
 
     @property
     def gain_db(self) -> float:
@@ -149,6 +164,8 @@ def measure_levels(probe: Probe) -> Levels:
         injected_rms_dbfs=rms_dbfs(probe.injected),
         returned_peak_dbfs=peak_dbfs(probe.returned),
         returned_rms_dbfs=rms_dbfs(probe.returned),
+        injected_nonfinite=check_finite(probe.injected),
+        returned_nonfinite=check_finite(probe.returned),
     )
 
 
@@ -163,7 +180,17 @@ def level_findings(
     Returns at most one finding, not a list of every way it went wrong: if the
     injection never arrived then "nothing came back" is a consequence of it and
     not a second fact, and reporting both would bury which one to fix.
+
+    Everything about the injection comes before anything about the response, so
+    a probe that is wired wrong is never reported as a rig that is broken.
     """
+    if levels.injected_nonfinite is not None:
+        return [Finding(
+            "stimulus-not-finite",
+            f"the signal being injected into {levels.name} is not finite "
+            f"({levels.injected_nonfinite.message}) — nothing measured from it would "
+            f"mean anything, and this is the test's own signal, not the rig's",
+        )]
     if levels.injected_peak_dbfs <= injected_floor_dbfs:
         return [Finding(
             "nothing-injected",
@@ -171,6 +198,13 @@ def level_findings(
             f"{levels.injected_peak_dbfs:.1f} dBFS peak, at or below the "
             f"{injected_floor_dbfs:.1f} dBFS floor. This says nothing about the rig — "
             f"check that the injection is linked to {levels.name}",
+        )]
+    if levels.returned_nonfinite is not None:
+        return [Finding(
+            "not-finite",
+            f"{levels.name} is producing NaN or Inf ({levels.returned_nonfinite.message}) "
+            f"— a plugin has blown up. Every threshold below this compares False "
+            f"against NaN, so without this check the rig would read as healthy",
         )]
     if levels.gain_db <= min_gain_db:
         return [Finding(
@@ -227,6 +261,7 @@ def delay_findings(
     delay: Delay,
     *,
     expected_quantum: int | None = None,
+    min_blocks: float = MIN_DELAY_BLOCKS,
     max_blocks: float = MAX_DELAY_BLOCKS,
 ) -> list[Finding]:
     """Whether a delay was measured, and whether it is the buffer size asked for.
@@ -239,15 +274,29 @@ def delay_findings(
     nothing at all.
 
     Port to port through Sushi is one quantum, plus the one sample the
-    correlation resolves to: 257 samples at a quantum of 256, 2049 at 2048. So
-    the test is whether the delay is still within `max_blocks` of the quantum
-    that was asked for. Loose on purpose — those two figures are the only two
-    ever observed here, and a tight tolerance would be a guess dressed as a
-    measurement.
+    correlation resolves to: 257 samples at a quantum of 256, and 2049 at a
+    quantum of 2048. Both measured. So the delay has to land between one block
+    and `max_blocks` of the quantum that was asked for.
 
-    `expected_quantum=None` skips that check, for a path with no quantum to
-    compare against: an offline render has an internal block size of its own and
-    is not running in a PipeWire graph at all.
+    **Both ends matter, and the lower one is not symmetry for its own sake.** A
+    delay under one block cannot have gone through the graph at all, so what the
+    capture is hearing is the injection rather than the component — and that is a
+    documented failure here, not a hypothetical: `pw-record --target` silently
+    ignores its target and falls back to the default source, which once produced
+    a convincing measurement off a webcam. A negative lag is the same check
+    catching the two channels being the wrong way round. Without a floor, zero
+    samples of delay is the single most convincing wrong answer this check could
+    return.
+
+    The upper bound is loose on purpose: the two figures above are the only
+    port-to-port delays ever observed here, and a tight tolerance would be a
+    guess dressed as a measurement. The floor of exactly one block is the
+    observation too — nothing measured here, including NAM in to NAM out at 256
+    samples, has ever come in under a block.
+
+    `expected_quantum=None` skips both, for a path with no quantum to compare
+    against: an offline render has an internal block size of its own and is not
+    running in a PipeWire graph at all.
     """
     if delay.samples is None:
         return [Finding(
@@ -261,6 +310,16 @@ def delay_findings(
     if expected_quantum < 1:
         raise ValueError(f"expected_quantum must be a positive block size, got {expected_quantum}")
     blocks = delay.samples / expected_quantum
+    if blocks < min_blocks:
+        return [Finding(
+            "delay-too-short-for-the-graph",
+            f"the delay through {delay.name} measured {delay.samples} samples "
+            f"({delay.ms:.2f} ms), {blocks:.2f} of the {expected_quantum}-sample block "
+            f"the rig asked for — under one block it cannot have gone through the graph, "
+            f"so the capture is hearing the injection rather than {delay.name}. "
+            f"`pw-record --target` silently ignores its target and falls back to the "
+            f"default source; link the ports by hand and check with `pw-link -l`",
+        )]
     if blocks <= max_blocks:
         return []
     return [Finding(
