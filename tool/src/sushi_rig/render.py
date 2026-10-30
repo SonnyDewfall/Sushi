@@ -1,0 +1,195 @@
+"""Render a config through Sushi offline, so its sound can be fingerprinted.
+
+The effect half of #40. `nulltest.py` holds the decisions — what to measure and
+what counts as a change — and this gets the audio for it to measure.
+
+Sushi has an offline frontend: `-o -i in.wav -O out.wav -c config.json` loads the
+config, pushes a file through the graph and exits. No audio device, no JACK, no
+PipeWire. So a null test runs anywhere the rig's plugins and Sushi exist, which
+means the CI container, which means a change in the rig's sound can fail a build.
+
+## The stimulus is described, not stored
+
+Nothing here commits a WAV. `signals.log_sweep` is deterministic, so a reference
+records *what was fed in* as a short string and the renderer regenerates it
+identically. That keeps the repository free of binaries, and it keeps the
+comparison honest: `nulltest.compare` refuses two fingerprints whose stimulus
+strings differ, so changing the stimulus invalidates every reference loudly
+instead of silently comparing a sweep against a sine.
+
+The string is for identity, never for parsing. `Stimulus` holds the parameters
+structurally and derives the string from them; nothing reads it back.
+
+## Why a sweep
+
+It covers the band in one pass, and it fails *diagnostically*: a reference that
+no longer matches tells you which band moved, because a sweep put energy in all
+of them. A sine would answer "different" for one frequency and nothing about the
+rest.
+"""
+
+from __future__ import annotations
+
+import subprocess
+from dataclasses import dataclass
+from pathlib import Path
+from typing import Any
+
+from . import signals
+from .verify import sushi_env
+
+# Long enough for the lowest band to have cycles to measure, short enough that
+# seven configs are a few seconds of CI rather than a minute. Not tuned against
+# anything -- if a band turns out to be unreliable at this length, lengthening
+# it is the fix, and it invalidates existing references on purpose.
+DEFAULT_DURATION_S = 5.0
+
+# Well below clipping, so a chain with gain in it still has somewhere to go.
+# A render that clips measures the clipping, not the chain.
+DEFAULT_LEVEL_DBFS = -20.0
+
+
+class RenderError(Exception):
+    """Something about the render the user needs to fix."""
+
+
+@dataclass(frozen=True)
+class Stimulus:
+    """What gets pushed through the graph.
+
+    `channels` is the one value here I could not verify: how many channels
+    Sushi's offline frontend wants when the engine has more inputs than the file
+    has channels is undocumented, and this container has no Sushi to ask. Two is
+    the rig's track width. If CI shows the engine wants its full input count, this
+    is the knob to turn, and `render_offline` reports the output's channel count
+    so a mismatch is visible rather than silently mixed down.
+    """
+
+    kind: str = "log_sweep"
+    duration_s: float = DEFAULT_DURATION_S
+    level_dbfs: float = DEFAULT_LEVEL_DBFS
+    f_start_hz: float = 20.0
+    f_end_hz: float = 20000.0
+    channels: int = 2
+
+    def describe(self) -> str:
+        """The identity a reference records. Compared, never parsed."""
+        return (
+            f"{self.kind} {self.f_start_hz:g}-{self.f_end_hz:g}Hz "
+            f"{self.duration_s:g}s {self.level_dbfs:g}dBFS {self.channels}ch"
+        )
+
+    def render(self, sample_rate: int):
+        """The samples themselves, regenerated from the parameters."""
+        if self.kind != "log_sweep":
+            raise RenderError(
+                f"unknown stimulus kind {self.kind!r}; this tool generates log_sweep"
+            )
+        return signals.log_sweep(
+            sample_rate,
+            self.duration_s,
+            f_start_hz=self.f_start_hz,
+            f_end_hz=self.f_end_hz,
+            level_dbfs=self.level_dbfs,
+            channels=self.channels,
+        )
+
+
+def sushi_argv(
+    config: Path, stimulus_wav: Path, out_wav: Path, sushi_bin: str = "./sushi"
+) -> list[str]:
+    """The offline-render command line.
+
+    Pure, so the flags are pinned by a test rather than discovered when a render
+    silently produces nothing. `-o` selects the offline frontend; `-i` and `-O`
+    are its input and output files. Note the asymmetry in case: that is Sushi's,
+    not a typo here.
+    """
+    return [
+        sushi_bin,
+        "-o",
+        "-i", str(stimulus_wav),
+        "-O", str(out_wav),
+        "-c", str(config),
+    ]
+
+
+def render_offline(
+    config: Path,
+    root: Path,
+    work: Path,
+    *,
+    stimulus: Stimulus | None = None,
+    sushi_bin: str = "./sushi",
+    sample_rate: int = 48000,
+    timeout: float = 120.0,
+) -> dict[str, Any]:
+    """Push `stimulus` through `config` and read back what came out.
+
+    Returns the rendered samples, the stimulus that produced them and its
+    description, which is everything `nulltest.fingerprint` needs.
+
+    `LV2_PATH` comes from `verify.sushi_env`, for the reason recorded there: a
+    render that inherited the caller's path would pass on a machine whose shell
+    exports it and fail with "Failed to load tracks" on a clean one, which is the
+    bug that cost a CI cycle in #47.
+    """
+    stimulus = stimulus or Stimulus()
+    work.mkdir(parents=True, exist_ok=True)
+    in_wav = work / "stimulus.wav"
+    out_wav = work / "rendered.wav"
+
+    fed = stimulus.render(sample_rate)
+    # float32: the stimulus is below full scale, but a float file cannot clip on
+    # write and this is not where a level problem should first appear.
+    signals.write_wav(in_wav, fed, sample_rate, subtype="float32")
+
+    try:
+        result = subprocess.run(
+            sushi_argv(config, in_wav, out_wav, sushi_bin),
+            cwd=root,
+            env=sushi_env(root),
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=timeout,
+        )
+    except FileNotFoundError as exc:
+        raise RenderError(
+            f"cannot run {sushi_bin!r} from {root}: {exc}. The rig keeps its own "
+            "Sushi at ./sushi"
+        ) from exc
+    except subprocess.TimeoutExpired as exc:
+        raise RenderError(
+            f"Sushi did not finish rendering {config.name} within {timeout}s. The "
+            "offline frontend should exit on its own once the input is consumed"
+        ) from exc
+
+    if result.returncode != 0:
+        # Both streams, because the LV2_PATH failure prints on stdout and
+        # dump.py reporting only stderr turned it into a blank error once.
+        raise RenderError(
+            f"Sushi exited {result.returncode} rendering {config.name}:\n"
+            f"{(result.stdout + result.stderr).strip()}"
+        )
+
+    if not out_wav.exists():
+        raise RenderError(
+            f"Sushi exited 0 but wrote no {out_wav.name} for {config.name}. "
+            "A silent success here would be fingerprinted as a change in sound"
+        )
+
+    came_back = signals.read_wav(out_wav)
+    if came_back.sample_rate != sample_rate:
+        raise RenderError(
+            f"rendered {config.name} at {came_back.sample_rate} Hz, expected "
+            f"{sample_rate} Hz — a rate change moves every band"
+        )
+
+    return {
+        "rendered": came_back.samples,
+        "sample_rate": came_back.sample_rate,
+        "channels": int(came_back.samples.shape[1]),
+        "stimulus": stimulus.describe(),
+        "stimulus_samples": fed,
+    }

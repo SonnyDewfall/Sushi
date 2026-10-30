@@ -212,3 +212,23 @@ def test_the_written_reference_is_readable():
         len(str(b["level_dbfs"]).split(".")[-1]) <= 4
         for b in out["measured"]["bands"]
     )
+
+
+def test_delay_is_measurable_on_a_stereo_render():
+    """The bug this closes: `estimate_delay` refuses multichannel input rather
+    than silently reducing it, so with both signals passed through whole the
+    delay could never be measured on any real render — every one is at least
+    stereo. Found by rendering through a passthrough and fingerprinting the
+    result; neither this module's tests nor render.py's would have caught it,
+    because each half was correct on its own."""
+    sweep = _sweep()                      # (frames, 2)
+    delayed = np.roll(sweep, 240, axis=0)
+    fp = _fp(delayed, against=sweep)
+    assert fp.delay_samples == 240
+
+
+def test_delay_still_works_on_a_mono_render():
+    """A mono render is not special-cased away by the stereo fix."""
+    mono = signals.log_sweep(SR, 1.0, level_dbfs=-20.0, channels=1)
+    fp = _fp(np.roll(mono, 100, axis=0), against=mono)
+    assert fp.delay_samples == 100
