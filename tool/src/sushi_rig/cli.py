@@ -123,6 +123,18 @@ def _machine(args: argparse.Namespace) -> int:
     return 0
 
 
+def _as_typed(target: Path, root: Path) -> str:
+    """A config path as the user would type it from the rig root.
+
+    `configs_to_check` returns absolute paths, and printing `target.name` in a
+    "run this command" hint produced a command that cannot find its config.
+    """
+    try:
+        return str(target.relative_to(root))
+    except ValueError:
+        return str(target)
+
+
 def _patchbay(args: argparse.Namespace) -> int:
     """`patchbay check` and `patchbay generate`."""
     from .machine import MachineError, MachineSpec, machine_path
@@ -368,6 +380,27 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "--quick", action="store_true",
         help="skip the check that starts Sushi — loads and names only",
+    )
+    p.add_argument(
+        "--sushi",
+        help="Sushi binary [default: ./sushi in the rig checkout, the one `up` runs]",
+    )
+
+    p = sub.add_parser(
+        "nulltest",
+        help="render a config offline and check its sound against an approved "
+        "reference",
+    )
+    p.add_argument("config", type=Path, nargs="?", help="config to check")
+    p.add_argument(
+        "--all", action="store_true", dest="check_all",
+        help="every config in config/, skipping retired ones",
+    )
+    p.add_argument(
+        "--calibrate", action="store_true",
+        help="render twice, measure how far two identical runs differ, and write "
+        "that as the reference's tolerance. Needed once per config, and again "
+        "whenever the config changes on purpose",
     )
     p.add_argument(
         "--sushi",
@@ -726,6 +759,99 @@ def main(argv: list[str] | None = None) -> int:
                 print(f"{target.name}: ok")
         if failed:
             print(f"\n{failed} of {len(targets)} config(s) have problems", file=sys.stderr)
+        return 1 if failed else 0
+    elif args.command == "nulltest":
+        import tempfile
+
+        import yaml
+
+        from .nulltest import compare, from_dict, to_dict
+        from .paths import checkout_root
+        from .render import RenderError, calibrate, measure, reference_path
+        from .verify import configs_to_check
+
+        root = checkout_root()
+        if args.check_all:
+            targets = configs_to_check(root)
+        elif args.config:
+            targets = [args.config]
+        else:
+            sys.exit("give a config to null-test, or --all")
+
+        sushi = args.sushi or str(root / "sushi")
+        failed = 0
+        with tempfile.TemporaryDirectory(prefix="sushi-rig-nulltest-") as tmp:
+            for target in targets:
+                ref_file = reference_path(root, target)
+                work = Path(tmp) / target.stem
+                try:
+                    if args.calibrate:
+                        fp, tolerance = calibrate(
+                            target, root, work, sushi_bin=sushi
+                        )
+                        ref_file.parent.mkdir(parents=True, exist_ok=True)
+                        ref_file.write_text(
+                            yaml.dump(
+                                to_dict(fp, tolerance),
+                                default_flow_style=False, sort_keys=False,
+                            )
+                        )
+                        print(
+                            f"{target.name}: calibrated — band {tolerance.band_db:.4f} dB, "
+                            f"level {tolerance.level_db:.4f} dB, "
+                            f"delay {tolerance.delay_samples} samples "
+                            f"-> {ref_file.relative_to(root)}"
+                        )
+                        continue
+
+                    if not ref_file.exists():
+                        # Not a failure of the sound: there is nothing to compare
+                        # against yet. Saying "ok" here would be the loudest
+                        # possible lie this command could tell.
+                        # The path as the user must type it, not just the file
+                        # name: the render runs from the rig root, so
+                        # `nulltest electric-clean.json` finds nothing.
+                        print(
+                            f"{target.name}: NO REFERENCE — run "
+                            f"`sushi-rig nulltest {_as_typed(target, root)} --calibrate`"
+                            " on a machine that can render",
+                            file=sys.stderr,
+                        )
+                        failed += 1
+                        continue
+
+                    reference, tolerance = from_dict(yaml.safe_load(ref_file.read_text()))
+                    differences = compare(reference, measure(
+                        target, root, work, sushi_bin=sushi
+                    ), tolerance)
+                except (RenderError, ValueError, OSError, KeyError, TypeError,
+                        AttributeError, yaml.YAMLError) as exc:
+                    # Everything a hand-edited reference can do. `from_dict`
+                    # raises KeyError on a missing section, yaml.safe_load gives
+                    # None for an empty file (AttributeError), and a traceback
+                    # here would also abandon the remaining configs under --all.
+                    # The type as well as the message: a KeyError's message is
+                    # the bare key, which on its own reads like nothing at all.
+                    print(
+                        f"{target.name}: CANNOT CHECK — {type(exc).__name__}: {exc}",
+                        file=sys.stderr,
+                    )
+                    failed += 1
+                    continue
+
+                if differences:
+                    failed += 1
+                    print(f"{target.name}: {len(differences)} difference(s)")
+                    for difference in differences:
+                        print(f"   {difference}")
+                else:
+                    print(f"{target.name}: sounds the same")
+
+        if failed:
+            print(
+                f"\n{failed} of {len(targets)} config(s) could not be confirmed",
+                file=sys.stderr,
+            )
         return 1 if failed else 0
     elif args.command == "plugins":
         return _plugins(args)
