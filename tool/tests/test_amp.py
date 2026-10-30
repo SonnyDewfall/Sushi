@@ -347,6 +347,47 @@ def test_falling_back_to_the_positional_rule_is_said_out_loud(
     assert "input position" in message or "first input" in message, message
 
 
+def test_every_node_the_guitar_port_is_saved_under_is_rewired():
+    """An ALSA device's port appears once per profile, so
+    `Audient iD14 Multichannel:capture_AUX0` and
+    `Audient iD14 Pro:capture_AUX0` are the same socket under two names.
+    Matching on one node left the other profile's link feeding Sushi dry — the
+    dry-under-amped failure the two-file design exists to prevent. Checked
+    against the real hand-wired patchbay, which has exactly that shape."""
+    from pathlib import Path as _Path
+
+    from sushi_rig.amp import amp_patchbay
+
+    handmade = (
+        _Path(__file__).parent / "fixtures" / "patchbay-handmade.qpwgraph"
+    ).read_text()
+    links = _links(amp_patchbay(handmade, "Audient iD14:capture_AUX0"))
+
+    dry = [
+        (src, dst) for src, dst in links
+        if src == "Audient iD14:capture_AUX0" and dst.startswith("sushi:")
+    ]
+    assert dry == [], f"a dry path survived under a second node name: {dry}"
+    assert ("NAM:Output", "sushi:audio_input_0") in links
+    assert ("Audient iD14:capture_AUX0", "NAM:Input") in links
+
+
+def test_an_unvalidated_machine_file_does_not_wire_the_amp(tmp_path, monkeypatch, capsys):
+    """`machine check` and `patchbay generate` both refuse this file. Without the
+    same refusal here, `up --amp-model` was the one path that wired NAM from a
+    machine file every other command rejects."""
+    from sushi_rig.amp import guitar_port
+
+    (tmp_path / "machines").mkdir()
+    (tmp_path / "machines" / "testhost.yaml").write_text(
+        "schema_version: 99\nroles:\n  guitar-in: ['Audient iD14:capture_AUX0']\n"
+    )
+    monkeypatch.setattr("socket.gethostname", lambda: "testhost")
+
+    assert guitar_port(tmp_path) is None
+    assert "schema_version" in capsys.readouterr().err
+
+
 # --- reading a .nam model ---------------------------------------------------
 
 

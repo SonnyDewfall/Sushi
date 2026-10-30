@@ -141,7 +141,7 @@ def _patchbay(args: argparse.Namespace) -> int:
     from .patchbay import (
         GUITAR_ROLE, PatchbayError, check_nodes, generate_patchbay,
         live_node_names, live_port_nodes, parse_patchbay, read_pw_dump,
-        resolve_nodes, routes_from_rig,
+        resolve_nodes, routes_from_rig, tuner_problem,
     )
     from .paths import checkout_root
 
@@ -218,26 +218,34 @@ def _patchbay(args: argparse.Namespace) -> int:
                 "is nothing to generate"
             )
         roles = machine.role_ports()
-        nodes = None
-        if not args.offline:
-            nodes, problems = resolve_nodes(
-                roles, set(feeds), set(sinks), live_port_nodes(read_pw_dump())
-            )
-            if problems:
-                raise PatchbayError(problems)
-        # The tuner follows the guitar role rather than a port, so it moves
-        # with the channel. A machine file that does not name that role gets a
-        # patchbay with no tuner tap -- which is a silent deaf tuner unless it
-        # is said out loud, because nothing else in the file mentions fmit.
+        # The tuner follows the guitar role rather than a port, so it moves with
+        # the channel. Decided before the live graph is read, because the tuner's
+        # port has to be resolved alongside the tracks' -- left out of
+        # `resolve_nodes`, the tap was written with the port's client name
+        # ("Audient iD14") instead of the live ALSA profile, which qpwgraph never
+        # matches: a deaf tuner in a file that generated cleanly.
         tuner_role = None if args.no_tuner else GUITAR_ROLE
-        if tuner_role is not None and tuner_role not in roles:
+        refusal = tuner_problem(roles, tuner_role) if tuner_role else None
+        if refusal:
+            # A warning rather than a failure: a guitar role the tuner cannot tap
+            # is a reason to have no tuner tap, not a reason to have no patchbay.
+            # Silence is the one thing it must not be -- nothing else in either
+            # file mentions fmit, so a missing tap looks like a broken tuner.
             print(
-                f"warning: {machine_file.name} defines no {tuner_role!r} role, so "
-                "the generated patchbay has no tuner tap and fmit will hear "
-                "nothing",
+                f"warning: {machine_file.name}: {refusal}. The generated patchbay "
+                "has no tuner tap, so fmit will hear nothing. Pass --no-tuner to "
+                "stop saying so",
                 file=sys.stderr,
             )
             tuner_role = None
+        nodes = None
+        if not args.offline:
+            sources = set(feeds) | ({tuner_role} if tuner_role else set())
+            nodes, problems = resolve_nodes(
+                roles, sources, set(sinks), live_port_nodes(read_pw_dump())
+            )
+            if problems:
+                raise PatchbayError(problems)
         xml = generate_patchbay(
             roles, feeds, sinks, mono_to_stereo=machine.mono_roles(), nodes=nodes,
             tuner_role=tuner_role,

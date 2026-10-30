@@ -1027,6 +1027,43 @@ def test_the_tuner_taps_the_dry_input_not_sushis_output():
     assert tap.out_port == "Audient iD14:capture_AUX0"
 
 
+def test_a_stereo_guitar_role_costs_the_tap_and_not_the_patchbay(files, capsys):
+    """`generate_patchbay` refuses a role the tuner cannot tap, because a library
+    that guesses is worse than one that stops. The command degrades instead: a
+    stereo guitar is a reason to have no tuner tap, not a reason to have no
+    patchbay at all."""
+    (files / "m.yaml").write_text(MACHINE.replace(
+        '    ports: ["Audient iD14:capture_AUX0"]\n    mono_to_stereo: true\n',
+        '    ports: ["Audient iD14:capture_AUX0", "Audient iD14:capture_AUX1"]\n',
+    ))
+    assert cli.main(["patchbay", "generate", str(files / "rig.yaml"),
+                     "--machine", str(files / "m.yaml"), "--offline"]) == 0
+    captured = capsys.readouterr()
+    assert patchbay.TUNER_PORT not in captured.out
+    assert "2 ports" in captured.err and "--no-tuner" in captured.err
+    assert len(parse_patchbay(captured.out)) == 4, "the tracks are still wired"
+
+
+def test_the_tuner_tap_is_resolved_against_the_live_graph(files, monkeypatch, capsys):
+    """The tap was left out of `resolve_nodes`, so its node fell back to the
+    port's client name ("Audient iD14") instead of the live ALSA profile — which
+    qpwgraph never matches. A deaf tuner in a file that generated cleanly, and
+    invisible unless the tuner is tested by ear."""
+    (files / "m.yaml").write_text(
+        "schema_version: 1\nroles:\n  guitar-in:\n    ports: ['Audient iD14:capture_AUX0']\n"
+        "    mono_to_stereo: true\n"
+        "  monitor-out: ['Audient iD14:playback_FL', 'Audient iD14:playback_FR']\n"
+    )
+    monkeypatch.setattr(patchbay, "read_pw_dump", lambda *a, **k: LIVE)
+    assert cli.main(["patchbay", "generate", str(files / "rig.yaml"),
+                     "--machine", str(files / "m.yaml")]) == 0
+    (tap,) = [
+        l for l in parse_patchbay(capsys.readouterr().out)
+        if l.in_port == patchbay.TUNER_PORT
+    ]
+    assert tap.out_node == "Audient iD14 Multichannel"
+
+
 def test_the_tuner_has_one_input_so_a_two_port_role_is_refused():
     """Which half of a stereo pair to tune is a judgement, and this module
     refuses those rather than picking — the same rule as `_pair_source`."""
@@ -1053,7 +1090,7 @@ def test_generate_warns_rather_than_silently_omitting_the_tuner(files, capsys):
                      "--machine", str(files / "m.yaml"), "--offline"]) == 0
     captured = capsys.readouterr()
     assert patchbay.TUNER_PORT not in captured.out
-    assert "no 'guitar-in' role" in captured.err and "fmit" in captured.err
+    assert "'guitar-in'" in captured.err and "fmit will hear nothing" in captured.err
 
 
 def test_no_tuner_leaves_the_tap_out_on_request(files, capsys):

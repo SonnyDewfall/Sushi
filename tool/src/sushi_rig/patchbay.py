@@ -275,20 +275,11 @@ def generate_patchbay(
 
     tuner_port: str | None = None
     if tuner_role is not None:
-        tuner_ports = roles.get(tuner_role)
-        if tuner_ports is None:
-            problems.append(_unknown_role(tuner_role, roles, "feeds the tuner"))
-        elif len(tuner_ports) != 1:
-            # The tuner has one input port, so two would be summed into it. Which
-            # of a stereo pair to tune is a judgement, and this module refuses
-            # those rather than picking -- see `_pair_source`.
-            problems.append(
-                f"role {tuner_role!r} has {len(tuner_ports)} ports but the tuner "
-                f"has one input ({TUNER_PORT}); give the tuner a role with a "
-                "single port"
-            )
+        refusal = tuner_problem(roles, tuner_role)
+        if refusal:
+            problems.append(refusal)
         else:
-            tuner_port = tuner_ports[0]
+            tuner_port = roles[tuner_role][0]
 
     if problems:
         raise PatchbayError(problems)
@@ -672,6 +663,28 @@ def _rig_child(node: str, rig_nodes: Collection[str]) -> str | None:
     for child in sorted(rig_nodes):
         if _names_child(child, node):
             return child
+    return None
+
+
+def tuner_problem(roles: Mapping[str, list[str]], tuner_role: str) -> str | None:
+    """Why the tuner cannot tap `tuner_role`, or None if it can.
+
+    Stated once and used twice: `generate_patchbay` turns it into a refusal,
+    because a library that guesses is worse than one that stops, and the command
+    turns it into a warning and leaves the tap out, because a stereo guitar is a
+    reason to have no tuner tap and not a reason to have no patchbay.
+    """
+    ports = roles.get(tuner_role)
+    if ports is None:
+        return _unknown_role(tuner_role, roles, "feeds the tuner")
+    if len(ports) != 1:
+        # The tuner has one input port, so two would be summed into it. Which of
+        # a stereo pair to tune is a judgement, and this module refuses those
+        # rather than picking -- see `_pair_source`.
+        return (
+            f"role {tuner_role!r} has {len(ports)} ports but the tuner has one "
+            f"input ({TUNER_PORT}); give the tuner a role with a single port"
+        )
     return None
 
 
