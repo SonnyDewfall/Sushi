@@ -62,12 +62,12 @@ class RenderError(Exception):
 class Stimulus:
     """What gets pushed through the graph.
 
-    `channels` is the one value here I could not verify: how many channels
-    Sushi's offline frontend wants when the engine has more inputs than the file
-    has channels is undocumented, and this container has no Sushi to ask. Two is
-    the rig's track width. If CI shows the engine wants its full input count, this
-    is the knob to turn, and `render_offline` reports the output's channel count
-    so a mismatch is visible rather than silently mixed down.
+    `channels` defaults to two, the rig's track width, and `stimulus_for` sizes it
+    to reach every input a config listens on. Whether Sushi's offline frontend
+    accepts more channels than two, and how it maps them onto engine buses, is
+    undocumented; the first calibration in CI is what settles it, and
+    `render_offline` reports the output's channel count so a mismatch is visible
+    rather than silently mixed down.
     """
 
     kind: str = "log_sweep"
@@ -126,6 +126,35 @@ class Stimulus:
             level_dbfs=self.level_dbfs,
             channels=self.channels,
         )
+
+
+def input_channels(config: dict[str, Any]) -> int:
+    """How many channels a stimulus needs to reach every track's input.
+
+    An engine bus is a stereo pair: `engine_bus: 1` is engine channels 2 and 3.
+    So this is two per bus, up to the highest bus any track listens on, and two
+    for a config that names none.
+
+    The reason it exists: the stimulus used to be two channels for every config,
+    and `guitar_vocal`'s vocal track listens on bus 1. Its reference would then
+    have fingerprinted the guitar alone, and the vocal chain could change without
+    any build failing — a silent hole in exactly the check that is meant to
+    catch a change in sound.
+    """
+    buses = [
+        entry.get("engine_bus")
+        for track in config.get("tracks", []) if isinstance(track, dict)
+        for entry in track.get("inputs", []) if isinstance(entry, dict)
+    ]
+    buses = [b for b in buses if type(b) is int and b >= 0]
+    return 2 * (max(buses) + 1) if buses else 2
+
+
+def stimulus_for(config: Path) -> Stimulus:
+    """The default stimulus, sized to reach every input `config` has."""
+    import json
+
+    return Stimulus(channels=input_channels(json.loads(Path(config).read_text())))
 
 
 def sushi_argv(
@@ -261,7 +290,8 @@ def measure(
     from .nulltest import fingerprint, render_findings
 
     out = render_offline(
-        config, root, work, stimulus=stimulus, sushi_bin=sushi_bin
+        config, root, work, stimulus=stimulus or stimulus_for(config),
+        sushi_bin=sushi_bin,
     )
     broken = render_findings(out["rendered"], out["sample_rate"])
     if broken:
@@ -299,6 +329,7 @@ def calibrate(
     """
     from .nulltest import floor_between
 
+    stimulus = stimulus or stimulus_for(config)
     first = measure(config, root, work / "run-1", stimulus=stimulus, sushi_bin=sushi_bin)
     second = measure(config, root, work / "run-2", stimulus=stimulus, sushi_bin=sushi_bin)
     return second, floor_between(first, second)

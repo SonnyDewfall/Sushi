@@ -99,3 +99,50 @@ jobs:
             echo "::error title=verify --all failed::$(tail -n 40 verify.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
             exit 1
           fi
+
+      # #40: a change in the rig's sound fails the build. References are
+      # calibrated in this container -- decided 2026-10-30, because a check CI
+      # cannot run protects nothing -- so a reference describes this image's
+      # plugin set, and the rig machine's own sound is selftest's to cover.
+      #
+      # It fingerprints Sushi's chain only. The neural amp runs in Carla outside
+      # Sushi and is not in this image, so a config's `_amp` section is never
+      # rendered here.
+      - name: nulltest --all
+        id: nulltest
+        run: |
+          set -o pipefail
+          if ! docker run --rm -w /rig sushi-rig-ci sushi-rig nulltest --all --sushi ./sushi 2>&1 | tee nulltest.log; then
+            echo "::error title=The rig's sound changed, or a config has no reference::$(tail -n 40 nulltest.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
+            exit 1
+          fi
+
+      # Only when the check above failed. Calibrates every config afresh and
+      # hands the result back, so the person fixing the failure has the numbers
+      # the render produces *now* -- as an artifact, and printed below, which is
+      # how a session without the GitHub UI reads them.
+      #
+      # These are candidates, never committed by this job. If the sound changed
+      # by accident, the fix is in the config and these are the evidence; only
+      # if it changed on purpose are they the new references. Committing them is
+      # the same deliberate act as running `nulltest --calibrate` by hand.
+      - name: Calibrate candidate references
+        if: failure() && steps.nulltest.outcome == 'failure'
+        run: |
+          set -o pipefail
+          mkdir -p sound-candidates
+          docker run --rm -w /rig -v "$PWD/sound-candidates:/rig/config/sound" \
+              sushi-rig-ci sushi-rig nulltest --all --calibrate --sushi ./sushi 2>&1 | tee calibrate.log
+          for f in sound-candidates/*.yaml; do
+            echo "===== BEGIN ${f#sound-candidates/} ====="
+            cat "$f"
+            echo "===== END ${f#sound-candidates/} ====="
+          done
+
+      - name: Upload candidate references
+        if: failure() && steps.nulltest.outcome == 'failure'
+        uses: actions/upload-artifact@v4
+        with:
+          name: sound-reference-candidates
+          path: sound-candidates/
+          if-no-files-found: warn

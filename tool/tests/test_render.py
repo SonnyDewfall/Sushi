@@ -441,3 +441,33 @@ def test_a_render_that_is_not_finite_is_refused_before_it_is_fingerprinted(
             Path("config/x.json"), tmp_path, tmp_path / "work",
             stimulus=Stimulus(duration_s=0.2),
         )
+
+
+# --- a stimulus that reaches every input -------------------------------------
+
+
+def test_a_config_listening_on_bus_one_needs_four_channels():
+    """`guitar_vocal`'s vocal track is on engine bus 1, channels 2 and 3. With
+    the old two-channel stimulus its reference fingerprinted the guitar alone,
+    and the vocal chain could change without any build failing."""
+    root = Path(__file__).parent.parent.parent
+    assert render.stimulus_for(root / "config" / "guitar_vocal.json").channels == 4
+
+
+def test_a_single_bus_config_keeps_the_stimulus_it_always_had():
+    """So nothing calibrated against the old default would be invalidated —
+    and every other config in the repository listens on bus 0 alone."""
+    root = Path(__file__).parent.parent.parent
+    assert render.stimulus_for(root / "config" / "electric_board.json").channels == 2
+
+
+@pytest.mark.parametrize("config, expected", [
+    ({"tracks": []}, 2),
+    ({"tracks": [{"inputs": [{"engine_bus": 0}]}]}, 2),
+    ({"tracks": [{"inputs": [{"engine_bus": 0}]}, {"inputs": [{"engine_bus": 2}]}]}, 6),
+    ({"tracks": [{"inputs": [{"engine_bus": True}]}]}, 2),
+    ({"tracks": ["not a track", {"inputs": "nor these"}]}, 2),
+])
+def test_input_channels_counts_two_per_bus_up_to_the_highest(config, expected):
+    """`True` is an int in Python, and must not read as bus 1."""
+    assert render.input_channels(config) == expected
