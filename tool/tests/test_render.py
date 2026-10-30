@@ -443,31 +443,101 @@ def test_a_render_that_is_not_finite_is_refused_before_it_is_fingerprinted(
         )
 
 
-# --- a stimulus that reaches every input -------------------------------------
+# --- what Sushi's offline frontend can host --------------------------------
+#
+# Settled from Sushi 1.3.0's source (src/audio_frontends/offline_frontend.*)
+# after CI rendered two configs at two channel counts: the offline engine has
+# exactly two channels, and a file wider than that overflows a stack buffer.
+
+ROOT = Path(__file__).parent.parent.parent
+BUS_ONE = {"tracks": [{"name": "vocal", "inputs": [{"engine_bus": 1, "track_bus": 0}],
+                       "outputs": [{"engine_bus": 0, "track_bus": 0}]}]}
 
 
-def test_a_config_listening_on_bus_one_needs_four_channels():
-    """`guitar_vocal`'s vocal track is on engine bus 1, channels 2 and 3. With
-    the old two-channel stimulus its reference fingerprinted the guitar alone,
-    and the vocal chain could change without any build failing."""
-    root = Path(__file__).parent.parent.parent
-    assert render.stimulus_for(root / "config" / "guitar_vocal.json").channels == 4
+def test_guitar_vocal_cannot_be_rendered_offline_and_says_why():
+    """Its vocal track listens on engine bus 1, and the offline engine is bus 0
+    alone. CI saw "Failed to load tracks" at two channels and at four."""
+    import json
+
+    problem = render.offline_problem(json.loads((ROOT / "config" / "guitar_vocal.json").read_text()))
+    assert problem and "'vocal'" in problem and "engine bus 1" in problem
 
 
-def test_a_single_bus_config_keeps_the_stimulus_it_always_had():
-    """So nothing calibrated against the old default would be invalidated —
-    and every other config in the repository listens on bus 0 alone."""
-    root = Path(__file__).parent.parent.parent
-    assert render.stimulus_for(root / "config" / "electric_board.json").channels == 2
+def test_every_single_bus_config_in_the_repository_can_be():
+    import json
+
+    renderable = [
+        c.name for c in sorted((ROOT / "config").glob("*.json"))
+        if render.offline_problem(json.loads(c.read_text())) is None
+    ]
+    assert "electric_board.json" in renderable
+    assert "guitar_vocal.json" not in renderable
 
 
-@pytest.mark.parametrize("config, expected", [
-    ({"tracks": []}, 2),
-    ({"tracks": [{"inputs": [{"engine_bus": 0}]}]}, 2),
-    ({"tracks": [{"inputs": [{"engine_bus": 0}]}, {"inputs": [{"engine_bus": 2}]}]}, 6),
-    ({"tracks": [{"inputs": [{"engine_bus": True}]}]}, 2),
-    ({"tracks": ["not a track", {"inputs": "nor these"}]}, 2),
+@pytest.mark.parametrize("config, renderable", [
+    ({"tracks": []}, True),
+    ({"tracks": [{"inputs": [{"engine_bus": 0}], "outputs": [{"engine_bus": 0}]}]}, True),
+    ({"tracks": [{"outputs": [{"engine_bus": 1}]}]}, False),
+    ({"tracks": [{"inputs": [{"engine_bus": True}]}]}, True),
+    ({"tracks": ["not a track", {"inputs": "nor these"}]}, True),
 ])
-def test_input_channels_counts_two_per_bus_up_to_the_highest(config, expected):
-    """`True` is an int in Python, and must not read as bus 1."""
-    assert render.input_channels(config) == expected
+def test_offline_problem_looks_at_inputs_and_outputs(config, renderable):
+    """An output on bus 1 is as unloadable as an input there. `True` is an int
+    in Python and must not read as bus 1."""
+    assert (render.offline_problem(config) is None) is renderable
+
+
+def test_a_stimulus_wider_than_the_frontend_is_refused_before_sushi_sees_it(
+    tmp_path, monkeypatch
+):
+    """Sushi does not refuse it: it reads the file into a two-channel stack
+    buffer and checks only for mono, so CI saw "*** stack smashing detected ***"
+    from a four-channel stimulus on a config that uses bus 0 alone."""
+    def run(*args, **kwargs):
+        raise AssertionError("Sushi must not be started with this stimulus")
+
+    monkeypatch.setattr(render.subprocess, "run", run)
+    with pytest.raises(RenderError, match="overflow"):
+        render.render_offline(
+            Path("config/x.json"), tmp_path, tmp_path / "work",
+            stimulus=Stimulus(channels=4, duration_s=0.1),
+        )
+
+
+def test_an_unrenderable_config_is_reported_every_run_without_failing_it(
+    tmp_path, monkeypatch, capsys
+):
+    """Loud, and not a failure: there is nothing to fix in the config, and a
+    check that is red for ever is a check people stop reading."""
+    import json
+
+    cli, config = _rig(tmp_path, monkeypatch)
+    config.write_text(json.dumps(BUS_ONE))
+    assert cli.main(["nulltest", str(config)]) == 0
+    err = capsys.readouterr().err
+    assert "NOT RENDERABLE OFFLINE" in err and "engine bus 1" in err
+    assert "sound is not protected: electric-clean.json" in err
+
+
+def test_calibrating_an_unrenderable_config_writes_no_reference(tmp_path, monkeypatch, capsys):
+    import json
+
+    cli, config = _rig(tmp_path, monkeypatch)
+    config.write_text(json.dumps(BUS_ONE))
+    assert cli.main(["nulltest", str(config), "--calibrate"]) == 0
+    assert not render.reference_path(tmp_path, config).exists()
+    assert "NOT RENDERABLE OFFLINE" in capsys.readouterr().err
+
+
+def test_a_config_that_had_a_reference_and_became_unrenderable_fails(
+    tmp_path, monkeypatch, capsys
+):
+    """The hole a derived exemption opens, closed: moving a track to bus 1 by
+    mistake must not quietly turn a protected config into an unprotected one."""
+    import json
+
+    cli, config = _rig(tmp_path, monkeypatch)
+    assert cli.main(["nulltest", str(config), "--calibrate"]) == 0
+    config.write_text(json.dumps(BUS_ONE))
+    assert cli.main(["nulltest", str(config)]) == 1
+    assert "NO LONGER RENDERABLE" in capsys.readouterr().err

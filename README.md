@@ -560,6 +560,13 @@ workflows because no single runner has everything:
 - `rig-container.yml` builds `ci/Dockerfile` (system lilv, the distro plugins,
   a real Sushi 1.3.0) and runs the **whole** suite in it, failing the job on any
   `SKIPPED`. That is what makes the first workflow's skips safe.
+- The same job runs `nulltest --all`, so **a change in a config's sound fails
+  the build**. References live in `config/sound/` and are calibrated in that
+  container. When the check fails, the job calibrates every config afresh and
+  attaches the result (`sound-reference-candidates`, and printed in the log).
+  Commit those only if the change was meant; if it was not, they are the
+  evidence and the fix is in the config. `guitar_vocal` is not covered: Sushi's
+  offline frontend has one stereo bus, and its vocal track is on the second.
 
 Only `-m slow` used to run in the container, so the lilv- and Sushi-guarded
 tests ran in neither workflow and nothing said so. If a test genuinely cannot

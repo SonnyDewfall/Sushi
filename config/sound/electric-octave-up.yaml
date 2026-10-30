@@ -1,0 +1,36 @@
+schema_version: 1
+config: electric-octave-up
+stimulus: log_sweep 20-20000Hz 5s -20dBFS 2ch
+sample_rate: 48000
+frames: 240000
+measured:
+  peak_dbfs: -8.1229
+  rms_dbfs: -24.8798
+  delay_samples: 0
+  bands:
+  - low_hz: 20.0
+    high_hz: 80.0
+    level_dbfs: -43.0678
+  - low_hz: 80.0
+    high_hz: 250.0
+    level_dbfs: -32.4629
+  - low_hz: 250.0
+    high_hz: 800.0
+    level_dbfs: -26.457
+  - low_hz: 800.0
+    high_hz: 2500.0
+    level_dbfs: -27.4509
+  - low_hz: 2500.0
+    high_hz: 8000.0
+    level_dbfs: -36.6174
+  - low_hz: 8000.0
+    high_hz: 20000.0
+    level_dbfs: -59.2264
+tolerance:
+  band_db: 0.002
+  level_db: 0.0004
+  delay_samples: 0
+  note: 'set by hand, 2026-10-30: four times the largest difference two renders of
+    this config showed across three calibrations in the CI container (up to 0.0005
+    dB in a band, 0.0001 dB in level). Not the floor of one calibration, because one
+    understated the spread a later one found'

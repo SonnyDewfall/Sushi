@@ -1,6 +1,7 @@
 # Builds the "dummy rig" image (ci/Dockerfile) and runs, inside it, the checks
-# that need a real Sushi or a system lilv: the WHOLE pytest suite and
-# `sushi-rig verify --all`. ci.yml runs the fast suite on a bare runner, where
+# that need a real Sushi or a system lilv: the WHOLE pytest suite,
+# `sushi-rig verify --all`, and `sushi-rig nulltest --all` against the sound
+# references in config/sound/. ci.yml runs the fast suite on a bare runner, where
 # the lilv- and Sushi-guarded tests skip; this job is the only place they run.
 # Between the two workflows every test must run somewhere (README: Running the
 # tests), so a test that skips here is a failure, not a footnote.
@@ -74,33 +75,6 @@ jobs:
             echo "::error title=Image build failed::$(tail -n 40 build.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
             exit 1
           fi
-
-      # TEMPORARY, removed before merge: isolates why guitar_vocal will not
-      # render offline. Two configs by two channel counts, one variable each.
-      - name: "Diagnose: offline render by channel count"
-        continue-on-error: true
-        run: |
-          docker run --rm -w /rig sushi-rig-ci bash -c '
-            echo "DIAG ===== ./sushi --help ====="; ./sushi --help 2>&1 | head -80
-            /opt/venv/bin/python - <<PY
-          from pathlib import Path
-          import numpy as np
-          from sushi_rig.render import RenderError, Stimulus, render_offline
-          root = Path("/rig")
-          for cfg in ("guitar_vocal", "electric_board"):
-              for ch in (2, 4):
-                  try:
-                      out = render_offline(root / "config" / f"{cfg}.json", root,
-                                           Path(f"/tmp/diag/{cfg}-{ch}"),
-                                           stimulus=Stimulus(channels=ch, duration_s=1.0),
-                                           sushi_bin="./sushi")
-                      r, n = out["rendered"], out["channels"]
-                      peaks = ", ".join(f"{20*np.log10(max(np.abs(r[:, c]).max(), 1e-12)):.1f}"
-                                        for c in range(r.shape[1]))
-                      print(f"DIAG {cfg} {ch}ch: OK, {n} out ch, {r.shape[0]} frames, peaks dBFS [{peaks}]")
-                  except RenderError as exc:
-                      print(f"DIAG {cfg} {ch}ch: FAILED {str(exc)[:400]!r}")
-          PY'
 
       - name: Full suite
         run: |

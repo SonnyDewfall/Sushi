@@ -960,7 +960,9 @@ def main(argv: list[str] | None = None) -> int:
 
         from .nulltest import compare, from_dict, to_dict
         from .paths import checkout_root
-        from .render import RenderError, calibrate, measure, reference_path
+        from .render import (
+            RenderError, calibrate, measure, offline_problem, reference_path,
+        )
         from .verify import configs_to_check
 
         root = checkout_root()
@@ -973,11 +975,31 @@ def main(argv: list[str] | None = None) -> int:
 
         sushi = args.sushi or str(root / "sushi")
         failed = 0
+        unrenderable = []
         with tempfile.TemporaryDirectory(prefix="sushi-rig-nulltest-") as tmp:
             for target in targets:
                 ref_file = reference_path(root, target)
                 work = Path(tmp) / target.stem
                 try:
+                    problem = offline_problem(json.loads(target.read_text()))
+                    if problem is not None:
+                        if ref_file.exists() and not args.calibrate:
+                            # It was protected and silently stopped being. A
+                            # derived exemption must not be a way to lose one.
+                            print(
+                                f"{target.name}: NO LONGER RENDERABLE — it has a "
+                                f"reference, so it used to be checked, but {problem}",
+                                file=sys.stderr,
+                            )
+                            failed += 1
+                        else:
+                            print(
+                                f"{target.name}: NOT RENDERABLE OFFLINE — {problem}. "
+                                "A change in its sound would not fail this check",
+                                file=sys.stderr,
+                            )
+                            unrenderable.append(target.name)
+                        continue
                     if args.calibrate:
                         fp, tolerance = calibrate(
                             target, root, work, sushi_bin=sushi
@@ -1040,6 +1062,14 @@ def main(argv: list[str] | None = None) -> int:
                 else:
                     print(f"{target.name}: sounds the same")
 
+        if unrenderable:
+            # Every run, not only the first: a gap in coverage that is reported
+            # once and then goes quiet is a gap nobody remembers.
+            print(
+                f"\n{len(unrenderable)} config(s) cannot be rendered offline, so their "
+                f"sound is not protected: {', '.join(unrenderable)}",
+                file=sys.stderr,
+            )
         if failed:
             print(
                 f"\n{failed} of {len(targets)} config(s) could not be confirmed",

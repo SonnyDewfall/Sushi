@@ -1,0 +1,39 @@
+schema_version: 1
+config: electric_board
+stimulus: log_sweep 20-20000Hz 5s -20dBFS 2ch
+sample_rate: 48000
+frames: 240000
+measured:
+  peak_dbfs: -12.1911
+  rms_dbfs: -29.5057
+  delay_samples: 4163
+  bands:
+  - low_hz: 20.0
+    high_hz: 80.0
+    level_dbfs: -40.0745
+  - low_hz: 80.0
+    high_hz: 250.0
+    level_dbfs: -31.2484
+  - low_hz: 250.0
+    high_hz: 800.0
+    level_dbfs: -31.4117
+  - low_hz: 800.0
+    high_hz: 2500.0
+    level_dbfs: -39.0067
+  - low_hz: 2500.0
+    high_hz: 8000.0
+    level_dbfs: -54.3626
+  - low_hz: 8000.0
+    high_hz: 20000.0
+    level_dbfs: -85.7406
+tolerance:
+  band_db: 0.01
+  level_db: 0.0008
+  delay_samples: 0
+  note: 'set by hand, 2026-10-30: four times the largest difference two renders of
+    this config showed across three calibrations in the CI container (up to 0.0025
+    dB in a band, 0.0002 dB in level). Not the floor of one calibration, because one
+    understated the spread a later one found. Its delay_samples of 4163 is the strongest
+    path through the chain, where every other config measures 0; most likely the delay
+    pedal''s echo outweighing the dry signal, which is unverified, and would fail
+    this reference on delay alone if the two ever traded places'
