@@ -43,6 +43,7 @@ http://drobilla.net/plugins/mda/VocInput
 http://drobilla.net/plugins/mda/Vocoder
 http://gareus.org/oss/lv2/darc#mono
 http://gareus.org/oss/lv2/darc#stereo
+http://github.com/mikeoliphant/neural-amp-modeler-lv2
 http://guitarix.sourceforge.net/plugins/gx_chorus_stereo#_chorus_stereo
 http://guitarix.sourceforge.net/plugins/gx_compressor#_compressor
 http://guitarix.sourceforge.net/plugins/gx_detune_#_detune_

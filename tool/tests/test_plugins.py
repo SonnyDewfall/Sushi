@@ -14,6 +14,7 @@ from pathlib import Path
 
 import pytest
 
+from sushi_rig.amp import NAM_URI
 from sushi_rig.plugins import (
     ARCHIVE_MANIFEST,
     Plan,
@@ -56,6 +57,41 @@ def test_config_uris_collects_every_track_and_skips_uriless_plugins():
 
 def test_config_uris_of_a_config_with_no_tracks_is_empty():
     assert config_uris({}) == set()
+
+
+def test_config_uris_includes_the_amp_which_lives_outside_tracks():
+    """The amp is an LV2 plugin Carla hosts, not Sushi, so it sits in the
+    top-level `_amp` section with a short name and no `uri` key. Walking
+    `tracks` missed it twice over, and the manifest did not list it either —
+    so the one plugin no distro packages was the one `check` did not check,
+    and a `plugins/` with no amp in it reported every URI resolving."""
+    config = {
+        "tracks": [{"plugins": [{"uri": A}]}],
+        "_amp": {"plugin": "nam", "model": "amp/models/Neve 2.nam"},
+    }
+    assert config_uris(config) == {A, NAM_URI}
+
+
+def test_config_uris_leaves_a_config_with_no_amp_alone():
+    """`electric_board.json` carries no `_amp`, and must not be made to
+    require one."""
+    assert config_uris({"tracks": [{"plugins": [{"uri": A}]}]}) == {A}
+
+
+def test_an_unknown_amp_plugin_is_loud_rather_than_skipped():
+    """Quietly not requiring an amp the config asks for is the exact failure
+    this was widened to prevent, so an unrecognised name stops the command."""
+    config = {"_amp": {"plugin": "some-future-amp", "model": "x.nam"}}
+    with pytest.raises(PluginsError, match="some-future-amp"):
+        config_uris(config)
+
+
+def test_the_shipped_manifest_lists_the_amp():
+    """A repo-level invariant, not a unit test: if this URI falls out of
+    `plugin-manifest.txt` again, `plugins check` silently stops protecting the
+    one component `plugins assemble` cannot rebuild."""
+    manifest = Path(__file__).resolve().parents[2] / "plugin-manifest.txt"
+    assert NAM_URI in read_manifest(manifest.read_text())
 
 
 # --- the decision -----------------------------------------------------------

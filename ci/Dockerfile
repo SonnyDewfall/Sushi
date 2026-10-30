@@ -100,9 +100,22 @@ RUN ln -s /opt/sushi/squashfs-root/AppRun /rig/sushi
 
 # --- plugins/ ---------------------------------------------------------------
 #
-# Every URI the rig needs comes from the packages above, so nothing is waived.
-RUN sushi-rig plugins assemble --from /usr/lib/lv2 --to /rig/plugins \
-    && sushi-rig plugins check /rig/plugins
+# Every URI the rig needs comes from the packages above *except the neural amp*,
+# which no distro packages and which therefore has to be waived by name.
+#
+# The waiver is the point, not a workaround. NAM is the one component
+# `plugins assemble` cannot reproduce, so it is the one most likely to be
+# missing on a fresh machine — and until the URI was added to
+# `plugin-manifest.txt`, `check` did not know to look for it and would report
+# every URI resolving while `plugins/` held no amp at all. Naming it here makes
+# "NAM is the thing you carry by hand" something the build says out loud on
+# every run, which is the same bargain `--waive` was built for.
+#
+# The consequence for this image: it has no amp, so the container cannot run
+# the rig's amped path. That was already true; it is now stated.
+ARG NAM_URI=http://github.com/mikeoliphant/neural-amp-modeler-lv2
+RUN sushi-rig plugins assemble --from /usr/lib/lv2 --to /rig/plugins --waive "$NAM_URI" \
+    && sushi-rig plugins check /rig/plugins --waive "$NAM_URI"
 
 # --- preflight --------------------------------------------------------------
 #

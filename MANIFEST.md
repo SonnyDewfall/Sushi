@@ -375,6 +375,233 @@ block `live.py`, `probe.py`, or `panel.py`.
 
 ## Known defects
 
+### 🟢 The amp was never running: Carla needs `pw-jack` too (2026-10-26)
+
+Reported as "NAM may not be working correctly" on a machine set up that day.
+It was not working at all, and had never started: `sushi-rig status` showed
+`amp pid 39178 (DEAD)`, and `amp.log` held the whole story —
+
+```
+Cannot connect to server socket err = No such file or directory
+jack server is not running or cannot be started
+libjack.so.0 loaded successfully!
+Engine failed to initialize, possible reasons:
+Failed to create new JACK client
+```
+
+Sushi is launched as `pw-jack ./sushi`; Carla was launched as plain `carla`.
+`pw-jack` is an `LD_PRELOAD` shim that puts PipeWire's `libjack.so.0` — which
+lives in `/usr/lib/x86_64-linux-gnu/pipewire-0.3/jack/`, a directory the
+dynamic loader does not search — in front of the system one. Without it Carla
+loads the real JACK client library, finds no JACK server (there is no `jackd`
+on this machine, and no `ld.so.conf.d` entry redirecting it), and exits.
+
+**Why it survived until a new machine:** the previous rig machine had a `jackd`
+for the system libjack to find. This is the same class of hidden portability
+break that `LV2_PATH` is deliberately kept narrow to prevent — a dependency
+satisfied by the machine rather than by the rig, invisible until the machine
+changes. Fixed by launching the amp as `pw-jack carla -n <project>`.
+
+Verified by running `pw-jack carla -n /run/user/1000/sushi-rig/amp.carxp` by
+hand before changing anything: the `NAM` JACK client appeared, and Carla logged
+`Creating symlink for '.../amp/models/Neve 2.nam'` — the model loads fine, and
+always would have.
+
+### 🟢 A child that started and then died was reported as a knob problem (2026-10-26)
+
+Found alongside the above, and the reason it was mistaken for "NAM sounds
+wrong" rather than "NAM is absent". The supervisor only caught `OSError` from
+`Popen`, which means *the binary does not exist*. A child that execs
+successfully and exits a second later — Carla, for want of JACK — left the
+supervisor printing `READY`.
+
+The one warning that did appear came from `_replay_amp` timing out on Carla's
+OSC port, worded "amp parameters not restored". To a musician that reads as
+*your knobs are at their defaults*, not *you have no amp and your guitar is
+running dry*. Silent degradation wearing a misleading label, which is worse
+than silence (principle 8).
+
+Fixed by polling every child's `poll()` before reporting `READY`, naming the
+exit status and the log, and saying plainly for the amp that there is no amp in
+the signal path. The parameter replay is now skipped when the amp is already
+dead, so the real fault is not buried under a consequence of it.
+
+### 🟢 The rig inherited a 2048-sample quantum and locked itself to it (2026-10-26)
+
+Reported as "high latency — perceptible delay while playing". Measured, it was
+**42.69 ms through Sushi alone**, and about **149 ms round trip** by PipeWire's
+own declared device latencies. Nothing in the rig set the buffer size, so it
+took whatever the desktop happened to be at, which was `clock.max-quantum`.
+
+Three separate facts, each worth keeping:
+
+**PipeWire's quantum is sticky once a JACK client has it.** Sushi runs under
+`pw-jack`, and PipeWire's JACK layer sets `node.lock-quantum = True`. Sushi
+therefore pins whatever the graph was at *the moment it started* and holds it
+for its whole life. Removing the node that caused the large quantum did not
+bring it back down — confirmed directly: cutting the offending links moved the
+driver but left the quantum at 2048. Startup order decides the buffer size, and
+nothing later can undo it.
+
+**The tuner was dragging a webcam into the rig's clock domain.** `fmit` is a
+pipewire-alsa client with no explicit target, so it auto-connects to the
+*default source* — on this machine a Logitech BRIO webcam. `fmit` is also wired
+to the Audient by the patchbay, so it bridged the two devices into one driver
+group, and `pw-dump` showed every rig node, the interface and Sushi included,
+carrying `node.driver-id = 63` — the webcam. A guitar rig clocked by a webcam.
+
+**The fix is for the rig to state the number.** `PIPEWIRE_QUANTUM` is now set
+per-child on Sushi and the amp (`rig.QUANTUM`, 256), for the same reason
+`LV2_PATH` is set explicitly: a value this audible belongs in the repository,
+not in the machine's current mood. Deliberately *not* set on the tuner or the
+panel, which do no DSP.
+
+Measured after the change, on this machine, with the full `electric-chorus`
+chain and the amp:
+
+| | before (quantum 2048) | after (quantum 256) |
+|---|---|---|
+| graph block | 42.7 ms | 5.3 ms |
+| Sushi in → Sushi out | 2049 samples / 42.69 ms | 257 samples / 5.35 ms |
+| ALSA period / headroom | 512 / 512 | 128 / 128 |
+| round trip, computed | ≈149 ms | ≈21 ms |
+| total DSP load | — | 7–8%, no xruns |
+
+**The plugin chain costs nothing measurable.** Port-to-port through Sushi is
+exactly one quantum (+1 sample of correlation resolution) at both buffer sizes,
+so the whole delay is buffering, not DSP. **Nor does the amp**: NAM in → NAM
+out is 256 samples, Sushi in → Sushi out is 257, and NAM in → *Sushi* out — the
+two in series — is still 257. PipeWire schedules both inside one graph cycle,
+so inserting the amp in front of Sushi adds no latency at all. Worth knowing
+before anyone trades it away for a shorter chain.
+
+The remaining ≈21 ms is PipeWire's device buffering (one quantum plus 128
+samples of headroom in each direction, both of which PipeWire scales from the
+quantum automatically) plus the interface's own converters. 128 and 64 both run
+here; below about 256 the headroom dominates and the gain gets small.
+
+> **Round trip is computed, not measured.** Measuring it needs a physical cable
+> from an interface output back to an input, and there is none on this machine.
+> Two traps found while looking for one: `pw-record --target <id>` **silently
+> ignores the target** and auto-connects to the default source, so a capture
+> that looks like the interface can be the webcam picking the room up through
+> the monitors — which is exactly what produced a convincing false positive
+> here. Link the ports by hand with `pw-link` and verify with `pw-link -l`.
+> And measure *differentially*: record the output monitor and the returning
+> input as two channels of one stream, so the software start offset cancels
+> instead of swamping the figure.
+
+### 🟢 NAM was invisible to the check meant to catch its absence (2026-10-26)
+
+Found while writing up the session above, not by it failing: **the one
+component no package provides was the one component `sushi-rig plugins check`
+did not check.**
+
+- `plugin-manifest.txt` listed 54 URIs and NAM's was not among them.
+- `config_uris()` walked `config["tracks"][*]["plugins"][*]["uri"]`, and the
+  amp lives in the top-level `_amp` section, which records `"plugin": "nam"`
+  and carries no `uri` key at all.
+
+So NAM fell through both halves of the "needed" definition. Deleting
+`plugins/neural_amp_modeler.lv2` left `check` reporting *"54 required plugin
+URI(s) all resolve"* and exiting 0 — the silent portability break the whole
+`plugins/` layout exists to prevent, in the single place it would hurt most,
+since NAM is the one bundle `plugins assemble` can never rebuild.
+
+Fixed in three parts:
+
+1. NAM's URI added to `plugin-manifest.txt` (now 55).
+2. `amp.PLUGIN_URIS` maps the short name a config records to the real URI, and
+   `config_uris()` resolves `_amp` through it. The amp belongs there because
+   the supervisor hands Carla the *same* `LV2_PATH` as everything else — if NAM
+   is not in `plugins/`, the rig has no amp. An amp plugin the tool has no URI
+   for raises rather than being skipped, since quietly not requiring an amp the
+   config asks for is the very failure this widening prevents.
+3. `ci/Dockerfile` waives the URI by name, because no distro packages NAM and
+   `assemble` fails on a URI with no provider. **The waiver is the point, not a
+   workaround**: `--waive` reports on every run, so "NAM is the thing you carry
+   by hand" became something the build says out loud. The image has no amp —
+   which was already true, and is now stated.
+
+Verified both ways against a symlink tree with the bundle withheld (`plugins/`
+itself untouched): without the waiver it exits 1 naming the URI, with it exits
+0 and prints `waived, not provided: ...`.
+
+### 🟢 The tuner clocked the rig off a webcam (2026-10-26)
+
+`fmit` reaches PipeWire through the ALSA compatibility layer, which
+auto-connects a capture stream to the **default source** — on this machine a
+Logitech BRIO webcam. The patchbay also wires `fmit` to the interface, so the
+tuner bridged the two devices into a single driver group: `pw-dump` showed the
+Audient and Sushi both carrying `node.driver-id = 63`, the webcam. The audio
+path was resampled to a webcam's clock and inherited its xruns.
+
+Fixed by giving `fmit` `PIPEWIRE_PROPS='{ node.autoconnect = false }'`, which
+puts its routing where every other connection in this rig already lives — the
+patchbay. Verified: the Audient is now the driver (`sushi-rig top` says
+`[clocked by alsa_input.usb-Audient...]`), the webcam has no `driver-id` at
+all, and `fmit` joins the rig's group only once the patchbay wires it.
+
+**Two consequences worth knowing.**
+
+An unconnected `fmit` negotiates the single `input_MONO` port it actually
+wants, instead of the stereo pair the default source imposed on it. So the
+saved patchbay's `ALSA Capture [fmit]:input_FL` / `input_FR` entries no longer
+match anything and the tuner comes up unwired.
+
+That failure is silent — a tuner showing nothing looks exactly like a tuner
+that cannot hear the guitar — so `_supervise` now checks it. The supervisor
+asks `pw-link -l -i` which of the tuner's input ports have no source (after a
+bounded settle, since qpwgraph wires as nodes appear) and warns by name:
+
+```
+warning: the tuner is running but nothing is connected to
+alsa_capture.fmit:input_MONO — wire the guitar's input to it in qpwgraph and
+save .../Patchbay/rig.qpwgraph, or the tuner will show nothing
+```
+
+### 🟠 qpwgraph saves to the *derived* patchbay, not the repository's
+
+Found while writing the re-wiring instructions above, and a trap for anyone
+editing routing with the amp running.
+
+With an amp configured, `up` launches `qpwgraph -a
+/run/user/1000/sushi-rig/rig-amp.qpwgraph`, the amp patchbay derived at launch
+(see `amp.amp_patchbay`). So **qpwgraph's Save button writes to `/run`** — a
+file regenerated from `Patchbay/rig.qpwgraph` on every launch and wiped on
+reboot. A change made the obvious way looks saved, survives until the next
+`restart`, and then silently reverts.
+
+Not fixed. Three ways round it today, none obvious from the UI:
+
+- `sushi-rig up --no-amp`, which loads `Patchbay/rig.qpwgraph` directly, then
+  wire, save, and bring the amp back;
+- **Save As** onto `Patchbay/rig.qpwgraph`;
+- edit the XML by hand with the rig down.
+
+Worth a real fix: either derive the amp patchbay somewhere that saves back, or
+have `up` notice the derived file changed and offer to fold it in. Related to
+the hand-wiring being uncommitted and unreproducible more generally.
+
+### 🟢 `sushi-rig top` could never show the quantum it is built to explain (2026-10-26)
+
+On a real rig `top` printed `quantum 0 @ 0 Hz` and no block time. `pw-top`
+states the quantum and rate on the *driver* row only; every follower reads 0,
+and Sushi is always a follower. `format_sample` read them off the rig's own
+first node, so the one display built to explain latency could never show the
+number that causes it — during the investigation above it reported `0 @ 0 Hz`
+while the rig sat at 42.7 ms per block.
+
+It went unnoticed because the test fixture gave every row a quantum, including
+the followers. A fixture that was *tidier than reality*, encoding a guess
+rather than a discovered fact. It now matches real output, and the parser
+associates each node with the driver it runs under.
+
+`top` also names the driving device now — `[clocked by <node>]`. The wrong
+driver has no symptom other than latency, and nothing in the tool said so; with
+this line the webcam above would have been obvious at a glance.
+
+
 ### 🟢 `panel.py` defaulted every fader to 0.5 normalised — real clipping on real hardware
 
 Found by testing with an actual guitar and audio interface, not in review.

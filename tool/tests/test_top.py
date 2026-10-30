@@ -24,10 +24,10 @@ R   45      0      0   0.0us   0.0us  0.00  0.00    0                  Dummy-Dri
 R  130      0      0   0.0us   0.0us  0.00  0.00    0                   + sushi
 S   ID  QUANT   RATE    WAIT    BUSY   W/Q   B/Q  ERR FORMAT           NAME
 R   45   1024  48000   5.8ms   3.0us  0.27  0.00    1   S32LE 10 48000 alsa_input.usb-Audient
-R  127   1024  48000  40.6us   6.2us  0.00  0.00    0                   + fmit
-R  130   1024  48000  34.3us 674.6us  0.00  0.03    0                   + sushi
-R  159   1024  48000  51.3us   3.0us  0.00  0.00    0                   + Carla
-R  143   1024  48000  51.3us   4.9ms  0.00  0.23    2                   + NAM
+R  127      0      0  40.6us   6.2us  0.00  0.00    0                   + fmit
+R  130      0      0  34.3us 674.6us  0.00  0.03    0                   + sushi
+R  159      0      0  51.3us   3.0us  0.00  0.00    0                   + Carla
+R  143      0      0  51.3us   4.9ms  0.00  0.23    2                   + NAM
 """
 
 
@@ -149,3 +149,41 @@ def test_the_block_budget_is_spelled_out():
 
 def test_nothing_running_says_so_rather_than_printing_an_empty_table():
     assert "is the rig running?" in format_sample([], {}, "rig")
+
+
+def test_a_follower_reports_no_quantum_of_its_own():
+    """Real `pw-top` states the quantum on the driver row only; every follower
+    reads 0. The fixture used to carry it on every row, which is why nothing
+    caught `top` printing "quantum 0 @ 0 Hz" on a real rig for as long as it
+    did."""
+    nodes = {n["name"]: n for n in parse_pw_top(PW_TOP)}
+    assert nodes["sushi"]["quantum"] == "0"
+    assert nodes["sushi"]["is_driver"] is False
+    assert nodes["alsa_input.usb-Audient"]["is_driver"] is True
+
+
+def test_a_node_carries_the_driver_it_runs_under():
+    """Sushi is always a follower, so the quantum that governs it has to be
+    read off whatever is driving the graph."""
+    nodes = {n["name"]: n for n in parse_pw_top(PW_TOP)}
+    assert nodes["sushi"]["driver"] == "alsa_input.usb-Audient"
+    assert nodes["sushi"]["driver_quantum"] == "1024"
+    assert nodes["sushi"]["driver_rate"] == "48000"
+
+
+def test_the_block_budget_is_read_from_the_driver_not_from_sushi():
+    """The regression this replaces: reading Sushi's own columns gave
+    "quantum 0 @ 0 Hz" and no block time, on the one display built to explain
+    latency."""
+    out = format_sample(parse_pw_top(PW_TOP), {}, "rig")
+    assert "quantum 1024 @ 48000 Hz" in out
+    assert "21.3 ms per block" in out
+    assert "quantum 0" not in out
+
+
+def test_the_driving_device_is_named():
+    """A webcam that had joined the graph through the tuner was clocking this
+    rig at 2048, and no part of the tool said so. The wrong driver has no
+    symptom other than latency."""
+    out = format_sample(parse_pw_top(PW_TOP), {}, "rig")
+    assert "clocked by alsa_input.usb-Audient" in out

@@ -30,6 +30,59 @@ QPWGRAPH_EXIT_TIMEOUT = 5.0
 # before believing it. See `start_qpwgraph`.
 QPWGRAPH_ATTEMPTS = 3
 QPWGRAPH_SETTLE = 1.5
+
+# How long to let qpwgraph finish wiring a node before calling it unwired.
+PATCHBAY_SETTLE = 3.0
+
+
+def ports_without_sources(listing: str, node: str) -> list[str]:
+    """Input ports of `node` that nothing is connected to, from `pw-link -l -i`.
+
+    The listing names a port on its own line and then indents one `|<-` line
+    per source, so a port with no indented lines under it is a port with no
+    input. Pure, so the parse is pinned by tests while the shelling out is
+    verified by running it (quality principle 1).
+    """
+    prefix = f"{node}:"
+    unconnected: list[str] = []
+    port: str | None = None
+    sources = 0
+    for line in listing.splitlines():
+        if not line.strip():
+            continue
+        if line[0].isspace():
+            if port is not None and line.strip().startswith("|<-"):
+                sources += 1
+            continue
+        if port is not None and sources == 0:
+            unconnected.append(port)
+        port = line.strip() if line.strip().startswith(prefix) else None
+        sources = 0
+    if port is not None and sources == 0:
+        unconnected.append(port)
+    return unconnected
+
+
+def unconnected_inputs(node: str, settle: float = PATCHBAY_SETTLE) -> list[str]:
+    """`node`'s input ports that the patchbay has not wired, once it has had a
+    chance to.
+
+    qpwgraph applies its patch as nodes appear, so asking too early reports a
+    port that is about to be connected. The wait is bounded and gives up rather
+    than blocking startup.
+    """
+    deadline = time.monotonic() + settle
+    unwired = [node]
+    while True:
+        result = subprocess.run(
+            ["pw-link", "-l", "-i"], capture_output=True, text=True, check=False
+        )
+        unwired = ports_without_sources(result.stdout, node)
+        if not unwired or time.monotonic() >= deadline:
+            return unwired
+        time.sleep(0.25)
+
+
 # How long to wait for Sushi's gRPC to start accepting connections.
 def stale_qpwgraph_sockets(paths: list[Path], any_running: bool) -> list[Path]:
     """Which qpwgraph single-instance sockets are safe to remove.

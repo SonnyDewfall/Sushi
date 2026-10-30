@@ -11,7 +11,7 @@ from pathlib import Path
 
 import pytest
 
-from sushi_rig.qpwgraph import stale_qpwgraph_sockets
+from sushi_rig.qpwgraph import ports_without_sources, stale_qpwgraph_sockets
 from sushi_rig.rig import plan_children
 
 
@@ -170,3 +170,47 @@ def test_giving_up_is_reported_rather_than_retried_forever(fake_launch, tmp_path
 
 
 # --- the neural amp ----------------------------------------------------------
+
+
+# --- is the patchbay actually wiring things? --------------------------------
+
+PW_LINK_INPUTS = """alsa_capture.fmit:input_MONO
+sushi:audio_input_0
+  |<- NAM:Output
+sushi:audio_input_1
+  |<- alsa_input.usb-Audient:capture_AUX1
+NAM:Input
+  |<- alsa_input.usb-Audient:capture_AUX0
+"""
+
+
+def test_a_port_with_no_sources_is_reported():
+    """The tuner no longer auto-connects, so a patchbay that does not name its
+    port leaves it running and deaf — which looks exactly like a tuner that
+    cannot hear the guitar."""
+    assert ports_without_sources(PW_LINK_INPUTS, "alsa_capture.fmit") == [
+        "alsa_capture.fmit:input_MONO"
+    ]
+
+
+def test_a_wired_port_is_not_reported():
+    listing = PW_LINK_INPUTS.replace(
+        "alsa_capture.fmit:input_MONO\n",
+        "alsa_capture.fmit:input_MONO\n  |<- alsa_input.usb-Audient:capture_AUX0\n",
+    )
+    assert ports_without_sources(listing, "alsa_capture.fmit") == []
+
+
+def test_only_the_named_nodes_ports_are_considered():
+    """`sushi:audio_input_*` and `NAM:Input` are all wired here, but the point
+    is that another node's unwired port must never be reported as this one's."""
+    assert ports_without_sources("other:in\nalsa_capture.fmit:input_MONO\n",
+                                 "alsa_capture.fmit") == [
+        "alsa_capture.fmit:input_MONO"
+    ]
+
+
+def test_a_node_with_no_ports_at_all_reports_nothing():
+    """A tuner that is not running is not an unwired tuner — the caller checks
+    the process separately, and this must not invent a port for it."""
+    assert ports_without_sources(PW_LINK_INPUTS, "alsa_capture.nosuch") == []

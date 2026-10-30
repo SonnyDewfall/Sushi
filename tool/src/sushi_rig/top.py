@@ -57,12 +57,23 @@ def parse_pw_top(output: str) -> list[dict[str, Any]]:
     The NAME column is taken as the final field. PipeWire node names in this rig
     never contain spaces, and the FORMAT column before it is variable-width,
     which makes counting from the left unreliable.
+
+    Each row also carries the *driver* it runs under. `pw-top` prints a driver
+    and then its followers, marking a follower with a `+` before the name, and
+    only the driver row states the graph's quantum and rate — a follower's
+    columns read 0. Sushi is always a follower, so reading the quantum off the
+    rig's own node reported "quantum 0 @ 0 Hz" and no block time at all: the
+    one display built to explain latency could never show the number that
+    causes it. Keeping the association also makes *which device is driving*
+    visible, which is worth seeing on its own — a webcam that had joined the
+    graph through the tuner was clocking this rig at 2048 and nothing said so.
     """
     blocks = output.split("S   ID  QUANT")
     if len(blocks) < 2:
         return []
 
     nodes: list[dict[str, Any]] = []
+    driver: dict[str, Any] | None = None
     for line in blocks[-1].splitlines()[1:]:
         fields = line.split()
         if len(fields) < 10 or fields[0] not in ("R", "S", "I", "C"):
@@ -73,7 +84,7 @@ def parse_pw_top(output: str) -> list[dict[str, Any]]:
             xruns = int(fields[8])
         except ValueError:
             continue
-        nodes.append({
+        node = {
             "name": fields[-1],
             "running": fields[0] == "R",
             "quantum": fields[2],
@@ -81,7 +92,14 @@ def parse_pw_top(output: str) -> list[dict[str, Any]]:
             "busy": busy,
             "load": load,
             "xruns": xruns,
-        })
+            "is_driver": "+" not in fields,
+        }
+        if node["is_driver"]:
+            driver = node
+        node["driver"] = driver["name"] if driver else node["name"]
+        node["driver_quantum"] = driver["quantum"] if driver else node["quantum"]
+        node["driver_rate"] = driver["rate"] if driver else node["rate"]
+        nodes.append(node)
     return nodes
 
 
@@ -139,12 +157,19 @@ def format_sample(
     if not nodes:
         return f"{title}\n\n  no rig audio nodes found — is the rig running?"
 
-    quantum, rate = nodes[0]["quantum"], nodes[0]["rate"]
+    # From the driver, not from Sushi: see `parse_pw_top`.
+    quantum = nodes[0].get("driver_quantum", nodes[0]["quantum"])
+    rate = nodes[0].get("driver_rate", nodes[0]["rate"])
+    driver = nodes[0].get("driver")
     try:
         block_ms = 1000 * int(quantum) / int(rate)
         budget = f"quantum {quantum} @ {rate} Hz — {block_ms:.1f} ms per block"
     except (TypeError, ValueError, ZeroDivisionError):
         budget = f"quantum {quantum} @ {rate} Hz"
+    if driver:
+        # Named because the wrong driver is a real fault with no other symptom
+        # than latency, and it is invisible everywhere else in this tool.
+        budget += f"  [clocked by {driver}]"
 
     lines = [title, budget, ""]
     lines.append(f"  {'node':<10} {'busy':>9}  {'load':<{BAR_WIDTH}}  {'':>5}  xruns")

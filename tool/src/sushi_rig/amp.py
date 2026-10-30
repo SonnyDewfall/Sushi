@@ -66,6 +66,17 @@ PANEL_PARAMETERS = ("Input Lvl", "Output Lvl")
 
 CONFIG_KEY = "_amp"
 
+# The amp's LV2 URI by the short name a config records it under.
+#
+# `_amp` names the plugin as `"plugin": "nam"` and carries no URI, because
+# nothing on the Sushi side ever needed one — Sushi does not host the amp. But
+# Carla resolves it through the *same* `LV2_PATH` the supervisor sets for every
+# child, so the amp is as much a part of the rig's LV2 tree as anything in
+# `tracks`, and `plugins check` has to be able to see it. Exported as a mapping
+# rather than a bare constant so an unrecognised name is something the caller
+# can notice rather than silently treat as "no amp".
+PLUGIN_URIS: dict[str, str] = {"nam": NAM_URI}
+
 
 class AmpError(Exception):
     """Something about the amp the user needs to fix."""

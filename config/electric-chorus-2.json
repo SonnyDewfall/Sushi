@@ -2,8 +2,8 @@
   "_meta": {
     "name": "electric-chorus-2",
     "version": "1.0",
-    "description": "electric-chorus on the new chain \u2014 L/C/R Delay, two-stage GxDetune octave",
-    "status": "wip",
+    "description": "Electric guitar \u2014 compressor, overdrive, octave, EQ, chorus, delay, and two reverbs \u2014 a clean room and a big hall",
+    "status": "stable",
     "source": "config/src/electric_board.yaml"
   },
   "host_config": {
@@ -89,8 +89,8 @@
       "parameters": {
         "RATIO": 0.07,
         "KNEE": 0.1,
-        "THRESHOLD": 0.74,
-        "RELEASE": 0.05,
+        "THRESHOLD": 0.8,
+        "RELEASE": 0.02,
         "ATTACK": 0.002,
         "BYPASS": 1.0
       }
@@ -106,13 +106,47 @@
       }
     },
     {
+      "processor": "octave_down",
+      "bypassed": true,
+      "parameters": {
+        "DETUNE": 0.5,
+        "OCTAVE": 0.0,
+        "COMPENSATE": 0.0,
+        "LATENCY": 0.0,
+        "WET": 0.5,
+        "DRY": 0.5,
+        "LOW": 0.5,
+        "MIDDLELOW": 0.5,
+        "MIDDLETREBLE": 0.5,
+        "TREBLE": 0.5,
+        "BYPASS": 1.0
+      }
+    },
+    {
+      "processor": "octave_up",
+      "bypassed": true,
+      "parameters": {
+        "DETUNE": 0.5,
+        "OCTAVE": 0.0,
+        "COMPENSATE": 0.0,
+        "LATENCY": 0.0,
+        "WET": 0.5,
+        "DRY": 0.5,
+        "LOW": 0.5,
+        "MIDDLELOW": 0.5,
+        "MIDDLETREBLE": 0.5,
+        "TREBLE": 0.5,
+        "BYPASS": 1.0
+      }
+    },
+    {
       "processor": "eq",
       "bypassed": false,
       "parameters": {
-        "Low": 0.41,
+        "Low": 0.5,
         "Mid": 0.56,
-        "High": 0.26,
-        "Master": 0.5,
+        "High": 0.62,
+        "Master": 0.56,
         "Low-Mid Freq": 0.48,
         "Mid-High Freq": 0.06
       }
@@ -129,10 +163,27 @@
       }
     },
     {
+      "processor": "delay",
+      "bypassed": true,
+      "parameters": {
+        "L delay (ms)": 0.25,
+        "L level": 0.5,
+        "C delay (ms)": 0.25,
+        "C level": 0.5,
+        "R delay (ms)": 0.25,
+        "R level": 0.5,
+        "Feedback": 0.5,
+        "High damp (%)": 0.5,
+        "Low damp (%)": 0.5,
+        "Spread": 0.5,
+        "Dry/Wet level": 0.0
+      }
+    },
+    {
       "processor": "room",
       "bypassed": false,
       "parameters": {
-        "Blend": 0.2,
+        "Blend": 0.15,
         "Room Size": 0.41,
         "Enable": 1.0
       }
@@ -141,13 +192,13 @@
       "processor": "hall",
       "bypassed": true,
       "parameters": {
-        "damping": 0.0,
+        "damping": 0.12,
         "revtime": 0.01,
         "roomsize": 0.29,
-        "spread": 0.01,
-        "bandwidth": 0.62,
-        "tail": 0.09,
-        "dry": 0.81,
+        "spread": 0.0,
+        "bandwidth": 0.12,
+        "tail": 0.08,
+        "dry": 0.92,
         "early": 0.16
       }
     }
@@ -157,7 +208,7 @@
     "model": "amp/models/Neve 2.nam",
     "parameters": {
       "Input Lvl": 0.0,
-      "Output Lvl": -0.4,
+      "Output Lvl": 6.0,
       "Quality": 1.0
     }
   }

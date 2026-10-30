@@ -18,6 +18,7 @@ from sushi_rig.procs import SHUTDOWN_STEPS
 from sushi_rig.rig import (
     DEFAULT_CONFIG_NAME,
     FALLBACK_RIG_YAML,
+    QUANTUM,
     format_uptime,
     plan_children,
     resolve_rig_yaml,
@@ -226,7 +227,70 @@ def test_a_missing_carla_does_not_stop_the_rig(plan_args):
         ) if c["name"] == "amp"
     )
     assert amp["optional"] is True
-    assert amp["command"][:2] == ["carla", "-n"]
+    assert amp["command"][:3] == ["pw-jack", "carla", "-n"]
+
+
+def test_the_amp_runs_under_pw_jack(plan_args):
+    """Carla links against the system libjack, which finds no server on a
+    PipeWire-only machine and exits during startup. The previous rig machine
+    had a jackd to fall back on, so this was invisible until a new one didn't
+    — the same class of hidden portability break `LV2_PATH` is kept narrow to
+    catch."""
+    root, config, rig_yaml = plan_args
+    amp = next(
+        c for c in plan_children(
+            root, config, rig_yaml, headless=False, tuner=True,
+            amp_project=root / "amp.carxp",
+        ) if c["name"] == "amp"
+    )
+    assert amp["command"][0] == "pw-jack"
+
+
+def test_the_dsp_children_ask_for_the_rigs_own_quantum(plan_args):
+    """Left to the machine this was 2048 — 42.7 ms per block, which is what
+    "high latency" turned out to mean. A JACK client locks whatever the graph
+    was at when it started, so the rig has to say the number rather than
+    inherit it."""
+    root, config, rig_yaml = plan_args
+    children = {
+        c["name"]: c for c in plan_children(
+            root, config, rig_yaml, headless=False, tuner=True,
+            amp_project=root / "amp.carxp",
+        )
+    }
+    expected = f"{QUANTUM}/48000"
+    assert children["sushi"]["env_set"]["PIPEWIRE_QUANTUM"] == expected
+    # The same one: two JACK clients locking different quanta is a fight
+    # nobody wins.
+    assert children["amp"]["env_set"]["PIPEWIRE_QUANTUM"] == expected
+
+
+def test_the_tuner_is_not_dragged_to_the_audio_quantum(plan_args):
+    """It taps the input and does no DSP; it has no business being pinned to
+    the audio path's buffer size. It does carry other environment of its own
+    (see the autoconnect test below), so this is about the quantum alone."""
+    root, config, rig_yaml = plan_args
+    fmit = next(
+        c for c in plan_children(
+            root, config, rig_yaml, headless=False, tuner=True,
+        ) if c["name"] == "fmit"
+    )
+    assert "PIPEWIRE_QUANTUM" not in fmit.get("env_set", {})
+
+
+def test_the_tuner_does_not_auto_connect(plan_args):
+    """`fmit` reaches PipeWire through the ALSA compatibility layer, which
+    auto-connects to the default source — a webcam on this machine. Since the
+    patchbay also wires it to the interface, the tuner bridged the two into one
+    driver group and the whole rig ended up clocked by the webcam. Its routing
+    belongs in the patchbay, where every other connection in this rig lives."""
+    root, config, rig_yaml = plan_args
+    fmit = next(
+        c for c in plan_children(
+            root, config, rig_yaml, headless=False, tuner=True,
+        ) if c["name"] == "fmit"
+    )
+    assert fmit["env_set"]["PIPEWIRE_PROPS"] == "{ node.autoconnect = false }"
 
 
 def test_the_amp_starts_after_sushi(plan_args):
