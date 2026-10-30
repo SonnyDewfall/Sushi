@@ -229,3 +229,182 @@ def test_a_render_fingerprints_and_compares_against_itself(tmp_path, monkeypatch
     )
     assert compare(fp, fp) == []
     assert fp.delay_samples == 0, "a passthrough should measure no delay"
+
+
+# --- the workflow -----------------------------------------------------------
+
+
+def test_a_reference_lives_beside_the_config_it_describes(tmp_path):
+    """Under config/, not a directory of its own: a reference describes one tone
+    and should travel with it, including to the library repo when configs move."""
+    from sushi_rig.render import reference_path
+
+    path = reference_path(tmp_path, Path("config/electric-clean.json"))
+    assert path == tmp_path / "config" / "sound" / "electric-clean.yaml"
+
+
+def test_calibrate_renders_twice_and_measures_the_gap(tmp_path, monkeypatch):
+    """A config that differs from itself must produce a non-zero tolerance, or
+    every later run reports its own non-determinism as a change in sound."""
+    from sushi_rig.render import calibrate
+
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        fed = signals.read_wav(Path(argv[argv.index("-i") + 1]))
+        # Second render 0.2 dB louder: a chorus differing from itself.
+        gain = 1.0 if len(calls) == 1 else 10 ** (0.2 / 20)
+        signals.write_wav(
+            Path(argv[argv.index("-O") + 1]), fed.samples * gain,
+            fed.sample_rate, subtype="float32",
+        )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(render.subprocess, "run", run)
+    fp, tolerance = calibrate(
+        Path("config/x.json"), tmp_path, tmp_path / "work",
+        stimulus=Stimulus(duration_s=1.0),
+    )
+
+    assert len(calls) == 2, "the floor is the gap between two runs"
+    assert tolerance.level_db == pytest.approx(0.2, abs=0.01)
+    assert "measured" in tolerance.note
+    assert fp.config == "x"
+
+
+def test_a_deterministic_config_calibrates_to_the_tightest_tolerance_the_file_holds(
+    tmp_path, monkeypatch
+):
+    """Most of the rig is deterministic, and its tolerance should say so rather
+    than carry slack that would hide a real change. Not *zero*, though: a
+    reference writes its levels to four decimals, so a tolerance below that
+    resolution fails the render it was calibrated from."""
+    from sushi_rig.render import calibrate
+
+    def run(argv, **kwargs):
+        fed = signals.read_wav(Path(argv[argv.index("-i") + 1]))
+        signals.write_wav(
+            Path(argv[argv.index("-O") + 1]), fed.samples, fed.sample_rate,
+            subtype="float32",
+        )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(render.subprocess, "run", run)
+    _, tolerance = calibrate(
+        Path("config/x.json"), tmp_path, tmp_path / "work",
+        stimulus=Stimulus(duration_s=1.0),
+    )
+    from sushi_rig.nulltest import WRITTEN_RESOLUTION_DB
+
+    assert tolerance.band_db == WRITTEN_RESOLUTION_DB
+    assert tolerance.level_db == WRITTEN_RESOLUTION_DB
+    assert tolerance.delay_samples == 0
+    assert "identical to the 0.0001 dB this file is written at" in tolerance.note
+
+
+# --- the command, end to end ------------------------------------------------
+#
+# What the first round of tests got wrong: `calibrate` was exercised in memory
+# only, so nothing round-tripped a reference through YAML and the CLI -- and a
+# calibrated reference failed its own check on the very next run. These go
+# through `cli.main` with a passthrough standing in for Sushi.
+
+
+def _rig(tmp_path, monkeypatch, *, chain=None):
+    """A rig root with one config, and a Sushi that applies `chain` to the audio."""
+    from sushi_rig import cli, paths
+
+    monkeypatch.setattr(paths, "checkout_root", lambda: tmp_path)
+    (tmp_path / "config").mkdir(parents=True, exist_ok=True)
+    config = tmp_path / "config" / "electric-clean.json"
+    config.write_text("{}")
+
+    def run(argv, **kwargs):
+        fed = signals.read_wav(Path(argv[argv.index("-i") + 1]))
+        samples = chain(fed.samples) if chain else fed.samples
+        signals.write_wav(
+            Path(argv[argv.index("-O") + 1]), samples, fed.sample_rate,
+            subtype="float32",
+        )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(render.subprocess, "run", run)
+    return cli, config
+
+
+def test_a_calibrated_reference_passes_its_own_check(tmp_path, monkeypatch, capsys):
+    """The bug this closes: `--calibrate` wrote a tolerance of 0.0 for a
+    deterministic config, and the next run compared the reference's 4-decimal
+    levels against an unrounded measurement and reported eight differences of
+    +0.000 dB. A reference that fails the render it was written from makes the
+    whole check worthless, and every in-memory test of `calibrate` passed."""
+    cli, config = _rig(tmp_path, monkeypatch)
+
+    assert cli.main(["nulltest", str(config), "--calibrate"]) == 0
+    assert "calibrated" in capsys.readouterr().out
+
+    assert cli.main(["nulltest", str(config)]) == 0
+    assert "sounds the same" in capsys.readouterr().out
+
+
+def test_a_calibrated_reference_still_catches_a_real_change(tmp_path, monkeypatch, capsys):
+    """The other half: the floor must not have been widened into blindness. A
+    6 dB drop is the cheapest real regression there is."""
+    cli, config = _rig(tmp_path, monkeypatch)
+    assert cli.main(["nulltest", str(config), "--calibrate"]) == 0
+    capsys.readouterr()
+
+    _rig(tmp_path, monkeypatch, chain=lambda samples: samples * 0.5)
+    assert cli.main(["nulltest", str(config)]) == 1
+    assert "difference(s)" in capsys.readouterr().out
+
+
+def test_the_no_reference_hint_names_a_path_the_command_can_find(tmp_path, monkeypatch, capsys):
+    """`sushi-rig nulltest electric-clean.json` finds nothing: the render runs
+    from the rig root, so the hint has to say `config/electric-clean.json`."""
+    cli, config = _rig(tmp_path, monkeypatch)
+    assert cli.main(["nulltest", str(config)]) == 1
+    assert "nulltest config/electric-clean.json --calibrate" in capsys.readouterr().err
+
+
+@pytest.mark.parametrize(
+    "written, expected",
+    [
+        ("", "AttributeError"),       # yaml.safe_load returns None
+        ("schema_version: 1\n", "KeyError"),
+        ("[not, a, mapping]", "AttributeError"),
+        ("schema_version: 1\nmeasured: {", "ParserError"),  # a yaml.YAMLError
+    ],
+)
+def test_a_reference_that_cannot_be_read_is_reported_not_raised(
+    tmp_path, monkeypatch, capsys, written, expected
+):
+    """These files are committed and hand-edited, so a half-written one is a
+    matter of time. A traceback would also abandon the remaining configs under
+    `--all`, turning one bad file into no check at all."""
+    cli, config = _rig(tmp_path, monkeypatch)
+    reference = render.reference_path(tmp_path, config)
+    reference.parent.mkdir(parents=True, exist_ok=True)
+    reference.write_text(written)
+
+    assert cli.main(["nulltest", str(config)]) == 1
+    assert f"CANNOT CHECK — {expected}" in capsys.readouterr().err
+
+
+def test_a_render_that_is_not_finite_is_refused_before_it_is_fingerprinted(
+    tmp_path, monkeypatch
+):
+    """`render_findings` was written for this step and had no caller outside its
+    own tests. Without it a NaN render died inside `estimate_delay` with "no
+    correlation between the signals", which describes the measurement and not
+    the chain — and `--calibrate` would have written it into a reference."""
+    def all_nan(samples):
+        return samples * np.nan
+
+    _rig(tmp_path, monkeypatch, chain=all_nan)
+    with pytest.raises(RenderError, match="unusable audio"):
+        render.measure(
+            Path("config/x.json"), tmp_path, tmp_path / "work",
+            stimulus=Stimulus(duration_s=0.2),
+        )

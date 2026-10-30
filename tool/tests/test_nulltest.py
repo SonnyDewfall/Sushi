@@ -193,6 +193,40 @@ def test_a_round_tripped_reference_still_compares_clean():
     assert compare(back, _fp(sweep), tol) == []
 
 
+def test_a_reference_calibrated_from_two_identical_renders_passes_against_a_third():
+    """The whole command rested on this and nothing checked it. `to_dict` rounds
+    levels to four decimals; `compare` tests those rounded numbers against a
+    fresh, unrounded measurement. A floor of exactly 0.0 — which is what two
+    identical renders observe — therefore failed the render it was calibrated
+    from, eight bogus differences of +0.000 dB at a time."""
+    sweep = _sweep()
+    reference = _fp(sweep)
+    tolerance = floor_between(_fp(sweep), reference)
+
+    back, back_tolerance = from_dict(to_dict(reference, tolerance))
+    assert compare(back, _fp(sweep), back_tolerance) == []
+
+
+def test_the_floor_admits_that_two_renders_were_identical():
+    """The number is clamped to the file's resolution, so the note has to say
+    which of the two it means: a measured difference, or none at all."""
+    sweep = _sweep()
+    identical = floor_between(_fp(sweep), _fp(sweep))
+    assert identical.band_db == nulltest.WRITTEN_RESOLUTION_DB
+    assert "identical" in identical.note
+
+    moved = floor_between(_fp(sweep), _fp(sweep * (10 ** (0.02 / 20))))
+    assert "identical" not in moved.note
+
+
+def test_a_measured_floor_is_never_narrowed_by_the_clamp():
+    """A chorus that differs from itself by 0.3 dB must keep 0.3 dB, not be
+    pulled towards the resolution."""
+    sweep = _sweep()
+    floor = floor_between(_fp(sweep), _fp(sweep * (10 ** (0.3 / 20))))
+    assert floor.level_db == pytest.approx(0.3, abs=0.005)
+
+
 def test_an_unknown_schema_version_is_refused():
     """This module exists to support the claim "the sound has not changed". A
     half-understood reference cannot support it, so it is refused rather than
