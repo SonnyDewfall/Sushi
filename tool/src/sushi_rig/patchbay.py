@@ -17,6 +17,7 @@ be tested without PipeWire (quality principle 1).
 from __future__ import annotations
 
 import json
+import re
 import subprocess
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
@@ -426,12 +427,25 @@ def _display_name(props: dict) -> str | None:
 
 
 def live_node_names(dump: str) -> set[str]:
-    """Every name a live node answers to: description, nick and node.name.
+    """Every name a live node answers to: description, nick, node.name, and the
+    `<application.name>/<node.description>` form qpwgraph shows for a client.
 
-    Deliberately generous. qpwgraph's label for a node is derived from these, but
-    exactly how is not settled here, so a saved name is accepted if it matches
-    any of them. That errs towards missing a stale link rather than inventing
-    one, which suits a check people will stop reading if it cries wolf.
+    Settled against a real `pw-dump` from the rig (`tests/fixtures/pw-dump-rig.json`)
+    rather than inferred. Two things that capture established:
+
+    - **`node.description` is qpwgraph's label.** `'Audient iD14 Multichannel'`
+      and `'Audient iD14 Analog Surround 4.0'` are exactly the `node=` strings in
+      the committed patchbay, while `node.nick` is `'Audient iD14'` -- the *port
+      alias* prefix, identical across every profile of the device, which is why
+      a port alias alone cannot identify a node.
+    - **The slashed form is a composition**, not a mystery: `fmit` carries
+      `application.name = 'PipeWire ALSA [fmit]'` and
+      `node.description = 'ALSA Capture [fmit]'`, which join to give exactly the
+      `'PipeWire ALSA [fmit]/ALSA Capture [fmit]'` the patchbay names.
+
+    Still generous: a saved name matching any of these counts as live. That errs
+    towards missing a stale link rather than inventing one, which suits a check
+    people stop reading if it cries wolf.
 
     Raises if the graph holds no nodes at all. PipeWire answering with nothing
     is a check that could not look, and reporting every link stale on that would
@@ -445,6 +459,9 @@ def live_node_names(dump: str) -> set[str]:
         found_node = True
         props = _props(obj)
         names.update(props[k] for k in ("node.description", "node.nick", "node.name") if props.get(k))
+        app, desc = props.get("application.name"), props.get("node.description")
+        if app and desc:
+            names.add(f"{app}/{desc}")
     if not found_node:
         raise PatchbayError(["the PipeWire graph holds no nodes — cannot tell what is missing"])
     return names
@@ -541,43 +558,108 @@ def resolve_nodes(
 class NodeCheck:
     """What the live graph says about each node a saved patchbay names.
 
-    Three states, not two. "Present" is a name that matches a live node.
-    "Missing" is a name in a form we know how to match and that matched nothing.
-    "Unevaluated" is a form we do not know how to match, so the honest answer is
-    neither: reporting it missing makes the check fail on a healthy rig, and a
-    check that fails on its first run gets ignored.
+    Four states, because "absent" has four different meanings and only one of
+    them is a fault. Present is a name that matches a live node. The other three
+    are the fields below. Collapsing them is what made this check's first real
+    run report three dead nodes when one was dead, and a check that cries wolf
+    on a healthy rig stops being read.
     """
 
     missing: dict[str, list[Link]]
     unevaluated: dict[str, list[Link]]
+    not_running: dict[str, list[Link]]
 
 
-def _can_match(node: str) -> bool:
-    # qpwgraph shows some clients as "<client>/<node>" (`PipeWire ALSA
-    # [fmit]/ALSA Capture [fmit]` in the committed file). How that string is
-    # composed from PipeWire's properties is not established, so a name of that
-    # shape cannot be judged either way. A device description that really does
-    # contain a slash is still matched first, below, by being live.
-    return "/" not in node
+# Nodes the rig itself provides, which exist only while it is running. Taken
+# from `top.CHILD_NODES` rather than restated, so the two cannot drift.
+#
+# They need their own answer. A `patchbay check` run with the rig down reported
+# `sushi` as "definitely not in the graph" alongside a genuinely dead ALSA
+# profile, and said three nodes were gone when one was -- which buries the only
+# finding that mattered. "Not running" and "no longer exists" are different
+# facts and the check now says which it means.
+def rig_node_names() -> set[str]:
+    from .top import CHILD_NODES
+
+    return {name for names in CHILD_NODES.values() for name in names}
 
 
-def check_nodes(links: list[Link], live: set[str]) -> NodeCheck:
+def _names_child(child: str, node: str) -> bool:
+    """Whether `node` is a name for the rig process `child`.
+
+    Not equality, because qpwgraph does not always write the rig's own name for
+    the node. The tuner appears in the committed patchbay twice: once as `fmit`,
+    and once as `PipeWire ALSA [fmit]/ALSA Capture [fmit]`, where `fmit` survives
+    only as a bracketed token. Both have to answer "this is the tuner".
+
+    Matched on token boundaries rather than as a substring, so `NAM` claims
+    `[NAM]` and `NAM/out` but not a device called `NAMM`.
+    """
+    return re.search(rf"(?<![A-Za-z0-9]){re.escape(child)}(?![A-Za-z0-9])", node) is not None
+
+
+def _rig_child(node: str, rig_nodes: Collection[str]) -> str | None:
+    """Which rig process a saved name refers to, or None if it names a device."""
+    for child in sorted(rig_nodes):
+        if _names_child(child, node):
+            return child
+    return None
+
+
+def check_nodes(
+    links: list[Link], live: set[str], rig_nodes: set[str] | None = None
+) -> NodeCheck:
     """Classify each node the links name against the live node names.
+
+    Three answers, not two, because a node can be absent for three different
+    reasons and only one of them is the user's problem:
+
+    - **missing** — a name that should be there whatever the rig is doing, and
+      is not. A dead ALSA profile. This is the finding.
+    - **not_running** — a name for a rig process that has no live node at all,
+      so absent means the rig is down. Not a fault, and reporting it as one
+      drowns the finding.
+    - **unevaluated** — a name in a form this cannot match. Now empty in
+      practice: qpwgraph's `<client>/<node>` form turned out to be
+      `application.name` + "/" + `node.description`, confirmed against a real
+      `pw-dump`, so `live_node_names` composes it and these match like any other.
+
+    "Rig process with no live node at all" is the careful part. A saved name is
+    only excused while the process it names is absent: with the rig up, the
+    committed patchbay's bare `fmit` matches nothing, because under PipeWire's
+    ALSA layer the tuner presents as `ALSA Capture [fmit]`. That link is dead
+    and gets reported, while the same name with the tuner stopped does not.
 
     A link with both ends in a bad state appears under each. Keyed by node
     because that is what the user acts on: a missing node is one profile or one
     app, however many links it carries.
     """
+    rig = rig_nodes if rig_nodes is not None else rig_node_names()
+    # Which rig processes are up, by their own name appearing in any live node
+    # name. Decided once per check rather than per link.
+    running = {
+        child for child in rig if any(_names_child(child, name) for name in live)
+    }
     missing: dict[str, list[Link]] = {}
     unevaluated: dict[str, list[Link]] = {}
+    not_running: dict[str, list[Link]] = {}
     for link in links:
         for node in (link.out_node, link.in_node):
             if node in live:
                 continue
-            bucket = (missing if _can_match(node) else unevaluated).setdefault(node, [])
+            child = _rig_child(node, rig)
+            if child is not None and child not in running:
+                bucket = not_running.setdefault(node, [])
+            elif "/" in node and not any(n.endswith(f"/{node.split('/', 1)[1]}") for n in live):
+                # A slashed name whose node half is not live either: still
+                # unmatchable rather than a finding, so it is reported but
+                # never fails. Kept for forms we have not seen.
+                bucket = unevaluated.setdefault(node, [])
+            else:
+                bucket = missing.setdefault(node, [])
             if link not in bucket:
                 bucket.append(link)
-    return NodeCheck(missing, unevaluated)
+    return NodeCheck(missing, unevaluated, not_running)
 
 
 # --- effects ------------------------------------------------------------------

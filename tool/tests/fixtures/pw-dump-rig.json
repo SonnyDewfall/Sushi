@@ -1,0 +1,4328 @@
+[
+ {
+  "id": 30,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "clock.id": "monotonic",
+    "clock.name": "clock.system.monotonic",
+    "clock.quantum-limit": 8192,
+    "factory.id": 11,
+    "factory.name": "support.node.driver",
+    "node.driver": true,
+    "node.group": "pipewire.dummy",
+    "node.loop.name": "data-loop.0",
+    "node.name": "Dummy-Driver",
+    "node.sync-group": "sync.dummy",
+    "object.id": 30,
+    "object.serial": 30,
+    "priority.driver": 200000
+   }
+  }
+ },
+ {
+  "id": 31,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "clock.id": "monotonic",
+    "clock.name": "clock.system.monotonic",
+    "clock.quantum-limit": 8192,
+    "factory.id": 11,
+    "factory.name": "support.node.driver",
+    "node.driver": true,
+    "node.freewheel": true,
+    "node.group": "pipewire.freewheel",
+    "node.loop.name": "data-loop.0",
+    "node.name": "Freewheel-Driver",
+    "node.sync-group": "sync.dummy",
+    "object.id": 31,
+    "object.serial": 31,
+    "priority.driver": 190000
+   }
+  }
+ },
+ {
+  "id": 52,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "alsa",
+    "factory.id": 11,
+    "factory.name": "api.alsa.seq.bridge",
+    "media.class": "Midi/Bridge",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "Midi-Bridge",
+    "object.id": 52,
+    "object.serial": 52,
+    "priority.driver": 1,
+    "priority.session": 100
+   }
+  }
+ },
+ {
+  "id": 53,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "format.dsp": "8 bit raw midi",
+    "node.id": 52,
+    "object.id": 53,
+    "object.path": "alsa:seq:default:client_14:playback_0",
+    "object.serial": 53,
+    "port.alias": "Midi Through:Midi Through Port-0",
+    "port.direction": "in",
+    "port.group": "client_14",
+    "port.id": 0,
+    "port.name": "Midi Through: Port-0 (playback)",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 54,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "format.dsp": "8 bit raw midi",
+    "node.id": 52,
+    "object.id": 54,
+    "object.path": "alsa:seq:default:client_14:capture_0",
+    "object.serial": 54,
+    "port.alias": "Midi Through:Midi Through Port-0",
+    "port.direction": "out",
+    "port.group": "client_14",
+    "port.id": 0,
+    "port.name": "Midi Through: Port-0 (capture)",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 61,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "api.bluez5.role": "server",
+    "api.glib.mainloop": true,
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "bluez5",
+    "factory.id": 14,
+    "factory.name": "api.bluez5.midi.node",
+    "media.class": "Midi/Bridge",
+    "node.description": "BLE MIDI 1",
+    "node.loop.name": "data-loop.0",
+    "node.name": "bluez_midi.server",
+    "object.id": 61,
+    "object.serial": 61
+   }
+  }
+ },
+ {
+  "id": 62,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "format.dsp": "8 bit raw midi",
+    "node.id": 61,
+    "object.id": 62,
+    "object.path": "bluez_midi.server:input_0",
+    "object.serial": 62,
+    "port.alias": "in",
+    "port.direction": "in",
+    "port.group": "group.0",
+    "port.id": 0,
+    "port.name": "in",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 63,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "format.dsp": "8 bit raw midi",
+    "node.id": 61,
+    "object.id": 63,
+    "object.path": "bluez_midi.server:output_0",
+    "object.serial": 63,
+    "port.alias": "out",
+    "port.direction": "out",
+    "port.group": "group.0",
+    "port.id": 0,
+    "port.name": "out",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 132,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "alsa.card": 4,
+    "alsa.card_name": "sof-soundwire",
+    "alsa.class": "generic",
+    "alsa.components": "HDA:8086281c,80860101,00100000  cfg-amp:2 spk:rt1316 mic:rt715-sdca",
+    "alsa.device": 2,
+    "alsa.driver_name": "snd_soc_sof_sdw",
+    "alsa.id": "sofsoundwire",
+    "alsa.long_card_name": "DellInc.-XPS9320-0V0059",
+    "alsa.mixer_device": "_ucm0009.hw:sofsoundwire",
+    "alsa.mixer_name": "Intel Alderlake-P HDMI",
+    "alsa.name": "",
+    "alsa.resolution_bits": 16,
+    "alsa.subclass": "generic-mix",
+    "alsa.subdevice": 0,
+    "alsa.subdevice_name": "subdevice #0",
+    "alsa.sync.id": "00000000:00000000:00000000:00000000",
+    "api.alsa.card.longname": "DellInc.-XPS9320-0V0059",
+    "api.alsa.card.name": "sof-soundwire",
+    "api.alsa.open.ucm": true,
+    "api.alsa.path": "hw:sofsoundwire,2",
+    "api.alsa.pcm.card": 4,
+    "api.alsa.pcm.stream": "playback",
+    "audio.channels": 2,
+    "audio.position": "[ FL, FR ]",
+    "card.profile.device": 0,
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "alsa",
+    "device.bus": "pci",
+    "device.class": "sound",
+    "device.icon-name": "audio-card-analog",
+    "device.icon_name": "audio-speakers",
+    "device.id": 130,
+    "device.profile.description": "Speaker",
+    "device.profile.name": "HiFi: Speaker: sink",
+    "device.routes": 1,
+    "factory.id": 19,
+    "factory.name": "api.alsa.pcm.sink",
+    "library.name": "audioconvert/libspa-audioconvert",
+    "media.class": "Audio/Sink",
+    "node.description": "Alder Lake PCH-P High Definition Audio Controller Speaker",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "alsa_output.pci-0000_00_1f.3-platform-sof_sdw.HiFi__Speaker__sink",
+    "node.nick": "Speaker",
+    "node.pause-on-idle": false,
+    "object.id": 132,
+    "object.path": "alsa:acp:sofsoundwire:0:playback",
+    "object.serial": 137,
+    "port.group": "playback",
+    "priority.driver": 712,
+    "priority.session": 712
+   }
+  }
+ },
+ {
+  "id": 133,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "alsa.card": 4,
+    "alsa.card_name": "sof-soundwire",
+    "alsa.class": "generic",
+    "alsa.components": "HDA:8086281c,80860101,00100000  cfg-amp:2 spk:rt1316 mic:rt715-sdca",
+    "alsa.device": 5,
+    "alsa.driver_name": "snd_soc_sof_sdw",
+    "alsa.id": "sofsoundwire",
+    "alsa.long_card_name": "DellInc.-XPS9320-0V0059",
+    "alsa.mixer_device": "_ucm0009.hw:sofsoundwire",
+    "alsa.mixer_name": "Intel Alderlake-P HDMI",
+    "alsa.name": "BenQ GW2780",
+    "alsa.resolution_bits": 16,
+    "alsa.subclass": "generic-mix",
+    "alsa.subdevice": 0,
+    "alsa.subdevice_name": "subdevice #0",
+    "alsa.sync.id": "00000000:00000000:00000000:00000000",
+    "api.alsa.card.longname": "DellInc.-XPS9320-0V0059",
+    "api.alsa.card.name": "sof-soundwire",
+    "api.alsa.open.ucm": true,
+    "api.alsa.path": "hw:sofsoundwire,5",
+    "api.alsa.pcm.card": 4,
+    "api.alsa.pcm.stream": "playback",
+    "audio.channels": 2,
+    "audio.position": "[ FL, FR ]",
+    "card.profile.device": 1,
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "alsa",
+    "device.bus": "pci",
+    "device.class": "sound",
+    "device.icon-name": "audio-card-analog",
+    "device.icon_name": "video-display",
+    "device.id": 130,
+    "device.profile.description": "HDMI / DisplayPort 1 Output",
+    "device.profile.name": "HiFi: HDMI1: sink",
+    "device.routes": 1,
+    "factory.id": 19,
+    "factory.name": "api.alsa.pcm.sink",
+    "iec958.codecs": "[\"PCM\"]",
+    "library.name": "audioconvert/libspa-audioconvert",
+    "media.class": "Audio/Sink",
+    "node.description": "Alder Lake PCH-P High Definition Audio Controller HDMI / DisplayPort 1 Output",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "alsa_output.pci-0000_00_1f.3-platform-sof_sdw.HiFi__HDMI1__sink",
+    "node.nick": "BenQ GW2780",
+    "node.pause-on-idle": false,
+    "object.id": 133,
+    "object.path": "alsa:acp:sofsoundwire:1:playback",
+    "object.serial": 138,
+    "port.group": "playback",
+    "priority.driver": 664,
+    "priority.session": 664
+   }
+  }
+ },
+ {
+  "id": 134,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "alsa.card": 4,
+    "alsa.card_name": "sof-soundwire",
+    "alsa.class": "generic",
+    "alsa.components": "HDA:8086281c,80860101,00100000  cfg-amp:2 spk:rt1316 mic:rt715-sdca",
+    "alsa.device": 6,
+    "alsa.driver_name": "snd_soc_sof_sdw",
+    "alsa.id": "sofsoundwire",
+    "alsa.long_card_name": "DellInc.-XPS9320-0V0059",
+    "alsa.mixer_device": "_ucm0009.hw:sofsoundwire",
+    "alsa.mixer_name": "Intel Alderlake-P HDMI",
+    "alsa.name": "BenQ GW2780",
+    "alsa.resolution_bits": 16,
+    "alsa.subclass": "generic-mix",
+    "alsa.subdevice": 0,
+    "alsa.subdevice_name": "subdevice #0",
+    "alsa.sync.id": "00000000:00000000:00000000:00000000",
+    "api.alsa.card.longname": "DellInc.-XPS9320-0V0059",
+    "api.alsa.card.name": "sof-soundwire",
+    "api.alsa.open.ucm": true,
+    "api.alsa.path": "hw:sofsoundwire,6",
+    "api.alsa.pcm.card": 4,
+    "api.alsa.pcm.stream": "playback",
+    "audio.channels": 2,
+    "audio.position": "[ FL, FR ]",
+    "card.profile.device": 2,
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "alsa",
+    "device.bus": "pci",
+    "device.class": "sound",
+    "device.icon-name": "audio-card-analog",
+    "device.icon_name": "video-display",
+    "device.id": 130,
+    "device.profile.description": "HDMI / DisplayPort 2 Output",
+    "device.profile.name": "HiFi: HDMI2: sink",
+    "device.routes": 1,
+    "factory.id": 19,
+    "factory.name": "api.alsa.pcm.sink",
+    "iec958.codecs": "[\"PCM\"]",
+    "library.name": "audioconvert/libspa-audioconvert",
+    "media.class": "Audio/Sink",
+    "node.description": "Alder Lake PCH-P High Definition Audio Controller HDMI / DisplayPort 2 Output",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "alsa_output.pci-0000_00_1f.3-platform-sof_sdw.HiFi__HDMI2__sink",
+    "node.nick": "BenQ GW2780",
+    "node.pause-on-idle": false,
+    "object.id": 134,
+    "object.path": "alsa:acp:sofsoundwire:2:playback",
+    "object.serial": 139,
+    "port.group": "playback",
+    "priority.driver": 648,
+    "priority.session": 648
+   }
+  }
+ },
+ {
+  "id": 135,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "alsa.card": 4,
+    "alsa.card_name": "sof-soundwire",
+    "alsa.class": "generic",
+    "alsa.components": "HDA:8086281c,80860101,00100000  cfg-amp:2 spk:rt1316 mic:rt715-sdca",
+    "alsa.device": 7,
+    "alsa.driver_name": "snd_soc_sof_sdw",
+    "alsa.id": "sofsoundwire",
+    "alsa.long_card_name": "DellInc.-XPS9320-0V0059",
+    "alsa.mixer_device": "_ucm0009.hw:sofsoundwire",
+    "alsa.mixer_name": "Intel Alderlake-P HDMI",
+    "alsa.name": "HDMI 3",
+    "alsa.resolution_bits": 16,
+    "alsa.subclass": "generic-mix",
+    "alsa.subdevice": 0,
+    "alsa.subdevice_name": "subdevice #0",
+    "alsa.sync.id": "00000000:00000000:00000000:00000000",
+    "api.alsa.card.longname": "DellInc.-XPS9320-0V0059",
+    "api.alsa.card.name": "sof-soundwire",
+    "api.alsa.open.ucm": true,
+    "api.alsa.path": "hw:sofsoundwire,7",
+    "api.alsa.pcm.card": 4,
+    "api.alsa.pcm.stream": "playback",
+    "audio.channels": 2,
+    "audio.position": "[ FL, FR ]",
+    "card.profile.device": 3,
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "alsa",
+    "device.bus": "pci",
+    "device.class": "sound",
+    "device.icon-name": "audio-card-analog",
+    "device.icon_name": "video-display",
+    "device.id": 130,
+    "device.profile.description": "HDMI / DisplayPort 3 Output",
+    "device.profile.name": "HiFi: HDMI3: sink",
+    "device.routes": 1,
+    "factory.id": 19,
+    "factory.name": "api.alsa.pcm.sink",
+    "library.name": "audioconvert/libspa-audioconvert",
+    "media.class": "Audio/Sink",
+    "node.description": "Alder Lake PCH-P High Definition Audio Controller HDMI / DisplayPort 3 Output",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "alsa_output.pci-0000_00_1f.3-platform-sof_sdw.HiFi__HDMI3__sink",
+    "node.nick": "HDMI 3",
+    "node.pause-on-idle": false,
+    "object.id": 135,
+    "object.path": "alsa:acp:sofsoundwire:3:playback",
+    "object.serial": 140,
+    "port.group": "playback",
+    "priority.driver": 632,
+    "priority.session": 632
+   }
+  }
+ },
+ {
+  "id": 136,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "alsa.card": 4,
+    "alsa.card_name": "sof-soundwire",
+    "alsa.class": "generic",
+    "alsa.components": "HDA:8086281c,80860101,00100000  cfg-amp:2 spk:rt1316 mic:rt715-sdca",
+    "alsa.device": 4,
+    "alsa.driver_name": "snd_soc_sof_sdw",
+    "alsa.id": "sofsoundwire",
+    "alsa.long_card_name": "DellInc.-XPS9320-0V0059",
+    "alsa.mixer_device": "_ucm0009.hw:sofsoundwire",
+    "alsa.mixer_name": "Intel Alderlake-P HDMI",
+    "alsa.name": "",
+    "alsa.resolution_bits": 16,
+    "alsa.subclass": "generic-mix",
+    "alsa.subdevice": 0,
+    "alsa.subdevice_name": "subdevice #0",
+    "alsa.sync.id": "00000000:00000000:00000000:00000000",
+    "api.alsa.card.longname": "DellInc.-XPS9320-0V0059",
+    "api.alsa.card.name": "sof-soundwire",
+    "api.alsa.open.ucm": true,
+    "api.alsa.path": "hw:sofsoundwire,4",
+    "api.alsa.pcm.card": 4,
+    "api.alsa.pcm.stream": "capture",
+    "audio.channels": 2,
+    "audio.position": "[ FL, FR ]",
+    "card.profile.device": 4,
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "alsa",
+    "device.bus": "pci",
+    "device.class": "sound",
+    "device.icon-name": "audio-card-analog",
+    "device.icon_name": "audio-input-microphone",
+    "device.id": 130,
+    "device.profile.description": "SoundWire microphones",
+    "device.profile.name": "HiFi: Mic: source",
+    "device.routes": 1,
+    "factory.id": 19,
+    "factory.name": "api.alsa.pcm.source",
+    "library.name": "audioconvert/libspa-audioconvert",
+    "media.class": "Audio/Source",
+    "node.description": "Alder Lake PCH-P High Definition Audio Controller SoundWire microphones",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "alsa_input.pci-0000_00_1f.3-platform-sof_sdw.HiFi__Mic__source",
+    "node.nick": "SoundWire microphones",
+    "node.pause-on-idle": false,
+    "object.id": 136,
+    "object.path": "alsa:acp:sofsoundwire:4:capture",
+    "object.serial": 141,
+    "port.group": "capture",
+    "priority.driver": 1680,
+    "priority.session": 1680
+   }
+  }
+ },
+ {
+  "id": 137,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "FL",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 132,
+    "object.id": 137,
+    "object.path": "alsa:acp:sofsoundwire:0:playback:playback_0",
+    "object.serial": 142,
+    "port.alias": "Speaker:playback_FL",
+    "port.direction": "in",
+    "port.group": "playback",
+    "port.id": 0,
+    "port.name": "playback_FL",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 138,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "FR",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 132,
+    "object.id": 138,
+    "object.path": "alsa:acp:sofsoundwire:0:playback:playback_1",
+    "object.serial": 143,
+    "port.alias": "Speaker:playback_FR",
+    "port.direction": "in",
+    "port.group": "playback",
+    "port.id": 1,
+    "port.name": "playback_FR",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 139,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "FL",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 132,
+    "object.id": 139,
+    "object.path": "alsa:acp:sofsoundwire:0:playback:monitor_0",
+    "object.serial": 144,
+    "port.alias": "Speaker:monitor_FL",
+    "port.direction": "out",
+    "port.group": "playback",
+    "port.id": 0,
+    "port.monitor": true,
+    "port.name": "monitor_FL"
+   }
+  }
+ },
+ {
+  "id": 140,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "FR",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 132,
+    "object.id": 140,
+    "object.path": "alsa:acp:sofsoundwire:0:playback:monitor_1",
+    "object.serial": 145,
+    "port.alias": "Speaker:monitor_FR",
+    "port.direction": "out",
+    "port.group": "playback",
+    "port.id": 1,
+    "port.monitor": true,
+    "port.name": "monitor_FR"
+   }
+  }
+ },
+ {
+  "id": 141,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "FL",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 133,
+    "object.id": 141,
+    "object.path": "alsa:acp:sofsoundwire:1:playback:playback_0",
+    "object.serial": 146,
+    "port.alias": "BenQ GW2780:playback_FL",
+    "port.direction": "in",
+    "port.group": "playback",
+    "port.id": 0,
+    "port.name": "playback_FL",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 142,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "FR",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 133,
+    "object.id": 142,
+    "object.path": "alsa:acp:sofsoundwire:1:playback:playback_1",
+    "object.serial": 147,
+    "port.alias": "BenQ GW2780:playback_FR",
+    "port.direction": "in",
+    "port.group": "playback",
+    "port.id": 1,
+    "port.name": "playback_FR",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 143,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "FL",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 133,
+    "object.id": 143,
+    "object.path": "alsa:acp:sofsoundwire:1:playback:monitor_0",
+    "object.serial": 148,
+    "port.alias": "BenQ GW2780:monitor_FL",
+    "port.direction": "out",
+    "port.group": "playback",
+    "port.id": 0,
+    "port.monitor": true,
+    "port.name": "monitor_FL"
+   }
+  }
+ },
+ {
+  "id": 144,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "FR",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 133,
+    "object.id": 144,
+    "object.path": "alsa:acp:sofsoundwire:1:playback:monitor_1",
+    "object.serial": 149,
+    "port.alias": "BenQ GW2780:monitor_FR",
+    "port.direction": "out",
+    "port.group": "playback",
+    "port.id": 1,
+    "port.monitor": true,
+    "port.name": "monitor_FR"
+   }
+  }
+ },
+ {
+  "id": 145,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "FL",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 134,
+    "object.id": 145,
+    "object.path": "alsa:acp:sofsoundwire:2:playback:playback_0",
+    "object.serial": 150,
+    "port.alias": "BenQ GW2780:playback_FL",
+    "port.direction": "in",
+    "port.group": "playback",
+    "port.id": 0,
+    "port.name": "playback_FL",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 146,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "FR",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 134,
+    "object.id": 146,
+    "object.path": "alsa:acp:sofsoundwire:2:playback:playback_1",
+    "object.serial": 151,
+    "port.alias": "BenQ GW2780:playback_FR",
+    "port.direction": "in",
+    "port.group": "playback",
+    "port.id": 1,
+    "port.name": "playback_FR",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 147,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "FL",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 134,
+    "object.id": 147,
+    "object.path": "alsa:acp:sofsoundwire:2:playback:monitor_0",
+    "object.serial": 152,
+    "port.alias": "BenQ GW2780:monitor_FL",
+    "port.direction": "out",
+    "port.group": "playback",
+    "port.id": 0,
+    "port.monitor": true,
+    "port.name": "monitor_FL"
+   }
+  }
+ },
+ {
+  "id": 148,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "FR",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 134,
+    "object.id": 148,
+    "object.path": "alsa:acp:sofsoundwire:2:playback:monitor_1",
+    "object.serial": 153,
+    "port.alias": "BenQ GW2780:monitor_FR",
+    "port.direction": "out",
+    "port.group": "playback",
+    "port.id": 1,
+    "port.monitor": true,
+    "port.name": "monitor_FR"
+   }
+  }
+ },
+ {
+  "id": 149,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "FL",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 135,
+    "object.id": 149,
+    "object.path": "alsa:acp:sofsoundwire:3:playback:playback_0",
+    "object.serial": 154,
+    "port.alias": "HDMI 3:playback_FL",
+    "port.direction": "in",
+    "port.group": "playback",
+    "port.id": 0,
+    "port.name": "playback_FL",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 150,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "FR",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 135,
+    "object.id": 150,
+    "object.path": "alsa:acp:sofsoundwire:3:playback:playback_1",
+    "object.serial": 155,
+    "port.alias": "HDMI 3:playback_FR",
+    "port.direction": "in",
+    "port.group": "playback",
+    "port.id": 1,
+    "port.name": "playback_FR",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 151,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "FL",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 135,
+    "object.id": 151,
+    "object.path": "alsa:acp:sofsoundwire:3:playback:monitor_0",
+    "object.serial": 156,
+    "port.alias": "HDMI 3:monitor_FL",
+    "port.direction": "out",
+    "port.group": "playback",
+    "port.id": 0,
+    "port.monitor": true,
+    "port.name": "monitor_FL"
+   }
+  }
+ },
+ {
+  "id": 152,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "FR",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 135,
+    "object.id": 152,
+    "object.path": "alsa:acp:sofsoundwire:3:playback:monitor_1",
+    "object.serial": 157,
+    "port.alias": "HDMI 3:monitor_FR",
+    "port.direction": "out",
+    "port.group": "playback",
+    "port.id": 1,
+    "port.monitor": true,
+    "port.name": "monitor_FR"
+   }
+  }
+ },
+ {
+  "id": 153,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "FL",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 136,
+    "object.id": 153,
+    "object.path": "alsa:acp:sofsoundwire:4:capture:capture_0",
+    "object.serial": 158,
+    "port.alias": "SoundWire microphones:capture_FL",
+    "port.direction": "out",
+    "port.group": "capture",
+    "port.id": 0,
+    "port.name": "capture_FL",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 154,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "FR",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 136,
+    "object.id": 154,
+    "object.path": "alsa:acp:sofsoundwire:4:capture:capture_1",
+    "object.serial": 159,
+    "port.alias": "SoundWire microphones:capture_FR",
+    "port.direction": "out",
+    "port.group": "capture",
+    "port.id": 1,
+    "port.name": "capture_FR",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 159,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "api.v4l2.cap.bus_info": "PCI:0000:00:05.0",
+    "api.v4l2.cap.capabilities": "0xa4a00001",
+    "api.v4l2.cap.card": "ipu6",
+    "api.v4l2.cap.device-caps": "0x24a00001",
+    "api.v4l2.cap.driver": "isys",
+    "api.v4l2.cap.version": "7.0.14",
+    "api.v4l2.path": "/dev/video21",
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "v4l2",
+    "device.devids": "[ 20757 ]",
+    "device.id": 98,
+    "factory.id": 11,
+    "factory.name": "api.v4l2.source",
+    "media.class": "Video/Source",
+    "media.role": "Camera",
+    "node.description": "ipu6 (V4L2)",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "v4l2_input.pci-0000_00_05.0",
+    "node.nick": "ipu6",
+    "node.pause-on-idle": false,
+    "object.id": 159,
+    "object.path": "v4l2:/dev/video21",
+    "object.serial": 164,
+    "priority.session": 790
+   }
+  }
+ },
+ {
+  "id": 160,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "node.id": 159,
+    "object.id": 160,
+    "object.path": "v4l2:/dev/video21:capture_0",
+    "object.serial": 165,
+    "port.alias": "ipu6:capture_1",
+    "port.direction": "out",
+    "port.group": "stream.0",
+    "port.id": 0,
+    "port.name": "capture_1",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 161,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "api.v4l2.cap.bus_info": "PCI:0000:00:05.0",
+    "api.v4l2.cap.capabilities": "0xa4a00001",
+    "api.v4l2.cap.card": "ipu6",
+    "api.v4l2.cap.device-caps": "0x24a00001",
+    "api.v4l2.cap.driver": "isys",
+    "api.v4l2.cap.version": "7.0.14",
+    "api.v4l2.path": "/dev/video33",
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "v4l2",
+    "device.devids": "[ 20769 ]",
+    "device.id": 99,
+    "factory.id": 11,
+    "factory.name": "api.v4l2.source",
+    "media.class": "Video/Source",
+    "media.role": "Camera",
+    "node.description": "ipu6 (V4L2)",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "v4l2_input.pci-0000_00_05.0.2",
+    "node.nick": "ipu6",
+    "node.pause-on-idle": false,
+    "object.id": 161,
+    "object.path": "v4l2:/dev/video33",
+    "object.serial": 166,
+    "priority.session": 670
+   }
+  }
+ },
+ {
+  "id": 162,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "node.id": 161,
+    "object.id": 162,
+    "object.path": "v4l2:/dev/video33:capture_0",
+    "object.serial": 167,
+    "port.alias": "ipu6:capture_1",
+    "port.direction": "out",
+    "port.group": "stream.0",
+    "port.id": 0,
+    "port.name": "capture_1",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 163,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "api.v4l2.cap.bus_info": "PCI:0000:00:05.0",
+    "api.v4l2.cap.capabilities": "0xa4a00001",
+    "api.v4l2.cap.card": "ipu6",
+    "api.v4l2.cap.device-caps": "0x24a00001",
+    "api.v4l2.cap.driver": "isys",
+    "api.v4l2.cap.version": "7.0.14",
+    "api.v4l2.path": "/dev/video29",
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "v4l2",
+    "device.devids": "[ 20765 ]",
+    "device.id": 100,
+    "factory.id": 11,
+    "factory.name": "api.v4l2.source",
+    "media.class": "Video/Source",
+    "media.role": "Camera",
+    "node.description": "ipu6 (V4L2)",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "v4l2_input.pci-0000_00_05.0.2",
+    "node.nick": "ipu6",
+    "node.pause-on-idle": false,
+    "object.id": 163,
+    "object.path": "v4l2:/dev/video29",
+    "object.serial": 168,
+    "priority.session": 710
+   }
+  }
+ },
+ {
+  "id": 164,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "node.id": 163,
+    "object.id": 164,
+    "object.path": "v4l2:/dev/video29:capture_0",
+    "object.serial": 169,
+    "port.alias": "ipu6:capture_1",
+    "port.direction": "out",
+    "port.group": "stream.0",
+    "port.id": 0,
+    "port.name": "capture_1",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 165,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "api.v4l2.cap.bus_info": "PCI:0000:00:05.0",
+    "api.v4l2.cap.capabilities": "0xa4a00001",
+    "api.v4l2.cap.card": "ipu6",
+    "api.v4l2.cap.device-caps": "0x24a00001",
+    "api.v4l2.cap.driver": "isys",
+    "api.v4l2.cap.version": "7.0.14",
+    "api.v4l2.path": "/dev/video30",
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "v4l2",
+    "device.devids": "[ 20766 ]",
+    "device.id": 101,
+    "factory.id": 11,
+    "factory.name": "api.v4l2.source",
+    "media.class": "Video/Source",
+    "media.role": "Camera",
+    "node.description": "ipu6 (V4L2)",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "v4l2_input.pci-0000_00_05.0.3",
+    "node.nick": "ipu6",
+    "node.pause-on-idle": false,
+    "object.id": 165,
+    "object.path": "v4l2:/dev/video30",
+    "object.serial": 170,
+    "priority.session": 700
+   }
+  }
+ },
+ {
+  "id": 166,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "node.id": 165,
+    "object.id": 166,
+    "object.path": "v4l2:/dev/video30:capture_0",
+    "object.serial": 171,
+    "port.alias": "ipu6:capture_1",
+    "port.direction": "out",
+    "port.group": "stream.0",
+    "port.id": 0,
+    "port.name": "capture_1",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 167,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "api.v4l2.cap.bus_info": "PCI:0000:00:05.0",
+    "api.v4l2.cap.capabilities": "0xa4a00001",
+    "api.v4l2.cap.card": "ipu6",
+    "api.v4l2.cap.device-caps": "0x24a00001",
+    "api.v4l2.cap.driver": "isys",
+    "api.v4l2.cap.version": "7.0.14",
+    "api.v4l2.path": "/dev/video23",
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "v4l2",
+    "device.devids": "[ 20759 ]",
+    "device.id": 102,
+    "factory.id": 11,
+    "factory.name": "api.v4l2.source",
+    "media.class": "Video/Source",
+    "media.role": "Camera",
+    "node.description": "ipu6 (V4L2)",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "v4l2_input.pci-0000_00_05.0.2",
+    "node.nick": "ipu6",
+    "node.pause-on-idle": false,
+    "object.id": 167,
+    "object.path": "v4l2:/dev/video23",
+    "object.serial": 172,
+    "priority.session": 770
+   }
+  }
+ },
+ {
+  "id": 168,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "node.id": 167,
+    "object.id": 168,
+    "object.path": "v4l2:/dev/video23:capture_0",
+    "object.serial": 173,
+    "port.alias": "ipu6:capture_1",
+    "port.direction": "out",
+    "port.group": "stream.0",
+    "port.id": 0,
+    "port.name": "capture_1",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 169,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "api.v4l2.cap.bus_info": "PCI:0000:00:05.0",
+    "api.v4l2.cap.capabilities": "0xa4a00001",
+    "api.v4l2.cap.card": "ipu6",
+    "api.v4l2.cap.device-caps": "0x24a00001",
+    "api.v4l2.cap.driver": "isys",
+    "api.v4l2.cap.version": "7.0.14",
+    "api.v4l2.path": "/dev/video8",
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "v4l2",
+    "device.devids": "[ 20744 ]",
+    "device.id": 103,
+    "factory.id": 11,
+    "factory.name": "api.v4l2.source",
+    "media.class": "Video/Source",
+    "media.role": "Camera",
+    "node.description": "ipu6 (V4L2)",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "v4l2_input.pci-0000_00_05.0",
+    "node.nick": "ipu6",
+    "node.pause-on-idle": false,
+    "object.id": 169,
+    "object.path": "v4l2:/dev/video8",
+    "object.serial": 174,
+    "priority.session": 920
+   }
+  }
+ },
+ {
+  "id": 170,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "node.id": 169,
+    "object.id": 170,
+    "object.path": "v4l2:/dev/video8:capture_0",
+    "object.serial": 175,
+    "port.alias": "ipu6:capture_1",
+    "port.direction": "out",
+    "port.group": "stream.0",
+    "port.id": 0,
+    "port.name": "capture_1",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 171,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "api.v4l2.cap.bus_info": "PCI:0000:00:05.0",
+    "api.v4l2.cap.capabilities": "0xa4a00001",
+    "api.v4l2.cap.card": "ipu6",
+    "api.v4l2.cap.device-caps": "0x24a00001",
+    "api.v4l2.cap.driver": "isys",
+    "api.v4l2.cap.version": "7.0.14",
+    "api.v4l2.path": "/dev/video16",
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "v4l2",
+    "device.devids": "[ 20752 ]",
+    "device.id": 104,
+    "factory.id": 11,
+    "factory.name": "api.v4l2.source",
+    "media.class": "Video/Source",
+    "media.role": "Camera",
+    "node.description": "ipu6 (V4L2)",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "v4l2_input.pci-0000_00_05.0.2",
+    "node.nick": "ipu6",
+    "node.pause-on-idle": false,
+    "object.id": 171,
+    "object.path": "v4l2:/dev/video16",
+    "object.serial": 176,
+    "priority.session": 840
+   }
+  }
+ },
+ {
+  "id": 172,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "node.id": 171,
+    "object.id": 172,
+    "object.path": "v4l2:/dev/video16:capture_0",
+    "object.serial": 177,
+    "port.alias": "ipu6:capture_1",
+    "port.direction": "out",
+    "port.group": "stream.0",
+    "port.id": 0,
+    "port.name": "capture_1",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 173,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "api.v4l2.cap.bus_info": "PCI:0000:00:05.0",
+    "api.v4l2.cap.capabilities": "0xa4a00001",
+    "api.v4l2.cap.card": "ipu6",
+    "api.v4l2.cap.device-caps": "0x24a00001",
+    "api.v4l2.cap.driver": "isys",
+    "api.v4l2.cap.version": "7.0.14",
+    "api.v4l2.path": "/dev/video35",
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "v4l2",
+    "device.devids": "[ 20771 ]",
+    "device.id": 105,
+    "factory.id": 11,
+    "factory.name": "api.v4l2.source",
+    "media.class": "Video/Source",
+    "media.role": "Camera",
+    "node.description": "ipu6 (V4L2)",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "v4l2_input.pci-0000_00_05.0.4",
+    "node.nick": "ipu6",
+    "node.pause-on-idle": false,
+    "object.id": 173,
+    "object.path": "v4l2:/dev/video35",
+    "object.serial": 178,
+    "priority.session": 650
+   }
+  }
+ },
+ {
+  "id": 174,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "node.id": 173,
+    "object.id": 174,
+    "object.path": "v4l2:/dev/video35:capture_0",
+    "object.serial": 179,
+    "port.alias": "ipu6:capture_1",
+    "port.direction": "out",
+    "port.group": "stream.0",
+    "port.id": 0,
+    "port.name": "capture_1",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 175,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "api.v4l2.cap.bus_info": "PCI:0000:00:05.0",
+    "api.v4l2.cap.capabilities": "0xa4a00001",
+    "api.v4l2.cap.card": "ipu6",
+    "api.v4l2.cap.device-caps": "0x24a00001",
+    "api.v4l2.cap.driver": "isys",
+    "api.v4l2.cap.version": "7.0.14",
+    "api.v4l2.path": "/dev/video9",
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "v4l2",
+    "device.devids": "[ 20745 ]",
+    "device.id": 106,
+    "factory.id": 11,
+    "factory.name": "api.v4l2.source",
+    "media.class": "Video/Source",
+    "media.role": "Camera",
+    "node.description": "ipu6 (V4L2)",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "v4l2_input.pci-0000_00_05.0.2",
+    "node.nick": "ipu6",
+    "node.pause-on-idle": false,
+    "object.id": 175,
+    "object.path": "v4l2:/dev/video9",
+    "object.serial": 180,
+    "priority.session": 910
+   }
+  }
+ },
+ {
+  "id": 176,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "node.id": 175,
+    "object.id": 176,
+    "object.path": "v4l2:/dev/video9:capture_0",
+    "object.serial": 181,
+    "port.alias": "ipu6:capture_1",
+    "port.direction": "out",
+    "port.group": "stream.0",
+    "port.id": 0,
+    "port.name": "capture_1",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 177,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "api.v4l2.cap.bus_info": "PCI:0000:00:05.0",
+    "api.v4l2.cap.capabilities": "0xa4a00001",
+    "api.v4l2.cap.card": "ipu6",
+    "api.v4l2.cap.device-caps": "0x24a00001",
+    "api.v4l2.cap.driver": "isys",
+    "api.v4l2.cap.version": "7.0.14",
+    "api.v4l2.path": "/dev/video25",
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "v4l2",
+    "device.devids": "[ 20761 ]",
+    "device.id": 107,
+    "factory.id": 11,
+    "factory.name": "api.v4l2.source",
+    "media.class": "Video/Source",
+    "media.role": "Camera",
+    "node.description": "ipu6 (V4L2)",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "v4l2_input.pci-0000_00_05.0.3",
+    "node.nick": "ipu6",
+    "node.pause-on-idle": false,
+    "object.id": 177,
+    "object.path": "v4l2:/dev/video25",
+    "object.serial": 182,
+    "priority.session": 750
+   }
+  }
+ },
+ {
+  "id": 178,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "node.id": 177,
+    "object.id": 178,
+    "object.path": "v4l2:/dev/video25:capture_0",
+    "object.serial": 183,
+    "port.alias": "ipu6:capture_1",
+    "port.direction": "out",
+    "port.group": "stream.0",
+    "port.id": 0,
+    "port.name": "capture_1",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 179,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "api.v4l2.cap.bus_info": "PCI:0000:00:05.0",
+    "api.v4l2.cap.capabilities": "0xa4a00001",
+    "api.v4l2.cap.card": "ipu6",
+    "api.v4l2.cap.device-caps": "0x24a00001",
+    "api.v4l2.cap.driver": "isys",
+    "api.v4l2.cap.version": "7.0.14",
+    "api.v4l2.path": "/dev/video13",
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "v4l2",
+    "device.devids": "[ 20749 ]",
+    "device.id": 108,
+    "factory.id": 11,
+    "factory.name": "api.v4l2.source",
+    "media.class": "Video/Source",
+    "media.role": "Camera",
+    "node.description": "ipu6 (V4L2)",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "v4l2_input.pci-0000_00_05.0.3",
+    "node.nick": "ipu6",
+    "node.pause-on-idle": false,
+    "object.id": 179,
+    "object.path": "v4l2:/dev/video13",
+    "object.serial": 184,
+    "priority.session": 870
+   }
+  }
+ },
+ {
+  "id": 180,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "node.id": 179,
+    "object.id": 180,
+    "object.path": "v4l2:/dev/video13:capture_0",
+    "object.serial": 185,
+    "port.alias": "ipu6:capture_1",
+    "port.direction": "out",
+    "port.group": "stream.0",
+    "port.id": 0,
+    "port.name": "capture_1",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 181,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "api.v4l2.cap.bus_info": "PCI:0000:00:05.0",
+    "api.v4l2.cap.capabilities": "0xa4a00001",
+    "api.v4l2.cap.card": "ipu6",
+    "api.v4l2.cap.device-caps": "0x24a00001",
+    "api.v4l2.cap.driver": "isys",
+    "api.v4l2.cap.version": "7.0.14",
+    "api.v4l2.path": "/dev/video5",
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "v4l2",
+    "device.devids": "[ 20741 ]",
+    "device.id": 109,
+    "factory.id": 11,
+    "factory.name": "api.v4l2.source",
+    "media.class": "Video/Source",
+    "media.role": "Camera",
+    "node.description": "ipu6 (V4L2)",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "v4l2_input.pci-0000_00_05.0",
+    "node.nick": "ipu6",
+    "node.pause-on-idle": false,
+    "object.id": 181,
+    "object.path": "v4l2:/dev/video5",
+    "object.serial": 186,
+    "priority.session": 950
+   }
+  }
+ },
+ {
+  "id": 182,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "node.id": 181,
+    "object.id": 182,
+    "object.path": "v4l2:/dev/video5:capture_0",
+    "object.serial": 187,
+    "port.alias": "ipu6:capture_1",
+    "port.direction": "out",
+    "port.group": "stream.0",
+    "port.id": 0,
+    "port.name": "capture_1",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 183,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "api.v4l2.cap.bus_info": "PCI:0000:00:05.0",
+    "api.v4l2.cap.capabilities": "0xa4a00001",
+    "api.v4l2.cap.card": "ipu6",
+    "api.v4l2.cap.device-caps": "0x24a00001",
+    "api.v4l2.cap.driver": "isys",
+    "api.v4l2.cap.version": "7.0.14",
+    "api.v4l2.path": "/dev/video11",
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "v4l2",
+    "device.devids": "[ 20747 ]",
+    "device.id": 110,
+    "factory.id": 11,
+    "factory.name": "api.v4l2.source",
+    "media.class": "Video/Source",
+    "media.role": "Camera",
+    "node.description": "ipu6 (V4L2)",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "v4l2_input.pci-0000_00_05.0.3",
+    "node.nick": "ipu6",
+    "node.pause-on-idle": false,
+    "object.id": 183,
+    "object.path": "v4l2:/dev/video11",
+    "object.serial": 188,
+    "priority.session": 890
+   }
+  }
+ },
+ {
+  "id": 184,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "node.id": 183,
+    "object.id": 184,
+    "object.path": "v4l2:/dev/video11:capture_0",
+    "object.serial": 189,
+    "port.alias": "ipu6:capture_1",
+    "port.direction": "out",
+    "port.group": "stream.0",
+    "port.id": 0,
+    "port.name": "capture_1",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 185,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "api.v4l2.cap.bus_info": "PCI:0000:00:05.0",
+    "api.v4l2.cap.capabilities": "0xa4a00001",
+    "api.v4l2.cap.card": "ipu6",
+    "api.v4l2.cap.device-caps": "0x24a00001",
+    "api.v4l2.cap.driver": "isys",
+    "api.v4l2.cap.version": "7.0.14",
+    "api.v4l2.path": "/dev/video34",
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "v4l2",
+    "device.devids": "[ 20770 ]",
+    "device.id": 111,
+    "factory.id": 11,
+    "factory.name": "api.v4l2.source",
+    "media.class": "Video/Source",
+    "media.role": "Camera",
+    "node.description": "ipu6 (V4L2)",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "v4l2_input.pci-0000_00_05.0.4",
+    "node.nick": "ipu6",
+    "node.pause-on-idle": false,
+    "object.id": 185,
+    "object.path": "v4l2:/dev/video34",
+    "object.serial": 190,
+    "priority.session": 660
+   }
+  }
+ },
+ {
+  "id": 186,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "node.id": 185,
+    "object.id": 186,
+    "object.path": "v4l2:/dev/video34:capture_0",
+    "object.serial": 191,
+    "port.alias": "ipu6:capture_1",
+    "port.direction": "out",
+    "port.group": "stream.0",
+    "port.id": 0,
+    "port.name": "capture_1",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 187,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "api.v4l2.cap.bus_info": "PCI:0000:00:05.0",
+    "api.v4l2.cap.capabilities": "0xa4a00001",
+    "api.v4l2.cap.card": "ipu6",
+    "api.v4l2.cap.device-caps": "0x24a00001",
+    "api.v4l2.cap.driver": "isys",
+    "api.v4l2.cap.version": "7.0.14",
+    "api.v4l2.path": "/dev/video19",
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "v4l2",
+    "device.devids": "[ 20755 ]",
+    "device.id": 112,
+    "factory.id": 11,
+    "factory.name": "api.v4l2.source",
+    "media.class": "Video/Source",
+    "media.role": "Camera",
+    "node.description": "ipu6 (V4L2)",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "v4l2_input.pci-0000_00_05.0.4",
+    "node.nick": "ipu6",
+    "node.pause-on-idle": false,
+    "object.id": 187,
+    "object.path": "v4l2:/dev/video19",
+    "object.serial": 192,
+    "priority.session": 810
+   }
+  }
+ },
+ {
+  "id": 188,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "node.id": 187,
+    "object.id": 188,
+    "object.path": "v4l2:/dev/video19:capture_0",
+    "object.serial": 193,
+    "port.alias": "ipu6:capture_1",
+    "port.direction": "out",
+    "port.group": "stream.0",
+    "port.id": 0,
+    "port.name": "capture_1",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 189,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "api.v4l2.cap.bus_info": "PCI:0000:00:05.0",
+    "api.v4l2.cap.capabilities": "0xa4a00001",
+    "api.v4l2.cap.card": "ipu6",
+    "api.v4l2.cap.device-caps": "0x24a00001",
+    "api.v4l2.cap.driver": "isys",
+    "api.v4l2.cap.version": "7.0.14",
+    "api.v4l2.path": "/dev/video15",
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "v4l2",
+    "device.devids": "[ 20751 ]",
+    "device.id": 113,
+    "factory.id": 11,
+    "factory.name": "api.v4l2.source",
+    "media.class": "Video/Source",
+    "media.role": "Camera",
+    "node.description": "ipu6 (V4L2)",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "v4l2_input.pci-0000_00_05.0.4",
+    "node.nick": "ipu6",
+    "node.pause-on-idle": false,
+    "object.id": 189,
+    "object.path": "v4l2:/dev/video15",
+    "object.serial": 194,
+    "priority.session": 850
+   }
+  }
+ },
+ {
+  "id": 190,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "node.id": 189,
+    "object.id": 190,
+    "object.path": "v4l2:/dev/video15:capture_0",
+    "object.serial": 195,
+    "port.alias": "ipu6:capture_1",
+    "port.direction": "out",
+    "port.group": "stream.0",
+    "port.id": 0,
+    "port.name": "capture_1",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 191,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "api.v4l2.cap.bus_info": "PCI:0000:00:05.0",
+    "api.v4l2.cap.capabilities": "0xa4a00001",
+    "api.v4l2.cap.card": "ipu6",
+    "api.v4l2.cap.device-caps": "0x24a00001",
+    "api.v4l2.cap.driver": "isys",
+    "api.v4l2.cap.version": "7.0.14",
+    "api.v4l2.path": "/dev/video22",
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "v4l2",
+    "device.devids": "[ 20758 ]",
+    "device.id": 114,
+    "factory.id": 11,
+    "factory.name": "api.v4l2.source",
+    "media.class": "Video/Source",
+    "media.role": "Camera",
+    "node.description": "ipu6 (V4L2)",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "v4l2_input.pci-0000_00_05.0.5",
+    "node.nick": "ipu6",
+    "node.pause-on-idle": false,
+    "object.id": 191,
+    "object.path": "v4l2:/dev/video22",
+    "object.serial": 196,
+    "priority.session": 780
+   }
+  }
+ },
+ {
+  "id": 192,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "node.id": 191,
+    "object.id": 192,
+    "object.path": "v4l2:/dev/video22:capture_0",
+    "object.serial": 197,
+    "port.alias": "ipu6:capture_1",
+    "port.direction": "out",
+    "port.group": "stream.0",
+    "port.id": 0,
+    "port.name": "capture_1",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 193,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "api.v4l2.cap.bus_info": "PCI:0000:00:05.0",
+    "api.v4l2.cap.capabilities": "0xa4a00001",
+    "api.v4l2.cap.card": "ipu6",
+    "api.v4l2.cap.device-caps": "0x24a00001",
+    "api.v4l2.cap.driver": "isys",
+    "api.v4l2.cap.version": "7.0.14",
+    "api.v4l2.path": "/dev/video12",
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "v4l2",
+    "device.devids": "[ 20748 ]",
+    "device.id": 115,
+    "factory.id": 11,
+    "factory.name": "api.v4l2.source",
+    "media.class": "Video/Source",
+    "media.role": "Camera",
+    "node.description": "ipu6 (V4L2)",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "v4l2_input.pci-0000_00_05.0.4",
+    "node.nick": "ipu6",
+    "node.pause-on-idle": false,
+    "object.id": 193,
+    "object.path": "v4l2:/dev/video12",
+    "object.serial": 198,
+    "priority.session": 880
+   }
+  }
+ },
+ {
+  "id": 194,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "node.id": 193,
+    "object.id": 194,
+    "object.path": "v4l2:/dev/video12:capture_0",
+    "object.serial": 199,
+    "port.alias": "ipu6:capture_1",
+    "port.direction": "out",
+    "port.group": "stream.0",
+    "port.id": 0,
+    "port.name": "capture_1",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 195,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "api.v4l2.cap.bus_info": "PCI:0000:00:05.0",
+    "api.v4l2.cap.capabilities": "0xa4a00001",
+    "api.v4l2.cap.card": "ipu6",
+    "api.v4l2.cap.device-caps": "0x24a00001",
+    "api.v4l2.cap.driver": "isys",
+    "api.v4l2.cap.version": "7.0.14",
+    "api.v4l2.path": "/dev/video6",
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "v4l2",
+    "device.devids": "[ 20742 ]",
+    "device.id": 116,
+    "factory.id": 11,
+    "factory.name": "api.v4l2.source",
+    "media.class": "Video/Source",
+    "media.role": "Camera",
+    "node.description": "ipu6 (V4L2)",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "v4l2_input.pci-0000_00_05.0.2",
+    "node.nick": "ipu6",
+    "node.pause-on-idle": false,
+    "object.id": 195,
+    "object.path": "v4l2:/dev/video6",
+    "object.serial": 200,
+    "priority.session": 940
+   }
+  }
+ },
+ {
+  "id": 196,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "node.id": 195,
+    "object.id": 196,
+    "object.path": "v4l2:/dev/video6:capture_0",
+    "object.serial": 201,
+    "port.alias": "ipu6:capture_1",
+    "port.direction": "out",
+    "port.group": "stream.0",
+    "port.id": 0,
+    "port.name": "capture_1",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 197,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "api.v4l2.cap.bus_info": "PCI:0000:00:05.0",
+    "api.v4l2.cap.capabilities": "0xa4a00001",
+    "api.v4l2.cap.card": "ipu6",
+    "api.v4l2.cap.device-caps": "0x24a00001",
+    "api.v4l2.cap.driver": "isys",
+    "api.v4l2.cap.version": "7.0.14",
+    "api.v4l2.path": "/dev/video10",
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "v4l2",
+    "device.devids": "[ 20746 ]",
+    "device.id": 117,
+    "factory.id": 11,
+    "factory.name": "api.v4l2.source",
+    "media.class": "Video/Source",
+    "media.role": "Camera",
+    "node.description": "ipu6 (V4L2)",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "v4l2_input.pci-0000_00_05.0.3",
+    "node.nick": "ipu6",
+    "node.pause-on-idle": false,
+    "object.id": 197,
+    "object.path": "v4l2:/dev/video10",
+    "object.serial": 202,
+    "priority.session": 900
+   }
+  }
+ },
+ {
+  "id": 198,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "node.id": 197,
+    "object.id": 198,
+    "object.path": "v4l2:/dev/video10:capture_0",
+    "object.serial": 203,
+    "port.alias": "ipu6:capture_1",
+    "port.direction": "out",
+    "port.group": "stream.0",
+    "port.id": 0,
+    "port.name": "capture_1",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 199,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "api.v4l2.cap.bus_info": "PCI:0000:00:05.0",
+    "api.v4l2.cap.capabilities": "0xa4a00001",
+    "api.v4l2.cap.card": "ipu6",
+    "api.v4l2.cap.device-caps": "0x24a00001",
+    "api.v4l2.cap.driver": "isys",
+    "api.v4l2.cap.version": "7.0.14",
+    "api.v4l2.path": "/dev/video4",
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "v4l2",
+    "device.devids": "[ 20740 ]",
+    "device.id": 118,
+    "factory.id": 11,
+    "factory.name": "api.v4l2.source",
+    "media.class": "Video/Source",
+    "media.role": "Camera",
+    "node.description": "ipu6 (V4L2)",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "v4l2_input.pci-0000_00_05.0",
+    "node.nick": "ipu6",
+    "node.pause-on-idle": false,
+    "object.id": 199,
+    "object.path": "v4l2:/dev/video4",
+    "object.serial": 204,
+    "priority.session": 960
+   }
+  }
+ },
+ {
+  "id": 200,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "node.id": 199,
+    "object.id": 200,
+    "object.path": "v4l2:/dev/video4:capture_0",
+    "object.serial": 205,
+    "port.alias": "ipu6:capture_1",
+    "port.direction": "out",
+    "port.group": "stream.0",
+    "port.id": 0,
+    "port.name": "capture_1",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 201,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "api.v4l2.cap.bus_info": "PCI:0000:00:05.0",
+    "api.v4l2.cap.capabilities": "0xa4a00001",
+    "api.v4l2.cap.card": "ipu6",
+    "api.v4l2.cap.device-caps": "0x24a00001",
+    "api.v4l2.cap.driver": "isys",
+    "api.v4l2.cap.version": "7.0.14",
+    "api.v4l2.path": "/dev/video32",
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "v4l2",
+    "device.devids": "[ 20768 ]",
+    "device.id": 119,
+    "factory.id": 11,
+    "factory.name": "api.v4l2.source",
+    "media.class": "Video/Source",
+    "media.role": "Camera",
+    "node.description": "ipu6 (V4L2)",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "v4l2_input.pci-0000_00_05.0.6",
+    "node.nick": "ipu6",
+    "node.pause-on-idle": false,
+    "object.id": 201,
+    "object.path": "v4l2:/dev/video32",
+    "object.serial": 206,
+    "priority.session": 680
+   }
+  }
+ },
+ {
+  "id": 202,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "node.id": 201,
+    "object.id": 202,
+    "object.path": "v4l2:/dev/video32:capture_0",
+    "object.serial": 207,
+    "port.alias": "ipu6:capture_1",
+    "port.direction": "out",
+    "port.group": "stream.0",
+    "port.id": 0,
+    "port.name": "capture_1",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 203,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "api.v4l2.cap.bus_info": "PCI:0000:00:05.0",
+    "api.v4l2.cap.capabilities": "0xa4a00001",
+    "api.v4l2.cap.card": "ipu6",
+    "api.v4l2.cap.device-caps": "0x24a00001",
+    "api.v4l2.cap.driver": "isys",
+    "api.v4l2.cap.version": "7.0.14",
+    "api.v4l2.path": "/dev/video28",
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "v4l2",
+    "device.devids": "[ 20764 ]",
+    "device.id": 120,
+    "factory.id": 11,
+    "factory.name": "api.v4l2.source",
+    "media.class": "Video/Source",
+    "media.role": "Camera",
+    "node.description": "ipu6 (V4L2)",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "v4l2_input.pci-0000_00_05.0.6",
+    "node.nick": "ipu6",
+    "node.pause-on-idle": false,
+    "object.id": 203,
+    "object.path": "v4l2:/dev/video28",
+    "object.serial": 208,
+    "priority.session": 720
+   }
+  }
+ },
+ {
+  "id": 204,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "node.id": 203,
+    "object.id": 204,
+    "object.path": "v4l2:/dev/video28:capture_0",
+    "object.serial": 209,
+    "port.alias": "ipu6:capture_1",
+    "port.direction": "out",
+    "port.group": "stream.0",
+    "port.id": 0,
+    "port.name": "capture_1",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 205,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "api.v4l2.cap.bus_info": "PCI:0000:00:05.0",
+    "api.v4l2.cap.capabilities": "0xa4a00001",
+    "api.v4l2.cap.card": "ipu6",
+    "api.v4l2.cap.device-caps": "0x24a00001",
+    "api.v4l2.cap.driver": "isys",
+    "api.v4l2.cap.version": "7.0.14",
+    "api.v4l2.path": "/dev/video17",
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "v4l2",
+    "device.devids": "[ 20753 ]",
+    "device.id": 121,
+    "factory.id": 11,
+    "factory.name": "api.v4l2.source",
+    "media.class": "Video/Source",
+    "media.role": "Camera",
+    "node.description": "ipu6 (V4L2)",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "v4l2_input.pci-0000_00_05.0.5",
+    "node.nick": "ipu6",
+    "node.pause-on-idle": false,
+    "object.id": 205,
+    "object.path": "v4l2:/dev/video17",
+    "object.serial": 210,
+    "priority.session": 830
+   }
+  }
+ },
+ {
+  "id": 206,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "node.id": 205,
+    "object.id": 206,
+    "object.path": "v4l2:/dev/video17:capture_0",
+    "object.serial": 211,
+    "port.alias": "ipu6:capture_1",
+    "port.direction": "out",
+    "port.group": "stream.0",
+    "port.id": 0,
+    "port.name": "capture_1",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 207,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "api.v4l2.cap.bus_info": "PCI:0000:00:05.0",
+    "api.v4l2.cap.capabilities": "0xa4a00001",
+    "api.v4l2.cap.card": "ipu6",
+    "api.v4l2.cap.device-caps": "0x24a00001",
+    "api.v4l2.cap.driver": "isys",
+    "api.v4l2.cap.version": "7.0.14",
+    "api.v4l2.path": "/dev/video18",
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "v4l2",
+    "device.devids": "[ 20754 ]",
+    "device.id": 122,
+    "factory.id": 11,
+    "factory.name": "api.v4l2.source",
+    "media.class": "Video/Source",
+    "media.role": "Camera",
+    "node.description": "ipu6 (V4L2)",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "v4l2_input.pci-0000_00_05.0.6",
+    "node.nick": "ipu6",
+    "node.pause-on-idle": false,
+    "object.id": 207,
+    "object.path": "v4l2:/dev/video18",
+    "object.serial": 212,
+    "priority.session": 820
+   }
+  }
+ },
+ {
+  "id": 208,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "node.id": 207,
+    "object.id": 208,
+    "object.path": "v4l2:/dev/video18:capture_0",
+    "object.serial": 213,
+    "port.alias": "ipu6:capture_1",
+    "port.direction": "out",
+    "port.group": "stream.0",
+    "port.id": 0,
+    "port.name": "capture_1",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 209,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "api.v4l2.cap.bus_info": "PCI:0000:00:05.0",
+    "api.v4l2.cap.capabilities": "0xa4a00001",
+    "api.v4l2.cap.card": "ipu6",
+    "api.v4l2.cap.device-caps": "0x24a00001",
+    "api.v4l2.cap.driver": "isys",
+    "api.v4l2.cap.version": "7.0.14",
+    "api.v4l2.path": "/dev/video7",
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "v4l2",
+    "device.devids": "[ 20743 ]",
+    "device.id": 123,
+    "factory.id": 11,
+    "factory.name": "api.v4l2.source",
+    "media.class": "Video/Source",
+    "media.role": "Camera",
+    "node.description": "ipu6 (V4L2)",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "v4l2_input.pci-0000_00_05.0.3",
+    "node.nick": "ipu6",
+    "node.pause-on-idle": false,
+    "object.id": 209,
+    "object.path": "v4l2:/dev/video7",
+    "object.serial": 214,
+    "priority.session": 930
+   }
+  }
+ },
+ {
+  "id": 210,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "node.id": 209,
+    "object.id": 210,
+    "object.path": "v4l2:/dev/video7:capture_0",
+    "object.serial": 215,
+    "port.alias": "ipu6:capture_1",
+    "port.direction": "out",
+    "port.group": "stream.0",
+    "port.id": 0,
+    "port.name": "capture_1",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 211,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "api.v4l2.cap.bus_info": "PCI:0000:00:05.0",
+    "api.v4l2.cap.capabilities": "0xa4a00001",
+    "api.v4l2.cap.card": "ipu6",
+    "api.v4l2.cap.device-caps": "0x24a00001",
+    "api.v4l2.cap.driver": "isys",
+    "api.v4l2.cap.version": "7.0.14",
+    "api.v4l2.path": "/dev/video31",
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "v4l2",
+    "device.devids": "[ 20767 ]",
+    "device.id": 124,
+    "factory.id": 11,
+    "factory.name": "api.v4l2.source",
+    "media.class": "Video/Source",
+    "media.role": "Camera",
+    "node.description": "ipu6 (V4L2)",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "v4l2_input.pci-0000_00_05.0.7",
+    "node.nick": "ipu6",
+    "node.pause-on-idle": false,
+    "object.id": 211,
+    "object.path": "v4l2:/dev/video31",
+    "object.serial": 216,
+    "priority.session": 690
+   }
+  }
+ },
+ {
+  "id": 212,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "node.id": 211,
+    "object.id": 212,
+    "object.path": "v4l2:/dev/video31:capture_0",
+    "object.serial": 217,
+    "port.alias": "ipu6:capture_1",
+    "port.direction": "out",
+    "port.group": "stream.0",
+    "port.id": 0,
+    "port.name": "capture_1",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 213,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "api.v4l2.cap.bus_info": "PCI:0000:00:05.0",
+    "api.v4l2.cap.capabilities": "0xa4a00001",
+    "api.v4l2.cap.card": "ipu6",
+    "api.v4l2.cap.device-caps": "0x24a00001",
+    "api.v4l2.cap.driver": "isys",
+    "api.v4l2.cap.version": "7.0.14",
+    "api.v4l2.path": "/dev/video26",
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "v4l2",
+    "device.devids": "[ 20762 ]",
+    "device.id": 125,
+    "factory.id": 11,
+    "factory.name": "api.v4l2.source",
+    "media.class": "Video/Source",
+    "media.role": "Camera",
+    "node.description": "ipu6 (V4L2)",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "v4l2_input.pci-0000_00_05.0.7",
+    "node.nick": "ipu6",
+    "node.pause-on-idle": false,
+    "object.id": 213,
+    "object.path": "v4l2:/dev/video26",
+    "object.serial": 218,
+    "priority.session": 740
+   }
+  }
+ },
+ {
+  "id": 214,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "node.id": 213,
+    "object.id": 214,
+    "object.path": "v4l2:/dev/video26:capture_0",
+    "object.serial": 219,
+    "port.alias": "ipu6:capture_1",
+    "port.direction": "out",
+    "port.group": "stream.0",
+    "port.id": 0,
+    "port.name": "capture_1",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 215,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "api.v4l2.cap.bus_info": "PCI:0000:00:05.0",
+    "api.v4l2.cap.capabilities": "0xa4a00001",
+    "api.v4l2.cap.card": "ipu6",
+    "api.v4l2.cap.device-caps": "0x24a00001",
+    "api.v4l2.cap.driver": "isys",
+    "api.v4l2.cap.version": "7.0.14",
+    "api.v4l2.path": "/dev/video24",
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "v4l2",
+    "device.devids": "[ 20760 ]",
+    "device.id": 126,
+    "factory.id": 11,
+    "factory.name": "api.v4l2.source",
+    "media.class": "Video/Source",
+    "media.role": "Camera",
+    "node.description": "ipu6 (V4L2)",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "v4l2_input.pci-0000_00_05.0.7",
+    "node.nick": "ipu6",
+    "node.pause-on-idle": false,
+    "object.id": 215,
+    "object.path": "v4l2:/dev/video24",
+    "object.serial": 220,
+    "priority.session": 760
+   }
+  }
+ },
+ {
+  "id": 216,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "node.id": 215,
+    "object.id": 216,
+    "object.path": "v4l2:/dev/video24:capture_0",
+    "object.serial": 221,
+    "port.alias": "ipu6:capture_1",
+    "port.direction": "out",
+    "port.group": "stream.0",
+    "port.id": 0,
+    "port.name": "capture_1",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 217,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "api.v4l2.cap.bus_info": "PCI:0000:00:05.0",
+    "api.v4l2.cap.capabilities": "0xa4a00001",
+    "api.v4l2.cap.card": "ipu6",
+    "api.v4l2.cap.device-caps": "0x24a00001",
+    "api.v4l2.cap.driver": "isys",
+    "api.v4l2.cap.version": "7.0.14",
+    "api.v4l2.path": "/dev/video20",
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "v4l2",
+    "device.devids": "[ 20756 ]",
+    "device.id": 127,
+    "factory.id": 11,
+    "factory.name": "api.v4l2.source",
+    "media.class": "Video/Source",
+    "media.role": "Camera",
+    "node.description": "ipu6 (V4L2)",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "v4l2_input.pci-0000_00_05.0.7",
+    "node.nick": "ipu6",
+    "node.pause-on-idle": false,
+    "object.id": 217,
+    "object.path": "v4l2:/dev/video20",
+    "object.serial": 222,
+    "priority.session": 800
+   }
+  }
+ },
+ {
+  "id": 218,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "node.id": 217,
+    "object.id": 218,
+    "object.path": "v4l2:/dev/video20:capture_0",
+    "object.serial": 223,
+    "port.alias": "ipu6:capture_1",
+    "port.direction": "out",
+    "port.group": "stream.0",
+    "port.id": 0,
+    "port.name": "capture_1",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 219,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "api.v4l2.cap.bus_info": "PCI:0000:00:05.0",
+    "api.v4l2.cap.capabilities": "0xa4a00001",
+    "api.v4l2.cap.card": "ipu6",
+    "api.v4l2.cap.device-caps": "0x24a00001",
+    "api.v4l2.cap.driver": "isys",
+    "api.v4l2.cap.version": "7.0.14",
+    "api.v4l2.path": "/dev/video27",
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "v4l2",
+    "device.devids": "[ 20763 ]",
+    "device.id": 128,
+    "factory.id": 11,
+    "factory.name": "api.v4l2.source",
+    "media.class": "Video/Source",
+    "media.role": "Camera",
+    "node.description": "ipu6 (V4L2)",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "v4l2_input.pci-0000_00_05.0.8",
+    "node.nick": "ipu6",
+    "node.pause-on-idle": false,
+    "object.id": 219,
+    "object.path": "v4l2:/dev/video27",
+    "object.serial": 224,
+    "priority.session": 730
+   }
+  }
+ },
+ {
+  "id": 220,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "node.id": 219,
+    "object.id": 220,
+    "object.path": "v4l2:/dev/video27:capture_0",
+    "object.serial": 225,
+    "port.alias": "ipu6:capture_1",
+    "port.direction": "out",
+    "port.group": "stream.0",
+    "port.id": 0,
+    "port.name": "capture_1",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 221,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "api.v4l2.cap.bus_info": "PCI:0000:00:05.0",
+    "api.v4l2.cap.capabilities": "0xa4a00001",
+    "api.v4l2.cap.card": "ipu6",
+    "api.v4l2.cap.device-caps": "0x24a00001",
+    "api.v4l2.cap.driver": "isys",
+    "api.v4l2.cap.version": "7.0.14",
+    "api.v4l2.path": "/dev/video14",
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "v4l2",
+    "device.devids": "[ 20750 ]",
+    "device.id": 129,
+    "factory.id": 11,
+    "factory.name": "api.v4l2.source",
+    "media.class": "Video/Source",
+    "media.role": "Camera",
+    "node.description": "ipu6 (V4L2)",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "v4l2_input.pci-0000_00_05.0.5",
+    "node.nick": "ipu6",
+    "node.pause-on-idle": false,
+    "object.id": 221,
+    "object.path": "v4l2:/dev/video14",
+    "object.serial": 226,
+    "priority.session": 860
+   }
+  }
+ },
+ {
+  "id": 222,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "node.id": 221,
+    "object.id": 222,
+    "object.path": "v4l2:/dev/video14:capture_0",
+    "object.serial": 227,
+    "port.alias": "ipu6:capture_1",
+    "port.direction": "out",
+    "port.group": "stream.0",
+    "port.id": 0,
+    "port.name": "capture_1",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 94,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "adapt.follower.spa-node": "",
+    "application.language": "C",
+    "application.name": "speech-dispatcher-dummy",
+    "application.process.binary": "sd_dummy",
+    "application.process.host": "sonny-dewfall-XPS-9320",
+    "application.process.id": 14073,
+    "application.process.machine-id": "4d94386dad0140be905bcbdd83f0f36d",
+    "application.process.user": "sonny-dewfall",
+    "client.api": "pipewire-pulse",
+    "client.id": 73,
+    "clock.quantum-limit": 8192,
+    "factory.id": 7,
+    "library.name": "audioconvert/libspa-audioconvert",
+    "media.class": "Stream/Output/Audio",
+    "media.name": "playback",
+    "node.autoconnect": true,
+    "node.latency": "471/44100",
+    "node.loop.name": "data-loop.0",
+    "node.name": "speech-dispatcher-dummy",
+    "node.rate": "1/44100",
+    "node.want-driver": true,
+    "object.id": 94,
+    "object.register": false,
+    "object.serial": 258,
+    "port.group": "stream.0",
+    "pulse.attr.maxlength": 4194304,
+    "pulse.attr.minreq": 942,
+    "pulse.attr.prebuf": 1886,
+    "pulse.attr.tlength": 2826,
+    "pulse.corked": false,
+    "pulse.idle.timeout": 5,
+    "pulse.min.quantum": "512/48000",
+    "pulse.min.req": "512/48000",
+    "pulse.server.type": "unix",
+    "stream.is-live": true,
+    "window.x11.display": ":0"
+   }
+  }
+ },
+ {
+  "id": 72,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "alsa.card": 0,
+    "alsa.card_name": "Logitech BRIO",
+    "alsa.class": "generic",
+    "alsa.components": "USB046d:085e",
+    "alsa.device": 0,
+    "alsa.driver_name": "snd_usb_audio",
+    "alsa.id": "BRIO",
+    "alsa.long_card_name": "Logitech BRIO at usb-0000:00:0d.0-1.2.4.3, super speed",
+    "alsa.mixer_name": "USB Mixer",
+    "alsa.name": "USB Audio",
+    "alsa.resolution_bits": 16,
+    "alsa.subclass": "generic-mix",
+    "alsa.subdevice": 0,
+    "alsa.subdevice_name": "subdevice #0",
+    "alsa.sync.id": "00000000:00000000:00000000:00000000",
+    "api.alsa.card.longname": "Logitech BRIO at usb-0000:00:0d.0-1.2.4.3, super speed",
+    "api.alsa.card.name": "Logitech BRIO",
+    "api.alsa.path": "front:0",
+    "api.alsa.pcm.card": 0,
+    "api.alsa.pcm.stream": "capture",
+    "audio.channels": 2,
+    "audio.position": "[ FL, FR ]",
+    "card.profile.device": 0,
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "alsa",
+    "device.bus": "usb",
+    "device.class": "sound",
+    "device.icon-name": "audio-card-analog",
+    "device.id": 234,
+    "device.profile.description": "Analog Stereo",
+    "device.profile.name": "analog-stereo",
+    "device.routes": 1,
+    "factory.id": 19,
+    "factory.name": "api.alsa.pcm.source",
+    "library.name": "audioconvert/libspa-audioconvert",
+    "media.class": "Audio/Source",
+    "node.description": "BRIO Ultra HD Webcam Analog Stereo",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "alsa_input.usb-046d_Logitech_BRIO_C256FA3E-03.analog-stereo",
+    "node.nick": "Logitech BRIO",
+    "node.pause-on-idle": false,
+    "object.id": 72,
+    "object.path": "alsa:acp:BRIO:0:capture",
+    "object.serial": 785,
+    "port.group": "capture",
+    "priority.driver": 2109,
+    "priority.session": 2109
+   }
+  }
+ },
+ {
+  "id": 231,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "alsa.card": 1,
+    "alsa.card_name": "Audient iD14",
+    "alsa.class": "generic",
+    "alsa.components": "USB2708:0002",
+    "alsa.device": 0,
+    "alsa.driver_name": "snd_usb_audio",
+    "alsa.id": "iD14",
+    "alsa.long_card_name": "Audient Audient iD14 at usb-0000:00:14.0-1.2.1, high speed",
+    "alsa.mixer_name": "USB Mixer",
+    "alsa.name": "USB Audio",
+    "alsa.resolution_bits": 16,
+    "alsa.subclass": "generic-mix",
+    "alsa.subdevice": 0,
+    "alsa.subdevice_name": "subdevice #0",
+    "alsa.sync.id": "00000000:00000000:00000000:00000000",
+    "api.alsa.card.longname": "Audient Audient iD14 at usb-0000:00:14.0-1.2.1, high speed",
+    "api.alsa.card.name": "Audient iD14",
+    "api.alsa.headroom": 128,
+    "api.alsa.path": "surround40:1",
+    "api.alsa.pcm.card": 1,
+    "api.alsa.pcm.stream": "playback",
+    "api.alsa.period-num": 256,
+    "api.alsa.period-size": 128,
+    "audio.channels": 4,
+    "audio.position": "[ FL, FR, RL, RR ]",
+    "card.profile.device": 3,
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "alsa",
+    "device.bus": "usb",
+    "device.class": "sound",
+    "device.icon-name": "audio-card-analog",
+    "device.id": 233,
+    "device.profile.description": "Analog Surround 4.0",
+    "device.profile.name": "analog-surround-40",
+    "device.routes": 1,
+    "factory.id": 19,
+    "factory.name": "api.alsa.pcm.sink",
+    "library.name": "audioconvert/libspa-audioconvert",
+    "media.class": "Audio/Sink",
+    "node.description": "Audient iD14 Analog Surround 4.0",
+    "node.driver": true,
+    "node.driver-id": 71,
+    "node.loop.name": "data-loop.0",
+    "node.max-latency": "16384/48000",
+    "node.name": "alsa_output.usb-Audient_Audient_iD14-00.analog-surround-40",
+    "node.nick": "Audient iD14",
+    "node.pause-on-idle": false,
+    "object.id": 231,
+    "object.path": "alsa:acp:iD14:3:playback",
+    "object.serial": 786,
+    "port.group": "playback",
+    "priority.driver": 1109,
+    "priority.session": 1109
+   }
+  }
+ },
+ {
+  "id": 71,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "alsa.card": 1,
+    "alsa.card_name": "Audient iD14",
+    "alsa.class": "generic",
+    "alsa.components": "USB2708:0002",
+    "alsa.device": 0,
+    "alsa.driver_name": "snd_usb_audio",
+    "alsa.id": "iD14",
+    "alsa.long_card_name": "Audient Audient iD14 at usb-0000:00:14.0-1.2.1, high speed",
+    "alsa.mixer_name": "USB Mixer",
+    "alsa.name": "USB Audio",
+    "alsa.resolution_bits": 32,
+    "alsa.subclass": "generic-mix",
+    "alsa.subdevice": 0,
+    "alsa.subdevice_name": "subdevice #0",
+    "alsa.sync.id": "00000000:00000000:00000000:00000000",
+    "api.alsa.card.longname": "Audient Audient iD14 at usb-0000:00:14.0-1.2.1, high speed",
+    "api.alsa.card.name": "Audient iD14",
+    "api.alsa.headroom": 128,
+    "api.alsa.path": "hw:1",
+    "api.alsa.pcm.card": 1,
+    "api.alsa.pcm.stream": "capture",
+    "api.alsa.period-num": 256,
+    "api.alsa.period-size": 128,
+    "audio.channels": 10,
+    "audio.position": "[ AUX0, AUX1, AUX2, AUX3, AUX4, AUX5, AUX6, AUX7, AUX8, AUX9 ]",
+    "card.profile.device": 2,
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "alsa",
+    "device.bus": "usb",
+    "device.class": "sound",
+    "device.icon-name": "audio-card-analog",
+    "device.id": 233,
+    "device.profile.description": "Multichannel",
+    "device.profile.name": "multichannel-input",
+    "device.routes": 0,
+    "factory.id": 19,
+    "factory.name": "api.alsa.pcm.source",
+    "library.name": "audioconvert/libspa-audioconvert",
+    "media.class": "Audio/Source",
+    "node.description": "Audient iD14 Multichannel",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.max-latency": "16384/48000",
+    "node.name": "alsa_input.usb-Audient_Audient_iD14-00.multichannel-input",
+    "node.nick": "Audient iD14",
+    "node.pause-on-idle": false,
+    "object.id": 71,
+    "object.path": "alsa:acp:iD14:2:capture",
+    "object.serial": 787,
+    "port.group": "capture",
+    "priority.driver": 2100,
+    "priority.session": 2100
+   }
+  }
+ },
+ {
+  "id": 227,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "FL",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 72,
+    "object.id": 227,
+    "object.path": "alsa:acp:BRIO:0:capture:capture_0",
+    "object.serial": 788,
+    "port.alias": "Logitech BRIO:capture_FL",
+    "port.direction": "out",
+    "port.group": "capture",
+    "port.id": 0,
+    "port.name": "capture_FL",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 230,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "FR",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 72,
+    "object.id": 230,
+    "object.path": "alsa:acp:BRIO:0:capture:capture_1",
+    "object.serial": 789,
+    "port.alias": "Logitech BRIO:capture_FR",
+    "port.direction": "out",
+    "port.group": "capture",
+    "port.id": 1,
+    "port.name": "capture_FR",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 225,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "FL",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 231,
+    "object.id": 225,
+    "object.path": "alsa:acp:iD14:3:playback:playback_0",
+    "object.serial": 790,
+    "port.alias": "Audient iD14:playback_FL",
+    "port.direction": "in",
+    "port.group": "playback",
+    "port.id": 0,
+    "port.name": "playback_FL",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 44,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "FR",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 231,
+    "object.id": 44,
+    "object.path": "alsa:acp:iD14:3:playback:playback_1",
+    "object.serial": 791,
+    "port.alias": "Audient iD14:playback_FR",
+    "port.direction": "in",
+    "port.group": "playback",
+    "port.id": 1,
+    "port.name": "playback_FR",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 55,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "RL",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 231,
+    "object.id": 55,
+    "object.path": "alsa:acp:iD14:3:playback:playback_2",
+    "object.serial": 792,
+    "port.alias": "Audient iD14:playback_RL",
+    "port.direction": "in",
+    "port.group": "playback",
+    "port.id": 2,
+    "port.name": "playback_RL",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 156,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "RR",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 231,
+    "object.id": 156,
+    "object.path": "alsa:acp:iD14:3:playback:playback_3",
+    "object.serial": 793,
+    "port.alias": "Audient iD14:playback_RR",
+    "port.direction": "in",
+    "port.group": "playback",
+    "port.id": 3,
+    "port.name": "playback_RR",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 90,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "FL",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 231,
+    "object.id": 90,
+    "object.path": "alsa:acp:iD14:3:playback:monitor_0",
+    "object.serial": 794,
+    "port.alias": "Audient iD14:monitor_FL",
+    "port.direction": "out",
+    "port.group": "playback",
+    "port.id": 0,
+    "port.monitor": true,
+    "port.name": "monitor_FL"
+   }
+  }
+ },
+ {
+  "id": 47,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "FR",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 231,
+    "object.id": 47,
+    "object.path": "alsa:acp:iD14:3:playback:monitor_1",
+    "object.serial": 795,
+    "port.alias": "Audient iD14:monitor_FR",
+    "port.direction": "out",
+    "port.group": "playback",
+    "port.id": 1,
+    "port.monitor": true,
+    "port.name": "monitor_FR"
+   }
+  }
+ },
+ {
+  "id": 89,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "RL",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 231,
+    "object.id": 89,
+    "object.path": "alsa:acp:iD14:3:playback:monitor_2",
+    "object.serial": 796,
+    "port.alias": "Audient iD14:monitor_RL",
+    "port.direction": "out",
+    "port.group": "playback",
+    "port.id": 2,
+    "port.monitor": true,
+    "port.name": "monitor_RL"
+   }
+  }
+ },
+ {
+  "id": 76,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "RR",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 231,
+    "object.id": 76,
+    "object.path": "alsa:acp:iD14:3:playback:monitor_3",
+    "object.serial": 797,
+    "port.alias": "Audient iD14:monitor_RR",
+    "port.direction": "out",
+    "port.group": "playback",
+    "port.id": 3,
+    "port.monitor": true,
+    "port.name": "monitor_RR"
+   }
+  }
+ },
+ {
+  "id": 74,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "AUX0",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 71,
+    "object.id": 74,
+    "object.path": "alsa:acp:iD14:2:capture:capture_0",
+    "object.serial": 798,
+    "port.alias": "Audient iD14:capture_AUX0",
+    "port.direction": "out",
+    "port.group": "capture",
+    "port.id": 0,
+    "port.name": "capture_AUX0",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 65,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "AUX1",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 71,
+    "object.id": 65,
+    "object.path": "alsa:acp:iD14:2:capture:capture_1",
+    "object.serial": 799,
+    "port.alias": "Audient iD14:capture_AUX1",
+    "port.direction": "out",
+    "port.group": "capture",
+    "port.id": 1,
+    "port.name": "capture_AUX1",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 49,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "AUX2",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 71,
+    "object.id": 49,
+    "object.path": "alsa:acp:iD14:2:capture:capture_2",
+    "object.serial": 800,
+    "port.alias": "Audient iD14:capture_AUX2",
+    "port.direction": "out",
+    "port.group": "capture",
+    "port.id": 2,
+    "port.name": "capture_AUX2",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 95,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "AUX3",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 71,
+    "object.id": 95,
+    "object.path": "alsa:acp:iD14:2:capture:capture_3",
+    "object.serial": 801,
+    "port.alias": "Audient iD14:capture_AUX3",
+    "port.direction": "out",
+    "port.group": "capture",
+    "port.id": 3,
+    "port.name": "capture_AUX3",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 67,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "AUX4",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 71,
+    "object.id": 67,
+    "object.path": "alsa:acp:iD14:2:capture:capture_4",
+    "object.serial": 802,
+    "port.alias": "Audient iD14:capture_AUX4",
+    "port.direction": "out",
+    "port.group": "capture",
+    "port.id": 4,
+    "port.name": "capture_AUX4",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 68,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "AUX5",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 71,
+    "object.id": 68,
+    "object.path": "alsa:acp:iD14:2:capture:capture_5",
+    "object.serial": 803,
+    "port.alias": "Audient iD14:capture_AUX5",
+    "port.direction": "out",
+    "port.group": "capture",
+    "port.id": 5,
+    "port.name": "capture_AUX5",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 226,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "AUX6",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 71,
+    "object.id": 226,
+    "object.path": "alsa:acp:iD14:2:capture:capture_6",
+    "object.serial": 804,
+    "port.alias": "Audient iD14:capture_AUX6",
+    "port.direction": "out",
+    "port.group": "capture",
+    "port.id": 6,
+    "port.name": "capture_AUX6",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 229,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "AUX7",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 71,
+    "object.id": 229,
+    "object.path": "alsa:acp:iD14:2:capture:capture_7",
+    "object.serial": 805,
+    "port.alias": "Audient iD14:capture_AUX7",
+    "port.direction": "out",
+    "port.group": "capture",
+    "port.id": 7,
+    "port.name": "capture_AUX7",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 77,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "AUX8",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 71,
+    "object.id": 77,
+    "object.path": "alsa:acp:iD14:2:capture:capture_8",
+    "object.serial": 806,
+    "port.alias": "Audient iD14:capture_AUX8",
+    "port.direction": "out",
+    "port.group": "capture",
+    "port.id": 8,
+    "port.name": "capture_AUX8",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 66,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "AUX9",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 71,
+    "object.id": 66,
+    "object.path": "alsa:acp:iD14:2:capture:capture_9",
+    "object.serial": 807,
+    "port.alias": "Audient iD14:capture_AUX9",
+    "port.direction": "out",
+    "port.group": "capture",
+    "port.id": 9,
+    "port.name": "capture_AUX9",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 228,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "FL",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 94,
+    "object.id": 228,
+    "object.path": "speech-dispatcher-dummy:output_0",
+    "object.serial": 808,
+    "port.alias": "speech-dispatcher-dummy:output_FL",
+    "port.direction": "out",
+    "port.group": "stream.0",
+    "port.id": 0,
+    "port.name": "output_FL"
+   }
+  }
+ },
+ {
+  "id": 70,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "FR",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 94,
+    "object.id": 70,
+    "object.path": "speech-dispatcher-dummy:output_1",
+    "object.serial": 809,
+    "port.alias": "speech-dispatcher-dummy:output_FR",
+    "port.direction": "out",
+    "port.group": "stream.0",
+    "port.id": 1,
+    "port.name": "output_FR"
+   }
+  }
+ },
+ {
+  "id": 34,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "RL",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 94,
+    "object.id": 34,
+    "object.path": "speech-dispatcher-dummy:output_2",
+    "object.serial": 810,
+    "port.alias": "speech-dispatcher-dummy:output_RL",
+    "port.direction": "out",
+    "port.group": "stream.0",
+    "port.id": 2,
+    "port.name": "output_RL"
+   }
+  }
+ },
+ {
+  "id": 96,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "RR",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 94,
+    "object.id": 96,
+    "object.path": "speech-dispatcher-dummy:output_3",
+    "object.serial": 811,
+    "port.alias": "speech-dispatcher-dummy:output_RR",
+    "port.direction": "out",
+    "port.group": "stream.0",
+    "port.id": 3,
+    "port.name": "output_RR"
+   }
+  }
+ },
+ {
+  "id": 50,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "alsa.card": 3,
+    "alsa.card_name": "R\u00d8DE NT-USB Mini",
+    "alsa.class": "generic",
+    "alsa.components": "USB19f7:0015",
+    "alsa.device": 0,
+    "alsa.driver_name": "snd_usb_audio",
+    "alsa.id": "Mini",
+    "alsa.long_card_name": "R\u00d8DE Microphones R\u00d8DE NT-USB Mini at usb-0000:00:14.0-1.2.4.4, full speed",
+    "alsa.mixer_name": "USB Mixer",
+    "alsa.name": "USB Audio",
+    "alsa.resolution_bits": 24,
+    "alsa.subclass": "generic-mix",
+    "alsa.subdevice": 0,
+    "alsa.subdevice_name": "subdevice #0",
+    "alsa.sync.id": "00000000:00000000:00000000:00000000",
+    "api.alsa.card.longname": "R\u00d8DE Microphones R\u00d8DE NT-USB Mini at usb-0000:00:14.0-1.2.4.4, full speed",
+    "api.alsa.card.name": "R\u00d8DE NT-USB Mini",
+    "api.alsa.path": "front:3",
+    "api.alsa.pcm.card": 3,
+    "api.alsa.pcm.stream": "playback",
+    "audio.channels": 2,
+    "audio.position": "[ FL, FR ]",
+    "card.profile.device": 3,
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "alsa",
+    "device.bus": "usb",
+    "device.class": "sound",
+    "device.icon-name": "audio-card-analog",
+    "device.id": 56,
+    "device.profile.description": "Analog Stereo",
+    "device.profile.name": "analog-stereo",
+    "device.routes": 1,
+    "factory.id": 19,
+    "factory.name": "api.alsa.pcm.sink",
+    "library.name": "audioconvert/libspa-audioconvert",
+    "media.class": "Audio/Sink",
+    "node.description": "R\u00d8DE NT-USB Mini Analog Stereo",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "alsa_output.usb-R__DE_Microphones_R__DE_NT-USB_Mini_EBBF286C-00.analog-stereo",
+    "node.nick": "R\u00d8DE NT-USB Mini",
+    "node.pause-on-idle": false,
+    "object.id": 50,
+    "object.path": "alsa:acp:Mini:3:playback",
+    "object.serial": 818,
+    "port.group": "playback",
+    "priority.driver": 1109,
+    "priority.session": 1109
+   }
+  }
+ },
+ {
+  "id": 78,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "alsa.card": 3,
+    "alsa.card_name": "R\u00d8DE NT-USB Mini",
+    "alsa.class": "generic",
+    "alsa.components": "USB19f7:0015",
+    "alsa.device": 0,
+    "alsa.driver_name": "snd_usb_audio",
+    "alsa.id": "Mini",
+    "alsa.long_card_name": "R\u00d8DE Microphones R\u00d8DE NT-USB Mini at usb-0000:00:14.0-1.2.4.4, full speed",
+    "alsa.mixer_name": "USB Mixer",
+    "alsa.name": "USB Audio",
+    "alsa.resolution_bits": 24,
+    "alsa.subclass": "generic-mix",
+    "alsa.subdevice": 0,
+    "alsa.subdevice_name": "subdevice #0",
+    "alsa.sync.id": "00000000:00000000:00000000:00000000",
+    "api.alsa.card.longname": "R\u00d8DE Microphones R\u00d8DE NT-USB Mini at usb-0000:00:14.0-1.2.4.4, full speed",
+    "api.alsa.card.name": "R\u00d8DE NT-USB Mini",
+    "api.alsa.path": "hw:3",
+    "api.alsa.pcm.card": 3,
+    "api.alsa.pcm.stream": "capture",
+    "audio.channels": 1,
+    "audio.position": "[ MONO ]",
+    "card.profile.device": 2,
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "alsa",
+    "device.bus": "usb",
+    "device.class": "sound",
+    "device.icon-name": "audio-card-analog",
+    "device.id": 56,
+    "device.profile.description": "Mono",
+    "device.profile.name": "mono-fallback",
+    "device.routes": 1,
+    "factory.id": 19,
+    "factory.name": "api.alsa.pcm.source",
+    "library.name": "audioconvert/libspa-audioconvert",
+    "media.class": "Audio/Source",
+    "node.description": "R\u00d8DE NT-USB Mini Mono",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "alsa_input.usb-R__DE_Microphones_R__DE_NT-USB_Mini_EBBF286C-00.mono-fallback",
+    "node.nick": "R\u00d8DE NT-USB Mini",
+    "node.pause-on-idle": false,
+    "object.id": 78,
+    "object.path": "alsa:acp:Mini:2:capture",
+    "object.serial": 819,
+    "port.group": "capture",
+    "priority.driver": 2100,
+    "priority.session": 2100
+   }
+  }
+ },
+ {
+  "id": 83,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "alsa.card": 2,
+    "alsa.card_name": "Triple-display Mini Docking sta",
+    "alsa.class": "generic",
+    "alsa.components": "USB17e9:4307",
+    "alsa.device": 0,
+    "alsa.driver_name": "snd_usb_audio",
+    "alsa.id": "sta",
+    "alsa.long_card_name": "DisplayLink Triple-display Mini Docking sta at usb-0000:00:0d.0-1.2.4.2, super",
+    "alsa.mixer_name": "USB Mixer",
+    "alsa.name": "USB Audio",
+    "alsa.resolution_bits": 16,
+    "alsa.subclass": "generic-mix",
+    "alsa.subdevice": 0,
+    "alsa.subdevice_name": "subdevice #0",
+    "alsa.sync.id": "00000000:00000000:00000000:00000000",
+    "api.alsa.card.longname": "DisplayLink Triple-display Mini Docking sta at usb-0000:00:0d.0-1.2.4.2, super ",
+    "api.alsa.card.name": "Triple-display Mini Docking sta",
+    "api.alsa.path": "iec958:2",
+    "api.alsa.pcm.card": 2,
+    "api.alsa.pcm.stream": "playback",
+    "audio.channels": 2,
+    "audio.position": "[ FL, FR ]",
+    "card.profile.device": 9,
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "alsa",
+    "device.bus": "usb",
+    "device.class": "sound",
+    "device.icon-name": "audio-card-analog",
+    "device.id": 48,
+    "device.profile.description": "Digital Stereo (IEC958)",
+    "device.profile.name": "iec958-stereo",
+    "device.routes": 1,
+    "factory.id": 19,
+    "factory.name": "api.alsa.pcm.sink",
+    "library.name": "audioconvert/libspa-audioconvert",
+    "media.class": "Audio/Sink",
+    "node.description": "Triple-display Mini Docking station Digital Stereo (IEC958)",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "alsa_output.usb-DisplayLink_Triple-display_Mini_Docking_station_d3a2836637674-02.iec958-stereo",
+    "node.nick": "Triple-display Mini Docking sta",
+    "node.pause-on-idle": false,
+    "object.id": 83,
+    "object.path": "alsa:acp:sta:9:playback",
+    "object.serial": 820,
+    "port.group": "playback",
+    "priority.driver": 1108,
+    "priority.session": 1108
+   }
+  }
+ },
+ {
+  "id": 223,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "alsa.card": 2,
+    "alsa.card_name": "Triple-display Mini Docking sta",
+    "alsa.class": "generic",
+    "alsa.components": "USB17e9:4307",
+    "alsa.device": 0,
+    "alsa.driver_name": "snd_usb_audio",
+    "alsa.id": "sta",
+    "alsa.long_card_name": "DisplayLink Triple-display Mini Docking sta at usb-0000:00:0d.0-1.2.4.2, super",
+    "alsa.mixer_name": "USB Mixer",
+    "alsa.name": "USB Audio",
+    "alsa.resolution_bits": 16,
+    "alsa.subclass": "generic-mix",
+    "alsa.subdevice": 0,
+    "alsa.subdevice_name": "subdevice #0",
+    "alsa.sync.id": "00000000:00000000:00000000:00000000",
+    "api.alsa.card.longname": "DisplayLink Triple-display Mini Docking sta at usb-0000:00:0d.0-1.2.4.2, super ",
+    "api.alsa.card.name": "Triple-display Mini Docking sta",
+    "api.alsa.path": "iec958:2",
+    "api.alsa.pcm.card": 2,
+    "api.alsa.pcm.stream": "capture",
+    "audio.channels": 2,
+    "audio.position": "[ FL, FR ]",
+    "card.profile.device": 3,
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "alsa",
+    "device.bus": "usb",
+    "device.class": "sound",
+    "device.icon-name": "audio-card-analog",
+    "device.id": 48,
+    "device.profile.description": "Digital Stereo (IEC958)",
+    "device.profile.name": "iec958-stereo",
+    "device.routes": 1,
+    "factory.id": 19,
+    "factory.name": "api.alsa.pcm.source",
+    "library.name": "audioconvert/libspa-audioconvert",
+    "media.class": "Audio/Source",
+    "node.description": "Triple-display Mini Docking station Digital Stereo (IEC958)",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "alsa_input.usb-DisplayLink_Triple-display_Mini_Docking_station_d3a2836637674-02.iec958-stereo",
+    "node.nick": "Triple-display Mini Docking sta",
+    "node.pause-on-idle": false,
+    "object.id": 223,
+    "object.path": "alsa:acp:sta:3:capture",
+    "object.serial": 821,
+    "port.group": "capture",
+    "priority.driver": 2108,
+    "priority.session": 2108
+   }
+  }
+ },
+ {
+  "id": 85,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "FL",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 50,
+    "object.id": 85,
+    "object.path": "alsa:acp:Mini:3:playback:playback_0",
+    "object.serial": 822,
+    "port.alias": "R\u00d8DE NT-USB Mini:playback_FL",
+    "port.direction": "in",
+    "port.group": "playback",
+    "port.id": 0,
+    "port.name": "playback_FL",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 81,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "FR",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 50,
+    "object.id": 81,
+    "object.path": "alsa:acp:Mini:3:playback:playback_1",
+    "object.serial": 823,
+    "port.alias": "R\u00d8DE NT-USB Mini:playback_FR",
+    "port.direction": "in",
+    "port.group": "playback",
+    "port.id": 1,
+    "port.name": "playback_FR",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 84,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "FL",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 50,
+    "object.id": 84,
+    "object.path": "alsa:acp:Mini:3:playback:monitor_0",
+    "object.serial": 824,
+    "port.alias": "R\u00d8DE NT-USB Mini:monitor_FL",
+    "port.direction": "out",
+    "port.group": "playback",
+    "port.id": 0,
+    "port.monitor": true,
+    "port.name": "monitor_FL"
+   }
+  }
+ },
+ {
+  "id": 80,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "FR",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 50,
+    "object.id": 80,
+    "object.path": "alsa:acp:Mini:3:playback:monitor_1",
+    "object.serial": 825,
+    "port.alias": "R\u00d8DE NT-USB Mini:monitor_FR",
+    "port.direction": "out",
+    "port.group": "playback",
+    "port.id": 1,
+    "port.monitor": true,
+    "port.name": "monitor_FR"
+   }
+  }
+ },
+ {
+  "id": 91,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "MONO",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 78,
+    "object.id": 91,
+    "object.path": "alsa:acp:Mini:2:capture:capture_0",
+    "object.serial": 826,
+    "port.alias": "R\u00d8DE NT-USB Mini:capture_MONO",
+    "port.direction": "out",
+    "port.group": "capture",
+    "port.id": 0,
+    "port.name": "capture_MONO",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 46,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "FL",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 83,
+    "object.id": 46,
+    "object.path": "alsa:acp:sta:9:playback:playback_0",
+    "object.serial": 827,
+    "port.alias": "Triple-display Mini Docking sta:playback_FL",
+    "port.direction": "in",
+    "port.group": "playback",
+    "port.id": 0,
+    "port.name": "playback_FL",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 87,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "FR",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 83,
+    "object.id": 87,
+    "object.path": "alsa:acp:sta:9:playback:playback_1",
+    "object.serial": 828,
+    "port.alias": "Triple-display Mini Docking sta:playback_FR",
+    "port.direction": "in",
+    "port.group": "playback",
+    "port.id": 1,
+    "port.name": "playback_FR",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 75,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "FL",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 83,
+    "object.id": 75,
+    "object.path": "alsa:acp:sta:9:playback:monitor_0",
+    "object.serial": 829,
+    "port.alias": "Triple-display Mini Docking sta:monitor_FL",
+    "port.direction": "out",
+    "port.group": "playback",
+    "port.id": 0,
+    "port.monitor": true,
+    "port.name": "monitor_FL"
+   }
+  }
+ },
+ {
+  "id": 92,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "FR",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 83,
+    "object.id": 92,
+    "object.path": "alsa:acp:sta:9:playback:monitor_1",
+    "object.serial": 830,
+    "port.alias": "Triple-display Mini Docking sta:monitor_FR",
+    "port.direction": "out",
+    "port.group": "playback",
+    "port.id": 1,
+    "port.monitor": true,
+    "port.name": "monitor_FR"
+   }
+  }
+ },
+ {
+  "id": 86,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "FL",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 223,
+    "object.id": 86,
+    "object.path": "alsa:acp:sta:3:capture:capture_0",
+    "object.serial": 831,
+    "port.alias": "Triple-display Mini Docking sta:capture_FL",
+    "port.direction": "out",
+    "port.group": "capture",
+    "port.id": 0,
+    "port.name": "capture_FL",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 88,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "FR",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 223,
+    "object.id": 88,
+    "object.path": "alsa:acp:sta:3:capture:capture_1",
+    "object.serial": 832,
+    "port.alias": "Triple-display Mini Docking sta:capture_FR",
+    "port.direction": "out",
+    "port.group": "capture",
+    "port.id": 1,
+    "port.name": "capture_FR",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 157,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "api.v4l2.cap.bus_info": "usb-0000:00:0d.0-1.2.4.3",
+    "api.v4l2.cap.capabilities": "0x84a00001",
+    "api.v4l2.cap.card": "Logitech BRIO",
+    "api.v4l2.cap.device-caps": "0x04200001",
+    "api.v4l2.cap.driver": "uvcvideo",
+    "api.v4l2.cap.version": "7.0.14",
+    "api.v4l2.path": "/dev/video0",
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "v4l2",
+    "device.devids": "[ 20736 ]",
+    "device.id": 93,
+    "device.product.id": "0x085e",
+    "device.vendor.id": "0x046d",
+    "factory.id": 11,
+    "factory.name": "api.v4l2.source",
+    "media.class": "Video/Source",
+    "media.role": "Camera",
+    "node.description": "Logitech BRIO (V4L2)",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "v4l2_input.pci-0000_00_0d.0-usb-0_1.2.4.3_1.0",
+    "node.nick": "Logitech BRIO",
+    "node.pause-on-idle": false,
+    "object.id": 157,
+    "object.path": "v4l2:/dev/video0",
+    "object.serial": 833,
+    "priority.session": 1000
+   }
+  }
+ },
+ {
+  "id": 58,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "node.id": 157,
+    "object.id": 58,
+    "object.path": "v4l2:/dev/video0:capture_0",
+    "object.serial": 834,
+    "port.alias": "Logitech BRIO:capture_1",
+    "port.direction": "out",
+    "port.group": "stream.0",
+    "port.id": 0,
+    "port.name": "capture_1",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 158,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "api.v4l2.cap.bus_info": "usb-0000:00:0d.0-1.2.4.3",
+    "api.v4l2.cap.capabilities": "0x84a00001",
+    "api.v4l2.cap.card": "Logitech BRIO",
+    "api.v4l2.cap.device-caps": "0x04200001",
+    "api.v4l2.cap.driver": "uvcvideo",
+    "api.v4l2.cap.version": "7.0.14",
+    "api.v4l2.path": "/dev/video2",
+    "client.id": 40,
+    "clock.quantum-limit": 8192,
+    "device.api": "v4l2",
+    "device.devids": "[ 20738 ]",
+    "device.id": 69,
+    "device.product.id": "0x085e",
+    "device.vendor.id": "0x046d",
+    "factory.id": 11,
+    "factory.name": "api.v4l2.source",
+    "media.class": "Video/Source",
+    "media.role": "Camera",
+    "node.description": "Logitech BRIO (V4L2)",
+    "node.driver": true,
+    "node.loop.name": "data-loop.0",
+    "node.name": "v4l2_input.pci-0000_00_0d.0-usb-0_1.2.4.3_1.0.2",
+    "node.nick": "Logitech BRIO",
+    "node.pause-on-idle": false,
+    "object.id": 158,
+    "object.path": "v4l2:/dev/video2",
+    "object.serial": 835,
+    "priority.session": 980
+   }
+  }
+ },
+ {
+  "id": 82,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "node.id": 158,
+    "object.id": 82,
+    "object.path": "v4l2:/dev/video2:capture_0",
+    "object.serial": 836,
+    "port.alias": "Logitech BRIO:capture_1",
+    "port.direction": "out",
+    "port.group": "stream.0",
+    "port.id": 0,
+    "port.name": "capture_1",
+    "port.physical": true,
+    "port.terminal": true
+   }
+  }
+ },
+ {
+  "id": 270,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "adapt.follower.spa-node": "",
+    "application.name": "PipeWire ALSA [fmit]",
+    "client.id": 237,
+    "clock.quantum-limit": 8192,
+    "factory.id": 9,
+    "library.name": "audioconvert/libspa-audioconvert",
+    "media.category": "Capture",
+    "media.class": "Stream/Input/Audio",
+    "media.name": "ALSA Capture",
+    "media.type": "Audio",
+    "node.autoconnect": false,
+    "node.description": "ALSA Capture [fmit]",
+    "node.latency": "2048/22050",
+    "node.loop.name": "data-loop.0",
+    "node.name": "alsa_capture.fmit",
+    "node.rate": "1/22050",
+    "node.want-driver": true,
+    "object.id": 270,
+    "object.register": false,
+    "object.serial": 1173,
+    "port.group": "stream.0",
+    "stream.is-live": true
+   }
+  }
+ },
+ {
+  "id": 260,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "MONO",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 270,
+    "object.id": 260,
+    "object.path": "alsa_capture.fmit:input_0",
+    "object.serial": 1174,
+    "port.alias": "ALSA Capture [fmit]:input_MONO",
+    "port.direction": "in",
+    "port.group": "stream.0",
+    "port.id": 0,
+    "port.name": "input_MONO"
+   }
+  }
+ },
+ {
+  "id": 254,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "audio.channel": "MONO",
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 270,
+    "object.id": 254,
+    "object.path": "alsa_capture.fmit:monitor_0",
+    "object.serial": 1175,
+    "port.alias": "ALSA Capture [fmit]:monitor_MONO",
+    "port.direction": "out",
+    "port.group": "stream.0",
+    "port.id": 0,
+    "port.monitor": true,
+    "port.name": "monitor_MONO"
+   }
+  }
+ },
+ {
+  "id": 238,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "client.api": "jack",
+    "client.id": 247,
+    "client.name": "sushi",
+    "config.name": "jack.conf",
+    "loop.cancel": true,
+    "media.category": "Duplex",
+    "media.role": "DSP",
+    "media.type": "Audio",
+    "node.always-process": true,
+    "node.description": "sushi",
+    "node.driver-id": 71,
+    "node.force-quantum": 256,
+    "node.force-rate": 48000,
+    "node.group": "group.dsp.0",
+    "node.lock-quantum": true,
+    "node.name": "sushi",
+    "node.transport.sync": true,
+    "object.id": 238,
+    "object.serial": 1178,
+    "thread.reset-on-fork": false
+   }
+  }
+ },
+ {
+  "id": 242,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 238,
+    "object.id": 242,
+    "object.path": "sushi:output_0",
+    "object.serial": 1179,
+    "port.alias": "sushi:audio_output_0",
+    "port.direction": "out",
+    "port.id": 0,
+    "port.name": "audio_output_0"
+   }
+  }
+ },
+ {
+  "id": 246,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 238,
+    "object.id": 246,
+    "object.path": "sushi:output_1",
+    "object.serial": 1180,
+    "port.alias": "sushi:audio_output_1",
+    "port.direction": "out",
+    "port.id": 1,
+    "port.name": "audio_output_1"
+   }
+  }
+ },
+ {
+  "id": 267,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 238,
+    "object.id": 267,
+    "object.path": "sushi:output_2",
+    "object.serial": 1181,
+    "port.alias": "sushi:audio_output_2",
+    "port.direction": "out",
+    "port.id": 2,
+    "port.name": "audio_output_2"
+   }
+  }
+ },
+ {
+  "id": 268,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 238,
+    "object.id": 268,
+    "object.path": "sushi:output_3",
+    "object.serial": 1182,
+    "port.alias": "sushi:audio_output_3",
+    "port.direction": "out",
+    "port.id": 3,
+    "port.name": "audio_output_3"
+   }
+  }
+ },
+ {
+  "id": 249,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 238,
+    "object.id": 249,
+    "object.path": "sushi:output_4",
+    "object.serial": 1183,
+    "port.alias": "sushi:audio_output_4",
+    "port.direction": "out",
+    "port.id": 4,
+    "port.name": "audio_output_4"
+   }
+  }
+ },
+ {
+  "id": 258,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 238,
+    "object.id": 258,
+    "object.path": "sushi:output_5",
+    "object.serial": 1184,
+    "port.alias": "sushi:audio_output_5",
+    "port.direction": "out",
+    "port.id": 5,
+    "port.name": "audio_output_5"
+   }
+  }
+ },
+ {
+  "id": 251,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 238,
+    "object.id": 251,
+    "object.path": "sushi:output_6",
+    "object.serial": 1185,
+    "port.alias": "sushi:audio_output_6",
+    "port.direction": "out",
+    "port.id": 6,
+    "port.name": "audio_output_6"
+   }
+  }
+ },
+ {
+  "id": 252,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 238,
+    "object.id": 252,
+    "object.path": "sushi:output_7",
+    "object.serial": 1186,
+    "port.alias": "sushi:audio_output_7",
+    "port.direction": "out",
+    "port.id": 7,
+    "port.name": "audio_output_7"
+   }
+  }
+ },
+ {
+  "id": 241,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 238,
+    "object.id": 241,
+    "object.path": "sushi:input_0",
+    "object.serial": 1187,
+    "port.alias": "sushi:audio_input_0",
+    "port.direction": "in",
+    "port.id": 0,
+    "port.name": "audio_input_0"
+   }
+  }
+ },
+ {
+  "id": 253,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 238,
+    "object.id": 253,
+    "object.path": "sushi:input_1",
+    "object.serial": 1188,
+    "port.alias": "sushi:audio_input_1",
+    "port.direction": "in",
+    "port.id": 1,
+    "port.name": "audio_input_1"
+   }
+  }
+ },
+ {
+  "id": 274,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 238,
+    "object.id": 274,
+    "object.path": "sushi:input_2",
+    "object.serial": 1189,
+    "port.alias": "sushi:audio_input_2",
+    "port.direction": "in",
+    "port.id": 2,
+    "port.name": "audio_input_2"
+   }
+  }
+ },
+ {
+  "id": 272,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 238,
+    "object.id": 272,
+    "object.path": "sushi:input_3",
+    "object.serial": 1190,
+    "port.alias": "sushi:audio_input_3",
+    "port.direction": "in",
+    "port.id": 3,
+    "port.name": "audio_input_3"
+   }
+  }
+ },
+ {
+  "id": 244,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 238,
+    "object.id": 244,
+    "object.path": "sushi:input_4",
+    "object.serial": 1191,
+    "port.alias": "sushi:audio_input_4",
+    "port.direction": "in",
+    "port.id": 4,
+    "port.name": "audio_input_4"
+   }
+  }
+ },
+ {
+  "id": 256,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 238,
+    "object.id": 256,
+    "object.path": "sushi:input_5",
+    "object.serial": 1192,
+    "port.alias": "sushi:audio_input_5",
+    "port.direction": "in",
+    "port.id": 5,
+    "port.name": "audio_input_5"
+   }
+  }
+ },
+ {
+  "id": 239,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 238,
+    "object.id": 239,
+    "object.path": "sushi:input_6",
+    "object.serial": 1193,
+    "port.alias": "sushi:audio_input_6",
+    "port.direction": "in",
+    "port.id": 6,
+    "port.name": "audio_input_6"
+   }
+  }
+ },
+ {
+  "id": 271,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 238,
+    "object.id": 271,
+    "object.path": "sushi:input_7",
+    "object.serial": 1194,
+    "port.alias": "sushi:audio_input_7",
+    "port.direction": "in",
+    "port.id": 7,
+    "port.name": "audio_input_7"
+   }
+  }
+ },
+ {
+  "id": 250,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "format.dsp": "8 bit raw midi",
+    "node.id": 52,
+    "object.id": 250,
+    "object.path": "alsa:seq:default:client_129:playback_0",
+    "object.serial": 1195,
+    "port.alias": "Sushi:listen:in",
+    "port.direction": "in",
+    "port.group": "client_129",
+    "port.id": 1,
+    "port.name": "Sushi:listen:in (playback)"
+   }
+  }
+ },
+ {
+  "id": 275,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "format.dsp": "8 bit raw midi",
+    "node.id": 52,
+    "object.id": 275,
+    "object.path": "alsa:seq:default:client_129:capture_1",
+    "object.serial": 1196,
+    "port.alias": "Sushi:read:out",
+    "port.direction": "out",
+    "port.group": "client_129",
+    "port.id": 1,
+    "port.name": "Sushi:read:out (capture)"
+   }
+  }
+ },
+ {
+  "id": 277,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "client.api": "jack",
+    "client.id": 263,
+    "client.name": "Carla",
+    "config.name": "jack.conf",
+    "loop.cancel": true,
+    "media.category": "Duplex",
+    "media.role": "DSP",
+    "media.type": "Audio",
+    "node.always-process": true,
+    "node.description": "Carla",
+    "node.driver-id": 71,
+    "node.force-quantum": 256,
+    "node.force-rate": 48000,
+    "node.group": "group.dsp.0",
+    "node.lock-quantum": true,
+    "node.name": "Carla",
+    "node.transport.sync": true,
+    "object.id": 277,
+    "object.serial": 1205,
+    "thread.reset-on-fork": false
+   }
+  }
+ },
+ {
+  "id": 262,
+  "type": "PipeWire:Interface:Node",
+  "info": {
+   "props": {
+    "client.api": "jack",
+    "client.id": 261,
+    "client.name": "NAM",
+    "config.name": "jack.conf",
+    "loop.cancel": true,
+    "media.category": "Duplex",
+    "media.role": "DSP",
+    "media.type": "Audio",
+    "node.always-process": true,
+    "node.description": "NAM",
+    "node.driver-id": 71,
+    "node.force-quantum": 256,
+    "node.force-rate": 48000,
+    "node.group": "group.dsp.0",
+    "node.lock-quantum": true,
+    "node.name": "NAM",
+    "node.transport.sync": true,
+    "object.id": 262,
+    "object.serial": 1207,
+    "thread.reset-on-fork": false
+   }
+  }
+ },
+ {
+  "id": 276,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 262,
+    "object.id": 276,
+    "object.path": "NAM:input_0",
+    "object.serial": 1208,
+    "port.alias": "NAM:Input",
+    "port.direction": "in",
+    "port.id": 0,
+    "port.name": "Input"
+   }
+  }
+ },
+ {
+  "id": 273,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "format.dsp": "32 bit float mono audio",
+    "node.id": 262,
+    "object.id": 273,
+    "object.path": "NAM:output_0",
+    "object.serial": 1209,
+    "port.alias": "NAM:Output",
+    "port.direction": "out",
+    "port.id": 0,
+    "port.name": "Output"
+   }
+  }
+ },
+ {
+  "id": 243,
+  "type": "PipeWire:Interface:Port",
+  "info": {
+   "props": {
+    "format.dsp": "8 bit raw midi",
+    "node.id": 262,
+    "object.id": 243,
+    "object.path": "NAM:input_1",
+    "object.serial": 1210,
+    "port.alias": "NAM:events-in",
+    "port.direction": "in",
+    "port.id": 1,
+    "port.name": "events-in"
+   }
+  }
+ }
+]
