@@ -965,6 +965,17 @@ at, in all three CI calibrations. Two did not: `electric_board` differed from
 itself by 0.0025, 0.0007 and 0.0001 dB in a band across the three, and
 `electric-octave-up` by 0.0005, 0.0001 and 0.0001. A tolerance taken from one
 calibration — which `--calibrate` does — would have been 0.0001 for both and
-failed at random. Their references carry four times the largest spread seen,
-set by hand and saying so in the file, which is the visible judgement
+failed at random.
+
+Nor did three calibrations settle it. Their references first carried four times
+the largest spread those three had shown — and the very next CI run measured
+`electric-octave-up`'s peak 0.0021 dB from its reference, five times the
+tolerance. The peak is a single sample, the most sensitive figure in a
+fingerprint, and the first three runs had all shown it steady. So both now carry
+0.01 dB for band and level, set by hand and saying so in the file: four times
+the worst difference either showed in four calibrations, rather than a fit to a
+spread that had already been overtaken once. That is the visible judgement
 `floor_between` leaves to whoever commits a reference.
+
+Not explained: the other configs carrying the same octave plugins are
+deterministic, so the octave pair alone is not the cause.

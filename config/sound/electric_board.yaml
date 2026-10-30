@@ -28,12 +28,14 @@ measured:
     level_dbfs: -85.7406
 tolerance:
   band_db: 0.01
-  level_db: 0.0008
+  level_db: 0.01
   delay_samples: 0
-  note: 'set by hand, 2026-10-30: four times the largest difference two renders of
-    this config showed across three calibrations in the CI container (up to 0.0025
-    dB in a band, 0.0002 dB in level). Not the floor of one calibration, because one
-    understated the spread a later one found. Its delay_samples of 4163 is the strongest
+  note: 'set by hand, 2026-10-30: 0.01 dB, four times the largest difference any of
+    four calibrations in the CI container showed for this config or for the other
+    non-deterministic one (electric_board, up to 0.0025 dB in a band; electric-octave-up,
+    up to 0.0021 dB in peak level). Not fitted to this config''s own spread: a tolerance
+    fitted to three calibrations was overtaken by the fourth by five times, so this
+    is set well above all of it instead. Its delay_samples of 4163 is the strongest
     path through the chain, where every other config measures 0; most likely the delay
-    pedal''s echo outweighing the dry signal, which is unverified, and would fail
+    pedal''s echo outweighing the dry signal, which is unverified, and it would fail
     this reference on delay alone if the two ever traded places'

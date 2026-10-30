@@ -27,10 +27,12 @@ measured:
     high_hz: 20000.0
     level_dbfs: -59.2264
 tolerance:
-  band_db: 0.002
-  level_db: 0.0004
+  band_db: 0.01
+  level_db: 0.01
   delay_samples: 0
-  note: 'set by hand, 2026-10-30: four times the largest difference two renders of
-    this config showed across three calibrations in the CI container (up to 0.0005
-    dB in a band, 0.0001 dB in level). Not the floor of one calibration, because one
-    understated the spread a later one found'
+  note: 'set by hand, 2026-10-30: 0.01 dB, four times the largest difference any of
+    four calibrations in the CI container showed for this config or for the other
+    non-deterministic one (electric_board, up to 0.0025 dB in a band; electric-octave-up,
+    up to 0.0021 dB in peak level). Not fitted to this config''s own spread: a tolerance
+    fitted to three calibrations was overtaken by the fourth by five times, so this
+    is set well above all of it instead'
