@@ -30,6 +30,94 @@ QPWGRAPH_EXIT_TIMEOUT = 5.0
 # before believing it. See `start_qpwgraph`.
 QPWGRAPH_ATTEMPTS = 3
 QPWGRAPH_SETTLE = 1.5
+
+# How long to let qpwgraph finish wiring a node before calling it unwired.
+PATCHBAY_SETTLE = 3.0
+
+# A bound on each `pw-link` call, so a hung one cannot hold up startup.
+PATCHBAY_TIMEOUT = 2.0
+
+
+def ports_without_sources(listing: str, node: str) -> list[str]:
+    """Input ports of `node` that nothing is connected to, from `pw-link -l -i`.
+
+    The listing names a port on its own line and then indents one `|<-` line
+    per source, so a port with no indented lines under it is a port with no
+    input. Pure, so the parse is pinned by tests while the shelling out is
+    verified by running it (quality principle 1).
+    """
+    prefix = f"{node}:"
+    unconnected: list[str] = []
+    port: str | None = None
+    sources = 0
+    for line in listing.splitlines():
+        if not line.strip():
+            continue
+        if line[0].isspace():
+            if port is not None and line.strip().startswith("|<-"):
+                sources += 1
+            continue
+        if port is not None and sources == 0:
+            unconnected.append(port)
+        port = line.strip() if line.strip().startswith(prefix) else None
+        sources = 0
+    if port is not None and sources == 0:
+        unconnected.append(port)
+    return unconnected
+
+
+def node_ports(listing: str, node: str) -> list[str]:
+    """Every input port of `node` the listing names, wired or not.
+
+    This exists because an empty `ports_without_sources` means two different
+    things — "every port has a source" and "this node is not in the listing at
+    all" — and treating the second as the first is a check reporting success
+    when it cannot tell. That is the failure this whole module's warning was
+    added to prevent, so it must not be the way the warning itself behaves.
+    """
+    prefix = f"{node}:"
+    ports: list[str] = []
+    for line in listing.splitlines():
+        if not line.strip() or line[0].isspace():
+            continue
+        text = line.strip()
+        if text.startswith(prefix):
+            ports.append(text)
+    return ports
+
+
+def unconnected_inputs(
+    node: str, settle: float = PATCHBAY_SETTLE
+) -> list[str] | None:
+    """`node`'s input ports that the patchbay has not wired, once it has had a
+    chance to — or `None` if `node` never appeared in the listing at all.
+
+    qpwgraph applies its patch as nodes appear, so asking too early reports a
+    port that is about to be connected. The wait is bounded and gives up rather
+    than blocking startup.
+
+    Lets `OSError` and `TimeoutExpired` out rather than reporting "nothing
+    unwired", so the caller can tell a wired rig from a question it failed to
+    ask. The caller is the one that decides such a failure is not fatal.
+    """
+    deadline = time.monotonic() + settle
+    while True:
+        result = subprocess.run(
+            ["pw-link", "-l", "-i"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=PATCHBAY_TIMEOUT,
+        )
+        present = node_ports(result.stdout, node)
+        unwired = ports_without_sources(result.stdout, node)
+        if present and not unwired:
+            return []
+        if time.monotonic() >= deadline:
+            return unwired if present else None
+        time.sleep(0.25)
+
+
 # How long to wait for Sushi's gRPC to start accepting connections.
 def stale_qpwgraph_sockets(paths: list[Path], any_running: bool) -> list[Path]:
     """Which qpwgraph single-instance sockets are safe to remove.
