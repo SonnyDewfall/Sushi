@@ -418,3 +418,155 @@ def test_the_config_inside_a_take_loads_and_verifies_on_its_own(tmp_path):
     folder = finished_take(tmp_path)
     problems = verify(folder / take.CONFIG_FILE, str(SUSHI), quick=True)
     assert not problems, "\n" + "\n".join(f"  {p}" for p in problems)
+
+
+# --------------------------------------------------------------------------- #
+# Found in review: each of these was a way to lose a take, or to mislead about one
+# --------------------------------------------------------------------------- #
+
+def test_a_config_json_cannot_encode_is_refused_before_the_earlier_take_moves(tmp_path):
+    """It used to be serialised after the earlier take had been archived and the
+    new folder made, so the refusal left an empty folder where a take had been."""
+    record(start(tmp_path))
+    take.finish_take(tmp_path / "riff-idea", {}, measured_by="")
+    unencodable = config()
+    unencodable["amp"] = Path("amp/models/x.nam")
+    with pytest.raises(TakeError, match="cannot be written as JSON"):
+        start(tmp_path, cfg=unencodable)
+    assert take.load_take(tmp_path / "riff-idea").complete, "the earlier take is untouched"
+    assert not (tmp_path / take.ARCHIVE_DIR).exists(), "and was never archived"
+
+
+@pytest.mark.parametrize("rate", [0, -48000, None, True, 48000.0])
+def test_a_sample_rate_nothing_can_divide_by_is_refused_at_the_start(tmp_path, rate):
+    """The first thing to notice used to be `finish_take` dividing by it —
+    after the performance, leaving a take that could never be marked complete."""
+    with pytest.raises(TakeError, match="sample_rate"):
+        start(tmp_path, sample_rate=rate)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_correcting_an_offset_by_hand_is_not_undercut_by_the_old_sentence(tmp_path, capsys):
+    """The carried-offset design's whole claim is that a wrong offset is fixed
+    by editing one number. `take check` used to print the stored sentence, so
+    after the edit it still said 5.35 ms and the stem was slid by the old
+    amount."""
+    from sushi_rig import cli
+
+    folder = finished_take(tmp_path)
+    path = folder / take.TAKE_FILE
+    path.write_text(path.read_text().replace("latency_samples: 257", "latency_samples: 513", 1))
+
+    problems = take.check_take(take.load_take(folder))
+    assert any("out of date with the stems' offsets" in p for p in problems)
+    assert "10.69 ms" in take.describe_alignment(take.load_take(folder))
+
+    cli.main(["take", "check", str(folder)])
+    out = capsys.readouterr().out
+    assert "guitar.wav is 513 samples (10.69 ms)" in out, "the number wins"
+
+
+def test_a_stem_that_is_a_directory_is_reported_rather_than_crashing(tmp_path):
+    folder = finished_take(tmp_path)
+    (folder / "guitar.wav").unlink()
+    (folder / "guitar.wav").mkdir()
+    assert any("guitar.wav cannot be read" in p for p in take.check_take(take.load_take(folder)))
+
+
+def test_finishing_a_take_with_damaged_metadata_says_so_as_a_take_error(tmp_path):
+    """A KeyError here would be a traceback at the end of a take, the worst
+    moment to have one, and the CLI only catches TakeError."""
+    paths = start(tmp_path)
+    record(paths)
+    path = tmp_path / "riff-idea" / take.TAKE_FILE
+    path.write_text(path.read_text().replace("sample_rate: 48000\n", ""))
+    with pytest.raises(TakeError, match="sample_rate"):
+        take.finish_take(tmp_path / "riff-idea", {}, measured_by="")
+
+
+def test_an_unquoted_recorded_at_from_a_hand_edit_still_finishes(tmp_path):
+    """YAML reads an unquoted timestamp back as a datetime, not a string."""
+    record(start(tmp_path))
+    path = tmp_path / "riff-idea" / take.TAKE_FILE
+    path.write_text(path.read_text().replace(
+        "recorded_at: '2026-10-30T21:40:00+00:00'", "recorded_at: 2026-10-30 21:40:00"
+    ))
+    finished = take.finish_take(tmp_path / "riff-idea", {}, measured_by="")
+    assert finished.metadata["recorded_at"] == "2026-10-30T21:40:00+00:00"
+
+
+def test_an_alignment_that_is_not_a_mapping_is_reported_by_the_command_that_describes_it(
+    tmp_path, capsys
+):
+    from sushi_rig import cli
+
+    folder = finished_take(tmp_path)
+    path = folder / take.TAKE_FILE
+    text = path.read_text()
+    start_at = text.index("alignment:")
+    end_at = text.index("sample_rate:")
+    path.write_text(text[:start_at] + "alignment: shifted by hand\n" + text[end_at:])
+    assert cli.main(["take", "check", str(folder)]) == 1
+    assert "not a mapping" in capsys.readouterr().out
+
+
+def test_a_damaged_stem_entry_is_reported_not_silently_dropped(tmp_path, capsys):
+    """It used to vanish: a four-stem take with one entry turned into a bare
+    string checked out as "ok, 3 stem(s)"."""
+    from sushi_rig import cli
+    import yaml
+
+    folder = finished_take(tmp_path)
+    path = folder / take.TAKE_FILE
+    meta = yaml.safe_load(path.read_text())
+    meta["stems"][3] = "vocal-dry.wav"
+    path.write_text(yaml.dump(meta, sort_keys=False))
+
+    assert any("stem entry 4 is 'vocal-dry.wav'" in p
+               for p in take.check_take(take.load_take(folder)))
+    assert cli.main(["take", "check", str(folder)]) == 1
+    assert "ok, 3 stem(s)" not in capsys.readouterr().out
+
+
+def test_a_stem_whose_channel_is_no_track_in_the_config_is_refused(tmp_path):
+    """A stem is named after its track, and that name is how it is re-amped:
+    guitr.wav beside a config with no guitr track goes back through nothing."""
+    stems = four_stems()
+    stems[0] = Stem("guitr", PROCESSED, GUITAR_OUT)
+    with pytest.raises(TakeError, match="no such track"):
+        start(tmp_path, stems=stems)
+
+
+def test_a_take_with_no_dry_tap_does_not_point_at_dry_stems():
+    lone = take.alignment_note([Stem("guitar", PROCESSED, GUITAR_OUT, 257)], SR)
+    assert "dry stems" not in lone and "move" not in lone
+    assert "behind what was played" in lone
+
+    together = take.alignment_note(
+        [Stem("guitar", PROCESSED, GUITAR_OUT, 257), Stem("vocal", PROCESSED, VOCAL_OUT, 257)],
+        SR,
+    )
+    assert "line up with each other" in together
+
+    apart = take.alignment_note(
+        [Stem("guitar", PROCESSED, GUITAR_OUT, 0), Stem("vocal", PROCESSED, VOCAL_OUT, 257)],
+        SR,
+    )
+    assert "line up with each other" not in apart, "they do not"
+
+
+def test_metadata_reaches_the_disk_before_it_replaces_the_old(tmp_path, monkeypatch):
+    """The rename alone survives a killed process but not a power cut: ext4 and
+    xfs can commit the rename before the data, leaving take.yaml empty. Pinned
+    so the two syncs cannot be tidied away."""
+    synced = []
+    real_fsync = take.os.fsync
+
+    def recording_fsync(fd):
+        synced.append(fd)
+        real_fsync(fd)
+
+    monkeypatch.setattr(take.os, "fsync", recording_fsync)
+    start(tmp_path)
+    # config.json and take.yaml, each: the file, then its directory.
+    assert len(synced) == 4

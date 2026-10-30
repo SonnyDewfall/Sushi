@@ -261,7 +261,13 @@ def check_stems(stems: Sequence[Stem]) -> list[str]:
 
 
 def alignment_note(stems: Sequence[Stem], sample_rate: int) -> str:
-    """How the stems line up, as a sentence a musician can act on."""
+    """How the stems line up, as a sentence a musician can act on.
+
+    Derived from the stems' `latency_samples` every time, never stored as the
+    truth: `take.yaml` carries this sentence for a person reading the file, but
+    the number is what is authoritative, and `check_take` reports the sentence
+    as stale if someone corrects the number by hand.
+    """
     late: dict[int, list[str]] = {}
     unmeasured = []
     for stem in stems:
@@ -271,14 +277,27 @@ def alignment_note(stems: Sequence[Stem], sample_rate: int) -> str:
         elif stem.latency_samples > 0:
             late.setdefault(stem.latency_samples, []).append(stem.filename)
 
+    has_dry = any(stem.tap == DRY for stem in stems)
     sentences = []
     for samples, files in sorted(late.items()):
         ms = 1000.0 * samples / sample_rate
-        sentences.append(
-            f"{_listed(files)} {'is' if len(files) == 1 else 'are'} {samples} samples "
-            f"({ms:.2f} ms) later than the dry stems. To line them up in a DAW, move "
-            f"{'it' if len(files) == 1 else 'them'} {ms:.2f} ms earlier."
-        )
+        verb = "is" if len(files) == 1 else "are"
+        if has_dry:
+            sentences.append(
+                f"{_listed(files)} {verb} {samples} samples ({ms:.2f} ms) later than "
+                f"the dry stems. To line them up in a DAW, move "
+                f"{'it' if len(files) == 1 else 'them'} {ms:.2f} ms earlier."
+            )
+        else:
+            # Nothing to slide against. The old wording told people to line a
+            # stem up with dry stems the take did not have.
+            sentences.append(
+                f"{_listed(files)} {verb} {samples} samples ({ms:.2f} ms) behind "
+                f"what was played."
+            )
+    measured = {s.latency_samples for s in stems if s.latency_samples is not None}
+    if not has_dry and len(measured) == 1 and not unmeasured and late:
+        sentences.append("There is no dry tap, and the stems line up with each other.")
     if unmeasured:
         sentences.append(
             f"The offset of {_listed(unmeasured)} was not measured, so "
@@ -286,6 +305,73 @@ def alignment_note(stems: Sequence[Stem], sample_rate: int) -> str:
             f"and may need lining up by ear."
         )
     return " ".join(sentences) or "All the stems line up as they are."
+
+
+def _recorded_at(value: Any) -> datetime | None:
+    """`recorded_at` as written, or as YAML reads it back after a hand edit.
+
+    An unquoted timestamp in YAML loads as a `datetime`, not a string, and a
+    naive one at that; this file is always written in UTC, so that is what a
+    naive one means.
+    """
+    if isinstance(value, datetime):
+        return value if value.tzinfo else value.replace(tzinfo=timezone.utc)
+    if isinstance(value, str):
+        try:
+            parsed = datetime.fromisoformat(value)
+        except ValueError:
+            return None
+        return parsed if parsed.tzinfo else parsed.replace(tzinfo=timezone.utc)
+    return None
+
+
+def check_format(sample_rate: Any, subtype: Any, quantum: Any) -> list[str]:
+    """The numbers every later step divides by or writes into a header.
+
+    Checked when a take starts, because the first thing that would otherwise
+    notice a sample rate of 0 is `finish_take` dividing by it — after the
+    performance, leaving a take that can never be marked complete.
+    """
+    problems = []
+    if type(sample_rate) is not int or sample_rate <= 0:
+        problems.append(f"sample_rate must be a positive whole number of Hz, got {sample_rate!r}")
+    if subtype not in SUBTYPES:
+        problems.append(f"subtype {subtype!r} is not one of {', '.join(SUBTYPES)}")
+    if quantum is not None and (type(quantum) is not int or quantum <= 0):
+        problems.append(f"quantum must be a positive block size or unset, got {quantum!r}")
+    return problems
+
+
+def check_channels(stems: Sequence[Stem], config: Any) -> list[str]:
+    """Every stem's channel is a track the config actually has.
+
+    A stem is named after its track, and that name is how a take is re-amped:
+    `guitr.wav` beside a config with no `guitr` track cannot be put back through
+    anything.
+    """
+    tracks = config.get("tracks") if isinstance(config, dict) else None
+    if not isinstance(tracks, list):
+        return []
+    names = {t.get("name") for t in tracks if isinstance(t, dict)}
+    return [
+        f"stem {stem.filename} names channel {stem.channel!r}, but the config has no "
+        f"such track (it has {', '.join(sorted(map(str, names))) or 'none'})"
+        for stem in stems if stem.channel not in names
+    ]
+
+
+def describe_alignment(take: "Take") -> str | None:
+    """The sentence to show a person: recomputed for a finished take, so a
+    corrected number is never undercut by a stale sentence; the stored one for a
+    take that was cut off; nothing when the take cannot say."""
+    if not take.complete:
+        alignment = take.metadata.get("alignment")
+        note = alignment.get("note") if isinstance(alignment, dict) else None
+        return note if isinstance(note, str) else None
+    rate = take.metadata.get("sample_rate")
+    if type(rate) is not int or rate <= 0 or check_stems(take.stems):
+        return None
+    return alignment_note(take.stems, rate)
 
 
 def _listed(names: Sequence[str]) -> str:
@@ -376,8 +462,12 @@ def load_take(folder: Path) -> Take:
             f"{path}: schema_version {raw.get('schema_version')!r} is not one this tool "
             f"reads ({SCHEMA_VERSION}). Not guessing at the rest of the file"
         ])
+    # Entries that are not mappings are skipped here and *reported* by
+    # `check_take`. Skipping them silently made a four-stem take with one
+    # damaged entry check out as "ok, 3 stem(s)".
     stems = []
-    for entry in raw.get("stems") or []:
+    entries = raw.get("stems")
+    for entry in entries if isinstance(entries, list) else []:
         if isinstance(entry, dict):
             stems.append(Stem(
                 channel=entry.get("channel"),
@@ -402,9 +492,20 @@ def check_take(take: Take) -> list[str]:
             "hold whatever was captured up to then and no offsets were measured"
         )
     problems += check_name(meta.get("name"))
-    problems += check_stems(take.stems)
+    entries = meta.get("stems")
+    if not isinstance(entries, list):
+        problems.append(f"stems is not a list, so the take does not say what it holds (got {entries!r})")
+        entries = []
+    for index, entry in enumerate(entries):
+        if not isinstance(entry, dict):
+            problems.append(
+                f"stem entry {index + 1} is {entry!r}, not a description of a stem, "
+                f"so whatever file it was is no longer part of the take"
+            )
+    stem_problems = check_stems(take.stems)
+    problems += stem_problems
 
-    files = [entry.get("file") for entry in meta.get("stems") or [] if isinstance(entry, dict)]
+    files = [entry.get("file") for entry in entries if isinstance(entry, dict)]
     for stem, written in zip(take.stems, files):
         if written != stem.filename:
             problems.append(
@@ -422,10 +523,30 @@ def check_take(take: Take) -> list[str]:
     else:
         if not isinstance(parsed, dict) or not isinstance(parsed.get("tracks"), list):
             problems.append(f"{CONFIG_FILE} has no tracks, so it is not a Sushi config")
+        else:
+            problems += check_channels(take.stems, parsed)
 
     rate, subtype = meta.get("sample_rate"), meta.get("subtype")
-    if subtype not in SUBTYPES:
-        problems.append(f"subtype {subtype!r} is not one of {', '.join(SUBTYPES)}")
+    format_problems = check_format(rate, subtype, meta.get("quantum"))
+    problems += format_problems
+
+    alignment = meta.get("alignment")
+    if not isinstance(alignment, dict):
+        problems.append(
+            f"alignment is {alignment!r}, not a mapping, so the take does not say how "
+            f"its stems line up"
+        )
+    elif take.complete and not stem_problems and not format_problems:
+        # The number is the truth and the sentence is for reading. Correcting a
+        # `latency_samples` by hand — the fix the carried-offset design relies
+        # on — must not leave the instruction above it telling someone to slide
+        # a stem by the old amount.
+        expected = alignment_note(take.stems, rate)
+        if alignment.get("note") != expected:
+            problems.append(
+                f"the alignment note is out of date with the stems' offsets: it says "
+                f"{alignment.get('note')!r}, and the offsets say {expected!r}"
+            )
     lengths: dict[str, int] = {}
     for stem in take.stems:
         path = take.folder / stem.filename
@@ -434,7 +555,9 @@ def check_take(take: Take) -> list[str]:
             continue
         try:
             info = wav_info(path)
-        except ValueError as exc:
+        except (ValueError, OSError) as exc:
+            # OSError too: a directory where a stem should be, or a file this
+            # user cannot read, must be one line in the list, not the end of it.
             problems.append(f"{stem.filename} cannot be read: {exc}")
             continue
         if info.sample_rate != rate:
@@ -462,11 +585,26 @@ def check_take(take: Take) -> list[str]:
 # --------------------------------------------------------------------------- #
 
 def _write_atomic(path: Path, text: str) -> None:
-    """Replace `path` in one step, so a kill mid-write leaves the old file or
-    the new one and never half of either."""
+    """Replace `path` in one step, so a kill or a power cut mid-write leaves the
+    old file or the new one and never half of either.
+
+    The rename alone survives a killed process, because the data is already in
+    the page cache. It does not survive losing power: ext4 and xfs can commit the
+    rename before the data, leaving a zero-byte file, so the data is synced
+    before the rename and the directory after it. A rig losing power on stage is
+    not a hypothetical worth skipping two syscalls for.
+    """
     tmp = path.with_name(f".{path.name}.tmp")
-    tmp.write_text(text)
+    with tmp.open("w") as handle:
+        handle.write(text)
+        handle.flush()
+        os.fsync(handle.fileno())
     os.replace(tmp, path)
+    directory = os.open(path.parent, os.O_RDONLY)
+    try:
+        os.fsync(directory)
+    finally:
+        os.close(directory)
 
 
 def _write_metadata(folder: Path, metadata: dict[str, Any]) -> None:
@@ -488,9 +626,8 @@ def _archive_existing(takes_dir: Path, name: str, folder: Path, now: datetime) -
     """
     stamp = now
     try:
-        when = load_take(folder).metadata.get("recorded_at")
-        stamp = datetime.fromisoformat(when) if isinstance(when, str) else now
-    except (TakeError, ValueError):
+        stamp = _recorded_at(load_take(folder).metadata.get("recorded_at")) or now
+    except TakeError:
         pass
     base = takes_dir / ARCHIVE_DIR / name
     base.mkdir(parents=True, exist_ok=True)
@@ -526,10 +663,20 @@ def start_take(
     """
     stems = _with_reference(stems)
     problems = check_name(name) + check_stems(stems)
-    if subtype not in SUBTYPES:
-        problems.append(f"subtype {subtype!r} is not one of {', '.join(SUBTYPES)}")
+    problems += check_format(sample_rate, subtype, quantum)
     if not isinstance(config, dict) or not isinstance(config.get("tracks"), list):
         problems.append("the config has no tracks, so it is not a Sushi config")
+    else:
+        problems += check_channels(stems, config)
+    # Serialised here, before anything is moved or made. Writing it after the
+    # earlier take had been archived and the new folder created meant a config
+    # holding something JSON cannot encode left an empty folder behind, which
+    # is exactly what "writes nothing" promised not to.
+    config_text = ""
+    try:
+        config_text = json.dumps(config, indent=2) + "\n"
+    except (TypeError, ValueError) as exc:
+        problems.append(f"the config cannot be written as JSON: {exc}")
     if problems:
         raise TakeError(problems)
 
@@ -543,7 +690,7 @@ def start_take(
     # A copy, never a reference: a take that points at config/electric-clean.json
     # says nothing once that file has moved on, which is the failure the
     # project's versioning exists to prevent.
-    (folder / CONFIG_FILE).write_text(json.dumps(config, indent=2) + "\n")
+    _write_atomic(folder / CONFIG_FILE, config_text)
     _write_metadata(folder, take_metadata(
         name, stems, sample_rate=sample_rate, subtype=subtype, quantum=quantum,
         recorded_at=now, config_source=config_source, complete=False,
@@ -565,6 +712,17 @@ def finish_take(
     provenance is lost is indistinguishable from one somebody guessed.
     """
     take = load_take(folder)
+    meta = take.metadata
+    recorded_at = _recorded_at(meta.get("recorded_at"))
+    problems = check_name(meta.get("name")) + check_format(
+        meta.get("sample_rate"), meta.get("subtype"), meta.get("quantum")
+    )
+    if recorded_at is None:
+        problems.append(f"recorded_at {meta.get('recorded_at')!r} is not a time")
+    if problems:
+        # As a TakeError, which the callers catch. A KeyError here would be a
+        # traceback at the end of a take, the worst moment to have one.
+        raise TakeError(problems)
     known = {stem.filename for stem in take.stems}
     unknown = sorted(set(latencies) - known)
     if unknown:
@@ -576,13 +734,11 @@ def finish_take(
     problems = check_stems(stems)
     if problems:
         raise TakeError(problems)
-    meta = take.metadata
     _write_metadata(Path(folder), take_metadata(
         meta["name"], stems,
         sample_rate=meta["sample_rate"], subtype=meta["subtype"],
-        quantum=meta.get("quantum"),
-        recorded_at=datetime.fromisoformat(meta["recorded_at"]),
-        config_source=meta.get("config_source", ""), complete=True,
+        quantum=meta.get("quantum"), recorded_at=recorded_at,
+        config_source=str(meta.get("config_source", "")), complete=True,
         measured_by=measured_by,
     ))
     return load_take(folder)

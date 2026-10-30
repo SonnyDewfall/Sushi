@@ -897,8 +897,11 @@ choice open. Compensating means writing silence ahead of a stem, which needs the
 offset before the first sample is recorded — and before a take the only number
 available is an assumption (one quantum) or an earlier measurement. Carried, the
 offset is measured from the take itself, after it, and written beside audio
-nothing has touched; if it is ever wrong, one line of `take.yaml` is corrected
-instead of every stem. The cost is that stems do not line up by themselves in a
+nothing has touched; if it is ever wrong, the number in `take.yaml` is corrected
+instead of every stem. The number is the truth and the sentence above it is for
+reading: `take check` recomputes the sentence from the number and flags the old
+one as stale, because the first version printed the stored sentence and would
+have had someone slide a corrected stem by the old amount. The cost is that stems do not line up by themselves in a
 DAW, so the file states the fix in milliseconds near its top. Compensation can
 be added at finish time later if that friction matters: the number is already
 there. *(2026-10-30)*

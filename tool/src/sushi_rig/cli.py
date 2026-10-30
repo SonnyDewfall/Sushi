@@ -263,7 +263,7 @@ def _patchbay(args: argparse.Namespace) -> int:
 
 def _take(args: argparse.Namespace) -> int:
     """`take check`: is this folder a whole, honest take, and how do its stems line up."""
-    from .take import TakeError, check_take, load_take
+    from .take import TakeError, check_take, describe_alignment, load_take
 
     try:
         take = load_take(args.folder)
@@ -272,7 +272,9 @@ def _take(args: argparse.Namespace) -> int:
     problems = check_take(take)
     for problem in problems:
         print(f"  {problem}")
-    alignment = (take.metadata.get("alignment") or {}).get("note")
+    # Recomputed from the offsets, not read back from the file: a number
+    # corrected by hand must not be undercut by the sentence that was there.
+    alignment = describe_alignment(take)
     if alignment:
         print(f"{args.folder.name}: {alignment}")
     print(
