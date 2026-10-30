@@ -958,7 +958,7 @@ def main(argv: list[str] | None = None) -> int:
 
         import yaml
 
-        from .nulltest import compare, from_dict, to_dict
+        from .nulltest import compare, from_dict, keep_wider, to_dict
         from .paths import checkout_root
         from .render import (
             RenderError, calibrate, measure, offline_problem, reference_path,
@@ -983,12 +983,18 @@ def main(argv: list[str] | None = None) -> int:
                 try:
                     problem = offline_problem(json.loads(target.read_text()))
                     if problem is not None:
-                        if ref_file.exists() and not args.calibrate:
+                        if ref_file.exists():
                             # It was protected and silently stopped being. A
-                            # derived exemption must not be a way to lose one.
+                            # derived exemption must not be a way to lose one —
+                            # nor `--calibrate`, which used to report it as
+                            # unrenderable, exit 0 and leave the stale
+                            # reference to fail the next run.
                             print(
                                 f"{target.name}: NO LONGER RENDERABLE — it has a "
-                                f"reference, so it used to be checked, but {problem}",
+                                f"reference, so it used to be checked, but {problem}. "
+                                f"Fix the routing, or if the move was meant, delete "
+                                f"{ref_file.relative_to(root)}: its sound can no "
+                                f"longer be checked here",
                                 file=sys.stderr,
                             )
                             failed += 1
@@ -1004,6 +1010,24 @@ def main(argv: list[str] | None = None) -> int:
                         fp, tolerance = calibrate(
                             target, root, work, sushi_bin=sushi
                         )
+                        committed = None
+                        if ref_file.exists():
+                            try:
+                                committed = from_dict(yaml.safe_load(ref_file.read_text()))[1]
+                            except (ValueError, KeyError, TypeError, AttributeError,
+                                    yaml.YAMLError):
+                                # An unreadable reference has no tolerance worth
+                                # keeping; this calibration replaces it whole.
+                                committed = None
+                        measured = tolerance
+                        tolerance = keep_wider(measured, committed)
+                        if tolerance != measured:
+                            print(
+                                f"{target.name}: kept the committed tolerance, wider "
+                                f"than this calibration's floor — delete the reference "
+                                f"first to tighten it",
+                                file=sys.stderr,
+                            )
                         ref_file.parent.mkdir(parents=True, exist_ok=True)
                         ref_file.write_text(
                             yaml.dump(

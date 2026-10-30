@@ -145,19 +145,35 @@ def offline_problem(config: dict[str, Any]) -> str | None:
     `guitar_vocal` is the case that found it: its vocal track listens on bus 1,
     so no stimulus of any width can render it offline.
     """
-    buses = OFFLINE_CHANNELS // 2
+    # Both routing forms the rig accepts (spec.py, patchbay.routes_from_rig):
+    # `engine_bus: n` is channels 2n and 2n+1, `engine_channel: n` is channel n.
+    # Checking only the bus form let a track on `engine_channel: 2` pass as
+    # renderable, and Sushi then refused it with the plugin-shaped error.
     for track in config.get("tracks", []):
         if not isinstance(track, dict):
             continue
         for side in ("inputs", "outputs"):
-            for entry in track.get(side, []) if isinstance(track.get(side), list) else []:
-                bus = entry.get("engine_bus") if isinstance(entry, dict) else None
-                if type(bus) is int and bus >= buses:
-                    return (
-                        f"track {track.get('name')!r} uses engine bus {bus} for its "
-                        f"{side}, and Sushi's offline frontend has {OFFLINE_CHANNELS} "
-                        f"channels — bus 0 only — so it cannot load this config"
-                    )
+            entries = track.get(side)
+            if not isinstance(entries, list):
+                continue
+            for entry in entries:
+                if not isinstance(entry, dict):
+                    continue
+                for key, width in (("engine_bus", 2), ("engine_channel", 1)):
+                    value = entry.get(key)
+                    # A malformed index is verify's to refuse — it runs first in
+                    # CI — and the rule for one is patchbay._index_problem's:
+                    # a non-negative int, with bool excluded.
+                    if type(value) is not int or value < 0:
+                        continue
+                    if value * width + width > OFFLINE_CHANNELS:
+                        return (
+                            f"track {track.get('name')!r} uses "
+                            f"{key.replace('_', ' ')} {value} for its "
+                            f"{side}, and Sushi's offline frontend has "
+                            f"{OFFLINE_CHANNELS} channels — bus 0 only — so it "
+                            f"cannot load this config"
+                        )
     return None
 
 

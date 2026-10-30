@@ -463,27 +463,34 @@ def test_guitar_vocal_cannot_be_rendered_offline_and_says_why():
     assert problem and "'vocal'" in problem and "engine bus 1" in problem
 
 
-def test_every_single_bus_config_in_the_repository_can_be():
+def test_guitar_vocal_is_the_only_config_in_the_repository_that_cannot_be():
+    """Pinned as a set, not by one example each way: a regression that wrongly
+    flagged electric-delay would otherwise pass, and quietly drop its
+    protection."""
     import json
 
-    renderable = [
-        c.name for c in sorted((ROOT / "config").glob("*.json"))
-        if render.offline_problem(json.loads(c.read_text())) is None
-    ]
-    assert "electric_board.json" in renderable
-    assert "guitar_vocal.json" not in renderable
+    unrenderable = {
+        c.name for c in (ROOT / "config").glob("*.json")
+        if render.offline_problem(json.loads(c.read_text())) is not None
+    }
+    assert unrenderable == {"guitar_vocal.json"}
 
 
 @pytest.mark.parametrize("config, renderable", [
     ({"tracks": []}, True),
     ({"tracks": [{"inputs": [{"engine_bus": 0}], "outputs": [{"engine_bus": 0}]}]}, True),
     ({"tracks": [{"outputs": [{"engine_bus": 1}]}]}, False),
+    ({"tracks": [{"inputs": [{"engine_channel": 0}, {"engine_channel": 1}]}]}, True),
+    ({"tracks": [{"inputs": [{"engine_channel": 2}]}]}, False),
+    ({"tracks": [{"outputs": [{"engine_channel": 3}]}]}, False),
     ({"tracks": [{"inputs": [{"engine_bus": True}]}]}, True),
     ({"tracks": ["not a track", {"inputs": "nor these"}]}, True),
 ])
-def test_offline_problem_looks_at_inputs_and_outputs(config, renderable):
-    """An output on bus 1 is as unloadable as an input there. `True` is an int
-    in Python and must not read as bus 1."""
+def test_offline_problem_looks_at_both_routing_forms_on_both_sides(config, renderable):
+    """The rig routes by `engine_bus` or by `engine_channel` (spec.py,
+    patchbay.routes_from_rig), and only the first was checked: a track on
+    channel 2 passed as renderable. `True` is an int in Python and must not
+    read as bus 1; malformed indices are left for verify, which runs first."""
     assert (render.offline_problem(config) is None) is renderable
 
 
@@ -540,4 +547,42 @@ def test_a_config_that_had_a_reference_and_became_unrenderable_fails(
     assert cli.main(["nulltest", str(config), "--calibrate"]) == 0
     config.write_text(json.dumps(BUS_ONE))
     assert cli.main(["nulltest", str(config)]) == 1
+    err = capsys.readouterr().err
+    assert "NO LONGER RENDERABLE" in err
+    assert "delete config/sound/electric-clean.yaml" in err, "say how to resolve it"
+
+
+def test_recalibrating_a_config_that_became_unrenderable_fails_rather_than_lying(
+    tmp_path, monkeypatch, capsys
+):
+    """It used to print NOT RENDERABLE, exit 0, and leave the stale reference
+    for the next run to fail on — so accepting the change looked accepted."""
+    import json
+
+    cli, config = _rig(tmp_path, monkeypatch)
+    assert cli.main(["nulltest", str(config), "--calibrate"]) == 0
+    config.write_text(json.dumps(BUS_ONE))
+    assert cli.main(["nulltest", str(config), "--calibrate"]) == 1
     assert "NO LONGER RENDERABLE" in capsys.readouterr().err
+
+
+def test_a_recalibration_keeps_a_tolerance_that_was_set_wider_by_hand(
+    tmp_path, monkeypatch, capsys
+):
+    """What committing CI's candidates used to do to the two non-deterministic
+    configs: put their hand-widened 0.01 dB back to one calibration's floor,
+    and with it the failures at random that the widening was for."""
+    import yaml
+    from sushi_rig.nulltest import Tolerance, from_dict, to_dict
+
+    cli, config = _rig(tmp_path, monkeypatch)
+    assert cli.main(["nulltest", str(config), "--calibrate"]) == 0
+    ref = render.reference_path(tmp_path, config)
+    fp, _ = from_dict(yaml.safe_load(ref.read_text()))
+    ref.write_text(yaml.dump(to_dict(fp, Tolerance(0.01, 0.01, 0, "set by hand")),
+                             sort_keys=False))
+
+    assert cli.main(["nulltest", str(config), "--calibrate"]) == 0
+    _, kept = from_dict(yaml.safe_load(ref.read_text()))
+    assert (kept.band_db, kept.level_db, kept.note) == (0.01, 0.01, "set by hand")
+    assert "kept the committed tolerance" in capsys.readouterr().err

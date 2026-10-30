@@ -297,6 +297,36 @@ def floor_between(a: Fingerprint, b: Fingerprint) -> Tolerance:
     )
 
 
+def keep_wider(measured: Tolerance, committed: Tolerance | None) -> Tolerance:
+    """The tolerance a recalibration writes: never tighter than the committed one.
+
+    A calibration's floor is one pair of renders. For a config that is not
+    deterministic, that understates its spread — `electric-octave-up` measured
+    steady three times and then moved its peak by five times the tolerance
+    those three implied — so its committed tolerance is set wider by hand.
+    Recalibrating after a deliberate change in tone used to overwrite that with
+    the new floor, and the config went back to failing at random. Per field,
+    the wider of the two wins; the committed note is kept whenever any field of
+    it is, because that is the judgement still in force. Tightening one is a
+    deliberate act: delete the reference and calibrate afresh.
+    """
+    if committed is None:
+        return measured
+    widest = Tolerance(
+        band_db=max(measured.band_db, committed.band_db),
+        level_db=max(measured.level_db, committed.level_db),
+        delay_samples=max(measured.delay_samples, committed.delay_samples),
+        note=measured.note,
+    )
+    kept = (
+        widest.band_db > measured.band_db
+        or widest.level_db > measured.level_db
+        or widest.delay_samples > measured.delay_samples
+    )
+    return Tolerance(widest.band_db, widest.level_db, widest.delay_samples,
+                     committed.note if kept else measured.note)
+
+
 def to_dict(fp: Fingerprint, tolerance: Tolerance) -> dict[str, Any]:
     """The reference as it is written to disk: readable, diffable, ordered."""
     return {

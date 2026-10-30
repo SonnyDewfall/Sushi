@@ -113,8 +113,22 @@ jobs:
         id: nulltest
         run: |
           set -o pipefail
+          # What the references depend on beyond this repository, printed so a
+          # failure on a PR that changed no config can be traced. The image is
+          # rebuilt each run from a floating ubuntu:24.04 and unpinned plugin
+          # packages, so an upstream update changes the sound being checked;
+          # and runners differ in CPU, which can take plugins down different
+          # floating-point paths. Neither is pinned: this makes them visible.
+          docker run --rm sushi-rig-ci bash -c '
+            grep -m1 "model name" /proc/cpuinfo
+            dpkg-query -W -f="\${Package} \${Version}\n" guitarix-lv2 mda-lv2 \
+                dpf-plugins-lv2 x42-plugins zynaddsubfx-lv2 rubberband-lv2 swh-lv2 \
+                ardour-lv2-plugins libc6'
           if ! docker run --rm -w /rig sushi-rig-ci sushi-rig nulltest --all --sushi ./sushi 2>&1 | tee nulltest.log; then
-            echo "::error title=The rig's sound changed, or a config has no reference::$(tail -n 40 nulltest.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
+            # Neutral on purpose: this fails on a changed sound, a missing
+            # reference, a config that cannot be rendered or checked, and one
+            # that stopped being renderable. The log line says which.
+            echo "::error title=nulltest --all failed::$(tail -n 40 nulltest.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
             exit 1
           fi
 
@@ -132,6 +146,14 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p sound-candidates
+          # Start from the committed references, so a recalibration keeps any
+          # tolerance set wider by hand (`nulltest.keep_wider`). An empty
+          # directory here used to throw those away: committing the candidates
+          # put the non-deterministic configs back to failing at random.
+          cp config/sound/*.yaml sound-candidates/ 2>/dev/null || true
+          echo "These are candidates for a change in sound that was MEANT. If"
+          echo "nulltest reported CANNOT CHECK or NO LONGER RENDERABLE, or if this"
+          echo "PR changed no config, they are not the fix: read nulltest's output."
           # Status kept, not acted on, until every candidate is printed. With
           # `bash -e` a single config that cannot calibrate used to end the
           # step there, and the candidates for every other config went with it.
