@@ -35,12 +35,14 @@ That is what `selftest` asks of an amp (#49).
 
 from __future__ import annotations
 
+import copy
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
 from . import signals
+from .save import NAME_PATTERN
 from .verify import sushi_env
 
 # Long enough for the lowest band to have cycles to measure, short enough that
@@ -143,7 +145,9 @@ def offline_problem(config: dict[str, Any]) -> str | None:
     config rather than read off the error.
 
     `guitar_vocal` is the case that found it: its vocal track listens on bus 1,
-    so no stimulus of any width can render it offline.
+    so no stimulus of any width can render it offline as a whole. `channels_of`
+    renders it one track at a time instead, and this is what is left over: a
+    single track that needs more than two channels by itself.
     """
     # Both routing forms the rig accepts (spec.py, patchbay.routes_from_rig):
     # `engine_bus: n` is channels 2n and 2n+1, `engine_channel: n` is channel n.
@@ -175,6 +179,127 @@ def offline_problem(config: dict[str, Any]) -> str | None:
                             f"cannot load this config"
                         )
     return None
+
+
+@dataclass(frozen=True)
+class Channel:
+    """One thing the null test renders and keeps a reference for.
+
+    `name` is the reference's file stem: the config's own stem for a
+    single-track config, so every reference written before channels existed
+    still applies, and `<config>.<track>` for each track of a multi-track one.
+    `whole` is true when `config` is the config file itself, unchanged, which
+    is then rendered from its own path rather than from a copy.
+    """
+
+    name: str
+    label: str
+    config: dict
+    whole: bool
+
+
+def channels_of(config: dict[str, Any], path: Path) -> list[Channel]:
+    """What to render for `config`: itself if it has one track, each track alone
+    if it has several.
+
+    Sushi's offline frontend has one stereo bus, so a rig of several channels
+    cannot be rendered as a whole — `guitar_vocal`'s vocal track is on bus 1.
+    Rendered one channel at a time, each on bus 0, any number of channels can
+    be, and a failure then says *which* chain's sound moved.
+
+    That is faithful for these configs because the only thing their tracks do
+    to each other is sum at the output bus, and a sum of unchanged channels is
+    unchanged. What it does not cover is a change in the summing itself — a
+    track sent to a different output — which `verify` checks as routing, and
+    any future cross-track processing such as sends, which would need the mix
+    rendered as a whole.
+
+    Raises ValueError for a track whose name cannot be a file name, since the
+    name becomes its reference's.
+    """
+    tracks = [t for t in config.get("tracks", []) if isinstance(t, dict)]
+    if len(tracks) <= 1:
+        if not tracks:
+            return [Channel(path.stem, path.name, config, True)]
+        moved = _on_bus_zero(tracks[0])
+        if moved == tracks[0]:
+            return [Channel(path.stem, path.name, config, True)]
+        alone = copy.deepcopy(config)
+        alone["tracks"] = [moved]
+        return [Channel(path.stem, path.name, alone, False)]
+
+    channels = []
+    for track in tracks:
+        name = track.get("name")
+        if not isinstance(name, str) or not NAME_PATTERN.fullmatch(name):
+            raise ValueError(
+                f"track name {name!r} in {path.name} cannot name a reference file: "
+                f"it must match {NAME_PATTERN.pattern}"
+            )
+        channels.append(Channel(
+            f"{path.stem}.{name}", f"{path.name} [{name}]", _alone(config, track), False
+        ))
+    return channels
+
+
+def _on_bus_zero(track: dict[str, Any]) -> dict[str, Any]:
+    """`track` with its engine indices moved down to start at 0, order kept.
+
+    Inputs and outputs separately, and each routing form separately: bus 1
+    becomes bus 0, channels 2 and 3 become 0 and 1. A track that needs more
+    than the offline frontend's two channels still needs them afterwards, and
+    `offline_problem` says so.
+    """
+    moved = copy.deepcopy(track)
+    for side in ("inputs", "outputs"):
+        entries = moved.get(side)
+        if not isinstance(entries, list):
+            continue
+        for key in ("engine_bus", "engine_channel"):
+            used = sorted({
+                e[key] for e in entries
+                if isinstance(e, dict) and type(e.get(key)) is int and e[key] >= 0
+            })
+            for entry in entries:
+                if isinstance(entry, dict) and entry.get(key) in used and type(entry.get(key)) is int:
+                    entry[key] = used.index(entry[key])
+    return moved
+
+
+def _alone(config: dict[str, Any], track: dict[str, Any]) -> dict[str, Any]:
+    """A copy of `config` holding `track` alone, on bus 0.
+
+    Everything keyed by processor name is cut down to this track's own: Sushi
+    refuses a config whose `initial_state` or MIDI mappings name a processor
+    that is not there.
+    """
+    own = {track.get("name")} | {
+        p.get("name") for p in track.get("plugins", []) if isinstance(p, dict)
+    }
+    alone = copy.deepcopy(config)
+    alone["tracks"] = [_on_bus_zero(track)]
+    if isinstance(config.get("initial_state"), list):
+        alone["initial_state"] = [
+            e for e in alone["initial_state"]
+            if not isinstance(e, dict) or e.get("processor") in own
+        ]
+    if isinstance(config.get("midi"), dict):
+        alone["midi"] = {
+            key: [e for e in value if not _names_another(e, own)]
+            if isinstance(value, list) else value
+            for key, value in alone["midi"].items()
+        }
+    return alone
+
+
+def _names_another(entry: Any, own: set) -> bool:
+    """Whether a MIDI entry points at a processor this channel does not have."""
+    if not isinstance(entry, dict):
+        return False
+    return any(
+        isinstance(entry.get(key), str) and entry[key] not in own
+        for key in ("processor", "track", "plugin", "plugin_name")
+    )
 
 
 def sushi_argv(

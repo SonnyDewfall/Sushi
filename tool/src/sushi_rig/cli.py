@@ -288,6 +288,196 @@ def _take(args: argparse.Namespace) -> int:
     return 1 if problems else 0
 
 
+def _nulltest(args: argparse.Namespace) -> int:
+    """`nulltest`: has any channel of any config changed its sound.
+
+    A config is checked one channel at a time (`render.channels_of`), because
+    Sushi's offline frontend has one stereo bus and a multi-channel rig cannot
+    be rendered as a whole. A single-track config is its own one channel, under
+    its own name, exactly as before channels existed.
+    """
+    import tempfile
+
+    import yaml
+
+    from .nulltest import compare, from_dict, keep_wider, to_dict
+    from .paths import checkout_root
+    from .render import (
+        SOUND_DIR, RenderError, calibrate, channels_of, measure, offline_problem,
+        reference_path,
+    )
+    from .verify import configs_to_check
+
+    root = checkout_root()
+    if args.check_all:
+        targets = configs_to_check(root)
+    elif args.config:
+        targets = [args.config]
+    else:
+        sys.exit("give a config to null-test, or --all")
+
+    sushi = args.sushi or str(root / "sushi")
+    failed = 0
+    checked = 0
+    unrenderable: list[str] = []
+    expected: set[str] = set()
+    unexpanded: list[str] = []
+
+    def cannot_check(label: str, exc: Exception) -> None:
+        nonlocal failed
+        # The type as well as the message: a KeyError's message is the bare key,
+        # which on its own reads like nothing at all.
+        print(f"{label}: CANNOT CHECK — {type(exc).__name__}: {exc}", file=sys.stderr)
+        failed += 1
+
+    with tempfile.TemporaryDirectory(prefix="sushi-rig-nulltest-") as tmp:
+        for target in targets:
+            try:
+                channels = channels_of(json.loads(target.read_text()), target)
+            except (ValueError, OSError) as exc:
+                unexpanded.append(target.stem)
+                checked += 1
+                cannot_check(target.name, exc)
+                continue
+
+            for channel in channels:
+                checked += 1
+                expected.add(channel.name)
+                work = Path(tmp) / channel.name
+                ref_file = reference_path(root, Path(f"{channel.name}.json"))
+                try:
+                    problem = offline_problem(channel.config)
+                    if problem is not None:
+                        if ref_file.exists():
+                            # It was protected and silently stopped being. A
+                            # derived exemption must not be a way to lose one —
+                            # nor `--calibrate`, which once reported it as
+                            # unrenderable, exited 0 and left the stale
+                            # reference to fail the next run.
+                            print(
+                                f"{channel.label}: NO LONGER RENDERABLE — it has a "
+                                f"reference, so it used to be checked, but {problem}. "
+                                f"Fix the routing, or if the move was meant, delete "
+                                f"{ref_file.relative_to(root)}: its sound can no "
+                                f"longer be checked here",
+                                file=sys.stderr,
+                            )
+                            failed += 1
+                        else:
+                            print(
+                                f"{channel.label}: NOT RENDERABLE OFFLINE — {problem}. "
+                                "A change in its sound would not fail this check",
+                                file=sys.stderr,
+                            )
+                            unrenderable.append(channel.label)
+                        continue
+
+                    if channel.whole:
+                        source = target
+                    else:
+                        # A copy cut down to this channel, named after it so
+                        # Sushi's own messages and the fingerprint say which.
+                        work.mkdir(parents=True, exist_ok=True)
+                        source = work / f"{channel.name}.json"
+                        source.write_text(json.dumps(channel.config, indent=2) + "\n")
+
+                    if args.calibrate:
+                        fp, measured = calibrate(source, root, work, sushi_bin=sushi)
+                        committed = None
+                        if ref_file.exists():
+                            try:
+                                committed = from_dict(yaml.safe_load(ref_file.read_text()))[1]
+                            except (ValueError, KeyError, TypeError, AttributeError,
+                                    yaml.YAMLError):
+                                # An unreadable reference has no tolerance worth
+                                # keeping; this calibration replaces it whole.
+                                committed = None
+                        tolerance = keep_wider(measured, committed)
+                        if tolerance != measured:
+                            print(
+                                f"{channel.label}: kept the committed tolerance, wider "
+                                f"than this calibration's floor — delete the reference "
+                                f"first to tighten it",
+                                file=sys.stderr,
+                            )
+                        ref_file.parent.mkdir(parents=True, exist_ok=True)
+                        ref_file.write_text(yaml.dump(
+                            to_dict(fp, tolerance), default_flow_style=False, sort_keys=False,
+                        ))
+                        print(
+                            f"{channel.label}: calibrated — band {tolerance.band_db:.4f} dB, "
+                            f"level {tolerance.level_db:.4f} dB, "
+                            f"delay {tolerance.delay_samples} samples "
+                            f"-> {ref_file.relative_to(root)}"
+                        )
+                        continue
+
+                    if not ref_file.exists():
+                        # Not a failure of the sound: there is nothing to compare
+                        # against yet. Saying "ok" here would be the loudest
+                        # possible lie this command could tell. The path as the
+                        # user must type it: the render runs from the rig root.
+                        print(
+                            f"{channel.label}: NO REFERENCE — run "
+                            f"`sushi-rig nulltest {_as_typed(target, root)} --calibrate`"
+                            " on a machine that can render",
+                            file=sys.stderr,
+                        )
+                        failed += 1
+                        continue
+
+                    reference, tolerance = from_dict(yaml.safe_load(ref_file.read_text()))
+                    differences = compare(
+                        reference, measure(source, root, work, sushi_bin=sushi), tolerance
+                    )
+                except (RenderError, ValueError, OSError, KeyError, TypeError,
+                        AttributeError, yaml.YAMLError) as exc:
+                    # Everything a hand-edited reference can do, caught per
+                    # channel so one bad file does not abandon the rest.
+                    cannot_check(channel.label, exc)
+                    continue
+
+                if differences:
+                    failed += 1
+                    print(f"{channel.label}: {len(differences)} difference(s)")
+                    for difference in differences:
+                        print(f"   {difference}")
+                else:
+                    print(f"{channel.label}: sounds the same")
+
+    if args.check_all:
+        # A reference nothing produces any more — a config renamed, a track
+        # renamed or removed — checks nothing and fails nothing, which reads as
+        # coverage that is not there. Only with --all, the one time every
+        # expected name is known; a config that could not be expanded keeps
+        # its own references out of this.
+        sound = root / "config" / SOUND_DIR
+        for ref in sorted(sound.glob("*.yaml")) if sound.is_dir() else []:
+            if ref.stem in expected or any(
+                ref.stem == stem or ref.stem.startswith(f"{stem}.") for stem in unexpanded
+            ):
+                continue
+            print(
+                f"{ref.relative_to(root)}: ORPHANED REFERENCE — no config or channel in "
+                f"config/ produces it any more, so it checks nothing. Delete it, or "
+                f"restore what it described",
+                file=sys.stderr,
+            )
+            failed += 1
+
+    if unrenderable:
+        # Every run, not only the first: a gap in coverage that is reported once
+        # and then goes quiet is a gap nobody remembers.
+        print(
+            f"\n{len(unrenderable)} channel(s) cannot be rendered offline, so their "
+            f"sound is not protected: {', '.join(unrenderable)}",
+            file=sys.stderr,
+        )
+    if failed:
+        print(f"\n{failed} of {checked} check(s) could not be confirmed", file=sys.stderr)
+    return 1 if failed else 0
+
+
 def _doctor(args: argparse.Namespace) -> int:
     """`doctor`: everything about this machine that has to be true before you play.
 
@@ -954,152 +1144,7 @@ def main(argv: list[str] | None = None) -> int:
             print(f"\n{failed} of {len(targets)} config(s) have problems", file=sys.stderr)
         return 1 if failed else 0
     elif args.command == "nulltest":
-        import tempfile
-
-        import yaml
-
-        from .nulltest import compare, from_dict, keep_wider, to_dict
-        from .paths import checkout_root
-        from .render import (
-            RenderError, calibrate, measure, offline_problem, reference_path,
-        )
-        from .verify import configs_to_check
-
-        root = checkout_root()
-        if args.check_all:
-            targets = configs_to_check(root)
-        elif args.config:
-            targets = [args.config]
-        else:
-            sys.exit("give a config to null-test, or --all")
-
-        sushi = args.sushi or str(root / "sushi")
-        failed = 0
-        unrenderable = []
-        with tempfile.TemporaryDirectory(prefix="sushi-rig-nulltest-") as tmp:
-            for target in targets:
-                ref_file = reference_path(root, target)
-                work = Path(tmp) / target.stem
-                try:
-                    problem = offline_problem(json.loads(target.read_text()))
-                    if problem is not None:
-                        if ref_file.exists():
-                            # It was protected and silently stopped being. A
-                            # derived exemption must not be a way to lose one —
-                            # nor `--calibrate`, which used to report it as
-                            # unrenderable, exit 0 and leave the stale
-                            # reference to fail the next run.
-                            print(
-                                f"{target.name}: NO LONGER RENDERABLE — it has a "
-                                f"reference, so it used to be checked, but {problem}. "
-                                f"Fix the routing, or if the move was meant, delete "
-                                f"{ref_file.relative_to(root)}: its sound can no "
-                                f"longer be checked here",
-                                file=sys.stderr,
-                            )
-                            failed += 1
-                        else:
-                            print(
-                                f"{target.name}: NOT RENDERABLE OFFLINE — {problem}. "
-                                "A change in its sound would not fail this check",
-                                file=sys.stderr,
-                            )
-                            unrenderable.append(target.name)
-                        continue
-                    if args.calibrate:
-                        fp, tolerance = calibrate(
-                            target, root, work, sushi_bin=sushi
-                        )
-                        committed = None
-                        if ref_file.exists():
-                            try:
-                                committed = from_dict(yaml.safe_load(ref_file.read_text()))[1]
-                            except (ValueError, KeyError, TypeError, AttributeError,
-                                    yaml.YAMLError):
-                                # An unreadable reference has no tolerance worth
-                                # keeping; this calibration replaces it whole.
-                                committed = None
-                        measured = tolerance
-                        tolerance = keep_wider(measured, committed)
-                        if tolerance != measured:
-                            print(
-                                f"{target.name}: kept the committed tolerance, wider "
-                                f"than this calibration's floor — delete the reference "
-                                f"first to tighten it",
-                                file=sys.stderr,
-                            )
-                        ref_file.parent.mkdir(parents=True, exist_ok=True)
-                        ref_file.write_text(
-                            yaml.dump(
-                                to_dict(fp, tolerance),
-                                default_flow_style=False, sort_keys=False,
-                            )
-                        )
-                        print(
-                            f"{target.name}: calibrated — band {tolerance.band_db:.4f} dB, "
-                            f"level {tolerance.level_db:.4f} dB, "
-                            f"delay {tolerance.delay_samples} samples "
-                            f"-> {ref_file.relative_to(root)}"
-                        )
-                        continue
-
-                    if not ref_file.exists():
-                        # Not a failure of the sound: there is nothing to compare
-                        # against yet. Saying "ok" here would be the loudest
-                        # possible lie this command could tell.
-                        # The path as the user must type it, not just the file
-                        # name: the render runs from the rig root, so
-                        # `nulltest electric-clean.json` finds nothing.
-                        print(
-                            f"{target.name}: NO REFERENCE — run "
-                            f"`sushi-rig nulltest {_as_typed(target, root)} --calibrate`"
-                            " on a machine that can render",
-                            file=sys.stderr,
-                        )
-                        failed += 1
-                        continue
-
-                    reference, tolerance = from_dict(yaml.safe_load(ref_file.read_text()))
-                    differences = compare(reference, measure(
-                        target, root, work, sushi_bin=sushi
-                    ), tolerance)
-                except (RenderError, ValueError, OSError, KeyError, TypeError,
-                        AttributeError, yaml.YAMLError) as exc:
-                    # Everything a hand-edited reference can do. `from_dict`
-                    # raises KeyError on a missing section, yaml.safe_load gives
-                    # None for an empty file (AttributeError), and a traceback
-                    # here would also abandon the remaining configs under --all.
-                    # The type as well as the message: a KeyError's message is
-                    # the bare key, which on its own reads like nothing at all.
-                    print(
-                        f"{target.name}: CANNOT CHECK — {type(exc).__name__}: {exc}",
-                        file=sys.stderr,
-                    )
-                    failed += 1
-                    continue
-
-                if differences:
-                    failed += 1
-                    print(f"{target.name}: {len(differences)} difference(s)")
-                    for difference in differences:
-                        print(f"   {difference}")
-                else:
-                    print(f"{target.name}: sounds the same")
-
-        if unrenderable:
-            # Every run, not only the first: a gap in coverage that is reported
-            # once and then goes quiet is a gap nobody remembers.
-            print(
-                f"\n{len(unrenderable)} config(s) cannot be rendered offline, so their "
-                f"sound is not protected: {', '.join(unrenderable)}",
-                file=sys.stderr,
-            )
-        if failed:
-            print(
-                f"\n{failed} of {len(targets)} config(s) could not be confirmed",
-                file=sys.stderr,
-            )
-        return 1 if failed else 0
+        return _nulltest(args)
     elif args.command == "plugins":
         return _plugins(args)
     elif args.command == "patchbay":
