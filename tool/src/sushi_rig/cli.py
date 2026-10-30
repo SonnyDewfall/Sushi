@@ -160,10 +160,16 @@ def _patchbay(args: argparse.Namespace) -> int:
                 f"{path.name}: rig down: node {node!r} ({len(node_links)} link(s)) is "
                 "started by the rig, so its absence says nothing about the patchbay"
             )
-        for node, node_links in result.unevaluated.items():
+        if result.not_running:
+            # Printed whenever anything went unchecked, not only when nothing
+            # else was found. In the run that prompted all this there *was* a
+            # real finding alongside, and an elif here meant the reader was
+            # never told that three nodes had been skipped.
             print(
-                f"{path.name}: not evaluated: node {node!r} ({len(node_links)} link(s)) "
-                "is in a form this check cannot match"
+                f"\n{len(result.not_running)} node(s) could not be checked because "
+                "the rig is not running. Run `sushi-rig up` and check again to "
+                "cover those links.",
+                file=sys.stderr,
             )
         if result.missing:
             print(
@@ -171,25 +177,7 @@ def _patchbay(args: argparse.Namespace) -> int:
                 "not in the graph. qpwgraph keeps their links and never connects them.",
                 file=sys.stderr,
             )
-        elif result.unevaluated:
-            print(
-                f"\n{len(result.unevaluated)} node(s) could not be evaluated; "
-                "that is not a failure, and not a pass for those links either.",
-                file=sys.stderr,
-            )
-        elif result.not_running:
-            # Deliberately not a pass and not a failure. The links to the rig's
-            # own nodes are the ones most worth checking, and nothing here has
-            # checked them -- saying "all links name a node that exists" would
-            # be false, and failing would punish running the check at the wrong
-            # moment.
-            print(
-                f"\nevery node the patchbay names exists, except "
-                f"{len(result.not_running)} the rig starts itself. Run "
-                "`sushi-rig up` and check again to cover those links.",
-                file=sys.stderr,
-            )
-        else:
+        elif not result.not_running:
             print(f"{path.name}: all {len(links)} link(s) name a node that exists")
         # Exit 1 means a node is definitely gone, and nothing less. A rig that is
         # merely down exits 0: the check was run at the wrong moment, which is
@@ -454,8 +442,8 @@ def main(argv: list[str] | None = None) -> int:
     q = patchbay_sub.add_parser(
         "check",
         help="saved links whose node is not in the live PipeWire graph. Exit 1 "
-        "means a node is definitely gone; nodes in a form it cannot match are "
-        "listed as not evaluated and do not fail",
+        "means a node is definitely gone; nodes the rig itself starts are "
+        "reported as unchecked when it is down, and do not fail",
     )
     q.add_argument(
         "file", type=Path, nargs="?",

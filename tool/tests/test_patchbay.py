@@ -526,7 +526,6 @@ def test_checking_the_committed_patchbay_against_the_running_rig():
     result = check_nodes(parse_patchbay(COMMITTED.read_text()), live_node_names(CAPTURED))
     assert set(result.missing) == {"Audient iD14 Pro", "fmit"}
     assert result.not_running == {}
-    assert result.unevaluated == {}
     # Five links leave the dead Pro profile and four enter it.
     assert len(result.missing["Audient iD14 Pro"]) == 9
 
@@ -557,35 +556,75 @@ def test_a_rig_name_is_only_excused_while_that_process_has_no_live_node():
     assert set(stopped.not_running) == {"fmit", "sushi"} and stopped.missing == {}
 
 
-def test_a_rig_node_name_does_not_claim_a_device_whose_name_merely_contains_it():
-    """`NAM` is a rig node. Matching it as a substring would excuse a dead
-    interface called `NAMM Keys` as "the rig is not running"."""
-    link = Link("NAMM Keys", "k:o", "sushi", "sushi:audio_input_0")
-    result = check_nodes([link], {"sushi"})
-    assert set(result.missing) == {"NAMM Keys"}
+@pytest.mark.parametrize("name", ["NAMM Keys", "NAM Keys", "fmit-old", "my sushi"])
+def test_a_rig_node_name_does_not_claim_a_device_whose_name_merely_contains_it(name):
+    """`NAM`, `fmit` and `sushi` are rig nodes. An earlier version matched on any
+    non-alphanumeric boundary, which excused every one of these dead names as
+    "the rig is not running"."""
+    link = Link(name, "k:o", "sushi", "sushi:audio_input_0")
+    assert set(check_nodes([link], {"sushi"}).missing) == {name}
 
 
-def test_an_unmatchable_form_is_neither_missing_nor_excused():
-    """Empty in practice now, but the bucket is the honest answer for a form we
-    have not seen: a check that fails on a healthy rig gets ignored."""
-    link = Link("sushi", "sushi:audio_output_0", "Some App/Some Node", "x:y")
-    result = check_nodes([link], {"sushi"})
+@pytest.mark.parametrize("live_name", ["sushi monitor", "sushi-old", "notsushi"])
+def test_an_incidental_mention_in_a_live_name_does_not_declare_a_child_running(live_name):
+    """The other half of the same mistake, and worse: a loopback called
+    `sushi monitor` in the graph marked Sushi up, so the saved `sushi` links
+    were reported MISSING and the check exited 1 on a rig that was merely down."""
+    link = Link("sushi", "sushi:audio_output_0", "X", "x:i")
+    result = check_nodes([link], {live_name, "X"})
+    assert set(result.not_running) == {"sushi"}, "the rig is down, whatever that node is"
     assert result.missing == {}
-    assert list(result.unevaluated) == ["Some App/Some Node"]
 
 
-def test_a_slashed_name_that_is_live_is_present_not_unevaluated():
+@pytest.mark.parametrize(
+    "live_name", ["fmit", "ALSA Capture [fmit]", "alsa_capture.fmit"]
+)
+def test_the_three_forms_a_rig_child_really_answers_to(live_name):
+    """Every one read off the committed patchbay or the capture: the name, the
+    name bracketed by PipeWire's ALSA layer, and the name as a dotted suffix.
+    Any of them in the graph means the tuner is up, which makes the *other*
+    saved name for it stale rather than excused."""
+    link = Link("PipeWire ALSA [fmit]/ALSA Capture [fmit]", "f:in", "X", "x:i")
+    result = check_nodes([link], {live_name, "X"})
+    assert set(result.missing) == {"PipeWire ALSA [fmit]/ALSA Capture [fmit]"}
+    assert result.not_running == {}
+
+
+def test_a_slashed_name_whose_client_has_gone_is_a_finding():
+    """There used to be a third bucket for the `<client>/<node>` form, holding
+    names this could not match. It excused exactly this link -- a client that is
+    genuinely gone -- reporting "cannot tell" and exiting 0, which is the failure
+    the check exists to catch. `live_node_names` composes the form now, so a
+    slashed name is judged like any other."""
+    link = Link("sushi", "sushi:audio_output_0", "Chromium/Playback", "x:y")
+    assert set(check_nodes([link], {"sushi"}).missing) == {"Chromium/Playback"}
+
+
+def test_a_slashed_name_that_is_live_is_simply_present():
     """A device description may contain a slash. If it matches, it is just fine."""
     dump = json.dumps([_node(1, **{"node.description": "Mic/Line In"})])
     link = Link("Mic/Line In", "Mic:out", "Mic/Line In", "Mic:in")
     result = check_nodes([link], live_node_names(dump))
-    assert result.missing == {} and result.unevaluated == {}
+    assert result.missing == {} and result.not_running == {}
 
 
-def test_a_fully_live_patchbay_has_nothing_in_any_of_the_three_buckets():
+def test_a_client_with_no_description_still_gets_its_slashed_name_composed():
+    """The capture's own `speech-dispatcher-dummy` carries an `application.name`
+    and no `node.description`. Composing the slashed form from the description
+    alone left that node's saved name unmatchable for ever -- which, with the
+    bucket for unmatchable names gone, now means permanently reported missing."""
+    dump = json.dumps([_node(1, **{
+        "node.name": "speech-dispatcher-dummy",
+        "application.name": "speech-dispatcher-dummy",
+    })])
+    names = live_node_names(dump)
+    assert "speech-dispatcher-dummy/speech-dispatcher-dummy" in names
+
+
+def test_a_fully_live_patchbay_has_nothing_in_either_bucket():
     links = [Link("Audient iD14 Multichannel", "Audient iD14:capture_AUX0", "sushi", "sushi:audio_input_0")]
     result = check_nodes(links, live_node_names(LIVE))
-    assert result.missing == {} and result.unevaluated == {} and result.not_running == {}
+    assert result.missing == {} and result.not_running == {}
 
 
 def test_a_link_with_both_ends_missing_is_listed_under_each():
@@ -853,18 +892,17 @@ def test_check_lists_missing_nodes_and_exits_nonzero(monkeypatch, capsys):
     assert "Audient iD14:capture_AUX0 -> sushi:audio_input_0" in out
 
 
-def test_check_reports_an_unevaluated_node_without_failing(tmp_path, monkeypatch, capsys):
-    """Exit 1 means a node is definitely gone. A form the check cannot match is
-    listed, plainly, and does not make a healthy rig fail."""
+def test_check_fails_on_a_link_to_a_client_that_has_gone(tmp_path, monkeypatch, capsys):
+    """This used to exit 0 saying "not evaluated", because the `<client>/<node>`
+    form had a bucket of its own that neither passed nor failed. The form is
+    matched now, so a dead client is a finding like any other."""
     path = tmp_path / "p.qpwgraph"
     path.write_text(render_patchbay([
-        Link("sushi", "sushi:audio_output_0", "PipeWire ALSA [fmit]/ALSA Capture [fmit]", "x:y"),
+        Link("sushi", "sushi:audio_output_0", "Chromium/Playback", "x:y"),
     ]))
     monkeypatch.setattr(patchbay, "read_pw_dump", lambda *a, **k: LIVE)
-    assert cli.main(["patchbay", "check", str(path)]) == 0
-    out = capsys.readouterr().out
-    assert "not evaluated" in out and "MISSING" not in out
-    assert "all 1 link(s)" not in out, "an unevaluated link must not be reported as present"
+    assert cli.main(["patchbay", "check", str(path)]) == 1
+    assert "MISSING no live node 'Chromium/Playback'" in capsys.readouterr().out
 
 
 def test_check_run_before_the_rig_is_up_says_so_and_does_not_fail(monkeypatch, capsys):
@@ -881,6 +919,10 @@ def test_check_run_before_the_rig_is_up_says_so_and_does_not_fail(monkeypatch, c
     assert "rig down: node 'sushi'" in captured.out
     assert "MISSING no live node 'sushi'" not in captured.out
     assert "1 node(s) the patchbay names are definitely not in the graph" in captured.err
+    # The skipped nodes are reported alongside the finding, not instead of it.
+    # An `elif` here meant that in this very scenario -- a real finding and three
+    # unchecked nodes -- the reader was never told anything had been skipped.
+    assert "3 node(s) could not be checked because the rig is not running" in captured.err
 
 
 def test_only_the_rig_being_down_is_neither_a_pass_nor_a_failure(tmp_path, monkeypatch, capsys):
