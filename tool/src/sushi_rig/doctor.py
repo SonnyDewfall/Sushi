@@ -244,6 +244,16 @@ def check_one_clock(nodes: dict[int, dict]) -> Check:
             "one-clock", UNCHECKED, "Sushi is not in the graph",
             "run `sushi-rig up` and check again",
         )
+    if _as_int(sushi.get("node.driver-id")) is None:
+        # `clock-driver` reports this one. Saying it twice, and saying it here as
+        # "all in driver group None", is how the cascade this module avoids
+        # elsewhere would creep back in.
+        return Check(
+            "one-clock", UNCHECKED,
+            "Sushi is in no driver group, so there is no group for the amp to "
+            "share — clock-driver reports that",
+            "bring the rig down and up again",
+        )
     groups: dict[str, int | None] = {SUSHI_NODE: _as_int(sushi.get("node.driver-id"))}
     for name in AMP_NODES:
         props = _named(nodes, name)
@@ -283,7 +293,7 @@ def check_quantum(nodes: dict[int, dict], expected: int) -> Check:
 
     What this reads is the *request*. The quantum the graph actually runs at is
     in PipeWire's settings metadata, not on the node, and the delay it produces
-    is `sushi-rig selftest`'s to measure.
+    is `selftest`'s to measure (#49, a module today and not yet a command).
     """
     sushi = _named(nodes, SUSHI_NODE)
     if sushi is None:
@@ -425,11 +435,17 @@ def patchbay_checks(missing: dict, not_running: dict, *, file_name: str,
     three states, and for its reasons: a node the *rig* starts is absent
     whenever the rig is down, which says nothing about the patchbay, while a
     node that is simply gone keeps its links for ever and is never connected.
+
+    The two can both be true at once, so they are two checks with **two
+    different names**. They shared one at first, which breaks the promise that
+    a name is a stable key — anything building a dict by name silently kept
+    whichever came last, and the first thing to do so was this module's own
+    tests.
     """
     checks = []
     if missing:
         checks.append(Check(
-            "patchbay-nodes", FAULT,
+            "patchbay-stale", FAULT,
             f"{file_name} names {len(missing)} node(s) that are not in the graph ("
             + ", ".join(
                 f"{node!r}, {len(node_links)} link(s)"
@@ -442,7 +458,7 @@ def patchbay_checks(missing: dict, not_running: dict, *, file_name: str,
         ))
     if not_running:
         checks.append(Check(
-            "patchbay-nodes", UNCHECKED,
+            "patchbay-unchecked", UNCHECKED,
             f"{len(not_running)} node(s) {file_name} names are started by the rig "
             f"itself, so their absence says nothing while the rig is down",
             "run `sushi-rig up` and check again to cover those links",
@@ -465,7 +481,11 @@ class Environment:
 
     pw_jack: str | None
     carla: str | None
-    jackd_pids: tuple[int, ...]
+    # None when pgrep could not be run at all, which is not the same as finding
+    # nothing. Collapsing the two gave a machine with no procps a confident
+    # "no jackd is running" — the module's own three-state rule, broken by a
+    # field that could not express the third state.
+    jackd_pids: tuple[int, ...] | None
     fuse2: bool
     # None when there is no ./sushi to look at.
     sushi_is_appimage: bool | None
@@ -498,6 +518,14 @@ def check_no_jackd(environment: Environment) -> Check:
     shim in front of a server that is also running, and which one a client
     reaches stops being predictable.
     """
+    if environment.jackd_pids is None:
+        return Check(
+            "jackd", UNCHECKED,
+            "whether a jackd is running could not be determined — pgrep could not "
+            "be run",
+            "install procps, or check by hand with `ps` that no jackd is running "
+            "beside PipeWire",
+        )
     if not environment.jackd_pids:
         return Check("jackd", OK, "no jackd is running, so PipeWire's JACK layer is "
                                   "the only one in play")
@@ -565,7 +593,7 @@ def environment_checks(environment: Environment) -> list[Check]:
 # Effects
 # --------------------------------------------------------------------------- #
 
-def _jackd_pids() -> tuple[int, ...]:
+def _jackd_pids() -> tuple[int, ...] | None:
     """Running jackd processes, by pid.
 
     `pgrep -x`, so a command merely *containing* "jackd" does not count — this
@@ -578,21 +606,32 @@ def _jackd_pids() -> tuple[int, ...]:
             timeout=5.0,
         )
     except (OSError, subprocess.SubprocessError):
-        # No pgrep, or it could not be run. Reported as "none found" rather than
-        # guessed at; the check that matters most here is the one above it.
-        return ()
+        # No pgrep, or it could not be run. `None`, never `()`: this check does
+        # not get to say "nothing is running" on the strength of not having
+        # looked.
+        return None
     return tuple(
         int(line) for line in result.stdout.split() if line.strip().isdigit()
     )
 
 
 def _is_appimage(path: Path) -> bool | None:
-    """Whether `path` is a type-2 AppImage, by magic. None when it is not there."""
+    """Whether `path` is a type-2 AppImage, by magic.
+
+    Three answers, because the two kinds of "cannot read it" mean opposite
+    things. `None` is "there is nothing there", including a broken symlink.
+    `False` covers a path that exists but is not a readable file — and a
+    directory left by `--appimage-extract` is exactly that, a perfectly good
+    `./sushi` that needs no FUSE. Mapping both to `None` reported "there is no
+    ./sushi to run" for a working extracted one.
+    """
+    if not path.exists():
+        return None
     try:
         with path.open("rb") as handle:
             head = handle.read(11)
     except OSError:
-        return None
+        return False
     return head[8:11] == APPIMAGE_MAGIC
 
 

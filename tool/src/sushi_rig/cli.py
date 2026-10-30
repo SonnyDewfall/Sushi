@@ -299,14 +299,21 @@ def _doctor(args: argparse.Namespace) -> int:
         if not problems:
             clients = interface_clients(spec.role_ports())
 
-    dump, why = None, ""
+    # Read and parsed inside one try. `pw-dump` exiting 0 with output that is
+    # not JSON raises from the parse, not the read, and that used to escape as a
+    # traceback — while the identical exception from the same helper was caught
+    # for the patchbay check a few lines below. One of two readers of the same
+    # bytes being guarded is the kind of asymmetry that only shows on the day it
+    # happens.
+    dump, nodes, why = None, None, ""
     try:
         dump = read_pw_dump()
+        nodes = nodes_by_id(dump)
     except PatchbayError as exc:
-        why = "; ".join(exc.problems)
+        dump, why = None, "; ".join(exc.problems)
 
     checks += graph_checks(
-        nodes_by_id(dump) if dump is not None else None,
+        nodes,
         clients,
         expected_quantum=QUANTUM,
         expected_rate=EXPECTED_RATE,

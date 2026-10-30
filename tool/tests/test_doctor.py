@@ -66,6 +66,17 @@ def nodes_with(changes: dict) -> dict[int, dict]:
 
 
 def states(checks: list[Check]) -> dict[str, str]:
+    """Name -> state, refusing to collapse two checks that share a name.
+
+    This helper is why a real defect hid: `patchbay_checks` returned a FAULT and
+    an UNCHECKED both called `patchbay-nodes`, and building a dict from them
+    silently dropped the FAULT. The assert is here so the next duplicate fails
+    loudly in the helper rather than passing quietly in a test.
+    """
+    assert len({c.name for c in checks}) == len(checks), (
+        "two checks share a name, so a name is not a stable key: "
+        + ", ".join(c.name for c in checks)
+    )
     return {c.name: c.state for c in checks}
 
 
@@ -172,6 +183,16 @@ def test_the_amp_in_a_different_driver_group_is_found():
     assert "NAM" in check.message and "sushi" in check.message
 
 
+def test_no_rig_node_in_any_driver_group_is_not_one_shared_group():
+    """`node.driver-id` removed from Sushi. Every node then reports `None`, and
+    reading that as agreement printed "all in driver group None" — an ok for a
+    rig that is not being scheduled at all. clock-driver is what reports it, so
+    this goes unchecked rather than saying it twice."""
+    check = doctor.check_one_clock(nodes_with({"node.driver-id": None}))
+    assert check.state == UNCHECKED
+    assert "clock-driver reports that" in check.message
+
+
 def test_a_wrong_sample_rate_is_found():
     check = doctor.check_rate(nodes_with({"node.force-rate": 44100}))
     assert check.state == FAULT
@@ -256,7 +277,7 @@ def test_a_stale_patchbay_node_is_a_fault_and_says_how_to_fix_it():
     checks = doctor.patchbay_checks(
         {"Audient iD14 Pro": ["a", "b"]}, {}, file_name="rig.qpwgraph", links=20
     )
-    assert states(checks) == {"patchbay-nodes": FAULT}
+    assert states(checks) == {"patchbay-stale": FAULT}
     assert "Audient iD14 Pro" in checks[0].message and "2 link(s)" in checks[0].message
     assert "patchbay generate" in checks[0].remedy
 
@@ -265,7 +286,7 @@ def test_a_node_the_rig_starts_is_unchecked_rather_than_stale():
     checks = doctor.patchbay_checks(
         {}, {"sushi": ["a"]}, file_name="rig.qpwgraph", links=20
     )
-    assert states(checks) == {"patchbay-nodes": UNCHECKED}
+    assert states(checks) == {"patchbay-unchecked": UNCHECKED}
 
 
 def test_both_a_stale_node_and_an_unchecked_one_are_reported():
@@ -274,7 +295,9 @@ def test_both_a_stale_node_and_an_unchecked_one_are_reported():
     checks = doctor.patchbay_checks(
         {"Gone": ["a"]}, {"sushi": ["b"]}, file_name="rig.qpwgraph", links=20
     )
-    assert sorted(c.state for c in checks) == [FAULT, UNCHECKED]
+    # Two names, not one: `states` refuses to build a dict from duplicates, and
+    # that refusal is the whole reason this reads as two checks now.
+    assert states(checks) == {"patchbay-stale": FAULT, "patchbay-unchecked": UNCHECKED}
 
 
 def test_a_patchbay_with_nothing_wrong_says_how_many_links_it_checked():
@@ -304,6 +327,15 @@ def test_a_missing_pw_jack_explains_the_session_it_cost():
     assert check.state == FAULT
     assert "playing dry" in check.message
     assert "pipewire-jack" in check.remedy
+
+
+def test_not_being_able_to_look_for_jackd_is_not_the_same_as_finding_none():
+    """The module's own three-state rule, applied to its own gathering: a
+    machine without procps used to get a confident "no jackd is running"."""
+    check = doctor.check_no_jackd(environment(jackd_pids=None))
+    assert check.state == UNCHECKED
+    assert "could not be run" in check.message
+    assert check.remedy
 
 
 def test_a_real_jackd_alongside_pipewire_is_found_by_pid():
@@ -382,6 +414,13 @@ def test_an_appimage_is_recognised_by_its_magic_not_its_name(tmp_path):
 
     assert doctor._is_appimage(tmp_path / "absent") is None
 
+    # A directory is what `--appimage-extract` leaves, and the comment on
+    # APPIMAGE_MAGIC says that is a valid ./sushi needing no FUSE. Mapping every
+    # OSError to None contradicted it and reported "there is no ./sushi to run".
+    extracted = tmp_path / "squashfs-root"
+    extracted.mkdir()
+    assert doctor._is_appimage(extracted) is False
+
 
 def test_gathering_the_environment_runs_and_answers_in_the_right_types():
     """The effect, exercised. What it finds depends on the machine, so only the
@@ -428,3 +467,21 @@ def test_the_command_runs_end_to_end_and_names_every_check(capsys):
     # and that was said. Both are honest; silence would not be.
     assert "pipewire-graph" in printed.out or "clock-driver" in printed.out
     assert "patchbay-nodes" in printed.out
+
+
+def test_a_pw_dump_that_is_not_json_does_not_abort_the_command(monkeypatch, capsys):
+    """`pw-dump` exiting 0 with output that is not JSON raises from the *parse*,
+    not the read. That escaped as a traceback, while the identical exception
+    from the same helper was caught for the patchbay check."""
+    from sushi_rig import cli, patchbay
+
+    monkeypatch.setattr(patchbay, "read_pw_dump", lambda *a, **k: "not json at all")
+    exit_code = cli.main([
+        "doctor",
+        "--machine", str(ROOT / "machines" / "sonny-dewfall-XPS-9320.yaml"),
+    ])
+    printed = capsys.readouterr().out
+    assert exit_code in (0, 1)
+    assert "pipewire-graph" in printed, "the graph went unchecked, and says so"
+    assert "did not produce JSON" in printed
+    assert "patchbay-unchecked" in printed or "could not be checked" in printed
