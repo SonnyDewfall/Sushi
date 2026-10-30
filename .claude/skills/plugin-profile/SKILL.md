@@ -1,6 +1,6 @@
 ---
 name: plugin-profile
-description: Write or revise a sushi-rig component profile — the file that decides which of an LV2 plugin's controls appear, how they are grouped and labelled, and what scale each one uses. Use this whenever the user wants to profile a plugin, add a plugin to the rig's control surface, cut a panel down to the controls that matter, fix a panel showing wrong units or useless parameters, or asks what a plugin's controls ought to look like. Use it too when reviewing, correcting or re-validating an existing file under profiles/, and when a plugin turns out to be one Sushi cannot drive. Reach for it even if the user never says the word "profile" — if the question is which controls a plugin should show and how, this is the skill.
+description: Write or revise a sushi-rig component profile — the file that decides which of an LV2 plugin's controls appear, how they are grouped and labelled, what scale each uses, and where they sit on a facsimile of the plugin's own GUI. Use this whenever the user wants to profile a plugin, add a plugin to the rig's control surface, cut a panel down to the controls that matter, fix a panel showing wrong units or useless parameters, capture a plugin's GUI or locate its controls, or asks what a plugin's controls ought to look like. Use it too when reviewing, correcting or re-validating an existing file under profiles/, and when a plugin turns out to be one Sushi cannot drive. Reach for it even if the user never says the word "profile" — if the question is which controls a plugin should show and how, this is the skill.
 ---
 
 # Writing a component profile
@@ -51,8 +51,57 @@ If you have neither, stop and ask for one. Do not infer a plugin's parameters fr
 ## Then gather what informs the judgements
 
 - **The plugin's documentation.** `probe` reports a homepage where the metadata declares one. Fetch it and read it — it is usually the only place that says what a control is *for*, as opposed to what it is called.
-- **A screenshot of the plugin's own GUI**, if the user has one or has pasted one in. Layout is evidence: controls the author grouped together on screen usually belong together on the panel, and a knob drawn large is rarely an afterthought.
+- **A screenshot of the plugin's own GUI.** Layout is evidence: controls the author grouped together on screen usually belong together on the panel, and a knob drawn large is rarely an afterthought. On a machine with the plugins you can capture this yourself, and locate every control while you are at it — see the next section. Failing that, use one the user pastes in.
 - **The parameter's range**, read carefully. A range of 100–1000 on something called Tone suggests Hz. A range of −20 to 4 suggests dB. Say "suggests" in the description rather than asserting a unit the plugin never declared — `probe` reports a real `unit` when one exists, and its absence is itself information.
+
+## Get a visual read, if the machine can
+
+On a machine that has the plugins, you can run the plugin's own GUI headlessly, move every parameter, and find each control by diffing screenshots. This is not speculative — it was proven on two plugins, a GTK one and an OpenGL one, locating knob centres to within 2.5 px repeatably. A pedal sweeps in about 10 seconds.
+
+**Check the prerequisites first**, because a missing one wastes a confusing minute:
+
+```bash
+command -v Xvfb jackd lv2info && ls -d /usr/share/carla
+python3 -c "import numpy, PIL, scipy, pythonosc, Xlib; print('deps ok')"
+```
+
+`jackd` is the one most likely to be missing. The rig machine runs PipeWire and has no `jackd`, so install `jackd2` if it is absent — the sweep starts its own private server with a dummy driver under a unique name, so it will not fight PipeWire for the audio device.
+
+If anything is missing and the user does not want to install it, say so and carry on without the visual read. Facts and docs still make a useful profile; it just has no `face`.
+
+**Run it:**
+
+```bash
+tool/spikes/virtual_ui/run_sweep.sh "<uri>" /tmp/sweep-<name> --steps 9
+```
+
+`--steps 9` is plenty for finding positions — the default 25 is for measuring accuracy and takes two to four times as long. Use `--skip SYM1,SYM2` for ports you do not care about. The script starts Xvfb, a private JACK server and the Carla host, and tears all three down on exit.
+
+**What it gives you**, in the output directory:
+
+| File | Use |
+|---|---|
+| `rest.png` | The GUI at rest. This is the screenshot for `face.screenshot` |
+| `boxes.json` | The located control boxes, keyed by port symbol |
+| `diff_<symbol>.png` | What changed when that control moved — look at these if a box seems wrong |
+
+**Read `rest.png` yourself.** You can look at an image, and the layout is the single best evidence for grouping and for which controls the author treated as important. Do not just harvest the boxes and skip the picture.
+
+**The boxes map straight onto the profile's `face` section**, which exists for this:
+
+```yaml
+face:
+  screenshot: {file: faces/gxts9.png, width: 260, height: 360}
+  zones:
+    - {parameter: Drive, bbox: [39, 72, 58, 57], confirmed: sweep}
+    - {parameter: Tone, bbox: [107, 139, 43, 43], confirmed: sweep}
+```
+
+`confirmed: sweep` means the position was measured. Use `draft` only for a zone you placed by eye on a screenshot you were given, and never claim `sweep` for one you did not measure — the whole value of the field is that it distinguishes the two. The validator checks every zone lies inside the screenshot and names a parameter `probe` knows.
+
+Two things to know about the boxes. A located box is **the part that moves**, not the whole hit target — a knob's indicator sweeps a smaller area than the knob, and the TS9's bypass footswitch located as its 18×11 px LED rather than the 60×85 px switch. So widen a zone to something a finger can hit, and keep `confirmed: sweep` only if you have not moved its centre. And match Carla's parameter numbering to Sushi's **by port symbol**, never by index: `probe` reports both, and they agree on symbols but not necessarily on numbering.
+
+These are spike scripts under `tool/spikes/`, not production code, and they are not covered by the test suite the way `tool/src` is. They work, and `tool/spikes/virtual_ui/FINDINGS.md` records their gotchas and timings — read it if a run misbehaves. Productising this into an unattended CI pipeline is #28's job, not this skill's.
 
 ## Write the profile
 
@@ -122,6 +171,7 @@ When you present a profile, say:
 1. **What it covers** — how many parameters, how many primary.
 2. **The validator's result** — the actual counts, errors and warnings.
 3. **The judgements you are least sure of.** Grouping on a dense plugin, and any unit you inferred from a range rather than read from a declaration, are the usual candidates. The person reviewing needs to know where to look, and a profile presented as uniformly confident wastes their attention.
-4. **What came from where** — docs, screenshot, or the range alone. A judgement drawn only from a parameter's range is a weaker thing than one the documentation states, and saying which is which is what makes the review quick.
+4. **What came from where** — the sweep, the docs, a screenshot, or the range alone. A judgement drawn only from a parameter's range is a weaker thing than one the documentation states or the sweep measured, and saying which is which is what makes the review quick.
+5. **Whether you got a visual read**, and if not, why. A profile with no `face` is not worse, but it is different, and the reviewer should not have to work out which kind they are looking at.
 
 Every judgement stays `draft` until a human changes it. That is not a formality: the panel will present these controls to someone playing live, and `draft` is an honest description of a proposal nobody has checked yet.
