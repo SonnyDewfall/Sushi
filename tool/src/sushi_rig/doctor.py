@@ -72,6 +72,18 @@ APPIMAGE_MAGIC = b"AI\x02"
 # FUSE-3-only machine has fuse installed and still cannot run the AppImage.
 FUSE2_SONAME = "libfuse.so.2"
 
+# What a take costs on disk, for the free-space check. Four stems is today's
+# two-channel rig with a dry tap on each; float32 is the larger of the two
+# formats #53 chooses between, so the estimate is the cautious one. A rig with
+# more channels records more stems and fills a disk faster, which the message
+# says rather than hides.
+TAKE_STEMS = 4
+TAKE_BYTES_PER_SAMPLE = 4
+# Below this much recording time the disk is a fault, not a footnote: a take
+# that runs out of space is a performance lost, and #53 assigns the check here
+# so it is found before playing rather than mid-take.
+MIN_RECORDING_HOURS = 1.0
+
 OK = "ok"
 FAULT = "fault"
 UNCHECKED = "unchecked"
@@ -489,6 +501,12 @@ class Environment:
     fuse2: bool
     # None when there is no ./sushi to look at.
     sushi_is_appimage: bool | None
+    # Free bytes where takes are written; None when that could not be read.
+    takes_free_bytes: int | None = None
+    takes_dir: str = ""
+    # One entry per .nam file in amp/models: its declared sample rate, None if
+    # it declares none, or the reason it could not be read.
+    models: tuple = ()
 
 
 def check_pw_jack(environment: Environment) -> Check:
@@ -580,12 +598,72 @@ def check_fuse(environment: Environment) -> Check:
     )
 
 
+def check_disk(environment: Environment, *, hours: float = MIN_RECORDING_HOURS) -> Check:
+    """Is there room to record before playing, rather than discovering it mid-take."""
+    free = environment.takes_free_bytes
+    where = environment.takes_dir or "the takes folder"
+    if free is None:
+        return Check(
+            "disk", UNCHECKED, f"how much space is free at {where} could not be read",
+            "check it by hand with `df -h`",
+        )
+    per_hour = TAKE_STEMS * EXPECTED_RATE * TAKE_BYTES_PER_SAMPLE * 3600
+    fits = free / per_hour
+    summary = (
+        f"{free / 1e9:.1f} GB free at {where}: about {fits:.1f} hour(s) of a "
+        f"{TAKE_STEMS}-stem take at {EXPECTED_RATE} Hz in float32, fewer with more channels"
+    )
+    if fits >= hours:
+        return Check("disk", OK, summary)
+    return Check(
+        "disk", FAULT, summary + f", under the {hours:g} hour this check asks for",
+        "free some space, or record somewhere with more of it — a take that runs out "
+        "of disk is a performance lost",
+    )
+
+
+def check_models(environment: Environment, expected: int = EXPECTED_RATE) -> Check:
+    """Was every amp model trained at the rate the rig runs at?
+
+    A model played at a rate it was not trained at degrades the tone and says
+    nothing, which is why #48 asks for it. The rate is what the `.nam` file
+    declares about itself (`amp.describe_model`).
+    """
+    models = environment.models
+    if not models:
+        return Check("amp-models", OK, "no .nam models in amp/models, so none can mismatch")
+    unreadable = [(name, why) for name, rate, why in models if why]
+    wrong = [(name, rate) for name, rate, why in models if not why and rate not in (None, expected)]
+    undeclared = [name for name, rate, why in models if not why and rate is None]
+    if unreadable or wrong:
+        parts = [f"{name} cannot be read ({why})" for name, why in unreadable]
+        parts += [f"{name} was trained at {rate} Hz" for name, rate in wrong]
+        return Check(
+            "amp-models", FAULT,
+            "; ".join(parts) + f" — the rig runs at {expected} Hz",
+            f"use a model trained at {expected} Hz, or replace the unreadable file; a "
+            "model at the wrong rate changes the tone without saying so",
+        )
+    if undeclared:
+        return Check(
+            "amp-models", UNCHECKED,
+            f"{', '.join(undeclared)} declare(s) no sample rate, so a mismatch with "
+            f"{expected} Hz cannot be ruled out",
+            "check where the model came from, or retrain it with its rate recorded",
+        )
+    return Check(
+        "amp-models", OK, f"{len(models)} model(s), all trained at {expected} Hz"
+    )
+
+
 def environment_checks(environment: Environment) -> list[Check]:
     return [
         check_pw_jack(environment),
         check_no_jackd(environment),
         check_carla(environment),
         check_fuse(environment),
+        check_disk(environment),
+        check_models(environment),
     ]
 
 
@@ -643,12 +721,45 @@ def _fuse2_loads() -> bool:
     return True
 
 
+def _free_bytes(path: Path) -> int | None:
+    """Free space where `path` is, or would be: the nearest folder that exists.
+
+    The takes folder is made by the first take, so before then it is its
+    parent that tells how much room there is.
+    """
+    for candidate in (path, *path.parents):
+        if candidate.exists():
+            try:
+                return shutil.disk_usage(candidate).free
+            except OSError:
+                return None
+    return None
+
+
+def _models(root: Path) -> tuple:
+    from .amp import AmpError, describe_model
+
+    found = []
+    for model in sorted((root / "amp" / "models").glob("*.nam")):
+        try:
+            found.append((model.name, describe_model(model)["sample_rate"], ""))
+        except AmpError as exc:
+            found.append((model.name, None, str(exc)))
+    return tuple(found)
+
+
 def gather_environment(root: Path) -> Environment:
     """Look at the machine. The one impure function here."""
+    from .take import default_takes_dir
+
+    takes = default_takes_dir()
     return Environment(
         pw_jack=shutil.which("pw-jack"),
         carla=shutil.which("carla"),
         jackd_pids=_jackd_pids(),
         fuse2=_fuse2_loads(),
         sushi_is_appimage=_is_appimage(root / "sushi"),
+        takes_free_bytes=_free_bytes(takes),
+        takes_dir=str(takes),
+        models=_models(root),
     )

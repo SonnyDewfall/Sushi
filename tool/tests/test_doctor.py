@@ -314,6 +314,8 @@ def environment(**changes) -> Environment:
     base = {
         "pw_jack": "/usr/bin/pw-jack", "carla": "/usr/bin/carla",
         "jackd_pids": (), "fuse2": True, "sushi_is_appimage": True,
+        "takes_free_bytes": 10 ** 12, "takes_dir": "/home/me/sushi-rig-takes",
+        "models": (("Neve 1.nam", 48000, ""),),
     }
     return Environment(**{**base, **changes})
 
@@ -384,7 +386,8 @@ def test_every_fault_doctor_can_report_carries_a_remedy():
     ):
         produced += doctor.graph_checks(nodes, CLIENTS, expected_quantum=RIG_QUANTUM)
     produced += doctor.environment_checks(environment(
-        pw_jack=None, carla=None, jackd_pids=(1,), fuse2=False
+        pw_jack=None, carla=None, jackd_pids=(1,), fuse2=False, takes_free_bytes=10,
+        models=(("old.nam", 44100, ""), ("broken.nam", None, "not valid JSON")),
     ))
     produced += doctor.patchbay_checks({"Gone": ["a"]}, {}, file_name="p", links=1)
     produced.append(doctor.machine_check(["bad"], file_name="m.yaml"))
@@ -461,7 +464,7 @@ def test_the_command_runs_end_to_end_and_names_every_check(capsys):
     ])
     printed = capsys.readouterr()
     assert exit_code in (0, 1), "doctor either passes or fails; nothing else"
-    for name in ("machine-file", "pw-jack", "jackd", "carla", "fuse2"):
+    for name in ("machine-file", "pw-jack", "jackd", "carla", "fuse2", "disk", "amp-models"):
         assert name in printed.out, f"{name} was not reported at all"
     # Either the graph was read and the four questions answered, or it was not
     # and that was said. Both are honest; silence would not be.
@@ -485,3 +488,66 @@ def test_a_pw_dump_that_is_not_json_does_not_abort_the_command(monkeypatch, caps
     assert "pipewire-graph" in printed, "the graph went unchecked, and says so"
     assert "did not produce JSON" in printed
     assert "patchbay-unchecked" in printed or "could not be checked" in printed
+
+
+
+# --------------------------------------------------------------------------- #
+# Room to record, and the amp models' rates
+# --------------------------------------------------------------------------- #
+
+# Four stems of 48 kHz float32 for an hour: the threshold, by its own arithmetic.
+ONE_HOUR = doctor.TAKE_STEMS * doctor.EXPECTED_RATE * doctor.TAKE_BYTES_PER_SAMPLE * 3600
+
+
+def test_an_hour_of_recording_is_enough_and_a_byte_less_is_not():
+    """#53 puts this here so it is found before playing, not mid-take."""
+    assert ONE_HOUR == 2_764_800_000
+    assert doctor.check_disk(environment(takes_free_bytes=ONE_HOUR)).state == OK
+    short = doctor.check_disk(environment(takes_free_bytes=ONE_HOUR - 1))
+    assert short.state == FAULT
+    assert "performance lost" in short.remedy
+
+
+def test_the_disk_check_says_how_long_and_that_more_channels_cost_more():
+    check = doctor.check_disk(environment(takes_free_bytes=ONE_HOUR * 3))
+    assert "3.0 hour(s)" in check.message
+    assert "fewer with more channels" in check.message, "rigs will not all be two channels"
+
+
+def test_free_space_that_cannot_be_read_is_unchecked():
+    assert doctor.check_disk(environment(takes_free_bytes=None)).state == UNCHECKED
+
+
+def test_free_space_is_read_where_the_takes_will_go_before_the_folder_exists(tmp_path):
+    """The folder is made by the first take, so until then its parent says."""
+    assert isinstance(doctor._free_bytes(tmp_path / "not" / "made" / "yet"), int)
+
+
+def test_the_committed_amp_models_are_trained_at_the_rigs_rate():
+    """Real files, not constructed ones: both Neve models declare 48 kHz."""
+    models = doctor._models(ROOT)
+    assert {name for name, _, _ in models} == {"Neve 1.nam", "Neve 2.nam"}
+    assert doctor.check_models(environment(models=models)).state == OK
+
+
+def test_a_model_trained_at_another_rate_is_a_fault_naming_it():
+    check = doctor.check_models(environment(models=(
+        ("Neve 1.nam", 48000, ""), ("vintage.nam", 44100, ""),
+    )))
+    assert check.state == FAULT
+    assert "vintage.nam was trained at 44100 Hz" in check.message
+    assert "Neve" not in check.message, "only the one at fault"
+
+
+def test_an_unreadable_model_is_a_fault_because_the_amp_could_not_load_it():
+    check = doctor.check_models(environment(models=(("broken.nam", None, "not valid JSON"),)))
+    assert check.state == FAULT and "broken.nam cannot be read" in check.message
+
+
+def test_a_model_declaring_no_rate_is_unchecked_rather_than_assumed():
+    check = doctor.check_models(environment(models=(("plain.nam", None, ""),)))
+    assert check.state == UNCHECKED and "plain.nam" in check.message
+
+
+def test_no_models_at_all_cannot_mismatch():
+    assert doctor.check_models(environment(models=())).state == OK

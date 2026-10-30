@@ -649,9 +649,14 @@ reported as `unchecked`, never as a pass. Most of these questions need PipeWire
 and a running rig, so on a bare machine `doctor` tells you what it could not
 look at rather than going quiet.
 
+It also checks there is room to record — at least an hour of a four-stem take,
+fewer with more channels — and that every `.nam` model in `amp/models` was
+trained at the rig's 48 kHz, since a model at the wrong rate changes the tone
+without saying so.
+
 What it does not cover yet: whether Carla really starts a JACK client under
 `pw-jack` (that needs launching it), `clock.allowed-rates` (that needs
-`pw-metadata`), the `.nam` models' sample rates, and a loopback cable. The
+`pw-metadata`), and a loopback cable. The
 quantum it reports is the one Sushi *asked the graph for*; the delay that
 actually results is a measurement, and belongs with `selftest` (issue #49).
 
