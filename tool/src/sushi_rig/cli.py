@@ -167,10 +167,21 @@ def _patchbay(args: argparse.Namespace) -> int:
             print(f"{path.name}: MISSING no live node {node!r} ({len(node_links)} link(s))")
             for link in node_links:
                 print(f"   {link.out_port} -> {link.in_port}")
-        for node, node_links in result.unevaluated.items():
+        for node, node_links in result.not_running.items():
             print(
-                f"{path.name}: not evaluated: node {node!r} ({len(node_links)} link(s)) "
-                "is in a form this check cannot match"
+                f"{path.name}: rig down: node {node!r} ({len(node_links)} link(s)) is "
+                "started by the rig, so its absence says nothing about the patchbay"
+            )
+        if result.not_running:
+            # Printed whenever anything went unchecked, not only when nothing
+            # else was found. In the run that prompted all this there *was* a
+            # real finding alongside, and an elif here meant the reader was
+            # never told that three nodes had been skipped.
+            print(
+                f"\n{len(result.not_running)} node(s) could not be checked because "
+                "the rig is not running. Run `sushi-rig up` and check again to "
+                "cover those links.",
+                file=sys.stderr,
             )
         if result.missing:
             print(
@@ -178,15 +189,11 @@ def _patchbay(args: argparse.Namespace) -> int:
                 "not in the graph. qpwgraph keeps their links and never connects them.",
                 file=sys.stderr,
             )
-        elif result.unevaluated:
-            print(
-                f"\n{len(result.unevaluated)} node(s) could not be evaluated; "
-                "that is not a failure, and not a pass for those links either.",
-                file=sys.stderr,
-            )
-        else:
+        elif not result.not_running:
             print(f"{path.name}: all {len(links)} link(s) name a node that exists")
-        # Exit 1 means a node is definitely gone, and nothing less.
+        # Exit 1 means a node is definitely gone, and nothing less. A rig that is
+        # merely down exits 0: the check was run at the wrong moment, which is
+        # not a fault in the patchbay and must not fail a script.
         return 1 if result.missing else 0
 
     # generate
@@ -468,8 +475,8 @@ def main(argv: list[str] | None = None) -> int:
     q = patchbay_sub.add_parser(
         "check",
         help="saved links whose node is not in the live PipeWire graph. Exit 1 "
-        "means a node is definitely gone; nodes in a form it cannot match are "
-        "listed as not evaluated and do not fail",
+        "means a node is definitely gone; nodes the rig itself starts are "
+        "reported as unchecked when it is down, and do not fail",
     )
     q.add_argument(
         "file", type=Path, nargs="?",

@@ -5,12 +5,18 @@ Everything here is a decision, so nothing needs PipeWire or an audio interface
 `read_pw_dump` against a real PipeWire, and qpwgraph loading a generated file.
 Those are effects, checked by running them on the rig machine.
 
-THE pw-dump FIXTURE IS NOT A CAPTURE. It was written in an environment with no
-PipeWire. What it relies on is pw-dump's documented object shape (a JSON list of
-objects with `id`, `type` and `info.props`); the node descriptions are taken from
-the node names in the committed `Patchbay/rig.qpwgraph`, which is evidence for
-what qpwgraph labels a node, not for what pw-dump says. Replace it with a real
-`pw-dump` from the rig machine when one is to hand.
+Two different fixtures, and the difference matters (#62).
+
+`fixtures/pw-dump-rig.json` IS a capture: a real `pw-dump` from the rig machine
+with the rig running, cut down to `id`, `type` and `info.props` with every prop
+value left exactly as PipeWire wrote it. A fixture is a captured artefact, not a
+tidied one (the lesson of #51), so the facts this check depends on are asserted
+against it rather than against a fixture written to agree with them.
+
+`LIVE` below is still constructed, and stays that way on purpose: it is how the
+edge cases are reached (an empty graph, a device description containing a slash,
+a node that is simply gone). It is evidence for nothing about the rig, so no test
+using it asserts a fact about PipeWire.
 """
 
 from __future__ import annotations
@@ -42,6 +48,7 @@ from sushi_rig.paths import checkout_root
 from sushi_rig.spec import RigSpec, TrackSpec
 
 COMMITTED = checkout_root() / "Patchbay" / "rig.qpwgraph"
+CAPTURED = (Path(__file__).parent / "fixtures" / "pw-dump-rig.json").read_text()
 
 ROLES = {
     "guitar-in": ["Audient iD14:capture_AUX0"],
@@ -424,9 +431,9 @@ def _port(id_, node_id, alias, direction=None):
     return {"id": id_, "type": "PipeWire:Interface:Port", "info": {"props": props}}
 
 
-# The rig machine as it is today, as best the committed patchbay shows: the
-# Multichannel input and Surround 4.0 output profiles live, Sushi and the tuner
-# running. Invented structure, see the module docstring.
+# A constructed graph, for the edge cases the capture does not contain. The
+# shapes are pw-dump's documented ones; nothing here is evidence about the rig,
+# which is what `CAPTURED` is for.
 LIVE = json.dumps([
     {"id": 0, "type": "PipeWire:Interface:Core", "info": {"props": {}}},
     _node(40, **{"node.name": "alsa_input.usb-Audient_Audient_iD14-00.multichannel-input",
@@ -469,38 +476,155 @@ def test_pw_dump_that_is_not_a_list_is_an_error():
         live_node_names("{}")
 
 
-def test_the_check_separates_missing_nodes_from_ones_it_cannot_evaluate():
-    """The committed patchbay names three Audient profiles. Only the live ones
-    exist. `fmit` and the Pro profile are definitely gone; the `app/node` form is
-    one this check cannot judge either way."""
-    result = check_nodes(parse_patchbay(COMMITTED.read_text()), live_node_names(LIVE))
+def _with_the_rig_stopped(dump: str) -> str:
+    """The capture minus the nodes the rig starts, which is what `patchbay check`
+    sees when it is run before `sushi-rig up` — the mistake that exposed the bug
+    these three buckets exist for."""
+    objects = json.loads(dump)
+    rig = ("sushi", "fmit", "Carla", "NAM")
+    return json.dumps([
+        obj for obj in objects
+        if not (
+            obj.get("type") == "PipeWire:Interface:Node"
+            and any(t in json.dumps((obj.get("info") or {}).get("props") or {}) for t in rig)
+        )
+    ])
+
+
+def test_the_name_the_patchbay_saves_is_node_description():
+    """Established by the capture, not inferred. The committed patchbay says
+    `node="Audient iD14 Multichannel"`, and that string is the interface's
+    `node.description` — which is why `_display_name` prefers it."""
+    assert {"Audient iD14 Multichannel", "Audient iD14 Analog Surround 4.0"} <= live_node_names(CAPTURED)
+
+
+def test_the_port_alias_prefix_is_shared_across_profiles_and_so_cannot_name_a_node():
+    """`node.nick` is `Audient iD14` for both the input and the output profile.
+    A check that matched on it would call the dead `Pro` profile live."""
+    nicks = {
+        (obj["info"]["props"].get("node.nick"))
+        for obj in json.loads(CAPTURED)
+        if obj.get("type") == "PipeWire:Interface:Node"
+        and "Audient" in str(obj["info"]["props"].get("node.description"))
+    }
+    assert nicks == {"Audient iD14"}
+
+
+def test_the_slashed_form_is_application_name_joined_to_node_description():
+    """The form that used to be unmatchable. The capture shows the tuner carries
+    `application.name = 'PipeWire ALSA [fmit]'` and
+    `node.description = 'ALSA Capture [fmit]'`, which join to exactly the name
+    the committed patchbay saved — so it is composed, not guessed at."""
+    assert "PipeWire ALSA [fmit]/ALSA Capture [fmit]" in live_node_names(CAPTURED)
+
+
+def test_checking_the_committed_patchbay_against_the_running_rig():
+    """With the rig up, two names in the committed patchbay are genuinely dead:
+    the `Pro` ALSA profile, and the bare `fmit` — because under PipeWire's ALSA
+    layer the tuner is `ALSA Capture [fmit]` and never `fmit`. Both are findings
+    and #54's generated patchbay is what fixes them."""
+    result = check_nodes(parse_patchbay(COMMITTED.read_text()), live_node_names(CAPTURED))
     assert set(result.missing) == {"Audient iD14 Pro", "fmit"}
-    assert set(result.unevaluated) == {"PipeWire ALSA [fmit]/ALSA Capture [fmit]"}
+    assert result.not_running == {}
     # Five links leave the dead Pro profile and four enter it.
     assert len(result.missing["Audient iD14 Pro"]) == 9
-    assert len(result.unevaluated["PipeWire ALSA [fmit]/ALSA Capture [fmit]"]) == 2
 
 
-def test_an_app_node_form_is_never_reported_missing():
-    """A check that fails on its first run against a working rig gets ignored."""
-    link = Link("sushi", "sushi:audio_output_0", "PipeWire ALSA [fmit]/ALSA Capture [fmit]", "x:y")
-    result = check_nodes([link], live_node_names(LIVE))
+def test_the_same_check_with_the_rig_down_does_not_report_the_rigs_own_nodes_as_gone():
+    """The bug. Run before `sushi-rig up`, the check said three nodes were
+    "definitely not in the graph" when one was, which buries the only finding
+    that mattered."""
+    result = check_nodes(
+        parse_patchbay(COMMITTED.read_text()),
+        live_node_names(_with_the_rig_stopped(CAPTURED)),
+    )
+    assert set(result.missing) == {"Audient iD14 Pro"}, "the finding is still the finding"
+    assert set(result.not_running) == {
+        "sushi", "fmit", "PipeWire ALSA [fmit]/ALSA Capture [fmit]"
+    }
+
+
+def test_a_rig_name_is_only_excused_while_that_process_has_no_live_node():
+    """Otherwise every stale name for a rig process would be excused for ever,
+    and `fmit` above would never be reported. The tuner running under a name the
+    patchbay does not know is a dead link, not a stopped process."""
+    link = Link("fmit", "fmit:in", "sushi", "sushi:audio_output_0")
+    running = check_nodes([link], {"sushi", "ALSA Capture [fmit]"})
+    assert set(running.missing) == {"fmit"} and running.not_running == {}
+
+    stopped = check_nodes([link], {"Audient iD14 Multichannel"})
+    assert set(stopped.not_running) == {"fmit", "sushi"} and stopped.missing == {}
+
+
+@pytest.mark.parametrize("name", ["NAMM Keys", "NAM Keys", "fmit-old", "my sushi"])
+def test_a_rig_node_name_does_not_claim_a_device_whose_name_merely_contains_it(name):
+    """`NAM`, `fmit` and `sushi` are rig nodes. An earlier version matched on any
+    non-alphanumeric boundary, which excused every one of these dead names as
+    "the rig is not running"."""
+    link = Link(name, "k:o", "sushi", "sushi:audio_input_0")
+    assert set(check_nodes([link], {"sushi"}).missing) == {name}
+
+
+@pytest.mark.parametrize("live_name", ["sushi monitor", "sushi-old", "notsushi"])
+def test_an_incidental_mention_in_a_live_name_does_not_declare_a_child_running(live_name):
+    """The other half of the same mistake, and worse: a loopback called
+    `sushi monitor` in the graph marked Sushi up, so the saved `sushi` links
+    were reported MISSING and the check exited 1 on a rig that was merely down."""
+    link = Link("sushi", "sushi:audio_output_0", "X", "x:i")
+    result = check_nodes([link], {live_name, "X"})
+    assert set(result.not_running) == {"sushi"}, "the rig is down, whatever that node is"
     assert result.missing == {}
-    assert list(result.unevaluated) == ["PipeWire ALSA [fmit]/ALSA Capture [fmit]"]
 
 
-def test_a_slashed_name_that_is_live_is_present_not_unevaluated():
+@pytest.mark.parametrize(
+    "live_name", ["fmit", "ALSA Capture [fmit]", "alsa_capture.fmit"]
+)
+def test_the_three_forms_a_rig_child_really_answers_to(live_name):
+    """Every one read off the committed patchbay or the capture: the name, the
+    name bracketed by PipeWire's ALSA layer, and the name as a dotted suffix.
+    Any of them in the graph means the tuner is up, which makes the *other*
+    saved name for it stale rather than excused."""
+    link = Link("PipeWire ALSA [fmit]/ALSA Capture [fmit]", "f:in", "X", "x:i")
+    result = check_nodes([link], {live_name, "X"})
+    assert set(result.missing) == {"PipeWire ALSA [fmit]/ALSA Capture [fmit]"}
+    assert result.not_running == {}
+
+
+def test_a_slashed_name_whose_client_has_gone_is_a_finding():
+    """There used to be a third bucket for the `<client>/<node>` form, holding
+    names this could not match. It excused exactly this link -- a client that is
+    genuinely gone -- reporting "cannot tell" and exiting 0, which is the failure
+    the check exists to catch. `live_node_names` composes the form now, so a
+    slashed name is judged like any other."""
+    link = Link("sushi", "sushi:audio_output_0", "Chromium/Playback", "x:y")
+    assert set(check_nodes([link], {"sushi"}).missing) == {"Chromium/Playback"}
+
+
+def test_a_slashed_name_that_is_live_is_simply_present():
     """A device description may contain a slash. If it matches, it is just fine."""
     dump = json.dumps([_node(1, **{"node.description": "Mic/Line In"})])
     link = Link("Mic/Line In", "Mic:out", "Mic/Line In", "Mic:in")
     result = check_nodes([link], live_node_names(dump))
-    assert result.missing == {} and result.unevaluated == {}
+    assert result.missing == {} and result.not_running == {}
 
 
-def test_a_fully_live_patchbay_has_nothing_missing_or_unevaluated():
+def test_a_client_with_no_description_still_gets_its_slashed_name_composed():
+    """The capture's own `speech-dispatcher-dummy` carries an `application.name`
+    and no `node.description`. Composing the slashed form from the description
+    alone left that node's saved name unmatchable for ever -- which, with the
+    bucket for unmatchable names gone, now means permanently reported missing."""
+    dump = json.dumps([_node(1, **{
+        "node.name": "speech-dispatcher-dummy",
+        "application.name": "speech-dispatcher-dummy",
+    })])
+    names = live_node_names(dump)
+    assert "speech-dispatcher-dummy/speech-dispatcher-dummy" in names
+
+
+def test_a_fully_live_patchbay_has_nothing_in_either_bucket():
     links = [Link("Audient iD14 Multichannel", "Audient iD14:capture_AUX0", "sushi", "sushi:audio_input_0")]
     result = check_nodes(links, live_node_names(LIVE))
-    assert result.missing == {} and result.unevaluated == {}
+    assert result.missing == {} and result.not_running == {}
 
 
 def test_a_link_with_both_ends_missing_is_listed_under_each():
@@ -768,18 +892,54 @@ def test_check_lists_missing_nodes_and_exits_nonzero(monkeypatch, capsys):
     assert "Audient iD14:capture_AUX0 -> sushi:audio_input_0" in out
 
 
-def test_check_reports_an_unevaluated_node_without_failing(tmp_path, monkeypatch, capsys):
-    """Exit 1 means a node is definitely gone. A form the check cannot match is
-    listed, plainly, and does not make a healthy rig fail."""
+def test_check_fails_on_a_link_to_a_client_that_has_gone(tmp_path, monkeypatch, capsys):
+    """This used to exit 0 saying "not evaluated", because the `<client>/<node>`
+    form had a bucket of its own that neither passed nor failed. The form is
+    matched now, so a dead client is a finding like any other."""
     path = tmp_path / "p.qpwgraph"
     path.write_text(render_patchbay([
-        Link("sushi", "sushi:audio_output_0", "PipeWire ALSA [fmit]/ALSA Capture [fmit]", "x:y"),
+        Link("sushi", "sushi:audio_output_0", "Chromium/Playback", "x:y"),
     ]))
     monkeypatch.setattr(patchbay, "read_pw_dump", lambda *a, **k: LIVE)
+    assert cli.main(["patchbay", "check", str(path)]) == 1
+    assert "MISSING no live node 'Chromium/Playback'" in capsys.readouterr().out
+
+
+def test_check_run_before_the_rig_is_up_says_so_and_does_not_fail(monkeypatch, capsys):
+    """The run that exposed this: `patchbay check` with the rig down reported
+    `sushi` and the tuner as "definitely not in the graph" alongside one real
+    finding, and exited 1. The real finding still shows; the rig's own nodes are
+    reported as unchecked, and a check run at the wrong moment does not fail."""
+    monkeypatch.setattr(
+        patchbay, "read_pw_dump", lambda *a, **k: _with_the_rig_stopped(CAPTURED)
+    )
+    assert cli.main(["patchbay", "check", str(COMMITTED)]) == 1, "the dead profile still fails"
+    captured = capsys.readouterr()
+    assert "MISSING no live node 'Audient iD14 Pro'" in captured.out
+    assert "rig down: node 'sushi'" in captured.out
+    assert "MISSING no live node 'sushi'" not in captured.out
+    assert "1 node(s) the patchbay names are definitely not in the graph" in captured.err
+    # The skipped nodes are reported alongside the finding, not instead of it.
+    # An `elif` here meant that in this very scenario -- a real finding and three
+    # unchecked nodes -- the reader was never told anything had been skipped.
+    assert "3 node(s) could not be checked because the rig is not running" in captured.err
+
+
+def test_only_the_rig_being_down_is_neither_a_pass_nor_a_failure(tmp_path, monkeypatch, capsys):
+    """Nothing here checked the links that matter most, so claiming they all
+    name a live node would be false — and failing would punish the user for
+    running the check a minute early."""
+    path = tmp_path / "p.qpwgraph"
+    path.write_text(render_patchbay([
+        Link("Audient iD14 Multichannel", "Audient iD14:capture_AUX0", "sushi", "sushi:audio_input_0"),
+    ]))
+    monkeypatch.setattr(
+        patchbay, "read_pw_dump", lambda *a, **k: _with_the_rig_stopped(CAPTURED)
+    )
     assert cli.main(["patchbay", "check", str(path)]) == 0
-    out = capsys.readouterr().out
-    assert "not evaluated" in out and "MISSING" not in out
-    assert "all 1 link(s)" not in out, "an unevaluated link must not be reported as present"
+    captured = capsys.readouterr()
+    assert "all 1 link(s)" not in captured.out
+    assert "sushi-rig up" in captured.err, "tell them how to cover those links"
 
 
 def test_check_exits_zero_when_everything_exists(tmp_path, monkeypatch, capsys):
