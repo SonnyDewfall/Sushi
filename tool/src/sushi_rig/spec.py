@@ -49,6 +49,13 @@ class TrackSpec:
     inputs: list[dict[str, int]] = field(default_factory=list)
     outputs: list[dict[str, int]] = field(default_factory=list)
     plugins: list[PluginSpec] = field(default_factory=list)
+    # The machine-file role that feeds this track's inputs, and the one its
+    # outputs go to. Sushi never sees either: they exist only so the patchbay
+    # can be generated (patchbay.py), which is why `to_sushi` leaves them out.
+    # A track's own `inputs`/`outputs` still say how it routes internally; these
+    # say which physical ports sit below that, and nothing else changes.
+    source: str | None = None
+    sink: str | None = None
 
     def to_sushi(self) -> dict[str, Any]:
         entry: dict[str, Any] = {"name": self.name}
@@ -133,6 +140,28 @@ class RigSpec:
                     problems.append(
                         f"track {track.name!r}: {direction} entry {entry} has neither a "
                         "bus nor a channel form"
+                    )
+
+            # Both are optional so that every existing rig.yaml keeps loading.
+            # A role named on a track that routes nothing there is a mistake
+            # worth catching now: the patchbay generated from it would silently
+            # leave the track unwired.
+            for role, label, entries in [
+                (track.source, "source", track.inputs),
+                (track.sink, "sink", track.outputs),
+            ]:
+                if role is None:
+                    continue
+                if not isinstance(role, str) or not role.strip():
+                    problems.append(
+                        f"track {track.name!r}: {label} must be a role name "
+                        f"(got {role!r})"
+                    )
+                elif not entries:
+                    problems.append(
+                        f"track {track.name!r}: {label} {role!r} names a role but "
+                        f"the track has no {'inputs' if label == 'source' else 'outputs'} "
+                        "for it to feed"
                     )
 
             for plugin in track.plugins:
