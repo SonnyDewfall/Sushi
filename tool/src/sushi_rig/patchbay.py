@@ -462,6 +462,24 @@ def _display_name(props: dict) -> str | None:
     return None
 
 
+def nodes_by_id(dump: str) -> dict[int, dict]:
+    """Every live node's properties, keyed by its PipeWire object id.
+
+    `live_node_names` answers "does this saved name exist". This hands back the
+    properties themselves, for the questions `doctor` asks of them: which node
+    clocks the rig (`node.driver-id`), and what Sushi asked the graph for
+    (`node.force-quantum`, `node.force-rate`).
+
+    It lives here rather than in `doctor` because this module owns the pw-dump
+    format, and a second reader of it would drift from this one.
+    """
+    found: dict[int, dict] = {}
+    for obj in _objects(dump):
+        if obj.get("type") == _NODE and isinstance(obj.get("id"), int):
+            found[obj["id"]] = _props(obj)
+    return found
+
+
 def live_node_names(dump: str) -> set[str]:
     """Every name a live node answers to: description, nick, node.name, and each
     of those behind the `<application.name>/` prefix qpwgraph shows for a client.

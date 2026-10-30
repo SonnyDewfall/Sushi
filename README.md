@@ -597,19 +597,33 @@ materialise; it installs and imports cleanly.
 
 ### Preflight
 
-Run before trusting anything downstream:
-
 ```bash
-lv2ls | wc -l                                  # plugins discoverable
-echo $LV2_PATH                                 # should be non-empty
-./sushi --version                              # must list lv2
-python3 -c "import lilv; print('ok')"
-python3 -c "import elkpy; print('ok')"
+sushi-rig doctor          # the audio environment: will this machine run the rig
+sushi-rig plugins check   # every plugin the rig needs resolves from plugins/ alone
 ```
 
+`doctor` exits non-zero on any failure and **every failure says what to do**,
+not just what is wrong. It replaces five commands a human had to run and then
+interpret, and it covers what those did not: the audio environment, which is
+where every fault in the 2026-10-26 new-machine session actually was — a dead
+amp, a webcam clocking the graph at a 2048 quantum, a tuner dragging that webcam
+into the rig's clock domain.
+
+Three states, and the third is the point: a check that *could not run* is
+reported as `unchecked`, never as a pass. Most of these questions need PipeWire
+and a running rig, so on a bare machine `doctor` tells you what it could not
+look at rather than going quiet.
+
+What it does not cover yet: whether Carla really starts a JACK client under
+`pw-jack` (that needs launching it), `clock.allowed-rates` (that needs
+`pw-metadata`), the `.nam` models' sample rates, and a loopback cable. The
+quantum it reports is the one Sushi *asked the graph for*; the delay that
+actually results is a measurement, and belongs with `selftest` (issue #49).
+
 **If a URI is absent from `lv2ls`, Sushi cannot load it** regardless of what is
-on disk. That is the single most common failure in this project, and it is worth
-checking first every time.
+on disk. That is the single most common failure in this project, and
+`plugins check` is the version of it that fails loudly — it resolves every URI
+the rig needs with `LV2_PATH` set to `plugins/` alone.
 
 ## Plugins and portability
 
