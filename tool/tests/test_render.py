@@ -229,3 +229,68 @@ def test_a_render_fingerprints_and_compares_against_itself(tmp_path, monkeypatch
     )
     assert compare(fp, fp) == []
     assert fp.delay_samples == 0, "a passthrough should measure no delay"
+
+
+# --- the workflow -----------------------------------------------------------
+
+
+def test_a_reference_lives_beside_the_config_it_describes(tmp_path):
+    """Under config/, not a directory of its own: a reference describes one tone
+    and should travel with it, including to the library repo when configs move."""
+    from sushi_rig.render import reference_path
+
+    path = reference_path(tmp_path, Path("config/electric-clean.json"))
+    assert path == tmp_path / "config" / "sound" / "electric-clean.yaml"
+
+
+def test_calibrate_renders_twice_and_measures_the_gap(tmp_path, monkeypatch):
+    """A config that differs from itself must produce a non-zero tolerance, or
+    every later run reports its own non-determinism as a change in sound."""
+    from sushi_rig.render import calibrate
+
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        fed = signals.read_wav(Path(argv[argv.index("-i") + 1]))
+        # Second render 0.2 dB louder: a chorus differing from itself.
+        gain = 1.0 if len(calls) == 1 else 10 ** (0.2 / 20)
+        signals.write_wav(
+            Path(argv[argv.index("-O") + 1]), fed.samples * gain,
+            fed.sample_rate, subtype="float32",
+        )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(render.subprocess, "run", run)
+    fp, tolerance = calibrate(
+        Path("config/x.json"), tmp_path, tmp_path / "work",
+        stimulus=Stimulus(duration_s=1.0),
+    )
+
+    assert len(calls) == 2, "the floor is the gap between two runs"
+    assert tolerance.level_db == pytest.approx(0.2, abs=0.01)
+    assert "measured" in tolerance.note
+    assert fp.config == "x"
+
+
+def test_a_deterministic_config_calibrates_to_a_zero_floor(tmp_path, monkeypatch):
+    """Most of the rig is deterministic, and its tolerance should say so rather
+    than carry slack that would hide a real change."""
+    from sushi_rig.render import calibrate
+
+    def run(argv, **kwargs):
+        fed = signals.read_wav(Path(argv[argv.index("-i") + 1]))
+        signals.write_wav(
+            Path(argv[argv.index("-O") + 1]), fed.samples, fed.sample_rate,
+            subtype="float32",
+        )
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(render.subprocess, "run", run)
+    _, tolerance = calibrate(
+        Path("config/x.json"), tmp_path, tmp_path / "work",
+        stimulus=Stimulus(duration_s=1.0),
+    )
+    assert tolerance.band_db == 0.0
+    assert tolerance.level_db == 0.0
+    assert tolerance.delay_samples == 0

@@ -193,3 +193,65 @@ def render_offline(
         "stimulus": stimulus.describe(),
         "stimulus_samples": fed,
     }
+
+
+# --- the workflow -----------------------------------------------------------
+#
+# Where a config's sound reference lives. Beside the configs rather than in a
+# directory of its own, because a reference describes one tone and should travel
+# with it -- including to the library repository when the configs move (#27).
+SOUND_DIR = "sound"
+
+
+def reference_path(root: Path, config: Path) -> Path:
+    """The reference for `config`, whether it exists yet or not."""
+    return root / "config" / SOUND_DIR / f"{config.stem}.yaml"
+
+
+def measure(
+    config: Path,
+    root: Path,
+    work: Path,
+    *,
+    stimulus: Stimulus | None = None,
+    sushi_bin: str = "./sushi",
+) -> Any:
+    """Render `config` and fingerprint the result."""
+    from .nulltest import fingerprint
+
+    out = render_offline(
+        config, root, work, stimulus=stimulus, sushi_bin=sushi_bin
+    )
+    return fingerprint(
+        out["rendered"],
+        out["sample_rate"],
+        config=config.stem,
+        stimulus=out["stimulus"],
+        stimulus_samples=out["stimulus_samples"],
+    )
+
+
+def calibrate(
+    config: Path,
+    root: Path,
+    work: Path,
+    *,
+    stimulus: Stimulus | None = None,
+    sushi_bin: str = "./sushi",
+) -> tuple[Any, Any]:
+    """Render `config` twice and measure how far apart two identical runs are.
+
+    The second fingerprint is the one kept, arbitrarily -- if the two differ by
+    more than the floor they establish, there is no "right" one of the pair, and
+    that is precisely what the recorded tolerance exists to admit.
+
+    Two runs, not more. A third would tighten the estimate a little and treble
+    the CI time, and the number this produces is a floor rather than a
+    distribution: what matters is that it is not zero when the config is not
+    deterministic.
+    """
+    from .nulltest import floor_between
+
+    first = measure(config, root, work / "run-1", stimulus=stimulus, sushi_bin=sushi_bin)
+    second = measure(config, root, work / "run-2", stimulus=stimulus, sushi_bin=sushi_bin)
+    return second, floor_between(first, second)
