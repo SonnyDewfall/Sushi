@@ -260,6 +260,134 @@ def test_the_result_is_still_valid_xml():
     )
 
 
+# --- the amp follows the guitar role, not an input index (#18) ----------------
+
+
+def test_a_declared_guitar_port_is_what_goes_through_the_amp():
+    """The role-based path. `guitar-in`'s port is amped wherever it sits, so the
+    amp no longer depends on the guitar happening to be on input 0."""
+    from sushi_rig.amp import amp_patchbay
+
+    links = _links(amp_patchbay(BASE_PATCHBAY, "iface:capture_AUX0"))
+    assert ("iface:capture_AUX0", "NAM:Input") in links
+    assert ("NAM:Output", "sushi:audio_input_0") in links
+    assert ("NAM:Output", "sushi:audio_input_1") in links
+    assert ("iface:capture_AUX0", "sushi:audio_input_0") not in links
+
+
+def test_the_amp_follows_the_guitar_when_it_is_not_on_the_first_input():
+    """The hazard #18 names, and the reason this stopped being positional. Put
+    the vocal channel on bus 0 and the guitar on bus 1 and the old rule — amp
+    whatever feeds `audio_input_0` — would have been reprofiling the singer."""
+    from sushi_rig.amp import amp_patchbay
+
+    links = _links(amp_patchbay(BASE_PATCHBAY, "iface:capture_AUX1"))
+    assert ("iface:capture_AUX1", "NAM:Input") in links
+    assert ("NAM:Output", "sushi:audio_input_2") in links
+    assert ("iface:capture_AUX0", "sushi:audio_input_0") in links, "the mic is dry"
+    assert ("iface:capture_AUX0", "NAM:Input") not in links
+
+
+def test_the_tuner_still_hears_the_dry_string_with_a_declared_port():
+    """The tuner taps the same port the amp is fed from, and must not be rewired
+    onto the amp's output: a pitch read through a neural amp is a pitch read
+    through its compression and its noise floor."""
+    from sushi_rig.amp import amp_patchbay
+
+    links = _links(amp_patchbay(BASE_PATCHBAY, "iface:capture_AUX0"))
+    assert ("iface:capture_AUX0", "fmit:input") in links
+
+
+def test_a_declared_port_that_feeds_nothing_leaves_the_patchbay_alone():
+    """A machine file naming a port the patchbay does not route is a mismatch to
+    report, not to paper over by falling back to input 0 — which would amp some
+    other channel."""
+    from sushi_rig.amp import amp_patchbay
+
+    assert amp_patchbay(BASE_PATCHBAY, "iface:capture_AUX9") == BASE_PATCHBAY
+
+
+def test_the_guitar_port_comes_from_the_machine_file(tmp_path, monkeypatch, capsys):
+    from sushi_rig.amp import guitar_port
+
+    (tmp_path / "machines").mkdir()
+    (tmp_path / "machines" / "testhost.yaml").write_text(
+        "schema_version: 1\nroles:\n  guitar-in:\n"
+        "    ports: ['Audient iD14:capture_AUX0']\n    mono_to_stereo: true\n"
+    )
+    monkeypatch.setattr("socket.gethostname", lambda: "testhost")
+    assert guitar_port(tmp_path) == "Audient iD14:capture_AUX0"
+    assert capsys.readouterr().err == "", "nothing to warn about"
+
+
+@pytest.mark.parametrize(
+    "roles, expected",
+    [
+        (None, "no machine file"),
+        ("roles:\n  vocal-in: ['x:1']\n", "0 ports"),
+        ("roles:\n  guitar-in: ['x:1', 'x:2']\n", "2 ports"),
+    ],
+)
+def test_falling_back_to_the_positional_rule_is_said_out_loud(
+    tmp_path, monkeypatch, capsys, roles, expected
+):
+    """The fallback is right for a single-channel rig and wrong the moment a
+    second channel moves the guitar off input 0, and a misrouted amp sounds like
+    a broken amp. Quality principle 8: failures must be loud."""
+    from sushi_rig.amp import guitar_port
+
+    (tmp_path / "machines").mkdir()
+    if roles is not None:
+        (tmp_path / "machines" / "testhost.yaml").write_text(f"schema_version: 1\n{roles}")
+    monkeypatch.setattr("socket.gethostname", lambda: "testhost")
+
+    assert guitar_port(tmp_path) is None
+    message = capsys.readouterr().err
+    assert expected in message, message
+    assert "input position" in message or "first input" in message, message
+
+
+def test_every_node_the_guitar_port_is_saved_under_is_rewired():
+    """An ALSA device's port appears once per profile, so
+    `Audient iD14 Multichannel:capture_AUX0` and
+    `Audient iD14 Pro:capture_AUX0` are the same socket under two names.
+    Matching on one node left the other profile's link feeding Sushi dry — the
+    dry-under-amped failure the two-file design exists to prevent. Checked
+    against the real hand-wired patchbay, which has exactly that shape."""
+    from pathlib import Path as _Path
+
+    from sushi_rig.amp import amp_patchbay
+
+    handmade = (
+        _Path(__file__).parent / "fixtures" / "patchbay-handmade.qpwgraph"
+    ).read_text()
+    links = _links(amp_patchbay(handmade, "Audient iD14:capture_AUX0"))
+
+    dry = [
+        (src, dst) for src, dst in links
+        if src == "Audient iD14:capture_AUX0" and dst.startswith("sushi:")
+    ]
+    assert dry == [], f"a dry path survived under a second node name: {dry}"
+    assert ("NAM:Output", "sushi:audio_input_0") in links
+    assert ("Audient iD14:capture_AUX0", "NAM:Input") in links
+
+
+def test_an_unvalidated_machine_file_does_not_wire_the_amp(tmp_path, monkeypatch, capsys):
+    """`machine check` and `patchbay generate` both refuse this file. Without the
+    same refusal here, `up --amp-model` was the one path that wired NAM from a
+    machine file every other command rejects."""
+    from sushi_rig.amp import guitar_port
+
+    (tmp_path / "machines").mkdir()
+    (tmp_path / "machines" / "testhost.yaml").write_text(
+        "schema_version: 99\nroles:\n  guitar-in: ['Audient iD14:capture_AUX0']\n"
+    )
+    monkeypatch.setattr("socket.gethostname", lambda: "testhost")
+
+    assert guitar_port(tmp_path) is None
+    assert "schema_version" in capsys.readouterr().err
+
+
 # --- reading a .nam model ---------------------------------------------------
 
 

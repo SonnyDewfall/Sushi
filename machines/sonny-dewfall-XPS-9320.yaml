@@ -1,0 +1,38 @@
+# The XPS 9320's ports. The only file in the repository that names physical
+# hardware; everything else addresses a role.
+#
+# Written from a real `pw-dump` of this machine with the rig running — the same
+# capture that lives at tool/tests/fixtures/pw-dump-rig.json — rather than from
+# memory of what the interface has. Three things it settles:
+#
+# - the input profile in use is "Multichannel", which presents ten capture
+#   ports, AUX0 to AUX9: two analogue, then the optical pairs;
+# - the output profile is "Analog Surround 4.0", whose ports are FL/FR/RL/RR
+#   and *not* playback_AUX0/1 — the committed example guessed AUX and would
+#   have resolved to nothing here;
+# - the ALSA profile itself is deliberately absent below. It is what changed
+#   under the old hand-wired patchbay, and the live graph supplies it.
+#
+# Validate with `sushi-rig machine check`, which defaults to this file on this
+# machine. Regenerate the patchbay with
+# `sushi-rig patchbay generate config/src/guitar_vocal.yaml -o Patchbay/rig.qpwgraph`.
+schema_version: 1
+interface: Audient iD14   # informational: for whoever reads this next
+roles:
+  # The guitar, on the first analogue input. Verified by ear: before this file
+  # existed the patchbay wired AUX0 to Sushi's input 0 alone, and the guitar
+  # came out of the left speaker only.
+  #
+  # `mono_to_stereo` is what centres it — one port into both halves of bus 0.
+  # Declared rather than inferred from the port count, because the dead `Pro`
+  # profile duplicated and the live `Multichannel` profile does not.
+  guitar-in:
+    ports: ["Audient iD14:capture_AUX0"]
+    mono_to_stereo: true
+  # The vocal mic, on the second analogue input. Mic gain and phantom power are
+  # the interface's business, not the rig's.
+  vocal-in:
+    ports: ["Audient iD14:capture_AUX1"]
+    mono_to_stereo: true
+  # The monitors. Left then right, in that order — the pairing is positional.
+  monitor-out: ["Audient iD14:playback_FL", "Audient iD14:playback_FR"]

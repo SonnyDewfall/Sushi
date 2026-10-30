@@ -400,16 +400,27 @@ sushi-rig patchbay generate rig.yaml -o /tmp/p.qpwgraph   # from machines/<hostn
 ```
 
 `patchbay check` sorts every node the saved file names into three states.
-**Missing** (a name it can match, and nothing live has it) is the only one that
-exits 1, so exit 1 means *a node is definitely gone*, not *something is wrong*.
-**Not evaluated** is a form it does not know how to match, such as qpwgraph's
-`app/node` label for the tuner; it is listed plainly and does not fail, and it is
-not a pass for those links either. **Present** needs no comment.
+**Missing** (nothing live answers to that name) is the only one that exits 1, so
+exit 1 means *a node is definitely gone*, not *something is wrong*. **Not
+running** is a node the rig starts itself, absent because the rig is down: it is
+listed, it does not fail, and it is not a pass for those links either — run
+`sushi-rig up` and check again to cover them. **Present** needs no comment.
+
+> Run it with the rig **up**. The first real run was made with the rig down and
+> reported `sushi` and the tuner as gone alongside one genuinely dead profile —
+> three findings where there was one. That was the tool's fault, and the two
+> states above are the fix.
 
 `generate` builds a patchbay from the machine file's roles and the `source:` /
-`sink:` a track names; it prints to stdout or the path you give and **never
-replaces `Patchbay/rig.qpwgraph`**, which stays hand-wired until a generated one
-has been proven equivalent on the rig. No config uses roles yet.
+`sink:` a track names, plus a tuner tap on the guitar role. It prints to stdout
+or the path you give. **`Patchbay/rig.qpwgraph` is now generated** — from
+`config/src/guitar_vocal.yaml` and `machines/sonny-dewfall-XPS-9320.yaml` — and
+a test asserts the committed file is byte-for-byte what the command produces, so
+editing it in qpwgraph's GUI fails the build. Regenerate instead:
+
+```bash
+sushi-rig patchbay generate config/src/guitar_vocal.yaml -o Patchbay/rig.qpwgraph
+```
 
 A role with one port feeding a stereo bus is an error unless the role *declares*
 it means to feed both halves:
@@ -424,7 +435,28 @@ roles:
 
 That is stated rather than inferred from the port count because the saved
 patchbay shows both wirings: the dead `Pro` profile duplicates one input across a
-bus, and the live `Multichannel` profile wires one input per channel.
+bus, and the live `Multichannel` profile wires one input per channel. It is also
+what centres a mono guitar — one port into both halves of the bus. Without it
+the guitar came out of the left speaker only.
+
+### Channels
+
+A channel is a role, a chain and an engine bus. `config/src/guitar_vocal.yaml`
+is the first rig with two: a guitar on bus 0 and a vocal on bus 1, summing into
+one monitor pair.
+
+Adding a third is a declaration, not an edit in five places — which is the
+actual deliverable of issue #18. Give the track a `source:` role, put the role
+in the machine file, and regenerate the patchbay. In particular the amp and the
+tuner follow the **`guitar-in` role**, not an input index: both used to take
+whatever fed `sushi:audio_input_0` to be the guitar, which is a position, and
+positions move. Put the vocal channel on bus 0 and the amp would have been
+reprofiling the singer.
+
+Plugin names carry their channel (`guitar_eq`, `vocal_eq`) because Sushi's
+processor names are global rather than per track — two plugins called `eq` are
+refused outright — and because those names are the panel's tab labels, so the
+prefix is what says which channel a tab belongs to.
 
 ### Choosing a plugin
 
