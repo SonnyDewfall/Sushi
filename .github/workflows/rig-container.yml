@@ -158,13 +158,20 @@ jobs:
         run: |
           set -o pipefail
           mkdir -p sound-candidates
+          # Status kept, not acted on, until every candidate is printed. With
+          # `bash -e` a single config that cannot calibrate used to end the
+          # step there, and the candidates for every other config went with it.
+          status=0
           docker run --rm -w /rig -v "$PWD/sound-candidates:/rig/config/sound" \
-              sushi-rig-ci sushi-rig nulltest --all --calibrate --sushi ./sushi 2>&1 | tee calibrate.log
+              sushi-rig-ci sushi-rig nulltest --all --calibrate --sushi ./sushi 2>&1 \
+              | tee calibrate.log || status=$?
           for f in sound-candidates/*.yaml; do
+            [ -e "$f" ] || continue
             echo "===== BEGIN ${f#sound-candidates/} ====="
             cat "$f"
             echo "===== END ${f#sound-candidates/} ====="
           done
+          exit "$status"
 
       - name: Upload candidate references
         if: failure() && steps.nulltest.outcome == 'failure'
