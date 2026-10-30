@@ -261,6 +261,33 @@ def _patchbay(args: argparse.Namespace) -> int:
     return 0
 
 
+def _take(args: argparse.Namespace) -> int:
+    """`take check`: is this folder a whole, honest take, and how do its stems line up."""
+    from .take import TakeError, check_take, describe_alignment, load_take
+
+    try:
+        take = load_take(args.folder)
+    except TakeError as exc:
+        sys.exit("\n".join(exc.problems))
+    problems = check_take(take)
+    for problem in problems:
+        print(f"  {problem}")
+    # Recomputed from the offsets, not read back from the file: a number
+    # corrected by hand must not be undercut by the sentence that was there.
+    alignment = describe_alignment(take)
+    if alignment:
+        print(f"{args.folder.name}: {alignment}")
+    print(
+        f"{args.folder.name}: {len(problems)} problem(s)" if problems
+        else f"{args.folder.name}: ok, {len(take.stems)} stem(s)"
+    )
+    print(
+        f"the rig that made it: `sushi-rig verify {args.folder / 'config.json'}`",
+        file=sys.stderr,
+    )
+    return 1 if problems else 0
+
+
 def _doctor(args: argparse.Namespace) -> int:
     """`doctor`: everything about this machine that has to be true before you play.
 
@@ -646,6 +673,17 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     p = sub.add_parser(
+        "take", help="takes: folders holding stems and the config that made them"
+    )
+    take_sub = p.add_subparsers(dest="take_command", required=True)
+    q = take_sub.add_parser(
+        "check",
+        help="check a take folder is whole and self-describing, and say how its "
+        "stems line up; exit 1 on any problem",
+    )
+    q.add_argument("folder", type=Path, help="the take's folder")
+
+    p = sub.add_parser(
         "doctor",
         help="whether this machine will run the rig properly, and what to do "
         "about it if not; exit 1 on any failure",
@@ -1016,6 +1054,8 @@ def main(argv: list[str] | None = None) -> int:
         return _machine(args)
     elif args.command == "doctor":
         return _doctor(args)
+    elif args.command == "take":
+        return _take(args)
     elif args.command == "top":
         from .top import top
 
