@@ -121,7 +121,26 @@ def fingerprint(
 
     delay = None
     if stimulus_samples is not None:
-        delay = int(estimate_delay(stimulus_samples, arr).lag_samples)
+        # Both reduced to their first channel, because `estimate_delay` refuses
+        # multichannel input rather than silently reducing it -- and every real
+        # render is at least stereo, so without this the delay could never be
+        # measured at all. Found by rendering through a passthrough and
+        # fingerprinting the result, which neither half's own tests would have
+        # caught: each was correct alone.
+        #
+        # Channel 0 rather than a mixdown, deliberately. A mixdown of two
+        # channels that are out of phase partially cancels, and a cancelled
+        # reference makes the correlation peak meaningless -- which would read
+        # as a latency change rather than as a measurement that could not be
+        # made. On this rig both halves of a centred channel are identical
+        # anyway, so there is nothing to gain by combining them.
+        delay = int(
+            estimate_delay(
+                np.asarray(stimulus_samples)[:, 0] if np.asarray(stimulus_samples).ndim > 1
+                else stimulus_samples,
+                arr[:, 0] if arr.ndim > 1 else arr,
+            ).lag_samples
+        )
 
     return Fingerprint(
         config=config,
