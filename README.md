@@ -9,6 +9,38 @@ The rig is described by a JSON config that Sushi loads at startup. This
 repository holds those configs, the patchbay routing that feeds them, and the
 tooling that produces them.
 
+## Where this is going: v2
+
+**A live-first DAW that handles configuration as readable code.**
+
+One refinement to that: in v1 you write the code. In v2 the rig writes it, and
+you can always read it, diff it and revert it.
+
+v1, everything below this section, was built by putting existing open-source
+projects together. v2 builds the product layer ourselves: the control plane,
+the data model, the UI and the plugin profiles. That's the only way to get the
+experience we want. The engines underneath stay open source (Sushi, the plugins,
+PipeWire), because nearly every painful bug here came from the glue between
+projects, never from the audio engine.
+
+Decisions so far:
+
+- **Local-first.** The rig runs, and is good to use, entirely on the local
+  machine, with its UI in a browser on localhost. The cloud adds reachability
+  and nothing else. Nothing possible remotely is impossible locally, and the
+  rig never notices the cloud going down.
+- **The web is for control**, plus loading library pieces while configuring.
+  Nothing real-time crosses the network.
+- **Files are machine-written but human-legible.** Nothing like a DAW's XML.
+- **Content lives in its own repository**, under version control, separate from
+  the code that runs the rig.
+- **The local part is portable.** Getting the whole rig onto a suitable machine
+  is one paved-road command.
+
+The plan and the reasoning behind it are in the
+[v2 roadmap](https://github.com/SonnyDewfall/Sushi/issues/38). v1 gets tagged
+as a release before that work starts.
+
 ---
 
 ## The problem this solves
