@@ -11,7 +11,14 @@ from pathlib import Path
 
 import pytest
 
-from sushi_rig.qpwgraph import stale_qpwgraph_sockets
+from types import SimpleNamespace
+
+from sushi_rig import qpwgraph
+from sushi_rig.qpwgraph import (
+    node_ports,
+    ports_without_sources,
+    stale_qpwgraph_sockets,
+)
 from sushi_rig.rig import plan_children
 
 
@@ -170,3 +177,108 @@ def test_giving_up_is_reported_rather_than_retried_forever(fake_launch, tmp_path
 
 
 # --- the neural amp ----------------------------------------------------------
+
+
+# --- is the patchbay actually wiring things? --------------------------------
+
+PW_LINK_INPUTS = """alsa_capture.fmit:input_MONO
+sushi:audio_input_0
+  |<- NAM:Output
+sushi:audio_input_1
+  |<- alsa_input.usb-Audient:capture_AUX1
+NAM:Input
+  |<- alsa_input.usb-Audient:capture_AUX0
+"""
+
+
+def test_a_port_with_no_sources_is_reported():
+    """The tuner no longer auto-connects, so a patchbay that does not name its
+    port leaves it running and deaf — which looks exactly like a tuner that
+    cannot hear the guitar."""
+    assert ports_without_sources(PW_LINK_INPUTS, "alsa_capture.fmit") == [
+        "alsa_capture.fmit:input_MONO"
+    ]
+
+
+def test_a_wired_port_is_not_reported():
+    listing = PW_LINK_INPUTS.replace(
+        "alsa_capture.fmit:input_MONO\n",
+        "alsa_capture.fmit:input_MONO\n  |<- alsa_input.usb-Audient:capture_AUX0\n",
+    )
+    assert ports_without_sources(listing, "alsa_capture.fmit") == []
+
+
+def test_only_the_named_nodes_ports_are_considered():
+    """`sushi:audio_input_*` and `NAM:Input` are all wired here, but the point
+    is that another node's unwired port must never be reported as this one's."""
+    assert ports_without_sources("other:in\nalsa_capture.fmit:input_MONO\n",
+                                 "alsa_capture.fmit") == [
+        "alsa_capture.fmit:input_MONO"
+    ]
+
+
+def test_a_node_with_no_ports_at_all_reports_nothing():
+    """A tuner that is not running is not an unwired tuner — the caller checks
+    the process separately, and this must not invent a port for it."""
+    assert ports_without_sources(PW_LINK_INPUTS, "alsa_capture.nosuch") == []
+
+
+# --- is the node even there? -------------------------------------------------
+
+
+def test_node_ports_lists_a_nodes_ports_whether_wired_or_not():
+    """`ports_without_sources` answers "which are unwired", which cannot
+    distinguish a fully wired node from one that is absent. This answers "is it
+    here at all", and the two together can."""
+    assert node_ports(PW_LINK_INPUTS, "alsa_capture.fmit") == [
+        "alsa_capture.fmit:input_MONO"
+    ]
+
+
+def test_node_ports_finds_nothing_for_a_node_that_is_not_listed():
+    assert node_ports(PW_LINK_INPUTS, "alsa_capture.nosuch") == []
+
+
+def test_an_absent_node_is_reported_as_unknown_not_as_wired(monkeypatch):
+    """The bug this closes: the settle loop returned `[]` both for "every port
+    has a source" and for "PipeWire has never heard of this node", so a check
+    that could not tell reported success. The caller needs those apart — one is
+    a healthy tuner, the other is a renamed node and an unanswered question."""
+    monkeypatch.setattr(
+        qpwgraph.subprocess, "run",
+        lambda *a, **k: SimpleNamespace(stdout=PW_LINK_INPUTS, returncode=0),
+    )
+    assert qpwgraph.unconnected_inputs("alsa_capture.nosuch", settle=0.0) is None
+
+
+def test_a_wired_node_reports_an_empty_list(monkeypatch):
+    wired = PW_LINK_INPUTS.replace(
+        "alsa_capture.fmit:input_MONO\n",
+        "alsa_capture.fmit:input_MONO\n  |<- alsa_input.usb-Audient:capture_AUX0\n",
+    )
+    monkeypatch.setattr(
+        qpwgraph.subprocess, "run",
+        lambda *a, **k: SimpleNamespace(stdout=wired, returncode=0),
+    )
+    assert qpwgraph.unconnected_inputs("alsa_capture.fmit", settle=0.0) == []
+
+
+def test_an_unwired_node_names_its_ports(monkeypatch):
+    monkeypatch.setattr(
+        qpwgraph.subprocess, "run",
+        lambda *a, **k: SimpleNamespace(stdout=PW_LINK_INPUTS, returncode=0),
+    )
+    assert qpwgraph.unconnected_inputs("alsa_capture.fmit", settle=0.0) == [
+        "alsa_capture.fmit:input_MONO"
+    ]
+
+
+def test_a_missing_pw_link_is_raised_not_reported_as_wired(monkeypatch):
+    """`up` must be able to tell "the tuner is fine" from "I could not ask".
+    Reporting the second as the first is how the amp stayed dead for a session."""
+    def boom(*a, **k):
+        raise FileNotFoundError("pw-link")
+
+    monkeypatch.setattr(qpwgraph.subprocess, "run", boom)
+    with pytest.raises(OSError):
+        qpwgraph.unconnected_inputs("alsa_capture.fmit", settle=0.0)

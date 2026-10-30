@@ -38,7 +38,7 @@ from typing import Any
 
 from .paths import checkout_root, log_dir, runtime_dir
 from .procs import SHUTDOWN_STEPS, pgid_alive, pid_alive, port_is_open, wait_for_grpc
-from .qpwgraph import start_qpwgraph
+from .qpwgraph import start_qpwgraph, unconnected_inputs
 from .state import clear_state, is_stale, read_state, write_state
 
 DEFAULT_CONFIG_NAME = "electric_board"
@@ -53,6 +53,51 @@ OSC_SEND_PORT = 24024
 # anything that ignores the polite one.
 # How long to wait for Sushi's gRPC to start accepting connections.
 GRPC_TIMEOUT = 15.0
+
+# The buffer size the rig asks PipeWire for, in samples at the graph rate.
+#
+# This used to be left to whatever the desktop happened to be doing, and on a
+# fresh machine that turned out to be 2048 — 42.7 ms per block, measured as
+# 42.69 ms of delay through Sushi and audible as the "high latency" this was
+# first reported as. Worse, it was *sticky*: a JACK client sets
+# `node.lock-quantum`, so Sushi pins whatever the graph was at when it started
+# and holds it there for its whole life, however the graph later changes.
+#
+# So the rig states it rather than inheriting it, for the same reason it states
+# `LV2_PATH`: a number this audible should come from the repository and not
+# from the machine. 256 measures at 5.35 ms through Sushi with the chain at 2%
+# of its budget and no xruns, which leaves a wide margin for the amp. Lower is
+# available — 128 and 64 both run — but below about 256 the interface's own
+# 512-sample headroom dominates, so the gain gets small and the risk does not.
+QUANTUM = 256
+
+# The PipeWire node `fmit` registers as, via the ALSA compatibility layer.
+TUNER_NODE = "alsa_capture.fmit"
+
+
+
+def child_environment(
+    base: dict[str, str], child: dict[str, Any]
+) -> dict[str, str]:
+    """The environment one child is started with.
+
+    Scoped per child rather than set on the supervisor, because the tuner and
+    the panel have no business being dragged to the audio path's buffer size.
+
+    `env_set` is **assigned, not defaulted**: stating these values in the
+    repository is the entire point, so an inherited one must not win. While
+    this merged with `setdefault`, a `PIPEWIRE_QUANTUM` already in the
+    environment put the rig back on the desktop's buffer size and a
+    `PIPEWIRE_PROPS` replaced the tuner's autoconnect setting outright — each
+    quietly undoing the fix it sits beside, which is why the precedence is now
+    pinned by a test instead of trusted.
+    """
+    env = dict(base)
+    for key in child.get("env_unset", ()):
+        env.pop(key, None)
+    for key, value in child.get("env_set", {}).items():
+        env[key] = value
+    return env
 
 
 class RigError(Exception):
@@ -105,7 +150,29 @@ def plan_children(
     children: list[dict[str, Any]] = []
 
     if tuner:
-        children.append({"name": "fmit", "command": ["fmit"], "optional": True})
+        children.append({
+            "name": "fmit",
+            "command": ["fmit"],
+            "optional": True,
+            # `fmit` reaches PipeWire through the ALSA compatibility layer,
+            # which auto-connects a capture stream to whatever the *default
+            # source* happens to be. On this machine that was a webcam, and
+            # because the patchbay also wires `fmit` to the interface, the
+            # tuner bridged the two devices into one driver group: `pw-dump`
+            # showed the interface and Sushi both carrying the webcam's
+            # `node.driver-id`. A guitar rig clocked by a webcam, resampling
+            # the audio path to it and inheriting its xruns.
+            #
+            # Turning autoconnect off puts the tuner's routing where every
+            # other connection in this rig already lives — the patchbay. It
+            # also makes `fmit` negotiate the single `input_MONO` port it
+            # actually wants, rather than the stereo pair the default source
+            # imposed on it.
+            #
+            # The cost is that an unwired tuner is silent rather than wrong,
+            # so `_supervise` checks for exactly that and says so.
+            "env_set": {"PIPEWIRE_PROPS": "{ node.autoconnect = false }"},
+        })
 
     children.append({
         "name": "qpwgraph",
@@ -151,6 +218,7 @@ def plan_children(
         "name": "sushi",
         "command": ["pw-jack", "./sushi", "-j", "-c", str(config)],
         "optional": False,
+        "env_set": {"PIPEWIRE_QUANTUM": f"{QUANTUM}/48000"},
     })
 
     if amp_project is not None:
@@ -160,8 +228,20 @@ def plan_children(
         # stop the rig coming up.
         children.append({
             "name": "amp",
-            "command": ["carla", "-n", str(amp_project)],
+            # `pw-jack`, for the same reason Sushi has it. Carla links against
+            # the system libjack, which on a PipeWire-only machine finds no
+            # server and exits during startup — "jack server is not running or
+            # cannot be started", in the amp log, nowhere else. PipeWire's own
+            # libjack lives in a directory the loader does not search, so only
+            # the shim puts it in front. It worked before this was noticed
+            # because the previous machine had a jackd to fall back on, which
+            # made the rig quietly non-portable in exactly the way `LV2_PATH`
+            # is kept narrow to prevent.
+            "command": ["pw-jack", "carla", "-n", str(amp_project)],
             "optional": True,
+            # The same quantum as Sushi. Two JACK clients each locking a
+            # different one is a fight nobody wins.
+            "env_set": {"PIPEWIRE_QUANTUM": f"{QUANTUM}/48000"},
         })
 
     return children
@@ -256,9 +336,7 @@ def _supervise(
                 procs[name] = proc
                 continue
             handle = logs / f"{name}.log"
-            child_env = dict(env)
-            for key in child.get("env_unset", ()):
-                child_env.pop(key, None)
+            child_env = child_environment(env, child)
             with open(handle, "wb") as sink:
                 try:
                     proc = subprocess.Popen(
@@ -302,8 +380,72 @@ def _supervise(
                     stdin=subprocess.DEVNULL, stdout=sink, stderr=sink,
                 )
             started["open-stage-control"] = osc.pid
+            # In `procs` too, so the liveness check below covers the panel.
+            # It was the one child the check missed, because it is started
+            # outside the loop that fills `procs`.
+            procs["open-stage-control"] = osc
 
-        if amp_model and "amp" in procs:
+        # A child that starts and *then* exits was, until this check, silent.
+        # Popen succeeding only means the binary existed; Carla dying a second
+        # later for want of a JACK server left `up` printing READY and a rig
+        # with no amp in it, which is precisely the "processing silence while
+        # looking perfectly healthy" failure principle 8 exists to forbid. The
+        # amp's own symptom was worse than absence: the only warning came from
+        # the parameter replay timing out, which reads as "your knobs are at
+        # their defaults" rather than "you have no amp".
+        for name, proc in procs.items():
+            if proc.poll() is None:
+                continue
+            problems.append(
+                f"{name} exited during startup (status {proc.returncode}) — "
+                f"see {logs / f'{name}.log'}"
+            )
+            if name == "amp":
+                problems[-1] += (
+                    "; the rig is playable but there is NO AMP in the signal "
+                    "path, so the guitar is running dry"
+                )
+
+        # The tuner no longer auto-connects (see `plan_children`), so the
+        # patchbay is the only thing that wires it. A patchbay that does not
+        # name its ports leaves the tuner running and deaf, which looks exactly
+        # like a tuner that cannot hear the guitar — so it is said out loud
+        # rather than left to be discovered mid-session (principle 8).
+        if "fmit" in procs and procs["fmit"].poll() is None:
+            # Guarded, unlike its neighbours' `poll()` calls, because this one
+            # shells out. Every check here is deliberately non-fatal -- it
+            # appends to `problems` and the rig still comes up -- but an
+            # exception escaping into the enclosing `except Exception` reports
+            # FAIL, and the parent then tears down a rig that was playing
+            # perfectly well. A missing `pw-link` must not cost the rig.
+            try:
+                unwired = unconnected_inputs(TUNER_NODE)
+            except (OSError, subprocess.TimeoutExpired) as exc:
+                problems.append(
+                    f"could not check whether the tuner is wired ({exc}) — if it "
+                    "shows nothing, wire its input in qpwgraph"
+                )
+            else:
+                if unwired is None:
+                    # Distinct from "nothing unwired": PipeWire listed no such
+                    # node, so the question went unanswered rather than
+                    # answered well. Saying "fine" here would be the same
+                    # mistake as the fixture that gave every row a quantum.
+                    problems.append(
+                        f"the tuner is running but PipeWire lists no {TUNER_NODE} "
+                        "ports, so its wiring could not be checked — the node may "
+                        "have been renamed"
+                    )
+                elif unwired:
+                    problems.append(
+                        "the tuner is running but nothing is connected to "
+                        + ", ".join(unwired)
+                        + f" — wire the guitar's input to it in qpwgraph and save "
+                        f"{root / 'Patchbay' / 'rig.qpwgraph'}, or the tuner will "
+                        "show nothing"
+                    )
+
+        if amp_model and "amp" in procs and procs["amp"].poll() is None:
             # Carla starts with the model but with the plugin's own default
             # knob positions; the saved values have to be sent once it is
             # listening. Never fatal — a rig with an amp at its defaults is

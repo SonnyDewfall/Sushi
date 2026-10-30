@@ -53,6 +53,8 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Iterator
 
+from .amp import CONFIG_KEY as AMP_KEY, PLUGIN_URIS as AMP_PLUGIN_URIS
+
 # Where distro packages put LV2 bundles. The default source for `assemble`.
 SYSTEM_LV2_DIR = Path("/usr/lib/lv2")
 
@@ -88,14 +90,52 @@ def read_manifest(text: str) -> list[str]:
     return uris
 
 
-def config_uris(config: dict[str, Any]) -> set[str]:
-    """Every LV2 plugin URI a Sushi config loads."""
-    return {
+def config_uris(config: dict[str, Any], source: str | None = None) -> set[str]:
+    """Every LV2 plugin URI a config needs on `LV2_PATH`.
+
+    Not the same as "every plugin Sushi loads", and the difference was a real
+    hole. The amp is an LV2 plugin hosted by Carla rather than by Sushi, so it
+    lives in the top-level `_amp` section instead of under `tracks`, and that
+    section names it `"plugin": "nam"` with no `uri` key at all. Walking
+    `tracks` therefore missed it twice over, and the manifest did not list it
+    either — so the one plugin no distro packages, and the one most likely to
+    be absent on a fresh machine, was the one plugin `check` did not check. It
+    would report every URI resolving while `plugins/` held no amp.
+
+    The amp belongs here because the supervisor hands Carla the same
+    `LV2_PATH` as everything else: if NAM is not in `plugins/`, the rig has no
+    amp, which is exactly the property this function exists to protect.
+    """
+    uris = {
         plugin["uri"]
         for track in config.get("tracks", [])
         for plugin in track.get("plugins", [])
         if plugin.get("uri")
     }
+
+    amp = config.get(AMP_KEY)
+    if isinstance(amp, dict):
+        # Named, because `check --all` walks every config and an error that
+        # says only "None" leaves you grepping for which file it meant.
+        known = ", ".join(sorted(AMP_PLUGIN_URIS)) or "none"
+        where = f"{source}: " if source else ""
+        name = amp.get("plugin")
+        if name is None:
+            raise PluginsError(
+                f'{where}its "{AMP_KEY}" section names no plugin, so the amp\'s '
+                f'URI cannot be required. Add "plugin": "nam".'
+            )
+        if name not in AMP_PLUGIN_URIS:
+            # Loud, because the alternative is quietly not requiring an amp
+            # the config says it wants — the precise failure this function was
+            # just widened to prevent.
+            raise PluginsError(
+                f"{where}names an amp plugin this tool has no URI for: "
+                f"{name!r}. Known: {known}."
+            )
+        uris.add(AMP_PLUGIN_URIS[name])
+
+    return uris
 
 
 @dataclass(frozen=True)

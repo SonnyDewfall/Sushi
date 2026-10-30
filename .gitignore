@@ -43,3 +43,10 @@ amp/Carla/
 
 # Sushi AppImage fetched for a local container build (ci/Dockerfile)
 ci/dl/
+
+# The AppImage extracted in place. `*.AppImage` covers the archive but not
+# its unpacked contents, which are the same 34 MB of third-party binaries.
+squashfs-root/
+
+# Stray audio captures from latency/signal measurements.
+*.wav

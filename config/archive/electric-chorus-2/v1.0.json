@@ -1,0 +1,165 @@
+{
+  "_meta": {
+    "name": "electric-chorus-2",
+    "version": "1.0",
+    "description": "electric-chorus on the new chain \u2014 L/C/R Delay, two-stage GxDetune octave",
+    "status": "wip",
+    "source": "config/src/electric_board.yaml",
+    "archived_at": "2026-10-27"
+  },
+  "host_config": {
+    "samplerate": 48000
+  },
+  "tracks": [
+    {
+      "name": "board",
+      "channels": 2,
+      "inputs": [
+        {
+          "engine_bus": 0,
+          "track_bus": 0
+        }
+      ],
+      "outputs": [
+        {
+          "engine_bus": 0,
+          "track_bus": 0
+        }
+      ],
+      "plugins": [
+        {
+          "name": "compressor",
+          "type": "lv2",
+          "uri": "http://guitarix.sourceforge.net/plugins/gx_compressor#_compressor"
+        },
+        {
+          "name": "overdrive",
+          "type": "lv2",
+          "uri": "http://guitarix.sourceforge.net/plugins/gxts9#ts9sim"
+        },
+        {
+          "name": "octave_down",
+          "type": "lv2",
+          "uri": "http://guitarix.sourceforge.net/plugins/gx_detune_#_detune_"
+        },
+        {
+          "name": "octave_up",
+          "type": "lv2",
+          "uri": "http://guitarix.sourceforge.net/plugins/gx_detune_#_detune_"
+        },
+        {
+          "name": "eq",
+          "type": "lv2",
+          "uri": "http://distrho.sf.net/plugins/3BandEQ"
+        },
+        {
+          "name": "chorus",
+          "type": "lv2",
+          "uri": "http://guitarix.sourceforge.net/plugins/gx_chorus_stereo#_chorus_stereo"
+        },
+        {
+          "name": "delay",
+          "type": "lv2",
+          "uri": "http://plugin.org.uk/swh-plugins/lcrDelay"
+        },
+        {
+          "name": "room",
+          "type": "lv2",
+          "uri": "urn:ardour:a-reverb"
+        },
+        {
+          "name": "hall",
+          "type": "lv2",
+          "uri": "http://distrho.sf.net/plugins/MaGigaverb"
+        }
+      ]
+    }
+  ],
+  "initial_state": [
+    {
+      "processor": "board",
+      "parameters": {
+        "gain": 0.833333,
+        "pan": 0.5,
+        "mute": 0.0
+      }
+    },
+    {
+      "processor": "compressor",
+      "bypassed": false,
+      "parameters": {
+        "RATIO": 0.07,
+        "KNEE": 0.1,
+        "THRESHOLD": 0.74,
+        "RELEASE": 0.05,
+        "ATTACK": 0.002,
+        "BYPASS": 1.0
+      }
+    },
+    {
+      "processor": "overdrive",
+      "bypassed": true,
+      "parameters": {
+        "Level": 0.93,
+        "Tone": 0.13,
+        "Drive": 0.0,
+        "BYPASS": 1.0
+      }
+    },
+    {
+      "processor": "eq",
+      "bypassed": false,
+      "parameters": {
+        "Low": 0.41,
+        "Mid": 0.56,
+        "High": 0.26,
+        "Master": 0.5,
+        "Low-Mid Freq": 0.48,
+        "Mid-High Freq": 0.06
+      }
+    },
+    {
+      "processor": "chorus",
+      "bypassed": false,
+      "parameters": {
+        "Level": 0.91,
+        "Delay": 0.5,
+        "Depth": 0.03,
+        "Freq": 0.08,
+        "BYPASS": 1.0
+      }
+    },
+    {
+      "processor": "room",
+      "bypassed": false,
+      "parameters": {
+        "Blend": 0.2,
+        "Room Size": 0.41,
+        "Enable": 1.0
+      }
+    },
+    {
+      "processor": "hall",
+      "bypassed": true,
+      "parameters": {
+        "damping": 0.0,
+        "revtime": 0.01,
+        "roomsize": 0.29,
+        "spread": 0.01,
+        "bandwidth": 0.62,
+        "tail": 0.09,
+        "dry": 0.81,
+        "early": 0.16
+      }
+    }
+  ],
+  "_amp": {
+    "plugin": "nam",
+    "model": "amp/models/Neve 2.nam",
+    "parameters": {
+      "Input Lvl": 0.0,
+      "Output Lvl": -0.4,
+      "Quality": 1.0
+    }
+  }
+}

@@ -61,7 +61,7 @@ def _plugins(args: argparse.Namespace) -> int:
         else configs_to_check(root)
     )
     for config in configs:
-        used |= config_uris(json.loads(config.read_text()))
+        used |= config_uris(json.loads(config.read_text()), str(config))
 
     waived = set(args.waive)
     try:

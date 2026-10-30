@@ -24,7 +24,9 @@ jobs:
         run: pip install -e "tool[dev,audio]"
 
       # Slow tests are excluded on purpose: they start a real Sushi binary,
-      # which this runner does not have. Run them locally until CI can supply it.
+      # which this runner does not have. Tests that need python3-lilv or ./sushi
+      # skip here too, and that is fine only because rig-container.yml runs the
+      # whole suite in an image that has both and fails on any skip. Keep it so.
       - name: Run the fast test suite
         working-directory: tool
         run: python -m pytest -q -m "not slow"
