@@ -384,6 +384,15 @@ get left behind. It then checks, and tells you if anything survived.
 profile) silently orphans it: qpwgraph keeps the dead links and nothing reports
 them. Three commands address that (issue #54):
 
+**`machines/<hostname>.yaml` is committed, deliberately.** It is the one
+hand-authored file naming physical ports, and it is tracked for the same reason
+the patchbay is: setting up a second machine proved it the most expensive thing
+to recreate, and the next machine should start from a worked example rather than
+from scratch. The hostname in the name is what keeps two machines' files from
+colliding. Nothing in `.gitignore` excludes them, and nothing should — a
+`machines/` entry added later on the assumption that these are per-machine
+scratch would quietly undo this.
+
 ```bash
 sushi-rig patchbay check                      # saved links whose node is not in the live graph
 sushi-rig machine check [machines/x.yaml]     # validate a machine file on its own
