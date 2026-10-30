@@ -867,3 +867,27 @@ defined. [#49](https://github.com/SonnyDewfall/Sushi/issues/49) also assumed
 `signals.py` and `analysis.py` between them already had everything needed —
 they did not, because neither had any harmonic measurement at all, which is
 most of what this adds. *(2026-10-30)*
+
+**`doctor` reads the request; `selftest` measures the result.** Issue #48 asks
+`doctor` for "the quantum the rig will actually get". A `pw-dump` cannot give
+that: the running quantum lives in PipeWire's settings metadata, and what the
+node carries is `node.force-quantum` — the value Sushi *asked* for. So the two
+commands split along that line, which turns out to be the useful one anyway.
+`doctor` checks that the rig asked for the right thing and that nothing
+overrode it, which is a setup question with a remedy; `selftest` measures the
+delay that actually comes out, which is a sound question with a number. Each
+says which it is, because reporting a request as though it were a result is the
+near-enough this project keeps paying for. The same split sends the dead amp to
+`selftest`: a pw-dump does not carry the config, so nothing in `doctor` can
+know whether an amp *ought* to be running, while "is anything being modelled"
+is measurable. *(2026-10-30)*
+
+**Two nodes in that capture carry `node.driver = True`.** Worth recording
+because it is a trap with a plausible wrong answer. "Which node is clocking the
+rig" looks like a search for the node flagged as a driver, and in
+`tests/fixtures/pw-dump-rig.json` — a healthy rig — both the Audient and the
+Logitech webcam carry that flag, because each drives its own group. A check
+written that way finds two and has nothing to choose between them. The rig's
+clock is whatever Sushi's own `node.driver-id` points at, followed from Sushi
+outwards, and the webcam being a driver in the healthy capture is now a test.
+*(2026-10-30)*

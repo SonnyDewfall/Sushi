@@ -261,6 +261,107 @@ def _patchbay(args: argparse.Namespace) -> int:
     return 0
 
 
+def _doctor(args: argparse.Namespace) -> int:
+    """`doctor`: everything about this machine that has to be true before you play.
+
+    One pw-dump, read once and used by both the graph checks and the patchbay
+    check, so the two cannot disagree about a graph that changed between them.
+    """
+    from .doctor import (
+        EXPECTED_RATE, UNCHECKED, Check, environment_checks, faults,
+        gather_environment, graph_checks, interface_clients, machine_check,
+        patchbay_checks, unchecked,
+    )
+    from .machine import MachineError, MachineSpec, machine_path
+    from .patchbay import (
+        PatchbayError, check_nodes, live_node_names, nodes_by_id, parse_patchbay,
+        read_pw_dump,
+    )
+    from .paths import checkout_root
+    from .rig import QUANTUM
+
+    root = checkout_root()
+    checks = []
+
+    # The machine file first: every device name the checks below compare
+    # against comes from it, so an unreadable one is reported once here rather
+    # than as a fault in each of them.
+    machine_file = args.machine or machine_path(root)
+    clients: set[str] = set()
+    try:
+        spec = MachineSpec.load(machine_file)
+    except MachineError as exc:
+        checks.append(machine_check([], file_name=machine_file.name, readable=False,
+                                    why=str(exc)))
+    else:
+        problems = spec.validate()
+        checks.append(machine_check(problems, file_name=machine_file.name))
+        if not problems:
+            clients = interface_clients(spec.role_ports())
+
+    dump, why = None, ""
+    try:
+        dump = read_pw_dump()
+    except PatchbayError as exc:
+        why = "; ".join(exc.problems)
+
+    checks += graph_checks(
+        nodes_by_id(dump) if dump is not None else None,
+        clients,
+        expected_quantum=QUANTUM,
+        expected_rate=EXPECTED_RATE,
+        reason=why,
+    )
+
+    patchbay_file = args.patchbay or root / "Patchbay" / "rig.qpwgraph"
+
+    def not_compared(reason: str) -> Check:
+        """One `unchecked` for a patchbay that could not be compared at all."""
+        return Check(
+            "patchbay-nodes", UNCHECKED,
+            f"{patchbay_file.name} could not be checked against the graph: "
+            f"{reason or 'no reason given'}",
+            "`sushi-rig patchbay check` reports on it on its own",
+        )
+
+    if dump is None:
+        checks.append(not_compared(why))
+    else:
+        try:
+            links = parse_patchbay(patchbay_file.read_text())
+            result = check_nodes(links, live_node_names(dump))
+        except OSError as exc:
+            checks.append(not_compared(str(exc)))
+        except PatchbayError as exc:
+            checks.append(not_compared("; ".join(exc.problems)))
+        else:
+            checks += patchbay_checks(
+                result.missing, result.not_running,
+                file_name=patchbay_file.name, links=len(links),
+            )
+
+    checks += environment_checks(gather_environment(root))
+
+    for check in checks:
+        print(check)
+    broken, skipped = faults(checks), unchecked(checks)
+    if skipped:
+        print(
+            f"\n{len(skipped)} check(s) could not be run. That is not a pass — "
+            "most of these need PipeWire and a running rig.",
+            file=sys.stderr,
+        )
+    if broken:
+        print(
+            f"\n{len(broken)} of {len(checks)} check(s) failed. Each line above "
+            "says what to do.",
+            file=sys.stderr,
+        )
+        return 1
+    print(f"\n{len(checks) - len(skipped)} check(s) passed")
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="sushi-rig", description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -535,6 +636,20 @@ def main(argv: list[str] | None = None) -> int:
     q.add_argument(
         "file", type=Path, nargs="?",
         help="machine file [default: machines/<this hostname>.yaml at the repo root]",
+    )
+
+    p = sub.add_parser(
+        "doctor",
+        help="whether this machine will run the rig properly, and what to do "
+        "about it if not; exit 1 on any failure",
+    )
+    p.add_argument(
+        "--machine", type=Path,
+        help="machine file [default: machines/<this hostname>.yaml at the repo root]",
+    )
+    p.add_argument(
+        "--patchbay", type=Path,
+        help="patchbay to check [default: Patchbay/rig.qpwgraph at the repo root]",
     )
 
     sub.add_parser("status", help="what is running, if anything")
@@ -892,6 +1007,8 @@ def main(argv: list[str] | None = None) -> int:
         return _patchbay(args)
     elif args.command == "machine":
         return _machine(args)
+    elif args.command == "doctor":
+        return _doctor(args)
     elif args.command == "top":
         from .top import top
 
