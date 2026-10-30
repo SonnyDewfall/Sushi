@@ -187,3 +187,53 @@ def test_the_driving_device_is_named():
     symptom other than latency."""
     out = format_sample(parse_pw_top(PW_TOP), {}, "rig")
     assert "clocked by alsa_input.usb-Audient" in out
+
+
+# --- which node's driver describes the rig -----------------------------------
+
+
+# The amp in a different driver group from Sushi: Carla parked on a
+# Dummy-Driver carrying no quantum, while Sushi follows the interface at 1024.
+PW_TOP_SPLIT = """S   ID  QUANT   RATE    WAIT    BUSY   W/Q   B/Q  ERR FORMAT           NAME
+R   45   1024  48000   5.8ms   3.0us  0.27  0.00    1   S32LE 10 48000 alsa_input.usb-Audient
+R  130      0      0  34.3us 674.6us  0.00  0.03    0                   + sushi
+R   46      0      0   0.0us   0.0us  0.00  0.00    0                  Dummy-Driver
+R  143      0      0  51.3us   4.9ms  0.00  0.23    2                   + NAM
+"""
+
+
+def test_the_budget_comes_from_sushis_driver_not_from_the_first_row():
+    """`rig_nodes` returns signal order, so the first row is the amp whenever
+    one runs. Reading the budget off it printed "quantum 0 @ 0 Hz" again —
+    the same symptom as before, arrived at from the other end."""
+    nodes = rig_nodes(parse_pw_top(PW_TOP_SPLIT), {"amp": 1, "sushi": 2})
+    assert nodes[0]["name"] == "NAM", "the amp should still be shown first"
+    out = format_sample(nodes, {}, "rig")
+    assert "quantum 1024 @ 48000 Hz" in out
+    assert "21.3 ms per block" in out
+    assert "quantum 0" not in out
+
+
+def test_nodes_in_separate_driver_groups_are_reported():
+    """Two driver groups means the amp and Sushi are not scheduled in one graph
+    cycle, so putting the amp in front stops being free and the chain stops
+    being sample-aligned. It has no other symptom."""
+    nodes = rig_nodes(parse_pw_top(PW_TOP_SPLIT), {"amp": 1, "sushi": 2})
+    out = format_sample(nodes, {}, "rig")
+    assert "split across 2 driver groups" in out
+    assert "Dummy-Driver" in out
+
+
+def test_one_driver_group_says_nothing_about_a_split():
+    assert "split across" not in format_sample(parse_pw_top(PW_TOP), {}, "rig")
+
+
+def test_a_node_with_no_driver_is_not_named_as_its_own():
+    """"[clocked by sushi]" is never true of anything: Sushi is always a
+    follower. A missing driver row has to read as unknown, not as self."""
+    only_followers = """S   ID  QUANT   RATE    WAIT    BUSY   W/Q   B/Q  ERR FORMAT           NAME
+R  130      0      0  34.3us 674.6us  0.00  0.03    0                   + sushi
+"""
+    nodes = parse_pw_top(only_followers)
+    assert nodes[0]["driver"] is None
+    assert "clocked by" not in format_sample(nodes, {}, "rig")

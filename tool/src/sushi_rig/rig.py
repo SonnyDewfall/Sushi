@@ -76,6 +76,30 @@ TUNER_NODE = "alsa_capture.fmit"
 
 
 
+def child_environment(
+    base: dict[str, str], child: dict[str, Any]
+) -> dict[str, str]:
+    """The environment one child is started with.
+
+    Scoped per child rather than set on the supervisor, because the tuner and
+    the panel have no business being dragged to the audio path's buffer size.
+
+    `env_set` is **assigned, not defaulted**: stating these values in the
+    repository is the entire point, so an inherited one must not win. While
+    this merged with `setdefault`, a `PIPEWIRE_QUANTUM` already in the
+    environment put the rig back on the desktop's buffer size and a
+    `PIPEWIRE_PROPS` replaced the tuner's autoconnect setting outright — each
+    quietly undoing the fix it sits beside, which is why the precedence is now
+    pinned by a test instead of trusted.
+    """
+    env = dict(base)
+    for key in child.get("env_unset", ()):
+        env.pop(key, None)
+    for key, value in child.get("env_set", {}).items():
+        env[key] = value
+    return env
+
+
 class RigError(Exception):
     """Something the user needs to fix, reported without a traceback."""
 
@@ -312,14 +336,7 @@ def _supervise(
                 procs[name] = proc
                 continue
             handle = logs / f"{name}.log"
-            child_env = dict(env)
-            for key in child.get("env_unset", ()):
-                child_env.pop(key, None)
-            # Scoped to the child rather than set on the supervisor, because
-            # the tuner and the panel have no business being dragged to the
-            # audio path's buffer size.
-            for key, value in child.get("env_set", {}).items():
-                child_env.setdefault(key, value)
+            child_env = child_environment(env, child)
             with open(handle, "wb") as sink:
                 try:
                     proc = subprocess.Popen(
@@ -363,6 +380,10 @@ def _supervise(
                     stdin=subprocess.DEVNULL, stdout=sink, stderr=sink,
                 )
             started["open-stage-control"] = osc.pid
+            # In `procs` too, so the liveness check below covers the panel.
+            # It was the one child the check missed, because it is started
+            # outside the loop that fills `procs`.
+            procs["open-stage-control"] = osc
 
         # A child that starts and *then* exits was, until this check, silent.
         # Popen succeeding only means the binary existed; Carla dying a second
@@ -391,15 +412,38 @@ def _supervise(
         # like a tuner that cannot hear the guitar — so it is said out loud
         # rather than left to be discovered mid-session (principle 8).
         if "fmit" in procs and procs["fmit"].poll() is None:
-            unwired = unconnected_inputs(TUNER_NODE)
-            if unwired:
+            # Guarded, unlike its neighbours' `poll()` calls, because this one
+            # shells out. Every check here is deliberately non-fatal -- it
+            # appends to `problems` and the rig still comes up -- but an
+            # exception escaping into the enclosing `except Exception` reports
+            # FAIL, and the parent then tears down a rig that was playing
+            # perfectly well. A missing `pw-link` must not cost the rig.
+            try:
+                unwired = unconnected_inputs(TUNER_NODE)
+            except (OSError, subprocess.TimeoutExpired) as exc:
                 problems.append(
-                    "the tuner is running but nothing is connected to "
-                    + ", ".join(unwired)
-                    + f" — wire the guitar's input to it in qpwgraph and save "
-                    f"{root / 'Patchbay' / 'rig.qpwgraph'}, or the tuner will "
-                    "show nothing"
+                    f"could not check whether the tuner is wired ({exc}) — if it "
+                    "shows nothing, wire its input in qpwgraph"
                 )
+            else:
+                if unwired is None:
+                    # Distinct from "nothing unwired": PipeWire listed no such
+                    # node, so the question went unanswered rather than
+                    # answered well. Saying "fine" here would be the same
+                    # mistake as the fixture that gave every row a quantum.
+                    problems.append(
+                        f"the tuner is running but PipeWire lists no {TUNER_NODE} "
+                        "ports, so its wiring could not be checked — the node may "
+                        "have been renamed"
+                    )
+                elif unwired:
+                    problems.append(
+                        "the tuner is running but nothing is connected to "
+                        + ", ".join(unwired)
+                        + f" — wire the guitar's input to it in qpwgraph and save "
+                        f"{root / 'Patchbay' / 'rig.qpwgraph'}, or the tuner will "
+                        "show nothing"
+                    )
 
         if amp_model and "amp" in procs and procs["amp"].poll() is None:
             # Carla starts with the model but with the plugin's own default

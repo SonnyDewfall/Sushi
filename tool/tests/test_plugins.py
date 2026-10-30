@@ -86,6 +86,19 @@ def test_an_unknown_amp_plugin_is_loud_rather_than_skipped():
         config_uris(config)
 
 
+def test_an_amp_section_with_no_plugin_key_says_which_config():
+    """`check` walks every config, so an error reading only "None" leaves you
+    grepping for the file it meant. It also has to name the key that is
+    missing, rather than reporting it as an unknown plugin."""
+    with pytest.raises(PluginsError, match="electric-clean.json"):
+        config_uris({"_amp": {"model": "x.nam"}}, "config/electric-clean.json")
+
+
+def test_the_missing_key_is_reported_as_missing_not_as_unknown():
+    with pytest.raises(PluginsError, match="names no plugin"):
+        config_uris({"_amp": {"model": "x.nam"}})
+
+
 def test_the_shipped_manifest_lists_the_amp():
     """A repo-level invariant, not a unit test: if this URI falls out of
     `plugin-manifest.txt` again, `plugins check` silently stops protecting the

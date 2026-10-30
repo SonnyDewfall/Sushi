@@ -96,7 +96,10 @@ def parse_pw_top(output: str) -> list[dict[str, Any]]:
         }
         if node["is_driver"]:
             driver = node
-        node["driver"] = driver["name"] if driver else node["name"]
+        # None, not the node itself, when no driver row has been seen: naming a
+        # follower as its own driver prints "[clocked by sushi]", which is
+        # never true of anything.
+        node["driver"] = driver["name"] if driver else None
         node["driver_quantum"] = driver["quantum"] if driver else node["quantum"]
         node["driver_rate"] = driver["rate"] if driver else node["rate"]
         nodes.append(node)
@@ -143,6 +146,42 @@ def rig_nodes(
     return [by_name[name] for name in wanted if name in by_name]
 
 
+# Which node's driver describes the rig. `rig_nodes` returns signal order, so
+# the first row is the amp whenever one is running — and Carla can sit in a
+# different driver group from Sushi entirely, on a Dummy-Driver carrying no
+# quantum, which printed "quantum 0 @ 0 Hz" again from the other end. Sushi is
+# the spine: it hosts the config, and it is what `verify` and `capture` talk to.
+BUDGET_NODE = "sushi"
+
+
+def budget_source(nodes: list[dict[str, Any]]) -> dict[str, Any] | None:
+    """The node to read the block budget from."""
+    for node in nodes:
+        if node["name"] == BUDGET_NODE:
+            return node
+    # No Sushi on display (--no-amp aside, that means someone is running the
+    # tuner alone): any node that knows its driver beats one that does not.
+    for node in nodes:
+        if node.get("driver"):
+            return node
+    return nodes[0] if nodes else None
+
+
+def driver_groups(nodes: list[dict[str, Any]]) -> list[str]:
+    """Every distinct driver the displayed nodes run under, in display order.
+
+    More than one is a real fault with no other symptom: nodes in separate
+    driver groups are not scheduled in the same graph cycle, so the amp in
+    front of Sushi stops being free and the chain stops being sample-aligned.
+    """
+    seen: list[str] = []
+    for node in nodes:
+        driver = node.get("driver")
+        if driver and driver not in seen:
+            seen.append(driver)
+    return seen
+
+
 def bar(load: float, width: int = BAR_WIDTH) -> str:
     filled = max(0, min(width, round(load * width)))
     return "█" * filled + "░" * (width - filled)
@@ -157,10 +196,12 @@ def format_sample(
     if not nodes:
         return f"{title}\n\n  no rig audio nodes found — is the rig running?"
 
-    # From the driver, not from Sushi: see `parse_pw_top`.
-    quantum = nodes[0].get("driver_quantum", nodes[0]["quantum"])
-    rate = nodes[0].get("driver_rate", nodes[0]["rate"])
-    driver = nodes[0].get("driver")
+    # From the driver, not from Sushi: see `parse_pw_top`. And from Sushi's
+    # driver specifically, not the first row's: see `budget_source`.
+    source = budget_source(nodes) or nodes[0]
+    quantum = source.get("driver_quantum") or source["quantum"]
+    rate = source.get("driver_rate") or source["rate"]
+    driver = source.get("driver")
     try:
         block_ms = 1000 * int(quantum) / int(rate)
         budget = f"quantum {quantum} @ {rate} Hz — {block_ms:.1f} ms per block"
@@ -170,6 +211,13 @@ def format_sample(
         # Named because the wrong driver is a real fault with no other symptom
         # than latency, and it is invisible everywhere else in this tool.
         budget += f"  [clocked by {driver}]"
+    groups = driver_groups(nodes)
+    if len(groups) > 1:
+        budget += (
+            "\n  ** split across " + str(len(groups)) + " driver groups ("
+            + ", ".join(groups) + ") — these nodes are not scheduled in one "
+            "graph cycle, so the chain is not sample-aligned **"
+        )
 
     lines = [title, budget, ""]
     lines.append(f"  {'node':<10} {'busy':>9}  {'load':<{BAR_WIDTH}}  {'':>5}  xruns")

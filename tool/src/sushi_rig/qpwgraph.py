@@ -34,6 +34,9 @@ QPWGRAPH_SETTLE = 1.5
 # How long to let qpwgraph finish wiring a node before calling it unwired.
 PATCHBAY_SETTLE = 3.0
 
+# A bound on each `pw-link` call, so a hung one cannot hold up startup.
+PATCHBAY_TIMEOUT = 2.0
+
 
 def ports_without_sources(listing: str, node: str) -> list[str]:
     """Input ports of `node` that nothing is connected to, from `pw-link -l -i`.
@@ -63,23 +66,55 @@ def ports_without_sources(listing: str, node: str) -> list[str]:
     return unconnected
 
 
-def unconnected_inputs(node: str, settle: float = PATCHBAY_SETTLE) -> list[str]:
+def node_ports(listing: str, node: str) -> list[str]:
+    """Every input port of `node` the listing names, wired or not.
+
+    This exists because an empty `ports_without_sources` means two different
+    things — "every port has a source" and "this node is not in the listing at
+    all" — and treating the second as the first is a check reporting success
+    when it cannot tell. That is the failure this whole module's warning was
+    added to prevent, so it must not be the way the warning itself behaves.
+    """
+    prefix = f"{node}:"
+    ports: list[str] = []
+    for line in listing.splitlines():
+        if not line.strip() or line[0].isspace():
+            continue
+        text = line.strip()
+        if text.startswith(prefix):
+            ports.append(text)
+    return ports
+
+
+def unconnected_inputs(
+    node: str, settle: float = PATCHBAY_SETTLE
+) -> list[str] | None:
     """`node`'s input ports that the patchbay has not wired, once it has had a
-    chance to.
+    chance to — or `None` if `node` never appeared in the listing at all.
 
     qpwgraph applies its patch as nodes appear, so asking too early reports a
     port that is about to be connected. The wait is bounded and gives up rather
     than blocking startup.
+
+    Lets `OSError` and `TimeoutExpired` out rather than reporting "nothing
+    unwired", so the caller can tell a wired rig from a question it failed to
+    ask. The caller is the one that decides such a failure is not fatal.
     """
     deadline = time.monotonic() + settle
-    unwired = [node]
     while True:
         result = subprocess.run(
-            ["pw-link", "-l", "-i"], capture_output=True, text=True, check=False
+            ["pw-link", "-l", "-i"],
+            capture_output=True,
+            text=True,
+            check=False,
+            timeout=PATCHBAY_TIMEOUT,
         )
+        present = node_ports(result.stdout, node)
         unwired = ports_without_sources(result.stdout, node)
-        if not unwired or time.monotonic() >= deadline:
-            return unwired
+        if present and not unwired:
+            return []
+        if time.monotonic() >= deadline:
+            return unwired if present else None
         time.sleep(0.25)
 
 

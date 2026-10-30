@@ -90,7 +90,7 @@ def read_manifest(text: str) -> list[str]:
     return uris
 
 
-def config_uris(config: dict[str, Any]) -> set[str]:
+def config_uris(config: dict[str, Any], source: str | None = None) -> set[str]:
     """Every LV2 plugin URI a config needs on `LV2_PATH`.
 
     Not the same as "every plugin Sushi loads", and the difference was a real
@@ -115,14 +115,23 @@ def config_uris(config: dict[str, Any]) -> set[str]:
 
     amp = config.get(AMP_KEY)
     if isinstance(amp, dict):
+        # Named, because `check --all` walks every config and an error that
+        # says only "None" leaves you grepping for which file it meant.
+        known = ", ".join(sorted(AMP_PLUGIN_URIS)) or "none"
+        where = f"{source}: " if source else ""
         name = amp.get("plugin")
+        if name is None:
+            raise PluginsError(
+                f'{where}its "{AMP_KEY}" section names no plugin, so the amp\'s '
+                f'URI cannot be required. Add "plugin": "nam".'
+            )
         if name not in AMP_PLUGIN_URIS:
             # Loud, because the alternative is quietly not requiring an amp
             # the config says it wants — the precise failure this function was
             # just widened to prevent.
             raise PluginsError(
-                f"config names an amp plugin this tool has no URI for: {name!r}. "
-                f"Known: {', '.join(sorted(AMP_PLUGIN_URIS)) or 'none'}."
+                f"{where}names an amp plugin this tool has no URI for: "
+                f"{name!r}. Known: {known}."
             )
         uris.add(AMP_PLUGIN_URIS[name])
 

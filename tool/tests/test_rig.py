@@ -19,6 +19,7 @@ from sushi_rig.rig import (
     DEFAULT_CONFIG_NAME,
     FALLBACK_RIG_YAML,
     QUANTUM,
+    child_environment,
     format_uptime,
     plan_children,
     resolve_rig_yaml,
@@ -366,3 +367,35 @@ def test_restart_falls_back_to_the_default_config_rather_than_failing():
     from sushi_rig.rig import DEFAULT_CONFIG_NAME, restart_arguments
 
     assert restart_arguments({"children": {}})[0] == DEFAULT_CONFIG_NAME
+
+
+# --- what environment a child actually gets ---------------------------------
+
+
+def test_a_stated_value_beats_an_inherited_one():
+    """The regression this closes: merging with `setdefault` meant a
+    `PIPEWIRE_QUANTUM` already in the environment won, putting the rig back on
+    the desktop's 2048-sample buffer with nothing said — undoing the fix it sat
+    beside. Stating the number in the repository is the whole point."""
+    env = child_environment(
+        {"PIPEWIRE_QUANTUM": "2048/48000", "HOME": "/home/x"},
+        {"env_set": {"PIPEWIRE_QUANTUM": "256/48000"}},
+    )
+    assert env["PIPEWIRE_QUANTUM"] == "256/48000"
+    assert env["HOME"] == "/home/x"
+
+
+def test_an_inherited_pipewire_props_cannot_replace_the_tuners():
+    """Same bug, worse consequence: a `PIPEWIRE_PROPS` in the environment
+    replaced `node.autoconnect = false` outright, so the tuner went back to
+    auto-connecting and the webcam went back to clocking the rig."""
+    env = child_environment(
+        {"PIPEWIRE_PROPS": "{ node.latency = 2048/48000 }"},
+        {"env_set": {"PIPEWIRE_PROPS": "{ node.autoconnect = false }"}},
+    )
+    assert env["PIPEWIRE_PROPS"] == "{ node.autoconnect = false }"
+
+
+def test_env_unset_still_removes_what_a_child_must_not_see():
+    env = child_environment({"LV2_PATH": "/usr/lib/lv2"}, {"env_unset": ["LV2_PATH"]})
+    assert "LV2_PATH" not in env
