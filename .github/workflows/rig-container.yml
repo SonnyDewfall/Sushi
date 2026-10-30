@@ -94,10 +94,10 @@ jobs:
                                            Path(f"/tmp/diag/{cfg}-{ch}"),
                                            stimulus=Stimulus(channels=ch, duration_s=1.0),
                                            sushi_bin="./sushi")
-                      r = out["rendered"]
+                      r, n = out["rendered"], out["channels"]
                       peaks = ", ".join(f"{20*np.log10(max(np.abs(r[:, c]).max(), 1e-12)):.1f}"
                                         for c in range(r.shape[1]))
-                      print(f"DIAG {cfg} {ch}ch: OK, {out[\"channels\"]} out ch, {r.shape[0]} frames, peaks dBFS [{peaks}]")
+                      print(f"DIAG {cfg} {ch}ch: OK, {n} out ch, {r.shape[0]} frames, peaks dBFS [{peaks}]")
                   except RenderError as exc:
                       print(f"DIAG {cfg} {ch}ch: FAILED {str(exc)[:400]!r}")
           PY'
