@@ -281,6 +281,81 @@ def write_wav(path: str | Path, samples, sample_rate: int, subtype: str = "float
     Path(path).write_bytes(b"RIFF" + struct.pack("<I", len(chunks) + 4) + b"WAVE" + chunks)
 
 
+def _parse_fmt(fmt: bytes, path) -> tuple[str, int, int, int]:
+    """(subtype, channels, sample_rate, block_align) from a `fmt ` chunk body.
+
+    Shared by `read_wav` and `wav_info`, so the two cannot disagree about what a
+    file is.
+    """
+    if len(fmt) < 16:
+        raise ValueError(f"{path}: fmt chunk is {len(fmt)} bytes, need at least 16")
+    tag, channels, sample_rate, _, block_align, bits = struct.unpack_from("<HHIIHH", fmt)
+    if tag == _TAG_EXTENSIBLE:
+        if len(fmt) < 40:
+            raise ValueError(f"{path}: WAVE_FORMAT_EXTENSIBLE fmt chunk is too short")
+        (tag,) = struct.unpack_from("<H", fmt, 24)  # first 2 bytes of the sub-format GUID
+    subtype = next((name for name, f in _FORMATS.items() if f == (tag, bits)), None)
+    if subtype is None:
+        raise ValueError(
+            f"{path}: unsupported WAV format (tag {tag}, {bits} bits); "
+            f"supported: {', '.join(SUBTYPES)}"
+        )
+    if channels < 1 or block_align != channels * bits // 8:
+        raise ValueError(f"{path}: inconsistent fmt chunk (channels={channels}, block_align={block_align})")
+    return subtype, channels, sample_rate, block_align
+
+
+@dataclass(frozen=True)
+class WavInfo:
+    """What a WAV file's header says, without its samples."""
+    sample_rate: int
+    subtype: str
+    channels: int
+    frames: int
+
+
+def wav_info(path: str | Path) -> WavInfo:
+    """Read a WAV file's header without decoding its audio.
+
+    For checking files too large to load: five minutes of a four-stem take is
+    about 460 MB once `read_wav` has turned it into float64. Walks the same
+    chunks by seeking past them, and refuses exactly what `read_wav` refuses —
+    in particular a chunk that claims more bytes than the file holds, which is
+    what a recording cut off mid-write looks like.
+    """
+    path = Path(path)
+    size = path.stat().st_size
+    fmt = None
+    data_size = None
+    with path.open("rb") as handle:
+        head = handle.read(12)
+        if len(head) < 12 or head[:4] != b"RIFF" or head[8:12] != b"WAVE":
+            what = head[:4].decode("latin-1") if len(head) >= 4 else "<empty>"
+            raise ValueError(f"{path}: not a RIFF/WAVE file (starts with {what!r}; RF64 is not supported)")
+        pos = 12
+        while pos + 8 <= size:
+            handle.seek(pos)
+            chunk_id = handle.read(4)
+            (chunk_size,) = struct.unpack("<I", handle.read(4))
+            body = pos + 8
+            if body + chunk_size > size:
+                raise ValueError(
+                    f"{path}: chunk {chunk_id.decode('latin-1')!r} claims {chunk_size} bytes "
+                    f"but only {size - body} remain — the file is truncated"
+                )
+            if chunk_id == b"fmt ":
+                fmt = handle.read(chunk_size)
+            elif chunk_id == b"data":
+                data_size = chunk_size
+            pos = body + chunk_size + (chunk_size % 2)
+    if fmt is None or data_size is None:
+        raise ValueError(f"{path}: missing {'fmt' if fmt is None else 'data'} chunk")
+    subtype, channels, sample_rate, block_align = _parse_fmt(fmt, path)
+    if data_size % block_align:
+        raise ValueError(f"{path}: data is {data_size} bytes, not a whole number of {block_align}-byte frames")
+    return WavInfo(sample_rate, subtype, channels, data_size // block_align)
+
+
 def read_wav(path: str | Path) -> WavData:
     """Read a PCM16, PCM24 or IEEE-float32 WAV into float64 (frames, channels).
 
@@ -313,22 +388,7 @@ def read_wav(path: str | Path) -> WavData:
         pos = body + size + (size % 2)  # skip the word-alignment pad
     if fmt is None or data is None:
         raise ValueError(f"{path}: missing {'fmt' if fmt is None else 'data'} chunk")
-    if len(fmt) < 16:
-        raise ValueError(f"{path}: fmt chunk is {len(fmt)} bytes, need at least 16")
-
-    tag, channels, sample_rate, _, block_align, bits = struct.unpack_from("<HHIIHH", fmt)
-    if tag == _TAG_EXTENSIBLE:
-        if len(fmt) < 40:
-            raise ValueError(f"{path}: WAVE_FORMAT_EXTENSIBLE fmt chunk is too short")
-        (tag,) = struct.unpack_from("<H", fmt, 24)  # first 2 bytes of the sub-format GUID
-    subtype = next((name for name, f in _FORMATS.items() if f == (tag, bits)), None)
-    if subtype is None:
-        raise ValueError(
-            f"{path}: unsupported WAV format (tag {tag}, {bits} bits); "
-            f"supported: {', '.join(SUBTYPES)}"
-        )
-    if channels < 1 or block_align != channels * bits // 8:
-        raise ValueError(f"{path}: inconsistent fmt chunk (channels={channels}, block_align={block_align})")
+    subtype, channels, sample_rate, block_align = _parse_fmt(fmt, path)
     if len(data) % block_align:
         raise ValueError(f"{path}: data is {len(data)} bytes, not a whole number of {block_align}-byte frames")
 

@@ -891,3 +891,27 @@ written that way finds two and has nothing to choose between them. The rig's
 clock is whatever Sushi's own `node.driver-id` points at, followed from Sushi
 outwards, and the webcam being a driver in the healthy capture is now a test.
 *(2026-10-30)*
+
+**A take carries its offset rather than compensating for it.** #55 left the
+choice open. Compensating means writing silence ahead of a stem, which needs the
+offset before the first sample is recorded — and before a take the only number
+available is an assumption (one quantum) or an earlier measurement. Carried, the
+offset is measured from the take itself, after it, and written beside audio
+nothing has touched; if it is ever wrong, one line of `take.yaml` is corrected
+instead of every stem. The cost is that stems do not line up by themselves in a
+DAW, so the file states the fix in milliseconds near its top. Compensation can
+be added at finish time later if that friction matters: the number is already
+there. *(2026-10-30)*
+
+**Today's routing cannot record separate processed stems.** Found while
+designing #55. `guitar_vocal.json` sends both tracks to engine bus 0 — that is
+how Sushi makes the monitor mix — so no port anywhere carries the processed
+guitar or the processed vocal on its own. A "processed guitar" tap would hold
+the vocal too, which #57 rules out. The fix is routing, not recording: one
+engine output bus per track, with the monitor mix made by the patchbay instead,
+since PipeWire sums several links into one input port. That touches
+`patchbay generate` and the machine file's `monitor-out`, so it belongs to #57's
+design rather than to the take folder. In the meantime `take.start_take` refuses
+two stems captured from one port, so the routing that ships cannot produce a
+take whose file names lie about what is in them. The dry taps are unaffected —
+they come straight off the interface. *(2026-10-30)*

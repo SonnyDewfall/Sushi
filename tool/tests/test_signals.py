@@ -282,3 +282,34 @@ def test_missing_numpy_gives_an_instruction_not_a_traceback(monkeypatch):
     with pytest.raises(SystemExit) as exc:
         signals.silence(SR, 0.1)
     assert "audio" in str(exc.value) and "pip install" in str(exc.value)
+
+
+
+# --- wav_info: the header without the samples --------------------------------
+
+@pytest.mark.parametrize("subtype", signals.SUBTYPES)
+def test_wav_info_agrees_with_read_wav_on_every_subtype(tmp_path, subtype):
+    """The two share the fmt parsing, so this guards the factoring as much as
+    the new reader."""
+    path = tmp_path / f"{subtype}.wav"
+    signals.write_wav(path, signals.sine(SR, 0.3, 440.0, channels=2), SR, subtype=subtype)
+    info, data = signals.wav_info(path), signals.read_wav(path)
+    assert (info.sample_rate, info.subtype, info.channels, info.frames) == (
+        data.sample_rate, data.subtype, data.samples.shape[1], data.samples.shape[0]
+    )
+
+
+def test_wav_info_refuses_a_truncated_file_as_read_wav_does(tmp_path):
+    path = tmp_path / "cut.wav"
+    signals.write_wav(path, signals.sine(SR, 0.3, 440.0), SR, subtype="pcm24")
+    path.write_bytes(path.read_bytes()[:-500])
+    for reader in (signals.wav_info, signals.read_wav):
+        with pytest.raises(ValueError, match="truncated"):
+            reader(path)
+
+
+def test_wav_info_refuses_what_is_not_a_wav(tmp_path):
+    path = tmp_path / "not.wav"
+    path.write_bytes(b"OggS" + bytes(40))
+    with pytest.raises(ValueError, match="not a RIFF/WAVE file"):
+        signals.wav_info(path)

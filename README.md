@@ -516,6 +516,34 @@ This starts Sushi with the dummy frontend, prints every hosted plugin's
 parameters as JSON, and exits. It is the authoritative source for parameter
 names, and the cheapest way to know a config is loadable.
 
+### Takes
+
+A recording is a folder, not loose WAVs: the stems, a copy of the config that
+was live when it was made (amp included), and a `take.yaml` saying how the
+stems line up. Because the rig is in the folder, a take can be re-amped through
+the exact rig that made it months later. Takes go in `~/sushi-rig-takes/`,
+outside the checkout, so `git clean -x` cannot delete them.
+
+```
+~/sushi-rig-takes/riff-idea/
+    take.yaml         how the stems line up, and what made them
+    config.json       the rig, as it was live
+    guitar.wav        what you heard
+    guitar-dry.wav    what went in
+```
+
+The processed stems are a block later than the dry ones — 5.35 ms at the rig's
+quantum. They are written exactly as captured and `take.yaml` says how far to
+slide them, rather than being shifted on write.
+
+```bash
+sushi-rig take check ~/sushi-rig-takes/riff-idea       # whole, and how it lines up
+sushi-rig verify ~/sushi-rig-takes/riff-idea/config.json  # the rig that made it
+```
+
+Recording itself is not here yet: the recorder is #53 and the record button
+#57. This is what they will write.
+
 ### Running the tests
 
 ```bash
