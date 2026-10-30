@@ -27,6 +27,7 @@ from typing import Any
 SCHEMA_VERSION = 1
 
 _KNOWN_KEYS = ("schema_version", "interface", "roles")
+_ROLE_KEYS = ("ports", "mono_to_stereo")
 
 
 class MachineError(Exception):
@@ -86,6 +87,32 @@ class MachineSpec:
             duplicate_keys=_duplicate_keys(tree),
         )
 
+    def role_ports(self) -> dict[str, list[str]]:
+        """role -> its ports, whichever form each was written in.
+
+        For a file that has passed `validate()`; on one that has not, the result
+        is whatever could be read.
+        """
+        found: dict[str, list[str]] = {}
+        for role, value in (self.roles if isinstance(self.roles, dict) else {}).items():
+            ports = value.get("ports") if isinstance(value, dict) else value
+            found[role] = list(ports) if isinstance(ports, list) else []
+        return found
+
+    def mono_roles(self) -> set[str]:
+        """Roles that declared `mono_to_stereo`.
+
+        Declared and never inferred from a role having one port: the committed
+        patchbay wires one-to-one on the live profile and duplicated on the dead
+        one, so the port count says nothing about which was meant.
+        """
+        if not isinstance(self.roles, dict):
+            return set()
+        return {
+            role for role, value in self.roles.items()
+            if isinstance(value, dict) and value.get("mono_to_stereo") is True
+        }
+
     def validate(self) -> list[str]:
         """Return every problem found, rather than raising on the first."""
         # Version first, and alone. If we do not recognise the version we do not
@@ -135,14 +162,37 @@ class MachineSpec:
             # feed anything, and a generated patchbay from it would be empty.
             problems.append("roles is empty — nothing here could feed or take anything")
 
-        for role, ports in self.roles.items():
+        for role, value in self.roles.items():
             if not isinstance(role, str) or not role.strip():
                 problems.append(f"role name {role!r} must be a non-empty string")
                 continue
+            ports, mono = value, False
+            if isinstance(value, dict):
+                # The long form, for a role that needs to say more than which
+                # ports it has. Today that is one thing: that a single port is
+                # meant to feed both halves of a stereo bus.
+                for key in value:
+                    if key not in _ROLE_KEYS:
+                        problems.append(
+                            f"role {role!r}: unknown key {key!r} "
+                            f"(expected {', '.join(_ROLE_KEYS)})"
+                        )
+                ports = value.get("ports")
+                mono = value.get("mono_to_stereo", False)
+                if not isinstance(mono, bool):
+                    problems.append(
+                        f"role {role!r}: mono_to_stereo must be true or false "
+                        f"(got {mono!r})"
+                    )
+                    mono = False
+                if ports is None:
+                    problems.append(f"role {role!r}: has no 'ports' key")
+                    continue
             if not isinstance(ports, list):
                 problems.append(
-                    f"role {role!r}: ports must be a list (got {type(ports).__name__}) "
-                    "— write [\"Device:port\"] even for one port"
+                    f"role {role!r}: must be a list of ports, or a mapping with "
+                    f"'ports' (got {type(ports).__name__}) — write "
+                    "[\"Device:port\"] even for one port"
                 )
                 continue
             if not ports:
@@ -151,6 +201,13 @@ class MachineSpec:
                 # nothing reporting it (quality principle 8).
                 problems.append(f"role {role!r}: has no ports")
                 continue
+            if mono and len(ports) != 1:
+                # It duplicates one port across a pair; with two there is nothing
+                # to duplicate and nothing to say which one is meant.
+                problems.append(
+                    f"role {role!r}: mono_to_stereo needs exactly one port "
+                    f"(got {len(ports)})"
+                )
             seen: set[str] = set()
             for port in ports:
                 problem = _port_problem(port)

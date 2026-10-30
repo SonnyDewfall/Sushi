@@ -382,18 +382,40 @@ get left behind. It then checks, and tells you if anything survived.
 
 `Patchbay/rig.qpwgraph` names ALSA device *profiles*, so changing interface (or
 profile) silently orphans it: qpwgraph keeps the dead links and nothing reports
-them. Two commands address that (issue #54):
+them. Three commands address that (issue #54):
 
 ```bash
 sushi-rig patchbay check                      # saved links whose node is not in the live graph
+sushi-rig machine check [machines/x.yaml]     # validate a machine file on its own
 sushi-rig patchbay generate rig.yaml -o /tmp/p.qpwgraph   # from machines/<hostname>.yaml
 ```
 
-`check` exits 1 if any node the saved patchbay names does not exist.
+`patchbay check` sorts every node the saved file names into three states.
+**Missing** (a name it can match, and nothing live has it) is the only one that
+exits 1, so exit 1 means *a node is definitely gone*, not *something is wrong*.
+**Not evaluated** is a form it does not know how to match, such as qpwgraph's
+`app/node` label for the tuner; it is listed plainly and does not fail, and it is
+not a pass for those links either. **Present** needs no comment.
+
 `generate` builds a patchbay from the machine file's roles and the `source:` /
 `sink:` a track names; it prints to stdout or the path you give and **never
 replaces `Patchbay/rig.qpwgraph`**, which stays hand-wired until a generated one
 has been proven equivalent on the rig. No config uses roles yet.
+
+A role with one port feeding a stereo bus is an error unless the role *declares*
+it means to feed both halves:
+
+```yaml
+roles:
+  guitar-in:
+    ports: ["Audient iD14:capture_AUX0"]
+    mono_to_stereo: true
+  monitor-out: ["Audient iD14:playback_AUX0", "Audient iD14:playback_AUX1"]
+```
+
+That is stated rather than inferred from the port count because the saved
+patchbay shows both wirings: the dead `Pro` profile duplicates one input across a
+bus, and the live `Multichannel` profile wires one input per channel.
 
 ### Choosing a plugin
 

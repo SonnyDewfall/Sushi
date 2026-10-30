@@ -10,13 +10,19 @@
 # rig machine, so check the capture_AUX numbering against a live graph before
 # trusting it.
 #
-# Validate with `sushi-rig patchbay generate <rig.yaml> --machine <this file>`.
+# Validate with `sushi-rig machine check machines/example.yaml`.
 schema_version: 1
 interface: Audient iD14   # informational: for whoever reads this next
 roles:
-  # A one-port role feeding a stereo bus is sent to both halves, which is how a
-  # mono guitar drives a stereo chain.
-  guitar-in:   ["Audient iD14:capture_AUX0"]
-  vocal-in:    ["Audient iD14:capture_AUX1"]
-  # Two ports, left then right.
+  # A role with one port feeding a stereo bus is an error unless it says it
+  # means to feed both halves. That is stated, not guessed from the port count:
+  # the rig's live profile wires one input per channel, and only a dead one
+  # duplicated.
+  guitar-in:
+    ports: ["Audient iD14:capture_AUX0"]
+    mono_to_stereo: true
+  vocal-in:
+    ports: ["Audient iD14:capture_AUX1"]
+    mono_to_stereo: true
+  # The plain list form: two ports, left then right.
   monitor-out: ["Audient iD14:playback_AUX0", "Audient iD14:playback_AUX1"]

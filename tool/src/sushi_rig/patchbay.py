@@ -20,7 +20,7 @@ import json
 import subprocess
 import xml.etree.ElementTree as ET
 from dataclasses import dataclass
-from typing import Any, Mapping
+from typing import Any, Collection, Mapping
 from xml.sax.saxutils import quoteattr
 
 # What qpwgraph wrote in the committed file. Copied, not understood: whether
@@ -68,32 +68,72 @@ def channel(n: int) -> Dest:
     return Dest("channel", n)
 
 
-def routes_from_rig(rig: Any) -> tuple[dict[str, list[Dest]], dict[str, list[Dest]]]:
-    """role -> where it feeds Sushi, and role -> what feeds it, from a `RigSpec`.
+# One track's engine-side entries for a role. Paired together because a stereo
+# role on channel-form routing is *two* entries (`engine_channel: 0` and `: 1`),
+# and judging each alone refuses it against every one of them.
+Route = tuple[Dest, ...]
 
-    Only entries the spec itself accepts are read: one that mixes bus and channel
-    forms is `RigSpec.validate()`'s to report, and guessing which half was meant
-    here would route audio on a guess.
+
+def _index_problem(where: str, key: str, value: Any) -> str | None:
+    # `type(...) is int`: a quoted "0" would otherwise die later in arithmetic
+    # with a TypeError, and a negative index would generate
+    # `sushi:audio_input_-2` without a word. bool is an int, so True is refused.
+    if type(value) is int and value >= 0:
+        return None
+    return f"{where}: {key} must be a non-negative integer (got {value!r})"
+
+
+def routes_from_rig(
+    rig: Any,
+) -> tuple[dict[str, list[Route]], dict[str, list[Route]]]:
+    """role -> the routes it feeds on Sushi, and role -> the ones it takes, from a `RigSpec`.
+
+    One `Route` per track (deduplicated), holding that track's entries for the
+    role.
+
+    Raises `PatchbayError` for any entry it cannot place, rather than skipping
+    it. `RigSpec.validate()` accepts an entry carrying only `track_bus`, and
+    dropping it here left a track named in `source:` with nothing wired while
+    the generation went ahead for everyone else.
     """
-    feeds: dict[str, list[Dest]] = {}
-    sinks: dict[str, list[Dest]] = {}
+    feeds: dict[str, list[Route]] = {}
+    sinks: dict[str, list[Route]] = {}
+    problems: list[str] = []
     for track in rig.tracks:
-        for role, entries, into in [
-            (track.source, track.inputs, feeds),
-            (track.sink, track.outputs, sinks),
+        for role, label, entries, into in [
+            (track.source, "inputs", track.inputs, feeds),
+            (track.sink, "outputs", track.outputs, sinks),
         ]:
             if not role:
                 continue
+            route: list[Dest] = []
             for entry in entries:
-                if "engine_bus" in entry and "engine_channel" not in entry:
-                    dest = bus(entry["engine_bus"])
-                elif "engine_channel" in entry and "engine_bus" not in entry:
-                    dest = channel(entry["engine_channel"])
+                where = f"track {track.name!r}: {label} entry {entry}"
+                has_bus, has_channel = "engine_bus" in entry, "engine_channel" in entry
+                if has_bus and has_channel:
+                    problems.append(f"{where} mixes bus and channel forms")
+                elif has_bus or has_channel:
+                    key = "engine_bus" if has_bus else "engine_channel"
+                    problem = _index_problem(where, key, entry[key])
+                    if problem:
+                        problems.append(problem)
+                    else:
+                        route.append((bus if has_bus else channel)(entry[key]))
                 else:
-                    continue
-                if dest not in into.setdefault(role, []):
-                    into[role].append(dest)
+                    problems.append(
+                        f"{where} names no engine_bus or engine_channel, so which "
+                        f"Sushi {label[:-1]} the role {role!r} takes is unknown"
+                    )
+            if route and tuple(route) not in into.setdefault(role, []):
+                into[role].append(tuple(route))
+    if problems:
+        raise PatchbayError(problems)
     return feeds, sinks
+
+
+def _as_routes(value: Any) -> list[Route]:
+    """Accept a bare `Dest` for a one-entry route, which is what most callers mean."""
+    return [(r,) if isinstance(r, Dest) else tuple(r) for r in value]
 
 
 # --- generation --------------------------------------------------------------
@@ -109,9 +149,10 @@ class Link:
 
 def generate_patchbay(
     roles: Mapping[str, list[str]],
-    feeds: Mapping[str, list[Dest]],
-    sinks: Mapping[str, list[Dest]] | None = None,
+    feeds: Mapping[str, Any],
+    sinks: Mapping[str, Any] | None = None,
     *,
+    mono_to_stereo: Collection[str] = (),
     nodes: Mapping[str, str] | None = None,
     sushi_node: str = SUSHI_NODE,
     name: str = "rig",
@@ -121,17 +162,27 @@ def generate_patchbay(
     Raises `PatchbayError` listing every problem; never returns a patchbay it is
     unsure of, because an unwired track looks exactly like a working one.
 
+    `feeds` and `sinks` map a role to its routes (see `routes_from_rig`); a bare
+    list of `Dest` is accepted as one-entry routes.
+
     Pairing, which is the part worth being exact about:
 
-    - A one-port role into a stereo bus feeds *both* halves. That is the guitar,
-      and it is what lets a stereo chain follow a mono source.
     - A two-port role into a bus is left to right, in the order listed.
-    - Anything else (three ports into a bus, two into a single channel) is an
-      error rather than a pick: choosing which port to drop, or summing two
-      physical inputs into one, is the near-miss recorded in `amp_patchbay`.
-    - Two roles reaching the same Sushi input is an error for the same reason.
-      Fanning one output to several places is not: Sushi outputs may go to
-      monitors and headphones at once.
+    - A one-port role into a bus is an error *unless the role is in
+      `mono_to_stereo`*, in which case the port feeds both halves. Duplication
+      is declared, never inferred from the port count: the committed patchbay
+      has it only on the dead `Pro` profile, and the live `Multichannel`
+      profile wires one input per channel. A rule inferred from one of them was
+      wrong for the other, and silently.
+    - A channel-form route pairs ports with its entries in order, so a stereo
+      role works with `engine_channel: 0` and `engine_channel: 1`.
+    - Anything else (three ports into a bus, a count that does not match the
+      entries) is an error rather than a pick: choosing which port to drop, or
+      summing two physical inputs into one, is the near-miss recorded in
+      `amp_patchbay`.
+    - Two different ports reaching the same Sushi input is an error for the same
+      reason. Fanning one output to several places is not: Sushi outputs may go
+      to monitors and headphones at once.
 
     `nodes` maps a port to the node name qpwgraph shows for it. The machine file
     holds only ports (`Audient iD14:capture_AUX0`), but the saved file keys links
@@ -143,6 +194,7 @@ def generate_patchbay(
     """
     nodes = nodes or {}
     sinks = sinks or {}
+    mono = set(mono_to_stereo)
     problems: list[str] = []
 
     def node_of(port: str) -> str:
@@ -155,26 +207,26 @@ def generate_patchbay(
     # Physical playback port -> the Sushi outputs that feed it.
     playback: dict[str, set[int]] = {}
 
-    for role, dests in feeds.items():
+    for role, value in feeds.items():
         ports = roles.get(role)
         if ports is None:
             problems.append(_unknown_role(role, roles, "feeds a track"))
             continue
-        for dest in dests:
-            pairs = _pair_source(role, ports, dest)
+        for route in _as_routes(value):
+            pairs = _pair_source(role, ports, route, role in mono)
             if isinstance(pairs, str):
                 problems.append(pairs)
                 continue
             for index, port in pairs:
                 into.setdefault(index, {}).setdefault(port, role)
 
-    for role, dests in sinks.items():
+    for role, value in sinks.items():
         ports = roles.get(role)
         if ports is None:
             problems.append(_unknown_role(role, roles, "takes a track's output"))
             continue
-        for dest in dests:
-            pairs = _pair_sink(role, ports, dest)
+        for route in _as_routes(value):
+            pairs = _pair_sink(role, ports, route)
             if isinstance(pairs, str):
                 problems.append(pairs)
                 continue
@@ -197,14 +249,17 @@ def generate_patchbay(
     if problems:
         raise PatchbayError(problems)
 
+    # Sorted at both levels so the bytes depend on the rig, not on which track
+    # happens to come first in rig.yaml. Only an output can fan out to several
+    # ports, so that is where dict order would otherwise leak.
     links: list[Link] = []
     for index, ports in sorted(into.items()):
-        for port in ports:
+        for port in sorted(ports):
             links.append(
                 Link(node_of(port), port, sushi_node, f"{sushi_node}:audio_input_{index}")
             )
     for index, ports in sorted(out_of.items()):
-        for port in ports:
+        for port in sorted(ports):
             links.append(
                 Link(sushi_node, f"{sushi_node}:audio_output_{index}", node_of(port), port)
             )
@@ -216,38 +271,74 @@ def _unknown_role(role: str, roles: Mapping[str, list[str]], doing: str) -> str:
     return f"role {role!r} {doing} but the machine file does not define it (it defines: {known})"
 
 
-def _pair_source(role: str, ports: list[str], dest: Dest) -> list[tuple[int, str]] | str:
+def _pair_source(
+    role: str, ports: list[str], route: Route, mono: bool
+) -> list[tuple[int, str]] | str:
     """(Sushi input index, physical port) pairs, or why the role cannot feed here."""
-    chans = dest.channels()
-    if dest.kind == "channel":
-        if len(ports) != 1:
-            return (
-                f"role {role!r} has {len(ports)} ports but feeds the single channel "
-                f"{dest.index}; a channel takes exactly one"
-            )
-        return [(chans[0], ports[0])]
-    if len(ports) == 1:
-        return [(c, ports[0]) for c in chans]
-    if len(ports) == 2:
-        return list(zip(chans, ports))
-    return (
-        f"role {role!r} has {len(ports)} ports but feeds bus {dest.index}, "
-        "a stereo pair; give it one (mono, fed to both sides) or two"
-    )
-
-
-def _pair_sink(role: str, ports: list[str], dest: Dest) -> list[tuple[int, str]] | str:
-    """(Sushi output index, physical port) pairs, or why the role cannot take it."""
-    chans = dest.channels()
-    if len(ports) != len(chans):
-        # No mono-into-stereo rule on the way out. Folding two channels into one
-        # port is a mix-down, and which mix-down is a decision nobody has made.
-        what = f"bus {dest.index}, a stereo pair" if dest.kind == "bus" else f"channel {dest.index}"
+    if mono and len(ports) != 1:
         return (
-            f"role {role!r} has {len(ports)} port(s) but takes {what}, which needs "
-            f"{len(chans)}"
+            f"role {role!r} declares mono_to_stereo but has {len(ports)} ports; "
+            "it duplicates one port, so it needs exactly one"
         )
-    return list(zip(chans, ports))
+    pairs: list[tuple[int, str]] = []
+    for dest in (d for d in route if d.kind == "bus"):
+        chans = dest.channels()
+        if len(ports) == 1 and mono:
+            pairs += [(c, ports[0]) for c in chans]
+        elif len(ports) == 1:
+            return (
+                f"role {role!r} has 1 port but feeds bus {dest.index}, a stereo "
+                "pair. If one mono source should drive both halves, declare it: "
+                f"{role}: {{ports: [{ports[0]!r}], mono_to_stereo: true}}. "
+                "Otherwise list two ports"
+            )
+        elif len(ports) == 2:
+            pairs += list(zip(chans, ports))
+        else:
+            return (
+                f"role {role!r} has {len(ports)} ports but feeds bus {dest.index}, "
+                "a stereo pair; give it two (left, right) or one with mono_to_stereo"
+            )
+    channels = [d for d in route if d.kind == "channel"]
+    if channels:
+        if len(ports) == len(channels):
+            pairs += [(d.index, p) for d, p in zip(channels, ports)]
+        elif len(ports) == 1 and mono:
+            pairs += [(d.index, ports[0]) for d in channels]
+        else:
+            return (
+                f"role {role!r} has {len(ports)} port(s) but this track routes it "
+                f"to {len(channels)} engine channel(s) "
+                f"({', '.join(str(d.index) for d in channels)}); each channel takes "
+                "one port, so the counts must match"
+            )
+    return pairs
+
+
+def _pair_sink(role: str, ports: list[str], route: Route) -> list[tuple[int, str]] | str:
+    """(Sushi output index, physical port) pairs, or why the role cannot take it."""
+    pairs: list[tuple[int, str]] = []
+    for dest in (d for d in route if d.kind == "bus"):
+        if len(ports) != 2:
+            # No mono-into-stereo rule on the way out. Folding two channels into
+            # one port is a mix-down, and which mix-down is a decision nobody has
+            # made.
+            return (
+                f"role {role!r} has {len(ports)} port(s) but takes bus "
+                f"{dest.index}, a stereo pair, which needs 2"
+            )
+        pairs += list(zip(dest.channels(), ports))
+    channels = [d for d in route if d.kind == "channel"]
+    if channels:
+        if len(ports) != len(channels):
+            return (
+                f"role {role!r} has {len(ports)} port(s) but this track takes "
+                f"{len(channels)} engine channel(s) "
+                f"({', '.join(str(d.index) for d in channels)}), which needs "
+                f"{len(channels)}"
+            )
+        pairs += [(d.index, p) for d, p in zip(channels, ports)]
+    return pairs
 
 
 # The shape qpwgraph itself writes, including the blank line after the closing
@@ -342,11 +433,6 @@ def live_node_names(dump: str) -> set[str]:
     any of them. That errs towards missing a stale link rather than inventing
     one, which suits a check people will stop reading if it cries wolf.
 
-    The one shape it does not accept is qpwgraph's "<client>/<node>" form
-    (`PipeWire ALSA [fmit]/ALSA Capture [fmit]` in the committed file): how that
-    is composed is unverified, so such a node reports as missing. Wrong in the
-    loud direction, which for this check is the right one.
-
     Raises if the graph holds no nodes at all. PipeWire answering with nothing
     is a check that could not look, and reporting every link stale on that would
     read as a finding when it is not.
@@ -364,8 +450,16 @@ def live_node_names(dump: str) -> set[str]:
     return names
 
 
-def live_port_nodes(dump: str) -> dict[str, list[str]]:
-    """Port alias -> the node names that own a port with it.
+@dataclass(frozen=True)
+class LivePort:
+    node: str
+    # PipeWire's `port.direction`, "in" or "out", from the node's side: a
+    # capture port is an "out" (the node produces audio), a playback port an "in".
+    direction: str | None
+
+
+def live_port_nodes(dump: str) -> dict[str, list[LivePort]]:
+    """Port alias -> the ports that carry it, with their node and direction.
 
     A list because nothing makes an alias unique: `Audient iD14:capture_AUX0` is
     the same under every ALSA profile of the device, so two profiles live at once
@@ -375,66 +469,115 @@ def live_port_nodes(dump: str) -> dict[str, list[str]]:
     node_name = {
         o.get("id"): _display_name(_props(o)) for o in objects if o.get("type") == _NODE
     }
-    found: dict[str, list[str]] = {}
+    found: dict[str, list[LivePort]] = {}
     for obj in objects:
         if obj.get("type") != _PORT:
             continue
         props = _props(obj)
         alias, owner = props.get("port.alias"), node_name.get(props.get("node.id"))
-        if alias and owner and owner not in found.setdefault(alias, []):
-            found[alias].append(owner)
+        if alias and owner:
+            port = LivePort(owner, props.get("port.direction"))
+            if port not in found.setdefault(alias, []):
+                found[alias].append(port)
     return found
 
 
 def resolve_nodes(
     roles: Mapping[str, list[str]],
-    used: set[str],
-    port_nodes: Mapping[str, list[str]],
+    sources: Collection[str],
+    sinks: Collection[str],
+    port_nodes: Mapping[str, list[LivePort]],
 ) -> tuple[dict[str, str], list[str]]:
     """port -> node name for every port of the roles in use, plus what failed.
 
-    Only roles in `used`: a machine file may describe hardware that is unplugged
-    today, and that is only a problem if a track needs it.
+    Only roles in `sources` or `sinks`: a machine file may describe hardware
+    that is unplugged today, and that is only a problem if a track needs it.
+
+    A source role's ports must be PipeWire outputs (capture) and a sink role's
+    inputs (playback). Without that, a playback port named in a source role
+    resolves cleanly and the patchbay asks for a link PipeWire can never make,
+    which looks exactly like a working file.
 
     This is the issue's "a role that resolves to no live port fails loudly,
     naming the role and what it looked for".
     """
     resolved: dict[str, str] = {}
     problems: list[str] = []
-    for role in sorted(used & set(roles)):
+    wanted = {r: "out" for r in sources}
+    for role in sinks:
+        if role in wanted:
+            problems.append(f"role {role!r} is used as both a source and a sink")
+        wanted[role] = "in"
+    for role in sorted(set(wanted) & set(roles)):
+        expected = wanted[role]
+        use = "source (capture)" if expected == "out" else "sink (playback)"
         for port in roles[role]:
-            owners = port_nodes.get(port, [])
-            if not owners:
+            found = port_nodes.get(port, [])
+            if not found:
                 problems.append(
                     f"role {role!r}: no live port with alias {port!r} — is the "
                     "interface connected, and is this its current name?"
                 )
-            elif len(owners) > 1:
+                continue
+            right = [p for p in found if p.direction == expected]
+            if not right:
+                seen = ", ".join(sorted({repr(p.direction) for p in found}))
+                problems.append(
+                    f"role {role!r}: port {port!r} is used as a {use} and so must "
+                    f"have direction {expected!r}, but the live graph says {seen}"
+                )
+            elif len(right) > 1:
+                owners = ", ".join(repr(p.node) for p in right)
                 problems.append(
                     f"role {role!r}: port {port!r} exists on more than one node "
-                    f"({', '.join(map(repr, owners))}); cannot tell which one the "
-                    "patchbay should name"
+                    f"({owners}); cannot tell which one the patchbay should name"
                 )
             else:
-                resolved[port] = owners[0]
+                resolved[port] = right[0].node
     return resolved, problems
 
 
-def stale_nodes(links: list[Link], live: set[str]) -> dict[str, list[Link]]:
-    """Saved links whose node is not live, grouped by the missing node.
+@dataclass(frozen=True)
+class NodeCheck:
+    """What the live graph says about each node a saved patchbay names.
 
-    A link with both ends missing appears under both. Keyed by node because that
-    is what the user acts on: a missing node is one profile or one app, however
-    many links it carries.
+    Three states, not two. "Present" is a name that matches a live node.
+    "Missing" is a name in a form we know how to match and that matched nothing.
+    "Unevaluated" is a form we do not know how to match, so the honest answer is
+    neither: reporting it missing makes the check fail on a healthy rig, and a
+    check that fails on its first run gets ignored.
     """
-    stale: dict[str, list[Link]] = {}
+
+    missing: dict[str, list[Link]]
+    unevaluated: dict[str, list[Link]]
+
+
+def _can_match(node: str) -> bool:
+    # qpwgraph shows some clients as "<client>/<node>" (`PipeWire ALSA
+    # [fmit]/ALSA Capture [fmit]` in the committed file). How that string is
+    # composed from PipeWire's properties is not established, so a name of that
+    # shape cannot be judged either way. A device description that really does
+    # contain a slash is still matched first, below, by being live.
+    return "/" not in node
+
+
+def check_nodes(links: list[Link], live: set[str]) -> NodeCheck:
+    """Classify each node the links name against the live node names.
+
+    A link with both ends in a bad state appears under each. Keyed by node
+    because that is what the user acts on: a missing node is one profile or one
+    app, however many links it carries.
+    """
+    missing: dict[str, list[Link]] = {}
+    unevaluated: dict[str, list[Link]] = {}
     for link in links:
         for node in (link.out_node, link.in_node):
-            if node not in live:
-                bucket = stale.setdefault(node, [])
-                if link not in bucket:
-                    bucket.append(link)
-    return stale
+            if node in live:
+                continue
+            bucket = (missing if _can_match(node) else unevaluated).setdefault(node, [])
+            if link not in bucket:
+                bucket.append(link)
+    return NodeCheck(missing, unevaluated)
 
 
 # --- effects ------------------------------------------------------------------
@@ -455,6 +598,10 @@ def read_pw_dump(timeout: float = PW_DUMP_TIMEOUT) -> str:
         )
     except FileNotFoundError as exc:
         raise PatchbayError(["pw-dump is not installed, so the live graph cannot be read"]) from exc
+    except OSError as exc:
+        # Not executable, say. Converted here so no caller mistakes it for a
+        # failure to read the file it was asked about.
+        raise PatchbayError([f"pw-dump could not be run: {exc}"]) from exc
     except subprocess.TimeoutExpired as exc:
         raise PatchbayError([f"pw-dump did not answer within {timeout:g}s"]) from exc
     if result.returncode != 0:

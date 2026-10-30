@@ -97,12 +97,39 @@ def _plugins(args: argparse.Namespace) -> int:
     return 0
 
 
+def _machine(args: argparse.Namespace) -> int:
+    """`machine check`: validate a machine file on its own.
+
+    Separate from `patchbay generate` because that needs a rig whose tracks name
+    roles, and none of the committed ones do yet. A new machine's file should be
+    checkable before there is anything to generate.
+    """
+    from .machine import MachineError, MachineSpec, machine_path
+    from .paths import checkout_root
+
+    path = args.file or machine_path(checkout_root())
+    try:
+        machine = MachineSpec.load(path)
+    except MachineError as exc:
+        sys.exit(str(exc))
+    problems = machine.validate()
+    for problem in problems:
+        print(f"{path.name}: {problem}")
+    if problems:
+        print(f"\n{len(problems)} problem(s)", file=sys.stderr)
+        return 1
+    ports = machine.role_ports()
+    print(f"{path.name}: ok, {len(ports)} role(s): {', '.join(sorted(ports))}")
+    return 0
+
+
 def _patchbay(args: argparse.Namespace) -> int:
     """`patchbay check` and `patchbay generate`."""
     from .machine import MachineError, MachineSpec, machine_path
     from .patchbay import (
-        PatchbayError, generate_patchbay, live_node_names, live_port_nodes,
-        parse_patchbay, read_pw_dump, resolve_nodes, routes_from_rig, stale_nodes,
+        PatchbayError, check_nodes, generate_patchbay, live_node_names,
+        live_port_nodes, parse_patchbay, read_pw_dump, resolve_nodes,
+        routes_from_rig,
     )
     from .paths import checkout_root
 
@@ -110,27 +137,45 @@ def _patchbay(args: argparse.Namespace) -> int:
 
     if args.patchbay_command == "check":
         path = args.file or root / "Patchbay" / "rig.qpwgraph"
+        # The read and the live query are separate steps so that a failure in
+        # one is not reported as the other: a pw-dump that cannot be executed
+        # raises OSError too, and "cannot read rig.qpwgraph" would send the
+        # reader to the wrong file.
         try:
-            links = parse_patchbay(path.read_text())
-            stale = stale_nodes(links, live_node_names(read_pw_dump()))
+            text = path.read_text()
         except OSError as exc:
             sys.exit(f"cannot read {path}: {exc}")
+        try:
+            links = parse_patchbay(text)
+            result = check_nodes(links, live_node_names(read_pw_dump()))
         except PatchbayError as exc:
             sys.exit(f"{path.name}: cannot check\n" + "\n".join(f"  {p}" for p in exc.problems))
 
-        if not stale:
-            print(f"{path.name}: all {len(links)} link(s) name a node that exists")
-            return 0
-        for node, node_links in stale.items():
-            print(f"{path.name}: no live node {node!r} ({len(node_links)} link(s))")
+        for node, node_links in result.missing.items():
+            print(f"{path.name}: MISSING no live node {node!r} ({len(node_links)} link(s))")
             for link in node_links:
                 print(f"   {link.out_port} -> {link.in_port}")
-        print(
-            f"\n{len(stale)} node(s) named by the patchbay do not exist. qpwgraph "
-            "keeps these links and never connects them.",
-            file=sys.stderr,
-        )
-        return 1
+        for node, node_links in result.unevaluated.items():
+            print(
+                f"{path.name}: not evaluated: node {node!r} ({len(node_links)} link(s)) "
+                "is in a form this check cannot match"
+            )
+        if result.missing:
+            print(
+                f"\n{len(result.missing)} node(s) the patchbay names are definitely "
+                "not in the graph. qpwgraph keeps their links and never connects them.",
+                file=sys.stderr,
+            )
+        elif result.unevaluated:
+            print(
+                f"\n{len(result.unevaluated)} node(s) could not be evaluated; "
+                "that is not a failure, and not a pass for those links either.",
+                file=sys.stderr,
+            )
+        else:
+            print(f"{path.name}: all {len(links)} link(s) name a node that exists")
+        # Exit 1 means a node is definitely gone, and nothing less.
+        return 1 if result.missing else 0
 
     # generate
     try:
@@ -144,23 +189,26 @@ def _patchbay(args: argparse.Namespace) -> int:
     if problems:
         sys.exit("\n".join(problems))
 
-    feeds, sinks = routes_from_rig(rig)
-    if not feeds and not sinks:
-        # An empty patchbay written without comment is the silent failure this
-        # exists to end: nothing wired, and nothing says why.
-        sys.exit(
-            f"{args.rig.name}: no track names a source or sink role, so there is "
-            "nothing to generate"
-        )
     try:
+        feeds, sinks = routes_from_rig(rig)
+        if not feeds and not sinks:
+            # An empty patchbay written without comment is the silent failure
+            # this exists to end: nothing wired, and nothing says why.
+            sys.exit(
+                f"{args.rig.name}: no track names a source or sink role, so there "
+                "is nothing to generate"
+            )
+        roles = machine.role_ports()
         nodes = None
         if not args.offline:
             nodes, problems = resolve_nodes(
-                machine.roles, set(feeds) | set(sinks), live_port_nodes(read_pw_dump())
+                roles, set(feeds), set(sinks), live_port_nodes(read_pw_dump())
             )
             if problems:
                 raise PatchbayError(problems)
-        xml = generate_patchbay(machine.roles, feeds, sinks, nodes=nodes)
+        xml = generate_patchbay(
+            roles, feeds, sinks, mono_to_stereo=machine.mono_roles(), nodes=nodes
+        )
     except PatchbayError as exc:
         sys.exit("\n".join(exc.problems))
 
@@ -386,8 +434,9 @@ def main(argv: list[str] | None = None) -> int:
     patchbay_sub = p.add_subparsers(dest="patchbay_command", required=True)
     q = patchbay_sub.add_parser(
         "check",
-        help="every saved link whose node does not exist in the live PipeWire "
-        "graph; exit 1 if any",
+        help="saved links whose node is not in the live PipeWire graph. Exit 1 "
+        "means a node is definitely gone; nodes in a form it cannot match are "
+        "listed as not evaluated and do not fail",
     )
     q.add_argument(
         "file", type=Path, nargs="?",
@@ -409,6 +458,17 @@ def main(argv: list[str] | None = None) -> int:
         help="do not read the live graph: name each device node after its port's "
         "client instead. Approximate for an ALSA device, whose node is its "
         "profile, so qpwgraph will not match it — for diffing, not for use",
+    )
+
+    p = sub.add_parser("machine", help="the machine file: which physical ports play which role")
+    machine_sub = p.add_subparsers(dest="machine_command", required=True)
+    q = machine_sub.add_parser(
+        "check",
+        help="validate a machine file on its own, reporting every problem; exit 1 if any",
+    )
+    q.add_argument(
+        "file", type=Path, nargs="?",
+        help="machine file [default: machines/<this hostname>.yaml at the repo root]",
     )
 
     sub.add_parser("status", help="what is running, if anything")
@@ -671,6 +731,8 @@ def main(argv: list[str] | None = None) -> int:
         return _plugins(args)
     elif args.command == "patchbay":
         return _patchbay(args)
+    elif args.command == "machine":
+        return _machine(args)
     elif args.command == "top":
         from .top import top
 

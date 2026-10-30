@@ -36,7 +36,7 @@ from sushi_rig.patchbay import (
     render_patchbay,
     resolve_nodes,
     routes_from_rig,
-    stale_nodes,
+    check_nodes,
 )
 from sushi_rig.paths import checkout_root
 from sushi_rig.spec import RigSpec, TrackSpec
@@ -51,6 +51,16 @@ ROLES = {
 }
 
 
+# Roles that say they mean to feed both halves of a bus. Duplication is declared,
+# never inferred from a role having one port.
+MONO = {"guitar-in", "vocal-in"}
+
+
+def _gen(roles, feeds, sinks=None, **kw):
+    kw.setdefault("mono_to_stereo", MONO)
+    return generate_patchbay(roles, feeds, sinks, **kw)
+
+
 def _pairs(xml: str) -> list[tuple[str, str]]:
     """(source port, destination port) for each link, in file order."""
     return [(l.out_port, l.in_port) for l in parse_patchbay(xml)]
@@ -62,7 +72,7 @@ def _pairs(xml: str) -> list[tuple[str, str]]:
 def test_a_mono_role_feeding_a_stereo_bus_is_duplicated_across_both_halves():
     """The established pattern: capture_AUX0 feeds both audio_input_0 and
     audio_input_1, which is what lets a stereo chain follow a mono guitar."""
-    xml = generate_patchbay(ROLES, {"guitar-in": [bus(0)]})
+    xml = _gen(ROLES, {"guitar-in": [bus(0)]})
     assert _pairs(xml) == [
         ("Audient iD14:capture_AUX0", "sushi:audio_input_0"),
         ("Audient iD14:capture_AUX0", "sushi:audio_input_1"),
@@ -72,7 +82,7 @@ def test_a_mono_role_feeding_a_stereo_bus_is_duplicated_across_both_halves():
 def test_a_second_mono_role_on_the_next_bus_uses_that_buss_channels():
     """Bus N is channels 2N and 2N+1 — the committed patchbay has capture_AUX1
     on audio_input_2 and audio_input_3."""
-    xml = generate_patchbay(ROLES, {"guitar-in": [bus(0)], "vocal-in": [bus(1)]})
+    xml = _gen(ROLES, {"guitar-in": [bus(0)], "vocal-in": [bus(1)]})
     assert _pairs(xml)[2:] == [
         ("Audient iD14:capture_AUX1", "sushi:audio_input_2"),
         ("Audient iD14:capture_AUX1", "sushi:audio_input_3"),
@@ -80,7 +90,7 @@ def test_a_second_mono_role_on_the_next_bus_uses_that_buss_channels():
 
 
 def test_a_two_port_role_goes_left_then_right_without_duplication():
-    xml = generate_patchbay(ROLES, {"stereo-in": [bus(1)]})
+    xml = _gen(ROLES, {"stereo-in": [bus(1)]})
     assert _pairs(xml) == [
         ("Audient iD14:capture_AUX2", "sushi:audio_input_2"),
         ("Audient iD14:capture_AUX3", "sushi:audio_input_3"),
@@ -89,12 +99,12 @@ def test_a_two_port_role_goes_left_then_right_without_duplication():
 
 def test_a_one_port_role_feeding_a_single_channel_feeds_only_that_channel():
     """Sushi routes by pair or by channel, never both in one entry."""
-    xml = generate_patchbay(ROLES, {"guitar-in": [channel(3)]})
+    xml = _gen(ROLES, {"guitar-in": [channel(3)]})
     assert _pairs(xml) == [("Audient iD14:capture_AUX0", "sushi:audio_input_3")]
 
 
 def test_one_role_may_feed_several_buses():
-    xml = generate_patchbay(ROLES, {"guitar-in": [bus(0), bus(1)]})
+    xml = _gen(ROLES, {"guitar-in": [bus(0), bus(1)]})
     assert [dst for _, dst in _pairs(xml)] == [f"sushi:audio_input_{i}" for i in range(4)]
 
 
@@ -104,18 +114,18 @@ def test_one_role_may_feed_several_buses():
 def test_three_ports_into_a_stereo_bus_is_an_error():
     roles = {"wide": ["A:1", "A:2", "A:3"]}
     with pytest.raises(PatchbayError, match="3 ports but feeds bus 0"):
-        generate_patchbay(roles, {"wide": [bus(0)]})
+        _gen(roles, {"wide": [bus(0)]})
 
 
 def test_two_ports_into_one_channel_is_an_error_rather_than_a_pick():
     """Dropping one, or summing both, are both guesses about the user's intent."""
-    with pytest.raises(PatchbayError, match="single channel 0"):
-        generate_patchbay(ROLES, {"stereo-in": [channel(0)]})
+    with pytest.raises(PatchbayError, match="2 port.* routes it to 1 engine channel"):
+        _gen(ROLES, {"stereo-in": [channel(0)]})
 
 
 def test_an_unknown_role_names_the_role_and_what_the_machine_defines():
     with pytest.raises(PatchbayError) as caught:
-        generate_patchbay(ROLES, {"guitar_in": [bus(0)]})
+        _gen(ROLES, {"guitar_in": [bus(0)]})
     message = str(caught.value)
     assert "'guitar_in'" in message
     assert "'guitar-in'" in message, "the near-miss spelling must be offered"
@@ -126,25 +136,25 @@ def test_two_roles_on_one_bus_are_refused_rather_than_summed():
     Sushi summed two physical inputs into one mono amp. With a microphone on the
     second input that stops being hypothetical."""
     with pytest.raises(PatchbayError) as caught:
-        generate_patchbay(ROLES, {"guitar-in": [bus(0)], "vocal-in": [bus(0)]})
+        _gen(ROLES, {"guitar-in": [bus(0)], "vocal-in": [bus(0)]})
     assert "sushi:audio_input_0 would be fed by more than one port" in str(caught.value)
 
 
 def test_a_bus_and_a_channel_overlapping_are_caught_too():
     with pytest.raises(PatchbayError, match="audio_input_1"):
-        generate_patchbay(ROLES, {"guitar-in": [bus(0)], "vocal-in": [channel(1)]})
+        _gen(ROLES, {"guitar-in": [bus(0)], "vocal-in": [channel(1)]})
 
 
 def test_two_roles_sharing_one_physical_port_is_fine():
     """The tuner and Sushi both listening to the guitar is the committed setup."""
     roles = {"guitar-in": ["A:x"], "tuner-in": ["A:x"]}
-    xml = generate_patchbay(roles, {"guitar-in": [channel(0)], "tuner-in": [channel(0)]})
+    xml = _gen(roles, {"guitar-in": [channel(0)], "tuner-in": [channel(0)]})
     assert _pairs(xml) == [("A:x", "sushi:audio_input_0")]
 
 
 def test_every_problem_is_reported_together():
     with pytest.raises(PatchbayError) as caught:
-        generate_patchbay(ROLES, {"nope": [bus(0)], "stereo-in": [channel(0)]})
+        _gen(ROLES, {"nope": [bus(0)], "stereo-in": [channel(0)]})
     assert len(caught.value.problems) == 2
 
 
@@ -152,7 +162,7 @@ def test_every_problem_is_reported_together():
 
 
 def test_a_two_port_sink_takes_a_bus_left_then_right():
-    xml = generate_patchbay(ROLES, {}, {"monitor-out": [bus(0)]})
+    xml = _gen(ROLES, {}, {"monitor-out": [bus(0)]})
     assert _pairs(xml) == [
         ("sushi:audio_output_0", "Audient iD14:playback_AUX0"),
         ("sushi:audio_output_1", "Audient iD14:playback_AUX1"),
@@ -162,32 +172,32 @@ def test_a_two_port_sink_takes_a_bus_left_then_right():
 def test_a_one_port_sink_for_a_stereo_bus_is_an_error_not_a_mixdown():
     roles = {"mono-out": ["A:p"]}
     with pytest.raises(PatchbayError, match="needs 2"):
-        generate_patchbay(roles, {}, {"mono-out": [bus(0)]})
+        _gen(roles, {}, {"mono-out": [bus(0)]})
 
 
 def test_a_sink_for_a_channel_needs_exactly_one_port():
     with pytest.raises(PatchbayError, match="needs 1"):
-        generate_patchbay(ROLES, {}, {"monitor-out": [channel(0)]})
+        _gen(ROLES, {}, {"monitor-out": [channel(0)]})
 
 
 def test_one_output_may_go_to_two_places():
     """Monitors and headphones at once is ordinary; only *inputs* must not sum."""
     roles = {"mon": ["A:l", "A:r"], "phones": ["B:l", "B:r"]}
-    xml = generate_patchbay(roles, {}, {"mon": [bus(0)], "phones": [bus(0)]})
+    xml = _gen(roles, {}, {"mon": [bus(0)], "phones": [bus(0)]})
     assert len(parse_patchbay(xml)) == 4
 
 
 def test_two_outputs_into_one_playback_port_are_refused():
     roles = {"mon": ["A:l", "A:r"], "other": ["A:r", "A:x"]}
     with pytest.raises(PatchbayError, match="playback port 'A:r'"):
-        generate_patchbay(roles, {}, {"mon": [bus(0)], "other": [bus(1)]})
+        _gen(roles, {}, {"mon": [bus(0)], "other": [bus(1)]})
 
 
 # --- node names ---------------------------------------------------------------
 
 
 def test_the_node_falls_back_to_the_ports_client_and_sushi_is_always_sushi():
-    link = parse_patchbay(generate_patchbay(ROLES, {"guitar-in": [bus(0)]}))[0]
+    link = parse_patchbay(_gen(ROLES, {"guitar-in": [bus(0)]}))[0]
     assert (link.out_node, link.in_node) == ("Audient iD14", "sushi")
 
 
@@ -195,7 +205,7 @@ def test_a_supplied_node_replaces_the_fallback():
     """The port alias is the same under every ALSA profile; the node is what
     differs, so it has to come from somewhere other than the machine file."""
     nodes = {"Audient iD14:capture_AUX0": "Audient iD14 Multichannel"}
-    link = parse_patchbay(generate_patchbay(ROLES, {"guitar-in": [bus(0)]}, nodes=nodes))[0]
+    link = parse_patchbay(_gen(ROLES, {"guitar-in": [bus(0)]}, nodes=nodes))[0]
     assert link.out_node == "Audient iD14 Multichannel"
     assert link.out_port == "Audient iD14:capture_AUX0"
 
@@ -217,8 +227,8 @@ def test_a_name_with_xml_metacharacters_survives():
 
 
 def test_generation_is_deterministic_whatever_order_the_roles_arrive_in():
-    a = generate_patchbay(ROLES, {"guitar-in": [bus(0)], "vocal-in": [bus(1)]})
-    b = generate_patchbay(dict(reversed(ROLES.items())), {"vocal-in": [bus(1)], "guitar-in": [bus(0)]})
+    a = _gen(ROLES, {"guitar-in": [bus(0)], "vocal-in": [bus(1)]})
+    b = _gen(dict(reversed(ROLES.items())), {"vocal-in": [bus(1)], "guitar-in": [bus(0)]})
     assert a == b
 
 
@@ -226,7 +236,7 @@ def test_the_amp_rewrite_understands_a_generated_patchbay():
     """`amp_patchbay` finds the guitar as whatever feeds sushi:audio_input_0 and
     is out of scope to change. If generation produced something it could not read,
     switching to generated patchbays would silently drop the amp."""
-    xml = generate_patchbay(ROLES, {"guitar-in": [bus(0)]}, {"monitor-out": [bus(0)]})
+    xml = _gen(ROLES, {"guitar-in": [bus(0)]}, {"monitor-out": [bus(0)]})
     amped = amp_patchbay(xml)
     pairs = _pairs(amped)
     assert ("Audient iD14:capture_AUX0", "NAM:Input") in pairs
@@ -248,8 +258,8 @@ def test_routes_come_from_each_tracks_inputs_and_outputs():
         TrackSpec(name="mic", source="vocal-in", inputs=[{"engine_channel": 3, "track_channel": 0}]),
     ])
     feeds, sinks = routes_from_rig(rig)
-    assert feeds == {"guitar-in": [bus(0)], "vocal-in": [channel(3)]}
-    assert sinks == {"monitor-out": [bus(0)]}
+    assert feeds == {"guitar-in": [(bus(0),)], "vocal-in": [(channel(3),)]}
+    assert sinks == {"monitor-out": [(bus(0),)]}
 
 
 def test_a_track_without_a_source_contributes_nothing():
@@ -259,11 +269,51 @@ def test_a_track_without_a_source_contributes_nothing():
     assert routes_from_rig(rig) == ({}, {})
 
 
-def test_an_entry_mixing_bus_and_channel_forms_is_skipped_not_guessed():
+def test_an_entry_mixing_bus_and_channel_forms_is_refused_not_skipped():
     rig = RigSpec(tracks=[TrackSpec(
         name="t", source="r", inputs=[{"engine_bus": 0, "engine_channel": 1}],
     )])
-    assert routes_from_rig(rig) == ({}, {})
+    with pytest.raises(PatchbayError, match="mixes bus and channel forms"):
+        routes_from_rig(rig)
+
+
+def test_an_entry_with_only_track_side_routing_is_refused_not_dropped():
+    """`RigSpec.validate()` accepts `{track_bus: 0}`, so it reaches here. Dropping
+    it left the track in `source:` unwired while generation went ahead for every
+    other track."""
+    rig = RigSpec(tracks=[
+        TrackSpec(name="a", source="guitar-in", inputs=[{"track_bus": 0}]),
+        TrackSpec(name="b", source="vocal-in", inputs=[{"engine_bus": 1, "track_bus": 0}]),
+    ])
+    assert rig.validate() == []
+    with pytest.raises(PatchbayError) as caught:
+        routes_from_rig(rig)
+    assert "track 'a'" in str(caught.value) and "names no engine_bus" in str(caught.value)
+
+
+@pytest.mark.parametrize("bad", ['"0"', -1, 1.0, True, None])
+def test_an_engine_index_that_is_not_a_non_negative_integer_is_refused(bad):
+    """A quoted "0" used to die in arithmetic with a TypeError, and -1 generated
+    `sushi:audio_input_-2` without a word."""
+    rig = RigSpec(tracks=[TrackSpec(name="t", source="r", inputs=[{"engine_bus": bad}])])
+    with pytest.raises(PatchbayError, match="engine_bus must be a non-negative integer"):
+        routes_from_rig(rig)
+
+
+def test_a_bad_engine_channel_is_refused_on_outputs_too():
+    rig = RigSpec(tracks=[TrackSpec(name="t", sink="r", outputs=[{"engine_channel": -2}])])
+    with pytest.raises(PatchbayError, match="engine_channel must be a non-negative integer"):
+        routes_from_rig(rig)
+
+
+def test_every_unplaceable_entry_is_reported_together():
+    rig = RigSpec(tracks=[
+        TrackSpec(name="a", source="r", inputs=[{"track_bus": 0}]),
+        TrackSpec(name="b", source="r", inputs=[{"engine_bus": -1}]),
+    ])
+    with pytest.raises(PatchbayError) as caught:
+        routes_from_rig(rig)
+    assert len(caught.value.problems) == 2
 
 
 def test_two_tracks_on_one_role_and_bus_do_not_duplicate_the_route():
@@ -271,7 +321,90 @@ def test_two_tracks_on_one_role_and_bus_do_not_duplicate_the_route():
         TrackSpec(name=n, source="guitar-in", inputs=[{"engine_bus": 0, "track_bus": 0}])
         for n in ("a", "b")
     ])
-    assert routes_from_rig(rig)[0] == {"guitar-in": [bus(0)]}
+    assert routes_from_rig(rig)[0] == {"guitar-in": [(bus(0),)]}
+
+
+def test_a_tracks_channel_entries_stay_together_as_one_route():
+    rig = RigSpec(tracks=[TrackSpec(
+        name="t", source="stereo-in",
+        inputs=[{"engine_channel": 2, "track_channel": 0}, {"engine_channel": 3, "track_channel": 1}],
+    )])
+    assert routes_from_rig(rig)[0] == {"stereo-in": [(channel(2), channel(3))]}
+
+
+# --- a stereo source on channel-form routing -----------------------------------
+
+
+def test_a_two_port_role_pairs_across_a_tracks_two_channel_entries():
+    """Channel form is the spelling `examples/rig.example.yaml` documents, and
+    judging each entry alone refused a stereo source against every one."""
+    rig = RigSpec(tracks=[TrackSpec(
+        name="t", source="stereo-in",
+        inputs=[{"engine_channel": 2, "track_channel": 0}, {"engine_channel": 3, "track_channel": 1}],
+    )])
+    feeds, _ = routes_from_rig(rig)
+    assert _pairs(_gen(ROLES, feeds)) == [
+        ("Audient iD14:capture_AUX2", "sushi:audio_input_2"),
+        ("Audient iD14:capture_AUX3", "sushi:audio_input_3"),
+    ]
+
+
+def test_a_one_port_role_on_two_channel_entries_needs_the_declaration():
+    feeds = {"guitar-in": [(channel(0), channel(1))]}
+    assert len(_pairs(_gen(ROLES, feeds))) == 2
+    with pytest.raises(PatchbayError, match="counts must match"):
+        _gen(ROLES, feeds, mono_to_stereo=())
+
+
+def test_the_same_role_on_two_tracks_is_fan_out_not_a_stereo_pair():
+    """Pairing is per track. Two tracks each taking one channel from a one-port
+    role is one port going to two places, not a pair to be split."""
+    feeds = {"guitar-in": [(channel(0),), (channel(4),)]}
+    assert [d for _, d in _pairs(_gen(ROLES, feeds, mono_to_stereo=()))] == [
+        "sushi:audio_input_0", "sushi:audio_input_4",
+    ]
+
+
+def test_a_sink_pairs_across_a_tracks_channel_entries_too():
+    xml = _gen(ROLES, {}, {"monitor-out": [(channel(0), channel(1))]})
+    assert _pairs(xml) == [
+        ("sushi:audio_output_0", "Audient iD14:playback_AUX0"),
+        ("sushi:audio_output_1", "Audient iD14:playback_AUX1"),
+    ]
+
+
+# --- mono_to_stereo is declared, never inferred ----------------------------------
+
+
+def test_a_one_port_role_into_a_bus_is_an_error_unless_declared():
+    """The design assumed duplication from the port count. The live profile
+    wires one input per channel, so a silent duplication was wrong for it."""
+    with pytest.raises(PatchbayError) as caught:
+        _gen(ROLES, {"guitar-in": [bus(0)]}, mono_to_stereo=())
+    message = str(caught.value)
+    assert "'guitar-in'" in message and "mono_to_stereo: true" in message
+
+
+def test_declaring_mono_to_stereo_duplicates_across_both_halves():
+    xml = _gen(ROLES, {"guitar-in": [bus(0)]}, mono_to_stereo={"guitar-in"})
+    assert [d for _, d in _pairs(xml)] == ["sushi:audio_input_0", "sushi:audio_input_1"]
+
+
+def test_declaring_mono_to_stereo_on_a_two_port_role_is_an_error():
+    with pytest.raises(PatchbayError, match="declares mono_to_stereo but has 2 ports"):
+        _gen(ROLES, {"stereo-in": [bus(1)]}, mono_to_stereo={"stereo-in"})
+
+
+def test_the_declaration_only_applies_to_the_role_that_made_it():
+    with pytest.raises(PatchbayError, match="'vocal-in'"):
+        _gen(ROLES, {"guitar-in": [bus(0)], "vocal-in": [bus(1)]}, mono_to_stereo={"guitar-in"})
+
+
+def test_fan_out_outputs_are_sorted_so_track_order_cannot_change_the_bytes():
+    roles = {"mon": ["A:l", "A:r"], "phones": ["B:l", "B:r"]}
+    one = _gen(roles, {}, {"mon": [bus(0)], "phones": [bus(0)]})
+    two = _gen(roles, {}, {"phones": [bus(0)], "mon": [bus(0)]})
+    assert one == two
 
 
 # --- the live graph -------------------------------------------------------------
@@ -281,11 +414,14 @@ def _node(id_, **props):
     return {"id": id_, "type": "PipeWire:Interface:Node", "info": {"props": props}}
 
 
-def _port(id_, node_id, alias):
-    return {
-        "id": id_, "type": "PipeWire:Interface:Port",
-        "info": {"props": {"node.id": node_id, "port.alias": alias}},
-    }
+def _port(id_, node_id, alias, direction=None):
+    # `direction` was added when generation began checking it. As with the rest
+    # of this fixture, "in"/"out" is pw-dump's documented `port.direction`, not
+    # something captured here.
+    props = {"node.id": node_id, "port.alias": alias}
+    if direction:
+        props["port.direction"] = direction
+    return {"id": id_, "type": "PipeWire:Interface:Port", "info": {"props": props}}
 
 
 # The rig machine as it is today, as best the committed patchbay shows: the
@@ -299,10 +435,10 @@ LIVE = json.dumps([
                  "node.description": "Audient iD14 Analog Surround 4.0"}),
     _node(42, **{"node.name": "sushi"}),
     _node(43, **{"node.name": "alsa_capture.fmit"}),
-    _port(50, 40, "Audient iD14:capture_AUX0"),
-    _port(51, 41, "Audient iD14:playback_FL"),
-    _port(53, 41, "Audient iD14:playback_FR"),
-    _port(52, 42, "sushi:audio_input_0"),
+    _port(50, 40, "Audient iD14:capture_AUX0", "out"),
+    _port(51, 41, "Audient iD14:playback_FL", "in"),
+    _port(53, 41, "Audient iD14:playback_FR", "in"),
+    _port(52, 42, "sushi:audio_input_0", "in"),
     {"id": 60, "type": "PipeWire:Interface:Link", "info": {"props": {}}},
 ])
 
@@ -333,32 +469,49 @@ def test_pw_dump_that_is_not_a_list_is_an_error():
         live_node_names("{}")
 
 
-def test_the_stale_check_names_each_missing_node_once_with_its_links():
-    """The committed patchbay names three Audient profiles. Only the ones that
-    exist are live; the rest are what this check exists to show."""
-    stale = stale_nodes(parse_patchbay(COMMITTED.read_text()), live_node_names(LIVE))
-    assert set(stale) == {
-        "Audient iD14 Pro",
-        "PipeWire ALSA [fmit]/ALSA Capture [fmit]",
-        "fmit",
-    }
-    # Four capture links and four playback links name the dead Pro profile.
-    assert len(stale["Audient iD14 Pro"]) == 9
+def test_the_check_separates_missing_nodes_from_ones_it_cannot_evaluate():
+    """The committed patchbay names three Audient profiles. Only the live ones
+    exist. `fmit` and the Pro profile are definitely gone; the `app/node` form is
+    one this check cannot judge either way."""
+    result = check_nodes(parse_patchbay(COMMITTED.read_text()), live_node_names(LIVE))
+    assert set(result.missing) == {"Audient iD14 Pro", "fmit"}
+    assert set(result.unevaluated) == {"PipeWire ALSA [fmit]/ALSA Capture [fmit]"}
+    # Five links leave the dead Pro profile and four enter it.
+    assert len(result.missing["Audient iD14 Pro"]) == 9
+    assert len(result.unevaluated["PipeWire ALSA [fmit]/ALSA Capture [fmit]"]) == 2
 
 
-def test_a_fully_live_patchbay_has_nothing_stale():
+def test_an_app_node_form_is_never_reported_missing():
+    """A check that fails on its first run against a working rig gets ignored."""
+    link = Link("sushi", "sushi:audio_output_0", "PipeWire ALSA [fmit]/ALSA Capture [fmit]", "x:y")
+    result = check_nodes([link], live_node_names(LIVE))
+    assert result.missing == {}
+    assert list(result.unevaluated) == ["PipeWire ALSA [fmit]/ALSA Capture [fmit]"]
+
+
+def test_a_slashed_name_that_is_live_is_present_not_unevaluated():
+    """A device description may contain a slash. If it matches, it is just fine."""
+    dump = json.dumps([_node(1, **{"node.description": "Mic/Line In"})])
+    link = Link("Mic/Line In", "Mic:out", "Mic/Line In", "Mic:in")
+    result = check_nodes([link], live_node_names(dump))
+    assert result.missing == {} and result.unevaluated == {}
+
+
+def test_a_fully_live_patchbay_has_nothing_missing_or_unevaluated():
     links = [Link("Audient iD14 Multichannel", "Audient iD14:capture_AUX0", "sushi", "sushi:audio_input_0")]
-    assert stale_nodes(links, live_node_names(LIVE)) == {}
+    result = check_nodes(links, live_node_names(LIVE))
+    assert result.missing == {} and result.unevaluated == {}
 
 
 def test_a_link_with_both_ends_missing_is_listed_under_each():
     link = Link("gone-a", "a:o", "gone-b", "b:i")
-    assert stale_nodes([link], live_node_names(LIVE)) == {"gone-a": [link], "gone-b": [link]}
+    result = check_nodes([link], live_node_names(LIVE))
+    assert result.missing == {"gone-a": [link], "gone-b": [link]}
 
 
 def test_a_link_is_not_listed_twice_under_one_node():
     link = Link("gone", "g:o", "gone", "g:i")
-    assert stale_nodes([link], set()) == {"gone": [link]}
+    assert check_nodes([link], set()).missing == {"gone": [link]}
 
 
 def test_a_patchbay_that_is_not_xml_is_an_error():
@@ -370,7 +523,7 @@ def test_a_patchbay_that_is_not_xml_is_an_error():
 
 
 def test_a_role_resolves_to_the_node_that_owns_its_port():
-    nodes, problems = resolve_nodes(ROLES, {"guitar-in"}, live_port_nodes(LIVE))
+    nodes, problems = resolve_nodes(ROLES, {"guitar-in"}, set(), live_port_nodes(LIVE))
     assert problems == []
     assert nodes == {"Audient iD14:capture_AUX0": "Audient iD14 Multichannel"}
 
@@ -378,14 +531,14 @@ def test_a_role_resolves_to_the_node_that_owns_its_port():
 def test_a_role_with_no_live_port_names_the_role_and_what_it_looked_for():
     """The failure this issue exists for: a renamed interface used to give
     silence and dead entries, and now gives this."""
-    _, problems = resolve_nodes(ROLES, {"vocal-in"}, live_port_nodes(LIVE))
+    _, problems = resolve_nodes(ROLES, {"vocal-in"}, set(), live_port_nodes(LIVE))
     assert len(problems) == 1
     assert "'vocal-in'" in problems[0] and "Audient iD14:capture_AUX1" in problems[0]
 
 
 def test_roles_no_track_uses_are_not_looked_up():
     """Unplugged hardware is a problem only if something needs it."""
-    _, problems = resolve_nodes(ROLES, {"guitar-in"}, live_port_nodes(LIVE))
+    _, problems = resolve_nodes(ROLES, {"guitar-in"}, set(), live_port_nodes(LIVE))
     assert problems == []
 
 
@@ -395,11 +548,49 @@ def test_a_port_alias_on_two_nodes_is_ambiguous_not_picked():
     dump = json.dumps([
         _node(1, **{"node.description": "Audient iD14 Pro"}),
         _node(2, **{"node.description": "Audient iD14 Multichannel"}),
-        _port(10, 1, "Audient iD14:capture_AUX0"),
-        _port(11, 2, "Audient iD14:capture_AUX0"),
+        _port(10, 1, "Audient iD14:capture_AUX0", "out"),
+        _port(11, 2, "Audient iD14:capture_AUX0", "out"),
     ])
-    _, problems = resolve_nodes(ROLES, {"guitar-in"}, live_port_nodes(dump))
+    _, problems = resolve_nodes(ROLES, {"guitar-in"}, set(), live_port_nodes(dump))
     assert len(problems) == 1 and "more than one node" in problems[0]
+
+
+def test_a_playback_port_in_a_source_role_is_refused_naming_the_direction():
+    """Resolved cleanly before, and generation then asked for a link PipeWire can
+    never make: `sushi:audio_output_N -> ...` into a capture port, or the
+    reverse."""
+    roles = {"guitar-in": ["Audient iD14:playback_FL"]}
+    _, problems = resolve_nodes(roles, {"guitar-in"}, set(), live_port_nodes(LIVE))
+    assert len(problems) == 1
+    assert "'guitar-in'" in problems[0] and "playback_FL" in problems[0]
+    assert "direction 'out'" in problems[0] and "'in'" in problems[0]
+
+
+def test_a_capture_port_in_a_sink_role_is_refused_naming_the_direction():
+    roles = {"monitor-out": ["Audient iD14:capture_AUX0"]}
+    _, problems = resolve_nodes(roles, set(), {"monitor-out"}, live_port_nodes(LIVE))
+    assert len(problems) == 1
+    assert "'monitor-out'" in problems[0] and "capture_AUX0" in problems[0]
+    assert "direction 'in'" in problems[0]
+
+
+def test_a_sink_role_with_playback_ports_resolves():
+    roles = {"monitor-out": ["Audient iD14:playback_FL", "Audient iD14:playback_FR"]}
+    nodes, problems = resolve_nodes(roles, set(), {"monitor-out"}, live_port_nodes(LIVE))
+    assert problems == []
+    assert set(nodes.values()) == {"Audient iD14 Analog Surround 4.0"}
+
+
+def test_a_port_whose_direction_pw_dump_does_not_state_is_refused():
+    """Not assumed to be right: a check that cannot tell must say so."""
+    dump = json.dumps([_node(1, **{"node.description": "X"}), _port(2, 1, "X:in")])
+    _, problems = resolve_nodes({"r": ["X:in"]}, {"r"}, set(), live_port_nodes(dump))
+    assert len(problems) == 1 and "None" in problems[0]
+
+
+def test_a_role_used_as_both_source_and_sink_is_a_problem():
+    _, problems = resolve_nodes(ROLES, {"guitar-in"}, {"guitar-in"}, live_port_nodes(LIVE))
+    assert any("both a source and a sink" in p for p in problems)
 
 
 # --- effects, with the process faked --------------------------------------------
@@ -446,7 +637,9 @@ tracks:
 MACHINE = """
 schema_version: 1
 roles:
-  guitar-in: ["Audient iD14:capture_AUX0"]
+  guitar-in:
+    ports: ["Audient iD14:capture_AUX0"]
+    mono_to_stereo: true
   monitor-out: ["Audient iD14:playback_AUX0", "Audient iD14:playback_AUX1"]
 """
 
@@ -479,7 +672,8 @@ def test_generate_names_device_nodes_from_the_live_graph(files, monkeypatch, cap
     """Offline, the device node would be "Audient iD14" and qpwgraph would never
     match it. Live, it is the profile that is actually running."""
     (files / "m.yaml").write_text(
-        "schema_version: 1\nroles:\n  guitar-in: ['Audient iD14:capture_AUX0']\n"
+        "schema_version: 1\nroles:\n  guitar-in:\n    ports: ['Audient iD14:capture_AUX0']\n"
+        "    mono_to_stereo: true\n"
         "  monitor-out: ['Audient iD14:playback_FL', 'Audient iD14:playback_FR']\n"
     )
     monkeypatch.setattr(patchbay, "read_pw_dump", lambda *a, **k: LIVE)
@@ -517,12 +711,75 @@ def test_generate_reports_machine_and_rig_problems_together(files):
     assert "has no ports" in message and "has no inputs" in message
 
 
-def test_check_lists_stale_nodes_and_exits_nonzero(monkeypatch, capsys):
+def test_generate_refuses_a_one_port_role_on_a_bus_without_the_declaration(files, capsys):
+    (files / "m.yaml").write_text(MACHINE.replace("    mono_to_stereo: true\n", ""))
+    with pytest.raises(SystemExit) as caught:
+        cli.main(["patchbay", "generate", str(files / "rig.yaml"),
+                  "--machine", str(files / "m.yaml"), "--offline"])
+    assert "mono_to_stereo: true" in str(caught.value)
+
+
+def test_generate_refuses_a_playback_port_used_as_a_source(files, monkeypatch):
+    (files / "m.yaml").write_text(
+        MACHINE.replace("capture_AUX0", "playback_FL")
+        .replace("playback_AUX0", "playback_FL").replace("playback_AUX1", "playback_FR")
+    )
+    monkeypatch.setattr(patchbay, "read_pw_dump", lambda *a, **k: LIVE)
+    with pytest.raises(SystemExit) as caught:
+        cli.main(["patchbay", "generate", str(files / "rig.yaml"),
+                  "--machine", str(files / "m.yaml")])
+    assert "'guitar-in'" in str(caught.value) and "direction 'out'" in str(caught.value)
+
+
+def test_generate_refuses_a_track_side_only_entry_rather_than_dropping_it(files):
+    (files / "rig.yaml").write_text(RIG.replace(
+        "inputs: [{engine_bus: 0, track_bus: 0}]", "inputs: [{track_bus: 0}]"))
+    with pytest.raises(SystemExit, match="names no engine_bus"):
+        cli.main(["patchbay", "generate", str(files / "rig.yaml"),
+                  "--machine", str(files / "m.yaml"), "--offline"])
+
+
+def test_machine_check_validates_without_a_rig(tmp_path, capsys):
+    """None of the committed rigs names a role, so `generate` has nothing to work
+    on; a machine file must still be checkable."""
+    path = tmp_path / "m.yaml"
+    path.write_text(MACHINE)
+    assert cli.main(["machine", "check", str(path)]) == 0
+    assert "ok, 2 role(s)" in capsys.readouterr().out
+
+
+def test_machine_check_reports_every_problem_and_exits_nonzero(tmp_path, capsys):
+    path = tmp_path / "m.yaml"
+    path.write_text("schema_version: 1\nroles:\n  a: []\n  b: 'x'\n")
+    assert cli.main(["machine", "check", str(path)]) == 1
+    out = capsys.readouterr().out
+    assert "role 'a': has no ports" in out and "role 'b'" in out
+
+
+def test_the_committed_example_passes_machine_check(capsys):
+    assert cli.main(["machine", "check", str(checkout_root() / "machines" / "example.yaml")]) == 0
+
+
+def test_check_lists_missing_nodes_and_exits_nonzero(monkeypatch, capsys):
     monkeypatch.setattr(patchbay, "read_pw_dump", lambda *a, **k: LIVE)
     assert cli.main(["patchbay", "check", str(COMMITTED)]) == 1
     out = capsys.readouterr().out
     assert "no live node 'Audient iD14 Pro'" in out
     assert "Audient iD14:capture_AUX0 -> sushi:audio_input_0" in out
+
+
+def test_check_reports_an_unevaluated_node_without_failing(tmp_path, monkeypatch, capsys):
+    """Exit 1 means a node is definitely gone. A form the check cannot match is
+    listed, plainly, and does not make a healthy rig fail."""
+    path = tmp_path / "p.qpwgraph"
+    path.write_text(render_patchbay([
+        Link("sushi", "sushi:audio_output_0", "PipeWire ALSA [fmit]/ALSA Capture [fmit]", "x:y"),
+    ]))
+    monkeypatch.setattr(patchbay, "read_pw_dump", lambda *a, **k: LIVE)
+    assert cli.main(["patchbay", "check", str(path)]) == 0
+    out = capsys.readouterr().out
+    assert "not evaluated" in out and "MISSING" not in out
+    assert "all 1 link(s)" not in out, "an unevaluated link must not be reported as present"
 
 
 def test_check_exits_zero_when_everything_exists(tmp_path, monkeypatch, capsys):
@@ -531,6 +788,25 @@ def test_check_exits_zero_when_everything_exists(tmp_path, monkeypatch, capsys):
     monkeypatch.setattr(patchbay, "read_pw_dump", lambda *a, **k: LIVE)
     assert cli.main(["patchbay", "check", str(path)]) == 0
     assert "all 1 link(s)" in capsys.readouterr().out
+
+
+def test_a_pw_dump_that_cannot_run_is_not_reported_as_an_unreadable_patchbay(monkeypatch):
+    """A non-executable pw-dump raises OSError, which `check` used to report as
+    "cannot read .../rig.qpwgraph" and send the reader to the wrong file."""
+    def not_executable(*a, **k):
+        raise PermissionError(13, "Permission denied", "pw-dump")
+
+    monkeypatch.setattr(patchbay.subprocess, "run", not_executable)
+    with pytest.raises(SystemExit) as caught:
+        cli.main(["patchbay", "check", str(COMMITTED)])
+    message = str(caught.value)
+    assert "pw-dump could not be run" in message
+    assert "rig.qpwgraph: cannot check" in message and "cannot read" not in message
+
+
+def test_an_unreadable_patchbay_file_names_that_file(tmp_path):
+    with pytest.raises(SystemExit, match="cannot read .*absent.qpwgraph"):
+        cli.main(["patchbay", "check", str(tmp_path / "absent.qpwgraph")])
 
 
 def test_check_that_cannot_ask_says_so_rather_than_passing(monkeypatch):

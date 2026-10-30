@@ -217,3 +217,72 @@ def test_a_missing_file_is_a_machine_error(tmp_path):
 
 def test_the_machine_file_is_named_by_hostname():
     assert machine_path(Path("/r"), "studio") == Path("/r/machines/studio.yaml")
+
+
+# --- the long role form: declaring mono_to_stereo --------------------------------
+
+LONG_FORM = """
+schema_version: 1
+roles:
+  guitar-in:
+    ports: ["A:x"]
+    mono_to_stereo: true
+  stereo-in:
+    ports: ["A:l", "A:r"]
+  monitor-out: ["A:pl", "A:pr"]
+"""
+
+
+def test_the_long_and_plain_forms_both_load(tmp_path):
+    machine = _load(tmp_path, LONG_FORM)
+    assert machine.validate() == []
+    assert machine.role_ports() == {
+        "guitar-in": ["A:x"], "stereo-in": ["A:l", "A:r"], "monitor-out": ["A:pl", "A:pr"],
+    }
+
+
+def test_only_a_role_that_says_so_is_mono(tmp_path):
+    """Never inferred from the port count: `stereo-in` and a plain one-port role
+    are not mono because of how many ports they have."""
+    machine = _load(tmp_path, LONG_FORM + "  one-port: ['A:z']\n")
+    assert machine.mono_roles() == {"guitar-in"}
+
+
+def test_mono_to_stereo_on_a_role_with_two_ports_is_a_problem(tmp_path):
+    machine = _load(
+        tmp_path,
+        "schema_version: 1\nroles:\n  r:\n    ports: ['A:l', 'A:r']\n    mono_to_stereo: true\n",
+    )
+    assert machine.validate() == ["role 'r': mono_to_stereo needs exactly one port (got 2)"]
+
+
+def test_mono_to_stereo_must_be_a_boolean(tmp_path):
+    """`"yes"` is truthy and would be taken as a declaration."""
+    machine = _load(
+        tmp_path, "schema_version: 1\nroles:\n  r:\n    ports: ['A:x']\n    mono_to_stereo: 'yes'\n"
+    )
+    problems = machine.validate()
+    assert len(problems) == 1 and "must be true or false" in problems[0]
+    assert machine.mono_roles() == set()
+
+
+def test_a_long_form_role_without_ports_is_a_problem(tmp_path):
+    machine = _load(tmp_path, "schema_version: 1\nroles:\n  r:\n    mono_to_stereo: true\n")
+    assert machine.validate() == ["role 'r': has no 'ports' key"]
+
+
+def test_a_misspelt_key_in_a_long_form_role_is_named(tmp_path):
+    """`mono_to_stero: true` would otherwise be ignored, and the role would then
+    fail later as an undeclared one-port role with no hint of the cause."""
+    machine = _load(
+        tmp_path, "schema_version: 1\nroles:\n  r:\n    ports: ['A:x']\n    mono_to_stero: true\n"
+    )
+    problems = machine.validate()
+    assert len(problems) == 1 and "unknown key 'mono_to_stero'" in problems[0]
+
+
+def test_long_form_ports_are_validated_like_plain_ones(tmp_path):
+    machine = _load(tmp_path, "schema_version: 1\nroles:\n  r:\n    ports: []\n")
+    assert machine.validate() == ["role 'r': has no ports"]
+    machine = _load(tmp_path, "schema_version: 1\nroles:\n  r:\n    ports: ['bad']\n")
+    assert "<client>:<port> form" in machine.validate()[0]
