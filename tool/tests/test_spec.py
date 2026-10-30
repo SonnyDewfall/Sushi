@@ -1,3 +1,4 @@
+import pytest
 import textwrap
 from pathlib import Path
 
@@ -135,3 +136,69 @@ def test_track_to_sushi_multibus():
     assert sushi["multibus"] is True
     assert sushi["buses"] == 2
     assert sushi["channels"] == 4
+
+
+# --- source / sink: the roles that sit below a track (issue #54) ---------------
+
+
+def test_source_and_sink_are_optional_so_existing_rigs_load_unchanged(tmp_path):
+    rig = RigSpec.load(_write(tmp_path, """
+        tracks:
+          - name: t
+            inputs: [{engine_bus: 0, track_bus: 0}]
+            outputs: [{engine_bus: 0, track_bus: 0}]
+    """))
+    assert rig.tracks[0].source is None and rig.tracks[0].sink is None
+    assert rig.validate() == []
+
+
+def test_every_committed_rig_source_still_loads_and_validates():
+    """There are live configs built from these; none may need touching to take
+    the new fields."""
+    from sushi_rig.paths import checkout_root
+
+    sources = sorted((checkout_root() / "config" / "src").glob("*.yaml"))
+    assert sources, "found nothing to check"
+    for path in sources:
+        assert RigSpec.load(path).validate() == [], path.name
+
+
+def test_source_and_sink_load_from_yaml(tmp_path):
+    rig = RigSpec.load(_write(tmp_path, """
+        tracks:
+          - name: t
+            source: guitar-in
+            sink: monitor-out
+            inputs: [{engine_bus: 0, track_bus: 0}]
+            outputs: [{engine_bus: 0, track_bus: 0}]
+    """))
+    assert (rig.tracks[0].source, rig.tracks[0].sink) == ("guitar-in", "monitor-out")
+    assert rig.validate() == []
+
+
+def test_roles_never_reach_the_sushi_config():
+    """Sushi would not know what to do with them, and they only mean something to
+    the patchbay generator."""
+    entry = TrackSpec(
+        name="t", source="guitar-in", sink="monitor-out",
+        inputs=[{"engine_bus": 0, "track_bus": 0}],
+    ).to_sushi()
+    assert "source" not in entry and "sink" not in entry
+
+
+def test_a_source_on_a_track_with_no_inputs_is_a_problem():
+    problems = RigSpec(tracks=[TrackSpec(name="t", source="guitar-in")]).validate()
+    assert len(problems) == 1
+    assert "source 'guitar-in'" in problems[0] and "no inputs" in problems[0]
+
+
+def test_a_sink_on_a_track_with_no_outputs_is_a_problem():
+    problems = RigSpec(tracks=[TrackSpec(name="t", sink="monitor-out")]).validate()
+    assert len(problems) == 1 and "no outputs" in problems[0]
+
+
+@pytest.mark.parametrize("bad", ["", "  ", 3, ["guitar-in"]])
+def test_a_source_that_is_not_a_role_name_is_a_problem(bad):
+    track = TrackSpec(name="t", source=bad, inputs=[{"engine_bus": 0, "track_bus": 0}])
+    problems = RigSpec(tracks=[track]).validate()
+    assert len(problems) == 1 and "must be a role name" in problems[0]

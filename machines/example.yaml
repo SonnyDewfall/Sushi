@@ -1,0 +1,22 @@
+# A worked example of a machine file, and the only thing here that names
+# physical ports. Copy it to machines/<hostname>.yaml (`hostname` prints the
+# name) and edit the ports. Nothing else in the repository should name a device.
+#
+# Ports are written as qpwgraph shows them, <client>:<port>. The device's ALSA
+# *profile* ("Multichannel", "Pro", ...) is deliberately absent: it is what
+# changed under the old hand-wired patchbay, and the live graph supplies it.
+#
+# This is a pattern, not this rig's file. It was written without access to the
+# rig machine, so check the capture_AUX numbering against a live graph before
+# trusting it.
+#
+# Validate with `sushi-rig patchbay generate <rig.yaml> --machine <this file>`.
+schema_version: 1
+interface: Audient iD14   # informational: for whoever reads this next
+roles:
+  # A one-port role feeding a stereo bus is sent to both halves, which is how a
+  # mono guitar drives a stereo chain.
+  guitar-in:   ["Audient iD14:capture_AUX0"]
+  vocal-in:    ["Audient iD14:capture_AUX1"]
+  # Two ports, left then right.
+  monitor-out: ["Audient iD14:playback_AUX0", "Audient iD14:playback_AUX1"]

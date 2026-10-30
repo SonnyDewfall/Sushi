@@ -284,12 +284,14 @@ then.
 │   ├── rig.qpwgraph              routing loaded at startup
 │   ├── Default.qpwgraph
 │   └── Test_1.qpwgraph
+├── machines/                   the only files that name physical ports,
+│   └── example.yaml              one per machine, as <hostname>.yaml
 ├── plugin-manifest.txt         every LV2 URI this rig can load (see Plugins below)
 │
 ├── tool/                       ── TOOL: generates the configs above
 │   ├── pyproject.toml
 │   ├── src/sushi_rig/            spec, emit, dump, probe, live, panel, listen,
-│   │                             save, rig, amp, top, cli
+│   │                             save, rig, amp, top, machine, patchbay, cli
 │   ├── tests/
 │   ├── examples/
 │   │   ├── rig.example.yaml       annotated rig spec
@@ -375,6 +377,23 @@ get left behind. It then checks, and tells you if anything survived.
 > `/usr/lib/lv2`: it would let a config load against system plugins that
 > `plugins/` doesn't carry, which is exactly the silent portability break the
 > current layout exists to prevent.
+
+### Ports by role, not by device name
+
+`Patchbay/rig.qpwgraph` names ALSA device *profiles*, so changing interface (or
+profile) silently orphans it: qpwgraph keeps the dead links and nothing reports
+them. Two commands address that (issue #54):
+
+```bash
+sushi-rig patchbay check                      # saved links whose node is not in the live graph
+sushi-rig patchbay generate rig.yaml -o /tmp/p.qpwgraph   # from machines/<hostname>.yaml
+```
+
+`check` exits 1 if any node the saved patchbay names does not exist.
+`generate` builds a patchbay from the machine file's roles and the `source:` /
+`sink:` a track names; it prints to stdout or the path you give and **never
+replaces `Patchbay/rig.qpwgraph`**, which stays hand-wired until a generated one
+has been proven equivalent on the rig. No config uses roles yet.
 
 ### Choosing a plugin
 

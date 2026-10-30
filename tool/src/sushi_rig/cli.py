@@ -97,6 +97,81 @@ def _plugins(args: argparse.Namespace) -> int:
     return 0
 
 
+def _patchbay(args: argparse.Namespace) -> int:
+    """`patchbay check` and `patchbay generate`."""
+    from .machine import MachineError, MachineSpec, machine_path
+    from .patchbay import (
+        PatchbayError, generate_patchbay, live_node_names, live_port_nodes,
+        parse_patchbay, read_pw_dump, resolve_nodes, routes_from_rig, stale_nodes,
+    )
+    from .paths import checkout_root
+
+    root = checkout_root()
+
+    if args.patchbay_command == "check":
+        path = args.file or root / "Patchbay" / "rig.qpwgraph"
+        try:
+            links = parse_patchbay(path.read_text())
+            stale = stale_nodes(links, live_node_names(read_pw_dump()))
+        except OSError as exc:
+            sys.exit(f"cannot read {path}: {exc}")
+        except PatchbayError as exc:
+            sys.exit(f"{path.name}: cannot check\n" + "\n".join(f"  {p}" for p in exc.problems))
+
+        if not stale:
+            print(f"{path.name}: all {len(links)} link(s) name a node that exists")
+            return 0
+        for node, node_links in stale.items():
+            print(f"{path.name}: no live node {node!r} ({len(node_links)} link(s))")
+            for link in node_links:
+                print(f"   {link.out_port} -> {link.in_port}")
+        print(
+            f"\n{len(stale)} node(s) named by the patchbay do not exist. qpwgraph "
+            "keeps these links and never connects them.",
+            file=sys.stderr,
+        )
+        return 1
+
+    # generate
+    try:
+        rig = RigSpec.load(args.rig)
+        machine_file = args.machine or machine_path(root)
+        machine = MachineSpec.load(machine_file)
+    except (MachineError, OSError) as exc:
+        sys.exit(str(exc))
+    problems = [f"{args.rig.name}: {p}" for p in rig.validate()]
+    problems += [f"{machine_file.name}: {p}" for p in machine.validate()]
+    if problems:
+        sys.exit("\n".join(problems))
+
+    feeds, sinks = routes_from_rig(rig)
+    if not feeds and not sinks:
+        # An empty patchbay written without comment is the silent failure this
+        # exists to end: nothing wired, and nothing says why.
+        sys.exit(
+            f"{args.rig.name}: no track names a source or sink role, so there is "
+            "nothing to generate"
+        )
+    try:
+        nodes = None
+        if not args.offline:
+            nodes, problems = resolve_nodes(
+                machine.roles, set(feeds) | set(sinks), live_port_nodes(read_pw_dump())
+            )
+            if problems:
+                raise PatchbayError(problems)
+        xml = generate_patchbay(machine.roles, feeds, sinks, nodes=nodes)
+    except PatchbayError as exc:
+        sys.exit("\n".join(exc.problems))
+
+    if args.out:
+        args.out.write_text(xml)
+        print(f"wrote {args.out}", file=sys.stderr)
+    else:
+        sys.stdout.write(xml)
+    return 0
+
+
 def main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="sushi-rig", description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
@@ -302,6 +377,39 @@ def main(argv: list[str] | None = None) -> int:
         help="folder to check [default: plugins/ at the repo root]",
     )
     add_requirement_args(q)
+
+    p = sub.add_parser(
+        "patchbay",
+        help="check the saved patchbay against the live graph, or generate one "
+        "from the machine file's roles",
+    )
+    patchbay_sub = p.add_subparsers(dest="patchbay_command", required=True)
+    q = patchbay_sub.add_parser(
+        "check",
+        help="every saved link whose node does not exist in the live PipeWire "
+        "graph; exit 1 if any",
+    )
+    q.add_argument(
+        "file", type=Path, nargs="?",
+        help="patchbay to check [default: Patchbay/rig.qpwgraph at the repo root]",
+    )
+    q = patchbay_sub.add_parser(
+        "generate",
+        help="write a patchbay from machines/<hostname>.yaml and a rig.yaml; "
+        "prints it unless -o is given, and never replaces the committed one",
+    )
+    q.add_argument("rig", type=Path, help="rig.yaml whose tracks name source/sink roles")
+    q.add_argument(
+        "--machine", type=Path,
+        help="machine file [default: machines/<this hostname>.yaml at the repo root]",
+    )
+    q.add_argument("-o", "--out", type=Path, help="write here instead of stdout")
+    q.add_argument(
+        "--offline", action="store_true",
+        help="do not read the live graph: name each device node after its port's "
+        "client instead. Approximate for an ALSA device, whose node is its "
+        "profile, so qpwgraph will not match it — for diffing, not for use",
+    )
 
     sub.add_parser("status", help="what is running, if anything")
     sub.add_parser(
@@ -561,6 +669,8 @@ def main(argv: list[str] | None = None) -> int:
         return 1 if failed else 0
     elif args.command == "plugins":
         return _plugins(args)
+    elif args.command == "patchbay":
+        return _patchbay(args)
     elif args.command == "top":
         from .top import top
 
