@@ -67,6 +67,16 @@ called. Meanwhile the tests that have genuinely earned their place encode
 overrides `parameters`, that Carla numbers plugins from zero. None of them came
 from chasing coverage.
 
+The corollary, learned the expensive way: **a fixture is a captured artefact,
+not a tidied one.** `test_top.py`'s `pw-top` fixture gave every row a quantum,
+followers included. Real `pw-top` states quantum and rate on the *driver* row
+alone, and Sushi is always a follower. That fixture was neater than reality and
+encoded a guess as a fact, so `sushi-rig top` — the one display built to explain
+latency — reported `quantum 0 @ 0 Hz` while the rig sat at 42.7 ms per block,
+with its tests green throughout. Capture fixtures from the real thing, and where
+one has to be written by hand, say in the file which parts are observed and
+which are invented.
+
 **2. Every feature is covered by a functional test.** Verified by driving the
 real thing, not by a human saying it worked.
 
