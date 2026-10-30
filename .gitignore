@@ -33,7 +33,13 @@ state.json
 
 # Claude Code session state and worktrees. Worktrees are full checkouts, so
 # this grows to tens of MB and is per-machine scratch, never shared history.
-.claude/
+#
+# `.claude/*` rather than `.claude/`, because git will not look inside an
+# ignored directory and the negation below would never be read. Skills are
+# shared history -- they are how a workflow gets written down once instead of
+# re-explained every session -- so they are tracked.
+.claude/*
+!.claude/skills/
 
 
 # Carla writes its plugin state next to whatever project it loads. The
