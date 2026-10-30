@@ -395,12 +395,26 @@ names, and the cheapest way to know a config is loadable.
 ### Running the tests
 
 ```bash
-cd tool && python -m pytest -m "not slow"   # fast suite, no Sushi needed
+cd tool && python -m pytest -m "not slow" -rs   # fast suite; lilv/Sushi-guarded tests skip without them
 cd tool && python -m pytest -m slow         # starts a real Sushi, seconds per test
+cd tool && PYTHONPATH=src python -m pytest -rs   # everything, on a machine with all of it
 ```
 
-CI runs the fast suite on every PR. The slow suite needs the Sushi binary and
-the rig's `plugins/`, so it isn't in CI yet (#26).
+**Every test must run somewhere, and a skip counts as a failure.** CI is two
+workflows because no single runner has everything:
+
+- `ci.yml` runs the fast suite on a bare runner. Tests that need `python3-lilv`
+  or `./sushi` skip there — expected, and not a pass.
+- `rig-container.yml` builds `ci/Dockerfile` (system lilv, the distro plugins,
+  a real Sushi 1.3.0) and runs the **whole** suite in it, failing the job on any
+  `SKIPPED`. That is what makes the first workflow's skips safe.
+
+Only `-m slow` used to run in the container, so the lilv- and Sushi-guarded
+tests ran in neither workflow and nothing said so. If a test genuinely cannot
+run in the container (it would need the NAM amp or Carla, which the image
+deliberately lacks), give it a registered marker that says what it needs and why
+CI cannot provide it, and exclude that marker in the container run — a declared
+exemption, not a silent skip. There are none today: `tests/test_amp.py` is pure.
 
 ## Environment
 
@@ -497,7 +511,7 @@ fallback. That is the whole point: a missing or renamed plugin now fails loudly
 at startup instead of silently resolving against the system copy and hiding the
 fact that the rig is not actually self-contained.
 
-`plugin-manifest.txt` means **every LV2 URI this rig can load** — 54 of them,
+`plugin-manifest.txt` means **every LV2 URI this rig can load** — 55 of them,
 from fifteen bundles — and it must include every plugin a config in `config/`
 uses; `sushi-rig plugins check` fails if one is missing. Since Sushi addresses
 plugins by URI and never by path, that manifest plus those bundles is the whole
@@ -515,9 +529,18 @@ noise.
 To rebuild `plugins/` from distro packages, and to prove it is self-contained:
 
 ```bash
-sushi-rig plugins assemble --from /usr/lib/lv2 --to plugins
-sushi-rig plugins check            # every URI resolves with LV2_PATH = plugins/ alone
+sushi-rig plugins assemble --from /usr/lib/lv2 --to plugins \
+    --waive http://github.com/mikeoliphant/neural-amp-modeler-lv2
+sushi-rig plugins check --waive http://github.com/mikeoliphant/neural-amp-modeler-lv2
+                                   # every other URI resolves with LV2_PATH = plugins/ alone
 ```
+
+The waiver is the right answer, not a workaround. The neural amp's URI is
+required, and no distro packages it, so `/usr/lib/lv2` has no provider and a bare
+`assemble` refuses — correctly. NAM is the one component you must carry by hand
+(build it from `mikeoliphant/neural-amp-modeler-lv2`). Waiving it by name makes
+`assemble` and `check` report it on every run, so that fact is something the tool
+says out loud rather than something you have to remember.
 
 `assemble` copies exactly the bundles the rig needs and nothing else, and fails
 without copying if any required URI has no provider, listing all of them. "Needed"
@@ -525,7 +548,7 @@ is the manifest **plus every plugin the configs in `config/` use**, because the
 manifest can fall behind them; both commands say which URIs it is missing. A URI the
 packages cannot provide can be accepted by name with `--waive URI`, and is
 reported on every run. `ci/Dockerfile` does this inside a container with a real
-Sushi, so the slow suite can run without the rig machine.
+Sushi, so the whole test suite can run without the rig machine.
 
 > **This replaces a long-standing defect.** `plugins/` used to be a flat copy of
 > the system LV2 tree with all 262 bundles one level *down* in `plugins/lv2/`,
