@@ -60,6 +60,13 @@ from .analysis import (
 
 SCHEMA_VERSION = 1
 
+# How many decimals a reference keeps. Four is a readability choice (see
+# `to_dict`), but it is also a measurement limit: a level written at 4 dp is
+# only known to within half of 1e-4 dB, so a tolerance tighter than that asks
+# the file for precision it does not hold. `floor_between` will not go below it.
+WRITTEN_DECIMALS = 4
+WRITTEN_RESOLUTION_DB = 10.0 ** -WRITTEN_DECIMALS
+
 
 @dataclass(frozen=True)
 class Tolerance:
@@ -255,10 +262,18 @@ def floor_between(a: Fingerprint, b: Fingerprint) -> Tolerance:
     two runs that *should* be identical. Anything tighter reports the rig's own
     non-determinism as a change in its sound.
 
-    The returned numbers are the observed differences, unrounded and with no
-    margin added. Deciding how much headroom to allow on top is a judgement for
-    whoever commits the reference, and it should be a visible one rather than
-    something this function quietly folded in.
+    The returned numbers are the observed differences with no margin added:
+    deciding how much headroom to allow on top is a judgement for whoever
+    commits the reference, and it should be a visible one rather than something
+    this function quietly folded in.
+
+    The one floor applied is the file's own resolution. A deterministic config
+    differs from itself by exactly nothing, which would be recorded as
+    `band_db: 0.0` -- and then every later check would fail, because the
+    reference stores levels rounded to `WRITTEN_DECIMALS` and compares them
+    against a fresh measurement that is not rounded. Those differences are the
+    file format, not the rig. Found by round-tripping a calibration through YAML,
+    which none of the in-memory tests did.
     """
     bands = [abs(d) for d in band_differences_db(a.bands, b.bands) if d not in (
         float("inf"), float("-inf")
@@ -266,11 +281,19 @@ def floor_between(a: Fingerprint, b: Fingerprint) -> Tolerance:
     delay = 0
     if a.delay_samples is not None and b.delay_samples is not None:
         delay = abs(b.delay_samples - a.delay_samples)
+    observed_band = max(bands) if bands else 0.0
+    observed_level = max(abs(b.peak_dbfs - a.peak_dbfs), abs(b.rms_dbfs - a.rms_dbfs))
+    note = "measured: the largest difference between two renders of this config"
+    if max(observed_band, observed_level) < WRITTEN_RESOLUTION_DB:
+        note = (
+            "measured: two renders of this config were identical to the "
+            f"{WRITTEN_RESOLUTION_DB:g} dB this file is written at"
+        )
     return Tolerance(
-        band_db=max(bands) if bands else 0.0,
-        level_db=max(abs(b.peak_dbfs - a.peak_dbfs), abs(b.rms_dbfs - a.rms_dbfs)),
+        band_db=max(observed_band, WRITTEN_RESOLUTION_DB),
+        level_db=max(observed_level, WRITTEN_RESOLUTION_DB),
         delay_samples=delay,
-        note="measured: the largest difference between two renders of this config",
+        note=note,
     )
 
 
@@ -283,14 +306,14 @@ def to_dict(fp: Fingerprint, tolerance: Tolerance) -> dict[str, Any]:
         "sample_rate": fp.sample_rate,
         "frames": fp.frames,
         "measured": {
-            "peak_dbfs": round(fp.peak_dbfs, 4),
-            "rms_dbfs": round(fp.rms_dbfs, 4),
+            "peak_dbfs": round(fp.peak_dbfs, WRITTEN_DECIMALS),
+            "rms_dbfs": round(fp.rms_dbfs, WRITTEN_DECIMALS),
             "delay_samples": fp.delay_samples,
             "bands": [
                 {
                     "low_hz": b.low_hz,
                     "high_hz": b.high_hz,
-                    "level_dbfs": round(b.level_dbfs, 4),
+                    "level_dbfs": round(b.level_dbfs, WRITTEN_DECIMALS),
                 }
                 for b in fp.bands
             ],

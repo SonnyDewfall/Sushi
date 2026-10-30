@@ -216,12 +216,26 @@ def measure(
     stimulus: Stimulus | None = None,
     sushi_bin: str = "./sushi",
 ) -> Any:
-    """Render `config` and fingerprint the result."""
-    from .nulltest import fingerprint
+    """Render `config` and fingerprint the result.
+
+    A render that is not finite is refused here rather than fingerprinted.
+    `nulltest.render_findings` exists for exactly this step, and without the
+    call a NaN render died inside `estimate_delay` with "no correlation between
+    the signals" -- a message about the measurement, naming nothing about the
+    chain that produced it. `--calibrate` went the same way, so an unusable
+    render could have been written into a reference.
+    """
+    from .nulltest import fingerprint, render_findings
 
     out = render_offline(
         config, root, work, stimulus=stimulus, sushi_bin=sushi_bin
     )
+    broken = render_findings(out["rendered"], out["sample_rate"])
+    if broken:
+        raise RenderError(
+            f"{config.name} rendered unusable audio: "
+            + "; ".join(str(finding) for finding in broken)
+        )
     return fingerprint(
         out["rendered"],
         out["sample_rate"],

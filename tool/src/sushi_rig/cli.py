@@ -123,6 +123,18 @@ def _machine(args: argparse.Namespace) -> int:
     return 0
 
 
+def _as_typed(target: Path, root: Path) -> str:
+    """A config path as the user would type it from the rig root.
+
+    `configs_to_check` returns absolute paths, and printing `target.name` in a
+    "run this command" hint produced a command that cannot find its config.
+    """
+    try:
+        return str(target.relative_to(root))
+    except ValueError:
+        return str(target)
+
+
 def _patchbay(args: argparse.Namespace) -> int:
     """`patchbay check` and `patchbay generate`."""
     from .machine import MachineError, MachineSpec, machine_path
@@ -796,10 +808,13 @@ def main(argv: list[str] | None = None) -> int:
                         # Not a failure of the sound: there is nothing to compare
                         # against yet. Saying "ok" here would be the loudest
                         # possible lie this command could tell.
+                        # The path as the user must type it, not just the file
+                        # name: the render runs from the rig root, so
+                        # `nulltest electric-clean.json` finds nothing.
                         print(
                             f"{target.name}: NO REFERENCE — run "
-                            f"`sushi-rig nulltest {target.name} --calibrate` on a "
-                            "machine that can render",
+                            f"`sushi-rig nulltest {_as_typed(target, root)} --calibrate`"
+                            " on a machine that can render",
                             file=sys.stderr,
                         )
                         failed += 1
@@ -809,8 +824,18 @@ def main(argv: list[str] | None = None) -> int:
                     differences = compare(reference, measure(
                         target, root, work, sushi_bin=sushi
                     ), tolerance)
-                except (RenderError, ValueError, OSError) as exc:
-                    print(f"{target.name}: CANNOT CHECK — {exc}", file=sys.stderr)
+                except (RenderError, ValueError, OSError, KeyError, TypeError,
+                        AttributeError, yaml.YAMLError) as exc:
+                    # Everything a hand-edited reference can do. `from_dict`
+                    # raises KeyError on a missing section, yaml.safe_load gives
+                    # None for an empty file (AttributeError), and a traceback
+                    # here would also abandon the remaining configs under --all.
+                    # The type as well as the message: a KeyError's message is
+                    # the bare key, which on its own reads like nothing at all.
+                    print(
+                        f"{target.name}: CANNOT CHECK — {type(exc).__name__}: {exc}",
+                        file=sys.stderr,
+                    )
                     failed += 1
                     continue
 
