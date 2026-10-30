@@ -4,8 +4,9 @@ What this enables: once the rig's audio can be rendered offline to WAV files,
 these are the questions a test asks of the result — is it safe (finite, no DC,
 no overs, not accidentally silent), did the chain change (null test of v1
 against v2, or of today's render against an approved reference), and does it
-behave (an echo at 375 ms, +6 dB at 1 kHz, the same spectral balance). The
-stimuli and file I/O are in `signals`.
+behave (an echo at 375 ms, +6 dB at 1 kHz, the same spectral balance, the
+harmonics an amp is supposed to be adding). The stimuli and file I/O are in
+`signals`.
 
 What is NOT here: the renderer. Nothing in this module starts Sushi, and
 Sushi's offline-mode command-line flags have not been verified yet, so none are
@@ -469,6 +470,146 @@ def frequency_response(stimulus, response, sample_rate: int, frequencies_hz: Seq
     gains = np.interp(freqs, bin_freqs, gain_db)
     cohs = np.interp(freqs, bin_freqs, coherence)
     return [ResponsePoint(float(f), float(g), float(c)) for f, g, c in zip(freqs, gains, cohs)]
+
+
+# --------------------------------------------------------------------------- #
+# Nonlinearity
+# --------------------------------------------------------------------------- #
+
+# Harmonics 2..5 of the fundamental. Five because that is what the amp
+# measurement in issue #49 used, and the figures it produced -- 4.06 % out of
+# NAM against 0.00 % into it -- are what the thresholds built on this are
+# calibrated against. Counting more would change the number and orphan them.
+DEFAULT_HARMONICS = 5
+
+# Half-width, in FFT bins, of the window summed around each harmonic. A Hann
+# window's main lobe is four bins wide, so +/-2 holds it when the harmonic
+# lands exactly on a bin and +/-3 when it falls between two. Wider would start
+# gathering the neighbouring harmonic's skirt.
+_LOBE_BINS = 3
+
+
+@dataclass(frozen=True)
+class Harmonics:
+    """How much of a sine's energy comes back at its harmonics rather than at itself.
+
+    Levels are RMS in dBFS, the convention `rms_dbfs` and `BandEnergy` use, so
+    an undistorted full-scale sine's fundamental reads -3.01.
+
+    `thd_percent` is the usual total harmonic distortion: the harmonics' total
+    amplitude over the fundamental's, as a percentage.
+
+    `noise_percent` is that same ratio for everything which is *neither* the
+    fundamental nor one of the measured harmonics. It is a "is this still the
+    sine that was injected" guard rather than a noise measurement -- harmonics
+    above the ones counted land in it too, so a heavily distorting component
+    reads high here quite legitimately. What it catches is a response whose
+    fundamental has been filtered away, where `thd_percent` would be a large
+    number about nothing.
+    """
+
+    fundamental_hz: float
+    fundamental_dbfs: float
+    harmonic_dbfs: tuple[float, ...]
+    thd_percent: float
+    noise_percent: float
+
+
+def harmonic_distortion(signal, sample_rate: int, fundamental_hz: float, *,
+                        harmonics: int = DEFAULT_HARMONICS) -> Harmonics:
+    """Measure the harmonics a component added to a sine.
+
+    The question issue #49 turns into an assertion: a neural amp with no model
+    loaded passes audio and adds *no* harmonics, so "is the amp modelling
+    anything" is measurable rather than a judgement. Measure the sine going in
+    and the sine coming out, and compare the two `thd_percent`.
+
+    `signal` must be mono and should be a steady sine at `fundamental_hz` for
+    its whole length: this takes one Hann-windowed FFT of all of it, so a
+    capture that starts with a block of silence or a fade reads slightly low.
+    Trim to the steady part first.
+
+    Energy is summed over a few bins around each harmonic (see `_LOBE_BINS`) and
+    scaled the way `band_energies` scales its bands, so the levels here and
+    there mean the same thing.
+
+    Raises rather than returning a number it cannot stand behind: a silent
+    signal, no energy at all at `fundamental_hz`, a harmonic that would land
+    above Nyquist and fold back as distortion that is not there, or a signal too
+    short to resolve one harmonic from the next.
+    """
+    np = require_numpy()
+    x = _mono(signal, "signal")
+    n = len(x)
+    if harmonics < 2:
+        raise ValueError(f"harmonics must be at least 2 to measure any, got {harmonics}")
+    if not 0 < fundamental_hz < sample_rate / 2:
+        raise ValueError(
+            f"fundamental_hz must be between 0 and Nyquist ({sample_rate / 2} Hz), "
+            f"got {fundamental_hz}"
+        )
+    highest = fundamental_hz * harmonics
+    if highest >= sample_rate / 2:
+        raise ValueError(
+            f"harmonic {harmonics} of {fundamental_hz:g} Hz is at {highest:g} Hz, at or "
+            f"above Nyquist ({sample_rate / 2} Hz) — it would fold back onto a lower "
+            f"frequency and be counted as distortion that is not there. Use a lower "
+            f"fundamental or fewer harmonics"
+        )
+
+    bin_hz = sample_rate / n
+    if fundamental_hz < 2 * (_LOBE_BINS + 1) * bin_hz:
+        raise ValueError(
+            f"{n} samples at {sample_rate} Hz resolves {bin_hz:.4g} Hz per bin, which "
+            f"cannot separate the harmonics of {fundamental_hz:g} Hz without them "
+            f"overlapping; use a longer signal"
+        )
+
+    # Hann-windowed, and normalised exactly as `band_energies` does it, so the
+    # bins sum to the signal's mean-square power (Parseval) and an in-band sine
+    # reads its RMS level.
+    window = np.hanning(n + 1)[:-1]
+    power = np.abs(np.fft.rfft(x * window)) ** 2 / (n * np.sum(window ** 2))
+    power[1:] *= 2  # one-sided: fold in the mirrored negative-frequency half...
+    if n % 2 == 0:
+        power[-1] /= 2  # ...except Nyquist, which has no mirror (DC, row 0, is single)
+    total = float(power.sum())
+    if total <= 0.0:
+        raise ValueError(
+            "the signal is digitally silent, so there is no fundamental to measure "
+            "harmonics against"
+        )
+
+    def around(centre_hz: float) -> float:
+        centre = int(round(centre_hz * n / sample_rate))
+        low = max(0, centre - _LOBE_BINS)
+        high = min(len(power) - 1, centre + _LOBE_BINS)
+        return float(power[low:high + 1].sum())
+
+    fundamental = around(fundamental_hz)
+    if fundamental <= 0.0:
+        # Defensive, and not reachable from a test: windowing spreads a little
+        # energy into every bin, so even a stuck DC output comes within rounding
+        # of zero here rather than at it. A signal with no energy at the
+        # frequency it was asked about shows up instead as a `noise_percent` in
+        # the thousands, which is what that figure is read for.
+        raise ValueError(
+            f"no energy at all at {fundamental_hz:g} Hz, so there is no fundamental to "
+            f"measure harmonics against"
+        )
+    harmonic_power = [around(fundamental_hz * h) for h in range(2, harmonics + 1)]
+    # Whatever is left over. Clamped at zero because the harmonic windows can
+    # overlap the fundamental's for a low fundamental in a short signal, which
+    # would otherwise make this very slightly negative.
+    noise = max(0.0, total - fundamental - sum(harmonic_power))
+
+    return Harmonics(
+        fundamental_hz=float(fundamental_hz),
+        fundamental_dbfs=_power_to_dbfs(fundamental),
+        harmonic_dbfs=tuple(_power_to_dbfs(p) for p in harmonic_power),
+        thd_percent=100.0 * float(np.sqrt(sum(harmonic_power) / fundamental)),
+        noise_percent=100.0 * float(np.sqrt(noise / fundamental)),
+    )
 
 
 # --------------------------------------------------------------------------- #

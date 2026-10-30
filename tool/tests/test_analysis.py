@@ -382,6 +382,122 @@ def test_frequency_response_refuses_mismatched_lengths():
 
 
 # --------------------------------------------------------------------------- #
+# Nonlinearity
+# --------------------------------------------------------------------------- #
+
+def squared(x, a):
+    """x + a*x**2, whose harmonics have a closed form.
+
+    For x = A sin(t) the result is a*A^2/2 of DC, A at the fundamental,
+    a*A^2/2 at the second harmonic, and nothing above it. So THD is a*A/2, and
+    the DC — which belongs to no harmonic — is what `noise_percent` should pick
+    up.
+    """
+    return x + a * x ** 2
+
+
+def cubed(x, b):
+    """x + b*x**3: third order, no DC and no even harmonics.
+
+    sin^3 = (3 sin - sin 3)/4, so the fundamental becomes A + 3bA^3/4 and the
+    third harmonic bA^3/4. Used where the DC of a squared term would land in
+    `noise_percent` and blunt the assertion.
+    """
+    return x + b * x ** 3
+
+
+def test_an_undistorted_sine_has_no_harmonics_and_reads_its_rms_level():
+    x = signals.sine(SR, 1.0, 220.0, level_dbfs=-6.0)[:, 0]
+    h = analysis.harmonic_distortion(x, SR, 220.0)
+    assert h.fundamental_dbfs == pytest.approx(-9.01, abs=0.01), "peak -6 dBFS is -9.01 RMS"
+    assert h.thd_percent < 0.01
+    assert h.noise_percent < 0.01
+    assert len(h.harmonic_dbfs) == 4, "harmonics 2..5"
+
+
+def test_a_known_second_order_distortion_is_measured_and_its_dc_shows_as_noise():
+    amplitude, a = 0.5, 0.16  # THD = a*A/2 = 4 %, the figure NAM measured
+    x = signals.sine(SR, 1.0, 220.0, level_dbfs=20 * math.log10(amplitude))[:, 0]
+    h = analysis.harmonic_distortion(squared(x, a), SR, 220.0)
+    assert h.thd_percent == pytest.approx(4.0, rel=0.01)
+    # DC is a*A^2/2 = 0.02, which against an RMS fundamental of A/sqrt(2) is
+    # 0.02*sqrt(2)/0.5 = 5.66 %.
+    assert h.noise_percent == pytest.approx(5.66, rel=0.02)
+    assert h.harmonic_dbfs[0] > h.harmonic_dbfs[1] + 40, "second harmonic only"
+
+
+def test_a_known_third_order_distortion_is_measured_with_nothing_left_over():
+    amplitude, b = 0.5, 1.0
+    x = signals.sine(SR, 1.0, 220.0, level_dbfs=20 * math.log10(amplitude))[:, 0]
+    h = analysis.harmonic_distortion(cubed(x, b), SR, 220.0)
+    third = b * amplitude ** 3 / 4
+    first = amplitude + 3 * b * amplitude ** 3 / 4
+    assert h.thd_percent == pytest.approx(100 * third / first, rel=0.01)
+    assert h.noise_percent < 0.05, "an odd-order nonlinearity adds no DC"
+    assert h.harmonic_dbfs[1] > h.harmonic_dbfs[0] + 40, "third harmonic, not second"
+
+
+def test_a_linear_filter_is_not_mistaken_for_distortion():
+    """The check has to separate "changed the tone" from "added harmonics", or
+    every EQ in the chain would read as an amp doing its job."""
+    x = signals.sine(SR, 1.0, 220.0, level_dbfs=-6.0)[:, 0]
+    b, a = peaking_eq_coefficients(SR, 440.0, 12.0, 1.0)
+    h = analysis.harmonic_distortion(apply_biquad(x, b, a), SR, 220.0)
+    assert h.thd_percent < 0.1, "a boost at the second harmonic is still linear"
+
+
+def test_a_sine_at_the_wrong_frequency_shows_as_noise_not_as_distortion():
+    """`thd_percent` on a response whose fundamental is not there would be a
+    large number about nothing; `noise_percent` is what says so."""
+    x = signals.sine(SR, 1.0, 1000.0, level_dbfs=-6.0)[:, 0]
+    h = analysis.harmonic_distortion(x, SR, 220.0)
+    assert h.noise_percent > 1000
+
+
+def test_harmonics_above_nyquist_are_refused_rather_than_folded():
+    x = signals.sine(SR, 1.0, 5000.0)[:, 0]
+    with pytest.raises(ValueError, match="fold back"):
+        analysis.harmonic_distortion(x, SR, 5000.0)
+
+
+def test_a_signal_too_short_to_separate_the_harmonics_is_refused():
+    x = signals.sine(SR, 0.03, 220.0)[:, 0]
+    with pytest.raises(ValueError, match="per bin"):
+        analysis.harmonic_distortion(x, SR, 220.0)
+
+
+def test_silence_is_refused_rather_than_measured():
+    with pytest.raises(ValueError, match="digitally silent"):
+        analysis.harmonic_distortion(signals.silence(SR, 1.0)[:, 0], SR, 220.0)
+
+
+def test_a_stuck_dc_output_shows_as_noise_rather_than_as_distortion():
+    """It has power, but none of it where it was asked for. Measured, not
+    refused: windowing leaves a rounding-sized amount of energy in every bin, so
+    the fundamental is never exactly zero and the ratio stays finite."""
+    h = analysis.harmonic_distortion(np.full(SR, 0.5), SR, 220.0)
+    assert h.noise_percent > 1e6
+
+
+@pytest.mark.parametrize("kwargs, match", [
+    ({"harmonics": 1}, "at least 2"),
+    ({"fundamental_hz": 0.0}, "between 0 and Nyquist"),
+])
+def test_harmonic_distortion_refuses_unmeasurable_requests(kwargs, match):
+    call = {"fundamental_hz": 220.0, **kwargs}
+    with pytest.raises(ValueError, match=match):
+        analysis.harmonic_distortion(
+            signals.sine(SR, 1.0, 220.0)[:, 0], SR, call.pop("fundamental_hz"), **call
+        )
+
+
+def test_harmonic_distortion_refuses_multichannel_input():
+    """Reducing a stereo pair here would average two different distortions."""
+    with pytest.raises(ValueError, match="must be mono"):
+        analysis.harmonic_distortion(signals.sine(SR, 1.0, 220.0, channels=2), SR, 220.0)
+
+
+# --------------------------------------------------------------------------- #
 # Band energies
 # --------------------------------------------------------------------------- #
 

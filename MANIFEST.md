@@ -850,3 +850,19 @@ Rig user runs the headless rig and switches between configs at runtime —
 defining this persona surfaced a real gap: nothing in the backlog covered
 runtime config-switching itself, only building and deploying configs. Added
 as [#11](https://github.com/SonnyDewfall/Sushi/issues/11). *(2026-09-13)*
+
+**`selftest` ships its decisions before its capture.** What counts as silent, as
+linear, as the wrong buffer size, and the harmonic measurement all of that rests
+on, are pure and tested against signals whose answer is known by construction —
+plus one functional test that renders a passthrough through a real Sushi and
+asserts it reads as linear, which is the amp failure's exact shape. Injecting
+into the live PipeWire graph and capturing back out of it is deliberately a
+second piece of work: it can only be verified on the rig machine, and this
+project has shipped enough "I have not run this" to know how that ends. Two of
+the three thresholds come from the 2026-10-26 figures above (1 % THD against
+NAM's 4.06 %, two blocks against 257-at-256 and 2049-at-256); the third,
+`MAX_NOISE_PERCENT`, has nothing measured behind it and says so where it is
+defined. [#49](https://github.com/SonnyDewfall/Sushi/issues/49) also assumed
+`signals.py` and `analysis.py` between them already had everything needed —
+they did not, because neither had any harmonic measurement at all, which is
+most of what this adds. *(2026-10-30)*

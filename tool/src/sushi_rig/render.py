@@ -26,6 +26,11 @@ It covers the band in one pass, and it fails *diagnostically*: a reference that
 no longer matches tells you which band moved, because a sweep put energy in all
 of them. A sine would answer "different" for one frequency and nothing about the
 rest.
+
+A sine is available all the same, because the one question a sweep cannot answer
+is whether a component is adding harmonics: distortion products have to be read
+somewhere the stimulus itself put no energy, and a sweep puts energy everywhere.
+That is what `selftest` asks of an amp (#49).
 """
 
 from __future__ import annotations
@@ -71,9 +76,20 @@ class Stimulus:
     f_start_hz: float = 20.0
     f_end_hz: float = 20000.0
     channels: int = 2
+    # Only a `sine` uses this, and a sine uses neither of the two above. Each
+    # kind therefore describes itself with its own fields and no others, so a
+    # field that cannot change the samples cannot change the identity either —
+    # and the identity of an existing `log_sweep` reference is untouched by this
+    # one being added.
+    frequency_hz: float | None = None
 
     def describe(self) -> str:
         """The identity a reference records. Compared, never parsed."""
+        if self.kind == "sine":
+            return (
+                f"sine {self.frequency_hz:g}Hz {self.duration_s:g}s "
+                f"{self.level_dbfs:g}dBFS {self.channels}ch"
+            )
         return (
             f"{self.kind} {self.f_start_hz:g}-{self.f_end_hz:g}Hz "
             f"{self.duration_s:g}s {self.level_dbfs:g}dBFS {self.channels}ch"
@@ -81,9 +97,20 @@ class Stimulus:
 
     def render(self, sample_rate: int):
         """The samples themselves, regenerated from the parameters."""
+        if self.kind == "sine":
+            if self.frequency_hz is None:
+                raise RenderError("a sine stimulus needs frequency_hz")
+            return signals.sine(
+                sample_rate,
+                self.duration_s,
+                self.frequency_hz,
+                level_dbfs=self.level_dbfs,
+                channels=self.channels,
+            )
         if self.kind != "log_sweep":
             raise RenderError(
-                f"unknown stimulus kind {self.kind!r}; this tool generates log_sweep"
+                f"unknown stimulus kind {self.kind!r}; this tool generates "
+                f"log_sweep and sine"
             )
         return signals.log_sweep(
             sample_rate,
