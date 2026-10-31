@@ -483,6 +483,21 @@ sushi-rig patchbay generate config/rigs/guitar_vocal.yaml -o /tmp/rig.qpwgraph
 sushi-rig probes config/rigs/guitar_vocal.yaml --amp
 ```
 
+Every tone in `config/*.json` has a rig here too, written by `convert`, which
+refuses to write one that does not compile back to every plugin and setting the
+config held:
+
+```bash
+sushi-rig convert config/electric-clean.json            # -> config/rigs/electric-clean.yaml
+sushi-rig convert config/x.json --input vocal=vocal-in:mono   # more than one track
+```
+
+A chain entry carries its settings (`bypassed`, `parameters`, ...), a channel
+its `strip` (gain, pan, mute), and the rig its `amp`. Until `up` runs these,
+each tone exists in both forms and CI holds them together: the same plugins and
+settings, and the same sound, rendered through the master against the
+reference the v1 config was calibrated to.
+
 Each input is linked once, the master's outputs go to the monitors, and the
 stems are linked to nothing. The probes follow each channel through its stem
 and, through its send, out of the master. Not yet what `up` runs: the new

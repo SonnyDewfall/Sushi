@@ -61,7 +61,8 @@ the compiler; a name that would collide with one is refused by name.
 
 from __future__ import annotations
 
-from dataclasses import dataclass
+import copy
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
@@ -83,10 +84,13 @@ SEND_UID = "sushi.testing.send"
 RETURN_UID = "sushi.testing.return"
 MASTER_BUS = 0
 
-_KEYS = ("kind", "schema_version", "name", "description", "host", "channels", "master")
-_CHANNEL_KEYS = ("name", "input", "width", "chain")
+_KEYS = ("kind", "schema_version", "name", "description", "meta", "host", "amp",
+         "channels", "master")
+_CHANNEL_KEYS = ("name", "input", "width", "strip", "chain")
 _MASTER_KEYS = ("output", "chain")
 _PLUGIN_KEYS = ("name", "uri", "path", "uid", "type")
+# A component's settings, as `emit` writes them into `initial_state`.
+_SETTING_KEYS = ("bypassed", "program", "parameters", "properties")
 
 
 class RigFileError(ValueError):
@@ -122,6 +126,13 @@ class Rig:
     master: Master
     description: str = ""
     host: dict[str, Any] | None = None
+    # Each processor's settings by name — a channel's strip under the channel's
+    # own name, as Sushi keys a track's parameters — in `initial_state` form.
+    settings: dict[str, dict[str, Any]] = field(default_factory=dict)
+    # The amp as `amp.read_amp` reads it from a config's `_amp`; and whatever
+    # provenance a config's `_meta` carried beyond its name and description.
+    amp: dict[str, Any] | None = None
+    meta: dict[str, Any] = field(default_factory=dict)
 
 
 # --------------------------------------------------------------------------- #
@@ -178,7 +189,40 @@ def _unknown(where: str, entry: dict, known: tuple[str, ...]) -> list[str]:
     ]
 
 
-def _chain(where: str, raw: Any, problems: list[str]) -> tuple[PluginSpec, ...]:
+def _settings(at: str, entry: dict, problems: list[str]) -> dict[str, Any]:
+    """A component's settings, each checked for the shape `emit` writes."""
+    found: dict[str, Any] = {}
+    for key in _SETTING_KEYS:
+        if key not in entry:
+            continue
+        value = entry[key]
+        ok = {
+            "bypassed": isinstance(value, bool),
+            "program": type(value) is int,
+            "parameters": isinstance(value, dict) and all(
+                isinstance(k, str) and type(v) in (int, float) for k, v in value.items()
+            ),
+            "properties": isinstance(value, dict) and all(
+                isinstance(k, str) and isinstance(v, str) for k, v in value.items()
+            ),
+        }[key]
+        if ok:
+            found[key] = value
+        else:
+            problems.append(f"{at}: {key} {value!r} is not a {_SETTING_SHAPES[key]}")
+    return found
+
+
+_SETTING_SHAPES = {
+    "bypassed": "true or false",
+    "program": "program number",
+    "parameters": "mapping of parameter names to numbers",
+    "properties": "mapping of property names to strings",
+}
+
+
+def _chain(where: str, raw: Any, problems: list[str],
+           settings: dict[str, dict[str, Any]]) -> tuple[PluginSpec, ...]:
     if raw is None:
         return ()
     if not isinstance(raw, list):
@@ -190,11 +234,14 @@ def _chain(where: str, raw: Any, problems: list[str]) -> tuple[PluginSpec, ...]:
         if not isinstance(entry, dict):
             problems.append(f"{at} is {entry!r}, not a plugin")
             continue
-        problems += _unknown(at, entry, _PLUGIN_KEYS)
+        problems += _unknown(at, entry, _PLUGIN_KEYS + _SETTING_KEYS)
         if not isinstance(entry.get("name"), str):
             problems.append(f"{at} has no name")
             continue
         plugins.append(PluginSpec(**{k: v for k, v in entry.items() if k in _PLUGIN_KEYS}))
+        found = _settings(f"{where}: {entry['name']}", entry, problems)
+        if found:
+            settings[entry["name"]] = found
     return tuple(plugins)
 
 
@@ -218,7 +265,11 @@ def parse_rig(raw: Any) -> Rig:
     host = raw.get("host")
     if host is not None and not isinstance(host, dict):
         problems.append(f"host must be a mapping (got {host!r})")
+    for key in ("meta", "amp"):
+        if raw.get(key) is not None and not isinstance(raw[key], dict):
+            problems.append(f"{key} must be a mapping (got {raw[key]!r})")
 
+    settings: dict[str, dict[str, Any]] = {}
     channels = []
     entries = raw.get("channels")
     if not isinstance(entries, list) or not entries:
@@ -240,7 +291,12 @@ def parse_rig(raw: Any) -> Rig:
             problems.append(
                 f"{where}: width must be one of {', '.join(WIDTHS)} (got {entry.get('width')!r})"
             )
-        chain = _chain(where, entry.get("chain"), problems)
+        chain = _chain(where, entry.get("chain"), problems, settings)
+        if "strip" in entry and isinstance(entry.get("name"), str):
+            # The track's own gain, pan and mute, normalised as Sushi stores them.
+            strip = _settings(f"{where}: strip", {"parameters": entry["strip"]}, problems)
+            if strip:
+                settings[entry["name"]] = strip
         if isinstance(entry.get("name"), str) and entry.get("width") in WIDTHS:
             channels.append(Channel(entry["name"], str(entry.get("input")), entry["width"], chain))
 
@@ -252,11 +308,13 @@ def parse_rig(raw: Any) -> Rig:
         problems += _unknown("master", master_raw, _MASTER_KEYS)
         if not isinstance(master_raw.get("output"), str) or not master_raw["output"].strip():
             problems.append("master: output must name a role in the machine file")
-        master = Master(str(master_raw.get("output")), _chain("master", master_raw.get("chain"), problems))
+        master = Master(str(master_raw.get("output")),
+                        _chain("master", master_raw.get("chain"), problems, settings))
 
     if problems:
         raise RigFileError(problems)
-    rig = Rig(str(name), tuple(channels), master, str(raw.get("description") or ""), host)
+    rig = Rig(str(name), tuple(channels), master, str(raw.get("description") or ""), host,
+              settings, raw.get("amp"), dict(raw.get("meta") or {}))
     problems = check_rig(rig)
     if problems:
         raise RigFileError(problems)
@@ -348,7 +406,7 @@ def compile_rig(rig: Rig) -> tuple[RigSpec, dict[str, Any]]:
     if problems:
         raise RigFileError(problems)
     tracks = []
-    processors: dict[str, Any] = {}
+    processors: dict[str, Any] = copy.deepcopy(rig.settings)
     next_input = 0
     for index, channel in enumerate(rig.channels):
         send = channel.name + SEND_SUFFIX
@@ -374,7 +432,8 @@ def compile_rig(rig: Rig) -> tuple[RigSpec, dict[str, Any]]:
     spec = RigSpec(
         host=dict(rig.host or {"samplerate": 48000}),
         tracks=tracks,
-        meta={"name": rig.name, **({"description": rig.description} if rig.description else {})},
+        meta={"name": rig.name, **({"description": rig.description} if rig.description else {}),
+              **rig.meta},
     )
     problems = spec.validate()
     if problems:
@@ -394,13 +453,24 @@ def merged_state(fixed: dict[str, Any], captured: dict[str, Any] | None) -> dict
     """
     captured = captured or {}
     merged = {key: value for key, value in captured.items() if key != "processors"}
-    processors = {
-        name: dict(values) for name, values in (captured.get("processors") or {}).items()
-        if isinstance(values, dict)
-    }
-    for name, values in fixed["processors"].items():
+    # The file's settings first, a capture over them: a capture is newer, the
+    # same relation a capture has to a v1 rig.yaml's.
+    processors = copy.deepcopy(fixed["processors"])
+    for name, values in (captured.get("processors") or {}).items():
+        if not isinstance(values, dict):
+            continue
         entry = processors.setdefault(name, {})
-        entry["properties"] = {**(entry.get("properties") or {}), **values["properties"]}
+        for key, value in values.items():
+            if key in ("parameters", "properties") and isinstance(value, dict):
+                entry[key] = {**(entry.get(key) or {}), **value}
+            elif value is not None:
+                entry[key] = value
+    for name, values in fixed["processors"].items():
+        if name.endswith(SEND_SUFFIX) and "destination_name" in (values.get("properties") or {}):
+            processors[name]["properties"] = {
+                **(processors[name].get("properties") or {}),
+                "destination_name": values["properties"]["destination_name"],
+            }
     merged["processors"] = processors
     return merged
 
@@ -435,4 +505,42 @@ def emit_rig(rig: Rig, captured: dict[str, Any] | None = None) -> dict[str, Any]
     from .emit import emit
 
     spec, fixed = compile_rig(rig)
-    return pin_monitor_path(emit(spec, merged_state(fixed, captured)))
+    config = pin_monitor_path(emit(spec, merged_state(fixed, captured)))
+    if rig.amp:
+        config["_amp"] = copy.deepcopy(rig.amp)
+    return config
+
+
+def heard(config: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
+    """What the monitors hear, as configs Sushi's offline frontend can render.
+
+    The offline frontend has one stereo bus, so the stems — each channel's own
+    output — are left out, and only the master on bus 0 is rendered. That loses
+    nothing about the sound: the send is the channel exactly, sample for sample
+    (test_send_return.py). One config for a one-channel rig, named after it; one
+    per channel otherwise, named `<rig>.<channel>`, each with only that channel
+    sending and its input moved to engine channel 0 — the same names and the
+    same cut as `render.channels_of` gives a v1 config, so a v2 rig is checked
+    against the reference its v1 config was calibrated to.
+    """
+    name = (config.get("_meta") or {}).get("name", "rig")
+    channels = [t["name"] for t in config["tracks"] if t["name"] != MASTER]
+    views = []
+    for only in channels if len(channels) > 1 else [None]:
+        view = copy.deepcopy(config)
+        kept = []
+        for track in view["tracks"]:
+            if track["name"] == MASTER:
+                kept.append(track)
+            elif only is None or track["name"] == only:
+                track["outputs"] = []
+                if only is not None:
+                    first = min(e["engine_channel"] for e in track["inputs"])
+                    for entry in track["inputs"]:
+                        entry["engine_channel"] -= first
+                kept.append(track)
+        view["tracks"] = kept
+        names = {p["name"] for t in kept for p in t["plugins"]} | {t["name"] for t in kept}
+        view["initial_state"] = [e for e in view.get("initial_state", []) if e["processor"] in names]
+        views.append((name if only is None else f"{name}.{only}", view))
+    return views

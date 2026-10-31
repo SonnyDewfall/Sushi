@@ -1099,3 +1099,19 @@ to nothing. A stereo channel on a one-port role is refused unless the machine
 file declares `mono_to_stereo`, which then duplicates the port across two
 engine inputs as it does for a v1 bus. Separation is now measurable — the
 stems are apart — and still unprobed. *(2026-10-31)*
+
+**Today's tones are v2 rigs too, and held to the configs they replace.** #30's
+third slice. A rig file now carries settings — a chain entry's `bypassed`,
+`program`, `parameters` and `properties`, a channel's `strip`, the rig's `amp`
+and provenance `meta` — because a tone is its settings as much as its chain.
+`sushi-rig convert` writes one from a v1 config and refuses to write it unless
+it compiles back to every plugin, in order, and every setting the config held.
+A single-track config is taken to be the guitar on `guitar-in`, mono, which is
+how every one here is played; anything with more tracks has to be told. The
+hand-written guitar_vocal rig was checked the same way. Found by its own test:
+the converter shared its dicts with the config it read, so editing the rig
+edited the config and the agreement check could never fail; it copies now.
+Until `up` runs v2 rigs both forms exist, and CI holds them together twice —
+by settings in the fast suite and by sound in the container, each rig rendered
+through its master against the reference its v1 config was calibrated to.
+*(2026-10-31)*

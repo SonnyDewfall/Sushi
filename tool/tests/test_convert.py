@@ -1,0 +1,170 @@
+"""Today's tones as v2 rigs (#30): converted, held to the configs they replace,
+and null-tested against the references those configs were calibrated to.
+
+Until `up` runs v2 rigs, each tone exists twice — `config/<name>.json` and
+`config/rigs/<name>.yaml` — and the two must not drift. The fast test says they
+hold the same plugins and settings; the slow one says they sound the same.
+"""
+
+from __future__ import annotations
+
+import json
+
+import pytest
+import yaml
+
+from sushi_rig import rigfile
+from sushi_rig.convert import ConvertError, Input, convert, differences, parse_input, to_rig
+from sushi_rig.paths import checkout_root
+
+ROOT = checkout_root()
+CONFIGS = sorted((ROOT / "config").glob("*.json"))
+
+
+def v1(name: str) -> dict:
+    return json.loads((ROOT / "config" / f"{name}.json").read_text())
+
+
+@pytest.mark.parametrize("config", CONFIGS, ids=lambda p: p.stem)
+def test_every_tone_has_a_v2_rig_that_holds_everything_it_did(config):
+    rig = ROOT / "config" / "rigs" / f"{config.stem}.yaml"
+    assert rig.exists(), f"no v2 rig for {config.name}: `sushi-rig convert {config}`"
+    assert differences(json.loads(config.read_text()), rigfile.emit_rig(rigfile.load_rig(rig))) == []
+
+
+def test_a_converted_tone_is_a_mono_guitar_channel_into_the_master():
+    rig = convert(v1("electric-clean"), "electric-clean")
+    (channel,) = rig["channels"]
+    assert (channel["name"], channel["input"], channel["width"]) == ("board", "guitar-in", "mono")
+    assert channel["strip"] == {"gain": 0.833333, "pan": 0.5, "mute": 0.0}
+    assert rig["master"] == {"output": "monitor-out", "chain": []}
+    assert rig["amp"]["model"] == "amp/models/Neve 2.nam"
+    assert rig["meta"]["source"] == "config/src/electric_board.yaml"
+
+
+def test_a_conversion_that_lost_a_setting_would_be_refused():
+    config = v1("electric-clean")
+    rig = to_rig(config, "electric-clean")
+    rig["channels"][0]["chain"][0]["parameters"]["RATIO"] = 0.5
+    found = differences(config, rigfile.emit_rig(rigfile.parse_rig(rig)))
+    assert len(found) == 1 and found[0].startswith("initial_state for 'compressor'")
+
+
+def test_a_conversion_that_reordered_the_chain_would_be_refused():
+    """Pedal order is a tone decision; a rig holding every setting in the wrong
+    order is not the same tone."""
+    config = v1("electric-clean")
+    rig = to_rig(config, "electric-clean")
+    chain = rig["channels"][0]["chain"]
+    chain[0], chain[1] = chain[1], chain[0]
+    found = differences(config, rigfile.emit_rig(rigfile.parse_rig(rig)))
+    assert len(found) == 1 and found[0].startswith("track 'board': plugins")
+
+
+def test_more_than_one_track_must_be_told_its_inputs():
+    with pytest.raises(ConvertError) as caught:
+        to_rig(v1("guitar_vocal"), "guitar_vocal")
+    assert "track 'guitar': which input it plays from is not in the config" in caught.value.problems[0]
+    rig = convert(v1("guitar_vocal"), "guitar_vocal", {
+        "guitar": Input("guitar-in", "mono"), "vocal": Input("vocal-in", "mono"),
+    })
+    assert [c["input"] for c in rig["channels"]] == ["guitar-in", "vocal-in"]
+
+
+@pytest.mark.parametrize("change, expected", [
+    (lambda c: c.update(midi={}), "top-level 'midi' has no place in a rig file"),
+    (lambda c: c["tracks"][0].update(multibus=True), "track 'board': 'multibus' has no place"),
+    (lambda c: c["tracks"][0].update(outputs=[{"engine_bus": 1, "track_bus": 0}]), "sums onto engine bus 0"),
+    (lambda c: c["initial_state"].append({"processor": "ghost", "parameters": {}}), "'ghost', which is not in the config"),
+    (lambda c: c["initial_state"][0].update(bypassed=True), "only parameters are kept for a track's strip"),
+])
+def test_what_a_rig_file_cannot_hold_is_refused_by_name(change, expected):
+    config = v1("electric-clean")
+    change(config)
+    with pytest.raises(ConvertError) as caught:
+        to_rig(config, "electric-clean")
+    assert any(expected in p for p in caught.value.problems), caught.value.problems
+
+
+def test_an_input_is_given_as_track_role_width():
+    assert parse_input("vocal=vocal-in:mono") == ("vocal", Input("vocal-in", "mono"))
+    with pytest.raises(ConvertError):
+        parse_input("vocal=vocal-in")
+
+
+def test_the_hand_written_guitar_vocal_is_the_same_tone_as_its_config():
+    """Written before `convert` existed, with comments a conversion would lose."""
+    rig = rigfile.load_rig(ROOT / "config" / "rigs" / "guitar_vocal.yaml")
+    assert differences(v1("guitar_vocal"), rigfile.emit_rig(rig)) == []
+
+
+def test_the_command_writes_once_and_refuses_to_overwrite(tmp_path, capsys):
+    from sushi_rig.cli import main
+
+    out = tmp_path / "clean.yaml"
+    assert main(["convert", str(ROOT / "config" / "electric-clean.json"), "-o", str(out)]) == 0
+    text = out.read_text()
+    assert text.startswith("# Converted from config/electric-clean.json")
+    assert rigfile.parse_rig(yaml.safe_load(text)).name == "electric-clean"
+    assert main(["convert", str(ROOT / "config" / "electric-clean.json"), "-o", str(out)]) == 1
+    assert "exists; --force replaces it" in capsys.readouterr().out
+
+
+def test_settings_in_a_rig_file_are_checked_for_shape():
+    raw = yaml.safe_load((ROOT / "config" / "rigs" / "electric-clean.yaml").read_text())
+    raw["channels"][0]["chain"][0]["parameters"]["RATIO"] = "high"
+    raw["channels"][0]["chain"][1]["bypassed"] = "no"
+    with pytest.raises(rigfile.RigFileError) as caught:
+        rigfile.parse_rig(raw)
+    assert len(caught.value.problems) == 2
+
+
+def test_a_capture_overrides_the_files_settings_and_keeps_the_rest():
+    rig = rigfile.load_rig(ROOT / "config" / "rigs" / "electric-clean.yaml")
+    config = rigfile.emit_rig(rig, {"processors": {"compressor": {"parameters": {"RATIO": 0.5}}}})
+    state = {e["processor"]: e for e in config["initial_state"]}
+    assert state["compressor"]["parameters"]["RATIO"] == 0.5
+    assert state["compressor"]["parameters"]["KNEE"] == 0.1
+    assert state["compressor"]["bypassed"] is False
+    assert state["board_send"]["properties"] == {"destination_name": "master_return"}
+
+
+def test_what_is_heard_offline_is_the_master_alone():
+    config = rigfile.emit_rig(rigfile.load_rig(ROOT / "config" / "rigs" / "guitar_vocal.yaml"))
+    views = dict(rigfile.heard(config))
+    assert list(views) == ["guitar_vocal.guitar", "guitar_vocal.vocal"]
+    vocal = views["guitar_vocal.vocal"]
+    assert [t["name"] for t in vocal["tracks"]] == ["vocal", "master"]
+    assert vocal["tracks"][0]["outputs"] == []
+    assert {e["engine_channel"] for e in vocal["tracks"][0]["inputs"]} == {0}
+    assert [e["processor"] for e in vocal["initial_state"]] == ["vocal_send"]
+
+
+# --------------------------------------------------------------------------- #
+# Against a real Sushi
+# --------------------------------------------------------------------------- #
+
+SUSHI = ROOT / "sushi"
+RIGS = sorted((ROOT / "config" / "rigs").glob("*.yaml"))
+
+
+@pytest.mark.skipif(not SUSHI.exists(), reason="needs the Sushi binary")
+@pytest.mark.slow
+@pytest.mark.parametrize("rig", RIGS, ids=lambda p: p.stem)
+def test_every_v2_rig_sounds_like_the_config_it_replaces(rig, tmp_path):
+    """#30's done-means: rendered through the master, each v2 rig matches the
+    fingerprint its v1 config was calibrated to, within that reference's own
+    tolerance."""
+    pytest.importorskip("numpy")
+    from sushi_rig.nulltest import compare, from_dict
+    from sushi_rig.render import measure
+
+    config = rigfile.emit_rig(rigfile.load_rig(rig))
+    for name, view in rigfile.heard(config):
+        reference = ROOT / "config" / "sound" / f"{name}.yaml"
+        assert reference.exists(), f"no reference for {name}"
+        source = tmp_path / f"{name}.json"
+        source.write_text(json.dumps(view, indent=2))
+        expected, tolerance = from_dict(yaml.safe_load(reference.read_text()))
+        found = compare(expected, measure(source, ROOT, tmp_path / name, sushi_bin=str(SUSHI)), tolerance)
+        assert found == [], f"{name}: " + "; ".join(str(f) for f in found)

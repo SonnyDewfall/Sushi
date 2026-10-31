@@ -1,0 +1,39 @@
+# Converted from config/electric_board.json by `sushi-rig convert`, and checked to compile
+# back to every plugin and setting it held. Edit this file, not that one.
+
+kind: rig
+schema_version: 1
+name: electric_board
+description: Electric guitar — compressor, overdrive, octave, EQ, chorus, delay, and two reverbs — a clean
+  room and a big hall
+meta:
+  version: '1.0'
+  status: stable
+host:
+  samplerate: 48000
+channels:
+- name: board
+  input: guitar-in
+  width: mono
+  chain:
+  - name: compressor
+    uri: http://guitarix.sourceforge.net/plugins/gx_compressor#_compressor
+  - name: overdrive
+    uri: http://guitarix.sourceforge.net/plugins/gxts9#ts9sim
+  - name: octave_down
+    uri: http://guitarix.sourceforge.net/plugins/gx_detune_#_detune_
+  - name: octave_up
+    uri: http://guitarix.sourceforge.net/plugins/gx_detune_#_detune_
+  - name: eq
+    uri: http://distrho.sf.net/plugins/3BandEQ
+  - name: chorus
+    uri: http://guitarix.sourceforge.net/plugins/gx_chorus_stereo#_chorus_stereo
+  - name: delay
+    uri: http://plugin.org.uk/swh-plugins/lcrDelay
+  - name: room
+    uri: urn:ardour:a-reverb
+  - name: hall
+    uri: http://distrho.sf.net/plugins/MaGigaverb
+master:
+  output: monitor-out
+  chain: []

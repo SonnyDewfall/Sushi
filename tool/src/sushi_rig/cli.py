@@ -281,6 +281,36 @@ def _emit_any(path: Path, state: dict | None) -> dict:
         sys.exit(f"{path}:\n  " + "\n  ".join(exc.problems))
 
 
+def _convert(args: argparse.Namespace) -> int:
+    from .convert import ConvertError, convert, parse_input, render_rig_file
+    from .paths import checkout_root
+
+    name = args.config.stem
+    out = args.out or checkout_root() / "config" / "rigs" / f"{name}.yaml"
+    if out.exists() and not args.force:
+        # A rig file may carry comments and edits its config never had.
+        print(f"FAIL {out} exists; --force replaces it")
+        return 1
+    try:
+        inputs = dict(parse_input(text) for text in args.input)
+        rig = convert(json.loads(args.config.read_text()), name, inputs)
+    except ConvertError as exc:
+        for problem in exc.problems:
+            print(f"FAIL {args.config}: {problem}")
+        return 1
+    except (OSError, ValueError) as exc:
+        print(f"FAIL {args.config}: {exc}")
+        return 1
+    out.parent.mkdir(parents=True, exist_ok=True)
+    try:
+        source = args.config.resolve().relative_to(checkout_root())
+    except ValueError:
+        source = args.config
+    out.write_text(render_rig_file(rig, str(source)))
+    print(f"wrote {out}")
+    return 0
+
+
 def _probes(args: argparse.Namespace) -> int:
     from .probes import ProbeError, plan_probes
 
@@ -678,6 +708,21 @@ def main(argv: list[str] | None = None) -> int:
         "--no-verify", dest="verify", action="store_false",
         help="skip the load and parameter-name checks run after writing",
     )
+
+    p = sub.add_parser(
+        "convert",
+        help="write a v1 config as a v2 rig file of channels, checked to compile back "
+        "to every plugin and setting it held",
+    )
+    p.add_argument("config", type=Path, help="config/<name>.json")
+    p.add_argument("-o", "--out", type=Path,
+                   help="where to write it [default: config/rigs/<name>.yaml]")
+    p.add_argument(
+        "--input", action="append", default=[], metavar="TRACK=ROLE:WIDTH",
+        help="which input a track plays from, e.g. vocal=vocal-in:mono. A single-track "
+        "config defaults to guitar-in:mono; any other must be told",
+    )
+    p.add_argument("--force", action="store_true", help="replace a rig file already there")
 
     p = sub.add_parser("push", help="build the rig in a running Sushi")
     p.add_argument("rig", type=Path)
@@ -1266,6 +1311,8 @@ def main(argv: list[str] | None = None) -> int:
         return _take(args)
     elif args.command == "probes":
         return _probes(args)
+    elif args.command == "convert":
+        return _convert(args)
     elif args.command == "top":
         from .top import top
 
