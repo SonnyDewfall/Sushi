@@ -1,0 +1,134 @@
+# Converted from config/hard-feelings.json by `sushi-rig convert`, and checked to compile
+# back to every plugin and setting it held. Edit this file, not that one.
+
+kind: rig
+schema_version: 1
+name: hard-feelings
+description: Electric guitar — compressor, overdrive, octave, EQ, chorus, delay, and two reverbs — a clean
+  room and a big hall
+meta:
+  version: '1.0'
+  status: stable
+  source: config/src/electric_board.yaml
+host:
+  samplerate: 48000
+amp:
+  plugin: nam
+  model: amp/models/Neve 2.nam
+  parameters:
+    Input Lvl: 0.0
+    Output Lvl: 6.0
+    Quality: 1.0
+channels:
+- name: board
+  input: guitar-in
+  width: mono
+  strip:
+    gain: 0.833333
+    pan: 0.5
+    mute: 0.0
+  chain:
+  - name: compressor
+    uri: http://guitarix.sourceforge.net/plugins/gx_compressor#_compressor
+    bypassed: false
+    parameters:
+      RATIO: 0.07
+      KNEE: 0.1
+      THRESHOLD: 0.8
+      RELEASE: 0.02
+      ATTACK: 0.002
+      BYPASS: 1.0
+  - name: overdrive
+    uri: http://guitarix.sourceforge.net/plugins/gxts9#ts9sim
+    bypassed: true
+    parameters:
+      Level: 0.93
+      Tone: 0.13
+      Drive: 0.0
+      BYPASS: 1.0
+  - name: octave_down
+    uri: http://guitarix.sourceforge.net/plugins/gx_detune_#_detune_
+    bypassed: true
+    parameters:
+      DETUNE: 0.5
+      OCTAVE: 0.0
+      COMPENSATE: 0.0
+      LATENCY: 0.0
+      WET: 0.5
+      DRY: 0.5
+      LOW: 0.5
+      MIDDLELOW: 0.5
+      MIDDLETREBLE: 0.5
+      TREBLE: 0.5
+      BYPASS: 1.0
+  - name: octave_up
+    uri: http://guitarix.sourceforge.net/plugins/gx_detune_#_detune_
+    bypassed: true
+    parameters:
+      DETUNE: 0.5
+      OCTAVE: 0.0
+      COMPENSATE: 0.0
+      LATENCY: 0.0
+      WET: 0.5
+      DRY: 0.5
+      LOW: 0.5
+      MIDDLELOW: 0.5
+      MIDDLETREBLE: 0.5
+      TREBLE: 0.5
+      BYPASS: 1.0
+  - name: eq
+    uri: http://distrho.sf.net/plugins/3BandEQ
+    bypassed: false
+    parameters:
+      Low: 0.5
+      Mid: 0.56
+      High: 0.62
+      Master: 0.56
+      Low-Mid Freq: 0.48
+      Mid-High Freq: 0.06
+  - name: chorus
+    uri: http://guitarix.sourceforge.net/plugins/gx_chorus_stereo#_chorus_stereo
+    bypassed: false
+    parameters:
+      Level: 0.91
+      Delay: 0.5
+      Depth: 0.03
+      Freq: 0.08
+      BYPASS: 1.0
+  - name: delay
+    uri: http://plugin.org.uk/swh-plugins/lcrDelay
+    bypassed: true
+    parameters:
+      L delay (ms): 0.25
+      L level: 0.5
+      C delay (ms): 0.25
+      C level: 0.5
+      R delay (ms): 0.25
+      R level: 0.5
+      Feedback: 0.5
+      High damp (%): 0.5
+      Low damp (%): 0.5
+      Spread: 0.5
+      Dry/Wet level: 0.0
+  - name: room
+    uri: urn:ardour:a-reverb
+    bypassed: false
+    parameters:
+      Blend: 0.15
+      Room Size: 0.41
+      Enable: 1.0
+  - name: hall
+    uri: http://distrho.sf.net/plugins/MaGigaverb
+    bypassed: true
+    parameters:
+      damping: 0.12
+      revtime: 0.01
+      roomsize: 0.29
+      spread: 0.0
+      bandwidth: 0.12
+      tail: 0.08
+      dry: 0.92
+      early: 0.16
+master:
+  output: monitor-out
+  chain: []

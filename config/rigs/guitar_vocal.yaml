@@ -21,6 +21,9 @@ kind: rig
 schema_version: 1
 name: guitar_vocal
 description: Guitar and vocals — two channels, two chains, one monitor mix
+meta:
+  version: "1.0"
+  status: wip
 
 channels:
   - name: guitar
