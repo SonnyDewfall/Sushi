@@ -248,3 +248,23 @@ def test_an_explicit_sushi_still_wins(tmp_path, monkeypatch):
     assert _run_verify_cli(tmp_path, monkeypatch, "--sushi", "/opt/other/sushi") == [
         "/opt/other/sushi"
     ]
+
+
+def test_stopping_a_verification_sushi_does_not_wait_out_the_grace_period():
+    """`_stop` reaps the Popen it was given. Otherwise the child, once killed,
+    is a zombie -- which still counts as a member of its group -- and the stop
+    sits through both full grace periods (five seconds) against a dead process.
+    Against a real process leading its own group, as the verification Sushi is."""
+    import subprocess
+    import sys
+    import time
+
+    from sushi_rig import verify
+
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True,
+    )
+    started = time.monotonic()
+    verify._stop(child)
+    assert child.returncode is not None, "it was reaped, not left a zombie"
+    assert time.monotonic() - started < 2.0
