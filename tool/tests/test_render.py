@@ -684,17 +684,30 @@ def test_a_track_name_that_cannot_name_a_file_is_refused():
 
 
 def test_every_channel_of_every_config_in_the_repository_renders():
-    """The property that matters now, and the one guitar_vocal used to fail."""
+    """The property that matters now, and the one guitar_vocal used to fail.
+
+    No head-count is written down here: a literal number made adding a config
+    fail a test that was not about how many configs there are. What is pinned
+    is that every channel of every config is accepted, and that none is lost or
+    named twice on the way.
+    """
     import json
 
-    names = {
-        channel.name
-        for config in (ROOT / "config").glob("*.json")
+    configs = sorted((ROOT / "config").glob("*.json"))
+    assert configs, "found no configs; the glob is looking in the wrong place"
+    every = [
+        channel
+        for config in configs
         for channel in render.channels_of(json.loads(config.read_text()), config)
-        if render.offline_problem(channel.config) is None
-    }
-    assert {"guitar_vocal.guitar", "guitar_vocal.vocal", "electric_board"} <= names
-    assert len(names) == 12, sorted(names)
+    ]
+    refused = {c.name: problem for c in every
+               if (problem := render.offline_problem(c.config)) is not None}
+    assert not refused, refused
+    names = [c.name for c in every]
+    assert len(set(names)) == len(names), "two channels share a reference name"
+    # A config always yields at least one channel, so none can have vanished.
+    assert len(names) >= len(configs)
+    assert {"guitar_vocal.guitar", "guitar_vocal.vocal", "electric_board"} <= set(names)
 
 
 def test_a_multi_track_config_gets_a_reference_per_channel(tmp_path, monkeypatch, capsys):

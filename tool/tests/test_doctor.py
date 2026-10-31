@@ -470,7 +470,16 @@ def test_the_command_runs_end_to_end_and_names_every_check(capsys):
     # Either the graph was read and the four questions answered, or it was not
     # and that was said. Both are honest; silence would not be.
     assert "pipewire-graph" in printed.out or "clock-driver" in printed.out
-    assert "patchbay-nodes" in printed.out
+    # The patchbay check is three-way, and which arm fires depends on the
+    # machine: `patchbay-nodes` (OK) where every device it names is present,
+    # `patchbay-stale` (FAULT) where it names one that is absent, and
+    # `patchbay-unchecked` where the graph could not be read. All three are an
+    # answer; exactly one must be given, and never none.
+    verdicts = [
+        name for name in ("patchbay-nodes", "patchbay-stale", "patchbay-unchecked")
+        if name in printed.out
+    ]
+    assert len(verdicts) == 1, f"expected one patchbay verdict, got {verdicts}"
 
 
 def test_a_pw_dump_that_is_not_json_does_not_abort_the_command(monkeypatch, capsys):

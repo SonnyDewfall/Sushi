@@ -40,7 +40,7 @@ from typing import Any
 
 from .dump import collect_parameter_names, dump_plugins
 from .paths import checkout_root
-from .procs import pgid_alive, port_is_open
+from .procs import port_is_open, stop_group
 
 def sushi_env(root: Path, base: dict[str, str] | None = None) -> dict[str, str]:
     """The environment every Sushi this module starts runs in.
@@ -237,16 +237,16 @@ def _stop(process: subprocess.Popen) -> None:
         pgid = os.getpgid(process.pid)
     except ProcessLookupError:
         return
-    for sig in (signal.SIGINT, signal.SIGKILL):
-        try:
-            os.killpg(pgid, sig)
-        except ProcessLookupError:
-            return
-        deadline = time.monotonic() + STOP_TIMEOUT / 2
-        while time.monotonic() < deadline:
-            if not pgid_alive(pgid):
-                return
-            time.sleep(0.05)
+    try:
+        # `process.poll` reaps it: it is our own child, and a zombie would
+        # otherwise count as a live member of its group.
+        stop_group(
+            pgid,
+            ((signal.SIGINT, STOP_TIMEOUT / 2), (signal.SIGKILL, STOP_TIMEOUT / 2)),
+            poll=process.poll, interval=0.05,
+        )
+    except PermissionError:
+        pass
 
 
 class VerifyError(Exception):

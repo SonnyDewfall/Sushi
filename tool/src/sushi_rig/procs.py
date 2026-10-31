@@ -17,6 +17,7 @@ import os
 import signal
 import socket
 import time
+from typing import Callable
 
 
 # Shutdown escalation. SIGINT first because that is what lets Sushi unhook its
@@ -28,9 +29,15 @@ SHUTDOWN_STEPS: tuple[tuple[signal.Signals, float], ...] = (
     (signal.SIGKILL, 2.0),
 )
 
-# How long to wait for a killed qpwgraph to actually exit before starting ours.
 def pid_alive(pid: int) -> bool:
-    """Whether a pid exists, without caring whether we may signal it."""
+    """Whether a pid exists, without caring whether we may signal it.
+
+    Ids of 1 or below are never a rig's process and are answered False without
+    asking: `kill(0, 0)` addresses the caller's own group and succeeds, and the
+    pids come from a state file anyone could have edited (see `pgid_alive`).
+    """
+    if pid <= 1:
+        return False
     try:
         os.kill(pid, 0)
     except ProcessLookupError:
@@ -42,6 +49,16 @@ def pid_alive(pid: int) -> bool:
 
 
 def pgid_alive(pgid: int) -> bool:
+    """Whether a process group has any member left.
+
+    Ids of 1 or below are never a rig's group, and are answered False without
+    asking. `killpg(0, 0)` signals the *caller's own* group and so always
+    succeeds -- a state file holding 0 would read as a live rig and then `down`
+    would signal the shell that ran it -- and a negative id is not a group at
+    all but an OSError nobody expects here. Pgid 1 is init's.
+    """
+    if pgid <= 1:
+        return False
     try:
         os.killpg(pgid, 0)
     except ProcessLookupError:
@@ -49,6 +66,55 @@ def pgid_alive(pgid: int) -> bool:
     except PermissionError:
         return True
     return True
+
+
+def stop_group(
+    pgid: int,
+    steps: tuple[tuple[signal.Signals, float], ...] = SHUTDOWN_STEPS,
+    *,
+    poll: Callable[[], object] | None = None,
+    interval: float = 0.1,
+) -> bool:
+    """Signal a process group through `steps` until it is gone; whether it is.
+
+    Each step sends its signal and then gives the group that long to disappear,
+    so SIGINT really gets its chance to let Sushi release its JACK ports before
+    anything harsher is sent. Stops at the first signal after which the group is
+    gone. One implementation because there were three copies of this loop and
+    they had drifted apart.
+
+    `poll`, if given, is called on every tick before the group is checked. It is
+    for a caller whose own child leads the group: a child that has exited is a
+    zombie until waited for, and a zombie still counts as a group member, so
+    without reaping it the whole escalation runs against a dead process. Pass
+    `process.poll` or a `waitpid(..., WNOHANG)`.
+
+    A group that vanishes between steps (ProcessLookupError) is gone, not an
+    error. `PermissionError` propagates: whether a group that is not ours is a
+    message (`down`) or something to shrug off (a failed-start cleanup) is the
+    caller's decision. A group id that is not a real one, or is the caller's own
+    group, is refused with ValueError rather than signalled; `killpg(0, ...)` is
+    the shell that ran us.
+    """
+    if pgid <= 1 or pgid == os.getpgrp():
+        raise ValueError(f"refusing to signal process group {pgid}")
+    for sig, wait in steps:
+        try:
+            os.killpg(pgid, sig)
+        except ProcessLookupError:
+            return True
+        deadline = time.monotonic() + wait
+        while time.monotonic() < deadline:
+            if poll is not None:
+                poll()
+            if not pgid_alive(pgid):
+                return True
+            time.sleep(interval)
+        if poll is not None:
+            poll()
+        if not pgid_alive(pgid):
+            return True
+    return not pgid_alive(pgid)
 
 
 def port_is_open(host: str, port: int, timeout: float = 0.5) -> bool:
