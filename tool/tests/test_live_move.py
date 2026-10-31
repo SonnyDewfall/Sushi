@@ -6,12 +6,13 @@ last element" case has to become add_to_back rather than "before" anything,
 because that is how Sushi's API expresses position.
 """
 
+import inspect
 import sys
-import time
 import types
 
 import pytest
 
+from sushi_rig import live
 from sushi_rig.live import TAB_RESELECT_DELAY, plan_move, refresh_panel
 
 CHAIN = ["compressor", "overdrive", "octave", "eq", "chorus", "delay", "reverb"]
@@ -88,16 +89,55 @@ def test_tab_reselect_is_deferred_rather_than_sent_immediately(fake_osc):
     """The regression this guards: sent back to back, the /TABS lands while
     open-stage-control is still rebuilding its widget tree and is silently
     dropped, so every move bounced you to the first tab. Verified against the
-    running rig — the identical message works once the rebuild has settled."""
-    refresh_panel("/tmp/panel.json", "reverb")
+    running rig — the identical message works once the rebuild has settled.
+
+    The deferral is injected, so this asks only what refresh_panel did with it:
+    it handed over the delay and an action, sent nothing more itself, and the
+    action, when fired, sends the /TABS."""
+    scheduled = []
+    refresh_panel(
+        "/tmp/panel.json", "reverb",
+        schedule=lambda delay, action: scheduled.append((delay, action)),
+    )
     assert fake_osc.sent == [("/SESSION/OPEN", "/tmp/panel.json")], (
         "/TABS must not go out in the same breath as /SESSION/OPEN"
     )
+    assert len(scheduled) == 1
+    delay, action = scheduled[0]
+    assert delay == TAB_RESELECT_DELAY
 
-    deadline = time.monotonic() + TAB_RESELECT_DELAY + 2
-    while time.monotonic() < deadline and len(fake_osc.sent) < 2:
-        time.sleep(0.05)
+    action()
     assert fake_osc.sent[1] == ("/TABS", "reverb"), "but it must still arrive"
+
+
+def test_the_delay_is_the_one_measured_and_it_is_what_refresh_uses_by_default():
+    """0.75 s: well over the under-half-second rebuild measured on a seven-plugin
+    panel, short enough not to be noticed (the constant's own comment)."""
+    assert TAB_RESELECT_DELAY == 0.75
+    assert inspect.signature(refresh_panel).parameters["tab_delay"].default == (
+        TAB_RESELECT_DELAY
+    )
+
+
+def test_by_default_the_deferral_is_a_threading_timer(fake_osc, monkeypatch):
+    """Without an injected schedule the real path is a `threading.Timer` for the
+    default delay. Timer is faked here, so no wall clock is spent finding that
+    out. (That the thread is not a daemon is a property of the real Timer, which
+    is why it is used rather than a hand-made thread.)"""
+    started = []
+
+    class FakeTimer:
+        def __init__(self, delay, action):
+            self.delay, self.action = delay, action
+
+        def start(self):
+            started.append(self)
+
+    monkeypatch.setattr(live.threading, "Timer", FakeTimer)
+    refresh_panel("/tmp/panel.json", "reverb")
+    assert [t.delay for t in started] == [TAB_RESELECT_DELAY]
+    started[0].action()
+    assert fake_osc.sent[-1] == ("/TABS", "reverb")
 
 
 def test_refresh_without_a_tab_only_reloads(fake_osc):

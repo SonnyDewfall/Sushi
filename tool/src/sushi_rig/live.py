@@ -29,7 +29,7 @@ import threading
 
 import sys
 import time
-from typing import Any
+from typing import Any, Callable
 
 DEFAULT_GRPC_ADDRESS = "localhost:51051"
 
@@ -251,12 +251,24 @@ def get_live_bypass_state(address: str = DEFAULT_GRPC_ADDRESS) -> dict[str, bool
 TAB_RESELECT_DELAY = 0.75
 
 
+def _start_timer(delay: float, action: Callable[[], None]) -> None:
+    """Run `action` after `delay` seconds, on a thread of its own.
+
+    Deliberately NOT a daemon thread. A daemon dies with the process, and a
+    one-shot caller (`sushi-rig panel`, a script) exits long before the delay is
+    up — the reload lands, the re-select never goes out. Non-daemon costs a
+    long-lived caller at most `delay` on shutdown.
+    """
+    threading.Timer(delay, action).start()
+
+
 def refresh_panel(
     panel_path: str,
     select_tab: str | None = None,
     host: str = "127.0.0.1",
     port: int = 8080,
     tab_delay: float = TAB_RESELECT_DELAY,
+    schedule: Callable[[float, Callable[[], None]], None] = _start_timer,
 ) -> None:
     """Tell a running open-stage-control to reload `panel_path`.
 
@@ -279,6 +291,9 @@ def refresh_panel(
     rebuild has settled, the very same message selects the tab correctly. So
     the re-select is deferred by `tab_delay`, on a timer rather than a sleep so
     the caller (the OSC listener, which must stay responsive) isn't blocked.
+    `schedule(delay, action)` is how that deferral is carried out; it is a
+    parameter so a test can run the action itself instead of waiting out the
+    wall clock, and defaults to a real `threading.Timer`.
 
     Fire-and-forget: OSC is unacknowledged, so there is nothing to await and no
     confirmation to check. A panel that failed to reload is a cosmetic problem;
@@ -300,11 +315,7 @@ def refresh_panel(
     if tab_delay <= 0:
         _reselect()
     else:
-        # Deliberately NOT a daemon thread. A daemon dies with the process,
-        # and a one-shot caller (`sushi-rig panel`, a script) exits long before
-        # the delay is up — the reload lands, the re-select never goes out.
-        # Non-daemon costs a long-lived caller at most `tab_delay` on shutdown.
-        threading.Timer(tab_delay, _reselect).start()
+        schedule(tab_delay, _reselect)
 
 
 def plan_move(chain: list[str], processor: str, direction: int) -> dict[str, Any] | None:
