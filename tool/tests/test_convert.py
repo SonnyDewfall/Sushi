@@ -128,7 +128,20 @@ def test_the_command_writes_once_and_refuses_to_overwrite(tmp_path, capsys):
     assert text.startswith("# Converted from config/electric-clean.json")
     assert rigfile.parse_rig(yaml.safe_load(text)).name == "electric-clean"
     assert main(["convert", str(ROOT / "config" / "electric-clean.json"), "-o", str(out)]) == 1
-    assert "exists; --force replaces it" in capsys.readouterr().out
+    assert "exists; --force updates it, keeping its comments" in capsys.readouterr().out
+
+
+def test_force_updates_a_rig_file_in_place_and_keeps_its_comments(tmp_path):
+    from sushi_rig.cli import main
+
+    out = tmp_path / "clean.yaml"
+    config = str(ROOT / "config" / "electric-clean.json")
+    assert main(["convert", config, "-o", str(out)]) == 0
+    fresh = out.read_text()
+    out.write_text(fresh.replace("channels:\n", "channels:\n# Written by hand, and wanted.\n", 1))
+    assert main(["convert", config, "-o", str(out), "--force"]) == 0
+    assert out.read_text().count("# Written by hand, and wanted.\n") == 1
+    assert out.read_text().replace("# Written by hand, and wanted.\n", "") == fresh
 
 
 def test_settings_in_a_rig_file_are_checked_for_shape():

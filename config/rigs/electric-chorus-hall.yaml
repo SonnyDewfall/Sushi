@@ -4,8 +4,8 @@
 kind: rig
 schema_version: 1
 name: electric-chorus-hall
-description: Electric guitar — compressor, overdrive, octave, EQ, chorus, delay, and two reverbs — a clean
-  room and a big hall
+description: Electric guitar — compressor, overdrive, octave, EQ, chorus, delay, and two reverbs — a
+  clean room and a big hall
 meta:
   version: '1.0'
   status: stable

@@ -5,6 +5,7 @@ description = "Author an LV2 rig live in Sushi, then capture it back as a config
 requires-python = ">=3.10"
 dependencies = [
     "pyyaml>=6.0",
+    "ruamel.yaml>=0.19,<0.20",  # round-trip writes, so comments survive (rigfile.write_rig); yamlmerge.py relies on 0.19's comment layout
 ]
 
 [project.optional-dependencies]

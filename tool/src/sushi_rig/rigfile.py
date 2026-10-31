@@ -151,6 +151,56 @@ def load_rig(path: Path) -> Rig:
     return parse_rig(raw)
 
 
+# The header a rig file written from nothing carries when it came from a v1 config.
+_HEADER = (
+    "# Converted from {source} by `sushi-rig convert`, and checked to compile\n"
+    "# back to every plugin and setting it held. Edit this file, not that one.\n\n"
+)
+
+
+def write_rig(path: Path, rig: dict, *, source: str | None = None) -> None:
+    """Write `rig` (the dict `parse_rig` reads) to `path`, keeping what a person wrote.
+
+    A file already there is updated in place to hold `rig` — changed values set,
+    new keys added, absent keys removed, chain entries matched by name — and
+    written back with its comments, blank lines, key order and layout intact,
+    so an unchanged rig is an unchanged file (yamlmerge.py has the rules, and
+    what it will not do). A file not there is written from nothing, in block
+    style with keys in `rig`'s order, under the header saying where it came
+    from if `source` is given.
+
+    Nothing is written, and `RigFileError` is raised, when `rig` is not one
+    `parse_rig` accepts, when the file there is not YAML or not a mapping or
+    holds a comment or a layout that cannot be kept, or when the text would not
+    read back as `rig` (yamlmerge checks that). The file is replaced whole or
+    not at all, with its permissions."""
+    import os
+    import shutil
+
+    from . import yamlmerge
+
+    path = Path(path)
+    parse_rig(copy.deepcopy(rig))  # refuse what load_rig would refuse
+    existing = path.read_text() if path.exists() else ""
+    try:
+        if existing.strip():
+            text = yamlmerge.merged(existing, rig)
+        else:
+            text = yamlmerge.fresh(rig, _HEADER.format(source=source) if source else "")
+    except yamlmerge.MergeError as exc:
+        raise RigFileError([f"{path}: {exc}"]) from exc
+    path.parent.mkdir(parents=True, exist_ok=True)
+    scratch = path.with_name(path.name + ".tmp")
+    try:
+        scratch.write_text(text)
+        if path.exists():
+            shutil.copymode(path, scratch)  # the file keeps its permissions
+        os.replace(scratch, path)
+    except BaseException:
+        scratch.unlink(missing_ok=True)
+        raise
+
+
 def load_any(path: Path) -> "Rig | RigSpec":
     """Either kind of rig file, decided in one place: a `Rig` for one of these,
     a `RigSpec` for a rig.yaml of tracks. Raises `RigFileError` (a ValueError)
