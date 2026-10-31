@@ -429,10 +429,13 @@ def test_restart_brings_back_the_same_rig():
 
     name, options = restart_arguments({
         "config_name": "electric-chorus-2", "mode": "panel",
+        "tuner_requested": True, "amp_requested": True,
         "children": {"fmit": 1, "sushi": 2, "amp": 3, "open-stage-control": 4},
     })
     assert name == "electric-chorus-2"
-    assert options == {"headless": False, "tuner": True, "amp": True}
+    assert options == {
+        "headless": False, "tuner": True, "amp": True, "amp_model": None,
+    }
 
 
 def test_restart_preserves_the_choices_the_rig_was_started_with():
@@ -441,9 +444,57 @@ def test_restart_preserves_the_choices_the_rig_was_started_with():
     from sushi_rig.rig import restart_arguments
 
     _, options = restart_arguments({
-        "config_name": "x", "mode": "headless", "children": {"sushi": 1},
+        "config_name": "x", "mode": "headless",
+        "tuner_requested": False, "amp_requested": False,
+        "children": {"sushi": 1},
     })
-    assert options == {"headless": True, "tuner": False, "amp": False}
+    assert options == {
+        "headless": True, "tuner": False, "amp": False, "amp_model": None,
+    }
+
+
+def test_restart_carries_the_amp_model_override():
+    """`--amp-model` is the whole reason for naming a model on the command line.
+    Dropped on restart, the config's own model came back with nothing said --
+    an amp that sounds plausible and is the wrong one."""
+    from sushi_rig.rig import restart_arguments
+
+    _, options = restart_arguments({
+        "config_name": "x", "mode": "panel", "amp_requested": True,
+        "amp_model": "amp/models/Other.nam", "children": {"sushi": 1, "amp": 2},
+    })
+    assert options["amp_model"] == "amp/models/Other.nam"
+
+
+def test_an_amp_that_was_asked_for_but_failed_comes_back_asked_for():
+    """The amp is optional, so a Carla that died at startup is absent from the
+    children. Deciding from the children made that permanent: every later
+    restart had no amp, silently, which is the looks-healthy-but-dry failure
+    this rig exists to avoid. The request is what is restored, so the next
+    restart tries again and the failure is reported again."""
+    from sushi_rig.rig import restart_arguments
+
+    _, options = restart_arguments({
+        "config_name": "x", "mode": "panel",
+        "tuner_requested": True, "amp_requested": True,
+        "amp_model": "amp/models/M.nam",
+        "children": {"sushi": 1, "listen": 3},  # no fmit, no amp: both failed
+    })
+    assert options["amp"] is True
+    assert options["tuner"] is True
+    assert options["amp_model"] == "amp/models/M.nam"
+
+
+def test_a_state_file_from_before_requests_were_recorded_falls_back_to_children():
+    """Written by an older `up`, it cannot say what was asked for; the children
+    are the best evidence it has, and refusing to restart would be worse."""
+    from sushi_rig.rig import restart_arguments
+
+    _, options = restart_arguments({
+        "config_name": "x", "mode": "panel", "children": {"sushi": 1, "amp": 2},
+    })
+    assert options["amp"] is True
+    assert options["tuner"] is False
 
 
 def test_restart_falls_back_to_the_default_config_rather_than_failing():
@@ -497,6 +548,76 @@ def runtime(tmp_path, monkeypatch):
     """A private runtime dir, so the real state file is neither read nor hurt."""
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
     return tmp_path / "run"
+
+
+def running_state(**over):
+    state = {
+        "supervisor_pid": 4001, "pgid": 4001, "mode": "panel",
+        "config_name": "electric_board", "config": "/x/electric_board.json",
+        "started_at": "2026-01-01T00:00:00+00:00",
+        "children": {"sushi": 4002, "fmit": 4003}, "log_dir": "/x/logs",
+        "amp_model": None, "tuner_requested": True, "amp_requested": False,
+    }
+    state.update(over)
+    return state
+
+
+# restart
+
+
+def test_restart_with_nothing_running_refuses_and_says_how_to_start(runtime):
+    with pytest.raises(rig.RigError, match="nothing to restart"):
+        rig.restart()
+
+
+def test_restart_hands_up_what_the_state_says_was_asked_for(runtime, monkeypatch):
+    """The whole chain, end to end with `down` and `up` stubbed: an amp that
+    failed to start and a model named on the command line both survive."""
+    state_file.write_state(running_state(
+        mode="headless", amp_requested=True, amp_model="amp/models/Other.nam",
+        children={"sushi": 4002},  # the amp is not here: it failed to start
+    ))
+    calls = []
+    monkeypatch.setattr(rig, "down", lambda force=False: 0)
+    monkeypatch.setattr(rig, "up", lambda name, **kw: calls.append((name, kw)) or 0)
+    assert rig.restart() == 0
+    assert calls == [("electric_board", {
+        "headless": True, "tuner": True, "amp": True,
+        "amp_model": "amp/models/Other.nam",
+    })]
+
+
+def test_restart_does_not_start_again_if_the_rig_would_not_stop(runtime, monkeypatch):
+    state_file.write_state(running_state())
+    monkeypatch.setattr(rig, "down", lambda force=False: 1)
+    monkeypatch.setattr(rig, "up", lambda *a, **k: pytest.fail("started over a live rig"))
+    with pytest.raises(rig.RigError, match="could not stop"):
+        rig.restart()
+
+
+def test_up_tells_the_supervisor_what_was_asked_for(runtime, monkeypatch):
+    """What `restart` later restores is recorded from these, so they must be
+    the caller's request and not a guess."""
+    monkeypatch.setattr(rig, "pid_alive", lambda pid: False)
+    monkeypatch.setattr(rig, "port_is_open", lambda *a, **k: False)
+    got = {}
+
+    def supervise(*args, ready_w, **kwargs):
+        got.update(kwargs)
+        os.write(ready_w, b"READY\n")
+
+    def fork(run):
+        ready_r, ready_w = os.pipe()
+        run(ready_w)  # in-process: no fork, just the same call
+        os.close(ready_w)
+        return 4242, ready_r
+
+    monkeypatch.setattr(rig, "_supervise", supervise)
+    monkeypatch.setattr(rig, "_fork_supervisor", fork)
+    assert rig.up(headless=True, tuner=False, amp=False) == 0
+    assert got["tuner_requested"] is False
+    assert got["amp_requested"] is False
+    assert got["headless"] is True
 
 
 # --- a real supervisor, children stubbed out ----------------------------------
@@ -561,6 +682,7 @@ def test_a_patchbay_that_will_not_stay_up_is_a_warning_not_a_failed_rig(
     recorded = state_file.read_state()
     assert recorded is not None and recorded["supervisor_pid"] == real_supervisor[0]
     assert recorded["pgid"] == real_supervisor[0], "the supervisor leads its own group"
+    assert recorded["tuner_requested"] is False and recorded["amp_requested"] is False
 
 
 def test_a_child_that_cannot_start_fails_up_and_takes_the_group_down_promptly(

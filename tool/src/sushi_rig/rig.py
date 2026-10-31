@@ -323,6 +323,8 @@ def _supervise(
     ready_w: int,
     amp_model: str | None = None,
     amp_values: dict[str, float] | None = None,
+    tuner_requested: bool = True,
+    amp_requested: bool = True,
 ) -> None:
     """The supervisor process: own the group, start the children, then wait.
 
@@ -519,6 +521,10 @@ def _supervise(
             "children": started,
             "log_dir": str(logs),
             "amp_model": amp_model,
+            # What was asked for, which `children` cannot say once an optional
+            # child has failed to start. `restart` reads these.
+            "tuner_requested": tuner_requested,
+            "amp_requested": amp_requested,
         })
 
         for problem in problems:
@@ -699,6 +705,7 @@ def up(
             root, config, children_plan,
             headless=headless, config_name=config_name, ready_w=ready_w,
             amp_model=amp_model_stored, amp_values=amp_values,
+            tuner_requested=tuner, amp_requested=amp,
         )
     )
     outcome = ""
@@ -821,16 +828,30 @@ def down(force: bool = False) -> int:
 def restart_arguments(state: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     """What `up` should be called with to bring back the rig `state` describes.
 
-    The record of what to restore is what was actually *running*: a rig started
-    with --no-amp or --no-tuner has no such child, and should come back the same
-    way. Pure, so "restart brings back the same rig" is a test rather than a
-    claim.
+    The record of what to restore is what was *asked for*, not what survived.
+    The tuner and the amp are optional, so one that failed to start is absent
+    from `children` -- and reading the children would make that failure silently
+    permanent: the first restart would drop the amp for good, with nothing said,
+    the exact "looks healthy, has no amp" state principle 8 forbids. So
+    `_supervise` records the request, and a rig started with --no-amp still
+    comes back without one because it never asked for one.
+
+    The amp's model is carried as the override it effectively was: the state
+    holds the model the amp ran with, so `--amp-model` survives a restart
+    instead of the config's own model coming back unannounced.
+
+    A state file written before the request was recorded falls back to reading
+    the children, which is the best that file can say. Pure, so "restart brings
+    back the same rig" is a test rather than a claim.
     """
     children = state.get("children") or {}
+    tuner = state.get("tuner_requested")
+    amp = state.get("amp_requested")
     return state.get("config_name", DEFAULT_CONFIG_NAME), {
         "headless": state.get("mode") == "headless",
-        "tuner": "fmit" in children,
-        "amp": "amp" in children,
+        "tuner": tuner if isinstance(tuner, bool) else "fmit" in children,
+        "amp": amp if isinstance(amp, bool) else "amp" in children,
+        "amp_model": state.get("amp_model") or None,
     }
 
 
