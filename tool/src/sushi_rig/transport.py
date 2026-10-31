@@ -120,7 +120,8 @@ class TakePlan:
 
     `stems` pairs each stem with its channel count, in the order the engine
     lays them out in a block. `config` is the config as it is live, amp
-    included; see `take.start_take`.
+    included; `rig_text` the v2 rig it was compiled from, if any, and
+    `library` where the library was; see `take.start_take`.
     """
 
     takes_dir: Path
@@ -129,6 +130,8 @@ class TakePlan:
     stems: tuple[tuple[Stem, int], ...]
     sample_rate: int
     quantum: int
+    rig_text: str | None = None
+    library: dict[str, Any] | None = None
 
 
 class TakeSession:
@@ -162,6 +165,7 @@ class TakeSession:
                 sample_rate=plan.sample_rate, subtype=SUBTYPE, quantum=plan.quantum,
                 config_source=plan.config_source,
                 now=self._clock() if self._clock else None,
+                rig_text=plan.rig_text, library=plan.library,
             )
         except (TakeError, OSError) as exc:
             raise TransportError(f"cannot record {name}: {exc}") from exc

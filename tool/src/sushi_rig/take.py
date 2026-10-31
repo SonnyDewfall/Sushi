@@ -11,6 +11,7 @@ the exact rig that made it, months later, because the rig is in the folder.
     <takes>/<name>/
         take.yaml         what this is, and how its stems line up
         config.json       the config that was live, amp included
+        rig.yaml          the v2 rig it was compiled from, when there was one
         guitar.wav        what you heard
         guitar-dry.wav    what went in
         vocal.wav
@@ -102,6 +103,7 @@ SCHEMA_VERSION = 1
 
 TAKE_FILE = "take.yaml"
 CONFIG_FILE = "config.json"
+RIG_FILE = "rig.yaml"  # the v2 rig the config was compiled from, when there was one
 ARCHIVE_DIR = "_archive"
 
 DRY = "dry"
@@ -112,7 +114,9 @@ TAPS = (PROCESSED, DRY)
 # `finish_take`, which would drop any comment a human had added.
 _HEADER = (
     "# A take recorded by sushi-rig. The stems are exactly as captured; see\n"
-    "# `alignment` for how they line up. config.json is the rig that made them.\n"
+    "# `alignment` for how they line up. config.json is the rig that made them,\n"
+    "# rig.yaml the file it was compiled from, and `library` the commit the\n"
+    "# library was at.\n"
 )
 
 
@@ -391,6 +395,8 @@ def take_metadata(
     complete: bool,
     measured_by: str = "",
     capture: dict[str, Any] | None = None,
+    rig: str | None = None,
+    library: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """take.yaml as written: what a person needs first, first.
 
@@ -398,6 +404,13 @@ def take_metadata(
     (`recorder.Recording.summary`). Near the top, because a take with a gap in
     it, or one whose writer died, is one a person needs to know about before
     they use it.
+
+    `rig` is the file in the folder holding the v2 rig the config was compiled
+    from, or None for a v1 config, which has no such file. `library` is where
+    the library was when the take was made (`library_state`), or None when
+    that could not be read. Both are written as null rather than left out, so
+    a take from before they existed and a take that had nothing to say look
+    the same, on purpose: neither names a rig.
     """
     return {
         "schema_version": SCHEMA_VERSION,
@@ -418,6 +431,8 @@ def take_metadata(
         "quantum": quantum,
         "config": CONFIG_FILE,
         "config_source": config_source,
+        "rig": rig,
+        "library": library,
         "stems": [
             {
                 "file": stem.filename,
@@ -446,6 +461,60 @@ class Take:
     @property
     def complete(self) -> bool:
         return self.metadata.get("complete") is True
+
+
+def _check_rig_file(folder: Path, rig: Any) -> list[str]:
+    """The rig file a take names must be there and be a rig file.
+
+    Only its shape is checked, not that it compiles to config.json: a rig that
+    needed plugins to compile would make `take check` need them too, and the
+    config is the record of what ran. The rig is the record of what was meant.
+    """
+    import yaml
+
+    from .spec import looks_like_rig_file
+
+    if rig != RIG_FILE:
+        return [f"rig is {rig!r}, but this tool writes the rig as {RIG_FILE!r}"]
+    try:
+        parsed = yaml.safe_load((folder / RIG_FILE).read_text())
+    except OSError as exc:
+        return [f"{RIG_FILE} is missing, so the take no longer says what rig it was compiled from: {exc}"]
+    except yaml.YAMLError as exc:
+        return [f"{RIG_FILE} is not valid YAML: {exc}"]
+    if not looks_like_rig_file(parsed):
+        return [f"{RIG_FILE} is not a channels-and-master rig file"]
+    return []
+
+
+def library_state(root: Path) -> dict[str, Any] | None:
+    """Where the library is: the commit `root` is at, and whether it has
+    uncommitted changes. None when that cannot be read, which is said in the
+    take as null rather than guessed at.
+
+    The library is the checkout itself until #27 moves it out; this is what
+    lets a take say which commit of config/ made it, which `config_source`
+    alone (a path) cannot once that file has moved on.
+    """
+    import subprocess
+
+    try:
+        head = subprocess.run(
+            ["git", "-C", str(root), "rev-parse", "HEAD"],
+            capture_output=True, text=True, check=False, timeout=10,
+        )
+        status = subprocess.run(
+            ["git", "-C", str(root), "status", "--porcelain"],
+            capture_output=True, text=True, check=False, timeout=10,
+        )
+    except (OSError, subprocess.SubprocessError):
+        return None
+    if head.returncode != 0 or status.returncode != 0:
+        return None
+    commit = head.stdout.strip()
+    if not commit:
+        return None
+    return {"commit": commit, "dirty": bool(status.stdout.strip())}
 
 
 def load_take(folder: Path) -> Take:
@@ -555,6 +624,10 @@ def check_take(take: Take) -> list[str]:
             problems.append(f"{CONFIG_FILE} has no tracks, so it is not a Sushi config")
         else:
             problems += check_channels(take.stems, parsed)
+
+    rig = meta.get("rig")
+    if rig is not None:
+        problems += _check_rig_file(take.folder, rig)
 
     rate, subtype = meta.get("sample_rate"), meta.get("subtype")
     format_problems = check_format(rate, subtype, meta.get("quantum"))
@@ -681,6 +754,8 @@ def start_take(
     quantum: int | None,
     config_source: str,
     now: datetime | None = None,
+    rig_text: str | None = None,
+    library: dict[str, Any] | None = None,
 ) -> dict[str, Path]:
     """Make the take's folder before a sample is recorded. Returns stem -> path.
 
@@ -688,6 +763,11 @@ def start_take(
     it, because only the caller knows: `up --amp-model` runs an amp the file on
     disk does not name, and `--no-amp` runs none where the file names one. See
     `save.save_config` for how the amp is written into a config.
+
+    `rig_text` is the v2 rig file the config was compiled from, copied in as
+    rig.yaml beside config.json for the same reason the config is: the file in
+    config/rigs/ moves on, the take must not. None for a v1 config. `library`
+    is `library_state`'s answer, recorded as it is.
 
     Refuses, writing nothing, if the plan cannot make an honest take.
     """
@@ -722,9 +802,12 @@ def start_take(
     # project's versioning exists to prevent.
     try:
         _write_atomic(folder / CONFIG_FILE, config_text)
+        if rig_text is not None:
+            _write_atomic(folder / RIG_FILE, rig_text)
         _write_metadata(folder, take_metadata(
             name, stems, sample_rate=sample_rate, subtype=subtype, quantum=quantum,
             recorded_at=now, config_source=config_source, complete=False,
+            rig=RIG_FILE if rig_text is not None else None, library=library,
         ))
     except OSError:
         # A full disk here would leave a folder that is not a take and does not
@@ -807,5 +890,8 @@ def finish_take(
         # Kept when not given: finishing a take again to correct an offset
         # used to rewrite its record of what was lost as nothing at all.
         capture=capture if capture is not None else meta.get("capture"),
+        # Kept always: the rig and the library are what was true at the start.
+        rig=meta.get("rig"),
+        library=meta.get("library") if isinstance(meta.get("library"), dict) else None,
     ))
     return load_take(folder)
