@@ -8,11 +8,12 @@ behave (an echo at 375 ms, +6 dB at 1 kHz, the same spectral balance, the
 harmonics an amp is supposed to be adding). The stimuli and file I/O are in
 `signals`.
 
-What is NOT here: the renderer. Nothing in this module starts Sushi, and
-Sushi's offline-mode command-line flags have not been verified yet, so none are
-guessed at. These functions take arrays and return numbers or findings; they are
-verified against synthetic ground truth (a signal delayed by a known number of
-samples, a filter with a known response) rather than against a real render.
+What is NOT here: the renderer, which is `render.py`. Nothing in this module
+starts Sushi. (When this was written, Sushi's offline-mode flags had not been
+verified; they have since, and `render.py` uses them.) These functions take
+arrays and return numbers or findings; they are verified against synthetic
+ground truth (a signal delayed by a known number of samples, a filter with a
+known response) rather than against a real render.
 
 Conventions (shared with `signals`): audio is `(frames, channels)` float64, and a
 1-D array is read as mono. 0 dBFS is amplitude 1.0. `rms_dbfs` is the plain RMS,

@@ -202,3 +202,17 @@ def test_a_source_that_is_not_a_role_name_is_a_problem(bad):
     track = TrackSpec(name="t", source=bad, inputs=[{"engine_bus": 0, "track_bus": 0}])
     problems = RigSpec(tracks=[track]).validate()
     assert len(problems) == 1 and "must be a role name" in problems[0]
+
+
+def test_the_example_spec_is_valid_and_uses_only_plugins_in_the_manifest():
+    """The example's header says its plugins are real and in the manifest; this
+    is what keeps that true (it once used Calf plugins the rig never had)."""
+    from sushi_rig.paths import checkout_root
+
+    root = checkout_root()
+    rig = RigSpec.load(root / "tool" / "examples" / "rig.example.yaml")
+    assert rig.validate() == []
+    manifest = set((root / "plugin-manifest.txt").read_text().split())
+    uris = {p.uri for t in rig.tracks for p in t.plugins if p.type == "lv2"}
+    assert uris, "no lv2 plugins would make this vacuous"
+    assert uris <= manifest, sorted(uris - manifest)

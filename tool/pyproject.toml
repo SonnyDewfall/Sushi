@@ -28,3 +28,6 @@ testpaths = ["tests"]
 # The deep config checks each start a real Sushi and take about six seconds.
 # Run the fast suite with:  pytest -m "not slow"
 markers = ["slow: starts a real Sushi and takes seconds, not milliseconds"]
+# A misspelt marker (`@pytest.mark.slwo`) is otherwise a warning on a test that
+# then runs in the fast suite, or is excluded from the slow one, unnoticed.
+addopts = "--strict-markers"

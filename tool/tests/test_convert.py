@@ -32,6 +32,27 @@ def test_every_tone_has_a_v2_rig_that_holds_everything_it_did(config):
     assert differences(json.loads(config.read_text()), rigfile.emit_rig(rigfile.load_rig(rig))) == []
 
 
+@pytest.mark.parametrize("config", CONFIGS, ids=lambda p: p.stem)
+def test_every_rig_names_the_plugins_its_config_names_read_without_the_converter(config):
+    """The test above asks `differences` whether a rig matches its config, and
+    `differences` lives in convert.py beside the code that wrote the rigs: if
+    the two share a blind spot, it passes. This reads both files with nothing
+    but json and yaml, and compares the plugin names and URIs on each channel
+    with those on the config's track of the same name, so a plugin the converter
+    dropped, renamed or moved to another channel fails here whatever it believes.
+    """
+    raw_config = json.loads(config.read_text())
+    raw_rig = yaml.safe_load((ROOT / "config" / "rigs" / f"{config.stem}.yaml").read_text())
+
+    def plugin(entry):
+        return entry["name"], entry.get("uri") or entry.get("uid")
+
+    wanted = {t["name"]: {plugin(p) for p in t["plugins"]} for t in raw_config["tracks"]}
+    found = {c["name"]: {plugin(p) for p in c["chain"]} for c in raw_rig["channels"]}
+    assert found == wanted
+    assert all(found.values()), "a channel with no plugins would make this vacuous"
+
+
 def test_a_converted_tone_is_a_mono_guitar_channel_into_the_master():
     rig = convert(v1("electric-clean"), "electric-clean")
     (channel,) = rig["channels"]

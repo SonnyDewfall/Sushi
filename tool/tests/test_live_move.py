@@ -7,11 +7,11 @@ because that is how Sushi's API expresses position.
 """
 
 import sys
-import time
 import types
 
 import pytest
 
+from sushi_rig import live
 from sushi_rig.live import TAB_RESELECT_DELAY, plan_move, refresh_panel
 
 CHAIN = ["compressor", "overdrive", "octave", "eq", "chorus", "delay", "reverb"]
@@ -88,16 +88,37 @@ def test_tab_reselect_is_deferred_rather_than_sent_immediately(fake_osc):
     """The regression this guards: sent back to back, the /TABS lands while
     open-stage-control is still rebuilding its widget tree and is silently
     dropped, so every move bounced you to the first tab. Verified against the
-    running rig — the identical message works once the rebuild has settled."""
-    refresh_panel("/tmp/panel.json", "reverb")
+    running rig — the identical message works once the rebuild has settled.
+
+    The deferral is injected, so this asks only what refresh_panel did with it:
+    it handed over the delay and an action, sent nothing more itself, and the
+    action, when fired, sends the /TABS."""
+    scheduled = []
+    refresh_panel(
+        "/tmp/panel.json", "reverb",
+        schedule=lambda delay, action: scheduled.append((delay, action)),
+    )
     assert fake_osc.sent == [("/SESSION/OPEN", "/tmp/panel.json")], (
         "/TABS must not go out in the same breath as /SESSION/OPEN"
     )
+    assert len(scheduled) == 1
+    delay, action = scheduled[0]
+    assert delay == TAB_RESELECT_DELAY
 
-    deadline = time.monotonic() + TAB_RESELECT_DELAY + 2
-    while time.monotonic() < deadline and len(fake_osc.sent) < 2:
-        time.sleep(0.05)
+    action()
     assert fake_osc.sent[1] == ("/TABS", "reverb"), "but it must still arrive"
+
+
+def test_by_default_the_deferral_goes_through_the_timer_helper(fake_osc, monkeypatch):
+    """Without an injected schedule the real path is `live._start_timer`, handed
+    the default delay. It is replaced here, so no wall clock is spent and no
+    stdlib module is patched."""
+    started = []
+    monkeypatch.setattr(live, "_start_timer", lambda delay, action: started.append((delay, action)))
+    refresh_panel("/tmp/panel.json", "reverb")
+    assert [d for d, _ in started] == [TAB_RESELECT_DELAY]
+    started[0][1]()
+    assert fake_osc.sent[-1] == ("/TABS", "reverb")
 
 
 def test_refresh_without_a_tab_only_reloads(fake_osc):
