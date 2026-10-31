@@ -294,3 +294,45 @@ def test_the_example_loads_with_its_sends_pointed_at_the_master(tmp_path):
     config = tmp_path / "guitar_vocal_v2.json"
     config.write_text(json.dumps(emit_rig(rigfile.load_rig(EXAMPLE)), indent=2))
     assert verify(config, str(SUSHI)) == []
+
+
+# --------------------------------------------------------------------------- #
+# Values a person can type that are not the shape asked for
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("width", [["mono"], {"mono": 1}, 1, None])
+def test_a_width_that_is_not_a_word_is_a_problem_not_a_traceback(width):
+    """`width: [mono]` is unhashable, and `in` on the widths raised TypeError
+    where every other bad value is named."""
+    raw = rig_yaml(channel("a"))
+    raw["channels"][0]["width"] = width
+    assert any("width must be one of mono, stereo" in p for p in problems(raw))
+
+
+@pytest.mark.parametrize("strip", [{}, {"volume": 1.0}])
+def test_a_strip_that_names_no_gain_pan_or_mute_is_refused(strip):
+    """`strip: {}` compiled to an initial_state entry holding only the
+    processor, which nothing here has ever sent to Sushi."""
+    raw = rig_yaml(channel("a"))
+    raw["channels"][0]["strip"] = strip
+    assert any("channel 'a': strip must name gain, pan or mute" in p for p in problems(raw))
+
+
+def test_a_strip_naming_one_of_the_three_is_still_read():
+    raw = rig_yaml(channel("a"))
+    raw["channels"][0]["strip"] = {"mute": 0.0}
+    assert parse_rig(raw).settings["a"] == {"parameters": {"mute": 0.0}}
+
+
+@pytest.mark.parametrize("description", [{"x": 1}, ["a"], 7, False])
+def test_a_description_that_is_not_text_is_refused_by_name(description):
+    """It was passed through `str()`, so a mapping became its Python repr in
+    the emitted `_meta`."""
+    found = problems(rig_yaml(channel("a"), description=description))
+    assert any(p.startswith("description must be text") for p in found)
+
+
+def test_a_description_that_is_text_or_absent_is_read():
+    assert parse_rig(rig_yaml(channel("a"), description="a clean tone")).description == "a clean tone"
+    assert parse_rig(rig_yaml(channel("a"), description=None)).description == ""
+    assert parse_rig(rig_yaml(channel("a"))).description == ""
