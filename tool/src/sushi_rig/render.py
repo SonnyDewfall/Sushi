@@ -153,7 +153,7 @@ def offline_problem(config: dict[str, Any]) -> str | None:
     # `engine_bus: n` is channels 2n and 2n+1, `engine_channel: n` is channel n.
     # Checking only the bus form let a track on `engine_channel: 2` pass as
     # renderable, and Sushi then refused it with the plugin-shaped error.
-    for track in config.get("tracks", []):
+    for track in (config.get("tracks") or []) if isinstance(config, dict) else []:
         if not isinstance(track, dict):
             continue
         for side in ("inputs", "outputs"):
@@ -165,10 +165,7 @@ def offline_problem(config: dict[str, Any]) -> str | None:
                     continue
                 for key, width in (("engine_bus", 2), ("engine_channel", 1)):
                     value = entry.get(key)
-                    # A malformed index is verify's to refuse — it runs first in
-                    # CI — and the rule for one is patchbay._index_problem's:
-                    # a non-negative int, with bool excluded.
-                    if type(value) is not int or value < 0:
+                    if not _index(value):
                         continue
                     if value * width + width > OFFLINE_CHANNELS:
                         return (
@@ -198,48 +195,63 @@ class Channel:
     whole: bool
 
 
-def channels_of(config: dict[str, Any], path: Path) -> list[Channel]:
-    """What to render for `config`: itself if it has one track, each track alone
-    if it has several.
+def channels_of(config: Any, path: Path) -> list[Channel]:
+    """What to render for `config`: the whole of it when Sushi's offline
+    frontend can host it, and one channel at a time when it cannot.
 
-    Sushi's offline frontend has one stereo bus, so a rig of several channels
-    cannot be rendered as a whole — `guitar_vocal`'s vocal track is on bus 1.
-    Rendered one channel at a time, each on bus 0, any number of channels can
-    be, and a failure then says *which* chain's sound moved.
+    Whole wherever possible, because the whole is the strictly stronger check:
+    it fingerprints the mix, and a change in how channels sum — a gain at the
+    output, or #18's one input blended through two parallel chains — is only
+    visible there. Splitting every multi-track config threw that away.
 
-    That is faithful for these configs because the only thing their tracks do
-    to each other is sum at the output bus, and a sum of unchanged channels is
-    unchanged. What it does not cover is a change in the summing itself — a
-    track sent to a different output — which `verify` checks as routing, and
-    any future cross-track processing such as sends, which would need the mix
-    rendered as a whole.
+    Split when the offline frontend's one stereo bus cannot hold the rig, as
+    with `guitar_vocal`'s vocal on bus 1: each track is then rendered alone on
+    bus 0, and any number of channels can be. A failure then says *which*
+    chain moved. A single track that needed moving keeps the config's own
+    name, so its reference does not change.
 
-    Raises ValueError for a track whose name cannot be a file name, since the
-    name becomes its reference's.
+    What a split does not cover is the summing between the channels, which is
+    routing and `verify`'s to check.
+
+    Raises ValueError for a config that is not one, a track whose name cannot
+    be a file name, or two tracks sharing a name — which Sushi would refuse,
+    but never sees once each is rendered alone, and which would otherwise
+    share one reference and overwrite it.
     """
-    tracks = [t for t in config.get("tracks", []) if isinstance(t, dict)]
-    if len(tracks) <= 1:
-        if not tracks:
-            return [Channel(path.stem, path.name, config, True)]
-        moved = _on_bus_zero(tracks[0])
-        if moved == tracks[0]:
-            return [Channel(path.stem, path.name, config, True)]
-        alone = copy.deepcopy(config)
-        alone["tracks"] = [moved]
+    if not isinstance(config, dict):
+        raise ValueError(f"{path.name} is not a Sushi config: expected an object, got {type(config).__name__}")
+    whole = Channel(path.stem, path.name, config, True)
+    if offline_problem(config) is None:
+        return [whole]
+    tracks = [t for t in (config.get("tracks") or []) if isinstance(t, dict)]
+    if len(tracks) == 1:
+        alone = _alone(config, tracks[0])
         return [Channel(path.stem, path.name, alone, False)]
 
-    channels = []
-    for track in tracks:
-        name = track.get("name")
+    names = [t.get("name") for t in tracks]
+    for name in names:
         if not isinstance(name, str) or not NAME_PATTERN.fullmatch(name):
             raise ValueError(
                 f"track name {name!r} in {path.name} cannot name a reference file: "
                 f"it must match {NAME_PATTERN.pattern}"
             )
-        channels.append(Channel(
-            f"{path.stem}.{name}", f"{path.name} [{name}]", _alone(config, track), False
-        ))
-    return channels
+    repeated = sorted({n for n in names if names.count(n) > 1})
+    if repeated:
+        raise ValueError(
+            f"{path.name} has more than one track called {', '.join(repeated)}, so "
+            f"their references would overwrite each other"
+        )
+    return [
+        Channel(f"{path.stem}.{t['name']}", f"{path.name} [{t['name']}]", _alone(config, t), False)
+        for t in tracks
+    ]
+
+
+def _index(value: Any) -> bool:
+    """An engine index this module acts on: a non-negative int, bool excluded,
+    which is patchbay._index_problem's rule. Anything else is left for verify,
+    which runs before the null tests and refuses it."""
+    return type(value) is int and value >= 0
 
 
 def _on_bus_zero(track: dict[str, Any]) -> dict[str, Any]:
@@ -252,16 +264,11 @@ def _on_bus_zero(track: dict[str, Any]) -> dict[str, Any]:
     """
     moved = copy.deepcopy(track)
     for side in ("inputs", "outputs"):
-        entries = moved.get(side)
-        if not isinstance(entries, list):
-            continue
+        entries = [e for e in (moved.get(side) or []) if isinstance(e, dict)]
         for key in ("engine_bus", "engine_channel"):
-            used = sorted({
-                e[key] for e in entries
-                if isinstance(e, dict) and type(e.get(key)) is int and e[key] >= 0
-            })
+            used = sorted({e[key] for e in entries if _index(e.get(key))})
             for entry in entries:
-                if isinstance(entry, dict) and entry.get(key) in used and type(entry.get(key)) is int:
+                if _index(entry.get(key)):
                     entry[key] = used.index(entry[key])
     return moved
 
@@ -269,31 +276,40 @@ def _on_bus_zero(track: dict[str, Any]) -> dict[str, Any]:
 def _alone(config: dict[str, Any], track: dict[str, Any]) -> dict[str, Any]:
     """A copy of `config` holding `track` alone, on bus 0.
 
-    Everything keyed by processor name is cut down to this track's own: Sushi
-    refuses a config whose `initial_state` or MIDI mappings name a processor
-    that is not there.
+    Everything keyed by processor name is cut down to the processors this
+    render still has — the track, its plugins, and any `pre_track` or
+    `post_track` processors, which every channel keeps — because Sushi refuses
+    a config naming a processor that is not there, and a kept processor must
+    keep its settings. Only the track is deep-copied; the rest is shared with
+    the original, which nothing here modifies.
     """
     own = {track.get("name")} | {
-        p.get("name") for p in track.get("plugins", []) if isinstance(p, dict)
+        p.get("name") for p in (track.get("plugins") or []) if isinstance(p, dict)
     }
-    alone = copy.deepcopy(config)
+    for key in ("pre_track", "post_track"):
+        section = config.get(key)
+        if isinstance(section, dict):
+            own |= {section.get("name")} | {
+                p.get("name") for p in (section.get("plugins") or []) if isinstance(p, dict)
+            }
+    alone = {key: value for key, value in config.items() if key != "tracks"}
     alone["tracks"] = [_on_bus_zero(track)]
     if isinstance(config.get("initial_state"), list):
         alone["initial_state"] = [
-            e for e in alone["initial_state"]
+            e for e in config["initial_state"]
             if not isinstance(e, dict) or e.get("processor") in own
         ]
     if isinstance(config.get("midi"), dict):
         alone["midi"] = {
             key: [e for e in value if not _names_another(e, own)]
             if isinstance(value, list) else value
-            for key, value in alone["midi"].items()
+            for key, value in config["midi"].items()
         }
     return alone
 
 
 def _names_another(entry: Any, own: set) -> bool:
-    """Whether a MIDI entry points at a processor this channel does not have."""
+    """Whether a MIDI entry points at a processor this render does not have."""
     if not isinstance(entry, dict):
         return False
     return any(

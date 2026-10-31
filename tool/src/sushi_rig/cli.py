@@ -289,12 +289,10 @@ def _take(args: argparse.Namespace) -> int:
 
 
 def _nulltest(args: argparse.Namespace) -> int:
-    """`nulltest`: has any channel of any config changed its sound.
+    """`nulltest`: has any config, or any channel of one, changed its sound.
 
-    A config is checked one channel at a time (`render.channels_of`), because
-    Sushi's offline frontend has one stereo bus and a multi-channel rig cannot
-    be rendered as a whole. A single-track config is its own one channel, under
-    its own name, exactly as before channels existed.
+    A config is rendered whole when Sushi's offline frontend can host it, and
+    one channel at a time when it cannot (`render.channels_of`).
     """
     import tempfile
 
@@ -334,7 +332,10 @@ def _nulltest(args: argparse.Namespace) -> int:
         for target in targets:
             try:
                 channels = channels_of(json.loads(target.read_text()), target)
-            except (ValueError, OSError) as exc:
+            except (ValueError, OSError, TypeError, AttributeError) as exc:
+                # TypeError and AttributeError too: a config that is a list, or
+                # whose tracks are null, must cost one line, not the whole run
+                # and the orphan check after it.
                 unexpanded.append(target.stem)
                 checked += 1
                 cannot_check(target.name, exc)
@@ -345,6 +346,12 @@ def _nulltest(args: argparse.Namespace) -> int:
                 expected.add(channel.name)
                 work = Path(tmp) / channel.name
                 ref_file = reference_path(root, Path(f"{channel.name}.json"))
+                if args.calibrate and args.missing and ref_file.exists():
+                    # --missing calibrates only what has no reference yet, so
+                    # adding a channel does not quietly re-baseline the others,
+                    # whose sound may have changed by accident.
+                    print(f"{channel.label}: has a reference, left as it is")
+                    continue
                 try:
                     problem = offline_problem(channel.config)
                     if problem is not None:
@@ -417,9 +424,13 @@ def _nulltest(args: argparse.Namespace) -> int:
                         # against yet. Saying "ok" here would be the loudest
                         # possible lie this command could tell. The path as the
                         # user must type it: the render runs from the rig root.
+                        # --missing, so following the hint calibrates this one
+                        # and leaves every channel that already has a reference
+                        # alone: recalibrating the whole config would accept
+                        # any accidental change in the others as the new sound.
                         print(
                             f"{channel.label}: NO REFERENCE — run "
-                            f"`sushi-rig nulltest {_as_typed(target, root)} --calibrate`"
+                            f"`sushi-rig nulltest {_as_typed(target, root)} --calibrate --missing`"
                             " on a machine that can render",
                             file=sys.stderr,
                         )
@@ -463,6 +474,8 @@ def _nulltest(args: argparse.Namespace) -> int:
                 f"restore what it described",
                 file=sys.stderr,
             )
+            # Counted as a check too, or the summary reads "3 of 1".
+            checked += 1
             failed += 1
 
     if unrenderable:
@@ -755,6 +768,11 @@ def main(argv: list[str] | None = None) -> int:
         help="render twice, measure how far two identical runs differ, and write "
         "that as the reference's tolerance. Needed once per config, and again "
         "whenever the config changes on purpose",
+    )
+    p.add_argument(
+        "--missing", action="store_true",
+        help="with --calibrate, only what has no reference yet — so adding a "
+        "channel does not re-baseline the ones already checked",
     )
     p.add_argument(
         "--sushi",
