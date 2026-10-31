@@ -19,6 +19,7 @@ while writing yamlmerge.py) and what is a choice:
 from __future__ import annotations
 
 import copy
+import re
 
 import pytest
 import yaml
@@ -339,3 +340,196 @@ def test_the_dict_given_is_not_changed(rig_path):
     before = copy.deepcopy(rig)
     write_rig(rig_path, rig)
     assert rig == before
+
+
+# --------------------------------------------------------------------------- #
+# The shapes `save` will produce most: a chain's last plugin removed, a channel
+# appended, an entry whose last key is an empty list. Each was wrong once.
+# --------------------------------------------------------------------------- #
+
+def example_text() -> str:
+    return EXAMPLE.read_text()
+
+
+def written(tmp_path, text: str, change) -> str:
+    """`text` through write_rig with `change` applied to its parsed rig; the text out."""
+    path = tmp_path / "rig.yaml"
+    path.write_text(text)
+    write_rig(path, edited(text, change))
+    return path.read_text()
+
+
+def test_removing_a_chains_last_plugin_does_not_duplicate_what_follows_it(tmp_path):
+    after = written(tmp_path, TEXT, lambda rig: rig["channels"][0]["chain"].pop())
+    assert [p["name"] for p in yaml.safe_load(after)["channels"][0]["chain"]] == ["comp", "drive", "eq"]
+    # Everything after the chain is where it was, once: the blank line, the comment, the rest.
+    assert after == TEXT.replace(
+        "      # Last in the chain.\n      - {name: verb, uri: http://example.org/verb}\n", "")
+    assert comments(after).count("# The vocal, on its own input.") == 1
+
+
+def test_removing_the_last_plugin_of_the_example_leaves_the_blank_line_before_master_single(tmp_path):
+    after = written(tmp_path, example_text(), lambda rig: rig["channels"][1]["chain"].pop())
+    assert after == example_text().replace(
+        '      - {name: vocal_limiter, uri: "http://drobilla.net/plugins/mda/Limiter"}\n', "")
+    # And a second rewrite of the result changes nothing: it does not compound.
+    path = tmp_path / "rig.yaml"
+    write_rig(path, yaml.safe_load(after))
+    assert path.read_text() == after
+
+
+def test_appending_a_channel_with_an_empty_chain_is_valid_yaml_and_keeps_the_comment(tmp_path):
+    bass = {"name": "bass", "input": "bass-in", "width": "mono", "chain": []}
+    after = written(tmp_path, example_text(), lambda rig: rig["channels"].append(bass))
+    assert [c["name"] for c in yaml.safe_load(after)["channels"]] == ["guitar", "vocal", "bass"]
+    assert "  - name: bass\n    input: bass-in\n    width: mono\n    chain: []\n" in after
+    assert comments(after) == comments(example_text())
+    assert "\n\nmaster:\n" in after
+
+
+def test_a_plugin_added_to_an_empty_chain_and_an_empty_one_added_to_a_plugin(tmp_path):
+    def change(rig):
+        rig["channels"][1]["chain"].append({"name": "gate", "uri": "http://example.org/gate"})
+        rig["channels"][0]["chain"].insert(
+            1, {"name": "bare", "uri": "http://example.org/bare", "parameters": {}})
+
+    after = written(tmp_path, TEXT, change)
+    got = yaml.safe_load(after)["channels"]
+    assert [p["name"] for p in got[0]["chain"]] == ["comp", "bare", "drive", "eq", "verb"]
+    assert got[0]["chain"][1]["parameters"] == {}
+    assert [p["name"] for p in got[1]["chain"]] == ["gate"]
+    assert comments(after) == comments(TEXT)
+
+
+def test_a_write_that_produces_text_that_is_not_yaml_is_a_rig_file_error(tmp_path, monkeypatch):
+    from sushi_rig import yamlmerge
+
+    monkeypatch.setattr(yamlmerge, "fresh", lambda data, header="": "kind: [unclosed\n")
+    path = tmp_path / "out.yaml"
+    with pytest.raises(RigFileError, match="read back"):
+        write_rig(path, yaml.safe_load(TEXT))
+    assert not path.exists()
+
+
+def test_convert_force_says_fail_instead_of_a_traceback_when_the_write_cannot_be_read_back(
+        tmp_path, monkeypatch, capsys):
+    from sushi_rig import yamlmerge
+    from sushi_rig.cli import main
+
+    monkeypatch.setattr(yamlmerge, "fresh", lambda data, header="": "kind: [unclosed\n")
+    out = tmp_path / "clean.yaml"
+    assert main(["convert", str(checkout_root() / "config" / "electric-clean.json"),
+                 "-o", str(out), "--force"]) == 1
+    assert "FAIL" in capsys.readouterr().out
+
+
+def test_a_long_comment_elsewhere_does_not_reflow_an_unchanged_scalar(tmp_path):
+    # A converted rig, whose description is folded at 100 columns, plus one long comment line.
+    path = tmp_path / "accustomed.yaml"
+    text = (checkout_root() / "config" / "rigs" / "accustomed.yaml").read_text()
+    text = text.replace("kind: rig\n", "# " + "long " * 26 + "\nkind: rig\n", 1)
+    assert max(len(l) for l in text.splitlines()) > 125
+    path.write_text(text)
+    write_rig(path, yaml.safe_load(text))
+    assert path.read_text() == text
+
+
+def test_a_long_flow_line_and_a_folded_description_together_stay_as_they_were(tmp_path):
+    # guitar_vocal.yaml has flow lines of 109 columns; give it a description folded at 100,
+    # as `convert` writes them. No single "longest line" width keeps both.
+    folded = re.search(r"^description: .*\n  .*\n", (checkout_root() / "config" / "rigs" / "accustomed.yaml").read_text(),
+                       re.M).group(0)
+    text = example_text().replace(
+        "description: Guitar and vocals — two channels, two chains, one monitor mix\n", folded)
+    assert text != example_text()
+    path = tmp_path / "a.yaml"
+    path.write_text(text)
+    write_rig(path, yaml.safe_load(text))
+    assert path.read_text() == text
+
+
+def test_a_key_inserted_first_leaves_the_comment_above_the_old_first_key(tmp_path):
+    text = TEXT.replace("          threshold: -20.0   # dB; do not go lower\n", "")
+
+    def change(rig):
+        params = rig["channels"][0]["chain"][0]["parameters"]
+        rig["channels"][0]["chain"][0]["parameters"] = {"threshold": -20.0, **params}
+
+    after = written(tmp_path, text, change)
+    lines = after.splitlines()
+    i = lines.index("          # The ratio is deliberately gentle.")
+    assert lines[i - 1].strip() == "threshold: -20.0"
+    assert lines[i + 1].strip() == "ratio: 2.0"
+
+
+def test_a_list_item_that_opens_with_a_mapping_and_a_comment_on_a_key_keep_the_files_indent(tmp_path):
+    # `- strip:` is a list item, so what is nested below it steps from "strip", not from the
+    # dash; and `channels:   # ...` is still the key whose list this is.
+    text = TEXT.replace("channels:\n", "channels:   # one per player\n", 1).replace(
+        "  - name: guitar\n    input: guitar-in\n    width: mono\n",
+        "  - strip:\n      gain: 0.833333\n      pan: 0.5\n    name: guitar\n"
+        "    input: guitar-in\n    width: mono\n", 1)
+    path = tmp_path / "rig.yaml"
+    path.write_text(text)
+    parsed = yaml.safe_load(text)
+    write_rig(path, parsed)
+    assert path.read_text() == text
+    parsed["channels"][0]["chain"][0]["bypassed"] = True
+    write_rig(path, parsed)
+    # The new key follows the one before it in the rig (parameters), and the comment written
+    # above the next plugin stays above that plugin.
+    assert path.read_text() == text.replace(
+        "          ratio: 2.0\n", "          ratio: 2.0\n        bypassed: true\n", 1)
+
+
+def test_an_update_that_would_duplicate_or_drop_a_comment_is_refused(tmp_path, monkeypatch):
+    from sushi_rig import yamlmerge
+
+    real = yamlmerge._tokens
+    monkeypatch.setattr(yamlmerge, "_tokens", lambda text: real(text) + real(text))
+    path = tmp_path / "rig.yaml"
+    path.write_text(TEXT)
+    rig = yaml.safe_load(TEXT)
+    rig["channels"][0]["chain"].pop()
+    with pytest.raises(RigFileError, match="comment"):
+        write_rig(path, rig)
+    assert path.read_text() == TEXT
+
+
+def test_a_renamed_plugin_keeps_its_comment_and_its_block_layout(tmp_path):
+    def change(rig):
+        rig["channels"][0]["chain"][1]["name"] = "fuzz"
+
+    after = written(tmp_path, TEXT, change)
+    assert after == TEXT.replace("name: drive", "name: fuzz")
+
+
+def test_a_plugin_inserted_beside_block_neighbours_is_a_block_and_beside_flow_ones_a_flow(tmp_path):
+    def change(rig):
+        chain = rig["channels"][0]["chain"]
+        chain.insert(1, {"name": "boost", "uri": "http://example.org/boost"})
+        chain.insert(4, {"name": "delay", "uri": "http://example.org/delay"})
+
+    after = written(tmp_path, TEXT, change)
+    assert "      - name: boost\n        uri: http://example.org/boost\n" in after
+    assert "      - {name: delay, uri: http://example.org/delay}\n" in after
+    assert comments(after) == comments(TEXT)
+
+
+def test_a_chain_can_be_emptied_when_nothing_follows_it_and_is_refused_when_comments_do(tmp_path):
+    # Where comments follow it, ruamel.yaml would drop them after the `[]`: refused, loudly.
+    path = tmp_path / "rig.yaml"
+    path.write_text(TEXT)
+    rig = yaml.safe_load(TEXT)
+    rig["channels"][0]["chain"] = []
+    with pytest.raises(RigFileError, match="only entry"):
+        write_rig(path, rig)
+    assert path.read_text() == TEXT
+
+    # The vocal is the last channel; its chain is emptied of the one plugin it was given.
+    text = TEXT.replace("    chain: []\nmaster:", "    chain:\n      # Gate.\n"
+                        "      - {name: gate, uri: http://example.org/gate}\nmaster:", 1)
+    assert text != TEXT
+    after = written(tmp_path, text, lambda rig: rig["channels"][1].update(chain=[]))
+    assert yaml.safe_load(after)["channels"][1]["chain"] == []
+    assert "# Gate." not in after and after.endswith("master:\n  output: monitor-out\n  chain: []\n# The very end.\n")

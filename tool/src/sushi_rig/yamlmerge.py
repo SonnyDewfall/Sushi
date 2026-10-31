@@ -19,26 +19,35 @@ It knows nothing about rigs. rigfile.write_rig is the rig-shaped caller.
   the key that precedes it in `data`. Keys already in the file stay in the
   order the file has them, however `data` orders them.
 - A list of mappings that all have a `name` is matched by name, so removing one
-  plugin from a chain does not hand its neighbours the wrong comments. Any
-  other list is matched by position. A list whose common names come in a
-  different order is matched by position as well (comments stay where they
-  were written, not with the plugin that moved).
-- A new list item is written in flow style (`- {name: x, uri: y}`) when its
-  neighbour is, so a hand-written chain stays one line a plugin.
+  plugin from a chain does not hand its neighbours the wrong comments. An entry
+  whose name changed but whose `uri` (or `path`, `uid`) did not is the same
+  plugin renamed, and is updated in place, comment and layout and all. Any
+  other list is matched by position, and so is one whose common names come in
+  a different order (comments stay where they were written, not with the
+  plugin that moved).
+- A new list item is written in flow style (`- {name: x, uri: y}`) when the
+  entry beside it is, and an empty mapping or list always is (`[]`).
+- The layout and fold width of the file (indent, where dashes sit, 100 columns
+  or its widest line) are found by reproducing the unchanged file with them
+  (`_choose`), so an update to one value does not re-indent or re-fold others.
 
 ## Where a comment belongs
 
 ruamel.yaml stores the comment lines *between* two entries on the entry
 before them, so deleting that entry drops the comments that were written
 above the next one, and inserting after it leaves the next one's comments
-above the wrong entry. Both are repaired here (`_remove`, `_insert`): the text
+above the wrong entry. Both are repaired here (`_Update.remove`, `_Update.insert`): the text
 between two entries moves with the entry it sits above, and a comment is
 dropped only with the entry it was written above or beside. Two edges:
 
 - the comments above the *first* entry of a list stay with the list when that
   entry goes (they are usually about the list, as a chain's heading is);
+- a key inserted first in a mapping goes above the comment that was above the
+  old first key, unless a blank line sets that comment apart;
 - the first key of a mapping cannot be removed if comment lines sit below it,
-  because ruamel.yaml has nowhere to put them. That is refused, loudly.
+  and the only entry of a list or mapping cannot be removed if comments follow
+  it, because ruamel.yaml has nowhere to put them (it drops anything after an
+  empty `[]`). Both are refused, loudly.
 
 ## What it refuses rather than does badly
 
@@ -46,6 +55,9 @@ dropped only with the entry it was written above or beside. Two edges:
   (it does: a comment line directly above a flow-style `- {...}` entry that
   has its own trailing `# comment`, in 0.19). The error names the comment. A
   silent loss is the thing this module exists to prevent.
+- An update that leaves a comment written twice, or lost other than with an
+  entry that was removed: the comments of the result are counted against
+  those of the file, less the ones deliberately dropped.
 - Text that PyYAML would not read back as `data`. Rig files are read with
   PyYAML (YAML 1.1: `on` and `1:30` are not strings, `1e-05` is not a float),
   ruamel writes YAML 1.2, so strings PyYAML would misread are quoted, floats
@@ -139,21 +151,30 @@ def fresh(data: Any, header: str = "") -> str:
 # --------------------------------------------------------------------------- #
 # Reading a file's layout, so an update writes it back the way it was written
 
-def _layout(text: str) -> tuple[int, int, int, int]:
-    """(mapping indent, sequence indent, sequence offset, width) of a file.
+# Layouts tried after the one measured, as (mapping, sequence, offset), when the
+# measured one does not reproduce the file.
+_LAYOUTS = [(2, 2, 0), (2, 4, 2), (4, 4, 0), (4, 6, 2), (2, 3, 1)]
+
+
+def _layout(text: str) -> tuple[int, int, int]:
+    """(mapping indent, sequence indent, sequence offset) a file looks to use.
 
     ruamel.yaml dumps every block with one indent, so the file's own is
-    measured: the first list under a key says whether its dashes sit under the
-    key (offset 0) or inside it; the first nested mapping says the step."""
+    measured: the first list under a `key:` line says whether its dashes sit
+    under the key (offset 0) or inside it; the first mapping under a `key:`
+    line says the step. A line that is itself a list item (`- strip:`) is not a
+    `key:` line, since what is nested below it steps from its text, not its
+    dash. This is a first guess: `_choose` checks it by reproducing the file."""
     mapping, sequence, offset = 2, 2, 0
     found_seq = found_map = False
-    previous: tuple[int, str] | None = None  # (indent, text) of the last real line
+    previous: tuple[int, str] | None = None  # (indent, code) of the last real line
     for line in text.splitlines():
-        stripped = line.strip()
-        if not stripped or stripped.startswith("#"):
+        code = line[:_comment_start(line)].rstrip()
+        if not code.strip():
             continue
-        indent = len(line) - len(line.lstrip(" "))
-        if previous is not None and previous[1].endswith(":"):
+        stripped = code.strip()
+        indent = len(code) - len(code.lstrip(" "))
+        if previous is not None and previous[1].endswith(":") and not previous[1].startswith("- "):
             if stripped.startswith("- ") and not found_seq:
                 found_seq = True
                 offset = indent - previous[0]
@@ -164,37 +185,76 @@ def _layout(text: str) -> tuple[int, int, int, int]:
         previous = (indent, stripped)
         if found_seq and found_map:
             break
-    width = max([FRESH_WIDTH] + [len(line) for line in text.splitlines()])
-    return mapping, max(sequence, offset + 2), max(offset, 0), width
+    return mapping, max(sequence, offset + 2), max(offset, 0)
+
+
+def _choose(text: str):
+    """(a dumper, the loaded document) that write the file back as it was.
+
+    Layout and width are properties of the file, not of ruamel.yaml, and a
+    wrong guess re-indents or re-folds lines nobody asked to change. So the
+    measured layout and a few likelier widths (100, where this tool folds, and
+    the file's longest line, with and without comments) are tried against the
+    unchanged document, widest first because that leaves a flow-style entry
+    that grows room to, and the first to reproduce the text exactly is used;
+    failing that, the one that differs from it least."""
+    lines = text.splitlines()
+    code = [l for l in lines if not l.lstrip().startswith("#")]
+    widths = sorted({FRESH_WIDTH, max([FRESH_WIDTH] + [len(l) for l in lines]),
+                     max([FRESH_WIDTH] + [len(l) for l in code])}, reverse=True)
+    measured = _layout(text)
+    doc = _yaml(*measured, FRESH_WIDTH).load(text)
+    best = None
+    for layout in [measured] + [l for l in _LAYOUTS if l != measured]:
+        for width in widths:
+            y = _yaml(*layout, width)
+            out = _dump(y, doc).splitlines()
+            if out == lines:
+                return y, doc
+            score = sum(a != b for a, b in zip(out, lines)) + abs(len(out) - len(lines))
+            if best is None or score < best[0]:
+                best = (score, y)
+    return best[1], doc
 
 
 # --------------------------------------------------------------------------- #
-# Comments, counted from the text: how a lost one is noticed
+# Comments, counted from the text: how a lost or doubled one is noticed
+
+def _comment_start(line: str) -> int | None:
+    """Where the `# comment` in a line of YAML starts, if there is one. A `#`
+    inside a quoted string, or glued to the text before it (`uri#fragment`), is
+    not one."""
+    quote = ""
+    last = ""
+    skip = False
+    for i, char in enumerate(line):
+        if skip:
+            skip = False
+            continue
+        if quote:
+            if quote == '"' and char == "\\":
+                skip = True
+            elif char == quote:
+                quote = ""
+        elif char in "\"'" and (last == "" or last in ":-,[{?"):
+            quote = char
+        elif char == "#" and (i == 0 or line[i - 1] in " \t"):
+            return i
+        if not quote and not char.isspace():
+            last = char
+    return None
+
 
 def _comments(text: str) -> list[str]:
-    """Every `# comment` in a YAML text, in order. A `#` inside a quoted
-    string, or glued to the text before it (`uri#fragment`), is not one."""
+    """Every `# comment` in a YAML text, in order."""
     found = []
     for line in text.splitlines():
-        quote = ""
-        last = ""
-        for i, char in enumerate(line):
-            if quote:
-                if quote == '"' and char == "\\":
-                    continue
-                if char == quote:
-                    quote = ""
-            elif char in "\"'" and (last == "" or last in ":-,[{?"):
-                quote = char
-            elif char == "#" and (i == 0 or line[i - 1] in " \t"):
-                found.append(line[i:].strip())
-                break
-            if not quote and not char.isspace():
-                last = char
+        start = _comment_start(line)
+        if start is not None:
+            found.append(line[start:].strip())
     return found
 
 
-# --------------------------------------------------------------------------- #
 # The text between two entries, which ruamel.yaml keeps on the first of them
 
 def _is_map(node: Any) -> bool:
@@ -323,46 +383,78 @@ def _add_leading(seq: Any, rest: str) -> None:
         seq.ca.comment[1].extend(tokens)
 
 
-def _remove(container: Any, ident: Any) -> None:
-    """Delete one entry; its comments go, the next entry's stay."""
-    keys = _keys(container)
-    pos = keys.index(ident)
-    _, rest = _split(_get_after(container, ident))
-    if pos > 0:
-        previous = keys[pos - 1]
-        eol, _ = _split(_get_after(container, previous))
-        _set_after(container, previous, _join(eol, rest))
-    elif _has_comment(rest):
-        if _is_map(container):
-            raise MergeError(
-                f"cannot remove {ident!r}, the first key of a mapping, while comments sit below it: "
-                "ruamel.yaml has nowhere to keep them. Move or delete the comments, then retry")
-        _add_leading(container, rest)
-    del container[ident]
-    if len(container) == 0 and not _is_map(container):
-        container.fa.set_flow_style()  # `[]`, not an empty block with comments hanging off it
-
-
-def _insert(container: Any, pos: int, ident: Any, node: Any) -> None:
-    """Insert one entry; the comments written above the entry now after it stay above it."""
-    keys = _keys(container)
-    rest = ""
-    if 0 < pos <= len(keys):
-        previous = keys[pos - 1]
-        eol, rest = _split(_get_after(container, previous))
-        _set_after(container, previous, _join(eol, ""))
-    if _is_map(container):
-        container.insert(pos, ident, node)
-        key = ident
+def _token_comments(t: Any, found: list[str]) -> None:
+    """Add the comments in a ruamel.yaml comment slot (a token, a list of them, or None)."""
+    if t is None:
+        return
+    if isinstance(t, list):
+        for item in t:
+            _token_comments(item, found)
     else:
-        container.insert(pos, node)
-        key = pos
-    if rest:
-        _set_after(container, key, _join("", rest))
+        found.extend(_comments(" " * (t.column or 0) + t.value))
+
+
+def _all_comments(node: Any) -> list[str]:
+    """Every comment held anywhere under `node`, from ruamel.yaml's own storage."""
+    found: list[str] = []
+    ca = getattr(node, "ca", None)
+    if ca is not None:
+        for slots in ca.items.values():
+            _token_comments(slots, found)
+        _token_comments(ca.comment, found)
+        _token_comments(ca.end, found)
+    if _is_map(node):
+        for v in node.values():
+            found += _all_comments(v)
+    elif isinstance(node, list):
+        for v in node:
+            found += _all_comments(v)
+    return found
+
+
+def _entry_comments(container: Any, ident: Any) -> list[str]:
+    """Every comment that goes if `container[ident]` does: those under it, and
+    the ones kept after it."""
+    found = _all_comments(container[ident])
+    _token_comments(container.ca.items.get(ident), found)
+    if not _is_map(container) and ident == len(container) - 1 and not _is_block(container[ident]):
+        _token_comments(container.ca.end, found)
+    return found
+
+
+def _subtract(whole: list[str], part: list[str]) -> list[str]:
+    from collections import Counter
+
+    return list((Counter(whole) - Counter(part)).elements())
+
+
+def _lead(container: Any, parent: tuple[Any, Any] | None) -> list[Any] | None:
+    """The comment tokens written above a mapping's first key, which
+    ruamel.yaml keeps on the key above it (or on the file, for the top mapping)."""
+    if parent is None:
+        return container.ca.comment[1] if container.ca.comment else None
+    holder, key = parent
+    if not _is_map(holder):
+        return None
+    slots = holder.ca.items.get(key)
+    return slots[3] if slots and isinstance(slots[3], list) else None
+
+
+def _clear_lead(container: Any, parent: tuple[Any, Any] | None) -> None:
+    if parent is None:
+        container.ca.comment[1] = None
+    else:
+        parent[0].ca.items[parent[1]][3] = None
 
 
 # --------------------------------------------------------------------------- #
 # Updating a loaded file to hold new data
+
+# What makes two chain entries with different names the same one, renamed: they
+# name the same plugin. A chain is matched by `name`, so without this a rename
+# is a removal and an insertion, and the comment written above the plugin goes.
+IDENTITY_KEYS = ("uri", "path", "uid")
+
 
 def _kind(value: Any) -> str:
     for kind, types in (("bool", bool), ("int", int), ("float", float), ("str", str)):
@@ -372,7 +464,9 @@ def _kind(value: Any) -> str:
 
 
 def _build(value: Any, flow: bool) -> Any:
-    """New data as ruamel nodes, in the style of where it is going."""
+    """New data as ruamel nodes, in the style of where it is going. An empty
+    mapping or list is always flow (`[]`): written as a block it has nowhere
+    for the comment after it to go but between the key and its value."""
     from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
     if isinstance(value, dict):
@@ -383,7 +477,7 @@ def _build(value: Any, flow: bool) -> Any:
         node = CommentedSeq(_build(v, flow) for v in value)
     else:
         return value
-    node.fa.set_flow_style() if flow else node.fa.set_block_style()
+    node.fa.set_flow_style() if flow or len(node) == 0 else node.fa.set_block_style()
     return node
 
 
@@ -399,33 +493,13 @@ def _same(old: Any, new: Any) -> bool:
     return _kind(old) == _kind(new) and old == new
 
 
-def _set_value(container: Any, ident: Any, new: Any, flow: bool) -> None:
-    from ruamel.yaml.comments import CommentedMap, CommentedSeq
-
-    old = container[ident]
-    if isinstance(new, dict) and isinstance(old, CommentedMap):
-        _update_map(old, new)
-    elif isinstance(new, list) and isinstance(old, CommentedSeq):
-        _update_seq(old, new)
-    elif not isinstance(new, (dict, list)) and not isinstance(old, (CommentedMap, CommentedSeq)):
-        if not _same(old, new):
-            container[ident] = _quoted_like(old, new)
-    else:
-        container[ident] = _build(new, flow or _is_flow(old))
-
-
-def _update_map(old: Any, new: dict) -> None:
-    flow = _is_flow(old)
-    for key in [k for k in old if k not in new]:
-        _remove(old, key)
-    previous = None
-    for key, value in new.items():
-        if key in old:
-            _set_value(old, key, value, flow)
-        else:
-            pos = _keys(old).index(previous) + 1 if previous is not None else 0
-            _insert(old, pos, key, _build(value, flow))
-        previous = key
+def _flow_near(seq: Any, pos: int) -> bool:
+    """Whether an entry put at `pos` is written like the neighbour it sits
+    beside: the one before, else the one after."""
+    for i in (pos - 1, pos):
+        if 0 <= i < len(seq):
+            return _is_flow(seq[i])
+    return False
 
 
 def _names(items: Any) -> list[str] | None:
@@ -438,33 +512,158 @@ def _names(items: Any) -> list[str] | None:
     return names if len(set(names)) == len(names) else None
 
 
-def _update_seq(old: Any, new: list) -> None:
-    flow_items = any(_is_flow(item) for item in old)
-    old_names, new_names = _names(old), _names(new)
-    if old_names is not None and new_names is not None:
-        for i in reversed(range(len(old))):
-            if old_names[i] not in new_names:
-                _remove(old, i)
-        kept = [n for n in old_names if n in new_names]
-        if kept == [n for n in new_names if n in kept]:
-            for i, item in enumerate(new):
-                if i < len(old) and old[i]["name"] == item["name"]:
-                    _update_item(old, i, item)
+def _renamed(old: Any, new: Any) -> bool:
+    return any(k in old and k in new and old[k] == new[k] for k in IDENTITY_KEYS)
+
+
+class _Update:
+    """One in-place update of a loaded document, and the comments it meant to drop."""
+
+    def __init__(self) -> None:
+        self.gone: list[str] = []
+
+    def remove(self, container: Any, ident: Any, parent: tuple[Any, Any] | None = None) -> None:
+        """Delete one entry; its comments go, the next entry's stay.
+
+        `parent` is the (container, key) that holds `container`."""
+        keys = _keys(container)
+        pos = keys.index(ident)
+        removed = _entry_comments(container, ident)
+        _, rest = _split(_get_after(container, ident))
+        eol = ""
+        emptying = len(keys) == 1
+        if pos > 0:
+            previous = keys[pos - 1]
+            eol, rest_before = _split(_get_after(container, previous))
+            self.gone += _comments(rest_before)
+        elif emptying:
+            # What was written above the first entry goes with the list. What
+            # follows the last entry has nowhere to go: ruamel.yaml drops
+            # comments after an empty `[]`, so that is refused.
+            lead = _lead(container, parent) if _is_map(container) else (
+                container.ca.comment[1] if container.ca.comment else None)
+            if lead:
+                tokens: list[str] = []
+                _token_comments(lead, tokens)
+                self.gone += tokens
+                if _is_map(container):
+                    _clear_lead(container, parent)
                 else:
-                    _insert(old, i, i, _build(item, flow_items))
-            return
-    # By position: the comments stay where they were written.
-    for i, item in enumerate(new):
-        if i < len(old):
-            _update_item(old, i, item)
+                    container.ca.comment = None
+            if _has_comment(rest):
+                raise MergeError(f"cannot remove the only entry {ident!r} of a list or mapping while "
+                                 "comments follow it: ruamel.yaml would drop them. Move or delete "
+                                 "the comments, then retry")
+        elif _has_comment(rest):
+            if _is_map(container):
+                raise MergeError(
+                    f"cannot remove {ident!r}, the first key of a mapping, while comments sit below it: "
+                    "ruamel.yaml has nowhere to keep them. Move or delete the comments, then retry")
+            _add_leading(container, rest)
+        self.gone += _subtract(removed, _comments(rest))
+        # Delete first: the entry before it may now be the list's last, and what
+        # follows a list's last entry is stored differently (see _set_after).
+        del container[ident]
+        if pos > 0:
+            _set_after(container, keys[pos - 1], _join(eol, rest))
+        elif emptying:
+            container.fa.set_flow_style()  # `[]`, not an empty block with comments hanging off it
+            if hasattr(container.ca, "end"):
+                container.ca.end[:] = []
+
+    def insert(self, container: Any, pos: int, ident: Any, node: Any,
+               parent: tuple[Any, Any] | None = None) -> None:
+        """Insert one entry; the comments written above the entry now after it stay above it."""
+        keys = _keys(container)
+        rest = ""
+        if 0 < pos <= len(keys):
+            previous = keys[pos - 1]
+            eol, rest = _split(_get_after(container, previous))
+            _set_after(container, previous, _join(eol, ""))
+        elif pos == 0 and _is_map(container) and keys:
+            # The comment above the old first key is about that key: it moves
+            # to follow the new one, unless a blank line sets it apart (a
+            # heading for the whole mapping, or the file).
+            lead = _lead(container, parent)
+            if lead and not lead[-1].value.endswith("\n\n"):
+                rest = "".join(" " * t.column + t.value for t in lead)
+                _clear_lead(container, parent)
+        if _is_map(container):
+            container.insert(pos, ident, node)
+            key = ident
         else:
-            _insert(old, i, i, _build(item, flow_items))
-    for i in reversed(range(len(new), len(old))):
-        _remove(old, i)
+            container.insert(pos, node)
+            key = pos
+        if rest:
+            _set_after(container, key, _join("", rest))
 
+    def value(self, container: Any, ident: Any, new: Any, flow: bool) -> None:
+        from ruamel.yaml.comments import CommentedMap, CommentedSeq
 
-def _update_item(seq: Any, i: int, new: Any) -> None:
-    _set_value(seq, i, new, _is_flow(seq[i]))
+        old = container[ident]
+        if isinstance(new, dict) and isinstance(old, CommentedMap):
+            self.map(old, new, (container, ident))
+        elif isinstance(new, list) and isinstance(old, CommentedSeq):
+            self.seq(old, new, (container, ident))
+        elif not isinstance(new, (dict, list)) and not isinstance(old, (CommentedMap, CommentedSeq)):
+            if not _same(old, new):
+                container[ident] = _quoted_like(old, new)
+        else:
+            container[ident] = _build(new, flow or _is_flow(old))
+
+    def map(self, old: Any, new: dict, parent: tuple[Any, Any] | None = None) -> None:
+        flow = _is_flow(old)
+        for key in [k for k in old if k not in new]:
+            self.remove(old, key, parent)
+        previous = None
+        for key, value in new.items():
+            if key in old:
+                self.value(old, key, value, flow)
+            else:
+                pos = _keys(old).index(previous) + 1 if previous is not None else 0
+                self.insert(old, pos, key, _build(value, flow), parent)
+            previous = key
+
+    def item(self, seq: Any, i: int, new: Any) -> None:
+        self.value(seq, i, new, _is_flow(seq[i]))
+
+    def add(self, seq: Any, pos: int, new: Any) -> None:
+        self.insert(seq, pos, pos, _build(new, _flow_near(seq, pos)))
+
+    def seq(self, old: Any, new: list, parent: tuple[Any, Any] | None = None) -> None:
+        import difflib
+
+        old_names, new_names = _names(old), _names(new)
+        if old_names is not None and new_names is not None:
+            common = [n for n in old_names if n in new_names]
+            if common == [n for n in new_names if n in old_names]:
+                matcher = difflib.SequenceMatcher(None, old_names, new_names, autojunk=False)
+                # Last block first, so the indexes of the blocks before it hold.
+                for tag, i1, i2, j1, j2 in reversed(matcher.get_opcodes()):
+                    if tag == "equal":
+                        for k in range(i2 - i1):
+                            self.item(old, i1 + k, new[j1 + k])
+                    elif tag == "replace" and i2 - i1 == j2 - j1:
+                        for k in reversed(range(i2 - i1)):
+                            if _renamed(old[i1 + k], new[j1 + k]):
+                                self.item(old, i1 + k, new[j1 + k])
+                            else:
+                                self.remove(old, i1 + k, parent)
+                                self.add(old, i1 + k, new[j1 + k])
+                    else:
+                        for i in reversed(range(i1, i2)):
+                            self.remove(old, i, parent)
+                        for k, j in enumerate(range(j1, j2)):
+                            self.add(old, i1 + k, new[j])
+                return
+        # By position: the comments stay where they were written.
+        for i, item in enumerate(new):
+            if i < len(old):
+                self.item(old, i, item)
+            else:
+                self.add(old, i, item)
+        for i in reversed(range(len(new), len(old))):
+            self.remove(old, i, parent)
 
 
 # --------------------------------------------------------------------------- #
@@ -473,27 +672,35 @@ def merged(text: str, data: dict) -> str:
     """`text` (a YAML mapping) updated to hold `data`, comments and layout kept.
 
     Raises `MergeError` for a text that is not a mapping or not YAML, for a
-    comment ruamel.yaml could not keep, and for a result PyYAML would read
-    as something other than `data`."""
+    comment ruamel.yaml could not keep, for an update that would duplicate or
+    drop a comment other than with an entry that is removed, and for a result
+    PyYAML would read as something other than `data` (rigfile.write_rig checks
+    that last one)."""
+    from collections import Counter
+
     from ruamel.yaml import YAMLError
 
-    mapping, sequence, offset, width = _layout(text)
-    y = _yaml(mapping, sequence, offset, width)
     try:
-        doc = y.load(text)
+        y, doc = _choose(text)
     except YAMLError as exc:
         raise MergeError(f"not YAML: {exc}") from exc
     if not _is_map(doc):
         raise MergeError("the top level is not a mapping")
-    before = _comments(text)
-    lost = list(before)
-    for comment in _comments(_dump(y, doc)):
-        if comment in lost:
-            lost.remove(comment)
+    before = Counter(_comments(text))
+    lost = before - Counter(_comments(_dump(y, doc)))
     if lost:
         raise MergeError(
-            f"ruamel.yaml would drop {len(lost)} comment(s) from this file before any change is made, "
-            f"first {lost[0]!r}; nothing was written. (A comment line directly above a flow-style "
-            "`- {...}` entry that has its own trailing comment is one case.)")
-    _update_map(doc, _prepare(data))
-    return _dump(y, doc)
+            f"ruamel.yaml would drop {sum(lost.values())} comment(s) from this file before any change "
+            f"is made, first {next(iter(lost))!r}; nothing was written. (A comment line directly above "
+            "a flow-style `- {...}` entry that has its own trailing comment is one case.)")
+    update = _Update()
+    update.map(doc, _prepare(data))
+    out = _dump(y, doc)
+    expected = before - Counter(update.gone)
+    after = Counter(_comments(out))
+    if after != expected:
+        extra, missing = after - expected, expected - after
+        what = (f"{sum(extra.values())} comment(s) written more than once, first {next(iter(extra))!r}"
+                if extra else f"{sum(missing.values())} comment(s) lost, first {next(iter(missing))!r}")
+        raise MergeError(f"the update would leave {what}; nothing was written")
+    return out

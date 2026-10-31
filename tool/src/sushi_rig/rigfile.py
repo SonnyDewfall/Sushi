@@ -189,7 +189,11 @@ def write_rig(path: Path, rig: dict, *, source: str | None = None) -> None:
             text = yamlmerge.fresh(rig, _HEADER.format(source=source) if source else "")
     except yamlmerge.MergeError as exc:
         raise RigFileError([f"{path}: {exc}"]) from exc
-    if yaml.safe_load(text) != rig:
+    try:
+        readable = yaml.safe_load(text) == rig
+    except yaml.YAMLError:
+        readable = False
+    if not readable:
         raise RigFileError([f"{path}: the text written would not read back as the rig given; "
                             "nothing was written"])
     path.parent.mkdir(parents=True, exist_ok=True)
