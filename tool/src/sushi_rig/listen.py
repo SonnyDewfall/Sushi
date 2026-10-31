@@ -34,6 +34,7 @@ import sys
 from pathlib import Path
 from typing import TYPE_CHECKING
 
+from .amp import AmpError, CARLA_OSC_PORT, parameter_message
 from .live import DEFAULT_GRPC_ADDRESS, move_processor, refresh_panel
 from .save import SaveError, save_config
 
@@ -121,8 +122,6 @@ def amp_command(osc_address: str, args: tuple) -> tuple[str, list, str, float]:
     A value that is not a finite number is refused here, not sent: it would
     arrive as the top of the parameter's range (see `amp.clamp`).
     """
-    from .amp import AmpError, clamp, parameter_message
-
     name = osc_address[len(AMP_ADDRESS_PREFIX):]
     if not args:
         raise AmpError(f"{name} sent no value")
@@ -131,7 +130,7 @@ def amp_command(osc_address: str, args: tuple) -> tuple[str, list, str, float]:
     except (TypeError, ValueError, OverflowError):
         raise AmpError(f"{name} got a non-numeric value") from None
     osc_path, payload = parameter_message(name, value)  # raises on NaN and infinity
-    return osc_path, payload, name, clamp(name, value)
+    return osc_path, payload, name, payload[1]  # already clamped by parameter_message
 
 
 def move_direction(args: tuple) -> int:
@@ -228,8 +227,6 @@ def serve(
         OSC is write-only from here, so the value we last sent is the only
         record there is of where the amp is set — and the save button needs it.
         """
-        from .amp import AmpError, CARLA_OSC_PORT
-
         try:
             osc_path, payload, name, remembered = amp_command(osc_address, args)
         except AmpError as exc:
