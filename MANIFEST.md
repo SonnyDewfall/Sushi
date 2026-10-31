@@ -1051,3 +1051,21 @@ worse than a little noise in a measurement. Three things this rests on are not
 yet seen on the rig: that PipeWire sums a second link into an input, that
 qpwgraph leaves links not in its file alone, and that Carla names the amp's
 ports `NAM:Input` and `NAM:Output` live. *(2026-10-31)*
+
+**The monitor mix is made in Sushi, and its send and return cost nothing if
+the master track comes last.** Decided by Sonny on 2026-10-31: each channel keeps
+its own output so stems exist, and sends a copy to a master track that feeds the
+monitors and carries #29's limiter. What that puts in the path you hear was
+measured before anything was built on it (`test_send_return.py`, real Sushi
+1.3.0, offline, comparing whole stereo renders sample for sample): through a
+master track listed *after* the channel, a 0 dB send is the channel exactly —
+no delay, both sides, nothing inverted or swapped — and a channel that sends
+keeps its own output untouched. A master track listed *before* the channel is
+64 samples late, 1.33 ms: one of Sushi's internal chunks, not a PipeWire block.
+Both are what return_plugin.cpp says: a send ahead of its return on the same
+thread lands in the block about to play. So the master track goes last, and
+item 6 makes that `emit`'s job, with a test, rather than this note's. Not yet seen: whether the
+live JACK frontend keeps every track on one thread, as it should without
+`--multicore-processing`; a send on another thread is always a chunk late. The
+cost that stays is outputs: the master takes 2 of Sushi's 8, leaving room for
+three stereo stems. *(2026-10-31)*
