@@ -1037,3 +1037,17 @@ saying so rather than ignoring it. Offsets are recorded as not measured: whether
 a dry tap can be measured against what came out of an amp is a question for the
 rig machine, not a number to write in beforehand. Not yet seen in real
 open-stage-control: whether a second fixed bar stacks under the first. *(2026-10-31)*
+
+**selftest's probes are planned from the rig, not written down.** #49 part 2's
+decisions — which ports each probe links — come from the rig's own routing,
+read by the same function the patchbay generator uses, so the two cannot
+disagree on a port. One probe per output half, so a chain silent on one side
+fails there; the guitar's own port reaching only one of Sushi's inputs is the
+patchbay's to catch, since a probe drives both inputs itself. With the amp on, a second probe from
+`NAM:Input` through Sushi catches the amp working and its output never
+arriving. Probes add links and never remove them: a selftest killed between
+unlinking the guitar and restoring it would leave a rig with no guitar, which is
+worse than a little noise in a measurement. Three things this rests on are not
+yet seen on the rig: that PipeWire sums a second link into an input, that
+qpwgraph leaves links not in its file alone, and that Carla names the amp's
+ports `NAM:Input` and `NAM:Output` live. *(2026-10-31)*

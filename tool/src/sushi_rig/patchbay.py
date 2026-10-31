@@ -120,35 +120,50 @@ def routes_from_rig(
     sinks: dict[str, list[Route]] = {}
     problems: list[str] = []
     for track in rig.tracks:
-        for role, label, entries, into in [
-            (track.source, "inputs", track.inputs, feeds),
-            (track.sink, "outputs", track.outputs, sinks),
+        for role, label, into in [
+            (track.source, "inputs", feeds),
+            (track.sink, "outputs", sinks),
         ]:
             if not role:
                 continue
-            route: list[Dest] = []
-            for entry in entries:
-                where = f"track {track.name!r}: {label} entry {entry}"
-                has_bus, has_channel = "engine_bus" in entry, "engine_channel" in entry
-                if has_bus and has_channel:
-                    problems.append(f"{where} mixes bus and channel forms")
-                elif has_bus or has_channel:
-                    key = "engine_bus" if has_bus else "engine_channel"
-                    problem = _index_problem(where, key, entry[key])
-                    if problem:
-                        problems.append(problem)
-                    else:
-                        route.append((bus if has_bus else channel)(entry[key]))
-                else:
-                    problems.append(
-                        f"{where} names no engine_bus or engine_channel, so which "
-                        f"Sushi {label[:-1]} the role {role!r} takes is unknown"
-                    )
-            if route and tuple(route) not in into.setdefault(role, []):
-                into[role].append(tuple(route))
+            route, found = track_route(track, label, role)
+            problems += found
+            if route and route not in into.setdefault(role, []):
+                into[role].append(route)
     if problems:
         raise PatchbayError(problems)
     return feeds, sinks
+
+
+def track_route(track: Any, label: str, role: str | None = None) -> tuple[Route, list[str]]:
+    """One track's `inputs` or `outputs` as places on Sushi, and every entry
+    that cannot be placed.
+
+    The one reading of a track's routing, shared by the patchbay and by
+    selftest's probes (probes.py), so the two can never disagree on a port.
+    `role` only words the problem; a track with no role is read the same way.
+    """
+    route: list[Dest] = []
+    problems: list[str] = []
+    for entry in getattr(track, label):
+        where = f"track {track.name!r}: {label} entry {entry}"
+        has_bus, has_channel = "engine_bus" in entry, "engine_channel" in entry
+        if has_bus and has_channel:
+            problems.append(f"{where} mixes bus and channel forms")
+        elif has_bus or has_channel:
+            key = "engine_bus" if has_bus else "engine_channel"
+            problem = _index_problem(where, key, entry[key])
+            if problem:
+                problems.append(problem)
+            else:
+                route.append((bus if has_bus else channel)(entry[key]))
+        else:
+            taker = f"the role {role!r}" if role else "the track"
+            problems.append(
+                f"{where} names no engine_bus or engine_channel, so which "
+                f"Sushi {label[:-1]} {taker} takes is unknown"
+            )
+    return tuple(route), problems
 
 
 def _as_routes(value: Any) -> list[Route]:
