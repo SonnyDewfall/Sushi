@@ -649,8 +649,9 @@ reported as `unchecked`, never as a pass. Most of these questions need PipeWire
 and a running rig, so on a bare machine `doctor` tells you what it could not
 look at rather than going quiet.
 
-It also checks there is room to record — at least an hour of a four-stem take,
-fewer with more channels — and that every `.nam` model in `amp/models` was
+It also checks there is room to record — at least an hour of a take of the
+largest rig in `config/`, two stems per channel — and that every `.nam` model
+the rig can play, in `amp/models` or wherever a config's `_amp` points, was
 trained at the rig's 48 kHz, since a model at the wrong rate changes the tone
 without saying so.
 
