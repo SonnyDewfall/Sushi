@@ -158,6 +158,12 @@ def relative_model(model_path: Path, root: Path) -> str:
         return str(model_path)
 
 
+def model_library(root: Path) -> Path:
+    """Where the rig keeps its `.nam` models. One place, so that if the library
+    moves, nothing goes on checking an empty folder and calling it fine."""
+    return Path(root) / "amp" / "models"
+
+
 def resolve_model(model: str, root: Path) -> Path:
     """Turn a stored model path back into something Carla can open.
 
@@ -172,7 +178,7 @@ def resolve_model(model: str, root: Path) -> Path:
         # Listing what is actually there turns "that file is missing" into
         # "here is the name you meant" — models are renamed and replaced far
         # more often than configs are edited.
-        library = Path(root) / "amp" / "models"
+        library = model_library(root)
         available = sorted(p.name for p in library.glob("*.nam")) if library.is_dir() else []
         found = (
             "\n\nModels in amp/models/:\n  " + "\n  ".join(available)

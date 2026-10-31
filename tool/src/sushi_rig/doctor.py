@@ -46,10 +46,13 @@ changing one field, and says which field.
 from __future__ import annotations
 
 import ctypes
+import json
+import math
 import shutil
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
+from typing import NamedTuple
 
 # The graph rate everything here assumes. Sushi's configs declare 48000, the
 # `.nam` models are trained at it, and a mismatch degrades tone without saying
@@ -71,6 +74,18 @@ APPIMAGE_MAGIC = b"AI\x02"
 # is checked by soname and not by asking whether "fuse" is installed -- a
 # FUSE-3-only machine has fuse installed and still cannot run the AppImage.
 FUSE2_SONAME = "libfuse.so.2"
+
+# What a take costs on disk, for the free-space check. Each channel records two
+# stems, what you heard and its dry tap; the channel count comes from the
+# largest rig in config/, because rigs will have one, two or more channels and a
+# fixed guess would be wrong for every one that is not the guess. float32 is the
+# larger of the two formats #53 chooses between, so the estimate is cautious.
+STEMS_PER_CHANNEL = 2
+TAKE_BYTES_PER_SAMPLE = 4
+# Below this much recording time the disk is a fault, not a footnote: a take
+# that runs out of space is a performance lost, and #53 assigns the check here
+# so it is found before playing rather than mid-take.
+MIN_RECORDING_HOURS = 1.0
 
 OK = "ok"
 FAULT = "fault"
@@ -489,6 +504,26 @@ class Environment:
     fuse2: bool
     # None when there is no ./sushi to look at.
     sushi_is_appimage: bool | None
+    # Free bytes where takes are written; None when that could not be read, and
+    # `takes_problem` says why when the reason is itself a fault.
+    takes_free_bytes: int | None = None
+    takes_dir: str = ""
+    takes_problem: str = ""
+    # Stems a take of the largest rig in config/ records, and which rig that is.
+    take_stems: int = 2
+    take_rig: str = ""
+    models: tuple["ModelInfo", ...] = ()
+
+
+class ModelInfo(NamedTuple):
+    """One amp model doctor looked at: what it declares, or why it could not
+    be read. `used_by` names the configs that play it, empty for a model that
+    is only in the library."""
+
+    name: str
+    rate: int | None
+    error: str = ""
+    used_by: tuple[str, ...] = ()
 
 
 def check_pw_jack(environment: Environment) -> Check:
@@ -580,12 +615,99 @@ def check_fuse(environment: Environment) -> Check:
     )
 
 
+def _duration(hours: float) -> str:
+    """Rounded down, never up: a check that fails at 0.997 hours must not say
+    "about 1.0 hour" in the same sentence as "under the 1 hour it asks for"."""
+    if hours < 2:
+        return f"about {math.floor(hours * 60)} minutes"
+    return f"about {math.floor(hours * 10) / 10:g} hours"
+
+
+def check_disk(environment: Environment, *, hours: float = MIN_RECORDING_HOURS) -> Check:
+    """Is there room to record before playing, rather than discovering it mid-take."""
+    where = environment.takes_dir or "the takes folder"
+    if environment.takes_problem:
+        return Check(
+            "disk", FAULT, environment.takes_problem,
+            "connect the drive, or point the link at a folder that exists — "
+            "otherwise the first take fails as it starts",
+        )
+    free = environment.takes_free_bytes
+    if free is None:
+        return Check(
+            "disk", UNCHECKED, f"how much space is free at {where} could not be read",
+            "check it by hand with `df -h`",
+        )
+    stems = max(1, environment.take_stems)
+    per_hour = stems * EXPECTED_RATE * TAKE_BYTES_PER_SAMPLE * 3600
+    fits = free / per_hour
+    rig = f" of {environment.take_rig}" if environment.take_rig else ""
+    summary = (
+        f"{free / 1e9:.1f} GB free at {where}: {_duration(fits)} of a {stems}-stem "
+        f"take{rig} at {EXPECTED_RATE} Hz in float32"
+    )
+    if fits >= hours:
+        return Check("disk", OK, summary)
+    return Check(
+        "disk", FAULT, summary + f", under the {hours:g} hour this check asks for",
+        "free some space, or record somewhere with more of it — a take that runs out "
+        "of disk is a performance lost",
+    )
+
+
+def check_models(environment: Environment, expected: int = EXPECTED_RATE) -> Check:
+    """Was every amp model the rig can play trained at the rate it runs at?
+
+    A model played at a rate it was not trained at degrades the tone and says
+    nothing, which is why #48 asks for it. The rate is what the `.nam` file
+    declares about itself (`amp.describe_model`). "Every model the rig can
+    play" is the library *and* every model a config's `_amp` points at, which
+    can be anywhere — checking the library alone would pass a config whose
+    model was never looked at.
+
+    Every problem in one run: a fault that named only the first kind left the
+    others to be found on the next.
+    """
+    models = environment.models
+    if not models:
+        return Check("amp-models", OK, "no .nam models in the library or the configs, so none can mismatch")
+
+    def who(model: ModelInfo) -> str:
+        return f"{model.name} (played by {', '.join(model.used_by)})" if model.used_by else model.name
+
+    unreadable = [m for m in models if m.error]
+    wrong = [m for m in models if not m.error and m.rate not in (None, expected)]
+    undeclared = [m for m in models if not m.error and m.rate is None]
+    parts = [f"{who(m)} cannot be read: {m.error}" for m in unreadable]
+    parts += [f"{who(m)} was trained at {m.rate} Hz, the rig runs at {expected} Hz" for m in wrong]
+    parts += [f"{who(m)} declares no sample rate, so a mismatch cannot be ruled out" for m in undeclared]
+
+    if unreadable or wrong:
+        remedies = []
+        if wrong:
+            remedies.append(
+                f"use a model trained at {expected} Hz — one at another rate changes the "
+                "tone without saying so"
+            )
+        if unreadable:
+            remedies.append("replace or remove the file that cannot be read, or point the config at one that can")
+        return Check("amp-models", FAULT, "; ".join(parts), "; and ".join(remedies))
+    if undeclared:
+        return Check(
+            "amp-models", UNCHECKED, "; ".join(parts),
+            "check where the model came from, or retrain it with its rate recorded",
+        )
+    return Check("amp-models", OK, f"{len(models)} model(s), all trained at {expected} Hz")
+
+
 def environment_checks(environment: Environment) -> list[Check]:
     return [
         check_pw_jack(environment),
         check_no_jackd(environment),
         check_carla(environment),
         check_fuse(environment),
+        check_disk(environment),
+        check_models(environment),
     ]
 
 
@@ -643,12 +765,107 @@ def _fuse2_loads() -> bool:
     return True
 
 
+def _free_bytes(path: Path) -> tuple[int | None, str]:
+    """Free space where `path` is, or would be, and a fault when that is a lie.
+
+    The takes folder is made by the first take, so before then it is the
+    nearest folder that exists that tells how much room there is. Except when
+    the path, or a folder above it, is a link to something missing — an
+    external drive not plugged in. Walking past that measured the home disk
+    instead, reported plenty of room, and the first take then failed as it
+    started. A mount point with nothing mounted cannot be told from an empty
+    folder, so it is still measured as whatever it sits on.
+    """
+    for candidate in (path, *path.parents):
+        if candidate.is_symlink() and not candidate.exists():
+            try:
+                target = candidate.readlink()
+            except OSError:
+                target = "something that is not there"
+            return None, (
+                f"{candidate} is a link to {target}, which does not exist — is the "
+                "drive takes are recorded to plugged in?"
+            )
+        if candidate.exists():
+            try:
+                return shutil.disk_usage(candidate).free, ""
+            except OSError:
+                return None, ""
+    return None, ""
+
+
+def _largest_rig(root: Path) -> tuple[int, str]:
+    """The stems a take of the largest rig in config/ records, and its name."""
+    from .verify import configs_to_check
+
+    stems, name = STEMS_PER_CHANNEL, ""
+    for config in configs_to_check(root):
+        try:
+            tracks = json.loads(config.read_text()).get("tracks", [])
+        except (OSError, ValueError, AttributeError):
+            continue
+        count = STEMS_PER_CHANNEL * len([t for t in tracks if isinstance(t, dict)])
+        if count > stems:
+            stems, name = count, config.stem
+    return stems, name
+
+
+def _describe(path: Path, used_by: tuple[str, ...]) -> ModelInfo:
+    from .amp import describe_model
+
+    try:
+        return ModelInfo(path.name, describe_model(path)["sample_rate"], "", used_by)
+    except Exception as exc:  # noqa: BLE001 — see below
+        # Broad on purpose. `describe_model` raises AmpError for what it
+        # expects, but a malformed file can reach AttributeError or
+        # OverflowError inside it, and one bad model must cost one line of
+        # the report, never the whole run.
+        return ModelInfo(path.name, None, f"{type(exc).__name__}: {exc}", used_by)
+
+
+def _models(root: Path) -> tuple[ModelInfo, ...]:
+    """Every model the rig can play: the library, and what each config points at."""
+    from .amp import CONFIG_KEY, AmpError, model_library, resolve_model
+    from .verify import configs_to_check
+
+    users: dict[Path, list[str]] = {}
+    missing: list[ModelInfo] = []
+    for config in configs_to_check(root):
+        try:
+            amp = json.loads(config.read_text()).get(CONFIG_KEY)
+        except (OSError, ValueError, AttributeError):
+            continue
+        model = amp.get("model") if isinstance(amp, dict) else None
+        if not isinstance(model, str):
+            continue
+        try:
+            users.setdefault(resolve_model(model, root).resolve(), []).append(config.stem)
+        except AmpError:
+            missing.append(ModelInfo(Path(model).name, None, "the file is not there", (config.stem,)))
+
+    library = model_library(root)
+    for path in sorted(library.glob("*.nam")) if library.is_dir() else []:
+        users.setdefault(path.resolve(), [])
+    return tuple(_describe(path, tuple(sorted(by))) for path, by in sorted(users.items())) + tuple(missing)
+
+
 def gather_environment(root: Path) -> Environment:
     """Look at the machine. The one impure function here."""
+    from .take import default_takes_dir
+
+    takes = default_takes_dir()
+    free, problem = _free_bytes(takes)
+    stems, rig = _largest_rig(root)
     return Environment(
         pw_jack=shutil.which("pw-jack"),
         carla=shutil.which("carla"),
         jackd_pids=_jackd_pids(),
         fuse2=_fuse2_loads(),
         sushi_is_appimage=_is_appimage(root / "sushi"),
+        takes_free_bytes=free,
+        takes_dir=str(takes),
+        takes_problem=problem,
+        take_stems=stems,
+        take_rig=rig,
+        models=_models(root),
     )

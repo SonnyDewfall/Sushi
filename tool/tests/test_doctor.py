@@ -314,6 +314,9 @@ def environment(**changes) -> Environment:
     base = {
         "pw_jack": "/usr/bin/pw-jack", "carla": "/usr/bin/carla",
         "jackd_pids": (), "fuse2": True, "sushi_is_appimage": True,
+        "takes_free_bytes": 10 ** 12, "takes_dir": "/home/me/sushi-rig-takes",
+        "take_stems": 4, "take_rig": "guitar_vocal",
+        "models": (doctor.ModelInfo("Neve 1.nam", 48000),),
     }
     return Environment(**{**base, **changes})
 
@@ -384,7 +387,8 @@ def test_every_fault_doctor_can_report_carries_a_remedy():
     ):
         produced += doctor.graph_checks(nodes, CLIENTS, expected_quantum=RIG_QUANTUM)
     produced += doctor.environment_checks(environment(
-        pw_jack=None, carla=None, jackd_pids=(1,), fuse2=False
+        pw_jack=None, carla=None, jackd_pids=(1,), fuse2=False, takes_free_bytes=10,
+        models=(doctor.ModelInfo("old.nam", 44100), doctor.ModelInfo("broken.nam", None, "not valid JSON")),
     ))
     produced += doctor.patchbay_checks({"Gone": ["a"]}, {}, file_name="p", links=1)
     produced.append(doctor.machine_check(["bad"], file_name="m.yaml"))
@@ -461,7 +465,7 @@ def test_the_command_runs_end_to_end_and_names_every_check(capsys):
     ])
     printed = capsys.readouterr()
     assert exit_code in (0, 1), "doctor either passes or fails; nothing else"
-    for name in ("machine-file", "pw-jack", "jackd", "carla", "fuse2"):
+    for name in ("machine-file", "pw-jack", "jackd", "carla", "fuse2", "disk", "amp-models"):
         assert name in printed.out, f"{name} was not reported at all"
     # Either the graph was read and the four questions answered, or it was not
     # and that was said. Both are honest; silence would not be.
@@ -485,3 +489,123 @@ def test_a_pw_dump_that_is_not_json_does_not_abort_the_command(monkeypatch, caps
     assert "pipewire-graph" in printed, "the graph went unchecked, and says so"
     assert "did not produce JSON" in printed
     assert "patchbay-unchecked" in printed or "could not be checked" in printed
+
+
+
+# --------------------------------------------------------------------------- #
+# Room to record, and the amp models' rates
+# --------------------------------------------------------------------------- #
+
+# Four stems of 48 kHz float32 for an hour: the threshold, by its own arithmetic.
+ONE_HOUR = 4 * doctor.EXPECTED_RATE * doctor.TAKE_BYTES_PER_SAMPLE * 3600
+
+
+def test_an_hour_of_recording_is_enough_and_a_byte_less_is_not():
+    """#53 puts this here so it is found before playing, not mid-take."""
+    assert ONE_HOUR == 2_764_800_000
+    assert doctor.check_disk(environment(takes_free_bytes=ONE_HOUR)).state == OK
+    short = doctor.check_disk(environment(takes_free_bytes=ONE_HOUR - 1))
+    assert short.state == FAULT
+    assert "performance lost" in short.remedy
+
+
+def test_a_fault_never_rounds_itself_up_past_the_threshold():
+    """It used to say "about 1.0 hour(s)" and "under the 1 hour" in one breath."""
+    short = doctor.check_disk(environment(takes_free_bytes=ONE_HOUR - 10_000_000))
+    assert "about 59 minutes" in short.message
+    assert "1.0" not in short.message
+
+
+def test_the_stem_count_comes_from_the_largest_rig_not_a_guess():
+    """Rigs will have one, two or more channels. guitar_vocal has two, each
+    recorded dry and processed."""
+    assert doctor._largest_rig(ROOT) == (4, "guitar_vocal")
+    eight = doctor.check_disk(environment(take_stems=8, takes_free_bytes=ONE_HOUR))
+    assert eight.state == FAULT, "twice the stems, half the time"
+    assert "8-stem take of guitar_vocal" in eight.message
+
+
+def test_free_space_that_cannot_be_read_is_unchecked():
+    assert doctor.check_disk(environment(takes_free_bytes=None)).state == UNCHECKED
+
+
+def test_free_space_is_read_where_the_takes_will_go_before_the_folder_exists(tmp_path):
+    """The folder is made by the first take, so until then its parent says."""
+    free, problem = doctor._free_bytes(tmp_path / "not" / "made" / "yet")
+    assert isinstance(free, int) and problem == ""
+
+
+def test_a_takes_folder_linked_to_an_unplugged_drive_is_a_fault(tmp_path):
+    """It used to walk past the dead link to the home disk, report plenty of
+    room, and let the first take fail as it started."""
+    takes = tmp_path / "sushi-rig-takes"
+    takes.symlink_to(tmp_path / "media" / "external")
+    free, problem = doctor._free_bytes(takes / "riff")
+    assert free is None and "plugged in" in problem
+    check = doctor.check_disk(environment(takes_free_bytes=None, takes_problem=problem))
+    assert check.state == FAULT and "connect the drive" in check.remedy
+
+
+def test_the_committed_amp_models_are_trained_at_the_rigs_rate():
+    """Real files: both Neve models declare 48 kHz. A superset, so committing a
+    third good model does not break the test of the property it shares."""
+    models = doctor._models(ROOT)
+    assert {"Neve 1.nam", "Neve 2.nam"} <= {m.name for m in models}
+    assert doctor.check_models(environment(models=models)).state == OK
+
+
+def test_a_model_a_config_plays_is_checked_wherever_it_lives(tmp_path):
+    """A config's _amp.model can point outside amp/models. Checking the library
+    alone passed a config whose model was never looked at."""
+    import json
+
+    (tmp_path / "config").mkdir()
+    elsewhere = tmp_path / "elsewhere" / "vintage.nam"
+    elsewhere.parent.mkdir()
+    elsewhere.write_text(json.dumps({"architecture": "WaveNet", "sample_rate": 44100}))
+    (tmp_path / "config" / "tone.json").write_text(json.dumps(
+        {"tracks": [], "_amp": {"plugin": "nam", "model": str(elsewhere)}}
+    ))
+    models = doctor._models(tmp_path)
+    assert models == (doctor.ModelInfo("vintage.nam", 44100, "", ("tone",)),)
+    check = doctor.check_models(environment(models=models))
+    assert check.state == FAULT and "played by tone" in check.message
+
+
+def test_a_malformed_model_costs_one_line_not_the_run(tmp_path):
+    """describe_model can raise more than AmpError on a malformed file; any of
+    it used to escape and abort doctor with every other result lost."""
+    import json
+
+    bad = tmp_path / "odd.nam"
+    bad.write_text(json.dumps({"architecture": "WaveNet", "config": []}))
+    info = doctor._describe(bad, ())
+    assert info.rate is None and info.error.startswith("AttributeError")
+    assert doctor.check_models(environment(models=(info,))).state == FAULT
+
+
+def test_every_kind_of_model_problem_is_reported_in_one_run():
+    """A fault that named only the first kind left the others for the next run."""
+    check = doctor.check_models(environment(models=(
+        doctor.ModelInfo("old.nam", 44100), doctor.ModelInfo("plain.nam", None),
+    )))
+    assert check.state == FAULT
+    assert "old.nam was trained at 44100 Hz" in check.message
+    assert "plain.nam declares no sample rate" in check.message
+
+
+def test_an_unreadable_model_is_not_reported_as_a_rate_problem():
+    check = doctor.check_models(environment(models=(
+        doctor.ModelInfo("broken.nam", None, "not valid JSON"),
+    )))
+    assert check.state == FAULT and "broken.nam cannot be read" in check.message
+    assert "48000" not in check.message + check.remedy
+
+
+def test_a_model_declaring_no_rate_is_unchecked_rather_than_assumed():
+    check = doctor.check_models(environment(models=(doctor.ModelInfo("plain.nam", None),)))
+    assert check.state == UNCHECKED and "plain.nam" in check.message
+
+
+def test_no_models_at_all_cannot_mismatch():
+    assert doctor.check_models(environment(models=())).state == OK
