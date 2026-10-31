@@ -24,7 +24,7 @@ from pathlib import Path
 from typing import Any
 
 from .amp import write_amp
-from .emit import emit
+from .emit import EmitError, emit
 from .live import DEFAULT_GRPC_ADDRESS, capture
 from .spec import RigSpec
 
@@ -75,9 +75,17 @@ def save_config(
     if not rig_path.is_file():
         raise SaveError(f"rig source not found: {rig_path}")
 
-    rig = RigSpec.load(rig_path)
+    try:
+        rig = RigSpec.load(rig_path)
+    except ValueError as exc:
+        # A v2 rig file (rigfile.py): RigSpec.load refuses it by name. Saving
+        # one is #30's last slice; until then this is a refusal, not a crash.
+        raise SaveError(f"cannot save from {rig_path}: {exc}") from exc
     state = capture(address)
-    config = emit(rig, state)
+    try:
+        config = emit(rig, state)
+    except EmitError as exc:
+        raise SaveError(str(exc)) from exc
 
     out_dir = Path(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)

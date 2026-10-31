@@ -70,9 +70,15 @@ MOVE_ADDRESS_PREFIX = "/sushi-rig/move/"
 AMP_ADDRESS_PREFIX = "/sushi-rig/amp/"
 
 
+NO_SOURCE = (
+    "save failed: this rig has no source to save from — the config carries no "
+    "_meta.source and no config/src/<name>.yaml exists — so SAVE is off for it"
+)
+
+
 def handle_save(
     name: str,
-    rig_path: Path,
+    rig_path: Path | None,
     out_dir: Path,
     archive_dir: Path,
     address: str = DEFAULT_GRPC_ADDRESS,
@@ -87,6 +93,8 @@ def handle_save(
     it. Split out from `serve()`'s OSC wiring so it's testable without a
     socket or `python-osc` installed at all.
     """
+    if rig_path is None:
+        return NO_SOURCE
     try:
         out_path = save_config(
             name, rig_path, out_dir, archive_dir, address,
@@ -94,6 +102,12 @@ def handle_save(
         )
     except SaveError as exc:
         return f"save failed: {exc}"
+    except SystemExit as exc:
+        # Library code that still calls sys.exit (live._controller when elkpy
+        # is missing) must not take the listener with it. A bare exit code is
+        # no reason a player can act on.
+        reason = exc.code if isinstance(exc.code, str) and exc.code else "a tool exited without saying why"
+        return f"save failed: {reason}"
     except Exception as exc:  # noqa: BLE001 - keep the listener alive
         return f"save failed: unexpected error: {exc}"
 
@@ -147,7 +161,7 @@ def move_direction(args: tuple) -> int:
 
 
 def serve(
-    rig_path: Path,
+    rig_path: Path | None,
     out_dir: Path,
     archive_dir: Path,
     address: str = DEFAULT_GRPC_ADDRESS,
@@ -198,6 +212,25 @@ def serve(
     def _report(message: str, status_address: str = STATUS_ADDRESS) -> None:
         print(message, file=sys.stderr)
         status_client.send_message(status_address, message)
+
+    def _guarded(handler):
+        """A handler that cannot end the listener.
+
+        python-osc's server catches Exception from a handler and nothing else,
+        so a SystemExit from library code (live._controller, emit before it
+        grew EmitError) propagated out of serve_forever and the listener died
+        with the save button: found by the audit. Every message that could do
+        that is reported to the panel instead. KeyboardInterrupt still stops
+        the listener, as it should.
+        """
+        def wrapped(address, *args):
+            try:
+                handler(address, *args)
+            except KeyboardInterrupt:
+                raise
+            except BaseException as exc:  # noqa: BLE001 - see docstring
+                _report(f"{address}: failed — {type(exc).__name__}: {exc}")
+        return wrapped
 
     def _on_take_name(_osc_address: str, *args) -> None:
         transport.on_name(str(args[0]) if args else "")
@@ -311,13 +344,16 @@ def serve(
             _report(f"panel refresh failed (the move still applied): {exc}")
 
     dispatcher = Dispatcher()
-    dispatcher.map(NAME_ADDRESS, _on_name)
-    dispatcher.map(SAVE_ADDRESS, _on_save)
-    dispatcher.map(TAKE_NAME_ADDRESS, _on_take_name)
-    dispatcher.map(RECORD_ADDRESS, _on_record)
-    dispatcher.map(STOP_ADDRESS, _on_stop)
-    dispatcher.map(MOVE_ADDRESS_PREFIX + "*", _on_move)
-    dispatcher.map(AMP_ADDRESS_PREFIX + "*", _on_amp)
+    for address, handler in (
+        (NAME_ADDRESS, _on_name),
+        (SAVE_ADDRESS, _on_save),
+        (TAKE_NAME_ADDRESS, _on_take_name),
+        (RECORD_ADDRESS, _on_record),
+        (STOP_ADDRESS, _on_stop),
+        (MOVE_ADDRESS_PREFIX + "*", _on_move),
+        (AMP_ADDRESS_PREFIX + "*", _on_amp),
+    ):
+        dispatcher.map(address, _guarded(handler))
 
     server = BlockingOSCUDPServer((host, port), dispatcher)
     print(

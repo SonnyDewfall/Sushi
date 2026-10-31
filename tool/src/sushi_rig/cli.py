@@ -308,15 +308,27 @@ def _patchbay(args: argparse.Namespace) -> int:
 def _emit_any(path: Path, state: dict | None) -> dict:
     """A config from either kind of rig file: channels and a master (#30), or
     tracks spelt out by hand. The file says which, by its `kind`."""
+    from .emit import EmitError
     from .rigfile import Rig, RigFileError, emit_rig, load_any
+
+    from .paths import checkout_root
 
     try:
         rig = load_any(path)
-        if not isinstance(rig, Rig):
-            return emit(rig, state)
-        return emit_rig(rig, state)
-    except RigFileError as exc:
+        config = emit_rig(rig, state) if isinstance(rig, Rig) else emit(rig, state)
+    except (RigFileError, EmitError) as exc:
         sys.exit(f"{path}:\n  " + "\n  ".join(exc.problems))
+    # Where this config came from, so `up` can find the rig SAVE saves from
+    # without guessing. Only within the checkout: a path outside it is not one
+    # another machine can follow.
+    try:
+        source = Path(path).resolve().relative_to(checkout_root())
+    except ValueError:
+        return config
+    meta = dict(config.get("_meta") or {})
+    meta["source"] = source.as_posix()
+    config["_meta"] = meta
+    return config
 
 
 def _convert(args: argparse.Namespace) -> int:
@@ -1096,7 +1108,11 @@ def main(argv: list[str] | None = None) -> int:
         "listen",
         help="run an OSC listener that saves a config on request (for the panel's save button)",
     )
-    p.add_argument("--rig", type=Path, required=True, help="rig.yaml every save is built from")
+    p.add_argument(
+        "--rig", type=Path,
+        help="rig.yaml every save is built from. Without it SAVE is refused with a "
+        "message, which is what `up` does for a config whose source it cannot find",
+    )
     p.add_argument("--out-dir", type=Path, help=_OUT_DIR_HELP)
     p.add_argument("--archive-dir", type=Path, help=_ARCHIVE_DIR_HELP)
     p.add_argument("--address", default=DEFAULT_GRPC_ADDRESS, help="Sushi's gRPC address")

@@ -32,9 +32,11 @@ def test_emit_without_state_has_no_initial_state():
     }
 
 
-def test_emit_invalid_spec_exits_rather_than_writing_a_bad_config():
+def test_emit_refuses_an_invalid_spec_rather_than_writing_a_bad_config():
+    from sushi_rig.emit import EmitError
+
     bad = RigSpec(tracks=[TrackSpec(name="t", plugins=[PluginSpec(name="p", type="lv2")])])
-    with pytest.raises(SystemExit):
+    with pytest.raises(EmitError, match="rig spec invalid"):
         emit(bad)
 
 
@@ -83,19 +85,21 @@ def test_emit_initial_state_uses_dict_form_not_list_of_name_value_objects():
     assert isinstance(entry["properties"], dict)
 
 
-def test_emit_warns_and_skips_state_for_processor_not_in_spec(capsys):
-    """A processor in captured state but not in the spec means the spec and
-    the live session have diverged — must warn, never silently resolve."""
+def test_emit_refuses_state_for_a_processor_not_in_the_spec():
+    """A processor in captured state but not in the spec means the capture is
+    of a different rig. It used to warn and skip, and through the save
+    listener that warning was a config written with the wrong chain and no
+    settings under the player's name, while the panel said saved."""
+    from sushi_rig.emit import EmitError
+
     state = {
         "processors": {
             "comp": {"parameters": {"X": 0.5}},
             "ghost_processor": {"parameters": {"Y": 0.1}},
         }
     }
-    config = emit(_simple_rig(), state)
-    processors_in_output = {e["processor"] for e in config["initial_state"]}
-    assert processors_in_output == {"comp"}
-    assert "ghost_processor" in capsys.readouterr().err
+    with pytest.raises(EmitError, match="'ghost_processor'.*not in the rig spec"):
+        emit(_simple_rig(), state)
 
 
 def test_emit_passes_meta_through_verbatim():
@@ -179,12 +183,23 @@ def test_state_without_a_tracks_key_leaves_order_alone():
     assert _plugin_names(emit(rig, state)) == ["compressor", "overdrive", "reverb"]
 
 
-def test_captured_order_naming_an_unknown_processor_warns_and_skips(capsys):
+def test_captured_order_naming_an_unknown_processor_is_refused():
+    from sushi_rig.emit import EmitError
+
     rig = _three_plugin_rig()
     state = {"tracks": {"board": ["reverb", "ghost", "compressor", "overdrive"]}}
-    names = _plugin_names(emit(rig, state))
-    assert names == ["reverb", "compressor", "overdrive"]
-    assert "ghost" in capsys.readouterr().err
+    with pytest.raises(EmitError, match="'ghost'"):
+        emit(rig, state)
+
+
+def test_an_invalid_spec_is_an_error_not_an_exit():
+    """emit runs inside the OSC listener, where a SystemExit ended it."""
+    from sushi_rig.emit import EmitError
+    from sushi_rig.spec import PluginSpec, RigSpec, TrackSpec
+
+    rig = RigSpec(tracks=[TrackSpec(name="a", plugins=[PluginSpec(name="a")])])
+    with pytest.raises(EmitError, match="duplicate name"):
+        emit(rig)
 
 
 def test_plugin_missing_from_the_captured_order_is_kept_not_dropped(capsys):

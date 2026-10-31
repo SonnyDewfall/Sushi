@@ -4,9 +4,10 @@ Refuses to emit on any spec problem (brief §6, emit.py). When `state` is
 supplied, builds `initial_state` — never the `events` list, which the brief
 (§2.4) says Sushi's own examples have moved away from since 1.3.0.
 
-A processor present in captured state but absent from the spec means the spec
-and the live session have diverged; that is surfaced as a warning and skipped,
-never silently resolved.
+A processor present in captured state but absent from the spec means the capture
+is of a different rig; `emit` refuses (`EmitError`) rather than skipping it, since
+through the save listener a skip was a config written with the wrong chain and
+no settings under the player's chosen name.
 
 Captured state also carries chain order (`state["tracks"]`), and when present it
 **overrides the order the yaml declares** — the same relationship the yaml and a
@@ -34,10 +35,38 @@ from typing import Any
 from .spec import RigSpec
 
 
+class EmitError(ValueError):
+    """A config that must not be written: a spec with problems, or captured
+    state that belongs to a different rig.
+
+    An exception rather than `sys.exit`, because `emit` runs inside the OSC
+    listener as well as the CLI, and a `SystemExit` there ended the listener
+    (found by the audit: the handlers caught Exception, which SystemExit is
+    not). Carries every problem, so one fix cycle covers them all.
+    """
+
+    def __init__(self, problems: list[str]):
+        self.problems = problems
+        super().__init__("\n".join(problems))
+
+
 def emit(rig: RigSpec, state: dict[str, Any] | None = None) -> dict[str, Any]:
     problems = rig.validate()
     if problems:
-        sys.exit("rig spec invalid:\n  " + "\n  ".join(problems))
+        raise EmitError(["rig spec invalid:"] + problems)
+    strange = _unknown_names(rig, state) if state else []
+    if strange:
+        # Refused, not skipped. A capture naming processors the spec does not
+        # have is a capture of a different rig, and writing the spec's chain
+        # with none of the captured settings under the player's chosen name
+        # is the silent wrong save the audit found: `up guitar_vocal`, SAVE,
+        # and electric_board's nine pedals were written with no settings.
+        raise EmitError([
+            f"the captured state names {', '.join(repr(n) for n in strange)}, which "
+            f"{'is' if len(strange) == 1 else 'are'} not in the rig spec. The capture "
+            "is of a different rig from the one being saved; check which rig.yaml "
+            "the save listener was started with"
+        ])
 
     config: dict[str, Any] = {}
     if rig.meta:
@@ -61,6 +90,15 @@ def emit(rig: RigSpec, state: dict[str, Any] | None = None) -> dict[str, Any]:
     return config
 
 
+def _unknown_names(rig: RigSpec, state: dict[str, Any]) -> list[str]:
+    """Every processor the captured state names that the spec does not."""
+    known = set(rig.plugin_names()) | {t.name for t in rig.tracks}
+    named = set(state.get("processors") or {})
+    for order in (state.get("tracks") or {}).values():
+        named |= set(order or [])
+    return sorted(named - known)
+
+
 def _ordered_track(track, captured_order: dict[str, Any]) -> dict[str, Any]:
     """`track.to_sushi()`, with its plugins reordered to match captured state.
 
@@ -80,12 +118,11 @@ def _ordered_track(track, captured_order: dict[str, Any]) -> dict[str, Any]:
     for name in wanted:
         plugin = by_name.pop(name, None)
         if plugin is None:
-            print(
-                f"warning: captured order for track {track.name!r} lists "
-                f"{name!r}, which is not in the rig spec — skipping",
-                file=sys.stderr,
-            )
-            continue
+            # See `emit`: refused there, and here for a direct caller.
+            raise EmitError([
+                f"captured order for track {track.name!r} lists {name!r}, which is not "
+                "in the rig spec"
+            ])
         ordered.append(plugin)
 
     # Anything the capture didn't mention is kept rather than dropped: a stale
@@ -109,12 +146,9 @@ def _build_initial_state(rig: RigSpec, state: dict[str, Any]) -> list[dict[str, 
     initial_state = []
     for processor, values in state.get("processors", {}).items():
         if processor not in known:
-            print(
-                f"warning: captured state for {processor!r}, which is not in the "
-                "rig spec — skipping",
-                file=sys.stderr,
-            )
-            continue
+            # Unreachable through `emit`, which refuses first; kept so a direct
+            # caller cannot write a config that quietly dropped a processor.
+            raise EmitError([f"captured state for {processor!r}, which is not in the rig spec"])
 
         entry: dict[str, Any] = {"processor": processor}
         # A track's `bypassed` is never written, even if the captured state has

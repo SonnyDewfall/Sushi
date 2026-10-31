@@ -143,3 +143,44 @@ def test_a_move_direction_that_is_no_number_is_refused_infinity_included(bad):
     heard nothing and a traceback went to the log."""
     with pytest.raises(ValueError, match="non-numeric direction"):
         move_direction((bad,))
+
+
+def test_a_listener_with_no_rig_source_refuses_to_save(tmp_path):
+    """`up` starts the listener without --rig for a config whose source it
+    cannot find. SAVE then says so instead of writing a different rig."""
+    from sushi_rig.listen import NO_SOURCE
+
+    assert handle_save("riff", None, tmp_path, tmp_path / "archive") == NO_SOURCE
+    assert not list(tmp_path.glob("*.json"))
+
+
+def test_a_capture_of_a_different_rig_is_refused_not_written(tmp_path, rig_path, monkeypatch):
+    """The silent wrong save the audit found: the capture named processors
+    the spec did not have, emit skipped them, and the spec's chain was
+    written under the typed name with no settings."""
+    monkeypatch.setattr(
+        "sushi_rig.save.capture",
+        lambda address: {"processors": {"vocal_eq": {"parameters": {"Low": 0.5}}}, "tracks": {}},
+    )
+    said = handle_save("riff", rig_path, tmp_path, tmp_path / "archive")
+    assert said.startswith("save failed:") and "'vocal_eq'" in said and "different rig" in said
+    assert not list(tmp_path.glob("*.json"))
+
+
+def test_a_system_exit_from_library_code_is_a_message_not_the_end(tmp_path, rig_path, monkeypatch):
+    def exits(address):
+        raise SystemExit("elkpy not found")
+
+    monkeypatch.setattr("sushi_rig.save.capture", exits)
+    assert handle_save("riff", rig_path, tmp_path, tmp_path / "archive") == "save failed: elkpy not found"
+
+
+def test_saving_from_a_v2_rig_file_is_refused_by_name(tmp_path, fake_capture):
+    """Until #30's last slice, save writes v1 configs from a rig.yaml of
+    tracks; a channels-and-master file is refused rather than read as a rig
+    with no tracks."""
+    from sushi_rig.paths import checkout_root
+
+    said = handle_save("riff", checkout_root() / "config" / "rigs" / "guitar_vocal.yaml",
+                       tmp_path, tmp_path / "archive")
+    assert said.startswith("save failed: cannot save from") and "rig file" in said

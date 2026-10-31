@@ -17,12 +17,12 @@ import pytest
 from sushi_rig.procs import SHUTDOWN_STEPS
 from sushi_rig.rig import (
     DEFAULT_CONFIG_NAME,
-    FALLBACK_RIG_YAML,
     QUANTUM,
     child_environment,
     format_uptime,
     plan_children,
     resolve_rig_yaml,
+    rig_source_problem,
 )
 from sushi_rig.state import is_stale
 from pathlib import Path
@@ -31,31 +31,113 @@ from pathlib import Path
 # --- which rig.yaml a config came from --------------------------------------
 
 
-def test_saved_variant_is_attributed_to_its_own_source(tmp_path):
+V1_SOURCE = """\
+meta: {name: t, version: "1"}
+host: {samplerate: 48000}
+tracks:
+  - name: board
+    channels: 2
+    inputs: [{engine_bus: 0, track_bus: 0}]
+    outputs: [{engine_bus: 0, track_bus: 0}]
+    plugins:
+      - {name: comp, type: lv2, uri: "urn:comp"}
+"""
+
+V2_SOURCE = """\
+kind: rig
+schema_version: 1
+name: newer
+channels:
+  - {name: board, input: guitar-in, width: mono, chain: [{name: comp, uri: "urn:comp"}]}
+master: {output: monitor-out}
+"""
+
+BOARD_CONFIG = {"tracks": [{"name": "board", "plugins": [{"name": "comp"}]}]}
+
+
+def _root(tmp_path):
+    (tmp_path / "config" / "src").mkdir(parents=True)
+    (tmp_path / "config" / "rigs").mkdir()
+    return tmp_path
+
+
+def test_a_saved_variant_is_attributed_to_the_source_it_names(tmp_path):
     """A variant records the yaml it was built from, because variants share a
-    hand-authored source rather than getting one of their own. Without reading
-    it back, every save made from a variant would be attributed to
-    electric_board."""
-    config = tmp_path / "acoustic_chorus.json"
-    config.write_text(json.dumps({"_meta": {"source": "config/src/acoustic.yaml"}}))
-    assert resolve_rig_yaml(config) == "config/src/acoustic.yaml"
+    hand-authored source rather than getting one of their own."""
+    root = _root(tmp_path)
+    (root / "config" / "src" / "acoustic.yaml").write_text(V1_SOURCE)
+    config = root / "acoustic_chorus.json"
+    config.write_text(json.dumps({**BOARD_CONFIG, "_meta": {"source": "config/src/acoustic.yaml"}}))
+    assert resolve_rig_yaml(config, root) == "config/src/acoustic.yaml"
 
 
-def test_hand_authored_config_falls_back(tmp_path):
-    """The canonical configs carry no _meta.source."""
-    config = tmp_path / "electric_board.json"
-    config.write_text(json.dumps({"tracks": []}))
-    assert resolve_rig_yaml(config) == FALLBACK_RIG_YAML
+def test_a_hand_authored_config_is_sourced_from_the_file_of_its_own_name(tmp_path):
+    """The canonical configs carry no _meta.source; their source is the yaml of
+    the same name under config/src/, or config/rigs/ once they are v2 rigs."""
+    root = _root(tmp_path)
+    (root / "config" / "src" / "electric_board.yaml").write_text(V1_SOURCE)
+    (root / "config" / "rigs" / "newer.yaml").write_text(V2_SOURCE)
+    for name in ("electric_board", "newer"):
+        (root / f"{name}.json").write_text(json.dumps(BOARD_CONFIG))
+    assert resolve_rig_yaml(root / "electric_board.json", root) == "config/src/electric_board.yaml"
+    assert resolve_rig_yaml(root / "newer.json", root) == "config/rigs/newer.yaml"
 
 
-def test_unreadable_config_falls_back_rather_than_raising(tmp_path):
-    """Resolving the source is a nicety; a broken config should fail later, on
-    the thing that actually needs it, with a better message than this could
-    give."""
-    assert resolve_rig_yaml(tmp_path / "missing.json") == FALLBACK_RIG_YAML
-    broken = tmp_path / "broken.json"
+def test_a_source_that_does_not_describe_the_config_is_passed_over(tmp_path):
+    """The converted v2 rigs carry their v1 variant's provenance, so a config
+    emitted from one names electric_board's yaml as its source. A source is
+    taken only if every track and plugin the config names is in it; otherwise
+    SAVE would be refused on every press, or worse."""
+    root = _root(tmp_path)
+    (root / "config" / "src" / "electric_board.yaml").write_text(V1_SOURCE)
+    (root / "config" / "rigs" / "accustomed.yaml").write_text(V2_SOURCE.replace("newer", "accustomed"))
+    config = root / "accustomed.json"
+    config.write_text(json.dumps({
+        "_meta": {"source": "config/src/electric_board.yaml"},
+        "tracks": [{"name": "board", "plugins": [{"name": "comp"}, {"name": "board_send"}]},
+                   {"name": "master", "plugins": [{"name": "master_return"}]}],
+    }))
+    assert resolve_rig_yaml(config, root) == "config/rigs/accustomed.yaml"
+    assert rig_source_problem(config, root) is None
+
+
+def test_a_config_with_no_source_anywhere_gets_none_and_a_reason(tmp_path):
+    """It used to fall back to electric_board's yaml, so SAVE on guitar_vocal
+    wrote electric_board's chain with no settings and said saved."""
+    root = _root(tmp_path)
+    (root / "config" / "src" / "orphan.yaml").write_text(V1_SOURCE)
+    config = root / "orphan.json"
+    config.write_text(json.dumps({"tracks": [{"name": "vocal", "plugins": [{"name": "vocal_eq"}]}]}))
+    assert resolve_rig_yaml(config, root) is None
+    problem = rig_source_problem(config, root)
+    assert problem.startswith("SAVE is off for orphan")
+    assert "config/src/orphan.yaml has no vocal, vocal_eq" in problem
+    assert "config/rigs/orphan.yaml does not exist" in problem
+    assert resolve_rig_yaml(root / "missing.json", root) is None
+    broken = root / "broken.json"
     broken.write_text("{not json")
-    assert resolve_rig_yaml(broken) == FALLBACK_RIG_YAML
+    assert resolve_rig_yaml(broken, root) is None
+
+
+def test_every_committed_config_has_a_source_to_save_from():
+    """guitar_vocal was the one that fell through to electric_board."""
+    from sushi_rig.paths import checkout_root
+
+    root = checkout_root()
+    for config in sorted((root / "config").glob("*.json")):
+        source = resolve_rig_yaml(config, root)
+        assert source is not None, (config.name, rig_source_problem(config, root))
+        assert (root / source).is_file()
+
+
+def test_the_listener_is_started_without_a_rig_when_there_is_none(plan_args):
+    root, config, _ = plan_args
+    listen = next(c for c in plan_children(root, config, None, headless=False, tuner=True)
+                  if c["name"] == "listen")
+    assert "--rig" not in listen["command"]
+    listen = next(c for c in plan_children(root, config, "config/src/x.yaml", headless=False, tuner=True)
+                  if c["name"] == "listen")
+    assert listen["command"][listen["command"].index("--rig") + 1] == "config/src/x.yaml"
 
 
 # --- second-instance guard --------------------------------------------------
