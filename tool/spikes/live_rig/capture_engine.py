@@ -20,6 +20,10 @@ Needs: PipeWire with pipewire-jack, `pip install JACK-Client numpy`, and the
 sushi_rig package importable (run from tool/ with the venv active, or
 PYTHONPATH=src). Writes a JSON report to --out and prints it.
 
+The callback allocates small Python objects on every block (ints, views, a
+0-d array for the counter add). If it misses deadlines, that is the first
+thing to name in the report; the recorder's own push is the second.
+
 Written without a machine to run it on (2026-10-31): expect to fix small
 things, and say what was fixed in the report.
 """
@@ -62,14 +66,22 @@ def continuity(column: np.ndarray) -> dict:
     nonzero = np.flatnonzero(column)
     if not len(nonzero):
         return {"samples": int(len(column)), "jumps": None, "note": "silent: never linked?"}
-    x = np.rint(column[nonzero[0]:].astype(np.float64) * WRAP).astype(np.int64)
+    first = int(nonzero[0])
+    x = np.rint(column[first:].astype(np.float64) * WRAP).astype(np.int64)
     step = np.diff(x) % WRAP
     bad = np.flatnonzero(step != 1)
+    # Losses and repeats counted apart, so they cannot cancel. A loss of a
+    # whole multiple of WRAP (21.8 s at 48 kHz) is invisible to this; the
+    # recorder's own count would show it.
+    lost = int(np.sum(step[bad][step[bad] > 1] - 1)) if len(bad) else 0
+    repeated = int(np.sum(step[bad] == 0)) if len(bad) else 0
     return {
         "samples": int(len(x)),
+        "leading_silence": first,
         "jumps": int(len(bad)),
-        "first_jumps_at": [int(i) for i in bad[:10]],
-        "lost_by_jumps": int(np.sum(step[bad] - 1)) if len(bad) else 0,
+        "first_jumps_at_file_index": [int(i) + first for i in bad[:10]],
+        "lost_by_jumps": lost,
+        "repeated_samples": repeated,
     }
 
 
@@ -99,7 +111,13 @@ def main() -> int:
     def process(frames):
         t0 = time.perf_counter_ns()
         if frames != q:
+            # Not the block size this ring was built for: say so, keep the
+            # counter stream continuous by advancing it, and push nothing.
+            # Pushed, a short block would be the ring's fault; skipped
+            # silently, the stale output buffer would read as a jump.
             state["short_blocks"] += 1
+            out.get_array()[:] = 0.0
+            state["position"] += frames
             return
         np.add(index, state["position"], out=scratch)
         np.remainder(scratch, WRAP, out=scratch)
