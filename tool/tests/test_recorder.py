@@ -167,3 +167,91 @@ def test_a_disk_failing_mid_take_is_reported_and_leaves_what_was_written(tmp_pat
 def test_a_recorder_with_no_stems_is_refused():
     with pytest.raises(ValueError, match="at least one stem"):
         Recorder([], SR, Q)
+
+
+
+# --------------------------------------------------------------------------- #
+# Found in review
+# --------------------------------------------------------------------------- #
+
+def test_a_block_of_the_wrong_width_is_refused_not_broadcast():
+    """NumPy would copy one mono column into every tap, and every stem would
+    hold the same signal under a different name."""
+    ring = Ring(capacity=64, channels=3)
+    with pytest.raises(ValueError, match="3-channel ring"):
+        ring.push(np.ones((4, 1), np.float32))
+    with pytest.raises(ValueError):
+        ring.push(np.ones(4, np.float32))
+
+
+def test_episodes_past_the_gap_table_are_counted_once_each():
+    """Once the table was full, every overflowing block counted as an episode."""
+    ring = Ring(capacity=4, channels=1, max_gaps=1)
+    ring.push(np.ones((6, 1), np.float32))          # episode one, recorded
+    ring.pull(4)
+    ring.push(np.ones((4, 1), np.float32))          # fills the ring again
+    for _ in range(5):
+        ring.push(np.ones((2, 1), np.float32))      # episode two, five blocks long
+    assert ring.unrecorded_gaps == 1
+
+
+def drained(rec: Recorder, timeout: float = 5.0) -> None:
+    """Wait for the writer to catch up, so a test can say when it writes."""
+    import time
+
+    deadline = time.monotonic() + timeout
+    while rec.ring._read != rec.ring._written:
+        assert time.monotonic() < deadline, "the writer never caught up"
+        time.sleep(0.005)
+
+
+def test_a_writer_that_dies_accounts_for_everything_after_it(tmp_path, monkeypatch):
+    """The frames left in its ring used to go uncounted, and the gaps after it
+    to point past the end of the files. Staged in two halves so the writer
+    really dies mid-take with audio still arriving."""
+    real_write = signals.WavWriter.write
+    calls = {"n": 0}
+
+    def second_write_fails(self, block):
+        calls["n"] += 1
+        if calls["n"] > 1:
+            raise OSError(28, "No space left on device")
+        real_write(self, block)
+
+    monkeypatch.setattr(signals.WavWriter, "write", second_write_fails)
+    audio = source(1.0, 1)
+    rec = Recorder([(tmp_path / "a.wav", 1)], SR, Q, headroom_s=0.05)
+    rec.start()
+    for block in blocks(audio[:2560]):
+        rec.push(block)
+    drained(rec)
+    for block in blocks(audio[2560:]):
+        rec.push(block)
+    result = rec.stop()
+
+    assert result.frames == 2560 == signals.wav_info(tmp_path / "a.wav").frames
+    assert result.frames + result.dropped_frames == len(audio), "nothing unaccounted for"
+    assert all(at <= result.seconds for at, _ in result.gaps), "no gap past the end"
+    assert result.gaps[-1] == (result.seconds, len(audio) - 2560)
+    assert result.summary()["error"].startswith("OSError")
+
+
+def test_a_writer_failing_part_way_through_a_block_leaves_the_stems_equal(tmp_path, monkeypatch):
+    """The stems before it held the block and those after did not."""
+    real_write = signals.WavWriter.write
+
+    def second_stem_fails_once(self, block):
+        if self.path.name == "b.wav" and self.frames >= 512:
+            raise OSError(28, "No space left on device")
+        real_write(self, block)
+
+    monkeypatch.setattr(signals.WavWriter, "write", second_stem_fails_once)
+    rec = Recorder([(tmp_path / "a.wav", 1), (tmp_path / "b.wav", 1)], SR, Q)
+    rec.start()
+    for block in blocks(source(0.1, 2)):
+        rec.push(block)
+    result = rec.stop()
+    a = signals.wav_info(tmp_path / "a.wav").frames
+    b = signals.wav_info(tmp_path / "b.wav").frames
+    assert a == b == result.frames, "cut back to the shortest, as a dropout would be"
+    assert result.frames + result.dropped_frames == round(SR * 0.1)

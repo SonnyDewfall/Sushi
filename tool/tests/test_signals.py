@@ -374,3 +374,36 @@ def test_repair_refuses_a_file_it_did_not_write(tmp_path):
     signals.write_wav(path, signals.sine(SR, 0.1, 220.0), SR, subtype="pcm16")
     with pytest.raises(ValueError, match="not a file WavWriter wrote"):
         signals.repair_wav(path)
+
+
+
+def test_a_new_stem_is_a_valid_empty_wav_before_its_first_block(tmp_path):
+    """A recorder killed before its first block left zero-byte stems, which no
+    repair can recover because nothing says what they were."""
+    path = tmp_path / "s.wav"
+    writer = signals.WavWriter(path, 2, SR)
+    assert signals.wav_info(path).frames == 0
+    writer.close()
+
+
+def test_repair_leaves_a_finished_file_and_its_metadata_alone(tmp_path):
+    """A RIFF size that matches the file means it was finished; a LIST chunk an
+    editor added after its data is metadata, not audio to claim."""
+    import struct
+
+    path = tmp_path / "s.wav"
+    with signals.WavWriter(path, 1, SR) as writer:
+        writer.write([[0.25]] * 10)
+    blob = path.read_bytes()
+    info = b"LIST" + struct.pack("<I", 4) + b"INFO"
+    path.write_bytes(blob[:4] + struct.pack("<I", len(blob) - 8 + len(info)) + blob[8:] + info)
+    assert signals.repair_wav(path) == 10
+    assert signals.wav_info(path).frames == 10
+
+
+def test_a_streamed_file_can_be_cut_back_to_match_its_siblings(tmp_path):
+    path = tmp_path / "s.wav"
+    with signals.WavWriter(path, 1, SR) as writer:
+        writer.write([[0.1]] * 100)
+        writer.truncate(40)
+    assert signals.wav_info(path).frames == 40

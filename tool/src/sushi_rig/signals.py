@@ -417,6 +417,16 @@ _DATA_SIZE_AT = 54
 _DATA_AT = 58
 
 
+def _write_sizes(handle, frames: int, block_align: int) -> None:
+    """The three size fields of `WavWriter`'s header, for `frames` frames.
+    One place, so the writer and `repair_wav` cannot drift apart."""
+    data_bytes = frames * block_align
+    for at, value in ((_RIFF_SIZE_AT, _DATA_AT - 8 + data_bytes),
+                      (_FACT_FRAMES_AT, frames), (_DATA_SIZE_AT, data_bytes)):
+        handle.seek(at)
+        handle.write(struct.pack("<I", value))
+
+
 class WavWriter:
     """A float32 WAV written block by block, as a recorder produces it.
 
@@ -450,13 +460,18 @@ class WavWriter:
                   + b"fact" + struct.pack("<II", 4, 0)
                   + b"data" + struct.pack("<I", 0))
         assert len(header) == _DATA_AT
+        self._block_align = block_align
         self._file = self.path.open("w+b")
         self._file.write(header)
+        # Flushed now, not with the first block: a recorder killed before its
+        # first block otherwise left zero-byte stems, which no repair can
+        # recover because nothing says what they were.
+        self._file.flush()
 
     def write(self, block) -> None:
         """Append frames shaped (frames, channels), then bring the sizes up to date."""
         np = require_numpy()
-        arr = np.asarray(block, dtype=np.float32)
+        arr = np.ascontiguousarray(block, dtype="<f4")  # one copy at most, not two
         if arr.ndim == 1:
             arr = arr[:, None]
         if arr.ndim != 2 or arr.shape[1] != self.channels:
@@ -474,16 +489,21 @@ class WavWriter:
                 "take has to stop and a new one begin"
             )
         self._file.seek(0, 2)
-        self._file.write(arr.astype("<f4").tobytes())
+        self._file.write(arr.tobytes())
         self.frames += len(arr)
-        self._sizes(data_bytes)
+        self._sizes()
 
-    def _sizes(self, data_bytes: int) -> None:
-        for at, value in ((_RIFF_SIZE_AT, _DATA_AT - 8 + data_bytes),
-                          (_FACT_FRAMES_AT, self.frames),
-                          (_DATA_SIZE_AT, data_bytes)):
-            self._file.seek(at)
-            self._file.write(struct.pack("<I", value))
+    def truncate(self, frames: int) -> None:
+        """Cut the file back to `frames`, header included. For a recorder that
+        must keep its stems the same length after one failed mid-block."""
+        if not 0 <= frames <= self.frames:
+            raise ValueError(f"cannot truncate {self.frames} frames to {frames}")
+        self._file.truncate(_DATA_AT + frames * self._block_align)
+        self.frames = frames
+        self._sizes()
+
+    def _sizes(self) -> None:
+        _write_sizes(self._file, self.frames, self._block_align)
         # Into the operating system's hands, which survives this process being
         # killed. Without it the last size written sat in Python's own buffer
         # until the next seek, so the file on disk always had a data size one
@@ -515,6 +535,11 @@ def repair_wav(path: str | Path) -> int:
     frames, and drops a partial frame at the end. Refuses a file whose header
     is not the layout `WavWriter` writes, rather than rewriting bytes it does
     not understand.
+
+    Leaves alone a file whose RIFF size already matches its length: that one
+    was finished, and anything past its data — an editor's LIST chunk — is
+    metadata, not audio cut off before its header caught up. Taking the file's
+    whole length as data turned such a chunk into three frames of noise.
     """
     path = Path(path)
     with path.open("r+b") as handle:
@@ -526,11 +551,11 @@ def repair_wav(path: str | Path) -> int:
         if subtype != "float32":
             raise ValueError(f"{path}: WavWriter writes float32, this is {subtype}")
         size = handle.seek(0, 2)
+        (riff_size,) = struct.unpack_from("<I", head, _RIFF_SIZE_AT)
+        if riff_size + 8 == size:
+            (data_bytes,) = struct.unpack_from("<I", head, _DATA_SIZE_AT)
+            return data_bytes // block_align
         frames = max(0, size - _DATA_AT) // block_align
-        data_bytes = frames * block_align
-        handle.truncate(_DATA_AT + data_bytes)
-        for at, value in ((_RIFF_SIZE_AT, _DATA_AT - 8 + data_bytes),
-                          (_FACT_FRAMES_AT, frames), (_DATA_SIZE_AT, data_bytes)):
-            handle.seek(at)
-            handle.write(struct.pack("<I", value))
+        handle.truncate(_DATA_AT + frames * block_align)
+        _write_sizes(handle, frames, block_align)
     return frames

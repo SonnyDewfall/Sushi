@@ -267,13 +267,15 @@ def _take(args: argparse.Namespace) -> int:
 
     if args.take_command == "repair":
         try:
-            repaired = repair_take(args.folder)
-        except (TakeError, ValueError, OSError) as exc:
-            sys.exit(str(exc))
+            repaired, failed = repair_take(args.folder)
+        except TakeError as exc:
+            sys.exit("\n".join(exc.problems))
         for name, frames in repaired.items():
             print(f"{name}: {frames} frames")
+        for name, why in failed.items():
+            print(f"{name}: NOT REPAIRED — {why}", file=sys.stderr)
         print(f"{args.folder.name}: {len(repaired)} stem(s) repaired; `sushi-rig take check` next")
-        return 0
+        return 1 if failed else 0
 
     try:
         take = load_take(args.folder)

@@ -96,11 +96,28 @@ class Ring:
         self._gap_at = np.zeros(max_gaps, dtype=np.int64)
         self._gap_frames = np.zeros(max_gaps, dtype=np.int64)
         self._gaps = 0
+        self._last_gap_at = -1
+        self._last_recorded = False
         self.dropped = 0
         self.unrecorded_gaps = 0
 
+    @property
+    def offered(self) -> int:
+        """Every frame ever pushed: those kept and those dropped."""
+        return self._written + self.dropped
+
     def push(self, block) -> int:
-        """Copy in as much of `block` as fits; count the rest. Returns frames kept."""
+        """Copy in as much of `block` as fits; count the rest. Returns frames kept.
+
+        A block of the wrong width is refused, not copied: NumPy would broadcast
+        one mono column into every tap, and every stem would hold the same
+        signal under a different name without a word. The check is a tuple
+        comparison, which allocates nothing.
+        """
+        if block.ndim != 2 or block.shape[1] != self.channels:
+            raise ValueError(
+                f"a block shaped {block.shape} pushed into a {self.channels}-channel ring"
+            )
         frames = len(block)
         room = self.capacity - (self._written - self._read)
         kept = frames if frames <= room else room
@@ -117,9 +134,16 @@ class Ring:
 
     def _gap(self, at: int, frames: int) -> None:
         self.dropped += frames
-        if self._gaps and self._gap_at[self._gaps - 1] == at:
-            self._gap_frames[self._gaps - 1] += frames
-        elif self._gaps < len(self._gap_at):
+        if at == self._last_gap_at:
+            # The same episode going on: nothing was kept since the last loss,
+            # so it is one gap whether its record fitted or not. Counting each
+            # block once the table was full overstated the episodes.
+            if self._last_recorded:
+                self._gap_frames[self._gaps - 1] += frames
+            return
+        self._last_gap_at = at
+        self._last_recorded = self._gaps < len(self._gap_at)
+        if self._last_recorded:
             self._gap_at[self._gaps] = at
             self._gap_frames[self._gaps] = frames
             self._gaps += 1
@@ -166,6 +190,19 @@ class Recording:
         """The gaps as `take.yaml` records them."""
         return [{"at_seconds": round(at, 3), "frames": frames} for at, frames in self.gaps]
 
+    def summary(self) -> dict[str, Any]:
+        """Everything about the capture `take.yaml` carries: not only the gaps
+        that fitted in the table but the true total, the episodes that did not
+        fit, and any error that ended the writer — so a take whose disk filled
+        is never marked complete and clean."""
+        return {
+            "frames": self.frames,
+            "lost_frames": self.dropped_frames,
+            "dropouts": self.dropouts(),
+            "unrecorded_episodes": self.unrecorded_gaps,
+            "error": self.error,
+        }
+
 
 class Recorder:
     """A take's audio, from `push` to its stems on disk.
@@ -204,6 +241,10 @@ class Recorder:
         for writer in self._writers:
             writer.write(block[:, column:column + writer.channels])
             column += writer.channels
+        # If a writer raises part way through, the stems before it already hold
+        # this block and those after do not. `stop` cuts them back to the
+        # shortest, so a failure costs every stem the same frames, as a dropout
+        # does.
 
     def _drain(self) -> None:
         idle = self.quantum / self.sample_rate
@@ -229,21 +270,38 @@ class Recorder:
             self._error = f"{type(exc).__name__}: {exc}"
 
     def stop(self) -> Recording:
-        """Drain what is left, close the files, and say what was captured."""
+        """Drain what is left, close the files, and say what was captured.
+
+        What was lost is measured against the files, not the ring: everything
+        pushed and not in every stem is lost, whatever the cause. A writer that
+        died — a full disk, the 4 GiB limit — used to leave the frames still in
+        its ring uncounted and the gaps after it pointing past the end of the
+        files; its loss is now one final gap at the point the stems stop.
+        """
         self._stopping.set()
         if self._thread is not None:
             self._thread.join()
+        written = min((w.frames for w in self._writers), default=0)
         for writer in self._writers:
             try:
+                if writer.frames > written:
+                    writer.truncate(written)
                 writer.close()
             except OSError as exc:
                 self._error = self._error or f"{type(exc).__name__}: {exc}"
-        frames = self._writers[0].frames if self._writers else 0
+        lost = self.ring.offered - written
+        gaps = [(at, frames) for at, frames in self.ring.gaps() if at <= written]
+        rest = lost - sum(frames for _, frames in gaps)
+        if rest > 0:
+            if gaps and gaps[-1][0] == written:
+                gaps[-1] = (written, gaps[-1][1] + rest)
+            else:
+                gaps.append((written, rest))
         return Recording(
-            frames=frames,
+            frames=written,
             sample_rate=self.sample_rate,
-            dropped_frames=self.ring.dropped,
-            gaps=[(at / self.sample_rate, lost) for at, lost in self.ring.gaps()],
+            dropped_frames=lost,
+            gaps=[(at / self.sample_rate, frames) for at, frames in gaps],
             unrecorded_gaps=self.ring.unrecorded_gaps,
             error=self._error,
         )
