@@ -39,7 +39,7 @@ from typing import Any, Callable
 from .paths import checkout_root, log_dir, runtime_dir
 from .procs import SHUTDOWN_STEPS, pgid_alive, pid_alive, port_is_open, wait_for_grpc
 from .qpwgraph import QPWGRAPH_ATTEMPTS, start_qpwgraph, unconnected_inputs
-from .state import clear_state, is_stale, read_state, write_state
+from .state import clear_state, is_stale, liveness, read_state, write_state
 
 DEFAULT_CONFIG_NAME = "electric_board"
 PANEL_FILE = "/tmp/sushi-rig-panel.json"
@@ -759,10 +759,15 @@ def _kill_group_of(pid: int) -> None:
         pgid = os.getpgid(pid)
     except ProcessLookupError:
         return
+    if pgid == os.getpgrp():
+        # The supervisor died before its `setsid`, so it is still in *our*
+        # group, and signalling that would kill the command reporting the
+        # failure. Nothing was started yet if it never got that far.
+        return
     for sig, wait in SHUTDOWN_STEPS:
         try:
             os.killpg(pgid, sig)
-        except ProcessLookupError:
+        except (ProcessLookupError, PermissionError):
             return
         deadline = time.monotonic() + wait
         while time.monotonic() < deadline:
@@ -781,21 +786,38 @@ def down(force: bool = False) -> int:
     called, which is precisely what the old `pkill`/`killall` shutdown missed.
     """
     state = read_state()
-    if not state:
+    # The state file is trusted as identity, so it is checked before anything is
+    # signalled: both the supervisor and its group must be alive (see `liveness`
+    # for why a group alone is not enough).
+    verdict = liveness(state, pid_alive, pgid_alive)
+    if verdict == "absent":
         print("No rig is running.")
         return 0
-
-    pgid = state.get("pgid")
-    if not isinstance(pgid, int):
-        print("State file has no process group — clearing it.", file=sys.stderr)
+    if verdict == "invalid":
+        print(
+            "State file names no usable supervisor or process group — clearing "
+            "it. Nothing was signalled.",
+            file=sys.stderr,
+        )
         clear_state()
         return 1
-
-    if not pgid_alive(pgid):
+    if verdict == "gone":
         print("No rig is running (clearing a stale state file).")
         clear_state()
         return 0
+    if verdict == "orphaned":
+        print(
+            f"Supervisor {state.get('supervisor_pid')} is gone but process group "
+            f"{state.get('pgid')} still has members. They may be the rig's "
+            "children, or the number may belong to something else by now, and "
+            "there is no telling which, so nothing was signalled and the state "
+            "file is kept. Look with: ps -eo pid,pgid,args | "
+            f"awk '$2 == {state.get('pgid')}'",
+            file=sys.stderr,
+        )
+        return 1
 
+    pgid = state["pgid"]
     steps = ((signal.SIGKILL, 2.0),) if force else SHUTDOWN_STEPS
     print(f"Stopping {state.get('config_name')} ({state.get('mode')} mode)...")
     for sig, wait in steps:
@@ -803,6 +825,17 @@ def down(force: bool = False) -> int:
             os.killpg(pgid, sig)
         except ProcessLookupError:
             break
+        except PermissionError:
+            # Alive, but not ours to signal: a state file from another user, or
+            # a recycled group id. A message, not a traceback, and the file is
+            # kept so the evidence is still there.
+            print(
+                f"Not permitted to signal process group {pgid}, so it was left "
+                "alone. It is not owned by this user; the state file is likely "
+                "stale or belongs to someone else's rig.",
+                file=sys.stderr,
+            )
+            return 1
         deadline = time.monotonic() + wait
         while time.monotonic() < deadline:
             if not pgid_alive(pgid):
@@ -886,14 +919,21 @@ def restart() -> int:
 def status() -> int:
     """What is running, if anything."""
     state = read_state()
-    if not state:
+    verdict = liveness(state, pid_alive, pgid_alive)
+    if verdict == "absent":
         print("No rig is running.")
         return 0
-
-    pgid = state.get("pgid")
-    if not isinstance(pgid, int) or not pgid_alive(pgid):
+    if verdict in ("invalid", "gone"):
         print("No rig is running (the state file is stale; 'sushi-rig down' clears it).")
         return 0
+    if verdict == "orphaned":
+        print(
+            f"The supervisor ({state.get('supervisor_pid')}) is gone but its "
+            f"process group {state.get('pgid')} still has members. 'sushi-rig "
+            "down' will say more."
+        )
+        return 0
+    pgid = state["pgid"]
 
     try:
         age = format_uptime(

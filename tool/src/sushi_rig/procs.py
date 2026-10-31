@@ -42,6 +42,16 @@ def pid_alive(pid: int) -> bool:
 
 
 def pgid_alive(pgid: int) -> bool:
+    """Whether a process group has any member left.
+
+    Ids of 1 or below are never a rig's group, and are answered False without
+    asking. `killpg(0, 0)` signals the *caller's own* group and so always
+    succeeds -- a state file holding 0 would read as a live rig and then `down`
+    would signal the shell that ran it -- and a negative id is not a group at
+    all but an OSError nobody expects here. Pgid 1 is init's.
+    """
+    if pgid <= 1:
+        return False
     try:
         os.killpg(pgid, 0)
     except ProcessLookupError:
