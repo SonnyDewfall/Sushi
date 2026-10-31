@@ -80,18 +80,22 @@ def continuity(column: np.ndarray) -> dict:
     starts, ends = np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)
     silent = [(int(a) + first, int(b - a)) for a, b in zip(starts, ends) if b - a >= 8]
     x = np.rint(live.astype(np.float64) * WRAP).astype(np.int64)
-    step = np.diff(x) % WRAP
-    bad = np.flatnonzero(step != 1)
-    # Losses and repeats counted apart, so they cannot cancel. A loss of a
-    # whole multiple of WRAP (21.8 s at 48 kHz) is invisible to this; the
-    # recorder's own count would show it.
-    lost = int(np.sum(step[bad][step[bad] > 1] - 1)) if len(bad) else 0
-    repeated = int(np.sum(step[bad] == 0)) if len(bad) else 0
+    # The step test runs over the samples that carry the counter, across any
+    # silent run: a counter that advances by exactly the run's length is
+    # continuous, and the silence is reported on its own above.
+    kept = np.flatnonzero(~zero)
+    gaps = np.diff(kept)
+    step = (x[kept[1:]] - x[kept[:-1]]) % WRAP
+    bad = np.flatnonzero(step != gaps % WRAP)
+    excess = (step[bad] - gaps[bad]) % WRAP if len(bad) else np.array([], dtype=np.int64)
+    # A loss shows as the counter being ahead of the index; a repeat as behind.
+    lost = int(np.sum(excess[(excess > 0) & (excess < WRAP // 2)])) if len(bad) else 0
+    repeated = int(np.sum((WRAP - excess[excess >= WRAP // 2]))) if len(bad) else 0
     return {
         "samples": int(len(x)),
         "leading_silence": first,
         "jumps": int(len(bad)),
-        "first_jumps_at_file_index": [int(i) + first for i in bad[:10]],
+        "first_jumps_at_file_index": [int(kept[i]) + first for i in bad[:10]],
         "lost_by_jumps": lost,
         "repeated_samples": repeated,
         # (file index, length) of each run of 8 or more exact zeros
