@@ -371,6 +371,33 @@ survives closing the terminal. Child output goes to log files rather than your
 terminal; `status` prints the paths. It refuses to start a second rig on top of
 a running one.
 
+### The agent (v2, #29)
+
+```bash
+sushi-rig agent                      # serve the rig over HTTP on 127.0.0.1:8029
+curl localhost:8029/health           # the agent and the rig in one answer
+curl localhost:8029/rig              # `status` as data
+curl localhost:8029/doctor           # `doctor` as data
+curl -X POST localhost:8029/rig/up -d '{"config_name": "guitar_vocal", "headless": true}'
+curl -X POST localhost:8029/rig/down
+curl -X POST localhost:8029/rig/restart
+```
+
+The first slice of the control plane every v2 feature needs: one process that
+owns the rig. Today it owns the lifecycle and the two readings — `up`, `down`,
+`restart`, `status` and `doctor` — and runs the lifecycle commands as the CLI
+they already are, in a child process, because `up` forks the supervisor and a
+fork from a threaded HTTP server is where deadlocks come from. So the
+supervisor is still the one `up` has always detached; the agent becoming the
+supervisor, and running as a service so a phone can press start, is the next
+slice. Needs `pip install -e tool[agent]` (aiohttp). One lifecycle command at a
+time: a second request while one runs gets `409 busy`, because `up` and `down`
+racing is a second rig on top of a running one. Every argument is checked
+before anything runs — a config name is a name, not a path — and nothing from a
+request is passed through as text. It binds to localhost; `--host 0.0.0.0`
+opens it to the LAN, and until the local/remote permission split in #29 exists
+that is your call, not a default.
+
 **Two modes, for two ways of using the rig.** The default gives you the Open
 Stage Control panel and the save listener behind it, which is what you want when
 dialling in a tone: tweak, type a name, press save, and `config/<name>.json`

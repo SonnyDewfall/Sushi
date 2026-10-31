@@ -947,6 +947,48 @@ def test_status_does_not_call_an_orphaned_group_a_running_rig(world, capsys):
     assert "electric_board" not in out and "pid 4002" not in out, "it is not a status of a rig"
 
 
+def test_describe_rig_is_status_as_data(world, monkeypatch):
+    """The agent (#29) serves this; `status` prints it. One answer, two readers."""
+    from datetime import datetime, timedelta
+
+    world()
+    monkeypatch.setattr(rig, "pid_alive", lambda pid: pid != 4003)
+    state = state_file.read_state()
+    now = datetime.fromisoformat(state["started_at"]) + timedelta(minutes=2)
+    described = rig.describe_rig(now=now)
+    assert described["verdict"] == "running" and described["running"] is True
+    assert described["config_name"] == "electric_board"
+    assert described["mode"] == "panel"
+    assert described["uptime_seconds"] == 120.0
+    assert described["message"] == f"electric_board (panel mode), up {format_uptime(120)}"
+    assert described["children"]["sushi"]["alive"] is True
+    assert described["children"]["fmit"] == {"pid": 4003, "alive": False}
+    assert described["log_dir"] == state["log_dir"]
+    assert "supervisor_pid" not in described, "the group is the handle, as for down"
+
+
+def test_describe_rig_marks_a_child_pid_that_is_not_a_pid_as_unknown(world):
+    world()
+    state_file.write_state(running_state(children={"sushi": None, "amp": "x"}))
+    children = rig.describe_rig()["children"]
+    assert children == {"sushi": {"pid": None, "alive": None}, "amp": {"pid": "x", "alive": None}}
+
+
+@pytest.mark.parametrize("verdict", ["absent", "gone", "invalid", "orphaned"])
+def test_describe_rig_says_why_there_is_nothing_to_describe(runtime, monkeypatch, verdict):
+    """Each non-running verdict is its own word plus the sentence `status`
+    prints, and nothing that could read as a running rig."""
+    if verdict != "absent":
+        state_file.write_state(running_state(pgid=4999 if verdict == "invalid" else 4001))
+    monkeypatch.setattr(rig, "pid_alive", lambda pid: False)
+    monkeypatch.setattr(rig, "pgid_alive", lambda pgid: verdict == "orphaned")
+    described = rig.describe_rig()
+    assert described["verdict"] == verdict
+    assert described["running"] is False
+    assert "config_name" not in described
+    assert described["message"]
+
+
 # restart
 
 

@@ -50,9 +50,13 @@ import json
 import math
 import shutil
 import subprocess
-from dataclasses import dataclass
+from dataclasses import asdict, dataclass
 from pathlib import Path
 from typing import NamedTuple
+
+from . import patchbay
+from .machine import MachineError, MachineSpec, machine_path
+from .patchbay import PatchbayError
 
 # The graph rate everything here assumes. Sushi's configs declare 48000, the
 # `.nam` models are trained at it, and a mismatch degrades tone without saying
@@ -111,6 +115,10 @@ class Check:
         label = {OK: "ok", FAULT: "FAULT", UNCHECKED: "unchecked"}[self.state]
         line = f"{label:>9}  {self.name}: {self.message}"
         return f"{line}\n           -> {self.remedy}" if self.remedy else line
+
+    def as_dict(self) -> dict:
+        """The same four fields, for the agent's JSON (#29)."""
+        return asdict(self)
 
 
 def faults(checks: list[Check]) -> list[Check]:
@@ -872,3 +880,88 @@ def gather_environment(root: Path) -> Environment:
         take_rig=rig,
         models=_models(root),
     )
+
+
+# --------------------------------------------------------------------------- #
+# The whole examination
+# --------------------------------------------------------------------------- #
+
+def run(root: Path, machine_file: Path | None = None,
+        patchbay_file: Path | None = None) -> list[Check]:
+    """Every check, in the order the command prints them.
+
+    This was the body of the CLI command until the agent (#29) needed the same
+    answer as data; the command now prints what this returns. One pw-dump, read
+    once and used by both the graph checks and the patchbay check, so the two
+    cannot disagree about a graph that changed between them.
+    """
+    from .rig import QUANTUM
+
+    checks: list[Check] = []
+
+    # The machine file first: every device name the checks below compare
+    # against comes from it, so an unreadable one is reported once here rather
+    # than as a fault in each of them.
+    machine_file = machine_file or machine_path(root)
+    clients: set[str] = set()
+    try:
+        spec = MachineSpec.load(machine_file)
+    except MachineError as exc:
+        checks.append(machine_check([], file_name=machine_file.name, readable=False,
+                                    why=str(exc)))
+    else:
+        problems = spec.validate()
+        checks.append(machine_check(problems, file_name=machine_file.name))
+        if not problems:
+            clients = interface_clients(spec.role_ports())
+
+    # Read and parsed inside one try. `pw-dump` exiting 0 with output that is
+    # not JSON raises from the parse, not the read, and that used to escape as a
+    # traceback — while the identical exception from the same helper was caught
+    # for the patchbay check a few lines below. One of two readers of the same
+    # bytes being guarded is the kind of asymmetry that only shows on the day it
+    # happens.
+    dump, nodes, why = None, None, ""
+    try:
+        dump = patchbay.read_pw_dump()
+        nodes = patchbay.nodes_by_id(dump)
+    except PatchbayError as exc:
+        dump, why = None, "; ".join(exc.problems)
+
+    checks += graph_checks(
+        nodes,
+        clients,
+        expected_quantum=QUANTUM,
+        expected_rate=EXPECTED_RATE,
+        reason=why,
+    )
+
+    patchbay_file = patchbay_file or root / "Patchbay" / "rig.qpwgraph"
+
+    def not_compared(reason: str) -> Check:
+        """One `unchecked` for a patchbay that could not be compared at all."""
+        return Check(
+            "patchbay-nodes", UNCHECKED,
+            f"{patchbay_file.name} could not be checked against the graph: "
+            f"{reason or 'no reason given'}",
+            "`sushi-rig patchbay check` reports on it on its own",
+        )
+
+    if dump is None:
+        checks.append(not_compared(why))
+    else:
+        try:
+            links = patchbay.parse_patchbay(patchbay_file.read_text())
+            result = patchbay.check_nodes(links, patchbay.live_node_names(dump))
+        except OSError as exc:
+            checks.append(not_compared(str(exc)))
+        except PatchbayError as exc:
+            checks.append(not_compared("; ".join(exc.problems)))
+        else:
+            checks += patchbay_checks(
+                result.missing, result.not_running,
+                file_name=patchbay_file.name, links=len(links),
+            )
+
+    checks += environment_checks(gather_environment(root))
+    return checks

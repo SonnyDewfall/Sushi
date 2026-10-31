@@ -638,16 +638,8 @@ def up(
     existing = read_state()
     verdict = liveness(existing, pid_alive, pgid_alive)
     if verdict == "running":
-        started = existing.get("started_at", "")
-        try:
-            age = format_uptime(
-                (datetime.now(timezone.utc) - datetime.fromisoformat(started)).total_seconds()
-            )
-        except (TypeError, ValueError):
-            age = "unknown"
         raise RigError(
-            f"a rig is already running: {existing.get('config_name')} "
-            f"({existing.get('mode')} mode), up {age}.\n"
+            f"a rig is already running: {describe_rig(existing)['message']}.\n"
             "Run 'sushi-rig down' first — starting a second rig on top of a "
             "running one is what takes the live session down."
         )
@@ -940,51 +932,96 @@ def restart() -> int:
     return up(config_name, **options)
 
 
-def status() -> int:
-    """What is running, if anything."""
-    state = read_state()
-    verdict = liveness(state, pid_alive, pgid_alive)
+def describe_rig(
+    state: dict[str, Any] | None = None,
+    alive: Callable[[int], bool] | None = None,
+    group_alive: Callable[[int], bool] | None = None,
+    now: datetime | None = None,
+) -> dict[str, Any]:
+    """What is running, if anything, as data: the one answer `status` prints
+    and the agent serves (#29).
+
+    `verdict` is `liveness`'s word (absent, gone, invalid, orphaned, running)
+    and `message` says it the way `status` always has. The rest is filled only
+    for a running rig. A child's `alive` is None when the recorded pid is not
+    one, which is reported rather than raised because this is what you read
+    when things are odd. Pure over its arguments so the shape is a test, not a
+    claim; `status` and the agent both call it with the real state and probes.
+    """
+    # The module's own probes, looked up now rather than bound at import, so
+    # standing them in for a test works the same way it does for `status`.
+    alive = alive or pid_alive
+    group_alive = group_alive or pgid_alive
+    if state is None:
+        state = read_state()
+    verdict = liveness(state, alive, group_alive)
+    described: dict[str, Any] = {"verdict": verdict, "running": verdict == "running"}
     if verdict == "absent":
-        print("No rig is running.")
-        return 0
+        described["message"] = "No rig is running."
+        return described
     if verdict == "gone":
-        print("No rig is running (the state file is stale; 'sushi-rig down' clears it).")
-        return 0
+        described["message"] = (
+            "No rig is running (the state file is stale; 'sushi-rig down' clears it)."
+        )
+        return described
     if verdict == "invalid":
-        print(
+        described["message"] = (
             f"{state_path()} does not describe a rig this tool started, so "
             "its contents are not reported. 'sushi-rig down' says more."
         )
-        return 0
+        return described
     if verdict == "orphaned":
-        print(
+        described["message"] = (
             f"The supervisor ({state.get('supervisor_pid')}) is gone but its "
             f"process group {state.get('pgid')} still has members: what a "
             "crash left behind. 'sushi-rig down' stops them."
         )
-        return 0
-    pgid = state["pgid"]
+        return described
 
     try:
-        age = format_uptime(
-            (datetime.now(timezone.utc)
-             - datetime.fromisoformat(state["started_at"])).total_seconds()
-        )
+        started = datetime.fromisoformat(state["started_at"])
+        uptime = ((now or datetime.now(timezone.utc)) - started).total_seconds()
     except (KeyError, TypeError, ValueError):
-        age = "unknown"
-
-    print(f"{state.get('config_name')} ({state.get('mode')} mode), up {age}")
-    print(f"  config     {state.get('config')}")
-    print(f"  group      {pgid}")
+        uptime = None
     children = state.get("children")
-    for name, pid in (children.items() if isinstance(children, dict) else ()):
-        if not is_real_id(pid):
+    described.update({
+        "config_name": state.get("config_name"),
+        "mode": state.get("mode"),
+        "config": state.get("config"),
+        "pgid": state["pgid"],
+        "started_at": state.get("started_at"),
+        "uptime_seconds": uptime,
+        "children": {
+            str(name): {
+                "pid": pid,
+                "alive": alive(pid) if is_real_id(pid) else None,
+            }
+            for name, pid in (children.items() if isinstance(children, dict) else ())
+        },
+        "amp_model": state.get("amp_model") or None,
+        "log_dir": state.get("log_dir"),
+    })
+    age = format_uptime(uptime) if uptime is not None else "unknown"
+    described["message"] = f"{described['config_name']} ({described['mode']} mode), up {age}"
+    return described
+
+
+def status() -> int:
+    """What is running, if anything."""
+    described = describe_rig()
+    print(described["message"])
+    if not described["running"]:
+        return 0
+    print(f"  config     {described['config']}")
+    print(f"  group      {described['pgid']}")
+    for name, child in described["children"].items():
+        if child["alive"] is None:
             # Read from a file, so not trusted to be a pid at all; said, not
             # raised, because `status` is what you run when things are odd.
-            print(f"  {name:10} pid {pid!r} (INVALID)")
+            print(f"  {name:10} pid {child['pid']!r} (INVALID)")
             continue
-        print(f"  {name:10} pid {pid} {'' if pid_alive(pid) else '(DEAD)'}")
-    if state.get("amp_model"):
-        print(f"  amp model  {state['amp_model']}")
-    print(f"  logs       {state.get('log_dir')}")
+        print(f"  {name:10} pid {child['pid']} {'' if child['alive'] else '(DEAD)'}")
+    if described["amp_model"]:
+        print(f"  amp model  {described['amp_model']}")
+    print(f"  logs       {described['log_dir']}")
     return 0

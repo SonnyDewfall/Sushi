@@ -639,93 +639,11 @@ def _nulltest(args: argparse.Namespace) -> int:
 
 
 def _doctor(args: argparse.Namespace) -> int:
-    """`doctor`: everything about this machine that has to be true before you play.
-
-    One pw-dump, read once and used by both the graph checks and the patchbay
-    check, so the two cannot disagree about a graph that changed between them.
-    """
-    from .doctor import (
-        EXPECTED_RATE, UNCHECKED, Check, environment_checks, faults,
-        gather_environment, graph_checks, interface_clients, machine_check,
-        patchbay_checks, unchecked,
-    )
-    from .machine import MachineError, MachineSpec, machine_path
-    from .patchbay import (
-        PatchbayError, check_nodes, live_node_names, nodes_by_id, parse_patchbay,
-        read_pw_dump,
-    )
+    """`doctor`: everything about this machine that has to be true before you play."""
+    from .doctor import faults, run, unchecked
     from .paths import checkout_root
-    from .rig import QUANTUM
 
-    root = checkout_root()
-    checks = []
-
-    # The machine file first: every device name the checks below compare
-    # against comes from it, so an unreadable one is reported once here rather
-    # than as a fault in each of them.
-    machine_file = args.machine or machine_path(root)
-    clients: set[str] = set()
-    try:
-        spec = MachineSpec.load(machine_file)
-    except MachineError as exc:
-        checks.append(machine_check([], file_name=machine_file.name, readable=False,
-                                    why=str(exc)))
-    else:
-        problems = spec.validate()
-        checks.append(machine_check(problems, file_name=machine_file.name))
-        if not problems:
-            clients = interface_clients(spec.role_ports())
-
-    # Read and parsed inside one try. `pw-dump` exiting 0 with output that is
-    # not JSON raises from the parse, not the read, and that used to escape as a
-    # traceback — while the identical exception from the same helper was caught
-    # for the patchbay check a few lines below. One of two readers of the same
-    # bytes being guarded is the kind of asymmetry that only shows on the day it
-    # happens.
-    dump, nodes, why = None, None, ""
-    try:
-        dump = read_pw_dump()
-        nodes = nodes_by_id(dump)
-    except PatchbayError as exc:
-        dump, why = None, "; ".join(exc.problems)
-
-    checks += graph_checks(
-        nodes,
-        clients,
-        expected_quantum=QUANTUM,
-        expected_rate=EXPECTED_RATE,
-        reason=why,
-    )
-
-    patchbay_file = args.patchbay or root / "Patchbay" / "rig.qpwgraph"
-
-    def not_compared(reason: str) -> Check:
-        """One `unchecked` for a patchbay that could not be compared at all."""
-        return Check(
-            "patchbay-nodes", UNCHECKED,
-            f"{patchbay_file.name} could not be checked against the graph: "
-            f"{reason or 'no reason given'}",
-            "`sushi-rig patchbay check` reports on it on its own",
-        )
-
-    if dump is None:
-        checks.append(not_compared(why))
-    else:
-        try:
-            links = parse_patchbay(patchbay_file.read_text())
-            result = check_nodes(links, live_node_names(dump))
-        except OSError as exc:
-            checks.append(not_compared(str(exc)))
-        except PatchbayError as exc:
-            checks.append(not_compared("; ".join(exc.problems)))
-        else:
-            checks += patchbay_checks(
-                result.missing, result.not_running,
-                file_name=patchbay_file.name, links=len(links),
-            )
-
-    checks += environment_checks(gather_environment(root))
-
+    checks = run(checkout_root(), machine_file=args.machine, patchbay_file=args.patchbay)
     for check in checks:
         print(check)
     broken, skipped = faults(checks), unchecked(checks)
@@ -1088,6 +1006,17 @@ def main(argv: list[str] | None = None) -> int:
     )
 
     sub.add_parser("status", help="what is running, if anything")
+    p = sub.add_parser(
+        "agent",
+        help="serve the rig over HTTP on localhost: health, status, doctor, up/down/restart (#29)",
+    )
+    # Localhost first (#29): opening it to the LAN is the operator's call.
+    # 8029 is the issue's number, and clear of the panel's 8080. The defaults
+    # live here rather than in agent.py so that `sushi-rig status` does not
+    # import asyncio for two numbers it will never use.
+    p.add_argument("--host", default="127.0.0.1",
+                   help="bind address [default: 127.0.0.1; 0.0.0.0 opens it to the LAN]")
+    p.add_argument("--port", type=int, default=8029, help="[default: 8029]")
     sub.add_parser(
         "restart",
         help="stop the running rig and bring the same one back — same config, same mode, same amp and tuner choices",
@@ -1369,6 +1298,13 @@ def main(argv: list[str] | None = None) -> int:
         from .top import top
 
         return top(args.interval, args.once)
+    elif args.command == "agent":
+        from .agent import AgentError, serve
+
+        try:
+            return serve(args.host, args.port)
+        except AgentError as exc:
+            sys.exit(str(exc))
     elif args.command in ("up", "down", "status", "restart"):
         from .amp import AmpError
         from .rig import RigError, down, restart, status, up
