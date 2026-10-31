@@ -268,7 +268,7 @@ def refresh_panel(
     host: str = "127.0.0.1",
     port: int = 8080,
     tab_delay: float = TAB_RESELECT_DELAY,
-    schedule: Callable[[float, Callable[[], None]], None] = _start_timer,
+    schedule: Callable[[float, Callable[[], None]], None] | None = None,
 ) -> None:
     """Tell a running open-stage-control to reload `panel_path`.
 
@@ -293,7 +293,8 @@ def refresh_panel(
     the caller (the OSC listener, which must stay responsive) isn't blocked.
     `schedule(delay, action)` is how that deferral is carried out; it is a
     parameter so a test can run the action itself instead of waiting out the
-    wall clock, and defaults to a real `threading.Timer`.
+    wall clock, and defaults (looked up at call time, so a test can replace
+    `_start_timer`) to a real `threading.Timer`.
 
     Fire-and-forget: OSC is unacknowledged, so there is nothing to await and no
     confirmation to check. A panel that failed to reload is a cosmetic problem;
@@ -315,7 +316,7 @@ def refresh_panel(
     if tab_delay <= 0:
         _reselect()
     else:
-        schedule(tab_delay, _reselect)
+        (schedule or _start_timer)(tab_delay, _reselect)
 
 
 def plan_move(chain: list[str], processor: str, direction: int) -> dict[str, Any] | None:

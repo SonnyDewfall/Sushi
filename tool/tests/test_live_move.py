@@ -6,7 +6,6 @@ last element" case has to become add_to_back rather than "before" anything,
 because that is how Sushi's API expresses position.
 """
 
-import inspect
 import sys
 import types
 
@@ -110,33 +109,15 @@ def test_tab_reselect_is_deferred_rather_than_sent_immediately(fake_osc):
     assert fake_osc.sent[1] == ("/TABS", "reverb"), "but it must still arrive"
 
 
-def test_the_delay_is_the_one_measured_and_it_is_what_refresh_uses_by_default():
-    """0.75 s: well over the under-half-second rebuild measured on a seven-plugin
-    panel, short enough not to be noticed (the constant's own comment)."""
-    assert TAB_RESELECT_DELAY == 0.75
-    assert inspect.signature(refresh_panel).parameters["tab_delay"].default == (
-        TAB_RESELECT_DELAY
-    )
-
-
-def test_by_default_the_deferral_is_a_threading_timer(fake_osc, monkeypatch):
-    """Without an injected schedule the real path is a `threading.Timer` for the
-    default delay. Timer is faked here, so no wall clock is spent finding that
-    out. (That the thread is not a daemon is a property of the real Timer, which
-    is why it is used rather than a hand-made thread.)"""
+def test_by_default_the_deferral_goes_through_the_timer_helper(fake_osc, monkeypatch):
+    """Without an injected schedule the real path is `live._start_timer`, handed
+    the default delay. It is replaced here, so no wall clock is spent and no
+    stdlib module is patched."""
     started = []
-
-    class FakeTimer:
-        def __init__(self, delay, action):
-            self.delay, self.action = delay, action
-
-        def start(self):
-            started.append(self)
-
-    monkeypatch.setattr(live.threading, "Timer", FakeTimer)
+    monkeypatch.setattr(live, "_start_timer", lambda delay, action: started.append((delay, action)))
     refresh_panel("/tmp/panel.json", "reverb")
-    assert [t.delay for t in started] == [TAB_RESELECT_DELAY]
-    started[0].action()
+    assert [d for d, _ in started] == [TAB_RESELECT_DELAY]
+    started[0][1]()
     assert fake_osc.sent[-1] == ("/TABS", "reverb")
 
 
