@@ -1,10 +1,26 @@
 """The rig supervisor's decisions, pinned without starting anything.
 
-Everything here runs with no audio hardware, no Sushi and no processes. The
-parts that genuinely need a running rig — that a killed process group really
-does take `sushi.bin` and open-stage-control's Electron helpers with it — are
-verified by hand against real hardware; what is testable offline is the logic
-that decides *what* to start and *how far* to escalate when stopping.
+Everything here runs with no audio hardware, no Sushi and no processes of the
+rig's own. The parts that genuinely need a running rig are verified by hand
+against real hardware, and are NOT covered here -- faking them would prove only
+that the fakes were called:
+
+- that a killed process group really does take `sushi.bin` and
+  open-stage-control's Electron helpers with it;
+- that SIGINT is what lets Sushi release its JACK ports cleanly;
+- that `up` leaves nothing holding the caller's stdout (the `| grep` hang);
+- the real children themselves: Sushi's gRPC coming up, Carla's OSC replay,
+  fmit's wiring and the tuner's PipeWire node.
+
+What is testable offline is the logic that decides *what* to start, *whether*
+to start it, *how far* to escalate when stopping and *what to say* -- plus one
+test that forks a real supervisor with its children stubbed out, because the
+`WARN`/`READY`/`FAIL` pipe protocol and the supervisor's `try` block are
+exactly the kind of thing a mock would agree with whatever it was told.
+
+Processes and signals are stood in for at the edges (`pid_alive`, `pgid_alive`,
+`os.killpg`, `time`, `_fork_supervisor`); the state file is real, in a
+temporary `XDG_RUNTIME_DIR`.
 """
 
 from __future__ import annotations
@@ -889,6 +905,118 @@ def test_restart_does_not_start_again_if_the_rig_would_not_stop(runtime, monkeyp
     monkeypatch.setattr(rig, "up", lambda *a, **k: pytest.fail("started over a live rig"))
     with pytest.raises(rig.RigError, match="could not stop"):
         rig.restart()
+
+
+# up
+
+
+@pytest.fixture
+def up_world(runtime, monkeypatch):
+    """`up` with the fork stood in for: a pipe pre-loaded with what a
+    supervisor would have said, and a record of what was done about it."""
+    seen = SimpleNamespace(killed=[], forked=0, supervise_kwargs=[])
+    monkeypatch.setattr(rig, "pid_alive", lambda pid: False)
+    monkeypatch.setattr(rig, "port_is_open", lambda host, port, *a, **k: False)
+    monkeypatch.setattr(rig, "_kill_group_of", lambda pid: seen.killed.append(pid))
+
+    def say(*lines, then_write=None):
+        def fork(supervise):
+            seen.forked += 1
+            ready_r, ready_w = os.pipe()
+            os.write(ready_w, "".join(line + "\n" for line in lines).encode())
+            os.close(ready_w)
+            if then_write is not None:
+                state_file.write_state(then_write)
+            return 4242, ready_r
+
+        monkeypatch.setattr(rig, "_fork_supervisor", fork)
+
+    seen.say = say
+    return seen
+
+
+def test_up_refuses_when_a_live_rig_is_recorded(up_world, monkeypatch):
+    state_file.write_state(running_state())
+    monkeypatch.setattr(rig, "pid_alive", lambda pid: True)
+    up_world.say("READY")
+    with pytest.raises(rig.RigError, match="already running"):
+        rig.up(headless=True)
+    assert up_world.forked == 0
+    assert state_file.read_state() is not None, "a refusal must not clear a live rig's state"
+
+
+def test_up_clears_a_stale_state_file_and_carries_on(up_world, capsys):
+    state_file.write_state(running_state(supervisor_pid=4001))  # pid_alive: False
+    up_world.say("READY", then_write=running_state(supervisor_pid=4242, pgid=4242))
+    assert rig.up(headless=True, tuner=False, amp=False) == 0
+    assert up_world.forked == 1
+    assert state_file.read_state()["supervisor_pid"] == 4242, "the stale file was replaced"
+    assert "Rig up: electric_board (headless mode)" in capsys.readouterr().out
+
+
+def test_up_treats_a_state_file_with_nonsense_ids_as_stale(up_world, monkeypatch):
+    """Even when the pid it names happens to be alive: 0 and 1 are not a rig."""
+    state_file.write_state(running_state(supervisor_pid=1, pgid=1))
+    monkeypatch.setattr(rig, "pid_alive", lambda pid: True)
+    up_world.say("READY")
+    assert rig.up(headless=True, tuner=False, amp=False) == 0
+
+
+def test_up_refuses_when_something_already_holds_the_grpc_port(up_world, monkeypatch):
+    """A Sushi this supervisor did not start is invisible to the state file, and
+    starting on top of it passed the readiness check against the other one."""
+    monkeypatch.setattr(rig, "port_is_open", lambda host, port, *a, **k: port == 51051)
+    up_world.say("READY")
+    with pytest.raises(rig.RigError, match="127.0.0.1:51051"):
+        rig.up(headless=True)
+    assert up_world.forked == 0
+
+
+def test_up_refuses_an_unknown_config(up_world):
+    up_world.say("READY")
+    with pytest.raises(rig.RigError, match="no such config"):
+        rig.up("no_such_config_anywhere")
+    assert up_world.forked == 0
+
+
+def test_up_reports_a_fail_line_as_an_error_and_kills_the_group(up_world):
+    # The supervisor got as far as recording itself before it gave up, so the
+    # state file `up` must remove is the one written during the start.
+    up_world.say(
+        "WARN the tuner is deaf", "FAIL Sushi exited during startup — see /x/sushi.log",
+        then_write=running_state(supervisor_pid=4242, pgid=4242),
+    )
+    with pytest.raises(rig.RigError, match="Sushi exited during startup"):
+        rig.up(headless=True, tuner=False, amp=False)
+    assert up_world.killed == [4242], "whatever did start must not be left running"
+    assert state_file.read_state() is None, "a failed start leaves no state"
+
+
+def test_up_reports_a_supervisor_that_went_silent_as_a_failure(up_world):
+    """The pipe closing with neither READY nor FAIL -- the supervisor was killed
+    or crashed -- is still a failed start, not a cheerful prompt."""
+    up_world.say()
+    with pytest.raises(rig.RigError, match="failed to start"):
+        rig.up(headless=True, tuner=False, amp=False)
+    assert up_world.killed == [4242]
+
+
+def test_up_prints_warnings_and_returns_zero_on_ready(up_world, capsys):
+    up_world.say("WARN amp exited during startup (status 1)", "WARN the tuner is deaf", "READY",
+                 then_write=running_state(supervisor_pid=4242, pgid=4242))
+    assert rig.up(headless=True, tuner=False, amp=False) == 0
+    printed = capsys.readouterr()
+    assert "warning: amp exited during startup (status 1)" in printed.err
+    assert "warning: the tuner is deaf" in printed.err
+    assert "Rig up:" in printed.out
+    assert up_world.killed == [], "a rig that came up is not torn down"
+
+
+def test_up_does_not_wait_for_lines_after_ready(up_world):
+    """READY ends the wait. The supervisor keeps the pipe's write end only until
+    it closes it, but `up` must not depend on that."""
+    up_world.say("READY", "FAIL too late to matter")
+    assert rig.up(headless=True, tuner=False, amp=False) == 0
 
 
 def test_up_tells_the_supervisor_what_was_asked_for(runtime, monkeypatch):
