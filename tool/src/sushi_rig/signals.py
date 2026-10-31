@@ -45,6 +45,7 @@ noise is built from that with plain arithmetic.
 
 from __future__ import annotations
 
+import errno
 import os
 import struct
 from dataclasses import dataclass
@@ -471,7 +472,14 @@ class WavWriter:
         # Written now, not with the first block: a recorder killed before its
         # first block otherwise left zero-byte stems, which no repair can
         # recover because nothing says what they were.
-        self._file.write(header)
+        try:
+            if self._file.write(header) != len(header):
+                raise OSError(errno.ENOSPC, f"{self.path.name}: the header was only part written")
+        except BaseException:
+            # A short header is a stem that looks started and is not; refuse it
+            # here, and do not leave the descriptor to whoever catches this.
+            self._file.close()
+            raise
 
     def write(self, block) -> None:
         """Append frames shaped (frames, channels), then bring the sizes up to date."""
@@ -501,12 +509,25 @@ class WavWriter:
         sent = 0
         try:
             while sent < len(view):
-                sent += self._file.write(view[sent:])  # short on a full disk, then raises
-        finally:
-            # Counted even when the write raised: the whole frames that did land
-            # are in the file, and the recorder cuts every stem back to the
-            # shortest count, so it has to be a true one.
+                landed = self._file.write(view[sent:])  # short on a full disk, then raises
+                if not landed:
+                    # A raw write may return 0 rather than raise; looping on it
+                    # would spin the recorder's thread and hang STOP.
+                    raise OSError(errno.EIO, f"{self.path.name}: the file took no more bytes")
+                sent += landed
+        except BaseException:
+            # The whole frames that did land are in the file, and the recorder
+            # cuts every stem back to the shortest count, so it has to be a
+            # true one. The header is brought up to date too, since two size
+            # fields rewritten in place need no new room; if even that fails,
+            # `stop` rewrites it, and the error that matters is the first one.
             self.frames += sent // self._block_align
+            try:
+                self._sizes()
+            except OSError:
+                pass
+            raise
+        self.frames += sent // self._block_align
         self._sizes()
 
     def truncate(self, frames: int) -> None:
@@ -531,8 +552,14 @@ class WavWriter:
 
     def close(self) -> None:
         if not self._file.closed:
-            self.sync()
-            self._file.close()
+            try:
+                self.sync()
+            finally:  # a failed fsync must not leak the descriptor
+                self._file.close()
+
+    @property
+    def closed(self) -> bool:
+        return self._file.closed
 
     def __enter__(self) -> "WavWriter":
         return self
