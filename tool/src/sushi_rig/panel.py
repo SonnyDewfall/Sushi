@@ -109,6 +109,7 @@ from __future__ import annotations
 
 import json
 import sys
+from pathlib import Path
 from typing import Any
 
 from .dump import collect_parameter_info
@@ -340,68 +341,110 @@ def _amp_tab(amp: dict[str, Any], listener_port: int) -> dict[str, Any]:
     return {"type": "tab", "id": "amp", "label": "amp", "widgets": widgets}
 
 
+def _bar(bar_id: str, widgets: list[dict[str, Any]]) -> dict[str, Any]:
+    return {
+        "type": "panel",
+        "id": bar_id,
+        "width": "100%",
+        "height": SAVE_BAR_HEIGHT,
+        "widgets": widgets,
+    }
+
+
+def _name_input(widget_id: str, label: str, address: str, target: list[str]) -> dict[str, Any]:
+    """A name field that sends its own value to the listener as it is typed.
+
+    Its own message rather than an argument on the button that uses it:
+    `preArgs` on a button is not re-evaluated per send (see the module
+    docstring). The regex is UX only; the listener enforces the same pattern,
+    since the name arrives over unauthenticated UDP and becomes a path.
+    """
+    return {
+        "type": "input",
+        "id": widget_id,
+        "label": label,
+        "value": "",
+        "validation": NAME_PATTERN.pattern,
+        "address": address,
+        "target": target,
+        "ignoreDefaults": True,
+        # Without this an input only sends on *commit* — Enter, or
+        # clicking away — so typing a name and pressing SAVE directly
+        # sends whatever was committed before, not what's on screen.
+        # Found on real hardware: "electric-test" was typed and the
+        # file saved as "electric-.json", the last committed value.
+        # The listener has no way to detect this; it just receives a
+        # stale name and writes it.
+        #
+        # Every automated test of this feature pressed Tab before
+        # saving, which commits the field and hides the bug entirely —
+        # worth remembering when a test procedure and a human's
+        # actual behaviour diverge.
+        "asYouType": True,
+        "width": 220,
+        "height": SAVE_BAR_WIDGET_HEIGHT,
+    }
+
+
+def _tap_button(widget_id: str, label: str, address: str, target: list[str]) -> dict[str, Any]:
+    """A bare tap at the listener: one message per press, no payload."""
+    return {
+        "type": "button",
+        "id": widget_id,
+        "label": label,
+        "mode": "tap",
+        "address": address,
+        "target": target,
+        "ignoreDefaults": True,
+        "width": 90,
+        "height": SAVE_BAR_WIDGET_HEIGHT,
+    }
+
+
+def _status_text(widget_id: str, address: str) -> dict[str, Any]:
+    """Where the listener's sentence about the last press appears."""
+    return {
+        "type": "text",
+        "id": widget_id,
+        "label": False,
+        "address": address,
+        "interaction": False,
+        "width": 320,
+        "height": SAVE_BAR_WIDGET_HEIGHT,
+    }
+
+
 def _record_bar(listener_port: int) -> dict[str, Any]:
     """A take's name, RECORD, STOP, and what the listener said (#57).
 
-    Built the way the save bar is, for the reasons that bar's comments record
-    against real open-stage-control: the name is an input sending its own value
-    as you type, and the buttons are bare taps. Two buttons rather than one
-    toggle, so the panel never holds its own idea of whether a take is running;
-    see transport.py.
+    Built from the save bar's parts, so its findings on real open-stage-control
+    apply here too. Two buttons rather than one toggle, so the panel never holds
+    its own idea of whether a take is running; see transport.py.
 
     Not yet seen in real open-stage-control: whether a second fixed-height bar
     stacks under the first in root's vertical layout as the save bar does above
     the tabs. It is off by default, and checking it is on the hardware list.
     """
     target = [f"127.0.0.1:{listener_port}"]
+    return _bar("record_bar", [
+        _name_input("take_name", "take", TAKE_NAME_ADDRESS, target),
+        _tap_button("record_button", "RECORD", RECORD_ADDRESS, target),
+        _tap_button("stop_button", "STOP", STOP_ADDRESS, target),
+        _status_text("record_status", RECORD_STATUS_ADDRESS),
+    ])
 
-    def button(widget_id: str, label: str, address: str) -> dict[str, Any]:
-        return {
-            "type": "button",
-            "id": widget_id,
-            "label": label,
-            "mode": "tap",
-            "address": address,
-            "target": target,
-            "ignoreDefaults": True,
-            "width": 90,
-            "height": SAVE_BAR_WIDGET_HEIGHT,
-        }
 
-    return {
-        "type": "panel",
-        "id": "record_bar",
-        "width": "100%",
-        "height": SAVE_BAR_HEIGHT,
-        "widgets": [
-            {
-                "type": "input",
-                "id": "take_name",
-                "label": "take",
-                "value": "",
-                "validation": NAME_PATTERN.pattern,
-                "address": TAKE_NAME_ADDRESS,
-                "target": target,
-                "ignoreDefaults": True,
-                # See config_name: without it, RECORD sends the last committed
-                # name rather than the one on screen.
-                "asYouType": True,
-                "width": 220,
-                "height": SAVE_BAR_WIDGET_HEIGHT,
-            },
-            button("record_button", "RECORD", RECORD_ADDRESS),
-            button("stop_button", "STOP", STOP_ADDRESS),
-            {
-                "type": "text",
-                "id": "record_status",
-                "label": False,
-                "address": RECORD_STATUS_ADDRESS,
-                "interaction": False,
-                "width": 320,
-                "height": SAVE_BAR_WIDGET_HEIGHT,
-            },
-        ],
-    }
+def has_record_bar(panel_file: Path) -> bool:
+    """Whether a panel file on disk has the record bar, so a panel regenerated
+    over it can keep it. A file that cannot be read has none."""
+    try:
+        panel = json.loads(Path(panel_file).read_text())
+        widgets = panel["content"]["widgets"]
+    except (OSError, ValueError, TypeError, KeyError):
+        return False
+    return isinstance(widgets, list) and any(
+        isinstance(w, dict) and w.get("id") == "record_bar" for w in widgets
+    )
 
 
 def build_osc_panel(
@@ -636,59 +679,12 @@ def build_osc_panel(
     if amp:
         tabs.append(_amp_tab(amp, listener_port))
 
-    save_bar = {
-        "type": "panel",
-        "id": "save_bar",
-        "width": "100%",
-        "height": SAVE_BAR_HEIGHT,
-        "widgets": [
-            {
-                "type": "input",
-                "id": "config_name",
-                "label": "name",
-                "value": "",
-                "validation": NAME_PATTERN.pattern,
-                "address": NAME_ADDRESS,
-                "target": [f"127.0.0.1:{listener_port}"],
-                "ignoreDefaults": True,
-                # Without this an input only sends on *commit* — Enter, or
-                # clicking away — so typing a name and pressing SAVE directly
-                # sends whatever was committed before, not what's on screen.
-                # Found on real hardware: "electric-test" was typed and the
-                # file saved as "electric-.json", the last committed value.
-                # The listener has no way to detect this; it just receives a
-                # stale name and writes it.
-                #
-                # Every automated test of this feature pressed Tab before
-                # saving, which commits the field and hides the bug entirely —
-                # worth remembering when a test procedure and a human's
-                # actual behaviour diverge.
-                "asYouType": True,
-                "width": 220,
-                "height": SAVE_BAR_WIDGET_HEIGHT,
-            },
-            {
-                "type": "button",
-                "id": "save_button",
-                "label": "SAVE",
-                "mode": "tap",
-                "address": SAVE_ADDRESS,
-                "target": [f"127.0.0.1:{listener_port}"],
-                "ignoreDefaults": True,
-                "width": 90,
-                "height": SAVE_BAR_WIDGET_HEIGHT,
-            },
-            {
-                "type": "text",
-                "id": "save_status",
-                "label": False,
-                "address": STATUS_ADDRESS,
-                "interaction": False,
-                "width": 320,
-                "height": SAVE_BAR_WIDGET_HEIGHT,
-            },
-        ],
-    }
+    target = [f"127.0.0.1:{listener_port}"]
+    save_bar = _bar("save_bar", [
+        _name_input("config_name", "name", NAME_ADDRESS, target),
+        _tap_button("save_button", "SAVE", SAVE_ADDRESS, target),
+        _status_text("save_status", STATUS_ADDRESS),
+    ])
 
     root = {
         "type": "root",

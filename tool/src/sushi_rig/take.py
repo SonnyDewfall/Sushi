@@ -85,6 +85,7 @@ from __future__ import annotations
 
 import json
 import os
+import shutil
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -719,11 +720,18 @@ def start_take(
     # A copy, never a reference: a take that points at config/electric-clean.json
     # says nothing once that file has moved on, which is the failure the
     # project's versioning exists to prevent.
-    _write_atomic(folder / CONFIG_FILE, config_text)
-    _write_metadata(folder, take_metadata(
-        name, stems, sample_rate=sample_rate, subtype=subtype, quantum=quantum,
-        recorded_at=now, config_source=config_source, complete=False,
-    ))
+    try:
+        _write_atomic(folder / CONFIG_FILE, config_text)
+        _write_metadata(folder, take_metadata(
+            name, stems, sample_rate=sample_rate, subtype=subtype, quantum=quantum,
+            recorded_at=now, config_source=config_source, complete=False,
+        ))
+    except OSError:
+        # A full disk here would leave a folder that is not a take and does not
+        # say why. It was made by this call and holds no audio, so it goes; a
+        # take it replaced is already safe in the archive.
+        shutil.rmtree(folder, ignore_errors=True)
+        raise
     return {stem.filename: folder / stem.filename for stem in stems}
 
 

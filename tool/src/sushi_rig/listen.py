@@ -128,7 +128,6 @@ def serve(
     amp_model: str | None = None,
     amp_parameters: dict[str, float] | None = None,
     session: "Session | None" = None,
-    record_bar: bool = False,
 ) -> None:
     """Block, handling `NAME_ADDRESS`/`SAVE_ADDRESS` messages until interrupted.
 
@@ -143,7 +142,6 @@ def serve(
 
     `session` records takes for the record bar. Without one the record bar's
     messages are still answered, by `NoEngine`, which says why it cannot.
-    `record_bar` keeps the bar on a panel regenerated after a move.
     """
     from .transport import Transport
 
@@ -249,16 +247,21 @@ def serve(
         refresh is a cosmetic problem; an exception here would take down the
         listener and with it the save button.
         """
+        nonlocal last_name
         if panel_config is None or panel_out is None:
             return
         try:
             from .dump import dump_plugins
             from .live import get_live_bypass_state, get_live_parameter_info
-            from .panel import build_osc_panel
+            from .panel import build_osc_panel, has_record_bar
             from .amp import panel_amp
             from .probe import units_for_config
             from .paths import checkout_root
 
+            # Whatever the panel being replaced had, it keeps: the record bar
+            # is a choice made when the panel was made, not one for a reorder
+            # to undo.
+            record_bar = has_record_bar(Path(panel_out))
             panel = build_osc_panel(
                 dump_plugins(panel_config, sushi_bin),
                 get_live_parameter_info(address),
@@ -270,6 +273,13 @@ def serve(
             )
             Path(panel_out).write_text(json.dumps(panel, indent=2) + "\n")
             refresh_panel(str(panel_out), select_tab, status_host, status_port)
+            # The reload empties both name fields, so the names held here go
+            # too: SAVE or RECORD on an empty field must not use a name typed
+            # before the reload.
+            last_name = ""
+            said = transport.on_panel_reloaded()
+            if said:
+                _report(said, RECORD_STATUS_ADDRESS)
         except Exception as exc:  # noqa: BLE001 - see docstring
             _report(f"panel refresh failed (the move still applied): {exc}")
 

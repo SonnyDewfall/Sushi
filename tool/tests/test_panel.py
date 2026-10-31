@@ -1,3 +1,5 @@
+import json
+
 import pytest
 
 from sushi_rig.listen import (
@@ -853,3 +855,21 @@ def test_listener_addresses_are_all_distinct():
     addresses = [NAME_ADDRESS, SAVE_ADDRESS, STATUS_ADDRESS, TAKE_NAME_ADDRESS,
                  RECORD_ADDRESS, STOP_ADDRESS, RECORD_STATUS_ADDRESS]
     assert len(set(addresses)) == len(addresses)
+
+
+def test_a_regenerated_panel_keeps_the_record_bar_it_replaces(real_dump, tmp_path):
+    """The listener rebuilds the panel after a reorder; the bar is a choice
+    made when the panel was made, not one for a reorder to undo."""
+    from sushi_rig.panel import has_record_bar
+
+    path = tmp_path / "panel.json"
+    for record_bar in (True, False):
+        path.write_text(json.dumps(
+            build_osc_panel(real_dump, _live_info_for(real_dump), record_bar=record_bar)
+        ))
+        assert has_record_bar(path) is record_bar
+    assert has_record_bar(tmp_path / "missing.json") is False
+    path.write_text("not json")
+    assert has_record_bar(path) is False
+    path.write_text("[]")
+    assert has_record_bar(path) is False

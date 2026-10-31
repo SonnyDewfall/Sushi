@@ -143,6 +143,24 @@ def test_without_an_engine_record_says_why_it_cannot():
     assert transport.recording is None
 
 
+def test_a_reloaded_panel_forgets_the_name_it_no_longer_shows():
+    """The reload empties the name field; RECORD on an empty field must not
+    record, and archive, under a name typed before it."""
+    session = FakeSession()
+    transport = Transport(session, clock=lambda: NOW)
+    transport.on_name("riff-idea")
+    assert transport.on_panel_reloaded() is None
+    assert transport.on_record() == "recording take-20261031-142501"
+
+
+def test_a_reloaded_panel_is_told_a_take_is_still_running():
+    transport = Transport(FakeSession())
+    transport.on_name("riff-idea")
+    transport.on_record()
+    assert transport.on_panel_reloaded() == "recording riff-idea"
+    assert transport.recording == "riff-idea"
+
+
 def test_closing_the_listener_finishes_a_running_take():
     session = FakeSession()
     transport = Transport(session)
@@ -238,14 +256,44 @@ def test_a_take_from_record_to_stop(tmp_path):
             assert np.allclose(data.samples[:, column], expected)
 
 
-def test_recording_over_a_name_keeps_the_earlier_take(tmp_path):
+def test_recording_over_a_name_keeps_the_earlier_take_and_says_where(tmp_path):
     session = TakeSession(plan(tmp_path), FakeEngine(), clock=lambda: NOW.astimezone())
-    session.start("riff-idea")
+    assert session.start("riff-idea") == "recording riff-idea"
     session.stop()
     session.engine = FakeEngine()
-    session.start("riff-idea")
+    assert session.start("riff-idea") == (
+        "recording riff-idea — the earlier riff-idea is in _archive/riff-idea/"
+    )
     session.stop()
     assert len(list((tmp_path / take.ARCHIVE_DIR / "riff-idea").iterdir())) == 1
+
+
+def test_a_disk_error_starting_a_take_is_a_refusal_and_leaves_no_folder(tmp_path, monkeypatch):
+    def full(path, text):
+        raise OSError(28, "No space left on device")
+
+    monkeypatch.setattr(take, "_write_atomic", full)
+    session = TakeSession(plan(tmp_path), FakeEngine())
+    with pytest.raises(TransportError, match="cannot record riff-idea: .*No space left"):
+        session.start("riff-idea")
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_an_engine_that_fails_part_way_through_starting_is_stopped(tmp_path):
+    class HalfStarted(FakeEngine):
+        stopped = False
+
+        def start(self, stems, push):
+            raise OSError("second port missing")
+
+        def stop(self):
+            self.stopped = True
+
+    engine = HalfStarted()
+    session = TakeSession(plan(tmp_path), engine)
+    with pytest.raises(TransportError, match="second port missing"):
+        session.start("riff-idea")
+    assert engine.stopped
 
 
 def test_a_take_that_cannot_be_honest_is_refused_before_anything_is_written(tmp_path):
@@ -269,7 +317,7 @@ def test_an_engine_that_will_not_start_leaves_a_take_that_says_so(tmp_path):
     assert any("the capture engine did not start: no such port" in p for p in problems)
     # And the session is free for the next attempt.
     session.engine = FakeEngine()
-    assert session.start("riff-idea") == "recording riff-idea"
+    assert session.start("riff-idea").startswith("recording riff-idea — the earlier")
     session.stop()
 
 

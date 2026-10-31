@@ -228,7 +228,20 @@ class Recorder:
         self._error = ""
 
     def start(self) -> None:
-        self._writers = [WavWriter(path, channels, self.sample_rate) for path, channels in self.stems]
+        writers = []
+        try:
+            for path, channels in self.stems:
+                writers.append(WavWriter(path, channels, self.sample_rate))
+        except BaseException:
+            # A full disk on the third stem must not leave the first two open
+            # in a listener that runs all evening.
+            for writer in writers:
+                try:
+                    writer.close()
+                except OSError:
+                    pass
+            raise
+        self._writers = writers
         self._thread = threading.Thread(target=self._drain, name="recorder-writer", daemon=True)
         self._thread.start()
 

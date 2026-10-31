@@ -1026,7 +1026,12 @@ own message sent as you type, and the buttons carry no payload — and adds a
 third rule: the panel holds no idea of its own about whether a take is running.
 A toggle would, and a panel reloaded mid-take, or a second one open on a phone,
 would then show the opposite of the truth. RECORD while recording and STOP
-while stopped are refused with a sentence instead. The bar is off by default
+while stopped are refused with a sentence instead. A reload empties the name
+fields, so the listener forgets the names it held — the save bar's too, which
+had the same gap — and tells the reloaded panel if a take is still running.
+Recording again under a name archives the earlier take, as #55 asks, and says
+so on the panel. A second panel's name field is its own; the last one typed
+in wins. The bar is off by default
 until there is a capture engine, and a listener without one answers RECORD by
 saying so rather than ignoring it. Offsets are recorded as not measured: whether
 a dry tap can be measured against what came out of an amp is a question for the

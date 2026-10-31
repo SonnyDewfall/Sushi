@@ -42,7 +42,15 @@ from datetime import datetime
 from pathlib import Path
 from typing import Any, Callable, Protocol, Sequence
 
-from .take import Stem, TakeError, check_name, check_take, finish_take, start_take
+from .take import (
+    ARCHIVE_DIR,
+    Stem,
+    TakeError,
+    check_name,
+    check_take,
+    finish_take,
+    start_take,
+)
 
 # The recorder writes float32 and nothing else; see signals.WavWriter.
 SUBTYPE = "float32"
@@ -147,6 +155,7 @@ class TakeSession:
         if self._recorder is not None:
             raise TransportError(f"already recording {self._folder.name}")
         plan = self.plan
+        replacing = (Path(plan.takes_dir) / name).exists()
         try:
             paths = start_take(
                 plan.takes_dir, name, plan.config, [stem for stem, _ in plan.stems],
@@ -154,7 +163,7 @@ class TakeSession:
                 config_source=plan.config_source,
                 now=self._clock() if self._clock else None,
             )
-        except TakeError as exc:
+        except (TakeError, OSError) as exc:
             raise TransportError(f"cannot record {name}: {exc}") from exc
         folder = Path(plan.takes_dir) / name
         # From here the folder exists and says it is unfinished. A failure is
@@ -174,11 +183,22 @@ class TakeSession:
             self.engine.start(plan.stems, recorder.push)
         except Exception as exc:  # noqa: BLE001 — becomes the take's own record
             reason = f"the capture engine did not start: {exc}"
+            # It may have got part of the way — a thread running, some ports
+            # connected — so it is told to stop before the recorder is.
+            try:
+                self.engine.stop()
+            except Exception:  # noqa: BLE001 — the start failure is the news
+                pass
             summary = recorder.stop().summary()
             summary["error"] = summary["error"] or reason
             _finish(folder, summary)
             raise TransportError(f"cannot record {name}: {reason}") from exc
         self._folder, self._recorder = folder, recorder
+        if replacing:
+            # Said on the panel, not only in the folder: a player pressing
+            # RECORD again under the same name should know the last attempt
+            # moved rather than wonder where it went.
+            return f"recording {name} — the earlier {name} is in {ARCHIVE_DIR}/{name}/"
         return f"recording {name}"
 
     def stop(self) -> str:
@@ -270,9 +290,24 @@ class Transport:
         except Exception as exc:  # noqa: BLE001 — the listener must survive
             return f"stop failed for {name}: unexpected error: {exc}"
 
+    def on_panel_reloaded(self) -> str | None:
+        """The listener regenerated the panel, so its name field is empty again.
+
+        Forgetting the name keeps the two in step: RECORD on a field showing
+        nothing must not record under a name typed before the reload. Returns
+        what the record status should show, because a reload blanks that too
+        and a running take must not look stopped.
+        """
+        self.name = ""
+        return f"recording {self.recording}" if self.recording is not None else None
+
     def close(self) -> str | None:
         """Finish a running take as the listener shuts down, so Ctrl-C ends a
-        take instead of abandoning it. `sushi-rig down` sends SIGINT first, so
-        it does the same; only a listener killed outright leaves a take
-        unfinished, and that take says so."""
+        take instead of abandoning it.
+
+        `sushi-rig down` sends SIGINT first, which lands here too, but it sends
+        SIGTERM three seconds later and nothing catches that: a stop slower
+        than three seconds — a writer far behind on a slow disk — is cut off,
+        and leaves a take that says it is unfinished. How long a stop takes is
+        for the rig machine to measure."""
         return self.on_stop() if self.recording is not None else None

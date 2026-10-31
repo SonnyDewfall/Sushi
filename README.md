@@ -554,17 +554,19 @@ falls behind, the stems lose the same frames together and stay aligned, and
 The panel's record bar (#57) is a take name, RECORD and STOP, with its own
 status line. Like the save bar, the name is its own message and the buttons
 carry nothing, and the listener decides whether a take is running, so a panel
-reloaded mid-take cannot get out of step with it. A take without a name is
-called `take-<date>-<time>`.
+reloaded mid-take cannot show it stopped. A take without a name is called
+`take-<date>-<time>`; recording again under a name moves the earlier take to
+`_archive/`, and the status line says so.
 
 What is not here yet is the capture engine — the part that takes audio from
 PipeWire, which needs the rig machine (#53). Until it exists the record bar is
 off, and RECORD says there is no engine rather than doing nothing. To check its
-layout on the rig:
+layout on the rig, with the rig up, write a panel with the bar over the one `up`
+made and reload it in open-stage-control; a reorder keeps the bar, because the
+listener keeps whatever the panel it replaces had:
 
 ```bash
-sushi-rig panel config/guitar_vocal.json --record-bar -o /tmp/panel.json
-sushi-rig listen --rig rig.yaml --record-bar   # keeps the bar after a reorder
+sushi-rig panel config/guitar_vocal.json --record-bar -o /tmp/sushi-rig-panel.json
 ```
 
 ### Running the tests
