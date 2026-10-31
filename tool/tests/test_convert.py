@@ -353,9 +353,51 @@ def test_a_track_with_no_parameters_gets_no_strip_rather_than_an_empty_one():
     conversion fail in the parser instead of saying what the config held."""
     config = v1("electric-clean")
     config["initial_state"][0] = {"processor": "board"}
-    (channel,) = to_rig(config, "electric-clean")["channels"]
-    assert "strip" not in channel
-    assert any("initial_state for 'board'" in line for line in _converts(config))
+    assert _converts(config) == [
+        "track 'board': a strip with no gain, pan or mute cannot be kept"
+    ]
+    config["initial_state"][0] = {"processor": "board", "parameters": {}}
+    assert len(_converts(config)) == 1
+
+
+@pytest.mark.parametrize("parameters", [{"volume": 1.0}, {"gain": 0.833333, "volume": 1.0}])
+def test_a_track_state_naming_more_than_gain_pan_mute_is_a_named_problem(parameters):
+    config = v1("electric-clean")
+    config["initial_state"][0] = {"processor": "board", "parameters": parameters}
+    (line,) = _converts(config)
+    assert line.startswith("track 'board': only gain, pan and mute are kept") and "volume" in line
+
+
+def test_a_config_with_no_meta_converts_under_the_name_given():
+    config = v1("electric-clean")
+    del config["_meta"]
+    assert _converts(config) == []
+    config["_meta"] = {}
+    assert _converts(config) == []
+
+
+@pytest.mark.parametrize("key, value, expected", [
+    ("_meta", {"name": "electric-clean", "description": {"x": 1}}, "_meta: description must be text"),
+    ("_meta", {"name": "electric-clean", "description": 0}, "_meta: description must be text"),
+    ("_meta", {"name": "electric-clean", "description": False}, "_meta: description must be text"),
+    ("_meta", ["name"], "_meta must be a mapping"),
+    ("_amp", ["model"], "_amp must be a mapping"),
+    ("_amp", 0, "_amp must be a mapping"),
+])
+def test_a_meta_or_amp_of_the_wrong_shape_is_a_named_conversion_error(key, value, expected):
+    """A non-text description escaped as a bare RigFileError from the parser, and
+    a falsy one (0, false) was dropped without a word."""
+    config = v1("electric-clean")
+    config[key] = value
+    (line,) = _converts(config)
+    assert line.startswith(expected)
+
+
+def test_the_mismatch_prints_the_meta_the_config_held():
+    compiled = {"_meta": {"name": "other"}}
+    config = {"_meta": {"name": "electric-clean", "description": ""}}
+    (line,) = [f for f in differences(config, compiled) if f.startswith("_meta")]
+    assert "'description': ''" in line
 
 
 def test_the_roles_come_from_the_patchbay_not_a_second_spelling(monkeypatch):

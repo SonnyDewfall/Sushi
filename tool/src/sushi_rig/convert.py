@@ -34,8 +34,8 @@ from typing import Any
 
 from .patchbay import GUITAR_ROLE, MONITOR_ROLE
 from .rigfile import (
-    _PLUGIN_KEYS, _SETTING_KEYS, KIND, MASTER, RETURN, SCHEMA_VERSION, SEND_SUFFIX, WIDTHS,
-    emit_rig, parse_rig,
+    _PLUGIN_KEYS, _SETTING_KEYS, KIND, MASTER, RETURN, SCHEMA_VERSION, SEND_SUFFIX,
+    UNITY_STRIP, WIDTHS, emit_rig, parse_rig,
 )
 
 _TOP = ("_amp", "_meta", "host_config", "initial_state", "tracks")
@@ -151,6 +151,13 @@ def to_rig(config: dict[str, Any], name: str,
             if tname in inputs else {"name": tname}
         channel["chain"] = chain
         channels.append(channel)
+    meta_in = config.get("_meta")
+    if meta_in is not None and not isinstance(meta_in, dict):
+        problems.append(f"_meta must be a mapping (got {meta_in!r})")
+    elif meta_in and meta_in.get("description") is not None and not isinstance(meta_in["description"], str):
+        problems.append(f"_meta: description must be text (got {meta_in['description']!r})")
+    if config.get("_amp") is not None and not isinstance(config["_amp"], dict):
+        problems.append(f"_amp must be a mapping (got {config['_amp']!r})")
     unused = sorted(set(inputs) - {t.get("name") for t in tracks})
     problems += [f"--input names {t!r}, which is not a track in the config" for t in unused]
 
@@ -169,10 +176,18 @@ def to_rig(config: dict[str, Any], name: str,
             # A track's own state is its strip: gain, pan and mute.
             if set(settings) - {"parameters"}:
                 problems.append(f"track {processor!r}: only parameters are kept for a track's strip, got {sorted(settings)}")
-            if settings.get("parameters"):
-                # An empty strip is not written: a rig file refuses `strip: {}`
-                # by name, and a track with no state of its own has none to keep.
-                by_name[processor]["strip"] = settings["parameters"]
+            strip = settings.get("parameters")
+            if not strip:
+                # Not written as `strip: {}`, which a rig file refuses; and not
+                # dropped unsaid either, since the config held an entry for it.
+                problems.append(f"track {processor!r}: a strip with no gain, pan or mute cannot be kept")
+            elif set(strip) - set(UNITY_STRIP):
+                problems.append(
+                    f"track {processor!r}: only gain, pan and mute are kept for a track's "
+                    f"strip, got {sorted(set(strip) - set(UNITY_STRIP))}"
+                )
+            else:
+                by_name[processor]["strip"] = strip
         elif processor in plugins_of:
             for entry in by_name[plugins_of[processor]]["chain"]:
                 if entry["name"] == processor:
@@ -236,7 +251,7 @@ def differences(v1: dict[str, Any], compiled: dict[str, Any]) -> list[str]:
     # be added to its rig unseen.
     # The sends the compiler added, by the names it gave them. Not by suffix: a
     # plugin the player called `delay_send` is theirs and must be held to the config.
-    sends = {t["name"] + SEND_SUFFIX for t in compiled.get("tracks", []) if t["name"] != MASTER}
+    sends = {n + SEND_SUFFIX for n in tracks if n != MASTER}
     state = {e["processor"]: e for e in compiled.get("initial_state", [])
              if e["processor"] not in sends}
     was = {e["processor"]: e for e in v1.get("initial_state", [])}
@@ -246,11 +261,13 @@ def differences(v1: dict[str, Any], compiled: dict[str, Any]) -> list[str]:
     # Empty and absent alike, as `to_rig` treats them: it writes no host, amp or
     # description for a falsy one, so a config holding `{}` or "" must not be
     # refused as a different tone for something the rig file cannot express.
-    meta = v1.get("_meta")
-    if isinstance(meta, dict) and not meta.get("description", True):
-        v1 = {**v1, "_meta": {k: v for k, v in meta.items() if k != "description"}}
-    for key in ("host_config", "_amp", "_meta"):
-        if (v1.get(key) or None) != (compiled.get(key) or None):
+    # Normalised into `held` for the comparison only; the message prints what the
+    # config actually held.
+    held = {key: v1.get(key) for key in ("host_config", "_amp", "_meta")}
+    if isinstance(held["_meta"], dict) and not held["_meta"].get("description", True):
+        held["_meta"] = {k: v for k, v in held["_meta"].items() if k != "description"}
+    for key, value in held.items():
+        if (value or None) != (compiled.get(key) or None):
             found.append(f"{key}: {compiled.get(key)!r}, was {v1.get(key)!r}")
     return found
 
@@ -260,7 +277,11 @@ def convert(config: dict[str, Any], name: str,
     """`to_rig`, refused unless the rig compiles back to everything `config` was."""
     rig = to_rig(config, name, inputs)
     expected = config
-    if isinstance(config.get("_meta"), dict) and config["_meta"].get("name") != name:
+    if not config.get("_meta"):
+        # No provenance to keep, but the rig is still named: that, and only
+        # that, may be in `_meta` when the config had none.
+        expected = {**config, "_meta": {"name": name}}
+    elif config["_meta"].get("name") != name:
         # Converted under a name of its own: that, and only that, may differ.
         expected = {**config, "_meta": {**config["_meta"], "name": name}}
     found = differences(expected, emit_rig(parse_rig(rig)))
