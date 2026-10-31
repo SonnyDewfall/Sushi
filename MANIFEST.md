@@ -1219,6 +1219,12 @@ and no name. `--dump-plugins` lists parameters and never properties (checked
 against the captured dump), so an LV2 plugin's properties can only be checked
 live, which `diff_state` does. The internal plugins the compiler writes are
 different: a send accepts `destination_name` and a return accepts nothing,
+from Sushi 1.3.0's source (`src/plugins/send_plugin.cpp` registers the one,
+`return_plugin.cpp` none), so those are checked offline with the usual near
+miss, and a destination that names no return in the config is caught too,
+which the live check cannot see: the rig echoes back whatever string was
+set. A config `--quick` finds fault with is no longer run for the deep check,
+which used to lose the names behind Sushi's exit 7. *(2026-10-31)*
 from Sushi 1.3.0's source, so those are checked offline with the usual near
 miss. *(2026-10-31)*
 **A rig file keeps its comments when the tool rewrites it.** Phase 2 decided

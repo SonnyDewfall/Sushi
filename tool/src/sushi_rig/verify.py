@@ -164,16 +164,33 @@ def diff_state(config: dict[str, Any], live: dict[str, Any]) -> list[Problem]:
 
 
 # The properties Sushi's internal plugins accept, from Sushi 1.3.0's source
-# (send_return_factory.cpp): a send has its destination's name, a return has
-# none. `--dump-plugins` lists parameters only, never properties, so for an
+# (src/plugins/send_plugin.cpp registers `destination_name`; return_plugin.cpp
+# registers no property): a send has its destination's name, a return has
+# none. Tied to that version: a Sushi that adds one is refused here until the
+# table says so, which is the honest failure, since `--quick` runs no Sushi. `--dump-plugins` lists parameters only, never properties, so for an
 # LV2 plugin nothing here can say whether a property name is right; the deep
 # verify asks the running rig (`diff_state`). For the internal plugins the
 # compiler writes, the answer is known in advance, and a mistyped
 # `destination_name` is otherwise Sushi's bare exit 7 at load.
+SEND_UID = "sushi.testing.send"
+RETURN_UID = "sushi.testing.return"
 INTERNAL_PROPERTIES: dict[str, frozenset[str]] = {
-    "sushi.testing.send": frozenset({"destination_name"}),
-    "sushi.testing.return": frozenset(),
+    SEND_UID: frozenset({"destination_name"}),
+    RETURN_UID: frozenset(),
 }
+
+
+def _unknown(kind: str, name: str, available: set[str] | frozenset[str]) -> str:
+    """One wording for a parameter or property the processor does not have:
+    the near miss when there is one, the list otherwise."""
+    near = get_close_matches(name, sorted(available), n=1, cutoff=0.6)
+    if near:
+        hint = f" — did you mean {near[0]!r}?"
+    elif available:
+        hint = f" — it has: {', '.join(sorted(available))}"
+    else:
+        hint = " — it has none"
+    return f"no {kind} named {name!r}{hint}"
 
 
 def check_names(config: dict[str, Any], dump: Any) -> list[Problem]:
@@ -190,12 +207,16 @@ def check_names(config: dict[str, Any], dump: Any) -> list[Problem]:
     problems: list[Problem] = []
     known = collect_parameter_names(dump)
     tracks = {t.get("name") for t in config.get("tracks", [])}
-    internal_uids = {
-        plugin.get("name"): plugin.get("uid")
+    plugins = [
+        plugin
         for track in config.get("tracks", [])
         for plugin in (track.get("plugins") or [])
-        if isinstance(plugin, dict) and plugin.get("uid") in INTERNAL_PROPERTIES
+        if isinstance(plugin, dict)
+    ]
+    internal_uids = {
+        p.get("name"): p.get("uid") for p in plugins if p.get("uid") in INTERNAL_PROPERTIES
     }
+    returns = {p.get("name") for p in plugins if p.get("uid") == RETURN_UID}
 
     for entry in config.get("initial_state", []):
         name = entry.get("processor")
@@ -207,22 +228,32 @@ def check_names(config: dict[str, Any], dump: Any) -> list[Problem]:
         if available is None:
             problems.append(Problem(name, "no such processor in this config"))
             continue
-        for param in (entry.get("parameters") or {}):
+        # The brief's list-of-objects shape is a real past mistake (emit.py
+        # says so); it is a problem to report, not a TypeError to crash on.
+        shapes = {key: entry.get(key) for key in ("parameters", "properties")}
+        for key, value in shapes.items():
+            if value is not None and not isinstance(value, dict):
+                problems.append(Problem(name, f"{key} must be a mapping, not {type(value).__name__}"))
+        parameters = shapes["parameters"] if isinstance(shapes["parameters"], dict) else {}
+        properties = shapes["properties"] if isinstance(shapes["properties"], dict) else {}
+
+        for param in parameters:
             if param not in available:
-                near = get_close_matches(param, sorted(available), n=1, cutoff=0.6)
-                hint = f" — did you mean {near[0]!r}?" if near else \
-                       f" — it has: {', '.join(sorted(available))}"
-                problems.append(Problem(name, f"no parameter named {param!r}{hint}"))
+                problems.append(Problem(name, _unknown("parameter", param, available)))
         if name in internal_uids:
             accepted = INTERNAL_PROPERTIES[internal_uids[name]]
-            for prop in (entry.get("properties") or {}):
+            for prop, value in properties.items():
                 if prop not in accepted:
-                    near = get_close_matches(prop, sorted(accepted), n=1, cutoff=0.6)
-                    hint = f" — did you mean {near[0]!r}?" if near else (
-                        f" — it has: {', '.join(sorted(accepted))}" if accepted
-                        else " — it has none"
-                    )
-                    problems.append(Problem(name, f"no property named {prop!r}{hint}"))
+                    problems.append(Problem(name, _unknown("property", prop, accepted)))
+                elif prop == "destination_name" and value not in returns:
+                    # The worst case the deep check cannot see either: the rig
+                    # echoes back whatever string was set, and the channel is
+                    # silent in the monitors while its stem looks healthy.
+                    problems.append(Problem(
+                        name, _unknown("return", str(value), returns).replace(
+                            "no return named", "destination_name names no return:"
+                        ),
+                    ))
     return problems
 
 
@@ -355,7 +386,10 @@ def verify(config: Path, sushi_bin: str = "sushi", quick: bool = False) -> list[
     dump = dump_plugins(_without_state(config), sushi_bin, env=sushi_env(root))
 
     problems = check_names(parsed, dump)
-    if quick:
+    # A config that names something wrong will not load: Sushi exits 7 and
+    # names nothing. Running it anyway would raise out of `capture_headless`
+    # and lose the names just found, which is the whole answer.
+    if quick or problems:
         return problems
 
     return problems + diff_state(parsed, capture_headless(config, sushi_bin, root))

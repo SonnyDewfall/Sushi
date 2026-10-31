@@ -237,6 +237,49 @@ def test_an_lv2_plugins_properties_are_left_to_the_running_rig():
     assert check_names(config, SENDS_DUMP) == []
 
 
+def test_a_destination_that_names_no_return_is_caught():
+    """The property name is right and the value is a string, so Sushi applies
+    it and the live check reads it back unchanged; only the config knows
+    there is no such return, and the channel is silent in the monitors."""
+    config = _rig_with_sends()
+    config["initial_state"][1]["properties"] = {"destination_name": "master_retrun"}
+    problems = [str(p) for p in check_names(config, SENDS_DUMP)]
+    assert problems == ["board_send: destination_name names no return: 'master_retrun' — did you mean 'master_return'?"]
+
+
+def test_settings_that_are_lists_are_a_problem_not_a_traceback():
+    config = _rig_with_sends()
+    config["initial_state"][0]["parameters"] = [{"name": "Low", "value": 0.41}]
+    config["initial_state"][1]["properties"] = [{"name": "destination_name"}]
+    problems = [str(p) for p in check_names(config, SENDS_DUMP)]
+    assert problems == [
+        "eq: parameters must be a mapping, not list",
+        "board_send: properties must be a mapping, not list",
+    ]
+
+
+def test_a_full_verify_reports_the_names_rather_than_sushis_exit_7(tmp_path, monkeypatch):
+    """Without --quick, the config used to be run anyway; Sushi refused it,
+    `capture_headless` raised, and the names just found were lost behind
+    'CANNOT CHECK'. The names are the answer, so they are returned first."""
+    import json
+
+    from sushi_rig import verify as verify_module
+
+    config = _rig_with_sends()
+    config["initial_state"][1]["properties"] = {"destination": "master_return"}
+    path = tmp_path / "rig.json"
+    path.write_text(json.dumps(config))
+    monkeypatch.setattr(verify_module, "dump_plugins", lambda *a, **k: SENDS_DUMP)
+
+    def never(*a, **k):
+        raise AssertionError("Sushi must not be started on a config that will not load")
+
+    monkeypatch.setattr(verify_module, "capture_headless", never)
+    problems = [str(p) for p in verify_module.verify(path, "sushi", quick=False)]
+    assert problems == ["board_send: no property named 'destination' — did you mean 'destination_name'?"]
+
+
 # --- the environment Sushi runs in -----------------------------------------
 
 
