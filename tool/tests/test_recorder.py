@@ -274,3 +274,129 @@ def test_a_recorder_that_cannot_open_every_stem_closes_the_ones_it_did(tmp_path,
         rec.start()
     assert len(opened) == 2
     assert all(writer._file.closed for writer in opened)
+
+
+# --------------------------------------------------------------------------- #
+# A disk that fills part way through a block
+# --------------------------------------------------------------------------- #
+
+class FullDisk:
+    """A stem's file on a disk with `capacity` bytes of room: a write that does
+    not fit lands what does and returns the short count, the next one raises
+    ENOSPC. That is what an unbuffered file does on a full disk, which was
+    checked on a real 64 KiB tmpfs; everything else passes through to the real
+    file, so the bytes are really on disk or really not."""
+
+    def __init__(self, raw, capacity):
+        self._raw = raw
+        self._capacity = capacity
+
+    def write(self, data):
+        room = max(0, self._capacity - self._raw.tell())
+        if room == 0 and len(data):
+            raise OSError(28, "No space left on device")
+        return self._raw.write(bytes(data[:room]))
+
+    def __getattr__(self, name):
+        return getattr(self._raw, name)
+
+
+def fill_disk_under(monkeypatch, stem, frames, stray=0):
+    """`stem`'s disk holds `frames` whole frames and `stray` bytes more."""
+    real_init = signals.WavWriter.__init__
+
+    def init(self, path, *args, **kwargs):
+        real_init(self, path, *args, **kwargs)
+        if signals.Path(path).name == stem:
+            self._file = FullDisk(self._file, signals._DATA_AT + frames * self._block_align + stray)
+
+    monkeypatch.setattr(signals.WavWriter, "__init__", init)
+
+
+def test_a_writer_counts_only_the_frames_that_reached_the_file(tmp_path, monkeypatch):
+    fill_disk_under(monkeypatch, "a.wav", 300, stray=3)
+    with signals.WavWriter(tmp_path / "a.wav", 1, SR) as writer:
+        writer.write(np.zeros((256, 1), np.float32))
+        with pytest.raises(OSError, match="No space"):
+            writer.write(np.zeros((256, 1), np.float32))
+        assert writer.frames == 300, "44 of the second block landed, and the 3 bytes after them are not a frame"
+        assert (tmp_path / "a.wav").stat().st_size == signals._DATA_AT + 300 * 4 + 3
+        writer.truncate(writer.frames)
+    assert signals.wav_info(tmp_path / "a.wav").frames == 300
+
+
+def test_stems_cut_back_to_what_the_dying_one_holds_not_what_it_was_asked_for(tmp_path, monkeypatch):
+    """One stem fills its disk part way through a block. The count it reported
+    ran ahead of the file, so the take claimed 768 frames while that stem held
+    512, no terminal gap was made, and the other stems were cut to a length
+    the dying one never reached."""
+    fill_disk_under(monkeypatch, "b.wav", 512, stray=3)
+    audio = source(0.05, 2)  # 2400 frames, ten blocks
+    rec = Recorder([(tmp_path / "a.wav", 1), (tmp_path / "b.wav", 1)], SR, Q)
+    rec.start()
+    for block in blocks(audio):
+        rec.push(block)
+    result = rec.stop()
+
+    assert "No space left on device" in result.error
+    assert result.frames == 512
+    assert [signals.wav_info(tmp_path / n).frames for n in ("a.wav", "b.wav")] == [512, 512]
+    assert result.frames + result.dropped_frames == len(audio)
+    assert result.gaps[-1] == (512 / SR, len(audio) - 512), "the loss is one gap at the end"
+    kept = signals.read_wav(tmp_path / "a.wav").samples
+    assert np.array_equal(kept[:, 0], audio[:512, 0])
+
+
+def test_stray_bytes_after_a_failed_write_are_cut_even_from_a_stem_already_the_right_length(
+        tmp_path, monkeypatch):
+    """Nothing to cut by count, so only an unconditional truncate removes the
+    bytes of a frame that never finished; `wav_info` refuses them and
+    `repair_wav` would make them a frame of noise."""
+    fill_disk_under(monkeypatch, "a.wav", 512, stray=3)
+    rec = Recorder([(tmp_path / "a.wav", 1)], SR, Q)
+    rec.start()
+    for block in blocks(source(0.05, 1)):
+        rec.push(block)
+    result = rec.stop()
+    assert result.frames == 512
+    assert (tmp_path / "a.wav").stat().st_size == signals._DATA_AT + 512 * 4
+    assert signals.wav_info(tmp_path / "a.wav").frames == 512
+
+
+def test_a_stem_that_cannot_be_cut_back_is_still_closed(tmp_path, monkeypatch):
+    """A failed cut used to skip the close, so its fsync never happened."""
+    fill_disk_under(monkeypatch, "a.wav", 512)
+    closed = []
+    real_close = signals.WavWriter.close
+
+    def cut_fails(self, frames):
+        raise OSError(5, "Input/output error")
+
+    def noting_close(self):
+        closed.append(self.path.name)
+        real_close(self)
+
+    monkeypatch.setattr(signals.WavWriter, "truncate", cut_fails)
+    monkeypatch.setattr(signals.WavWriter, "close", noting_close)
+    rec = Recorder([(tmp_path / "a.wav", 1), (tmp_path / "b.wav", 1)], SR, Q)
+    rec.start()
+    for block in blocks(source(0.05, 2)):
+        rec.push(block)
+    result = rec.stop()
+    assert sorted(closed) == ["a.wav", "b.wav"]
+    assert "No space left on device" in result.error, "the first error stays the one reported"
+
+
+def test_a_block_after_a_failed_one_lands_on_a_frame_boundary(tmp_path, monkeypatch):
+    """The failed block left 3 bytes past its last whole frame. The next block
+    goes over them, not after them, or every sample from there on is shifted."""
+    fill_disk_under(monkeypatch, "a.wav", 300, stray=3)
+    audio = source(0.01, 1)  # 480 frames
+    with signals.WavWriter(tmp_path / "a.wav", 1, SR) as writer:
+        writer.write(audio[:256])
+        with pytest.raises(OSError):
+            writer.write(audio[256:512])
+        writer._file._capacity = 1 << 20  # space is freed
+        writer.write(audio[300:480])
+    back = signals.read_wav(tmp_path / "a.wav").samples
+    assert len(back) == 480 and np.array_equal(back[:, 0], audio[:, 0])

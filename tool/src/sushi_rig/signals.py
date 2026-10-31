@@ -461,12 +461,17 @@ class WavWriter:
                   + b"data" + struct.pack("<I", 0))
         assert len(header) == _DATA_AT
         self._block_align = block_align
-        self._file = self.path.open("w+b")
-        self._file.write(header)
-        # Flushed now, not with the first block: a recorder killed before its
+        # Unbuffered, and not for speed. Behind a buffer `write` returns before
+        # anything has left Python, so a full disk surfaced later, from a seek
+        # or a flush, after `frames` had already risen, and the buffer kept the
+        # bytes it could not place, so even cutting the file back failed. Here a
+        # write lands or raises, a short one says how short, and `frames` is
+        # what the operating system accepted.
+        self._file = self.path.open("w+b", buffering=0)
+        # Written now, not with the first block: a recorder killed before its
         # first block otherwise left zero-byte stems, which no repair can
         # recover because nothing says what they were.
-        self._file.flush()
+        self._file.write(header)
 
     def write(self, block) -> None:
         """Append frames shaped (frames, channels), then bring the sizes up to date."""
@@ -488,9 +493,20 @@ class WavWriter:
                 f"{self.path.name} would pass the 4 GiB a WAV can describe; this "
                 "take has to stop and a new one begin"
             )
-        self._file.seek(0, 2)
-        self._file.write(arr.tobytes())
-        self.frames += len(arr)
+        # Where the last whole frame ends, not the end of the file: a write
+        # that failed part way through a frame left bytes after it, and the
+        # next block belongs over them.
+        self._file.seek(_DATA_AT + self.frames * self._block_align)
+        view = memoryview(arr.tobytes())
+        sent = 0
+        try:
+            while sent < len(view):
+                sent += self._file.write(view[sent:])  # short on a full disk, then raises
+        finally:
+            # Counted even when the write raised: the whole frames that did land
+            # are in the file, and the recorder cuts every stem back to the
+            # shortest count, so it has to be a true one.
+            self.frames += sent // self._block_align
         self._sizes()
 
     def truncate(self, frames: int) -> None:
@@ -503,13 +519,10 @@ class WavWriter:
         self._sizes()
 
     def _sizes(self) -> None:
+        # Unbuffered, so each size is already in the operating system's hands,
+        # which survives this process being killed; `sync` is the step that
+        # survives a power cut.
         _write_sizes(self._file, self.frames, self._block_align)
-        # Into the operating system's hands, which survives this process being
-        # killed. Without it the last size written sat in Python's own buffer
-        # until the next seek, so the file on disk always had a data size one
-        # block stale — invalid at every point, not valid at every point, and
-        # lost outright if the process died. Cheap: no sync to the disk itself.
-        self._file.flush()
 
     def sync(self) -> None:
         """Everything written so far, on disk rather than in the page cache."""

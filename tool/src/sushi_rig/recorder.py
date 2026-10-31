@@ -297,8 +297,15 @@ class Recorder:
         written = min((w.frames for w in self._writers), default=0)
         for writer in self._writers:
             try:
-                if writer.frames > written:
-                    writer.truncate(written)
+                # Unconditionally, even a stem already at `written`: one that
+                # failed part way through a frame has stray bytes past its last
+                # whole frame, which `wav_info` refuses and `repair_wav` would
+                # turn into invented frames. Truncating to the length it
+                # already has is allowed, and clears them.
+                writer.truncate(written)
+            except OSError as exc:
+                self._error = self._error or f"{type(exc).__name__}: {exc}"
+            try:  # on its own, so a failed cut still closes the file and syncs it
                 writer.close()
             except OSError as exc:
                 self._error = self._error or f"{type(exc).__name__}: {exc}"
