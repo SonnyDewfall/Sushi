@@ -29,4 +29,4 @@ jobs:
       # whole suite in an image that has both and fails on any skip. Keep it so.
       - name: Run the fast test suite
         working-directory: tool
-        run: python -m pytest -q -m "not slow"
+        run: python -m pytest -q -rs -m "not slow"

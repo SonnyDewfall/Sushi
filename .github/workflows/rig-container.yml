@@ -19,6 +19,9 @@ on:
       - plugin-manifest.txt
       - config/**
       - tool/**
+      - machines/**
+      - Patchbay/**
+      - amp/**
   push:
     branches: [master]
   workflow_dispatch:
