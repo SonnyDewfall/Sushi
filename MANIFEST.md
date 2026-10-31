@@ -1211,3 +1211,20 @@ check need the plugins. Nothing builds a `TakePlan` yet outside the tests
 (the record bar waits on the capture engine), so these are fields on the plan
 for the engine's caller to fill from `resolve_rig_yaml` and `library_state`.
 *(2026-10-31)*
+
+**A rig file keeps its comments when the tool rewrites it.** Phase 2 decided
+that v2 rig files are written with ruamel.yaml, not PyYAML, because `save` will
+rewrite a rig file's settings after a capture and `config/rigs/guitar_vocal.yaml`
+is a third comment: PyYAML drops every one on a dump, and the reasons a chain is
+the way it is would go with them. `rigfile.write_rig` loads the file
+round-trip, updates it in place to hold the rig, and dumps it back, so an
+unchanged rig is a byte-identical file; a file that does not exist is written
+fresh in the layout `convert` always used. Two things found doing it: ruamel
+keeps the comment lines between two entries on the entry *before* them, so a
+plain delete or insert hands the next entry's comments to the wrong one
+(`yamlmerge.py` moves them), and it drops a comment line above a flow-style
+entry that has a trailing comment of its own even with no change at all, which
+`write_rig` refuses with the comment named rather than lose. Rig files are still
+read with PyYAML (YAML 1.1), so what ruamel writes is read back with it and
+compared before the file is replaced; strings like `on` and floats like `1e-05`
+are written so PyYAML reads them as they were. *(2026-10-31)*

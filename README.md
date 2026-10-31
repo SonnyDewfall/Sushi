@@ -562,6 +562,10 @@ each tone exists in both forms and CI holds them together: the same plugins and
 settings, and the same sound, rendered through the master against the
 reference the v1 config was calibrated to.
 
+Rig files keep their comments when the tool rewrites them: `write_rig` updates
+the file in place (comments, blank lines and key order stay), and `convert
+--force` on an existing file does the same.
+
 Each input is linked once, the master's outputs go to the monitors, and the
 stems are linked to nothing. The probes follow each channel through its stem
 and, through its send, out of the master. Not yet what `up` runs: the new
