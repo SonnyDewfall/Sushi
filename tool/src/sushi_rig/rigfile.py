@@ -147,17 +147,26 @@ def load_rig(path: Path) -> Rig:
     return parse_rig(raw)
 
 
+def load_any(path: Path) -> "Rig | RigSpec":
+    """Either kind of rig file, decided in one place: a `Rig` for one of these,
+    a `RigSpec` for a rig.yaml of tracks. Raises `RigFileError` (a ValueError)
+    for a rig file with problems, and yaml's own error for a file that is not
+    YAML at all."""
+    import yaml
+
+    raw = yaml.safe_load(Path(path).read_text()) or {}
+    if looks_like_rig_file(raw):
+        return parse_rig(raw)
+    return RigSpec.from_dict(raw, path)
+
+
 def spec_of(path: Path) -> RigSpec:
     """The tracks either kind of rig file runs as: compiled from channels and a
     master, or read as written. For the tools that read routing — the patchbay
     and the probes. Anything that writes a config goes through `emit_rig`
     instead, because the sends need state this does not carry."""
-    import yaml
-
-    raw = yaml.safe_load(Path(path).read_text()) or {}
-    if looks_like_rig_file(raw):
-        return compile_rig(parse_rig(raw))[0]
-    return RigSpec.from_dict(raw, path)
+    rig = load_any(path)
+    return compile_rig(rig)[0] if isinstance(rig, Rig) else rig
 
 
 def _unknown(where: str, entry: dict, known: tuple[str, ...]) -> list[str]:

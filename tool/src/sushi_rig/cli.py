@@ -197,14 +197,18 @@ def _patchbay(args: argparse.Namespace) -> int:
         return 1 if result.missing else 0
 
     # generate
-    from .rigfile import spec_of
+    import yaml
+
+    from .rigfile import RigFileError, spec_of
 
     try:
         rig = spec_of(args.rig)
         machine_file = args.machine or machine_path(root)
         machine = MachineSpec.load(machine_file)
-    except (MachineError, OSError, ValueError) as exc:
-        sys.exit(str(exc))
+    except RigFileError as exc:
+        sys.exit(f"{args.rig}:\n  " + "\n  ".join(exc.problems))
+    except (MachineError, OSError, ValueError, yaml.YAMLError) as exc:
+        sys.exit(f"{args.rig}: {exc}" if isinstance(exc, yaml.YAMLError) else str(exc))
     problems = [f"{args.rig.name}: {p}" for p in rig.validate()]
     problems += [f"{machine_file.name}: {p}" for p in machine.validate()]
     if problems:
@@ -266,15 +270,13 @@ def _patchbay(args: argparse.Namespace) -> int:
 def _emit_any(path: Path, state: dict | None) -> dict:
     """A config from either kind of rig file: channels and a master (#30), or
     tracks spelt out by hand. The file says which, by its `kind`."""
-    import yaml
+    from .rigfile import Rig, RigFileError, emit_rig, load_any
 
-    from .rigfile import RigFileError, emit_rig, looks_like_rig_file, parse_rig
-
-    raw = yaml.safe_load(path.read_text()) or {}
-    if not looks_like_rig_file(raw):
-        return emit(RigSpec.from_dict(raw, path), state)
     try:
-        return emit_rig(parse_rig(raw), state)
+        rig = load_any(path)
+        if not isinstance(rig, Rig):
+            return emit(rig, state)
+        return emit_rig(rig, state)
     except RigFileError as exc:
         sys.exit(f"{path}:\n  " + "\n  ".join(exc.problems))
 
@@ -284,10 +286,14 @@ def _probes(args: argparse.Namespace) -> int:
 
     import yaml
 
-    from .rigfile import spec_of
+    from .rigfile import RigFileError, spec_of
 
     try:
         rig = spec_of(args.rig)
+    except RigFileError as exc:
+        for problem in exc.problems:
+            print(f"FAIL {args.rig}: {problem}")
+        return 1
     except (OSError, ValueError, yaml.YAMLError) as exc:
         print(f"FAIL {args.rig}: {exc}")
         return 1

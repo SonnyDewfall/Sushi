@@ -109,8 +109,8 @@ def test_tracks_with_outputs_of_their_own_can_be_separated_but_are_not_yet(tmp_p
           outputs: [{engine_bus: 1, track_bus: 0}]
         """)
     assert plan_probes(spec, amp=False).not_checked == (
-        "separation of a, b: each has an output of its own, so whether one leaks into "
-        "another can be measured, but no probe for it exists yet",
+        "separation of a/b: outputs of their own, so whether one leaks into the "
+        "other can be measured, but no probe for it exists yet",
     )
 
 
@@ -168,8 +168,8 @@ def test_an_amp_in_front_of_a_guitar_with_no_outputs_says_so(tmp_path):
     with pytest.raises(ProbeError) as caught:
         plan_probes(spec, amp=True)
     assert caught.value.problems == [
-        "the amp is in front of 'g', which has no outputs on Sushi, so what the "
-        "amp does can never be heard"
+        "the amp is in front of 'g', which has no outputs on Sushi and no master "
+        "to send to, so what the amp does can never be heard"
     ]
 
 
@@ -323,5 +323,99 @@ def test_a_send_with_no_return_to_follow_is_said_not_probed(tmp_path):
           outputs: [{engine_bus: 0, track_bus: 0}]
           plugins: [{name: a_send, type: internal, uid: sushi.testing.send}]
         """)
-    (note,) = [n for n in plan_probes(spec, amp=False).not_checked if "send to" in n]
-    assert note.startswith("a send to no return")
+    (note,) = [n for n in plan_probes(spec, amp=False).not_checked if "sends" in n]
+    assert note.startswith("a: sends somewhere this plan cannot follow")
+
+
+MASTER_TRACK = """\
+        - name: master
+          channels: 2
+          inputs: []
+          outputs: {outputs}
+          plugins: [{{name: master_return, type: internal, uid: sushi.testing.return}}]
+        """
+
+
+def test_a_channel_heard_only_through_the_master_is_probed_and_amped(tmp_path):
+    spec = rig(tmp_path, textwrap.dedent("""\
+        - name: g
+          channels: 2
+          source: guitar-in
+          inputs: [{engine_channel: 0, track_channel: 0}, {engine_channel: 0, track_channel: 1}]
+          outputs: []
+          plugins: [{name: g_send, type: internal, uid: sushi.testing.send}]
+        """) + textwrap.dedent(MASTER_TRACK.format(outputs="[{engine_bus: 0, track_bus: 0}]")))
+    plan = plan_probes(spec, amp=True)
+    names = [p.name for p in plan.points]
+    assert "g through the master (sushi:audio_output_0)" in names
+    assert "g via amp and the master (sushi:audio_output_1)" in names
+    assert plan.not_checked == ()
+
+
+def test_a_master_with_no_outputs_is_said_to_reach_nothing(tmp_path):
+    spec = rig(tmp_path, textwrap.dedent("""\
+        - name: a
+          channels: 2
+          inputs: [{engine_bus: 0, track_bus: 0}]
+          outputs: [{engine_bus: 1, track_bus: 0}]
+          plugins: [{name: a_send, type: internal, uid: sushi.testing.send}]
+        """) + textwrap.dedent(MASTER_TRACK.format(outputs="[]")))
+    notes = plan_probes(spec, amp=False).not_checked
+    assert any(n.startswith("a: sent to the master, which has no outputs") for n in notes)
+
+
+def test_a_return_that_is_not_the_compiled_master_is_not_followed(tmp_path):
+    """A reverb aux's return is not the monitor path, and probing through it
+    would pass on the wrong path."""
+    spec = rig(tmp_path, """\
+        - name: a
+          channels: 2
+          inputs: [{engine_bus: 0, track_bus: 0}]
+          outputs: [{engine_bus: 0, track_bus: 0}]
+          plugins: [{name: to_verb, type: internal, uid: sushi.testing.send}]
+        - name: verb
+          channels: 2
+          source: guitar-in
+          inputs: [{engine_bus: 1, track_bus: 0}]
+          outputs: [{engine_bus: 1, track_bus: 0}]
+          plugins: [{name: verb_return, type: internal, uid: sushi.testing.return}]
+        """)
+    plan = plan_probes(spec, amp=True)
+    assert not any("through the" in p.name for p in plan.points)
+    # A return track with inputs of its own is still probed, and still the guitar.
+    assert "verb through sushi (sushi:audio_output_2)" in [p.name for p in plan.points]
+    assert any(p.name.startswith("verb via amp") for p in plan.points)
+
+
+def test_separable_pairs_are_named_even_when_another_pair_shares(tmp_path):
+    spec = rig(tmp_path, """\
+        - name: v
+          channels: 2
+          inputs: [{engine_bus: 0, track_bus: 0}]
+          outputs: [{engine_bus: 1, track_bus: 0}]
+        - name: w
+          channels: 2
+          inputs: [{engine_bus: 1, track_bus: 0}]
+          outputs: [{engine_bus: 1, track_bus: 0}]
+        - name: x
+          channels: 2
+          inputs: [{engine_bus: 2, track_bus: 0}]
+          outputs: [{engine_bus: 3, track_bus: 0}]
+        """)
+    notes = plan_probes(spec, amp=False).not_checked
+    assert any(n.startswith("separation of v and w: both come out of") for n in notes)
+    assert any(n.startswith("separation of v/x, w/x: outputs of their own") for n in notes)
+
+
+def test_every_problem_in_a_v2_rig_is_its_own_fail_line(tmp_path, capsys):
+    from sushi_rig.cli import main
+    import yaml
+
+    path = tmp_path / "bad.yaml"
+    path.write_text(yaml.safe_dump({
+        "kind": "rig", "schema_version": 1, "name": "bad", "master": {"output": "out"},
+        "channels": [{"name": "a", "input": "a", "width": "mon"}, {"name": "b", "width": "mono"}],
+    }))
+    assert main(["probes", str(path)]) == 1
+    lines = capsys.readouterr().out.splitlines()
+    assert len(lines) == 2 and all(line.startswith(f"FAIL {path}: ") for line in lines)

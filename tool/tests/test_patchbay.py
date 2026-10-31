@@ -1219,3 +1219,16 @@ def test_a_repeated_engine_channel_is_one_port():
     ])
     route, problems = patchbay.track_route(track, "inputs")
     assert route == (patchbay.channel(3),) and problems == []
+
+
+def test_generate_names_the_file_for_a_bad_rig_and_a_yaml_error(tmp_path):
+    bad = tmp_path / "bad.yaml"
+    bad.write_text("kind: rig\nschema_version: 1\nname: bad\nchannels: []\nmaster: {output: o}\n")
+    with pytest.raises(SystemExit) as caught:
+        cli.main(["patchbay", "generate", str(bad), "--machine", str(THIS_MACHINE), "--offline"])
+    assert str(caught.value.code).startswith(f"{bad}:\n  channels must be a list")
+    broken = tmp_path / "broken.yaml"
+    broken.write_text("tracks: [unclosed")
+    with pytest.raises(SystemExit) as caught:
+        cli.main(["patchbay", "generate", str(broken), "--machine", str(THIS_MACHINE), "--offline"])
+    assert str(caught.value.code).startswith(f"{broken}: ")
