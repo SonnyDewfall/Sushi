@@ -1019,3 +1019,16 @@ Found by its own test: the streaming writer's header was never valid on disk.
 Python's buffer held the last size field back until the next seek, so the file
 always had a data size one block stale — and a killed process would have lost
 it outright. It flushes after every block now. *(2026-10-31)*
+
+**Record and stop are two buttons, decided by the listener.** #57's record bar
+follows the save bar's two hardware findings from the start — the name is its
+own message sent as you type, and the buttons carry no payload — and adds a
+third rule: the panel holds no idea of its own about whether a take is running.
+A toggle would, and a panel reloaded mid-take, or a second one open on a phone,
+would then show the opposite of the truth. RECORD while recording and STOP
+while stopped are refused with a sentence instead. The bar is off by default
+until there is a capture engine, and a listener without one answers RECORD by
+saying so rather than ignoring it. Offsets are recorded as not measured: whether
+a dry tap can be measured against what came out of an amp is a question for the
+rig machine, not a number to write in beforehand. Not yet seen in real
+open-stage-control: whether a second fixed bar stacks under the first. *(2026-10-31)*

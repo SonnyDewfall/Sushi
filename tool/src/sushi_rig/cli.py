@@ -658,6 +658,12 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_LISTEN_PORT,
         help="port the save button targets — must match 'sushi-rig listen --port'",
     )
+    p.add_argument(
+        "--record-bar",
+        action="store_true",
+        help="add RECORD and STOP under the save bar. Until there is a capture "
+        "engine they only say so; for checking the layout on the rig",
+    )
     p.add_argument("-o", "--out", type=Path, default=Path("panel.json"))
 
     p = sub.add_parser(
@@ -980,6 +986,12 @@ def main(argv: list[str] | None = None) -> int:
         default="sushi",
         help="sushi binary, used to re-dump plugin parameters when regenerating",
     )
+    p.add_argument(
+        "--record-bar",
+        action="store_true",
+        help="keep the record bar when regenerating — pass it when the panel "
+        "was made with 'sushi-rig panel --record-bar'",
+    )
 
     # The amp runs outside Sushi and cannot be captured from it, so the save
     # button can only record what it was told. See sushi_rig/amp.py.
@@ -1040,6 +1052,7 @@ def main(argv: list[str] | None = None) -> int:
                 bypass_info,
                 units_for_config(args.config),
                 panel_amp(args.config, checkout_root()),
+                record_bar=args.record_bar,
             ),
         )
         print(
@@ -1234,6 +1247,7 @@ def main(argv: list[str] | None = None) -> int:
             sushi_bin=args.sushi,
             amp_model=args.amp_model,
             amp_parameters=_amp_parameters(args.amp_parameter),
+            record_bar=args.record_bar,
         )
 
     return 0

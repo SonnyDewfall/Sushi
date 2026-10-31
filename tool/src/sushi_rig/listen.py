@@ -18,6 +18,10 @@ against the same test panel, works correctly. So `NAME_ADDRESS` updates
 `_last_name` below; `SAVE_ADDRESS` triggers a save using whatever name was
 last received, carrying no payload of its own.
 
+The record bar (#57) is wired the same way — `TAKE_NAME_ADDRESS`, then a bare
+`RECORD_ADDRESS` or `STOP_ADDRESS` — and what they mean is decided in
+`transport.py`, not here.
+
 `python-osc` is a heavy, environment-specific dependency (matching how
 `live.py` treats `elkpy`, per brief §3.1) — imported lazily so the rest of the
 package stays importable and testable without it.
@@ -28,9 +32,13 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
+from typing import TYPE_CHECKING
 
 from .live import DEFAULT_GRPC_ADDRESS, move_processor, refresh_panel
 from .save import SaveError, save_config
+
+if TYPE_CHECKING:
+    from .transport import Session
 
 DEFAULT_LISTEN_PORT = 24025
 DEFAULT_STATUS_HOST = "127.0.0.1"
@@ -38,6 +46,15 @@ DEFAULT_STATUS_PORT = 8080  # open-stage-control's own OSC input (its HTTP port)
 STATUS_ADDRESS = "/sushi-rig/status"
 SAVE_ADDRESS = "/sushi-rig/save"
 NAME_ADDRESS = "/sushi-rig/name"
+
+# The record bar (#57), the same shape as the save bar: the take's name is its
+# own message, and RECORD and STOP carry nothing. Its status is a separate
+# address so a save's outcome and a take's do not overwrite each other on a
+# panel showing both. See transport.py.
+TAKE_NAME_ADDRESS = "/sushi-rig/take-name"
+RECORD_ADDRESS = "/sushi-rig/record"
+STOP_ADDRESS = "/sushi-rig/stop"
+RECORD_STATUS_ADDRESS = "/sushi-rig/record-status"
 
 # The processor is in the address rather than an argument, mirroring how Sushi
 # itself addresses per-processor operations (/bypass/<processor>). That keeps
@@ -110,6 +127,8 @@ def serve(
     sushi_bin: str = "sushi",
     amp_model: str | None = None,
     amp_parameters: dict[str, float] | None = None,
+    session: "Session | None" = None,
+    record_bar: bool = False,
 ) -> None:
     """Block, handling `NAME_ADDRESS`/`SAVE_ADDRESS` messages until interrupted.
 
@@ -121,7 +140,13 @@ def serve(
     `host` defaults to loopback-only. This endpoint writes files to disk on
     receipt of an unauthenticated UDP message; widening it past localhost is
     a deliberate choice for the caller to make, never the default.
+
+    `session` records takes for the record bar. Without one the record bar's
+    messages are still answered, by `NoEngine`, which says why it cannot.
+    `record_bar` keeps the bar on a panel regenerated after a move.
     """
+    from .transport import Transport
+
     try:
         from pythonosc.dispatcher import Dispatcher
         from pythonosc.osc_server import BlockingOSCUDPServer
@@ -137,9 +162,20 @@ def serve(
     # What we last sent the amp. Not what Carla holds — see amp.py.
     amp_state: dict[str, float] = dict(amp_parameters or {})
 
-    def _report(message: str) -> None:
+    transport = Transport(session)
+
+    def _report(message: str, status_address: str = STATUS_ADDRESS) -> None:
         print(message, file=sys.stderr)
-        status_client.send_message(STATUS_ADDRESS, message)
+        status_client.send_message(status_address, message)
+
+    def _on_take_name(_osc_address: str, *args) -> None:
+        transport.on_name(str(args[0]) if args else "")
+
+    def _on_record(_osc_address: str, *_args) -> None:
+        _report(transport.on_record(), RECORD_STATUS_ADDRESS)
+
+    def _on_stop(_osc_address: str, *_args) -> None:
+        _report(transport.on_stop(), RECORD_STATUS_ADDRESS)
 
     def _on_name(_osc_address: str, *args) -> None:
         nonlocal last_name
@@ -230,6 +266,7 @@ def serve(
                 get_live_bypass_state(address),
                 units_for_config(panel_config),
                 panel_amp(panel_config, checkout_root()),
+                record_bar=record_bar,
             )
             Path(panel_out).write_text(json.dumps(panel, indent=2) + "\n")
             refresh_panel(str(panel_out), select_tab, status_host, status_port)
@@ -239,12 +276,15 @@ def serve(
     dispatcher = Dispatcher()
     dispatcher.map(NAME_ADDRESS, _on_name)
     dispatcher.map(SAVE_ADDRESS, _on_save)
+    dispatcher.map(TAKE_NAME_ADDRESS, _on_take_name)
+    dispatcher.map(RECORD_ADDRESS, _on_record)
+    dispatcher.map(STOP_ADDRESS, _on_stop)
     dispatcher.map(MOVE_ADDRESS_PREFIX + "*", _on_move)
     dispatcher.map(AMP_ADDRESS_PREFIX + "*", _on_amp)
 
     server = BlockingOSCUDPServer((host, port), dispatcher)
     print(
-        f"sushi-rig listen: {NAME_ADDRESS} / {SAVE_ADDRESS} on {host}:{port}, "
+        f"sushi-rig listen: {NAME_ADDRESS} / {SAVE_ADDRESS} / {RECORD_ADDRESS} on {host}:{port}, "
         f"rig={rig_path}"
     )
     try:
@@ -252,4 +292,8 @@ def serve(
     except KeyboardInterrupt:
         pass
     finally:
+        # A take running when the listener stops is finished, not abandoned.
+        said = transport.close()
+        if said:
+            _report(said, RECORD_STATUS_ADDRESS)
         server.server_close()

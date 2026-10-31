@@ -116,8 +116,12 @@ from .listen import (
     DEFAULT_LISTEN_PORT,
     MOVE_ADDRESS_PREFIX,
     NAME_ADDRESS,
+    RECORD_ADDRESS,
+    RECORD_STATUS_ADDRESS,
     SAVE_ADDRESS,
     STATUS_ADDRESS,
+    STOP_ADDRESS,
+    TAKE_NAME_ADDRESS,
 )
 from .save import NAME_PATTERN
 
@@ -336,6 +340,70 @@ def _amp_tab(amp: dict[str, Any], listener_port: int) -> dict[str, Any]:
     return {"type": "tab", "id": "amp", "label": "amp", "widgets": widgets}
 
 
+def _record_bar(listener_port: int) -> dict[str, Any]:
+    """A take's name, RECORD, STOP, and what the listener said (#57).
+
+    Built the way the save bar is, for the reasons that bar's comments record
+    against real open-stage-control: the name is an input sending its own value
+    as you type, and the buttons are bare taps. Two buttons rather than one
+    toggle, so the panel never holds its own idea of whether a take is running;
+    see transport.py.
+
+    Not yet seen in real open-stage-control: whether a second fixed-height bar
+    stacks under the first in root's vertical layout as the save bar does above
+    the tabs. It is off by default, and checking it is on the hardware list.
+    """
+    target = [f"127.0.0.1:{listener_port}"]
+
+    def button(widget_id: str, label: str, address: str) -> dict[str, Any]:
+        return {
+            "type": "button",
+            "id": widget_id,
+            "label": label,
+            "mode": "tap",
+            "address": address,
+            "target": target,
+            "ignoreDefaults": True,
+            "width": 90,
+            "height": SAVE_BAR_WIDGET_HEIGHT,
+        }
+
+    return {
+        "type": "panel",
+        "id": "record_bar",
+        "width": "100%",
+        "height": SAVE_BAR_HEIGHT,
+        "widgets": [
+            {
+                "type": "input",
+                "id": "take_name",
+                "label": "take",
+                "value": "",
+                "validation": NAME_PATTERN.pattern,
+                "address": TAKE_NAME_ADDRESS,
+                "target": target,
+                "ignoreDefaults": True,
+                # See config_name: without it, RECORD sends the last committed
+                # name rather than the one on screen.
+                "asYouType": True,
+                "width": 220,
+                "height": SAVE_BAR_WIDGET_HEIGHT,
+            },
+            button("record_button", "RECORD", RECORD_ADDRESS),
+            button("stop_button", "STOP", STOP_ADDRESS),
+            {
+                "type": "text",
+                "id": "record_status",
+                "label": False,
+                "address": RECORD_STATUS_ADDRESS,
+                "interaction": False,
+                "width": 320,
+                "height": SAVE_BAR_WIDGET_HEIGHT,
+            },
+        ],
+    }
+
+
 def build_osc_panel(
     dump: Any,
     live_info: dict[str, dict[str, dict]],
@@ -343,8 +411,13 @@ def build_osc_panel(
     bypass_info: dict[str, bool] | None = None,
     units: dict[str, dict[str, str]] | None = None,
     amp: dict[str, Any] | None = None,
+    record_bar: bool = False,
 ) -> dict[str, Any]:
-    """Build a tabbed Open Stage Control panel structure: one tab per processor."""
+    """Build a tabbed Open Stage Control panel structure: one tab per processor.
+
+    `record_bar` adds RECORD and STOP under the save bar. Off by default until
+    there is a capture engine to drive: see `_record_bar`.
+    """
     tabs = []
     parameter_info = collect_parameter_info(dump)
 
@@ -629,6 +702,7 @@ def build_osc_panel(
         "layout": "vertical",
         "widgets": [
             save_bar,
+            *([_record_bar(listener_port)] if record_bar else []),
             {
                 "type": "panel",
                 "id": "tabs",
