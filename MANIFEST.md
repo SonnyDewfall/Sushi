@@ -1000,3 +1000,22 @@ spread that had already been overtaken once. That is the visible judgement
 
 Not explained: the other configs carrying the same octave plugins are
 deterministic, so the octave pair alone is not the cause.
+
+**The recorder's core is built before its engine.** #53's ring buffer, writer
+thread and files are tested here by feeding them a synthetic source — faster
+than real time, with the writer stalled until the ring overflows, with the disk
+failing mid-take — which a rig machine cannot do on demand. What is left for
+the rig machine is the engine that takes audio from PipeWire and calls `push`,
+and with it the biggest open question in Phase 2: whether a Python callback
+keeps up at a 256 quantum. If not, the engine becomes a native helper and
+nothing else changes. Three decisions, each with its reason in the code:
+float32, because a recorder cannot stop mid-take to refuse a sample past full
+scale; one ring for every tap, so a dropout costs every stem the same frames
+and they stay aligned; and lost frames not replaced with silence, which would
+need both threads to agree on positions while running, so `take.yaml` records
+where audio was lost instead. Two seconds of headroom is chosen, not measured.
+
+Found by its own test: the streaming writer's header was never valid on disk.
+Python's buffer held the last size field back until the next seek, so the file
+always had a data size one block stale — and a killed process would have lost
+it outright. It flushes after every block now. *(2026-10-31)*

@@ -541,8 +541,19 @@ sushi-rig take check ~/sushi-rig-takes/riff-idea       # whole, and how it lines
 sushi-rig verify ~/sushi-rig-takes/riff-idea/config.json  # the rig that made it
 ```
 
-Recording itself is not here yet: the recorder is #53 and the record button
-#57. This is what they will write.
+```bash
+sushi-rig take repair ~/sushi-rig-takes/riff-idea      # after the rig was killed mid-take
+```
+
+The recorder writes float32, so a chain pushed past 0 dBFS is kept as it was
+rather than clipped, and it rewrites each stem's header after every block, so a
+take cut off by a crash is readable after `take repair`. If its writer ever
+falls behind, the stems lose the same frames together and stay aligned, and
+`take.yaml` lists where audio was lost.
+
+The recorder's core is built and tested (#53); what is not here yet is the part
+that takes audio from PipeWire, which needs the rig machine, and the record
+button (#57).
 
 ### Running the tests
 

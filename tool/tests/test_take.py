@@ -305,7 +305,8 @@ def test_a_take_cut_off_mid_recording_still_describes_itself(tmp_path):
     problems = take.check_take(cut_off)
     assert problems == [
         "this take was never finished — the rig stopped mid-take, so its stems "
-        "hold whatever was captured up to then and no offsets were measured"
+        "hold whatever was captured up to then and no offsets were measured. "
+        "If a stem cannot be read, `sushi-rig take repair` fixes its header"
     ]
     assert "cut off before it finished" in cut_off.metadata["alignment"]["note"]
 
@@ -570,3 +571,106 @@ def test_metadata_reaches_the_disk_before_it_replaces_the_old(tmp_path, monkeypa
     start(tmp_path)
     # config.json and take.yaml, each: the file, then its directory.
     assert len(synced) == 4
+
+
+# --------------------------------------------------------------------------- #
+# What the recorder hands over: dropouts, and a take cut off mid-write
+# --------------------------------------------------------------------------- #
+
+CAPTURE = {
+    "frames": 96000, "lost_frames": 7200, "unrecorded_episodes": 0, "error": "",
+    "dropouts": [{"at_seconds": 12.5, "frames": 4800}, {"at_seconds": 40.0, "frames": 2400}],
+}
+
+
+def test_a_take_with_dropouts_carries_them_and_says_so(tmp_path):
+    """A take with a gap in it is one a person needs to know about before they
+    use it: the stems still line up, but the performance skips."""
+    record(start(tmp_path))
+    finished = take.finish_take(
+        tmp_path / "riff-idea", {"guitar.wav": 257, "vocal.wav": 257}, measured_by="test",
+        capture=CAPTURE,
+    )
+    assert finished.metadata["capture"]["dropouts"][0] == {"at_seconds": 12.5, "frames": 4800}
+    problems = take.check_take(finished)
+    assert any("lost audio 2 time(s), 150.0 ms in all" in p for p in problems)
+    assert any("still aligned with each other" in p for p in problems)
+
+
+def test_the_loss_is_the_recorders_total_not_the_gaps_that_fitted():
+    """Episodes past the gap table used to vanish from the count."""
+    import tempfile
+
+    with tempfile.TemporaryDirectory() as d:
+        folder = Path(d)
+        record(start(folder))
+        overflowing = dict(CAPTURE, lost_frames=48000, unrecorded_episodes=3)
+        finished = take.finish_take(folder / "riff-idea", {}, measured_by="t", capture=overflowing)
+        assert any("lost audio 5 time(s), 1000.0 ms in all" in p for p in take.check_take(finished))
+
+
+def test_a_recorder_that_died_is_never_a_clean_take(tmp_path):
+    """A full disk used to reach take.yaml as nothing at all."""
+    record(start(tmp_path))
+    died = dict(CAPTURE, lost_frames=0, dropouts=[], error="OSError: No space left on device")
+    finished = take.finish_take(tmp_path / "riff-idea", {}, measured_by="t", capture=died)
+    assert any("stopped early: OSError: No space left" in p for p in take.check_take(finished))
+
+
+def test_finishing_a_take_again_keeps_its_record_of_what_was_lost(tmp_path):
+    """Correcting an offset by finishing again used to rewrite the loss as none."""
+    record(start(tmp_path))
+    take.finish_take(tmp_path / "riff-idea", {"guitar.wav": 257}, measured_by="t", capture=CAPTURE)
+    again = take.finish_take(tmp_path / "riff-idea", {"guitar.wav": 260}, measured_by="re-measured")
+    assert again.metadata["capture"] == CAPTURE
+    assert {s.filename: s.latency_samples for s in again.stems}["guitar.wav"] == 260
+
+
+def test_a_take_finished_without_a_recorder_claims_no_capture(tmp_path):
+    record(start(tmp_path))
+    assert "capture" not in take.finish_take(tmp_path / "riff-idea", {}, measured_by="t").metadata
+
+
+def test_a_take_killed_mid_write_is_repaired_by_the_command(tmp_path, capsys):
+    """The recorder's real writer, cut off the way a kill cuts it: one stem's
+    last block written without its header. `take repair` sets it right."""
+    from sushi_rig import cli, recorder
+
+    paths = start(tmp_path, subtype="float32")
+    stems = [(paths[name], 1) for name in sorted(paths)]
+    rec = recorder.Recorder(stems, SR, 256)
+    rec.start()
+    rec.push(np.tile(signals.sine(SR, 0.25, 220.0).astype("float32"), (1, len(stems))))
+    rec.stop()
+    victim = paths["vocal.wav"]
+    with victim.open("ab") as handle:
+        handle.write(signals.sine(SR, 0.01, 330.0).astype("<f4").tobytes())
+
+    assert any("vocal.wav cannot be read" in p for p in take.check_take(take.load_take(tmp_path / "riff-idea")))
+    assert cli.main(["take", "repair", str(tmp_path / "riff-idea")]) == 0
+    assert "4 stem(s) repaired" in capsys.readouterr().out
+    after = take.check_take(take.load_take(tmp_path / "riff-idea"))
+    assert not any(".wav cannot be read" in p for p in after), "no stem left unreadable"
+    assert any("different lengths" in p for p in after), "the extra block is real audio, kept"
+
+
+
+def test_repair_tries_every_stem_and_names_the_ones_it_could_not_fix(tmp_path, capsys):
+    """Stopping at the first failure left the rest with stale headers, each of
+    which could have been fixed."""
+    from sushi_rig import cli, recorder
+
+    paths = start(tmp_path, subtype="float32")
+    names = sorted(paths)
+    rec = recorder.Recorder([(paths[n], 1) for n in names], SR, 256)
+    rec.start()
+    rec.push(np.tile(signals.sine(SR, 0.1, 220.0).astype("float32"), (1, len(names))))
+    rec.stop()
+    paths[names[0]].write_bytes(b"")              # the first stem beyond repair
+    with paths[names[-1]].open("ab") as handle:   # the last one cut off mid-write
+        handle.write(signals.sine(SR, 0.01, 330.0).astype("<f4").tobytes())
+
+    repaired, failed = take.repair_take(tmp_path / "riff-idea")
+    assert set(failed) == {names[0]} and names[-1] in repaired
+    assert cli.main(["take", "repair", str(tmp_path / "riff-idea")]) == 1
+    assert f"{names[0]}: NOT REPAIRED" in capsys.readouterr().err

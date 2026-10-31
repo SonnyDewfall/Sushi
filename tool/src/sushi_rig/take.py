@@ -92,7 +92,7 @@ from pathlib import Path
 from typing import Any, Sequence
 
 from .save import NAME_PATTERN
-from .signals import SUBTYPES, wav_info
+from .signals import SUBTYPES, repair_wav, wav_info
 
 # Bumped when the shape of take.yaml changes incompatibly. A reader that meets a
 # version it does not know refuses rather than guessing, for machine.py's
@@ -389,13 +389,21 @@ def take_metadata(
     config_source: str,
     complete: bool,
     measured_by: str = "",
+    capture: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
-    """take.yaml as written: what a person needs first, first."""
+    """take.yaml as written: what a person needs first, first.
+
+    `capture` is what the recorder says it captured and lost
+    (`recorder.Recording.summary`). Near the top, because a take with a gap in
+    it, or one whose writer died, is one a person needs to know about before
+    they use it.
+    """
     return {
         "schema_version": SCHEMA_VERSION,
         "name": name,
         "complete": complete,
         "recorded_at": recorded_at.astimezone(timezone.utc).isoformat(timespec="seconds"),
+        **({"capture": dict(capture)} if capture is not None else {}),
         "alignment": {
             "note": (
                 alignment_note(stems, sample_rate) if complete else
@@ -489,8 +497,29 @@ def check_take(take: Take) -> list[str]:
     if not take.complete:
         problems.append(
             "this take was never finished — the rig stopped mid-take, so its stems "
-            "hold whatever was captured up to then and no offsets were measured"
+            "hold whatever was captured up to then and no offsets were measured. "
+            "If a stem cannot be read, `sushi-rig take repair` fixes its header"
         )
+    capture = meta.get("capture")
+    if isinstance(capture, dict):
+        if capture.get("error"):
+            problems.append(
+                f"the recorder stopped early: {capture['error']} — the stems hold "
+                "what was written before it"
+            )
+        lost = capture.get("lost_frames")
+        if type(lost) is int and lost > 0:
+            dropouts = capture.get("dropouts") or []
+            episodes = (len(dropouts) if isinstance(dropouts, list) else 0) + (
+                capture.get("unrecorded_episodes") or 0
+            )
+            rate = meta.get("sample_rate") if type(meta.get("sample_rate")) is int else 0
+            problems.append(
+                f"the recorder lost audio {episodes} time(s)"
+                + (f", {1000.0 * lost / rate:.1f} ms in all" if rate else "")
+                + " — the stems are still aligned with each other, but each gap is "
+                "a skip in the performance"
+            )
     problems += check_name(meta.get("name"))
     entries = meta.get("stems")
     if not isinstance(entries, list):
@@ -698,11 +727,38 @@ def start_take(
     return {stem.filename: folder / stem.filename for stem in stems}
 
 
+def repair_take(folder: Path) -> tuple[dict[str, int], dict[str, str]]:
+    """Make every stem of a take cut off mid-write readable.
+
+    Returns frames per repaired stem, and why each of the others could not be.
+    Every stem is tried: stopping at the first that failed left the rest with
+    their stale headers, each of which could have been fixed.
+
+    The recorder rewrites each stem's header after every block, so only a kill
+    in the instant between a block and its header leaves one stale; this sets
+    it from the file's own length.
+    """
+    take = load_take(folder)
+    repaired: dict[str, int] = {}
+    failed: dict[str, str] = {}
+    for stem in take.stems:
+        path = Path(folder) / stem.filename
+        if not path.exists():
+            failed[stem.filename] = "not in the folder"
+            continue
+        try:
+            repaired[stem.filename] = repair_wav(path)
+        except (ValueError, OSError) as exc:
+            failed[stem.filename] = str(exc)
+    return repaired, failed
+
+
 def finish_take(
     folder: Path,
     latencies: dict[str, int | None],
     *,
     measured_by: str,
+    capture: dict[str, Any] | None = None,
 ) -> Take:
     """Record each stem's measured offset and mark the take complete.
 
@@ -740,5 +796,8 @@ def finish_take(
         quantum=meta.get("quantum"), recorded_at=recorded_at,
         config_source=str(meta.get("config_source", "")), complete=True,
         measured_by=measured_by,
+        # Kept when not given: finishing a take again to correct an offset
+        # used to rewrite its record of what was lost as nothing at all.
+        capture=capture if capture is not None else meta.get("capture"),
     ))
     return load_take(folder)

@@ -45,6 +45,7 @@ noise is built from that with plain arithmetic.
 
 from __future__ import annotations
 
+import os
 import struct
 from dataclasses import dataclass
 from pathlib import Path
@@ -401,3 +402,160 @@ def read_wav(path: str | Path) -> WavData:
         value = b[:, 0] | (b[:, 1] << 8) | (b[:, 2] << 16)
         flat = ((value ^ 0x800000) - 0x800000).astype(np.float64) / 8388608.0  # sign-extend
     return WavData(flat.reshape(-1, channels), sample_rate, subtype)
+
+
+# --------------------------------------------------------------------------- #
+# Streaming: a WAV written as it is recorded
+# --------------------------------------------------------------------------- #
+
+# Byte offsets in the header `WavWriter` writes, which `repair_wav` relies on.
+# The layout is `write_wav`'s float32 one: RIFF, an 18-byte fmt, a fact chunk
+# holding the frame count, then data.
+_RIFF_SIZE_AT = 4
+_FACT_FRAMES_AT = 46
+_DATA_SIZE_AT = 54
+_DATA_AT = 58
+
+
+def _write_sizes(handle, frames: int, block_align: int) -> None:
+    """The three size fields of `WavWriter`'s header, for `frames` frames.
+    One place, so the writer and `repair_wav` cannot drift apart."""
+    data_bytes = frames * block_align
+    for at, value in ((_RIFF_SIZE_AT, _DATA_AT - 8 + data_bytes),
+                      (_FACT_FRAMES_AT, frames), (_DATA_SIZE_AT, data_bytes)):
+        handle.seek(at)
+        handle.write(struct.pack("<I", value))
+
+
+class WavWriter:
+    """A float32 WAV written block by block, as a recorder produces it.
+
+    Float32 only, and not as a preference. A recorder cannot stop mid-take to
+    refuse a sample, and `write_wav` refuses integer formats for any sample past
+    full scale rather than clip it — the right call for a file written at once,
+    a lost performance for one written live. Float keeps exactly what the port
+    carried, over 0 dBFS included, at a third more disk than 24-bit.
+
+    The header's sizes are rewritten after every block, so the file is a valid
+    WAV at every point except the instant between a block's data landing and
+    its sizes following. A process killed in that instant leaves a header that
+    claims less than the file holds; `repair_wav` fixes it from the file's own
+    length. `sync()` pushes it all to disk, which survives a power cut as well
+    as a killed process; how often to call it is the recorder's decision.
+    """
+
+    def __init__(self, path: str | Path, channels: int, sample_rate: int):
+        _check_channels(channels)
+        if sample_rate <= 0:
+            raise ValueError(f"sample_rate must be positive, got {sample_rate}")
+        self.path = Path(path)
+        self.channels = channels
+        self.frames = 0
+        tag, bits = _FORMATS["float32"]
+        block_align = channels * bits // 8
+        fmt = struct.pack("<HHIIHH", tag, channels, sample_rate,
+                          sample_rate * block_align, block_align, bits)
+        header = (b"RIFF" + struct.pack("<I", _DATA_AT - 8) + b"WAVE"
+                  + b"fmt " + struct.pack("<I", 18) + fmt + struct.pack("<H", 0)
+                  + b"fact" + struct.pack("<II", 4, 0)
+                  + b"data" + struct.pack("<I", 0))
+        assert len(header) == _DATA_AT
+        self._block_align = block_align
+        self._file = self.path.open("w+b")
+        self._file.write(header)
+        # Flushed now, not with the first block: a recorder killed before its
+        # first block otherwise left zero-byte stems, which no repair can
+        # recover because nothing says what they were.
+        self._file.flush()
+
+    def write(self, block) -> None:
+        """Append frames shaped (frames, channels), then bring the sizes up to date."""
+        np = require_numpy()
+        arr = np.ascontiguousarray(block, dtype="<f4")  # one copy at most, not two
+        if arr.ndim == 1:
+            arr = arr[:, None]
+        if arr.ndim != 2 or arr.shape[1] != self.channels:
+            raise ValueError(
+                f"{self.path.name} takes {self.channels} channel(s), got a block shaped {arr.shape}"
+            )
+        if not len(arr):
+            return
+        data_bytes = (self.frames + len(arr)) * self.channels * 4
+        if _DATA_AT - 8 + data_bytes >= 1 << 32:
+            # Loud, not wrapped: a size field that rolls over makes the whole
+            # file read as a few seconds long. About six hours of mono float.
+            raise ValueError(
+                f"{self.path.name} would pass the 4 GiB a WAV can describe; this "
+                "take has to stop and a new one begin"
+            )
+        self._file.seek(0, 2)
+        self._file.write(arr.tobytes())
+        self.frames += len(arr)
+        self._sizes()
+
+    def truncate(self, frames: int) -> None:
+        """Cut the file back to `frames`, header included. For a recorder that
+        must keep its stems the same length after one failed mid-block."""
+        if not 0 <= frames <= self.frames:
+            raise ValueError(f"cannot truncate {self.frames} frames to {frames}")
+        self._file.truncate(_DATA_AT + frames * self._block_align)
+        self.frames = frames
+        self._sizes()
+
+    def _sizes(self) -> None:
+        _write_sizes(self._file, self.frames, self._block_align)
+        # Into the operating system's hands, which survives this process being
+        # killed. Without it the last size written sat in Python's own buffer
+        # until the next seek, so the file on disk always had a data size one
+        # block stale — invalid at every point, not valid at every point, and
+        # lost outright if the process died. Cheap: no sync to the disk itself.
+        self._file.flush()
+
+    def sync(self) -> None:
+        """Everything written so far, on disk rather than in the page cache."""
+        self._file.flush()
+        os.fsync(self._file.fileno())
+
+    def close(self) -> None:
+        if not self._file.closed:
+            self.sync()
+            self._file.close()
+
+    def __enter__(self) -> "WavWriter":
+        return self
+
+    def __exit__(self, *exc) -> None:
+        self.close()
+
+
+def repair_wav(path: str | Path) -> int:
+    """Make a `WavWriter` file cut off mid-write readable again. Returns frames.
+
+    Sets the sizes from what is actually in the file, rounded down to whole
+    frames, and drops a partial frame at the end. Refuses a file whose header
+    is not the layout `WavWriter` writes, rather than rewriting bytes it does
+    not understand.
+
+    Leaves alone a file whose RIFF size already matches its length: that one
+    was finished, and anything past its data — an editor's LIST chunk — is
+    metadata, not audio cut off before its header caught up. Taking the file's
+    whole length as data turned such a chunk into three frames of noise.
+    """
+    path = Path(path)
+    with path.open("r+b") as handle:
+        head = handle.read(_DATA_AT)
+        if (len(head) < _DATA_AT or head[:4] != b"RIFF" or head[8:16] != b"WAVEfmt "
+                or head[38:42] != b"fact" or head[50:54] != b"data"):
+            raise ValueError(f"{path}: not a file WavWriter wrote, so not repairing it")
+        subtype, channels, _, block_align = _parse_fmt(head[20:38], path)
+        if subtype != "float32":
+            raise ValueError(f"{path}: WavWriter writes float32, this is {subtype}")
+        size = handle.seek(0, 2)
+        (riff_size,) = struct.unpack_from("<I", head, _RIFF_SIZE_AT)
+        if riff_size + 8 == size:
+            (data_bytes,) = struct.unpack_from("<I", head, _DATA_SIZE_AT)
+            return data_bytes // block_align
+        frames = max(0, size - _DATA_AT) // block_align
+        handle.truncate(_DATA_AT + frames * block_align)
+        _write_sizes(handle, frames, block_align)
+    return frames

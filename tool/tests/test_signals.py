@@ -313,3 +313,97 @@ def test_wav_info_refuses_what_is_not_a_wav(tmp_path):
     path.write_bytes(b"OggS" + bytes(40))
     with pytest.raises(ValueError, match="not a RIFF/WAVE file"):
         signals.wav_info(path)
+
+
+# --- WavWriter: a file written as it is recorded -----------------------------
+
+def test_a_streamed_file_reads_back_exactly_and_is_valid_after_every_block(tmp_path):
+    path = tmp_path / "s.wav"
+    audio = signals.sine(SR, 0.5, 220.0, channels=2).astype("float32")
+    with signals.WavWriter(path, 2, SR) as writer:
+        for start in range(0, len(audio), 1000):
+            writer.write(audio[start:start + 1000])
+            assert signals.wav_info(path).frames == writer.frames, "a valid WAV at every point"
+    back = signals.read_wav(path)
+    assert back.subtype == "float32" and (back.samples == audio).all()
+
+
+def test_a_streamed_file_keeps_what_is_over_full_scale():
+    """Why float32 only: a recorder cannot stop mid-take to refuse a sample."""
+    import tempfile
+    from pathlib import Path
+
+    with tempfile.TemporaryDirectory() as d:
+        path = Path(d) / "hot.wav"
+        with signals.WavWriter(path, 1, SR) as writer:
+            writer.write([[1.5], [-2.0]])
+        assert signals.read_wav(path).samples[:, 0].tolist() == [1.5, -2.0]
+
+
+def test_a_block_of_the_wrong_width_is_refused(tmp_path):
+    with signals.WavWriter(tmp_path / "s.wav", 2, SR) as writer:
+        with pytest.raises(ValueError, match="takes 2 channel"):
+            writer.write([[0.1, 0.2, 0.3]])
+
+
+def test_a_file_that_would_pass_four_gibibytes_is_refused_not_wrapped(tmp_path):
+    """A size field that rolls over makes a long take read as a few seconds."""
+    with signals.WavWriter(tmp_path / "s.wav", 1, SR) as writer:
+        writer.frames = (1 << 30) - 10  # as if nearly 4 GiB of mono float were in it
+        with pytest.raises(ValueError, match="4 GiB"):
+            writer.write([[0.0]] * 20)
+
+
+def test_a_file_cut_off_between_its_data_and_its_header_is_repaired(tmp_path):
+    """A process killed in that instant leaves a header claiming less than the
+    file holds, and the audio past it reads as a chunk claiming a size the file
+    cannot hold."""
+    path = tmp_path / "s.wav"
+    with signals.WavWriter(path, 2, SR) as writer:
+        writer.write(signals.sine(SR, 0.1, 220.0, channels=2))
+    with path.open("ab") as handle:  # a block's data, its sizes never written
+        handle.write(signals.sine(SR, 0.01, 330.0, channels=2).astype("<f4").tobytes() + b"\x01")
+    with pytest.raises(ValueError, match="truncated"):
+        signals.wav_info(path)
+    assert signals.repair_wav(path) == 4800 + 480, "every whole frame, the stray byte dropped"
+    assert signals.wav_info(path).frames == 5280
+
+
+def test_repair_refuses_a_file_it_did_not_write(tmp_path):
+    path = tmp_path / "pcm.wav"
+    signals.write_wav(path, signals.sine(SR, 0.1, 220.0), SR, subtype="pcm16")
+    with pytest.raises(ValueError, match="not a file WavWriter wrote"):
+        signals.repair_wav(path)
+
+
+
+def test_a_new_stem_is_a_valid_empty_wav_before_its_first_block(tmp_path):
+    """A recorder killed before its first block left zero-byte stems, which no
+    repair can recover because nothing says what they were."""
+    path = tmp_path / "s.wav"
+    writer = signals.WavWriter(path, 2, SR)
+    assert signals.wav_info(path).frames == 0
+    writer.close()
+
+
+def test_repair_leaves_a_finished_file_and_its_metadata_alone(tmp_path):
+    """A RIFF size that matches the file means it was finished; a LIST chunk an
+    editor added after its data is metadata, not audio to claim."""
+    import struct
+
+    path = tmp_path / "s.wav"
+    with signals.WavWriter(path, 1, SR) as writer:
+        writer.write([[0.25]] * 10)
+    blob = path.read_bytes()
+    info = b"LIST" + struct.pack("<I", 4) + b"INFO"
+    path.write_bytes(blob[:4] + struct.pack("<I", len(blob) - 8 + len(info)) + blob[8:] + info)
+    assert signals.repair_wav(path) == 10
+    assert signals.wav_info(path).frames == 10
+
+
+def test_a_streamed_file_can_be_cut_back_to_match_its_siblings(tmp_path):
+    path = tmp_path / "s.wav"
+    with signals.WavWriter(path, 1, SR) as writer:
+        writer.write([[0.1]] * 100)
+        writer.truncate(40)
+    assert signals.wav_info(path).frames == 40
