@@ -700,8 +700,8 @@ def test_every_channel_of_every_config_in_the_repository_renders():
         for config in configs
         for channel in render.channels_of(json.loads(config.read_text()), config)
     ]
-    refused = {c.name: render.offline_problem(c.config) for c in every
-               if render.offline_problem(c.config) is not None}
+    refused = {c.name: problem for c in every
+               if (problem := render.offline_problem(c.config)) is not None}
     assert not refused, refused
     names = [c.name for c in every]
     assert len(set(names)) == len(names), "two channels share a reference name"
