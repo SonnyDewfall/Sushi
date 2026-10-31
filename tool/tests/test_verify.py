@@ -178,6 +178,65 @@ def test_a_tracks_parameters_are_not_checked_against_the_plugin_dump():
     assert check_names(config, DUMP) == []
 
 
+def _rig_with_sends():
+    """What the compiler writes for one channel and a master: the send on the
+    channel names the master's return, and the dump lists neither plugin's
+    properties, because `--dump-plugins` never does."""
+    return {
+        "tracks": [
+            {"name": "board", "plugins": [
+                {"name": "eq", "uri": "urn:eq"},
+                {"name": "board_send", "uid": "sushi.testing.send", "type": "internal"},
+            ]},
+            {"name": "master", "plugins": [
+                {"name": "master_return", "uid": "sushi.testing.return", "type": "internal"},
+            ]},
+        ],
+        "initial_state": [
+            {"processor": "eq", "parameters": {"Low": 0.41}},
+            {"processor": "board_send", "properties": {"destination_name": "master_return"}},
+        ],
+    }
+
+
+SENDS_DUMP = {"plugins": [
+    {"name": "eq", "parameters": [{"name": "Low"}, {"name": "Mid"}, {"name": "High"}]},
+    {"name": "board_send", "parameters": [{"name": "gain"}, {"name": "channel_count"}]},
+    {"name": "master_return", "parameters": []},
+]}
+
+
+def test_a_sends_destination_is_a_property_it_has():
+    assert check_names(_rig_with_sends(), SENDS_DUMP) == []
+
+
+def test_a_mistyped_destination_name_is_caught_before_sushi_exits_7():
+    """Sushi refuses a config whose initial_state names a property the plugin
+    lacks with "Failed to load the initial processor states" and exit 7,
+    naming nothing. For the internal plugins the compiler writes, the
+    properties are known in advance, so --quick can say which."""
+    config = _rig_with_sends()
+    config["initial_state"][1]["properties"] = {"destination": "master_return"}
+    problems = [str(p) for p in check_names(config, SENDS_DUMP)]
+    assert problems == ["board_send: no property named 'destination' — did you mean 'destination_name'?"]
+
+
+def test_a_property_on_a_return_is_caught_because_a_return_has_none():
+    config = _rig_with_sends()
+    config["initial_state"].append({"processor": "master_return", "properties": {"source_name": "x"}})
+    problems = [str(p) for p in check_names(config, SENDS_DUMP)]
+    assert problems == ["master_return: no property named 'source_name' — it has none"]
+
+
+def test_an_lv2_plugins_properties_are_left_to_the_running_rig():
+    """The dump lists no properties for any plugin, so a name here can be
+    neither confirmed nor refuted offline; `diff_state` checks it live rather
+    than this check guessing."""
+    config = _rig_with_sends()
+    config["initial_state"][0]["properties"] = {"anything": "goes"}
+    assert check_names(config, SENDS_DUMP) == []
+
+
 # --- the environment Sushi runs in -----------------------------------------
 
 

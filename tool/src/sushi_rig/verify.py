@@ -163,8 +163,22 @@ def diff_state(config: dict[str, Any], live: dict[str, Any]) -> list[Problem]:
     return problems
 
 
+# The properties Sushi's internal plugins accept, from Sushi 1.3.0's source
+# (send_return_factory.cpp): a send has its destination's name, a return has
+# none. `--dump-plugins` lists parameters only, never properties, so for an
+# LV2 plugin nothing here can say whether a property name is right; the deep
+# verify asks the running rig (`diff_state`). For the internal plugins the
+# compiler writes, the answer is known in advance, and a mistyped
+# `destination_name` is otherwise Sushi's bare exit 7 at load.
+INTERNAL_PROPERTIES: dict[str, frozenset[str]] = {
+    "sushi.testing.send": frozenset({"destination_name"}),
+    "sushi.testing.return": frozenset(),
+}
+
+
 def check_names(config: dict[str, Any], dump: Any) -> list[Problem]:
-    """Every parameter named in `initial_state` exists on its processor.
+    """Every parameter named in `initial_state` exists on its processor, and
+    every property named on an internal plugin is one it has.
 
     Reuses `collect_parameter_names`, which already indexes exactly this from
     Sushi's own introspection — the authoritative answer, since Sushi assigns
@@ -176,6 +190,12 @@ def check_names(config: dict[str, Any], dump: Any) -> list[Problem]:
     problems: list[Problem] = []
     known = collect_parameter_names(dump)
     tracks = {t.get("name") for t in config.get("tracks", [])}
+    internal_uids = {
+        plugin.get("name"): plugin.get("uid")
+        for track in config.get("tracks", [])
+        for plugin in (track.get("plugins") or [])
+        if isinstance(plugin, dict) and plugin.get("uid") in INTERNAL_PROPERTIES
+    }
 
     for entry in config.get("initial_state", []):
         name = entry.get("processor")
@@ -193,6 +213,16 @@ def check_names(config: dict[str, Any], dump: Any) -> list[Problem]:
                 hint = f" — did you mean {near[0]!r}?" if near else \
                        f" — it has: {', '.join(sorted(available))}"
                 problems.append(Problem(name, f"no parameter named {param!r}{hint}"))
+        if name in internal_uids:
+            accepted = INTERNAL_PROPERTIES[internal_uids[name]]
+            for prop in (entry.get("properties") or {}):
+                if prop not in accepted:
+                    near = get_close_matches(prop, sorted(accepted), n=1, cutoff=0.6)
+                    hint = f" — did you mean {near[0]!r}?" if near else (
+                        f" — it has: {', '.join(sorted(accepted))}" if accepted
+                        else " — it has none"
+                    )
+                    problems.append(Problem(name, f"no property named {prop!r}{hint}"))
     return problems
 
 

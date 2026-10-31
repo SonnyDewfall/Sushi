@@ -1212,6 +1212,15 @@ check need the plugins. Nothing builds a `TakePlan` yet outside the tests
 for the engine's caller to fill from `resolve_rig_yaml` and `library_state`.
 *(2026-10-31)*
 
+**`verify --quick` names a mistyped property on a send or return.** Follow-up
+from #88's review: `check_names` covered parameters only, and Sushi refuses a
+config whose `initial_state` names a property the plugin lacks with exit 7
+and no name. `--dump-plugins` lists parameters and never properties (checked
+against the captured dump), so an LV2 plugin's properties can only be checked
+live, which `diff_state` does. The internal plugins the compiler writes are
+different: a send accepts `destination_name` and a return accepts nothing,
+from Sushi 1.3.0's source, so those are checked offline with the usual near
+miss. *(2026-10-31)*
 **A rig file keeps its comments when the tool rewrites it.** Phase 2 decided
 that v2 rig files are written with ruamel.yaml, not PyYAML, because `save` will
 rewrite a rig file's settings after a capture and `config/rigs/guitar_vocal.yaml`
