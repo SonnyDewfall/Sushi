@@ -97,7 +97,7 @@ def test_channel_form_routing_injects_and_reads_the_channels_named(tmp_path):
     assert point.capture == "sushi:audio_output_5"
 
 
-def test_tracks_with_outputs_of_their_own_have_nothing_to_say_about_separation(tmp_path):
+def test_tracks_with_outputs_of_their_own_can_be_separated_but_are_not_yet(tmp_path):
     spec = rig(tmp_path, """\
         - name: a
           channels: 2
@@ -108,7 +108,10 @@ def test_tracks_with_outputs_of_their_own_have_nothing_to_say_about_separation(t
           inputs: [{engine_bus: 1, track_bus: 0}]
           outputs: [{engine_bus: 1, track_bus: 0}]
         """)
-    assert plan_probes(spec, amp=False).not_checked == ()
+    assert plan_probes(spec, amp=False).not_checked == (
+        "separation of a, b: each has an output of its own, so whether one leaks into "
+        "another can be measured, but no probe for it exists yet",
+    )
 
 
 def test_a_track_with_no_outputs_is_said_to_be_unprobed(tmp_path):
@@ -280,3 +283,45 @@ def test_the_command_refuses_a_rig_that_does_not_validate(tmp_path, capsys):
         """)
     assert main(["probes", str(tmp_path / "rig.yaml")]) == 1
     assert capsys.readouterr().out.startswith("FAIL rig.yaml: ")
+
+
+# --------------------------------------------------------------------------- #
+# A v2 rig: channels and a master (#30)
+# --------------------------------------------------------------------------- #
+
+RIGS = checkout_root() / "config" / "rigs"
+
+
+def test_a_v2_rig_is_probed_through_each_stem_and_through_the_master():
+    from sushi_rig.rigfile import spec_of
+
+    points = by_name(plan_probes(spec_of(RIGS / "guitar_vocal.yaml"), amp=False))
+    # A mono channel is one engine input, injected once.
+    assert points["guitar through sushi (sushi:audio_output_2)"].inject == ("sushi:audio_input_0",)
+    assert points["vocal through sushi (sushi:audio_output_4)"].inject == ("sushi:audio_input_1",)
+    # What the monitors hear: every channel, through its send, out of the master.
+    assert points["guitar through the master (sushi:audio_output_0)"].inject == ("sushi:audio_input_0",)
+    assert points["vocal through the master (sushi:audio_output_1)"].capture == "sushi:audio_output_1"
+    # The master track has no inputs of its own and is not called unprobed.
+    assert not any(note.startswith("master:") for note in plan_probes(
+        spec_of(RIGS / "guitar_vocal.yaml"), amp=False).not_checked)
+
+
+def test_with_the_amp_a_v2_rig_is_probed_from_the_amp_to_the_monitors():
+    from sushi_rig.rigfile import spec_of
+
+    points = by_name(plan_probes(spec_of(RIGS / "guitar_vocal.yaml"), amp=True))
+    via = points["guitar via amp and the master (sushi:audio_output_0)"]
+    assert via.inject == ("NAM:Input",) and via.nonlinear is True
+
+
+def test_a_send_with_no_return_to_follow_is_said_not_probed(tmp_path):
+    spec = rig(tmp_path, """\
+        - name: a
+          channels: 2
+          inputs: [{engine_bus: 0, track_bus: 0}]
+          outputs: [{engine_bus: 0, track_bus: 0}]
+          plugins: [{name: a_send, type: internal, uid: sushi.testing.send}]
+        """)
+    (note,) = [n for n in plan_probes(spec, amp=False).not_checked if "send to" in n]
+    assert note.startswith("a send to no return")

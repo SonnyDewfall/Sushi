@@ -1086,3 +1086,16 @@ since `widht: stereo` silently giving a mono channel would be heard, not read.
 The ceiling is three channels: the master and three stereo stems fill eight
 outputs. Not yet done: the patchbay and probes from this layout, today's tones
 converted and null-testing identically, and `up` running one. *(2026-10-31)*
+
+**The patchbay and the probes read v2 rigs.** One loader (`rigfile.spec_of`)
+gives them either kind of file as tracks. Two things changed underneath, both
+with tests: a route naming one engine channel twice is one port — a mono
+channel feeds both halves of its track from engine channel 0, and counted twice
+it asked its one-port role for two — and the probes follow sends, so each
+channel is probed through its stem and through the master, which is what the
+monitors hear. Generated against this machine's file, guitar_vocal links each
+input once, the master to the speakers, the tuner to the guitar, and the stems
+to nothing. A stereo channel on a one-port role is refused unless the machine
+file declares `mono_to_stereo`, which then duplicates the port across two
+engine inputs as it does for a v1 bus. Separation is now measurable — the
+stems are apart — and still unprobed. *(2026-10-31)*

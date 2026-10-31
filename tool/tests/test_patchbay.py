@@ -1137,3 +1137,85 @@ def test_the_committed_patchbay_keeps_the_two_channels_apart():
     vocal = {into["sushi:audio_input_2"], into["sushi:audio_input_3"]}
     assert len(guitar) == 1 and len(vocal) == 1
     assert guitar.isdisjoint(vocal), f"guitar {guitar} and vocal {vocal} share a port"
+
+
+# --- a v2 rig: channels and a master (#30) -----------------------------------
+
+V2_RIG = checkout_root() / "config" / "rigs" / "guitar_vocal.yaml"
+THIS_MACHINE = checkout_root() / "machines" / "sonny-dewfall-XPS-9320.yaml"
+
+
+def _links(capsys, *extra) -> set[tuple[str, str]]:
+    assert cli.main(["patchbay", "generate", str(V2_RIG), "--machine", str(THIS_MACHINE),
+                     "--offline", *extra]) == 0
+    return {(l.out_port, l.in_port) for l in parse_patchbay(capsys.readouterr().out)}
+
+
+def test_a_v2_rig_wires_each_input_once_and_only_the_master_to_the_monitors(capsys):
+    """Each mono channel is one engine input, so its port is linked once, not
+    duplicated across a bus. The stems are linked to nothing: only the master
+    reaches the speakers."""
+    assert _links(capsys, "--no-tuner") == {
+        ("Audient iD14:capture_AUX0", "sushi:audio_input_0"),
+        ("Audient iD14:capture_AUX1", "sushi:audio_input_1"),
+        ("sushi:audio_output_0", "Audient iD14:playback_FL"),
+        ("sushi:audio_output_1", "Audient iD14:playback_FR"),
+    }
+
+
+def test_a_v2_rig_keeps_the_tuner_on_the_guitar(capsys):
+    assert ("Audient iD14:capture_AUX0", "ALSA Capture [fmit]:input_MONO") in _links(capsys)
+
+
+def test_the_amp_goes_in_front_of_a_v2_guitar_and_nothing_else(capsys):
+    """amp_patchbay redirects whatever leaves the guitar's port for Sushi. With
+    one link from that port, that is one link through the amp."""
+    xml = cli.main(["patchbay", "generate", str(V2_RIG), "--machine", str(THIS_MACHINE),
+                    "--offline", "--no-tuner"])
+    assert xml == 0
+    base = capsys.readouterr().out
+    links = {(l.out_port, l.in_port)
+             for l in parse_patchbay(amp_patchbay(base, "Audient iD14:capture_AUX0"))}
+    assert ("Audient iD14:capture_AUX0", "NAM:Input") in links
+    assert ("NAM:Output", "sushi:audio_input_0") in links
+    assert ("Audient iD14:capture_AUX0", "sushi:audio_input_0") not in links
+    assert ("Audient iD14:capture_AUX1", "sushi:audio_input_1") in links
+
+
+def test_a_stereo_channel_on_a_one_port_role_needs_the_machine_file_to_say_so(tmp_path, capsys):
+    """Width is the channel's claim about its input; the machine file is the
+    truth about it. One port into a stereo channel is refused unless the role
+    declares mono_to_stereo, as for a v1 bus — and then the port is duplicated
+    into both engine channels, which spends an input the mono width would not."""
+    import yaml
+
+    raw = yaml.safe_load(V2_RIG.read_text())
+    raw["channels"][0]["width"] = "stereo"
+    rig_path = tmp_path / "rig.yaml"
+    rig_path.write_text(yaml.safe_dump(raw))
+    machine = tmp_path / "m.yaml"
+    machine.write_text(
+        "schema_version: 1\nroles:\n"
+        "  guitar-in: ['Audient iD14:capture_AUX0']\n"
+        "  vocal-in: ['Audient iD14:capture_AUX1']\n"
+        "  monitor-out: ['Audient iD14:playback_FL', 'Audient iD14:playback_FR']\n"
+    )
+    with pytest.raises(SystemExit) as caught:
+        cli.main(["patchbay", "generate", str(rig_path), "--machine", str(machine),
+                  "--offline", "--no-tuner"])
+    assert ("role 'guitar-in' has 1 port(s) but this track routes it to 2 engine channel(s)"
+            in str(caught.value.code))
+
+    assert cli.main(["patchbay", "generate", str(rig_path), "--machine", str(THIS_MACHINE),
+                     "--offline", "--no-tuner"]) == 0
+    links = {(l.out_port, l.in_port) for l in parse_patchbay(capsys.readouterr().out)}
+    assert {("Audient iD14:capture_AUX0", "sushi:audio_input_0"),
+            ("Audient iD14:capture_AUX0", "sushi:audio_input_1")} <= links
+
+
+def test_a_repeated_engine_channel_is_one_port():
+    track = SimpleNamespace(name="t", inputs=[
+        {"engine_channel": 3, "track_channel": 0}, {"engine_channel": 3, "track_channel": 1},
+    ])
+    route, problems = patchbay.track_route(track, "inputs")
+    assert route == (patchbay.channel(3),) and problems == []

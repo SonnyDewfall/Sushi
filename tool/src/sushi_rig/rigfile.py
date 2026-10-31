@@ -147,6 +147,19 @@ def load_rig(path: Path) -> Rig:
     return parse_rig(raw)
 
 
+def spec_of(path: Path) -> RigSpec:
+    """The tracks either kind of rig file runs as: compiled from channels and a
+    master, or read as written. For the tools that read routing — the patchbay
+    and the probes. Anything that writes a config goes through `emit_rig`
+    instead, because the sends need state this does not carry."""
+    import yaml
+
+    raw = yaml.safe_load(Path(path).read_text()) or {}
+    if looks_like_rig_file(raw):
+        return compile_rig(parse_rig(raw))[0]
+    return RigSpec.from_dict(raw, path)
+
+
 def _unknown(where: str, entry: dict, known: tuple[str, ...]) -> list[str]:
     # Refused rather than ignored: a misspelt `widht: stereo` silently giving a
     # mono channel is the kind of near miss that is heard, not read.

@@ -197,11 +197,13 @@ def _patchbay(args: argparse.Namespace) -> int:
         return 1 if result.missing else 0
 
     # generate
+    from .rigfile import spec_of
+
     try:
-        rig = RigSpec.load(args.rig)
+        rig = spec_of(args.rig)
         machine_file = args.machine or machine_path(root)
         machine = MachineSpec.load(machine_file)
-    except (MachineError, OSError) as exc:
+    except (MachineError, OSError, ValueError) as exc:
         sys.exit(str(exc))
     problems = [f"{args.rig.name}: {p}" for p in rig.validate()]
     problems += [f"{machine_file.name}: {p}" for p in machine.validate()]
@@ -282,8 +284,10 @@ def _probes(args: argparse.Namespace) -> int:
 
     import yaml
 
+    from .rigfile import spec_of
+
     try:
-        rig = RigSpec.load(args.rig)
+        rig = spec_of(args.rig)
     except (OSError, ValueError, yaml.YAMLError) as exc:
         print(f"FAIL {args.rig}: {exc}")
         return 1
@@ -914,7 +918,7 @@ def main(argv: list[str] | None = None) -> int:
         help="write a patchbay from machines/<hostname>.yaml and a rig.yaml; "
         "prints it unless -o is given, and never replaces the committed one",
     )
-    q.add_argument("rig", type=Path, help="rig.yaml whose tracks name source/sink roles")
+    q.add_argument("rig", type=Path, help="a rig file of channels (config/rigs/), or a rig.yaml whose tracks name source/sink roles")
     q.add_argument(
         "--machine", type=Path,
         help="machine file [default: machines/<this hostname>.yaml at the repo root]",
@@ -964,7 +968,7 @@ def main(argv: list[str] | None = None) -> int:
         help="where selftest will inject and listen for a rig: the ports each "
         "probe links. Reads nothing live; exit 1 if the rig cannot be probed",
     )
-    p.add_argument("rig", type=Path, help="rig.yaml (config/src/*.yaml)")
+    p.add_argument("rig", type=Path, help="a rig file (config/rigs/*.yaml) or a rig.yaml (config/src/*.yaml)")
     p.add_argument(
         "--amp", action="store_true",
         help="plan for the rig with the amp in it, as `up` runs it for a config "

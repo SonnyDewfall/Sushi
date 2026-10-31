@@ -43,6 +43,16 @@ With the amp in the rig, two probes cover it:
 A probe straight into Sushi asserts nothing about harmonics either way: a chain
 may hold a distortion pedal, and the probe is about whether sound comes through.
 
+## Through the master
+
+A rig compiled from channels and a master (rigfile.py) is heard through a
+master track that has no inputs: it is fed by each channel's send. So each
+channel is probed twice, through its own output (its stem) and through the
+master's (what the monitors hear), and with the amp on, from the amp to the
+master as well. The send is followed by its plugin, not by its destination:
+a compiled rig has exactly one return, and with any other number the path to
+the monitors is listed as not probed rather than guessed.
+
 ## Separation is not probed yet
 
 Whether one channel leaks into another needs the two to come out of different
@@ -77,6 +87,7 @@ from typing import Any
 
 from .amp import AMP_INPUT, AMP_OUTPUT
 from .patchbay import GUITAR_ROLE, SUSHI_NODE, track_route
+from .rigfile import RETURN_UID, SEND_UID
 
 
 @dataclass(frozen=True)
@@ -127,11 +138,24 @@ def plan_probes(rig: Any, *, amp: bool, sushi_node: str = SUSHI_NODE) -> ProbePl
     problems: list[str] = []
     guitar: list[tuple[str, tuple[str, ...] | None]] = []
     routed: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {}
+    returns = [t for t in rig.tracks if _carries(t, RETURN_UID)]
+    master = None
+    if len(returns) == 1:
+        out, _ = track_route(returns[0], "outputs")
+        master = (returns[0].name, _ports(sushi_node, "output", out))
+    senders: list[tuple[str, tuple[str, ...]]] = []
     for track in rig.tracks:
         into, found = track_route(track, "inputs", track.source)
         out, more = track_route(track, "outputs", track.sink)
         inject = _ports(sushi_node, "input", into)
         captures = _ports(sushi_node, "output", out)
+        if track in returns:
+            # Fed by sends, not inputs: probed from each channel below.
+            if found or more:
+                problems += found + more
+            continue
+        if _carries(track, SEND_UID) and inject and not (found or more):
+            senders.append((track.name, inject))
         if track.source == GUITAR_ROLE:
             # Recorded before anything can skip the track, so an amp in front
             # of a broken guitar track is reported as that, not as no guitar.
@@ -146,6 +170,20 @@ def plan_probes(rig: Any, *, amp: bool, sushi_node: str = SUSHI_NODE) -> ProbePl
         routed[track.name] = (inject, captures)
         for port in captures:
             points.append(ProbePoint(f"{track.name} through {sushi_node} ({port})", inject, port))
+
+    if senders and master is None:
+        not_checked.append(
+            f"{', '.join(name for name, _ in senders)} send to "
+            + ("no return" if not returns else f"one of {len(returns)} returns")
+            + ", so the path to the monitors is not probed; a compiled rig has one master"
+        )
+    elif master is not None:
+        name, outputs = master
+        for sender, inject in senders:
+            points += [
+                ProbePoint(f"{sender} through the {name} ({port})", inject, port)
+                for port in outputs
+            ]
 
     if amp:
         if not guitar:
@@ -171,10 +209,27 @@ def plan_probes(rig: Any, *, amp: bool, sushi_node: str = SUSHI_NODE) -> ProbePl
                     ProbePoint(f"{name} via amp ({port})", (AMP_INPUT,), port, nonlinear=True)
                     for port in captures
                 ]
+                if master is not None and any(s == name for s, _ in senders):
+                    # What the monitors hear, which is the point of the amp.
+                    points += [
+                        ProbePoint(f"{name} via amp and the {master[0]} ({port})",
+                                   (AMP_INPUT,), port, nonlinear=True)
+                        for port in master[1]
+                    ]
     if problems:
         raise ProbeError(problems)
-    not_checked += _shared(routed)
+    shared = _shared(routed)
+    not_checked += shared
+    if len(routed) > 1 and not shared:
+        not_checked.append(
+            f"separation of {', '.join(routed)}: each has an output of its own, so "
+            "whether one leaks into another can be measured, but no probe for it exists yet"
+        )
     return ProbePlan(tuple(points), tuple(not_checked))
+
+
+def _carries(track: Any, uid: str) -> bool:
+    return any(getattr(p, "uid", None) == uid for p in track.plugins)
 
 
 def _shared(routed: dict[str, tuple[tuple[str, ...], tuple[str, ...]]]) -> list[str]:
