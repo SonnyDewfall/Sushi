@@ -1,0 +1,86 @@
+{
+  "sample_rate": 48000,
+  "quantum": 128,
+  "budget_us": 2666.7,
+  "quantum_asked": "128/48000",
+  "quantum_before_activate": 1024,
+  "seconds_asked": 300.0,
+  "load_processes": 0,
+  "work_dir": "/tmp/capture-spike-nbdz9h3y",
+  "pid": 32877,
+  "blocks": 112507,
+  "xruns": 0,
+  "short_blocks": 0,
+  "blocksize_changes": 0,
+  "callback_us": {
+    "p50": 303.7,
+    "p99": 708.9,
+    "p99.9": 888.7,
+    "max": 1204.9
+  },
+  "recorder": {
+    "frames": 14400896,
+    "lost_frames": 0,
+    "dropouts": [],
+    "unrecorded_episodes": 0,
+    "error": ""
+  },
+  "continuity": {
+    "guitar.wav": [
+      {
+        "samples": 14400640,
+        "leading_silence": 256,
+        "jumps": 0,
+        "first_jumps_at_file_index": [],
+        "lost_by_jumps": 0,
+        "repeated_samples": 0
+      },
+      {
+        "samples": 14400512,
+        "leading_silence": 384,
+        "jumps": 0,
+        "first_jumps_at_file_index": [],
+        "lost_by_jumps": 0,
+        "repeated_samples": 0
+      }
+    ],
+    "guitar-dry.wav": [
+      {
+        "samples": 14400384,
+        "leading_silence": 512,
+        "jumps": 0,
+        "first_jumps_at_file_index": [],
+        "lost_by_jumps": 0,
+        "repeated_samples": 0
+      }
+    ],
+    "vocal.wav": [
+      {
+        "samples": 14400384,
+        "leading_silence": 512,
+        "jumps": 0,
+        "first_jumps_at_file_index": [],
+        "lost_by_jumps": 0,
+        "repeated_samples": 0
+      },
+      {
+        "samples": 14400384,
+        "leading_silence": 512,
+        "jumps": 0,
+        "first_jumps_at_file_index": [],
+        "lost_by_jumps": 0,
+        "repeated_samples": 0
+      }
+    ],
+    "vocal-dry.wav": [
+      {
+        "samples": 14400384,
+        "leading_silence": 512,
+        "jumps": 0,
+        "first_jumps_at_file_index": [],
+        "lost_by_jumps": 0,
+        "repeated_samples": 0
+      }
+    ]
+  }
+}

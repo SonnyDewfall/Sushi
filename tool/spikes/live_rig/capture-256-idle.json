@@ -1,0 +1,119 @@
+{
+  "sample_rate": 48000,
+  "quantum": 256,
+  "budget_us": 5333.3,
+  "quantum_asked": "256/48000",
+  "quantum_before_activate": 1024,
+  "seconds_asked": 600.0,
+  "load_processes": 0,
+  "work_dir": "/tmp/capture-spike-am1dogo5",
+  "pid": 31111,
+  "blocks": 112215,
+  "xruns": 0,
+  "short_blocks": 0,
+  "blocksize_changes": 0,
+  "callback_us": {
+    "p50": 270.6,
+    "p99": 607.4,
+    "p99.9": 861.9,
+    "max": 1343.5
+  },
+  "recorder": {
+    "frames": 28727040,
+    "lost_frames": 0,
+    "dropouts": [],
+    "unrecorded_episodes": 0,
+    "error": ""
+  },
+  "continuity": {
+    "guitar.wav": [
+      {
+        "samples": 28726784,
+        "leading_silence": 256,
+        "jumps": 257,
+        "first_jumps_at_file_index": [
+          9965823,
+          9965824,
+          9965825,
+          9965826,
+          9965827,
+          9965828,
+          9965829,
+          9965830,
+          9965831,
+          9965832
+        ],
+        "lost_by_jumps": 1048831,
+        "repeated_samples": 255
+      },
+      {
+        "samples": 28726784,
+        "leading_silence": 256,
+        "jumps": 257,
+        "first_jumps_at_file_index": [
+          9965823,
+          9965824,
+          9965825,
+          9965826,
+          9965827,
+          9965828,
+          9965829,
+          9965830,
+          9965831,
+          9965832
+        ],
+        "lost_by_jumps": 1048831,
+        "repeated_samples": 255
+      }
+    ],
+    "guitar-dry.wav": [
+      {
+        "samples": 28726528,
+        "leading_silence": 512,
+        "jumps": 0,
+        "first_jumps_at_file_index": [],
+        "lost_by_jumps": 0,
+        "repeated_samples": 0
+      }
+    ],
+    "vocal.wav": [
+      {
+        "samples": 28726528,
+        "leading_silence": 512,
+        "jumps": 257,
+        "first_jumps_at_file_index": [
+          9965823,
+          9965824,
+          9965825,
+          9965826,
+          9965827,
+          9965828,
+          9965829,
+          9965830,
+          9965831,
+          9965832
+        ],
+        "lost_by_jumps": 1048831,
+        "repeated_samples": 255
+      },
+      {
+        "samples": 28726528,
+        "leading_silence": 512,
+        "jumps": 0,
+        "first_jumps_at_file_index": [],
+        "lost_by_jumps": 0,
+        "repeated_samples": 0
+      }
+    ],
+    "vocal-dry.wav": [
+      {
+        "samples": 28726528,
+        "leading_silence": 512,
+        "jumps": 0,
+        "first_jumps_at_file_index": [],
+        "lost_by_jumps": 0,
+        "repeated_samples": 0
+      }
+    ]
+  }
+}

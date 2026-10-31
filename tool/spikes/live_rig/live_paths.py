@@ -114,8 +114,22 @@ def main() -> int:
     report: dict = {"sushi_pid": proc.pid, "config": str(config), "log": str(work / "sushi.log")}
     try:
         client = jack.Client("sushi-rig-live-spike", no_start_server=True)
+        # `blocksize` is the server's default (1024 here) until this client is
+        # active; PIPEWIRE_QUANTUM reaches the node only once it starts. Read
+        # early it reported quantum 1024 for a run that actually ran at 256,
+        # which makes `port_to_port_samples` unreadable: 257 is the expected
+        # answer at 256 and means nothing against a quantum that was never
+        # used. Activating once first also lets the quantum stop churning
+        # (256 -> 1024 -> 256) before the measurement window opens.
+        quantum_asked = os.environ.get("PIPEWIRE_QUANTUM", "")
+        quantum_before_activate = client.blocksize
+        client.activate()
+        time.sleep(0.5)
         sr, q = client.samplerate, client.blocksize
-        report.update({"sample_rate": sr, "quantum": q})
+        client.deactivate()
+        report.update({"sample_rate": sr, "quantum": q,
+                       "quantum_asked": quantum_asked,
+                       "quantum_before_activate": quantum_before_activate})
         sushi_in = wait_for_ports(client, "sushi:audio_input_", 2)
         sushi_out = wait_for_ports(client, "sushi:audio_output_", 6)
         report["sushi_ports"] = {"inputs": len(sushi_in), "outputs": len(sushi_out)}

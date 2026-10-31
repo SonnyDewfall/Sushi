@@ -1,0 +1,60 @@
+{
+  "sushi_pid": 29296,
+  "config": "/tmp/live-paths-40ips3m5/live_paths.json",
+  "log": "/tmp/live-paths-40ips3m5/sushi.log",
+  "sample_rate": 48000,
+  "quantum": 256,
+  "quantum_asked": "256/48000",
+  "quantum_before_activate": 1024,
+  "sushi_ports": {
+    "inputs": 8,
+    "outputs": 8
+  },
+  "links": "sushi-rig-live-spike:probe_A\n  |-> sushi:audio_input_0\n  |-> sushi:audio_input_1\n  |-> sushi-rig-live-spike:inject_A\nsushi-rig-live-spike:probe_B\n  |-> sushi:audio_input_1\n  |-> sushi-rig-live-spike:inject_B\nsushi-rig-live-spike:master_l\n  |<- sushi:audio_output_0\nsushi-rig-live-spike:master_r\n  |<- sushi:audio_output_1\nsushi-rig-live-spike:guitar_l\n  |<- sushi:audio_output_2\nsushi-rig-live-spike:guitar_r\n  |<- sushi:audio_output_3\nsushi-rig-live-spike:vocal_l\n  |<- sushi:audio_output_4\nsushi-rig-live-spike:vocal_r\n  |<- sushi:audio_output_5\nsushi-rig-live-spike:inject_A\n  |<- sushi-rig-live-spike:probe_A\nsushi-rig-live-spike:inject_B\n  |<- sushi-rig-live-spike:probe_B\nsushi:audio_output_0\n  |-> sushi-rig-live-spike:master_l\nsushi:audio_output_1\n  |-> sushi-rig-live-spike:master_r\nsushi:audio_output_2\n  |-> sushi-rig-live-spike:guitar_l\nsushi:audio_output_3\n  |-> sushi-rig-live-spike:guitar_r\nsushi:audio_output_4\n  |-> sushi-rig-live-spike:vocal_l\nsushi:audio_output_5\n  |-> sushi-rig-live-spike:vocal_r\nsushi:audio_input_0\n  |<- sushi-rig-live-spike:probe_A\nsushi:audio_input_1\n  |<- sushi-rig-live-spike:probe_A\n  |<- sushi-rig-live-spike:probe_B\n",
+  "paths": {
+    "master_l": {
+      "lag_samples": 256,
+      "A": 1.2529,
+      "B": 0.255,
+      "as_expected": false
+    },
+    "master_r": {
+      "lag_samples": 256,
+      "A": 1.2529,
+      "B": 0.255,
+      "as_expected": false
+    },
+    "guitar_l": {
+      "lag_samples": 256,
+      "A": 1.0,
+      "B": 0.0029,
+      "as_expected": true
+    },
+    "guitar_r": {
+      "lag_samples": 256,
+      "A": 1.0,
+      "B": 0.0029,
+      "as_expected": true
+    },
+    "vocal_l": {
+      "lag_samples": 256,
+      "A": 0.2529,
+      "B": 0.2521,
+      "as_expected": false
+    },
+    "vocal_r": {
+      "lag_samples": 256,
+      "A": 0.2529,
+      "B": 0.2521,
+      "as_expected": false
+    }
+  },
+  "checks": {
+    "send_costs_nothing": true,
+    "port_to_port_samples": 256,
+    "separate_channels": true,
+    "pipewire_sums_two_links": false,
+    "all_gains_as_expected": false
+  },
+  "sushi_exit": 0
+}

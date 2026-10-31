@@ -54,6 +54,9 @@ STEMS = [("guitar.wav", 2), ("guitar-dry.wav", 1), ("vocal.wav", 2), ("vocal-dry
 WIDTH = sum(c for _, c in STEMS)
 # The counter wraps here; k / 2**20 is exact in float32.
 WRAP = 1 << 20
+# Long enough for PipeWire to settle this node on its final quantum before we
+# read it: observed to arrive as 256, then 1024, then 256 again.
+SETTLE_S = 0.5
 
 
 def _burn(stop) -> None:
@@ -93,9 +96,24 @@ def main() -> int:
     args = parser.parse_args()
 
     client = jack.Client("sushi-rig-capture-spike", no_start_server=True)
-    sr, q = client.samplerate, client.blocksize
     out = client.outports.register("counter")
     ins = [client.inports.register(f"in_{i}") for i in range(WIDTH)]
+
+    # The granted quantum is not readable until this client is *active*.
+    # Before activation `blocksize` is the server's current default (1024 on
+    # the rig laptop); PIPEWIRE_QUANTUM is applied to this node only once it
+    # starts. Reading it early cost the first real run everything: every
+    # buffer was sized for 1024, so the callback saw 256-frame blocks, took
+    # the `frames != q` branch 3751 times out of 3751, and recorded 20
+    # seconds of silence while reporting 0 xruns and 0 lost frames.
+    # So activate once with no process callback, read what was actually
+    # granted, and stop again before a single buffer is allocated.
+    quantum_asked = os.environ.get("PIPEWIRE_QUANTUM", "")
+    quantum_before_activate = client.blocksize
+    client.activate()
+    time.sleep(SETTLE_S)          # the blocksize settles 256 -> 1024 -> 256
+    sr, q = client.samplerate, client.blocksize
+    client.deactivate()
 
     work = Path(tempfile.mkdtemp(prefix="capture-spike-"))
     recorder = Recorder([(work / name, channels) for name, channels in STEMS], sr, q)
@@ -143,6 +161,8 @@ def main() -> int:
     stop = multiprocessing.Event()
     burners = [multiprocessing.Process(target=_burn, args=(stop,), daemon=True) for _ in range(args.load)]
     report: dict = {"sample_rate": sr, "quantum": q, "budget_us": round(1e6 * q / sr, 1),
+                    "quantum_asked": quantum_asked,
+                    "quantum_before_activate": quantum_before_activate,
                     "seconds_asked": args.seconds, "load_processes": args.load,
                     "work_dir": str(work), "pid": os.getpid()}
     try:

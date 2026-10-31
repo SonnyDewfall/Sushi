@@ -1,0 +1,407 @@
+{
+  "version": "1.31.1",
+  "content": {
+    "type": "root",
+    "id": "sushi-rig",
+    "layout": "vertical",
+    "widgets": [
+      {
+        "type": "panel",
+        "id": "save_bar",
+        "width": "100%",
+        "height": 70,
+        "widgets": [
+          {
+            "type": "input",
+            "id": "config_name",
+            "label": "name",
+            "value": "",
+            "validation": "^[a-z0-9][a-z0-9_-]{0,63}$",
+            "address": "/sushi-rig/name",
+            "target": [
+              "127.0.0.1:24025"
+            ],
+            "ignoreDefaults": true,
+            "asYouType": true,
+            "width": 220,
+            "height": 40
+          },
+          {
+            "type": "button",
+            "id": "save_button",
+            "label": "SAVE",
+            "mode": "tap",
+            "address": "/sushi-rig/save",
+            "target": [
+              "127.0.0.1:24025"
+            ],
+            "ignoreDefaults": true,
+            "width": 90,
+            "height": 40
+          },
+          {
+            "type": "text",
+            "id": "save_status",
+            "label": false,
+            "address": "/sushi-rig/status",
+            "interaction": false,
+            "width": 320,
+            "height": 40
+          }
+        ]
+      },
+      {
+        "type": "panel",
+        "id": "record_bar",
+        "width": "100%",
+        "height": 70,
+        "widgets": [
+          {
+            "type": "input",
+            "id": "take_name",
+            "label": "take",
+            "value": "",
+            "validation": "^[a-z0-9][a-z0-9_-]{0,63}$",
+            "address": "/sushi-rig/take-name",
+            "target": [
+              "127.0.0.1:24025"
+            ],
+            "ignoreDefaults": true,
+            "asYouType": true,
+            "width": 220,
+            "height": 40
+          },
+          {
+            "type": "button",
+            "id": "record_button",
+            "label": "RECORD",
+            "mode": "tap",
+            "address": "/sushi-rig/record",
+            "target": [
+              "127.0.0.1:24025"
+            ],
+            "ignoreDefaults": true,
+            "width": 90,
+            "height": 40
+          },
+          {
+            "type": "button",
+            "id": "stop_button",
+            "label": "STOP",
+            "mode": "tap",
+            "address": "/sushi-rig/stop",
+            "target": [
+              "127.0.0.1:24025"
+            ],
+            "ignoreDefaults": true,
+            "width": 90,
+            "height": 40
+          },
+          {
+            "type": "text",
+            "id": "record_status",
+            "label": false,
+            "address": "/sushi-rig/record-status",
+            "interaction": false,
+            "width": 320,
+            "height": 40
+          }
+        ]
+      },
+      {
+        "type": "panel",
+        "id": "tabs",
+        "width": "100%",
+        "height": "100%",
+        "tabs": [
+          {
+            "type": "tab",
+            "id": "guitar_send",
+            "label": "guitar_send",
+            "widgets": [
+              {
+                "type": "button",
+                "id": "guitar_send/bypass",
+                "label": "Active",
+                "mode": "toggle",
+                "css": "label:before { content: '\\2610'; margin-right: 0.4em; font-size: 1.15em; line-height: 1; }\n&.on label:before { content: '\\2611'; }",
+                "address": "/bypass/guitar_send",
+                "on": 0,
+                "off": 1,
+                "default": 0,
+                "typeTags": "i",
+                "width": 90,
+                "height": 30
+              },
+              {
+                "type": "button",
+                "id": "guitar_send/move-earlier",
+                "label": "< EARLIER",
+                "mode": "tap",
+                "address": "/sushi-rig/move/guitar_send",
+                "on": -1,
+                "target": [
+                  "127.0.0.1:24025"
+                ],
+                "ignoreDefaults": true,
+                "typeTags": "i",
+                "width": 70,
+                "height": 30
+              },
+              {
+                "type": "button",
+                "id": "guitar_send/move-later",
+                "label": "LATER >",
+                "mode": "tap",
+                "address": "/sushi-rig/move/guitar_send",
+                "on": 1,
+                "target": [
+                  "127.0.0.1:24025"
+                ],
+                "ignoreDefaults": true,
+                "typeTags": "i",
+                "width": 70,
+                "height": 30
+              },
+              {
+                "type": "fader",
+                "id": "guitar_send/channel_count",
+                "address": "/parameter/guitar_send/channel_count",
+                "range": {
+                  "min": 0,
+                  "max": 1
+                },
+                "default": 1.0,
+                "width": 90,
+                "height": 220,
+                "logScale": true
+              },
+              {
+                "type": "text",
+                "id": "guitar_send/channel_count/readout",
+                "label": false,
+                "wrap": true,
+                "value": "JS{return \"channel_count\\n\" + (0.0 + @{guitar_send/channel_count} * 16.0).toFixed(1) + \"\"}",
+                "interaction": false,
+                "width": 90,
+                "height": 40
+              },
+              {
+                "type": "fader",
+                "id": "guitar_send/dest_channel",
+                "address": "/parameter/guitar_send/dest_channel",
+                "range": {
+                  "min": 0,
+                  "max": 1
+                },
+                "default": 0.0,
+                "width": 90,
+                "height": 220,
+                "logScale": true
+              },
+              {
+                "type": "text",
+                "id": "guitar_send/dest_channel/readout",
+                "label": false,
+                "wrap": true,
+                "value": "JS{return \"dest_channel\\n\" + (0.0 + @{guitar_send/dest_channel} * 16.0).toFixed(1) + \"\"}",
+                "interaction": false,
+                "width": 90,
+                "height": 40
+              },
+              {
+                "type": "fader",
+                "id": "guitar_send/gain",
+                "address": "/parameter/guitar_send/gain",
+                "range": {
+                  "min": 0,
+                  "max": 1
+                },
+                "default": 0.833333,
+                "width": 90,
+                "height": 220,
+                "logScale": true
+              },
+              {
+                "type": "text",
+                "id": "guitar_send/gain/readout",
+                "label": false,
+                "wrap": true,
+                "value": "JS{return \"gain\\n\" + (-120.0 + @{guitar_send/gain} * 144.0).toFixed(0) + \"\"}",
+                "interaction": false,
+                "width": 90,
+                "height": 40
+              },
+              {
+                "type": "fader",
+                "id": "guitar_send/start_channel",
+                "address": "/parameter/guitar_send/start_channel",
+                "range": {
+                  "min": 0,
+                  "max": 1
+                },
+                "default": 0.0,
+                "width": 90,
+                "height": 220,
+                "logScale": true
+              },
+              {
+                "type": "text",
+                "id": "guitar_send/start_channel/readout",
+                "label": false,
+                "wrap": true,
+                "value": "JS{return \"start_channel\\n\" + (0.0 + @{guitar_send/start_channel} * 16.0).toFixed(1) + \"\"}",
+                "interaction": false,
+                "width": 90,
+                "height": 40
+              }
+            ]
+          },
+          {
+            "type": "tab",
+            "id": "vocal_send",
+            "label": "vocal_send",
+            "widgets": [
+              {
+                "type": "button",
+                "id": "vocal_send/bypass",
+                "label": "Active",
+                "mode": "toggle",
+                "css": "label:before { content: '\\2610'; margin-right: 0.4em; font-size: 1.15em; line-height: 1; }\n&.on label:before { content: '\\2611'; }",
+                "address": "/bypass/vocal_send",
+                "on": 0,
+                "off": 1,
+                "default": 0,
+                "typeTags": "i",
+                "width": 90,
+                "height": 30
+              },
+              {
+                "type": "button",
+                "id": "vocal_send/move-earlier",
+                "label": "< EARLIER",
+                "mode": "tap",
+                "address": "/sushi-rig/move/vocal_send",
+                "on": -1,
+                "target": [
+                  "127.0.0.1:24025"
+                ],
+                "ignoreDefaults": true,
+                "typeTags": "i",
+                "width": 70,
+                "height": 30
+              },
+              {
+                "type": "button",
+                "id": "vocal_send/move-later",
+                "label": "LATER >",
+                "mode": "tap",
+                "address": "/sushi-rig/move/vocal_send",
+                "on": 1,
+                "target": [
+                  "127.0.0.1:24025"
+                ],
+                "ignoreDefaults": true,
+                "typeTags": "i",
+                "width": 70,
+                "height": 30
+              },
+              {
+                "type": "fader",
+                "id": "vocal_send/channel_count",
+                "address": "/parameter/vocal_send/channel_count",
+                "range": {
+                  "min": 0,
+                  "max": 1
+                },
+                "default": 1.0,
+                "width": 90,
+                "height": 220,
+                "logScale": true
+              },
+              {
+                "type": "text",
+                "id": "vocal_send/channel_count/readout",
+                "label": false,
+                "wrap": true,
+                "value": "JS{return \"channel_count\\n\" + (0.0 + @{vocal_send/channel_count} * 16.0).toFixed(1) + \"\"}",
+                "interaction": false,
+                "width": 90,
+                "height": 40
+              },
+              {
+                "type": "fader",
+                "id": "vocal_send/dest_channel",
+                "address": "/parameter/vocal_send/dest_channel",
+                "range": {
+                  "min": 0,
+                  "max": 1
+                },
+                "default": 0.0,
+                "width": 90,
+                "height": 220,
+                "logScale": true
+              },
+              {
+                "type": "text",
+                "id": "vocal_send/dest_channel/readout",
+                "label": false,
+                "wrap": true,
+                "value": "JS{return \"dest_channel\\n\" + (0.0 + @{vocal_send/dest_channel} * 16.0).toFixed(1) + \"\"}",
+                "interaction": false,
+                "width": 90,
+                "height": 40
+              },
+              {
+                "type": "fader",
+                "id": "vocal_send/gain",
+                "address": "/parameter/vocal_send/gain",
+                "range": {
+                  "min": 0,
+                  "max": 1
+                },
+                "default": 0.833333,
+                "width": 90,
+                "height": 220,
+                "logScale": true
+              },
+              {
+                "type": "text",
+                "id": "vocal_send/gain/readout",
+                "label": false,
+                "wrap": true,
+                "value": "JS{return \"gain\\n\" + (-120.0 + @{vocal_send/gain} * 144.0).toFixed(0) + \"\"}",
+                "interaction": false,
+                "width": 90,
+                "height": 40
+              },
+              {
+                "type": "fader",
+                "id": "vocal_send/start_channel",
+                "address": "/parameter/vocal_send/start_channel",
+                "range": {
+                  "min": 0,
+                  "max": 1
+                },
+                "default": 0.0,
+                "width": 90,
+                "height": 220,
+                "logScale": true
+              },
+              {
+                "type": "text",
+                "id": "vocal_send/start_channel/readout",
+                "label": false,
+                "wrap": true,
+                "value": "JS{return \"start_channel\\n\" + (0.0 + @{vocal_send/start_channel} * 16.0).toFixed(1) + \"\"}",
+                "interaction": false,
+                "width": 90,
+                "height": 40
+              }
+            ]
+          }
+        ]
+      }
+    ]
+  }
+}
