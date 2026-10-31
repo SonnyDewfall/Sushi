@@ -288,14 +288,3 @@ def convert(config: dict[str, Any], name: str,
     if found:
         raise ConvertError(["the converted rig does not hold the same tone:"] + found)
     return rig
-
-
-def render_rig_file(rig: dict[str, Any], source: str) -> str:
-    """The rig as YAML, with a header saying where it came from."""
-    import yaml
-
-    header = (
-        f"# Converted from {source} by `sushi-rig convert`, and checked to compile\n"
-        "# back to every plugin and setting it held. Edit this file, not that one.\n\n"
-    )
-    return header + yaml.safe_dump(rig, sort_keys=False, allow_unicode=True, width=100)

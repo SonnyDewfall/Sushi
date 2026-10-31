@@ -332,8 +332,9 @@ def _emit_any(path: Path, state: dict | None) -> dict:
 
 
 def _convert(args: argparse.Namespace) -> int:
-    from .convert import ConvertError, convert, parse_inputs, render_rig_file
+    from .convert import ConvertError, convert, parse_inputs
     from .paths import checkout_root
+    from .rigfile import write_rig
 
     try:
         config = json.loads(args.config.read_text())
@@ -342,7 +343,7 @@ def _convert(args: argparse.Namespace) -> int:
         out = args.out or checkout_root() / "config" / "rigs" / f"{name}.yaml"
         if out.exists() and not args.force:
             # A rig file may carry comments and edits its config never had.
-            print(f"FAIL {out} exists; --force replaces it")
+            print(f"FAIL {out} exists; --force updates it, keeping its comments")
             return 1
         rig = convert(config, name, parse_inputs(args.input))
     except ConvertError as exc:
@@ -352,12 +353,15 @@ def _convert(args: argparse.Namespace) -> int:
     except (OSError, ValueError, TypeError, AttributeError) as exc:
         print(f"FAIL {args.config}: {type(exc).__name__}: {exc}")
         return 1
-    out.parent.mkdir(parents=True, exist_ok=True)
     try:
         source = args.config.resolve().relative_to(checkout_root())
     except ValueError:
         source = args.config
-    out.write_text(render_rig_file(rig, str(source)))
+    try:
+        write_rig(out, rig, source=str(source))
+    except (OSError, ValueError) as exc:
+        print(f"FAIL {out}: {exc}")
+        return 1
     print(f"wrote {out}")
     return 0
 
@@ -691,7 +695,7 @@ def main(argv: list[str] | None = None) -> int:
         help="which input a track plays from, e.g. vocal=vocal-in:mono. A single-track "
         "config defaults to guitar-in:mono; any other must be told",
     )
-    p.add_argument("--force", action="store_true", help="replace a rig file already there")
+    p.add_argument("--force", action="store_true", help="update a rig file already there to this config, keeping its comments")
     p.add_argument("--name", help="the rig's name [default: the config's _meta name, or its file name]")
 
     p = sub.add_parser("push", help="build the rig in a running Sushi")
