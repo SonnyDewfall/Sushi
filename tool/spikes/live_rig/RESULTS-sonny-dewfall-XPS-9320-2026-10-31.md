@@ -1,5 +1,18 @@
 # Laptop test results — sonny-dewfall-XPS-9320, 2026-10-31
 
+> **Notes added by the cloud session after reading this (2026-10-31).** Three
+> things below are no longer as stated, by later commits on this branch:
+> the five `sushi-logs/*.log` files were dropped (they held only the banner,
+> and `*.log` is gitignored); `--hold` now survives EOF (open item 6); and
+> `continuity()` now reports runs of exact zeros as `silent_samples`, apart
+> from losses, so the `jumps 257 / lost 1048831 / repeated 255` figures in
+> `capture-256-idle.json` are the old analysis of the 256-sample silence
+> described in step 3 and would read `jumps 0, silent_samples 256` today. The
+> WAVs were in `/tmp` on the rig and are gone, so the JSON is left as the
+> artefact it was. On open item 3: the 256 here is measured against this
+> client's own loopback, October's 257 against pw-record; different reference
+> paths, so the one-sample difference is not evidence about Sushi.
+
 Run by a local Claude session on the rig laptop, following
 `tool/spikes/live_rig/README.md` on branch `claude/laptop-tests`.
 No Audient iD14 and no guitar were connected, as expected.

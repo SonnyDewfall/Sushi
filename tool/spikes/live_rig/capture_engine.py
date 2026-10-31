@@ -49,14 +49,14 @@ except (ImportError, OSError) as exc:  # OSError: libjack missing
 from sushi_rig.recorder import Recorder
 from sushi_rig.signals import read_wav
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from jackq import granted_quantum  # noqa: E402
+
 # Column layout of a guitar_vocal take: (file, channels).
 STEMS = [("guitar.wav", 2), ("guitar-dry.wav", 1), ("vocal.wav", 2), ("vocal-dry.wav", 1)]
 WIDTH = sum(c for _, c in STEMS)
 # The counter wraps here; k / 2**20 is exact in float32.
 WRAP = 1 << 20
-# Long enough for PipeWire to settle this node on its final quantum before we
-# read it: observed to arrive as 256, then 1024, then 256 again.
-SETTLE_S = 0.5
 
 
 def _burn(stop) -> None:
@@ -78,7 +78,7 @@ def continuity(column: np.ndarray) -> dict:
     zero = live == 0.0
     edges = np.diff(np.concatenate([[0], zero.astype(np.int8), [0]]))
     starts, ends = np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)
-    silent = [(int(a) + first, int(b - a)) for a, b in zip(starts, ends) if b - a >= 8]
+    silent = [(int(a) + first, int(b - a)) for a, b in zip(starts, ends)]
     x = np.rint(live.astype(np.float64) * WRAP).astype(np.int64)
     # The step test runs over the samples that carry the counter, across any
     # silent run: a counter that advances by exactly the run's length is
@@ -98,8 +98,9 @@ def continuity(column: np.ndarray) -> dict:
         "first_jumps_at_file_index": [int(kept[i]) + first for i in bad[:10]],
         "lost_by_jumps": lost,
         "repeated_samples": repeated,
-        # (file index, length) of each run of 8 or more exact zeros
+        # (file index, length) of the first 20 runs of exact zeros, any length
         "silent_runs": silent[:20],
+        "silent_run_count": len(silent),
         "silent_samples": int(sum(n for _, n in silent)),
     }
 
@@ -115,21 +116,8 @@ def main() -> int:
     out = client.outports.register("counter")
     ins = [client.inports.register(f"in_{i}") for i in range(WIDTH)]
 
-    # The granted quantum is not readable until this client is *active*.
-    # Before activation `blocksize` is the server's current default (1024 on
-    # the rig laptop); PIPEWIRE_QUANTUM is applied to this node only once it
-    # starts. Reading it early cost the first real run everything: every
-    # buffer was sized for 1024, so the callback saw 256-frame blocks, took
-    # the `frames != q` branch 3751 times out of 3751, and recorded 20
-    # seconds of silence while reporting 0 xruns and 0 lost frames.
-    # So activate once with no process callback, read what was actually
-    # granted, and stop again before a single buffer is allocated.
-    quantum_asked = os.environ.get("PIPEWIRE_QUANTUM", "")
-    quantum_before_activate = client.blocksize
-    client.activate()
-    time.sleep(SETTLE_S)          # the blocksize settles 256 -> 1024 -> 256
-    sr, q = client.samplerate, client.blocksize
-    client.deactivate()
+    granted = granted_quantum(client)
+    sr, q = granted["sample_rate"], granted["quantum"]
 
     work = Path(tempfile.mkdtemp(prefix="capture-spike-"))
     recorder = Recorder([(work / name, channels) for name, channels in STEMS], sr, q)
@@ -176,9 +164,7 @@ def main() -> int:
 
     stop = multiprocessing.Event()
     burners = [multiprocessing.Process(target=_burn, args=(stop,), daemon=True) for _ in range(args.load)]
-    report: dict = {"sample_rate": sr, "quantum": q, "budget_us": round(1e6 * q / sr, 1),
-                    "quantum_asked": quantum_asked,
-                    "quantum_before_activate": quantum_before_activate,
+    report: dict = {**granted, "budget_us": round(1e6 * q / sr, 1),
                     "seconds_asked": args.seconds, "load_processes": args.load,
                     "work_dir": str(work), "pid": os.getpid()}
     try:

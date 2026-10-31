@@ -88,7 +88,9 @@ xrun figures.
 
 - `xruns` 0;
 - `recorder.lost_frames` 0 and `recorder.error` empty;
-- `continuity` reports 0 `jumps` for every column of every stem;
+- `continuity` reports 0 `jumps`, 0 `silent_samples` and 0 `repeated_samples`
+  for every column of every stem (a run of exact zeros is silence delivered in
+  place, which the counters cannot see and the audio can);
 - `callback_us.p99.9` well under `budget_us`.
 
 A failure is not a bug to fix: it is the answer. Record it exactly. Then, if
@@ -117,13 +119,14 @@ same client. **Pass:** every value under `checks` is true.
 | Check | What it proves |
 |---|---|
 | `send_costs_nothing` | The master is exactly as late as the stems live. Offline it was 0 samples; live it depends on Sushi running every track on one thread. |
-| `port_to_port_samples` | Expected 257 at quantum 256 (measured before). Record whatever it is. |
+| `port_to_port_samples` | About one quantum. Measured against this client's own loopback, a different reference path from October's 257 (pw-record), so a one-sample difference is the path, not Sushi. Record whatever it is. |
 | `separate_channels` | Noise in the guitar's input is not in the vocal's stem. |
 | `pipewire_sums_two_links` | Two links into one input are summed. `probes.py` assumes this. |
 | `all_gains_as_expected` | Every path at the gain the docstring's table predicts. |
 
-Run it three times and record all three. Keep `sushi.log`, whose path is in
-the report: any line in it about threads, xruns or ports matters.
+Run it three times and record all three. Read `sushi.log`, whose path is in
+the report, and quote any line about threads, xruns or ports in the results;
+`*.log` is gitignored, so do not commit the file itself.
 
 ## 5. The record bar (only if `open-stage-control` is installed)
 
@@ -165,6 +168,6 @@ Write `tool/spikes/live_rig/RESULTS-<hostname>-<date>.md` containing:
 - every fix made to the scripts, with the reason;
 - anything that could not run, and why.
 
-Commit it, along with the JSON reports, the `sushi.log` files and any
-screenshot, to `claude/laptop-tests`, and push. Then tell Sonny it is pushed.
+Commit it, along with the JSON reports and any screenshot, to
+`claude/laptop-tests`, and push. Then tell Sonny it is pushed.
 The cloud session reads it from there.
