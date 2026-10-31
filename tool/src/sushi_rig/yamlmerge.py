@@ -61,15 +61,19 @@ dropped only with the entry it was written above or beside. Two edges:
 - Text that PyYAML would not read back as `data`. Rig files are read with
   PyYAML (YAML 1.1: `on` and `1:30` are not strings, `1e-05` is not a float),
   ruamel writes YAML 1.2, so strings PyYAML would misread are quoted, floats
-  are written the PyYAML way, and the result is read back and compared
-  before a caller is given it.
+  are written the PyYAML way, and `fresh` and `merged` both read their result
+  back with PyYAML and compare it to `data` before returning it.
+- A file whose layout they cannot reproduce: if dumping the unchanged document
+  does not give the file back exactly (a flow entry a person wrapped by hand,
+  mixed indents), an update would re-lay-out lines nobody asked to touch, so
+  it is refused with the first line that would move.
 """
 
 from __future__ import annotations
 
 import copy
+import functools
 import io
-import re
 from typing import Any
 
 # Matches PyYAML's safe_dump(width=100) closely enough for a file that
@@ -85,8 +89,9 @@ class MergeError(ValueError):
 # --------------------------------------------------------------------------- #
 # Dumping
 
-def _yaml(mapping: int, sequence: int, offset: int, width: int):
-    from ruamel.yaml import YAML
+@functools.lru_cache(maxsize=None)
+def _representer():
+    """ruamel's round-trip representer, writing floats the way PyYAML reads them."""
     from ruamel.yaml.representer import RoundTripRepresenter
 
     class Representer(RoundTripRepresenter):
@@ -105,8 +110,14 @@ def _yaml(mapping: int, sequence: int, offset: int, width: int):
         return self.represent_scalar("tag:yaml.org,2002:float", text)
 
     Representer.add_representer(float, represent_float)
+    return Representer
+
+
+def _yaml(mapping: int, sequence: int, offset: int, width: int):
+    from ruamel.yaml import YAML
+
     y = YAML()
-    y.Representer = Representer
+    y.Representer = _representer()
     y.indent(mapping=mapping, sequence=sequence, offset=offset)
     y.width = width
     y.preserve_quotes = True
@@ -120,14 +131,18 @@ def _dump(y, data: Any) -> str:
     return out.getvalue()
 
 
-def _ambiguous(text: str) -> bool:
-    """Whether PyYAML would read this string, written plain, as something else."""
-    import yaml
-    from yaml.nodes import ScalarNode
+@functools.lru_cache(maxsize=None)
+def _resolver():
     from yaml.resolver import Resolver
 
-    tag = Resolver().resolve(ScalarNode, text, (True, False))
-    return tag != "tag:yaml.org,2002:str"
+    return Resolver()
+
+
+def _ambiguous(text: str) -> bool:
+    """Whether PyYAML would read this string, written plain, as something else."""
+    from yaml.nodes import ScalarNode
+
+    return _resolver().resolve(ScalarNode, text, (True, False)) != "tag:yaml.org,2002:str"
 
 
 def _prepare(value: Any) -> Any:
@@ -143,9 +158,24 @@ def _prepare(value: Any) -> Any:
     return copy.copy(value)
 
 
+def _read_back(text: str, data: Any) -> str:
+    """`text`, after checking that PyYAML (what reads rig files) reads it back as `data`."""
+    import yaml
+
+    try:
+        same = yaml.safe_load(text) == data
+    except yaml.YAMLError:
+        same = False
+    if not same:
+        raise MergeError("the text written would not read back as the data given")
+    return text
+
+
 def fresh(data: Any, header: str = "") -> str:
-    """`data` as a new YAML file: block style, keys in `data`'s order."""
-    return header + _dump(_yaml(2, 2, 0, FRESH_WIDTH), _prepare(data))
+    """`data` as a new YAML file: block style, keys in `data`'s order.
+
+    Raises `MergeError` if PyYAML would not read the text back as `data`."""
+    return _read_back(header + _dump(_yaml(2, 2, 0, FRESH_WIDTH), _prepare(data)), data)
 
 
 # --------------------------------------------------------------------------- #
@@ -189,15 +219,17 @@ def _layout(text: str) -> tuple[int, int, int]:
 
 
 def _choose(text: str):
-    """(a dumper, the loaded document) that write the file back as it was.
+    """(a dumper, the loaded document, a problem or None): how to write the file back exactly as it was.
 
     Layout and width are properties of the file, not of ruamel.yaml, and a
     wrong guess re-indents or re-folds lines nobody asked to change. So the
     measured layout and a few likelier widths (100, where this tool folds, and
     the file's longest line, with and without comments) are tried against the
     unchanged document, widest first because that leaves a flow-style entry
-    that grows room to, and the first to reproduce the text exactly is used;
-    failing that, the one that differs from it least."""
+    that grows room to, and the first to reproduce the text exactly is used.
+    If none does, the dumper is the closest and the problem names the first line
+    that would move: the update is refused then, since guessing would rewrite
+    lines the caller never meant to change."""
     lines = text.splitlines()
     code = [l for l in lines if not l.lstrip().startswith("#")]
     widths = sorted({FRESH_WIDTH, max([FRESH_WIDTH] + [len(l) for l in lines]),
@@ -210,24 +242,34 @@ def _choose(text: str):
             y = _yaml(*layout, width)
             out = _dump(y, doc).splitlines()
             if out == lines:
-                return y, doc
-            score = sum(a != b for a, b in zip(out, lines)) + abs(len(out) - len(lines))
+                return y, doc, None
+            moved = [i for i, (a, b) in enumerate(zip(out, lines)) if a != b]
+            score = len(moved) + abs(len(out) - len(lines))
             if best is None or score < best[0]:
-                best = (score, y)
-    return best[1], doc
+                best = (score, out, moved[0] if moved else min(len(out), len(lines)), y)
+    score, out, first, y = best
+    was = lines[first] if first < len(lines) else "(end of file)"
+    now = out[first] if first < len(out) else "(end of file)"
+    return y, doc, (
+        f"this file's layout cannot be reproduced, so updating it would re-lay-out lines that did not "
+        f"change (the closest try differs from it at {score} line(s), first at line {first + 1}: "
+        f"{was!r} would become {now!r}); nothing was written. Write that part the way ruamel.yaml "
+        "does (one indent throughout, flow entries on one line), then retry")
 
 
 # --------------------------------------------------------------------------- #
 # Comments, counted from the text: how a lost or doubled one is noticed
 
-def _comment_start(line: str) -> int | None:
-    """Where the `# comment` in a line of YAML starts, if there is one. A `#`
-    inside a quoted string, or glued to the text before it (`uri#fragment`), is
-    not one."""
+def _comment_start(line: str, begin: int = 0) -> int | None:
+    """Where the `# comment` in a line of YAML starts, if there is one, looking
+    from column `begin`. A `#` inside a quoted string, or glued to the text
+    before it (`uri#fragment`), is not one."""
     quote = ""
     last = ""
     skip = False
     for i, char in enumerate(line):
+        if i < begin:
+            continue
         if skip:
             skip = False
             continue
@@ -245,22 +287,56 @@ def _comment_start(line: str) -> int | None:
     return None
 
 
-def _comments(text: str) -> list[str]:
-    """Every `# comment` in a YAML text, in order."""
+def _inside_scalars(text: str) -> dict[int, int | None]:
+    """For each line that continues a scalar begun on an earlier one (a `|` or
+    `>` block, a quoted string or a plain scalar over several lines): None if
+    the whole line is scalar, else the column its scalar ends at. A `#` there
+    is text, not a comment, and a line scan cannot tell. ruamel.yaml's own
+    parse says where each scalar starts and ends."""
+    from ruamel.yaml import YAML, YAMLError
+    from ruamel.yaml.events import ScalarEvent
+
+    inside: dict[int, int | None] = {}
+    try:
+        for event in YAML().parse(text):
+            if isinstance(event, ScalarEvent) and event.end_mark.line > event.start_mark.line:
+                for line in range(event.start_mark.line + 1, event.end_mark.line):
+                    inside[line] = None
+                if event.end_mark.column:
+                    inside[event.end_mark.line] = event.end_mark.column
+    except YAMLError:
+        pass
+    return inside
+
+
+def _comments(text: str, whole_document: bool = False) -> list[str]:
+    """Every `# comment` in a YAML text, in order. For a whole document pass
+    `whole_document=True`, so that a `#` inside a multi-line scalar is not
+    taken for one; otherwise the text is comment lines alone."""
+    inside = _inside_scalars(text) if whole_document else {}
     found = []
-    for line in text.splitlines():
-        start = _comment_start(line)
+    for number, line in enumerate(text.splitlines()):
+        if number in inside and inside[number] is None:
+            continue
+        start = _comment_start(line, inside.get(number) or 0)
         if start is not None:
             found.append(line[start:].strip())
     return found
 
 
+# --------------------------------------------------------------------------- #
 # The text between two entries, which ruamel.yaml keeps on the first of them
 
 def _is_map(node: Any) -> bool:
     from ruamel.yaml.comments import CommentedMap
 
     return isinstance(node, CommentedMap)
+
+
+def _is_collection(node: Any) -> bool:
+    from ruamel.yaml.comments import CommentedMap, CommentedSeq
+
+    return isinstance(node, (CommentedMap, CommentedSeq))
 
 
 def _is_block(node: Any) -> bool:
@@ -303,8 +379,8 @@ def _get_after(container: Any, ident: Any) -> str:
     if token is not None and not isinstance(token, list):
         return token.value
     if _is_last_of_list(holder, key) and holder.ca.end:
-        # What follows a list's last entry is kept on the list, when that entry
-        # has no comment of its own to hold it. Each token starts at its column.
+        # What follows a list's last entry, if it is not a scalar, is kept on
+        # the list, when that entry has no comment of its own to hold it. Each token starts at its column.
         return "\n" + "".join(" " * t.column + t.value for t in holder.ca.end)
     return ""
 
@@ -315,7 +391,7 @@ def _set_after(container: Any, ident: Any, value: str | None) -> None:
 
     holder, key = _leaf(container, ident)
     index = _after_index(holder)
-    if _is_last_of_list(holder, key):
+    if _is_last_of_list(holder, key) and _is_collection(holder[key]):
         # Mirror how ruamel.yaml reads it: a comment on the entry's own line
         # takes everything after it into one token; otherwise the lines after
         # the entry belong to the list's end.
@@ -370,19 +446,6 @@ def _tokens(text: str) -> list[Any]:
     return tokens
 
 
-def _add_leading(seq: Any, rest: str) -> None:
-    """Put comment lines above a list's first entry (where its heading lives)."""
-    tokens = _tokens(rest)
-    if not tokens:
-        return
-    if seq.ca.comment is None:
-        seq.ca.comment = [None, tokens]
-    elif seq.ca.comment[1] is None:
-        seq.ca.comment[1] = tokens
-    else:
-        seq.ca.comment[1].extend(tokens)
-
-
 def _token_comments(t: Any, found: list[str]) -> None:
     """Add the comments in a ruamel.yaml comment slot (a token, a list of them, or None)."""
     if t is None:
@@ -429,9 +492,11 @@ def _subtract(whole: list[str], part: list[str]) -> list[str]:
 
 
 def _lead(container: Any, parent: tuple[Any, Any] | None) -> list[Any] | None:
-    """The comment tokens written above a mapping's first key, which
-    ruamel.yaml keeps on the key above it (or on the file, for the top mapping)."""
-    if parent is None:
+    """The comment tokens written above a collection's first entry. For a list,
+    for the top mapping, ruamel.yaml keeps them on the collection itself; for a
+    mapping under a key, on that key (`parent` is the (container, key) holding
+    it); for a mapping that is a list item there is no such place."""
+    if parent is None or not _is_map(container):
         return container.ca.comment[1] if container.ca.comment else None
     holder, key = parent
     if not _is_map(holder):
@@ -441,10 +506,39 @@ def _lead(container: Any, parent: tuple[Any, Any] | None) -> list[Any] | None:
 
 
 def _clear_lead(container: Any, parent: tuple[Any, Any] | None) -> None:
-    if parent is None:
-        container.ca.comment[1] = None
-    else:
+    if parent is None or not _is_map(container):
+        if container.ca.comment:
+            container.ca.comment[1] = None
+    elif parent[0].ca.items.get(parent[1]):
         parent[0].ca.items[parent[1]][3] = None
+
+
+def _own_lead(lead: list[Any]) -> list[Any]:
+    """The tokens of a lead that are about the entry below: those after the last
+    blank line. What a blank line sets apart is a heading for the whole collection."""
+    last = max((i for i, t in enumerate(lead) if t.value.endswith("\n\n")), default=-1)
+    return lead[last + 1:]
+
+
+def _add_lead(container: Any, parent: tuple[Any, Any] | None, text: str) -> bool:
+    """Put comment lines above a collection's first entry, after any already
+    there. False if the collection has nowhere to keep them."""
+    tokens = _tokens(text)
+    if not tokens:
+        return True
+    existing = _lead(container, parent)
+    if existing is not None:
+        existing.extend(tokens)
+    elif parent is None or not _is_map(container):
+        if container.ca.comment is None:
+            container.ca.comment = [None, tokens]
+        else:
+            container.ca.comment[1] = tokens
+    elif _is_map(parent[0]):
+        parent[0].ca.items.setdefault(parent[1], [None, None, None, None])[3] = tokens
+    else:
+        return False
+    return True
 
 
 # --------------------------------------------------------------------------- #
@@ -540,26 +634,21 @@ class _Update:
             # What was written above the first entry goes with the list. What
             # follows the last entry has nowhere to go: ruamel.yaml drops
             # comments after an empty `[]`, so that is refused.
-            lead = _lead(container, parent) if _is_map(container) else (
-                container.ca.comment[1] if container.ca.comment else None)
-            if lead:
-                tokens: list[str] = []
-                _token_comments(lead, tokens)
-                self.gone += tokens
-                if _is_map(container):
-                    _clear_lead(container, parent)
-                else:
-                    container.ca.comment = None
+            self._drop_lead(container, parent)
             if _has_comment(rest):
                 raise MergeError(f"cannot remove the only entry {ident!r} of a list or mapping while "
                                  "comments follow it: ruamel.yaml would drop them. Move or delete "
                                  "the comments, then retry")
-        elif _has_comment(rest):
+        else:
+            # The comments above a list's first entry stay: they are usually its
+            # heading. Above a mapping's first key they are about that key, so
+            # they go with it, unless a blank line sets them apart as a heading.
             if _is_map(container):
+                self._drop_lead(container, parent, own_only=True)
+            if _has_comment(rest) and not _add_lead(container, parent, rest):
                 raise MergeError(
                     f"cannot remove {ident!r}, the first key of a mapping, while comments sit below it: "
-                    "ruamel.yaml has nowhere to keep them. Move or delete the comments, then retry")
-            _add_leading(container, rest)
+                    "this mapping has nowhere to keep them. Move or delete the comments, then retry")
         self.gone += _subtract(removed, _comments(rest))
         # Delete first: the entry before it may now be the list's last, and what
         # follows a list's last entry is stored differently (see _set_after).
@@ -571,9 +660,29 @@ class _Update:
             if hasattr(container.ca, "end"):
                 container.ca.end[:] = []
 
+    def _drop_lead(self, container: Any, parent: tuple[Any, Any] | None, own_only: bool = False) -> None:
+        """Drop the comments above a collection's first entry: all, or only the
+        ones about that entry, not a heading a blank line sets apart."""
+        lead = _lead(container, parent)
+        if lead:
+            gone = _own_lead(lead) if own_only else lead
+            tokens: list[str] = []
+            _token_comments(gone, tokens)
+            self.gone += tokens
+            if gone is lead or len(gone) == len(lead):
+                _clear_lead(container, parent)
+            else:
+                del lead[len(lead) - len(gone):]
+
     def insert(self, container: Any, pos: int, ident: Any, node: Any,
                parent: tuple[Any, Any] | None = None) -> None:
-        """Insert one entry; the comments written above the entry now after it stay above it."""
+        """Insert one entry; the comments written above the entry now after it stay above it.
+
+        At the front of a list the heading stays at the top and the new entry
+        goes under it: a comment that was about the old first entry in
+        particular cannot be told from a heading, and a heading is the commoner
+        (a chain's). At the front of a mapping the comment above the old first
+        key stays with that key, unless a blank line sets it apart."""
         keys = _keys(container)
         rest = ""
         if 0 < pos <= len(keys):
@@ -585,9 +694,12 @@ class _Update:
             # to follow the new one, unless a blank line sets it apart (a
             # heading for the whole mapping, or the file).
             lead = _lead(container, parent)
-            if lead and not lead[-1].value.endswith("\n\n"):
-                rest = "".join(" " * t.column + t.value for t in lead)
-                _clear_lead(container, parent)
+            own = _own_lead(lead) if lead else []
+            if own:
+                rest = "".join(" " * t.column + t.value for t in own)
+                del lead[len(lead) - len(own):]
+                if not lead:
+                    _clear_lead(container, parent)
         if _is_map(container):
             container.insert(pos, ident, node)
             key = ident
@@ -681,26 +793,28 @@ def merged(text: str, data: dict) -> str:
     from ruamel.yaml import YAMLError
 
     try:
-        y, doc = _choose(text)
+        y, doc, layout_problem = _choose(text)
     except YAMLError as exc:
         raise MergeError(f"not YAML: {exc}") from exc
     if not _is_map(doc):
         raise MergeError("the top level is not a mapping")
-    before = Counter(_comments(text))
-    lost = before - Counter(_comments(_dump(y, doc)))
+    before = Counter(_comments(text, True))
+    lost = before - Counter(_comments(_dump(y, doc), True))
     if lost:
         raise MergeError(
             f"ruamel.yaml would drop {sum(lost.values())} comment(s) from this file before any change "
             f"is made, first {next(iter(lost))!r}; nothing was written. (A comment line directly above "
             "a flow-style `- {...}` entry that has its own trailing comment is one case.)")
+    if layout_problem:
+        raise MergeError(layout_problem)
     update = _Update()
     update.map(doc, _prepare(data))
     out = _dump(y, doc)
     expected = before - Counter(update.gone)
-    after = Counter(_comments(out))
+    after = Counter(_comments(out, True))
     if after != expected:
         extra, missing = after - expected, expected - after
         what = (f"{sum(extra.values())} comment(s) written more than once, first {next(iter(extra))!r}"
                 if extra else f"{sum(missing.values())} comment(s) lost, first {next(iter(missing))!r}")
         raise MergeError(f"the update would leave {what}; nothing was written")
-    return out
+    return _read_back(out, data)

@@ -171,11 +171,11 @@ def write_rig(path: Path, rig: dict, *, source: str | None = None) -> None:
 
     Nothing is written, and `RigFileError` is raised, when `rig` is not one
     `parse_rig` accepts, when the file there is not YAML or not a mapping or
-    holds a comment that cannot be kept, or when the text would not read back
-    as `rig`. The file is replaced whole or not at all."""
+    holds a comment or a layout that cannot be kept, or when the text would not
+    read back as `rig` (yamlmerge checks that). The file is replaced whole or
+    not at all, with its permissions."""
     import os
-
-    import yaml
+    import shutil
 
     from . import yamlmerge
 
@@ -189,17 +189,16 @@ def write_rig(path: Path, rig: dict, *, source: str | None = None) -> None:
             text = yamlmerge.fresh(rig, _HEADER.format(source=source) if source else "")
     except yamlmerge.MergeError as exc:
         raise RigFileError([f"{path}: {exc}"]) from exc
-    try:
-        readable = yaml.safe_load(text) == rig
-    except yaml.YAMLError:
-        readable = False
-    if not readable:
-        raise RigFileError([f"{path}: the text written would not read back as the rig given; "
-                            "nothing was written"])
     path.parent.mkdir(parents=True, exist_ok=True)
     scratch = path.with_name(path.name + ".tmp")
-    scratch.write_text(text)
-    os.replace(scratch, path)
+    try:
+        scratch.write_text(text)
+        if path.exists():
+            shutil.copymode(path, scratch)  # the file keeps its permissions
+        os.replace(scratch, path)
+    except BaseException:
+        scratch.unlink(missing_ok=True)
+        raise
 
 
 def load_any(path: Path) -> "Rig | RigSpec":

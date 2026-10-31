@@ -322,18 +322,6 @@ def test_a_comment_ruamel_would_drop_is_refused_not_dropped(tmp_path):
     assert path.read_text() == text
 
 
-def test_the_first_key_of_a_mapping_cannot_go_while_comments_sit_below_it(tmp_path):
-    text = TEXT.replace("          threshold: -20.0   # dB; do not go lower\n",
-                        "          threshold: -20.0\n          # a note on the ratio\n")
-    path = tmp_path / "first.yaml"
-    path.write_text(text)
-    rig = yaml.safe_load(text)
-    del rig["channels"][0]["chain"][0]["parameters"]["threshold"]
-    with pytest.raises(RigFileError, match="first key"):
-        write_rig(path, rig)
-    assert path.read_text() == text
-
-
 def test_the_dict_given_is_not_changed(rig_path):
     rig = yaml.safe_load(TEXT)
     rig["channels"][0]["chain"][0]["parameters"]["threshold"] = -30.0
@@ -404,7 +392,7 @@ def test_a_plugin_added_to_an_empty_chain_and_an_empty_one_added_to_a_plugin(tmp
 def test_a_write_that_produces_text_that_is_not_yaml_is_a_rig_file_error(tmp_path, monkeypatch):
     from sushi_rig import yamlmerge
 
-    monkeypatch.setattr(yamlmerge, "fresh", lambda data, header="": "kind: [unclosed\n")
+    monkeypatch.setattr(yamlmerge, "_dump", lambda y, data: "kind: [unclosed\n")
     path = tmp_path / "out.yaml"
     with pytest.raises(RigFileError, match="read back"):
         write_rig(path, yaml.safe_load(TEXT))
@@ -416,7 +404,7 @@ def test_convert_force_says_fail_instead_of_a_traceback_when_the_write_cannot_be
     from sushi_rig import yamlmerge
     from sushi_rig.cli import main
 
-    monkeypatch.setattr(yamlmerge, "fresh", lambda data, header="": "kind: [unclosed\n")
+    monkeypatch.setattr(yamlmerge, "_dump", lambda y, data: "kind: [unclosed\n")
     out = tmp_path / "clean.yaml"
     assert main(["convert", str(checkout_root() / "config" / "electric-clean.json"),
                  "-o", str(out), "--force"]) == 1
@@ -533,3 +521,229 @@ def test_a_chain_can_be_emptied_when_nothing_follows_it_and_is_refused_when_comm
     after = written(tmp_path, text, lambda rig: rig["channels"][1].update(chain=[]))
     assert yaml.safe_load(after)["channels"][1]["chain"] == []
     assert "# Gate." not in after and after.endswith("master:\n  output: monitor-out\n  chain: []\n# The very end.\n")
+
+
+# --------------------------------------------------------------------------- #
+# Second review
+# --------------------------------------------------------------------------- #
+
+def test_a_hash_inside_a_block_scalar_is_text_not_a_comment(tmp_path):
+    text = TEXT.replace(
+        "description: A demo   # trailing, on the description\n",
+        "description: |\n  # not a comment\n  line two\n\n  # nor this\n", 1)
+    assert yaml.safe_load(text)["description"] == "# not a comment\nline two\n\n# nor this\n"
+    path = tmp_path / "rig.yaml"
+    path.write_text(text)
+    rig = yaml.safe_load(text)
+    rig["name"] = "renamed"                                  # an update that has nothing to do with it
+    write_rig(path, rig)
+    assert path.read_text() == text.replace("name: demo", "name: renamed", 1)
+    del rig["description"]                                    # and one that removes the block scalar
+    write_rig(path, rig)
+    assert "# not a comment" not in path.read_text() and "# The guitar, played" in path.read_text()
+
+
+def test_comments_are_counted_outside_multi_line_scalars_only():
+    from sushi_rig.yamlmerge import _comments
+
+    text = ("a: |   # header comment\n  # text\n  more # text\nb: \"quoted\n  # text\n  end\"   # real\n"
+            "c: plain # real two\nd: x\n# real three\n")
+    assert _comments(text, True) == ["# header comment", "# real", "# real two", "# real three"]
+
+
+def test_a_layout_that_cannot_be_reproduced_is_refused_naming_the_line(tmp_path):
+    # Four-space top indent, two-space nested, and a flow entry wrapped by hand across two lines:
+    # no one layout gives this file back, so an update would re-lay-out lines nobody touched.
+    text = (
+        "kind: rig\nschema_version: 1\nname: demo\nchannels:\n"
+        "    - name: a\n      input: a-in\n      width: mono\n      chain:\n"
+        "        - {name: p,\n           uri: http://example.org/p}\n"
+        "master:\n  output: monitor-out\n")
+    path = tmp_path / "rig.yaml"
+    path.write_text(text)
+    rig = yaml.safe_load(text)
+    rig["channels"][0]["chain"][0]["name"] = "q"
+    with pytest.raises(RigFileError, match=r"layout cannot be reproduced.*first at line \d+"):
+        write_rig(path, rig)
+    assert path.read_text() == text
+
+
+def test_the_first_key_of_a_nested_mapping_takes_its_comment_with_it(tmp_path):
+    text = TEXT.replace(
+        "          threshold: -20.0   # dB; do not go lower\n          # The ratio is deliberately gentle.\n",
+        "          # About the threshold.\n          threshold: -20.0\n          # The ratio is deliberately gentle.\n")
+    assert text != TEXT
+
+    def change(rig):
+        del rig["channels"][0]["chain"][0]["parameters"]["threshold"]
+
+    after = written(tmp_path, text, change)
+    assert after == text.replace("          # About the threshold.\n          threshold: -20.0\n", "")
+    # A heading set apart by a blank line is not about the key, and stays.
+    headed = text.replace("          # About the threshold.\n", "          # A heading.\n\n"
+                                                                "          # About the threshold.\n")
+    after = written(tmp_path, headed, change)
+    assert "# A heading.\n" in after and "# About the threshold." not in after
+    assert "# The ratio is deliberately gentle." in after
+
+
+def test_the_first_key_of_a_mapping_can_go_and_a_comment_below_it_becomes_the_next_keys(tmp_path):
+    text = TEXT.replace("          threshold: -20.0   # dB; do not go lower\n",
+                        "          threshold: -20.0\n          # a note on the ratio\n")
+
+    def change(rig):
+        del rig["channels"][0]["chain"][0]["parameters"]["threshold"]
+
+    after = written(tmp_path, text, change)
+    lines = after.splitlines()
+    i = lines.index("          # a note on the ratio")
+    assert lines[i + 1].strip().startswith("# The ratio") and lines[i + 2].strip() == "ratio: 2.0"
+
+
+def test_the_first_key_of_a_mapping_inside_a_list_item_cannot_go_with_comments_below_it(tmp_path):
+    text = TEXT.replace(
+        "  - name: guitar\n",
+        "  - strip:\n      gain: 0.833333\n      pan: 0.5\n    # about the name\n    name: guitar\n", 1)
+    path = tmp_path / "rig.yaml"
+    path.write_text(text)
+    rig = yaml.safe_load(text)
+    del rig["channels"][0]["strip"]
+    with pytest.raises(RigFileError, match="nowhere to keep them"):
+        write_rig(path, rig)
+    assert path.read_text() == text
+
+
+def test_a_plugin_inserted_at_the_front_goes_under_the_chains_heading(tmp_path):
+    # Decided: the comment above a list's first entry is its heading, and stays at the top; a
+    # comment that was about that one plugin cannot be told apart from it.
+    after = written(tmp_path, TEXT, lambda rig: rig["channels"][0]["chain"].insert(
+        0, {"name": "gate", "uri": "http://example.org/gate"}))
+    lines = after.splitlines()
+    i = lines.index("      # Keep the squash light.")
+    assert lines[i + 1].strip().startswith("- {name: gate") or lines[i + 1].strip() == "- name: gate"
+    assert [p["name"] for p in yaml.safe_load(after)["channels"][0]["chain"]] == \
+        ["gate", "comp", "drive", "eq", "verb"]
+    assert comments(after) == comments(TEXT)
+
+
+def test_the_comment_layout_yamlmerge_relies_on_is_the_one_this_ruamel_version_has():
+    # yamlmerge.py moves comments by the slots ruamel.yaml 0.19 keeps them in. This pins the
+    # slots, so a version that moves them fails here instead of attaching comments to the wrong plugin.
+    from ruamel.yaml import YAML
+
+    doc = YAML().load(
+        "# top\n"
+        "a:\n"
+        "  # lead of a's first key\n"
+        "  x: 1   # eol of x\n"
+        "  # between x and y\n"
+        "  y: 2\n"
+        "  # after y\n"
+        "l:\n"
+        "  # lead of l\n"
+        "  - {n: 1}\n"
+        "  # between 1 and 2\n"
+        "  - {n: 2}\n"
+        "  # after 2\n"
+        "b:\n"
+        "  - 1\n"
+        "  # between 1 and 2\n"
+        "  - 2\n"
+        "bm:\n"
+        "  - n: 1\n"
+        "  # between 1 and 2\n"
+        "  - n: 2\n"
+        "l2:\n"
+        "  - {n: 1}   # eol of 1\n"
+        "  # after l2\n"
+        "m:\n"
+        "  - 1\n"
+        "  - 2\n"
+        "  # after the last, no eol\n"
+        "mf:\n"
+        "  - {n: 1}\n"
+        "  - {n: 2}\n"
+        "  # after the last, no eol\n"
+        "z: 0\n")
+
+    def text(token):
+        return token.value
+
+    assert text(doc.ca.comment[1][0]) == "# top\n"                                 # the file's lead
+    assert text(doc.ca.items["a"][3][0]) == "# lead of a's first key\n"            # a mapping's lead: on its key
+    assert text(doc["a"].ca.items["x"][2]) == "# eol of x\n  # between x and y\n"  # after a key: slot 2
+    assert text(doc["a"].ca.items["y"][2]) == "\n  # after y\n"                     # no eol: starts with a newline
+    assert text(doc["l"].ca.comment[1][0]) == "# lead of l\n"                      # a list's lead
+    assert text(doc["l"].ca.items[1][1][0]) == "# between 1 and 2\n"               # before a flow item that follows a flow item: its slot 1
+    assert text(doc["b"].ca.items[0][0]) == "\n  # between 1 and 2\n"              # after a scalar list item: slot 0
+    assert text(doc["bm"][0].ca.items["n"][2]) == "\n  # between 1 and 2\n"        # after a block item: on its last key
+    assert [text(t) for t in doc["l"].ca.end] == ["# after 2\n"]                 # after a list's last: its end
+    assert text(doc["l2"].ca.items[0][0]) == "# eol of 1\n  # after l2\n"           # ... or on the item, with an eol
+    assert text(doc["m"].ca.items[1][0]) == "\n  # after the last, no eol\n"        # after a scalar last item: its slot 0
+    assert [text(t) for t in doc["mf"].ca.end] == ["# after the last, no eol\n"]  # after a flow last item, no eol: the end
+
+
+def test_ruamel_is_pinned_to_the_version_the_comment_layout_was_checked_on():
+    import re as regex
+
+    pyproject = (checkout_root() / "tool" / "pyproject.toml").read_text()
+    assert regex.search(r'"ruamel\.yaml>=0\.19,<0\.20"', pyproject)
+    import ruamel.yaml
+
+    assert ruamel.yaml.__version__.startswith("0.19.")
+
+
+def test_a_merge_that_would_not_read_back_is_refused_by_yamlmerge_itself(monkeypatch):
+    # The read-back is in yamlmerge, not only in write_rig, so no other caller can skip it.
+    from sushi_rig import yamlmerge
+
+    monkeypatch.setattr(yamlmerge, "_prepare", lambda value: value)   # no quoting of "no"
+    with pytest.raises(yamlmerge.MergeError, match="read back"):
+        yamlmerge.fresh({"answer": "no"})
+    with pytest.raises(yamlmerge.MergeError, match="read back"):
+        yamlmerge.merged("answer: x\n", {"answer": "no"})
+
+
+def test_the_representer_and_the_resolver_are_built_once():
+    from sushi_rig import yamlmerge
+
+    assert yamlmerge._representer() is yamlmerge._representer()
+    assert yamlmerge._resolver() is yamlmerge._resolver()
+    assert yamlmerge._yaml(2, 2, 0, 100).Representer is yamlmerge._representer()
+
+
+def test_a_failed_write_leaves_no_scratch_file_and_the_old_file(tmp_path, monkeypatch):
+    import os
+
+    path = tmp_path / "rig.yaml"
+    path.write_text(TEXT)
+    rig = yaml.safe_load(TEXT)
+    rig["name"] = "other"
+
+    def broken(src, dst):
+        raise OSError("disk full")
+
+    monkeypatch.setattr(os, "replace", broken)
+    with pytest.raises(OSError, match="disk full"):
+        write_rig(path, rig)
+    assert path.read_text() == TEXT
+    assert [p.name for p in tmp_path.iterdir()] == ["rig.yaml"]
+
+
+def test_a_rewritten_file_keeps_its_permissions(tmp_path):
+    path = tmp_path / "rig.yaml"
+    path.write_text(TEXT)
+    path.chmod(0o640)
+    rig = yaml.safe_load(TEXT)
+    rig["name"] = "other"
+    write_rig(path, rig)
+    assert path.stat().st_mode & 0o777 == 0o640
+    assert "name: other" in path.read_text()
+
+
+def test_a_list_of_scalars_grows_and_shrinks_with_the_comment_after_it_kept_once():
+    from sushi_rig import yamlmerge
+
+    text = "m:\n  - 1\n  - 2\n  # after\nz: 0\n"
+    assert yamlmerge.merged(text, {"m": [1], "z": 0}) == "m:\n  - 1\n  # after\nz: 0\n"
+    assert yamlmerge.merged(text, {"m": [1, 2, 3], "z": 0}) == "m:\n  - 1\n  - 2\n  - 3\n  # after\nz: 0\n"
