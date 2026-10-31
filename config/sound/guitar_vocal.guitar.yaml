@@ -1,0 +1,34 @@
+schema_version: 1
+config: guitar_vocal.guitar
+stimulus: log_sweep 20-20000Hz 5s -20dBFS 2ch
+sample_rate: 48000
+frames: 240000
+measured:
+  peak_dbfs: -21.0895
+  rms_dbfs: -34.9631
+  delay_samples: 1
+  bands:
+  - low_hz: 20.0
+    high_hz: 80.0
+    level_dbfs: -52.5799
+  - low_hz: 80.0
+    high_hz: 250.0
+    level_dbfs: -38.9424
+  - low_hz: 250.0
+    high_hz: 800.0
+    level_dbfs: -36.5704
+  - low_hz: 800.0
+    high_hz: 2500.0
+    level_dbfs: -43.0991
+  - low_hz: 2500.0
+    high_hz: 8000.0
+    level_dbfs: -56.6525
+  - low_hz: 8000.0
+    high_hz: 20000.0
+    level_dbfs: -76.6904
+tolerance:
+  band_db: 0.0001
+  level_db: 0.0001
+  delay_samples: 0
+  note: 'measured: two renders of this config were identical to the 0.0001 dB this
+    file is written at'

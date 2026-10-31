@@ -565,8 +565,12 @@ workflows because no single runner has everything:
   container. When the check fails, the job calibrates every config afresh and
   attaches the result (`sound-reference-candidates`, and printed in the log).
   Commit those only if the change was meant; if it was not, they are the
-  evidence and the fix is in the config. `guitar_vocal` is not covered: Sushi's
-  offline frontend has one stereo bus, and its vocal track is on the second.
+  evidence and the fix is in the config. A config is rendered whole when Sushi's
+  offline frontend can host it, which also checks how its channels mix. One it
+  cannot — the offline frontend has one stereo bus, and `guitar_vocal`'s vocal
+  is on the second — is checked one channel at a time, each with its own
+  reference (`config/sound/<config>.<channel>.yaml`). To add a reference
+  without re-baselining the rest, `nulltest <config> --calibrate --missing`.
 
 Only `-m slow` used to run in the container, so the lilv- and Sushi-guarded
 tests ran in neither workflow and nothing said so. If a test genuinely cannot

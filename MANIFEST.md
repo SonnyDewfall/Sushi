@@ -942,14 +942,35 @@ Isolated by rendering two configs at two channel counts in one CI step, because
 the obvious reading of the first failure — that a four-channel stimulus would
 reach bus 1 — was wrong twice over.
 
-**What it costs: `guitar_vocal`'s sound is not null-tested.** `nulltest`
-reports it as NOT RENDERABLE OFFLINE on every run rather than failing for ever.
-A config that *has* a reference and becomes unrenderable does fail, so moving a
-track to bus 1 by mistake cannot quietly drop a config's protection. The way to
-close the gap is to render each track on its own through a single-bus copy of
-the config, which would also say *which* chain moved; not done, because it
-changes what a reference is. It matters more with every multi-channel rig, and
-recording makes those the normal case.
+**What it cost, and how it was closed.** At first `guitar_vocal` could not be
+null-tested at all, and was reported as NOT RENDERABLE OFFLINE on every run. A
+config the offline frontend cannot host is now checked one channel at a time:
+each track rendered alone through a copy of the config holding only that track,
+moved to bus 0, with its own `initial_state` and MIDI entries and those of any
+`pre_track` or `post_track`. Each channel has its own reference,
+`config/sound/<config>.<channel>.yaml`. It works for any number of channels,
+which matters because rigs will be set up with one, two or more from the UI,
+and a failure says *which* chain moved.
+
+A config that *can* be rendered whole still is, under its own name. The first
+version split every multi-track config, and review caught what that cost: the
+whole is the stronger check, because it fingerprints the mix, and #18's one
+input through two parallel chains is only audible as a blend. So the split is
+the fallback, and what it does not cover — the summing between channels — is
+routing, and `verify`'s to check.
+
+Adding a channel used to mean following a hint to recalibrate the whole
+config, which would also have accepted any accidental change in the other
+channels as their new sound. `--calibrate --missing` calibrates only what has
+no reference.
+
+A channel that needs more than two engine channels on its own is still
+unrenderable and reported as such. One that *had* a reference and becomes
+unrenderable fails, so a routing mistake cannot quietly drop protection, and
+with `--all` a reference nothing produces any more fails as orphaned.
+
+**Not reported upstream**, by decision on 2026-10-30: the stack overflow is
+noted here and left for now.
 
 ### 🟡 Three configs are one tone under three names (2026-10-30)
 

@@ -452,6 +452,12 @@ def test_a_render_that_is_not_finite_is_refused_before_it_is_fingerprinted(
 ROOT = Path(__file__).parent.parent.parent
 BUS_ONE = {"tracks": [{"name": "vocal", "inputs": [{"engine_bus": 1, "track_bus": 0}],
                        "outputs": [{"engine_bus": 0, "track_bus": 0}]}]}
+# What is still unrenderable once channels are rendered one at a time: a single
+# track that needs four input channels by itself, which no move to bus 0 fits
+# into the offline frontend's two.
+WIDE = {"tracks": [{"name": "quad", "channels": 4,
+                    "inputs": [{"engine_bus": 0, "track_bus": 0}, {"engine_bus": 1, "track_bus": 1}],
+                    "outputs": [{"engine_bus": 0, "track_bus": 0}]}]}
 
 
 def test_guitar_vocal_cannot_be_rendered_offline_and_says_why():
@@ -519,7 +525,7 @@ def test_an_unrenderable_config_is_reported_every_run_without_failing_it(
     import json
 
     cli, config = _rig(tmp_path, monkeypatch)
-    config.write_text(json.dumps(BUS_ONE))
+    config.write_text(json.dumps(WIDE))
     assert cli.main(["nulltest", str(config)]) == 0
     err = capsys.readouterr().err
     assert "NOT RENDERABLE OFFLINE" in err and "engine bus 1" in err
@@ -530,7 +536,7 @@ def test_calibrating_an_unrenderable_config_writes_no_reference(tmp_path, monkey
     import json
 
     cli, config = _rig(tmp_path, monkeypatch)
-    config.write_text(json.dumps(BUS_ONE))
+    config.write_text(json.dumps(WIDE))
     assert cli.main(["nulltest", str(config), "--calibrate"]) == 0
     assert not render.reference_path(tmp_path, config).exists()
     assert "NOT RENDERABLE OFFLINE" in capsys.readouterr().err
@@ -545,7 +551,7 @@ def test_a_config_that_had_a_reference_and_became_unrenderable_fails(
 
     cli, config = _rig(tmp_path, monkeypatch)
     assert cli.main(["nulltest", str(config), "--calibrate"]) == 0
-    config.write_text(json.dumps(BUS_ONE))
+    config.write_text(json.dumps(WIDE))
     assert cli.main(["nulltest", str(config)]) == 1
     err = capsys.readouterr().err
     assert "NO LONGER RENDERABLE" in err
@@ -561,7 +567,7 @@ def test_recalibrating_a_config_that_became_unrenderable_fails_rather_than_lying
 
     cli, config = _rig(tmp_path, monkeypatch)
     assert cli.main(["nulltest", str(config), "--calibrate"]) == 0
-    config.write_text(json.dumps(BUS_ONE))
+    config.write_text(json.dumps(WIDE))
     assert cli.main(["nulltest", str(config), "--calibrate"]) == 1
     assert "NO LONGER RENDERABLE" in capsys.readouterr().err
 
@@ -586,3 +592,242 @@ def test_a_recalibration_keeps_a_tolerance_that_was_set_wider_by_hand(
     _, kept = from_dict(yaml.safe_load(ref.read_text()))
     assert (kept.band_db, kept.level_db, kept.note) == (0.01, 0.01, "set by hand")
     assert "kept the committed tolerance" in capsys.readouterr().err
+
+
+# --- one channel at a time ----------------------------------------------------
+#
+# Sushi's offline frontend has one stereo bus, so a rig of several channels is
+# rendered one channel at a time, each on bus 0. Rigs will have one, two or
+# more channels, chosen in the UI, so none of this may assume two.
+
+TWO_TRACKS = {
+    "host_config": {"samplerate": 48000},
+    "tracks": [
+        {"name": "guitar", "channels": 2,
+         "inputs": [{"engine_bus": 0, "track_bus": 0}], "outputs": [{"engine_bus": 0, "track_bus": 0}],
+         "plugins": [{"name": "guitar_eq", "type": "internal", "uid": "sushi.testing.passthrough"}]},
+        {"name": "vocal", "channels": 2,
+         "inputs": [{"engine_bus": 1, "track_bus": 0}], "outputs": [{"engine_bus": 0, "track_bus": 0}],
+         "plugins": [{"name": "vocal_eq", "type": "internal", "uid": "sushi.testing.passthrough"}]},
+    ],
+    "initial_state": [
+        {"processor": "guitar", "parameters": {"gain": 0.8}},
+        {"processor": "guitar_eq", "parameters": {"gain": 0.5}},
+        {"processor": "vocal_eq", "parameters": {"gain": 0.3}},
+    ],
+    "midi": {"cc_mappings": [
+        {"port": 0, "channel": "all", "cc_number": 1, "plugin_name": "guitar_eq", "parameter_name": "gain"},
+        {"port": 0, "channel": "all", "cc_number": 2, "plugin_name": "vocal_eq", "parameter_name": "gain"},
+    ]},
+}
+
+
+def test_a_single_track_config_is_its_own_one_channel_untouched():
+    """So every reference written before channels existed still applies, and
+    the file Sushi renders is the very file on disk."""
+    import json
+
+    config = json.loads((ROOT / "config" / "electric_board.json").read_text())
+    (only,) = render.channels_of(config, ROOT / "config" / "electric_board.json")
+    assert (only.name, only.whole) == ("electric_board", True)
+    assert only.config is config
+
+
+def test_a_lone_track_on_bus_one_is_moved_to_bus_zero_and_renders():
+    (only,) = render.channels_of(BUS_ONE, Path("solo.json"))
+    assert (only.name, only.whole) == ("solo", False)
+    assert only.config["tracks"][0]["inputs"][0]["engine_bus"] == 0
+    assert render.offline_problem(only.config) is None
+    assert BUS_ONE["tracks"][0]["inputs"][0]["engine_bus"] == 1, "the original is not touched"
+
+
+def test_each_track_of_a_multi_track_config_is_rendered_alone_on_bus_zero():
+    guitar, vocal = render.channels_of(TWO_TRACKS, Path("config/duo.json"))
+    assert (guitar.name, vocal.name) == ("duo.guitar", "duo.vocal")
+    assert vocal.label == "duo.json [vocal]"
+    assert [t["name"] for t in vocal.config["tracks"]] == ["vocal"]
+    assert vocal.config["tracks"][0]["inputs"][0]["engine_bus"] == 0
+    assert render.offline_problem(vocal.config) is None
+
+
+def test_a_channel_keeps_only_its_own_state_and_midi():
+    """Sushi refuses a config whose initial_state or MIDI mappings name a
+    processor that is not there."""
+    guitar, vocal = render.channels_of(TWO_TRACKS, Path("duo.json"))
+    assert [e["processor"] for e in guitar.config["initial_state"]] == ["guitar", "guitar_eq"]
+    assert [e["processor"] for e in vocal.config["initial_state"]] == ["vocal_eq"]
+    assert [m["plugin_name"] for m in vocal.config["midi"]["cc_mappings"]] == ["vocal_eq"]
+
+
+def test_channel_form_routing_moves_down_in_order():
+    track = {"name": "s", "inputs": [{"engine_channel": 3, "track_channel": 1},
+                                     {"engine_channel": 2, "track_channel": 0}]}
+    (only,) = render.channels_of({"tracks": [track]}, Path("s.json"))
+    assert [e["engine_channel"] for e in only.config["tracks"][0]["inputs"]] == [1, 0]
+
+
+def test_any_number_of_channels_each_get_their_own():
+    """Not two: the UI will offer one, two or more."""
+    tracks = [
+        {"name": f"ch{n}", "inputs": [{"engine_bus": n, "track_bus": 0}],
+         "outputs": [{"engine_bus": 0, "track_bus": 0}]}
+        for n in range(4)
+    ]
+    channels = render.channels_of({"tracks": tracks}, Path("four.json"))
+    assert [c.name for c in channels] == ["four.ch0", "four.ch1", "four.ch2", "four.ch3"]
+    assert all(render.offline_problem(c.config) is None for c in channels)
+
+
+def test_a_track_name_that_cannot_name_a_file_is_refused():
+    with pytest.raises(ValueError, match="cannot name a reference file"):
+        render.channels_of({"tracks": [{"name": "A B", "inputs": [{"engine_bus": 1}]}, {"name": "c"}]}, Path("x.json"))
+
+
+def test_every_channel_of_every_config_in_the_repository_renders():
+    """The property that matters now, and the one guitar_vocal used to fail."""
+    import json
+
+    names = {
+        channel.name
+        for config in (ROOT / "config").glob("*.json")
+        for channel in render.channels_of(json.loads(config.read_text()), config)
+        if render.offline_problem(channel.config) is None
+    }
+    assert {"guitar_vocal.guitar", "guitar_vocal.vocal", "electric_board"} <= names
+    assert len(names) == 12, sorted(names)
+
+
+def test_a_multi_track_config_gets_a_reference_per_channel(tmp_path, monkeypatch, capsys):
+    import json
+
+    cli, config = _rig(tmp_path, monkeypatch)
+    config.write_text(json.dumps(TWO_TRACKS))
+    assert cli.main(["nulltest", str(config), "--calibrate"]) == 0
+    sound = tmp_path / "config" / "sound"
+    assert sorted(p.name for p in sound.iterdir()) == [
+        "electric-clean.guitar.yaml", "electric-clean.vocal.yaml"
+    ]
+    assert cli.main(["nulltest", str(config)]) == 0
+    out = capsys.readouterr().out
+    assert "electric-clean.json [vocal]: sounds the same" in out
+
+
+def test_a_reference_nothing_produces_any_more_fails_the_full_run(tmp_path, monkeypatch, capsys):
+    """A config or track renamed leaves a reference that checks nothing and
+    fails nothing, which reads as coverage that is not there."""
+    cli, config = _rig(tmp_path, monkeypatch)
+    assert cli.main(["nulltest", "--all", "--calibrate"]) == 0
+    stale = tmp_path / "config" / "sound" / "renamed-away.yaml"
+    stale.write_text((tmp_path / "config" / "sound" / "electric-clean.yaml").read_text())
+    assert cli.main(["nulltest", "--all"]) == 1
+    assert "renamed-away.yaml: ORPHANED REFERENCE" in capsys.readouterr().err
+
+
+def test_a_config_that_cannot_be_split_keeps_its_references_out_of_the_orphan_check(
+    tmp_path, monkeypatch, capsys
+):
+    """Its references are not orphans just because this run could not expand
+    it; that failure is reported once, as itself."""
+    import json
+
+    cli, config = _rig(tmp_path, monkeypatch)
+    config.write_text(json.dumps(TWO_TRACKS))
+    assert cli.main(["nulltest", "--all", "--calibrate"]) == 0
+    config.write_text(json.dumps({"tracks": [{"name": "A B", "inputs": [{"engine_bus": 1}]}, {"name": "c"}]}))
+    assert cli.main(["nulltest", "--all"]) == 1
+    err = capsys.readouterr().err
+    assert "CANNOT CHECK" in err and "ORPHANED" not in err
+
+
+# --- found in review ----------------------------------------------------------
+
+def test_a_multi_track_config_that_renders_whole_is_checked_whole():
+    """The mix is the stronger check — #18's one input through two parallel
+    chains is only audible as a blend — so a config is split only when it has
+    to be."""
+    parallel = {"tracks": [
+        {"name": "clean", "inputs": [{"engine_bus": 0}], "outputs": [{"engine_bus": 0}]},
+        {"name": "dirty", "inputs": [{"engine_bus": 0}], "outputs": [{"engine_bus": 0}]},
+    ]}
+    (only,) = render.channels_of(parallel, Path("blend.json"))
+    assert (only.name, only.whole) == ("blend", True)
+
+
+@pytest.mark.parametrize("config", [[], {"tracks": None}, {"tracks": [{"name": "a", "plugins": None,
+                                                                         "inputs": [{"engine_bus": 1}]}]}])
+def test_a_malformed_config_is_one_line_not_the_end_of_the_run(tmp_path, monkeypatch, capsys, config):
+    """A list, a null track list or null plugins used to escape as a traceback
+    and take every other config and the orphan check with it."""
+    import json
+
+    cli, good = _rig(tmp_path, monkeypatch)
+    (tmp_path / "config" / "broken.json").write_text(json.dumps(config))
+    assert cli.main(["nulltest", "--all", "--calibrate"]) in (0, 1)
+    out, err = capsys.readouterr()
+    assert "electric-clean.json: calibrated" in out, "the good config still ran"
+    if config == []:
+        assert "broken.json: CANNOT CHECK" in err
+
+
+def test_two_tracks_sharing_a_name_are_refused_before_they_share_a_reference():
+    """Sushi would refuse it, but never sees it once each track is rendered
+    alone — and both would write the same reference."""
+    twins = {"tracks": [{"name": "guitar", "inputs": [{"engine_bus": 1}]}, {"name": "guitar"}]}
+    with pytest.raises(ValueError, match="more than one track called guitar"):
+        render.channels_of(twins, Path("x.json"))
+
+
+def test_calibrating_only_what_is_missing_leaves_the_rest_alone(tmp_path, monkeypatch, capsys):
+    """The hint for one missing channel used to recalibrate the whole config,
+    accepting any accidental change in the other channels as the new sound."""
+    import json
+
+    cli, config = _rig(tmp_path, monkeypatch)
+    config.write_text(json.dumps(TWO_TRACKS))
+    assert cli.main(["nulltest", str(config), "--calibrate"]) == 0
+    guitar_ref = tmp_path / "config" / "sound" / "electric-clean.guitar.yaml"
+    vocal_ref = tmp_path / "config" / "sound" / "electric-clean.vocal.yaml"
+    before = guitar_ref.read_text()
+    vocal_ref.unlink()
+
+    assert cli.main(["nulltest", str(config)]) == 1
+    assert "--calibrate --missing" in capsys.readouterr().err, "the hint says how"
+
+    guitar_ref.write_text(before.replace("delay_samples: 0\n  bands", "delay_samples: 7\n  bands", 1))
+    edited = guitar_ref.read_text()
+    assert cli.main(["nulltest", str(config), "--calibrate", "--missing"]) == 0
+    assert vocal_ref.exists()
+    assert guitar_ref.read_text() == edited, "an existing reference is not touched"
+
+
+def test_processors_every_channel_keeps_keep_their_settings():
+    """pre_track and post_track survive the copy, so their initial_state must
+    too, or a master limiter renders at its defaults in every channel."""
+    config = dict(TWO_TRACKS)
+    config["post_track"] = {"name": "master", "plugins": [{"name": "limiter", "type": "internal",
+                                                           "uid": "sushi.testing.passthrough"}]}
+    config["initial_state"] = TWO_TRACKS["initial_state"] + [
+        {"processor": "limiter", "parameters": {"gain": 0.2}},
+    ]
+    _, vocal = render.channels_of(config, Path("duo.json"))
+    assert [e["processor"] for e in vocal.config["initial_state"]] == ["vocal_eq", "limiter"]
+
+
+def test_splitting_a_config_leaves_the_original_as_it_was():
+    """Only the track is deep-copied; nothing here may modify what is shared."""
+    import json
+
+    before = json.dumps(TWO_TRACKS, sort_keys=True)
+    render.channels_of(TWO_TRACKS, Path("duo.json"))
+    assert json.dumps(TWO_TRACKS, sort_keys=True) == before
+
+
+def test_orphans_count_as_checks_so_the_summary_adds_up(tmp_path, monkeypatch, capsys):
+    """It read "3 of 1 check(s)" with three orphans and one config."""
+    cli, config = _rig(tmp_path, monkeypatch)
+    assert cli.main(["nulltest", "--all", "--calibrate"]) == 0
+    sound = tmp_path / "config" / "sound"
+    for name in ("a", "b", "c"):
+        (sound / f"{name}.yaml").write_text((sound / "electric-clean.yaml").read_text())
+    assert cli.main(["nulltest", "--all"]) == 1
+    assert "3 of 4 check(s) could not be confirmed" in capsys.readouterr().err
