@@ -14,7 +14,7 @@ open issues link to them rather than duplicating the task description.
 
 ---
 
-## 1. 🟡 Shared understanding — README and manifest
+## 1. 🟢 Shared understanding — README and manifest
 
 Establish what the project is, how it is shaped, and what is in flight, so the
 next session (human or model) can pick it up cold.
@@ -34,7 +34,7 @@ next session (human or model) can pick it up cold.
 
 ---
 
-## 2. 🟡 Modelling → config workflow
+## 2. 🟢 Modelling → config workflow
 
 The core of the project: a stable loop from *tweaking sound by ear* to *a
 committed Sushi config*.
@@ -56,10 +56,11 @@ to reach a working tweak-by-ear loop as fast as possible — see the plan at
 | E2 | `probe.py` — LV2 metadata catalogue — [#3](https://github.com/SonnyDewfall/Sushi/issues/3) | lilv | ❌ |
 | E3 | config test suite — [#4](https://github.com/SonnyDewfall/Sushi/issues/4) | — | mixed |
 
-A working single-file prototype of all these already exists at
-`tool/prototype_reference.py`. Treat it as reference for data shapes and emit logic, not
-as the target structure — it is being split into `tool/src/sushi_rig/` with
-`pyproject.toml` and `tool/tests/`.
+A working single-file prototype of all these existed at
+`tool/prototype_reference.py`, as reference for data shapes and emit logic rather
+than the target structure; it was split into `tool/src/sushi_rig/` with
+`pyproject.toml` and `tool/tests/`. *(Deleted 2026-10-31: the package superseded
+it and nothing imported it.)*
 
 - [x] Environment ready: `python3-pip`, `python3-venv`, `python3-lilv`,
       `lv2-dev`, `lilv-utils`, and `liblilv-dev` installed system-wide (the
@@ -79,7 +80,7 @@ as the target structure — it is being split into `tool/src/sushi_rig/` with
       Renamed `tool/sushi_rig.py` → `tool/prototype_reference.py` — its old name
       collided with the new package's import name and, since `tool/` sits on
       `sys.path` at runtime, silently shadowed it. Left in place as reference
-      until item 2 phase D deletes it.
+      until the package superseded it; deleted 2026-10-31, imported by nothing.
 - [x] **B1 `dump.py`** — fixed break, parses with `JSONDecoder().raw_decode`
       from the first `{`, ignoring the trailing `Parameter dump completed -
       exiting.` line. `collect_parameter_info` added alongside the prototype's
@@ -167,18 +168,16 @@ right. Backlog moved to GitHub Issues (2026-09-13) — see
 Backlog moved to GitHub Issues (2026-09-13) — see
 [#4](https://github.com/SonnyDewfall/Sushi/issues/4). The real
 `--dump-plugins` fixture this depends on already exists at
-`tool/examples/dump.example.json`, and the smoke test itself is runnable by
-hand today (no new dependencies):
-
-```bash
-export LV2_PATH="$HOME/Sushi/plugins/lv2:$HOME/Sushi/plugins:/usr/lib/lv2"
-for c in config/*.json; do ./sushi --dump-plugins -c "$c" >/dev/null 2>&1 \
-  && echo "ok   $c" || echo "FAIL $c"; done
-```
+`tool/examples/dump.example.json`. The smoke test was once a shell loop over
+`config/*.json` run with an `LV2_PATH` that included `/usr/lib/lv2` and
+`plugins/lv2`. That path is gone, deliberately (it hid the rig not being
+self-contained; see the README's *Plugins and portability*). Use
+`sushi-rig verify --all` instead: it and the supervisor (`sushi-rig up`) set
+`LV2_PATH` to `plugins/` alone (`rig.py`, `verify.py`).
 
 ---
 
-## 4. 🟡 Config library structure and versioning
+## 4. 🟢 Config library structure and versioning
 
 - [x] Physically separated the kinds of file that were mixed in `config/`:
       patchbay routing → `Patchbay/`, plugin inventory → `plugin-manifest.txt`,
@@ -188,12 +187,19 @@ for c in config/*.json; do ./sushi --dump-plugins -c "$c" >/dev/null 2>&1 \
       three layers — source (`config/src/acoustic_chorus.yaml`), live config
       (`config/acoustic_chorus.json`, `_meta` populated), and an archived
       `v1.0` snapshot.
-- [ ] Remaining three configs (`acoustic_reverb_fx.json` as part of
+- [x] Remaining three configs (`acoustic_reverb_fx.json` as part of
       [#1](https://github.com/SonnyDewfall/Sushi/issues/1); `empty.json`,
       `fx.json` as [#5](https://github.com/SonnyDewfall/Sushi/issues/5))
-      still use the old names — tracked on GitHub, not here.
+      still used the old names. *Moot:* all three are in `config/retired/` now,
+      so there is nothing left to rename.
 
 ### Naming
+
+> **Never followed, and dropped (2026-10-31).** Only `acoustic_chorus` was ever
+> named this way. The configs that exist now (`electric-clean`, `hard-feelings`,
+> `accustomed`, `guitar_vocal`, ...) are free-form, hyphenated or not, the
+> `test_` prefix is unused, and nothing enforces any of it. The rest of this
+> section records what was once intended.
 
 Shared `<instrument>_<character>` stem across the hand-authored source, the
 deployable config, and any archived snapshot:
@@ -308,7 +314,8 @@ parameters: [{name, label, osc_path, id}]}]}` — followed on **stdout** by the
 literal line `Parameter dump completed - exiting.`. Captured verbatim as
 `tool/examples/dump.example.json`.
 
-> ⚠️ This breaks the prototype. `sushi_rig.py:dump_plugins()` handles *leading*
+> ⚠️ This breaks the prototype (`prototype_reference.py`, since deleted
+> 2026-10-31). `sushi_rig.py:dump_plugins()` handles *leading*
 > log lines but not a *trailing* message, so both `json.loads` paths raise
 > `Extra data`. `verify` and `panel` cannot work on 1.3.0 until it parses with
 > `JSONDecoder().raw_decode()` from the first `{`. First thing to fix in item 2.
@@ -572,12 +579,20 @@ file regenerated from `Patchbay/rig.qpwgraph` on every launch and wiped on
 reboot. A change made the obvious way looks saved, survives until the next
 `restart`, and then silently reverts.
 
-Not fixed. Three ways round it today, none obvious from the UI:
+Not fixed. *(Updated 2026-10-31: `Patchbay/rig.qpwgraph` is now generated, so
+the remedies first listed here — `up --no-amp` then wire and save, **Save As**
+onto `Patchbay/rig.qpwgraph`, editing the XML by hand — all write the committed
+file directly, and `test_the_committed_patchbay_is_what_generate_produces` fails
+on any of them.)* The real remedy: change the routing at its source, in
+`machines/<hostname>.yaml` (and the rig file's roles), then regenerate:
 
-- `sushi-rig up --no-amp`, which loads `Patchbay/rig.qpwgraph` directly, then
-  wire, save, and bring the amp back;
-- **Save As** onto `Patchbay/rig.qpwgraph`;
-- edit the XML by hand with the rig down.
+```bash
+sushi-rig patchbay generate config/src/guitar_vocal.yaml -o Patchbay/rig.qpwgraph
+```
+
+(`--machine` defaults to `machines/<this hostname>.yaml`.) qpwgraph is for
+looking at a wiring, or trying one out; what survives is what the machine file
+says.
 
 Worth a real fix: either derive the amp patchbay somewhere that saves back, or
 have `up` notice the derived file changed and offer to fold it in. Related to
@@ -670,7 +685,11 @@ Needed `"label": false` on the readout to stop it from falling back to
 showing its own (long, processor-qualified) `id` as a label, which had been
 overlapping the row above it.
 
-### 🟡 The plugin settings in `acoustic_reverb_fx.json` do nothing (chorus fixed)
+### 🟢 The plugin settings in `acoustic_reverb_fx.json` do nothing (chorus fixed)
+
+> **Moot (2026-10-31).** `acoustic_reverb_fx.json` is in `config/retired/`: it
+> depended on the LSP suite, which left `LV2_PATH`, and the rig was rebuilt on
+> `electric_board`. Nothing launches the file, so the fix below is never needed.
 
 Affects `config/acoustic_reverb_fx.json` only now — `acoustic_chorus_fx.json`
 was fixed for real on 2026-09-13 (see below) and renamed to
@@ -719,7 +738,11 @@ directly from each port's domain (`probe`, or `get_parameter_value_in_domain`
 live) without the caution the brief urged around logarithmic ports, since
 Sushi's linear normalisation is now confirmed regardless of that hint.
 
-### 🟠 `start-rig.sh` does not put the bundled plugins on `LV2_PATH`
+### 🟢 `start-rig.sh` does not put the bundled plugins on `LV2_PATH`
+
+> **Resolved.** `start-rig.sh` was replaced by the supervisor, and `plugins/` is
+> now flat (bundles at the top level, the rest in `plugins/archive/`) with
+> `LV2_PATH` set to `plugins/` alone. See the README's *Plugins and portability*.
 
 The script sets `LV2_PATH="$HOME/Sushi/plugins:…"`, but `LV2_PATH` entries must
 be directories *containing* `.lv2` bundles. Only `plugins/lsp-plugins.lv2` sits
@@ -732,7 +755,11 @@ which means the "portable plugins directory" is not actually supplying anything
 except the newer LSP build. Portability here is currently illusory — fix
 tracked as [#6](https://github.com/SonnyDewfall/Sushi/issues/6).
 
-### 🟠 Two LSP versions are installed simultaneously
+### 🟢 Two LSP versions are installed simultaneously
+
+> **Moot.** The LSP suite was moved to `plugins/archive/` and is off `LV2_PATH`
+> (see `config/retired/README.md`), and `/usr/lib/lv2` is no longer on the path,
+> so there is no longer a choice of version to drift.
 
 `plugins/lsp-plugins.lv2` is v0.26; `plugins/lv2/lsp-plugins.lv2` and
 `/usr/lib/lv2/lsp-plugins.lv2` are v0.22. lilv resolves this by silently
@@ -744,7 +771,10 @@ Also note `plugins/lv2/` is a byte-identical copy of `/usr/lib/lv2/` (262 of
 262 bundles, no extras either way), so it is ~358 MB of pure redundancy that is
 shadowed on the current path anyway.
 
-### 🟡 Sushi requires `LV2_PATH` to be set explicitly
+### 🟢 Sushi requires `LV2_PATH` to be set explicitly
+
+> **Resolved in tooling.** `sushi-rig up` and `sushi-rig verify` set `LV2_PATH`
+> themselves (`rig.py`, `verify.py`). Running `./sushi` by hand still needs it.
 
 With `LV2_PATH` unset, Sushi loads no LV2 plugins at all and exits 4
 (`Failed to load tracks from the Json config file`) — even though `lv2ls` finds
@@ -917,7 +947,9 @@ since PipeWire sums several links into one input port. That touches
 design rather than to the take folder. In the meantime `take.start_take` refuses
 two stems captured from one port, so the routing that ships cannot produce a
 take whose file names lie about what is in them. The dry taps are unaffected —
-they come straight off the interface. *(2026-10-30)*
+they come straight off the interface. *(2026-10-30)* *Superseded 2026-10-31: the
+monitor mix is made in Sushi, not by the patchbay; see "The monitor mix is made
+in Sushi" below.*
 
 ### 🟢 Sushi's offline frontend: one stereo bus, and a stack overflow past it (2026-10-30)
 
@@ -1053,7 +1085,9 @@ qpwgraph leaves links not in its file alone, and that Carla names the amp's
 ports `NAM:Input` and `NAM:Output` live. *(2026-10-31)*
 
 **The monitor mix is made in Sushi, and its send and return cost nothing if
-the master track comes last.** Decided by Sonny on 2026-10-31: each channel keeps
+the master track comes last.** *Supersedes the 2026-10-30 entry above ("Today's
+routing cannot record separate processed stems"), which proposed making the
+monitor mix in the patchbay.* Decided by Sonny on 2026-10-31: each channel keeps
 its own output so stems exist, and sends a copy to a master track that feeds the
 monitors and carries #29's limiter. What that puts in the path you hear was
 measured before anything was built on it (`test_send_return.py`, real Sushi

@@ -7,10 +7,11 @@ one a human signed off?), and behaviour and safety checks (does the delay really
 sit at 375 ms; does anything produce NaN or clip?). This module is the input
 side — stimuli and file I/O. `analysis` is the measuring side.
 
-What is NOT here: the renderer. Nothing in this module starts Sushi or knows how
-to drive it, and Sushi's offline-mode command-line flags have not been verified
-yet, so none are guessed at. Everything below is pure, runs with no audio
-hardware, and is tested against synthetic ground truth.
+What is NOT here: the renderer, which is `render.py`. Nothing in this module
+starts Sushi or knows how to drive it. (When this was written, Sushi's
+offline-mode flags had not been verified; they have since, and `render.py` uses
+them.) Everything below is pure, runs with no audio hardware, and is tested
+against synthetic ground truth.
 
 Conventions, chosen once so the two modules agree:
 

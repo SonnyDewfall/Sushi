@@ -16,13 +16,15 @@ Two halves, kept apart (quality principle 1):
 
 ## What counts as "needed"
 
-The manifest is not enough on its own. `plugin-manifest.txt` says it lists every
-URI the rig can load, but the configs in `config/` also reference plugins it
-does not list (a reverb, a delay, a detuner). Assembling from the manifest alone
-would produce a `plugins/` that passes its own check and then fails the first
-time Sushi loads a real config — the silent kind of failure principle 8 exists
-to prevent. So the requirement is the manifest *plus* whatever the configs
-use, and `decide` reports the difference so the manifest can be corrected.
+The manifest is not enough on its own, in principle. `plugin-manifest.txt` says
+it lists every URI the rig can load, and it once fell behind the configs in
+`config/` (a reverb, a delay, a detuner were used but not listed). Today every
+URI the committed configs use is in it. The rule stays because it is what keeps
+that true: assembling from the manifest alone would produce a `plugins/` that
+passes its own check and then fails the first time Sushi loads a real config —
+the silent kind of failure principle 8 exists to prevent. So the requirement is
+the manifest *plus* whatever the configs use, and `decide` reports the
+difference (`undeclared`) so the manifest can be corrected.
 
 ## Waivers
 
@@ -36,8 +38,8 @@ the reason for it has gone.
 ## `archive/`
 
 The README's layout has an `archive/` beside the bundles, holding everything
-off the path, with an intentionally empty `manifest.ttl` so lilv's probe of it
-stays quiet. An assembled tree has nothing to archive, but gets the same shape:
+off the path, with a `manifest.ttl` that declares nothing (a single comment, see
+`ARCHIVE_MANIFEST`) so lilv's probe of it stays quiet. An assembled tree has nothing to archive, but gets the same shape:
 anything parked there later behaves exactly as it does on the rig machine.
 
 `lilv` is a system package and is imported lazily by `probe._world`, so this
@@ -60,7 +62,7 @@ SYSTEM_LV2_DIR = Path("/usr/lib/lv2")
 
 # The one file lilv needs to find in `archive/` to stop logging about it.
 #
-# A comment, not a zero-byte file. The README calls the manifest "empty", but
+# A comment, not a zero-byte file. The manifest "declares nothing", but
 # with serd 0.32 (Ubuntu 24.04) a literally empty file makes lilv log "Error
 # loading file" at every startup — the very noise it exists to prevent. A
 # comment-only file parses cleanly there, and is valid turtle everywhere.

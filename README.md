@@ -202,10 +202,14 @@ The bridge between them is `capture` → versioned config. Everything here is
 built to keep that bridge tool-agnostic, so adopting a better live editor later
 costs nothing.
 
-Where those projects do something well, this one borrows rather than reinvents —
-Sushi's native `SaveSession`/`RestoreSession` for runtime switching, and
-`sushi-gui`'s live-session-to-config derivation for the cases where no
-`rig.yaml` exists yet. Full rationale in
+Where those projects do something well, the intention is to borrow rather than
+reinvent — Sushi's native `SaveSession`/`RestoreSession` for runtime switching,
+and `sushi-gui`'s live-session-to-config derivation for the cases where no
+`rig.yaml` exists yet. **Neither is done yet**: nothing in the code calls
+`SaveSession` or `RestoreSession`, and the config this rig writes is derived from
+`capture` alone. Both are tracked in
+[issue #11](https://github.com/SonnyDewfall/Sushi/issues/11); rationale for the
+division of labour is in
 [issue #12](https://github.com/SonnyDewfall/Sushi/issues/12).
 
 ## The workflow
@@ -224,7 +228,10 @@ rig.yaml ──emit──> rig.json ──verify──> names confirmed against 
 rig.yaml + state.json ──emit──> rig.json  (now carrying initial_state)
 ```
 
-`rig.yaml` is the only hand-authored file; everything below it is generated.
+Hand-authored: `rig.yaml` (or, for the v2 rigs, `config/rigs/*.yaml`), the
+per-machine `machines/<hostname>.yaml` that names physical ports, and any
+component profile under `tool/examples/profiles/`. Everything below the rig file
+in the diagram is generated.
 
 `verify` answers the question that has caught this project out twice: a config
 can load cleanly, name only things that exist, and still not do what it says.
@@ -275,30 +282,45 @@ then.
 .                               ── RIG (root): what you run daily
 ├── config/                     Sushi configs — the deployable artefacts
 │   ├── electric_board.json       current rig (what `sushi-rig up` launches)
-│   ├── empty.json                passthrough, for verifying the audio path
-│   ├── src/electric_board.yaml   hand-authored source for electric_board.json
+│   ├── *.json                    the other tones, one config each
+│   ├── src/                      hand-authored v1 sources (electric_board,
+│   │                             electric_stereo, guitar_vocal)
+│   ├── rigs/                     every tone as a v2 rig: channels and a master
+│   ├── sound/                    nulltest references: what each config sounds like
 │   ├── archive/                  auto-written version snapshots,
 │   │                             config/archive/<name>/vX.Y.json
-│   └── retired/                  hand-retired configs, kept for recovery only
+│   └── retired/                  hand-retired configs (incl. empty.json), kept
+│                                 for recovery only
 ├── Patchbay/                   qpwgraph sessions
-│   ├── rig.qpwgraph              routing loaded at startup
+│   ├── rig.qpwgraph              routing loaded at startup; generated from
+│   │                             config/src/guitar_vocal.yaml, held by a test
 │   ├── Default.qpwgraph
 │   └── Test_1.qpwgraph
 ├── machines/                   the only files that name physical ports,
-│   └── example.yaml              one per machine, as <hostname>.yaml
+│   ├── example.yaml              one per machine, as <hostname>.yaml
+│   └── sonny-dewfall-XPS-9320.yaml
+├── amp/models/                 the neural amp's .nam captures
+├── ci/                         Dockerfile for the container the full suite runs in
+├── .github/workflows/          ci.yml (fast suite), rig-container.yml (everything)
 ├── plugin-manifest.txt         every LV2 URI this rig can load (see Plugins below)
 │
 ├── tool/                       ── TOOL: generates the configs above
 │   ├── pyproject.toml
-│   ├── src/sushi_rig/            spec, emit, dump, probe, live, panel, listen,
-│   │                             save, rig, amp, top, machine, patchbay, cli
-│   ├── tests/
+│   ├── src/sushi_rig/            35 modules, one job each:
+│   │                             spec, rigfile, convert, emit, dump, probe, probes,
+│   │                             profile, plugins, live, panel, listen, save,
+│   │                             state, procs, rig, qpwgraph, patchbay, machine,
+│   │                             amp, top, doctor, verify, render, nulltest,
+│   │                             signals, analysis, selftest, take, transport,
+│   │                             recorder, paths, _numpy, cli
+│   ├── tests/                    fast suite; fixtures/ holds captured artefacts
 │   ├── examples/
-│   │   ├── rig.example.yaml       annotated rig spec
-│   │   └── dump.example.json      real --dump-plugins output, test fixture
-│   └── prototype_reference.py    single-file prototype; superseded by src/, kept for reference
+│   │   ├── rig.example.yaml       annotated rig spec (placeholder plugins)
+│   │   ├── dump.example.json      real --dump-plugins output, test fixture
+│   │   └── profiles/gxts9.yaml    a component profile
+│   └── spikes/virtual_ui/        the headless-plugin-GUI experiment (#28), with findings
 │
-├── IMPLEMENTATION_BRIEF.md     authoritative spec — read before writing code
+├── IMPLEMENTATION_BRIEF.md     the original brief, kept as history (see below)
 ├── MANIFEST.md                 what is being worked on and what is next
 └── README.md
 ```
@@ -306,11 +328,16 @@ then.
 Untracked but required at runtime: `Sushi-x86_64.AppImage` (symlinked as
 `sushi`) and `plugins/`. See [Plugins and portability](#plugins-and-portability).
 
-`tool/prototype_reference.py` (previously `sushi_rig.py`) is the original
-single-file prototype, kept as reference for data shapes and emit logic while
-`tool/src/sushi_rig/` is built out module by module per §3 of the implementation
-brief — tracked as work item 2 in [MANIFEST.md](MANIFEST.md). It will be deleted
-once the package supersedes it.
+`IMPLEMENTATION_BRIEF.md` is the brief the project started from. It is kept as
+history, not as a spec: **where it and the code disagree, the code is right.**
+Two known cases — the `initial_state` shape it describes does not load in Sushi
+1.3.0 (see the docstring of `emit.py`), and its sketch of elkpy's API is wrong in
+places (see the docstring of `live.py`).
+
+The single-file prototype the brief refers to (`tool/prototype_reference.py`,
+previously `sushi_rig.py`) was deleted on 2026-10-31. The package in
+`tool/src/sushi_rig/` had superseded it and nothing imported it; git history
+has it.
 
 ---
 
@@ -656,7 +683,7 @@ Verified on this machine:
 | | Status |
 |---|---|
 | Sushi 1.3.0 | ✅ built with `vst3, lv2, jack, rpc control, ableton link` |
-| LV2 plugins discoverable | ✅ 41 via `lv2ls`, from the six bundles in `plugins/` |
+| LV2 plugins discoverable | every URI in `plugin-manifest.txt` (55), from the bundles in `plugins/`; `sushi-rig plugins check` is the test |
 | PipeWire / JACK, qpwgraph, fmit | ✅ |
 | `lilv` Python bindings (system) | ✅ `python3-lilv` + `liblilv-dev` |
 | `elkpy` (in `tool/.venv`) | ✅ imports cleanly on Python 3.14 |
@@ -764,12 +791,9 @@ It is structured deliberately:
 
 ```
 plugins/
-├── 3BandEQ.lv2       the bundles this rig actually uses, at the top level
-├── gx_chorus.lv2     where LV2_PATH looks
-├── gx_compressor.lv2
-├── gx_oc_2.lv2
-├── gxts9.lv2
-├── mda.lv2
+├── <name>.lv2        one bundle per plugin family the manifest and the configs
+│                     need (`plugins assemble` copies them), at the top level
+│                     where LV2_PATH looks
 └── archive/          everything else — off the path, ignored by lilv
 ```
 
@@ -779,7 +803,7 @@ at startup instead of silently resolving against the system copy and hiding the
 fact that the rig is not actually self-contained.
 
 `plugin-manifest.txt` means **every LV2 URI this rig can load** — 55 of them,
-from fifteen bundles — and it must include every plugin a config in `config/`
+counted by URI — and it must include every plugin a config in `config/`
 uses; `sushi-rig plugins check` fails if one is missing. Since Sushi addresses
 plugins by URI and never by path, that manifest plus those bundles is the whole
 dependency set.
@@ -827,8 +851,9 @@ Sushi, so the whole test suite can run without the rig machine.
 ## Where to start reading
 
 1. **[MANIFEST.md](MANIFEST.md)** — current state and what is being worked on.
-2. **[IMPLEMENTATION_BRIEF.md](IMPLEMENTATION_BRIEF.md)** — the authoritative
-   spec. §2 lists the domain facts that are easy to get wrong; several contradict
-   a reasonable first guess.
+2. **[IMPLEMENTATION_BRIEF.md](IMPLEMENTATION_BRIEF.md)** — the original brief,
+   kept as history. §2 lists domain facts that are easy to get wrong; several
+   contradict a reasonable first guess. Where it and the code disagree, the code
+   is right (see *Repository layout*).
 3. **[tool/examples/rig.example.yaml](tool/examples/rig.example.yaml)** — what a
    rig spec looks like.

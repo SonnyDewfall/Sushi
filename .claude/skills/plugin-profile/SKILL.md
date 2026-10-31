@@ -1,6 +1,6 @@
 ---
 name: plugin-profile
-description: Write or revise a sushi-rig component profile — the file that decides which of an LV2 plugin's controls appear, how they are grouped and labelled, what scale each uses, and where they sit on a facsimile of the plugin's own GUI. Use this whenever the user wants to profile a plugin, add a plugin to the rig's control surface, cut a panel down to the controls that matter, fix a panel showing wrong units or useless parameters, capture a plugin's GUI or locate its controls, or asks what a plugin's controls ought to look like. Use it too when reviewing, correcting or re-validating an existing file under profiles/, and when a plugin turns out to be one Sushi cannot drive. Reach for it even if the user never says the word "profile" — if the question is which controls a plugin should show and how, this is the skill.
+description: Write or revise a sushi-rig component profile — the file that decides which of an LV2 plugin's controls appear, how they are grouped and labelled, what scale each uses, and where they sit on a facsimile of the plugin's own GUI. Use this whenever the user wants to profile a plugin, add a plugin to the rig's control surface, cut a panel down to the controls that matter, fix a panel showing wrong units or useless parameters, capture a plugin's GUI or locate its controls, or asks what a plugin's controls ought to look like. Use it too when reviewing, correcting or re-validating an existing file under tool/examples/profiles/, and when a plugin turns out to be one Sushi cannot drive. Reach for it even if the user never says the word "profile" — if the question is which controls a plugin should show and how, this is the skill.
 ---
 
 # Writing a component profile
@@ -105,7 +105,7 @@ These are spike scripts under `tool/spikes/`, not production code, and they are 
 
 ## Write the profile
 
-Copy the shape from `tool/examples/profiles/gxts9.yaml`, which was written by hand against real probe output and is the reference for this format. Profiles live in `profiles/` at the repository root, named after the plugin (`profiles/gxts9.yaml`). They are rig content rather than tool code, which is also why they will move to the library repository later (#27).
+Copy the shape from `tool/examples/profiles/gxts9.yaml`, which was written by hand against real probe output and is the reference for this format. Profiles live in `tool/examples/profiles/`, named after the plugin (`tool/examples/profiles/gxts9.yaml`); there is no `profiles/` directory at the repository root. They are rig content rather than tool code, which is also why they will move to the library repository later (#27).
 
 Allowed values, enforced by the validator:
 
@@ -140,9 +140,9 @@ Everything else you propose is `draft`, including judgements you are confident a
 ## Validate, every time
 
 ```bash
-sushi-rig profile validate profiles/<name>.yaml
+sushi-rig profile validate tool/examples/profiles/<name>.yaml
 # or, away from the rig:
-sushi-rig profile validate profiles/<name>.yaml --facts /tmp/probe-<name>.json
+sushi-rig profile validate tool/examples/profiles/<name>.yaml --facts /tmp/probe-<name>.json
 ```
 
 Exit 1 means errors; warnings alone are fine. Fix every error before showing the file to anyone.

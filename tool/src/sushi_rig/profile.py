@@ -47,14 +47,14 @@ about the unreviewed remainder.
 
 ## Gaps in probe this module tolerates but does not paper over
 
-`probe.describe()` currently reports neither the plugin version, units, nor
-enumeration scale points. `validate()` therefore:
+`probe.describe()` now emits the plugin `version` and, per parameter, `unit` and
+`scale_points` — but only when the plugin declares them; absent stays absent,
+never guessed. (It once emitted none of these, which is why the checks below are
+written around absence.) `validate()` therefore:
 - warns that the pinned version is unverified when probe gives none (and errors
   on a mismatch when it does, under `facts["version"]`);
 - errors on a restated `unit` or `scale_points` when probe gives none, rather
-  than trusting it. Probe should grow these keys (`version`, per-parameter
-  `unit` and `scale_points`) — this module already compares against them when
-  present. `settable` needs no probe field: probe lists only *input control
+  than trusting it, and compares them when it does. `settable` needs no probe field: probe lists only *input control
   ports*, and every one of those is settable; meters and other output ports are
   not listed at all, so naming one in a profile is reported as invented.
 

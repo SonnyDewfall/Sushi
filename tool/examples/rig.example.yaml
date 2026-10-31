@@ -1,7 +1,11 @@
 # sushi-rig specification.
 #
-# The only file you hand-author. Plugin and track names must be globally
-# unique — Sushi addresses processors by name, not by path.
+# One of the hand-authored files (the others: config/rigs/*.yaml, the per-machine
+# machines/<hostname>.yaml, and component profiles). Plugin and track names must
+# be globally unique — Sushi addresses processors by name, not by path.
+#
+# Every plugin below is in plugin-manifest.txt, so this file loads on the rig.
+# The real examples are config/src/*.yaml.
 #
 # Find LV2 URIs with `lv2ls`. If a URI is not in that list, Sushi cannot
 # load it regardless of what is on disk.
@@ -30,15 +34,15 @@ tracks:
       - engine_bus: 0
         track_bus: 0
     plugins:
-      - name: gtr_gate
-        type: lv2
-        uri: http://calf.sourceforge.net/plugins/Gate
       - name: gtr_comp
         type: lv2
-        uri: http://calf.sourceforge.net/plugins/Compressor
+        uri: http://guitarix.sourceforge.net/plugins/gx_compressor#_compressor
+      - name: gtr_drive
+        type: lv2
+        uri: http://guitarix.sourceforge.net/plugins/gxts9#ts9sim
       - name: gtr_eq
         type: lv2
-        uri: http://calf.sourceforge.net/plugins/Equalizer8Band
+        uri: http://distrho.sf.net/plugins/3BandEQ
 
   - name: synth
     channels: 2
@@ -51,7 +55,7 @@ tracks:
         uri: http://drobilla.net/plugins/mda/JX10
       - name: synth_reverb
         type: lv2
-        uri: http://calf.sourceforge.net/plugins/Reverb
+        uri: urn:ardour:a-reverb
 
 # Optional: a post track processes everything after the tracks are mixed.
 # Handy for a single master chain. Declare it as a normal track here and
@@ -65,9 +69,9 @@ midi:
   cc_mappings:
     - port: 0
       channel: all
-      plugin_name: gtr_comp
+      plugin_name: gtr_drive
       cc_number: 7
-      parameter_name: Threshold
+      parameter_name: Level
       min_range: 0.0
       max_range: 1.0
       mode: absolute

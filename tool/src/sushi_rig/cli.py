@@ -1,6 +1,7 @@
 """sushi-rig — author an LV2 rig live in Sushi, then capture it back as a config file.
 
-See IMPLEMENTATION_BRIEF.md for the full workflow this supports.
+The workflow this supports is in README.md. IMPLEMENTATION_BRIEF.md is the
+original brief, kept as history; where it and the code disagree, the code is right.
 """
 
 from __future__ import annotations
@@ -101,8 +102,9 @@ def _machine(args: argparse.Namespace) -> int:
     """`machine check`: validate a machine file on its own.
 
     Separate from `patchbay generate` because that needs a rig whose tracks name
-    roles, and none of the committed ones do yet. A new machine's file should be
-    checkable before there is anything to generate.
+    roles, and a new machine's file should be checkable before there is anything
+    to generate. (`config/src/guitar_vocal.yaml` does name roles, and
+    `Patchbay/rig.qpwgraph` is generated from it.)
     """
     from .machine import MachineError, MachineSpec, machine_path
     from .paths import checkout_root
@@ -813,8 +815,8 @@ def main(argv: list[str] | None = None) -> int:
 
     p = sub.add_parser(
         "up",
-        help="start the whole rig — patchbay, tuner, Sushi, and (by default) "
-        "the control panel — then return to the prompt",
+        help="start the whole rig — patchbay, tuner, Sushi, the amp, and (by "
+        "default) the control panel — then return to the prompt",
     )
     p.add_argument(
         "config_name",

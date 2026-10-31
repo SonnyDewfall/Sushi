@@ -76,9 +76,9 @@ that still describes itself, says plainly that it was cut off, and points at
 what was captured — principle 9 applied to a recording. Metadata is replaced
 atomically, so a kill *during* that write cannot leave a half-written file.
 
-What is not here: capturing audio (#53, the recorder, streams into the paths
+What is not here: capturing audio (#53, `recorder.py`, streams into the paths
 `start_take` returns), measuring the offset (the caller passes it in, with what
-measured it), and the record button (#57).
+measured it), and the record button, which is `transport.py` (#57).
 """
 
 from __future__ import annotations

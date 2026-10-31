@@ -1,9 +1,11 @@
 """The rig.yaml model.
 
-`RigSpec.load` reads the only hand-authored file in the workflow. `host`,
-`midi`, `osc` and `cv_control` pass through to the emitted config unchanged —
-only `tracks` is transformed — so the tool never has to model Sushi's entire
-schema, and new Sushi config features work without a tool change (brief §5.1).
+`RigSpec.load` reads the rig file, the main hand-authored input (a machine file
+and component profiles are hand-authored too, and v2 rigs live in
+`config/rigs/`; see `rigfile.py`). `host`, `midi`, `osc` and `cv_control` pass
+through to the emitted config unchanged — only `tracks` is transformed — so the
+tool never has to model Sushi's entire schema, and new Sushi config features
+work without a tool change (brief §5.1).
 
 `validate()` returns a list of problems rather than raising on the first one:
 at rig scale you want every naming collision reported at once, not one fix
