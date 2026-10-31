@@ -110,6 +110,27 @@ def diff_state(config: dict[str, Any], live: dict[str, Any]) -> list[Problem]:
                     name, f"{param} did not apply — config {expected:.4f}, rig {got:.4f}"
                 ))
 
+        # A property that did not apply is as wrong as a parameter, and one
+        # kind matters more than any parameter: a send's destination_name,
+        # without which a channel is silent in the monitors while its stem
+        # looks healthy. A rig that could not be asked is said to be
+        # unchecked, never passed over.
+        wanted = entry.get("properties") or {}
+        if wanted and "properties" not in actual:
+            problems.append(Problem(
+                name, f"properties ({', '.join(sorted(wanted))}) could not be read from "
+                "the running rig, so whether they applied is unchecked"
+            ))
+        else:
+            for prop, expected in wanted.items():
+                got = (actual.get("properties") or {}).get(prop)
+                if got is None:
+                    problems.append(Problem(name, f"{prop} is not a property of this processor"))
+                elif str(got) != str(expected):
+                    problems.append(Problem(
+                        name, f"{prop} did not apply — config {expected!r}, rig {got!r}"
+                    ))
+
         # Tracks report no bypass state at all, so comparing one produces a
         # difference that is not a difference. Found by running this: a track
         # entry saying `false` came back as `None`.

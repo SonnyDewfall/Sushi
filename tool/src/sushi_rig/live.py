@@ -103,6 +103,25 @@ def capture(address: str = DEFAULT_GRPC_ADDRESS) -> dict[str, Any]:
 
                 entry: dict[str, Any] = {"parameters": params}
 
+                # Properties too: a send's destination_name is one, and it is
+                # the compiled rig's most important setting. Without it here
+                # `verify` could not see whether a send reached its return,
+                # and a channel silent in the monitors passed as applied (the
+                # audit's finding; #78 had claimed otherwise). Read with
+                # `_safe` so a Sushi that cannot answer leaves the key absent,
+                # which `verify.diff_state` reports as unchecked rather than
+                # as a pass.
+                listing = (controller.parameters.get_track_properties if is_track
+                           else controller.parameters.get_processor_properties)
+                infos = _safe(listing, proc_id)
+                if infos is not None:
+                    props: dict[str, str] = {}
+                    for info in infos:
+                        value = _safe(controller.parameters.get_property_value, proc_id, info.id)
+                        if value is not None:
+                            props[info.name] = value
+                    entry["properties"] = props
+
                 # A program is only recorded for a processor we captured no
                 # parameters for. Sushi applies a program *over* the parameters
                 # in the same initial_state entry, so recording both silently

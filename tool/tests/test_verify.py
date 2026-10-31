@@ -268,3 +268,47 @@ def test_stopping_a_verification_sushi_does_not_wait_out_the_grace_period():
     verify._stop(child)
     assert child.returncode is not None, "it was reaped, not left a zombie"
     assert time.monotonic() - started < 2.0
+
+
+# --- properties: a send's destination is one -------------------------------
+
+
+def _config_with_send():
+    return {
+        "tracks": [{"name": "guitar", "plugins": [{"name": "guitar_send"}]}],
+        "initial_state": [
+            {"processor": "guitar_send", "properties": {"destination_name": "master_return"}},
+        ],
+    }
+
+
+def test_a_send_whose_destination_did_not_apply_is_caught():
+    """The compiled rig's most important setting. Before this, diff_state
+    compared parameters, bypass and order only, so a channel silent in the
+    monitors passed as applied."""
+    live = {"processors": {"guitar_send": {"parameters": {}, "properties": {"destination_name": "No destination"}}},
+            "tracks": {"guitar": ["guitar_send"]}}
+    (problem,) = diff_state(_config_with_send(), live)
+    assert problem.processor == "guitar_send"
+    assert "destination_name did not apply" in problem.detail
+    assert "'master_return'" in problem.detail and "'No destination'" in problem.detail
+
+
+def test_a_property_that_applied_reports_nothing():
+    live = {"processors": {"guitar_send": {"parameters": {}, "properties": {"destination_name": "master_return"}}},
+            "tracks": {"guitar": ["guitar_send"]}}
+    assert diff_state(_config_with_send(), live) == []
+
+
+def test_properties_the_rig_could_not_be_asked_about_are_unchecked_not_passed():
+    """A capture from a Sushi that answered nothing about properties leaves
+    the key absent; that is a problem to report, not a pass."""
+    live = {"processors": {"guitar_send": {"parameters": {}}}, "tracks": {"guitar": ["guitar_send"]}}
+    (problem,) = diff_state(_config_with_send(), live)
+    assert "could not be read" in problem.detail and "unchecked" in problem.detail
+
+
+def test_a_property_the_processor_does_not_have_is_caught():
+    live = {"processors": {"guitar_send": {"parameters": {}, "properties": {}}}, "tracks": {"guitar": ["guitar_send"]}}
+    (problem,) = diff_state(_config_with_send(), live)
+    assert "destination_name is not a property" in problem.detail
