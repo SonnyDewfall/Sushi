@@ -474,8 +474,19 @@ channel's own output for its stem, a send at the end of each chain, and a
 master track — last, on output bus 0, with its own chain for the limiter — that
 is all the monitors hear. A rig has at most three channels, because the master
 and three stereo stems fill Sushi's eight outputs; more is refused with the
-arithmetic. Not yet what `up` runs: the patchbay is generated from v1 files
-until it learns this layout, and the new monitor path wants hearing first.
+arithmetic.
+
+The patchbay and selftest's probes read these files too:
+
+```bash
+sushi-rig patchbay generate config/rigs/guitar_vocal.yaml -o /tmp/rig.qpwgraph
+sushi-rig probes config/rigs/guitar_vocal.yaml --amp
+```
+
+Each input is linked once, the master's outputs go to the monitors, and the
+stems are linked to nothing. The probes follow each channel through its stem
+and, through its send, out of the master. Not yet what `up` runs: the new
+monitor path wants hearing first.
 
 ### Choosing a plugin
 

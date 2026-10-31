@@ -163,7 +163,10 @@ def track_route(track: Any, label: str, role: str | None = None) -> tuple[Route,
                 f"{where} names no engine_bus or engine_channel, so which "
                 f"Sushi {label[:-1]} {taker} takes is unknown"
             )
-    return tuple(route), problems
+    # One place on Sushi named twice is one port. A v2 rig's mono channel does
+    # exactly that — engine channel 0 into both halves of its track
+    # (rigfile.py) — and counted twice it would ask the role for two ports.
+    return tuple(dict.fromkeys(route)), problems
 
 
 def _as_routes(value: Any) -> list[Route]:
