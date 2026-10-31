@@ -311,13 +311,24 @@ def _emit_any(path: Path, state: dict | None) -> dict:
     from .emit import EmitError
     from .rigfile import Rig, RigFileError, emit_rig, load_any
 
+    from .paths import checkout_root
+
     try:
         rig = load_any(path)
-        if not isinstance(rig, Rig):
-            return emit(rig, state)
-        return emit_rig(rig, state)
+        config = emit_rig(rig, state) if isinstance(rig, Rig) else emit(rig, state)
     except (RigFileError, EmitError) as exc:
         sys.exit(f"{path}:\n  " + "\n  ".join(exc.problems))
+    # Where this config came from, so `up` can find the rig SAVE saves from
+    # without guessing. Only within the checkout: a path outside it is not one
+    # another machine can follow.
+    try:
+        source = Path(path).resolve().relative_to(checkout_root())
+    except ValueError:
+        return config
+    meta = dict(config.get("_meta") or {})
+    meta["source"] = source.as_posix()
+    config["_meta"] = meta
+    return config
 
 
 def _convert(args: argparse.Namespace) -> int:

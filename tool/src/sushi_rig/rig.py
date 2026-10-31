@@ -107,34 +107,77 @@ class RigError(Exception):
 
 
 def resolve_rig_yaml(config_path: Path, root: Path | None = None) -> str | None:
-    """The rig.yaml a config was built from, for the save listener, or None.
+    """The rig source SAVE can save this config from, or None with a reason in
+    `rig_source_problem`.
 
-    A saved variant records its originating yaml in `_meta.source`, because
-    variants share the hand-authored source rather than getting one of their own.
-    A hand-authored config carries no `_meta.source`; its source is the file of
-    its own name under `config/src/`, or under `config/rigs/` once it is a v2
-    rig. When neither exists the answer is None, and SAVE is refused with a
-    message rather than attributed to a guess.
+    A source is a candidate only if it describes the running config: every
+    track and plugin the config names is in the source's spec. The candidates,
+    in order: the config's `_meta.source` (written by `emit` and `save`), then
+    the file of the config's own name under `config/src/`, then under
+    `config/rigs/`. A candidate that does not fit is passed over, so a fact is
+    checked rather than a path guessed at. None means SAVE is refused with a
+    message.
 
-    It used to fall back to electric_board's yaml. For any other config that
-    meant SAVE captured the running rig, `emit` dropped every processor the
-    capture named that electric_board's spec did not, and the file written
-    under the player's name was electric_board's chain with no settings, while
-    the panel said "saved". Found by the audit, on guitar_vocal.
+    It used to return `_meta.source` or fall back to electric_board's yaml,
+    unchecked. For any other config that meant SAVE captured the running rig,
+    `emit` dropped every processor the capture named that electric_board's spec
+    did not, and the file written under the player's name was electric_board's
+    chain with no settings, while the panel said "saved". Found by the audit,
+    on guitar_vocal. The check against the config is what stops the same thing
+    happening through a `_meta.source` that is merely wrong — the converted v2
+    rigs carry their v1 variant's provenance, for one.
     """
+    source, _ = _rig_source(config_path, root)
+    return source
+
+
+def rig_source_problem(config_path: Path, root: Path | None = None) -> str | None:
+    """Why SAVE is off for this config, in a sentence, or None if it is on."""
+    _, problem = _rig_source(config_path, root)
+    return problem
+
+
+def _rig_source(config_path: Path, root: Path | None) -> tuple[str | None, str | None]:
+    from .rigfile import spec_of
+
     root = Path(root) if root is not None else checkout_root()
     try:
         config = json.loads(Path(config_path).read_text())
     except (OSError, ValueError):
         config = {}
-    source = (config.get("_meta") or {}).get("source") if isinstance(config, dict) else None
-    if isinstance(source, str) and source:
-        return source
+    if not isinstance(config, dict):
+        config = {}
+    named = {t.get("name") for t in (config.get("tracks") or []) if isinstance(t, dict)} | {
+        p.get("name") for t in (config.get("tracks") or []) if isinstance(t, dict)
+        for p in (t.get("plugins") or []) if isinstance(p, dict)
+    }
     stem = Path(config_path).stem
-    for candidate in (f"config/src/{stem}.yaml", f"config/rigs/{stem}.yaml"):
-        if (root / candidate).is_file():
-            return candidate
-    return None
+    candidates = []
+    source = (config.get("_meta") or {}).get("source")
+    if isinstance(source, str) and source:
+        candidates.append(source)
+    candidates += [f"config/src/{stem}.yaml", f"config/rigs/{stem}.yaml"]
+    tried = []
+    for candidate in dict.fromkeys(candidates):
+        path = root / candidate
+        if not path.is_file():
+            tried.append(f"{candidate} does not exist")
+            continue
+        try:
+            spec = spec_of(path)
+        except Exception as exc:  # noqa: BLE001 - a bad candidate is a reason, not a crash
+            tried.append(f"{candidate} cannot be read as a rig ({exc})")
+            continue
+        known = set(spec.plugin_names()) | {t.name for t in spec.tracks}
+        missing = sorted(named - known)
+        if missing:
+            tried.append(f"{candidate} has no {', '.join(missing)}")
+            continue
+        return candidate, None
+    return None, (
+        f"SAVE is off for {stem}: no rig source describes it ("
+        + "; ".join(tried) + "). Reorder and the amp controls still work"
+    )
 
 
 def plan_children(
@@ -593,13 +636,19 @@ def up(
         )
 
     rig_yaml = resolve_rig_yaml(config, root)
-    if rig_yaml is None and not headless:
-        print(
-            f"warning: SAVE is off for {config_name}: it has no _meta.source and no "
-            f"config/src/{config_name}.yaml, so there is no rig to save from. "
-            "Reorder and the amp controls still work",
-            file=sys.stderr,
-        )
+    if not headless:
+        problem = rig_source_problem(config, root) if rig_yaml is None else None
+        if rig_yaml is not None and rig_yaml.startswith("config/rigs/"):
+            # A v2 rig file describes the config, and save cannot write one
+            # yet: #30's last slice. Said at start, not at the first press.
+            problem = (
+                f"SAVE is off for {config_name}: it was built from {rig_yaml}, a rig of "
+                "channels, which save cannot write yet. Reorder and the amp controls "
+                "still work"
+            )
+            rig_yaml = None
+        if problem:
+            print(f"warning: {problem}", file=sys.stderr)
 
     # The amp is described in the config's `_amp` section, which Sushi ignores.
     # The Carla project is generated from it rather than kept as a file, because

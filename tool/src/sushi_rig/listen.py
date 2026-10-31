@@ -104,8 +104,10 @@ def handle_save(
         return f"save failed: {exc}"
     except SystemExit as exc:
         # Library code that still calls sys.exit (live._controller when elkpy
-        # is missing) must not take the listener with it.
-        return f"save failed: {exc}"
+        # is missing) must not take the listener with it. A bare exit code is
+        # no reason a player can act on.
+        reason = exc.code if isinstance(exc.code, str) and exc.code else "a tool exited without saying why"
+        return f"save failed: {reason}"
     except Exception as exc:  # noqa: BLE001 - keep the listener alive
         return f"save failed: unexpected error: {exc}"
 
