@@ -104,6 +104,31 @@ def save_config(
     return out_path
 
 
+def _claim(path: Path, *, directory: bool = False) -> Path:
+    """Create `path` empty, failing with FileExistsError if anything is there.
+    Creating is the check, so two processes cannot both be told a name is free."""
+    if directory:
+        path.mkdir()
+    else:
+        path.open("x").close()
+    return path
+
+
+def unused_path(base: Path, suffix: str = "", *, directory: bool = False) -> Path:
+    """`base + suffix`, or `base-2 + suffix`, `base-3`, ... : the first that was
+    free, and is now claimed as an empty file (or directory) for the caller to
+    fill. Archives use it so nothing saved is replaced. A one-second stamp is not
+    unique, and checking `exists()` then writing races: the CLI's save and the
+    listener's save button, in the same second, were both told the name was free.
+    """
+    path, n = base.with_name(base.name + suffix), 2
+    while True:
+        try:
+            return _claim(path, directory=directory)
+        except FileExistsError:
+            path, n = base.with_name(f"{base.name}-{n}{suffix}"), n + 1
+
+
 def _archive_existing(existing_path: Path, archive_dir: Path, name: str) -> str:
     """Snapshot the config currently at `existing_path` before it's replaced.
 
@@ -126,10 +151,11 @@ def _archive_existing(existing_path: Path, archive_dir: Path, name: str) -> str:
 
     target_dir = archive_dir / name
     target_dir.mkdir(parents=True, exist_ok=True)
-    archive_path = target_dir / f"v{version}.json"
-    if archive_path.exists():
-        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S")
-        archive_path = target_dir / f"v{version}-{timestamp}.json"
+    try:
+        archive_path = _claim(target_dir / f"v{version}.json")
+    except FileExistsError:
+        stamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S")
+        archive_path = unused_path(target_dir / f"v{version}-{stamp}", ".json")
 
     archive_path.write_text(json.dumps(existing, indent=2) + "\n")
     existing_path.unlink()

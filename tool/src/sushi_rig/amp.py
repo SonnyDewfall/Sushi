@@ -28,6 +28,7 @@ described as if they were.
 from __future__ import annotations
 
 import json
+import math
 import sys
 from pathlib import Path
 from typing import Any
@@ -199,8 +200,14 @@ def clamp(name: str, value: float) -> float:
     Carla does its own clamping, but doing it here means the value we remember
     for saving is the value that actually took effect.
     """
+    value = float(value)
+    if not math.isfinite(value):
+        # Refused rather than clamped: `min(high, nan)` is `high`, so a NaN on
+        # the wire used to send the amp its loudest setting, and infinity the
+        # same, with nothing said. Neither is a position the player chose.
+        raise AmpError(f"{name} got {value}, which is not a number the amp can be set to")
     low, high = PARAMETER_RANGE.get(name, (float("-inf"), float("inf")))
-    return max(low, min(high, float(value)))
+    return max(low, min(high, value))
 
 
 def parameter_message(name: str, value: float) -> tuple[str, list[Any]]:

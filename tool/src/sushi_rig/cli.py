@@ -1103,7 +1103,11 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument(
         "--host",
         default="127.0.0.1",
-        help="address to listen on — defaults to loopback-only; widen deliberately",
+        help=(
+            "address to listen on — defaults to loopback-only. The listener writes "
+            "config files and starts recordings on receipt of unauthenticated UDP, "
+            "so any address but loopback exposes that to the network"
+        ),
     )
     p.add_argument("--port", type=int, default=DEFAULT_LISTEN_PORT)
     p.add_argument(

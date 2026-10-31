@@ -92,7 +92,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Sequence
 
-from .save import NAME_PATTERN
+from .save import NAME_PATTERN, unused_path
 from .signals import SUBTYPES, repair_wav, wav_info
 
 # Bumped when the shape of take.yaml changes incompatibly. A reader that meets a
@@ -662,9 +662,9 @@ def _archive_existing(takes_dir: Path, name: str, folder: Path, now: datetime) -
     base = takes_dir / ARCHIVE_DIR / name
     base.mkdir(parents=True, exist_ok=True)
     label = stamp.astimezone(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S")
-    target, n = base / label, 2
-    while target.exists():
-        target, n = base / f"{label}-{n}", n + 1
+    # Claimed as an empty directory, which the rename then replaces: renaming a
+    # directory onto an empty one is allowed.
+    target = unused_path(base / label, directory=True)
     folder.rename(target)
     print(f"archived the earlier take {name!r} -> {target}", file=sys.stderr)
     return target

@@ -211,6 +211,32 @@ def test_save_config_nothing_is_lost_when_re_saving_repeatedly(tmp_path, rig_pat
     assert any(n != "v1.0.json" for n in names)  # the collision got a distinct name
 
 
+def test_saves_of_one_name_inside_one_second_each_keep_their_archive(
+        tmp_path, rig_path, monkeypatch):
+    """The collision fallback stamped the archive with the second and nothing
+    more, so a double-pressed save button made the same file name twice and
+    the second archive replaced the first."""
+    import datetime as real
+
+    class Frozen(real.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 10, 31, 12, 0, 0, tzinfo=tz)
+
+    monkeypatch.setattr("sushi_rig.save.datetime", Frozen)
+    out_dir, archive_dir = tmp_path / "config", tmp_path / "archive"
+    for n in range(1, 5):
+        rig_path.write_text(RIG_YAML.replace("A test rig", f"state {n}"))
+        save_config("bright", rig_path, out_dir, archive_dir)
+
+    archived = sorted((archive_dir / "bright").glob("*.json"))
+    assert [p.name for p in archived] == [
+        "v1.0-2026-10-31T12-00-00-2.json", "v1.0-2026-10-31T12-00-00.json", "v1.0.json",
+    ]
+    held = {json.loads(p.read_text())["_meta"]["description"] for p in archived}
+    assert held == {"state 1", "state 2", "state 3"}, "every earlier save is still there"
+
+
 def test_save_config_different_names_do_not_interact(tmp_path, rig_path):
     out_dir = tmp_path / "config"
     archive_dir = tmp_path / "archive"
@@ -221,3 +247,23 @@ def test_save_config_different_names_do_not_interact(tmp_path, rig_path):
     assert (out_dir / "dark.json").exists()
     assert not (archive_dir / "bright").exists()
     assert not (archive_dir / "dark").exists()
+
+
+def test_unused_path_claims_what_it_returns_and_never_replaces_anything(tmp_path):
+    """Claiming is the check: `exists()` then write let two saves in the same
+    second (the CLI and the listener's button) both be told a name was free."""
+    from sushi_rig.save import unused_path
+
+    (tmp_path / "v1.0-stamp.json").write_text("first")
+    got = [unused_path(tmp_path / "v1.0-stamp", ".json") for _ in range(2)]
+    assert [p.name for p in got] == ["v1.0-stamp-2.json", "v1.0-stamp-3.json"]
+    assert all(p.exists() for p in got), "claimed on return, before any caller writes"
+    assert (tmp_path / "v1.0-stamp.json").read_text() == "first"
+
+
+def test_unused_path_can_claim_a_directory(tmp_path):
+    from sushi_rig.save import unused_path
+
+    (tmp_path / "2026").mkdir()
+    got = unused_path(tmp_path / "2026", directory=True)
+    assert got.name == "2026-2" and got.is_dir()

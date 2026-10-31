@@ -297,8 +297,16 @@ class Recorder:
         written = min((w.frames for w in self._writers), default=0)
         for writer in self._writers:
             try:
-                if writer.frames > written:
+                # Every stem, even one already at `written`, so all end exactly
+                # that many frames long: one that died part way through a frame
+                # also has a few bytes past its last whole frame, and this
+                # tidies them away. Skipped once closed, so a second `stop`
+                # returns a Recording instead of raising.
+                if not writer.closed:
                     writer.truncate(written)
+            except OSError as exc:
+                self._error = self._error or f"{type(exc).__name__}: {exc}"
+            try:  # on its own, so a failed cut still closes the file and syncs it
                 writer.close()
             except OSError as exc:
                 self._error = self._error or f"{type(exc).__name__}: {exc}"
