@@ -70,7 +70,16 @@ def continuity(column: np.ndarray) -> dict:
     if not len(nonzero):
         return {"samples": int(len(column)), "jumps": None, "note": "silent: never linked?"}
     first = int(nonzero[0])
-    x = np.rint(column[first:].astype(np.float64) * WRAP).astype(np.int64)
+    live = column[first:]
+    # A run of exact zeros inside a live counter is silence delivered in place,
+    # not a lost or repeated sample: seen on the rig, 256 zeros on three of six
+    # columns with the counter continuous either side. Counted apart, before
+    # the step test would read it as one huge loss and 255 repeats.
+    zero = live == 0.0
+    edges = np.diff(np.concatenate([[0], zero.astype(np.int8), [0]]))
+    starts, ends = np.flatnonzero(edges == 1), np.flatnonzero(edges == -1)
+    silent = [(int(a) + first, int(b - a)) for a, b in zip(starts, ends) if b - a >= 8]
+    x = np.rint(live.astype(np.float64) * WRAP).astype(np.int64)
     step = np.diff(x) % WRAP
     bad = np.flatnonzero(step != 1)
     # Losses and repeats counted apart, so they cannot cancel. A loss of a
@@ -85,6 +94,9 @@ def continuity(column: np.ndarray) -> dict:
         "first_jumps_at_file_index": [int(i) + first for i in bad[:10]],
         "lost_by_jumps": lost,
         "repeated_samples": repeated,
+        # (file index, length) of each run of 8 or more exact zeros
+        "silent_runs": silent[:20],
+        "silent_samples": int(sum(n for _, n in silent)),
     }
 
 

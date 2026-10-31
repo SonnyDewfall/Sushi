@@ -190,7 +190,12 @@ def main() -> int:
             "all_gains_as_expected": all(r.get("as_expected", False) for r in results.values()),
         }
         if args.hold:
-            input("Sushi is up with the live_paths rig. Press Enter to stop it. ")
+            # EOF (stdin closed, or driven non-interactively) ends the hold
+            # the same way Enter does; a traceback here lost the whole report.
+            try:
+                input("Sushi is up with the live_paths rig. Press Enter to stop it. ")
+            except EOFError:
+                pass
     finally:
         proc.terminate()
         try:
