@@ -221,6 +221,33 @@ _SETTING_SHAPES = {
 }
 
 
+# A track's gain, pan and mute at unity, normalised as Sushi stores them: 0 dB
+# on its -120..24 dB range, pan centred on -1..1, unmuted.
+UNITY_STRIP = {"gain": 120 / 144, "pan": 0.5, "mute": 0.0}
+
+
+def _strip_problems(where: str, strip: dict[str, Any]) -> list[str]:
+    """A strip anywhere but unity changes the stem and not the monitors.
+
+    Sushi 1.3.0 applies a track's gain, pan and mute after its plugins
+    (src/engine/track.cpp, `Track::process_audio`), and the send that feeds
+    the master is the last plugin, so it copies the signal before them. Until
+    the mixer strip (#18) decides where a channel's level lives, a strip that
+    would make the two disagree is refused rather than written.
+    """
+    off = [
+        f"{key} {value}" for key, value in strip.items()
+        if key in UNITY_STRIP and abs(value - UNITY_STRIP[key]) > 1e-5
+    ]
+    if not off:
+        return []
+    return [
+        f"{where}: strip {', '.join(off)} is not unity, and a channel's strip acts after "
+        "its send — it would change the stem and not what the monitors hear. Leave it "
+        "at gain 0.833333, pan 0.5, mute 0 until the mixer strip (#18) is designed"
+    ]
+
+
 def _chain(where: str, raw: Any, problems: list[str],
            settings: dict[str, dict[str, Any]]) -> tuple[PluginSpec, ...]:
     if raw is None:
@@ -268,6 +295,9 @@ def parse_rig(raw: Any) -> Rig:
     for key in ("meta", "amp"):
         if raw.get(key) is not None and not isinstance(raw[key], dict):
             problems.append(f"{key} must be a mapping (got {raw[key]!r})")
+    for key in ("name", "description"):
+        if isinstance(raw.get("meta"), dict) and key in raw["meta"]:
+            problems.append(f"meta: {key!r} is the rig's own {key}, set at the top of the file")
 
     settings: dict[str, dict[str, Any]] = {}
     channels = []
@@ -296,6 +326,7 @@ def parse_rig(raw: Any) -> Rig:
             # The track's own gain, pan and mute, normalised as Sushi stores them.
             strip = _settings(f"{where}: strip", {"parameters": entry["strip"]}, problems)
             if strip:
+                problems += _strip_problems(where, strip["parameters"])
                 settings[entry["name"]] = strip
         if isinstance(entry.get("name"), str) and entry.get("width") in WIDTHS:
             channels.append(Channel(entry["name"], str(entry.get("input")), entry["width"], chain))
@@ -460,6 +491,11 @@ def merged_state(fixed: dict[str, Any], captured: dict[str, Any] | None) -> dict
         if not isinstance(values, dict):
             continue
         entry = processors.setdefault(name, {})
+        if values.get("program") is not None and not values.get("parameters"):
+            # A captured program replaces the file's parameters, which are the
+            # previous program's: `emit` drops a program written beside
+            # parameters, so keeping them would reload the old sound.
+            entry.pop("parameters", None)
         for key, value in values.items():
             if key in ("parameters", "properties") and isinstance(value, dict):
                 entry[key] = {**(entry.get(key) or {}), **value}
@@ -505,7 +541,18 @@ def emit_rig(rig: Rig, captured: dict[str, Any] | None = None) -> dict[str, Any]
     from .emit import emit
 
     spec, fixed = compile_rig(rig)
-    config = pin_monitor_path(emit(spec, merged_state(fixed, captured)))
+    state = merged_state(fixed, captured)
+    problems = [
+        problem for channel in rig.channels
+        for problem in _strip_problems(
+            f"channel {channel.name!r}",
+            (state["processors"].get(channel.name) or {}).get("parameters") or {},
+        )
+    ]
+    if problems:
+        # A capture can carry a strip moved live, which the file never had.
+        raise RigFileError(problems)
+    config = pin_monitor_path(emit(spec, state))
     if rig.amp:
         config["_amp"] = copy.deepcopy(rig.amp)
     return config
@@ -518,29 +565,26 @@ def heard(config: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
     output — are left out, and only the master on bus 0 is rendered. That loses
     nothing about the sound: the send is the channel exactly, sample for sample
     (test_send_return.py). One config for a one-channel rig, named after it; one
-    per channel otherwise, named `<rig>.<channel>`, each with only that channel
-    sending and its input moved to engine channel 0 — the same names and the
-    same cut as `render.channels_of` gives a v1 config, so a v2 rig is checked
-    against the reference its v1 config was calibrated to.
+    per channel otherwise, named `<rig>.<channel>`. Each is `render._alone`'s
+    cut of that channel — the names and the cut `render.channels_of` gives a v1
+    config — with the master put back, so a v2 rig is checked against the
+    reference its v1 config was calibrated to.
     """
+    from .render import _alone
+
     name = (config.get("_meta") or {}).get("name", "rig")
-    channels = [t["name"] for t in config["tracks"] if t["name"] != MASTER]
+    master = next(t for t in config["tracks"] if t["name"] == MASTER)
+    channels = [t for t in config["tracks"] if t["name"] != MASTER]
     views = []
-    for only in channels if len(channels) > 1 else [None]:
-        view = copy.deepcopy(config)
-        kept = []
-        for track in view["tracks"]:
-            if track["name"] == MASTER:
-                kept.append(track)
-            elif only is None or track["name"] == only:
-                track["outputs"] = []
-                if only is not None:
-                    first = min(e["engine_channel"] for e in track["inputs"])
-                    for entry in track["inputs"]:
-                        entry["engine_channel"] -= first
-                kept.append(track)
-        view["tracks"] = kept
-        names = {p["name"] for t in kept for p in t["plugins"]} | {t["name"] for t in kept}
-        view["initial_state"] = [e for e in view.get("initial_state", []) if e["processor"] in names]
-        views.append((name if only is None else f"{name}.{only}", view))
+    for track in channels:
+        view = _alone(config, track)
+        view["tracks"][0]["outputs"] = []
+        view["tracks"].append(copy.deepcopy(master))
+        kept = {t["name"] for t in view["tracks"]} | {
+            p["name"] for t in view["tracks"] for p in t["plugins"]
+        }
+        view["initial_state"] = [
+            e for e in config.get("initial_state", []) if e["processor"] in kept
+        ]
+        views.append((name if len(channels) == 1 else f"{name}.{track['name']}", view))
     return views

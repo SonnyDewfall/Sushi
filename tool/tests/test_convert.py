@@ -168,3 +168,88 @@ def test_every_v2_rig_sounds_like_the_config_it_replaces(rig, tmp_path):
         expected, tolerance = from_dict(yaml.safe_load(reference.read_text()))
         found = compare(expected, measure(source, ROOT, tmp_path / name, sushi_bin=str(SUSHI)), tolerance)
         assert found == [], f"{name}: " + "; ".join(str(f) for f in found)
+
+
+# --------------------------------------------------------------------------- #
+# Review fixes
+# --------------------------------------------------------------------------- #
+
+def _clean_rig() -> dict:
+    return yaml.safe_load((ROOT / "config" / "rigs" / "electric-clean.yaml").read_text())
+
+
+def test_a_captured_program_replaces_the_files_parameters():
+    """emit drops a program written beside parameters, so keeping the file's
+    would reload the previous program's sound."""
+    config = rigfile.emit_rig(rigfile.parse_rig(_clean_rig()), {"processors": {"compressor": {"program": 3}}})
+    (entry,) = [e for e in config["initial_state"] if e["processor"] == "compressor"]
+    assert entry.get("program") == 3 and "parameters" not in entry
+
+
+def test_a_setting_only_the_rig_has_is_a_difference_too():
+    """electric_board's config has no initial_state, so a one-way check let
+    anything be added to its rig unseen."""
+    raw = yaml.safe_load((ROOT / "config" / "rigs" / "electric_board.yaml").read_text())
+    raw["channels"][0]["chain"][0]["bypassed"] = True
+    found = differences(v1("electric_board"), rigfile.emit_rig(rigfile.parse_rig(raw)))
+    assert len(found) == 1 and "was None" in found[0]
+
+
+def test_a_strip_off_unity_is_refused_in_the_file_and_from_a_capture():
+    """Sushi applies a track's gain after its plugins, so after the send: a
+    strip would change the stem and not the monitors."""
+    raw = _clean_rig()
+    raw["channels"][0]["strip"]["mute"] = 1.0
+    with pytest.raises(rigfile.RigFileError, match="acts after its send"):
+        rigfile.parse_rig(raw)
+    with pytest.raises(rigfile.RigFileError, match="gain 0.5 is not unity"):
+        rigfile.emit_rig(rigfile.parse_rig(_clean_rig()),
+                         {"processors": {"board": {"parameters": {"gain": 0.5}}}})
+
+
+@pytest.mark.parametrize("key", ["name", "description"])
+def test_meta_cannot_rename_the_rig(key):
+    raw = _clean_rig()
+    raw["meta"][key] = "other"
+    with pytest.raises(rigfile.RigFileError, match=f"meta: '{key}' is the rig's own"):
+        rigfile.parse_rig(raw)
+
+
+def test_a_track_that_may_be_stereo_is_not_taken_for_the_guitar():
+    config = v1("electric-clean")
+    config["tracks"][0]["inputs"] = [
+        {"engine_channel": 0, "track_channel": 0}, {"engine_channel": 1, "track_channel": 1},
+    ]
+    with pytest.raises(ConvertError, match="cannot be assumed"):
+        to_rig(config, "electric-clean")
+    rig = to_rig(config, "electric-clean", {"board": Input("keys-in", "stereo")})
+    assert rig["channels"][0]["width"] == "stereo"
+
+
+def test_a_track_given_twice_is_refused():
+    from sushi_rig.convert import parse_inputs
+
+    with pytest.raises(ConvertError, match="twice"):
+        parse_inputs(["vocal=vocal-in:mono", "vocal=guitar-in:stereo"])
+
+
+@pytest.mark.parametrize("tracks", [["board"], [None], "board"])
+def test_a_malformed_config_is_a_fail_line_not_a_traceback(tmp_path, capsys, tracks):
+    from sushi_rig.cli import main
+
+    bad = tmp_path / "bad.json"
+    bad.write_text(json.dumps({"tracks": tracks}))
+    assert main(["convert", str(bad), "-o", str(tmp_path / "x.yaml")]) == 1
+    assert capsys.readouterr().out.startswith("FAIL ")
+
+
+def test_a_copy_of_a_config_converts_under_its_own_name_or_one_given(tmp_path, capsys):
+    from sushi_rig.cli import main
+
+    copy = tmp_path / "my-tone.json"
+    copy.write_text((ROOT / "config" / "electric-clean.json").read_text())
+    out = tmp_path / "out.yaml"
+    assert main(["convert", str(copy), "-o", str(out)]) == 0
+    assert yaml.safe_load(out.read_text())["name"] == "electric-clean"
+    assert main(["convert", str(copy), "-o", str(out), "--force", "--name", "my-tone"]) == 0
+    assert yaml.safe_load(out.read_text())["name"] == "my-tone"
