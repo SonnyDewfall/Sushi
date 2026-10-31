@@ -694,12 +694,13 @@ actually results is a measurement, and belongs with `selftest` (issue #49).
 where to capture is too, and can be read before anything is linked:
 
 ```bash
-sushi-rig probes config/src/guitar_vocal.yaml   # every port each probe links
+sushi-rig probes config/src/guitar_vocal.yaml         # every port each probe links
+sushi-rig probes config/src/guitar_vocal.yaml --amp   # as run with an amp model
 ```
 
-Every half of every track's output is its own probe, so a guitar coming out of
-one speaker fails; with the amp on, the amp is probed on its own and through
-Sushi, both required to add harmonics. What the plan cannot check it lists —
+Every half of every track's output is its own probe, so a chain that comes out
+of one side only fails on the silent side; with `--amp`, the amp is probed on
+its own and through Sushi, both required to add harmonics. What the plan cannot check it lists —
 today that includes whether guitar and vocal leak into each other, since both
 come out of bus 0. Linking the ports and capturing needs the rig machine.
 

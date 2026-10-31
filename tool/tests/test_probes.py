@@ -148,8 +148,56 @@ def test_two_tracks_claiming_the_guitar_are_refused(tmp_path):
           inputs: [{engine_bus: 1, track_bus: 0}]
           outputs: [{engine_bus: 1, track_bus: 0}]
         """)
-    with pytest.raises(ProbeError, match="both take 'guitar-in'"):
+    with pytest.raises(ProbeError, match="tracks 'a', 'b' all take 'guitar-in'"):
         plan_probes(spec, amp=True)
+    # Without the amp, two guitars are nobody's problem.
+    assert len(plan_probes(spec, amp=False).points) == 4
+
+
+def test_an_amp_in_front_of_a_guitar_with_no_outputs_says_so(tmp_path):
+    spec = rig(tmp_path, """\
+        - name: g
+          channels: 2
+          source: guitar-in
+          inputs: [{engine_bus: 0, track_bus: 0}]
+          outputs: []
+        """)
+    with pytest.raises(ProbeError) as caught:
+        plan_probes(spec, amp=True)
+    assert caught.value.problems == [
+        "the amp is in front of 'g', which has no outputs on Sushi, so what the "
+        "amp does can never be heard"
+    ]
+
+
+def test_a_broken_guitar_track_is_reported_as_broken_not_as_missing(tmp_path):
+    spec = rig(tmp_path, """\
+        - name: g
+          channels: 2
+          source: guitar-in
+          inputs: [{track_bus: 0}]
+          outputs: [{engine_bus: 0, track_bus: 0}]
+        """)
+    with pytest.raises(ProbeError) as caught:
+        plan_probes(spec, amp=True)
+    (problem,) = caught.value.problems
+    assert "names no engine_bus or engine_channel" in problem
+
+
+def test_tracks_sharing_inputs_and_outputs_cannot_be_told_apart(tmp_path):
+    spec = rig(tmp_path, """\
+        - name: a
+          channels: 2
+          inputs: [{engine_bus: 0, track_bus: 0}]
+          outputs: [{engine_bus: 0, track_bus: 0}]
+        - name: b
+          channels: 2
+          inputs: [{engine_bus: 0, track_bus: 0}]
+          outputs: [{engine_bus: 0, track_bus: 0}]
+        """)
+    (note,) = plan_probes(spec, amp=False).not_checked
+    assert note.startswith("a and b: both read sushi:audio_input_0, sushi:audio_input_1")
+    assert "a silent chain on one is heard through the other" in note
 
 
 def test_every_routing_problem_is_reported_at_once(tmp_path):
@@ -167,12 +215,16 @@ def test_every_routing_problem_is_reported_at_once(tmp_path):
         plan_probes(spec, amp=False)
     assert len(caught.value.problems) == 2
     assert "track 'a'" in caught.value.problems[0] and "track 'b'" in caught.value.problems[1]
+    # A track with no role is "the track", never a placeholder role.
+    assert "which Sushi input the track takes is unknown" in caught.value.problems[0]
 
 
 @pytest.mark.parametrize("source", sorted(SOURCES.glob("*.yaml")), ids=lambda p: p.name)
 def test_every_committed_rig_has_a_plan(source):
-    plan = plan_probes(RigSpec.load(source), amp=True)
-    assert any(p.nonlinear for p in plan.points)
+    """With the amp and without: none of the committed sources names an amp,
+    but each can be run with one, by `up --amp-model`."""
+    assert any(p.nonlinear for p in plan_probes(RigSpec.load(source), amp=True).points)
+    assert plan_probes(RigSpec.load(source), amp=False).points
 
 
 def test_the_command_prints_the_plan_and_what_it_cannot_check(capsys):
@@ -180,8 +232,22 @@ def test_the_command_prints_the_plan_and_what_it_cannot_check(capsys):
 
     assert main(["probes", str(SOURCES / "guitar_vocal.yaml")]) == 0
     out = capsys.readouterr().out
-    assert "amp\n  inject  NAM:Input\n  listen  NAM:Output  must add harmonics\n" in out
+    # No amp unless asked for: guitar_vocal names none, and `up` starts none.
+    assert "NAM" not in out
     assert "NOT CHECKED separation of guitar and vocal" in out
+    assert main(["probes", str(SOURCES / "guitar_vocal.yaml"), "--amp"]) == 0
+    out = capsys.readouterr().out
+    assert "amp\n  inject  NAM:Input\n  listen  NAM:Output  must add harmonics\n" in out
+
+
+def test_the_command_fails_loudly_on_a_file_it_cannot_read(tmp_path, capsys):
+    from sushi_rig.cli import main
+
+    assert main(["probes", str(tmp_path / "missing.yaml")]) == 1
+    assert capsys.readouterr().out.startswith("FAIL ")
+    (tmp_path / "bad.yaml").write_text("tracks: [unclosed")
+    assert main(["probes", str(tmp_path / "bad.yaml")]) == 1
+    assert capsys.readouterr().out.startswith("FAIL ")
 
 
 def test_the_command_fails_loudly_on_a_rig_it_cannot_probe(tmp_path, capsys):
@@ -194,6 +260,23 @@ def test_the_command_fails_loudly_on_a_rig_it_cannot_probe(tmp_path, capsys):
           inputs: [{engine_bus: 0, track_bus: 0}]
           outputs: [{engine_bus: 0, track_bus: 0}]
         """)
-    assert main(["probes", str(tmp_path / "rig.yaml")]) == 1
+    assert main(["probes", str(tmp_path / "rig.yaml"), "--amp"]) == 1
     assert capsys.readouterr().out.startswith("FAIL the amp is on but no track takes")
-    assert main(["probes", str(tmp_path / "rig.yaml"), "--no-amp"]) == 0
+    assert main(["probes", str(tmp_path / "rig.yaml")]) == 0
+
+
+def test_the_command_refuses_a_rig_that_does_not_validate(tmp_path, capsys):
+    from sushi_rig.cli import main
+
+    rig(tmp_path, """\
+        - name: a
+          channels: 2
+          inputs: [{engine_bus: 0, track_bus: 0}]
+          outputs: [{engine_bus: 0, track_bus: 0}]
+        - name: a
+          channels: 2
+          inputs: [{engine_bus: 1, track_bus: 0}]
+          outputs: [{engine_bus: 1, track_bus: 0}]
+        """)
+    assert main(["probes", str(tmp_path / "rig.yaml")]) == 1
+    assert capsys.readouterr().out.startswith("FAIL rig.yaml: ")

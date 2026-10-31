@@ -9,9 +9,14 @@ the stimulus and records both channels together needs the rig machine.
 ## Every half of every output
 
 A probe reads one output port. A track feeding a stereo bus gets one probe per
-half, because a dead half is a failure this rig has had: before the machine
-file, the guitar fed Sushi's input 0 alone and came out of the left speaker
-only. A probe that summed or picked one side would have passed it.
+half, so a chain that comes out of one side only — a mono plugin on a stereo
+track, an output mapped to the wrong channel — fails on the side that is
+silent. A probe that summed the two or picked one would pass it.
+
+What this does not catch is the guitar's own port feeding only one of Sushi's
+inputs, the left-speaker-only failure this rig once had: the probe drives both
+inputs itself. That is the physical side of the routing, `mono_to_stereo` in
+the machine file and `patchbay check` against the live graph.
 
 ## Injected where the track's own input lands
 
@@ -20,6 +25,10 @@ mono guitar declared `mono_to_stereo` is probed through both halves exactly as
 it is played. It is injected into Sushi's ports, not the interface's: nothing
 can be played *into* a capture port, and the physical side of the routing is
 `patchbay check`'s to verify.
+
+Every input of a track is driven at once, so a multibus track whose bus 1 input
+never reaches its bus 1 output still passes on signal mixed in from bus 0. One
+stimulus per input bus would see it; no rig here has a multibus track yet.
 
 ## The amp, twice
 
@@ -39,6 +48,9 @@ may hold a distortion pedal, and the probe is about whether sound comes through.
 Whether one channel leaks into another needs the two to come out of different
 ports, and in today's guitar_vocal they share bus 0. The plan says so for every
 pair that shares an output; probing separation waits for per-channel outputs.
+Two tracks sharing their inputs *and* outputs are worse: a probe of either
+drives both, so a silent chain on one is heard through the other, and the plan
+says that too.
 
 ## Links are added, never taken away
 
@@ -61,11 +73,10 @@ leaves a rig with no guitar in it — worse than any measurement is worth.
 from __future__ import annotations
 
 from dataclasses import dataclass
-from types import SimpleNamespace
 from typing import Any
 
 from .amp import AMP_INPUT, AMP_OUTPUT
-from .patchbay import GUITAR_ROLE, SUSHI_NODE, PatchbayError, routes_from_rig
+from .patchbay import GUITAR_ROLE, SUSHI_NODE, track_route
 
 
 @dataclass(frozen=True)
@@ -103,92 +114,95 @@ def _ports(sushi_node: str, direction: str, route) -> tuple[str, ...]:
     return tuple(f"{sushi_node}:audio_{direction}_{c}" for c in dict.fromkeys(channels))
 
 
-def _track_routes(track: Any) -> tuple[tuple, tuple]:
-    """A track's input and output routes, with the patchbay's own rules for
-    reading them, so a probe and the patchbay can never disagree on a port."""
-    # `routes_from_rig` keys by role; a track without one is still probed, so
-    # it is given a placeholder role for the length of the call.
-    alone = SimpleNamespace(
-        name=track.name, inputs=track.inputs, outputs=track.outputs,
-        source=track.source or "_in", sink=track.sink or "_out",
-    )
-    feeds, sinks = routes_from_rig(SimpleNamespace(tracks=[alone]))
-    into = next(iter(feeds.values()), [()])
-    out = next(iter(sinks.values()), [()])
-    return into[0], out[0]
-
-
 def plan_probes(rig: Any, *, amp: bool, sushi_node: str = SUSHI_NODE) -> ProbePlan:
     """Every probe point in `rig`, or `ProbeError` naming everything wrong.
 
-    `amp` is whether the amp runs for this rig (`up` without `--no-amp`, and a
-    config that names a model). With it, the track the guitar role feeds is
-    the one the amp sits in front of — the role, not input 0, for the reason
-    `amp.amp_patchbay` gives.
+    `amp` is whether the amp runs for this rig: a config with an `_amp` model,
+    or `up --amp-model`, and not `--no-amp`. With it, the track the guitar role
+    feeds is the one the amp sits in front of — the role, not input 0, for the
+    reason `amp.amp_patchbay` gives.
     """
     points: list[ProbePoint] = []
     not_checked: list[str] = []
     problems: list[str] = []
-    guitar_track = None
-    outputs: dict[str, tuple[str, ...]] = {}
+    guitar: list[tuple[str, tuple[str, ...] | None]] = []
+    routed: dict[str, tuple[tuple[str, ...], tuple[str, ...]]] = {}
     for track in rig.tracks:
-        try:
-            into, out = _track_routes(track)
-        except PatchbayError as exc:
-            problems += exc.problems
-            continue
+        into, found = track_route(track, "inputs", track.source)
+        out, more = track_route(track, "outputs", track.sink)
         inject = _ports(sushi_node, "input", into)
         captures = _ports(sushi_node, "output", out)
+        if track.source == GUITAR_ROLE:
+            # Recorded before anything can skip the track, so an amp in front
+            # of a broken guitar track is reported as that, not as no guitar.
+            guitar.append((track.name, None if found or more else captures))
+        if found or more:
+            problems += found + more
+            continue
         if not inject or not captures:
             missing = "inputs" if not inject else "outputs"
             not_checked.append(f"{track.name}: no {missing} on Sushi, so nothing to probe")
             continue
-        outputs[track.name] = captures
+        routed[track.name] = (inject, captures)
         for port in captures:
             points.append(ProbePoint(f"{track.name} through {sushi_node} ({port})", inject, port))
-        if track.source == GUITAR_ROLE:
-            if guitar_track is not None:
-                problems.append(
-                    f"tracks {guitar_track[0]!r} and {track.name!r} both take {GUITAR_ROLE!r}, "
-                    "so which one the amp sits in front of is not decided"
-                )
-            guitar_track = (track.name, captures)
 
     if amp:
-        if guitar_track is None:
+        if not guitar:
             problems.append(
                 f"the amp is on but no track takes {GUITAR_ROLE!r}, so it is in front "
                 "of nothing; the amp follows that role"
             )
+        elif len(guitar) > 1:
+            problems.append(
+                f"tracks {', '.join(repr(name) for name, _ in guitar)} all take "
+                f"{GUITAR_ROLE!r}, so which one the amp sits in front of is not decided"
+            )
         else:
-            name, captures = guitar_track
-            points.append(ProbePoint("amp", (AMP_INPUT,), AMP_OUTPUT, nonlinear=True))
-            points += [
-                ProbePoint(f"{name} via amp ({port})", (AMP_INPUT,), port, nonlinear=True)
-                for port in captures
-            ]
+            (name, captures), = guitar
+            if captures == ():
+                problems.append(
+                    f"the amp is in front of {name!r}, which has no outputs on Sushi, "
+                    "so what the amp does can never be heard"
+                )
+            elif captures:
+                points.append(ProbePoint("amp", (AMP_INPUT,), AMP_OUTPUT, nonlinear=True))
+                points += [
+                    ProbePoint(f"{name} via amp ({port})", (AMP_INPUT,), port, nonlinear=True)
+                    for port in captures
+                ]
     if problems:
         raise ProbeError(problems)
-    not_checked += _shared_outputs(outputs)
+    not_checked += _shared(routed)
     return ProbePlan(tuple(points), tuple(not_checked))
 
 
-def _shared_outputs(outputs: dict[str, tuple[str, ...]]) -> list[str]:
-    """Pairs of tracks that come out of the same Sushi port.
+def _shared(routed: dict[str, tuple[tuple[str, ...], tuple[str, ...]]]) -> list[str]:
+    """Pairs of tracks a probe cannot tell apart, and why.
 
     Channel separation — a stimulus in one track and nothing from the other —
     can only be measured where the two have outputs of their own. Where they
     share one, today's guitar_vocal included, the probe would hear the
-    stimulus through the track it was injected into and call it a leak.
+    stimulus through the track it was injected into and call it a leak. Where
+    they share inputs as well, a probe of either drives both.
     """
-    names = list(outputs)
+    names = list(routed)
     said = []
     for i, a in enumerate(names):
         for b in names[i + 1:]:
-            shared = [port for port in outputs[a] if port in outputs[b]]
-            if shared:
+            outputs = [port for port in routed[a][1] if port in routed[b][1]]
+            if not outputs:
+                continue
+            inputs = [port for port in routed[a][0] if port in routed[b][0]]
+            if inputs:
                 said.append(
-                    f"separation of {a} and {b}: both come out of {', '.join(shared)}, "
+                    f"{a} and {b}: both read {', '.join(inputs)} and come out of "
+                    f"{', '.join(outputs)}, so a probe of either drives both, and a "
+                    "silent chain on one is heard through the other"
+                )
+            else:
+                said.append(
+                    f"separation of {a} and {b}: both come out of {', '.join(outputs)}, "
                     "so whether either leaks into the other cannot be measured"
                 )
     return said

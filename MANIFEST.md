@@ -1041,8 +1041,9 @@ open-stage-control: whether a second fixed bar stacks under the first. *(2026-10
 **selftest's probes are planned from the rig, not written down.** #49 part 2's
 decisions — which ports each probe links — come from the rig's own routing,
 read by the same function the patchbay generator uses, so the two cannot
-disagree on a port. One probe per output half, because a guitar heard in one
-speaker is a failure this rig has had. With the amp on, a second probe from
+disagree on a port. One probe per output half, so a chain silent on one side
+fails there; the guitar's own port reaching only one of Sushi's inputs is the
+patchbay's to catch, since a probe drives both inputs itself. With the amp on, a second probe from
 `NAM:Input` through Sushi catches the amp working and its output never
 arriving. Probes add links and never remove them: a selftest killed between
 unlinking the guitar and restoring it would leave a rig with no guitar, which is

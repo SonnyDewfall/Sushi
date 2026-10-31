@@ -264,10 +264,21 @@ def _patchbay(args: argparse.Namespace) -> int:
 def _probes(args: argparse.Namespace) -> int:
     from .probes import ProbeError, plan_probes
 
+    import yaml
+
     try:
-        plan = plan_probes(RigSpec.load(args.rig), amp=not args.no_amp)
-    except ProbeError as exc:
-        for problem in exc.problems:
+        rig = RigSpec.load(args.rig)
+    except (OSError, ValueError, yaml.YAMLError) as exc:
+        print(f"FAIL {args.rig}: {exc}")
+        return 1
+    problems = [f"{args.rig.name}: {p}" for p in rig.validate()]
+    if not problems:
+        try:
+            plan = plan_probes(rig, amp=args.amp)
+        except ProbeError as exc:
+            problems = exc.problems
+    if problems:
+        for problem in problems:
             print(f"FAIL {problem}")
         return 1
     for point in plan.points:
@@ -939,8 +950,9 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument("rig", type=Path, help="rig.yaml (config/src/*.yaml)")
     p.add_argument(
-        "--no-amp", action="store_true",
-        help="plan for a rig run without the amp ('up --no-amp')",
+        "--amp", action="store_true",
+        help="plan for the rig with the amp in it, as `up` runs it for a config "
+        "with an _amp model or with --amp-model",
     )
 
     p = sub.add_parser(
