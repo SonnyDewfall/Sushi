@@ -39,21 +39,7 @@ def clear_state() -> None:
         pass
 
 
-def is_stale(state: dict[str, Any] | None, pid_alive: Callable[[int], bool]) -> bool:
-    """Whether a recorded rig is gone and its state file can be ignored.
-
-    No state is not stale state — there is simply nothing there. A state file
-    naming a supervisor that no longer exists is stale, and `up` clears it and
-    carries on rather than refusing forever after a crash.
-    """
-    if not state:
-        return False
-    if not (_is_real_id(state.get("supervisor_pid")) and _is_real_id(state.get("pgid"))):
-        return True
-    return not pid_alive(state["supervisor_pid"])
-
-
-def _is_real_id(value: Any) -> bool:
+def is_real_id(value: Any) -> bool:
     """Whether a recorded pid or pgid could possibly name a rig process.
 
     The state file is trusted as *identity* -- `down` signals whatever group it
@@ -73,16 +59,17 @@ def liveness(
     """What the state file amounts to, as one of five words.
 
     - `absent`: no state file, nothing recorded.
-    - `invalid`: it names no usable supervisor or group, so nothing in it may be
-      signalled.
-    - `gone`: the supervisor and the group are both dead; a leftover file.
-    - `orphaned`: the supervisor is dead but the group still has members. Either
-      they are the rig's children, left behind by a supervisor that was killed,
-      or the number has since been handed to an unrelated group. Nothing here
-      can tell which, so `down` must not signal it.
-    - `running`: the supervisor is alive *and* its group exists. Both are
-      required: the supervisor is what owns the group id (see `_supervise`), so
-      a live group without it is not evidence of this rig.
+    - `invalid`: it does not describe a rig this code could have started, so
+      nothing in it may be trusted. That includes ids that are not real ones
+      and a `pgid` that is not the `supervisor_pid`: `_supervise` calls `setsid`
+      and so always leads a group of its own number, which makes the two equal
+      by construction. A file where they differ was edited or is damaged.
+    - `gone`: the group has no members left; a leftover file.
+    - `orphaned`: the supervisor is dead but its group still has members. These
+      are this rig's leftovers after a crash -- a group number cannot be handed
+      to anything else while any member lives, so there is no reuse to fear --
+      and recovering from exactly this is what `down` and `restart` are for.
+    - `running`: the supervisor and its group are both alive.
 
     Pure, taking the probes as arguments, so the decision that guards `killpg`
     is a test rather than a claim.
@@ -90,8 +77,8 @@ def liveness(
     if not state:
         return "absent"
     pid, pgid = state.get("supervisor_pid"), state.get("pgid")
-    if not (_is_real_id(pid) and _is_real_id(pgid)):
+    if not (is_real_id(pid) and is_real_id(pgid)) or pid != pgid:
         return "invalid"
-    if pid_alive(pid):
-        return "running" if pgid_alive(pgid) else "gone"
-    return "orphaned" if pgid_alive(pgid) else "gone"
+    if not pgid_alive(pgid):
+        return "gone"
+    return "running" if pid_alive(pid) else "orphaned"

@@ -17,3 +17,14 @@ def real_dump() -> dict:
     raw = (EXAMPLES / "dump.example.json").read_text()
     payload, _ = json.JSONDecoder().raw_decode(raw, raw.index("{"))
     return payload
+
+
+@pytest.fixture
+def runtime(tmp_path, monkeypatch):
+    """A private runtime dir, so the real state file is neither read nor hurt.
+
+    `XDG_RUNTIME_DIR` is pointed at a temporary directory; the fixture's value
+    is the rig's own directory inside it, where the state file and logs go.
+    """
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
+    return tmp_path / "run" / "sushi-rig"

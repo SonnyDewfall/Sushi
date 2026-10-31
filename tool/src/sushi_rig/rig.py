@@ -36,10 +36,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from .paths import checkout_root, log_dir, runtime_dir
-from .procs import SHUTDOWN_STEPS, pgid_alive, pid_alive, port_is_open, wait_for_grpc
+from .paths import checkout_root, log_dir, runtime_dir, state_path
+from .procs import (
+    SHUTDOWN_STEPS, pgid_alive, pid_alive, port_is_open, stop_group, wait_for_grpc,
+)
 from .qpwgraph import QPWGRAPH_ATTEMPTS, start_qpwgraph, unconnected_inputs
-from .state import clear_state, is_stale, liveness, read_state, write_state
+from .state import clear_state, is_real_id, liveness, read_state, write_state
 
 DEFAULT_CONFIG_NAME = "electric_board"
 PANEL_FILE = "/tmp/sushi-rig-panel.json"
@@ -325,6 +327,7 @@ def _supervise(
     amp_values: dict[str, float] | None = None,
     tuner_requested: bool = True,
     amp_requested: bool = True,
+    amp_model_requested: str | None = None,
 ) -> None:
     """The supervisor process: own the group, start the children, then wait.
 
@@ -525,6 +528,11 @@ def _supervise(
             # child has failed to start. `restart` reads these.
             "tuner_requested": tuner_requested,
             "amp_requested": amp_requested,
+            # The override as the caller gave it, None when there was none. Not
+            # `amp_model`, which is what *ran* and so includes the config's own
+            # choice: restoring that would pin today's model for good, and a
+            # later edit to the config would be ignored by every restart.
+            "amp_model_requested": amp_model_requested,
         })
 
         for problem in problems:
@@ -628,7 +636,8 @@ def up(
         raise RigError(f"no such config: {config}")
 
     existing = read_state()
-    if existing and not is_stale(existing, pid_alive):
+    verdict = liveness(existing, pid_alive, pgid_alive)
+    if verdict == "running":
         started = existing.get("started_at", "")
         try:
             age = format_uptime(
@@ -642,9 +651,25 @@ def up(
             "Run 'sushi-rig down' first — starting a second rig on top of a "
             "running one is what takes the live session down."
         )
-    if existing:
-        # Named a supervisor that no longer exists: a crash, or a reboot on a
-        # system without XDG_RUNTIME_DIR. Not a reason to refuse forever.
+    if verdict == "orphaned":
+        raise RigError(
+            f"a previous rig's supervisor ({existing.get('supervisor_pid')}) is "
+            f"gone but its process group still has members: what a crash left "
+            "behind. Starting over would put a second rig on top of them.\n"
+            "Run 'sushi-rig down' to stop them, then start again."
+        )
+    if verdict == "invalid":
+        raise RigError(
+            f"{state_path()} does not describe a rig this tool started (its "
+            "ids are missing, nonsensical, or the group is not the "
+            "supervisor's own), so it will not be trusted either way.\n"
+            "Inspect it; if it is garbage, delete it, or run "
+            "'sushi-rig down --force' if its pgid really is a rig's."
+        )
+    if verdict == "gone":
+        # Named a supervisor and group that no longer exist: a crash, or a
+        # reboot on a system without XDG_RUNTIME_DIR. Not a reason to refuse
+        # forever.
         clear_state()
 
     # The state file only knows about rigs this supervisor started. A Sushi
@@ -706,6 +731,7 @@ def up(
             headless=headless, config_name=config_name, ready_w=ready_w,
             amp_model=amp_model_stored, amp_values=amp_values,
             tuner_requested=tuner, amp_requested=amp,
+            amp_model_requested=amp_model,
         )
     )
     outcome = ""
@@ -743,11 +769,11 @@ def up(
 def _kill_group_of(pid: int) -> None:
     """Best-effort teardown of a supervisor's group, used on a failed start.
 
-    `pid` is our own child, and is reaped here. A supervisor that has already
-    given up (it reports FAIL and exits) is a zombie until someone waits for it,
-    and a zombie still counts as a member of its group, so `pgid_alive` stayed
-    true and the escalation ran its whole eight seconds against a process that
-    was already dead -- the error message arrived that much late.
+    `pid` is our own child, and is reaped as the group is polled. A supervisor
+    that has already given up (it reports FAIL and exits) is a zombie until
+    someone waits for it, and a zombie still counts as a member of its group, so
+    without that the escalation ran its whole eight seconds against a process
+    that was already dead -- the error message arrived that much late.
     """
     def reap() -> None:
         try:
@@ -764,17 +790,12 @@ def _kill_group_of(pid: int) -> None:
         # group, and signalling that would kill the command reporting the
         # failure. Nothing was started yet if it never got that far.
         return
-    for sig, wait in SHUTDOWN_STEPS:
-        try:
-            os.killpg(pgid, sig)
-        except (ProcessLookupError, PermissionError):
-            return
-        deadline = time.monotonic() + wait
-        while time.monotonic() < deadline:
-            reap()
-            if not pgid_alive(pgid):
-                return
-            time.sleep(0.1)
+    try:
+        stop_group(pgid, poll=reap)
+    except PermissionError:
+        # Already a failure path; there is nothing better to say than the error
+        # that brought us here.
+        return
 
 
 def down(force: bool = False) -> int:
@@ -784,67 +805,68 @@ def down(force: bool = False) -> int:
     the whole point: `sushi.bin`, open-stage-control's Electron helpers and the
     listener are all reachable as group members regardless of what they are
     called, which is precisely what the old `pkill`/`killall` shutdown missed.
+
+    The state file is trusted as identity, so it is checked before anything is
+    signalled (see `liveness`). `force` skips the polite signals, and on a file
+    that fails that check it is also the user's say-so to signal the recorded
+    group anyway.
     """
     state = read_state()
-    # The state file is trusted as identity, so it is checked before anything is
-    # signalled: both the supervisor and its group must be alive (see `liveness`
-    # for why a group alone is not enough).
     verdict = liveness(state, pid_alive, pgid_alive)
     if verdict == "absent":
         print("No rig is running.")
         return 0
-    if verdict == "invalid":
-        print(
-            "State file names no usable supervisor or process group — clearing "
-            "it. Nothing was signalled.",
-            file=sys.stderr,
-        )
-        clear_state()
-        return 1
     if verdict == "gone":
         print("No rig is running (clearing a stale state file).")
         clear_state()
         return 0
-    if verdict == "orphaned":
-        print(
-            f"Supervisor {state.get('supervisor_pid')} is gone but process group "
-            f"{state.get('pgid')} still has members. They may be the rig's "
-            "children, or the number may belong to something else by now, and "
-            "there is no telling which, so nothing was signalled and the state "
-            "file is kept. Look with: ps -eo pid,pgid,args | "
-            f"awk '$2 == {state.get('pgid')}'",
-            file=sys.stderr,
-        )
-        return 1
 
-    pgid = state["pgid"]
-    steps = ((signal.SIGKILL, 2.0),) if force else SHUTDOWN_STEPS
-    print(f"Stopping {state.get('config_name')} ({state.get('mode')} mode)...")
-    for sig, wait in steps:
-        try:
-            os.killpg(pgid, sig)
-        except ProcessLookupError:
-            break
-        except PermissionError:
-            # Alive, but not ours to signal: a state file from another user, or
-            # a recycled group id. A message, not a traceback, and the file is
-            # kept so the evidence is still there.
+    pgid = state.get("pgid")
+    if verdict == "invalid":
+        reason = (
+            f"{state_path()} does not describe a rig this tool started "
+            f"(supervisor_pid {state.get('supervisor_pid')!r}, pgid {pgid!r})"
+        )
+        if not force:
             print(
-                f"Not permitted to signal process group {pgid}, so it was left "
-                "alone. It is not owned by this user; the state file is likely "
-                "stale or belongs to someone else's rig.",
+                f"{reason}, so nothing was signalled and the file is kept. "
+                "If it is garbage, delete it; if its pgid really is a rig's, "
+                "'sushi-rig down --force' will signal that group on your say-so.",
                 file=sys.stderr,
             )
             return 1
-        deadline = time.monotonic() + wait
-        while time.monotonic() < deadline:
-            if not pgid_alive(pgid):
-                break
-            time.sleep(0.1)
-        if not pgid_alive(pgid):
-            break
+        if not is_real_id(pgid) or pgid == os.getpgrp():
+            print(
+                f"{reason}, and its pgid cannot be signalled even with --force "
+                "(it is not a real group id, or it is this command's own). "
+                "Delete the file.",
+                file=sys.stderr,
+            )
+            return 1
+        print(f"{reason}; signalling group {pgid} anyway because --force was given.",
+              file=sys.stderr)
+    elif verdict == "orphaned":
+        print(
+            f"Supervisor {state.get('supervisor_pid')} is gone but its process "
+            f"group {pgid} still has members: this rig's leftovers after a "
+            "crash. Stopping them."
+        )
 
-    if pgid_alive(pgid):
+    steps = ((signal.SIGKILL, 2.0),) if (force or verdict == "invalid") else SHUTDOWN_STEPS
+    print(f"Stopping {state.get('config_name')} ({state.get('mode')} mode)...")
+    try:
+        gone = stop_group(pgid, steps)
+    except PermissionError:
+        # Alive, but not ours to signal: a state file from another user. A
+        # message, not a traceback, and the file is kept as evidence.
+        print(
+            f"Not permitted to signal process group {pgid}, so it was left "
+            "alone. It is not owned by this user; the state file is likely "
+            "stale or belongs to someone else's rig.",
+            file=sys.stderr,
+        )
+        return 1
+    if not gone:
         print(
             f"Process group {pgid} survived SIGKILL. Something is stuck in an "
             "uninterruptible state — check with: ps -eo pid,pgid,args | "
@@ -869,9 +891,11 @@ def restart_arguments(state: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     `_supervise` records the request, and a rig started with --no-amp still
     comes back without one because it never asked for one.
 
-    The amp's model is carried as the override it effectively was: the state
-    holds the model the amp ran with, so `--amp-model` survives a restart
-    instead of the config's own model coming back unannounced.
+    The amp's model is restored from `amp_model_requested`: the `--amp-model`
+    the caller gave, or None. Not from `amp_model`, which is what ran and so
+    includes the config's own choice -- restoring that would pin today's model
+    for good and make every restart ignore a later edit to the config. A state
+    file from before it was recorded restores no override.
 
     A state file written before the request was recorded falls back to reading
     the children, which is the best that file can say. Pure, so "restart brings
@@ -884,7 +908,7 @@ def restart_arguments(state: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         "headless": state.get("mode") == "headless",
         "tuner": tuner if isinstance(tuner, bool) else "fmit" in children,
         "amp": amp if isinstance(amp, bool) else "amp" in children,
-        "amp_model": state.get("amp_model") or None,
+        "amp_model": state.get("amp_model_requested") or None,
     }
 
 
@@ -923,14 +947,20 @@ def status() -> int:
     if verdict == "absent":
         print("No rig is running.")
         return 0
-    if verdict in ("invalid", "gone"):
+    if verdict == "gone":
         print("No rig is running (the state file is stale; 'sushi-rig down' clears it).")
+        return 0
+    if verdict == "invalid":
+        print(
+            f"{state_path()} does not describe a rig this tool started, so "
+            "its contents are not reported. 'sushi-rig down' says more."
+        )
         return 0
     if verdict == "orphaned":
         print(
             f"The supervisor ({state.get('supervisor_pid')}) is gone but its "
-            f"process group {state.get('pgid')} still has members. 'sushi-rig "
-            "down' will say more."
+            f"process group {state.get('pgid')} still has members: what a "
+            "crash left behind. 'sushi-rig down' stops them."
         )
         return 0
     pgid = state["pgid"]
@@ -946,7 +976,13 @@ def status() -> int:
     print(f"{state.get('config_name')} ({state.get('mode')} mode), up {age}")
     print(f"  config     {state.get('config')}")
     print(f"  group      {pgid}")
-    for name, pid in (state.get("children") or {}).items():
+    children = state.get("children")
+    for name, pid in (children.items() if isinstance(children, dict) else ()):
+        if not is_real_id(pid):
+            # Read from a file, so not trusted to be a pid at all; said, not
+            # raised, because `status` is what you run when things are odd.
+            print(f"  {name:10} pid {pid!r} (INVALID)")
+            continue
         print(f"  {name:10} pid {pid} {'' if pid_alive(pid) else '(DEAD)'}")
     if state.get("amp_model"):
         print(f"  amp model  {state['amp_model']}")

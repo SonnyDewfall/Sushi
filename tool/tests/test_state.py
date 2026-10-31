@@ -14,12 +14,6 @@ import pytest
 from sushi_rig import paths, state
 
 
-@pytest.fixture
-def runtime(tmp_path, monkeypatch):
-    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
-    return tmp_path / "sushi-rig"
-
-
 def test_read_state_of_a_missing_file_is_none(runtime):
     assert state.read_state() is None
 

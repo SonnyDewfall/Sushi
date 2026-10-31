@@ -42,8 +42,8 @@ from sushi_rig.rig import (
     resolve_rig_yaml,
     rig_source_problem,
 )
-from sushi_rig import rig, state as state_file
-from sushi_rig.state import is_stale, liveness
+from sushi_rig import procs, rig, state as state_file
+from sushi_rig.state import liveness
 from pathlib import Path
 
 
@@ -162,60 +162,68 @@ def test_the_listener_is_started_without_a_rig_when_there_is_none(plan_args):
 # --- second-instance guard --------------------------------------------------
 
 
-def test_a_running_supervisor_is_not_stale():
+def test_a_running_supervisor_is_running():
     """The guard that was missing: starting a second rig on top of a running one
     is what produced the two-wrapper collision that took a live session down."""
-    assert not is_stale({"supervisor_pid": 42, "pgid": 42}, lambda pid: True)
+    yes = lambda n: True  # noqa: E731
+    assert liveness({"supervisor_pid": 42, "pgid": 42}, yes, yes) == "running"
 
 
-def test_a_dead_supervisor_is_stale():
+def test_a_rig_whose_group_is_gone_is_gone():
     """A crash must not leave `up` refusing forever."""
-    assert is_stale({"supervisor_pid": 42, "pgid": 42}, lambda pid: False)
+    no = lambda n: False  # noqa: E731
+    assert liveness({"supervisor_pid": 42, "pgid": 42}, no, no) == "gone"
 
 
 def test_no_state_is_not_stale_state():
     """Nothing recorded means nothing to clean up, not a stale file."""
-    assert not is_stale(None, lambda pid: pytest.fail("should not be consulted"))
-    assert not is_stale({}, lambda pid: pytest.fail("should not be consulted"))
+    def never(n):
+        pytest.fail("should not be consulted")
+
+    assert liveness(None, never, never) == "absent"
+    assert liveness({}, never, never) == "absent"
 
 
-def test_state_without_a_pid_is_stale():
-    """Unusable is as good as gone — better than trusting a malformed file."""
-    assert is_stale({"mode": "panel"}, lambda pid: pytest.fail("no pid to check"))
-
-
-def test_ids_that_cannot_name_a_rig_are_stale_without_asking_anyone():
+def test_ids_that_cannot_name_a_rig_are_invalid_without_asking_anyone():
     """The state file is trusted as identity, and these parse but are not one:
     0 is "my own group" to `killpg`, negatives are another call, 1 is init, and
-    `true` is an `int` in Python. None may reach the liveness probe, or read as
-    a running rig."""
-    def never(pid):
+    `true` is an `int` in Python. None may reach a liveness probe, or read as a
+    running rig."""
+    def never(n):
         pytest.fail("a nonsense id must not be probed")
 
     for pid, pgid in [(0, 42), (1, 42), (-5, 42), (42, 0), (42, 1), (42, -5),
-                      (True, 42), (42, True), ("42", 42), (42, None)]:
-        assert is_stale({"supervisor_pid": pid, "pgid": pgid}, never), (pid, pgid)
+                      (True, 42), (42, True), ("42", 42), (42, None),
+                      (0, 0), (1, 1), (-5, -5)]:
+        assert liveness({"supervisor_pid": pid, "pgid": pgid}, never, never) == "invalid", (pid, pgid)
 
 
-def test_state_without_a_group_is_stale():
-    assert is_stale({"supervisor_pid": 42}, lambda pid: pytest.fail("not asked"))
+def test_state_without_a_group_or_a_pid_is_invalid():
+    def never(n):
+        pytest.fail("not asked")
+
+    assert liveness({"supervisor_pid": 42}, never, never) == "invalid"
+    assert liveness({"mode": "panel"}, never, never) == "invalid"
 
 
-def test_liveness_needs_both_the_supervisor_and_its_group():
-    """The supervisor owns the group id (see `_supervise`), so a live group
-    whose supervisor is gone is not evidence of this rig: it may be orphans, or
-    a number since handed to someone else. Only both together is `running`."""
+def test_a_group_that_is_not_the_supervisors_own_is_invalid():
+    """`_supervise` calls setsid, so it always leads a group of its own number.
+    A file where the two differ was edited or damaged, and naming some other
+    group is exactly how a stale or hostile file would get it signalled."""
+    yes = lambda n: True  # noqa: E731
+    assert liveness({"supervisor_pid": 10, "pgid": 11}, yes, yes) == "invalid"
+
+
+def test_a_dead_supervisor_with_a_live_group_is_the_rigs_own_leftovers():
+    """A group number cannot be handed to anything else while any member lives,
+    and the group is the supervisor's own, so this is what a crash leaves
+    behind -- not a stranger. `down` and `restart` exist to recover from it."""
     state = {"supervisor_pid": 10, "pgid": 10}
     yes, no = (lambda n: True), (lambda n: False)
-    assert liveness(None, yes, yes) == "absent"
-    assert liveness({}, yes, yes) == "absent"
+    assert liveness(state, no, yes) == "orphaned"
     assert liveness(state, yes, yes) == "running"
     assert liveness(state, no, no) == "gone"
-    assert liveness(state, no, yes) == "orphaned"
     assert liveness(state, yes, no) == "gone"
-    assert liveness({"supervisor_pid": 10, "pgid": 0}, yes, yes) == "invalid"
-    assert liveness({"supervisor_pid": 0, "pgid": 10}, yes, yes) == "invalid"
-    assert liveness({"supervisor_pid": 10}, yes, yes) == "invalid"
 
 
 # --- what each persona starts -----------------------------------------------
@@ -511,9 +519,25 @@ def test_restart_carries_the_amp_model_override():
 
     _, options = restart_arguments({
         "config_name": "x", "mode": "panel", "amp_requested": True,
-        "amp_model": "amp/models/Other.nam", "children": {"sushi": 1, "amp": 2},
+        "amp_model": "amp/models/Other.nam",
+        "amp_model_requested": "amp/models/Other.nam",
+        "children": {"sushi": 1, "amp": 2},
     })
     assert options["amp_model"] == "amp/models/Other.nam"
+
+
+def test_restart_does_not_pin_the_configs_own_model_as_an_override():
+    """`amp_model` is what ran, which is the config's own choice unless one was
+    named. Restoring that as an override would freeze today's model: edit the
+    config afterwards and every restart would still bring back the old one."""
+    from sushi_rig.rig import restart_arguments
+
+    _, options = restart_arguments({
+        "config_name": "x", "mode": "panel", "amp_requested": True,
+        "amp_model": "amp/models/FromConfig.nam", "amp_model_requested": None,
+        "children": {"sushi": 1, "amp": 2},
+    })
+    assert options["amp_model"] is None
 
 
 def test_an_amp_that_was_asked_for_but_failed_comes_back_asked_for():
@@ -527,7 +551,7 @@ def test_an_amp_that_was_asked_for_but_failed_comes_back_asked_for():
     _, options = restart_arguments({
         "config_name": "x", "mode": "panel",
         "tuner_requested": True, "amp_requested": True,
-        "amp_model": "amp/models/M.nam",
+        "amp_model": "amp/models/M.nam", "amp_model_requested": "amp/models/M.nam",
         "children": {"sushi": 1, "listen": 3},  # no fmit, no amp: both failed
     })
     assert options["amp"] is True
@@ -593,13 +617,6 @@ def test_env_unset_still_removes_what_a_child_must_not_see():
 # a temporary directory. Nothing is started and nothing is signalled.
 
 
-@pytest.fixture
-def runtime(tmp_path, monkeypatch):
-    """A private runtime dir, so the real state file is neither read nor hurt."""
-    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
-    return tmp_path / "run"
-
-
 def running_state(**over):
     state = {
         "supervisor_pid": 4001, "pgid": 4001, "mode": "panel",
@@ -630,8 +647,9 @@ class Clock:
 def clock(monkeypatch):
     clock = Clock()
     # Replaces the module's name, not `time.sleep` itself, so nothing else in
-    # the process sees a clock that stands still.
-    monkeypatch.setattr(rig, "time", SimpleNamespace(
+    # the process sees a clock that stands still. The escalation loop lives in
+    # procs.stop_group, which is where the clock is read.
+    monkeypatch.setattr(procs, "time", SimpleNamespace(
         monotonic=clock.monotonic, sleep=clock.sleep,
     ))
     return clock
@@ -672,6 +690,7 @@ def world(runtime, clock, monkeypatch):
         group = Group(clock, dies_on, delay, vanishes)
         monkeypatch.setattr(rig, "pid_alive", lambda pid: supervisor_alive)
         monkeypatch.setattr(rig, "pgid_alive", group.alive)
+        monkeypatch.setattr(procs, "pgid_alive", group.alive)
         monkeypatch.setattr(os, "killpg", group.killpg)
         state_file.write_state(running_state())
         return group
@@ -745,24 +764,55 @@ def test_down_clears_a_stale_file_without_signalling(world, monkeypatch, capsys)
 def test_down_never_signals_a_group_id_that_cannot_be_a_rigs(world, pgid, capsys):
     """`killpg(0, ...)` is the caller's own group: it is the shell running
     `down`. The id comes from a file anyone could have edited, so it is checked
-    before it is used, not after it has done damage."""
+    before it is used, not after it has done damage -- and `--force` is no
+    licence to signal something that is not a group at all."""
     group = world()
     state_file.write_state(running_state(pgid=pgid))
     assert rig.down() == 1
+    assert rig.down(force=True) == 1
     assert group.sent == []
-    assert state_file.read_state() is None
-    assert "Nothing was signalled" in capsys.readouterr().err
+    assert state_file.read_state() is not None, "the evidence is kept"
+    assert "cannot be signalled even with --force" in capsys.readouterr().err
 
 
-def test_down_wants_the_supervisor_alive_not_just_the_group(world, capsys):
-    """A group alone could be orphans, or an id reused by a stranger. Without
-    the supervisor there is nothing to say it is this rig's, so nothing is
-    signalled, the file stays, and the message says why."""
-    group = world(supervisor_alive=False)
+def test_down_refuses_a_group_that_is_not_the_supervisors_own(world, capsys):
+    """Refused, said so, file kept: nothing here says the group is the rig's."""
+    group = world()
+    state_file.write_state(running_state(pgid=4999))
     assert rig.down() == 1
     assert group.sent == []
     assert state_file.read_state() is not None
-    assert "nothing was signalled" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "nothing was signalled" in err and "--force" in err
+
+
+def test_down_force_signals_an_inconsistent_file_on_the_users_say_so(world, capsys):
+    group = world(dies_on={signal.SIGKILL})
+    state_file.write_state(running_state(pgid=4999))
+    assert rig.down(force=True) == 0
+    assert group.signals == [signal.SIGKILL], "no polite signals for a file we do not trust"
+    assert "because --force was given" in capsys.readouterr().err
+    assert state_file.read_state() is None
+
+
+def test_down_never_forces_its_own_group(world, monkeypatch, capsys):
+    group = world()
+    monkeypatch.setattr(os, "getpgrp", lambda: 4999)
+    state_file.write_state(running_state(pgid=4999))
+    assert rig.down(force=True) == 1
+    assert group.sent == []
+
+
+def test_down_stops_the_leftovers_of_a_crashed_supervisor(world, capsys):
+    """The post-crash path `restart` exists for: the supervisor is dead, its
+    own group is not, and nothing else can be using that number. Refusing here
+    would leave the rig's children running with no way to stop them but a
+    hand-written kill."""
+    group = world(dies_on={signal.SIGINT}, supervisor_alive=False)
+    assert rig.down() == 0
+    assert group.signals == [signal.SIGINT]
+    assert state_file.read_state() is None
+    assert "leftovers" in capsys.readouterr().out
 
 
 def test_down_reports_a_group_it_may_not_signal_as_a_message(world, monkeypatch, capsys):
@@ -789,7 +839,7 @@ def kill_world(clock, monkeypatch):
         monkeypatch.setattr(os, "getpgrp", lambda: own_pgid)
         monkeypatch.setattr(os, "waitpid", lambda pid, flags: (0, 0))
         monkeypatch.setattr(os, "killpg", group.killpg)
-        monkeypatch.setattr(rig, "pgid_alive", group.alive)
+        monkeypatch.setattr(procs, "pgid_alive", group.alive)
         return group
 
     return make
@@ -849,6 +899,29 @@ def test_status_marks_a_dead_child(world, monkeypatch, capsys):
     assert "(DEAD)" in fmit
 
 
+def test_status_survives_a_child_pid_that_is_not_a_pid(world, capsys):
+    """Child pids come straight from the file. A null was a TypeError out of
+    `os.kill`, in the command people run when things are already odd."""
+    world()
+    state_file.write_state(running_state(children={"sushi": None, "fmit": 0, "amp": "x"}))
+    assert rig.status() == 0
+    out = capsys.readouterr().out
+    assert out.count("(INVALID)") == 3
+
+
+def test_status_survives_children_that_is_not_a_mapping(world, capsys):
+    world()
+    state_file.write_state(running_state(children=["sushi"]))
+    assert rig.status() == 0
+
+
+def test_status_says_when_the_file_describes_no_rig_of_ours(world, capsys):
+    world()
+    state_file.write_state(running_state(pgid=4999))
+    assert rig.status() == 0
+    assert "does not describe a rig" in capsys.readouterr().out
+
+
 def test_status_reports_the_amp_model_when_there_is_one(world, capsys):
     world()
     state_file.write_state(running_state(amp_model="amp/models/M.nam"))
@@ -870,7 +943,7 @@ def test_status_does_not_call_an_orphaned_group_a_running_rig(world, capsys):
     world(supervisor_alive=False)
     rig.status()
     out = capsys.readouterr().out
-    assert "is gone" in out
+    assert "is gone" in out and "'sushi-rig down' stops them" in out
     assert "electric_board" not in out and "pid 4002" not in out, "it is not a status of a rig"
 
 
@@ -886,7 +959,8 @@ def test_restart_hands_up_what_the_state_says_was_asked_for(runtime, monkeypatch
     """The whole chain, end to end with `down` and `up` stubbed: an amp that
     failed to start and a model named on the command line both survive."""
     state_file.write_state(running_state(
-        mode="headless", amp_requested=True, amp_model="amp/models/Other.nam",
+        mode="headless", amp_requested=True,
+        amp_model="amp/models/Other.nam", amp_model_requested="amp/models/Other.nam",
         children={"sushi": 4002},  # the amp is not here: it failed to start
     ))
     calls = []
@@ -916,6 +990,7 @@ def up_world(runtime, monkeypatch):
     supervisor would have said, and a record of what was done about it."""
     seen = SimpleNamespace(killed=[], forked=0, supervise_kwargs=[])
     monkeypatch.setattr(rig, "pid_alive", lambda pid: False)
+    monkeypatch.setattr(rig, "pgid_alive", lambda pgid: False)
     monkeypatch.setattr(rig, "port_is_open", lambda host, port, *a, **k: False)
     monkeypatch.setattr(rig, "_kill_group_of", lambda pid: seen.killed.append(pid))
 
@@ -938,6 +1013,7 @@ def up_world(runtime, monkeypatch):
 def test_up_refuses_when_a_live_rig_is_recorded(up_world, monkeypatch):
     state_file.write_state(running_state())
     monkeypatch.setattr(rig, "pid_alive", lambda pid: True)
+    monkeypatch.setattr(rig, "pgid_alive", lambda pgid: True)
     up_world.say("READY")
     with pytest.raises(rig.RigError, match="already running"):
         rig.up(headless=True)
@@ -954,12 +1030,34 @@ def test_up_clears_a_stale_state_file_and_carries_on(up_world, capsys):
     assert "Rig up: electric_board (headless mode)" in capsys.readouterr().out
 
 
-def test_up_treats_a_state_file_with_nonsense_ids_as_stale(up_world, monkeypatch):
-    """Even when the pid it names happens to be alive: 0 and 1 are not a rig."""
-    state_file.write_state(running_state(supervisor_pid=1, pgid=1))
-    monkeypatch.setattr(rig, "pid_alive", lambda pid: True)
+def test_up_refuses_on_a_crashed_rigs_leftovers_and_points_at_down(up_world, monkeypatch):
+    """Dead supervisor, live group: starting over would stack a second rig on
+    the first one's children. Clearing the file would hide them. It refuses,
+    keeps the file, and says what stops them."""
+    state_file.write_state(running_state())
+    monkeypatch.setattr(rig, "pgid_alive", lambda pgid: True)  # pid_alive: False
     up_world.say("READY")
-    assert rig.up(headless=True, tuner=False, amp=False) == 0
+    with pytest.raises(rig.RigError, match="sushi-rig down"):
+        rig.up(headless=True, tuner=False, amp=False)
+    assert up_world.forked == 0
+    assert state_file.read_state() is not None
+
+
+@pytest.mark.parametrize("override", [
+    {"supervisor_pid": 1, "pgid": 1}, {"supervisor_pid": 0, "pgid": 0},
+    {"pgid": 4999},
+])
+def test_up_refuses_a_state_file_that_describes_no_rig_of_ours(up_world, monkeypatch, override):
+    """Even when the ids it names happen to be alive. `up` uses the same verdict
+    as `down` so the two cannot disagree about whether a rig exists."""
+    state_file.write_state(running_state(**override))
+    monkeypatch.setattr(rig, "pid_alive", lambda pid: True)
+    monkeypatch.setattr(rig, "pgid_alive", lambda pgid: True)
+    up_world.say("READY")
+    with pytest.raises(rig.RigError, match="does not describe a rig"):
+        rig.up(headless=True, tuner=False, amp=False)
+    assert up_world.forked == 0
+    assert state_file.read_state() is not None
 
 
 def test_up_refuses_when_something_already_holds_the_grpc_port(up_world, monkeypatch):
@@ -1038,9 +1136,10 @@ def test_up_tells_the_supervisor_what_was_asked_for(runtime, monkeypatch):
 
     monkeypatch.setattr(rig, "_supervise", supervise)
     monkeypatch.setattr(rig, "_fork_supervisor", fork)
-    assert rig.up(headless=True, tuner=False, amp=False) == 0
+    assert rig.up(headless=True, tuner=False, amp=False, amp_model="M.nam") == 0
     assert got["tuner_requested"] is False
     assert got["amp_requested"] is False
+    assert got["amp_model_requested"] == "M.nam", "the override as given, not as resolved"
     assert got["headless"] is True
 
 
