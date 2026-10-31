@@ -87,6 +87,7 @@ from __future__ import annotations
 import json
 import os
 import shutil
+import subprocess
 import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
@@ -488,33 +489,81 @@ def _check_rig_file(folder: Path, rig: Any) -> list[str]:
 
 
 def library_state(root: Path) -> dict[str, Any] | None:
-    """Where the library is: the commit `root` is at, and whether it has
-    uncommitted changes. None when that cannot be read, which is said in the
-    take as null rather than guessed at.
+    """Where the library is: the commit `root` is at, and whether its tracked
+    files have uncommitted changes. None when the commit cannot be read, which
+    is said in the take as null rather than guessed at.
 
     The library is the checkout itself until #27 moves it out; this is what
     lets a take say which commit of config/ made it, which `config_source`
     alone (a path) cannot once that file has moved on.
+
+    Three things it will not do. It will not report an enclosing repository's
+    commit for a `root` that is not itself a checkout (`git -C` walks upward,
+    so the top level is checked against `root`). It will not call the library
+    dirty for an untracked scratch file: `dirty` is about the tracked files,
+    since those are the library. And it will not throw away a commit it has
+    read because the status call failed: `dirty` is then None, said as such.
     """
-    import subprocess
+    env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0"}  # status must not take the index lock
+
+    def git(*args: str) -> str | None:
+        try:
+            done = subprocess.run(
+                ["git", "-C", str(root), *args],
+                capture_output=True, text=True, check=False, timeout=10, env=env,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return done.stdout if done.returncode == 0 else None
+
+    top = git("rev-parse", "--show-toplevel")
+    try:
+        if top is None or Path(top.strip()).resolve() != Path(root).resolve():
+            return None
+    except OSError:
+        return None
+    commit = git("rev-parse", "HEAD")
+    if not commit or not commit.strip():
+        return None
+    status = git("status", "--porcelain", "--untracked-files=no")
+    return {
+        "commit": commit.strip(),
+        "dirty": None if status is None else bool(status.strip()),
+    }
+
+
+def check_library(library: Any) -> list[str]:
+    """`library` is null or `{commit: str, dirty: bool | null}`; anything else
+    is a damaged record, reported rather than read as nothing to say."""
+    if library is None:
+        return []
+    if (
+        isinstance(library, dict)
+        and set(library) == {"commit", "dirty"}
+        and isinstance(library["commit"], str) and library["commit"]
+        and (library["dirty"] is None or isinstance(library["dirty"], bool))
+    ):
+        return []
+    return [
+        f"library is {library!r}, not null or a mapping of commit and dirty, so the "
+        f"take no longer says where the library was"
+    ]
+
+
+def _check_rig_text(rig_text: str) -> list[str]:
+    """What `start_take` is given as the rig must be a rig file, before
+    anything is written; the same test `take check` applies afterwards."""
+    import yaml
+
+    from .spec import looks_like_rig_file
 
     try:
-        head = subprocess.run(
-            ["git", "-C", str(root), "rev-parse", "HEAD"],
-            capture_output=True, text=True, check=False, timeout=10,
-        )
-        status = subprocess.run(
-            ["git", "-C", str(root), "status", "--porcelain"],
-            capture_output=True, text=True, check=False, timeout=10,
-        )
-    except (OSError, subprocess.SubprocessError):
-        return None
-    if head.returncode != 0 or status.returncode != 0:
-        return None
-    commit = head.stdout.strip()
-    if not commit:
-        return None
-    return {"commit": commit, "dirty": bool(status.stdout.strip())}
+        parsed = yaml.safe_load(rig_text)
+    except yaml.YAMLError as exc:
+        return [f"the rig text is not valid YAML: {exc}"]
+    if not looks_like_rig_file(parsed):
+        return ["the rig text is not a channels-and-master rig file"]
+    return []
 
 
 def load_take(folder: Path) -> Take:
@@ -628,6 +677,7 @@ def check_take(take: Take) -> list[str]:
     rig = meta.get("rig")
     if rig is not None:
         problems += _check_rig_file(take.folder, rig)
+    problems += check_library(meta.get("library"))
 
     rate, subtype = meta.get("sample_rate"), meta.get("subtype")
     format_problems = check_format(rate, subtype, meta.get("quantum"))
@@ -778,6 +828,9 @@ def start_take(
         problems.append("the config has no tracks, so it is not a Sushi config")
     else:
         problems += check_channels(stems, config)
+    if rig_text is not None:
+        problems += _check_rig_text(rig_text)
+    problems += check_library(library)
     # Serialised here, before anything is moved or made. Writing it after the
     # earlier take had been archived and the new folder created meant a config
     # holding something JSON cannot encode left an empty folder behind, which
@@ -892,6 +945,6 @@ def finish_take(
         capture=capture if capture is not None else meta.get("capture"),
         # Kept always: the rig and the library are what was true at the start.
         rig=meta.get("rig"),
-        library=meta.get("library") if isinstance(meta.get("library"), dict) else None,
+        library=meta.get("library"),
     ))
     return load_take(folder)
