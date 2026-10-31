@@ -1001,7 +1001,8 @@ def main(argv: list[str] | None = None) -> int:
     q = patchbay_sub.add_parser(
         "generate",
         help="write a patchbay from machines/<hostname>.yaml and a rig.yaml; "
-        "prints it unless -o is given, and never replaces the committed one",
+        "prints it unless -o is given; -o Patchbay/rig.qpwgraph replaces the "
+        "committed one, which is how it is maintained",
     )
     q.add_argument("rig", type=Path, help="a rig file of channels (config/rigs/), or a rig.yaml whose tracks name source/sink roles")
     q.add_argument(

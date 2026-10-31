@@ -72,8 +72,9 @@ midi:
       plugin_name: gtr_drive
       cc_number: 7
       parameter_name: Level
-      min_range: 0.0
-      max_range: 1.0
+      # In the parameter's own domain, not 0-1: gxts9's Level runs -20 to 4 dB.
+      min_range: -20.0
+      max_range: 4.0
       mode: absolute
 
 osc:

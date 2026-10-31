@@ -315,7 +315,7 @@ then.
 │   │                             recorder, paths, _numpy, cli
 │   ├── tests/                    fast suite; fixtures/ holds captured artefacts
 │   ├── examples/
-│   │   ├── rig.example.yaml       annotated rig spec (placeholder plugins)
+│   │   ├── rig.example.yaml       annotated rig spec (real plugins)
 │   │   ├── dump.example.json      real --dump-plugins output, test fixture
 │   │   └── profiles/gxts9.yaml    a component profile
 │   └── spikes/virtual_ui/        the headless-plugin-GUI experiment (#28), with findings
@@ -683,7 +683,7 @@ Verified on this machine:
 | | Status |
 |---|---|
 | Sushi 1.3.0 | ✅ built with `vst3, lv2, jack, rpc control, ableton link` |
-| LV2 plugins discoverable | every URI in `plugin-manifest.txt` (55), from the bundles in `plugins/`; `sushi-rig plugins check` is the test |
+| LV2 plugins discoverable | ✅ every URI in `plugin-manifest.txt` (55), from the bundles in `plugins/`; `sushi-rig plugins check` is the test |
 | PipeWire / JACK, qpwgraph, fmit | ✅ |
 | `lilv` Python bindings (system) | ✅ `python3-lilv` + `liblilv-dev` |
 | `elkpy` (in `tool/.venv`) | ✅ imports cleanly on Python 3.14 |

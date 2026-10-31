@@ -195,11 +195,11 @@ self-contained; see the README's *Plugins and portability*). Use
 
 ### Naming
 
-> **Never followed, and dropped (2026-10-31).** Only `acoustic_chorus` was ever
-> named this way. The configs that exist now (`electric-clean`, `hard-feelings`,
-> `accustomed`, `guitar_vocal`, ...) are free-form, hyphenated or not, the
-> `test_` prefix is unused, and nothing enforces any of it. The rest of this
-> section records what was once intended.
+> **Followed loosely and inconsistently, and dropped (2026-10-31).** Some names
+> fit the stem (`acoustic_chorus`, `electric_board`, `guitar_vocal`), but many
+> do not (`electric-clean`, `hard-feelings`, `accustomed`, ...), the `test_`
+> prefix is unused, and nothing enforces any of it. Config names are free-form.
+> The rest of this section records what was once intended.
 
 Shared `<instrument>_<character>` stem across the hand-authored source, the
 deployable config, and any archived snapshot:
@@ -590,7 +590,9 @@ on any of them.)* The real remedy: change the routing at its source, in
 sushi-rig patchbay generate config/src/guitar_vocal.yaml -o Patchbay/rig.qpwgraph
 ```
 
-(`--machine` defaults to `machines/<this hostname>.yaml`.) qpwgraph is for
+(`--machine` defaults to `machines/<this hostname>.yaml`, so the committed
+patchbay is regenerated only on the rig machine, `sonny-dewfall-XPS-9320`;
+anywhere else the output differs and the byte-for-byte test fails.) qpwgraph is for
 looking at a wiring, or trying one out; what survives is what the machine file
 says.
 
