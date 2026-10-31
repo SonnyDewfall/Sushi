@@ -25,6 +25,42 @@ def write_json(path: Path, payload) -> None:
     print(f"wrote {path}")
 
 
+_SUSHI_HELP = "Sushi binary [default: ./sushi in the rig checkout, the one `up` runs]"
+_OUT_DIR_HELP = "where configs are written [default: config/ in the rig checkout]"
+_ARCHIVE_DIR_HELP = (
+    "where the previous version of a re-saved config is kept "
+    "[default: config/archive/ in the rig checkout]"
+)
+
+
+def _sushi_bin(args: argparse.Namespace) -> str:
+    """The Sushi to run: `--sushi`, else the rig's own `./sushi`.
+
+    Not whatever `sushi` is on PATH: a command should use the Sushi the rig
+    actually plays through, and with a PATH default it failed with "No such
+    file" on any machine where Sushi is not also installed system-wide. The
+    default is resolved from the checkout, not the working directory, so it
+    does the same thing from anywhere.
+    """
+    from .paths import checkout_root
+
+    return args.sushi or str(checkout_root() / "sushi")
+
+
+def _config_dirs(args: argparse.Namespace) -> tuple[Path, Path]:
+    """`--out-dir` and `--archive-dir`, defaulting to the checkout's `config/`.
+
+    These used to default to `../config`, which was right only from `tool/` and
+    wrote into a stray directory next to the checkout from anywhere else.
+    `rig.py` passes both explicitly (`--out-dir config`, run from the root), so
+    `up` is unaffected.
+    """
+    from .paths import checkout_root
+
+    out_dir = args.out_dir or checkout_root() / "config"
+    return out_dir, args.archive_dir or out_dir / "archive"
+
+
 def _amp_parameters(pairs: list[str]) -> dict[str, float]:
     """Parse repeated `--amp-parameter NAME=VALUE` into a dict.
 
@@ -413,7 +449,7 @@ def _nulltest(args: argparse.Namespace) -> int:
     else:
         sys.exit("give a config to null-test, or --all")
 
-    sushi = args.sushi or str(root / "sushi")
+    sushi = _sushi_bin(args)
     failed = 0
     checked = 0
     unrenderable: list[str] = []
@@ -706,7 +742,7 @@ def main(argv: list[str] | None = None) -> int:
     p.add_argument("rig", type=Path)
     p.add_argument("--state", type=Path, help="captured state file to fold in")
     p.add_argument("-o", "--out", type=Path, default=Path("rig.json"))
-    p.add_argument("--sushi", default="sushi")
+    p.add_argument("--sushi", help=_SUSHI_HELP)
     p.add_argument(
         "--no-verify", dest="verify", action="store_false",
         help="skip the load and parameter-name checks run after writing",
@@ -741,7 +777,7 @@ def main(argv: list[str] | None = None) -> int:
         help="Open Stage Control panel from a config, using live values from a running Sushi",
     )
     p.add_argument("config", type=Path)
-    p.add_argument("--sushi", default="sushi")
+    p.add_argument("--sushi", help=_SUSHI_HELP)
     p.add_argument(
         "--address",
         default=DEFAULT_GRPC_ADDRESS,
@@ -809,8 +845,8 @@ def main(argv: list[str] | None = None) -> int:
     p = sub.add_parser("save", help="capture live state and write it as a named config")
     p.add_argument("name", help="config name — becomes config/<name>.json")
     p.add_argument("--rig", type=Path, required=True, help="rig.yaml this config is built from")
-    p.add_argument("--out-dir", type=Path, default=Path("../config"))
-    p.add_argument("--archive-dir", type=Path, default=Path("../config/archive"))
+    p.add_argument("--out-dir", type=Path, help=_OUT_DIR_HELP)
+    p.add_argument("--archive-dir", type=Path, help=_ARCHIVE_DIR_HELP)
     p.add_argument("--address", default=DEFAULT_GRPC_ADDRESS)
 
     p = sub.add_parser(
@@ -869,10 +905,7 @@ def main(argv: list[str] | None = None) -> int:
         "--quick", action="store_true",
         help="skip the check that starts Sushi — loads and names only",
     )
-    p.add_argument(
-        "--sushi",
-        help="Sushi binary [default: ./sushi in the rig checkout, the one `up` runs]",
-    )
+    p.add_argument("--sushi", help=_SUSHI_HELP)
 
     p = sub.add_parser(
         "nulltest",
@@ -895,10 +928,7 @@ def main(argv: list[str] | None = None) -> int:
         help="with --calibrate, only what has no reference yet — so adding a "
         "channel does not re-baseline the ones already checked",
     )
-    p.add_argument(
-        "--sushi",
-        help="Sushi binary [default: ./sushi in the rig checkout, the one `up` runs]",
-    )
+    p.add_argument("--sushi", help=_SUSHI_HELP)
 
     p = sub.add_parser(
         "plugins",
@@ -1066,8 +1096,8 @@ def main(argv: list[str] | None = None) -> int:
         help="run an OSC listener that saves a config on request (for the panel's save button)",
     )
     p.add_argument("--rig", type=Path, required=True, help="rig.yaml every save is built from")
-    p.add_argument("--out-dir", type=Path, default=Path("../config"))
-    p.add_argument("--archive-dir", type=Path, default=Path("../config/archive"))
+    p.add_argument("--out-dir", type=Path, help=_OUT_DIR_HELP)
+    p.add_argument("--archive-dir", type=Path, help=_ARCHIVE_DIR_HELP)
     p.add_argument("--address", default=DEFAULT_GRPC_ADDRESS, help="Sushi's gRPC address")
     p.add_argument(
         "--host",
@@ -1098,8 +1128,8 @@ def main(argv: list[str] | None = None) -> int:
     )
     p.add_argument(
         "--sushi",
-        default="sushi",
-        help="sushi binary, used to re-dump plugin parameters when regenerating",
+        help="Sushi binary, used to re-dump plugin parameters when regenerating "
+        "[default: ./sushi in the rig checkout, the one `up` runs]",
     )
 
     # The amp runs outside Sushi and cannot be captured from it, so the save
@@ -1128,7 +1158,7 @@ def main(argv: list[str] | None = None) -> int:
             from .verify import VerifyError, verify
 
             try:
-                problems = verify(args.out, args.sushi, quick=True)
+                problems = verify(args.out, _sushi_bin(args), quick=True)
             except (VerifyError, SystemExit) as exc:
                 sys.exit(f"{args.out} was written, but does not load: {exc}")
             if problems:
@@ -1149,7 +1179,7 @@ def main(argv: list[str] | None = None) -> int:
         from .probe import units_for_config
         from .paths import checkout_root
 
-        dump = dump_plugins(args.config, args.sushi)
+        dump = dump_plugins(args.config, _sushi_bin(args))
         live_info = get_live_parameter_info(args.address)
         bypass_info = get_live_bypass_state(args.address)
         write_json(
@@ -1261,7 +1291,7 @@ def main(argv: list[str] | None = None) -> int:
 
         try:
             out_path = save_config(
-                args.name, args.rig, args.out_dir, args.archive_dir, args.address
+                args.name, args.rig, *_config_dirs(args), args.address
             )
         except SaveError as exc:
             sys.exit(str(exc))
@@ -1277,11 +1307,8 @@ def main(argv: list[str] | None = None) -> int:
         else:
             sys.exit("give a config to verify, or --all")
 
-        # The rig's own ./sushi, not whatever `sushi` is on PATH: verify should
-        # check the Sushi the rig actually plays through, and with a PATH
-        # default it failed with "No such file" on any machine where Sushi is
-        # not also installed system-wide.
-        sushi = args.sushi or str(checkout_root() / "sushi")
+        # See _sushi_bin for why this is the rig's ./sushi and not PATH's.
+        sushi = _sushi_bin(args)
 
         failed = 0
         for target in targets:
@@ -1348,8 +1375,7 @@ def main(argv: list[str] | None = None) -> int:
 
         serve(
             args.rig,
-            args.out_dir,
-            args.archive_dir,
+            *_config_dirs(args),
             address=args.address,
             host=args.host,
             port=args.port,
@@ -1357,7 +1383,7 @@ def main(argv: list[str] | None = None) -> int:
             status_port=args.status_port,
             panel_config=args.panel_config,
             panel_out=args.panel_out,
-            sushi_bin=args.sushi,
+            sushi_bin=_sushi_bin(args),
             amp_model=args.amp_model,
             amp_parameters=_amp_parameters(args.amp_parameter),
         )
