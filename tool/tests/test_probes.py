@@ -1,0 +1,199 @@
+"""Which ports each selftest probe links (#49 part 2's decisions).
+
+Against the committed rigs, so a routing change that moves a probe shows here,
+and against small rigs written to put one rule under strain each.
+"""
+
+from __future__ import annotations
+
+import textwrap
+
+import pytest
+
+from sushi_rig.paths import checkout_root
+from sushi_rig.probes import ProbeError, ProbePoint, plan_probes
+from sushi_rig.spec import RigSpec
+
+SOURCES = checkout_root() / "config" / "src"
+
+
+def rig(tmp_path, tracks: str) -> RigSpec:
+    path = tmp_path / "rig.yaml"
+    path.write_text(
+        'meta:\n  name: t\n  version: "1"\nhost:\n  samplerate: 48000\ntracks:\n'
+        + textwrap.indent(textwrap.dedent(tracks), "  ")
+    )
+    return RigSpec.load(path)
+
+
+def by_name(plan) -> dict[str, ProbePoint]:
+    return {point.name: point for point in plan.points}
+
+
+def test_guitar_vocal_as_committed(tmp_path):
+    plan = plan_probes(RigSpec.load(SOURCES / "guitar_vocal.yaml"), amp=True)
+    points = by_name(plan)
+    assert list(points) == [
+        "guitar through sushi (sushi:audio_output_0)",
+        "guitar through sushi (sushi:audio_output_1)",
+        "vocal through sushi (sushi:audio_output_0)",
+        "vocal through sushi (sushi:audio_output_1)",
+        "amp",
+        "guitar via amp (sushi:audio_output_0)",
+        "guitar via amp (sushi:audio_output_1)",
+    ]
+    # The vocal goes in on bus 1 and the guitar on bus 0.
+    assert points["vocal through sushi (sushi:audio_output_0)"].inject == (
+        "sushi:audio_input_2", "sushi:audio_input_3",
+    )
+    assert points["amp"] == ProbePoint("amp", ("NAM:Input",), "NAM:Output", nonlinear=True)
+    # Today both tracks sum onto bus 0, which the plan says rather than hides.
+    assert plan.not_checked == (
+        "separation of guitar and vocal: both come out of sushi:audio_output_0, "
+        "sushi:audio_output_1, so whether either leaks into the other cannot be measured",
+    )
+
+
+def test_every_half_of_a_stereo_output_is_its_own_probe(tmp_path):
+    """The guitar once came out of the left speaker only; a probe reading one
+    side, or the two summed, would have passed it."""
+    plan = plan_probes(RigSpec.load(SOURCES / "electric_board.yaml"), amp=False)
+    assert [p.capture for p in plan.points] == ["sushi:audio_output_0", "sushi:audio_output_1"]
+
+
+def test_without_the_amp_nothing_is_asserted_nonlinear():
+    plan = plan_probes(RigSpec.load(SOURCES / "guitar_vocal.yaml"), amp=False)
+    assert plan.points and all(p.nonlinear is None for p in plan.points)
+    assert not any("NAM" in port for p in plan.points for port in p.inject)
+
+
+def test_the_amp_follows_the_guitar_role_not_the_first_track(tmp_path):
+    spec = rig(tmp_path, """\
+        - name: vocal
+          channels: 2
+          source: vocal-in
+          inputs: [{engine_bus: 0, track_bus: 0}]
+          outputs: [{engine_bus: 0, track_bus: 0}]
+        - name: guitar
+          channels: 2
+          source: guitar-in
+          inputs: [{engine_bus: 1, track_bus: 0}]
+          outputs: [{engine_bus: 1, track_bus: 0}]
+        """)
+    via = [p for p in plan_probes(spec, amp=True).points if "via amp" in p.name]
+    assert [p.capture for p in via] == ["sushi:audio_output_2", "sushi:audio_output_3"]
+    assert all(p.name.startswith("guitar via amp") for p in via)
+
+
+def test_channel_form_routing_injects_and_reads_the_channels_named(tmp_path):
+    spec = rig(tmp_path, """\
+        - name: mono
+          channels: 1
+          inputs: [{engine_channel: 4, track_channel: 0}]
+          outputs: [{engine_channel: 5, track_channel: 0}]
+        """)
+    (point,) = plan_probes(spec, amp=False).points
+    assert point.inject == ("sushi:audio_input_4",)
+    assert point.capture == "sushi:audio_output_5"
+
+
+def test_tracks_with_outputs_of_their_own_have_nothing_to_say_about_separation(tmp_path):
+    spec = rig(tmp_path, """\
+        - name: a
+          channels: 2
+          inputs: [{engine_bus: 0, track_bus: 0}]
+          outputs: [{engine_bus: 0, track_bus: 0}]
+        - name: b
+          channels: 2
+          inputs: [{engine_bus: 1, track_bus: 0}]
+          outputs: [{engine_bus: 1, track_bus: 0}]
+        """)
+    assert plan_probes(spec, amp=False).not_checked == ()
+
+
+def test_a_track_with_no_outputs_is_said_to_be_unprobed(tmp_path):
+    spec = rig(tmp_path, """\
+        - name: send_only
+          channels: 2
+          inputs: [{engine_bus: 0, track_bus: 0}]
+          outputs: []
+        """)
+    plan = plan_probes(spec, amp=False)
+    assert plan.points == ()
+    assert plan.not_checked == ("send_only: no outputs on Sushi, so nothing to probe",)
+
+
+def test_an_amp_in_front_of_nothing_is_refused(tmp_path):
+    spec = rig(tmp_path, """\
+        - name: vocal
+          channels: 2
+          source: vocal-in
+          inputs: [{engine_bus: 0, track_bus: 0}]
+          outputs: [{engine_bus: 0, track_bus: 0}]
+        """)
+    with pytest.raises(ProbeError, match="no track takes 'guitar-in'"):
+        plan_probes(spec, amp=True)
+
+
+def test_two_tracks_claiming_the_guitar_are_refused(tmp_path):
+    spec = rig(tmp_path, """\
+        - name: a
+          channels: 2
+          source: guitar-in
+          inputs: [{engine_bus: 0, track_bus: 0}]
+          outputs: [{engine_bus: 0, track_bus: 0}]
+        - name: b
+          channels: 2
+          source: guitar-in
+          inputs: [{engine_bus: 1, track_bus: 0}]
+          outputs: [{engine_bus: 1, track_bus: 0}]
+        """)
+    with pytest.raises(ProbeError, match="both take 'guitar-in'"):
+        plan_probes(spec, amp=True)
+
+
+def test_every_routing_problem_is_reported_at_once(tmp_path):
+    spec = rig(tmp_path, """\
+        - name: a
+          channels: 2
+          inputs: [{track_bus: 0}]
+          outputs: [{engine_bus: 0, track_bus: 0}]
+        - name: b
+          channels: 2
+          inputs: [{engine_bus: 1, track_bus: 0}]
+          outputs: [{track_bus: 0}]
+        """)
+    with pytest.raises(ProbeError) as caught:
+        plan_probes(spec, amp=False)
+    assert len(caught.value.problems) == 2
+    assert "track 'a'" in caught.value.problems[0] and "track 'b'" in caught.value.problems[1]
+
+
+@pytest.mark.parametrize("source", sorted(SOURCES.glob("*.yaml")), ids=lambda p: p.name)
+def test_every_committed_rig_has_a_plan(source):
+    plan = plan_probes(RigSpec.load(source), amp=True)
+    assert any(p.nonlinear for p in plan.points)
+
+
+def test_the_command_prints_the_plan_and_what_it_cannot_check(capsys):
+    from sushi_rig.cli import main
+
+    assert main(["probes", str(SOURCES / "guitar_vocal.yaml")]) == 0
+    out = capsys.readouterr().out
+    assert "amp\n  inject  NAM:Input\n  listen  NAM:Output  must add harmonics\n" in out
+    assert "NOT CHECKED separation of guitar and vocal" in out
+
+
+def test_the_command_fails_loudly_on_a_rig_it_cannot_probe(tmp_path, capsys):
+    from sushi_rig.cli import main
+
+    rig(tmp_path, """\
+        - name: vocal
+          channels: 2
+          source: vocal-in
+          inputs: [{engine_bus: 0, track_bus: 0}]
+          outputs: [{engine_bus: 0, track_bus: 0}]
+        """)
+    assert main(["probes", str(tmp_path / "rig.yaml")]) == 1
+    assert capsys.readouterr().out.startswith("FAIL the amp is on but no track takes")
+    assert main(["probes", str(tmp_path / "rig.yaml"), "--no-amp"]) == 0

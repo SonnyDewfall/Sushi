@@ -261,6 +261,23 @@ def _patchbay(args: argparse.Namespace) -> int:
     return 0
 
 
+def _probes(args: argparse.Namespace) -> int:
+    from .probes import ProbeError, plan_probes
+
+    try:
+        plan = plan_probes(RigSpec.load(args.rig), amp=not args.no_amp)
+    except ProbeError as exc:
+        for problem in exc.problems:
+            print(f"FAIL {problem}")
+        return 1
+    for point in plan.points:
+        expect = "  must add harmonics" if point.nonlinear else ""
+        print(f"{point.name}\n  inject  {', '.join(point.inject)}\n  listen  {point.capture}{expect}")
+    for note in plan.not_checked:
+        print(f"NOT CHECKED {note}")
+    return 0
+
+
 def _take(args: argparse.Namespace) -> int:
     """`take check`: is this folder a whole, honest take, and how do its stems line up."""
     from .take import TakeError, check_take, describe_alignment, load_take, repair_take
@@ -916,6 +933,17 @@ def main(argv: list[str] | None = None) -> int:
     q.add_argument("folder", type=Path, help="the take's folder")
 
     p = sub.add_parser(
+        "probes",
+        help="where selftest will inject and listen for a rig: the ports each "
+        "probe links. Reads nothing live; exit 1 if the rig cannot be probed",
+    )
+    p.add_argument("rig", type=Path, help="rig.yaml (config/src/*.yaml)")
+    p.add_argument(
+        "--no-amp", action="store_true",
+        help="plan for a rig run without the amp ('up --no-amp')",
+    )
+
+    p = sub.add_parser(
         "doctor",
         help="whether this machine will run the rig properly, and what to do "
         "about it if not; exit 1 on any failure",
@@ -1198,6 +1226,8 @@ def main(argv: list[str] | None = None) -> int:
         return _doctor(args)
     elif args.command == "take":
         return _take(args)
+    elif args.command == "probes":
+        return _probes(args)
     elif args.command == "top":
         from .top import top
 
