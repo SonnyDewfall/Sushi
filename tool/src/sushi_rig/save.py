@@ -128,8 +128,14 @@ def _archive_existing(existing_path: Path, archive_dir: Path, name: str) -> str:
     target_dir.mkdir(parents=True, exist_ok=True)
     archive_path = target_dir / f"v{version}.json"
     if archive_path.exists():
-        timestamp = datetime.now(timezone.utc).strftime("%Y-%m-%dT%H-%M-%S")
-        archive_path = target_dir / f"v{version}-{timestamp}.json"
+        # A one-second stamp is not unique: two saves of a name inside one
+        # second (a double-pressed button) made the same file name, and the
+        # second archive overwrote the first. Count on from there, as take.py
+        # does, so nothing saved is ever replaced.
+        label = f"v{version}-{datetime.now(timezone.utc).strftime('%Y-%m-%dT%H-%M-%S')}"
+        archive_path, n = target_dir / f"{label}.json", 2
+        while archive_path.exists():
+            archive_path, n = target_dir / f"{label}-{n}.json", n + 1
 
     archive_path.write_text(json.dumps(existing, indent=2) + "\n")
     existing_path.unlink()

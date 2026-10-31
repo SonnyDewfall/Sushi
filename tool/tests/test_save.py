@@ -211,6 +211,32 @@ def test_save_config_nothing_is_lost_when_re_saving_repeatedly(tmp_path, rig_pat
     assert any(n != "v1.0.json" for n in names)  # the collision got a distinct name
 
 
+def test_saves_of_one_name_inside_one_second_each_keep_their_archive(
+        tmp_path, rig_path, monkeypatch):
+    """The collision fallback stamped the archive with the second and nothing
+    more, so a double-pressed save button made the same file name twice and
+    the second archive replaced the first."""
+    import datetime as real
+
+    class Frozen(real.datetime):
+        @classmethod
+        def now(cls, tz=None):
+            return cls(2026, 10, 31, 12, 0, 0, tzinfo=tz)
+
+    monkeypatch.setattr("sushi_rig.save.datetime", Frozen)
+    out_dir, archive_dir = tmp_path / "config", tmp_path / "archive"
+    for n in range(1, 5):
+        rig_path.write_text(RIG_YAML.replace("A test rig", f"state {n}"))
+        save_config("bright", rig_path, out_dir, archive_dir)
+
+    archived = sorted((archive_dir / "bright").glob("*.json"))
+    assert [p.name for p in archived] == [
+        "v1.0-2026-10-31T12-00-00-2.json", "v1.0-2026-10-31T12-00-00.json", "v1.0.json",
+    ]
+    held = {json.loads(p.read_text())["_meta"]["description"] for p in archived}
+    assert held == {"state 1", "state 2", "state 3"}, "every earlier save is still there"
+
+
 def test_save_config_different_names_do_not_interact(tmp_path, rig_path):
     out_dir = tmp_path / "config"
     archive_dir = tmp_path / "archive"
