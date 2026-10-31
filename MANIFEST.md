@@ -1168,3 +1168,14 @@ different rig; and the listener's handlers catch everything but
 KeyboardInterrupt, since a `SystemExit` from library code (elkpy missing, a
 spec failing validation at SAVE time) used to end the listener and with it the
 save button. *(2026-10-31)*
+
+**`verify` now reads properties, so a send's destination is checked.** Found
+by the 2026-10-31 audit: `diff_state` compared parameters, bypass and chain
+order and never properties, and `live.capture` recorded none, so a compiled
+rig whose send never reached its return passed `verify` with the monitors
+silent. #78's description said the slow test read each send's destination
+back; it proved only that the config loaded. `capture` now records each
+processor's properties through elkpy's property calls, `diff_state` compares
+them, and a rig that could not be asked is reported as unchecked rather than
+passed over. The slow test in test_rigfile.py now checks what it said it did.
+*(2026-10-31)*

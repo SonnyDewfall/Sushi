@@ -82,6 +82,11 @@ def save_config(
         # one is #30's last slice; until then this is a refusal, not a crash.
         raise SaveError(f"cannot save from {rig_path}: {exc}") from exc
     state = capture(address)
+    # Captured properties are for checking a rig, not for writing one: which
+    # of a plugin's properties may be set at load is not known from the
+    # listing, and a value read back as "" would be baked into the config.
+    for values in state.get("processors", {}).values():
+        values.pop("properties", None)
     try:
         config = emit(rig, state)
     except EmitError as exc:

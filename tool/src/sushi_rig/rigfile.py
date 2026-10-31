@@ -490,12 +490,13 @@ def compile_rig(rig: Rig) -> tuple[RigSpec, dict[str, Any]]:
 def merged_state(fixed: dict[str, Any], captured: dict[str, Any] | None) -> dict[str, Any]:
     """Captured state over the compiler's, except where the compiler's must hold.
 
-    `live.capture` records parameters, programs and chain order, not
-    properties, so a capture never carries a send's destination: without the
-    compiler's, every re-emit from a capture would leave the sends pointing
-    nowhere and the channels silent in the monitors while their stems looked
-    healthy. A hand-written state file may carry one; the compiler's still
-    wins, since a destination other than the master is a send to nothing.
+    Captured properties are not merged at all. `live.capture` records them so
+    `verify` can check a rig, but which of a plugin's properties may be set at
+    load is not known from the listing, and a value read back as "" would be
+    baked into the config. The compiler's own properties, each send's
+    destination, always win: a destination other than the master is a send
+    to nothing, and the channel is silent in the monitors while its stem
+    looks healthy.
     """
     captured = captured or {}
     merged = {key: value for key, value in captured.items() if key != "processors"}
@@ -512,7 +513,9 @@ def merged_state(fixed: dict[str, Any], captured: dict[str, Any] | None) -> dict
             # parameters, so keeping them would reload the old sound.
             entry.pop("parameters", None)
         for key, value in values.items():
-            if key in ("parameters", "properties") and isinstance(value, dict):
+            if key == "properties":
+                continue
+            if key == "parameters" and isinstance(value, dict):
                 entry[key] = {**(entry.get(key) or {}), **value}
             elif value is not None:
                 entry[key] = value
