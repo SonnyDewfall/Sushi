@@ -247,3 +247,23 @@ def test_save_config_different_names_do_not_interact(tmp_path, rig_path):
     assert (out_dir / "dark.json").exists()
     assert not (archive_dir / "bright").exists()
     assert not (archive_dir / "dark").exists()
+
+
+def test_unused_path_claims_what_it_returns_and_never_replaces_anything(tmp_path):
+    """Claiming is the check: `exists()` then write let two saves in the same
+    second (the CLI and the listener's button) both be told a name was free."""
+    from sushi_rig.save import unused_path
+
+    (tmp_path / "v1.0-stamp.json").write_text("first")
+    got = [unused_path(tmp_path / "v1.0-stamp", ".json") for _ in range(2)]
+    assert [p.name for p in got] == ["v1.0-stamp-2.json", "v1.0-stamp-3.json"]
+    assert all(p.exists() for p in got), "claimed on return, before any caller writes"
+    assert (tmp_path / "v1.0-stamp.json").read_text() == "first"
+
+
+def test_unused_path_can_claim_a_directory(tmp_path):
+    from sushi_rig.save import unused_path
+
+    (tmp_path / "2026").mkdir()
+    got = unused_path(tmp_path / "2026", directory=True)
+    assert got.name == "2026-2" and got.is_dir()
