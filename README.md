@@ -306,7 +306,7 @@ then.
 │
 ├── tool/                       ── TOOL: generates the configs above
 │   ├── pyproject.toml
-│   ├── src/sushi_rig/            35 modules, one job each:
+│   ├── src/sushi_rig/            34 modules and __init__, one job each:
 │   │                             spec, rigfile, convert, emit, dump, probe, probes,
 │   │                             profile, plugins, live, panel, listen, save,
 │   │                             state, procs, rig, qpwgraph, patchbay, machine,
