@@ -638,16 +638,8 @@ def up(
     existing = read_state()
     verdict = liveness(existing, pid_alive, pgid_alive)
     if verdict == "running":
-        started = existing.get("started_at", "")
-        try:
-            age = format_uptime(
-                (datetime.now(timezone.utc) - datetime.fromisoformat(started)).total_seconds()
-            )
-        except (TypeError, ValueError):
-            age = "unknown"
         raise RigError(
-            f"a rig is already running: {existing.get('config_name')} "
-            f"({existing.get('mode')} mode), up {age}.\n"
+            f"a rig is already running: {describe_rig(existing)['message']}.\n"
             "Run 'sushi-rig down' first — starting a second rig on top of a "
             "running one is what takes the live session down."
         )

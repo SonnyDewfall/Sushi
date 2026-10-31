@@ -1192,6 +1192,9 @@ multi-threaded process (an event loop plus its executor) inherits whatever
 locks another thread held, which Python itself warns about. The honest
 consequence is that the supervisor is still the one `up` detaches, not the
 agent; the agent becoming the supervisor and a service is the next slice. One
-lifecycle command at a time, `409 busy` otherwise; every request argument is
-checked before anything runs; the real agent was run against this container
+lifecycle command at a time, `409 busy` otherwise; a command the CLI refuses
+is `409` with its words, and one the agent gave up waiting for is `504` with
+the rig as it stands, since killing `up` does not stop the supervisor it
+detached; every request argument is checked before anything runs (a config
+name and an amp model are file names, never paths); the real agent was run against this container
 (no rig, no PipeWire) and every route answered as the tests say. *(2026-10-31)*

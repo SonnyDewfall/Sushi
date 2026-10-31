@@ -11,7 +11,6 @@ import json
 import sys
 from pathlib import Path
 
-from .agent import DEFAULT_HOST as DEFAULT_AGENT_HOST, DEFAULT_PORT as DEFAULT_AGENT_PORT
 from .dump import dump_plugins
 from .emit import emit
 from .live import DEFAULT_GRPC_ADDRESS
@@ -1011,10 +1010,13 @@ def main(argv: list[str] | None = None) -> int:
         "agent",
         help="serve the rig over HTTP on localhost: health, status, doctor, up/down/restart (#29)",
     )
-    p.add_argument("--host", default=DEFAULT_AGENT_HOST,
-                   help=f"bind address [default: {DEFAULT_AGENT_HOST}; 0.0.0.0 opens it to the LAN]")
-    p.add_argument("--port", type=int, default=DEFAULT_AGENT_PORT,
-                   help=f"[default: {DEFAULT_AGENT_PORT}]")
+    # Localhost first (#29): opening it to the LAN is the operator's call.
+    # 8029 is the issue's number, and clear of the panel's 8080. The defaults
+    # live here rather than in agent.py so that `sushi-rig status` does not
+    # import asyncio for two numbers it will never use.
+    p.add_argument("--host", default="127.0.0.1",
+                   help="bind address [default: 127.0.0.1; 0.0.0.0 opens it to the LAN]")
+    p.add_argument("--port", type=int, default=8029, help="[default: 8029]")
     sub.add_parser(
         "restart",
         help="stop the running rig and bring the same one back — same config, same mode, same amp and tuner choices",

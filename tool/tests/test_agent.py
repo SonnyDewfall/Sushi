@@ -82,16 +82,31 @@ def test_each_request_is_one_fixed_command(command, body, expected):
     {"config_name": "config/x"},
     {"config_name": ""},
     {"config_name": "-rf"},
+    {"config_name": "guitar_vocal\n"},
     {"config_name": 7},
     {"headless": "yes"},
     {"amp_model": ""},
     {"amp_model": "--help"},
+    {"amp_model": "/etc/passwd"},
+    {"amp_model": "../../.env"},
+    {"amp_model": "amp/models/M.nam"},
+    {"amp_model": "M.nam\n"},
     ["not", "an", "object"],
+    [],
+    0,
+    "",
 ])
 def test_an_argument_that_is_not_what_it_claims_is_refused(body):
-    """A name is a name, not a path or a flag; a flag is a boolean."""
+    """A name is a name, not a path or a flag; a flag is a boolean. An amp
+    model is the name of a file in amp/models, which `up` resolves there, not
+    a path for a LAN client to read the machine with."""
     with pytest.raises(AgentError):
         lifecycle_arguments("up", body)
+
+
+def test_an_amp_model_name_may_look_like_one():
+    assert lifecycle_arguments("up", {"amp_model": "Marshall JCM800 (crunch) v2.nam"})[-1] == \
+        "Marshall JCM800 (crunch) v2.nam"
 
 
 def test_only_the_three_lifecycle_commands_exist():
@@ -128,7 +143,7 @@ def test_up_runs_the_cli_and_reports_what_it_said():
     assert body["ok"] is True
     assert body["command"] == ["up", "guitar_vocal", "--headless"]
     assert body["output"] == "started\n"
-    assert body["error"] is None
+    assert "reason" not in body
     assert body["rig"] == UP, "the answer carries the rig as it is after the command"
 
 
@@ -166,7 +181,7 @@ def test_a_command_the_cli_refuses_is_a_conflict_and_is_remembered():
     status, body = call(agent, "POST", "/rig/up")
     assert status == 409
     assert body["ok"] is False
-    assert body["error"].startswith("a rig is already running")
+    assert body["reason"].startswith("a rig is already running")
 
     _, health = call(agent, "GET", "/health")
     assert health["ok"] is True, "the agent is fine; the rig refused"
@@ -203,6 +218,44 @@ def test_one_lifecycle_command_at_a_time():
 
     asyncio.run(go())
     assert calls == [["up", "electric_board"], ["down"]]
+
+
+def test_a_command_the_agent_gave_up_on_says_what_to_read_next():
+    """The front process was killed; what it started may well be running."""
+    abandoned = Outcome(False, None, "", "'up electric_board' did not finish within 120s, "
+                        "so the agent stopped waiting for it. What it started, if anything, "
+                        "is still running: read /rig.")
+    agent = Agent(describe=lambda: dict(UP), run=FakeRunner(abandoned))
+    status, body = call(agent, "POST", "/rig/up")
+    assert status == 504
+    assert "read /rig" in body["reason"]
+    assert body["rig"]["running"] is True, "and the answer already carries it"
+
+
+def test_a_failure_the_route_did_not_expect_is_json_and_remembered():
+    """A plain-text 500 and a log line is what aiohttp does on its own; a
+    phone would see neither."""
+    def broken():
+        raise OSError("state file unreadable")
+
+    agent = Agent(describe=broken)
+    status, body = call(agent, "GET", "/rig")
+    assert status == 500
+    assert body == {"ok": False, "status": 500, "reason": "OSError: state file unreadable"}
+    agent.describe = lambda: dict(DOWN)
+    _, health = call(agent, "GET", "/health")
+    assert health["agent"]["last_error"]["message"] == "OSError: state file unreadable"
+    assert health["agent"]["last_error"]["command"] == ["GET", "/rig"]
+
+
+def test_a_body_that_is_not_text_is_a_bad_request_not_a_crash():
+    runner = FakeRunner()
+    agent = Agent(describe=lambda: dict(DOWN), run=runner)
+    status, body = call(agent, "POST", "/rig/up", data=b"\xff\xfe\x00{",
+                        headers={"Content-Type": "application/json"})
+    assert status == 400
+    assert "not JSON" in body["reason"]
+    assert runner.calls == []
 
 
 def test_a_route_that_does_not_exist_is_json_too():
@@ -242,9 +295,9 @@ def test_the_runner_runs_the_real_cli(runtime):
 def test_a_command_that_hangs_is_killed_and_said_so():
     sleeper = (sys.executable, "-c", "import time; time.sleep(30)")
     outcome = asyncio.run(run_cli(["x"], timeout=0.3, program=sleeper))
-    assert not outcome.ok
-    assert outcome.returncode is None
+    assert not outcome.ok and outcome.abandoned
     assert "did not finish within 0.3s" in outcome.stderr
+    assert "still running: read /rig" in outcome.stderr, "killed the CLI, not what it started"
 
 
 def test_the_cli_the_agent_runs_is_the_installation_it_was_started_from():

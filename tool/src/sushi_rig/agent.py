@@ -35,16 +35,15 @@ running one, which is what takes a live session down.
 
 ## Local-first, so localhost first
 
-The default bind is 127.0.0.1. `--host 0.0.0.0` opens it to the LAN, and until
-the permission split the issue describes exists (local: everything; remote:
-start, stop, load, parameters) that is the operator's call to make, not a
-default.
+The CLI binds it to 127.0.0.1:8029 unless told otherwise. `--host 0.0.0.0`
+opens it to the LAN, and until the permission split the issue describes exists
+(local: everything; remote: start, stop, load, parameters) that is the
+operator's call to make, not a default.
 """
 
 from __future__ import annotations
 
 import asyncio
-import json
 import re
 import sys
 import time
@@ -55,8 +54,11 @@ from typing import Any, Awaitable, Callable, Sequence
 
 from .rig import DEFAULT_CONFIG_NAME, describe_rig
 
-DEFAULT_HOST = "127.0.0.1"
-DEFAULT_PORT = 8029  # the issue's number, and clear of the panel's 8080
+try:
+    from aiohttp import web
+except ImportError:  # the `agent` extra is optional; `serve` says so
+    web = None  # type: ignore[assignment]
+
 VERSION = "0.1"
 
 # `up` waits up to GRPC_TIMEOUT for Sushi and `down` is bounded by
@@ -68,10 +70,14 @@ LIFECYCLE_TIMEOUT = 120.0
 # drives the installation it was started from.
 CLI: tuple[str, ...] = (sys.executable, "-m", "sushi_rig.cli")
 
-# A config name names config/<name>.json. `up` checks the file exists, but a
-# name with a separator in it would be looked up outside config/, so it is
-# refused here first.
-CONFIG_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_.-]*$")
+# A config name names config/<name>.json and an amp model names
+# amp/models/<name>. `up` checks each file exists, but a name with a separator
+# in it would be looked up outside those folders, so both are refused here
+# first: letters, digits and a few marks, no separators, and never a leading
+# '-' that would read as a flag. `fullmatch`, because `$` matches before a
+# trailing newline.
+CONFIG_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
+MODEL_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_ .,()'+-]*")
 
 LIFECYCLE = ("up", "down", "restart")
 
@@ -82,12 +88,20 @@ class AgentError(Exception):
 
 @dataclass(frozen=True)
 class Outcome:
-    """What a command said: its exit status and both streams."""
+    """What a command said: its exit status and both streams.
+
+    `returncode` is None when the agent stopped waiting: the command was
+    abandoned, not finished, and whatever it had started may still be running.
+    """
 
     ok: bool
     returncode: int | None
     stdout: str
     stderr: str
+
+    @property
+    def abandoned(self) -> bool:
+        return self.returncode is None
 
 
 Runner = Callable[[Sequence[str]], Awaitable[Outcome]]
@@ -99,7 +113,8 @@ def lifecycle_arguments(command: str, body: dict[str, Any] | None) -> list[str]:
     Pure, and the whole of the request's influence on what runs: anything not
     read here is ignored.
     """
-    body = body or {}
+    if body is None:
+        body = {}
     if not isinstance(body, dict):
         raise AgentError("the request body must be a JSON object")
     if command not in LIFECYCLE:
@@ -113,7 +128,7 @@ def lifecycle_arguments(command: str, body: dict[str, Any] | None) -> list[str]:
 
     if command == "up":
         name = body.get("config_name", DEFAULT_CONFIG_NAME)
-        if not isinstance(name, str) or not CONFIG_NAME.match(name) or ".." in name:
+        if not isinstance(name, str) or not CONFIG_NAME.fullmatch(name) or ".." in name:
             raise AgentError(f"invalid config name {name!r}: letters, digits, '_', '-' and '.'")
         args = ["up", name]
         if flag("headless", False):
@@ -124,8 +139,10 @@ def lifecycle_arguments(command: str, body: dict[str, Any] | None) -> list[str]:
             args.append("--no-amp")
         model = body.get("amp_model")
         if model is not None:
-            if not isinstance(model, str) or not model or model.startswith("-"):
-                raise AgentError(f"invalid amp model {model!r}")
+            if not isinstance(model, str) or not MODEL_NAME.fullmatch(model) or ".." in model:
+                raise AgentError(
+                    f"invalid amp model {model!r}: the name of a file in amp/models, not a path"
+                )
             args += ["--amp-model", model]
         return args
     if command == "down":
@@ -140,8 +157,12 @@ async def run_cli(
 ) -> Outcome:
     """Run one CLI command to completion and report what it said.
 
-    A command that outlives `timeout` is killed and reported as a failure
-    naming the limit, never left running under a lock nobody will release.
+    A command that outlives `timeout` is abandoned: the CLI process is killed
+    so the lock is released, and the report says so. What that command had
+    started is not stopped, and cannot be from here: `up`'s supervisor has
+    already detached into its own process group, so killing the `up` that
+    forked it leaves the rig coming up. The answer therefore carries the rig
+    as it is afterwards, and a client reads that rather than the exit.
     """
     proc = await asyncio.create_subprocess_exec(
         *program, *args,
@@ -152,9 +173,17 @@ async def run_cli(
     try:
         out, err = await asyncio.wait_for(proc.communicate(), timeout)
     except asyncio.TimeoutError:
-        proc.kill()
+        try:
+            proc.kill()
+        except ProcessLookupError:  # finished in the gap; its exit is still read
+            pass
         await proc.wait()
-        return Outcome(False, None, "", f"{' '.join(args)} did not finish within {timeout:g}s and was killed")
+        return Outcome(
+            False, None, "",
+            f"'{' '.join(args)}' did not finish within {timeout:g}s, so the agent "
+            "stopped waiting for it. What it started, if anything, is still "
+            "running: read /rig.",
+        )
     return Outcome(
         proc.returncode == 0, proc.returncode,
         out.decode(errors="replace"), err.decode(errors="replace"),
@@ -199,9 +228,7 @@ class Agent:
     # ----------------------------------------------------------------- routes
 
     def app(self):
-        from aiohttp import web
-
-        app = web.Application(middlewares=[_json_errors()])
+        app = web.Application(middlewares=[self._json_errors])
         app.router.add_get("/health", self.health)
         app.router.add_get("/rig", self.rig)
         app.router.add_get("/doctor", self.doctor_route)
@@ -210,8 +237,6 @@ class Agent:
         return app
 
     async def health(self, request):
-        from aiohttp import web
-
         return web.json_response({
             "ok": True,
             "agent": {
@@ -225,13 +250,9 @@ class Agent:
         })
 
     async def rig(self, request):
-        from aiohttp import web
-
         return web.json_response(self.describe())
 
     async def doctor_route(self, request):
-        from aiohttp import web
-
         from .doctor import FAULT, UNCHECKED
 
         # pw-dump and the environment probes block; off the loop they go.
@@ -244,14 +265,12 @@ class Agent:
         })
 
     async def lifecycle(self, request):
-        from aiohttp import web
-
         command = request.path.rsplit("/", 1)[-1]
         body = None
         if request.can_read_body:
             try:
                 body = await request.json()
-            except json.JSONDecodeError as exc:
+            except ValueError as exc:  # JSONDecodeError, or bytes that are not text
                 raise web.HTTPBadRequest(reason=f"the request body is not JSON: {exc}")
         try:
             args = lifecycle_arguments(command, body)
@@ -267,32 +286,36 @@ class Agent:
             finally:
                 self.busy = None
 
-        answer = {
+        answer: dict[str, Any] = {
             "ok": outcome.ok,
             "command": args,
             "output": outcome.stdout,
-            "error": outcome.stderr.strip() or None,
             "rig": self.describe(),
         }
-        if not outcome.ok:
-            self.last_error = {
-                "command": args,
-                "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-                "message": outcome.stderr.strip() or f"exit status {outcome.returncode}",
-            }
-            # The CLI refused or failed: "a rig is already running", "no rig
-            # to restart". That is a conflict with the rig's state, not a bad
-            # request and not the agent's own fault.
-            return web.json_response(answer, status=409)
-        return web.json_response(answer)
+        if outcome.ok:
+            return web.json_response(answer)
+        # Three failures, three answers, one body shape (`reason` says why,
+        # as every error here does). The CLI refused or failed -- "a rig is
+        # already running", "no rig to restart", Sushi never came up -- which
+        # is a conflict with the rig's state, 409. The agent gave up waiting:
+        # 504, and the rig in the answer is what to read next.
+        reason = outcome.stderr.strip() or f"exit status {outcome.returncode}"
+        self._remember(args, reason)
+        answer["reason"] = reason
+        return web.json_response(answer, status=504 if outcome.abandoned else 409)
 
+    def _remember(self, command: list[str] | None, reason: str) -> None:
+        self.last_error = {
+            "command": command,
+            "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "message": reason,
+        }
 
-def _json_errors():
-    """Every error is JSON with a `reason`, including aiohttp's own 404."""
-    from aiohttp import web
-
-    @web.middleware
-    async def middleware(request, handler):
+    @web.middleware if web else (lambda f: f)
+    async def _json_errors(self, request, handler):
+        """Every error is JSON with a `reason`: aiohttp's own 404, and
+        anything a route did not expect, which is also remembered for
+        /health rather than left as a plain-text 500 and a log line."""
         try:
             return await handler(request)
         except web.HTTPException as exc:
@@ -301,15 +324,15 @@ def _json_errors():
             return web.json_response(
                 {"ok": False, "status": exc.status, "reason": exc.reason}, status=exc.status,
             )
+        except Exception as exc:  # noqa: BLE001 -- said, remembered, not swallowed
+            reason = f"{type(exc).__name__}: {exc}"
+            self._remember([request.method, request.path], reason)
+            return web.json_response({"ok": False, "status": 500, "reason": reason}, status=500)
 
-    return middleware
 
-
-def serve(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT, root: Path | None = None) -> int:
+def serve(host: str, port: int, root: Path | None = None) -> int:
     """Run the agent until interrupted."""
-    try:
-        from aiohttp import web
-    except ImportError:
+    if web is None:
         raise AgentError("aiohttp is not installed; pip install -e tool[agent]")
 
     agent = Agent(root=root)
