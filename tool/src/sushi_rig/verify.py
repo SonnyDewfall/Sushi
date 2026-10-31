@@ -122,10 +122,17 @@ def diff_state(config: dict[str, Any], live: dict[str, Any]) -> list[Problem]:
                 "the running rig, so whether they applied is unchecked"
             ))
         else:
+            have = actual.get("properties") or {}
             for prop, expected in wanted.items():
-                got = (actual.get("properties") or {}).get(prop)
-                if got is None:
+                if prop not in have:
                     problems.append(Problem(name, f"{prop} is not a property of this processor"))
+                    continue
+                got = have[prop]
+                if got is None:
+                    problems.append(Problem(
+                        name, f"{prop} is a property of this processor but its value could "
+                        "not be read, so whether it applied is unchecked"
+                    ))
                 elif str(got) != str(expected):
                     problems.append(Problem(
                         name, f"{prop} did not apply — config {expected!r}, rig {got!r}"

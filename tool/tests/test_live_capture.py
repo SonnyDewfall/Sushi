@@ -85,3 +85,18 @@ def test_a_rig_that_cannot_be_asked_about_properties_leaves_the_key_out(controll
     controller.parameters.get_processor_properties = refuse
     state = live.capture()
     assert "properties" not in state["processors"]["guitar_send"]
+
+
+def test_a_property_whose_value_cannot_be_read_is_recorded_as_none(controller, capsys):
+    def refuse(pid, prop_id):
+        raise RuntimeError("NOT_FOUND")
+
+    controller.parameters.get_property_value = refuse
+    state = live.capture()
+    assert state["processors"]["guitar_send"]["properties"] == {"destination_name": None}
+
+
+def test_a_listing_that_fails_is_said_on_stderr(controller, capsys):
+    controller.parameters.get_processor_properties = lambda pid: (_ for _ in ()).throw(RuntimeError("x"))
+    live.capture()
+    assert "properties could not be listed" in capsys.readouterr().err

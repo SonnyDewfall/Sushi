@@ -55,9 +55,10 @@ def _safe(fn, *args):
 def capture(address: str = DEFAULT_GRPC_ADDRESS) -> dict[str, Any]:
     """Read the full normalised parameter state of a running Sushi.
 
-    Returns the shape documented in the brief §5.2: a dict of processor name
-    to {"parameters": {...}, "program": int?, "bypassed": bool?}. Tracks are
-    included alongside plugins, since tracks carry parameters too (gain, pan).
+    Returns a dict of processor name to {"parameters": {...}, "program": int?,
+    "bypassed": bool?, "properties": {...}?} (the brief's §5.2 shape, plus
+    properties). Tracks are included alongside plugins, since tracks carry
+    parameters too (gain, pan).
 
     Also returns `"tracks"`: `{track_name: [processor names, in chain order]}`.
     Processor *values* alone are not enough to describe a session, because
@@ -111,16 +112,28 @@ def capture(address: str = DEFAULT_GRPC_ADDRESS) -> dict[str, Any]:
                 # `_safe` so a Sushi that cannot answer leaves the key absent,
                 # which `verify.diff_state` reports as unchecked rather than
                 # as a pass.
+                #
+                # Recorded for checking, not for writing back: which of a
+                # plugin's properties can be set at load is not something the
+                # listing says, and an IR loader's path read back as "" is the
+                # kind of value Sushi refuses a config over. `save` strips them
+                # before `emit`, and a compiled rig writes only its own.
                 listing = (controller.parameters.get_track_properties if is_track
                            else controller.parameters.get_processor_properties)
                 infos = _safe(listing, proc_id)
-                if infos is not None:
-                    props: dict[str, str] = {}
-                    for info in infos:
-                        value = _safe(controller.parameters.get_property_value, proc_id, info.id)
-                        if value is not None:
-                            props[info.name] = value
-                    entry["properties"] = props
+                if infos is None:
+                    print(
+                        f"warning: {proc_name!r}: properties could not be listed, so "
+                        "verify will report them as unchecked",
+                        file=sys.stderr,
+                    )
+                else:
+                    # A property listed but unreadable is kept as None, so verify
+                    # says "could not be read" rather than "not a property".
+                    entry["properties"] = {
+                        info.name: _safe(controller.parameters.get_property_value, proc_id, info.id)
+                        for info in infos
+                    }
 
                 # A program is only recorded for a processor we captured no
                 # parameters for. Sushi applies a program *over* the parameters

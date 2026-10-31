@@ -312,3 +312,10 @@ def test_a_property_the_processor_does_not_have_is_caught():
     live = {"processors": {"guitar_send": {"parameters": {}, "properties": {}}}, "tracks": {"guitar": ["guitar_send"]}}
     (problem,) = diff_state(_config_with_send(), live)
     assert "destination_name is not a property" in problem.detail
+
+
+def test_a_property_listed_but_unreadable_is_unchecked_not_absent():
+    live = {"processors": {"guitar_send": {"parameters": {}, "properties": {"destination_name": None}}},
+            "tracks": {"guitar": ["guitar_send"]}}
+    (problem,) = diff_state(_config_with_send(), live)
+    assert "could not be read" in problem.detail and "is a property" in problem.detail

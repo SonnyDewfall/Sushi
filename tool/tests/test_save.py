@@ -267,3 +267,32 @@ def test_unused_path_can_claim_a_directory(tmp_path):
     (tmp_path / "2026").mkdir()
     got = unused_path(tmp_path / "2026", directory=True)
     assert got.name == "2026-2" and got.is_dir()
+
+
+def test_captured_properties_are_checked_not_written(tmp_path, monkeypatch):
+    """Which of a plugin's properties may be set at load is not known from the
+    listing; a value read back as "" would be baked into the saved config."""
+    import textwrap
+
+    from sushi_rig import save as save_module
+    from sushi_rig.save import save_config
+
+    rig = tmp_path / "rig.yaml"
+    rig.write_text(textwrap.dedent("""\
+        meta: {name: t, version: "1"}
+        host: {samplerate: 48000}
+        tracks:
+          - name: board
+            channels: 2
+            inputs: [{engine_bus: 0, track_bus: 0}]
+            outputs: [{engine_bus: 0, track_bus: 0}]
+            plugins:
+              - {name: ir, type: lv2, uri: "urn:ir"}
+        """))
+    monkeypatch.setattr(save_module, "capture", lambda address: {
+        "processors": {"ir": {"parameters": {"gain": 0.5}, "properties": {"file": ""}}},
+        "tracks": {"board": ["ir"]},
+    })
+    out = save_config("riff", rig, tmp_path / "out", tmp_path / "archive")
+    (entry,) = __import__("json").loads(out.read_text())["initial_state"]
+    assert entry == {"processor": "ir", "parameters": {"gain": 0.5}}
