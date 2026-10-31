@@ -578,6 +578,12 @@ def test_a_test_signal_shorter_than_half_the_reference_says_so_not_silence():
         analysis.estimate_delay(ref, signals.silence(SR, 0.6))
 
 
+def test_the_mono_error_still_blames_the_reference_first():
+    both = signals.pink_noise(SR, 0.1, channels=2)
+    with pytest.raises(ValueError, match="reference must be mono"):
+        analysis.estimate_delay(both, both)
+
+
 def test_half_the_reference_is_enough_to_search():
     ref = signals.pink_noise(SR, 1.0)
     assert analysis.estimate_delay(ref, ref[:24000]).lag_samples == 0

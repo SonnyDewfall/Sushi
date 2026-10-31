@@ -348,11 +348,13 @@ def estimate_delay(reference, test, *, max_lag_samples: int | None = None) -> De
     # a test shorter than half of it has nothing to search -- which is a fact
     # about the lengths, and "is either one silent?" sends the reader to look at
     # the wrong thing.
-    if 2 * len(_mono(test, "test")) < len(_mono(reference, "reference")):
+    ref = _mono(reference, "reference")
+    sig = _mono(test, "test")
+    if 2 * len(sig) < len(ref):
         raise ValueError(
             "the test signal is shorter than half the reference, so no lag could be searched"
         )
-    peaks = find_delays(reference, test, max_lag_samples=max_lag_samples, max_peaks=1)
+    peaks = find_delays(ref, sig, max_lag_samples=max_lag_samples, max_peaks=1)
     if not peaks:
         raise ValueError("no correlation between the signals within the allowed lag (is either one silent?)")
     return peaks[0]
