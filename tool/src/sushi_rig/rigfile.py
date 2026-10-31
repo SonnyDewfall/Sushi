@@ -67,7 +67,7 @@ from pathlib import Path
 from typing import Any
 
 from .save import NAME_PATTERN
-from .spec import PluginSpec, RigSpec, TrackSpec
+from .spec import PluginSpec, RigSpec, TrackSpec, looks_like_rig_file  # noqa: F401 (re-exported)
 
 KIND = "rig"
 SCHEMA_VERSION = 1
@@ -142,13 +142,6 @@ class Rig:
 def is_rig_file(raw: Any) -> bool:
     """Whether a parsed YAML document is one of these rather than a v1 rig.yaml."""
     return isinstance(raw, dict) and raw.get("kind") == KIND
-
-
-def looks_like_rig_file(raw: Any) -> bool:
-    """Whether a document was meant to be one of these, even if its `kind` is
-    wrong: read as a v1 rig.yaml it would be a rig with no tracks, and emitted
-    as an empty config without a word."""
-    return isinstance(raw, dict) and any(key in raw for key in ("kind", "channels", "master"))
 
 
 def load_rig(path: Path) -> Rig:
@@ -332,10 +325,17 @@ def parse_rig(raw: Any) -> Rig:
         if "strip" in entry and isinstance(entry.get("name"), str):
             # The track's own gain, pan and mute, normalised as Sushi stores them.
             strip = _settings(f"{where}: strip", {"parameters": entry["strip"]}, problems)
-            if strip and not any(key in UNITY_STRIP for key in strip["parameters"]):
+            if strip and not strip["parameters"]:
                 # `strip: {}` would compile to an initial_state entry holding only
                 # the track's name, which nothing has ever sent to Sushi.
                 problems.append(f"{where}: strip must name gain, pan or mute")
+            elif strip and set(strip["parameters"]) - set(UNITY_STRIP):
+                # Beside a valid key, an unknown one would compile to a track
+                # parameter Sushi was never told about.
+                problems.append(
+                    f"{where}: strip may only name gain, pan or mute, not "
+                    f"{', '.join(sorted(set(strip['parameters']) - set(UNITY_STRIP)))}"
+                )
             elif strip:
                 problems += _strip_problems(where, strip["parameters"])
                 settings[entry["name"]] = strip

@@ -309,13 +309,21 @@ def test_a_width_that_is_not_a_word_is_a_problem_not_a_traceback(width):
     assert any("width must be one of mono, stereo" in p for p in problems(raw))
 
 
-@pytest.mark.parametrize("strip", [{}, {"volume": 1.0}])
-def test_a_strip_that_names_no_gain_pan_or_mute_is_refused(strip):
+def test_a_strip_that_names_no_gain_pan_or_mute_is_refused():
     """`strip: {}` compiled to an initial_state entry holding only the
     processor, which nothing here has ever sent to Sushi."""
     raw = rig_yaml(channel("a"))
-    raw["channels"][0]["strip"] = strip
+    raw["channels"][0]["strip"] = {}
     assert any("channel 'a': strip must name gain, pan or mute" in p for p in problems(raw))
+
+
+@pytest.mark.parametrize("strip", [{"volume": 1.0}, {"gain": 0.833333, "volume": 1.0}])
+def test_a_strip_key_that_is_not_gain_pan_or_mute_is_refused_even_beside_one_that_is(strip):
+    """`{gain: .., volume: 1.0}` compiled a track parameter `volume`."""
+    raw = rig_yaml(channel("a"))
+    raw["channels"][0]["strip"] = strip
+    assert any("channel 'a': strip may only name gain, pan or mute, not volume" in p
+               for p in problems(raw))
 
 
 def test_a_strip_naming_one_of_the_three_is_still_read():
@@ -330,6 +338,12 @@ def test_a_description_that_is_not_text_is_refused_by_name(description):
     the emitted `_meta`."""
     found = problems(rig_yaml(channel("a"), description=description))
     assert any(p.startswith("description must be text") for p in found)
+
+
+def test_the_rig_file_predicate_is_specs_one_not_a_copy():
+    from sushi_rig import spec
+
+    assert rigfile.looks_like_rig_file is spec.looks_like_rig_file
 
 
 def test_a_description_that_is_text_or_absent_is_read():
