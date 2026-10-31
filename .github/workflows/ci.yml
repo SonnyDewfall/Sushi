@@ -18,10 +18,10 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      # `audio` (numpy) is pure-PyPI, so the signal and analysis tests run here
-      # instead of skipping.
-      - name: Install the tool with dev and audio extras
-        run: pip install -e "tool[dev,audio]"
+      # `audio` (numpy) and `agent` (aiohttp) are pure-PyPI, so the signal,
+      # analysis and agent tests run here instead of skipping.
+      - name: Install the tool with dev, audio and agent extras
+        run: pip install -e "tool[dev,audio,agent]"
 
       # Slow tests are excluded on purpose: they start a real Sushi binary,
       # which this runner does not have. Tests that need python3-lilv or ./sushi

@@ -1179,3 +1179,19 @@ processor's properties through elkpy's property calls, `diff_state` compares
 them, and a rig that could not be asked is reported as unchecked rather than
 passed over. The slow test in test_rigfile.py now checks what it said it did.
 *(2026-10-31)*
+
+**The rig agent exists (#29, first slice).** `sushi-rig agent` serves the
+lifecycle and the two readings over HTTP on localhost: `/health`, `/rig`
+(`status` as data), `/doctor` (its checks as data), and `POST /rig/up`, `down`,
+`restart`. Two refactors fell out of it, both pure: `rig.describe_rig` is what
+`status` prints and the agent serves, one answer with two readers; and the
+body of the `doctor` command moved to `doctor.run`, which returns the checks
+the command prints. The lifecycle commands run as the CLI in a child process
+rather than in the agent: `up` forks the supervisor, and a fork from a
+multi-threaded process (an event loop plus its executor) inherits whatever
+locks another thread held, which Python itself warns about. The honest
+consequence is that the supervisor is still the one `up` detaches, not the
+agent; the agent becoming the supervisor and a service is the next slice. One
+lifecycle command at a time, `409 busy` otherwise; every request argument is
+checked before anything runs; the real agent was run against this container
+(no rig, no PipeWire) and every route answered as the tests say. *(2026-10-31)*
