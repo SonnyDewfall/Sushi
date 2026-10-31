@@ -305,7 +305,8 @@ def test_a_take_cut_off_mid_recording_still_describes_itself(tmp_path):
     problems = take.check_take(cut_off)
     assert problems == [
         "this take was never finished — the rig stopped mid-take, so its stems "
-        "hold whatever was captured up to then and no offsets were measured"
+        "hold whatever was captured up to then and no offsets were measured. "
+        "If a stem cannot be read, `sushi-rig take repair` fixes its header"
     ]
     assert "cut off before it finished" in cut_off.metadata["alignment"]["note"]
 
@@ -570,3 +571,50 @@ def test_metadata_reaches_the_disk_before_it_replaces_the_old(tmp_path, monkeypa
     start(tmp_path)
     # config.json and take.yaml, each: the file, then its directory.
     assert len(synced) == 4
+
+
+# --------------------------------------------------------------------------- #
+# What the recorder hands over: dropouts, and a take cut off mid-write
+# --------------------------------------------------------------------------- #
+
+def test_a_take_with_dropouts_carries_them_and_says_so(tmp_path):
+    """A take with a gap in it is one a person needs to know about before they
+    use it: the stems still line up, but the performance skips."""
+    record(start(tmp_path))
+    finished = take.finish_take(
+        tmp_path / "riff-idea", {"guitar.wav": 257, "vocal.wav": 257}, measured_by="test",
+        dropouts=[{"at_seconds": 12.5, "frames": 4800}, {"at_seconds": 40.0, "frames": 2400}],
+    )
+    assert finished.metadata["dropouts"][0] == {"at_seconds": 12.5, "frames": 4800}
+    problems = take.check_take(finished)
+    assert any("lost audio 2 time(s), 150.0 ms in all" in p for p in problems)
+    assert any("still aligned with each other" in p for p in problems)
+
+
+def test_a_take_with_no_dropouts_records_an_empty_list_not_nothing(tmp_path):
+    record(start(tmp_path))
+    finished = take.finish_take(tmp_path / "riff-idea", {}, measured_by="test")
+    assert finished.metadata["dropouts"] == []
+
+
+def test_a_take_killed_mid_write_is_repaired_by_the_command(tmp_path, capsys):
+    """The recorder's real writer, cut off the way a kill cuts it: one stem's
+    last block written without its header. `take repair` sets it right."""
+    from sushi_rig import cli, recorder
+
+    paths = start(tmp_path, subtype="float32")
+    stems = [(paths[name], 1) for name in sorted(paths)]
+    rec = recorder.Recorder(stems, SR, 256)
+    rec.start()
+    rec.push(np.tile(signals.sine(SR, 0.25, 220.0).astype("float32"), (1, len(stems))))
+    rec.stop()
+    victim = paths["vocal.wav"]
+    with victim.open("ab") as handle:
+        handle.write(signals.sine(SR, 0.01, 330.0).astype("<f4").tobytes())
+
+    assert any("vocal.wav cannot be read" in p for p in take.check_take(take.load_take(tmp_path / "riff-idea")))
+    assert cli.main(["take", "repair", str(tmp_path / "riff-idea")]) == 0
+    assert "4 stem(s) repaired" in capsys.readouterr().out
+    after = take.check_take(take.load_take(tmp_path / "riff-idea"))
+    assert not any(".wav cannot be read" in p for p in after), "no stem left unreadable"
+    assert any("different lengths" in p for p in after), "the extra block is real audio, kept"

@@ -263,7 +263,17 @@ def _patchbay(args: argparse.Namespace) -> int:
 
 def _take(args: argparse.Namespace) -> int:
     """`take check`: is this folder a whole, honest take, and how do its stems line up."""
-    from .take import TakeError, check_take, describe_alignment, load_take
+    from .take import TakeError, check_take, describe_alignment, load_take, repair_take
+
+    if args.take_command == "repair":
+        try:
+            repaired = repair_take(args.folder)
+        except (TakeError, ValueError, OSError) as exc:
+            sys.exit(str(exc))
+        for name, frames in repaired.items():
+            print(f"{name}: {frames} frames")
+        print(f"{args.folder.name}: {len(repaired)} stem(s) repaired; `sushi-rig take check` next")
+        return 0
 
     try:
         take = load_take(args.folder)
@@ -680,6 +690,12 @@ def main(argv: list[str] | None = None) -> int:
         "check",
         help="check a take folder is whole and self-describing, and say how its "
         "stems line up; exit 1 on any problem",
+    )
+    q.add_argument("folder", type=Path, help="the take's folder")
+    q = take_sub.add_parser(
+        "repair",
+        help="make the stems of a take cut off mid-write readable again, by setting "
+        "each header from its file's own length",
     )
     q.add_argument("folder", type=Path, help="the take's folder")
 
