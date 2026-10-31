@@ -563,3 +563,20 @@ def test_a_patchbay_that_will_not_stay_up_is_a_warning_not_a_failed_rig(
     assert recorded["pgid"] == real_supervisor[0], "the supervisor leads its own group"
 
 
+def test_a_child_that_cannot_start_fails_up_and_takes_the_group_down_promptly(
+    real_supervisor, monkeypatch
+):
+    """A required child that cannot be executed is FAIL. The supervisor then
+    exits as an unreaped zombie of `up`, and a zombie still counts as a group
+    member -- so, until `_kill_group_of` reaped it, the error arrived after the
+    whole eight-second escalation had run against a process already dead."""
+    import time
+
+    monkeypatch.setattr(rig, "plan_children", lambda *a, **k: [{
+        "name": "sushi", "command": ["/nonexistent/sushi"], "optional": False,
+    }])
+    started = time.monotonic()
+    with pytest.raises(rig.RigError, match="sushi did not start"):
+        rig.up(headless=True, tuner=False, amp=False)
+    assert time.monotonic() - started < 3.0
+    assert state_file.read_state() is None

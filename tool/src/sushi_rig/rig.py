@@ -734,7 +734,20 @@ def up(
 
 
 def _kill_group_of(pid: int) -> None:
-    """Best-effort teardown of a supervisor's group, used on a failed start."""
+    """Best-effort teardown of a supervisor's group, used on a failed start.
+
+    `pid` is our own child, and is reaped here. A supervisor that has already
+    given up (it reports FAIL and exits) is a zombie until someone waits for it,
+    and a zombie still counts as a member of its group, so `pgid_alive` stayed
+    true and the escalation ran its whole eight seconds against a process that
+    was already dead -- the error message arrived that much late.
+    """
+    def reap() -> None:
+        try:
+            os.waitpid(pid, os.WNOHANG)
+        except ChildProcessError:
+            pass
+
     try:
         pgid = os.getpgid(pid)
     except ProcessLookupError:
@@ -746,6 +759,7 @@ def _kill_group_of(pid: int) -> None:
             return
         deadline = time.monotonic() + wait
         while time.monotonic() < deadline:
+            reap()
             if not pgid_alive(pgid):
                 return
             time.sleep(0.1)
