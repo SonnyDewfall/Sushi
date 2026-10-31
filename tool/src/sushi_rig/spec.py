@@ -92,7 +92,10 @@ class RigSpec:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any], path: Path | str = "rig") -> "RigSpec":
-        if isinstance(raw, dict) and any(key in raw for key in ("kind", "channels", "master")):
+        # Imported here because rigfile imports this module for RigSpec.
+        from .rigfile import looks_like_rig_file
+
+        if looks_like_rig_file(raw):
             # A v2 rig file (rigfile.py), or one meant to be. Read as tracks it
             # is a rig with none, which every caller would run as silence.
             raise ValueError(

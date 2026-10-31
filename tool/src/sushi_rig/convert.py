@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .patchbay import GUITAR_ROLE, MONITOR_ROLE
 from .rigfile import (
     _PLUGIN_KEYS, _SETTING_KEYS, KIND, MASTER, RETURN, SCHEMA_VERSION, SEND_SUFFIX, WIDTHS,
     emit_rig, parse_rig,
@@ -46,8 +47,7 @@ _STATE = ("processor",) + _SETTING_KEYS
 # from `guitar-in` with mono_to_stereo.
 _DEFAULT_SHAPE = [{"engine_bus": 0, "track_bus": 0}]
 
-DEFAULT_INPUT = ("guitar-in", "mono")
-MONITORS = "monitor-out"
+DEFAULT_INPUT = (GUITAR_ROLE, "mono")
 
 
 class ConvertError(ValueError):
@@ -169,7 +169,10 @@ def to_rig(config: dict[str, Any], name: str,
             # A track's own state is its strip: gain, pan and mute.
             if set(settings) - {"parameters"}:
                 problems.append(f"track {processor!r}: only parameters are kept for a track's strip, got {sorted(settings)}")
-            by_name[processor]["strip"] = settings.get("parameters", {})
+            if settings.get("parameters"):
+                # An empty strip is not written: a rig file refuses `strip: {}`
+                # by name, and a track with no state of its own has none to keep.
+                by_name[processor]["strip"] = settings["parameters"]
         elif processor in plugins_of:
             for entry in by_name[plugins_of[processor]]["chain"]:
                 if entry["name"] == processor:
@@ -183,6 +186,8 @@ def to_rig(config: dict[str, Any], name: str,
     meta.pop("name", None)
     description = meta.pop("description", None)
     rig: dict[str, Any] = {"kind": KIND, "schema_version": SCHEMA_VERSION, "name": name}
+    # Empty and absent are the same here and in `differences`: a rig file has no
+    # way to say "an empty description", so neither side may count it.
     if description:
         rig["description"] = description
     if meta:
@@ -194,7 +199,7 @@ def to_rig(config: dict[str, Any], name: str,
     rig["channels"] = [
         {k: c[k] for k in ("name", "input", "width", "strip", "chain") if k in c} for c in channels
     ]
-    rig["master"] = {"output": MONITORS, "chain": []}
+    rig["master"] = {"output": MONITOR_ROLE, "chain": []}
     return rig
 
 
@@ -229,14 +234,23 @@ def differences(v1: dict[str, Any], compiled: dict[str, Any]) -> list[str]:
     # Both ways: a setting only the rig has is as much a different tone as one
     # it lost, and a config with no initial_state would otherwise let anything
     # be added to its rig unseen.
+    # The sends the compiler added, by the names it gave them. Not by suffix: a
+    # plugin the player called `delay_send` is theirs and must be held to the config.
+    sends = {t["name"] + SEND_SUFFIX for t in compiled.get("tracks", []) if t["name"] != MASTER}
     state = {e["processor"]: e for e in compiled.get("initial_state", [])
-             if not e["processor"].endswith(SEND_SUFFIX)}
+             if e["processor"] not in sends}
     was = {e["processor"]: e for e in v1.get("initial_state", [])}
     for name in sorted(set(state) | set(was)):
         if state.get(name) != was.get(name):
             found.append(f"initial_state for {name!r}: {state.get(name)!r}, was {was.get(name)!r}")
+    # Empty and absent alike, as `to_rig` treats them: it writes no host, amp or
+    # description for a falsy one, so a config holding `{}` or "" must not be
+    # refused as a different tone for something the rig file cannot express.
+    meta = v1.get("_meta")
+    if isinstance(meta, dict) and not meta.get("description", True):
+        v1 = {**v1, "_meta": {k: v for k, v in meta.items() if k != "description"}}
     for key in ("host_config", "_amp", "_meta"):
-        if v1.get(key) != compiled.get(key):
+        if (v1.get(key) or None) != (compiled.get(key) or None):
             found.append(f"{key}: {compiled.get(key)!r}, was {v1.get(key)!r}")
     return found
 

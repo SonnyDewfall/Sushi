@@ -53,6 +53,10 @@ TUNER_PORT = "ALSA Capture [fmit]:input_MONO"
 # same declared channel, so a third channel is a declaration rather than an edit
 # in five places.
 GUITAR_ROLE = "guitar-in"
+# Where the monitor mix leaves the machine. Named once, beside the guitar's role,
+# because a v2 rig's master says it (rigfile.py) and the converter of today's
+# tones writes it (convert.py); a second spelling is a master that goes nowhere.
+MONITOR_ROLE = "monitor-out"
 
 # pw-dump is a one-shot snapshot of the whole graph; a hung PipeWire is the only
 # way it takes long, and a check that blocks forever is worse than one that fails.
