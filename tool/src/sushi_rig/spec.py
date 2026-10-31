@@ -28,6 +28,7 @@ def looks_like_rig_file(raw: Any) -> bool:
     document and rigfile imports this module for `RigSpec`."""
     return isinstance(raw, dict) and any(key in raw for key in ("kind", "channels", "master"))
 
+
 _VALID_TYPES = {"lv2", "vst2x", "vst3x", "internal"}
 
 
