@@ -576,3 +576,27 @@ def test_a_missing_model_still_refuses_loudly(tmp_path):
     config.write_text(json.dumps({"_amp": {"model": "amp/models/gone.nam", "parameters": {}}}))
     with pytest.raises(AmpError, match="not found"):
         prepare(config, root, root / "run")
+
+
+def test_replaying_a_saved_amp_sends_what_is_valid_and_then_names_what_was_not(monkeypatch):
+    """A NaN in a saved config used to be skipped without a word, leaving that
+    knob at Carla's default; it now reaches the supervisor's 'amp parameters
+    not restored' report, after the good knobs have been sent."""
+    pytest.importorskip("pythonosc")
+    from sushi_rig import rig
+
+    sent = []
+
+    class Client:
+        def __init__(self, host, port):
+            pass
+
+        def send_message(self, address, payload):
+            sent.append(payload)
+
+    monkeypatch.setattr(rig, "port_is_open", lambda host, port: True)
+    monkeypatch.setattr("pythonosc.udp_client.SimpleUDPClient", Client)
+    with pytest.raises(RuntimeError, match="Quality") as caught:
+        rig._replay_amp({"Quality": float("nan"), "Input Lvl": 5.0})
+    assert "Input Lvl" not in str(caught.value)
+    assert [p[1] for p in sent] == [5.0], "the valid one went out"

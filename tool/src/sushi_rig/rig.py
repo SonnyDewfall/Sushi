@@ -509,12 +509,19 @@ def _replay_amp(values: dict[str, float], timeout: float = 5.0) -> None:
         raise RuntimeError("Carla's OSC server never came up")
 
     client = SimpleUDPClient("127.0.0.1", CARLA_OSC_PORT)
+    refused = []
     for name, value in values.items():
         try:
             address, payload = parameter_message(name, value)
-        except Exception:  # noqa: BLE001 - an unknown name is not fatal
+        except Exception:  # noqa: BLE001 - one bad value must not stop the rest
+            refused.append(name)
             continue
         client.send_message(address, payload)
+    if refused:
+        # After the valid ones are sent, so the amp is as close to its saved
+        # sound as it can be; and loud, so a NaN in a config is not a knob
+        # quietly left at Carla's default.
+        raise RuntimeError("not sent, as not valid: " + ", ".join(refused))
 
 
 def up(
