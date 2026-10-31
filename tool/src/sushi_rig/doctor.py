@@ -802,9 +802,12 @@ def _largest_rig(root: Path) -> tuple[int, str]:
     for config in configs_to_check(root):
         try:
             tracks = json.loads(config.read_text()).get("tracks", [])
-        except (OSError, ValueError, AttributeError):
+            # Inside the try: `"tracks": null` or a number parses, and is a
+            # TypeError only once something iterates it. An unreadable config is
+            # skipped, as one that is not JSON is.
+            count = STEMS_PER_CHANNEL * len([t for t in tracks if isinstance(t, dict)])
+        except (OSError, ValueError, AttributeError, TypeError):
             continue
-        count = STEMS_PER_CHANNEL * len([t for t in tracks if isinstance(t, dict)])
         if count > stems:
             stems, name = count, config.stem
     return stems, name
