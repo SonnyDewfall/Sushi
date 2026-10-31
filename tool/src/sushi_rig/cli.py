@@ -261,6 +261,22 @@ def _patchbay(args: argparse.Namespace) -> int:
     return 0
 
 
+def _emit_any(path: Path, state: dict | None) -> dict:
+    """A config from either kind of rig file: channels and a master (#30), or
+    tracks spelt out by hand. The file says which, by its `kind`."""
+    import yaml
+
+    from .rigfile import RigFileError, emit_rig, is_rig_file, parse_rig
+
+    raw = yaml.safe_load(path.read_text())
+    if not is_rig_file(raw):
+        return emit(RigSpec.load(path), state)
+    try:
+        return emit_rig(parse_rig(raw), state)
+    except RigFileError as exc:
+        sys.exit(f"{path}:\n  " + "\n  ".join(exc.problems))
+
+
 def _probes(args: argparse.Namespace) -> int:
     from .probes import ProbeError, plan_probes
 
@@ -1045,7 +1061,7 @@ def main(argv: list[str] | None = None) -> int:
 
     if args.command == "emit":
         state = json.loads(args.state.read_text()) if args.state else None
-        write_json(args.out, emit(RigSpec.load(args.rig), state))
+        write_json(args.out, _emit_any(args.rig, state))
         if args.verify:
             # The cheap checks only: they cost milliseconds and catch a bad
             # config at the moment it is created. The check that starts Sushi

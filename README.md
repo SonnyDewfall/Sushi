@@ -458,6 +458,25 @@ processor names are global rather than per track — two plugins called `eq` are
 refused outright — and because those names are the panel's tab labels, so the
 prefix is what says which channel a tab belongs to.
 
+#### Channels and a master (v2, #30)
+
+`config/rigs/` holds rigs written the v2 way: a list of channels, each a name,
+an input role, `mono` or `stereo`, and a chain, plus a master that says where
+the mix goes. No engine bus or channel number is written by hand.
+
+```bash
+sushi-rig emit config/rigs/guitar_vocal.yaml -o /tmp/gv.json
+```
+
+`emit` reads either kind of file. For this kind it allocates everything: one
+engine input per mono channel (feeding both halves of its stereo chain), each
+channel's own output for its stem, a send at the end of each chain, and a
+master track — last, on output bus 0, with its own chain for the limiter — that
+is all the monitors hear. A rig has at most three channels, because the master
+and three stereo stems fill Sushi's eight outputs; more is refused with the
+arithmetic. Not yet what `up` runs: the patchbay is generated from v1 files
+until it learns this layout, and the new monitor path wants hearing first.
+
 ### Choosing a plugin
 
 Before a plugin goes into a rig, `probe` answers what you'd otherwise only

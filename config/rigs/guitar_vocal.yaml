@@ -1,0 +1,55 @@
+# Guitar and vocals as a v2 rig (#30): channels and a master, nothing else.
+#
+# The same two chains as config/src/guitar_vocal.yaml, which spells out two
+# Sushi tracks, their engine buses and their routing by hand. Here none of that
+# is written: `sushi-rig emit` allocates it. What it allocates, so this file can
+# be read without the code:
+#
+# - guitar on engine input 0, vocal on engine input 1, each one mono input
+#   feeding both halves of a stereo chain;
+# - the master on output bus 0, which is all the monitors are linked to;
+# - each channel's own output after it — guitar on bus 1, vocal on bus 2 — its
+#   stem, linked to nothing unless something is recording;
+# - a send at the end of each chain into the master, and the master track last,
+#   which is what makes the send cost no delay (test_send_return.py).
+#
+# Not yet what `up` runs: config/guitar_vocal.json is still built from the v1
+# file. This becomes it once the patchbay is generated from it and it has been
+# heard.
+
+kind: rig
+schema_version: 1
+name: guitar_vocal
+description: Guitar and vocals — two channels, two chains, one monitor mix
+
+channels:
+  - name: guitar
+    input: guitar-in
+    width: mono
+    chain:
+      # The electric_board chain, shortened: compressor, dirt and tone stay;
+      # the octave pair and the second reverb go.
+      - {name: guitar_compressor, uri: "http://guitarix.sourceforge.net/plugins/gx_compressor#_compressor"}
+      - {name: guitar_overdrive, uri: "http://guitarix.sourceforge.net/plugins/gxts9#ts9sim"}
+      - {name: guitar_eq, uri: "http://distrho.sf.net/plugins/3BandEQ"}
+      - {name: guitar_chorus, uri: "http://guitarix.sourceforge.net/plugins/gx_chorus_stereo#_chorus_stereo"}
+      - {name: guitar_delay, uri: "http://plugin.org.uk/swh-plugins/lcrDelay"}
+      - {name: guitar_room, uri: "urn:ardour:a-reverb"}
+
+  - name: vocal
+    input: vocal-in
+    width: mono
+    chain:
+      # Gate, compressor, sibilance, tone, space, ceiling: the conventional
+      # live order. Dynamics first so the gate hears the signal before anything
+      # raises the room noise; de-essing after compression, which pushes esses up.
+      - {name: vocal_dynamics, uri: "http://drobilla.net/plugins/mda/Dynamics"}
+      - {name: vocal_deess, uri: "http://drobilla.net/plugins/mda/DeEss"}
+      - {name: vocal_eq, uri: "http://distrho.sf.net/plugins/3BandEQ"}
+      - {name: vocal_reverb, uri: "http://distrho.sf.net/plugins/MVerb"}
+      - {name: vocal_limiter, uri: "http://drobilla.net/plugins/mda/Limiter"}
+
+master:
+  output: monitor-out
+  # Empty for now. #29's limiter goes here, where it covers the whole mix.
+  chain: []

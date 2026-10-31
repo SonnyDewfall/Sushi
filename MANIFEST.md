@@ -1069,3 +1069,20 @@ live JACK frontend keeps every track on one thread, as it should without
 `--multicore-processing`; a send on another thread is always a chunk late. The
 cost that stays is outputs: the master takes 2 of Sushi's 8, leaving room for
 three stereo stems. *(2026-10-31)*
+
+**A rig is channels and a master; the compiler allocates the rest.** #30's
+first layer (`rigfile.py`, `config/rigs/`). A channel is a name, an input role,
+mono or stereo, and a chain; a rig compiles to the `RigSpec` everything else
+already reads, so `emit`, `verify` and the null tests gained no second path to
+Sushi. Decisions, each with its reason in the module: the master on output bus
+0 because it is the one bus the offline frontend has, so what is heard is what
+renders; the master track last, because a master listed first is 64 samples
+late; a send pinned last in its chain and the return first in the master even
+when a capture saved them elsewhere, because a moved send makes the monitors
+hear a different tone from the stem; a mono input routed to both halves of its
+track from one engine channel, which spends one of Sushi's eight inputs instead
+of the two the patchbay's duplication spends today; and unknown keys refused,
+since `widht: stereo` silently giving a mono channel would be heard, not read.
+The ceiling is three channels: the master and three stereo stems fill eight
+outputs. Not yet done: the patchbay and probes from this layout, today's tones
+converted and null-testing identically, and `up` running one. *(2026-10-31)*
