@@ -249,6 +249,13 @@ hardware, no JACK — and compares the running rig against the file, naming ever
 parameter, bypass and chain-order difference. It uses a free port and its own
 process group, so it is safe to run while you are playing.
 
+SAVE writes from the rig source `up` found for the running config: its
+`_meta.source`, or `config/src/<name>.yaml`, or `config/rigs/<name>.yaml`. A
+config with none has no rig to save from, `up` says so, and SAVE answers with
+why rather than writing a guess. A capture that names processors the source
+does not have is refused for the same reason: it is a capture of a different
+rig.
+
 The two cheap checks run automatically after `emit` and after the panel's SAVE.
 The deep one stays explicit: five seconds on every SAVE would be felt while
 dialling in a tone.

@@ -1151,3 +1151,20 @@ Until `up` runs v2 rigs both forms exist, and CI holds them together twice —
 by settings in the fast suite and by sound in the container, each rig rendered
 through its master against the reference its v1 config was calibrated to.
 *(2026-10-31)*
+
+**SAVE refuses rather than guesses which rig it is saving.** Found by the
+2026-10-31 audit: `up` chose the save listener's rig.yaml from a config's
+`_meta.source` and fell back to electric_board's, and only `save` and `convert`
+write that field. Running guitar_vocal and pressing SAVE captured both chains,
+`emit` warned for each processor that it was not in electric_board's spec and
+skipped it, and the file written under the typed name was electric_board's nine
+pedals with no settings, with the panel saying saved and the warnings in
+listen.log. Three things changed: the source is the file of the config's own
+name under config/src or config/rigs when `_meta.source` is absent, and None
+when neither exists, in which case `up` says SAVE is off and the listener
+answers SAVE with why; `emit` raises `EmitError` instead of warning when a
+capture names processors the spec lacks, because that is a capture of a
+different rig; and the listener's handlers catch everything but
+KeyboardInterrupt, since a `SystemExit` from library code (elkpy missing, a
+spec failing validation at SAVE time) used to end the listener and with it the
+save button. *(2026-10-31)*

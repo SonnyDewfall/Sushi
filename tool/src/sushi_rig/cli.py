@@ -308,6 +308,7 @@ def _patchbay(args: argparse.Namespace) -> int:
 def _emit_any(path: Path, state: dict | None) -> dict:
     """A config from either kind of rig file: channels and a master (#30), or
     tracks spelt out by hand. The file says which, by its `kind`."""
+    from .emit import EmitError
     from .rigfile import Rig, RigFileError, emit_rig, load_any
 
     try:
@@ -315,7 +316,7 @@ def _emit_any(path: Path, state: dict | None) -> dict:
         if not isinstance(rig, Rig):
             return emit(rig, state)
         return emit_rig(rig, state)
-    except RigFileError as exc:
+    except (RigFileError, EmitError) as exc:
         sys.exit(f"{path}:\n  " + "\n  ".join(exc.problems))
 
 
@@ -1096,7 +1097,11 @@ def main(argv: list[str] | None = None) -> int:
         "listen",
         help="run an OSC listener that saves a config on request (for the panel's save button)",
     )
-    p.add_argument("--rig", type=Path, required=True, help="rig.yaml every save is built from")
+    p.add_argument(
+        "--rig", type=Path,
+        help="rig.yaml every save is built from. Without it SAVE is refused with a "
+        "message, which is what `up` does for a config whose source it cannot find",
+    )
     p.add_argument("--out-dir", type=Path, help=_OUT_DIR_HELP)
     p.add_argument("--archive-dir", type=Path, help=_ARCHIVE_DIR_HELP)
     p.add_argument("--address", default=DEFAULT_GRPC_ADDRESS, help="Sushi's gRPC address")

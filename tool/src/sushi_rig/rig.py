@@ -42,7 +42,6 @@ from .qpwgraph import start_qpwgraph, unconnected_inputs
 from .state import clear_state, is_stale, read_state, write_state
 
 DEFAULT_CONFIG_NAME = "electric_board"
-FALLBACK_RIG_YAML = "config/src/electric_board.yaml"
 PANEL_FILE = "/tmp/sushi-rig-panel.json"
 GRPC_HOST = "127.0.0.1"
 GRPC_PORT = 51051
@@ -107,31 +106,41 @@ class RigError(Exception):
 # --- paths ------------------------------------------------------------------
 
 
-def resolve_rig_yaml(config_path: Path, root: Path | None = None) -> str:
-    """The rig.yaml a config was built from, for the save listener.
+def resolve_rig_yaml(config_path: Path, root: Path | None = None) -> str | None:
+    """The rig.yaml a config was built from, for the save listener, or None.
 
     A saved variant records its originating yaml in `_meta.source`, because
     variants share the hand-authored source rather than getting one of their own.
-    Reading it back means a save made *from* a variant is attributed correctly
-    instead of always to electric_board.
+    A hand-authored config carries no `_meta.source`; its source is the file of
+    its own name under `config/src/`, or under `config/rigs/` once it is a v2
+    rig. When neither exists the answer is None, and SAVE is refused with a
+    message rather than attributed to a guess.
 
-    Canonical hand-authored configs carry no `_meta.source`, hence the fallback.
-
-    Previously this was inline Python inside a bash heredoc, interpolating a
-    shell variable straight into a string literal.
+    It used to fall back to electric_board's yaml. For any other config that
+    meant SAVE captured the running rig, `emit` dropped every processor the
+    capture named that electric_board's spec did not, and the file written
+    under the player's name was electric_board's chain with no settings, while
+    the panel said "saved". Found by the audit, on guitar_vocal.
     """
+    root = Path(root) if root is not None else checkout_root()
     try:
         config = json.loads(Path(config_path).read_text())
     except (OSError, ValueError):
-        return FALLBACK_RIG_YAML
-    source = config.get("_meta", {}).get("source")
-    return source if isinstance(source, str) and source else FALLBACK_RIG_YAML
+        config = {}
+    source = (config.get("_meta") or {}).get("source") if isinstance(config, dict) else None
+    if isinstance(source, str) and source:
+        return source
+    stem = Path(config_path).stem
+    for candidate in (f"config/src/{stem}.yaml", f"config/rigs/{stem}.yaml"):
+        if (root / candidate).is_file():
+            return candidate
+    return None
 
 
 def plan_children(
     root: Path,
     config: Path,
-    rig_yaml: str,
+    rig_yaml: str | None,
     *,
     headless: bool,
     tuner: bool,
@@ -199,7 +208,9 @@ def plan_children(
             "name": "listen",
             "command": [
                 str(root / "tool" / ".venv" / "bin" / "sushi-rig"), "listen",
-                "--rig", rig_yaml,
+                # Without a source the listener still serves the reorder and
+                # amp buttons; SAVE answers with why it cannot.
+                *(["--rig", rig_yaml] if rig_yaml else []),
                 "--out-dir", "config",
                 "--archive-dir", "config/archive",
                 "--panel-config", str(config),
@@ -581,7 +592,14 @@ def up(
             "file exists."
         )
 
-    rig_yaml = resolve_rig_yaml(config)
+    rig_yaml = resolve_rig_yaml(config, root)
+    if rig_yaml is None and not headless:
+        print(
+            f"warning: SAVE is off for {config_name}: it has no _meta.source and no "
+            f"config/src/{config_name}.yaml, so there is no rig to save from. "
+            "Reorder and the amp controls still work",
+            file=sys.stderr,
+        )
 
     # The amp is described in the config's `_amp` section, which Sushi ignores.
     # The Carla project is generated from it rather than kept as a file, because

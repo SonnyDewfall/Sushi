@@ -17,7 +17,6 @@ import pytest
 from sushi_rig.procs import SHUTDOWN_STEPS
 from sushi_rig.rig import (
     DEFAULT_CONFIG_NAME,
-    FALLBACK_RIG_YAML,
     QUANTUM,
     child_environment,
     format_uptime,
@@ -41,21 +40,50 @@ def test_saved_variant_is_attributed_to_its_own_source(tmp_path):
     assert resolve_rig_yaml(config) == "config/src/acoustic.yaml"
 
 
-def test_hand_authored_config_falls_back(tmp_path):
-    """The canonical configs carry no _meta.source."""
-    config = tmp_path / "electric_board.json"
+def test_a_hand_authored_config_is_sourced_from_the_file_of_its_own_name(tmp_path):
+    """The canonical configs carry no _meta.source; their source is the yaml of
+    the same name under config/src/, or config/rigs/ once they are v2 rigs."""
+    (tmp_path / "config" / "src").mkdir(parents=True)
+    (tmp_path / "config" / "rigs").mkdir()
+    (tmp_path / "config" / "src" / "electric_board.yaml").write_text("tracks: []\n")
+    (tmp_path / "config" / "rigs" / "newer.yaml").write_text("kind: rig\n")
+    for name in ("electric_board", "newer"):
+        (tmp_path / f"{name}.json").write_text(json.dumps({"tracks": []}))
+    assert resolve_rig_yaml(tmp_path / "electric_board.json", tmp_path) == "config/src/electric_board.yaml"
+    assert resolve_rig_yaml(tmp_path / "newer.json", tmp_path) == "config/rigs/newer.yaml"
+
+
+def test_a_config_with_no_source_anywhere_gets_none_not_a_guess(tmp_path):
+    """It used to fall back to electric_board's yaml, so SAVE on guitar_vocal
+    wrote electric_board's chain with no settings and said saved. A config
+    with no source has no rig to save from, and that is said."""
+    (tmp_path / "config" / "src").mkdir(parents=True)
+    config = tmp_path / "orphan.json"
     config.write_text(json.dumps({"tracks": []}))
-    assert resolve_rig_yaml(config) == FALLBACK_RIG_YAML
-
-
-def test_unreadable_config_falls_back_rather_than_raising(tmp_path):
-    """Resolving the source is a nicety; a broken config should fail later, on
-    the thing that actually needs it, with a better message than this could
-    give."""
-    assert resolve_rig_yaml(tmp_path / "missing.json") == FALLBACK_RIG_YAML
+    assert resolve_rig_yaml(config, tmp_path) is None
+    assert resolve_rig_yaml(tmp_path / "missing.json", tmp_path) is None
     broken = tmp_path / "broken.json"
     broken.write_text("{not json")
-    assert resolve_rig_yaml(broken) == FALLBACK_RIG_YAML
+    assert resolve_rig_yaml(broken, tmp_path) is None
+
+
+def test_every_committed_config_has_a_source_to_save_from():
+    """guitar_vocal was the one that fell through to electric_board."""
+    from sushi_rig.paths import checkout_root
+
+    root = checkout_root()
+    for config in sorted((root / "config").glob("*.json")):
+        assert resolve_rig_yaml(config, root) is not None, config.name
+
+
+def test_the_listener_is_started_without_a_rig_when_there_is_none(plan_args):
+    root, config, _ = plan_args
+    listen = next(c for c in plan_children(root, config, None, headless=False, tuner=True)
+                  if c["name"] == "listen")
+    assert "--rig" not in listen["command"]
+    listen = next(c for c in plan_children(root, config, "config/src/x.yaml", headless=False, tuner=True)
+                  if c["name"] == "listen")
+    assert listen["command"][listen["command"].index("--rig") + 1] == "config/src/x.yaml"
 
 
 # --- second-instance guard --------------------------------------------------
