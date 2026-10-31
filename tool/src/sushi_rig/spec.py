@@ -18,6 +18,17 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+
+def looks_like_rig_file(raw: Any) -> bool:
+    """Whether a document was meant to be a channels-and-master rig file
+    (rigfile.py), even if its `kind` is wrong: read as a v1 rig.yaml it would be
+    a rig with no tracks, and emitted as an empty config without a word.
+
+    Here, depending on nothing, because `RigSpec.from_dict` must refuse such a
+    document and rigfile imports this module for `RigSpec`."""
+    return isinstance(raw, dict) and any(key in raw for key in ("kind", "channels", "master"))
+
+
 _VALID_TYPES = {"lv2", "vst2x", "vst3x", "internal"}
 
 
@@ -92,7 +103,7 @@ class RigSpec:
 
     @classmethod
     def from_dict(cls, raw: dict[str, Any], path: Path | str = "rig") -> "RigSpec":
-        if isinstance(raw, dict) and any(key in raw for key in ("kind", "channels", "master")):
+        if looks_like_rig_file(raw):
             # A v2 rig file (rigfile.py), or one meant to be. Read as tracks it
             # is a rig with none, which every caller would run as silence.
             raise ValueError(

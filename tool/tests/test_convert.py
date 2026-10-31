@@ -274,3 +274,137 @@ def test_a_copy_of_a_config_converts_under_its_own_name_or_one_given(tmp_path, c
     assert yaml.safe_load(out.read_text())["name"] == "electric-clean"
     assert main(["convert", str(copy), "-o", str(out), "--force", "--name", "my-tone"]) == 0
     assert yaml.safe_load(out.read_text())["name"] == "my-tone"
+
+
+# --------------------------------------------------------------------------- #
+# Edges of the check, found by running it
+# --------------------------------------------------------------------------- #
+
+def _converts(config: dict) -> list[str]:
+    """The refusal's lines, or [] when the conversion is accepted."""
+    try:
+        convert(config, "electric-clean")
+    except ConvertError as refused:
+        return refused.problems
+    return []
+
+
+def test_an_empty_description_or_amp_is_the_same_as_none():
+    """`to_rig` writes no description or amp for an empty one, and `differences`
+    compared them exactly, so the tone was refused as a different tone."""
+    config = v1("electric-clean")
+    config["_meta"]["description"] = ""
+    assert _converts(config) == []
+    config = v1("electric-clean")
+    config["_amp"] = {}
+    assert _converts(config) == []
+
+
+def test_an_empty_host_config_is_refused_as_an_absent_one_is_for_the_host_it_adds():
+    """A rig always compiles a host (48000 Hz when the file gives none), so
+    neither can be the same tone. The refusal names the host, and only it."""
+    empty, absent = v1("electric-clean"), v1("electric-clean")
+    empty["host_config"] = {}
+    del absent["host_config"]
+    for config in (empty, absent):
+        lines = _converts(config)
+        assert len(lines) == 2 and lines[1].startswith("host_config: {'samplerate': 48000}, was ")
+
+
+def test_empty_and_absent_agree_in_differences_both_ways():
+    config = v1("electric-clean")
+    compiled = rigfile.emit_rig(rigfile.load_rig(ROOT / "config" / "rigs" / "electric-clean.yaml"))
+    config["_amp"] = {}
+    del compiled["_amp"]
+    assert differences(config, compiled) == []
+    config["_amp"], compiled["_amp"] = None, {}
+    assert differences(config, compiled) == []
+
+
+def _with_user_plugin(name: str) -> dict:
+    config = v1("electric-clean")
+    config["tracks"][0]["plugins"].append(
+        {"name": name, "type": "lv2", "uri": "http://guitarix.sourceforge.net/plugins/gx_compressor#_compressor"}
+    )
+    config["initial_state"].append({"processor": name, "parameters": {"RATIO": 0.25}})
+    return config
+
+
+def test_a_plugin_named_like_a_send_is_held_to_its_settings_not_mistaken_for_one():
+    """`differences` dropped any compiled state ending in `_send`, so a player's
+    own `delay_send` with settings was reported lost and the tone refused."""
+    config = _with_user_plugin("delay_send")
+    assert _converts(config) == []
+    rig = convert(config, "electric-clean")
+    rig["channels"][0]["chain"][-1]["parameters"]["RATIO"] = 0.5
+    found = differences(config, rigfile.emit_rig(rigfile.parse_rig(rig)))
+    assert len(found) == 1 and found[0].startswith("initial_state for 'delay_send'")
+
+
+def test_the_compilers_own_send_is_still_not_counted_against_the_config():
+    config = v1("electric-clean")
+    compiled = rigfile.emit_rig(rigfile.load_rig(ROOT / "config" / "rigs" / "electric-clean.yaml"))
+    assert any(e["processor"] == "board_send" for e in compiled["initial_state"])
+    assert differences(config, compiled) == []
+
+
+def test_a_track_with_no_parameters_gets_no_strip_rather_than_an_empty_one():
+    """`strip: {}` is refused by the rig file, so writing one would make the
+    conversion fail in the parser instead of saying what the config held."""
+    config = v1("electric-clean")
+    config["initial_state"][0] = {"processor": "board"}
+    assert _converts(config) == [
+        "track 'board': a strip with no gain, pan or mute cannot be kept"
+    ]
+    config["initial_state"][0] = {"processor": "board", "parameters": {}}
+    assert len(_converts(config)) == 1
+
+
+@pytest.mark.parametrize("parameters", [{"volume": 1.0}, {"gain": 0.833333, "volume": 1.0}])
+def test_a_track_state_naming_more_than_gain_pan_mute_is_a_named_problem(parameters):
+    config = v1("electric-clean")
+    config["initial_state"][0] = {"processor": "board", "parameters": parameters}
+    (line,) = _converts(config)
+    assert line.startswith("track 'board': only gain, pan and mute are kept") and "volume" in line
+
+
+def test_a_config_with_no_meta_converts_under_the_name_given():
+    config = v1("electric-clean")
+    del config["_meta"]
+    assert _converts(config) == []
+    config["_meta"] = {}
+    assert _converts(config) == []
+
+
+@pytest.mark.parametrize("key, value, expected", [
+    ("_meta", {"name": "electric-clean", "description": {"x": 1}}, "_meta: description must be text"),
+    ("_meta", {"name": "electric-clean", "description": 0}, "_meta: description must be text"),
+    ("_meta", {"name": "electric-clean", "description": False}, "_meta: description must be text"),
+    ("_meta", ["name"], "_meta must be a mapping"),
+    ("_amp", ["model"], "_amp must be a mapping"),
+    ("_amp", 0, "_amp must be a mapping"),
+])
+def test_a_meta_or_amp_of_the_wrong_shape_is_a_named_conversion_error(key, value, expected):
+    """A non-text description escaped as a bare RigFileError from the parser, and
+    a falsy one (0, false) was dropped without a word."""
+    config = v1("electric-clean")
+    config[key] = value
+    (line,) = _converts(config)
+    assert line.startswith(expected)
+
+
+def test_the_mismatch_prints_the_meta_the_config_held():
+    compiled = {"_meta": {"name": "other"}}
+    config = {"_meta": {"name": "electric-clean", "description": ""}}
+    (line,) = [f for f in differences(config, compiled) if f.startswith("_meta")]
+    assert "'description': ''" in line
+
+
+def test_the_roles_come_from_the_patchbay_not_a_second_spelling(monkeypatch):
+    from sushi_rig import convert as convert_module
+    from sushi_rig import patchbay
+
+    assert convert_module.DEFAULT_INPUT == (patchbay.GUITAR_ROLE, "mono")
+    assert to_rig(v1("electric-clean"), "t")["master"]["output"] == patchbay.MONITOR_ROLE
+    monkeypatch.setattr(convert_module, "MONITOR_ROLE", "other-out")
+    assert to_rig(v1("electric-clean"), "t")["master"]["output"] == "other-out"

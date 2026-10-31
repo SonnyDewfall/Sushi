@@ -216,3 +216,15 @@ def test_the_example_spec_is_valid_and_uses_only_plugins_in_the_manifest():
     uris = {p.uri for t in rig.tracks for p in t.plugins if p.type == "lv2"}
     assert uris, "no lv2 plugins would make this vacuous"
     assert uris <= manifest, sorted(uris - manifest)
+
+
+def test_a_rig_file_is_recognised_by_rigfiles_own_test_not_a_copy_of_it(monkeypatch):
+    """`from_dict` kept its own tuple of the keys, which would drift from
+    `spec.looks_like_rig_file` the first time that gained one."""
+    from sushi_rig import spec
+
+    document = {"tracks": []}
+    assert RigSpec.from_dict(document).tracks == []
+    monkeypatch.setattr(spec, "looks_like_rig_file", lambda raw: True)
+    with pytest.raises(ValueError, match="channels-and-master rig file"):
+        RigSpec.from_dict(document)

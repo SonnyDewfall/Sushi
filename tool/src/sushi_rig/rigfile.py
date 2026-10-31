@@ -67,7 +67,7 @@ from pathlib import Path
 from typing import Any
 
 from .save import NAME_PATTERN
-from .spec import PluginSpec, RigSpec, TrackSpec
+from .spec import PluginSpec, RigSpec, TrackSpec, looks_like_rig_file  # noqa: F401 (re-exported)
 
 KIND = "rig"
 SCHEMA_VERSION = 1
@@ -144,13 +144,6 @@ def is_rig_file(raw: Any) -> bool:
     return isinstance(raw, dict) and raw.get("kind") == KIND
 
 
-def looks_like_rig_file(raw: Any) -> bool:
-    """Whether a document was meant to be one of these, even if its `kind` is
-    wrong: read as a v1 rig.yaml it would be a rig with no tracks, and emitted
-    as an empty config without a word."""
-    return isinstance(raw, dict) and any(key in raw for key in ("kind", "channels", "master"))
-
-
 def load_rig(path: Path) -> Rig:
     import yaml
 
@@ -187,6 +180,13 @@ def _unknown(where: str, entry: dict, known: tuple[str, ...]) -> list[str]:
         f"{where}: unknown key {key!r} (expected one of {', '.join(known)})"
         for key in entry if key not in known
     ]
+
+
+def _is_width(value: Any) -> bool:
+    """Whether `value` names a width. Not `value in WIDTHS` alone: a list or a
+    mapping in a rig file is unhashable, and the membership test would raise
+    where every other bad value is reported by name."""
+    return isinstance(value, str) and value in WIDTHS
 
 
 def _settings(at: str, entry: dict, problems: list[str]) -> dict[str, Any]:
@@ -317,7 +317,7 @@ def parse_rig(raw: Any) -> Rig:
             problems.append(f"{where} has no name")
         if not isinstance(entry.get("input"), str) or not entry["input"].strip():
             problems.append(f"{where}: input must name a role in the machine file")
-        if entry.get("width") not in WIDTHS:
+        if not _is_width(entry.get("width")):
             problems.append(
                 f"{where}: width must be one of {', '.join(WIDTHS)} (got {entry.get('width')!r})"
             )
@@ -325,11 +325,26 @@ def parse_rig(raw: Any) -> Rig:
         if "strip" in entry and isinstance(entry.get("name"), str):
             # The track's own gain, pan and mute, normalised as Sushi stores them.
             strip = _settings(f"{where}: strip", {"parameters": entry["strip"]}, problems)
-            if strip:
+            if strip and not strip["parameters"]:
+                # `strip: {}` would compile to an initial_state entry holding only
+                # the track's name, which nothing has ever sent to Sushi.
+                problems.append(f"{where}: strip must name gain, pan or mute")
+            elif strip and set(strip["parameters"]) - set(UNITY_STRIP):
+                # Beside a valid key, an unknown one would compile to a track
+                # parameter Sushi was never told about.
+                problems.append(
+                    f"{where}: strip may only name gain, pan or mute, not "
+                    f"{', '.join(sorted(set(strip['parameters']) - set(UNITY_STRIP)))}"
+                )
+            elif strip:
                 problems += _strip_problems(where, strip["parameters"])
                 settings[entry["name"]] = strip
-        if isinstance(entry.get("name"), str) and entry.get("width") in WIDTHS:
+        if isinstance(entry.get("name"), str) and _is_width(entry.get("width")):
             channels.append(Channel(entry["name"], str(entry.get("input")), entry["width"], chain))
+
+    description = raw.get("description")
+    if description is not None and not isinstance(description, str):
+        problems.append(f"description must be text (got {description!r})")
 
     master_raw = raw.get("master")
     master = None
@@ -344,7 +359,7 @@ def parse_rig(raw: Any) -> Rig:
 
     if problems:
         raise RigFileError(problems)
-    rig = Rig(str(name), tuple(channels), master, str(raw.get("description") or ""), host,
+    rig = Rig(str(name), tuple(channels), master, description or "", host,
               settings, raw.get("amp"), dict(raw.get("meta") or {}))
     problems = check_rig(rig)
     if problems:
@@ -362,7 +377,7 @@ def check_rig(rig: Rig) -> list[str]:
     seen: set[str] = set()
     reserved = {MASTER, RETURN} | {c.name + SEND_SUFFIX for c in rig.channels}
     for channel in rig.channels:
-        if channel.width not in WIDTHS:
+        if not _is_width(channel.width):
             problems.append(
                 f"channel {channel.name!r}: width must be one of {', '.join(WIDTHS)} "
                 f"(got {channel.width!r})"
@@ -391,7 +406,7 @@ def check_rig(rig: Rig) -> list[str]:
                     "own send, return or master track; rename it"
                 )
 
-    if any(c.width not in WIDTHS for c in rig.channels):
+    if any(not _is_width(c.width) for c in rig.channels):
         return problems
     # Unreachable while every stem is stereo — three channels use at most six
     # inputs — and kept for when a mono source can have a mono stem.

@@ -609,3 +609,18 @@ def test_a_model_declaring_no_rate_is_unchecked_rather_than_assumed():
 
 def test_no_models_at_all_cannot_mismatch():
     assert doctor.check_models(environment(models=())).state == OK
+
+
+@pytest.mark.parametrize("body", [
+    {"tracks": None}, {"tracks": 5}, {"tracks": {"a": 1}}, ["tracks"], None,
+])
+def test_one_odd_config_does_not_take_the_doctor_down(tmp_path, body):
+    """`"tracks": null` parses, and raised TypeError out of the comprehension
+    with nothing above `gather_environment` to catch it."""
+    import json
+
+    (tmp_path / "config").mkdir()
+    (tmp_path / "config" / "odd.json").write_text(json.dumps(body))
+    (tmp_path / "config" / "tone.json").write_text(json.dumps({"tracks": [{}, {}, {}]}))
+    assert doctor._largest_rig(tmp_path) == (3 * doctor.STEMS_PER_CHANNEL, "tone")
+    assert doctor._models(tmp_path) == ()

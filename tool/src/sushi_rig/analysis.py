@@ -340,9 +340,21 @@ def estimate_delay(reference, test, *, max_lag_samples: int | None = None) -> De
     """The single strongest alignment of `reference` within `test`. See `find_delays`.
 
     Raises if nothing correlates (either signal silent, or nothing within
-    `max_lag_samples`), rather than returning lag 0 as if that had been measured.
+    `max_lag_samples`), rather than returning lag 0 as if that had been measured,
+    and raises its own error when `test` is shorter than half of `reference`.
     """
-    peaks = find_delays(reference, test, max_lag_samples=max_lag_samples, max_peaks=1)
+    # Before any correlation, and after the mono check that `find_delays` would
+    # make first. Half the reference must overlap the test signal at some lag, so
+    # a test shorter than half of it has nothing to search -- which is a fact
+    # about the lengths, and "is either one silent?" sends the reader to look at
+    # the wrong thing.
+    ref = _mono(reference, "reference")
+    sig = _mono(test, "test")
+    if 2 * len(sig) < len(ref):
+        raise ValueError(
+            "the test signal is shorter than half the reference, so no lag could be searched"
+        )
+    peaks = find_delays(ref, sig, max_lag_samples=max_lag_samples, max_peaks=1)
     if not peaks:
         raise ValueError("no correlation between the signals within the allowed lag (is either one silent?)")
     return peaks[0]
