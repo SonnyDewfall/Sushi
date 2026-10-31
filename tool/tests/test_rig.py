@@ -10,7 +10,9 @@ that decides *what* to start and *how far* to escalate when stopping.
 from __future__ import annotations
 
 import json
+import os
 import signal
+from types import SimpleNamespace
 
 import pytest
 
@@ -24,6 +26,7 @@ from sushi_rig.rig import (
     resolve_rig_yaml,
     rig_source_problem,
 )
+from sushi_rig import rig, state as state_file
 from sushi_rig.state import is_stale
 from pathlib import Path
 
@@ -481,3 +484,82 @@ def test_an_inherited_pipewire_props_cannot_replace_the_tuners():
 def test_env_unset_still_removes_what_a_child_must_not_see():
     env = child_environment({"LV2_PATH": "/usr/lib/lv2"}, {"env_unset": ["LV2_PATH"]})
     assert "LV2_PATH" not in env
+
+
+# --- the supervisor's effects, with the world stood in for -------------------
+#
+# Fakes for what a process table and a clock would say, and a real state file in
+# a temporary directory. Nothing is started and nothing is signalled.
+
+
+@pytest.fixture
+def runtime(tmp_path, monkeypatch):
+    """A private runtime dir, so the real state file is neither read nor hurt."""
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
+    return tmp_path / "run"
+
+
+# --- a real supervisor, children stubbed out ----------------------------------
+
+
+@pytest.fixture
+def real_supervisor(runtime, monkeypatch):
+    """Let `up` really fork, with the *children* replaced.
+
+    The pipe protocol and the supervisor's `try` block are where a mock would
+    agree with whatever it was told, so this runs the real thing: a real fork,
+    a real `setsid`, a real pipe, a real state file. Only what would start
+    external programs is swapped, and the swaps are inherited by the child.
+
+    The supervisor never exits on its own once the rig is up, so it is killed by
+    its recorded pid afterwards -- never by pattern.
+    """
+    spawned: list[int] = []
+    real_fork = rig._fork_supervisor
+
+    def recording_fork(supervise):
+        pid, ready_r = real_fork(supervise)
+        spawned.append(pid)
+        return pid, ready_r
+
+    monkeypatch.setattr(rig, "_fork_supervisor", recording_fork)
+    monkeypatch.setattr(rig, "pid_alive", lambda pid: False)
+    monkeypatch.setattr(rig, "port_is_open", lambda *a, **k: False)
+    monkeypatch.setattr(rig, "wait_for_grpc", lambda *a, **k: True)
+    yield spawned
+    for pid in spawned:
+        try:
+            os.kill(pid, signal.SIGKILL)
+        except ProcessLookupError:
+            pass
+        try:
+            os.waitpid(pid, 0)
+        except ChildProcessError:
+            pass
+
+
+def test_a_patchbay_that_will_not_stay_up_is_a_warning_not_a_failed_rig(
+    real_supervisor, monkeypatch, capsys
+):
+    """qpwgraph is optional. When all its attempts fail the supervisor words a
+    warning -- and while that f-string named a constant nobody had imported, the
+    NameError landed in the supervisor's blanket `except`, was reported as FAIL,
+    and `up` tore down a rig whose only problem was the patchbay."""
+    from sushi_rig.qpwgraph import QPWGRAPH_ATTEMPTS
+
+    monkeypatch.setattr(rig, "plan_children", lambda *a, **k: [{
+        "name": "qpwgraph", "command": ["qpwgraph"], "optional": True,
+    }])
+    monkeypatch.setattr(rig, "start_qpwgraph", lambda *a, **k: None)
+
+    assert rig.up(headless=True, tuner=False, amp=False) == 0
+
+    printed = capsys.readouterr()
+    assert "warning:" in printed.err and "patchbay" in printed.err
+    assert f"{QPWGRAPH_ATTEMPTS} attempts" in printed.err
+    assert "Rig up:" in printed.out
+    recorded = state_file.read_state()
+    assert recorded is not None and recorded["supervisor_pid"] == real_supervisor[0]
+    assert recorded["pgid"] == real_supervisor[0], "the supervisor leads its own group"
+
+

@@ -34,11 +34,11 @@ import sys
 import time
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 
 from .paths import checkout_root, log_dir, runtime_dir
 from .procs import SHUTDOWN_STEPS, pgid_alive, pid_alive, port_is_open, wait_for_grpc
-from .qpwgraph import start_qpwgraph, unconnected_inputs
+from .qpwgraph import QPWGRAPH_ATTEMPTS, start_qpwgraph, unconnected_inputs
 from .state import clear_state, is_stale, read_state, write_state
 
 DEFAULT_CONFIG_NAME = "electric_board"
@@ -578,6 +578,30 @@ def _replay_amp(values: dict[str, float], timeout: float = 5.0) -> None:
         raise RuntimeError("not sent, as not valid: " + ", ".join(refused))
 
 
+def _fork_supervisor(supervise: Callable[[int], None]) -> tuple[int, int]:
+    """Fork the supervisor; return its pid and the read end of the ready pipe.
+
+    Kept apart from `up` so that the fork and the pipe are the one place a test
+    has to stand in for, and everything `up` *decides* -- refuse, clear, report
+    -- can be pinned without forking anything.
+
+    The child runs `supervise(write_end)` and then leaves with `os._exit`,
+    never by returning: returning would unwind into the caller's stack and run
+    the parent's cleanup and `atexit` handlers a second time, in a process that
+    is meant to be a detached daemon.
+    """
+    ready_r, ready_w = os.pipe()
+    pid = os.fork()
+    if pid == 0:
+        os.close(ready_r)
+        try:
+            supervise(ready_w)
+        finally:
+            os._exit(0)
+    os.close(ready_w)
+    return pid, ready_r
+
+
 def up(
     config_name: str = DEFAULT_CONFIG_NAME,
     *,
@@ -670,20 +694,13 @@ def up(
         amp_values=amp_values, patchbay=amp_patch,
     )
 
-    ready_r, ready_w = os.pipe()
-    pid = os.fork()
-    if pid == 0:
-        os.close(ready_r)
-        try:
-            _supervise(
-                root, config, children_plan,
-                headless=headless, config_name=config_name, ready_w=ready_w,
-                amp_model=amp_model_stored, amp_values=amp_values,
-            )
-        finally:
-            os._exit(0)
-
-    os.close(ready_w)
+    pid, ready_r = _fork_supervisor(
+        lambda ready_w: _supervise(
+            root, config, children_plan,
+            headless=headless, config_name=config_name, ready_w=ready_w,
+            amp_model=amp_model_stored, amp_values=amp_values,
+        )
+    )
     outcome = ""
     with os.fdopen(ready_r) as pipe:
         for line in pipe:
