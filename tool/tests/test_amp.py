@@ -93,6 +93,16 @@ def test_values_are_clamped_to_what_the_plugin_declares():
     assert parameter_message("Output Lvl", 99.0)[1][1] == 20.0
 
 
+@pytest.mark.parametrize("bad", [float("nan"), float("inf"), float("-inf")])
+def test_a_value_that_is_not_a_number_is_refused_not_clamped_to_the_top(bad):
+    """`min(high, nan)` is `high`: a NaN on the amp's OSC address sent Carla
+    +20 dB, and said nothing."""
+    with pytest.raises(AmpError, match="not a number"):
+        parameter_message("Input Lvl", bad)
+    with pytest.raises(AmpError, match="not a number"):
+        clamp("Input Lvl", bad)
+
+
 # --- the config section -----------------------------------------------------
 
 

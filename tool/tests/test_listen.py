@@ -6,7 +6,8 @@ import textwrap
 
 import pytest
 
-from sushi_rig.listen import handle_save
+from sushi_rig.amp import AmpError
+from sushi_rig.listen import AMP_ADDRESS_PREFIX, amp_command, handle_save, move_direction
 
 RIG_YAML = textwrap.dedent(
     """\
@@ -105,3 +106,40 @@ def test_handle_save_reports_unexpected_errors_without_raising(tmp_path, rig_pat
     message = handle_save("bright", rig_path, tmp_path / "config", tmp_path / "archive")
     assert "save failed" in message
     assert "gRPC channel unavailable" in message
+
+
+# --- the decisions inside the OSC handlers ----------------------------------
+#
+# The handlers are closures in `serve()`, which needs a real port; what they
+# decide is pulled out so it can be tested, and `serve` only reports it.
+
+def test_an_amp_message_becomes_the_carla_message_and_the_value_to_remember():
+    path, payload, name, remembered = amp_command(AMP_ADDRESS_PREFIX + "Input Lvl", (50.0,))
+    assert (name, remembered) == ("Input Lvl", 20.0), "what is remembered is what took effect"
+    assert path.endswith("/set_parameter_value") and payload[1] == 20.0
+
+
+@pytest.mark.parametrize("value", [float("nan"), float("inf"), float("-inf"), "nan", 10 ** 400])
+def test_an_amp_value_that_is_no_number_is_reported_not_sent_as_the_top_of_the_range(value):
+    with pytest.raises(AmpError):
+        amp_command(AMP_ADDRESS_PREFIX + "Input Lvl", (value,))
+
+
+def test_an_amp_message_with_no_value_or_a_word_is_reported():
+    with pytest.raises(AmpError, match="no value"):
+        amp_command(AMP_ADDRESS_PREFIX + "Input Lvl", ())
+    with pytest.raises(AmpError, match="non-numeric"):
+        amp_command(AMP_ADDRESS_PREFIX + "Input Lvl", ("loud",))
+
+
+@pytest.mark.parametrize("args, direction", [((), 0), ((1,), 1), ((-1.0,), -1), (("2",), 2), ((0.9,), 0)])
+def test_a_move_direction_is_read_as_a_whole_number(args, direction):
+    assert move_direction(args) == direction
+
+
+@pytest.mark.parametrize("bad", [float("inf"), float("-inf"), float("nan"), "up", None])
+def test_a_move_direction_that_is_no_number_is_refused_infinity_included(bad):
+    """`int(float(inf))` is an OverflowError, which was not caught: the panel
+    heard nothing and a traceback went to the log."""
+    with pytest.raises(ValueError, match="non-numeric direction"):
+        move_direction((bad,))

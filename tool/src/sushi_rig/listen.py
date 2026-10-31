@@ -113,6 +113,40 @@ def handle_save(
     return f"saved {out_path.name}"
 
 
+def amp_command(osc_address: str, args: tuple) -> tuple[str, list, str, float]:
+    """What an amp message means: the Carla message to send, and the name and
+    value to remember. Raises `AmpError` with the words for the panel when it
+    means nothing, so the decision is testable without a socket.
+
+    A value that is not a finite number is refused here, not sent: it would
+    arrive as the top of the parameter's range (see `amp.clamp`).
+    """
+    from .amp import AmpError, clamp, parameter_message
+
+    name = osc_address[len(AMP_ADDRESS_PREFIX):]
+    if not args:
+        raise AmpError(f"{name} sent no value")
+    try:
+        value = float(args[0])
+    except (TypeError, ValueError, OverflowError):
+        raise AmpError(f"{name} got a non-numeric value") from None
+    osc_path, payload = parameter_message(name, value)  # raises on NaN and infinity
+    return osc_path, payload, name, clamp(name, value)
+
+
+def move_direction(args: tuple) -> int:
+    """The direction a move message asks for; 0 when it carries none. Raises
+    `ValueError` for anything that is not a finite number, infinity included:
+    `int(float("inf"))` is an OverflowError, which the handler used not to
+    catch, leaving the panel hearing nothing and a traceback in the log."""
+    if not args:
+        return 0
+    try:
+        return int(float(args[0]))
+    except (TypeError, ValueError, OverflowError) as exc:
+        raise ValueError("non-numeric direction") from exc
+
+
 def serve(
     rig_path: Path,
     out_dir: Path,
@@ -194,15 +228,11 @@ def serve(
         OSC is write-only from here, so the value we last sent is the only
         record there is of where the amp is set — and the save button needs it.
         """
-        from .amp import AmpError, CARLA_OSC_PORT, clamp, parameter_message
+        from .amp import AmpError, CARLA_OSC_PORT
 
-        name = osc_address[len(AMP_ADDRESS_PREFIX):]
-        if not args:
-            _report(f"amp: {name} sent no value")
-            return
         try:
-            osc_path, payload = parameter_message(name, float(args[0]))
-        except (AmpError, TypeError, ValueError) as exc:
+            osc_path, payload, name, remembered = amp_command(osc_address, args)
+        except AmpError as exc:
             _report(f"amp: {exc}")
             return
         try:
@@ -210,7 +240,7 @@ def serve(
         except Exception as exc:  # noqa: BLE001 - a dead amp must not kill the listener
             _report(f"amp: could not reach Carla ({exc})")
             return
-        amp_state[name] = clamp(name, float(args[0]))
+        amp_state[name] = remembered
 
     def _on_move(osc_address: str, *args) -> None:
         processor = osc_address[len(MOVE_ADDRESS_PREFIX):]
@@ -218,8 +248,8 @@ def serve(
             _report("move failed: no processor in address")
             return
         try:
-            direction = int(float(args[0])) if args else 0
-        except (TypeError, ValueError):
+            direction = move_direction(args)
+        except ValueError:
             _report(f"move failed: {processor} got a non-numeric direction")
             return
         if direction == 0:
