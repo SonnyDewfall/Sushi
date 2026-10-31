@@ -30,9 +30,35 @@ def _exited_child(**kwargs) -> int:
     return child.pid
 
 
-def test_pid_alive_is_true_for_ourselves_and_false_for_an_exited_process():
-    assert procs.pid_alive(os.getpid())
-    assert not procs.pid_alive(_exited_child())
+@pytest.fixture
+def sleeper():
+    """A live child leading a session and group of its own, so its pgid is its
+    pid. Not this process: in a container pytest can itself be pid 1 with pgid
+    1, which the probes rightly refuse, so ourselves is no fixture for "alive".
+    Terminated by pid when the test is done, whatever happened in it."""
+    child = subprocess.Popen(
+        [sys.executable, "-c", "import time; time.sleep(30)"],
+        start_new_session=True,
+    )
+    yield child
+    if child.poll() is None:
+        os.kill(child.pid, signal.SIGKILL)
+    child.wait()
+
+
+def test_pid_alive_is_true_for_a_live_process_and_false_once_it_is_gone(sleeper):
+    assert procs.pid_alive(sleeper.pid)
+    os.kill(sleeper.pid, signal.SIGKILL)
+    sleeper.wait()
+    assert not procs.pid_alive(sleeper.pid)
+
+
+def test_pid_1_is_never_alive_whatever_is_running_there():
+    """Pid 1 exists on every machine, and a state file naming it must never
+    read as a rig -- or `down` would go on to signal init. A rule, not an
+    accident of the process table."""
+    assert procs.pid_alive(1) is False
+    assert procs.pgid_alive(1) is False
 
 
 def test_pid_alive_is_false_for_ids_that_are_not_a_rigs_process(monkeypatch):
@@ -52,9 +78,12 @@ def test_pid_alive_counts_a_process_we_may_not_signal_as_alive(monkeypatch):
     assert procs.pid_alive(1234)
 
 
-def test_pgid_alive_is_true_for_our_group_and_false_for_one_that_is_gone():
-    assert procs.pgid_alive(os.getpgrp())
-    assert not procs.pgid_alive(_exited_child(start_new_session=True))
+def test_pgid_alive_is_true_for_a_live_group_and_false_once_it_is_gone(sleeper):
+    assert os.getpgid(sleeper.pid) == sleeper.pid, "it leads a group of its own"
+    assert procs.pgid_alive(sleeper.pid)
+    os.kill(sleeper.pid, signal.SIGKILL)
+    sleeper.wait()
+    assert not procs.pgid_alive(sleeper.pid)
 
 
 def test_pgid_alive_is_false_for_ids_that_are_not_a_rigs_group(monkeypatch):
