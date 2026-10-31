@@ -260,6 +260,9 @@ loop directly — type a name, tweak, press save, and `config/<name>.json`
 appears with the current sound baked in. `sushi-rig save <name>` on the CLI
 does the same thing without the panel, since the save button is just one
 caller of that same underlying capture-and-write step (see issue #10).
+The listener acts on unauthenticated UDP — it writes config files and starts
+recordings on receipt — so it binds loopback only; `--host` with any other
+address exposes both to the network.
 
 ---
 
