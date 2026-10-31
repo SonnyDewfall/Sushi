@@ -658,6 +658,12 @@ def main(argv: list[str] | None = None) -> int:
         default=DEFAULT_LISTEN_PORT,
         help="port the save button targets — must match 'sushi-rig listen --port'",
     )
+    p.add_argument(
+        "--record-bar",
+        action="store_true",
+        help="add RECORD and STOP under the save bar. Until there is a capture "
+        "engine they only say so; for checking the layout on the rig",
+    )
     p.add_argument("-o", "--out", type=Path, default=Path("panel.json"))
 
     p = sub.add_parser(
@@ -1040,6 +1046,7 @@ def main(argv: list[str] | None = None) -> int:
                 bypass_info,
                 units_for_config(args.config),
                 panel_amp(args.config, checkout_root()),
+                record_bar=args.record_bar,
             ),
         )
         print(

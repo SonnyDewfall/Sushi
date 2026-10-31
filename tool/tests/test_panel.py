@@ -1,4 +1,17 @@
-from sushi_rig.listen import DEFAULT_LISTEN_PORT, NAME_ADDRESS, SAVE_ADDRESS, STATUS_ADDRESS
+import json
+
+import pytest
+
+from sushi_rig.listen import (
+    DEFAULT_LISTEN_PORT,
+    NAME_ADDRESS,
+    RECORD_ADDRESS,
+    RECORD_STATUS_ADDRESS,
+    SAVE_ADDRESS,
+    STATUS_ADDRESS,
+    STOP_ADDRESS,
+    TAKE_NAME_ADDRESS,
+)
 from sushi_rig.panel import (
     BYPASS_ADDRESS_PREFIX,
     LOG_SCALE_DOMAIN_THRESHOLD,
@@ -779,3 +792,84 @@ def test_the_amp_controls_reach_the_listener_not_sushi(real_dump):
         if widget["type"] in ("fader", "button"):
             assert widget["target"] == ["127.0.0.1:24025"]
             assert widget["ignoreDefaults"] is True
+
+
+# --- record bar (issue #57) -------------------------------------------------
+
+
+def _record_widget(panel, widget_id):
+    return next(w for w in _root_widget(panel, "record_bar")["widgets"] if w["id"] == widget_id)
+
+
+def test_panel_has_no_record_bar_until_asked(real_dump):
+    """Off by default: until there is a capture engine, RECORD can only say
+    that there is not one."""
+    panel = build_osc_panel(real_dump, _live_info_for(real_dump))
+    assert [w["id"] for w in panel["content"]["widgets"]] == ["save_bar", "tabs"]
+
+
+def test_panel_record_bar_sits_between_the_save_bar_and_the_tabs(real_dump):
+    panel = build_osc_panel(real_dump, _live_info_for(real_dump), record_bar=True)
+    assert [w["id"] for w in panel["content"]["widgets"]] == ["save_bar", "record_bar", "tabs"]
+
+
+def test_panel_take_name_is_its_own_message_sent_as_you_type(real_dump):
+    """The save bar's two findings on real hardware, applied from the start:
+    no preArgs, and asYouType so RECORD gets the name on screen."""
+    panel = build_osc_panel(real_dump, _live_info_for(real_dump), 24099, record_bar=True)
+    name_input = _record_widget(panel, "take_name")
+    assert name_input["type"] == "input"
+    assert name_input["address"] == TAKE_NAME_ADDRESS
+    assert name_input["validation"] == NAME_PATTERN.pattern
+    assert name_input["asYouType"] is True
+    assert name_input["target"] == ["127.0.0.1:24099"]
+    assert name_input["ignoreDefaults"] is True
+
+
+@pytest.mark.parametrize("widget_id, address", [
+    ("record_button", RECORD_ADDRESS),
+    ("stop_button", STOP_ADDRESS),
+])
+def test_panel_record_and_stop_are_bare_taps_at_the_listener(real_dump, widget_id, address):
+    """Two buttons, not a toggle, so the panel never holds its own idea of
+    whether a take is running; see transport.py."""
+    panel = build_osc_panel(real_dump, _live_info_for(real_dump), 24099, record_bar=True)
+    button = _record_widget(panel, widget_id)
+    assert button["type"] == "button"
+    assert button["mode"] == "tap"
+    assert button["address"] == address
+    assert button["target"] == ["127.0.0.1:24099"]
+    assert button["ignoreDefaults"] is True
+    assert "preArgs" not in button
+
+
+def test_panel_record_status_is_apart_from_the_save_status(real_dump):
+    """One status for both would let a save's outcome overwrite a take's."""
+    panel = build_osc_panel(real_dump, _live_info_for(real_dump), record_bar=True)
+    status = _record_widget(panel, "record_status")
+    assert status["address"] == RECORD_STATUS_ADDRESS != STATUS_ADDRESS
+    assert status["interaction"] is False
+
+
+def test_listener_addresses_are_all_distinct():
+    addresses = [NAME_ADDRESS, SAVE_ADDRESS, STATUS_ADDRESS, TAKE_NAME_ADDRESS,
+                 RECORD_ADDRESS, STOP_ADDRESS, RECORD_STATUS_ADDRESS]
+    assert len(set(addresses)) == len(addresses)
+
+
+def test_a_regenerated_panel_keeps_the_record_bar_it_replaces(real_dump, tmp_path):
+    """The listener rebuilds the panel after a reorder; the bar is a choice
+    made when the panel was made, not one for a reorder to undo."""
+    from sushi_rig.panel import has_record_bar
+
+    path = tmp_path / "panel.json"
+    for record_bar in (True, False):
+        path.write_text(json.dumps(
+            build_osc_panel(real_dump, _live_info_for(real_dump), record_bar=record_bar)
+        ))
+        assert has_record_bar(path) is record_bar
+    assert has_record_bar(tmp_path / "missing.json") is False
+    path.write_text("not json")
+    assert has_record_bar(path) is False
+    path.write_text("[]")
+    assert has_record_bar(path) is False

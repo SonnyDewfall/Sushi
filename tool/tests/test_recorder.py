@@ -255,3 +255,22 @@ def test_a_writer_failing_part_way_through_a_block_leaves_the_stems_equal(tmp_pa
     b = signals.wav_info(tmp_path / "b.wav").frames
     assert a == b == result.frames, "cut back to the shortest, as a dropout would be"
     assert result.frames + result.dropped_frames == round(SR * 0.1)
+
+
+def test_a_recorder_that_cannot_open_every_stem_closes_the_ones_it_did(tmp_path, monkeypatch):
+    opened = []
+    real = signals.WavWriter
+
+    class Counting(real):
+        def __init__(self, *args, **kwargs):
+            if len(opened) == 2:
+                raise OSError(28, "No space left on device")
+            super().__init__(*args, **kwargs)
+            opened.append(self)
+
+    monkeypatch.setattr(recorder, "WavWriter", Counting)
+    rec = Recorder([(tmp_path / f"{n}.wav", 1) for n in "abc"], SR, Q)
+    with pytest.raises(OSError, match="No space"):
+        rec.start()
+    assert len(opened) == 2
+    assert all(writer._file.closed for writer in opened)
