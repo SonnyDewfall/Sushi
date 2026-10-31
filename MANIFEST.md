@@ -1198,3 +1198,16 @@ the rig as it stands, since killing `up` does not stop the supervisor it
 detached; every request argument is checked before anything runs (a config
 name and an amp model are file names, never paths); the real agent was run against this container
 (no rig, no PipeWire) and every route answered as the tests say. *(2026-10-31)*
+
+
+**A take carries the v2 rig it was compiled from and the library commit.**
+config.json is what ran; rig.yaml, copied in beside it when the config came
+from a v2 rig, is what was meant, and `library` in take.yaml is the commit
+the checkout (the library, until #27) was at and whether it was dirty. Written
+as null when there is nothing to say, so a take from before these fields and a
+take from a v1 config read the same. `take check` finds a rig file that went
+missing or is not a rig; it does not compile it, since that would make the
+check need the plugins. Nothing builds a `TakePlan` yet outside the tests
+(the record bar waits on the capture engine), so these are fields on the plan
+for the engine's caller to fill from `resolve_rig_yaml` and `library_state`.
+*(2026-10-31)*

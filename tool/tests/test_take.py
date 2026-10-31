@@ -21,6 +21,7 @@ that refuses the real routing uses the real port.
 from __future__ import annotations
 
 import json
+import os
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -241,6 +242,141 @@ def test_the_config_as_it_was_live_is_what_is_kept(tmp_path):
     start(tmp_path, cfg=live)
     copied = json.loads((tmp_path / "riff-idea" / take.CONFIG_FILE).read_text())
     assert copied["_amp"]["model"] == "amp/models/audition.nam"
+
+
+RIG_TEXT = (checkout_root() / "config" / "rigs" / "guitar_vocal.yaml").read_text()
+LIBRARY = {"commit": "987e37691ba8f69960019bbd746c0fc18586a4ed", "dirty": False}
+
+
+def finished(tmp_path, **overrides) -> take.Take:
+    """A whole take, recorded and finished, so `check_take` has only the
+    question under test to answer."""
+    record(start(tmp_path, **overrides))
+    return take.finish_take(tmp_path / "riff-idea", {}, measured_by="test")
+
+
+def test_a_take_from_a_v2_rig_carries_the_rig_file_and_the_library_commit(tmp_path):
+    """config.json is what ran; rig.yaml is what was meant; the commit is
+    where the library was. A copy, for the same reason the config is one."""
+    done = finished(tmp_path, rig_text=RIG_TEXT, library=LIBRARY)
+    assert (done.folder / take.RIG_FILE).read_text() == RIG_TEXT
+    assert done.metadata["rig"] == "rig.yaml"
+    assert done.metadata["library"] == LIBRARY
+    assert take.check_take(done) == []
+
+
+def test_finishing_a_take_keeps_its_rig_and_library(tmp_path):
+    """They were true at the start; finishing is about the offsets, and
+    finishing twice (to correct one) must not lose them either."""
+    finished(tmp_path, rig_text=RIG_TEXT, library=LIBRARY)
+    again = take.finish_take(tmp_path / "riff-idea", {"guitar.wav": 257}, measured_by="again")
+    assert again.metadata["rig"] == "rig.yaml"
+    assert again.metadata["library"] == LIBRARY
+
+
+def test_a_take_from_a_v1_config_names_no_rig_and_says_so(tmp_path):
+    """Written as null, not left out: a take from before these fields and a
+    take with nothing to say must read the same."""
+    done = finished(tmp_path)
+    text = (done.folder / take.TAKE_FILE).read_text()
+    assert "rig: null" in text and "library: null" in text
+    assert not (done.folder / take.RIG_FILE).exists()
+    assert take.check_take(done) == []
+
+
+def test_a_rig_file_that_went_missing_is_found(tmp_path):
+    done = finished(tmp_path, rig_text=RIG_TEXT, library=LIBRARY)
+    (done.folder / take.RIG_FILE).unlink()
+    problems = take.check_take(done)
+    assert len(problems) == 1 and "rig.yaml is missing" in problems[0]
+
+
+def test_a_rig_file_that_is_not_a_rig_is_found(tmp_path):
+    done = finished(tmp_path, rig_text=RIG_TEXT, library=None)
+    (done.folder / take.RIG_FILE).write_text("tracks: []\n")
+    problems = take.check_take(done)
+    assert len(problems) == 1 and "not a channels-and-master rig file" in problems[0]
+
+
+@pytest.mark.parametrize("rig_text", ["", "tracks: []\n", "{not: [yaml\n"])
+def test_a_rig_that_is_not_a_rig_is_refused_before_anything_is_written(tmp_path, rig_text):
+    """The promise is 'writing nothing', for the rig as much as the config."""
+    with pytest.raises(TakeError) as refused:
+        start(tmp_path, rig_text=rig_text)
+    assert any("rig text" in p for p in refused.value.problems)
+    assert list(tmp_path.iterdir()) == []
+
+
+def test_a_damaged_library_record_is_reported_and_kept_not_read_as_nothing(tmp_path):
+    """Null means nothing to say, so a record that became something else must
+    not be turned into null by the next finish, and `check` must say so."""
+    import yaml
+
+    done = finished(tmp_path, rig_text=RIG_TEXT, library=LIBRARY)
+    path = done.folder / take.TAKE_FILE
+    meta = yaml.safe_load(path.read_text())
+    meta["library"] = "987e376"
+    path.write_text(yaml.safe_dump(meta, sort_keys=False))
+    problems = take.check_take(take.load_take(done.folder))
+    assert len(problems) == 1 and "library is '987e376'" in problems[0]
+    again = take.finish_take(done.folder, {}, measured_by="again")
+    assert again.metadata["library"] == "987e376", "kept verbatim, not nulled"
+    with pytest.raises(TakeError):
+        start(tmp_path, name="other", library="987e376")
+
+
+def test_the_library_state_is_the_commit_and_whether_it_is_clean(tmp_path):
+    """Against a repository made for the test. Where git is not installed the
+    honest answer is None, and that is asserted rather than skipped: a take
+    then says null, which is what `library_state` promises."""
+    import shutil
+    import subprocess
+
+    if shutil.which("git") is None:
+        assert take.library_state(tmp_path) is None
+        return
+    env = {"GIT_AUTHOR_NAME": "t", "GIT_AUTHOR_EMAIL": "t@x", "GIT_COMMITTER_NAME": "t",
+           "GIT_COMMITTER_EMAIL": "t@x", "HOME": str(tmp_path), "PATH": os.environ["PATH"],
+           # A machine-wide gitconfig (signing, a template with hooks) must not
+           # fail the fixture for something the code under test never sees.
+           "GIT_CONFIG_NOSYSTEM": "1", "GIT_CONFIG_GLOBAL": os.devnull}
+    repo = tmp_path / "lib"
+    repo.mkdir()
+    subprocess.run(["git", "init", "-q", str(repo)], check=True, env=env)
+    (repo / "a.yaml").write_text("a: 1\n")
+    subprocess.run(["git", "-C", str(repo), "add", "a.yaml"], check=True, env=env)
+    subprocess.run(["git", "-C", str(repo), "commit", "-q", "-m", "one"], check=True, env=env)
+    head = subprocess.run(["git", "-C", str(repo), "rev-parse", "HEAD"],
+                          capture_output=True, text=True, check=True, env=env).stdout.strip()
+    assert take.library_state(repo) == {"commit": head, "dirty": False}
+    # An untracked scratch file is not the library changing.
+    (repo / "scratch.wav").write_bytes(b"RIFF")
+    assert take.library_state(repo) == {"commit": head, "dirty": False}
+    (repo / "a.yaml").write_text("a: 2\n")
+    assert take.library_state(repo) == {"commit": head, "dirty": True}
+    assert take.library_state(tmp_path / "not-a-repo") is None
+    # A folder inside a repository is not that repository: `git -C` would
+    # walk up and report the enclosing project's commit as the library's.
+    (repo / "inside").mkdir()
+    assert take.library_state(repo / "inside") is None
+
+
+def test_a_commit_that_was_read_survives_a_status_that_fails(monkeypatch, tmp_path):
+    """Both calls or nothing used to be the rule, and it threw away the one
+    fact that mattered when the second call hit an index lock."""
+    import subprocess
+
+    real = subprocess.run
+
+    def run(args, **kwargs):
+        if "status" in args:
+            raise subprocess.TimeoutExpired(args, 10)
+        if "--show-toplevel" in args:
+            return subprocess.CompletedProcess(args, 0, stdout=f"{tmp_path}\n", stderr="")
+        return subprocess.CompletedProcess(args, 0, stdout="abc123\n", stderr="")
+
+    monkeypatch.setattr(take.subprocess, "run", run)
+    assert take.library_state(tmp_path) == {"commit": "abc123", "dirty": None}
 
 
 def test_recording_over_a_name_archives_the_earlier_take(tmp_path):

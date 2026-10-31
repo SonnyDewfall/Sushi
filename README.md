@@ -628,15 +628,18 @@ names, and the cheapest way to know a config is loadable.
 ### Takes
 
 A recording is a folder, not loose WAVs: the stems, a copy of the config that
-was live when it was made (amp included), and a `take.yaml` saying how the
-stems line up. Because the rig is in the folder, a take can be re-amped through
-the exact rig that made it months later. Takes go in `~/sushi-rig-takes/`,
-outside the checkout, so `git clean -x` cannot delete them.
+was live when it was made (amp included), a copy of the v2 rig file it was
+compiled from when there was one, and a `take.yaml` saying how the stems line
+up and which commit the library was at. Because the rig is in the folder, a
+take can be re-amped through the exact rig that made it months later. Takes go
+in `~/sushi-rig-takes/`, outside the checkout, so `git clean -x` cannot delete
+them.
 
 ```
 ~/sushi-rig-takes/riff-idea/
-    take.yaml         how the stems line up, and what made them
-    config.json       the rig, as it was live
+    take.yaml         how the stems line up, what made them, and the library commit
+    config.json       the rig, as it was live: what ran
+    rig.yaml          the v2 rig it was compiled from: what was meant (v2 rigs only)
     guitar.wav        what you heard
     guitar-dry.wav    what went in
 ```

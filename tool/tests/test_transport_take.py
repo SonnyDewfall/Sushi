@@ -113,6 +113,24 @@ def test_a_take_from_record_to_stop(tmp_path):
             assert np.allclose(data.samples[:, column], expected)
 
 
+def test_a_take_from_a_v2_rig_carries_the_rig_and_the_library_through_the_transport(tmp_path):
+    """The plan carries them; the session hands them on; the folder has them."""
+    import dataclasses
+
+    rig_text = (checkout_root() / "config" / "rigs" / "guitar_vocal.yaml").read_text()
+    library = {"commit": "0123456789abcdef0123456789abcdef01234567", "dirty": True}
+    with_rig = dataclasses.replace(plan(tmp_path), rig_text=rig_text, library=library)
+    transport = Transport(TakeSession(with_rig, FakeEngine()))
+    transport.on_name("riff-idea")
+    transport.on_record()
+    transport.on_stop()
+    finished = take.load_take(tmp_path / "riff-idea")
+    assert (finished.folder / take.RIG_FILE).read_text() == rig_text
+    assert finished.metadata["rig"] == take.RIG_FILE
+    assert finished.metadata["library"] == library
+    assert take.check_take(finished) == []
+
+
 def test_recording_over_a_name_keeps_the_earlier_take_and_says_where(tmp_path):
     session = TakeSession(plan(tmp_path), FakeEngine(), clock=lambda: NOW.astimezone())
     assert session.start("riff-idea") == "recording riff-idea"
