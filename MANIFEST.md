@@ -1227,4 +1227,9 @@ entry that has a trailing comment of its own even with no change at all, which
 `write_rig` refuses with the comment named rather than lose. Rig files are still
 read with PyYAML (YAML 1.1), so what ruamel writes is read back with it and
 compared before the file is replaced; strings like `on` and floats like `1e-05`
-are written so PyYAML reads them as they were. *(2026-10-31)*
+are written so PyYAML reads them as they were. Review added the refusals: a
+file whose layout ruamel cannot reproduce exactly (a hand-wrapped flow entry,
+mixed indents) is not rewritten, since an update would re-lay-out lines nobody
+touched; an update that leaves a comment written twice or lost, other than with
+a removed entry, is not written; and ruamel.yaml is pinned to 0.19 with a test
+that asserts the comment slots `yamlmerge.py` relies on. *(2026-10-31)*
