@@ -9,13 +9,13 @@ Sushi 1.3.0's source says what to expect (return_plugin.cpp, `send_audio`): a
 send that runs on the return's thread *before* the return has processed this
 block writes straight into the block the return is about to play — no delay. A
 send that runs after it writes into the next block — one internal chunk late,
-`AUDIO_CHUNK_SIZE`, 64 samples unless the build changed it. Not a PipeWire
-quantum: Sushi processes each 256-sample quantum as four 64-sample chunks.
+`AUDIO_CHUNK_SIZE`, 64 samples in the stock build. Not a PipeWire quantum: Sushi
+processes each 256-sample quantum as four 64-sample chunks.
 
-So the order of tracks in the config should be the whole story: master after
-the channels costs nothing, master before costs 64 samples. These tests render
-both through a real Sushi and measure against a plain passthrough, so the
-answer is the build's, not the source's.
+So the order of tracks in the config should be the whole story. These tests
+render through a real Sushi and compare whole stereo renders, sample for sample,
+against a plain passthrough. Each channel of the stimulus is a different signal,
+so a send that dropped, swapped or inverted a channel would not match.
 
 What this cannot say: whether the live JACK frontend runs tracks on more than
 one thread. A send on another thread is always a chunk late. `up` runs Sushi
@@ -31,15 +31,29 @@ import pytest
 
 np = pytest.importorskip("numpy")
 
-from sushi_rig import selftest  # noqa: E402
 from sushi_rig.paths import checkout_root  # noqa: E402
+from sushi_rig.render import Stimulus, render_offline  # noqa: E402
 
 ROOT = checkout_root()
 SUSHI = ROOT / "sushi"
 SR = 48000
-CHUNK = 64  # Sushi's AUDIO_CHUNK_SIZE, as its source sets it
+# A shift of a PipeWire block or more would be a different mechanism from the
+# one the source describes, and would be audible as one.
+QUANTUM = 256
+# Passthrough is a copy, so a matching render matches to float rounding.
+EXACT = 1e-6
 
 needs_sushi = pytest.mark.skipif(not SUSHI.exists(), reason="needs the Sushi binary")
+
+
+class Distinct(Stimulus):
+    """The default sweep on the left, and on the right the same sweep inverted
+    and 6 dB down: a dropped, swapped or inverted channel cannot match."""
+
+    def render(self, sample_rate: int):
+        fed = super().render(sample_rate).copy()
+        fed[:, 1] *= -0.5
+        return fed
 
 
 def passthrough_track(name: str, inputs, outputs) -> dict:
@@ -57,9 +71,15 @@ BUS0 = [{"engine_bus": 0, "track_bus": 0}]
 DIRECT = {"host_config": {"samplerate": SR}, "tracks": [passthrough_track("channel", BUS0, BUS0)]}
 
 
-def through_master(master_first: bool) -> dict:
-    """A channel heard only through a send to a master track's return."""
-    channel = passthrough_track("channel", BUS0, [])
+def through_master(*, master_first: bool, channel_output: bool) -> dict:
+    """A channel sending to a master track's return.
+
+    `channel_output` is the decided design: the channel keeps its own output as
+    well as sending. With only one stereo bus offline, both land on bus 0, so the
+    render is the channel twice — which is what shows the send copies the signal
+    without taking anything from the channel's own output.
+    """
+    channel = passthrough_track("channel", BUS0, BUS0 if channel_output else [])
     channel["plugins"].append({"uid": "sushi.testing.send", "name": "channel_send", "type": "internal"})
     master = {
         "name": "master",
@@ -77,40 +97,55 @@ def through_master(master_first: bool) -> dict:
     }
 
 
-def render(tmp_path, name: str, config: dict) -> selftest.Probe:
-    from sushi_rig.render import Stimulus, render_offline
-
+def render(tmp_path, name: str, config: dict) -> "np.ndarray":
     path = tmp_path / f"{name}.json"
     path.write_text(json.dumps(config))
-    out = render_offline(path, ROOT, tmp_path / name, stimulus=Stimulus(duration_s=1.0),
+    out = render_offline(path, ROOT, tmp_path / name, stimulus=Distinct(duration_s=1.0),
                          sushi_bin=str(SUSHI))
-    return selftest.Probe(name=name, injected=out["stimulus_samples"][:, 0],
-                          returned=out["rendered"][:, 0], sample_rate=out["sample_rate"])
+    return out["rendered"]
 
 
-def measured(probe: selftest.Probe) -> tuple[int | None, float, float]:
-    """(delay in samples, gain in dB, peak out in dBFS), for one message."""
-    delay = selftest.measure_delay(probe).samples
-    levels = selftest.measure_levels(probe)
-    gain = levels.returned_rms_dbfs - levels.injected_rms_dbfs
-    return delay, round(gain, 3), round(levels.returned_peak_dbfs, 3)
+def shift_matching(rendered, direct) -> int | None:
+    """The delay, in samples, at which `rendered` is `direct` exactly, if any."""
+    for shift in range(QUANTUM):
+        later = rendered[shift:]
+        if np.max(np.abs(later - direct[:len(later)])) < EXACT:
+            return shift
+    return None
+
+
+@pytest.fixture(scope="module")
+def direct(tmp_path_factory):
+    rendered = render(tmp_path_factory.mktemp("direct"), "direct", DIRECT)
+    # Something must come out, and on both sides, or every comparison below
+    # is between silences.
+    assert np.max(np.abs(rendered[:, 0])) > 0.1 and np.max(np.abs(rendered[:, 1])) > 0.05
+    return rendered
 
 
 @needs_sushi
 @pytest.mark.slow
-def test_send_and_return_cost_what_sushis_source_says(tmp_path):
-    """Both orders in one test, so a failure prints every number at once."""
-    direct = measured(render(tmp_path, "direct", DIRECT))
-    after = measured(render(tmp_path, "master_after", through_master(master_first=False)))
-    before = measured(render(tmp_path, "master_before", through_master(master_first=True)))
-    report = f"direct {direct}, master after {after}, master before {before}"
-    print(report)
+def test_a_master_after_the_channel_adds_nothing(tmp_path, direct):
+    rendered = render(tmp_path, "after", through_master(master_first=False, channel_output=False))
+    assert shift_matching(rendered, direct) == 0
 
-    assert direct[0] is not None and after[0] is not None and before[0] is not None, report
-    # The level through a 0 dB send is the level direct: nothing doubled, nothing lost.
-    assert abs(after[1] - direct[1]) < 0.05, report
-    assert abs(before[1] - direct[1]) < 0.05, report
-    # Master after the channels: no delay added.
-    assert after[0] - direct[0] == 0, report
-    # Master before them: one internal chunk.
-    assert before[0] - direct[0] == CHUNK, report
+
+@needs_sushi
+@pytest.mark.slow
+def test_a_master_before_the_channel_is_late_by_less_than_a_block(tmp_path, direct):
+    """One internal chunk, by the source: 64 samples in the stock build, which
+    is what 1.3.0 measured here. Asserted as a shift under one PipeWire block
+    rather than as 64, so a build with another chunk size still reads true."""
+    rendered = render(tmp_path, "before", through_master(master_first=True, channel_output=False))
+    shift = shift_matching(rendered, direct)
+    print(f"master before the channel: {shift} samples late")
+    assert shift is not None and 0 < shift < QUANTUM, shift
+
+
+@needs_sushi
+@pytest.mark.slow
+def test_a_channel_that_sends_keeps_its_own_output(tmp_path, direct):
+    """The decided design: the channel's own output and the master's copy, both
+    on bus 0 here, sum to the channel exactly twice over."""
+    rendered = render(tmp_path, "both", through_master(master_first=False, channel_output=True))
+    assert np.max(np.abs(rendered - 2 * direct)) < EXACT
