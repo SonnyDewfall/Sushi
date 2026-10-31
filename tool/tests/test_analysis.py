@@ -563,3 +563,21 @@ def test_band_edges_beyond_nyquist_or_out_of_order_are_refused():
         analysis.band_energies(x, SR, edges_hz=[100, 30000])
     with pytest.raises(ValueError):
         analysis.band_energies(x, SR, edges_hz=[1000, 100])
+
+
+def test_a_test_signal_shorter_than_half_the_reference_says_so_not_silence():
+    """Less than half the reference can never overlap it, so no lag is searched;
+    the old message blamed a silent signal for what was a matter of length."""
+    ref = signals.pink_noise(SR, 1.0)
+    short = signals.pink_noise(SR, 20000 / SR)
+    assert len(ref) == 48000 and len(short) == 20000
+    with pytest.raises(ValueError, match="shorter than half the reference, so no lag could be searched"):
+        analysis.estimate_delay(ref, short)
+    # Searched, and silent: the message that blames silence is still the one for that.
+    with pytest.raises(ValueError, match="is either one silent"):
+        analysis.estimate_delay(ref, signals.silence(SR, 0.6))
+
+
+def test_half_the_reference_is_enough_to_search():
+    ref = signals.pink_noise(SR, 1.0)
+    assert analysis.estimate_delay(ref, ref[:24000]).lag_samples == 0
