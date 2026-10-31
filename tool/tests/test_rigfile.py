@@ -145,8 +145,20 @@ def test_names_the_compiler_owns_are_refused_by_name():
     found = problems(rig_yaml(
         channel("master") + channel("guitar", chain=[{"name": "guitar_send", "uri": "urn:x"}])
     ))
-    assert "channel 'master': 'master' is the master track's name" in found
+    assert any(p.startswith("channel 'master': a name the compiler gives") for p in found)
     assert any("plugin 'guitar_send' has a name the compiler gives" in p for p in found)
+
+
+@pytest.mark.parametrize("name", ["master_return", "vocal_send"])
+def test_a_channel_named_like_a_send_or_the_return_is_refused(name):
+    found = problems(rig_yaml(channel("vocal") + channel(name)))
+    assert any(p.startswith(f"channel {name!r}: a name the compiler gives") for p in found)
+
+
+def test_a_hand_built_rig_with_a_bad_width_is_a_problem_not_a_crash():
+    rig = rigfile.Rig("t", (rigfile.Channel("a", "in", "Mono"),), rigfile.Master("out"))
+    with pytest.raises(RigFileError, match="width must be one of mono, stereo"):
+        compile_rig(rig)
 
 
 def test_a_name_that_cannot_be_a_stem_is_refused():
@@ -196,6 +208,48 @@ def test_a_capture_keeps_its_values_but_not_a_moved_send_or_return():
     assert state["guitar_send"]["properties"] == {"destination_name": "master_return"}
     assert state["guitar_send"]["parameters"] == {"gain": 0.4}
     assert state["guitar_delay"]["parameters"] == {"Delay": 0.2}
+
+
+def test_a_plugin_added_after_a_capture_still_comes_before_the_send():
+    """emit appends what a capture does not mention, which once put it after
+    the send: heard in the stem, missing from the monitors."""
+    raw = rig_yaml(channel("guitar", chain=[{"name": "a", "uri": "urn:a"}, {"name": "b", "uri": "urn:b"}]))
+    for order in (["a", "guitar_send"], []):
+        config = emit_rig(parse_rig(raw), {"tracks": {"guitar": order}})
+        assert [p["name"] for p in config["tracks"][0]["plugins"]][-1] == "guitar_send", order
+
+
+def test_a_state_file_with_null_properties_is_read(tmp_path):
+    config = emit_rig(parse_rig(rig_yaml(channel("guitar"))),
+                      {"processors": {"guitar_send": {"properties": None}}})
+    (entry,) = config["initial_state"]
+    assert entry["properties"] == {"destination_name": "master_return"}
+
+
+@pytest.mark.parametrize("kind", ["Rig", None])
+def test_a_rig_file_with_its_kind_wrong_is_refused_not_emitted_empty(tmp_path, kind):
+    from sushi_rig.cli import main
+
+    raw = rig_yaml(channel("guitar"))
+    if kind is None:
+        del raw["kind"]
+    else:
+        raw["kind"] = kind
+    path = tmp_path / "rig.yaml"
+    path.write_text(yaml.safe_dump(raw))
+    with pytest.raises(SystemExit) as caught:
+        main(["emit", str(path), "-o", str(tmp_path / "x.json"), "--no-verify"])
+    assert "kind must be 'rig'" in str(caught.value.code)
+    assert not (tmp_path / "x.json").exists()
+
+
+def test_the_tools_that_read_tracks_refuse_a_rig_file_by_name():
+    """save, push, probes and the patchbay read tracks; given a rig file they
+    would have run a rig with none."""
+    from sushi_rig.spec import RigSpec
+
+    with pytest.raises(ValueError, match="channels-and-master rig file"):
+        RigSpec.load(EXAMPLE)
 
 
 def test_the_command_emits_either_kind(tmp_path):

@@ -266,11 +266,11 @@ def _emit_any(path: Path, state: dict | None) -> dict:
     tracks spelt out by hand. The file says which, by its `kind`."""
     import yaml
 
-    from .rigfile import RigFileError, emit_rig, is_rig_file, parse_rig
+    from .rigfile import RigFileError, emit_rig, looks_like_rig_file, parse_rig
 
-    raw = yaml.safe_load(path.read_text())
-    if not is_rig_file(raw):
-        return emit(RigSpec.load(path), state)
+    raw = yaml.safe_load(path.read_text()) or {}
+    if not looks_like_rig_file(raw):
+        return emit(RigSpec.from_dict(raw, path), state)
     try:
         return emit_rig(parse_rig(raw), state)
     except RigFileError as exc:

@@ -86,7 +86,18 @@ class RigSpec:
     def load(cls, path: Path) -> "RigSpec":
         import yaml
 
-        raw = yaml.safe_load(Path(path).read_text()) or {}
+        return cls.from_dict(yaml.safe_load(Path(path).read_text()) or {}, path)
+
+    @classmethod
+    def from_dict(cls, raw: dict[str, Any], path: Path | str = "rig") -> "RigSpec":
+        if isinstance(raw, dict) and any(key in raw for key in ("kind", "channels", "master")):
+            # A v2 rig file (rigfile.py), or one meant to be. Read as tracks it
+            # is a rig with none, which every caller would run as silence.
+            raise ValueError(
+                f"{path} is a channels-and-master rig file (kind: rig), not a rig.yaml "
+                "of tracks; `sushi-rig emit` compiles it to a config, and the config "
+                "is what everything else reads"
+            )
         tracks = []
         for t in raw.get("tracks", []):
             t = dict(t)

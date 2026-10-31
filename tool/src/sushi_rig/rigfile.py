@@ -133,6 +133,13 @@ def is_rig_file(raw: Any) -> bool:
     return isinstance(raw, dict) and raw.get("kind") == KIND
 
 
+def looks_like_rig_file(raw: Any) -> bool:
+    """Whether a document was meant to be one of these, even if its `kind` is
+    wrong: read as a v1 rig.yaml it would be a rig with no tracks, and emitted
+    as an empty config without a word."""
+    return isinstance(raw, dict) and any(key in raw for key in ("kind", "channels", "master"))
+
+
 def load_rig(path: Path) -> Rig:
     import yaml
 
@@ -242,19 +249,27 @@ def check_rig(rig: Rig) -> list[str]:
     """Names and the channel ceiling. Every problem, with the arithmetic."""
     problems = []
     seen: set[str] = set()
+    reserved = {MASTER, RETURN} | {c.name + SEND_SUFFIX for c in rig.channels}
     for channel in rig.channels:
+        if channel.width not in WIDTHS:
+            problems.append(
+                f"channel {channel.name!r}: width must be one of {', '.join(WIDTHS)} "
+                f"(got {channel.width!r})"
+            )
         if not NAME_PATTERN.fullmatch(channel.name):
             problems.append(
                 f"channel {channel.name!r}: a name must match {NAME_PATTERN.pattern} — it "
                 "is the track's name and the stem's file name in a take"
             )
-        if channel.name == MASTER:
-            problems.append(f"channel {channel.name!r}: {MASTER!r} is the master track's name")
+        if channel.name in reserved:
+            problems.append(
+                f"channel {channel.name!r}: a name the compiler gives the master track, "
+                "its return or a channel's send; rename it"
+            )
         if channel.name in seen:
             problems.append(f"channel {channel.name!r} appears twice")
         seen.add(channel.name)
 
-    reserved = {MASTER, RETURN} | {c.name + SEND_SUFFIX for c in rig.channels}
     for owner, chain in [(f"channel {c.name!r}", c.chain) for c in rig.channels] + [
         ("master", rig.master.chain)
     ]:
@@ -265,6 +280,10 @@ def check_rig(rig: Rig) -> list[str]:
                     "own send, return or master track; rename it"
                 )
 
+    if any(c.width not in WIDTHS for c in rig.channels):
+        return problems
+    # Unreachable while every stem is stereo — three channels use at most six
+    # inputs — and kept for when a mono source can have a mono stem.
     inputs = sum(c.inputs_used for c in rig.channels)
     if inputs > MAX_FRONTEND_CHANNELS:
         problems.append(
@@ -344,38 +363,49 @@ def compile_rig(rig: Rig) -> tuple[RigSpec, dict[str, Any]]:
 def merged_state(fixed: dict[str, Any], captured: dict[str, Any] | None) -> dict[str, Any]:
     """Captured state over the compiler's, except where the compiler's must hold.
 
-    A capture of a running rig records each send's destination too, and for a
-    rig compiled from this file it is the same value; but a capture from before
-    a channel was renamed would point a send at nothing. The compiler's
-    destinations win, every other captured value is kept.
+    `live.capture` records parameters, programs and chain order, not
+    properties, so a capture never carries a send's destination: without the
+    compiler's, every re-emit from a capture would leave the sends pointing
+    nowhere and the channels silent in the monitors while their stems looked
+    healthy. A hand-written state file may carry one; the compiler's still
+    wins, since a destination other than the master is a send to nothing.
     """
     captured = captured or {}
-    merged = {key: value for key, value in captured.items() if key not in ("processors", "tracks")}
-    processors = {name: dict(values) for name, values in captured.get("processors", {}).items()}
+    merged = {key: value for key, value in captured.items() if key != "processors"}
+    processors = {
+        name: dict(values) for name, values in (captured.get("processors") or {}).items()
+        if isinstance(values, dict)
+    }
     for name, values in fixed["processors"].items():
         entry = processors.setdefault(name, {})
-        entry["properties"] = {**entry.get("properties", {}), **values["properties"]}
+        entry["properties"] = {**(entry.get("properties") or {}), **values["properties"]}
     merged["processors"] = processors
-    if captured.get("tracks"):
-        merged["tracks"] = {
-            track: _pinned(track, list(order)) for track, order in captured["tracks"].items()
-        }
     return merged
 
 
-def _pinned(track: str, order: list[str]) -> list[str]:
-    """A captured chain order with the send kept last and the return first.
+def pin_monitor_path(config: dict[str, Any]) -> dict[str, Any]:
+    """Each send last in its chain and the return first in the master.
 
-    The panel can move any processor, and a capture saves the order it finds.
-    A send moved up a chain feeds the monitors from the middle of it, so the
-    player hears the guitar before its delay while the stem has the delay; a
-    return moved down the master skips the master chain. Neither is a tone
-    decision anyone made, so the order around them is kept and they are not.
+    The panel can move any processor and a capture saves the order it finds,
+    and `emit` appends a plugin the capture does not mention at the end of its
+    chain. Any of those can leave a send part way up a chain, which feeds the
+    monitors from the middle of it: the player hears the guitar without its
+    delay while the stem has it. Neither position is a tone decision anyone
+    made, so the order around them is kept and they are not. Done on the
+    emitted config, after every reordering, so nothing can come after it.
     """
-    if track == MASTER:
-        return [RETURN] + [name for name in order if name != RETURN]
-    send = track + SEND_SUFFIX
-    return [name for name in order if name != send] + [send]
+    for track in config["tracks"]:
+        plugins = track["plugins"]
+        if track["name"] == MASTER:
+            track["plugins"] = (
+                [p for p in plugins if p["name"] == RETURN] + [p for p in plugins if p["name"] != RETURN]
+            )
+        else:
+            send = track["name"] + SEND_SUFFIX
+            track["plugins"] = (
+                [p for p in plugins if p["name"] != send] + [p for p in plugins if p["name"] == send]
+            )
+    return config
 
 
 def emit_rig(rig: Rig, captured: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -383,4 +413,4 @@ def emit_rig(rig: Rig, captured: dict[str, Any] | None = None) -> dict[str, Any]
     from .emit import emit
 
     spec, fixed = compile_rig(rig)
-    return emit(spec, merged_state(fixed, captured))
+    return pin_monitor_path(emit(spec, merged_state(fixed, captured)))
