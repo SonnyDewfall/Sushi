@@ -380,19 +380,81 @@ def test_a_block_scalar_with_nothing_after_it_does_not_stop_a_reorder():
         "chain:\n  - name: b  # b eol\n  - name: a\n    note: |\n      hello\n      # text, not a comment\n"
 
 
-# --- Refusals ---------------------------------------------------------------- #
+# --- Review of 2026-11-01: seven findings ------------------------------------ #
 
-def test_a_comment_after_a_block_scalar_is_refused_not_carried_to_the_wrong_plugin():
-    # ruamel.yaml keeps the line under a `|` scalar as that scalar's own trailing comment, so the
-    # lead of the next plugin cannot be told from a comment about this one. Without the refusal
-    # `# b lead` stayed under `a` (the comment count was still right).
-    text = "chain:\n  - name: a\n    note: |\n      hello\n  # b lead\n  - name: b\n    note: x\n"
-    data = {"chain": [{"name": "b", "note": "x"}, {"name": "a", "note": "hello\n"}]}
-    with pytest.raises(MergeError, match="block scalar"):
-        merged(text, data)
-    # The same list, not reordered, is not affected.
+def test_1_a_comment_above_the_first_entry_stays_with_it_when_the_key_has_a_comment_of_its_own():
+    # ruamel.yaml folds the key's trailing comment and the lines under it into one token.
+    text = "chain:  # the chain\n  # about a\n  - name: a\n  - name: b\n"
+    assert reorder(text, ["b", "a"]) == "chain:  # the chain\n  - name: b\n  # about a\n  - name: a\n"
+    flow = "chain:  # the chain\n  # about a\n  - {name: a}\n  - name: b\n"
+    assert reorder(flow, ["b", "a"]) == "chain:  # the chain\n  - name: b\n  # about a\n  - {name: a}\n"
+    # And a comment under a mapping key's own comment is read the same way.
+    nested = "outer:  # the outer\n  # about k\n  k: 1\n  j: 2\n"
+    assert merged(nested, {"outer": {"i": 0, "k": 1, "j": 2}}) == \
+        "outer:  # the outer\n  i: 0\n  # about k\n  k: 1\n  j: 2\n"
+    assert merged(nested, {"outer": {"j": 2}}) == "outer:  # the outer\n  j: 2\n"
+
+
+def test_1_a_list_whose_key_has_a_comment_is_written_back_as_it_was_when_nothing_moves():
+    text = "chain:  # the chain\n  # about a\n  - name: a\n  - name: b\n"
     assert merged(text, yaml.safe_load(text)) == text
+    assert merged(text, {"chain": [{"name": "a"}, {"name": "b"}, {"name": "c"}]}) == text + "  - name: c\n"
+    # Removing the first entry leaves what was above it as the list's, as it always has.
+    assert merged(text, {"chain": [{"name": "b"}]}) == "chain:  # the chain\n  # about a\n  - name: b\n"
 
+
+def test_2_a_comment_after_a_list_whose_last_entry_ends_in_an_empty_mapping_is_not_lost():
+    text = "chain:\n  - {name: a}\n  - name: b\n    p: {}\n  # tail\nz: 1\n"
+    assert reorder(text, ["b", "a"]) == "chain:\n  - name: b\n    p: {}\n  - {name: a}\n  # tail\nz: 1\n"
+    # And the other way round, without a reorder: the entry that ends in `[]` is removed.
+    assert merged(text, {"chain": [{"name": "a"}], "z": 1}) == "chain:\n  - {name: a}\n  # tail\nz: 1\n"
+
+
+BLOCK = "chain:\n  - name: a\n    note: |\n      hello\n  # b lead\n  - name: b\n  - name: c\n"
+NOTE = {"name": "a", "note": "hello\n"}
+
+
+def test_3_removing_or_inserting_beside_a_block_scalar_does_not_misattach_what_follows_it():
+    # `# b lead` is under a `|` scalar, which ruamel.yaml stores as that scalar's own trailing comment.
+    assert merged(BLOCK, {"chain": [NOTE, {"name": "c"}]}) == \
+        "chain:\n  - name: a\n    note: |\n      hello\n  - name: c\n"
+    assert merged(BLOCK, {"chain": [NOTE, {"name": "x"}, {"name": "b"}, {"name": "c"}]}) == \
+        "chain:\n  - name: a\n    note: |\n      hello\n  - name: x\n  # b lead\n  - name: b\n  - name: c\n"
+
+
+def test_3_a_comment_after_a_block_scalar_moves_with_the_next_entry_in_a_reorder():
+    data = {"chain": [{"name": "b"}, {"name": "c"}, NOTE]}
+    assert merged(BLOCK, data) == \
+        "chain:\n  # b lead\n  - name: b\n  - name: c\n  - name: a\n    note: |\n      hello\n"
+    assert merged(BLOCK, yaml.safe_load(BLOCK)) == BLOCK
+
+
+def test_4_gaps_belong_to_the_entry_below_them_and_a_new_entry_has_none():
+    text = "chain:\n  - name: a\n\n  - name: b\n"
+    assert reorder(text, ["b", "a", "x", "y"]) == \
+        "chain:\n  - name: b\n\n  - name: a\n  - name: x\n  - name: y\n"
+    # The gap before c survives c going first, as it does when b alone is removed.
+    text = "chain:\n  - name: a\n  - name: b\n\n  # c lead\n  - name: c\n"
+    assert reorder(text, ["c", "a"]) == "chain:\n  # c lead\n  - name: c\n\n  - name: a\n"
+    assert merged(text, {"chain": [{"name": "a"}, {"name": "c"}]}) == \
+        "chain:\n  - name: a\n\n  # c lead\n  - name: c\n"
+
+
+def test_5_a_blank_line_after_an_entry_ending_in_a_block_scalar_is_kept():
+    text = "chain:\n  - name: a\n    note: |\n      hello\n\n  - name: b\n"
+    assert merged(text, yaml.safe_load(text)) == text
+    assert reorder(text, ["b", "a"]) == "chain:\n  - name: b\n\n  - name: a\n    note: |\n      hello\n"
+
+
+def test_6_the_pairing_is_worked_out_once_and_handed_to_reorder(monkeypatch):
+    calls = []
+    real = yamlmerge._pairing
+    monkeypatch.setattr(yamlmerge, "_pairing", lambda old, new: calls.append(1) or real(old, new))
+    merged("chain:\n  - name: a\n  - name: b\n", {"chain": [{"name": "b"}, {"name": "a"}]})
+    assert len(calls) == 1
+
+
+# --- Refusals ---------------------------------------------------------------- #
 
 def test_a_slot_the_list_keeps_a_comment_in_that_is_not_read_is_refused():
     # No file is known that puts a comment in the list's own third or fourth slot for an entry, so
@@ -404,7 +466,7 @@ def test_a_slot_the_list_keeps_a_comment_in_that_is_not_read_is_refused():
     doc = YAML().load("chain:\n  - name: a\n  - name: b\n")
     doc["chain"].ca.items[1] = [None, None, CommentToken("# unseen\n", CommentMark(2)), None]
     with pytest.raises(MergeError, match="entry 2 has comments in a place"):
-        yamlmerge._Update().reorder(doc["chain"], [{"name": "b"}, {"name": "a"}], (doc, "chain"))
+        yamlmerge._Update().reorder(doc["chain"], [{"name": "b"}, {"name": "a"}], [1, 0], (doc, "chain"))
 
 
 def test_a_hand_wrapped_flow_list_with_comments_is_still_refused_before_any_reorder():
