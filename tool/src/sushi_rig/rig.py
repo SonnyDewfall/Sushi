@@ -211,14 +211,15 @@ def prepare_rig(
     """
     from .machine import MachineError, MachineSpec, machine_path
     from .patchbay import PatchbayError, patchbay_for, read_pw_dump
-    from .rigfile import RigFileError, emit_rig, load_rig, spec_of
+    from .rigfile import RigFileError, compile_rig, emit_rig, load_rig
 
     path = root / "config" / "rigs" / f"{name}.yaml"
     if not path.is_file():
         raise RigError(f"no such rig: {path}")
     try:
-        compiled = emit_rig(load_rig(path))
-        spec = spec_of(path)
+        loaded = load_rig(path)  # parsed and checked once; both forms come from it
+        compiled = emit_rig(loaded)
+        spec = compile_rig(loaded)[0]
     except RigFileError as exc:
         raise RigError(f"{path.name}:\n  " + "\n  ".join(exc.problems)) from exc
     problems = spec.validate()
@@ -256,10 +257,14 @@ def prepare_rig(
     meta = compiled.setdefault("_meta", {})
     if isinstance(meta, dict):
         meta["source"] = source
-    runtime.mkdir(parents=True, exist_ok=True)
-    config = runtime / f"{name}.json"
+    # Their own directory: the runtime root holds the state file (rig.json),
+    # the amp's project and its patchbay, so a rig called `rig` would otherwise
+    # share a name with the state file.
+    out = runtime / "rigs"
+    out.mkdir(parents=True, exist_ok=True)
+    config = out / f"{name}.json"
     config.write_text(json.dumps(compiled, indent=2) + "\n")
-    patchbay = runtime / f"{name}.qpwgraph"
+    patchbay = out / f"{name}.qpwgraph"
     patchbay.write_text(xml)
     return {
         "config": config,
@@ -559,6 +564,13 @@ def _supervise(
         # like a tuner that cannot hear the guitar — so it is said out loud
         # rather than left to be discovered mid-session (principle 8).
         if "fmit" in procs and procs["fmit"].poll() is None:
+            # The file qpwgraph was started with: the committed one, the amp's
+            # rewiring of it, or a v2 rig's own. Saving anywhere else changes
+            # nothing, so the advice names it rather than assuming the first.
+            patchbay_loaded = next(
+                (c["command"][2] for c in children_plan if c["name"] == "qpwgraph"),
+                root / "Patchbay" / "rig.qpwgraph",
+            )
             # Guarded, unlike its neighbours' `poll()` calls, because this one
             # shells out. Every check here is deliberately non-fatal -- it
             # appends to `problems` and the rig still comes up -- but an
@@ -588,7 +600,7 @@ def _supervise(
                         "the tuner is running but nothing is connected to "
                         + ", ".join(unwired)
                         + f" — wire the guitar's input to it in qpwgraph and save "
-                        f"{root / 'Patchbay' / 'rig.qpwgraph'}, or the tuner will "
+                        f"{patchbay_loaded}, or the tuner will "
                         "show nothing"
                     )
 
@@ -731,8 +743,6 @@ def up(
     root = checkout_root()
     rig_source: str | None = None
     rig_patchbay: Path | None = None
-    if rig:
-        pass  # compiled below, after the running-rig guard, so a refusal costs nothing
     config = root / "config" / f"{config_name}.json"
     if not rig and not config.is_file():
         raise RigError(f"no such config: {config}")
@@ -785,6 +795,7 @@ def up(
         )
 
     if rig:
+        # After the running-rig and port guards, so a refusal compiles nothing.
         prepared_rig = prepare_rig(config_name, root, runtime_dir(), tuner=tuner)
         config = prepared_rig["config"]
         rig_patchbay = prepared_rig["patchbay"]

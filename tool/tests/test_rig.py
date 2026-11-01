@@ -226,6 +226,48 @@ def test_up_on_a_v2_rig_uses_its_compiled_config_and_patchbay(up_world, monkeypa
     assert seen == {"config": compiled, "patchbay": wired}
 
 
+def test_up_on_a_v2_rig_with_an_amp_wires_the_amp_into_the_generated_patchbay(up_world, monkeypatch, tmp_path):
+    """The hazard this slice closes: the amp's patchbay used to be rewired from
+    the committed file, which would feed guitar_vocal's guitar into the vocal
+    channel. For a v2 run it is rewired from the generated one, and that
+    rewired file is what qpwgraph loads."""
+    compiled = tmp_path / "x.json"
+    compiled.write_text(json.dumps({"tracks": [], "_meta": {"source": "config/rigs/x.yaml"}}))
+    wired = tmp_path / "x.qpwgraph"
+    wired.write_text("<patchbay/>")
+    rewired = tmp_path / "rig-amp.qpwgraph"
+    monkeypatch.setattr(rig, "prepare_rig", lambda name, root, runtime, **kw: {
+        "config": compiled, "patchbay": wired, "source": "config/rigs/x.yaml", "warnings": [],
+    })
+    seen = {}
+
+    def fake_prepare_amp(config, root, runtime, override, base=None):
+        seen["base"] = base
+        return {"model": "amp/models/M.nam", "values": {}, "project": tmp_path / "amp.carxp", "patchbay": rewired}
+
+    monkeypatch.setattr("sushi_rig.amp.prepare", fake_prepare_amp)
+
+    def plan(root, config, rig_yaml, **kw):
+        seen["patchbay"] = kw.get("patchbay")
+        return []
+
+    monkeypatch.setattr(rig, "plan_children", plan)
+    up_world.say("READY", then_write=running_state(config_name="x", rig="config/rigs/x.yaml"))
+    assert rig.up("x", headless=True, amp=True, rig=True) == 0
+    assert seen == {"base": wired, "patchbay": rewired}
+
+
+def test_a_v2_runs_artefacts_cannot_collide_with_the_state_file(tmp_path):
+    """The state file is runtime/rig.json, so a rig called `rig` compiled into
+    the runtime root would overwrite it, or be overwritten by it."""
+    from sushi_rig.paths import state_path
+
+    out = rig.prepare_rig("guitar_vocal", ROOT, tmp_path / "run",
+                          machine_file=MACHINE, dump=CAPTURED_DUMP)
+    assert out["config"].parent == tmp_path / "run" / "rigs"
+    assert out["config"].name != state_path().name or out["config"].parent != tmp_path / "run"
+
+
 def test_restart_brings_back_a_v2_rig_as_a_v2_rig():
     from sushi_rig.rig import restart_arguments
 
