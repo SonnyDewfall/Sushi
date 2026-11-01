@@ -579,6 +579,17 @@ def merged_state(fixed: dict[str, Any], captured: dict[str, Any] | None) -> dict
     return merged
 
 
+def _rounded(value: Any) -> Any:
+    """A captured number as the file should hold it: six decimals, as `emit`
+    writes them, and an integer kept whole."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        return value
+    if isinstance(value, int):
+        return value
+    rounded = round(value, 6)
+    return int(rounded) if rounded == int(rounded) and value == int(value) else rounded
+
+
 def fold_state(raw: dict[str, Any], captured: dict[str, Any] | None) -> dict[str, Any]:
     """The rig file's document with a live capture folded into it: what SAVE
     writes for a rig of channels (#30's last slice).
@@ -628,11 +639,26 @@ def fold_state(raw: dict[str, Any], captured: dict[str, Any] | None) -> dict[str
                 continue
             if values.get("program") is not None and not values.get("parameters"):
                 entry.pop("parameters", None)
-            for key in ("bypassed", "program"):
-                if values.get(key) is not None:
-                    entry[key] = values[key]
+            if values.get("program") is not None:
+                entry["program"] = values["program"]
+            # `bypassed: false` is the default, so it is written only where the
+            # file said true: a save must not touch every entry of a chain
+            # nothing changed in, or the file's history stops showing what
+            # the player changed.
+            if values.get("bypassed") is not None:
+                if values["bypassed"]:
+                    entry["bypassed"] = True
+                elif entry.get("bypassed"):
+                    entry["bypassed"] = False
             if isinstance(values.get("parameters"), dict) and values["parameters"]:
-                entry["parameters"] = {**(entry.get("parameters") or {}), **values["parameters"]}
+                # Rounded as `emit` rounds, because a capture carries float32
+                # noise (0.35 reads back as 0.3500000238418579) that would
+                # rewrite every parameter line on every save and show a value
+                # that did not change as changed.
+                entry["parameters"] = {
+                    **(entry.get("parameters") or {}),
+                    **{k: _rounded(v) for k, v in values["parameters"].items()},
+                }
         return folded
 
     out = copy.deepcopy(raw)

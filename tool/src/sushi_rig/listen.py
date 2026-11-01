@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING
 
 from .amp import AmpError, CARLA_OSC_PORT, parameter_message
 from .live import DEFAULT_GRPC_ADDRESS, move_processor, refresh_panel
-from .save import SaveError, save_config, save_rig
+from .save import SaveError, save_any
 
 if TYPE_CHECKING:
     from .transport import Session
@@ -76,23 +76,12 @@ NO_SOURCE = (
 )
 
 
-def _is_rig_of_channels(path: Path) -> bool:
-    """Whether `path` is a rig of channels (rigfile.py) rather than a v1 rig.yaml.
-    Unreadable counts as not one: save_config then says why it cannot."""
-    import yaml
-
-    from .spec import looks_like_rig_file
-
-    try:
-        return looks_like_rig_file(yaml.safe_load(Path(path).read_text()))
-    except (OSError, yaml.YAMLError):
-        return False
-
-
 def _checkable(saved: Path) -> Path:
     """The config `verify` can check for what was just saved: the file itself
-    for a config, or the compiled form of a rig of channels, written beside
-    the state file so nothing generated lands in config/."""
+    for a config, or the compiled form of a rig of channels, written under a
+    scratch directory beside the state file. Not into config/, and not where
+    `prepare_rig` put the running rig's compiled config, which Sushi loaded and
+    `--panel-config` reads: a check must not overwrite what is running."""
     import json
 
     from .paths import runtime_dir
@@ -100,7 +89,7 @@ def _checkable(saved: Path) -> Path:
 
     if saved.suffix != ".yaml":
         return saved
-    out = runtime_dir() / "rigs"
+    out = runtime_dir() / "checks"
     out.mkdir(parents=True, exist_ok=True)
     compiled = out / f"{saved.stem}.json"
     compiled.write_text(json.dumps(emit_rig(load_rig(saved)), indent=2) + "\n")
@@ -127,18 +116,12 @@ def handle_save(
     if rig_path is None:
         return NO_SOURCE
     try:
-        if _is_rig_of_channels(rig_path):
-            # A rig of channels is saved as one, into config/rigs/ beside its
-            # source, with its comments; the compiled config is never written.
-            out_path = save_rig(
-                name, rig_path, Path(out_dir) / "rigs", address,
-                amp_model=amp_model, amp_parameters=amp_parameters,
-            )
-        else:
-            out_path = save_config(
-                name, rig_path, out_dir, archive_dir, address,
-                amp_model=amp_model, amp_parameters=amp_parameters,
-            )
+        # A rig of channels is written back beside its source, with its
+        # comments; a rig.yaml of tracks becomes a config. save_any decides.
+        out_path = save_any(
+            name, rig_path, out_dir, archive_dir, address,
+            amp_model=amp_model, amp_parameters=amp_parameters,
+        )
     except SaveError as exc:
         return f"save failed: {exc}"
     except SystemExit as exc:

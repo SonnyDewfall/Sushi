@@ -387,7 +387,7 @@ def test_fold_state_writes_the_captured_order_and_values_into_the_chain():
     assert [p["name"] for p in chain] == ["drive", "comp", "verb"], "the panel's order is the file's"
     assert chain[0] == {"name": "drive", "uri": "urn:drive", "bypassed": False}
     assert chain[1]["parameters"] == {"Ratio": 0.35, "Thresh": 0.5}, "captured over the file's, key by key"
-    assert chain[1]["bypassed"] is False
+    assert "bypassed" not in chain[1], "false is the default, and the file never said otherwise"
     assert chain[2] == {"name": "verb", "uri": "urn:verb", "program": 2}, "untouched when the capture says nothing"
     assert folded["master"]["chain"][0]["parameters"] == {"Ceiling": 0.9}
     assert "strip" not in folded["channels"][0], "a strip moved live is not the file's"
@@ -412,3 +412,18 @@ def test_fold_state_refuses_a_capture_of_a_different_rig():
 def test_fold_state_never_writes_properties():
     folded = fold_state(FOLD_RAW, {"processors": {"comp": {"properties": {"x": "y"}}}})
     assert "properties" not in folded["channels"][0]["chain"][0]
+
+
+def test_fold_state_rounds_a_captures_float32_noise_and_writes_no_default_bypass():
+    """A capture carries 0.3500000238418579 for 0.35; written as is, every
+    parameter line would change on every save. And `bypassed: false` is the
+    default, so an entry that never had the key does not gain it."""
+    folded = fold_state(FOLD_RAW, {"processors": {
+        "comp": {"bypassed": False, "parameters": {"Ratio": 0.3500000238418579, "Thresh": 0.5}},
+        "verb": {"bypassed": False},
+    }})
+    comp, _, verb = folded["channels"][0]["chain"]
+    assert comp["parameters"] == {"Ratio": 0.35, "Thresh": 0.5}
+    assert "bypassed" not in comp and "bypassed" not in verb
+    folded = fold_state(FOLD_RAW, {"processors": {"drive": {"bypassed": False}}})
+    assert folded["channels"][0]["chain"][1]["bypassed"] is False, "the file said true, so false is a change"

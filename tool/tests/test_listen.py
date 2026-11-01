@@ -225,6 +225,7 @@ def test_a_rig_of_channels_is_saved_as_one_with_its_comments(tmp_path, monkeypat
     assert "# the one knob that matters" in text
     assert "Low: 0.6" in text and "bypassed: true" in text
     assert not (tmp_path / "config" / "riff.json").exists(), "the compiled config stays out of config/"
-    assert (tmp_path / "run" / "sushi-rig" / "rigs" / "riff.json").exists(), "but was compiled for the check"
+    assert (tmp_path / "run" / "sushi-rig" / "checks" / "riff.json").exists(), "but was compiled for the check"
+    assert not (tmp_path / "run" / "sushi-rig" / "rigs").exists(), "and not where the running rig's compiled config lives"
 
 

@@ -1313,4 +1313,14 @@ source resolves to a rig of channels keeps SAVE off and says to use `--rig`,
 since saving the rig would leave the v1 config behind. Not folded, and said in
 the docstring: a channel's strip (held at unity) and the sends' gains, where
 a channel's level in the mix lives (#18); a send gain moved live is lost at
-save until the file can hold it. *(2026-11-01)*
+save until the file can hold it. Found by review before merging: captured
+values are rounded as `emit` rounds them, since a capture's float32 noise
+would rewrite every parameter line on every save; `bypassed: false` is
+written only where the file said true; a name that already belongs to
+another rig file is refused rather than updated into this rig; a run without
+the amp leaves the file's amp alone; and the save check compiles into a
+scratch directory, not over the running rig's compiled config. One thing
+stays open: after a chain is reordered from the panel, `yamlmerge` matches
+the entries by position and a per-plugin comment stays at its line, so it
+can end up beside a different plugin. Being fixed in yamlmerge separately.
+*(2026-11-01)*
