@@ -57,7 +57,11 @@ sushi-rig doctor      # record the whole output; a FAULT here is a result, not a
 sushi-rig up electric_board --headless
 sushi-rig status
 sushi-rig top --once       # record: load per node, xruns
-pw-link -l | grep -i sushi # record: which ports are linked to what
+pw-link -l | awk '/^[^ ]/{node=$0} /\|[<-]/{print node" \t"$0}' \
+  | grep -i sushi   # record: which ports are linked to what
+# `grep -i sushi` alone cannot answer this: pw-link prints a node on its own
+# line and its links indented beneath, so grepping keeps the link lines and
+# throws away the node header that says what the link is *to*.
 ```
 
 **Play.** A minute of the usual: clean chords, something with the delay and
@@ -103,7 +107,11 @@ the guitar, which is exactly this layout, so nothing in the patchbay changes.
 sushi-rig up electric_board_v2 --headless
 sushi-rig status
 sushi-rig top --once       # compare with step 1: one more track, so a little more load
-pw-link -l | grep -i sushi # outputs 0/1 to the monitors; outputs 2/3 (the stem) linked to nothing
+pw-link -l | awk '/^[^ ]/{node=$0} /\|[<-]/{print node" \t"$0}' \
+  | grep -i sushi   # outputs 0/1 to the monitors
+# Outputs 2/3 (the stem) will not appear at all: this lists only ports that
+# have a link, and the stem has none. Confirm they exist with
+#   pw-link -o | grep '^sushi:'
 ```
 
 `--headless` is deliberate: the save listener does not yet know how to save a
@@ -136,7 +144,8 @@ sushi-rig down
 sushi-rig up electric-clean --headless        # play; write it down; down
 sushi-rig emit config/rigs/electric-clean.yaml -o config/electric-clean_v2.json
 sushi-rig up electric-clean_v2 --headless     # the amp should come up as before: check `status` lists it
-pw-link -l | grep -iE "sushi|NAM|Carla"       # the amp's ports wired by the guitar role, as today
+pw-link -l | awk '/^[^ ]/{node=$0} /\|[<-]/{print node" \t"$0}' \
+  | grep -iE "sushi|NAM|Carla"    # the amp's ports wired by the guitar role, as today
 ```
 
 **Play. Same question.** Then `sushi-rig down`.
@@ -169,7 +178,15 @@ In one terminal, and **record the pid**:
 
 ```bash
 sushi-rig agent &
-AGENT=$!
+# Do NOT trust $! here. Typed at an interactive prompt it is the agent, but in
+# any compound command `&` binds to the whole `&&` chain before it, so the
+# assignment runs inside the backgrounded subshell and $! names the wrapping
+# shell instead. Killing that leaves the agent holding port 8029 — the exact
+# failure "kill what you start, by pid" exists to prevent. Take the pid from
+# whatever actually holds the port, and check it:
+ss -ltnp | grep 8029          # users:(("sushi-rig",pid=NNNNN,...))
+AGENT=<that pid>
+ps -p $AGENT -o pid,ppid,stat,cmd    # must say `sushi-rig agent`
 echo "agent pid $AGENT"
 ```
 
@@ -214,6 +231,13 @@ aseqdump -l                              # record: every MIDI client and port
 aseqdump -p <client:port of the pedal>   # then press each switch once, release, press again; sweep the expression pedal end to end
 ```
 
+If you need to separate one labelled take from another, **start a new file**;
+do not truncate the one `aseqdump` is writing to. It holds the file open at
+its old offset, so the next write lands past the truncation point and the
+kernel fills the gap with NULs — after which `grep` sees a binary file and
+silently reports nothing while the events are still there. Recover with
+`tr -d '\000'`.
+
 Record the raw lines for each control, labelled with what you did ("switch A
 press", "switch A release", "expression heel to toe"). If `aseqdump` is not
 installed it is in `alsa-utils`; `amidi -l` and `amidi -p hw:X,Y -d` are the
@@ -224,7 +248,8 @@ fallback. Stop with Ctrl+C. No Sushi needed for this step.
 ```bash
 sushi-rig status           # nothing running
 ps aux | grep -E "sushi|carla|fmit|open-stage|sushi_rig" | grep -v grep   # nothing of the rig's
-rm config/electric_board_v2.json config/electric-clean_v2.json   # generated, not for committing
+ls config/*_v2.json          # whichever ones you actually generated
+rm config/*_v2.json          # generated, not for committing
 git status                 # only the results file
 git add tool/spikes/live_rig/RESULTS-hear-v2-*.md tool/spikes/live_rig/HEAR-V2.md && git commit -m "Hear-v2 results from $(hostname)" && git push origin claude/hear-v2
 ```
