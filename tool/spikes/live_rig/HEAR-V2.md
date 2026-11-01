@@ -200,6 +200,25 @@ Record every response. A 504 from `up` means the agent stopped waiting after
 120 s; if that happens, `sushi-rig status` says whether the rig came up anyway,
 and that is the result.
 
+## 3b. The pedals, five minutes, if they are to hand
+
+Added 2026-11-01. The stage design now assumes a footswitch and an expression
+pedal over MIDI (issue #34 has what Sushi can do natively). Before anything is
+built on them, we need their facts: what they appear as, which CC or Program
+Change each control sends, and whether each footswitch is momentary (a press
+sends one value, a release another) or latching (each press alternates).
+Plug them in, then:
+
+```bash
+aseqdump -l                              # record: every MIDI client and port
+aseqdump -p <client:port of the pedal>   # then press each switch once, release, press again; sweep the expression pedal end to end
+```
+
+Record the raw lines for each control, labelled with what you did ("switch A
+press", "switch A release", "expression heel to toe"). If `aseqdump` is not
+installed it is in `alsa-utils`; `amidi -l` and `amidi -p hw:X,Y -d` are the
+fallback. Stop with Ctrl+C. No Sushi needed for this step.
+
 ## 4. Clean up
 
 ```bash
@@ -207,7 +226,7 @@ sushi-rig status           # nothing running
 ps aux | grep -E "sushi|carla|fmit|open-stage|sushi_rig" | grep -v grep   # nothing of the rig's
 rm config/electric_board_v2.json config/electric-clean_v2.json   # generated, not for committing
 git status                 # only the results file
-git add tool/spikes/live_rig/RESULTS-hear-v2-*.md && git commit -m "Hear-v2 results from $(hostname)" && git push origin claude/hear-v2
+git add tool/spikes/live_rig/RESULTS-hear-v2-*.md tool/spikes/live_rig/HEAR-V2.md && git commit -m "Hear-v2 results from $(hostname)" && git push origin claude/hear-v2
 ```
 
 ## 5. Separately: the profiling session
