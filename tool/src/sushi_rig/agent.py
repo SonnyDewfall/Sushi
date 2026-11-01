@@ -292,11 +292,13 @@ class Agent:
                 outcome = await self.run(args)
             finally:
                 self.busy = None
-            if outcome.ok:
+            if outcome.ok and (self.last_error or {}).get("kind") == "lifecycle":
                 # A later success supersedes the old failure: left in place,
                 # a healthy agent reports a refused request forever and
                 # /health cannot be trusted to say "nothing is wrong now".
-                # A failure keeps it (below), and replaces it with the newer.
+                # Only a lifecycle failure, though: an unexpected error from
+                # /doctor or /rig says nothing about the rig coming up, so a
+                # `down` that works must not forget it.
                 self.last_error = None
 
         answer: dict[str, Any] = {
@@ -313,7 +315,7 @@ class Agent:
         # is a conflict with the rig's state, 409. The agent gave up waiting:
         # 504, and the rig in the answer is what to read next.
         reason = outcome.stderr.strip() or f"exit status {outcome.returncode}"
-        self._remember(args, reason)
+        self._remember(args, reason, kind="lifecycle")
         answer["reason"] = reason
         return web.json_response(answer, status=504 if outcome.abandoned else 409)
 
@@ -327,8 +329,9 @@ class Agent:
         doing = f"'{self.busy}' still running" if self.busy else "no lifecycle command running"
         print(f"sushi-rig agent stopping ({doing})", flush=True)
 
-    def _remember(self, command: list[str] | None, reason: str) -> None:
+    def _remember(self, command: list[str] | None, reason: str, kind: str = "request") -> None:
         self.last_error = {
+            "kind": kind,
             "command": command,
             "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "message": reason,

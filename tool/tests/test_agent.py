@@ -309,6 +309,21 @@ def test_a_body_that_is_not_text_is_a_bad_request_not_a_crash():
     assert runner.calls == []
 
 
+def test_a_lifecycle_success_does_not_forget_an_unrelated_crash():
+    """A broken /doctor says nothing about the rig coming up, so a `down` that
+    works must not clear it; only a lifecycle failure is superseded."""
+    def broken():
+        raise OSError("pw-dump missing")
+
+    agent = Agent(describe=lambda: dict(DOWN), doctor=broken, run=FakeRunner())
+    status, _ = call(agent, "GET", "/doctor")
+    assert status == 500
+    status, _ = call(agent, "POST", "/rig/down")
+    assert status == 200
+    _, health = call(agent, "GET", "/health")
+    assert health["agent"]["last_error"]["message"] == "OSError: pw-dump missing"
+
+
 def test_a_route_that_does_not_exist_is_json_too():
     status, body = call(Agent(describe=lambda: dict(DOWN)), "GET", "/shell")
     assert status == 404

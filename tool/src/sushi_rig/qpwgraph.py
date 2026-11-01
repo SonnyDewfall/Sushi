@@ -37,7 +37,8 @@ QPWGRAPH_SETTLE = 1.5
 # short: on a cold start fmit (the tuner) took more than 3 s to register its
 # ALSA capture node with PipeWire on sonny-dewfall-XPS-9320 (2026-11-01), so
 # `up` warned that PipeWire listed no alsa_capture.fmit ports when the node was
-# merely late; the next `up` was fine.
+# merely late; the next `up` was fine. The cost lands only on the failure path:
+# a tuner that never appears now holds `up` for 10 s before READY, not 3.
 PATCHBAY_SETTLE = 10.0
 
 # A bound on each `pw-link` call, so a hung one cannot hold up startup.

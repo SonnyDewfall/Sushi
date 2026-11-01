@@ -1248,6 +1248,7 @@ mixed indents) is not rewritten, since an update would re-lay-out lines nobody
 touched; an update that leaves a comment written twice or lost, other than with
 a removed entry, is not written; and ruamel.yaml is pinned to 0.19 with a test
 that asserts the comment slots `yamlmerge.py` relies on. *(2026-10-31)*
+
 **Four small fixes from running the agent on the rig machine.** (1) `POST
 /rig/up` with no `config_name` is a 400 ("config_name is required: the name of a
 file in config/") instead of defaulting to electric_board, so a stray empty
