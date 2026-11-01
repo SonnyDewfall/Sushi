@@ -1248,3 +1248,15 @@ mixed indents) is not rewritten, since an update would re-lay-out lines nobody
 touched; an update that leaves a comment written twice or lost, other than with
 a removed entry, is not written; and ruamel.yaml is pinned to 0.19 with a test
 that asserts the comment slots `yamlmerge.py` relies on. *(2026-10-31)*
+**Four small fixes from running the agent on the rig machine.** (1) `POST
+/rig/up` with no `config_name` is a 400 ("config_name is required: the name of a
+file in config/") instead of defaulting to electric_board, so a stray empty
+request against an idle agent starts nothing. (2) A successful lifecycle command
+clears `/health`'s `last_error`; before, one refused request was reported by a
+healthy agent forever. (3) The agent prints "sushi-rig agent stopping" on
+SIGTERM/SIGINT, with whether a lifecycle command was running, so a handled stop
+can be told from a kill. (4) `PATCHBAY_SETTLE` is 10 s, not 3: fmit's ALSA
+capture node took longer than 3 s to appear on a cold start, so `up` warned of a
+missing tuner node that was only late. The wait already polled every 0.25 s and
+returns as soon as the node is wired, so the common case is no slower.
+*(2026-11-01)*

@@ -392,7 +392,8 @@ supervisor is still the one `up` has always detached; the agent becoming the
 supervisor, and running as a service so a phone can press start, is the next
 slice. Needs `pip install -e tool[agent]` (aiohttp). One lifecycle command at a
 time: a second request while one runs gets `409 busy`, because `up` and `down`
-racing is a second rig on top of a running one. Every argument is checked
+racing is a second rig on top of a running one. `up` must be told which
+config (`config_name` is required, so a stray empty POST starts nothing). Every argument is checked
 before anything runs — a config name is a name, not a path — and nothing from a
 request is passed through as text. It binds to localhost; `--host 0.0.0.0`
 opens it to the LAN, and until the local/remote permission split in #29 exists
