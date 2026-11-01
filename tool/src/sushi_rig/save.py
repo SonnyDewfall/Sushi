@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .amp import write_amp
+from .amp import CONFIG_KEY as AMP_KEY, write_amp
 from .emit import EmitError, emit
 from .live import DEFAULT_GRPC_ADDRESS, capture
 from .spec import RigSpec
@@ -114,6 +114,65 @@ def save_config(
     config["_meta"] = meta
 
     out_path.write_text(json.dumps(config, indent=2) + "\n")
+    return out_path
+
+
+def save_rig(
+    name: str,
+    rig_path: Path,
+    rigs_dir: Path,
+    address: str = DEFAULT_GRPC_ADDRESS,
+    amp_model: str | None = None,
+    amp_parameters: dict[str, float] | None = None,
+) -> Path:
+    """Capture the running Sushi's state and write it into a rig of channels,
+    `<rigs_dir>/<name>.yaml` (#30's last slice, the half SAVE is).
+
+    The rig file is the source, so it is updated in place through `write_rig`
+    and keeps its comments; saving under a new name writes a new file holding
+    the same rig under that name. No archive: the file is in git, and its
+    history is the archive (principle 5). The compiled config is not written,
+    since `up --rig` compiles the file at every start.
+    """
+    import yaml
+
+    from .rigfile import RigFileError, fold_state, write_rig
+    from .spec import looks_like_rig_file
+
+    validate_name(name)
+    rig_path = Path(rig_path)
+    if not rig_path.is_file():
+        raise SaveError(f"rig source not found: {rig_path}")
+    try:
+        raw = yaml.safe_load(rig_path.read_text())
+    except yaml.YAMLError as exc:
+        raise SaveError(f"cannot read {rig_path}: {exc}") from exc
+    if not looks_like_rig_file(raw):
+        raise SaveError(f"{rig_path} is not a rig of channels; save_config saves a v1 rig")
+
+    state = capture(address)
+    # Captured properties are for checking a rig, not for writing one (see
+    # save_config and rigfile.merged_state).
+    for values in state.get("processors", {}).values():
+        values.pop("properties", None)
+    try:
+        folded = fold_state(raw, state)
+    except RigFileError as exc:
+        raise SaveError("; ".join(exc.problems)) from exc
+
+    folded["name"] = name
+    # The amp rides in the rig file as it does in a config: the values the
+    # listener last sent, since Carla cannot be asked. See amp.py.
+    if amp_model is None:
+        folded.pop("amp", None)
+    else:
+        folded["amp"] = write_amp({}, amp_model, amp_parameters or {})[AMP_KEY]
+
+    out_path = Path(rigs_dir) / f"{name}.yaml"
+    try:
+        write_rig(out_path, folded)
+    except RigFileError as exc:
+        raise SaveError("; ".join(exc.problems)) from exc
     return out_path
 
 

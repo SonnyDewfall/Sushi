@@ -579,6 +579,72 @@ def merged_state(fixed: dict[str, Any], captured: dict[str, Any] | None) -> dict
     return merged
 
 
+def fold_state(raw: dict[str, Any], captured: dict[str, Any] | None) -> dict[str, Any]:
+    """The rig file's document with a live capture folded into it: what SAVE
+    writes for a rig of channels (#30's last slice).
+
+    `raw` is the document `parse_rig` reads, as `write_rig` wants it, so the
+    file keeps its comments. Per chain, the captured order of the track's
+    processors becomes the chain's order (a plugin the capture does not
+    mention keeps its place after those it does, as `emit` appends it), and
+    each plugin's captured `bypassed`, `program` and `parameters` are set on
+    its entry; a captured program with no parameters drops the entry's
+    parameters, which were the previous program's, the same rule as
+    `merged_state`. Properties are never folded, for `merged_state`'s reason.
+
+    Not folded, on purpose: a channel's strip, held at unity (`UNITY_STRIP`)
+    because a strip moved live changes the stem and not the mix, and the
+    sends and the return, which are the compiler's. Where a channel's level
+    in the mix lives, the send's gain (#18), is not in the file yet; a send
+    gain moved live is lost at save until it is, and that is said here rather
+    than written as a strip.
+
+    A capture naming a processor the rig does not have is refused, as `emit`
+    refuses it: that is a capture of a different rig.
+    """
+    rig = parse_rig(copy.deepcopy(raw))  # refuse what load_rig would refuse
+    captured = captured or {}
+    processors = captured.get("processors") or {}
+    orders = captured.get("tracks") or {}
+    known = {p.name for ch in rig.channels for p in ch.chain} | {p.name for p in rig.master.chain}
+    known |= {ch.name for ch in rig.channels} | {MASTER}
+    internal = {ch.name + SEND_SUFFIX for ch in rig.channels} | {RETURN}
+    named = set(processors) | {n for order in orders.values() for n in (order or [])}
+    unknown = sorted(named - known - internal)
+    if unknown:
+        raise RigFileError([
+            f"the capture names {', '.join(unknown)}, which {rig.name} does not have: "
+            "that is a capture of a different rig, so nothing was saved"
+        ])
+
+    def fold_chain(entries: list[dict[str, Any]], track: str) -> list[dict[str, Any]]:
+        by_name = {e["name"]: e for e in entries}
+        order = [n for n in (orders.get(track) or []) if n in by_name]
+        rest = [e["name"] for e in entries if e["name"] not in order]
+        folded = [by_name[n] for n in order + rest]
+        for entry in folded:
+            values = processors.get(entry["name"]) or {}
+            if not isinstance(values, dict):
+                continue
+            if values.get("program") is not None and not values.get("parameters"):
+                entry.pop("parameters", None)
+            for key in ("bypassed", "program"):
+                if values.get(key) is not None:
+                    entry[key] = values[key]
+            if isinstance(values.get("parameters"), dict) and values["parameters"]:
+                entry["parameters"] = {**(entry.get("parameters") or {}), **values["parameters"]}
+        return folded
+
+    out = copy.deepcopy(raw)
+    for channel in out.get("channels") or []:
+        if isinstance(channel, dict) and channel.get("chain"):
+            channel["chain"] = fold_chain(channel["chain"], channel["name"])
+    master = out.get("master")
+    if isinstance(master, dict) and master.get("chain"):
+        master["chain"] = fold_chain(master["chain"], MASTER)
+    return out
+
+
 def pin_monitor_path(config: dict[str, Any]) -> dict[str, Any]:
     """Each send last in its chain and the return first in the master.
 

@@ -350,3 +350,65 @@ def test_a_description_that_is_text_or_absent_is_read():
     assert parse_rig(rig_yaml(channel("a"), description="a clean tone")).description == "a clean tone"
     assert parse_rig(rig_yaml(channel("a"), description=None)).description == ""
     assert parse_rig(rig_yaml(channel("a"))).description == ""
+
+
+# --------------------------------------------------------------------------- #
+# fold_state: a capture written back into the file (#30's last slice)
+# --------------------------------------------------------------------------- #
+
+from sushi_rig.rigfile import fold_state  # noqa: E402
+
+FOLD_RAW = {
+    "kind": "rig", "schema_version": 1, "name": "two",
+    "channels": [{
+        "name": "board", "input": "guitar-in", "width": "mono",
+        "chain": [
+            {"name": "comp", "uri": "urn:comp", "parameters": {"Ratio": 0.3, "Thresh": 0.5}},
+            {"name": "drive", "uri": "urn:drive", "bypassed": True},
+            {"name": "verb", "uri": "urn:verb", "program": 2},
+        ],
+    }],
+    "master": {"output": "monitor-out", "chain": [{"name": "lim", "uri": "urn:lim"}]},
+}
+
+
+def test_fold_state_writes_the_captured_order_and_values_into_the_chain():
+    folded = fold_state(FOLD_RAW, {
+        "processors": {
+            "comp": {"bypassed": False, "parameters": {"Ratio": 0.35}},
+            "drive": {"bypassed": False},
+            "lim": {"parameters": {"Ceiling": 0.9}},
+            "board": {"parameters": {"gain": 0.8}},
+            "board_send": {"parameters": {"gain": -6.0}},
+        },
+        "tracks": {"board": ["drive", "comp", "verb", "board_send"], "master": ["master_return", "lim"]},
+    })
+    chain = folded["channels"][0]["chain"]
+    assert [p["name"] for p in chain] == ["drive", "comp", "verb"], "the panel's order is the file's"
+    assert chain[0] == {"name": "drive", "uri": "urn:drive", "bypassed": False}
+    assert chain[1]["parameters"] == {"Ratio": 0.35, "Thresh": 0.5}, "captured over the file's, key by key"
+    assert chain[1]["bypassed"] is False
+    assert chain[2] == {"name": "verb", "uri": "urn:verb", "program": 2}, "untouched when the capture says nothing"
+    assert folded["master"]["chain"][0]["parameters"] == {"Ceiling": 0.9}
+    assert "strip" not in folded["channels"][0], "a strip moved live is not the file's"
+    assert FOLD_RAW["channels"][0]["chain"][0]["parameters"] == {"Ratio": 0.3, "Thresh": 0.5}, "the input is not mutated"
+
+
+def test_fold_state_a_captured_program_drops_the_previous_programs_parameters():
+    folded = fold_state(FOLD_RAW, {"processors": {"comp": {"program": 4}}})
+    assert folded["channels"][0]["chain"][0] == {"name": "comp", "uri": "urn:comp", "program": 4}
+
+
+def test_fold_state_a_plugin_the_capture_omits_keeps_its_place_after_the_rest():
+    folded = fold_state(FOLD_RAW, {"tracks": {"board": ["verb"]}})
+    assert [p["name"] for p in folded["channels"][0]["chain"]] == ["verb", "comp", "drive"]
+
+
+def test_fold_state_refuses_a_capture_of_a_different_rig():
+    with pytest.raises(RigFileError, match="names hall, which two does not have"):
+        fold_state(FOLD_RAW, {"processors": {"hall": {"parameters": {"Mix": 0.2}}}})
+
+
+def test_fold_state_never_writes_properties():
+    folded = fold_state(FOLD_RAW, {"processors": {"comp": {"properties": {"x": "y"}}}})
+    assert "properties" not in folded["channels"][0]["chain"][0]

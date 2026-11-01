@@ -1295,3 +1295,22 @@ link to a child that is not running (`--no-tuner`) is not waited for, the
 alias map is re-read on every poll so a node that registers late is not
 reported unmade for ever, and a `pw-link` that fails is unreadable, never
 "nothing is linked". *(2026-11-01)*
+
+**SAVE on a rig of channels writes the rig file, with its comments.** The
+other half of #30's last slice. `rigfile.fold_state` is the decision: the
+captured order of a track's processors becomes the chain's order, each
+plugin's captured bypass, program and parameters land on its entry, a program
+with no parameters drops the previous program's, properties are never
+written, and a capture naming a processor the rig lacks is refused as a
+capture of a different rig. `save.save_rig` captures, folds, sets the amp as
+the listener last sent it, and writes through `write_rig`, so the file is
+updated in place and the player's comments survive; a new name is a new
+file, and there is no archive because the file is in git. The listener tells
+the two kinds of source apart by their `kind`, saves into `config/rigs/`,
+and checks the save by compiling it beside the state file rather than into
+`config/`. `up --rig` hands the rig file to the listener; a v1 run whose
+source resolves to a rig of channels keeps SAVE off and says to use `--rig`,
+since saving the rig would leave the v1 config behind. Not folded, and said in
+the docstring: a channel's strip (held at unity) and the sends' gains, where
+a channel's level in the mix lives (#18); a send gain moved live is lost at
+save until the file can hold it. *(2026-11-01)*

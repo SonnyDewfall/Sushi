@@ -852,13 +852,15 @@ def up(
     rig_yaml = resolve_rig_yaml(config, root)
     if not headless:
         problem = rig_source_problem(config, root) if rig_yaml is None else None
-        if rig_yaml is not None and rig_yaml.startswith("config/rigs/"):
-            # A v2 rig file describes the config, and save cannot write one
-            # yet: #30's last slice. Said at start, not at the first press.
+        if rig_yaml is not None and rig_yaml.startswith("config/rigs/") and not rig:
+            # A v1 run whose source is a rig of channels: SAVE would write the
+            # rig file while the v1 config it ran stays as it was, two files
+            # for one tone diverging. `up --rig` saves it as a rig. Said at
+            # start, not at the first press.
             problem = (
                 f"SAVE is off for {config_name}: it was built from {rig_yaml}, a rig of "
-                "channels, which save cannot write yet. Reorder and the amp controls "
-                "still work"
+                f"channels. Run 'sushi-rig up --rig {config_name}' to play and save the "
+                "rig itself. Reorder and the amp controls still work"
             )
             rig_yaml = None
         if problem:

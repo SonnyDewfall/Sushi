@@ -334,6 +334,30 @@ def test_a_running_tuner_the_patchbay_never_taps_is_said(tmp_path, monkeypatch):
     assert rig._unmade_link_problems(patchbay, {"sushi", "qpwgraph"}) == []
 
 
+def test_a_rig_run_with_a_panel_hands_its_file_to_the_listener(up_world, monkeypatch, tmp_path, capsys):
+    """SAVE is on for a rig run: the listener gets the rig file, and no
+    'SAVE is off' warning is printed."""
+    compiled = tmp_path / "x.json"
+    compiled.write_text(json.dumps({"tracks": [], "_meta": {"source": "config/rigs/x.yaml"}}))
+    wired = tmp_path / "x.qpwgraph"
+    wired.write_text("<patchbay/>")
+    monkeypatch.setattr(rig, "prepare_rig", lambda name, root, runtime, **kw: {
+        "config": compiled, "patchbay": wired, "source": "config/rigs/x.yaml", "warnings": [],
+    })
+    monkeypatch.setattr(rig, "resolve_rig_yaml", lambda config, root: "config/rigs/x.yaml")
+    seen = {}
+
+    def plan(root, config, rig_yaml, **kw):
+        seen["rig_yaml"] = rig_yaml
+        return []
+
+    monkeypatch.setattr(rig, "plan_children", plan)
+    up_world.say("READY", then_write=running_state(config_name="x", rig="config/rigs/x.yaml"))
+    assert rig.up("x", headless=False, amp=False, rig=True) == 0
+    assert seen["rig_yaml"] == "config/rigs/x.yaml"
+    assert "SAVE is off" not in capsys.readouterr().err
+
+
 def test_restart_brings_back_a_v2_rig_as_a_v2_rig():
     from sushi_rig.rig import restart_arguments
 
