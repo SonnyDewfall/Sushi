@@ -63,12 +63,11 @@ def call(agent, method, path, **kwargs):
 # --------------------------------------------------------------------------- #
 
 @pytest.mark.parametrize("command, body, expected", [
-    ("up", None, ["up", "electric_board"]),
-    ("up", {}, ["up", "electric_board"]),
     ("up", {"config_name": "guitar_vocal"}, ["up", "guitar_vocal"]),
-    ("up", {"headless": True, "tuner": False, "amp": False},
+    ("up", {"config_name": "electric_board", "headless": True, "tuner": False, "amp": False},
      ["up", "electric_board", "--headless", "--no-tuner", "--no-amp"]),
-    ("up", {"amp_model": "Some Amp.nam"}, ["up", "electric_board", "--amp-model", "Some Amp.nam"]),
+    ("up", {"config_name": "electric_board", "amp_model": "Some Amp.nam"},
+     ["up", "electric_board", "--amp-model", "Some Amp.nam"]),
     ("down", None, ["down"]),
     ("down", {"force": True}, ["down", "--force"]),
     ("restart", {"anything": "ignored"}, ["restart"]),
@@ -84,13 +83,13 @@ def test_each_request_is_one_fixed_command(command, body, expected):
     {"config_name": "-rf"},
     {"config_name": "guitar_vocal\n"},
     {"config_name": 7},
-    {"headless": "yes"},
-    {"amp_model": ""},
-    {"amp_model": "--help"},
-    {"amp_model": "/etc/passwd"},
-    {"amp_model": "../../.env"},
-    {"amp_model": "amp/models/M.nam"},
-    {"amp_model": "M.nam\n"},
+    {"config_name": "electric_board", "headless": "yes"},
+    {"config_name": "electric_board", "amp_model": ""},
+    {"config_name": "electric_board", "amp_model": "--help"},
+    {"config_name": "electric_board", "amp_model": "/etc/passwd"},
+    {"config_name": "electric_board", "amp_model": "../../.env"},
+    {"config_name": "electric_board", "amp_model": "amp/models/M.nam"},
+    {"config_name": "electric_board", "amp_model": "M.nam\n"},
     ["not", "an", "object"],
     [],
     0,
@@ -105,7 +104,7 @@ def test_an_argument_that_is_not_what_it_claims_is_refused(body):
 
 
 def test_an_amp_model_name_may_look_like_one():
-    assert lifecycle_arguments("up", {"amp_model": "Marshall JCM800 (crunch) v2.nam"})[-1] == \
+    assert lifecycle_arguments("up", {"config_name": "electric_board", "amp_model": "Marshall JCM800 (crunch) v2.nam"})[-1] == \
         "Marshall JCM800 (crunch) v2.nam"
 
 
@@ -147,7 +146,22 @@ def test_up_runs_the_cli_and_reports_what_it_said():
     assert body["rig"] == UP, "the answer carries the rig as it is after the command"
 
 
-def test_a_lifecycle_request_with_no_body_uses_the_defaults():
+@pytest.mark.parametrize("body", [None, {}, {"headless": True}])
+def test_up_without_a_config_name_is_refused(body):
+    """A stray body-less POST must not start a rig nobody asked for."""
+    with pytest.raises(AgentError, match="config_name is required: the name of a file in config/"):
+        lifecycle_arguments("up", body)
+
+
+def test_an_up_with_no_body_is_a_bad_request_and_runs_nothing():
+    runner = FakeRunner()
+    status, body = call(Agent(describe=lambda: dict(DOWN), run=runner), "POST", "/rig/up")
+    assert status == 400
+    assert "config_name is required" in body["reason"]
+    assert runner.calls == []
+
+
+def test_a_down_with_no_body_uses_the_defaults():
     runner = FakeRunner()
     status, _ = call(Agent(describe=lambda: dict(DOWN), run=runner), "POST", "/rig/down")
     assert status == 200
@@ -178,7 +192,7 @@ def test_a_command_the_cli_refuses_is_a_conflict_and_is_remembered():
     back, and health carries them until something else goes wrong."""
     refused = Outcome(False, 1, "", "a rig is already running: electric_board (panel mode), up 2m.\n")
     agent = Agent(describe=lambda: dict(UP), run=FakeRunner(refused))
-    status, body = call(agent, "POST", "/rig/up")
+    status, body = call(agent, "POST", "/rig/up", json={"config_name": "electric_board"})
     assert status == 409
     assert body["ok"] is False
     assert body["reason"].startswith("a rig is already running")
@@ -187,6 +201,43 @@ def test_a_command_the_cli_refuses_is_a_conflict_and_is_remembered():
     assert health["ok"] is True, "the agent is fine; the rig refused"
     assert health["agent"]["last_error"]["command"] == ["up", "electric_board"]
     assert health["agent"]["last_error"]["message"].startswith("a rig is already running")
+
+
+def test_a_success_clears_the_last_error():
+    """Otherwise one refused request is reported by a healthy agent forever."""
+    refused = Outcome(False, 1, "", "a rig is already running: electric_board.\n")
+    runner = FakeRunner(refused)
+    agent = Agent(describe=lambda: dict(UP), run=runner)
+    status, _ = call(agent, "POST", "/rig/up", json={"config_name": "electric_board"})
+    assert status == 409
+    _, health = call(agent, "GET", "/health")
+    assert health["agent"]["last_error"] is not None
+
+    runner.outcome = Outcome(True, 0, "stopped\n", "")
+    status, _ = call(agent, "POST", "/rig/down")
+    assert status == 200
+    _, health = call(agent, "GET", "/health")
+    assert health["agent"]["last_error"] is None
+
+
+def test_stopping_says_so_and_whether_a_command_was_running(capsys):
+    """SIGTERM stops aiohttp silently; this line is how a log tells a handled
+    stop from a kill. TestServer runs on_shutdown when it closes, as run_app
+    does on a signal."""
+    agent = Agent(describe=lambda: dict(DOWN))
+    app = agent.app()
+    app.on_shutdown.append(agent.announce_stopping)
+
+    async def go():
+        async with TestClient(TestServer(app)):
+            pass
+
+    asyncio.run(go())
+    assert "sushi-rig agent stopping (no lifecycle command running)" in capsys.readouterr().out
+
+    agent.busy = "up"
+    asyncio.run(agent.announce_stopping())
+    assert "sushi-rig agent stopping ('up' still running)" in capsys.readouterr().out
 
 
 def test_one_lifecycle_command_at_a_time():
@@ -204,7 +255,7 @@ def test_one_lifecycle_command_at_a_time():
 
     async def go():
         async with TestClient(TestServer(agent.app())) as client:
-            first = asyncio.ensure_future(client.post("/rig/up"))
+            first = asyncio.ensure_future(client.post("/rig/up", json={"config_name": "electric_board"}))
             await started.wait()
             second = await client.post("/rig/down")
             assert second.status == 409
@@ -226,7 +277,7 @@ def test_a_command_the_agent_gave_up_on_says_what_to_read_next():
                         "so the agent stopped waiting for it. What it started, if anything, "
                         "is still running: read /rig.")
     agent = Agent(describe=lambda: dict(UP), run=FakeRunner(abandoned))
-    status, body = call(agent, "POST", "/rig/up")
+    status, body = call(agent, "POST", "/rig/up", json={"config_name": "electric_board"})
     assert status == 504
     assert "read /rig" in body["reason"]
     assert body["rig"]["running"] is True, "and the answer already carries it"
@@ -256,6 +307,21 @@ def test_a_body_that_is_not_text_is_a_bad_request_not_a_crash():
     assert status == 400
     assert "not JSON" in body["reason"]
     assert runner.calls == []
+
+
+def test_a_lifecycle_success_does_not_forget_an_unrelated_crash():
+    """A broken /doctor says nothing about the rig coming up, so a `down` that
+    works must not clear it; only a lifecycle failure is superseded."""
+    def broken():
+        raise OSError("pw-dump missing")
+
+    agent = Agent(describe=lambda: dict(DOWN), doctor=broken, run=FakeRunner())
+    status, _ = call(agent, "GET", "/doctor")
+    assert status == 500
+    status, _ = call(agent, "POST", "/rig/down")
+    assert status == 200
+    _, health = call(agent, "GET", "/health")
+    assert health["agent"]["last_error"]["message"] == "OSError: pw-dump missing"
 
 
 def test_a_route_that_does_not_exist_is_json_too():

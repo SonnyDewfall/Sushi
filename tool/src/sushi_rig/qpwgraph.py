@@ -31,8 +31,15 @@ QPWGRAPH_EXIT_TIMEOUT = 5.0
 QPWGRAPH_ATTEMPTS = 3
 QPWGRAPH_SETTLE = 1.5
 
-# How long to let qpwgraph finish wiring a node before calling it unwired.
-PATCHBAY_SETTLE = 3.0
+# How long `unconnected_inputs` waits for a node to appear and be wired before
+# calling it missing or unwired. It polls (every 0.25 s) and returns the moment
+# the node is wired, so a long limit costs nothing when all is well. 3.0 was too
+# short: on a cold start fmit (the tuner) took more than 3 s to register its
+# ALSA capture node with PipeWire on sonny-dewfall-XPS-9320 (2026-11-01), so
+# `up` warned that PipeWire listed no alsa_capture.fmit ports when the node was
+# merely late; the next `up` was fine. The cost lands only on the failure path:
+# a tuner that never appears now holds `up` for 10 s before READY, not 3.
+PATCHBAY_SETTLE = 10.0
 
 # A bound on each `pw-link` call, so a hung one cannot hold up startup.
 PATCHBAY_TIMEOUT = 2.0

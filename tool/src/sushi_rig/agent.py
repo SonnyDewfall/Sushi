@@ -8,7 +8,7 @@ and the two things worth reading about a rig, served over HTTP on localhost.
     GET  /health        the agent and the rig, in one answer
     GET  /rig           what is running, if anything (`describe_rig`)
     GET  /doctor        `doctor`'s checks, as data
-    POST /rig/up        {"config_name", "headless", "tuner", "amp", "amp_model"}
+    POST /rig/up        {"config_name" (required), "headless", "tuner", "amp", "amp_model"}
     POST /rig/down      {"force"}
     POST /rig/restart   {}
 
@@ -52,7 +52,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Sequence
 
-from .rig import DEFAULT_CONFIG_NAME, describe_rig
+from .rig import describe_rig
 
 try:
     from aiohttp import web
@@ -127,7 +127,13 @@ def lifecycle_arguments(command: str, body: dict[str, Any] | None) -> list[str]:
         return value
 
     if command == "up":
-        name = body.get("config_name", DEFAULT_CONFIG_NAME)
+        # Required, with no default: against an idle agent a stray body-less
+        # POST would otherwise start a rig nobody asked for (found live,
+        # 2026-11-01). `down` and `restart` act on a rig that exists; `up`
+        # makes one, so it must be told which.
+        if "config_name" not in body:
+            raise AgentError("config_name is required: the name of a file in config/")
+        name = body["config_name"]
         if not isinstance(name, str) or not CONFIG_NAME.fullmatch(name) or ".." in name:
             raise AgentError(f"invalid config name {name!r}: letters, digits, '_', '-' and '.'")
         args = ["up", name]
@@ -192,7 +198,8 @@ async def run_cli(
 
 class Agent:
     """The routes and the one piece of state they share: whether a lifecycle
-    command is running, and the last thing that went wrong.
+    command is running, and the last thing that went wrong (until a lifecycle
+    command next succeeds).
 
     Everything that touches the world is injectable, so the routes are tested
     without a rig, a PipeWire or a child process: `describe` answers for the
@@ -285,6 +292,14 @@ class Agent:
                 outcome = await self.run(args)
             finally:
                 self.busy = None
+            if outcome.ok and (self.last_error or {}).get("kind") == "lifecycle":
+                # A later success supersedes the old failure: left in place,
+                # a healthy agent reports a refused request forever and
+                # /health cannot be trusted to say "nothing is wrong now".
+                # Only a lifecycle failure, though: an unexpected error from
+                # /doctor or /rig says nothing about the rig coming up, so a
+                # `down` that works must not forget it.
+                self.last_error = None
 
         answer: dict[str, Any] = {
             "ok": outcome.ok,
@@ -300,12 +315,23 @@ class Agent:
         # is a conflict with the rig's state, 409. The agent gave up waiting:
         # 504, and the rig in the answer is what to read next.
         reason = outcome.stderr.strip() or f"exit status {outcome.returncode}"
-        self._remember(args, reason)
+        self._remember(args, reason, kind="lifecycle")
         answer["reason"] = reason
         return web.json_response(answer, status=504 if outcome.abandoned else 409)
 
-    def _remember(self, command: list[str] | None, reason: str) -> None:
+    async def announce_stopping(self, app=None) -> None:
+        """Say on stdout that the agent is stopping, and whether it was
+        mid-command. SIGTERM and SIGINT stop aiohttp cleanly and silently, so
+        afterwards "stopped cleanly" and "killed mid-request" looked the same
+        in the log (2026-11-01). A line here means the stop was handled; its
+        absence, with the process gone, means it was killed outright.
+        """
+        doing = f"'{self.busy}' still running" if self.busy else "no lifecycle command running"
+        print(f"sushi-rig agent stopping ({doing})", flush=True)
+
+    def _remember(self, command: list[str] | None, reason: str, kind: str = "request") -> None:
         self.last_error = {
+            "kind": kind,
             "command": command,
             "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
             "message": reason,
@@ -336,6 +362,8 @@ def serve(host: str, port: int, root: Path | None = None) -> int:
         raise AgentError("aiohttp is not installed; pip install -e tool[agent]")
 
     agent = Agent(root=root)
+    app = agent.app()
+    app.on_shutdown.append(agent.announce_stopping)
     print(f"sushi-rig agent {VERSION} on http://{host}:{port}  (Ctrl+C to stop)", flush=True)
-    web.run_app(agent.app(), host=host, port=port, print=None, handle_signals=True)
+    web.run_app(app, host=host, port=port, print=None, handle_signals=True)
     return 0
