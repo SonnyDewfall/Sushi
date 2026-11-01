@@ -73,6 +73,82 @@ def ports_without_sources(listing: str, node: str) -> list[str]:
     return unconnected
 
 
+def listed_links(listing: str) -> set[tuple[str, str]]:
+    """Every link in a `pw-link -l` listing, as (source port, sink port).
+
+    The listing names a port on its own line and indents one line per link
+    under it: `|->` to a sink when the port is a source, `|<-` from a source
+    when it is a sink. Both directions are read, so a link appears whichever
+    of its two ends the listing happened to print it under.
+    """
+    links: set[tuple[str, str]] = set()
+    port: str | None = None
+    for line in listing.splitlines():
+        text = line.strip()
+        if not text:
+            continue
+        if not line[0].isspace():
+            port = text
+            continue
+        if port is None:
+            continue
+        if text.startswith("|->"):
+            links.add((port, text[3:].strip()))
+        elif text.startswith("|<-"):
+            links.add((text[3:].strip(), port))
+    return links
+
+
+def unmade_links(
+    wanted: list, names: dict[str, list[str]], listing: str
+) -> list[tuple[str, str]]:
+    """The (source, sink) pairs a patchbay asked for that the graph does not
+    have, by alias as the patchbay wrote them.
+
+    `wanted` is the patchbay's links (`patchbay.parse_patchbay`), `names` the
+    alias -> live-name map (`patchbay.live_port_names`), `listing` the output
+    of `pw-link -l`. A link is made if any live name of its source is linked
+    to any live name of its sink; an alias with no live name is unmade, since
+    a port that is not in the graph cannot be wired. Pure: this is the decision
+    behind the warning `_supervise` prints, so it is pinned by tests rather
+    than by a rig.
+
+    Why this exists (2026-11-01): a rig can come up with every process healthy
+    and a channel's source never reaching it -- the committed patchbay would
+    have put guitar_vocal's guitar into the vocal channel and left the
+    microphone silent, and nothing checked. The tuner had this check; every
+    link does now.
+    """
+    made = listed_links(listing)
+    missing: list[tuple[str, str]] = []
+    for link in wanted:
+        sources = names.get(link.out_port, [link.out_port])
+        sinks = names.get(link.in_port, [link.in_port])
+        if not any((a, b) in made for a in sources for b in sinks):
+            missing.append((link.out_port, link.in_port))
+    return missing
+
+
+def wait_for_links(
+    wanted: list, names: dict[str, list[str]], settle: float = PATCHBAY_SETTLE
+) -> list[tuple[str, str]]:
+    """The patchbay's links still unmade once qpwgraph has had `settle`
+    seconds to make them, polling like `unconnected_inputs` and returning the
+    moment every link is there. Lets `OSError` and `TimeoutExpired` out, so
+    the caller can tell an unwired rig from a question it failed to ask.
+    """
+    deadline = time.monotonic() + settle
+    while True:
+        result = subprocess.run(
+            ["pw-link", "-l"], capture_output=True, text=True, check=False,
+            timeout=PATCHBAY_TIMEOUT,
+        )
+        missing = unmade_links(wanted, names, result.stdout)
+        if not missing or time.monotonic() >= deadline:
+            return missing
+        time.sleep(0.25)
+
+
 def node_ports(listing: str, node: str) -> list[str]:
     """Every input port of `node` the listing names, wired or not.
 

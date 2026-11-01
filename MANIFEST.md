@@ -1278,3 +1278,15 @@ capture node took longer than 3 s to appear on a cold start, so `up` warned of a
 missing tuner node that was only late. The wait already polled every 0.25 s and
 returns as soon as the node is wired, so the common case is no slower.
 *(2026-11-01)*
+
+**`up` checks that every link in its patchbay was made.** Until now only the
+tuner's input was checked after start; a channel whose source never reached
+it came up with every process healthy and no sound, which is what the
+committed patchbay would have done to a v2 guitar_vocal (read off the files
+on 2026-11-01). The supervisor now reads the patchbay qpwgraph was started
+with, maps each alias to the name `pw-link` lists it under (through pw-dump's
+`port.alias` and `node.name`, since the two tools name a port differently),
+waits the settle for the links to appear, and reports every link not made as
+one loud warning naming the pairs. A graph it cannot ask is said to be
+unchecked, never passed over, and nothing here can take a playing rig down.
+*(2026-11-01)*

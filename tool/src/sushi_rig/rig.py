@@ -563,14 +563,11 @@ def _supervise(
         # name its ports leaves the tuner running and deaf, which looks exactly
         # like a tuner that cannot hear the guitar — so it is said out loud
         # rather than left to be discovered mid-session (principle 8).
+        # The file qpwgraph was started with: the committed one, the amp's
+        # rewiring of it, or a v2 rig's own. Saving anywhere else changes
+        # nothing, so the advice below names it rather than assuming the first.
+        patchbay_loaded = _patchbay_in(children_plan, root)
         if "fmit" in procs and procs["fmit"].poll() is None:
-            # The file qpwgraph was started with: the committed one, the amp's
-            # rewiring of it, or a v2 rig's own. Saving anywhere else changes
-            # nothing, so the advice names it rather than assuming the first.
-            patchbay_loaded = next(
-                (c["command"][2] for c in children_plan if c["name"] == "qpwgraph"),
-                root / "Patchbay" / "rig.qpwgraph",
-            )
             # Guarded, unlike its neighbours' `poll()` calls, because this one
             # shells out. Every check here is deliberately non-fatal -- it
             # appends to `problems` and the rig still comes up -- but an
@@ -603,6 +600,15 @@ def _supervise(
                         f"{patchbay_loaded}, or the tuner will "
                         "show nothing"
                     )
+
+        # Every link the loaded patchbay asked for, not only the tuner's: a
+        # channel whose source never reaches it is a rig that comes up healthy
+        # and silent, which is how the committed patchbay would have treated a
+        # v2 guitar_vocal (read off the files, 2026-11-01). Non-fatal like its
+        # neighbours, and guarded for the same reason: a `pw-dump` or `pw-link`
+        # that cannot run must not cost a rig that is playing.
+        if "qpwgraph" in procs and procs["qpwgraph"].poll() is None:
+            problems += _unmade_link_problems(patchbay_loaded)
 
         if amp_model and "amp" in procs and procs["amp"].poll() is None:
             # Carla starts with the model but with the plugin's own default
@@ -654,6 +660,49 @@ def _supervise(
             signal.pause()
         except InterruptedError:
             continue
+
+
+def _patchbay_in(children_plan: list[dict[str, Any]], root: Path) -> Path:
+    """The patchbay file qpwgraph was planned with: the argument after `-a`,
+    or the committed file when the plan names none (a stubbed plan in a test,
+    or a qpwgraph started some other way). Pure, and tolerant of a command
+    that is not qpwgraph's real one, because the supervisor's blanket `except`
+    turns any surprise here into a FAIL that tears down a playing rig."""
+    for child in children_plan:
+        if child.get("name") != "qpwgraph":
+            continue
+        command = list(child.get("command") or [])
+        if "-a" in command and command.index("-a") + 1 < len(command):
+            return Path(command[command.index("-a") + 1])
+    return root / "Patchbay" / "rig.qpwgraph"
+
+
+def _unmade_link_problems(patchbay: Path) -> list[str]:
+    """What to say about links the loaded patchbay asked for and the graph
+    lacks: one problem naming them all, or one saying the check could not be
+    made. Never raises: this runs inside the supervisor's try, where an
+    exception would report FAIL and tear down a playing rig."""
+    from .patchbay import PatchbayError, live_port_names, parse_patchbay, read_pw_dump
+    from .qpwgraph import wait_for_links
+
+    try:
+        wanted = parse_patchbay(patchbay.read_text())
+        names = live_port_names(read_pw_dump())
+        missing = wait_for_links(wanted, names)
+    except (OSError, subprocess.TimeoutExpired, PatchbayError) as exc:
+        return [
+            f"could not check whether {patchbay.name}'s links were made ({exc}) — "
+            "if a channel is silent, look at the patchbay in qpwgraph"
+        ]
+    if not missing:
+        return []
+    shown = ", ".join(f"{a} -> {b}" for a, b in missing[:6])
+    more = f" and {len(missing) - 6} more" if len(missing) > 6 else ""
+    return [
+        f"{len(missing)} link(s) in {patchbay.name} were not made: {shown}{more}. "
+        "A channel whose input is among them is silent while everything looks "
+        "healthy; check the device is present and the machine file names its ports"
+    ]
 
 
 def _replay_amp(values: dict[str, float], timeout: float = 5.0) -> None:

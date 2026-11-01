@@ -268,6 +268,32 @@ def test_a_v2_runs_artefacts_cannot_collide_with_the_state_file(tmp_path):
     assert out["config"].name != state_path().name or out["config"].parent != tmp_path / "run"
 
 
+def test_the_patchbay_the_supervisor_checks_is_the_one_qpwgraph_loaded(tmp_path):
+    plan = [{"name": "qpwgraph", "command": ["qpwgraph", "-a", str(tmp_path / "x.qpwgraph"), "-m"]}]
+    assert rig._patchbay_in(plan, ROOT) == tmp_path / "x.qpwgraph"
+    assert rig._patchbay_in([{"name": "qpwgraph", "command": ["true"]}], ROOT) == ROOT / "Patchbay" / "rig.qpwgraph"
+    assert rig._patchbay_in([], ROOT) == ROOT / "Patchbay" / "rig.qpwgraph"
+
+
+def test_unmade_links_are_one_loud_problem_and_an_unaskable_graph_is_said(tmp_path, monkeypatch):
+    patchbay = tmp_path / "p.qpwgraph"
+    patchbay.write_text((ROOT / "Patchbay" / "rig.qpwgraph").read_text())
+    monkeypatch.setattr("sushi_rig.patchbay.read_pw_dump", lambda *a, **k: "[]")
+    monkeypatch.setattr("sushi_rig.qpwgraph.wait_for_links",
+                        lambda wanted, names, settle=0: [("Audient iD14:capture_AUX1", "sushi:audio_input_1")])
+    (problem,) = rig._unmade_link_problems(patchbay)
+    assert "1 link(s) in p.qpwgraph were not made: Audient iD14:capture_AUX1 -> sushi:audio_input_1" in problem
+    assert "silent while everything looks healthy" in problem
+
+    def cannot(*a, **k):
+        raise OSError("no pw-link")
+
+    monkeypatch.setattr("sushi_rig.qpwgraph.wait_for_links", cannot)
+    (problem,) = rig._unmade_link_problems(patchbay)
+    assert "could not check" in problem and "no pw-link" in problem
+    assert rig._unmade_link_problems(tmp_path / "missing.qpwgraph")[0].startswith("could not check")
+
+
 def test_restart_brings_back_a_v2_rig_as_a_v2_rig():
     from sushi_rig.rig import restart_arguments
 
