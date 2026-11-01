@@ -296,3 +296,85 @@ def test_captured_properties_are_checked_not_written(tmp_path, monkeypatch):
     out = save_config("riff", rig, tmp_path / "out", tmp_path / "archive")
     (entry,) = __import__("json").loads(out.read_text())["initial_state"]
     assert entry == {"processor": "ir", "parameters": {"gain": 0.5}}
+
+
+# --- save_rig: a rig of channels (#30's last slice) --------------------------
+
+import textwrap as _tw  # noqa: E402
+
+from sushi_rig.save import save_any, save_rig  # noqa: E402
+
+RIG_OF_CHANNELS = _tw.dedent("""\
+    # A hand-written rig.
+    kind: rig
+    schema_version: 1
+    name: riff
+    channels:
+    - name: board
+      input: guitar-in
+      width: mono
+      chain:
+      - name: eq   # keep
+        uri: urn:eq
+        parameters: {Low: 0.4}
+    master:
+      output: monitor-out
+      chain: []
+    amp:
+      plugin: nam
+      model: amp/models/Neve 2.nam
+      parameters: {Input Lvl: 0.0, Output Lvl: 6.0, Quality: 1.0}
+    """)
+
+
+@pytest.fixture
+def rigs(tmp_path, monkeypatch):
+    rigs = tmp_path / "config" / "rigs"
+    rigs.mkdir(parents=True)
+    (rigs / "riff.yaml").write_text(RIG_OF_CHANNELS)
+    monkeypatch.setattr("sushi_rig.save.capture", lambda address: {
+        "processors": {"eq": {"parameters": {"Low": 0.6000000238418579}}},
+        "tracks": {"board": ["eq", "board_send"], "master": ["master_return"]},
+    })
+    return rigs
+
+
+def test_save_rig_updates_its_own_file_in_place_with_comments_and_rounding(rigs):
+    out = save_rig("riff", rigs / "riff.yaml")
+    assert out == rigs / "riff.yaml"
+    text = out.read_text()
+    assert "# A hand-written rig." in text and "# keep" in text
+    assert "Low: 0.6" in text and "0.6000000" not in text
+
+
+def test_save_rig_under_a_new_name_is_a_new_file_beside_the_source(rigs):
+    out = save_rig("riff-2", rigs / "riff.yaml")
+    assert out == rigs / "riff-2.yaml" and out.is_file()
+    assert "name: riff-2" in out.read_text()
+    assert "Low: 0.4" in (rigs / "riff.yaml").read_text(), "the source is untouched"
+
+
+def test_save_rig_refuses_a_name_that_is_another_rigs(rigs):
+    (rigs / "hall.yaml").write_text(RIG_OF_CHANNELS.replace("name: riff", "name: hall"))
+    with pytest.raises(SaveError, match="a rig called hall already exists"):
+        save_rig("hall", rigs / "riff.yaml")
+    assert "name: hall" in (rigs / "hall.yaml").read_text(), "and it is as it was"
+
+
+def test_a_run_without_the_amp_leaves_the_files_amp_alone(rigs):
+    """`--no-amp` says nothing about the amp; a config's archive could give a
+    removed amp back, a rig file's cannot."""
+    save_rig("riff", rigs / "riff.yaml", amp_model=None)
+    assert "model: amp/models/Neve 2.nam" in (rigs / "riff.yaml").read_text()
+    save_rig("riff", rigs / "riff.yaml", amp_model="amp/models/Other.nam", amp_parameters={"Output Lvl": 2.0})
+    text = (rigs / "riff.yaml").read_text()
+    assert "model: amp/models/Other.nam" in text and "Output Lvl: 2.0" in text
+
+
+def test_save_any_chooses_by_the_files_kind(rigs, rig_path, tmp_path, monkeypatch):
+    assert save_any("riff", rigs / "riff.yaml", tmp_path / "out", tmp_path / "archive") == rigs / "riff.yaml"
+    monkeypatch.setattr("sushi_rig.save.capture", lambda address: FAKE_STATE)  # the v1 rig's own capture
+    out = save_any("bright", rig_path, tmp_path / "out", tmp_path / "archive")
+    assert out == tmp_path / "out" / "bright.json"
+    with pytest.raises(SaveError, match="rig source not found"):
+        save_any("x", tmp_path / "nope.yaml", tmp_path / "out", tmp_path / "archive")

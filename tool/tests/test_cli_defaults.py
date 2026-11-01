@@ -50,7 +50,7 @@ def test_save_resolves_its_directories_from_the_checkout_not_the_cwd(
         seen.update(out_dir=out_dir, archive_dir=archive_dir)
         return out_dir / f"{name}.json"
 
-    monkeypatch.setattr(save, "save_config", fake_save)
+    monkeypatch.setattr(save, "save_any", fake_save)
     monkeypatch.chdir(tmp_path)
     assert cli.main(["save", "bright", "--rig", "rig.yaml"]) == 0
     assert seen["out_dir"] == checkout_root() / "config"

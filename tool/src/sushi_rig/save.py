@@ -23,7 +23,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any
 
-from .amp import write_amp
+from .amp import CONFIG_KEY as AMP_KEY, write_amp
 from .emit import EmitError, emit
 from .live import DEFAULT_GRPC_ADDRESS, capture
 from .spec import RigSpec
@@ -78,8 +78,8 @@ def save_config(
     try:
         rig = RigSpec.load(rig_path)
     except ValueError as exc:
-        # A v2 rig file (rigfile.py): RigSpec.load refuses it by name. Saving
-        # one is #30's last slice; until then this is a refusal, not a crash.
+        # A rig of channels (rigfile.py): RigSpec.load refuses it by name, and
+        # `save_rig` is what saves it; `save_any` chooses between the two.
         raise SaveError(f"cannot save from {rig_path}: {exc}") from exc
     state = capture(address)
     # Captured properties are for checking a rig, not for writing one: which
@@ -114,6 +114,109 @@ def save_config(
     config["_meta"] = meta
 
     out_path.write_text(json.dumps(config, indent=2) + "\n")
+    return out_path
+
+
+def save_any(
+    name: str,
+    rig_path: Path,
+    out_dir: Path,
+    archive_dir: Path,
+    address: str = DEFAULT_GRPC_ADDRESS,
+    amp_model: str | None = None,
+    amp_parameters: dict[str, float] | None = None,
+) -> Path:
+    """Save the running rig from whichever kind of source `rig_path` is: a
+    rig of channels is written back into its own file beside the source
+    (`save_rig`); a rig.yaml of tracks becomes `<out_dir>/<name>.json`
+    (`save_config`). One decision for the CLI and the listener, read once
+    from the file's `kind`."""
+    import yaml
+
+    from .spec import looks_like_rig_file
+
+    rig_path = Path(rig_path)
+    if not rig_path.is_file():
+        raise SaveError(f"rig source not found: {rig_path}")
+    try:
+        raw = yaml.safe_load(rig_path.read_text())
+    except (OSError, yaml.YAMLError) as exc:
+        raise SaveError(f"cannot read {rig_path}: {exc}") from exc
+    if looks_like_rig_file(raw):
+        return save_rig(name, rig_path, address, amp_model=amp_model,
+                        amp_parameters=amp_parameters, raw=raw)
+    return save_config(name, rig_path, out_dir, archive_dir, address,
+                       amp_model=amp_model, amp_parameters=amp_parameters)
+
+
+def save_rig(
+    name: str,
+    rig_path: Path,
+    address: str = DEFAULT_GRPC_ADDRESS,
+    amp_model: str | None = None,
+    amp_parameters: dict[str, float] | None = None,
+    raw: dict[str, Any] | None = None,
+) -> Path:
+    """Capture the running Sushi's state and write it into a rig of channels,
+    `<name>.yaml` beside `rig_path` (#30's last slice, the half SAVE is).
+
+    The rig file is the source, so under its own name it is updated in place
+    through `write_rig` and keeps its comments. A new name is a new file; a
+    name that already belongs to another rig file is refused, because
+    updating that file in place would turn it into this rig and there is no
+    archive to get it back from: the file is in git, and git is the archive
+    (principle 5). The compiled config is not written, since `up --rig`
+    compiles the file at every start.
+
+    A run without the amp (`--no-amp`, or an amp that failed to start) says
+    nothing about the amp, so the file's `amp` is left as it is; `save_config`
+    removes it from a config, which a config's archive can give back and a
+    rig file's cannot.
+    """
+    import yaml
+
+    from .rigfile import RigFileError, fold_state, write_rig
+    from .spec import looks_like_rig_file
+
+    validate_name(name)
+    rig_path = Path(rig_path)
+    if raw is None:
+        if not rig_path.is_file():
+            raise SaveError(f"rig source not found: {rig_path}")
+        try:
+            raw = yaml.safe_load(rig_path.read_text())
+        except yaml.YAMLError as exc:
+            raise SaveError(f"cannot read {rig_path}: {exc}") from exc
+    if not looks_like_rig_file(raw):
+        raise SaveError(f"{rig_path} is not a rig of channels; save_config saves a v1 rig")
+
+    out_path = rig_path.with_name(f"{name}.yaml")
+    if out_path != rig_path and out_path.exists():
+        raise SaveError(
+            f"a rig called {name} already exists at {out_path}; saving over it would "
+            f"turn it into {rig_path.stem}. Choose another name, or run that rig and save it"
+        )
+
+    state = capture(address)
+    # Captured properties are for checking a rig, not for writing one (see
+    # save_config and rigfile.merged_state).
+    for values in state.get("processors", {}).values():
+        values.pop("properties", None)
+    try:
+        folded = fold_state(raw, state)
+    except RigFileError as exc:
+        raise SaveError("; ".join(exc.problems)) from exc
+
+    folded["name"] = name
+    if amp_model is not None:
+        # The amp rides in the rig file as it does in a config: the values the
+        # listener last sent, since Carla cannot be asked. See amp.py.
+        folded["amp"] = write_amp({}, amp_model, amp_parameters or {})[AMP_KEY]
+
+    try:
+        write_rig(out_path, folded)
+    except RigFileError as exc:
+        raise SaveError("; ".join(exc.problems)) from exc
     return out_path
 
 

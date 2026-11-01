@@ -1215,10 +1215,10 @@ def main(argv: list[str] | None = None) -> int:
         )
         return 1 if failed else 0
     elif args.command == "save":
-        from .save import SaveError, save_config
+        from .save import SaveError, save_any
 
         try:
-            out_path = save_config(
+            out_path = save_any(
                 args.name, args.rig, *_config_dirs(args), args.address
             )
         except SaveError as exc:

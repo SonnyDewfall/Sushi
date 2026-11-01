@@ -175,12 +175,57 @@ def test_a_system_exit_from_library_code_is_a_message_not_the_end(tmp_path, rig_
     assert handle_save("riff", rig_path, tmp_path, tmp_path / "archive") == "save failed: elkpy not found"
 
 
-def test_saving_from_a_v2_rig_file_is_refused_by_name(tmp_path, fake_capture):
-    """Until #30's last slice, save writes v1 configs from a rig.yaml of
-    tracks; a channels-and-master file is refused rather than read as a rig
-    with no tracks."""
+def test_a_capture_of_a_different_rig_is_refused_not_written_into_a_rig_of_channels(tmp_path, fake_capture):
+    """The autouse capture is of the v1 test rig (`comp` on `fx_track`); folded
+    into guitar_vocal it would be a different rig under that name."""
     from sushi_rig.paths import checkout_root
 
     said = handle_save("riff", checkout_root() / "config" / "rigs" / "guitar_vocal.yaml",
                        tmp_path, tmp_path / "archive")
-    assert said.startswith("save failed: cannot save from") and "rig file" in said
+    assert said.startswith("save failed: the capture names comp")
+    assert not (tmp_path / "rigs" / "riff.yaml").exists()
+
+
+def test_a_rig_of_channels_is_saved_as_one_with_its_comments(tmp_path, monkeypatch):
+    """SAVE on a v2 run (#30's last slice): the rig file is updated in place
+    through write_rig, so the player's comments survive, and the compiled
+    config is never written into config/."""
+    import textwrap
+
+    rigs = tmp_path / "config" / "rigs"
+    rigs.mkdir(parents=True)
+    source = rigs / "riff.yaml"
+    source.write_text(textwrap.dedent("""\
+        # Hand-written, with a comment worth keeping.
+        kind: rig
+        schema_version: 1
+        name: riff
+        channels:
+        - name: board
+          input: guitar-in
+          width: mono
+          chain:
+          - name: eq          # the one knob that matters
+            uri: urn:eq
+            parameters: {Low: 0.4}
+        master:
+          output: monitor-out
+          chain: []
+        """))
+    monkeypatch.setattr("sushi_rig.save.capture", lambda address: {
+        "processors": {"eq": {"bypassed": True, "parameters": {"Low": 0.6}}},
+        "tracks": {"board": ["eq", "board_send"], "master": ["master_return"]},
+    })
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
+    said = handle_save("riff", source, tmp_path / "config", tmp_path / "archive",
+                       sushi_bin="definitely-not-a-real-binary")
+    assert said.startswith("saved riff.yaml"), said
+    text = source.read_text()
+    assert "# Hand-written, with a comment worth keeping." in text
+    assert "# the one knob that matters" in text
+    assert "Low: 0.6" in text and "bypassed: true" in text
+    assert not (tmp_path / "config" / "riff.json").exists(), "the compiled config stays out of config/"
+    assert (tmp_path / "run" / "sushi-rig" / "checks" / "riff.json").exists(), "but was compiled for the check"
+    assert not (tmp_path / "run" / "sushi-rig" / "rigs").exists(), "and not where the running rig's compiled config lives"
+
+

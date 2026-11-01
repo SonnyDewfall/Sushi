@@ -379,8 +379,11 @@ two-channel rig has not been. `restart` brings a v2 rig back as one, and
 `status` names the rig file. After any `up`, v1 or v2, the supervisor checks
 that every link in the patchbay it loaded was actually made, and warns naming
 the pairs that were not: a channel whose source never reached it is silent
-while everything looks healthy, and that is said rather than discovered. SAVE is still off for v2 rigs; that is the rest
-of the slice.
+while everything looks healthy, and that is said rather than discovered. SAVE works on a rig run: the panel's SAVE folds the
+live capture back into the rig file itself, in place and keeping its comments
+(a new name writes a new file), and never writes a compiled config into
+`config/`. A v1 run whose source is a rig of channels still has SAVE off, since
+saving the rig would leave the v1 config behind; it says to use `--rig`.
 
 `up` starts everything and hands the prompt back — the rig is detached, so it
 survives closing the terminal. Child output goes to log files rather than your

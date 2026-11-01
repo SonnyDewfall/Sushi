@@ -36,7 +36,7 @@ from typing import TYPE_CHECKING
 
 from .amp import AmpError, CARLA_OSC_PORT, parameter_message
 from .live import DEFAULT_GRPC_ADDRESS, move_processor, refresh_panel
-from .save import SaveError, save_config
+from .save import SaveError, save_any
 
 if TYPE_CHECKING:
     from .transport import Session
@@ -76,6 +76,26 @@ NO_SOURCE = (
 )
 
 
+def _checkable(saved: Path) -> Path:
+    """The config `verify` can check for what was just saved: the file itself
+    for a config, or the compiled form of a rig of channels, written under a
+    scratch directory beside the state file. Not into config/, and not where
+    `prepare_rig` put the running rig's compiled config, which Sushi loaded and
+    `--panel-config` reads: a check must not overwrite what is running."""
+    import json
+
+    from .paths import runtime_dir
+    from .rigfile import emit_rig, load_rig
+
+    if saved.suffix != ".yaml":
+        return saved
+    out = runtime_dir() / "checks"
+    out.mkdir(parents=True, exist_ok=True)
+    compiled = out / f"{saved.stem}.json"
+    compiled.write_text(json.dumps(emit_rig(load_rig(saved)), indent=2) + "\n")
+    return compiled
+
+
 def handle_save(
     name: str,
     rig_path: Path | None,
@@ -96,7 +116,9 @@ def handle_save(
     if rig_path is None:
         return NO_SOURCE
     try:
-        out_path = save_config(
+        # A rig of channels is written back beside its source, with its
+        # comments; a rig.yaml of tracks becomes a config. save_any decides.
+        out_path = save_any(
             name, rig_path, out_dir, archive_dir, address,
             amp_model=amp_model, amp_parameters=amp_parameters,
         )
@@ -118,7 +140,7 @@ def handle_save(
     try:
         from .verify import verify
 
-        problems = verify(out_path, sushi_bin, quick=True)
+        problems = verify(_checkable(out_path), sushi_bin, quick=True)
     except SystemExit as exc:
         return f"saved {out_path.name}, but it does not load: {exc}"
     except Exception as exc:  # noqa: BLE001 - keep the listener alive
