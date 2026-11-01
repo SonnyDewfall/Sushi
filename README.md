@@ -366,6 +366,19 @@ sushi-rig down              # stop everything, and verify it stopped
 `up` also takes `--no-amp`, `--no-tuner`, and `--amp-model "Some Model.nam"` to
 audition a different amp capture without editing the config.
 
+`up --rig <name>` runs a rig of channels, `config/rigs/<name>.yaml` (#30): the
+rig is compiled at start into the runtime directory, never into `config/`, and
+its patchbay is generated from the rig and the machine file rather than loaded
+from `Patchbay/rig.qpwgraph`. The committed patchbay describes the v1 layout,
+and on `guitar_vocal` it would feed the guitar into input 1, the vocal channel
+under v2, and wire the microphone to inputs the rig does not read, with the rig
+looking healthy throughout; a v2 rig therefore always brings its own. Opt-in
+rather than the default while a v1 config of the same name exists: the monitor
+path was heard to be the same on 2026-11-01 (two rigs, amp included), but a
+two-channel rig has not been. `restart` brings a v2 rig back as one, and
+`status` names the rig file. SAVE is still off for v2 rigs; that is the rest
+of the slice.
+
 `up` starts everything and hands the prompt back — the rig is detached, so it
 survives closing the terminal. Child output goes to log files rather than your
 terminal; `status` prints the paths. It refuses to start a second rig on top of
