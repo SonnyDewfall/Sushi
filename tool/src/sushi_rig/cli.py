@@ -177,9 +177,8 @@ def _patchbay(args: argparse.Namespace) -> int:
     """`patchbay check` and `patchbay generate`."""
     from .machine import MachineError, MachineSpec, machine_path
     from .patchbay import (
-        GUITAR_ROLE, PatchbayError, check_nodes, generate_patchbay,
-        live_node_names, live_port_nodes, parse_patchbay, read_pw_dump,
-        resolve_nodes, routes_from_rig, tuner_problem,
+        PatchbayError, check_nodes, live_node_names, parse_patchbay, patchbay_for,
+        read_pw_dump,
     )
     from .paths import checkout_root
 
@@ -253,49 +252,17 @@ def _patchbay(args: argparse.Namespace) -> int:
         sys.exit("\n".join(problems))
 
     try:
-        feeds, sinks = routes_from_rig(rig)
-        if not feeds and not sinks:
-            # An empty patchbay written without comment is the silent failure
-            # this exists to end: nothing wired, and nothing says why.
-            sys.exit(
-                f"{args.rig.name}: no track names a source or sink role, so there "
-                "is nothing to generate"
-            )
-        roles = machine.role_ports()
-        # The tuner follows the guitar role rather than a port, so it moves with
-        # the channel. Decided before the live graph is read, because the tuner's
-        # port has to be resolved alongside the tracks' -- left out of
-        # `resolve_nodes`, the tap was written with the port's client name
-        # ("Audient iD14") instead of the live ALSA profile, which qpwgraph never
-        # matches: a deaf tuner in a file that generated cleanly.
-        tuner_role = None if args.no_tuner else GUITAR_ROLE
-        refusal = tuner_problem(roles, tuner_role) if tuner_role else None
-        if refusal:
-            # A warning rather than a failure: a guitar role the tuner cannot tap
-            # is a reason to have no tuner tap, not a reason to have no patchbay.
-            # Silence is the one thing it must not be -- nothing else in either
-            # file mentions fmit, so a missing tap looks like a broken tuner.
-            print(
-                f"warning: {machine_file.name}: {refusal}. The generated patchbay "
-                "has no tuner tap, so fmit will hear nothing. Pass --no-tuner to "
-                "stop saying so",
-                file=sys.stderr,
-            )
-            tuner_role = None
-        nodes = None
-        if not args.offline:
-            sources = set(feeds) | ({tuner_role} if tuner_role else set())
-            nodes, problems = resolve_nodes(
-                roles, sources, set(sinks), live_port_nodes(read_pw_dump())
-            )
-            if problems:
-                raise PatchbayError(problems)
-        xml = generate_patchbay(
-            roles, feeds, sinks, mono_to_stereo=machine.mono_roles(), nodes=nodes,
-            tuner_role=tuner_role,
+        dump = None if args.offline else read_pw_dump()
+        xml, warnings = patchbay_for(
+            rig, machine, dump, tuner=not args.no_tuner,
+            rig_name=args.rig.name, machine_name=machine_file.name,
         )
     except PatchbayError as exc:
         sys.exit("\n".join(exc.problems))
+    for warning in warnings:
+        # Silence is the one thing a missing tap must not be: nothing else in
+        # either file mentions fmit, so it would look like a broken tuner.
+        print(f"warning: {warning}. Pass --no-tuner to stop saying so", file=sys.stderr)
 
     if args.out:
         args.out.write_text(xml)
@@ -793,6 +760,13 @@ def main(argv: list[str] | None = None) -> int:
         nargs="?",
         default=DEFAULT_CONFIG_NAME,
         help=f"names config/<name>.json [default: {DEFAULT_CONFIG_NAME}]",
+    )
+    p.add_argument(
+        "--rig",
+        action="store_true",
+        help="the name is a rig of channels, config/rigs/<name>.yaml (#30): compiled "
+        "at start, with a patchbay generated from it and the machine file rather "
+        "than the committed one, so each channel's input reaches its own chain",
     )
     p.add_argument(
         "--headless",
@@ -1322,7 +1296,7 @@ def main(argv: list[str] | None = None) -> int:
                 return up(
                     args.config_name, headless=args.headless,
                     tuner=args.tuner, amp=args.amp,
-                    amp_model=args.amp_model,
+                    amp_model=args.amp_model, rig=args.rig,
                 )
             if args.command == "down":
                 return down(args.force)

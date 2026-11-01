@@ -1249,6 +1249,23 @@ touched; an update that leaves a comment written twice or lost, other than with
 a removed entry, is not written; and ruamel.yaml is pinned to 0.19 with a test
 that asserts the comment slots `yamlmerge.py` relies on. *(2026-10-31)*
 
+**`up --rig` runs a rig of channels, with its own patchbay.** #30's last slice,
+first half, unblocked by the hearing on 2026-11-01. The rig is compiled by
+`emit_rig` into the runtime directory with `_meta.source` set, so SAVE's
+source resolution works and nothing generated lands in `config/`. The patchbay
+comes from the rig and the machine file through `patchbay_for`, which
+`patchbay generate` now also uses, so the two cannot wire a channel
+differently; the amp's patchbay is rewired from that one rather than the
+committed file. Why not the committed patchbay: read off the files that night,
+on `guitar_vocal` it would feed the guitar into input 1, the vocal channel
+under v2, and wire the microphone to inputs 2/3, which the rig does not read,
+with every process healthy. A rig whose channels cannot be wired (no machine
+file, a port the live graph lacks) is refused rather than brought up
+half-wired. Opt-in behind `--rig` while a v1 config of the same name exists;
+`restart` keeps the kind and `status` names the file. Not yet: SAVE on a v2
+rig, a post-start check that each channel's source reached its input, and the
+agent's `rig` flag. *(2026-11-01)*
+
 **Four small fixes from running the agent on the rig machine.** (1) `POST
 /rig/up` with no `config_name` is a 400 ("config_name is required: the name of a
 file in config/") instead of defaulting to electric_board, so a stray empty

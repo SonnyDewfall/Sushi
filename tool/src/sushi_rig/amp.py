@@ -568,7 +568,8 @@ def guitar_port(root: Path) -> str | None:
 
 
 def prepare(
-    config: Path, root: Path, runtime: Path, override_model: str | None = None
+    config: Path, root: Path, runtime: Path, override_model: str | None = None,
+    base: Path | None = None,
 ) -> dict[str, Any]:
     """Everything a run needs for the amp, written out and ready.
 
@@ -604,8 +605,11 @@ def prepare(
     # rather than extra connections layered onto the saved one — otherwise the
     # direct guitar-to-Sushi route stays live too and the dry signal sits under
     # the amped one.
+    # `base` is the patchbay the amp is wired into: the committed one for a v1
+    # config, the one generated from the rig for a v2 rig (#30), which the
+    # committed file would wire wrongly past one channel.
     patchbay = None
-    base = Path(root) / "Patchbay" / "rig.qpwgraph"
+    base = Path(base) if base is not None else Path(root) / "Patchbay" / "rig.qpwgraph"
     if base.is_file():
         patchbay = runtime / "rig-amp.qpwgraph"
         patchbay.write_text(amp_patchbay(base.read_text(), guitar_port(Path(root))))

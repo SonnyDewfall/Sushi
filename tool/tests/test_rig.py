@@ -32,6 +32,7 @@ from types import SimpleNamespace
 
 import pytest
 
+from sushi_rig.paths import checkout_root
 from sushi_rig.procs import SHUTDOWN_STEPS
 from sushi_rig.rig import (
     DEFAULT_CONFIG_NAME,
@@ -157,6 +158,131 @@ def test_the_listener_is_started_without_a_rig_when_there_is_none(plan_args):
     listen = next(c for c in plan_children(root, config, "config/src/x.yaml", headless=False, tuner=True)
                   if c["name"] == "listen")
     assert listen["command"][listen["command"].index("--rig") + 1] == "config/src/x.yaml"
+
+
+# --- v2 rigs: up --rig (#30's last slice) ------------------------------------
+
+
+ROOT = checkout_root()
+CAPTURED_DUMP = (Path(__file__).parent / "fixtures" / "pw-dump-rig.json").read_text()
+MACHINE = ROOT / "machines" / "sonny-dewfall-XPS-9320.yaml"
+
+
+def test_a_v2_rig_is_compiled_and_wired_from_its_own_file(tmp_path):
+    """The committed patchbay describes the v1 layout: on guitar_vocal it would
+    feed the guitar into input 1, the vocal channel under v2, and wire the
+    microphone to inputs 2/3, which v2 does not read. Read off the files on
+    2026-11-01. So a v2 run wires each channel from the rig and the machine
+    file, through the same `patchbay_for` as `patchbay generate`, against a
+    real pw-dump capture."""
+    from sushi_rig.patchbay import parse_patchbay
+
+    out = rig.prepare_rig("guitar_vocal", ROOT, tmp_path / "run",
+                          machine_file=MACHINE, dump=CAPTURED_DUMP)
+    assert out["source"] == "config/rigs/guitar_vocal.yaml"
+    config = json.loads(out["config"].read_text())
+    assert [t["name"] for t in config["tracks"]] == ["guitar", "vocal", "master"]
+    assert config["_meta"]["source"] == "config/rigs/guitar_vocal.yaml"
+    links = {(l.out_port, l.in_port) for l in parse_patchbay(out["patchbay"].read_text())}
+    sushi_in = {o: i for o, i in links if i.startswith("sushi:audio_input")}
+    assert sushi_in == {
+        "Audient iD14:capture_AUX0": "sushi:audio_input_0",
+        "Audient iD14:capture_AUX1": "sushi:audio_input_1",
+    }, "one link per mono source: the widening happens inside Sushi, not in the patchbay"
+    assert ("sushi:audio_output_0", "Audient iD14:playback_FL") in links
+    assert out["warnings"] == []
+
+
+def test_a_rig_that_does_not_exist_is_refused_by_name(tmp_path):
+    with pytest.raises(rig.RigError, match="no such rig"):
+        rig.prepare_rig("nope", ROOT, tmp_path, machine_file=MACHINE, dump=CAPTURED_DUMP)
+
+
+def test_a_rig_without_a_machine_file_is_refused_not_half_wired(tmp_path):
+    with pytest.raises(rig.RigError, match="machine file"):
+        rig.prepare_rig("guitar_vocal", ROOT, tmp_path,
+                        machine_file=tmp_path / "missing.yaml", dump=CAPTURED_DUMP)
+
+
+def test_up_on_a_v2_rig_uses_its_compiled_config_and_patchbay(up_world, monkeypatch, tmp_path):
+    """`up --rig` plans the children on the compiled config and the generated
+    patchbay, and tells the supervisor which rig file it came from."""
+    compiled = tmp_path / "x.json"
+    compiled.write_text(json.dumps({"tracks": [], "_meta": {"source": "config/rigs/x.yaml"}}))
+    wired = tmp_path / "x.qpwgraph"
+    wired.write_text("<patchbay/>")
+    monkeypatch.setattr(rig, "prepare_rig", lambda name, root, runtime, **kw: {
+        "config": compiled, "patchbay": wired, "source": "config/rigs/x.yaml", "warnings": ["w"],
+    })
+    seen = {}
+
+    def plan(root, config, rig_yaml, **kw):
+        seen.update(config=config, patchbay=kw.get("patchbay"))
+        return []
+
+    monkeypatch.setattr(rig, "plan_children", plan)
+    up_world.say("READY", then_write=running_state(config_name="x", rig="config/rigs/x.yaml"))
+    assert rig.up("x", headless=True, amp=False, rig=True) == 0
+    assert seen == {"config": compiled, "patchbay": wired}
+
+
+def test_up_on_a_v2_rig_with_an_amp_wires_the_amp_into_the_generated_patchbay(up_world, monkeypatch, tmp_path):
+    """The hazard this slice closes: the amp's patchbay used to be rewired from
+    the committed file, which would feed guitar_vocal's guitar into the vocal
+    channel. For a v2 run it is rewired from the generated one, and that
+    rewired file is what qpwgraph loads."""
+    compiled = tmp_path / "x.json"
+    compiled.write_text(json.dumps({"tracks": [], "_meta": {"source": "config/rigs/x.yaml"}}))
+    wired = tmp_path / "x.qpwgraph"
+    wired.write_text("<patchbay/>")
+    rewired = tmp_path / "rig-amp.qpwgraph"
+    monkeypatch.setattr(rig, "prepare_rig", lambda name, root, runtime, **kw: {
+        "config": compiled, "patchbay": wired, "source": "config/rigs/x.yaml", "warnings": [],
+    })
+    seen = {}
+
+    def fake_prepare_amp(config, root, runtime, override, base=None):
+        seen["base"] = base
+        return {"model": "amp/models/M.nam", "values": {}, "project": tmp_path / "amp.carxp", "patchbay": rewired}
+
+    monkeypatch.setattr("sushi_rig.amp.prepare", fake_prepare_amp)
+
+    def plan(root, config, rig_yaml, **kw):
+        seen["patchbay"] = kw.get("patchbay")
+        return []
+
+    monkeypatch.setattr(rig, "plan_children", plan)
+    up_world.say("READY", then_write=running_state(config_name="x", rig="config/rigs/x.yaml"))
+    assert rig.up("x", headless=True, amp=True, rig=True) == 0
+    assert seen == {"base": wired, "patchbay": rewired}
+
+
+def test_a_v2_runs_artefacts_cannot_collide_with_the_state_file(tmp_path):
+    """The state file is runtime/rig.json, so a rig called `rig` compiled into
+    the runtime root would overwrite it, or be overwritten by it."""
+    from sushi_rig.paths import state_path
+
+    out = rig.prepare_rig("guitar_vocal", ROOT, tmp_path / "run",
+                          machine_file=MACHINE, dump=CAPTURED_DUMP)
+    assert out["config"].parent == tmp_path / "run" / "rigs"
+    assert out["config"].name != state_path().name or out["config"].parent != tmp_path / "run"
+
+
+def test_restart_brings_back_a_v2_rig_as_a_v2_rig():
+    from sushi_rig.rig import restart_arguments
+
+    _, options = restart_arguments({"config_name": "x", "mode": "headless", "rig": "config/rigs/x.yaml"})
+    assert options["rig"] is True
+    _, options = restart_arguments({"config_name": "x", "mode": "headless", "rig": None})
+    assert options["rig"] is False
+
+
+def test_status_names_the_rig_file_a_v2_run_came_from(world, capsys):
+    world()
+    state_file.write_state(running_state(rig="config/rigs/guitar_vocal.yaml"))
+    assert rig.describe_rig()["rig"] == "config/rigs/guitar_vocal.yaml"
+    rig.status()
+    assert "rig        config/rigs/guitar_vocal.yaml" in capsys.readouterr().out
 
 
 # --- second-instance guard --------------------------------------------------
@@ -492,7 +618,7 @@ def test_restart_brings_back_the_same_rig():
     })
     assert name == "electric-chorus-2"
     assert options == {
-        "headless": False, "tuner": True, "amp": True, "amp_model": None,
+        "headless": False, "tuner": True, "amp": True, "amp_model": None, "rig": False,
     }
 
 
@@ -507,7 +633,7 @@ def test_restart_preserves_the_choices_the_rig_was_started_with():
         "children": {"sushi": 1},
     })
     assert options == {
-        "headless": True, "tuner": False, "amp": False, "amp_model": None,
+        "headless": True, "tuner": False, "amp": False, "amp_model": None, "rig": False,
     }
 
 
@@ -1011,7 +1137,7 @@ def test_restart_hands_up_what_the_state_says_was_asked_for(runtime, monkeypatch
     assert rig.restart() == 0
     assert calls == [("electric_board", {
         "headless": True, "tuner": True, "amp": True,
-        "amp_model": "amp/models/Other.nam",
+        "amp_model": "amp/models/Other.nam", "rig": False,
     })]
 
 

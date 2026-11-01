@@ -182,6 +182,98 @@ def _rig_source(config_path: Path, root: Path | None) -> tuple[str | None, str |
     )
 
 
+def prepare_rig(
+    name: str,
+    root: Path,
+    runtime: Path,
+    *,
+    tuner: bool = True,
+    machine_file: Path | None = None,
+    dump: str | None = None,
+) -> dict[str, Any]:
+    """Everything a run of a v2 rig needs, written out: the compiled config and
+    the patchbay generated for it (#30's last slice).
+
+    A rig of channels is compiled by `emit_rig` to the config Sushi loads,
+    under the runtime directory, never into `config/`: the rig file is the
+    source and the compiled form is a run's artefact, like the amp's Carla
+    project. The patchbay comes from the rig and the machine file, through the
+    same `patchbay_for` as `patchbay generate`, because the committed
+    `rig.qpwgraph` describes the v1 layout: on guitar_vocal it would feed the
+    guitar into input 1, the vocal channel under v2, and wire the microphone
+    to inputs the rig does not read. Read off the files on 2026-11-01, not
+    heard, and exactly the kind of healthy-looking silence this project has
+    paid for before.
+
+    `dump` is the live graph's pw-dump text; None reads it. `machine_file`
+    defaults to this machine's. Raises `RigError` with the reason, since a rig
+    whose channels cannot be wired must not come up half-wired.
+    """
+    from .machine import MachineError, MachineSpec, machine_path
+    from .patchbay import PatchbayError, patchbay_for, read_pw_dump
+    from .rigfile import RigFileError, compile_rig, emit_rig, load_rig
+
+    path = root / "config" / "rigs" / f"{name}.yaml"
+    if not path.is_file():
+        raise RigError(f"no such rig: {path}")
+    try:
+        loaded = load_rig(path)  # parsed and checked once; both forms come from it
+        compiled = emit_rig(loaded)
+        spec = compile_rig(loaded)[0]
+    except RigFileError as exc:
+        raise RigError(f"{path.name}:\n  " + "\n  ".join(exc.problems)) from exc
+    problems = spec.validate()
+    if problems:
+        raise RigError(f"{path.name}: " + "; ".join(problems))
+
+    machine_file = machine_file or machine_path(root)
+    try:
+        machine = MachineSpec.load(machine_file)
+    except MachineError as exc:
+        raise RigError(
+            f"a rig of channels needs the machine file to wire its inputs, and "
+            f"{machine_file.name} could not be read: {exc}"
+        ) from exc
+    problems = machine.validate()
+    if problems:
+        raise RigError(f"{machine_file.name}: " + "; ".join(problems))
+
+    if dump is None:
+        try:
+            dump = read_pw_dump()
+        except PatchbayError as exc:
+            raise RigError("cannot read the PipeWire graph to wire the rig: " + "; ".join(exc.problems)) from exc
+    try:
+        xml, warnings = patchbay_for(
+            spec, machine, dump, tuner=tuner, rig_name=path.name,
+            machine_name=machine_file.name,
+        )
+    except PatchbayError as exc:
+        raise RigError(f"{path.name} cannot be wired on this machine:\n  " + "\n  ".join(exc.problems)) from exc
+
+    # The provenance `emit` writes, so `resolve_rig_yaml` knows which file this
+    # run came from and `save` (when it can write a v2 rig) saves there.
+    source = f"config/rigs/{name}.yaml"
+    meta = compiled.setdefault("_meta", {})
+    if isinstance(meta, dict):
+        meta["source"] = source
+    # Their own directory: the runtime root holds the state file (rig.json),
+    # the amp's project and its patchbay, so a rig called `rig` would otherwise
+    # share a name with the state file.
+    out = runtime / "rigs"
+    out.mkdir(parents=True, exist_ok=True)
+    config = out / f"{name}.json"
+    config.write_text(json.dumps(compiled, indent=2) + "\n")
+    patchbay = out / f"{name}.qpwgraph"
+    patchbay.write_text(xml)
+    return {
+        "config": config,
+        "patchbay": patchbay,
+        "source": source,
+        "warnings": warnings,
+    }
+
+
 def plan_children(
     root: Path,
     config: Path,
@@ -328,6 +420,7 @@ def _supervise(
     tuner_requested: bool = True,
     amp_requested: bool = True,
     amp_model_requested: str | None = None,
+    rig_source: str | None = None,
 ) -> None:
     """The supervisor process: own the group, start the children, then wait.
 
@@ -471,6 +564,13 @@ def _supervise(
         # like a tuner that cannot hear the guitar — so it is said out loud
         # rather than left to be discovered mid-session (principle 8).
         if "fmit" in procs and procs["fmit"].poll() is None:
+            # The file qpwgraph was started with: the committed one, the amp's
+            # rewiring of it, or a v2 rig's own. Saving anywhere else changes
+            # nothing, so the advice names it rather than assuming the first.
+            patchbay_loaded = next(
+                (c["command"][2] for c in children_plan if c["name"] == "qpwgraph"),
+                root / "Patchbay" / "rig.qpwgraph",
+            )
             # Guarded, unlike its neighbours' `poll()` calls, because this one
             # shells out. Every check here is deliberately non-fatal -- it
             # appends to `problems` and the rig still comes up -- but an
@@ -500,7 +600,7 @@ def _supervise(
                         "the tuner is running but nothing is connected to "
                         + ", ".join(unwired)
                         + f" — wire the guitar's input to it in qpwgraph and save "
-                        f"{root / 'Patchbay' / 'rig.qpwgraph'}, or the tuner will "
+                        f"{patchbay_loaded}, or the tuner will "
                         "show nothing"
                     )
 
@@ -533,6 +633,9 @@ def _supervise(
             # choice: restoring that would pin today's model for good, and a
             # later edit to the config would be ignored by every restart.
             "amp_model_requested": amp_model_requested,
+            # The rig file a v2 run was compiled from, None for a v1 config.
+            # `restart` brings back the same kind; `status` says which.
+            "rig": rig_source,
         })
 
         for problem in problems:
@@ -623,16 +726,25 @@ def up(
     tuner: bool = True,
     amp: bool = True,
     amp_model: str | None = None,
+    rig: bool = False,
 ) -> int:
     """Start the rig and return to the prompt.
 
     Forks a supervisor (see `_supervise`) and blocks on a pipe until it says the
     rig is actually up, so a failed start is reported as a failure rather than a
     cheerful prompt over a dead rig.
+
+    `rig` means `config_name` names a rig of channels, `config/rigs/<name>.yaml`,
+    compiled at start with its own patchbay (`prepare_rig`). Opt-in rather than
+    the default while a v1 config of the same name exists: the monitor path was
+    heard to be the same on 2026-11-01, but a two-channel rig has not been, and
+    what `up` starts by default changes only once it has.
     """
     root = checkout_root()
+    rig_source: str | None = None
+    rig_patchbay: Path | None = None
     config = root / "config" / f"{config_name}.json"
-    if not config.is_file():
+    if not rig and not config.is_file():
         raise RigError(f"no such config: {config}")
 
     existing = read_state()
@@ -682,6 +794,15 @@ def up(
             "file exists."
         )
 
+    if rig:
+        # After the running-rig and port guards, so a refusal compiles nothing.
+        prepared_rig = prepare_rig(config_name, root, runtime_dir(), tuner=tuner)
+        config = prepared_rig["config"]
+        rig_patchbay = prepared_rig["patchbay"]
+        rig_source = prepared_rig["source"]
+        for warning in prepared_rig["warnings"]:
+            print(f"warning: {warning}", file=sys.stderr)
+
     rig_yaml = resolve_rig_yaml(config, root)
     if not headless:
         problem = rig_source_problem(config, root) if rig_yaml is None else None
@@ -705,9 +826,9 @@ def up(
     if amp:
         from .amp import prepare as prepare_amp
 
-        prepared = prepare_amp(config, root, runtime_dir(), amp_model)
+        prepared = prepare_amp(config, root, runtime_dir(), amp_model, base=rig_patchbay)
     amp_project = prepared.get("project")
-    amp_patch = prepared.get("patchbay")
+    amp_patch = prepared.get("patchbay") or rig_patchbay
     amp_values = prepared.get("values", {})
     amp_model_stored = prepared.get("model")
 
@@ -723,7 +844,7 @@ def up(
             headless=headless, config_name=config_name, ready_w=ready_w,
             amp_model=amp_model_stored, amp_values=amp_values,
             tuner_requested=tuner, amp_requested=amp,
-            amp_model_requested=amp_model,
+            amp_model_requested=amp_model, rig_source=rig_source,
         )
     )
     outcome = ""
@@ -901,6 +1022,7 @@ def restart_arguments(state: dict[str, Any]) -> tuple[str, dict[str, Any]]:
         "tuner": tuner if isinstance(tuner, bool) else "fmit" in children,
         "amp": amp if isinstance(amp, bool) else "amp" in children,
         "amp_model": state.get("amp_model_requested") or None,
+        "rig": isinstance(state.get("rig"), str) and bool(state.get("rig")),
     }
 
 
@@ -999,6 +1121,7 @@ def describe_rig(
             for name, pid in (children.items() if isinstance(children, dict) else ())
         },
         "amp_model": state.get("amp_model") or None,
+        "rig": state.get("rig") if isinstance(state.get("rig"), str) else None,
         "log_dir": state.get("log_dir"),
     })
     age = format_uptime(uptime) if uptime is not None else "unknown"
@@ -1013,6 +1136,8 @@ def status() -> int:
     if not described["running"]:
         return 0
     print(f"  config     {described['config']}")
+    if described["rig"]:
+        print(f"  rig        {described['rig']}")
     print(f"  group      {described['pgid']}")
     for name, child in described["children"].items():
         if child["alive"] is None:

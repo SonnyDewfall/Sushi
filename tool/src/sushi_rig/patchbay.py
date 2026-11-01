@@ -418,6 +418,63 @@ _ITEM = (
 _TAIL = ' </items>\n</patchbay>\n\n'
 
 
+def patchbay_for(
+    rig: Any,
+    machine: Any,
+    dump: str | None,
+    *,
+    tuner: bool = True,
+    rig_name: str = "rig",
+    machine_name: str = "machine",
+) -> tuple[str, list[str]]:
+    """The patchbay for `rig` on `machine`, and the warnings worth printing.
+
+    One function for `patchbay generate` and for `up` on a v2 rig (#30), so the
+    two cannot wire a channel differently. `dump` is the live graph's pw-dump
+    text, which resolves each port to the node qpwgraph will show for it; None
+    is the offline form, approximate for an ALSA device and for diffing only.
+    Pure given its arguments: every effect (reading the files, running
+    pw-dump) is the caller's. Raises `PatchbayError` with every problem.
+
+    The tuner follows the guitar role rather than a port, so it moves with the
+    channel. Decided before the live graph is read, because the tuner's port
+    has to be resolved alongside the tracks': left out of `resolve_nodes`, the
+    tap was written with the port's client name instead of the live ALSA
+    profile, which qpwgraph never matches, giving a deaf tuner in a file that
+    generated cleanly. A guitar role the tuner cannot tap is a warning, not a
+    refusal: a reason to have no tuner tap, not a reason to have no patchbay.
+    """
+    feeds, sinks = routes_from_rig(rig)
+    if not feeds and not sinks:
+        # An empty patchbay written without comment is the silent failure this
+        # exists to end: nothing wired, and nothing says why.
+        raise PatchbayError([
+            f"{rig_name}: no track names a source or sink role, so there is "
+            "nothing to generate"
+        ])
+    roles = machine.role_ports()
+    warnings: list[str] = []
+    tuner_role = GUITAR_ROLE if tuner else None
+    refusal = tuner_problem(roles, tuner_role) if tuner_role else None
+    if refusal:
+        warnings.append(
+            f"{machine_name}: {refusal}. The generated patchbay has no tuner "
+            "tap, so fmit will hear nothing"
+        )
+        tuner_role = None
+    nodes = None
+    if dump is not None:
+        sources = set(feeds) | ({tuner_role} if tuner_role else set())
+        nodes, problems = resolve_nodes(roles, sources, set(sinks), live_port_nodes(dump))
+        if problems:
+            raise PatchbayError(problems)
+    xml = generate_patchbay(
+        roles, feeds, sinks, mono_to_stereo=machine.mono_roles(), nodes=nodes,
+        tuner_role=tuner_role,
+    )
+    return xml, warnings
+
+
 def render_patchbay(links: list[Link], name: str = "rig") -> str:
     # quoteattr, not an f-string: a device description with an ampersand or a
     # quote in it is a valid node name and must not corrupt the file.
