@@ -376,7 +376,10 @@ looking healthy throughout; a v2 rig therefore always brings its own. Opt-in
 rather than the default while a v1 config of the same name exists: the monitor
 path was heard to be the same on 2026-11-01 (two rigs, amp included), but a
 two-channel rig has not been. `restart` brings a v2 rig back as one, and
-`status` names the rig file. SAVE is still off for v2 rigs; that is the rest
+`status` names the rig file. After any `up`, v1 or v2, the supervisor checks
+that every link in the patchbay it loaded was actually made, and warns naming
+the pairs that were not: a channel whose source never reached it is silent
+while everything looks healthy, and that is said rather than discovered. SAVE is still off for v2 rigs; that is the rest
 of the slice.
 
 `up` starts everything and hands the prompt back — the rig is detached, so it

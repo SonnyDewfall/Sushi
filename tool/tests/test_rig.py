@@ -268,6 +268,72 @@ def test_a_v2_runs_artefacts_cannot_collide_with_the_state_file(tmp_path):
     assert out["config"].name != state_path().name or out["config"].parent != tmp_path / "run"
 
 
+def test_the_patchbay_the_supervisor_checks_is_the_one_qpwgraph_loaded(tmp_path):
+    plan = [{"name": "qpwgraph", "command": ["qpwgraph", "-a", str(tmp_path / "x.qpwgraph"), "-m"]}]
+    assert rig._patchbay_in(plan, ROOT) == tmp_path / "x.qpwgraph"
+    assert rig._patchbay_in([{"name": "qpwgraph", "command": ["true"]}], ROOT) == ROOT / "Patchbay" / "rig.qpwgraph"
+    assert rig._patchbay_in([], ROOT) == ROOT / "Patchbay" / "rig.qpwgraph"
+
+
+def test_unmade_links_are_one_loud_problem_and_an_unaskable_graph_is_said(tmp_path, monkeypatch):
+    patchbay = tmp_path / "p.qpwgraph"
+    patchbay.write_text((ROOT / "Patchbay" / "rig.qpwgraph").read_text())
+    monkeypatch.setattr("sushi_rig.patchbay.read_pw_dump", lambda *a, **k: "[]")
+    monkeypatch.setattr("sushi_rig.qpwgraph.wait_for_links",
+                        lambda wanted, read_names, settle=0: [("Audient iD14:capture_AUX1", "sushi:audio_input_1")])
+    running = {"sushi", "fmit", "qpwgraph"}
+    (problem,) = rig._unmade_link_problems(patchbay, running)
+    assert "1 link(s) in p.qpwgraph were not made: Audient iD14:capture_AUX1 -> sushi:audio_input_1" in problem
+    assert "silent while everything looks healthy" in problem
+    assert f"save {patchbay}" in problem, "a v1 run is told to fix the file qpwgraph loaded"
+    (problem,) = rig._unmade_link_problems(patchbay, running, rig_run=True)
+    assert "machine file" in problem, "a rig run's ports come from the machine file"
+
+    def cannot(*a, **k):
+        raise OSError("no pw-link")
+
+    monkeypatch.setattr("sushi_rig.qpwgraph.wait_for_links", cannot)
+    (problem,) = rig._unmade_link_problems(patchbay, running)
+    assert "could not check" in problem and "no pw-link" in problem
+    assert rig._unmade_link_problems(tmp_path / "missing.qpwgraph", running)[0].startswith("could not check")
+
+
+def test_a_link_to_a_child_that_is_not_running_is_not_waited_for(tmp_path, monkeypatch):
+    """The committed patchbay carries the tuner's tap. `up --no-tuner` must
+    not wait the settle and then warn about a link that was never going to be
+    made; a tuner that failed to start is already reported as that."""
+    patchbay = tmp_path / "p.qpwgraph"
+    patchbay.write_text((ROOT / "Patchbay" / "rig.qpwgraph").read_text())
+    monkeypatch.setattr("sushi_rig.patchbay.read_pw_dump", lambda *a, **k: "[]")
+    asked = {}
+
+    def record(wanted, read_names, settle=0):
+        asked["sinks"] = {link.in_port for link in wanted}
+        return []
+
+    monkeypatch.setattr("sushi_rig.qpwgraph.wait_for_links", record)
+    assert rig._unmade_link_problems(patchbay, {"sushi", "qpwgraph"}) == []
+    assert "ALSA Capture [fmit]:input_MONO" not in asked["sinks"]
+    assert "sushi:audio_input_0" in asked["sinks"]
+    rig._unmade_link_problems(patchbay, {"sushi", "qpwgraph", "fmit"})
+    assert "ALSA Capture [fmit]:input_MONO" in asked["sinks"], "wanted once the tuner runs"
+
+
+def test_a_running_tuner_the_patchbay_never_taps_is_said(tmp_path, monkeypatch):
+    """A patchbay with no tuner link leaves fmit running and deaf, which looks
+    exactly like a tuner that cannot hear the guitar."""
+    patchbay = tmp_path / "p.qpwgraph"
+    text = (ROOT / "Patchbay" / "rig.qpwgraph").read_text()
+    from sushi_rig.patchbay import TUNER_PORT, parse_patchbay, render_patchbay
+    links = [l for l in parse_patchbay(text) if l.in_port != TUNER_PORT]
+    patchbay.write_text(render_patchbay(links))
+    monkeypatch.setattr("sushi_rig.patchbay.read_pw_dump", lambda *a, **k: "[]")
+    monkeypatch.setattr("sushi_rig.qpwgraph.wait_for_links", lambda wanted, read_names, settle=0: [])
+    (problem,) = rig._unmade_link_problems(patchbay, {"sushi", "qpwgraph", "fmit"})
+    assert "the tuner is running but p.qpwgraph has no link into" in problem
+    assert rig._unmade_link_problems(patchbay, {"sushi", "qpwgraph"}) == []
+
+
 def test_restart_brings_back_a_v2_rig_as_a_v2_rig():
     from sushi_rig.rig import restart_arguments
 

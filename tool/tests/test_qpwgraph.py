@@ -239,46 +239,144 @@ def test_node_ports_finds_nothing_for_a_node_that_is_not_listed():
     assert node_ports(PW_LINK_INPUTS, "alsa_capture.nosuch") == []
 
 
-def test_an_absent_node_is_reported_as_unknown_not_as_wired(monkeypatch):
-    """The bug this closes: the settle loop returned `[]` both for "every port
-    has a source" and for "PipeWire has never heard of this node", so a check
-    that could not tell reported success. The caller needs those apart — one is
-    a healthy tuner, the other is a renamed node and an unanswered question."""
-    monkeypatch.setattr(
-        qpwgraph.subprocess, "run",
-        lambda *a, **k: SimpleNamespace(stdout=PW_LINK_INPUTS, returncode=0),
-    )
-    assert qpwgraph.unconnected_inputs("alsa_capture.nosuch", settle=0.0) is None
-
-
-def test_a_wired_node_reports_an_empty_list(monkeypatch):
-    wired = PW_LINK_INPUTS.replace(
-        "alsa_capture.fmit:input_MONO\n",
-        "alsa_capture.fmit:input_MONO\n  |<- alsa_input.usb-Audient:capture_AUX0\n",
-    )
-    monkeypatch.setattr(
-        qpwgraph.subprocess, "run",
-        lambda *a, **k: SimpleNamespace(stdout=wired, returncode=0),
-    )
-    assert qpwgraph.unconnected_inputs("alsa_capture.fmit", settle=0.0) == []
-
-
-def test_an_unwired_node_names_its_ports(monkeypatch):
-    monkeypatch.setattr(
-        qpwgraph.subprocess, "run",
-        lambda *a, **k: SimpleNamespace(stdout=PW_LINK_INPUTS, returncode=0),
-    )
-    assert qpwgraph.unconnected_inputs("alsa_capture.fmit", settle=0.0) == [
-        "alsa_capture.fmit:input_MONO"
-    ]
-
-
 def test_a_missing_pw_link_is_raised_not_reported_as_wired(monkeypatch):
-    """`up` must be able to tell "the tuner is fine" from "I could not ask".
+    """`up` must be able to tell "every link is made" from "I could not ask".
     Reporting the second as the first is how the amp stayed dead for a session."""
     def boom(*a, **k):
         raise FileNotFoundError("pw-link")
 
     monkeypatch.setattr(qpwgraph.subprocess, "run", boom)
     with pytest.raises(OSError):
-        qpwgraph.unconnected_inputs("alsa_capture.fmit", settle=0.0)
+        qpwgraph.wait_for_links([], lambda: {}, settle=0.0)
+
+
+def test_a_pw_link_that_fails_is_unreadable_not_empty(monkeypatch):
+    """A non-zero exit with no stdout would otherwise read as "nothing is
+    linked" and name every link as unmade: a confident answer to a question
+    that was never answered."""
+    monkeypatch.setattr(
+        qpwgraph.subprocess, "run",
+        lambda *a, **k: SimpleNamespace(stdout="", stderr="can't connect", returncode=1),
+    )
+    with pytest.raises(qpwgraph.GraphUnreadable, match="exited 1"):
+        qpwgraph.wait_for_links([], lambda: {}, settle=0.0)
+
+
+# --- every link the patchbay asked for (2026-11-01) -------------------------
+
+from sushi_rig.patchbay import Link, live_port_names  # noqa: E402
+from sushi_rig.qpwgraph import listed_links, unmade_links  # noqa: E402
+
+# `pw-link -l` as the rig machine printed it on 2026-11-01 (RESULTS-hear-v2),
+# device names shortened the way the results file shortened them.
+PW_LINK_LIST = """alsa_output.usb-Audient_Audient_iD14-00.analog-surround-40:playback_FL
+  |<- sushi:audio_output_0
+alsa_output.usb-Audient_Audient_iD14-00.analog-surround-40:playback_FR
+  |<- sushi:audio_output_1
+alsa_input.usb-Audient_Audient_iD14-00.multichannel-input:capture_AUX0
+  |-> sushi:audio_input_1
+  |-> sushi:audio_input_0
+alsa_input.usb-Audient_Audient_iD14-00.multichannel-input:capture_AUX1
+  |-> sushi:audio_input_2
+  |-> sushi:audio_input_3
+sushi:audio_output_0
+  |-> alsa_output.usb-Audient_Audient_iD14-00.analog-surround-40:playback_FL
+sushi:audio_output_1
+  |-> alsa_output.usb-Audient_Audient_iD14-00.analog-surround-40:playback_FR
+sushi:audio_input_0
+  |<- alsa_input.usb-Audient_Audient_iD14-00.multichannel-input:capture_AUX0
+sushi:audio_input_1
+  |<- alsa_input.usb-Audient_Audient_iD14-00.multichannel-input:capture_AUX0
+sushi:audio_input_2
+  |<- alsa_input.usb-Audient_Audient_iD14-00.multichannel-input:capture_AUX1
+sushi:audio_input_3
+  |<- alsa_input.usb-Audient_Audient_iD14-00.multichannel-input:capture_AUX1
+"""
+IN = "alsa_input.usb-Audient_Audient_iD14-00.multichannel-input"
+OUT = "alsa_output.usb-Audient_Audient_iD14-00.analog-surround-40"
+NAMES = {
+    "Audient iD14:capture_AUX0": [f"{IN}:capture_AUX0"],
+    "Audient iD14:capture_AUX1": [f"{IN}:capture_AUX1"],
+    "Audient iD14:playback_FL": [f"{OUT}:playback_FL"],
+    "Audient iD14:playback_FR": [f"{OUT}:playback_FR"],
+}
+
+
+def test_listed_links_reads_both_directions_as_one_set_of_pairs():
+    links = listed_links(PW_LINK_LIST)
+    assert (f"{IN}:capture_AUX0", "sushi:audio_input_0") in links
+    assert ("sushi:audio_output_0", f"{OUT}:playback_FL") in links
+    # Printed under both ends, counted once.
+    assert len(links) == 6
+
+
+def test_the_v1_patchbay_is_fully_made_on_the_rigs_own_listing():
+    wanted = [
+        Link("Audient iD14 Multichannel", "Audient iD14:capture_AUX0", "sushi", "sushi:audio_input_0"),
+        Link("Audient iD14 Multichannel", "Audient iD14:capture_AUX1", "sushi", "sushi:audio_input_2"),
+        Link("sushi", "sushi:audio_output_0", "Audient iD14 Analog Surround 4.0", "Audient iD14:playback_FL"),
+    ]
+    assert unmade_links(wanted, NAMES, PW_LINK_LIST) == []
+
+
+def test_a_v2_rig_on_the_v1_graph_names_the_vocal_channel_as_unwired():
+    """The hazard this check exists for: under v2 the vocal is on input 1 and
+    nothing feeds it from the microphone, while every process is healthy."""
+    wanted = [
+        Link("Audient iD14 Multichannel", "Audient iD14:capture_AUX0", "sushi", "sushi:audio_input_0"),
+        Link("Audient iD14 Multichannel", "Audient iD14:capture_AUX1", "sushi", "sushi:audio_input_1"),
+    ]
+    assert unmade_links(wanted, NAMES, PW_LINK_LIST) == [
+        ("Audient iD14:capture_AUX1", "sushi:audio_input_1"),
+    ]
+
+
+def test_a_port_that_is_not_in_the_graph_is_unmade_not_skipped():
+    """An alias with no live name cannot be wired: the device is unplugged or
+    on another profile. Silence here would be the device-renamed failure the
+    patchbay check was built to end."""
+    wanted = [Link("Pro", "Audient iD14 Pro:capture_1", "sushi", "sushi:audio_input_0")]
+    assert unmade_links(wanted, NAMES, PW_LINK_LIST) == [("Audient iD14 Pro:capture_1", "sushi:audio_input_0")]
+
+
+def test_an_alias_with_two_live_names_is_made_if_either_is_linked():
+    names = dict(NAMES)
+    names["Audient iD14:capture_AUX0"] = ["alsa_input.other-profile:capture_AUX0", f"{IN}:capture_AUX0"]
+    wanted = [Link("x", "Audient iD14:capture_AUX0", "sushi", "sushi:audio_input_0")]
+    assert unmade_links(wanted, names, PW_LINK_LIST) == []
+
+
+def test_live_port_names_maps_the_patchbays_alias_to_pw_links_name():
+    """Against the real capture: the alias qpwgraph shows against the
+    node.name:port.name that pw-link prints."""
+    from pathlib import Path
+
+    dump = (Path(__file__).parent / "fixtures" / "pw-dump-rig.json").read_text()
+    names = live_port_names(dump)
+    assert names["Audient iD14:capture_AUX0"] == [f"{IN}:capture_AUX0"]
+    assert names["sushi:audio_input_0"] == ["sushi:audio_input_0"]
+
+
+def test_wait_for_links_reads_the_names_again_on_every_poll(monkeypatch):
+    """A node that registers during the settle has no live name until it
+    does; a map taken once before it appeared would report its links unmade
+    for ever."""
+    wanted = [Link("x", "Audient iD14:capture_AUX0", "sushi", "sushi:audio_input_0")]
+    reads = iter([{}, NAMES, NAMES])
+    monkeypatch.setattr(
+        qpwgraph.subprocess, "run",
+        lambda *a, **k: SimpleNamespace(stdout=PW_LINK_LIST, stderr="", returncode=0),
+    )
+    monkeypatch.setattr(qpwgraph.time, "sleep", lambda s: None)
+    assert qpwgraph.wait_for_links(wanted, lambda: next(reads), settle=5.0) == []
+
+
+def test_wait_for_links_gives_up_at_the_settle_and_names_what_is_missing(monkeypatch):
+    wanted = [Link("x", "Audient iD14:capture_AUX1", "sushi", "sushi:audio_input_1")]
+    monkeypatch.setattr(
+        qpwgraph.subprocess, "run",
+        lambda *a, **k: SimpleNamespace(stdout=PW_LINK_LIST, stderr="", returncode=0),
+    )
+    assert qpwgraph.wait_for_links(wanted, lambda: NAMES, settle=0.0) == [
+        ("Audient iD14:capture_AUX1", "sushi:audio_input_1")
+    ]

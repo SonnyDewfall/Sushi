@@ -40,7 +40,7 @@ from .paths import checkout_root, log_dir, runtime_dir, state_path
 from .procs import (
     SHUTDOWN_STEPS, pgid_alive, pid_alive, port_is_open, stop_group, wait_for_grpc,
 )
-from .qpwgraph import QPWGRAPH_ATTEMPTS, start_qpwgraph, unconnected_inputs
+from .qpwgraph import QPWGRAPH_ATTEMPTS, start_qpwgraph
 from .state import clear_state, is_real_id, liveness, read_state, write_state
 
 DEFAULT_CONFIG_NAME = "electric_board"
@@ -558,51 +558,18 @@ def _supervise(
                     "path, so the guitar is running dry"
                 )
 
-        # The tuner no longer auto-connects (see `plan_children`), so the
-        # patchbay is the only thing that wires it. A patchbay that does not
-        # name its ports leaves the tuner running and deaf, which looks exactly
-        # like a tuner that cannot hear the guitar — so it is said out loud
-        # rather than left to be discovered mid-session (principle 8).
-        if "fmit" in procs and procs["fmit"].poll() is None:
-            # The file qpwgraph was started with: the committed one, the amp's
-            # rewiring of it, or a v2 rig's own. Saving anywhere else changes
-            # nothing, so the advice names it rather than assuming the first.
-            patchbay_loaded = next(
-                (c["command"][2] for c in children_plan if c["name"] == "qpwgraph"),
-                root / "Patchbay" / "rig.qpwgraph",
+        # Every link the loaded patchbay asked for, the tuner's included: a
+        # channel whose source never reaches it is a rig that comes up healthy
+        # and silent, which is how the committed patchbay would have treated a
+        # v2 guitar_vocal (read off the files, 2026-11-01), and a tuner whose
+        # tap is missing is one that shows nothing. Non-fatal like its
+        # neighbours, and guarded: a `pw-dump` or `pw-link` that cannot run
+        # must not cost a rig that is playing.
+        if "qpwgraph" in procs and procs["qpwgraph"].poll() is None:
+            running = {name for name, proc in procs.items() if proc.poll() is None}
+            problems += _unmade_link_problems(
+                _patchbay_in(children_plan, root), running, rig_run=rig_source is not None,
             )
-            # Guarded, unlike its neighbours' `poll()` calls, because this one
-            # shells out. Every check here is deliberately non-fatal -- it
-            # appends to `problems` and the rig still comes up -- but an
-            # exception escaping into the enclosing `except Exception` reports
-            # FAIL, and the parent then tears down a rig that was playing
-            # perfectly well. A missing `pw-link` must not cost the rig.
-            try:
-                unwired = unconnected_inputs(TUNER_NODE)
-            except (OSError, subprocess.TimeoutExpired) as exc:
-                problems.append(
-                    f"could not check whether the tuner is wired ({exc}) — if it "
-                    "shows nothing, wire its input in qpwgraph"
-                )
-            else:
-                if unwired is None:
-                    # Distinct from "nothing unwired": PipeWire listed no such
-                    # node, so the question went unanswered rather than
-                    # answered well. Saying "fine" here would be the same
-                    # mistake as the fixture that gave every row a quantum.
-                    problems.append(
-                        f"the tuner is running but PipeWire lists no {TUNER_NODE} "
-                        "ports, so its wiring could not be checked — the node may "
-                        "have been renamed"
-                    )
-                elif unwired:
-                    problems.append(
-                        "the tuner is running but nothing is connected to "
-                        + ", ".join(unwired)
-                        + f" — wire the guitar's input to it in qpwgraph and save "
-                        f"{patchbay_loaded}, or the tuner will "
-                        "show nothing"
-                    )
 
         if amp_model and "amp" in procs and procs["amp"].poll() is None:
             # Carla starts with the model but with the plugin's own default
@@ -654,6 +621,85 @@ def _supervise(
             signal.pause()
         except InterruptedError:
             continue
+
+
+def _patchbay_in(children_plan: list[dict[str, Any]], root: Path) -> Path:
+    """The patchbay file qpwgraph was planned with: the argument after `-a`,
+    or the committed file when the plan names none (a stubbed plan in a test,
+    or a qpwgraph started some other way). Pure, and tolerant of a command
+    that is not qpwgraph's real one, because the supervisor's blanket `except`
+    turns any surprise here into a FAIL that tears down a playing rig."""
+    for child in children_plan:
+        if child.get("name") != "qpwgraph":
+            continue
+        command = list(child.get("command") or [])
+        if "-a" in command and command.index("-a") + 1 < len(command):
+            return Path(command[command.index("-a") + 1])
+    return root / "Patchbay" / "rig.qpwgraph"
+
+
+def _unmade_link_problems(
+    patchbay: Path, running: set[str], *, rig_run: bool = False
+) -> list[str]:
+    """What to say about links the loaded patchbay asked for and the graph
+    lacks: one problem naming them all, one for a tuner the patchbay never
+    taps, or one saying the check could not be made. Never raises: this runs
+    inside the supervisor's try, where an exception would report FAIL and
+    tear down a playing rig.
+
+    `running` is the rig's own children that are up. A link to or from a
+    child that is not running is left out: the committed patchbay carries
+    the tuner's tap, and `up --no-tuner` must not wait the settle and then
+    warn about a link that was never going to be made. The advice names the
+    file qpwgraph loaded; a rig run adds the machine file, which is where its
+    patchbay's ports come from, and a v1 run does not, since its file is the
+    committed one.
+    """
+    from .patchbay import (
+        PatchbayError, TUNER_PORT, _rig_child, live_port_names, parse_patchbay,
+        read_pw_dump, rig_node_names,
+    )
+    from .qpwgraph import wait_for_links
+
+    try:
+        links = parse_patchbay(patchbay.read_text())
+        children = rig_node_names()
+
+        def wanted_link(link) -> bool:
+            for node in (link.out_node, link.in_node):
+                child = _rig_child(node, children)
+                if child and child not in running:
+                    return False
+            return True
+
+        wanted = [link for link in links if wanted_link(link)]
+        problems: list[str] = []
+        if "fmit" in running and not any(link.in_port == TUNER_PORT for link in links):
+            problems.append(
+                f"the tuner is running but {patchbay.name} has no link into "
+                f"{TUNER_PORT}, so it will show nothing — wire the guitar's input "
+                f"to it in qpwgraph and save {patchbay}"
+            )
+        missing = wait_for_links(wanted, lambda: live_port_names(read_pw_dump()))
+    except (OSError, ValueError, subprocess.TimeoutExpired, PatchbayError) as exc:
+        return [
+            f"could not check whether {patchbay.name}'s links were made ({exc}) — "
+            "if a channel or the tuner is silent, look at the patchbay in qpwgraph"
+        ]
+    if not missing:
+        return problems
+    shown = ", ".join(f"{a} -> {b}" for a, b in missing[:6])
+    more = f" and {len(missing) - 6} more" if len(missing) > 6 else ""
+    advice = (
+        "check the device is present and the machine file names its ports"
+        if rig_run else
+        f"check the device is present, then wire it in qpwgraph and save {patchbay}"
+    )
+    return problems + [
+        f"{len(missing)} link(s) in {patchbay.name} were not made: {shown}{more}. "
+        f"A channel whose input is among them is silent while everything looks "
+        f"healthy; {advice}"
+    ]
 
 
 def _replay_amp(values: dict[str, float], timeout: float = 5.0) -> None:
