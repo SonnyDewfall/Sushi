@@ -108,6 +108,19 @@ def test_an_amp_model_name_may_look_like_one():
         "Marshall JCM800 (crunch) v2.nam"
 
 
+def test_a_rig_of_channels_is_asked_for_by_flag():
+    """`--rig` makes the name config/rigs/<name>.yaml; the name check is the
+    same, so a path cannot reach the CLI through it either."""
+    assert lifecycle_arguments("up", {"config_name": "guitar_vocal", "rig": True}) == \
+        ["up", "guitar_vocal", "--rig"]
+    assert lifecycle_arguments("up", {"config_name": "guitar_vocal", "rig": False}) == \
+        ["up", "guitar_vocal"]
+    with pytest.raises(AgentError):
+        lifecycle_arguments("up", {"config_name": "../x", "rig": True})
+    with pytest.raises(AgentError):
+        lifecycle_arguments("up", {"config_name": "guitar_vocal", "rig": "yes"})
+
+
 def test_only_the_three_lifecycle_commands_exist():
     with pytest.raises(AgentError):
         lifecycle_arguments("shell", {})

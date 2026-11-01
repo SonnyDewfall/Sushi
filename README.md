@@ -391,7 +391,7 @@ sushi-rig agent                      # serve the rig over HTTP on 127.0.0.1:8029
 curl localhost:8029/health           # the agent and the rig in one answer
 curl localhost:8029/rig              # `status` as data
 curl localhost:8029/doctor           # `doctor` as data
-curl -X POST localhost:8029/rig/up -d '{"config_name": "guitar_vocal", "headless": true}'
+curl -X POST localhost:8029/rig/up -d '{"config_name": "guitar_vocal", "rig": true, "headless": true}'
 curl -X POST localhost:8029/rig/down
 curl -X POST localhost:8029/rig/restart
 ```
