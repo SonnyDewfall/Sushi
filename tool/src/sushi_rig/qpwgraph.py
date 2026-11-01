@@ -19,7 +19,7 @@ import os
 import subprocess
 import time
 from pathlib import Path
-from typing import Any
+from typing import Callable, Any
 
 
 # How long to wait for a killed qpwgraph to actually exit before starting ours.
@@ -31,9 +31,9 @@ QPWGRAPH_EXIT_TIMEOUT = 5.0
 QPWGRAPH_ATTEMPTS = 3
 QPWGRAPH_SETTLE = 1.5
 
-# How long `unconnected_inputs` waits for a node to appear and be wired before
-# calling it missing or unwired. It polls (every 0.25 s) and returns the moment
-# the node is wired, so a long limit costs nothing when all is well. 3.0 was too
+# How long `wait_for_links` waits for the patchbay's links to appear before
+# calling the rest unmade. It polls and returns the moment every link is
+# there, so a long limit costs nothing when all is well. 3.0 was too
 # short: on a cold start fmit (the tuner) took more than 3 s to register its
 # ALSA capture node with PipeWire on sonny-dewfall-XPS-9320 (2026-11-01), so
 # `up` warned that PipeWire listed no alsa_capture.fmit ports when the node was
@@ -45,32 +45,20 @@ PATCHBAY_SETTLE = 10.0
 PATCHBAY_TIMEOUT = 2.0
 
 
-def ports_without_sources(listing: str, node: str) -> list[str]:
-    """Input ports of `node` that nothing is connected to, from `pw-link -l -i`.
+class GraphUnreadable(OSError):
+    """`pw-link` could not answer: a non-zero exit, so its empty output means
+    "unknown", never "nothing is linked"."""
 
-    The listing names a port on its own line and then indents one `|<-` line
-    per source, so a port with no indented lines under it is a port with no
-    input. Pure, so the parse is pinned by tests while the shelling out is
-    verified by running it (quality principle 1).
+
+def ports_without_sources(listing: str, node: str) -> list[str]:
+    """Input ports of `node` that nothing is connected to, from `pw-link -l`.
+
+    Derived from `node_ports` and `listed_links`, so the listing is parsed in
+    one place. Pure, so the decision is pinned by tests while the shelling
+    out is verified by running it (quality principle 1).
     """
-    prefix = f"{node}:"
-    unconnected: list[str] = []
-    port: str | None = None
-    sources = 0
-    for line in listing.splitlines():
-        if not line.strip():
-            continue
-        if line[0].isspace():
-            if port is not None and line.strip().startswith("|<-"):
-                sources += 1
-            continue
-        if port is not None and sources == 0:
-            unconnected.append(port)
-        port = line.strip() if line.strip().startswith(prefix) else None
-        sources = 0
-    if port is not None and sources == 0:
-        unconnected.append(port)
-    return unconnected
+    sinks = {sink for _, sink in listed_links(listing)}
+    return [port for port in node_ports(listing, node) if port not in sinks]
 
 
 def listed_links(listing: str) -> set[tuple[str, str]]:
@@ -79,7 +67,8 @@ def listed_links(listing: str) -> set[tuple[str, str]]:
     The listing names a port on its own line and indents one line per link
     under it: `|->` to a sink when the port is a source, `|<-` from a source
     when it is a sink. Both directions are read, so a link appears whichever
-    of its two ends the listing happened to print it under.
+    of its two ends the listing happened to print it under. The one parser
+    of this format.
     """
     links: set[tuple[str, str]] = set()
     port: str | None = None
@@ -130,12 +119,19 @@ def unmade_links(
 
 
 def wait_for_links(
-    wanted: list, names: dict[str, list[str]], settle: float = PATCHBAY_SETTLE
+    wanted: list,
+    read_names: Callable[[], dict[str, list[str]]],
+    settle: float = PATCHBAY_SETTLE,
 ) -> list[tuple[str, str]]:
     """The patchbay's links still unmade once qpwgraph has had `settle`
-    seconds to make them, polling like `unconnected_inputs` and returning the
-    moment every link is there. Lets `OSError` and `TimeoutExpired` out, so
-    the caller can tell an unwired rig from a question it failed to ask.
+    seconds to make them, returning the moment every link is there.
+
+    `read_names` is called on every poll, not once: a node that registers
+    during the settle (Carla's NAM on a slow model load, an interface a beat
+    late) has no live name until it does, and a map taken before it appeared
+    would report its links unmade for ever. Raises `GraphUnreadable` when
+    `pw-link` fails, and lets `OSError` and `TimeoutExpired` out, so the
+    caller can tell an unwired rig from a question it failed to ask.
     """
     deadline = time.monotonic() + settle
     while True:
@@ -143,10 +139,14 @@ def wait_for_links(
             ["pw-link", "-l"], capture_output=True, text=True, check=False,
             timeout=PATCHBAY_TIMEOUT,
         )
-        missing = unmade_links(wanted, names, result.stdout)
+        if result.returncode != 0:
+            raise GraphUnreadable(
+                f"pw-link -l exited {result.returncode}: {result.stderr.strip() or 'no output'}"
+            )
+        missing = unmade_links(wanted, read_names(), result.stdout)
         if not missing or time.monotonic() >= deadline:
             return missing
-        time.sleep(0.25)
+        time.sleep(1.0)
 
 
 def node_ports(listing: str, node: str) -> list[str]:
@@ -167,38 +167,6 @@ def node_ports(listing: str, node: str) -> list[str]:
         if text.startswith(prefix):
             ports.append(text)
     return ports
-
-
-def unconnected_inputs(
-    node: str, settle: float = PATCHBAY_SETTLE
-) -> list[str] | None:
-    """`node`'s input ports that the patchbay has not wired, once it has had a
-    chance to — or `None` if `node` never appeared in the listing at all.
-
-    qpwgraph applies its patch as nodes appear, so asking too early reports a
-    port that is about to be connected. The wait is bounded and gives up rather
-    than blocking startup.
-
-    Lets `OSError` and `TimeoutExpired` out rather than reporting "nothing
-    unwired", so the caller can tell a wired rig from a question it failed to
-    ask. The caller is the one that decides such a failure is not fatal.
-    """
-    deadline = time.monotonic() + settle
-    while True:
-        result = subprocess.run(
-            ["pw-link", "-l", "-i"],
-            capture_output=True,
-            text=True,
-            check=False,
-            timeout=PATCHBAY_TIMEOUT,
-        )
-        present = node_ports(result.stdout, node)
-        unwired = ports_without_sources(result.stdout, node)
-        if present and not unwired:
-            return []
-        if time.monotonic() >= deadline:
-            return unwired if present else None
-        time.sleep(0.25)
 
 
 # How long to wait for Sushi's gRPC to start accepting connections.

@@ -239,49 +239,27 @@ def test_node_ports_finds_nothing_for_a_node_that_is_not_listed():
     assert node_ports(PW_LINK_INPUTS, "alsa_capture.nosuch") == []
 
 
-def test_an_absent_node_is_reported_as_unknown_not_as_wired(monkeypatch):
-    """The bug this closes: the settle loop returned `[]` both for "every port
-    has a source" and for "PipeWire has never heard of this node", so a check
-    that could not tell reported success. The caller needs those apart — one is
-    a healthy tuner, the other is a renamed node and an unanswered question."""
-    monkeypatch.setattr(
-        qpwgraph.subprocess, "run",
-        lambda *a, **k: SimpleNamespace(stdout=PW_LINK_INPUTS, returncode=0),
-    )
-    assert qpwgraph.unconnected_inputs("alsa_capture.nosuch", settle=0.0) is None
-
-
-def test_a_wired_node_reports_an_empty_list(monkeypatch):
-    wired = PW_LINK_INPUTS.replace(
-        "alsa_capture.fmit:input_MONO\n",
-        "alsa_capture.fmit:input_MONO\n  |<- alsa_input.usb-Audient:capture_AUX0\n",
-    )
-    monkeypatch.setattr(
-        qpwgraph.subprocess, "run",
-        lambda *a, **k: SimpleNamespace(stdout=wired, returncode=0),
-    )
-    assert qpwgraph.unconnected_inputs("alsa_capture.fmit", settle=0.0) == []
-
-
-def test_an_unwired_node_names_its_ports(monkeypatch):
-    monkeypatch.setattr(
-        qpwgraph.subprocess, "run",
-        lambda *a, **k: SimpleNamespace(stdout=PW_LINK_INPUTS, returncode=0),
-    )
-    assert qpwgraph.unconnected_inputs("alsa_capture.fmit", settle=0.0) == [
-        "alsa_capture.fmit:input_MONO"
-    ]
-
-
 def test_a_missing_pw_link_is_raised_not_reported_as_wired(monkeypatch):
-    """`up` must be able to tell "the tuner is fine" from "I could not ask".
+    """`up` must be able to tell "every link is made" from "I could not ask".
     Reporting the second as the first is how the amp stayed dead for a session."""
     def boom(*a, **k):
         raise FileNotFoundError("pw-link")
 
     monkeypatch.setattr(qpwgraph.subprocess, "run", boom)
     with pytest.raises(OSError):
-        qpwgraph.unconnected_inputs("alsa_capture.fmit", settle=0.0)
+        qpwgraph.wait_for_links([], lambda: {}, settle=0.0)
+
+
+def test_a_pw_link_that_fails_is_unreadable_not_empty(monkeypatch):
+    """A non-zero exit with no stdout would otherwise read as "nothing is
+    linked" and name every link as unmade: a confident answer to a question
+    that was never answered."""
+    monkeypatch.setattr(
+        qpwgraph.subprocess, "run",
+        lambda *a, **k: SimpleNamespace(stdout="", stderr="can't connect", returncode=1),
+    )
+    with pytest.raises(qpwgraph.GraphUnreadable, match="exited 1"):
+        qpwgraph.wait_for_links([], lambda: {}, settle=0.0)
 
 
 # --- every link the patchbay asked for (2026-11-01) -------------------------
@@ -377,3 +355,28 @@ def test_live_port_names_maps_the_patchbays_alias_to_pw_links_name():
     names = live_port_names(dump)
     assert names["Audient iD14:capture_AUX0"] == [f"{IN}:capture_AUX0"]
     assert names["sushi:audio_input_0"] == ["sushi:audio_input_0"]
+
+
+def test_wait_for_links_reads_the_names_again_on_every_poll(monkeypatch):
+    """A node that registers during the settle has no live name until it
+    does; a map taken once before it appeared would report its links unmade
+    for ever."""
+    wanted = [Link("x", "Audient iD14:capture_AUX0", "sushi", "sushi:audio_input_0")]
+    reads = iter([{}, NAMES, NAMES])
+    monkeypatch.setattr(
+        qpwgraph.subprocess, "run",
+        lambda *a, **k: SimpleNamespace(stdout=PW_LINK_LIST, stderr="", returncode=0),
+    )
+    monkeypatch.setattr(qpwgraph.time, "sleep", lambda s: None)
+    assert qpwgraph.wait_for_links(wanted, lambda: next(reads), settle=5.0) == []
+
+
+def test_wait_for_links_gives_up_at_the_settle_and_names_what_is_missing(monkeypatch):
+    wanted = [Link("x", "Audient iD14:capture_AUX1", "sushi", "sushi:audio_input_1")]
+    monkeypatch.setattr(
+        qpwgraph.subprocess, "run",
+        lambda *a, **k: SimpleNamespace(stdout=PW_LINK_LIST, stderr="", returncode=0),
+    )
+    assert qpwgraph.wait_for_links(wanted, lambda: NAMES, settle=0.0) == [
+        ("Audient iD14:capture_AUX1", "sushi:audio_input_1")
+    ]

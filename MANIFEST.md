@@ -1289,4 +1289,9 @@ with, maps each alias to the name `pw-link` lists it under (through pw-dump's
 waits the settle for the links to appear, and reports every link not made as
 one loud warning naming the pairs. A graph it cannot ask is said to be
 unchecked, never passed over, and nothing here can take a playing rig down.
-*(2026-11-01)*
+The tuner's own check is folded into this one, since its tap is a link like
+any other; a running tuner the patchbay never taps gets its own warning. A
+link to a child that is not running (`--no-tuner`) is not waited for, the
+alias map is re-read on every poll so a node that registers late is not
+reported unmade for ever, and a `pw-link` that fails is unreadable, never
+"nothing is linked". *(2026-11-01)*

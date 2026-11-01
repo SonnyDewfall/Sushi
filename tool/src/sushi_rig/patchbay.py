@@ -616,27 +616,34 @@ class LivePort:
     # PipeWire's `port.direction`, "in" or "out", from the node's side: a
     # capture port is an "out" (the node produces audio), a playback port an "in".
     direction: str | None
+    # `<node.name>:<port.name>`, the form `pw-link -l` lists the port under,
+    # which differs from the alias for an ALSA device. None when the dump
+    # lacks either half.
+    name: str | None = None
 
 
 def live_port_nodes(dump: str) -> dict[str, list[LivePort]]:
-    """Port alias -> the ports that carry it, with their node and direction.
+    """Port alias -> the ports that carry it, with their node, direction and
+    `pw-link` name.
 
     A list because nothing makes an alias unique: `Audient iD14:capture_AUX0` is
     the same under every ALSA profile of the device, so two profiles live at once
-    would both answer to it.
+    would both answer to it. The one reader of ports in the dump: everything
+    that needs a port's node or its `pw-link` name derives from this.
     """
     objects = _objects(dump)
-    node_name = {
-        o.get("id"): _display_name(_props(o)) for o in objects if o.get("type") == _NODE
-    }
+    nodes = {o.get("id"): _props(o) for o in objects if o.get("type") == _NODE}
     found: dict[str, list[LivePort]] = {}
     for obj in objects:
         if obj.get("type") != _PORT:
             continue
         props = _props(obj)
-        alias, owner = props.get("port.alias"), node_name.get(props.get("node.id"))
+        node = nodes.get(props.get("node.id"))
+        alias, owner = props.get("port.alias"), _display_name(node) if node else None
         if alias and owner:
-            port = LivePort(owner, props.get("port.direction"))
+            node_name, port_name = node.get("node.name"), props.get("port.name")
+            name = f"{node_name}:{port_name}" if node_name and port_name else None
+            port = LivePort(owner, props.get("port.direction"), name)
             if port not in found.setdefault(alias, []):
                 found[alias].append(port)
     return found
@@ -645,28 +652,15 @@ def live_port_nodes(dump: str) -> dict[str, list[LivePort]]:
 def live_port_names(dump: str) -> dict[str, list[str]]:
     """Port alias -> the names `pw-link -l` lists that port under.
 
-    A saved patchbay names a port by its alias (`Audient iD14:capture_AUX0`),
-    which is what qpwgraph shows. `pw-link` names the same port
-    `<node.name>:<port.name>` (`alsa_input.usb-Audient_...:capture_AUX0`), and
-    that is the only form in which a link can be read back off the graph. A
-    list, as in `live_port_nodes`: an ALSA device's alias is the same under
-    every profile, so two profiles live at once both answer to it.
+    A saved patchbay names a port by its alias, which is what qpwgraph shows;
+    `pw-link` names the same port `<node.name>:<port.name>`, and that is the
+    only form in which a link can be read back off the graph. Derived from
+    `live_port_nodes`, so there is one reader of the dump's ports.
     """
-    objects = _objects(dump)
-    node_name = {
-        o.get("id"): _props(o).get("node.name") for o in objects if o.get("type") == _NODE
+    return {
+        alias: [p.name for p in ports if p.name]
+        for alias, ports in live_port_nodes(dump).items()
     }
-    found: dict[str, list[str]] = {}
-    for obj in objects:
-        if obj.get("type") != _PORT:
-            continue
-        props = _props(obj)
-        alias, node, port = props.get("port.alias"), node_name.get(props.get("node.id")), props.get("port.name")
-        if alias and node and port:
-            name = f"{node}:{port}"
-            if name not in found.setdefault(alias, []):
-                found[alias].append(name)
-    return found
 
 
 def resolve_nodes(
