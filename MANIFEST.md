@@ -1296,6 +1296,21 @@ alias map is re-read on every poll so a node that registers late is not
 reported unmade for ever, and a `pw-link` that fails is unreadable, never
 "nothing is linked". *(2026-11-01)*
 
+**A reordered chain keeps each plugin's comments with it.** `yamlmerge` matched a
+chain by name only while its order held; once two plugins swapped it fell back
+to matching by position, so a comment stayed at its line and ended up beside
+the other plugin (`comp  # squash first` came out on drive, reproduced by a
+reviewer on 2026-11-01), which the player's SAVE would now do every time the
+panel reorders a chain. A reorder is now a move: each plugin takes the comment
+lines above it, what is inside it and its trailing comment, while the blank
+lines between entries, a heading a blank line sets apart at the top, and what
+follows the last entry stay at their positions. A plugin renamed in the same
+save is still the same plugin when its `uri` is unique. It refuses, naming the
+entry, a list where an entry ends in a `|` or `>` block scalar with a comment
+after it, because ruamel.yaml stores that line as the scalar's own trailing
+comment and it cannot be told from one. The comment count and the read-back
+still run after a move. *(2026-11-01)*
+
 **SAVE on a rig of channels writes the rig file, with its comments.** The
 other half of #30's last slice. `rigfile.fold_state` is the decision: the
 captured order of a track's processors becomes the chain's order, each

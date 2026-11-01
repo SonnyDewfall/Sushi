@@ -245,7 +245,10 @@ def test_the_committed_example_keeps_its_comments_when_a_chain_changes(tmp_path)
     assert "vocal_eq" not in after
 
 
-def test_a_reordered_chain_is_matched_by_position_and_loses_no_comment(rig_path):
+def test_a_reordered_chain_moves_each_plugin_with_its_comments(rig_path):
+    # Used to be matched by position, which left every comment where it was written and so
+    # beside a different plugin (a reviewer's `comp  # squash first` came out on drive).
+    # yamlmerge's own cases are in test_yamlmerge_reorder.py; this is the shape of a real rig.
     def change(rig):
         chain = rig["channels"][0]["chain"]
         chain[0], chain[3] = chain[3], chain[0]
@@ -254,7 +257,40 @@ def test_a_reordered_chain_is_matched_by_position_and_loses_no_comment(rig_path)
     after = rig_path.read_text()
     assert [p["name"] for p in yaml.safe_load(after)["channels"][0]["chain"]] == \
         ["verb", "drive", "eq", "comp"]
-    assert comments(after)[:3] == comments(TEXT)[:3]
+    assert after == TEXT.replace("""\
+      # Keep the squash light.
+      - name: comp
+        uri: http://example.org/comp
+        parameters:
+          threshold: -20.0   # dB; do not go lower
+          # The ratio is deliberately gentle.
+          ratio: 2.0
+      # Dirt, off for the clean tone.
+      - name: drive
+        uri: http://example.org/drive
+        bypassed: true
+      # Flat, and meant to stay flat.
+      - {name: eq, uri: http://example.org/eq}
+      # Last in the chain.
+      - {name: verb, uri: http://example.org/verb}
+""", """\
+      # Last in the chain.
+      - {name: verb, uri: http://example.org/verb}
+      # Dirt, off for the clean tone.
+      - name: drive
+        uri: http://example.org/drive
+        bypassed: true
+      # Flat, and meant to stay flat.
+      - {name: eq, uri: http://example.org/eq}
+      # Keep the squash light.
+      - name: comp
+        uri: http://example.org/comp
+        parameters:
+          threshold: -20.0   # dB; do not go lower
+          # The ratio is deliberately gentle.
+          ratio: 2.0
+""")
+    assert comments(after).count("# The very end.") == 1 and sorted(comments(after)) == sorted(COMMENTS)
 
 
 def test_the_layout_a_file_was_written_in_is_the_layout_it_keeps(tmp_path):
