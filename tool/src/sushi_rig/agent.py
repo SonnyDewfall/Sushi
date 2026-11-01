@@ -8,7 +8,7 @@ and the two things worth reading about a rig, served over HTTP on localhost.
     GET  /health        the agent and the rig, in one answer
     GET  /rig           what is running, if anything (`describe_rig`)
     GET  /doctor        `doctor`'s checks, as data
-    POST /rig/up        {"config_name" (required), "headless", "tuner", "amp", "amp_model"}
+    POST /rig/up        {"config_name" (required), "rig", "headless", "tuner", "amp", "amp_model"}
     POST /rig/down      {"force"}
     POST /rig/restart   {}
 
@@ -137,6 +137,11 @@ def lifecycle_arguments(command: str, body: dict[str, Any] | None) -> list[str]:
         if not isinstance(name, str) or not CONFIG_NAME.fullmatch(name) or ".." in name:
             raise AgentError(f"invalid config name {name!r}: letters, digits, '_', '-' and '.'")
         args = ["up", name]
+        if flag("rig", False):
+            # A rig of channels, config/rigs/<name>.yaml, compiled at start
+            # with its own patchbay (#30, #96). The same name check applies:
+            # it names a file in config/rigs/, never a path.
+            args.append("--rig")
         if flag("headless", False):
             args.append("--headless")
         if not flag("tuner", True):
