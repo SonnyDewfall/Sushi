@@ -1341,3 +1341,14 @@ scratch directory, not over the running rig's compiled config. The one thing
 that stayed open, a per-plugin comment staying at its line when a chain was
 reordered from the panel, is closed by the yamlmerge entry above: a
 reordered chain now moves each entry with its comments. *(2026-11-01)*
+
+**A channel's level in the mix is `level:` on the channel, in dB.** The #18
+answer, made concrete: a strip acts after the send and changes the stem, so
+the strip stays at unity and the level is the send's gain, which Sushi 1.3.0
+holds normalised over -120 to +24 dB (`send_plugin.cpp`; unity is 120/144,
+the 0.833333 every v1 track carries). A channel without a level compiles
+exactly as before, so no existing config or null-test reference changes. SAVE
+folds a send gain moved live back into the file as dB to a thousandth, below
+anything audible and above a float32 capture's noise. This is what the
+expression pedal's blend will drive: one CC, two channels' levels, opposite
+directions (#34). *(2026-11-02)*

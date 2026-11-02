@@ -427,3 +427,115 @@ def test_fold_state_rounds_a_captures_float32_noise_and_writes_no_default_bypass
     assert "bypassed" not in comp and "bypassed" not in verb
     folded = fold_state(FOLD_RAW, {"processors": {"drive": {"bypassed": False}}})
     assert folded["channels"][0]["chain"][1]["bypassed"] is False, "the file said true, so false is a change"
+
+
+# --------------------------------------------------------------------------- #
+# A channel's level in the mix (#18): the send's gain, in dB in the file
+# --------------------------------------------------------------------------- #
+
+from sushi_rig.rigfile import gain_to_level, level_to_gain  # noqa: E402
+
+
+def _two_channel(level=None):
+    raw = {
+        "kind": "rig", "schema_version": 1, "name": "two",
+        "channels": [
+            {"name": "clean", "input": "guitar-in", "width": "mono", "chain": []},
+            {"name": "lead", "input": "guitar-in", "width": "mono", "chain": []},
+        ],
+        "master": {"output": "monitor-out", "chain": []},
+    }
+    if level is not None:
+        raw["channels"][1]["level"] = level
+    return raw
+
+
+def test_a_level_is_the_sends_gain_and_unity_writes_nothing():
+    """0 dB is the send's own default, so a channel without a level compiles
+    exactly as before: every existing rig's config is unchanged."""
+    _, state = compile_rig(parse_rig(_two_channel()))
+    assert "parameters" not in state["processors"]["lead_send"]
+    _, state = compile_rig(parse_rig(_two_channel(-6.0)))
+    assert state["processors"]["lead_send"]["parameters"] == {"gain": level_to_gain(-6.0)}  # emit rounds
+    assert state["processors"]["lead_send"]["properties"] == {"destination_name": "master_return"}
+    config = emit_rig(parse_rig(_two_channel(-6.0)))
+    entry = next(e for e in config["initial_state"] if e["processor"] == "lead_send")
+    assert entry["parameters"]["gain"] == round((-6.0 + 120) / 144, 6)
+
+
+def test_the_units_round_trip_and_unity_is_the_strips_gain():
+    from sushi_rig.rigfile import UNITY_STRIP
+
+    assert level_to_gain(0.0) == UNITY_STRIP["gain"]
+    assert gain_to_level(level_to_gain(-6.0)) == -6.0
+    assert gain_to_level(0.8333330154418945) == 0.0, "a float32 capture of unity reads as 0 dB"
+    assert level_to_gain(-120.0) == 0.0 and level_to_gain(24.0) == 1.0
+
+
+@pytest.mark.parametrize("bad, said", [
+    ("loud", "must be a number"), (True, "must be a number"), (30, "outside"), (-121, "outside"),
+])
+def test_a_level_that_is_not_a_level_is_refused(bad, said):
+    with pytest.raises(RigFileError, match=said):
+        parse_rig(_two_channel(bad))
+
+
+def test_a_send_gain_moved_live_is_saved_as_the_channels_level():
+    folded = fold_state(_two_channel(), {"processors": {"lead_send": {"parameters": {"gain": level_to_gain(-6.0)}}}})
+    assert folded["channels"][1]["level"] == -6.0
+    assert "level" not in folded["channels"][0], "a send the capture does not mention is left alone"
+    unity = fold_state(_two_channel(), {"processors": {"lead_send": {"parameters": {"gain": 0.8333330154418945}}}})
+    assert "level" not in unity["channels"][1], "unity is the default, so nothing is written"
+    back = fold_state(_two_channel(-6.0), {"processors": {"lead_send": {"parameters": {"gain": 0.8333330154418945}}}})
+    assert back["channels"][1]["level"] == 0.0, "but a file that said -6 is told it is back at 0"
+    assert str(back["channels"][1]["level"]) == "0.0", "never -0.0, which YAML would write as such"
+
+
+def test_a_captured_gain_past_the_sends_range_is_clamped_not_refused():
+    assert gain_to_level(1.05) == 24.0 and gain_to_level(-0.1) == -120.0
+
+
+def test_a_level_written_with_more_precision_than_save_keeps_is_read_to_a_thousandth():
+    rig = parse_rig(_two_channel(-6.0004))
+    assert rig.channels[1].level == -6.0
+    folded = fold_state(_two_channel(-6.0004), {"processors": {"lead_send": {"parameters": {"gain": level_to_gain(-6.0)}}}})
+    assert folded["channels"][1]["level"] == -6.0
+
+
+def test_a_level_saved_into_a_commented_file_lands_after_the_chain(tmp_path):
+    """The path a real SAVE takes: fold_state adds `level` to a channel that
+    never had one, and write_rig has to insert it into a commented file."""
+    import textwrap
+
+    from sushi_rig.rigfile import write_rig
+    import yaml
+
+    path = tmp_path / "two.yaml"
+    path.write_text(textwrap.dedent("""\
+        # Two chains on one guitar.
+        kind: rig
+        schema_version: 1
+        name: two
+        channels:
+        - name: clean
+          input: guitar-in
+          width: mono
+          chain: []
+        # The lead, blended in with the pedal.
+        - name: lead
+          input: guitar-in
+          width: mono
+          chain:
+          - name: drive   # on for the solos
+            uri: urn:drive
+        master:
+          output: monitor-out
+          chain: []
+        """))
+    raw = yaml.safe_load(path.read_text())
+    folded = fold_state(raw, {"processors": {"lead_send": {"parameters": {"gain": level_to_gain(-6.0)}}}})
+    write_rig(path, folded)
+    text = path.read_text()
+    assert "level: -6.0" in text
+    assert "# The lead, blended in with the pedal." in text and "# on for the solos" in text
+    assert yaml.safe_load(text)["channels"][1]["level"] == -6.0

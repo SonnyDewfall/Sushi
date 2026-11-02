@@ -548,6 +548,13 @@ prefix is what says which channel a tab belongs to.
 an input role, `mono` or `stereo`, and a chain, plus a master that says where
 the mix goes. No engine bus or channel number is written by hand.
 
+A channel's level in the mix is `level:` on the channel, in dB, 0 being unity.
+It is the send's gain: the stem is unaffected, which is why it is not a strip
+(a strip acts after the send and would change the stem). This is where the
+expression pedal's blend between two channels lives (#34): one CC driving two
+channels' levels in opposite directions. SAVE writes a level moved live back
+as dB to a thousandth.
+
 ```bash
 sushi-rig emit config/rigs/guitar_vocal.yaml -o /tmp/gv.json
 ```

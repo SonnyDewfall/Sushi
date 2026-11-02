@@ -34,6 +34,7 @@ from typing import Any
 
 from .patchbay import GUITAR_ROLE, MONITOR_ROLE
 from .rigfile import (
+    _CHANNEL_KEYS,
     _PLUGIN_KEYS, _SETTING_KEYS, KIND, MASTER, RETURN, SCHEMA_VERSION, SEND_SUFFIX,
     UNITY_STRIP, WIDTHS, emit_rig, parse_rig,
 )
@@ -212,7 +213,7 @@ def to_rig(config: dict[str, Any], name: str,
     if config.get("_amp"):
         rig["amp"] = copy.deepcopy(config["_amp"])
     rig["channels"] = [
-        {k: c[k] for k in ("name", "input", "width", "strip", "chain") if k in c} for c in channels
+        {k: c[k] for k in _CHANNEL_KEYS if k in c} for c in channels
     ]
     rig["master"] = {"output": MONITOR_ROLE, "chain": []}
     return rig
