@@ -209,7 +209,7 @@ def prepare_rig(
     defaults to this machine's. Raises `RigError` with the reason, since a rig
     whose channels cannot be wired must not come up half-wired.
     """
-    from .machine import MachineError, MachineSpec, controller_for, machine_path
+    from .machine import MachineError, MachineSpec, machine_path, rig_controller
     from .patchbay import PatchbayError, patchbay_for, read_pw_dump
     from .rigfile import RigFileError, compile_rig, emit_compiled, load_rig
 
@@ -234,12 +234,10 @@ def prepare_rig(
         raise RigError(f"{machine_file.name}: " + "; ".join(problems))
 
     # The MIDI map (#34) names a controller the machine file describes.
-    controller = None
-    if loaded.midi is not None:
-        try:
-            controller = controller_for(loaded.midi.controller, machine_file)
-        except MachineError as exc:
-            raise RigError(f"{path.name}: {exc}") from exc
+    try:
+        controller = rig_controller(loaded, machine_file, machine=machine)
+    except MachineError as exc:
+        raise RigError(f"{path.name}: {exc}") from exc
     # Compiled once, with the map: the same spec wires the patchbay and
     # becomes the config.
     try:
@@ -281,6 +279,9 @@ def prepare_rig(
         "patchbay": patchbay,
         "source": source,
         "warnings": warnings,
+        # What the config and patchbay were compiled against, for the state
+        # file: the listener's save check must compile against the same one.
+        "machine": machine_file,
     }
 
 
@@ -431,6 +432,7 @@ def _supervise(
     amp_requested: bool = True,
     amp_model_requested: str | None = None,
     rig_source: str | None = None,
+    machine_file: Path | None = None,
 ) -> None:
     """The supervisor process: own the group, start the children, then wait.
 
@@ -613,6 +615,10 @@ def _supervise(
             # The rig file a v2 run was compiled from, None for a v1 config.
             # `restart` brings back the same kind; `status` says which.
             "rig": rig_source,
+            # The machine file that run was compiled against, None for a v1
+            # config. The listener's save check recompiles the rig and must
+            # read the same file, not whatever this host's default is.
+            "machine": str(machine_file) if machine_file else None,
         })
 
         for problem in problems:
@@ -799,6 +805,7 @@ def up(
     root = checkout_root()
     rig_source: str | None = None
     rig_patchbay: Path | None = None
+    rig_machine: Path | None = None
     config = root / "config" / f"{config_name}.json"
     if not rig and not config.is_file():
         raise RigError(f"no such config: {config}")
@@ -856,6 +863,7 @@ def up(
         config = prepared_rig["config"]
         rig_patchbay = prepared_rig["patchbay"]
         rig_source = prepared_rig["source"]
+        rig_machine = prepared_rig.get("machine")
         for warning in prepared_rig["warnings"]:
             print(f"warning: {warning}", file=sys.stderr)
 
@@ -903,6 +911,7 @@ def up(
             amp_model=amp_model_stored, amp_values=amp_values,
             tuner_requested=tuner, amp_requested=amp,
             amp_model_requested=amp_model, rig_source=rig_source,
+            machine_file=rig_machine,
         )
     )
     outcome = ""

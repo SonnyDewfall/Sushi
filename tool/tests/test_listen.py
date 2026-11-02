@@ -276,3 +276,58 @@ def test_a_saved_rig_with_a_midi_map_is_checked_with_its_controller(tmp_path, mo
     compiled = _checkable(source)
     mappings = json.loads(compiled.read_text())["midi"]["cc_mappings"]
     assert [m["plugin_name"] for m in mappings] == ["clean_send", "lead_send"]
+
+
+def test_the_save_check_compiles_against_the_machine_file_the_running_rig_used(tmp_path, monkeypatch):
+    """`up` records the machine file it compiled against; the listener's check
+    reads it rather than assuming this host's default, which may describe a
+    different controller (or none). Without a record, the default."""
+    import json
+    import textwrap
+
+    from sushi_rig.listen import _checkable
+    from sushi_rig.state import write_state
+
+    def machine(name, cc):
+        path = tmp_path / name
+        path.write_text(textwrap.dedent(f"""\
+            schema_version: 1
+            interface: Audient iD14
+            roles:
+              guitar-in: {{ports: ["Audient iD14:capture_AUX0"], mono_to_stereo: true}}
+              monitor-out: ["Audient iD14:playback_FL", "Audient iD14:playback_FR"]
+            controllers:
+              mpd218:
+                controls:
+                  knob1: {{cc: {cc}}}
+            """))
+        return path
+
+    default, running = machine("default.yaml", 3), machine("running.yaml", 9)
+    source = tmp_path / "blend.yaml"
+    source.write_text(textwrap.dedent("""\
+        kind: rig
+        schema_version: 1
+        name: blend
+        channels:
+        - {name: clean, input: guitar-in, width: mono, chain: []}
+        - {name: lead, input: guitar-in, width: mono, chain: [], level: -3}
+        master: {output: monitor-out, chain: []}
+        midi:
+          controller: mpd218
+          controls:
+          - {control: knob1, blend: [clean, lead]}
+        """))
+    monkeypatch.setattr("sushi_rig.paths.checkout_root", lambda: tmp_path)
+    monkeypatch.setattr("sushi_rig.machine.machine_path", lambda r: default)
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
+
+    def numbers():
+        mappings = json.loads(_checkable(source).read_text())["midi"]["cc_mappings"]
+        return {m["cc_number"] for m in mappings}
+
+    assert numbers() == {3}, "no state file: the default"
+    write_state({"rig": "config/rigs/blend.yaml", "machine": None})
+    assert numbers() == {3}, "a state that records no machine: the default"
+    write_state({"rig": "config/rigs/blend.yaml", "machine": str(running)})
+    assert numbers() == {9}, "the running rig's own machine file"

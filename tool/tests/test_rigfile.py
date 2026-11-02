@@ -689,6 +689,39 @@ def test_the_agents_bindings_and_the_midi_port_are_written_into_the_config():
     assert AGENT_BINDINGS not in state, "the bindings are not a processor"
 
 
+@pytest.mark.parametrize("value", ["two", -1, 1.5, True, [1], None])
+def test_a_host_midi_inputs_that_is_not_a_count_is_a_rig_file_problem(value):
+    """`compile_rig` reads host.midi_inputs to size the MIDI inputs, and used
+    to meet a string there as a bare ValueError from `int()`. It is checked
+    with the rest of the file, by name, like every other rig-file problem."""
+    raw = _midi_rig([{"control": "knob1", "blend": ["clean", "lead"]}])
+    raw["host"] = {"samplerate": 48000, "midi_inputs": value}
+    assert any("host.midi_inputs must be a whole number, 0 or more" in p for p in problems(raw))
+
+
+def test_a_host_midi_inputs_that_is_a_count_is_kept_and_raised_to_the_maps_port():
+    raw = _midi_rig([{"control": "knob1", "blend": ["clean", "lead"]}], port=2)
+    raw["host"] = {"samplerate": 48000, "midi_inputs": 1}
+    assert emit_rig(parse_rig(raw), controller=MPD218)["host_config"]["midi_inputs"] == 3
+    raw["host"]["midi_inputs"] = 5
+    assert emit_rig(parse_rig(raw), controller=MPD218)["host_config"]["midi_inputs"] == 5
+
+
+def test_the_agents_bindings_are_their_own_part_of_the_compiled_state_not_a_processor():
+    """They used to ride in `fixed["processors"]` under a pseudo-processor
+    name, which every reader of that map took for a processor."""
+    rig = parse_rig(_midi_rig([{"control": "pad1", "bypass": "lead/drive"}], programs="rigs"))
+    _, fixed = compile_rig(rig, MPD218)
+    assert fixed["agent"] == [
+        {"control": "pad1", "note": 36, "channel": "all", "bypass": "lead/drive"},
+        {"programs": "rigs", "port": 0, "channel": "all"},
+    ]
+    assert all(isinstance(entry, dict) for entry in fixed["processors"].values())
+    assert "_midi_agent" not in fixed["processors"]
+    _, plain = compile_rig(parse_rig(_two_channel()))
+    assert "agent" not in plain, "a rig without a map has nothing for the agent"
+
+
 @pytest.mark.parametrize("target", ["lead//Mix", "/hall/Mix", "lead/hall/"])
 def test_a_parameter_target_with_an_empty_segment_is_refused(target):
     with pytest.raises(RigFileError, match="channel/plugin/parameter"):

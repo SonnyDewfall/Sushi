@@ -84,18 +84,21 @@ def _checkable(saved: Path) -> Path:
     `--panel-config` reads: a check must not overwrite what is running."""
     import json
 
-    from .machine import controller_for, machine_path
-    from .paths import checkout_root, runtime_dir
+    from .machine import rig_controller
+    from .paths import runtime_dir
     from .rigfile import emit_rig, load_rig
+    from .state import read_state
 
     if saved.suffix != ".yaml":
         return saved
     rig = load_rig(saved)
-    controller = None
-    if rig.midi is not None:
-        # A mapped rig compiles only with its controller; a MachineError here
-        # is caught by handle_save and reported as "could not check it".
-        controller = controller_for(rig.midi.controller, machine_path(checkout_root()))
+    # The machine file the running rig was compiled against, as `up` recorded
+    # it: this host's default may describe other controls, and a check against
+    # a different file than the rig runs on would pass or refuse for nothing
+    # the player did. A MachineError here is caught by handle_save and
+    # reported as "could not check it".
+    recorded = (read_state() or {}).get("machine")
+    controller = rig_controller(rig, Path(recorded) if isinstance(recorded, str) and recorded else None)
     out = runtime_dir() / "checks"
     out.mkdir(parents=True, exist_ok=True)
     compiled = out / f"{saved.stem}.json"

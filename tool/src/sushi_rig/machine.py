@@ -254,6 +254,11 @@ class MachineSpec:
             if not isinstance(controls, dict) or not controls:
                 problems.append(f"{where}: controls must be a mapping of control name to what it sends")
                 continue
+            # Which control first sent each message. Two controls sending one
+            # number would, once a rig bound both, fire two mappings from one
+            # pedal with nothing to say so; a cc and a note of the same number
+            # are different messages and are not a clash.
+            claimed: dict[tuple[str, int], str] = {}
             for control, sends in controls.items():
                 at = f"{where}: control {control!r}"
                 if not isinstance(sends, dict) or len(sends) != 1 or next(iter(sends)) not in ("cc", "note"):
@@ -262,6 +267,14 @@ class MachineSpec:
                 kind, number = next(iter(sends.items()))
                 if type(number) is not int or not 0 <= number <= MIDI_MAX:
                     problems.append(f"{at}: {kind} must be 0 to {MIDI_MAX} (got {number!r})")
+                    continue
+                if (kind, number) in claimed:
+                    problems.append(
+                        f"{where}: controls {claimed[(kind, number)]!r} and {control!r} "
+                        f"both send {kind} {number}, so one pedal would fire both"
+                    )
+                else:
+                    claimed[(kind, number)] = control
         return problems
 
     def controller(self, name: str) -> dict[str, Any]:
@@ -277,11 +290,24 @@ class MachineSpec:
             },
         }
 
+    def controller_for(self, name: str, file_name: str = "the machine file") -> dict[str, Any]:
+        """`controller(name)` for a machine already loaded and validated, or
+        `MachineError` saying the file does not describe it. `file_name` is
+        only for the message: the spec does not remember where it was read."""
+        if name not in (self.controllers or {}):
+            raise MachineError(
+                f"the rig is written for controller {name!r}, which {file_name} "
+                f"does not describe; its controllers: {', '.join(sorted(self.controllers or {})) or 'none'}"
+            )
+        return self.controller(name)
+
 
 def controller_for(controller_name: str, machine_file: Path) -> dict[str, Any]:
     """The machine file's description of `controller_name`, for the MIDI-map
-    compiler, or `MachineError` saying why not. One place for `up --rig`,
-    `emit` and the listener's save check, so they refuse in the same words."""
+    compiler, or `MachineError` saying why not. For a caller with only a
+    path. One that has loaded the machine already asks the spec
+    (`MachineSpec.controller_for`); callers with a rig go through
+    `rig_controller`."""
     try:
         machine = MachineSpec.load(machine_file)
     except MachineError as exc:
@@ -291,12 +317,30 @@ def controller_for(controller_name: str, machine_file: Path) -> dict[str, Any]:
     problems = machine.validate()
     if problems:
         raise MachineError(f"{machine_file.name}: " + "; ".join(problems))
-    if controller_name not in (machine.controllers or {}):
-        raise MachineError(
-            f"the rig is written for controller {controller_name!r}, which {machine_file.name} "
-            f"does not describe; its controllers: {', '.join(sorted(machine.controllers or {})) or 'none'}"
-        )
-    return machine.controller(controller_name)
+    return machine.controller_for(controller_name, machine_file.name)
+
+
+def rig_controller(
+    rig: Any, machine_file: Path | None = None, *, machine: MachineSpec | None = None,
+) -> dict[str, Any] | None:
+    """The controller `rig`'s MIDI map names, as this machine describes it, or
+    None for a rig with no map; `MachineError` when the machine cannot say.
+
+    The one place `up --rig`, `emit` and the listener's save check resolve it,
+    so they refuse in the same words and cannot drift apart on the default.
+    `machine_file` defaults to this host's. A caller that has loaded and
+    validated the machine already passes it as `machine`, and the file (still
+    wanted, for its name in a message) is not read again.
+    """
+    if rig.midi is None:
+        return None
+    if machine_file is None:
+        from .paths import checkout_root
+
+        machine_file = machine_path(checkout_root())
+    if machine is not None:
+        return machine.controller_for(rig.midi.controller, machine_file.name)
+    return controller_for(rig.midi.controller, machine_file)
 
 
 def _port_problem(port: Any) -> str | None:

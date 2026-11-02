@@ -475,6 +475,14 @@ def parse_rig(raw: Any) -> Rig:
     host = raw.get("host")
     if host is not None and not isinstance(host, dict):
         problems.append(f"host must be a mapping (got {host!r})")
+    elif host is not None and "midi_inputs" in host:
+        # `compile_rig` raises it to hold the MIDI map's port. Checked here so
+        # a stray string is a problem with the file, named, and not an
+        # `int()` traceback from the compiler. `bool` is an `int`, and `true`
+        # is not a count of ports.
+        count = host["midi_inputs"]
+        if type(count) is not int or count < 0:
+            problems.append(f"host.midi_inputs must be a whole number, 0 or more (got {count!r})")
     for key in ("meta", "amp"):
         if raw.get(key) is not None and not isinstance(raw[key], dict):
             problems.append(f"{key} must be a mapping (got {raw[key]!r})")
@@ -761,7 +769,10 @@ def compile_rig(
 
     The state is what `emit` takes as captured state: each send's
     `destination_name`, without which a send goes nowhere and the channel is
-    silent in the monitors while its stem looks healthy.
+    silent in the monitors while its stem looks healthy. It is
+    `{"processors": {...}}`, and `"agent"` beside it, when the MIDI map has
+    bindings only the agent can serve (a bypass, a Program Change): a list
+    of them, for `emit_compiled` to write into the config.
 
     `controller` is the machine's description of the controller the rig's
     MIDI map names (`MachineSpec.controller`). Without one the MIDI map is
@@ -782,7 +793,8 @@ def compile_rig(
         midi_section, agent_bindings = compile_midi(rig, controller)
         # Sushi opens `midi_inputs` ports and refuses a mapping on one it did
         # not open, so the host asks for enough to hold the map's port.
-        host["midi_inputs"] = max(int(host.get("midi_inputs") or 0), rig.midi.port + 1)
+        # `check_rig` has already refused a value that is not a count.
+        host["midi_inputs"] = max(host.get("midi_inputs", 0), rig.midi.port + 1)
     tracks = []
     processors: dict[str, Any] = copy.deepcopy(rig.settings)
     next_input = 0
@@ -821,11 +833,13 @@ def compile_rig(
     problems = spec.validate()
     if problems:
         raise RigFileError(problems)
+    fixed: dict[str, Any] = {"processors": processors}
     if agent_bindings:
-        # Carried beside the processors' state so `emit_rig` can write them
-        # into the config for the agent; `merged_state` passes them through.
-        processors[AGENT_BINDINGS] = agent_bindings
-    return spec, {"processors": processors}
+        # Their own key, not a pseudo-processor in the map above: that map is
+        # read as processors by everything that touches it. `emit_compiled`
+        # writes them into the config for the agent.
+        fixed["agent"] = agent_bindings
+    return spec, fixed
 
 
 def merged_state(fixed: dict[str, Any], captured: dict[str, Any] | None) -> dict[str, Any]:
@@ -837,14 +851,14 @@ def merged_state(fixed: dict[str, Any], captured: dict[str, Any] | None) -> dict
     baked into the config. The compiler's own properties, each send's
     destination, always win: a destination other than the master is a send
     to nothing, and the channel is silent in the monitors while its stem
-    looks healthy.
+    looks healthy. The compiler's `agent` bindings are not state and are not
+    merged; `emit_compiled` takes them from `fixed` itself.
     """
     captured = captured or {}
     merged = {key: value for key, value in captured.items() if key != "processors"}
     # The file's settings first, a capture over them: a capture is newer, the
     # same relation a capture has to a v1 rig.yaml's.
     processors = copy.deepcopy(fixed["processors"])
-    bindings = processors.pop(AGENT_BINDINGS, None)
     for name, values in (captured.get("processors") or {}).items():
         if not isinstance(values, dict):
             continue
@@ -868,8 +882,6 @@ def merged_state(fixed: dict[str, Any], captured: dict[str, Any] | None) -> dict
                 "destination_name": values["properties"]["destination_name"],
             }
     merged["processors"] = processors
-    if bindings:
-        merged[AGENT_BINDINGS] = bindings
     return merged
 
 
@@ -1045,7 +1057,7 @@ def emit_compiled(
     if problems:
         # A capture can carry a strip moved live, which the file never had.
         raise RigFileError(problems)
-    bindings = state.pop(AGENT_BINDINGS, None)
+    bindings = fixed.get("agent")
     config = pin_monitor_path(emit(spec, state))
     if rig.amp:
         config["_amp"] = copy.deepcopy(rig.amp)
