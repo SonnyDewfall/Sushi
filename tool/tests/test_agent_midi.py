@@ -692,6 +692,25 @@ def test_a_dropped_switch_action_does_not_count_as_a_crossing(monkeypatch):
     served(agent, test)
 
 
+def test_a_burst_on_one_side_of_64_is_one_crossing():
+    """A pedal sends several values as it moves: those after the first on the
+    same side are not crossings, even before the first one's action has run,
+    so they queue nothing and read nothing from Sushi."""
+    agent, fake, world, *_ = midi_agent()
+
+    async def test(client):
+        port = await started(agent, world, client)
+        for value in (20, 15, 10, 5, 0):
+            port.send(0xB0, 80, value)
+        await until(lambda: agent._midi_status()["heard"] == 5)
+        await until(lambda: fake.writes())
+        await settle(agent)
+        assert fake.writes() == [("set_bypass", "comp", True)]
+        assert [c for c in fake.calls if c[0] == "bypass"] == [("bypass", "comp")]
+
+    served(agent, test)
+
+
 def test_a_failed_switch_action_does_not_count_as_a_crossing():
     agent, fake, world, *_ = midi_agent()
     fake.fail, fake.fail_on = RuntimeError("Sushi went sideways"), "set_bypass"

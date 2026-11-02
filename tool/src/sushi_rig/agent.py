@@ -1585,7 +1585,11 @@ class Agent:
                 else:
                     action = message  # decided in `_midi_act`, off the loop
             else:
-                action, _ = midi_listener.dispatch(message, plan.bindings, self._midi_switches)
+                # A switch's crossing is recorded as it is decided, so the values
+                # that follow on the same side (a pedal sends several) are not
+                # crossings too; `_midi_forget` takes it back if the action is
+                # dropped or fails, so the next value plays it again.
+                action, self._midi_switches = midi_listener.dispatch(message, plan.bindings, self._midi_switches)
         except Exception as exc:  # noqa: BLE001 -- a loop callback's error would reach only the loop's log
             self._midi["last_error"] = {
                 "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -1601,6 +1605,7 @@ class Agent:
             # LIVE_TIMEOUT): a pedal's presses queued behind it would all land
             # at once, long after they were played.
             self._midi_error(action, f"{len(self._midi_tasks)} MIDI actions are still waiting on Sushi, so this one was dropped")
+            self._midi_forget(action)
             return
         task = asyncio.ensure_future(self._midi_act(generation, action))
         self._midi_tasks.add(task)
@@ -1653,22 +1658,31 @@ class Agent:
                     raise MidiError(action.reason)
                 if isinstance(action, (midi_listener.ToggleBypass, midi_listener.SetBypass)):
                     await self._midi_bypass(origin, action)
-                    if isinstance(action, midi_listener.SetBypass) and generation == self._midi_generation:
-                        # Set, or Sushi was already there: only now has the
-                        # switch crossed. A dropped or failed action leaves it
-                        # where it was, so the next value on this side plays
-                        # the crossing again.
-                        self._midi_switches = {**self._midi_switches, action.control: not action.bypassed}
                 elif isinstance(action, midi_listener.ToggleMute):
                     await self._midi_mute(origin, action)
                 elif isinstance(action, midi_listener.SelectRig):
                     await self._midi_switch(action)
             except web.HTTPException as exc:  # what a route would have answered
                 self._midi_error(action, exc.reason)
+                self._midi_forget(action, generation)
             except (AgentError, MidiError) as exc:
                 self._midi_error(action, str(exc))
+                self._midi_forget(action, generation)
             except Exception as exc:  # noqa: BLE001 -- said, with its type; the agent carries on
                 self._midi_error(action, f"{type(exc).__name__}: {exc}")
+                self._midi_forget(action, generation)
+
+    def _midi_forget(self, action: Any, generation: int | None = None) -> None:
+        """Take back the crossing a CC switch's dropped or failed action
+        recorded, so the next value on that side plays it again. Only while
+        the switch still holds this action's state (a later crossing stands)
+        and the listener that heard it is still the one listening."""
+        if not isinstance(action, midi_listener.SetBypass):
+            return
+        if generation is not None and generation != self._midi_generation:
+            return
+        if self._midi_switches.get(action.control) == (not action.bypassed):
+            self._midi_switches = {k: v for k, v in self._midi_switches.items() if k != action.control}
 
     def _midi_logged(self, entry: dict[str, Any], control: str | None) -> None:
         """Mark a live-log entry as MIDI's. `_record` returns the entry it
