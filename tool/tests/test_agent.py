@@ -1366,6 +1366,83 @@ def test_a_sushi_that_is_stuck_for_good_fills_a_bounded_pool_of_its_own_and_is_t
     assert fake.thread_names and all(n.startswith("sushi-live") for n in fake.thread_names)
 
 
+def test_a_connect_cancelled_while_in_flight_has_its_late_connection_closed():
+    """The client going while the connect is running cancels the handler; the
+    connection the connect then returns used to be nobody's, and leaked."""
+    from types import SimpleNamespace
+
+    agent, fake = live_agent()
+    fake.hang_on = "connect"
+    request = SimpleNamespace(method="GET", path="/live")
+
+    async def go():
+        async def use():
+            async with agent._connected(request):
+                pytest.fail("connected")
+
+        task = asyncio.ensure_future(use())
+        await asyncio.get_running_loop().run_in_executor(None, fake.reached.wait, 5)
+        task.cancel()
+        with pytest.raises(asyncio.CancelledError):
+            await task
+        assert agent.stuck_live_calls == 1
+        fake.release.set()
+        assert await asyncio.get_running_loop().run_in_executor(
+            None, _until, lambda: fake.opened == [1] and fake.closed == [1])
+        await asyncio.sleep(0.1)
+
+    asyncio.run(go())
+    assert agent.stuck_live_calls == 0
+
+
+def test_a_call_that_returns_between_the_timeout_check_and_the_abandoning_is_not_counted_stuck(
+    monkeypatch
+):
+    """The done-callback runs in the worker thread and the abandoning on the
+    loop; a call that returned in the gap between them stayed in the abandoned
+    set for ever, inflating `stuck_live_calls` and the count in the 503."""
+    import concurrent.futures
+
+    monkeypatch.setattr(agent_module, "LIVE_TIMEOUT", 0.1)
+
+    class Racy(concurrent.futures.Future):
+        armed = False
+
+        def done(self):
+            was = super().done()
+            if self.armed and not was:
+                self.armed = False
+                self.set_result(None)  # it returns now: after the check, before the add
+            return was
+
+    future = Racy()
+
+    class Pool:
+        def submit(self, fn, *args):
+            future.set_running_or_notify_cancel()  # a worker has it: it cannot be cancelled
+            return future
+
+        def shutdown(self, **kwargs):
+            pass
+
+    real_wait_for = asyncio.wait_for
+
+    async def arming(awaitable, timeout):
+        try:
+            return await real_wait_for(awaitable, timeout)
+        except asyncio.TimeoutError:
+            future.armed = True
+            raise
+
+    monkeypatch.setattr(agent_module.asyncio, "wait_for", arming)
+    agent, fake = live_agent()
+    agent._executor = Pool()
+    status, _ = call(agent, "GET", "/live")
+    assert status == 504
+    assert agent.stuck_live_calls == 0
+    assert not agent._in_flight
+
+
 def test_a_connect_that_never_returns_is_a_504_too(monkeypatch):
     monkeypatch.setattr(agent_module, "LIVE_TIMEOUT", 0.2)
     agent, fake = live_agent()

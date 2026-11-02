@@ -1474,4 +1474,14 @@ as it did before. **Still not run against a live Sushi**: the late close, the
 pool and the 503 are shown against fakes, with a fake whose calls finish after
 the timeout; whether elkpy's `close()` is safe once a call that was running on
 it has returned is read from its source (it stops the notification loop and
-joins its thread), not run. *(2026-11-02)*
+joins its thread), not run.
+
+*A fourth review found two more in the abandon bookkeeping.* A connect cancelled
+in flight (the client went) was not handled like one that timed out, so the
+connection it returned late was never closed: both are now. And a call that
+returned in the gap between the timeout check (on the loop) and counting it as
+abandoned (the done-callback that uncounts it runs in the worker thread) stayed
+counted for ever, inflating `stuck_live_calls` and the count in the 503; it is
+now counted first and uncounted if it has already returned. The second is shown
+with a future that completes from inside the check; neither was run against a
+live Sushi. *(2026-11-02)*

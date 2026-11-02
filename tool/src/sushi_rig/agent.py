@@ -644,6 +644,20 @@ class Agent:
         future.add_done_callback(lambda f: (self._in_flight.discard(f), self._abandoned.discard(f)))
         return future
 
+    def _abandon(self, future) -> None:
+        """Count a call the agent has stopped waiting for as stuck.
+
+        The done-callback that discards it runs in the worker thread, and this
+        on the loop, so the call may return before, during or after: add first,
+        then look, and discard if it has already returned. (A check first and an
+        add after left a call that returned in between counted for ever.) Either
+        order of the two discards is harmless, since a discard of what is not
+        there does nothing.
+        """
+        self._abandoned.add(future)
+        if future.done():
+            self._abandoned.discard(future)
+
     async def _sushi(self, request, fn: Callable[..., Any], *args: Any, reading: bool) -> Any:
         """Run one blocking Sushi call off the loop, and say how it failed.
 
@@ -682,12 +696,12 @@ class Agent:
                 self._remember(where, reason, kind="live")
                 timeout = web.HTTPGatewayTimeout(reason=reason)
                 if not future.cancelled():  # a call still running, not one that never started
-                    self._abandoned.add(future)
+                    self._abandon(future)
                     timeout.pending = future
                 raise timeout
             except asyncio.CancelledError as exc:
                 if not future.done():  # the client went; the call did not
-                    self._abandoned.add(future)
+                    self._abandon(future)
                     exc.pending = future
                 raise
         except web.HTTPException:
@@ -726,7 +740,9 @@ class Agent:
         """
         try:
             controller = await self._sushi(request, self.live.connect, reading=True)
-        except web.HTTPGatewayTimeout as exc:
+        except (web.HTTPGatewayTimeout, asyncio.CancelledError) as exc:
+            # The connect is still running (it timed out, or the client went);
+            # the connection it returns late is nobody's, so close it then.
             self._close_when_it_returns(request, getattr(exc, "pending", None), None)
             raise
         pending = None
