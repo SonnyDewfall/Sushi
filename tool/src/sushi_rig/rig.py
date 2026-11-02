@@ -1396,6 +1396,15 @@ def _clear_state_of(pgid: Any) -> None:
         clear_state()
 
 
+def runs_panel(state: dict[str, Any]) -> bool:
+    """Whether the rig a state file describes runs with its panel (and the
+    panel's listener, which writes to Carla itself). Anything but an explicit
+    "headless" is the panel: `up`'s default, and the safe reading of a state
+    file that does not say. The one rule for `restart_arguments`, the live
+    switch's `state_blockers` and the agent's amp (amp_live.amp_problem). Pure."""
+    return state.get("mode") != "headless"
+
+
 def restart_arguments(state: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     """What `up` should be called with to bring back the rig `state` describes.
 
@@ -1421,7 +1430,7 @@ def restart_arguments(state: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     tuner = state.get("tuner_requested")
     amp = state.get("amp_requested")
     return state.get("config_name", DEFAULT_CONFIG_NAME), {
-        "headless": state.get("mode") == "headless",
+        "headless": not runs_panel(state),
         "tuner": tuner if isinstance(tuner, bool) else "fmit" in children,
         "amp": amp if isinstance(amp, bool) else "amp" in children,
         "amp_model": state.get("amp_model_requested") or None,

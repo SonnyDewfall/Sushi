@@ -2651,7 +2651,7 @@ def test_a_switch_that_differs_in_the_amps_levels_is_made_live_through_carla():
     assert runner.calls == []
     assert body["counts"] == {"parameter": 2, "amp": 2}
     assert world.carla.values() == {"Input Lvl": 0.0, "Output Lvl": 6.0}
-    assert world.carla.asked == 2, "Carla was asked whether it answers before each send"
+    assert world.carla.asked == 1, "Carla was asked whether it answers before the first send"
     status, amp = call(agent, "GET", "/amp")
     assert status == 200, amp
     values = {p["name"]: (p["value"], p["source"]) for p in amp["parameters"]}
@@ -2669,6 +2669,33 @@ def test_a_switch_whose_carla_does_not_answer_restarts_into_the_next_rig():
     assert "Carla is not answering" in body["why"][0]["detail"]
     assert runner.calls == [["down"], ["up", "electric-chorus-2", "--rig", "--headless"]]
     assert world.carla.sent == []
+
+
+def test_a_rig_run_with_no_amp_switches_live_to_a_rig_with_another_model_or_no_amp():
+    """`up --no-amp`, then a switch: no Carla runs and a restart would start
+    none, so a different model, or an amp on one side only, is no reason to
+    restart (review). The rig switches live and Carla is not asked."""
+    state = {**HEADLESS, "amp_requested": False, "children": {"sushi": 4243}}
+    agent, fake, world, runner = switch_agent("electric-delay", state=state)
+    other = switch_config("electric-octave-up")
+    other["_amp"]["model"] = "amp/models/another.nam"
+    agent.switching = replace(agent.switching, compile=lambda name, root, machine: _copy.deepcopy(other))
+    status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-octave-up"})
+    assert status == 200 and body["how"] == "live", body
+    assert runner.calls == [] and world.carla.asked == 0 and world.carla.sent == []
+    agent, fake, world, runner = switch_agent("electric-delay", state=state)
+    status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric_board"})
+    assert status == 200 and body["how"] == "live", body
+    assert runner.calls == []
+
+
+def test_with_an_amp_running_a_different_model_still_restarts_with_it():
+    agent, fake, world, runner = switch_agent("electric-delay")
+    other = switch_config("electric-octave-up")
+    other["_amp"]["model"] = "amp/models/another.nam"
+    agent.switching = replace(agent.switching, compile=lambda name, root, machine: _copy.deepcopy(other))
+    status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-octave-up"})
+    assert body["how"] == "restart" and [r["code"] for r in body["why"]] == ["amp"]
 
 
 def test_a_rig_run_with_no_amp_drops_the_amp_steps_since_a_restart_would_start_none():

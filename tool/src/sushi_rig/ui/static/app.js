@@ -26,6 +26,10 @@ const DRAG_PIXELS = 200;
 // inside this, so a pocket or a stray palm cannot do it (S6: deliberate).
 const UNLOCK_MS = 4000;
 const LOCK_KEY = "sushi-rig.locked";
+// amp/models is listed again this often while the page is open, so a model
+// copied in shows in the picker without a reload; a failed listing is asked
+// for again after RETRY_MS.
+const MODELS_MS = 30000;
 // Colours for a unit's swatch, from the mockups; chosen by the plugin, so a
 // plugin keeps its colour wherever it sits. Decoration, nothing more.
 const SWATCHES = ["#D9C04E", "#F08A50", "#B59CF2", "#8FC25A", "#A98BF0", "#6FC6D1", "#E07A73"];
@@ -52,6 +56,7 @@ const state = {
   ampModels: null, ampModelsAt: 0,  // GET /amp/models: kept once it answers, read again after a model change
   ampChoice: null,           // the model picked in the amp card, awaiting its confirm
   ampPending: null,          // the model change in flight
+  ampUpdaters: [],           // the amp region's own, emptied whenever it is rebuilt
   chosen: null,              // the rig picked in the picker; null follows the running rig
   pending: null,             // this page's lifecycle command in flight: {op, name}
   confirming: false, confirmTimer: null,  // Stop's second tap
@@ -176,11 +181,12 @@ async function refreshRigs(force = false) {
   return true;
 }
 
-// amp/models, for the amp card's picker: once it answers, and again after a
-// model change (which one is playing moves); after RETRY_MS while it fails.
+// amp/models, for the amp card's picker: every MODELS_MS (a model copied in
+// while the page is open shows without a reload), at once after a model
+// change (which one is playing moves), after RETRY_MS while it fails.
 async function refreshAmpModels(force = false) {
-  if (!force && state.ampModels && state.ampModels.ok) return false;
-  if (!force && state.ampModelsAt && Date.now() - state.ampModelsAt < RETRY_MS) return false;
+  const wait = state.ampModels && state.ampModels.ok ? MODELS_MS : RETRY_MS;
+  if (!force && state.ampModelsAt && Date.now() - state.ampModelsAt < wait) return false;
   state.ampModels = await request("GET", "/amp/models");
   state.ampModelsAt = Date.now();
   return true;
@@ -636,7 +642,11 @@ function rigsRegion(el) {
 
 // One of the amp's parameters as a fader, in its own unit (dB), sent as it
 // moves through the same Sender as a knob: one request in flight, the
-// newest wins, a refusal shown beside it with the agent's reason.
+// newest wins, a refusal shown beside it with the agent's reason. Its updater
+// goes in `state.ampUpdaters`, which the amp region empties as it rebuilds:
+// the amp region is rebuilt on its own (a model picked, the list arriving),
+// and an updater left in the rack's list for an input no longer on the page
+// was a list that grew with every rebuild (found by review).
 function ampFader(f) {
   const key = `a\u0000${f.name}`;
   const input = h("input", {
@@ -665,7 +675,7 @@ function ampFader(f) {
     draw(v, null);
   });
   const el = h("label", { class: "fader" }, h("span", { class: "label" }, f.label), input, value, note);
-  state.updaters.push((ctx) => {
+  state.ampUpdaters.push((ctx) => {
     const body = state.amp && state.amp.ok ? state.amp.body : null;
     draw(sender.displayed(key, R.ampValueOf(body, f.name), ctx.seq), ctx.unsaved.get(key) || null);
   });
@@ -674,10 +684,10 @@ function ampFader(f) {
 
 // The rack's amp card: the model and what it declares, the panel's faders,
 // Quality shown and not on a fader, and the model picker with its warning.
-function ampRegion(el, rebuilt) {
+function ampRegion(el) {
   const view = R.ampCard(state.amp, state.ampModels, { locked: state.locked, pending: state.ampPending });
-  if (rebuilt) state.keys.delete(el);
   patch(el, JSON.stringify([view, state.ampChoice]), () => {
+    state.ampUpdaters = [];
     if (view.state === "hidden") return [];
     if (view.state !== "up") {
       return [h("h2", {}, "AMP"), h("p", { class: view.state === "failed" ? "missing" : "amp-none" }, view.why)];
@@ -716,14 +726,13 @@ function ampRegion(el, rebuilt) {
 
 // The stage's amp: the model's name and the output level only, hidden
 // while the lock is on (as the rig picker is).
-function stageAmpRegion(el, rebuilt) {
-  if (state.locked) { patch(el, "locked", () => []); return; }
+function stageAmpRegion(el) {
+  if (state.locked) { patch(el, "locked", () => { state.ampUpdaters = []; return []; }); return; }
   const view = R.stageAmp(state.amp);
-  if (rebuilt) state.keys.delete(el);
-  patch(el, JSON.stringify(view), () => view ? [
+  patch(el, JSON.stringify(view), () => { state.ampUpdaters = []; return view ? [
     h("h2", {}, "AMP"), h("span", { class: "amp-model" }, view.name),
     view.output ? ampFader(view.output) : null,
-  ] : []);
+  ] : []; });
 }
 
 // ---------------------------------------------------------------- the rack (S1)
@@ -801,7 +810,7 @@ function renderRack(regions, model, unsaved, status) {
   // With no rig, the message depends on the tone (changing, or down), so
   // the tone is in the key, or it would never be redrawn (found by review).
   const structure = model ? JSON.stringify([model.tracks.map((t) => [t.name, t.chain, t.units.map((u) => [u.uri, u.profile, u.panel])]), state.locked, [...state.open], !!state.names]) : JSON.stringify(["none", status.tone]);
-  const rebuilt = patch(regions.rack, structure, () => {
+  patch(regions.rack, structure, () => {
     state.updaters = [];
     if (!model) {
       return h("p", { class: "empty" }, status.tone === "busy" ? "The rig is changing; the rack comes back when it is up."
@@ -814,9 +823,7 @@ function renderRack(regions, model, unsaved, status) {
       track.units.map((u, i) => unitRow(track, u, i)),
       track.send ? h("div", { class: "send" }, h("span", { class: "k" }, "SEND TO MASTER"), control(track.send, track.send.panel.groups[0].controls[0], "small")) : null));
   });
-  // After the rack, whose rebuild empties the updaters: the amp's faders are
-  // rebuilt with it, so theirs are there again.
-  ampRegion(regions.amp, rebuilt);
+  ampRegion(regions.amp);
   rigsRegion(regions.rigs);
   patch(regions.channels, model ? JSON.stringify(model.tracks.map((t) => [t.name, t.units.length])) : "none", () => [
     h("h2", {}, "CHANNELS"),
@@ -920,7 +927,7 @@ function renderStage(regions, model, status) {
     state.locked
       ? "Add, remove and reorder are off while locked, and start, stop and switch are hidden. Knobs and bypass still work. This is the page's lock: the agent does not enforce one yet."
       : "Lock off: the rack can reorder the rig, and the rig can be started, stopped or switched below.");
-  const rebuilt = patch(regions.cards, structure, () => {
+  patch(regions.cards, structure, () => {
     state.updaters = [];
     if (!model) {
       return [h("p", { class: "empty" }, status.tone === "busy" ? "The rig is changing; the cards come back when it is up."
@@ -931,7 +938,7 @@ function renderStage(regions, model, status) {
       lockNote(),
     ];
   });
-  stageAmpRegion(regions.amp, rebuilt);
+  stageAmpRegion(regions.amp);
   // Hidden, not disabled, while locked: on stage a Stop within reach of a
   // thumb is the mistake the lock is there to prevent.
   if (state.locked) patch(regions.rigs, "locked", () => []);
@@ -956,6 +963,7 @@ function render() {
       state.screen = screen;
       state.regions = built.regions;
       state.updaters = [];
+      state.ampUpdaters = [];
     }
     const live = liveBody();
     const model = live ? R.rackModel(live, state.plugins, state.profiles) : null;
@@ -974,7 +982,7 @@ function render() {
         else if (item.kind === "amp") keyed.set(`a\u0000${item.name}`, item);
       }
       const ctx = { live, seq: state.seq, unsaved: keyed };
-      for (const update of state.updaters) update(ctx);
+      for (const update of [...state.updaters, ...state.ampUpdaters]) update(ctx);
     }
   } catch (error) {
     // Loud: a page that drew nothing would read as a rig with nothing on it.
@@ -983,6 +991,10 @@ function render() {
     state.screen = null;
   }
 }
+
+// How many updaters the page holds, for the browser tests to see that the
+// count stays flat as regions are rebuilt. Read-only, and nothing else.
+window.sushiRigUpdaters = () => ({ rack: state.updaters.length, amp: state.ampUpdaters.length });
 
 // A channel's link is a hash too; only a change of screen closes what was open.
 window.addEventListener("hashchange", () => { if (currentScreen() !== state.screen) state.open.clear(); render(); });

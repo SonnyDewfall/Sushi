@@ -35,6 +35,7 @@ class FakeCarla:
         self.answering = answering
         self.sent: list = []
         self.asked = 0
+        self.forgotten = 0
         self.fail: BaseException | None = None
 
     def carla(self) -> Carla:
@@ -47,7 +48,10 @@ class FakeCarla:
                 raise self.fail
             self.sent.append((address, list(payload)))
 
-        return Carla(answering=answering, send=send)
+        def forget():
+            self.forgotten += 1
+
+        return Carla(answering=answering, send=send, forget=forget)
 
     def values(self) -> dict:
         """The last value sent for each parameter, by name."""

@@ -629,11 +629,13 @@ fader, with `known: "sent"` so nothing can present it as what Carla holds. It
 is seeded for each run of the rig from the running config's `_amp`, which `up`
 replays, and a parameter the config does not state is `null`, not a guessed
 default. `POST /amp/parameter {"name", "value"}` sends one parameter, in its
-own unit; a value outside the range is clamped and the answer says so. Before
-each send the agent opens a TCP connection to Carla's OSC port (Carla serves
-OSC over TCP and UDP; the send itself is UDP, which succeeds whether anything
-listens or not): no connection is `502` and nothing is recorded. That proves a
-Carla is listening, not that it applied the value. Each change is in
+own unit; a value outside the range is clamped and the answer says so. The
+agent opens a TCP connection to Carla's OSC port (Carla serves OSC over TCP and
+UDP; the send itself is UDP, which succeeds whether anything listens or not)
+on the first send to a Carla, after any failure, and at most every two seconds
+otherwise, so a fader's stream of sends costs one: no connection is `502` and
+nothing is recorded. Every send also checks Carla's process is alive. That
+proves a Carla is listening, not that it applied the value. Each change is in
 `/live/log` (op `amp`), and `/live/undo` puts back what was last sent before
 it, refusing as `stale` once something else was sent since. `POST /amp/model
 {"model"}` plays another model of `amp/models` (a path only from this machine,
@@ -644,8 +646,9 @@ holds, with its knobs replayed; Sushi and everything else play on. If the new
 model does not come up, the previous one is put back, and the answer says
 whether that worked. The state file records the model, so `restart` keeps it.
 It needs a rig this agent started (`409 not_held` otherwise), and is refused
-while a lifecycle command runs. **With the panel running, the panel owns the
-amp**: its faders reach Carla through the listener, which keeps its own
+while a lifecycle command runs, and while the state file does not name the rig
+the agent holds. **With the panel running, the panel owns the amp** (any mode
+but `headless`, as a switch and `restart` read it): its faders reach Carla through the listener, which keeps its own
 record for SAVE, so the agent says `known: "panel"` and writes nothing
 (`409 panel`) rather than keep a second record neither could trust. **Not run
 against a real Carla**: Carla is a stand-in in every test (an in-memory one,

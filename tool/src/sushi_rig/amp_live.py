@@ -32,13 +32,22 @@ made live in panel mode for the same reason (agent `state_blockers`).
 ## How the agent knows Carla answered
 
 OSC is UDP here, and a UDP send to a port nobody holds succeeds silently. So
-before each send the agent opens a TCP connection to Carla's OSC port, which
-Carla also serves over TCP (`rig._replay_amp` waits on the same thing): no
-connection is "Carla is not answering", 502, and nothing is recorded. That
-says a Carla is listening; it does not say the value took. Nothing can, from
-here, short of Carla's feedback channel for registered clients, which is a
-much larger thing (amp.py). The TCP connection per send is a guess at being
-harmless to Carla's liblo server at fader rates: not run against a Carla.
+the agent opens a TCP connection to Carla's OSC port, which Carla also serves
+over TCP (`rig._replay_amp` waits on the same thing): no connection is "Carla
+is not answering", 502, and nothing is recorded. That says a Carla is
+listening; it does not say the value took. Nothing can, from here, short of
+Carla's feedback channel for registered clients, which is a much larger thing
+(amp.py).
+
+Not on every send, though, which at fader rates would be a TCP connection to
+Carla's liblo server per fader step (`needs_probe`): on the first send to a
+Carla run (its pid, from the state file), after any failure, and otherwise
+at most every `PROBE_EVERY` seconds. Each send also checks Carla's process is
+alive (`amp_problem`, from the pid), so a Carla that died is caught at once;
+what a quiet interval can miss is a Carla alive whose OSC stopped answering,
+for at most `PROBE_EVERY`. The sends of one run share one UDP client
+(`Carla.at`), dropped when the run changes or a send fails. None of this has
+been run against a Carla.
 """
 
 from __future__ import annotations
@@ -49,6 +58,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any, Callable
 
+from .rig import runs_panel
 from .amp import (
     CARLA_OSC_PORT, PANEL_PARAMETERS, PARAMETER_INDEX, PARAMETER_RANGE, PARAMETER_UNIT,
     RIG_SAMPLE_RATE, AmpError, clamp, describe_model, model_library, parameter_message, read_amp,
@@ -71,6 +81,19 @@ KNOWN_NOTE = {
 
 # The ops an amp change is logged as. `amp` is a parameter, `amp_model` the model.
 OPS = ("amp", "amp_model")
+
+# How long a TCP probe of Carla's OSC port is taken to hold for the sends
+# after it: long enough that a fader's stream of sends costs one probe, short
+# enough that a Carla whose OSC went quiet is noticed within a gesture.
+# A choice, not a measurement.
+PROBE_EVERY = 2.0
+
+
+def needs_probe(last: tuple | None, run: Any, now: float, every: float = PROBE_EVERY) -> bool:
+    """Whether to ask Carla's OSC port before this send. `last` is `(run,
+    when)` of the last probe that answered, None after a failure or before
+    the first. A new Carla run (its pid) is always asked. Pure."""
+    return last is None or last[0] != run or now - last[1] >= every
 
 
 class AmpRefused(Exception):
@@ -136,7 +159,8 @@ def amp_problem(state: dict[str, Any] | None, described: dict[str, Any], *, writ
     - no rig up: 409 `no_rig`;
     - no amp child: 409 `no_amp` (started with --no-amp, a config with no
       `_amp`, or a Carla that did not start, which `up` warned of);
-    - writing in panel mode: 409 `panel` (see the module docstring);
+    - writing in panel mode: 409 `panel` (see the module docstring), by
+      `rig.runs_panel`, so a state file that does not say is the panel's;
     - writing to an amp child that is dead: 502 `carla_down`, since Carla is
       the one that would have to answer. A read still answers, saying so
       (GET /amp's `carla`).
@@ -154,7 +178,7 @@ def amp_problem(state: dict[str, Any] | None, described: dict[str, Any], *, writ
         else:
             why = "Carla did not start with it (see the warnings of the up that started it, and amp.log)"
         return AmpRefused(f"the running rig has no amp: {why}", 409, "no_amp")
-    if writing and state.get("mode") == "panel":
+    if writing and runs_panel(state):
         return AmpRefused(
             "the panel is running and writes to the amp itself (its faders go to Carla through the "
             "listener), and two writers that cannot see each other would each be wrong about what the "
@@ -380,12 +404,14 @@ def parameters_view(amp: AmpState) -> list[dict[str, Any]]:
     return out
 
 
-def amp_view(amp: AmpState, state: dict[str, Any], root: Path, shelf: ModelShelf) -> dict[str, Any]:
-    """GET /amp's answer for a rig with an amp."""
-    known = KNOWN_PANEL if state.get("mode") == "panel" else KNOWN_SENT
+def amp_view(amp: AmpState, state: dict[str, Any], model: dict[str, Any] | None) -> dict[str, Any]:
+    """GET /amp's answer for a rig with an amp; `model` is `model_view`'s,
+    which the agent keeps per run and model rather than reading the file's
+    status and summary again on every page's poll. Pure."""
+    known = KNOWN_PANEL if runs_panel(state) else KNOWN_SENT
     return {
         "ok": True, "known": known, "known_note": KNOWN_NOTE[known],
-        "model": model_view(amp.model, root, shelf),
+        "model": model,
         "parameters": parameters_view(amp),
         "override": state.get("amp_model_requested") or None,
     }
@@ -434,22 +460,37 @@ def undo_check(entry: dict[str, Any], amp: AmpState, root: Path) -> None:
 @dataclass(frozen=True)
 class Carla:
     """Carla's OSC, as the agent reaches it: `answering` (a TCP connection to
-    its OSC port, see the module docstring) and `send` (one UDP message,
-    `parameter_message`'s). Both block; the agent runs them off its loop."""
+    its OSC port, see the module docstring), `send` (one UDP message,
+    `parameter_message`'s) and `forget` (drop the UDP client, for the next
+    Carla run or after a failure). They block; the agent runs them off its
+    loop."""
 
     answering: Callable[[], bool]
     send: Callable[[str, list], None]
+    forget: Callable[[], None] = lambda: None
 
     @classmethod
     def at(cls, host: str = "127.0.0.1", port: int = CARLA_OSC_PORT) -> "Carla":
         from .procs import port_is_open
 
-        def send(address: str, payload: list) -> None:
-            try:
-                from pythonosc.udp_client import SimpleUDPClient
-            except ImportError as exc:
-                raise AmpError("python-osc is not installed, so the agent cannot reach Carla: "
-                               "pip install python-osc (the 'live' extra)") from exc
-            SimpleUDPClient(host, port).send_message(address, payload)
+        held: dict[str, Any] = {}  # the one UDP client, until forgotten
 
-        return cls(answering=lambda: port_is_open(host, port), send=send)
+        def send(address: str, payload: list) -> None:
+            if "client" not in held:
+                try:
+                    from pythonosc.udp_client import SimpleUDPClient
+                except ImportError as exc:
+                    raise AmpError("python-osc is not installed, so the agent cannot reach Carla: "
+                                   "pip install python-osc (the 'live' extra)") from exc
+                held["client"] = SimpleUDPClient(host, port)
+            held["client"].send_message(address, payload)
+
+        def forget() -> None:
+            client = held.pop("client", None)
+            if client is not None:
+                try:
+                    client._sock.close()
+                except (AttributeError, OSError):
+                    pass
+
+        return cls(answering=lambda: port_is_open(host, port), send=send, forget=forget)

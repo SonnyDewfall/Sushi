@@ -327,14 +327,17 @@ class AmpRestart:
     replayed, with `pid` its Carla. Otherwise `reason` says why, and
     `restored` whether the previous model was brought back (True), could not
     be (False), or was never taken away (None: refused before Carla was
-    touched). `problems` are said either way: links the patchbay did not
-    remake, a log to read."""
+    touched). `code` says which refusal or failure, for the agent's answer:
+    `not_held`, `no_amp`, `project_unreadable`, `no_state` (refused);
+    `would_not_stop`, `did_not_start` (failed). `problems` are said either
+    way: links the patchbay did not remake, a log to read."""
 
     ok: bool
     reason: str | None = None
     pid: int | None = None
     restored: bool | None = None
     problems: tuple[str, ...] = ()
+    code: str | None = None
 
 
 @dataclass(frozen=True)
@@ -633,7 +636,10 @@ class Supervisor:
         takes to stop and start (not measured: no Carla was to hand).
 
         1. Refused, with Carla untouched, unless this agent holds a rig that
-           is up and planned an amp.
+           is up and planned an amp, its project can be read (to put back),
+           and the state file names the held group: the run as it is now,
+           a live switch's config included, is what the new model is
+           recorded into, never the rig `up` first started.
         2. Carla is stopped by its pid and what it started (`stop_child`),
            its exit marked as the restart's. One that will not stop is a
            failure, and nothing is started over it.
@@ -661,18 +667,26 @@ class Supervisor:
             return AmpRestart(False, (
                 "this agent does not hold a running rig, so it cannot restart its amp: a rig "
                 "started with 'up --direct', or by an agent before this one, is restarted whole "
-                "(POST /rig/restart)"))
+                "(POST /rig/restart)"), code="not_held")
         planned = next((c for c in held.launch.children if c.get("name") == "amp"), None)
         path = rig_module.amp_project_of(held.launch.children)
         child = held.children.get("amp")
         if planned is None or path is None or child is None:
-            return AmpRestart(False, "the rig was started with no amp, so there is no Carla to restart")
+            return AmpRestart(False, "the rig was started with no amp, so there is no Carla to restart",
+                              code="no_amp")
         world = self.world
         try:
-            previous = path.read_text()
+            previous, recorded = await asyncio.to_thread(lambda: (path.read_text(), read_state()))
         except OSError as exc:
             return AmpRestart(False, f"the amp's project {path} cannot be read ({exc}), so the model "
-                                     "it plays could not be put back: not restarted")
+                                     "it plays could not be put back: not restarted",
+                              code="project_unreadable")
+        if not recorded or recorded.get("pgid") != held.pgid:
+            return AmpRestart(False, (
+                "the state file does not name the rig this agent holds (it is gone, or names group "
+                f"{(recorded or {}).get('pgid')} and not {held.pgid}), so the new model could not be "
+                "recorded for restart to keep: not restarted. POST /rig/restart writes it again"),
+                code="no_state")
         env = _rig_env(held.launch)
         held.restarting.add("amp")
         try:
@@ -683,24 +697,24 @@ class Supervisor:
                 return AmpRestart(False, (
                     f"Carla would not stop: pid(s) {', '.join(map(str, left))} are still running, so "
                     "no new Carla was started over it. The amp may be half there: POST /rig/restart"),
-                    restored=False)
+                    restored=False, code="would_not_stop")
             failure = await self._start_amp(held, planned, env, path, project, values)
             if failure is None:
                 problems = await self._amp_links(held)
-                self._record_amp(held, model=model, override=override)
+                await self._record_amp(held, recorded, model=model, override=override)
                 return AmpRestart(True, pid=held.children["amp"].proc.pid, problems=tuple(problems))
             self._say(f"the amp did not come up on {model}: {failure}; putting the previous model back")
             back = await self._start_amp(held, planned, env, path, previous, values)
             if back is None:
                 problems = await self._amp_links(held)
-                self._record_amp(held, model=None, override=None)
+                await self._record_amp(held, recorded, model=None, override=None)
                 return AmpRestart(False, failure, pid=held.children["amp"].proc.pid, restored=True,
-                                  problems=tuple(problems))
+                                  problems=tuple(problems), code="did_not_start")
             said = (f"the amp did not come back on its previous model either: {back}. There is NO AMP "
                     "in the signal path, so the guitar is running dry: POST /rig/restart")
             self._say(said)
             self.problems.append({"kind": "no_amp", "at": _now(), "message": said})
-            return AmpRestart(False, f"{failure}; and {said}", restored=False)
+            return AmpRestart(False, f"{failure}; and {said}", restored=False, code="did_not_start")
         finally:
             # Seen while still marked, so a Carla that this restart stopped,
             # or that failed to come up, is the restart's and not a crash.
@@ -757,22 +771,33 @@ class Supervisor:
         except Exception as exc:  # noqa: BLE001 -- a check that cannot run is said, not fatal
             return [f"could not check the patchbay's links after the amp restarted: {exc}"]
 
-    def _record_amp(self, held: Held, *, model: str | None, override: str | None) -> None:
+    async def _record_amp(
+        self, held: Held, recorded: dict[str, Any], *, model: str | None, override: str | None,
+    ) -> None:
         """The state file, and the held launch, after Carla was restarted: the
-        new pid always, and the model when it changed (None: it was put back)."""
+        new pid always, and the model when it changed (None: it was put back).
+
+        Written over the run as it is now: the state file as it reads now if
+        it still names the held group, else as it read when the restart began
+        (`recorded`, checked then to name it). Never `held.provisional()`,
+        which is the rig `up` started, with a fresh `started_at`: after a live
+        switch that would bring the switched-from rig back on `restart`, and
+        reseed the amp from its config. Off the loop: it reads and writes."""
         pid = held.children["amp"].proc.pid
+
+        def write() -> dict[str, Any]:
+            now = read_state()
+            base = now if now and now.get("pgid") == held.pgid else recorded
+            if model is None:
+                updated = {**base, "children": {**(base.get("children") or {}), "amp": pid}}
+            else:
+                updated = rig_module.amp_restarted_state(base, model=model, override=override, pid=pid)
+            write_state(updated)
+            return updated
+
+        held.record = await asyncio.to_thread(write)
         if model is not None:
             held.launch = dataclasses.replace(held.launch, amp_model=model, amp_model_requested=override)
-        recorded = read_state()
-        if recorded and recorded.get("pgid") == held.pgid:
-            if model is None:
-                updated = {**recorded, "children": {**(recorded.get("children") or {}), "amp": pid}}
-            else:
-                updated = rig_module.amp_restarted_state(recorded, model=model, override=override, pid=pid)
-        else:
-            updated = held.provisional()
-        write_state(updated)
-        held.record = updated
 
     async def restart(self) -> Outcome:
         """`rig.restart`'s steps with the agent's own `down` and `up`, and its

@@ -1533,3 +1533,47 @@ def test_a_model_change_in_flight_is_said_as_the_amp_restarting(blank):
     status = rigjs(blank, """return R.rigStatus({ok: true, body: {rig: {running: true, config_name: 'board'},
         agent: {busy: 'amp_model'}}}, null);""")
     assert status["tone"] == "busy" and status["detail"].startswith("The amp is restarting on another model")
+
+
+def test_the_updaters_stay_flat_as_the_amp_region_is_rebuilt(browser, amp_served):
+    """Picking a model, cancelling, a model list arriving: each rebuilds the
+    amp region alone, and each used to add its faders' updaters again to a
+    list only a rack rebuild emptied (review)."""
+    page = amp_rack(browser, amp_served)
+    p = page.page
+    lock = p.locator("button.lock")
+    lock.click()
+    lock.click()
+    picker = p.get_by_role("combobox", name="Amp model")
+    expect(picker).to_be_enabled()
+    first = p.evaluate("() => window.sushiRigUpdaters()")
+    assert first["amp"] == 2, "one per fader"
+    for _ in range(5):
+        picker.select_option("Edge.nam")
+        p.get_by_role("button", name="Cancel").click()
+        expect(p.get_by_role("group", name="Confirm the model change")).to_have_count(0)
+    p.wait_for_timeout(1200)  # a poll or so, to rebuild whatever it would
+    assert p.evaluate("() => window.sushiRigUpdaters()") == first
+    expect(p.get_by_role("slider", name="amp Output Lvl")).to_have_attribute("aria-valuetext", "−3.0 dB")
+    page.close()
+
+
+def test_a_model_copied_in_while_the_page_is_open_shows_in_the_picker(browser, amp_served):
+    from ui_fake import nam
+
+    page = Page.__new__(Page)
+    page.page = browser.new_page()
+    page.errors = []
+    asked = []
+    page.page.on("request", lambda r: asked.append(r.url) if r.url.endswith("/amp/models") else None)
+    page.page.clock.install()
+    page.page.goto(amp_served.url + "/#rack")
+    p = page.page
+    expect(p.locator(".amp-picker option")).to_have_count(4)
+    nam(amp_served.amp.root / "amp" / "models" / "Fresh.nam", "Fresh")
+    advance(p, 10)
+    assert len(asked) == 1, "not asked on every poll"
+    advance(p, 22)
+    expect(p.locator(".amp-picker option[value='Fresh.nam']")).to_have_count(1)
+    assert len(asked) == 2
+    page.close()

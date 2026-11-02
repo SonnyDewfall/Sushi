@@ -1009,6 +1009,7 @@ def test_the_amp_is_restarted_only_in_a_rig_this_agent_holds_and_that_has_one(am
     supervisor = Supervisor(world.world, say=lambda m: None)
     result = run(supervisor.restart_amp("<new/>", {}, model="m", override="m"))
     assert not result.ok and result.restored is None and "does not hold a running rig" in result.reason
+    assert result.code == "not_held"
 
     no_amp = world.state["launch"]
     world.state["launch"] = lambda name="t", **kw: dataclasses.replace(
@@ -1023,6 +1024,7 @@ def test_the_amp_is_restarted_only_in_a_rig_this_agent_holds_and_that_has_one(am
 
     result = run(go())
     assert not result.ok and result.restored is None and "no amp" in result.reason
+    assert result.code == "no_amp"
     assert world.project.read_text() == "<old project/>"
 
 
@@ -1073,3 +1075,86 @@ def test_post_amp_model_restarts_carla_alone_through_the_agent(amp_world, tmp_pa
     assert health["rig"]["amp_model"] == "amp/models/New.nam"
     assert health["rig"]["children"]["amp"]["pid"] == body["pid"]
     assert health["agent"]["supervisor"]["crashed"] == []
+
+
+def test_after_a_live_switch_the_new_model_is_recorded_into_the_switched_rig_not_the_one_up_started(amp_world):
+    """A live switch rewrites the state file to the next rig; the held launch
+    is still the rig `up` started. The model goes into the run as it is now:
+    the switch's config, name and start, so `restart` brings back the rig
+    that is playing and the agent does not reseed the amp (review)."""
+    world = amp_world
+    supervisor = Supervisor(world.world, say=lambda m: None)
+
+    async def go():
+        assert (await supervisor.up("t", headless=True)).ok
+        switched = {**state_file.read_state(), "config_name": "u", "config": "/run/rigs/u.json",
+                    "rig": "config/rigs/u.yaml", "switched_at": "later"}
+        state_file.write_state(switched)
+        result = await supervisor.restart_amp("<new/>", {}, model="amp/models/New.nam", override="New.nam")
+        recorded = state_file.read_state()
+        await supervisor.down()
+        return switched, result, recorded
+
+    switched, result, recorded = run(go())
+    assert result.ok, result
+    assert {k: v for k, v in recorded.items() if k not in ("children", "amp_model", "amp_model_requested")} == \
+        {k: v for k, v in switched.items() if k not in ("children", "amp_model", "amp_model_requested")}
+    assert recorded["config"] == "/run/rigs/u.json" and recorded["started_at"] == switched["started_at"]
+    assert rig.restart_arguments(recorded)[0] == "u"
+
+
+@pytest.mark.parametrize("how, code", [("gone", "no_state"), ("another", "no_state"), ("project", "project_unreadable")])
+def test_a_restart_that_could_not_be_recorded_or_put_back_is_refused_with_carla_untouched(amp_world, how, code):
+    world = amp_world
+    supervisor = Supervisor(world.world, say=lambda m: None)
+
+    async def go():
+        assert (await supervisor.up("t", headless=True)).ok
+        pid = supervisor.held.children["amp"].proc.pid
+        if how == "gone":
+            state_file.clear_state()
+        elif how == "another":
+            state_file.write_state({**state_file.read_state(), "pgid": 1234})
+        else:
+            world.project.unlink()
+        result = await supervisor.restart_amp("<new/>", {}, model="m", override="m")
+        same = supervisor.held.children["amp"].proc.pid == pid and supervisor.held.children["amp"].proc.poll() is None
+        await supervisor.down()
+        return result, same
+
+    result, same = run(go())
+    assert not result.ok and result.restored is None and result.pid is None and result.code == code, result
+    assert same, "Carla was not touched"
+    assert len(world.spawner.carla_starts()) == 1
+
+
+def test_the_restart_reads_and_writes_its_files_off_the_event_loop(amp_world, monkeypatch):
+    world = amp_world
+    supervisor = Supervisor(world.world, say=lambda m: None)
+    seen = []
+    for name in ("read_state", "write_state"):
+        original = getattr(supervisor_module, name)
+
+        def watched(*args, _original=original, _name=name):
+            seen.append((_name, threading.current_thread() is threading.main_thread()))
+            return _original(*args)
+
+        monkeypatch.setattr(supervisor_module, name, watched)
+
+    async def go():
+        assert (await supervisor.up("t", headless=True)).ok
+        # The watch names a rig by reading the state file when a child exits
+        # (`_running_name`), as it always has; the old Carla's exit is one.
+        # That is the watch's read, not the restart's, and is set aside here.
+        supervisor._running_name = lambda held: "t"
+        seen.clear()
+        result = await supervisor.restart_amp("<new/>", {}, model="m", override="m")
+        calls = list(seen)
+        await supervisor.down()
+        return result, calls
+
+    result, calls = run(go())
+    assert result.ok
+    restart_io = [c for c in calls if c[0] in ("read_state", "write_state")]
+    assert ("write_state", False) in restart_io
+    assert all(not on_loop for _, on_loop in restart_io), restart_io

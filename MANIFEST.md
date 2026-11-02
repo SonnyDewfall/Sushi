@@ -2481,3 +2481,34 @@ Carla stopped by SIGINT releases its JACK client and OSC port before the next
 starts, how long the restart silences the amp, that qpwgraph rewires the new
 Carla's ports, and that a model change sounds as `up` on that model would.
 *(2026-11-02)*
+
+**The amp from the web UI: answering review.** Ten findings, each with a test.
+(1) **A rig up with `--no-amp` restarted for an amp that was not running**:
+`_amp_plan` still made a model or an amp on one side a restart reason, and the
+agent only dropped amp steps from a plan. `rigfile.diff(..., amp_off=True)` now
+leaves both rigs' `_amp` out entirely, before and during the live attempt, so
+such a rig switches live to one with another model or none. (2) **The panel
+rule**: the agent refused writes only for `mode == "panel"`, so a state file
+with no mode let it write beside a panel. One function, `rig.runs_panel`
+(anything but "headless"), now serves `state_blockers`, `restart_arguments`
+and the amp. (3) **The amp faders' updaters leaked** into the rack's list on
+every amp-region rebuild: the region keeps its own (`ampUpdaters`), emptied as
+it rebuilds; a browser test holds the count flat over five pick-and-cancels.
+(4) **A model change after a live switch recorded the rig `up` started**
+(`held.provisional()`, a fresh `started_at`): `restart_amp` now reads the state
+file before touching Carla, refuses (`no_state`) when it does not name the held
+group, and writes the new model into the run as it is, the switch's config
+included. (5) **Every refusal was `not_held`**: `AmpRestart.code` says which
+(`not_held`, `no_amp`, `project_unreadable`, `no_state`; `would_not_stop`,
+`did_not_start` for failures) and the agent answers with it. (6) The project
+read and the state file's read and write are off the event loop. (7) **A TCP
+probe and a new UDP client per send**: one client per Carla run (its pid),
+dropped on a new run or a failed send; the probe on the first send to a run,
+after any failure, and at most every `PROBE_EVERY` (2 s) otherwise. Every send
+still checks Carla's process is alive, so what a quiet interval can miss is a
+Carla alive whose OSC went silent, for at most 2 s. (8) GET /amp keeps its
+model view per (run, model) instead of reading the model on every poll. (9)
+**A model was compared as written**: `_amp_plan` compares it as a file with
+`amp_live.same_model` from the checkout's root, so one `.nam` by a relative and
+an absolute path is no restart. (10) **amp/models was listed once**: the page
+lists it again every 30 s. Still **NOT RUN AGAINST A REAL CARLA**. *(2026-11-02)*

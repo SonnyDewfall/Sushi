@@ -121,7 +121,7 @@ class World:
     def described(self):
         if not self.running:
             return {"verdict": "absent", "running": False, "message": "No rig is running."}
-        return {"verdict": "running", "running": True, "config_name": "board", "mode": self.state["mode"],
+        return {"verdict": "running", "running": True, "config_name": "board", "mode": self.state.get("mode"),
                 "children": {n: {"pid": p, "alive": self.alive if n == "amp" else True}
                              for n, p in self.state["children"].items()},
                 "message": "board (headless mode), up 2m"}
@@ -141,6 +141,16 @@ def amp_agent(root, world=None, supervisor=None, **kwargs):
 
 async def _runner(args):
     return Outcome(True, 0, "", "")
+
+
+class Clock:
+    """The agent's clock, moved by hand."""
+
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
 
 
 def by_name(answer):
@@ -359,14 +369,16 @@ def test_the_agents_own_sender_reaches_a_real_osc_port(root):
     and once the TCP side is gone the agent says Carla is not answering."""
     with OscCarla() as carla:
         world = World(root)
+        clock = Clock()
         agent = Agent(root=root, describe=world.described, switching=world.switching(), run=_runner,
-                      carla=amp_live.Carla.at(port=carla.port))
+                      carla=amp_live.Carla.at(port=carla.port), clock=clock)
         status, body = call(agent, "POST", "/amp/parameter", json={"name": "Output Lvl", "value": -3.5})
         assert status == 200, body
         assert carla.got.wait(2)
         assert carla.received == [("/Carla/0/set_parameter_value", [1, -3.5])]
         assert carla.connected.wait(2), "asked over TCP whether Carla answers"
         carla.stop_answering()
+        clock.now += amp_live.PROBE_EVERY  # the next send asks again
         status, body = call(agent, "POST", "/amp/parameter", json={"name": "Output Lvl", "value": 0.0})
         assert (status, body["code"]) == (502, "carla_not_answering")
 
@@ -420,9 +432,11 @@ def test_a_skip_of_an_amp_change_that_can_be_undone_is_refused(root):
 
 
 def test_an_undo_carla_does_not_answer_is_502_and_the_entry_stays(root):
-    agent, world = amp_agent(root)
+    clock = Clock()
+    agent, world = amp_agent(root, clock=clock)
     call(agent, "POST", "/amp/parameter", json={"name": "Output Lvl", "value": 3.0})
     world.carla.answering = False
+    clock.now += amp_live.PROBE_EVERY
     status, body = call(agent, "POST", "/live/undo")
     assert (status, body["code"]) == (502, "carla_not_answering")
     world.carla.answering = True
@@ -708,3 +722,102 @@ def test_a_parameter_request_is_clamped_and_the_clamp_said(asked, sent, said):
     name, got_asked, got_sent = amp_live.parameter_request({"name": "Output Lvl", "value": asked})
     assert (name, got_asked, got_sent) == ("Output Lvl", asked, sent)
     assert amp_live.clamped_said(name, got_asked, got_sent) == said
+
+
+def test_a_state_file_that_does_not_say_its_mode_is_the_panels_as_the_switch_reads_it(root):
+    """The one rule (`rig.runs_panel`): anything but "headless" is the panel,
+    as `state_blockers` and `restart_arguments` read it (review)."""
+    from sushi_rig.agent import state_blockers
+    from sushi_rig.rig import restart_arguments, runs_panel
+
+    world = World(root)
+    del world.state["mode"]
+    agent, _ = amp_agent(root, world)
+    status, body = call(agent, "POST", "/amp/parameter", json={"name": "Output Lvl", "value": 1.0})
+    assert (status, body["code"]) == (409, "panel") and world.carla.sent == []
+    assert call(agent, "GET", "/amp")[1]["known"] == "panel"
+    for mode, panel in ((None, True), ("panel", True), ("headless", False), ("weird", True)):
+        state = {} if mode is None else {"mode": mode}
+        assert runs_panel(state) is panel
+        assert restart_arguments(state)[1]["headless"] is not panel
+        assert (["panel"] == [r.code for r in state_blockers(state)]) is panel
+
+
+@pytest.mark.parametrize("code", ["not_held", "no_amp", "project_unreadable", "no_state"])
+def test_a_restart_refused_before_carla_was_touched_is_answered_with_its_own_code(root, code):
+    agent, world, supervisor = model_agent(root, AmpRestart(False, f"refused ({code})", code=code))
+    status, body = call(agent, "POST", "/amp/model", json={"model": "Second.nam"})
+    assert (status, body["code"]) == (409, code) and body["reason"] == f"refused ({code})"
+    assert call(agent, "GET", "/live/log")[1]["log"] == []
+
+
+def test_carla_is_asked_on_the_first_send_after_a_failure_and_every_few_seconds_not_per_fader_step(root):
+    """A fader's stream of sends costs one TCP probe (review): the first send
+    to a Carla run asks, the rest within `PROBE_EVERY` do not, a failure
+    makes the next ask again, and a new Carla (another pid) is asked, with
+    a new UDP client."""
+    clock = Clock()
+    agent, world = amp_agent(root, clock=clock)
+    move = ("POST", "/amp/parameter", {"json": {"name": "Output Lvl", "value": 1.0}})
+    assert [r[0] for r in calls(agent, move, move, move)] == [200, 200, 200]
+    assert (world.carla.asked, len(world.carla.sent)) == (1, 3)
+    clock.now += amp_live.PROBE_EVERY - 0.1
+    call(agent, *move[:2], **move[2])
+    assert world.carla.asked == 1
+    clock.now += 0.2
+    call(agent, *move[:2], **move[2])
+    assert world.carla.asked == 2, "asked again once the interval is up"
+    world.carla.fail = OSError("gone")
+    assert call(agent, *move[:2], **move[2])[0] == 502
+    world.carla.fail = None
+    forgotten = world.carla.forgotten
+    call(agent, *move[:2], **move[2])
+    assert world.carla.asked == 3 and world.carla.forgotten == forgotten, "a failure: asked again at once"
+    world.state["children"]["amp"] = 99  # a new Carla run
+    call(agent, *move[:2], **move[2])
+    assert world.carla.asked == 4 and world.carla.forgotten == forgotten + 1, "a new run: a new client"
+
+
+def test_the_agents_sender_keeps_one_udp_client_until_it_is_forgotten(monkeypatch):
+    made = []
+
+    class Client:
+        def __init__(self, host, port):
+            made.append((host, port))
+            self.sent = []
+
+        def send_message(self, address, payload):
+            self.sent.append((address, payload))
+
+    import pythonosc.udp_client
+
+    monkeypatch.setattr(pythonosc.udp_client, "SimpleUDPClient", Client)
+    carla = amp_live.Carla.at(port=1)
+    carla.send("/a", [0, 1.0])
+    carla.send("/a", [0, 2.0])
+    assert len(made) == 1
+    carla.forget()
+    carla.send("/a", [0, 3.0])
+    assert len(made) == 2
+
+
+@pytest.mark.parametrize("last, run, now, asks", [
+    (None, 1, 0.0, True), ((1, 0.0), 1, 1.9, False), ((1, 0.0), 1, 2.0, True), ((1, 0.0), 2, 0.1, True),
+])
+def test_when_carla_is_asked(last, run, now, asks):
+    assert amp_live.needs_probe(last, run, now, every=2.0) is asks
+
+
+def test_the_model_view_is_read_once_per_run_and_model_not_per_poll(root, monkeypatch):
+    agent, world, supervisor = model_agent(root)
+    made = []
+    original = amp_live.model_view
+    monkeypatch.setattr(amp_live, "model_view", lambda *a: made.append(a[0]) or original(*a))
+    get = ("GET", "/amp", {})
+    assert [r[1]["model"]["name"] for r in calls(agent, get, get, get)] == ["First"] * 3
+    assert made == ["amp/models/First.nam"]
+    call(agent, "POST", "/amp/model", json={"model": "Second.nam"})
+    assert call(agent, "GET", "/amp")[1]["model"]["name"] == "Second"
+    world.state["started_at"] = "2026-11-02T11:00:00+00:00"  # a restart: a new run
+    call(agent, "GET", "/amp")
+    assert made == ["amp/models/First.nam", "amp/models/Second.nam", "amp/models/Second.nam"]

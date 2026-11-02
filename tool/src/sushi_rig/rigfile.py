@@ -1274,10 +1274,19 @@ def _close(a: Any, b: Any) -> bool:
 
 
 def _amp_plan(
-    amp_r: Any, amp_n: Any, sent: dict[str, Any] | None,
+    amp_r: Any, amp_n: Any, sent: dict[str, Any] | None, *, off: bool = False, root: Path | None = None,
 ) -> tuple[list[SwitchStep], list[RestartReason]]:
     """The `amp` steps that set the next rig's amp parameters, or the reasons
-    the amp needs a restart. Pure.
+    the amp needs a restart. Pure, but for reading where a model is (`root`).
+
+    `off` is a run with no amp at all (`up --no-amp`): nothing about either
+    `_amp` matters then, since no Carla is running and a restart into the
+    next rig would start none (`restart_arguments` keeps the choice), so it
+    is neither a step nor a reason.
+
+    The model is compared as a file, with `amp_live.same_model` from `root`
+    when one is given: one `.nam` written as a relative and an absolute path
+    is the same model. Without a root, as written.
 
     `sent` is what the agent last sent Carla for each parameter (None where
     it has sent nothing), from the live reading; without one, the running
@@ -1291,7 +1300,7 @@ def _amp_plan(
     """
     from .amp import PARAMETER_INDEX, AmpError, clamp
 
-    if amp_r is None and amp_n is None:
+    if off or (amp_r is None and amp_n is None):
         return [], []
     if amp_r is None or amp_n is None:
         which = "the next rig has an amp and the running one has none" if amp_r is None \
@@ -1301,6 +1310,11 @@ def _amp_plan(
         return [], [RestartReason("amp", "an _amp section is not a mapping")]
     shape_r = {k: v for k, v in amp_r.items() if k != "parameters"}
     shape_n = {k: v for k, v in amp_n.items() if k != "parameters"}
+    if root is not None and "model" in shape_r and "model" in shape_n:
+        from .amp_live import same_model
+
+        if same_model(shape_r["model"], shape_n["model"], root):
+            shape_n["model"] = shape_r["model"]
     if shape_r != shape_n:
         keys = sorted(k for k in set(shape_r) | set(shape_n) if shape_r.get(k) != shape_n.get(k))
         said = ", ".join(f"{k} {shape_r.get(k)!r} becomes {shape_n.get(k)!r}" for k in keys)
@@ -1362,6 +1376,7 @@ def _cc_targets(midi: Any) -> set[str]:
 
 def diff(
     running: dict[str, Any], next_config: dict[str, Any], live: dict[str, Any] | None = None,
+    *, root: Path | None = None, amp_off: bool = False,
 ) -> SwitchPlan | NeedsRestart:
     """How to turn the running rig into the next one live, or why not. Pure.
 
@@ -1375,6 +1390,9 @@ def diff(
     would then refuse. Its `amp`, `{"parameters": {name: value or None}}`, is
     what the agent last sent Carla, which is all that can be known of the amp
     (amp.py); without it, the running rig's `_amp` stands for that.
+    `amp_off` is a run with no amp (`--no-amp`), where neither rig's `_amp`
+    matters. `root` is where a relative model path is read from, so a model is
+    compared as the file it names (`_amp_plan`).
 
     A processor survives the switch when the next rig has one of the same
     name, on the same track, of the same plugin. Its parameters and bypass are
@@ -1453,7 +1471,8 @@ def diff(
             need("config_section", f"{key!r} differs")
     amp_steps, amp_reasons = _amp_plan(
         running.get("_amp") or None, next_config.get("_amp") or None,
-        ((live or {}).get("amp") or {}).get("parameters") if live is not None and "amp" in live else None)
+        ((live or {}).get("amp") or {}).get("parameters") if live is not None and "amp" in live else None,
+        off=amp_off, root=root)
     reasons.extend(amp_reasons)
     wiring_r, wiring_n = running.get(WIRING), next_config.get(WIRING)
     if not isinstance(wiring_r, dict) or not isinstance(wiring_n, dict):

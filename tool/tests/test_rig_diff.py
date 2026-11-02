@@ -594,3 +594,36 @@ def test_a_restart_for_a_default_names_what_is_left_at_it():
     decided = diff(before, after)
     (reason,) = [r for r in decided.reasons if r.code == "parameter_default"]
     assert "its properties (preset)" in reason.detail and "program" not in reason.detail
+
+
+# --------------------------------------------------------------------------- #
+# Review of the amp branch
+# --------------------------------------------------------------------------- #
+
+def test_with_no_amp_running_neither_rigs_amp_is_a_step_or_a_reason():
+    """`up --no-amp`: no Carla runs, and a restart would start none, so a
+    model that differs, or an amp on one side only, is no reason to restart
+    and nothing is sent."""
+    before, after = _changed(lambda c: c["_amp"].update(model="amp/models/Other.nam",
+                                                         parameters={"Output Lvl": 9.0}))
+    assert diff(before, after, amp_off=True) == SwitchPlan(())
+    no_amp = copy.deepcopy(before)
+    no_amp.pop("_amp")
+    assert diff(no_amp, before, amp_off=True) == SwitchPlan(())
+    assert diff(before, no_amp, amp_off=True) == SwitchPlan(())
+    assert _codes(before, after) == ["amp"], "with an amp running it is still a restart"
+
+
+def test_one_model_written_two_ways_is_the_same_model(tmp_path):
+    """Compared as the file it names, from the checkout's root."""
+    models = tmp_path / "amp" / "models"
+    models.mkdir(parents=True)
+    (models / "M.nam").write_text("{}")
+    before, after = _changed(lambda c: c["_amp"].update(model=str(models / "M.nam")))
+    before["_amp"]["model"] = "amp/models/M.nam"
+    assert isinstance(diff(before, after, root=tmp_path), SwitchPlan)
+    assert _codes(before, after) == ["amp"], "without a root, as written"
+    other = copy.deepcopy(after)
+    (models / "N.nam").write_text("{}")
+    other["_amp"]["model"] = str(models / "N.nam")
+    assert diff(before, other, root=tmp_path).codes == ["amp"], "another file is another model"
