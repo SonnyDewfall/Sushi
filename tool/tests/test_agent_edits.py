@@ -42,6 +42,7 @@ from sushi_rig.library import build_library, read_bundle, read_library  # noqa: 
 from sushi_rig.agent import _track_of, check_move  # noqa: E402
 from sushi_rig.live import LiveError, decide_move, protected_processor  # noqa: E402
 from sushi_rig.paths import checkout_root  # noqa: E402
+from sushi_rig.stereo import COPY_UID, load_ports  # noqa: E402
 
 ROOT = checkout_root()
 FIXTURES = Path(__file__).parent / "fixtures" / "lv2"
@@ -82,7 +83,8 @@ def the_library():
     found = {**read_bundle(FIXTURES / "gxts9.lv2")[0], **read_bundle(FIXTURES / "mda.lv2")[0]}
     from sushi_rig.plugins import read_manifest
 
-    return build_library(read_manifest((ROOT / "plugin-manifest.txt").read_text()), found, {})
+    return build_library(read_manifest((ROOT / "plugin-manifest.txt").read_text()), found, {},
+                         audio=load_ports(ROOT))
 
 
 LIBRARY = the_library()
@@ -142,7 +144,7 @@ def test_a_plugin_whose_name_gives_nothing_must_be_named():
         add_request({"track": "guitar", "uri": "urn:x:!!!"}, library)
 
 
-def request(name="new", after=None, track="guitar", uri=GXTS9):
+def request(name="new", after=None, track="guitar", uri=DELAY):
     return add_request({"track": track, "uri": uri, "name": name, "after": after}, LIBRARY)
 
 
@@ -342,18 +344,25 @@ class EditingLive:
                     addition.before_id, addition.add_to_back)
         track = next(t for t, i in self.ids.items() if i == addition.track_id)
         chain = self.chains[track]
-        if addition.add_to_back or self.misplace:
-            chain.append(addition.name)
-        else:
-            before = next(n for n, i in self.ids.items() if i == addition.before_id)
-            chain.insert(chain.index(before), addition.name)
-        self.ids[addition.name] = max(self.ids.values()) + 1
-        self.classes[addition.name] = {"uri": addition.uri, "uid": None, "type": "lv2"}
+        # The plugin, then its copy to stereo in the same place, as the
+        # agent's `Live` sends them (`agent._add_with_copy`).
+        added = [(addition.name, {"uri": addition.uri, "uid": None, "type": "lv2"})]
+        if addition.copy:
+            added.append((addition.copy, {"uri": None, "uid": COPY_UID, "type": "internal"}))
+        for name, plugin in added:
+            if addition.add_to_back or self.misplace:
+                chain.append(name)
+            else:
+                before = next(n for n, i in self.ids.items() if i == addition.before_id)
+                chain.insert(chain.index(before), name)
+            self.ids[name] = max(self.ids.values()) + 1
+            self.classes[name] = plugin
 
     def remove(self, connection, removal):
         self._enter("remove", connection, removal.processor, removal.processor_id, removal.track_id)
         if not self.keep:
-            self.chains[removal.track].remove(removal.processor)
+            for name in ([removal.copy] if removal.copy else []) + [removal.processor]:
+                self.chains[removal.track].remove(name)
 
     def writes(self):
         return [c for c in self.calls if c[0] in ("add", "remove", "move")]
@@ -436,13 +445,13 @@ def test_a_library_that_cannot_be_built_is_said_and_tried_again():
 
 def test_an_add_goes_in_before_the_send_and_is_logged_with_the_chain_before():
     agent, fake = edit_agent()
-    status, body = call(agent, "POST", "/live/add", json={"track": "guitar", "uri": GXTS9, "name": "ts"})
+    status, body = call(agent, "POST", "/live/add", json={"track": "guitar", "uri": DELAY, "name": "ts"})
     assert status == 200
-    assert fake.writes() == [("add", "ts", GXTS9, 1, 4, False)]
+    assert fake.writes() == [("add", "ts", DELAY, 1, 4, False)]
     assert body["chain"] == ["comp", "drive", "ts", "guitar_send"]
     assert body["message"] == "added ts to guitar"
     assert (body["op"], body["previous"]) == ("add", ["comp", "drive", "guitar_send"])
-    assert body["args"] == {"track": "guitar", "uri": GXTS9, "name": "ts", "after": None}
+    assert body["args"] == {"track": "guitar", "uri": DELAY, "name": "ts", "after": None}
     assert [c[:1] + c[-1:] for c in fake.calls if c[0] == "walk"] == [("walk", True), ("walk", False)], \
         "read with the uids (to know the send), change, read back"
     assert [c[0] for c in fake.calls] == ["walk", "add", "walk"]
@@ -496,7 +505,7 @@ def test_an_add_the_rig_cannot_take_is_409_and_changes_nothing(body, why):
 def test_an_add_sushi_confirmed_but_put_elsewhere_is_a_bad_gateway_and_not_logged():
     agent, fake = edit_agent()
     fake.misplace = True
-    status, body = call(agent, "POST", "/live/add", json={"track": "guitar", "uri": GXTS9, "name": "ts"})
+    status, body = call(agent, "POST", "/live/add", json={"track": "guitar", "uri": DELAY, "name": "ts"})
     assert status == 502
     assert "read back ['comp', 'drive', 'guitar_send', 'ts']" in body["reason"]
     assert "not ['comp', 'drive', 'ts', 'guitar_send']" in body["reason"]

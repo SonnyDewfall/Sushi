@@ -547,6 +547,7 @@ def build_library(
     found: dict[str, dict[str, Any]],
     profiles: dict[str, dict[str, Any]],
     problems: list[str] | None = None,
+    audio: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """`{"plugins": [entry...], "problems": [...]}`, one entry per manifest URI
     in manifest order. Pure: `found` is `scan_plugins`'s, `profiles`
@@ -557,6 +558,10 @@ def build_library(
     name; `"uri"`, the URI's last segment) and a `note` whenever it is not the
     plugin's own; `ports` and `bundle` (None where not read); `profile` and
     `groups` (None without a profile); `addable`, and `why_not` when false.
+
+    With `audio`, the committed table of audio ports (`stereo.load_ports`),
+    each entry has `audio`: `{"in", "out"}`, or None for a plugin the table
+    does not list. That is what a live add decides a copy to stereo on.
     """
     problems = list(problems or [])
     entries = []
@@ -584,6 +589,9 @@ def build_library(
                 entry["note"] = f"{why}; the name is the URI's last segment"
         entry["ports"] = meta.get("ports") if meta else None
         entry["bundle"] = meta.get("bundle") if meta else None
+        if audio is not None:
+            counts = audio.get(uri)
+            entry["audio"] = {"in": counts.inputs, "out": counts.outputs} if counts else None
         entry["profile"] = profile is not None
         entry["groups"] = _groups(profile) if profile is not None else None
         if uri in AMP_PLUGIN_URIS.values():
@@ -614,7 +622,13 @@ def read_library(root: Path, plugins_dir: Path | None = None) -> dict[str, Any]:
     profiles_dir = root / PROFILES_DIR
     found, problems = scan_plugins(plugins_dir)
     profiles, profile_problems = load_profiles(profiles_dir)
-    result = build_library(manifest, found, profiles, problems + profile_problems)
+    from .stereo import PortsError, load_ports
+
+    try:
+        audio = load_ports(root)
+    except PortsError as exc:
+        audio, problems = {}, problems + exc.problems
+    result = build_library(manifest, found, profiles, problems + profile_problems, audio)
     result["sources"] = {
         "manifest": str(manifest_path),
         "plugins_dir": str(plugins_dir),

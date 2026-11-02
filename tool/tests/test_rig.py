@@ -60,7 +60,7 @@ tracks:
     inputs: [{engine_bus: 0, track_bus: 0}]
     outputs: [{engine_bus: 0, track_bus: 0}]
     plugins:
-      - {name: comp, type: lv2, uri: "urn:comp"}
+      - {name: comp, type: lv2, uri: "http://drobilla.net/plugins/mda/Dynamics"}
 """
 
 V2_SOURCE = """\
@@ -68,7 +68,7 @@ kind: rig
 schema_version: 1
 name: newer
 channels:
-  - {name: board, input: guitar-in, width: mono, chain: [{name: comp, uri: "urn:comp"}]}
+  - {name: board, input: guitar-in, width: mono, chain: [{name: comp, uri: "http://drobilla.net/plugins/mda/Dynamics"}]}
 master: {output: monitor-out}
 """
 

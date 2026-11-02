@@ -17,6 +17,7 @@ on:
       - ci/**
       - .github/workflows/rig-container.yml
       - plugin-manifest.txt
+      - plugin-ports.txt
       - config/**
       - tool/**
       - machines/**
@@ -71,6 +72,7 @@ jobs:
           rm -rf ci/dl/unzipped "ci/dl/$SUSHI_ASSET"
 
       - name: Build the image
+        id: build
         run: |
           set -o pipefail
           if ! docker build --progress=plain -f ci/Dockerfile \
@@ -112,8 +114,15 @@ jobs:
       # It fingerprints Sushi's chain only. The neural amp runs in Carla outside
       # Sushi and is not in this image, so a config's `_amp` section is never
       # rendered here.
+      # Runs whether or not the suite passed, once the image is built: the
+      # sound check and the candidate references below are their own answer,
+      # and a failing test is no reason to hide them. Without this, a change
+      # meant to change the sound (a reference to recalibrate) could never
+      # get its candidates from CI while any test that reads that reference
+      # failed first (2026-11-02, the copies to stereo).
       - name: nulltest --all
         id: nulltest
+        if: ${{ !cancelled() && steps.build.outcome == 'success' }}
         run: |
           set -o pipefail
           # What the references depend on beyond this repository, printed so a

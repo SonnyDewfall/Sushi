@@ -417,7 +417,7 @@ def test_a_reference_that_cannot_be_read_is_reported_not_raised(
     matter of time. A traceback would also abandon the remaining configs under
     `--all`, turning one bad file into no check at all."""
     cli, config = _rig(tmp_path, monkeypatch)
-    reference = render.reference_path(tmp_path, config)
+    reference = render.v1_reference_path(tmp_path, config)
     reference.parent.mkdir(parents=True, exist_ok=True)
     reference.write_text(written)
 
@@ -538,7 +538,7 @@ def test_calibrating_an_unrenderable_config_writes_no_reference(tmp_path, monkey
     cli, config = _rig(tmp_path, monkeypatch)
     config.write_text(json.dumps(WIDE))
     assert cli.main(["nulltest", str(config), "--calibrate"]) == 0
-    assert not render.reference_path(tmp_path, config).exists()
+    assert not render.v1_reference_path(tmp_path, config).exists()
     assert "NOT RENDERABLE OFFLINE" in capsys.readouterr().err
 
 
@@ -555,7 +555,7 @@ def test_a_config_that_had_a_reference_and_became_unrenderable_fails(
     assert cli.main(["nulltest", str(config)]) == 1
     err = capsys.readouterr().err
     assert "NO LONGER RENDERABLE" in err
-    assert "delete config/sound/electric-clean.yaml" in err, "say how to resolve it"
+    assert "delete config/sound/electric-clean.v1-mono.yaml" in err, "say how to resolve it"
 
 
 def test_recalibrating_a_config_that_became_unrenderable_fails_rather_than_lying(
@@ -583,7 +583,7 @@ def test_a_recalibration_keeps_a_tolerance_that_was_set_wider_by_hand(
 
     cli, config = _rig(tmp_path, monkeypatch)
     assert cli.main(["nulltest", str(config), "--calibrate"]) == 0
-    ref = render.reference_path(tmp_path, config)
+    ref = render.v1_reference_path(tmp_path, config)
     fp, _ = from_dict(yaml.safe_load(ref.read_text()))
     ref.write_text(yaml.dump(to_dict(fp, Tolerance(0.01, 0.01, 0, "set by hand")),
                              sort_keys=False))
@@ -718,7 +718,7 @@ def test_a_multi_track_config_gets_a_reference_per_channel(tmp_path, monkeypatch
     assert cli.main(["nulltest", str(config), "--calibrate"]) == 0
     sound = tmp_path / "config" / "sound"
     assert sorted(p.name for p in sound.iterdir()) == [
-        "electric-clean.guitar.yaml", "electric-clean.vocal.yaml"
+        "electric-clean.guitar.v1-mono.yaml", "electric-clean.vocal.v1-mono.yaml"
     ]
     assert cli.main(["nulltest", str(config)]) == 0
     out = capsys.readouterr().out
@@ -731,7 +731,7 @@ def test_a_reference_nothing_produces_any_more_fails_the_full_run(tmp_path, monk
     cli, config = _rig(tmp_path, monkeypatch)
     assert cli.main(["nulltest", "--all", "--calibrate"]) == 0
     stale = tmp_path / "config" / "sound" / "renamed-away.yaml"
-    stale.write_text((tmp_path / "config" / "sound" / "electric-clean.yaml").read_text())
+    stale.write_text((tmp_path / "config" / "sound" / "electric-clean.v1-mono.yaml").read_text())
     assert cli.main(["nulltest", "--all"]) == 1
     assert "renamed-away.yaml: ORPHANED REFERENCE" in capsys.readouterr().err
 
@@ -798,8 +798,8 @@ def test_calibrating_only_what_is_missing_leaves_the_rest_alone(tmp_path, monkey
     cli, config = _rig(tmp_path, monkeypatch)
     config.write_text(json.dumps(TWO_TRACKS))
     assert cli.main(["nulltest", str(config), "--calibrate"]) == 0
-    guitar_ref = tmp_path / "config" / "sound" / "electric-clean.guitar.yaml"
-    vocal_ref = tmp_path / "config" / "sound" / "electric-clean.vocal.yaml"
+    guitar_ref = tmp_path / "config" / "sound" / "electric-clean.guitar.v1-mono.yaml"
+    vocal_ref = tmp_path / "config" / "sound" / "electric-clean.vocal.v1-mono.yaml"
     before = guitar_ref.read_text()
     vocal_ref.unlink()
 
@@ -841,6 +841,48 @@ def test_orphans_count_as_checks_so_the_summary_adds_up(tmp_path, monkeypatch, c
     assert cli.main(["nulltest", "--all", "--calibrate"]) == 0
     sound = tmp_path / "config" / "sound"
     for name in ("a", "b", "c"):
-        (sound / f"{name}.yaml").write_text((sound / "electric-clean.yaml").read_text())
+        (sound / f"{name}.yaml").write_text((sound / "electric-clean.v1-mono.yaml").read_text())
     assert cli.main(["nulltest", "--all"]) == 1
     assert "3 of 4 check(s) could not be confirmed" in capsys.readouterr().err
+
+
+# --- rigs of channels, and the v1 configs' own references (2026-11-02) --------
+
+def _channels_rig(root):
+    (root / "plugin-ports.txt").write_text((Path(__file__).resolve().parents[2] / "plugin-ports.txt").read_text())
+    rigs = root / "config" / "rigs"
+    rigs.mkdir(parents=True, exist_ok=True)
+    (rigs / "electric-clean.yaml").write_text(
+        "kind: rig\nschema_version: 1\nname: electric-clean\n"
+        "channels:\n- {name: board, input: guitar-in, width: mono, chain: []}\n"
+        "master: {output: monitor-out, chain: []}\n")
+    return rigs / "electric-clean.yaml"
+
+
+def test_a_rig_and_its_v1_config_have_a_reference_each(tmp_path, monkeypatch, capsys):
+    cli, _ = _rig(tmp_path, monkeypatch)
+    _channels_rig(tmp_path)
+    assert cli.main(["nulltest", "--all", "--calibrate"]) == 0
+    assert sorted(p.name for p in (tmp_path / "config" / "sound").iterdir()) == [
+        "electric-clean.v1-mono.yaml", "electric-clean.yaml"]
+    assert cli.main(["nulltest", "--all"]) == 0
+    out = capsys.readouterr().out
+    assert "electric-clean.json: sounds the same" in out and "electric-clean.yaml: sounds the same" in out
+
+
+def test_a_rig_that_does_not_compile_exempts_only_its_own_references_from_the_orphan_check(
+    tmp_path, monkeypatch, capsys
+):
+    """Found by review: its stem used to exempt the v1 config's `.v1-mono`
+    references too, so a v1 config removed beside a broken rig left an orphan
+    nobody was told of."""
+    cli, config = _rig(tmp_path, monkeypatch)
+    rig = _channels_rig(tmp_path)
+    assert cli.main(["nulltest", "--all", "--calibrate"]) == 0
+    rig.write_text("kind: rig\nschema_version: 1\nname: electric-clean\nchannels: nope\n")
+    config.unlink()
+    assert cli.main(["nulltest", "--all"]) == 1
+    err = capsys.readouterr().err
+    assert "electric-clean.yaml: CANNOT CHECK" in err
+    assert "electric-clean.v1-mono.yaml: ORPHANED REFERENCE" in err
+    assert "sound/electric-clean.yaml: ORPHANED" not in err, "the broken rig's own reference is not an orphan"
