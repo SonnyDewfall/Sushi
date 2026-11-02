@@ -684,6 +684,49 @@ get left behind. It then checks, and tells you if anything survived.
 > `plugins/` doesn't carry, which is exactly the silent portability break the
 > current layout exists to prevent.
 
+### The web UI (v2, #31)
+
+```bash
+sushi-rig agent                      # then open http://127.0.0.1:8029/ (the rack)
+                                     # or http://127.0.0.1:8029/#stage (the stage screen; the default on a phone)
+```
+
+![The rack: two channels and a master, the overdrive open with its profile's groups, one knob turned and listed as unsaved](docs/ui/rack.png)
+
+<img src="docs/ui/stage.png" alt="The stage screen at phone width: the rig's name and state, what is not measured, each channel's level, one card per plugin with a big bypass switch, and the lock" width="300">
+
+The agent serves the UI at `/`, from `tool/src/sushi_rig/ui/static/`: plain HTML, CSS
+and JavaScript with no build step and no framework, because the rig machine has
+no Node and the UI has to run from a checkout. Two screens from the mockups:
+
+- **The rack (S1).** Every channel as a row of plugin cards, each with its
+  knobs: the profile's controls in its groups and labels for a plugin that has
+  one (`tool/examples/profiles/`), every parameter in a plain list for one that
+  does not. Values are in the plugin's own range, never 0 to 1. A turned knob is
+  sent at once and marked unsaved, with what it was; the side panel lists what
+  changed since the rig came up and undoes the newest change.
+- **The stage screen (S5).** One glance: the rig, up or down, each channel's
+  level, and the last error. One tap: a 56 px bypass per plugin, or a card opened
+  for its knobs. Locked by default; unlocking takes two taps.
+
+It polls `/live` once a second and sends each change as it happens. A change the
+agent refuses shows the agent's reason on screen, beside the knob; nothing is put
+back without saying why.
+
+Not done yet, and said on screen where it shows: load and xruns (the agent does
+not measure them, so they read "not measured", and an up rig is never green,
+#49); saving (S4); the lock is the page's own, since the agent has no performance
+lock yet (#29); "unsaved" counts only changes made through the agent since the
+rig came up, so a change from the OSC panel, or a `sushi-rig save` since, is not
+reflected; changes go over HTTP, not a WebSocket. Library, Record, Broken, Save
+and Pedals from the canvas are not built. None of it has met a real Sushi: it is
+tested against the agent over a fake rig (`tool/tests/ui_fake.py`, which says
+what in it is observed), and which plugin each processor is comes from Sushi's
+saved session, unverified against 1.3.0 as for the agent's add and remove.
+
+To try it without a rig: `cd tool && PYTHONPATH=src:tests python tests/ui_fake.py`
+serves the UI against that fake on port 8029.
+
 ### Ports by role, not by device name
 
 `Patchbay/rig.qpwgraph` names ALSA device *profiles*, so changing interface (or
@@ -1007,6 +1050,13 @@ sushi-rig panel config/guitar_vocal.json --record-bar -o /tmp/sushi-rig-panel.js
 cd tool && python -m pytest -m "not slow" -rs   # fast suite; lilv/Sushi-guarded tests skip without them
 cd tool && python -m pytest -m slow         # starts a real Sushi, seconds per test
 cd tool && PYTHONPATH=src python -m pytest -rs   # everything, on a machine with all of it
+```
+
+The web UI's browser tests (`tests/test_ui.py`) need Playwright and a Chromium for
+it; without them those tests skip, and the rest of the file still runs:
+
+```bash
+pip install -e "tool[ui-test]" && python -m playwright install chromium
 ```
 
 **Every test must run somewhere, and a skip counts as a failure.** CI is two

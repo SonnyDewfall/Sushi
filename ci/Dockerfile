@@ -92,12 +92,27 @@ RUN ./Sushi.AppImage --appimage-extract >/dev/null \
 # aiohttp, for the same reason, and `capture` brings JACK-Client, which needs the
 # libjack the apt line above installs: without both the capture tests skip.
 # `midi` brings alsa-midi, which links the libasound2t64 installed above; without
-# it test_midi_alsa.py skips.
+# it test_midi_alsa.py skips. `ui-test` brings playwright, for the web UI's
+# browser tests (#31), which skip without it.
 COPY . /rig
 WORKDIR /rig
 RUN python3 -m venv --system-site-packages /opt/venv \
-    && /opt/venv/bin/pip install --no-cache-dir -e "/rig/tool[dev,live,audio,agent,capture,midi]"
+    && /opt/venv/bin/pip install --no-cache-dir -e "/rig/tool[dev,live,audio,agent,capture,midi,ui-test]"
 ENV PATH="/opt/venv/bin:${PATH}"
+
+# --- Chromium, for the web UI's browser tests --------------------------------
+#
+# The playwright package carries no browser. `playwright install` downloads the
+# Chromium build matching the installed playwright from Playwright's own CDN
+# (network at build time, as pip and apt already need), and --with-deps runs
+# apt-get for the system libraries it links (this image is root, so no sudo).
+# Fixed path, so the browser does not depend on whose HOME the tests run under.
+# Without this the browser tests would fail to launch Chromium -- a failure,
+# not a skip, by design (tests/test_ui.py). NOT VERIFIED: this step was written
+# where Docker could not be run; the first CI build of it is its test.
+ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
+RUN playwright install --with-deps chromium \
+    && rm -rf /var/lib/apt/lists/*
 
 # `./sushi` at the repo root is where tests/test_configs.py and the README look.
 RUN ln -s /opt/sushi/squashfs-root/AppRun /rig/sushi

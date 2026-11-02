@@ -29,8 +29,15 @@ jobs:
       # `audio` (numpy), `agent` (aiohttp), `capture` (JACK-Client) and `midi`
       # (alsa-midi) are pure-PyPI, so the signal, analysis, agent, capture and
       # MIDI tests run here instead of skipping.
-      - name: Install the tool with dev, audio, agent, capture and midi extras
-        run: pip install -e "tool[dev,audio,agent,capture,midi]"
+      # `ui-test` (playwright) is the web UI's browser tests (#31). The package
+      # has no browser in it: `playwright install` fetches the Chromium build
+      # that this playwright version drives, and --with-deps apt-installs the
+      # libraries it needs (it uses sudo here). Without it test_ui.py's
+      # browser tests skip; with a Chromium that will not start, they fail.
+      - name: Install the tool with dev, audio, agent, capture, midi and ui-test extras
+        run: |
+          pip install -e "tool[dev,audio,agent,capture,midi,ui-test]"
+          python -m playwright install --with-deps chromium
 
       # Slow tests are excluded on purpose: they start a real Sushi binary,
       # which this runner does not have. Tests that need python3-lilv or ./sushi
