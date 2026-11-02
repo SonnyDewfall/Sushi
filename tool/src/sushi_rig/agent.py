@@ -164,6 +164,18 @@ knows them, by the uid Sushi's session reports and by the compiler's names. Each
 by reading the chain back, not by Sushi's acknowledgement alone, and an edit
 whose read-back is not what was asked is 502 and is not logged, as a change
 Sushi did not confirm is not. Not run against a live Sushi: see `live.py`.
+
+## The web UI (#31)
+
+    GET  /              the UI's page; its files are under /ui/ (`sushi_rig/ui/static/`)
+    GET  /profiles      every profile, flattened for the browser (`ui.panel_profile`)
+    GET  /live/plugins  {processor: {"track", "uri", "uid", "type", "role"}}, from Sushi's session
+
+The page polls the routes above and sends the live changes itself; the agent
+adds only what the browser could not get: the files, the profiles (files, no
+rig needed) and which plugin each processor is, which `/live` does not say
+because only Sushi's session does (`live.read_live_plugins`). The routes are
+in a block of their own at the end of the routes, before the MIDI section.
 """
 
 from __future__ import annotations
@@ -907,6 +919,8 @@ class Live:
     removal: Callable[[Any, str], dict[str, Any]]  # (processor) -> the walk plus its "plugin"
     add: Callable[[Any, Addition], None]  # sends a decided add
     remove: Callable[[Any, Removal], None]  # sends a decided remove
+    # -- the web UI (#31): which plugin each processor is; None where it cannot say --
+    plugins: Callable[[Any], dict[str, Any]] | None = None
 
     @classmethod
     def at(cls, address: str = DEFAULT_GRPC_ADDRESS) -> "Live":
@@ -928,6 +942,7 @@ class Live:
             add=lambda c, a: m.add_live_processor(
                 a.name, a.uri, a.track_id, a.before_id, a.add_to_back, address, c),
             remove=lambda c, r: m.remove_live_processor(r.processor_id, r.track_id, address, c),
+            plugins=lambda c: m.read_live_plugins(address, c),  # the web UI (#31)
         )
 
 
@@ -1048,6 +1063,7 @@ class Agent:
         app.router.add_post("/live/move", self.live_move)
         app.router.add_post("/live/undo", self.live_undo)
         self._edit_routes(app)
+        self._ui_routes(app)  # the web UI (#31): see its block
         return app
 
     async def health(self, request):
@@ -1808,6 +1824,72 @@ class Agent:
 
     # ======================================================================= #
     # (end of the library and chain edits' routes)
+    # ======================================================================= #
+    # ======================================================================= #
+    # The web UI (#31): GET /, /ui/*, /profiles, /live/plugins
+    # ======================================================================= #
+    #
+    # Kept in one block so it merges past other work on this file; outside it
+    # the UI adds only `Live.plugins`, the call in `app` and a section of the
+    # module docstring. The decisions are `sushi_rig.ui`'s and
+    # `ui/static/rig.js`'s; this serves files and answers two reads.
+
+    def _ui_routes(self, app) -> None:
+        from .ui import UI_DIR
+
+        app.router.add_get("/", self.ui_page)
+        # aiohttp's static route refuses paths that leave the folder and does
+        # not follow symlinks out of it; no listing, so /ui/ is not a browser.
+        app.router.add_static("/ui/", UI_DIR, show_index=False)
+        app.router.add_get("/profiles", self.profiles_route)
+        app.router.add_get("/live/plugins", self.live_plugins)
+
+    async def ui_page(self, request):
+        from .ui import UI_DIR
+
+        return web.FileResponse(UI_DIR / "index.html")
+
+    def _read_profiles(self) -> dict[str, Any]:
+        from .paths import checkout_root
+        from .ui import panel_profiles
+
+        directory = (self.root or checkout_root()) / library_module.PROFILES_DIR
+        return panel_profiles(*library_module.load_profiles(directory))
+
+    async def profiles_route(self, request):
+        """Every profile under tool/examples/profiles/, flattened for the
+        browser (`ui.panel_profile`), and the problems loading them met. Needs
+        no rig. Read on every request, not kept as the library is: it is a
+        handful of small files, the page asks once, and a profile being written
+        then shows on a reload without restarting the agent."""
+        answer = await asyncio.to_thread(self._read_profiles)
+        return web.json_response({"ok": True, **answer})
+
+    async def live_plugins(self, request):
+        """Which plugin each processor on the rig is, from Sushi's session
+        (`live.read_live_plugins`), with `role` "send" or "return" for the
+        compiler's (`live.protected_processor`, the one rule for them) and None
+        for a plugin. A read: busy, 503 and 502 as `/live` answers them, and
+        no live lock. 501 from a `Live` that cannot say, rather than an answer
+        the page would take for a rig of unknown plugins."""
+        plugins = getattr(self.live, "plugins", None)
+        if plugins is None:
+            raise web.HTTPNotImplemented(
+                reason="this agent's connection to Sushi cannot say which plugin each processor is")
+        self._refuse_while_busy()
+        async with self._connected(request) as controller:
+            found = await self._sushi(request, plugins, controller, reading=True)
+        processors = {}
+        for name, plugin in (found or {}).items():
+            track = plugin.get("track") or ""
+            role = None
+            if protected_processor(track, name, plugin.get("uid")):
+                role = "send" if is_send(track, name, plugin.get("uid")) else "return"
+            processors[name] = {**plugin, "role": role}
+        return web.json_response({"ok": True, "processors": processors})
+
+    # ======================================================================= #
+    # (end of the web UI's routes)
     # ======================================================================= #
     # =================================================================== MIDI
     #

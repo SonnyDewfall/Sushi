@@ -1913,3 +1913,48 @@ returns the chains it confirmed, a 502 otherwise. (8) An unknown escape's
 `TurtleError` had no line; it has. (9) `plugins_described` scanned every triple
 three times per plugin; it indexes once per bundle. Every name and port count
 still agrees with lilv on the assembled `plugins/` (rerun). *(2026-11-02)*
+
+**The web UI, v0: the rack and the stage screen (#31).** The agent serves a
+page at `/` from `tool/src/sushi_rig/ui/static/`: plain HTML, CSS and JavaScript
+modules, no build step and no framework, since the rig machine has no Node and
+the UI must run from a checkout (`ui/__init__.py` says so). Two screens from the
+"Rig UI mockups v2" canvas and nothing else from it: **the rack** (S1), every
+channel a row of plugin cards with knobs from the profile, and **the stage
+screen** (S5), one glance and one tap at phone width, with a lock. It polls
+`/health`, `/live` and `/live/log` once a second and sends each change as it
+happens, one request in flight per control with the newest value next
+(`Sender`). Two routes are new, in a block of their own in `agent.py`:
+`GET /profiles`, every profile flattened for the browser (`ui.panel_profile`,
+no rig needed), and `GET /live/plugins`, which plugin each processor is, from
+Sushi's saved session (`live.read_live_plugins`), with the send and return
+marked by `live.protected_processor`; `/live` cannot say, since `ProcessorInfo`
+names no plugin. `Live` gains a `plugins` field (default None, which
+`/live/plugins` answers 501) and `app()` one line; nothing else outside the
+block. **Decisions are pure:** `panel_profile` in Python, and in `ui/static/rig.js`
+the value in real units (Sushi normalises linearly over the domain, so real =
+min + v·(max − min); a profile's `log` or `db` scale changes the drag and the
+text, never that), which controls a card shows (the profile's groups; `hidden`
+left out; what the profile names and the plugin lacks, and the reverse, each
+listed, not dropped), what is unsaved (netted from the log: each key against
+what its first change replaced, since the rig's start and the last rig switch),
+the undo on offer (the agent's `pick_undo`, tested against it on the same logs),
+the state line, and the lock's refusals. `test_ui.py` runs rig.js's functions in
+a bare Chromium page and drives both screens against a real agent over a fake
+rig (`tests/ui_fake.py`) whose parameter names and ranges are read from the
+repository's captured plugin data, and which says what it invents. **Failures
+are loud:** a refused change shows the agent's reason in an alert and beside the
+knob, and the knob shows the rig's value again; the agent's `last_error` and a
+failed MIDI listener are in the same glance. **Said on screen, not built:**
+load and xruns read "not measured" (the agent measures neither), so an up rig is
+amber, never green (#49); saving (S4); the lock is the page's own, in this
+browser's storage and on by default, because the agent has no performance lock
+(#29), so another client is not held by it; "unsaved" knows only changes made
+through the agent since the rig came up, so the OSC panel's, a MIDI mapping's
+inside Sushi, or a `sushi-rig save` since, are not reflected, and the log does
+not survive the agent; changes go over HTTP, not the WebSocket S1 names. CI
+gets Chromium from `python -m playwright install --with-deps chromium`, in
+`ci.yml` and in `ci/Dockerfile` (with the `[ui-test]` extra); without the
+package the browser tests skip, and a Chromium that will not start fails them.
+**Not run:** any of it against a live Sushi, a phone's own browser, or the
+Docker build (no Docker here; the Dockerfile step is untested until CI builds
+it). *(2026-11-02)*

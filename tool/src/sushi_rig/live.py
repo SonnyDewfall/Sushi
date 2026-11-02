@@ -901,6 +901,37 @@ def _session_plugins(controller) -> dict[str, dict[str, Any]]:
     return plugins
 
 
+def read_live_plugins(address: str = DEFAULT_GRPC_ADDRESS, controller: Any = None) -> dict[str, dict[str, Any]]:
+    """`{processor name: {"track", "uri", "uid", "type"}}` for every processor
+    on a chain, from Sushi's session: which plugin each one is, so the web UI
+    (#31) can show it with its profile. The session is the one place Sushi
+    says (see `_session_plugins`), and it is read here rather than by
+    `_session_plugins` because that one's answer is copied whole into the
+    log's record of a remove, where a `track` key would collide.
+
+    The UI asks for this when the processors on the rig change, not on every
+    poll, since a session save is the heaviest read the agent makes. Not run
+    against a live Sushi: whether 1.3.0 answers SaveSession and puts an LV2
+    URI in `path` is unverified, as for the add and the remove.
+    """
+    from elkpy import sushi_info_types as info
+
+    with _connection(address, controller) as c:
+        plugins: dict[str, dict[str, Any]] = {}
+        session = c.session.get_session()
+        for track in getattr(session, "tracks", None) or []:
+            for plugin in getattr(track, "processors", None) or []:
+                try:
+                    kind = info.PluginType(plugin.type.type).name.lower()
+                except (AttributeError, ValueError):
+                    kind = None
+                plugins[plugin.name] = {
+                    "track": getattr(track, "name", None), "uri": plugin.path or None,
+                    "uid": plugin.uid or None, "type": kind,
+                }
+        return plugins
+
+
 def read_live_removal(
     processor: str, address: str = DEFAULT_GRPC_ADDRESS, controller: Any = None,
 ) -> dict[str, Any]:
