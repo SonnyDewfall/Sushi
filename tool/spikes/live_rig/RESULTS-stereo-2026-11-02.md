@@ -118,11 +118,31 @@ the two Rear announcements, and nothing did — but it is why `playback_RL` and
 `machines/sonny-dewfall-XPS-9320.yaml`, which pairs `playback_FL` and
 `playback_FR` positionally.
 
-### What is left to try, physically
+### Narrowed to the interface
 
-Swap the two monitor cables at the interface. If the silence follows the
-cable, it is the cable; if it stays on the right, it is that monitor; if it
-moves to the left, it is the interface's output.
+Sonny swapped the two monitor cables at the interface and reported:
+
+> **"It's not the monitor cables, it's the interface itself for some reason
+> only functioning on the left side."**
+
+The silence did not follow the cable and did not stay with one monitor, so
+neither the cables nor the speakers are at fault. The right output of the
+Audient iD14 is not producing sound.
+
+Two things remain untested, and both are worth doing before the interface is
+written off as broken:
+
+1. **The iD14's own direct monitoring**, with the guitar plugged in and the
+   computer out of the path entirely. If the right side sounds there, the
+   analogue output stage is fine and the problem is in the USB/driver path —
+   which would point at the profile below. If it is silent there too, the
+   hardware is genuinely faulty.
+2. **The PipeWire device profile.** The iD14 is being driven as
+   `analog-surround-40` — four outputs, `[ FL, FR, RL, RR ]`, on an
+   interface with two. A two-channel `analog-stereo` profile is the normal
+   one for this device. This was not changed here, because the brief is
+   diagnosis only and a device profile is a setting on Sonny's machine, not
+   a file in this repository.
 
 ---
 
@@ -348,12 +368,18 @@ output altogether.
 check that could have convicted it cleared it, including a live measurement
 of the two channels it exists to produce.
 
+Narrowed further after the cable swap: the fault is the **interface's right
+output**, not the cables and not the monitors. Whether that is the hardware
+or the four-output surround profile PipeWire has it on is still open, and
+the two tests that would separate them are listed under step 2.
+
 ### Sonny's words
 
 | step | asked | said |
 |---|---|---|
 | 2 | did "Front Right" come from the right speaker? | **"No, just heard front left."** |
 | 2 | did any of the four positions reach the right speaker? | **"I just head front left."** |
+| 2 | after swapping the monitor cables | **"It's not the monitor cables, it's the interface itself for some reason only functioning on the left side."** |
 | 7 | — | not asked: step not run |
 
 ### One thing for the tool, found in passing
