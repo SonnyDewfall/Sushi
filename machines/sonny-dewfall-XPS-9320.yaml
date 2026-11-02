@@ -36,3 +36,22 @@ roles:
     mono_to_stereo: true
   # The monitors. Left then right, in that order — the pairing is positional.
   monitor-out: ["Audient iD14:playback_FL", "Audient iD14:playback_FR"]
+
+# MIDI controllers (#34). The rig's `midi:` section names a control here, so
+# the same rig file works on another machine with other pedals. Facts measured
+# with `aseqdump` on 2026-11-01 (RESULTS-hear-v2-2026-11-01.md, step 3b):
+# the Akai MPD218's pads send Note on/off on channel 0 (notes 36, 38, 40, 41
+# were pressed), a knob sends CC 3 with full 0 to 127 travel, and holding a
+# pad also sends channel aftertouch, which a mapping must ignore. The real
+# footswitch and expression pedal were not attached; when they are, they get
+# their own entry here and the rig names their controls instead.
+controllers:
+  mpd218:
+    port: "MPD218:MPD218 Port A"   # as `aseqdump -l` and PipeWire list it
+    channel: all
+    controls:
+      knob1: {cc: 3}
+      pad1: {note: 36}
+      pad2: {note: 38}
+      pad3: {note: 40}
+      pad4: {note: 41}

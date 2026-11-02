@@ -579,6 +579,51 @@ prefix is what says which channel a tab belongs to.
 an input role, `mono` or `stereo`, and a chain, plus a master that says where
 the mix goes. No engine bus or channel number is written by hand.
 
+A channel's level in the mix is `level:` on the channel, in dB, 0 being unity.
+It is the send's gain: the stem is unaffected, which is why it is not a strip
+(a strip acts after the send and would change the stem). This is where the
+expression pedal's blend between two channels lives (#34): one CC driving two
+channels' levels in opposite directions. SAVE writes a level moved live back
+as dB to a thousandth.
+
+A rig can carry its MIDI map (#34). The machine file describes the
+controller, since pedals vary by machine and venue, and the rig names its
+controls:
+
+```yaml
+# machines/<hostname>.yaml
+controllers:
+  mpd218:
+    port: "MPD218:MPD218 Port A"
+    channel: all                 # or 0 to 15, as Sushi counts it
+    controls:
+      knob1: {cc: 3}
+      knob2: {cc: 9}
+      knob3: {cc: 12}
+      pad1: {note: 36}
+
+# config/rigs/<name>.yaml
+midi:
+  controller: mpd218
+  controls:
+  - {control: knob1, blend: [clean, lead]}        # one pedal fades clean out as lead comes in
+  - {control: knob2, parameter: lead/hall/Mix}     # a sweep, 0 to 1 normalised, or range: [a, b]
+  - {control: knob3, mute: lead}                   # a whole channel, native
+  - {control: pad1, bypass: lead/drive}            # one plugin: the agent's, Sushi has no CC-to-bypass; a CC here is a switch
+```
+
+Blend, parameter and mute compile into Sushi's own `cc_mappings` and run in
+the engine with no Python in the path; a blend is two mappings on the two
+channels' sends with their ranges reversed, each channel's own level being
+its loudest. Bypass and rig switching by Program Change go through the agent, which
+reads them from the compiled config's `_midi_agent`; a blended channel's
+send gain is a pedal position, so SAVE does not write it back as the level.
+A rig with a map refuses to compile to a config without its controller, since
+a rig running without its pedals would be the silent failure. Still to verify
+on the rig: that Sushi counts MIDI channels from 0, and the name PipeWire
+gives Sushi's MIDI input so the patchbay can link the pedal to it.
+
+
 ```bash
 sushi-rig emit config/rigs/guitar_vocal.yaml -o /tmp/gv.json
 ```

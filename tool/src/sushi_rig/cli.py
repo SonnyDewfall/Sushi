@@ -272,7 +272,19 @@ def _patchbay(args: argparse.Namespace) -> int:
     return 0
 
 
-def _emit_any(path: Path, state: dict | None) -> dict:
+def _controller_for(rig, machine_file: Path | None) -> dict | None:
+    """The machine's description of the controller a rig's MIDI map names, or
+    None when the rig has no map. A map whose controller this machine does
+    not describe is an exit with the reason, never a config without it."""
+    from .machine import MachineError, rig_controller
+
+    try:
+        return rig_controller(rig, machine_file)
+    except MachineError as exc:
+        sys.exit(str(exc))
+
+
+def _emit_any(path: Path, state: dict | None, machine_file: Path | None = None) -> dict:
     """A config from either kind of rig file: channels and a master (#30), or
     tracks spelt out by hand. The file says which, by its `kind`."""
     from .emit import EmitError
@@ -282,7 +294,8 @@ def _emit_any(path: Path, state: dict | None) -> dict:
 
     try:
         rig = load_any(path)
-        config = emit_rig(rig, state) if isinstance(rig, Rig) else emit(rig, state)
+        controller = _controller_for(rig, machine_file) if isinstance(rig, Rig) else None
+        config = emit_rig(rig, state, controller=controller) if isinstance(rig, Rig) else emit(rig, state)
     except (RigFileError, EmitError) as exc:
         sys.exit(f"{path}:\n  " + "\n  ".join(exc.problems))
     # Where this config came from, so `up` can find the rig SAVE saves from
@@ -657,6 +670,10 @@ def _main(argv: list[str] | None = None) -> int:
     p.add_argument("--state", type=Path, help="captured state file to fold in")
     p.add_argument("-o", "--out", type=Path, default=Path("rig.json"))
     p.add_argument("--sushi", help=_SUSHI_HELP)
+    p.add_argument(
+        "--machine", type=Path,
+        help="machine file whose controllers a rig's MIDI map names [default: machines/<this hostname>.yaml]",
+    )
     p.add_argument(
         "--no-verify", dest="verify", action="store_false",
         help="skip the load and parameter-name checks run after writing",
@@ -1091,7 +1108,7 @@ def _main(argv: list[str] | None = None) -> int:
 
     if args.command == "emit":
         state = json.loads(args.state.read_text()) if args.state else None
-        write_json(args.out, _emit_any(args.rig, state))
+        write_json(args.out, _emit_any(args.rig, state, args.machine))
         if args.verify:
             # The cheap checks only: they cost milliseconds and catch a bad
             # config at the moment it is created. The check that starts Sushi

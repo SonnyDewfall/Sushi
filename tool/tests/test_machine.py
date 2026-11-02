@@ -286,3 +286,105 @@ def test_long_form_ports_are_validated_like_plain_ones(tmp_path):
     assert machine.validate() == ["role 'r': has no ports"]
     machine = _load(tmp_path, "schema_version: 1\nroles:\n  r:\n    ports: ['bad']\n")
     assert "<client>:<port> form" in machine.validate()[0]
+
+
+# --- controllers (#34) ------------------------------------------------------
+
+
+def _with_controllers(controllers):
+    return MachineSpec(schema_version=1, interface="x",
+                       roles={"guitar-in": {"ports": ["A:in"], "mono_to_stereo": True}, "monitor-out": ["A:l", "A:r"]},
+                       controllers=controllers)
+
+
+def test_a_controller_describes_what_each_control_sends():
+    machine = _with_controllers({"mpd218": {"port": "MPD218:MPD218 Port A", "channel": 0,
+                                            "controls": {"knob1": {"cc": 3}, "pad1": {"note": 36}}}})
+    assert machine.validate() == []
+    assert machine.controller("mpd218") == {
+        "port": "MPD218:MPD218 Port A", "channel": 0,
+        "controls": {"knob1": ("cc", 3), "pad1": ("note", 36)},
+    }
+    assert _with_controllers({"x": {"controls": {"k": {"cc": 1}}}}).controller("x")["channel"] == "all"
+
+
+@pytest.mark.parametrize("controllers, said", [
+    ("mpd218", "controllers must be a mapping"),
+    ({"x": "cc 3"}, "must be a mapping with controls"),
+    ({"x": {"controls": {}}}, "controls must be a mapping"),
+    ({"x": {"controls": {"k": {"cc": 3, "note": 1}}}}, "exactly one of cc"),
+    ({"x": {"controls": {"k": {"pc": 3}}}}, "exactly one of cc"),
+    ({"x": {"controls": {"k": {"cc": 128}}}}, "cc must be 0 to 127"),
+    ({"x": {"channel": 16, "controls": {"k": {"cc": 3}}}}, "channel must be 0 to 15"),
+    ({"x": {"ports": "y", "controls": {"k": {"cc": 3}}}}, "unknown key 'ports'"),
+    ({"x": {"port": 3, "controls": {"k": {"cc": 3}}}}, "port must be the MIDI port's name"),
+])
+def test_a_controller_that_is_not_one_is_named(controllers, said):
+    problems = _with_controllers(controllers).validate()
+    assert any(said in p for p in problems), problems
+
+
+def test_two_controls_that_send_the_same_number_are_refused_naming_both():
+    """A rig binding both would put two mappings on one pedal, each firing on
+    the same message, with nothing to say so."""
+    machine = _with_controllers({"x": {"controls": {"knob1": {"cc": 3}, "pedal": {"cc": 3}}}})
+    problems = machine.validate()
+    assert len(problems) == 1, problems
+    assert "controller 'x'" in problems[0]
+    assert "'knob1'" in problems[0] and "'pedal'" in problems[0] and "cc 3" in problems[0]
+    machine = _with_controllers({"x": {"controls": {"a": {"note": 36}, "b": {"note": 36}}}})
+    assert "note 36" in machine.validate()[0]
+
+
+def test_a_cc_and_a_note_of_one_number_are_different_messages_and_allowed():
+    machine = _with_controllers({"x": {"controls": {"knob": {"cc": 36}, "pad": {"note": 36}}}})
+    assert machine.validate() == []
+    # The same number on two controllers is two pedals, not a clash.
+    machine = _with_controllers({"x": {"controls": {"k": {"cc": 3}}}, "y": {"controls": {"k": {"cc": 3}}}})
+    assert machine.validate() == []
+
+
+def test_a_loaded_machine_answers_for_its_controller_and_refuses_one_it_lacks():
+    machine = _with_controllers({"x": {"controls": {"k": {"cc": 3}}}})
+    assert machine.controller_for("x")["controls"] == {"k": ("cc", 3)}
+    with pytest.raises(MachineError, match="controller 'y', which the machine file does not describe; its controllers: x"):
+        machine.controller_for("y")
+
+
+def test_a_loaded_machine_remembers_where_it_was_read_from_and_names_it(tmp_path):
+    path = tmp_path / "box.yaml"
+    path.write_text("schema_version: 1\ninterface: x\nroles:\n  r: {ports: ['A:in']}\n"
+                    "controllers:\n  x:\n    controls:\n      k: {cc: 3}\n")
+    machine = MachineSpec.load(path)
+    assert machine.source == path
+    with pytest.raises(MachineError, match="which box.yaml does not describe"):
+        machine.controller_for("y")
+
+
+def test_rig_controller_is_one_helper_for_every_caller(tmp_path):
+    from types import SimpleNamespace
+
+    from sushi_rig.machine import rig_controller
+
+    machine_file = tmp_path / "box.yaml"
+    machine_file.write_text(
+        "schema_version: 1\ninterface: x\nroles:\n  r: {ports: ['A:in']}\n"
+        "controllers:\n  x:\n    controls:\n      k: {cc: 3}\n"
+    )
+    mapped = SimpleNamespace(midi=SimpleNamespace(controller="x"))
+    assert rig_controller(SimpleNamespace(midi=None), machine_file) is None
+    assert rig_controller(mapped, machine_file)["controls"] == {"k": ("cc", 3)}
+    # An already-loaded machine is used as it is, whatever the file does next.
+    loaded = MachineSpec.load(machine_file)
+    machine_file.unlink()
+    assert rig_controller(mapped, loaded)["controls"] == {"k": ("cc", 3)}
+    with pytest.raises(MachineError, match="could not be read"):
+        rig_controller(mapped, machine_file)
+
+
+def test_the_rig_machines_file_describes_the_mpd218():
+    from pathlib import Path
+
+    machine = MachineSpec.load(Path(__file__).parent.parent.parent / "machines" / "sonny-dewfall-XPS-9320.yaml")
+    assert machine.validate() == []
+    assert machine.controller("mpd218")["controls"]["knob1"] == ("cc", 3)
