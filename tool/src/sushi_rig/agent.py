@@ -5,7 +5,8 @@ Control reaches the rig from three places today: the panel speaks OSC to Sushi,
 one place that owns the rig instead, and this is its first slice: the lifecycle
 and the two things worth reading about a rig, served over HTTP on localhost.
 
-    GET  /health        the agent and the rig, in one answer
+    GET  /health        the agent and the rig, in one answer: `agent.supervisor` is the rig
+                        the agent holds and its children that crashed
     GET  /rig           what is running, if anything (`describe_rig`), and which
                         Program Change selects which rig when the rig's map switches rigs
     GET  /doctor        `doctor`'s checks, as data
@@ -23,20 +24,29 @@ and the two things worth reading about a rig, served over HTTP on localhost.
 
 ## A fixed command set, never a shell
 
-Each route maps to one CLI command with arguments the agent builds itself
-(`lifecycle_arguments`): a config name is a name, not a path, and a flag is a
-boolean. Nothing a request carries is passed through as text.
+Each route maps to one lifecycle command with arguments the agent builds itself
+(`lifecycle_arguments`), in the CLI's own words: a config name is a name, not a
+path, and a flag is a boolean. Nothing a request carries is passed through as
+text.
 
-## The lifecycle runs in a child process, not in this one
+## The agent is the supervisor
 
-`up` forks the supervisor. This process serves HTTP from an event loop with
-worker threads, and a fork from a multi-threaded process inherits whatever locks
-another thread held at that instant -- Python warns about exactly this. So the
-agent runs `sushi-rig up`, `down` and `restart` as the CLI they already are and
-reports what they said. The supervisor is therefore still the one `up` has
-always forked, detached from the agent; moving it in here, so that the agent
-*is* the supervisor and can run as a service, is the next slice, and this one
-does not pretend otherwise.
+The agent starts the rig's children itself and holds their process group
+(`supervisor.py`): `up` starts what `plan_children` plans, as `up`'s forked
+supervisor would, and writes the same state file, so `status` and
+`describe_rig` read it unchanged. A child that exits while the rig is up is
+noticed and reported in `/health` (`agent.supervisor.crashed`), and is not
+restarted: principle 9, recovery is `restart`, asked for. It is not done by
+forking, as `up` does, because a fork from this threaded process inherits
+whatever locks another thread held at that instant; processes are started with
+`subprocess`'s fork-and-exec, which runs no Python in between.
+
+The rig outlives the agent. A rig running when the agent starts -- one `up`
+started with no agent, or an earlier agent's -- is not held, since its exit
+statuses are not this process's to read, but `down` and `restart` act on it
+through the state file as the CLI does. The CLI's `up`, `down`, `restart` and
+`status` ask the agent when it is running (`agent_client.py`), so a rig started
+from the CLI is held by the agent too, unless `--direct` said otherwise.
 
 One lifecycle operation at a time: a second request while one is running is
 answered `409 busy`, because `up` and `down` racing is a second rig on top of a
@@ -190,6 +200,7 @@ from .rig import describe_rig
 from .save import NAME_PATTERN
 from .midi_listener import MidiError
 from .rig import describe_rig, restart_arguments
+from .supervisor import Outcome, Supervisor
 
 try:
     from aiohttp import web
@@ -197,11 +208,6 @@ except ImportError:  # the `agent` extra is optional; `serve` says so
     web = None  # type: ignore[assignment]
 
 VERSION = "0.1"
-
-# `up` waits up to GRPC_TIMEOUT for Sushi and `down` is bounded by
-# SHUTDOWN_STEPS, both well inside this; a command still running at the limit
-# is stuck, and is killed rather than holding the lock forever.
-LIFECYCLE_TIMEOUT = 120.0
 
 # How long one blocking call to Sushi (connecting, a read, a change) may take
 # before the agent stops waiting for it and answers 504. elkpy's gRPC calls
@@ -233,10 +239,6 @@ LIVE_TIMEOUT = 20.0
 # queued, since a queue behind stuck threads would wait for ever.
 LIVE_WORKERS = 8
 
-# The CLI is run as this module, not as `sushi-rig` from PATH, so the agent
-# drives the installation it was started from.
-CLI: tuple[str, ...] = (sys.executable, "-m", "sushi_rig.cli")
-
 # A config name names config/<name>.json and an amp model names
 # amp/models/<name>. `up` checks each file exists, but a name with a separator
 # in it would be looked up outside those folders, so both are refused here
@@ -258,29 +260,6 @@ DIRECTIONS = {"up": -1, "down": 1}
 
 class AgentError(Exception):
     """A request the agent will not act on, with the reason."""
-
-
-@dataclass(frozen=True)
-class Outcome:
-    """What a command said: its exit status and both streams.
-
-    `returncode` is None when the agent stopped waiting: the command was
-    abandoned, not finished, and whatever it had started may still be running.
-    """
-
-    ok: bool
-    returncode: int | None
-    stdout: str
-    stderr: str
-
-    @property
-    def abandoned(self) -> bool:
-        return self.returncode is None
-
-    @property
-    def reason(self) -> str:
-        """Why it failed, in its own words where it gave any."""
-        return self.stderr.strip() or f"exit status {self.returncode}"
 
 
 Runner = Callable[[Sequence[str]], Awaitable[Outcome]]
@@ -931,46 +910,6 @@ class Live:
         )
 
 
-async def run_cli(
-    args: Sequence[str],
-    timeout: float = LIFECYCLE_TIMEOUT,
-    program: Sequence[str] = CLI,
-) -> Outcome:
-    """Run one CLI command to completion and report what it said.
-
-    A command that outlives `timeout` is abandoned: the CLI process is killed
-    so the lock is released, and the report says so. What that command had
-    started is not stopped, and cannot be from here: `up`'s supervisor has
-    already detached into its own process group, so killing the `up` that
-    forked it leaves the rig coming up. The answer therefore carries the rig
-    as it is afterwards, and a client reads that rather than the exit.
-    """
-    proc = await asyncio.create_subprocess_exec(
-        *program, *args,
-        stdin=asyncio.subprocess.DEVNULL,
-        stdout=asyncio.subprocess.PIPE,
-        stderr=asyncio.subprocess.PIPE,
-    )
-    try:
-        out, err = await asyncio.wait_for(proc.communicate(), timeout)
-    except asyncio.TimeoutError:
-        try:
-            proc.kill()
-        except ProcessLookupError:  # finished in the gap; its exit is still read
-            pass
-        await proc.wait()
-        return Outcome(
-            False, None, "",
-            f"'{' '.join(args)}' did not finish within {timeout:g}s, so the agent "
-            "stopped waiting for it. What it started, if anything, is still "
-            "running: read /rig.",
-        )
-    return Outcome(
-        proc.returncode == 0, proc.returncode,
-        out.decode(errors="replace"), err.decode(errors="replace"),
-    )
-
-
 class Agent:
     """The routes and the one piece of state they share: whether a lifecycle
     command is running, and the last thing that went wrong (until a lifecycle
@@ -978,8 +917,9 @@ class Agent:
 
     Everything that touches the world is injectable, so the routes are tested
     without a rig, a PipeWire or a child process: `describe` answers for the
-    state file, `doctor` for the examination, `run` for the CLI, `live` for
-    Sushi's gRPC.
+    state file, `doctor` for the examination, `supervisor` for the rig's
+    children and `run` for one lifecycle step (the supervisor's own runner
+    unless given), `live` for Sushi's gRPC.
     """
 
     def __init__(
@@ -988,7 +928,8 @@ class Agent:
         root: Path | None = None,
         describe: Callable[[], dict[str, Any]] = describe_rig,
         doctor: Callable[[], list] | None = None,
-        run: Runner = run_cli,
+        run: Runner | None = None,
+        supervisor: Supervisor | None = None,
         live: Live | None = None,
         clock: Callable[[], float] = time.monotonic,
         log_limit: int = LOG_LIMIT,
@@ -999,7 +940,10 @@ class Agent:
         self.log_limit = log_limit
         self.describe = describe
         self.doctor = doctor or self._doctor
-        self.run = run
+        self.supervisor = supervisor or Supervisor()
+        # A lifecycle step is CLI arguments (`lifecycle_arguments`), run by the
+        # supervisor in this process (#29); a test stands in a runner instead.
+        self.run = run or self.supervisor.run
         self.live = live or Live.at()
         self.clock = clock
         self.started = clock()
@@ -1051,6 +995,7 @@ class Agent:
         return app
 
     async def health(self, request):
+        rig = self.describe()
         return web.json_response({
             "ok": True,
             "agent": {
@@ -1061,8 +1006,11 @@ class Agent:
                 "stuck_live_calls": self.stuck_live_calls,
                 "last_error": self.last_error,
                 "midi": self._midi_status(),
+                # The rig this agent holds, and its children that exited with
+                # no `down` asking them to: what a phone reads after a crash.
+                "supervisor": self.supervisor.describe(rig),
             },
-            "rig": self.describe(),
+            "rig": rig,
         })
 
     async def rig(self, request):
@@ -1096,12 +1044,20 @@ class Agent:
             "rig": self.describe(),
         }
         if outcome.ok:
+            # What `up` said on stderr as it came up -- a patchbay link not
+            # made, an amp that died -- which the CLI printed and a phone
+            # would otherwise never see.
+            answer["warnings"] = [
+                line[len("warning: "):] for line in outcome.stderr.splitlines()
+                if line.startswith("warning: ")
+            ]
             return web.json_response(answer)
-        # Three failures, three answers, one body shape (`reason` says why,
-        # as every error here does). The CLI refused or failed -- "a rig is
-        # already running", "no rig to restart", Sushi never came up -- which
-        # is a conflict with the rig's state, 409. The agent gave up waiting:
-        # 504, and the rig in the answer is what to read next.
+        # Failures, one body shape (`reason` says why, as every error here
+        # does). The command refused or failed -- "a rig is already running",
+        # "no rig to restart", Sushi never came up -- which is a conflict with
+        # the rig's state, 409. A runner that gave up waiting (none does now
+        # the supervisor is in this process, but a runner may) is 504, and the
+        # rig in the answer is what to read next.
         answer["reason"] = outcome.reason
         return web.json_response(answer, status=504 if outcome.abandoned else 409)
 
@@ -2192,6 +2148,7 @@ def serve(host: str, port: int, root: Path | None = None) -> int:
     app.on_startup.append(agent.midi_adopt)  # MIDI: a rig already up has its pedals served
     app.on_shutdown.append(agent.announce_stopping)
     app.on_cleanup.append(agent.midi_release)  # MIDI: before the pool its actions use
+    app.on_cleanup.append(agent.supervisor.release)  # stop watching; the rig plays on
     app.on_cleanup.append(agent.release_workers)
     print(f"sushi-rig agent {VERSION} on http://{host}:{port}  (Ctrl+C to stop)", flush=True)
     web.run_app(app, host=host, port=port, print=None, handle_signals=True)

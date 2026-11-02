@@ -3,9 +3,10 @@
 The routes are tested against fakes for everything that touches the world --
 the state file, the examination, the child process -- so these say what the
 agent *decides*: what runs for a request, what is refused before anything
-runs, what one failure does to the next request. One test runs the real CLI
-through the real runner, because a runner that only ever met a fake would be
-the mock agreeing with itself.
+runs, what one failure does to the next request. The runner the agent uses by
+default is its own supervisor, whose lifecycle is tested with real (if fake)
+child processes in test_supervisor.py, because a runner that only ever met a
+fake would be the mock agreeing with itself.
 """
 
 from __future__ import annotations
@@ -40,7 +41,6 @@ from sushi_rig.agent import (  # noqa: E402
     move_request,
     parameter_request,
     pick_undo,
-    run_cli,
     trim_log,
     undo_inverse,
     undo_request,
@@ -2001,24 +2001,22 @@ def test_nothing_to_undo_is_said_with_a_code_and_busy_wins_over_it():
     assert (status, body["code"], body["reason"]) == (409, "nothing_to_undo", "nothing to undo")
 
 # --------------------------------------------------------------------------- #
-# The runner, for real
+# The runner
 # --------------------------------------------------------------------------- #
 
-def test_the_runner_runs_the_real_cli(runtime):
-    """`status` with nothing recorded: the one command safe to run here."""
-    outcome = asyncio.run(run_cli(["status"]))
-    assert outcome.ok, outcome
-    assert "No rig is running." in outcome.stdout
+def test_the_agent_runs_the_lifecycle_itself_through_its_supervisor():
+    """No CLI child process any more (#29): a request's steps go to the
+    supervisor the agent holds the rig with, and /health reports it."""
+    agent = Agent(describe=lambda: dict(DOWN))
+    assert agent.run == agent.supervisor.run
+    _, health = call(agent, "GET", "/health")
+    assert health["agent"]["supervisor"] == {"holds": None, "crashed": [], "note": None}
 
 
-def test_a_command_that_hangs_is_killed_and_said_so():
-    sleeper = (sys.executable, "-c", "import time; time.sleep(30)")
-    outcome = asyncio.run(run_cli(["x"], timeout=0.3, program=sleeper))
-    assert not outcome.ok and outcome.abandoned
-    assert "did not finish within 0.3s" in outcome.stderr
-    assert "still running: read /rig" in outcome.stderr, "killed the CLI, not what it started"
-
-
-def test_the_cli_the_agent_runs_is_the_installation_it_was_started_from():
-    assert agent_module.CLI[0] == sys.executable
-    assert agent_module.CLI[1:] == ("-m", "sushi_rig.cli")
+def test_a_successful_command_carries_its_warnings_for_a_phone_to_read():
+    said = Outcome(True, 0, "Rig up: x (headless mode)\n",
+                   "warning: amp exited during startup (status 1)\nwarning: 2 link(s) were not made\n")
+    agent = Agent(describe=lambda: dict(UP), run=FakeRunner(said))
+    status, body = call(agent, "POST", "/rig/up", json={"config_name": "x", "headless": True})
+    assert status == 200
+    assert body["warnings"] == ["amp exited during startup (status 1)", "2 link(s) were not made"]

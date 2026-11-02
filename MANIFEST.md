@@ -1999,3 +1999,78 @@ rig file has changed since `up`, so restart the rig". The channels and their
 input roles still come from the rig file, read at listener start: the config
 does not say which role a track plays from. Still NOT VERIFIED on the rig; the
 check above stands, with a blend rig added if one is to hand. *(2026-11-02)*
+
+**The agent is the supervisor, and can run as a user service (#29).** `POST
+/rig/up` no longer runs the CLI in a child process: the agent starts the
+children itself (`supervisor.py`) and holds their process group. It cannot fork
+a supervisor (a fork from its threaded loop is the deadlock the first slice
+avoided) or lead the group it signals, so it starts a group holder -- a Python
+that waits for a signal, with `process_group=0` -- and each child with
+`process_group=<holder>`, through `subprocess`'s fork-and-exec, which runs no
+Python in between. The holder is the state file's `supervisor_pid`, so the file
+has the forked supervisor's shape and `liveness`, `status`, `describe_rig` and
+`restart_arguments` read it unchanged (a test round-trips it through
+`status`). The children are `Popen`s rather than asyncio subprocesses, because
+asyncio's transport kills a still-running child when it is closed or collected:
+seen on 3.13 in this container, where a `sleep` started with
+`create_subprocess_exec` was killed when `asyncio.run` returned (on 3.11 it
+lived). A task on the loop polls them every 0.2 s; an exit no `down` caused is
+a crash, in `/health` under `agent.supervisor.crashed` (name, pid, status or
+signal, when, startup or running, log), on the agent's stderr, and as `CRASHED`
+in `status`. Nothing is restarted (principle 9). An exit is classified one tick
+after it is seen, holder first, so a group signalled from outside the agent
+(`down --direct`, a `kill`) reads as that stop and not as crashes. The rig
+outlives the agent: stopping it leaves the holder keeping the group, and the
+next agent stops or restarts it through the state file (`rig.down`) without
+watching it, which `/health` says in `agent.supervisor.note`. **What changed
+for the code:** `up` is split into `rig.prepare_launch` (the guards, the rig
+compile, the amp, `plan_children`, unchanged) and the fork, so both
+supervisors start the same `Launch`; `state_record`, `qpwgraph_problem`,
+`startup_exit_problem`, `panel_commands`, `up_summary` and `status_lines` are
+shared helpers; `down` takes the streams it speaks on; `start_qpwgraph` takes a
+`process_group`. `Agent._run_lifecycle` is unchanged: its runner is now
+`Supervisor.run`, which takes the same CLI arguments (`parse_lifecycle`, pinned
+as the inverse of `lifecycle_arguments`), so a Program Change switch and its
+fallback run as before. `run_cli` and `LIFECYCLE_TIMEOUT` are gone; `Outcome`
+lives in `supervisor.py` and is re-exported from `agent.py`. A successful
+answer carries `warnings`. **The CLI:** `up`, `down`, `restart` and `status`
+probe 127.0.0.1:8029 (`agent_client.py`, standard library, no proxy); an agent
+there is asked, nothing listening means today's behaviour, and either way one
+line on stderr says which. Something there that does not answer as the agent
+(no answer in 2 s, not JSON, not /health's shape), or an agent that vanishes
+between the probe and the request, is refused with nothing done; `--direct`
+acts without asking. **The service:** `systemd/sushi-rig-agent.service`, a
+template with `@CHECKOUT@`, and `sushi-rig agent install-service`, which fills
+it in, writes it to `~/.config/systemd/user/` (or `$XDG_CONFIG_HOME`), links it
+into `graphical-session.target.wants/` as `enable` would, refuses a checkout
+path systemd would read as more than a path or one with no venv, and prints
+`systemctl --user daemon-reload` and `start` without running systemctl.
+Fast suite 2164 -> 2224 passed. Tested with fake children (`test_supervisor.py`:
+real processes in a real group, standing in for the programs), the CLI's
+choice both ways (`test_agent_client.py`, including a real agent on a real
+socket), and the installer (`test_service.py`). Also run in this container: the
+real agent and the real CLI, with stand-in `pw-jack`, `fmit` and `qpwgraph`
+scripts on PATH (the `pw-jack` one holding port 51051 as Sushi's gRPC would):
+`up` through the CLI came up in 2 s with the state file in the old shape, a
+SIGSEGV to the tuner showed in `/health` and `status` and was not restarted,
+SIGTERM to the agent left the group playing under pid 1, and a second agent
+took it down through the state file in 1.4 s with nothing left; without the
+stand-ins, `up` failed on the missing `pw-jack` and tore down what it had
+started. **NOT VERIFIED: the service has not been installed on a real machine,
+and the agent-run `up` has not been run against real Sushi and PipeWire.**
+Guesses, each to check there: that `graphical-session.target` is reached on the
+rig machine's desktop and hands the agent `DISPLAY`/`WAYLAND_DISPLAY`, without
+which qpwgraph, fmit and open-stage-control cannot start; that the user
+manager's PATH finds `pw-jack`, `carla`, `fmit`, `qpwgraph` and
+`open-stage-control` (`curl localhost:8029/doctor` shows the service's view);
+that `KillMode=process` leaves the rig playing across `systemctl --user
+restart` (systemd may warn about processes left in the unit); that Sushi,
+started from a process in a background process group of the agent's session
+rather than a session of its own, behaves as it did from the forked
+supervisor; and the 60 s bound on `sushi-rig panel`, which the forked
+supervisor never had. **The check, on the rig:** `sushi-rig agent
+install-service`, the two printed commands, then `sushi-rig up --rig
+guitar_vocal` (it must say it asked the agent), play, `kill -SEGV` the tuner's
+pid and read `curl localhost:8029/health | jq .agent.supervisor`, `systemctl
+--user restart sushi-rig-agent.service` while playing (the sound must not
+stop), then `sushi-rig down`. Record the result here either way. *(2026-11-02)*

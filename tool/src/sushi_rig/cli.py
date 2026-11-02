@@ -660,6 +660,12 @@ def _doctor(args: argparse.Namespace) -> int:
     return 0
 
 
+_DIRECT_HELP = (
+    "act on the rig directly, without asking the agent even if one is running "
+    "(#29); what the command did before there was an agent"
+)
+
+
 def main(argv: list[str] | None = None) -> int:
     """Run one command. A missing elkpy ends the process with its message, as it
     always has here; `live.py` raises it instead, so that the listener and the
@@ -832,6 +838,7 @@ def _main(argv: list[str] | None = None) -> int:
         "amp/models/ or a path. For auditioning without editing the config; "
         "a save then records whichever was actually used",
     )
+    p.add_argument("--direct", action="store_true", help=_DIRECT_HELP)
 
     p = sub.add_parser("down", help="stop a running rig and verify it stopped")
     p.add_argument(
@@ -840,6 +847,7 @@ def _main(argv: list[str] | None = None) -> int:
         help="skip straight to SIGKILL, giving Sushi no chance to release its "
         "JACK ports cleanly — for a rig that is already wedged",
     )
+    p.add_argument("--direct", action="store_true", help=_DIRECT_HELP)
 
     p = sub.add_parser(
         "verify",
@@ -1026,22 +1034,32 @@ def _main(argv: list[str] | None = None) -> int:
         help="patchbay to check [default: Patchbay/rig.qpwgraph at the repo root]",
     )
 
-    sub.add_parser("status", help="what is running, if anything")
+    p = sub.add_parser("status", help="what is running, if anything")
+    p.add_argument("--direct", action="store_true", help=_DIRECT_HELP)
     p = sub.add_parser(
         "agent",
         help="serve the rig over HTTP on localhost: health, status, doctor, up/down/restart (#29)",
     )
     # Localhost first (#29): opening it to the LAN is the operator's call.
     # 8029 is the issue's number, and clear of the panel's 8080. The defaults
-    # live here rather than in agent.py so that `sushi-rig status` does not
-    # import asyncio for two numbers it will never use.
-    p.add_argument("--host", default="127.0.0.1",
-                   help="bind address [default: 127.0.0.1; 0.0.0.0 opens it to the LAN]")
-    p.add_argument("--port", type=int, default=8029, help="[default: 8029]")
-    sub.add_parser(
+    # live in agent_client.py rather than agent.py so that `sushi-rig status`,
+    # which looks for the agent there, does not import asyncio for two numbers.
+    from .agent_client import DEFAULT_HOST, DEFAULT_PORT
+
+    p.add_argument("--host", default=DEFAULT_HOST,
+                   help=f"bind address [default: {DEFAULT_HOST}; 0.0.0.0 opens it to the LAN]")
+    p.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"[default: {DEFAULT_PORT}]")
+    agent_sub = p.add_subparsers(dest="agent_command")
+    agent_sub.add_parser(
+        "install-service",
+        help="write the agent's systemd user unit to ~/.config/systemd/user/ and enable it; "
+        "prints the systemctl commands to start it rather than running them",
+    )
+    p = sub.add_parser(
         "restart",
         help="stop the running rig and bring the same one back — same config, same mode, same amp and tuner choices",
     )
+    p.add_argument("--direct", action="store_true", help=_DIRECT_HELP)
 
     p = sub.add_parser(
         "top",
@@ -1329,6 +1347,16 @@ def _main(argv: list[str] | None = None) -> int:
 
         return top(args.interval, args.once)
     elif args.command == "agent":
+        if args.agent_command == "install-service":
+            from .paths import checkout_root
+            from .service import ServiceError, install
+
+            try:
+                lines = install(checkout_root())
+            except ServiceError as exc:
+                sys.exit(f"the service was not installed: {exc}")
+            print("\n".join(lines))
+            return 0
         from .agent import AgentError, serve
 
         try:
@@ -1338,6 +1366,25 @@ def _main(argv: list[str] | None = None) -> int:
     elif args.command in ("up", "down", "status", "restart"):
         from .amp import AmpError
         from .rig import RigError, down, restart, status, up
+
+        # The agent holds the rig when it is running (#29), so ask it first;
+        # with nothing listening, act as the CLI always has. Either way one
+        # line on stderr says which.
+        if args.direct:
+            print("sushi-rig: --direct, so acting without asking the agent", file=sys.stderr)
+        else:
+            from .agent_client import Unusable, route
+
+            try:
+                routed = route(args.command, args)
+            except Unusable as exc:
+                sys.exit(
+                    f"sushi-rig: {exc}. Nothing was done. If the agent is stuck, stop it "
+                    f"(systemctl --user stop sushi-rig-agent.service, or Ctrl+C where it runs); "
+                    f"'sushi-rig {args.command} --direct' acts without it."
+                )
+            if routed is not None:
+                return routed
 
         # AmpError is caught alongside RigError rather than subclassing it:
         # amp.py is imported *by* rig.py, so inheriting the other way round

@@ -311,18 +311,21 @@ then.
 │   └── sonny-dewfall-XPS-9320.yaml
 ├── amp/models/                 the neural amp's .nam captures
 ├── ci/                         Dockerfile for the container the full suite runs in
+├── systemd/                    the agent's user unit; `sushi-rig agent install-service` installs it
 ├── .github/workflows/          ci.yml (fast suite), rig-container.yml (everything)
 ├── plugin-manifest.txt         every LV2 URI this rig can load (see Plugins below)
 │
 ├── tool/                       ── TOOL: generates the configs above
 │   ├── pyproject.toml
-│   ├── src/sushi_rig/            34 modules and __init__, one job each:
+│   ├── src/sushi_rig/            42 modules and __init__, one job each:
 │   │                             spec, rigfile, convert, emit, dump, probe, probes,
-│   │                             profile, plugins, live, panel, listen, save,
-│   │                             state, procs, rig, qpwgraph, patchbay, machine,
-│   │                             amp, top, doctor, verify, render, nulltest,
-│   │                             signals, analysis, selftest, take, transport,
-│   │                             recorder, paths, _numpy, cli
+│   │                             profile, plugins, library, live, panel, listen,
+│   │                             save, state, procs, rig, supervisor, qpwgraph,
+│   │                             patchbay, machine, amp, top, doctor, verify,
+│   │                             render, nulltest, signals, analysis, selftest,
+│   │                             take, transport, recorder, capture, midi_listener,
+│   │                             agent, agent_client, service, yamlmerge, paths,
+│   │                             _numpy, cli
 │   ├── tests/                    fast suite; fixtures/ holds captured artefacts
 │   ├── examples/
 │   │   ├── rig.example.yaml       annotated rig spec (real plugins)
@@ -388,13 +391,15 @@ saving the rig would leave the v1 config behind; it says to use `--rig`.
 `up` starts everything and hands the prompt back — the rig is detached, so it
 survives closing the terminal. Child output goes to log files rather than your
 terminal; `status` prints the paths. It refuses to start a second rig on top of
-a running one.
+a running one. With the agent running, `up`, `down`, `restart` and `status` go
+through it, and say so in one line; see the next section.
 
 ### The agent (v2, #29)
 
 ```bash
 sushi-rig agent                      # serve the rig over HTTP on 127.0.0.1:8029
-curl localhost:8029/health           # the agent and the rig in one answer
+sushi-rig agent install-service      # or run it as a systemd user service (prints the systemctl commands)
+curl localhost:8029/health           # the agent and the rig in one answer, crashed children included
 curl localhost:8029/rig              # `status` as data
 curl localhost:8029/doctor           # `doctor` as data
 curl -X POST localhost:8029/rig/up -d '{"config_name": "guitar_vocal", "rig": true, "headless": true}'
@@ -411,20 +416,67 @@ curl -X POST localhost:8029/live/undo -d '{"skip": true}'   # give up on the new
 curl localhost:8029/health | jq .agent.midi   # the pedals: listening, or why not, and what was last heard
 ```
 
-The first slice of the control plane every v2 feature needs: one process that
-owns the rig. Today it owns the lifecycle and the two readings — `up`, `down`,
-`restart`, `status` and `doctor` — and runs the lifecycle commands as the CLI
-they already are, in a child process, because `up` forks the supervisor and a
-fork from a threaded HTTP server is where deadlocks come from. So the
-supervisor is still the one `up` has always detached; the agent becoming the
-supervisor, and running as a service so a phone can press start, is the next
-slice. Needs `pip install -e tool[agent]` (aiohttp), and `tool[agent,midi]`
-(alsa-midi, and libasound) for the pedals. One lifecycle command at a
+The control plane every v2 feature needs: one process that owns the rig.
+**The agent is the supervisor.** `POST /rig/up` starts Sushi, the patchbay,
+the tuner and the amp, and unless headless the listener and the panel, as one
+process group the agent holds; it plans them with the same `plan_children`
+and writes the same state file as `up` always has, so `status`, `restart` and
+`describe_rig` cannot tell which started a rig. `down` and `restart` act on
+what the agent holds. A child that crashes is noticed within half a
+second and reported: in `/health` under `agent.supervisor.crashed` (its name,
+pid, exit status or the signal that killed it, when, and its log), on the
+agent's stderr, and as `CRASHED` in `sushi-rig status`. It is **not
+restarted** (principle 9): the agent heals nothing on its own, and the way
+back is `restart`, which you ask for.
+
+**The CLI asks the agent when it is running.** `up`, `down`, `restart` and
+`status` look for an agent on 127.0.0.1:8029 first. If one answers, they go
+through it; if nothing is listening, they do what they always did, forking
+their own supervisor. Each says which in one line on stderr (`asking the
+agent at ...` or `no agent is running at ..., so acting directly`), so stdout
+is unchanged. Something on that port that does not answer as the agent does
+(an agent that is stuck, another program) is refused with nothing done, rather
+than guessed at; `--direct` on any of the four acts without asking.
+
+How the group is held, because the obvious ways do not work: the agent cannot
+fork a supervisor, since a fork from a threaded server is where deadlocks come
+from, and it cannot lead the group itself, since `down` signals the group. So
+it starts a tiny **group holder** (a Python that waits for a signal) as the
+leader of a new group, and each child straight into that group, with
+`subprocess`'s fork-and-exec, which runs no Python in between. The holder is
+the state file's `supervisor_pid`, which is why the file reads as before. The
+children are the agent's own, which is how it reads a crash's exit status.
+
+**The rig outlives the agent.** Stopping or restarting the agent leaves the rig
+playing: the holder keeps the group and the state file describes it. The next
+agent finds it there and can stop or restart it, but does not watch it (its
+children are not that agent's to wait on), so a crash in it shows as a `DEAD`
+child in `/rig` and `status` rather than in `crashed`, and `/health` says so in
+`agent.supervisor.note`. The same holds for a rig started with `--direct` or
+before the agent was.
+
+**As a service** (`sushi-rig agent install-service`): writes
+`systemd/sushi-rig-agent.service` to `~/.config/systemd/user/` with this
+checkout's path filled in, enables it for `graphical-session.target` (by the
+link `systemctl --user enable` would make), and prints the `systemctl --user
+daemon-reload` and `start` to run; it never runs systemctl itself. The unit's
+comments say why each line is what it is: the graphical session because the
+patchbay, tuner and panel are desktop programs that inherit the agent's
+`DISPLAY`; `KillMode=process` so a service restart does not take the rig with
+it. `curl localhost:8029/doctor` checks the machine as the service sees it.
+**Not yet installed on a real machine, and the agent-run `up` has not been run
+against real Sushi and PipeWire**: see MANIFEST.md for the check.
+
+Needs `pip install -e tool[agent]` (aiohttp), and `tool[agent,midi]`
+(alsa-midi, and libasound) for the pedals; starting a rig through the agent
+needs Python 3.11 or later. One lifecycle command at a
 time: a second request while one runs gets `409 busy`, because `up` and `down`
 racing is a second rig on top of a running one. `up` must be told which
 config (`config_name` is required, so a stray empty POST starts nothing). Every argument is checked
 before anything runs — a config name is a name, not a path — and nothing from a
-request is passed through as text. It binds to localhost; `--host 0.0.0.0`
+request is passed through as text. A successful `up`'s answer carries its
+`warnings` (an unmade patchbay link, an amp that died at start), which the CLI
+prints as it always printed them. The agent binds to localhost; `--host 0.0.0.0`
 opens it to the LAN, and until the local/remote permission split in #29 exists
 that is your call, not a default.
 
@@ -526,9 +578,10 @@ anyway, the rig that was playing is brought back. `/live/undo` stops at a rig
 switch: what came before it was done to the other rig. A Program Change for the rig already playing does
 nothing; one past the last rig is refused and said. Each change is in
 `/live/log` with `source: "midi"` and the control that made it. The listener
-starts when a rig comes up through the agent, or is already up when the agent
-starts, and stops before `down`, `restart` or a switch; a rig brought up from
-the CLI while the agent runs is not heard until the agent is restarted.
+starts when a rig comes up through the agent (the CLI's `up` included, now
+that it asks the agent), or is already up when the agent starts, and stops
+before `down`, `restart` or a switch; a rig brought up with `up --direct` while
+the agent runs is not heard until the agent is restarted.
 `/health` shows it under `agent.midi`: `listening`, `off` with the reason, or
 `failed` with the problem — a port that will not open is said once, naming the
 port, the controller and what ALSA does list, and not retried until the next

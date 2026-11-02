@@ -241,8 +241,14 @@ def start_qpwgraph(
     logs: Path,
     attempts: int = QPWGRAPH_ATTEMPTS,
     settle: float = QPWGRAPH_SETTLE,
+    process_group: int | None = None,
 ) -> subprocess.Popen | None:
     """Start qpwgraph, and keep trying until it actually stays up.
+
+    `process_group` is the rig's group when the agent starts it (#29): the
+    agent is not the group's leader, so each child is put into the group the
+    agent holds rather than inheriting the agent's own. None inherits, which
+    is what the forked supervisor wants, being the leader itself.
 
     qpwgraph fails to start far more often than anything else here, and always
     the same way: it exits within a second or so with status 2, writing nothing
@@ -274,6 +280,7 @@ def start_qpwgraph(
                 proc = subprocess.Popen(
                     child["command"], cwd=root, env=child_env,
                     stdin=subprocess.DEVNULL, stdout=sink, stderr=sink,
+                    **({} if process_group is None else {"process_group": process_group}),
                 )
             except OSError:
                 return None

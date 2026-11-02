@@ -62,8 +62,10 @@ def liveness(
     - `invalid`: it does not describe a rig this code could have started, so
       nothing in it may be trusted. That includes ids that are not real ones
       and a `pgid` that is not the `supervisor_pid`: `_supervise` calls `setsid`
-      and so always leads a group of its own number, which makes the two equal
-      by construction. A file where they differ was edited or is damaged.
+      and so always leads a group of its own number, and the agent's group
+      holder is started as the leader of a new group (`supervisor.py`), which
+      makes the two equal by construction either way. A file where they differ
+      was edited or is damaged.
     - `gone`: the group has no members left; a leftover file.
     - `orphaned`: the supervisor is dead but its group still has members. These
       are this rig's leftovers after a crash -- a group number cannot be handed
