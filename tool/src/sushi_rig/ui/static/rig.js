@@ -269,16 +269,20 @@ const trackOf = (live, processor) => {
   return null;
 };
 
-// What has changed since the rig came up, from the agent's log, netted: a
-// value moved and moved back is not a change. Each key's baseline is what the
-// oldest change to it replaced; it is unsaved where the rig now differs.
+// What has changed since the rig came up or was last saved, from the agent's
+// log, netted: a value moved and moved back is not a change. Each key's
+// baseline is what the oldest change to it since then replaced; it is
+// unsaved where the rig now differs. A save (`op: "save"`, POST /rig/save)
+// is a baseline as the rig's start is: what it captured is in the file, so
+// only what came after it counts, an undo after it included (undo passes
+// over a save, so it puts back what the file does not have).
 //
 // The baseline is only what the agent saw. A change from the OSC panel, a
 // MIDI mapping inside Sushi, or a `sushi-rig save` since, is not in the log,
 // and the log is lost when the agent restarts; `partial` says when the log
 // was trimmed past the rig's start, so the list may be short. Entries before
 // the last rig switch, or older than the rig's start (a restart reloads its
-// file), are another rig's.
+// file), are another rig's; entries before the last save are in the file.
 //
 // The amp's changes (op "amp" and "amp_model") are compared with `amp`, GET
 // /amp's answer: what the agent last sent Carla, which is all there is to
@@ -287,7 +291,7 @@ export function unsavedChanges(logAnswer, live, rig, amp = null) {
   const log = (logAnswer && logAnswer.log) || [];
   const first = (logAnswer && logAnswer.first) || 0;
   let start = 0;
-  for (let i = log.length - 1; i >= 0; i--) if (log[i].op === "rig") { start = i + 1; break; }
+  for (let i = log.length - 1; i >= 0; i--) if (log[i].op === "rig" || log[i].op === "save") { start = i + 1; break; }
   // The log's `at` is to the second, the rig's start finer: compare seconds.
   const since = rig && rig.started_at ? Math.floor(Date.parse(rig.started_at) / 1000) * 1000 : NaN;
   const keys = new Map();
@@ -346,7 +350,8 @@ export function unsavedChanges(logAnswer, live, rig, amp = null) {
 
 // The entry an undo would take back, as the agent picks it (agent.pick_undo):
 // the newest that is neither an undo nor a skip and has not been undone or
-// skipped; a rig switch is a barrier. `{index, entry}`, `{barrier}` or null.
+// skipped; a save is passed over, and a rig switch is a barrier. `{index,
+// entry}`, `{barrier}` or null.
 export function nextUndo(logAnswer) {
   const log = (logAnswer && logAnswer.log) || [];
   const first = (logAnswer && logAnswer.first) || 0;
@@ -356,6 +361,7 @@ export function nextUndo(logAnswer) {
     if (e.op === "rig") return { barrier: e };
     if (e.op === "undo") handled.add(e.undoes);
     else if (e.op === "stale") handled.add(e.stale);
+    else if (e.op === "save") continue;
     else if (!handled.has(first + i)) return { index: first + i, entry: e };
   }
   return null;
@@ -371,6 +377,7 @@ export function describeEntry(entry) {
     case "remove": return `remove ${a.processor}`;
     case "amp": return `amp · ${a.name}`;
     case "amp_model": return `amp model ${modelName(a.model)}`;
+    case "save": return `save to ${a.file}`;
     default: return entry.op;
   }
 }
@@ -578,6 +585,147 @@ export function lifecycleOutcome(op, name, answer) {
   }
   return answer.ok ? { ok: true, title: "Stopped", text: `Stopped ${name || "the rig"}.` }
     : { ok: false, title: `Not stopped: ${name || "the rig"}`, reason: answer.reason };
+}
+
+// ---------------------------------------------------------------- saving (S4)
+// POST /rig/save: the running rig into its own file of config/rigs, or "save
+// as" a new one, which then is the running rig. The agent decides what can be
+// saved and says why not (panel, v1, taken, a chain changed live...); these
+// only say what the page offers and what an answer means.
+
+// A rig's name, as save.validate_name checks it (save.NAME_PATTERN): it
+// becomes config/rigs/<name>.yaml. test_ui.py pins the two as one rule.
+export const NAME_PATTERN = "^[a-z0-9][a-z0-9_-]{0,63}$";
+const NAME_RE = new RegExp(NAME_PATTERN);
+
+// Why a save-as name will not do, or null. `running` is the running rig's
+// name: saving "as" it is a plain save, which the Save button is for.
+export function checkRigName(name, running = null) {
+  const n = typeof name === "string" ? name : "";
+  if (!n) return "Name the new rig: it becomes config/rigs/<name>.yaml.";
+  if (!NAME_RE.test(n)) {
+    return "A rig's name is lowercase letters, digits, '-' and '_', starting with a letter or digit, "
+      + "at most 64 characters: it becomes config/rigs/<name>.yaml.";
+  }
+  if (running && n === running) return `${n} is the running rig: Save writes into it.`;
+  return null;
+}
+
+export function saveCall(name = null) {
+  return { path: "/rig/save", json: name ? { name } : {} };
+}
+
+// The newest save in the log, or null: `{file, rig, how, at, library}`.
+export function lastSave(logAnswer) {
+  const log = (logAnswer && logAnswer.log) || [];
+  for (let i = log.length - 1; i >= 0; i--) {
+    const e = log[i];
+    if (e.op === "save") return { ...(e.args || {}), at: e.at };
+  }
+  return null;
+}
+
+// Since when the agent's log can say what changed: the newest of the last
+// save, the rig's start and the agent's own start (a change made before the
+// agent started is not in its log). An ISO time, or null.
+export function seenSince(health, logAnswer) {
+  const body = health && health.ok ? health.body : {};
+  const last = lastSave(logAnswer);
+  const times = [last && last.at, (body.rig || {}).started_at, (body.agent || {}).started_at]
+    .filter((t) => typeof t === "string" && !Number.isNaN(Date.parse(t)));
+  if (!times.length) return null;
+  return times.reduce((a, b) => (Date.parse(b) > Date.parse(a) ? b : a));
+}
+
+// What the Save buttons offer. Both are offered whenever a rig that can be
+// saved from here is up and nothing is running: the unsaved list is only
+// what the agent saw (not the panel's changes, nor pedals mapped in Sushi,
+// nor anything before the agent started, nor an amp change while GET /amp
+// failed), so an empty list is no proof the file holds what is playing. Not
+// offered, with why and how to save instead, for a v1 run (`rig.rig` null)
+// or one with its panel (any mode but "headless", as `rig.runs_panel`
+// reads it), both of which the agent refuses. `fmt` writes a time.
+export function saveView(health, unsaved, pending, logAnswer = null, fmt = (iso) => iso) {
+  const agentUp = !!(health && health.ok);
+  const rig = agentUp ? health.body.rig || {} : {};
+  const busy = agentUp ? (health.body.agent || {}).busy || null : null;
+  const running = rig.running ? rig.config_name || null : null;
+  const count = unsaved && unsaved.items ? unsaved.items.length : 0;
+  const idle = !pending && !busy;
+  const file = rig.running && rig.rig ? rig.rig : null;
+  let blocked = null;
+  if (!running) blocked = "No rig is running to save.";
+  else if (!file) {
+    blocked = `${running} is a v1 config, not a rig of channels started with --rig, so it is not saved from here. `
+      + "Save it on the rig with: sushi-rig save <name> --rig <its rig.yaml>";
+  } else if (rig.mode !== "headless") {
+    blocked = "The rig runs with its panel, which owns the amp, so the agent does not know what the amp is at: "
+      + "save with the panel's SAVE button, or start the rig from here (headless) to save from here.";
+  }
+  const since = seenSince(health, logAnswer);
+  const off = !!blocked || !idle;
+  return {
+    running, file, blocked, since,
+    save: { label: running ? `Save to ${running}` : "Save", disabled: off },
+    saveAs: { label: "Save as…", disabled: off },
+    note: blocked ? blocked
+      : pending ? (pending.name ? `Saving as ${pending.name}…` : `Saving ${running}…`)
+        : busy ? `${busy} is running: saving waits for it.`
+          : count === 0 ? `No changes seen since ${since ? fmt(since) : "the agent started"}. The agent does not see the panel's `
+            + "changes, pedals mapped in Sushi, or anything before it started, so Save is still offered."
+            : `Save writes ${file} in place, keeping its comments. It is not committed: that is yours to do.`,
+  };
+}
+
+// What git says of a save (`library`: take.library_state's `{commit,
+// dirty}` and save.file_git_state's `{file, others}`, or null). The file is
+// said from its own state; `dirty` is the whole checkout's, so it is not
+// read as the file's.
+export function commitText(library) {
+  const tail = " sushi-rig does not commit: that is yours to do.";
+  if (!library || !library.commit) {
+    return "Not committed. Which commit it sits on is not known: git could not be read in the checkout." + tail;
+  }
+  const short = String(library.commit).slice(0, 7);
+  const others = library.others === true ? " Other tracked files have uncommitted changes too." : "";
+  switch (library.file) {
+    case "untracked": return `Not committed: a new file git does not track yet, on commit ${short}.${others}${tail}`;
+    case "changed": return `Not committed: changed on top of commit ${short}.${others}${tail}`;
+    case "unchanged": return `Nothing to commit: the file is as commit ${short} has it.${others}`;
+    case "ignored": return `Not committed: git ignores this file (on commit ${short}).${others}`;
+    default: return `Not committed, on commit ${short}: whether this file differs from it could not be read.${tail}`;
+  }
+}
+
+// The last save, for the line under the buttons, from its log entry: what
+// git said *when it was saved*, since a commit made since is not seen.
+export function lastSaveText(last, fmt = (iso) => iso) {
+  if (!last) return null;
+  const file = (last.library || {}).file;
+  const then = file === "unchanged" ? "as its commit had it when saved" : file === "ignored" ? "ignored by git"
+    : "not committed when saved";
+  return { time: fmt(last.at), file: last.file, then };
+}
+
+// What a save's answer says, for the page: `{ok: true, title, text, commit}`
+// or `{ok: false, title, reason}` with the agent's reason as it gave it.
+export function saveOutcome(name, answer) {
+  const body = answer.body || {};
+  if (!answer.ok) {
+    // A save-as that wrote its file and could not make it the running rig
+    // (`recorded: false`): the file is there, so "not saved" would be untrue.
+    const written = body.recorded === false && body.file;
+    const title = written ? `Written, but not running: ${body.file}` : name ? `Not saved as ${name}` : "Not saved";
+    return { ok: false, title, reason: answer.reason, code: answer.code || null };
+  }
+  const amp = body.amp || {};
+  const ampText = amp.saved ? ` The amp is saved as the agent last sent it (${modelName(amp.model)}): Carla cannot be read back.`
+    : amp.why ? ` The amp is not saved: ${amp.why}.` : "";
+  const title = body.how === "new" ? `Saved as ${body.rig}` : `Saved ${body.rig}`;
+  const text = body.how === "new"
+    ? `Wrote ${body.file}, a new rig, which is now the running rig. It starts without the comments of ${body.previous}, which keeps them.${ampText}`
+    : `Wrote ${body.file} in place, keeping its comments.${ampText}`;
+  return { ok: true, title, text, commit: commitText(body.library), file: body.file };
 }
 
 // ---------------------------------------------------------------- the lock

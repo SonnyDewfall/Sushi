@@ -399,9 +399,24 @@ def test_fold_state_a_captured_program_drops_the_previous_programs_parameters():
     assert folded["channels"][0]["chain"][0] == {"name": "comp", "uri": "urn:comp", "program": 4}
 
 
-def test_fold_state_a_plugin_the_capture_omits_keeps_its_place_after_the_rest():
-    folded = fold_state(FOLD_RAW, {"tracks": {"board": ["verb"]}})
-    assert [p["name"] for p in folded["channels"][0]["chain"]] == ["verb", "comp", "drive"]
+def test_fold_state_refuses_a_chain_that_lacks_one_of_the_files_plugins():
+    """A plugin removed live: folding used to keep it in its place, so the
+    saved file still had it with nothing said (found by review, 2026-11-02)."""
+    with pytest.raises(RigFileError, match=r"the running rig lacks comp \(on board\), drive \(on board\), which two has"):
+        fold_state(FOLD_RAW, {"tracks": {"board": ["verb"]}})
+
+
+def test_fold_state_a_track_the_capture_does_not_name_says_nothing():
+    folded = fold_state(FOLD_RAW, {"processors": {"comp": {"bypassed": True}}})
+    assert [p["name"] for p in folded["channels"][0]["chain"]] == ["comp", "drive", "verb"]
+
+
+def test_fold_state_a_capture_of_another_rig_is_said_as_that_before_any_chain():
+    """Checked before the chains: a capture of another rig whose board holds
+    neither of the file's plugins is not told as plugins removed live."""
+    with pytest.raises(RigFileError, match="names hall, which two does not have: that is a capture of a different rig") as raised:
+        fold_state(FOLD_RAW, {"tracks": {"board": ["hall"]}})
+    assert "lacks" not in str(raised.value)
 
 
 def test_fold_state_refuses_a_capture_of_a_different_rig():

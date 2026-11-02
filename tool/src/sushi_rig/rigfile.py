@@ -945,7 +945,9 @@ def fold_state(raw: dict[str, Any], captured: dict[str, Any] | None) -> dict[str
     channel's level in the mix lives.
 
     A capture naming a processor the rig does not have is refused, as `emit`
-    refuses it: that is a capture of a different rig.
+    refuses it: that is a capture of a different rig, or a plugin added live.
+    So is a chain the capture names that lacks one of the file's plugins: one
+    removed live, which folding would otherwise have kept in the file.
     """
     rig = parse_rig(copy.deepcopy(raw))  # refuse what load_rig would refuse
     captured = captured or {}
@@ -957,9 +959,29 @@ def fold_state(raw: dict[str, Any], captured: dict[str, Any] | None) -> dict[str
     named = set(processors) | {n for order in orders.values() for n in (order or [])}
     unknown = sorted(named - known - internal)
     if unknown:
+        # Checked first: a capture of another rig (a switch that raced the
+        # save) is the larger fault, and must not be told as a chain edit.
         raise RigFileError([
-            f"the capture names {', '.join(unknown)}, which {rig.name} does not have: "
-            "that is a capture of a different rig, so nothing was saved"
+            f"the capture names {', '.join(unknown)}, which {rig.name} does not have: that is a capture "
+            "of a different rig, or a plugin added live, which a save cannot write (it writes values, "
+            "bypass and order, never which plugins a chain holds), so nothing was saved"
+        ])
+    # A plugin of the file that a chain the capture names does not hold was
+    # removed live (#32's POST /live/remove). Folding used to keep it in its
+    # place, so the saved file still had it with nothing said; it is refused,
+    # as an added one is above. A track the capture does not name says
+    # nothing, and the compiler's own processors (`internal`) are not the
+    # file's to list. Found by review, 2026-11-02.
+    lacking = []
+    for track, entries in [(ch.name, ch.chain) for ch in rig.channels] + [(MASTER, rig.master.chain)]:
+        order = orders.get(track)
+        if isinstance(order, list):
+            lacking += [f"{p.name} (on {track})" for p in entries if p.name not in order]
+    if lacking:
+        raise RigFileError([
+            f"the running rig lacks {', '.join(lacking)}, which {rig.name} has: a plugin removed live "
+            "cannot be saved (a save writes values, bypass and order, never which plugins a chain "
+            "holds), so nothing was saved. Undo the remove, or edit the rig file and restart the rig"
         ])
 
     def fold_chain(entries: list[dict[str, Any]], track: str) -> list[dict[str, Any]]:

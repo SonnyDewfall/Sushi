@@ -2519,3 +2519,82 @@ agent now sets the amp in Carla over OSC itself (`amp_live.Carla`), so the
 agent needs python-osc as much as the listener does. Missing, the agent still
 refuses an amp write with a sentence rather than failing to start; the
 sentence now names the agent extra. *(2026-11-02)*
+
+**Save the running rig from the web UI (S4).** `POST /rig/save {name?}` on the
+agent, and Save and Save as… in the rack, since the panel's SAVE listener runs
+only beside the panel and the page starts rigs headless. The agent captures
+on its own connection under the live lock and the amp's, so no change lands
+between the capture and the log entry, and folds it into the running rig's
+file with `save.save_rig` (now taking the capture as `state=`): in place,
+keeping comments, the amp as the agent last sent it, a run with no amp
+leaving the file's `amp` alone. A name is "save as": a new
+`config/rigs/<name>.yaml` beside it, refused if another rig owns the name
+(`taken`), which becomes the running rig in the state file as a live switch
+records one (compiled config and `saved_as_state`), so `restart`, the next
+plain save, /health and /rigs follow it; the amp's record carries over as
+sent, and the MIDI listener follows the renamed rig. A save in place leaves
+the state file alone. Refused while a lifecycle command runs (`busy`), in
+panel mode (`panel`), for a v1 run (`v1`, pointing at `sushi-rig save`), and
+past `SAVE_TIMEOUT` for the write (504, said, nothing logged). A save is `op:
+"save"` in the log, with the file and `library` (commit, dirty, from
+`take.library_state`); `pick_undo` and the page's `nextUndo` pass over it,
+and the page's unsaved baseline is the newest save or rig switch, so a change
+or an undo after a save is unsaved again. **Not committed, by design**: the
+answer and the page say the file is not committed and the commit it sits on.
+Found on the way, and fixed in `save_rig` for every caller (the panel's SAVE
+and `sushi-rig save` too): **a plugin removed live was kept in the saved file
+with nothing said**, since `fold_state` keeps what a capture omits; a chain
+whose plugins differ from the file's is now refused (`structure_problems`),
+naming what was added or removed, as an added one always was (with a
+misleading "capture of a different rig"). Route tests against `ui_fake.UiRig`
+as the capture and real rig files in tmp (comments kept, amp from the agent's
+record, undo over a save, a change mid-capture waiting for the save, git state
+from a real repository); browser tests against `Served(save=True)` (save in
+place, save as, a refused name before sending and a taken one from the agent,
+panel mode, unsaved clearing and coming back). Of the UX doc's S4: the
+unsaved list in plain words was already there; **not met**: save does not
+commit, history does not list saves with revert (the rack shows the last
+save only), the rig file is not shown on screen, and the mockup's commit
+message and "throw all away" are not built. A save-as file is written fresh
+(`write_rig` has no source text for a new path), so it starts without the
+source's comments, which the answer says. **NOT RUN AGAINST A LIVE SUSHI.**
+Follow-ons: a commit route (the player's call to make, with a message, as the
+mockup has it), the history of saves with revert, carrying a save-as's
+comments over from its source, and saving a plugin added or removed live
+(rewriting a chain's membership in the file). *(2026-11-02)*
+
+**Save from the web UI: answering review.** Ten findings, each with a test.
+(1) **A save-as was logged before it was the running rig**: if recording the
+new rig failed, the log held a save, the page reset its unsaved baseline and
+the rig ran on under its old name. The save is now logged only once it has
+wholly happened; a save-as whose file was written but could not be made the
+running rig is a 500 that says exactly that (and that retrying the name is
+refused as taken because the file is there), logs nothing, and the page
+titles it "Written, but not running". (2) **Save was off whenever the unsaved
+list was empty**, which is only what the agent saw: it is now offered
+whenever a saveable rig is up, and an empty list says "No changes seen"
+since when (the newest of the last save, the rig's start and the agent's).
+(3, 7) **The structure check moved into `rigfile.fold_state`**, after its
+check for a capture of another rig, so a switch racing a save is not told as
+a chain edit, and there is one copy of which processors are the compiler's;
+`save.structure_problems` is gone. An added plugin is said as "a capture of
+a different rig, or a plugin added live". (4) The save-as's state write and
+the amp's record moving to the renamed run happen under the amp lock, in one
+step, before the save is logged. (5) **"This file among them" was said
+whenever the checkout was dirty**: `save.file_git_state` asks git about the
+file itself (untracked, changed, unchanged, ignored) and whether other
+tracked files are changed, and the page says each. (6) The last-save line
+says "not committed when saved", since it is from the log and cannot see a
+commit made since. (8) A save-as reads the state file once under its locks
+and uses that reading; no third read. (9) For a v1 run or one with its panel
+Save and Save as… are off and say how to save instead (the CLI line; the
+panel's SAVE). (10) **A rig whose file name the name rule refuses could not
+be saved in place** (`Guitar.Vocal.yaml` compiles): `save_rig` checks only a
+name chosen for a new file, and in place keeps the file's own `name:`.
+Still **NOT RUN AGAINST A LIVE SUSHI**. *(2026-11-02)*
+
+**git joins the CI image.** The container job had no `git` binary, so the save
+tests that build a real repository (`file_git_state`, the UI fake's checkout)
+errored there while the fast job, on a runner with git, passed. The code itself
+already said "no git state" without git rather than failing; the tests check
+the real thing, so the image now has what the rig machine always has. *(2026-11-02)*

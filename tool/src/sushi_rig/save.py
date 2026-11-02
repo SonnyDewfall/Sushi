@@ -3,7 +3,9 @@
 This is the core the brief for issue #10 asks for: a deterministic bridge from
 "the sound is right now" to "a config file on disk", callable from anywhere —
 the CLI (`sushi-rig save <name>`) and the OSC listener (`listen.py`) are both
-thin callers around `save_config`, not separate implementations of it. Per the
+thin callers around `save_any`, not separate implementations of it, and the
+agent's `POST /rig/save` (the web UI's Save) calls `save_rig` with a capture
+it made itself under its live lock. Per the
 issue #12 decision, this bridge is meant to outlive whatever live tool is used
 for exploration, so it deliberately doesn't assume Open Stage Control is the
 only caller.
@@ -16,6 +18,7 @@ archiving policy around that.
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 import sys
@@ -156,6 +159,7 @@ def save_rig(
     amp_model: str | None = None,
     amp_parameters: dict[str, float] | None = None,
     raw: dict[str, Any] | None = None,
+    state: dict[str, Any] | None = None,
 ) -> Path:
     """Capture the running Sushi's state and write it into a rig of channels,
     `<name>.yaml` beside `rig_path` (#30's last slice, the half SAVE is).
@@ -171,15 +175,35 @@ def save_rig(
     A run without the amp (`--no-amp`, or an amp that failed to start) says
     nothing about the amp, so the file's `amp` is left as it is; `save_config`
     removes it from a config, which a config's archive can give back and a
-    rig file's cannot.
+    rig file's cannot. A parameter `amp_parameters` lacks is written as the
+    plugin's default (`amp.write_amp`), as the listener's SAVE always has.
+
+    `state` is a capture already made, which the agent passes (`POST
+    /rig/save`): it captures on its own connection, under its live lock, so
+    no change lands between the capture and the log entry that records the
+    save. Without one, Sushi at `address` is captured here.
+
+    A chain whose plugins are not the file's -- one added or removed live --
+    is refused by `fold_state`: a save writes values, bypass and order, never
+    which plugins a chain holds, and a plugin removed live used to be kept in
+    the file with nothing said.
+
+    Under the source's own name the file is the one the rig runs from, so
+    the name is not checked against `NAME_PATTERN` and the file's own `name:`
+    is kept: a rig file called `Guitar.Vocal.yaml` compiles, and must save in
+    place. Only a name chosen for a new file is checked, since it becomes a
+    file name.
     """
     import yaml
 
     from .rigfile import RigFileError, fold_state, write_rig
     from .spec import looks_like_rig_file
 
-    validate_name(name)
     rig_path = Path(rig_path)
+    in_place = name == rig_path.stem and rig_path.suffix == ".yaml"
+    if not in_place:
+        validate_name(name)  # before the name is made a path
+    out_path = rig_path.with_name(f"{name}.yaml")
     if raw is None:
         if not rig_path.is_file():
             raise SaveError(f"rig source not found: {rig_path}")
@@ -190,14 +214,13 @@ def save_rig(
     if not looks_like_rig_file(raw):
         raise SaveError(f"{rig_path} is not a rig of channels; save_config saves a v1 rig")
 
-    out_path = rig_path.with_name(f"{name}.yaml")
     if out_path != rig_path and out_path.exists():
         raise SaveError(
             f"a rig called {name} already exists at {out_path}; saving over it would "
             f"turn it into {rig_path.stem}. Choose another name, or run that rig and save it"
         )
 
-    state = capture(address)
+    state = capture(address) if state is None else copy.deepcopy(state)
     # Captured properties are for checking a rig, not for writing one (see
     # save_config and rigfile.merged_state).
     for values in state.get("processors", {}).values():
@@ -207,7 +230,8 @@ def save_rig(
     except RigFileError as exc:
         raise SaveError("; ".join(exc.problems)) from exc
 
-    folded["name"] = name
+    if not in_place:
+        folded["name"] = name
     if amp_model is not None:
         # The amp rides in the rig file as it does in a config: the values the
         # listener last sent, since Carla cannot be asked. See amp.py.
@@ -218,6 +242,59 @@ def save_rig(
     except RigFileError as exc:
         raise SaveError("; ".join(exc.problems)) from exc
     return out_path
+
+
+def file_git_state(root: Path, path: Path) -> dict[str, Any] | None:
+    """What git says of one file of the checkout at `root`, beside what
+    `take.library_state` says of the checkout: `{"file", "others"}`, or None
+    when git cannot be read there. `file` is "untracked" (a new rig a save-as
+    wrote), "changed" (staged or not), "unchanged" (as HEAD has it) or
+    "ignored"; `others` is whether any other tracked file has uncommitted
+    changes. `library_state`'s `dirty` cannot say either: it is the whole
+    checkout's, and blind to untracked files. Called after the caller checked
+    `root` is a checkout's top (`library_state` not None).
+
+    Two git calls at most, each with `library_state`'s ten-second limit, and
+    without the index lock, which a save must not take from the player's git.
+    """
+    import os
+    import subprocess
+
+    env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0"}
+
+    def git(*args: str) -> str | None:
+        try:
+            done = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True,
+                                  check=False, timeout=10, env=env)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return done.stdout if done.returncode == 0 else None
+
+    try:
+        rel = Path(path).resolve().relative_to(Path(root).resolve()).as_posix()
+    except (OSError, ValueError):
+        return None
+    status = git("status", "--porcelain=v1", "-z", "--untracked-files=all")
+    if status is None:
+        return None
+    fields = status.split("\0")
+    mine, others, i = None, False, 0
+    while i < len(fields):
+        record = fields[i]
+        i += 1
+        if len(record) < 4:
+            continue
+        code, name = record[:2], record[3:]
+        if code[0] in "RC":
+            i += 1  # a rename or copy is followed by the path it came from
+        if name == rel:
+            mine = "untracked" if code == "??" else "changed"
+        elif code != "??":
+            others = True
+    if mine is None:
+        listed = git("ls-files", "--", rel)
+        mine = None if listed is None else "unchanged" if listed.strip() else "ignored"
+    return {"file": mine, "others": others}
 
 
 def _claim(path: Path, *, directory: bool = False) -> Path:
