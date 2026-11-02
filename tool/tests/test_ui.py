@@ -1916,19 +1916,18 @@ def test_the_record_bar_follows_what_the_recorder_says(blank):
     views = rigjs(blank, """
       const up = arg.up, recording = {ok: true, body: {state: "recording", name: "riff", elapsed: 3, stems: arg.stems,
         said: "recording riff"}};
-      const idle = {ok: true, body: {state: "idle", stems: arg.stems}};
-      const takes = {ok: true, body: {takes: [{name: "riff"}]}};
+      const idle = {ok: true, body: {state: "idle", stems: arg.stems, names: ["riff"]}};
       return [
-        R.recordBar({ok: false, reason: "x"}, null, "", null, null),
-        R.recordBar({ok: true, body: {rig: {running: false}, agent: {}}}, null, "", null, null),
-        R.recordBar(arg.busy, idle, "", null, null),
-        R.recordBar(up, {ok: true, body: {state: "unavailable", reason: "the rig runs with its panel (test)"}}, "", null, null),
-        R.recordBar(up, idle, "", takes, null),
-        R.recordBar(up, idle, "Riff Idea", takes, null),
-        R.recordBar(up, idle, "riff", takes, null),
-        R.recordBar(up, recording, "", takes, null),
-        R.recordBar(up, recording, "", takes, "stop"),
-        R.recordBar(up, idle, "", takes, "start"),
+        R.recordBar({ok: false, reason: "x"}, null, "", null),
+        R.recordBar({ok: true, body: {rig: {running: false}, agent: {}}}, null, "", null),
+        R.recordBar(arg.busy, idle, "", null),
+        R.recordBar(up, {ok: true, body: {state: "unavailable", reason: "the rig runs with its panel (test)"}}, "", null),
+        R.recordBar(up, idle, "", null),
+        R.recordBar(up, idle, "Riff Idea", null),
+        R.recordBar(up, idle, "riff", null),
+        R.recordBar(up, recording, "", null),
+        R.recordBar(up, recording, "", "stop"),
+        R.recordBar(up, idle, "", "start"),
       ];
     """, {"up": health_up(), "busy": health_up("restart"), "stems": STEMS})
     off = [v for v in views[:4]]
@@ -2178,3 +2177,66 @@ def test_the_rack_lists_the_takes_with_each_ones_check(browser, record_served):
         "Whole · 5 stems · nothing lost")
     rack.close()
     stage.close()
+
+
+
+def test_an_answer_older_than_one_shown_is_dropped(blank):
+    said = rigjs(blank, """
+      const order = new R.Latest();
+      const first = order.issue(), second = order.issue();
+      return [order.accept(second), order.accept(first), order.accept(order.issue())];
+    """)
+    assert said == [True, False, True]
+
+
+def test_the_stage_never_asks_for_the_takes_and_the_rack_does(browser, record_served):
+    page = Watched(browser, record_served, "/#stage", width=390, height=844)
+    p = page.page
+    p.get_by_role("button", name="Record", exact=True).click()
+    p.get_by_role("button", name="Stop", exact=True).click()
+    expect(p.locator(".record-result")).to_contain_text("Recorded")
+    p.wait_for_timeout(1500)
+    assert "/takes" not in page.asked, "the stage lists no takes, so it asks for none"
+    p.evaluate("location.hash = '#rack'")
+    expect(p.locator("section.takes .take")).to_have_count(1)
+    assert "/takes" in page.asked
+    page.close()
+
+
+def test_an_older_takes_answer_never_replaces_a_newer_one(browser, record_served):
+    """A periodic /takes still out when a take stops, and answering last:
+    what the page shows is the newer list, not the older one."""
+    import json as json_module
+
+    page = Page.__new__(Page)
+    page.page = browser.new_page()
+    page.errors = []
+    p = page.page
+    p.on("pageerror", lambda error: page.errors.append(str(error)))
+    held = []
+    stale = {"ok": True, "takes_dir": "/stale", "exists": True, "more": 0, "archived": 0,
+             "takes": [{"name": "stale-take", "take": True, "complete": True, "seconds": 1, "stems": [],
+                        "lost_ms": 0, "problems": []}]}
+
+    def takes(route):
+        if not held:
+            held.append(route)  # the first answer is held back, and sent last
+        else:
+            route.continue_()
+
+    p.route("**/takes", takes)
+    p.goto(record_served.url + "/#rack")
+    expect(p.locator(".unit").first).to_be_visible()
+    stage = stage_page(browser, record_served)
+    stage.page.get_by_role("button", name="Record", exact=True).click()
+    # The rack sees the take start (its /record poll) and asks for the list
+    # again at once, while its first request is still held.
+    expect(p.locator("section.takes .take .note")).to_have_text("Recording now", timeout=8000)
+    stage.page.get_by_role("button", name="Stop", exact=True).click()
+    expect(p.locator("section.takes .take .note")).to_have_text("Whole · 5 stems · nothing lost", timeout=8000)
+    held[0].fulfill(status=200, content_type="application/json", body=json_module.dumps(stale))
+    p.wait_for_timeout(500)
+    expect(p.locator("section.takes .take .n")).to_have_text(re.compile(r"^take-"))
+    expect(p.locator("section.takes")).not_to_contain_text("stale-take")
+    stage.close()
+    page.close()

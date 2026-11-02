@@ -124,6 +124,9 @@ class World:
 
     async def run(self, args):
         self.ran.append(list(args))
+        if args[0] == "up" and self.running:
+            # As `up` refuses: rig.prepare_launch, before anything starts.
+            return Outcome(False, 1, "", "error: a rig is already running: duo (headless mode)\n")
         if args[0] == "down":
             self.running = False
         elif args[0] == "up":
@@ -549,3 +552,170 @@ def test_a_take_through_the_agent_and_a_real_recorder_passes_take_check(root, tm
                               str(root / "takes" / "riff-idea")],
                              env={**os.environ, "PYTHONPATH": str(SRC)}, capture_output=True, text=True)
     assert checked.returncode == 0, checked.stdout + checked.stderr
+
+
+# --------------------------------------------------------------------------- #
+# Review of S7: each finding, pinned
+# --------------------------------------------------------------------------- #
+
+def test_an_up_refused_for_a_running_rig_leaves_the_take_recording(root):
+    """`up` takes no rig down, and refuses one that is running: finishing the
+    take for it would end the take for nothing."""
+    agent, world, _, _ = record_agent(root)
+    _, (status, answer), (_, now), (_, log) = calls(
+        agent, START, ("POST", "/rig/up", {"json": {"config_name": "duo", "rig": True, "headless": True}}),
+        STATUS, ("GET", "/live/log", {}))
+    assert status == 409 and "a rig is already running" in answer["reason"] and "take" not in answer
+    assert (now["state"], now["name"]) == ("recording", "riff-idea")
+    assert [e["args"]["action"] for e in log["log"]] == ["start"]
+    calls(agent, STOP)
+
+
+class SlowLink(CoreLink):
+    """A recorder whose start waits for `go`, so a test can act while a
+    start is in flight; `entered` is set once it is."""
+
+    def __init__(self, core):
+        super().__init__(core)
+        import threading
+
+        self.entered, self.go = threading.Event(), threading.Event()
+
+    def ask(self, request, timeout):
+        if request["op"] == "start":
+            self.entered.set()
+            assert self.go.wait(10)
+        return super().ask(request, timeout)
+
+
+def test_no_amp_change_lands_between_the_amp_a_take_names_and_its_start(root):
+    """A fader moved and a model changed while a start is in flight wait for
+    it: the take names the amp that was playing when it started, the fader
+    is sent after, and the model change finishes the take it would
+    otherwise misdescribe."""
+    link = SlowLink(RecorderCore(engine=Pushing, clock=FakeClock(), say=lambda message: None))
+    agent, _, _, _ = record_agent(root, link=link)
+    order = []
+
+    async def go():
+        async with TestClient(TestServer(agent.app())) as client:
+            async def post(path, body, label):
+                response = await client.post(path, json=body)
+                order.append(label)
+                return response.status, await response.json()
+
+            start = asyncio.ensure_future(post("/record/start", {"name": "raced"}, "start"))
+            while not link.entered.is_set():
+                await asyncio.sleep(0.01)
+            fader = asyncio.ensure_future(post("/amp/parameter", {"name": "Output Lvl", "value": 1.5}, "fader"))
+            model = asyncio.ensure_future(post("/amp/model", {"model": "Second.nam"}, "model"))
+            await asyncio.sleep(0.3)
+            assert order == [], "nothing passed the start while it was in flight"
+            link.go.set()
+            return await start, await fader, await model
+
+    (start_status, started), (fader_status, _), (model_status, changed) = asyncio.run(go())
+    assert start_status == 200 and order[0] == "start", order
+    assert fader_status in (200, 409), "sent after the start, or refused as busy behind the model change"
+    assert model_status == 200 and changed["take"]["name"] == "raced" and changed["take"]["by"] == "amp_model"
+    config = json.loads((root / "takes" / "raced" / "config.json").read_text())
+    assert config["_amp"]["model"] == "amp/models/First.nam", "the model playing while it recorded"
+    assert config["_amp"]["parameters"]["Output Lvl"] == 6.0, "the fader as it was at RECORD"
+    assert started["amp"]["model"] == "amp/models/First.nam"
+
+
+class Answers(CoreLink):
+    """A recorder that answers `answer` to a status, whatever it is."""
+
+    def __init__(self, core, answer):
+        super().__init__(core)
+        self.answer = answer
+
+    def ask(self, request, timeout):
+        if request["op"] == "status":
+            return self.answer
+        return super().ask(request, timeout)
+
+
+@pytest.mark.parametrize("answer, status, code", [
+    ({"ok": False, "code": "bad_request", "reason": "status does not take verbose"}, 500, "bad_request"),
+    ({"ok": False, "code": "failed", "reason": "the recorder failed unexpectedly: KeyError"}, 502, "failed"),
+    ({"ok": True}, 502, None),
+    ({"ok": True, "state": "dancing"}, 502, None),
+])
+def test_a_status_the_recorder_refuses_or_gives_no_state_is_not_passed_on(root, answer, status, code):
+    core = RecorderCore(engine=Pushing, clock=FakeClock(), say=lambda message: None)
+    agent, _, _, _ = record_agent(root, link=Answers(core, answer))
+    got, body = call(agent, "GET", "/record")
+    assert got == status and body.get("code") == code and "state" not in body, body
+
+
+def test_a_recorder_too_busy_to_answer_is_a_timeout_not_a_crash(root):
+    from sushi_rig.recorder_process import RecorderTimeout
+
+    class Busy:
+        def ask(self, request, timeout):
+            raise RecorderTimeout("the recorder on /run/recorder.sock did not take the connection within 3s: it is busy")
+
+    agent, _, _, _ = record_agent(root, link=Busy())
+    (_, now), (status, start) = calls(agent, STATUS, START)
+    assert (now["state"], now["code"]) == ("unavailable", "recorder_timeout") and "it is busy" in now["reason"]
+    assert (status, start["code"]) == (504, "recorder_timeout")
+
+
+def test_a_stop_that_cannot_be_read_back_is_logged_as_the_stop_it_was(root, monkeypatch):
+    from sushi_rig import take as take_module
+
+    agent, _, _, _ = record_agent(root)
+    calls(agent, START)
+    monkeypatch.setattr(take_module, "take_summary", lambda folder: (_ for _ in ()).throw(OSError("gone (test)")))
+    (status, stopped), (_, now), (_, log) = calls(agent, STOP, STATUS, ("GET", "/live/log", {}))
+    assert status == 502 and stopped["stopped"] is True and stopped["name"] == "riff-idea"
+    assert stopped["reason"] == "riff-idea stopped, but could not be read back: OSError: gone (test)"
+    assert now["state"] == "idle"
+    assert log["log"][-1]["args"] == {"action": "stop", "name": "riff-idea", "seconds": None, "problems": 1,
+                                      "by": "request", "ok": False}
+
+
+def test_a_take_is_checked_again_only_when_its_folder_changes(root, monkeypatch):
+    from sushi_rig import take as take_module
+
+    agent, _, _, _ = record_agent(root)
+    calls(agent, START, STOP, ("POST", "/record/start", {"json": {"name": "second"}}), STOP)
+    checked = []
+    real = take_module.take_summary
+    monkeypatch.setattr(take_module, "take_summary", lambda folder: checked.append(Path(folder).name) or real(folder))
+    calls(agent, ("GET", "/takes", {}), ("GET", "/takes", {}), ("GET", "/takes", {}))
+    assert sorted(checked) == ["riff-idea", "second"], "each once, then from the cache"
+    (root / "takes" / "second" / "take.yaml").write_text(
+        (root / "takes" / "second" / "take.yaml").read_text() + "# touched\n")
+    _, (_, listed) = calls(agent, ("GET", "/takes", {}), ("GET", "/takes", {}))
+    assert sorted(checked) == ["riff-idea", "second", "second"]
+    assert [t["name"] for t in listed["takes"]][0] == "second"
+
+
+def test_an_idle_status_names_the_takes_already_there(root):
+    agent, _, _, _ = record_agent(root)
+    _, _, (_, now) = calls(agent, START, STOP, STATUS)
+    assert now["state"] == "idle" and now["names"] == ["riff-idea"]
+
+
+def test_each_route_reads_the_rig_once_inside_its_lock(root):
+    agent, _, _, _ = record_agent(root)
+    seen = []
+    real = agent._record_state
+
+    async def counted():
+        seen.append(agent._record_lock.locked())
+        return await real()
+
+    agent._record_state = counted
+    calls(agent, START)
+    assert seen == [True], "a start"
+    seen.clear()
+    calls(agent, STOP)
+    assert seen == [True], "a stop"
+    calls(agent, START)
+    seen.clear()
+    calls(agent, ("POST", "/rig/down", {"json": {}}))
+    assert seen == [True], "a down finishing the take"

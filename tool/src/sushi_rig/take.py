@@ -1100,7 +1100,31 @@ def take_summary(folder: Path) -> dict[str, Any]:
     }
 
 
-def list_takes(takes_dir: Path, limit: int = TAKES_LISTED) -> dict[str, Any]:
+def _is_take_folder(entry: Path) -> bool:
+    return not entry.name.startswith(("_", ".")) and entry.is_dir()
+
+
+def take_names(takes_dir: Path) -> list[str]:
+    """The names of the takes in `takes_dir`, sorted: a listing of one folder
+    and nothing read, for a page to say a name will replace a take."""
+    try:
+        return sorted(entry.name for entry in Path(takes_dir).iterdir() if _is_take_folder(entry))
+    except OSError:
+        return []
+
+
+def _folder_key(folder: Path) -> tuple:
+    """What is in a take's folder, by name, time and size: a summary made
+    from one key holds until a file in it is written, added or removed (a
+    take finished rewrites take.yaml; a take repaired rewrites its stems)."""
+    try:
+        return tuple(sorted((e.name, e.stat().st_mtime_ns, e.stat().st_size) for e in os.scandir(folder)))
+    except OSError:
+        return ("unreadable",)
+
+
+def list_takes(takes_dir: Path, limit: int = TAKES_LISTED, *,
+               cache: dict[str, Any] | None = None) -> dict[str, Any]:
     """The takes in `takes_dir`, newest first, each as `take_summary` gives it:
     `{"takes_dir", "exists", "takes", "more", "archived"}`. `more` counts the
     takes past `limit`, not summarised; `archived` the earlier takes kept in
@@ -1109,7 +1133,12 @@ def list_takes(takes_dir: Path, limit: int = TAKES_LISTED) -> dict[str, Any]:
     take is placed by when it was last finished, without reading every one.
 
     Folders whose names start with `_` or `.` are not takes: `_archive` is the
-    archive (a take's name cannot start with either, `NAME_PATTERN`)."""
+    archive (a take's name cannot start with either, `NAME_PATTERN`).
+
+    `cache`, when given, keeps each take's summary by what is in its folder
+    (`_folder_key`: a stat per file), so a list asked for again checks only
+    the takes that changed; it is the caller's, and is trimmed to the takes
+    listed."""
     takes_dir = Path(takes_dir)
     answer: dict[str, Any] = {"takes_dir": str(takes_dir), "exists": takes_dir.is_dir(), "takes": [],
                               "more": 0, "archived": 0}
@@ -1117,7 +1146,7 @@ def list_takes(takes_dir: Path, limit: int = TAKES_LISTED) -> dict[str, Any]:
         return answer
     found = []
     for entry in takes_dir.iterdir():
-        if entry.name.startswith(("_", ".")) or not entry.is_dir():
+        if not _is_take_folder(entry):
             continue
         try:
             stamp = (entry / TAKE_FILE).stat().st_mtime_ns
@@ -1128,7 +1157,22 @@ def list_takes(takes_dir: Path, limit: int = TAKES_LISTED) -> dict[str, Any]:
                 continue
         found.append((stamp, entry.name, entry))
     found.sort(key=lambda item: (item[0], item[1]), reverse=True)
-    answer["takes"] = [take_summary(entry) for _, _, entry in found[:limit]]
+    listed = found[:limit]
+    summaries = []
+    for _, name, entry in listed:
+        if cache is None:
+            summaries.append(take_summary(entry))
+            continue
+        key = _folder_key(entry)
+        kept = cache.get(name)
+        if kept is None or kept[0] != key:
+            kept = (key, take_summary(entry))
+            cache[name] = kept
+        summaries.append(kept[1])
+    if cache is not None:
+        for gone in set(cache) - {name for _, name, _ in listed}:
+            del cache[gone]
+    answer["takes"] = summaries
     answer["more"] = max(0, len(found) - limit)
     archive = takes_dir / ARCHIVE_DIR
     if archive.is_dir():

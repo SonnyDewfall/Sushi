@@ -39,24 +39,38 @@ def _unused_address() -> str:
 
 
 def test_a_real_elkpy_connection_closed_here_leaves_no_descriptors_behind():
+    """Measured as a leak's shape, not a count: the descriptors open in the
+    whole process move with whatever other threads are doing (a test before
+    this one still closing its files once pushed a plain count past its
+    limit), so the first batch of connections warms up whatever gRPC keeps
+    for good, and then two equal batches are counted. A leak grows each batch
+    by the same amount (about three a connection under elkpy's own close, 45
+    a batch); a close that lets go grows the second by nothing."""
     pytest.importorskip("elkpy")
     address = _unused_address()
     cycles = 15
-    gc.collect()
-    gc.disable()  # what the agent sees between collections: nothing frees a cycle
-    try:
-        before = _open_fds()
+
+    def batch() -> None:
         for _ in range(cycles):
             with contextlib.redirect_stdout(io.StringIO()):  # elkpy prints on connect
                 controller = live.connect(address)
             live.close_controller(controller)
             del controller
-        after = _open_fds()
+
+    gc.collect()
+    gc.disable()  # what the agent sees between collections: nothing frees a cycle
+    try:
+        batch()  # warm-up: gRPC's own shared machinery, made once
+        first = _open_fds()
+        batch()
+        second = _open_fds()
+        batch()
+        third = _open_fds()
     finally:
         gc.enable()
-    # elkpy's own close() alone left about three per cycle here (45 after 15);
-    # a few may stay with gRPC's own shared machinery, which does not grow.
-    assert after - before <= 4, f"{after - before} descriptors left after {cycles} connections"
+    assert third - second <= 2, (
+        f"{third - second} descriptors left by the last {cycles} connections "
+        f"({second - first} by the {cycles} before)")
 
 
 class _FakeNotifications:

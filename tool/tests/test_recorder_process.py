@@ -133,15 +133,39 @@ def test_a_run_no_take_can_be_planned_for_says_why_before_record(duo, tmp_path):
 
 
 def test_without_jack_client_the_reason_says_how_to_get_it(duo):
+    """Found once, at the process's start (`main`), and said by every status
+    without making an engine; a start that tries says the same."""
     from sushi_rig.capture import CaptureUnavailable
 
-    def no_jack(rate, quantum):
-        raise CaptureUnavailable(["JACK-Client is not installed (test): pip install -e \"tool[capture]\""])
+    problem = "JACK-Client is not installed (test): pip install -e \"tool[capture]\""
 
-    answer = RecorderCore(engine=no_jack, say=lambda m: None).status(Run(**duo))
-    assert answer == {"ok": True, "state": "unavailable", "doing": None,
-                      "reason": "recording is not available: JACK-Client is not installed (test): "
-                                "pip install -e \"tool[capture]\""}
+    def no_jack(rate, quantum):
+        raise CaptureUnavailable([problem])
+
+    recorder = RecorderCore(engine=no_jack, say=lambda m: None, engine_problem=problem)
+    assert recorder.status(Run(**duo)) == {"ok": True, "state": "unavailable", "doing": None,
+                                           "reason": f"recording is not available: {problem}"}
+    refused = asked(recorder, {"op": "start", "name": "x", "run": duo, "amp": None})
+    assert refused == {"ok": False, "code": "unavailable", "reason": f"recording is not available: {problem}"}
+
+
+def test_a_status_makes_no_engine_and_one_engine_serves_every_take(duo):
+    """A status plans from the files and builds nothing; the engine is made
+    by the first start, once per rate and quantum, and kept."""
+    made = []
+
+    def engine(rate, quantum):
+        made.append((rate, quantum))
+        return Pushing(rate, quantum)
+
+    recorder = RecorderCore(engine=engine, clock=FakeClock(), say=lambda m: None)
+    for _ in range(3):
+        assert asked(recorder, {"op": "status", "run": duo})["state"] == "idle"
+    assert made == [], "a status built an engine"
+    for name in ("one", "two"):
+        asked(recorder, {"op": "start", "name": name, "run": duo, "amp": None})
+        asked(recorder, {"op": "stop"})
+    assert made == [(48000, 256)]
 
 
 def test_a_take_from_start_to_stop_is_whole_and_says_how_long(duo):
@@ -561,3 +585,96 @@ def test_the_planned_recorder_crashing_is_a_crash_in_health_and_is_not_restarted
     assert any("recorder" in message and "Not restarted" in message for message in said)
     spawned_recorders = [p for p in started if p.args[-1].startswith("import sys, time; time.sleep(0.3)")]
     assert len(spawned_recorders) == 1, "started once, never again"
+
+
+def test_a_take_that_cannot_be_read_back_still_says_it_stopped(duo, monkeypatch):
+    """The take is over whatever reading it back does: the answer names it
+    and says it stopped, with why it could not be checked."""
+    from sushi_rig import take as take_module
+
+    recorder = core()
+    asked(recorder, {"op": "start", "name": "unread", "run": duo, "amp": None})
+
+    def broken(folder):
+        raise OSError("disk went away (test)")
+
+    monkeypatch.setattr(take_module, "take_summary", broken)
+    answer = asked(recorder, {"op": "stop"})
+    assert (answer["ok"], answer["stopped"], answer["name"], answer["code"]) == (False, True, "unread", "failed")
+    assert answer["summary_error"] == "OSError: disk went away (test)"
+    assert answer["reason"] == "unread stopped, but could not be read back: OSError: disk went away (test)"
+    assert "could not be read back to check it" in answer["problems"][0]
+    assert asked(recorder, {"op": "status"})["state"] == "idle"
+    monkeypatch.undo()
+    assert check_take(load_take(Path(duo["takes_dir"]) / "unread")) == [], "and it was finished"
+
+
+def test_a_recorder_whose_queue_is_full_is_busy_not_gone_and_its_socket_is_kept(socket_dir):
+    """A socket that is listened on but not taking connections: its queue
+    fills, and a connect then waits, or is refused with EAGAIN. Either is a
+    recorder busy, not a crash's leftover, so `bind` must not take it over."""
+    import socket as sockets
+
+    path = socket_dir / "recorder.sock"
+    listener = sockets.socket(sockets.AF_UNIX, sockets.SOCK_STREAM)
+    listener.bind(str(path))
+    listener.listen(0)
+    queued = []
+    try:
+        for _ in range(8):  # fill the queue; never accepted
+            conn = sockets.socket(sockets.AF_UNIX, sockets.SOCK_STREAM)
+            conn.setblocking(False)
+            try:
+                conn.connect(str(path))
+            except (BlockingIOError, InterruptedError):
+                pass
+            queued.append(conn)
+        with pytest.raises(recorder_process.RecorderTimeout, match="it is busy"):
+            ask(path, {"op": "status"}, 0.3)
+        with pytest.raises(OSError, match="does not answer: not replacing it"):
+            recorder_process.bind(path, core())
+        assert path.exists(), "a busy recorder's socket is not unlinked"
+    finally:
+        for conn in queued:
+            conn.close()
+        listener.close()
+
+
+def test_a_connect_refused_with_eagain_is_busy(monkeypatch, socket_dir):
+    import socket as sockets
+
+    def full(self, address):
+        raise BlockingIOError(11, "Resource temporarily unavailable")
+
+    monkeypatch.setattr(sockets.socket, "connect", full)
+    with pytest.raises(recorder_process.RecorderTimeout):
+        ask(socket_dir / "recorder.sock", {"op": "status"}, 1.0)
+
+
+def test_the_server_keeps_no_record_of_requests_served(duo, socket_dir):
+    """A recorder polled every second for hours: each request's thread is a
+    daemon one the server does not keep (Python 3.10 kept every one when
+    joined on close)."""
+    import threading
+
+    server = recorder_process.bind(socket_dir / "recorder.sock", core())
+    server.timeout = 0.05
+    stop = threading.Event()
+
+    def loop():
+        while not stop.is_set():
+            server.handle_request()
+
+    serving = threading.Thread(target=loop)
+    serving.start()
+    try:
+        link = RecorderLink(socket_dir / "recorder.sock")
+        for _ in range(30):
+            assert link.ask({"op": "status", "run": duo}, 3.0)["state"] == "idle"
+        assert server.daemon_threads is True and server.block_on_close is False
+        kept = vars(server).get("_threads")
+        assert not kept or len(list(kept)) == 0, "the server kept its request threads"
+    finally:
+        stop.set()
+        serving.join(5)
+        server.server_close()

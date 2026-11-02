@@ -30,8 +30,9 @@ const LOCK_KEY = "sushi-rig.locked";
 // copied in shows in the picker without a reload; a failed listing is asked
 // for again after RETRY_MS.
 const MODELS_MS = 30000;
-// GET /takes this often while the page is open, and at once after a take
-// starts or stops: a take made from another page, or the panel, shows.
+// GET /takes this often while the rack is shown (only the rack lists the
+// takes, and each answer checks takes on the machine playing the audio), and
+// at once when a take starts or stops, here or from another page.
 const TAKES_MS = 10000;
 // The running take's elapsed time is redrawn this often between polls.
 const TICK_MS = 250;
@@ -69,7 +70,8 @@ const state = {
   saveResult: null,          // what the last save from this page said (R.saveOutcome)
   confirming: false, confirmTimer: null,  // Stop's second tap
   record: null, recordBase: null,  // GET /record, with /live; and {elapsed, at} of the take running
-  takes: null, takesAt: 0,   // GET /takes: every TAKES_MS, and after a start or stop
+  takes: null, takesAt: 0,   // GET /takes, on the rack only: every TAKES_MS, and after a start or stop
+  takesOrder: new R.Latest(),  // so an older /takes answer never replaces a newer one
   takeName: "",              // what is typed in the record bar's name
   recordPending: null,       // "start" or "stop", from this page, in flight
   recordResult: null,        // what the last start or stop from this page said (R.recordOutcome)
@@ -236,18 +238,25 @@ async function poll() {
     inBackground("names", refreshNames);
     inBackground("rigs", refreshRigs);
     if (amp && amp.ok) inBackground("amp models", refreshAmpModels);
-    inBackground("takes", refreshTakes);
+    if (state.screen === "rack") inBackground("takes", refreshTakes);
   } finally {
     state.polling = false;
     state.timer = setTimeout(poll, POLL_MS);
   }
 }
 
-// GET /takes every TAKES_MS, or now (`force`) after a take starts or stops.
+// GET /takes every TAKES_MS, or now (`force`) after a take starts or stops,
+// and only while the rack, which lists them, is shown. Requests can overlap
+// (a forced one while a periodic one is out), so each is numbered and an
+// answer older than one already shown is dropped.
 async function refreshTakes(force = false) {
+  if (state.screen !== "rack") return false;
   if (!force && state.takesAt && Date.now() - state.takesAt < TAKES_MS) return false;
   state.takesAt = Date.now();
-  state.takes = await request("GET", "/takes");
+  const ticket = state.takesOrder.issue();
+  const answer = await request("GET", "/takes");
+  if (!state.takesOrder.accept(ticket)) return false;
+  state.takes = answer;
   return true;
 }
 
@@ -260,7 +269,7 @@ function noteRecord(record) {
   // A take started or stopped, here or from another page: the list is
   // read again now, so a take just stopped is not shown as unfinished.
   const now = state.recordBase ? state.recordBase.name : null;
-  if (now !== was) inBackground("takes", () => refreshTakes(true));
+  if (now !== was) refreshTakes(true).then((fetched) => { if (fetched) render(); });
 }
 
 // After a gesture that changes the rig's structure: read it now, not in a second.
@@ -1064,7 +1073,7 @@ function saveAsForm(view) {
 // the elapsed time (redrawn by `tickElapsed`), so neither a poll nor the
 // clock rebuilds the field under the fingers.
 function recordBarView(typed = state.takeName) {
-  return R.recordBar(state.health, state.record, typed, state.takes, state.recordPending);
+  return R.recordBar(state.health, state.record, typed, state.recordPending);
 }
 
 function recordRegion(el) {
@@ -1231,6 +1240,7 @@ function render() {
       state.regions = built.regions;
       state.updaters = [];
       state.ampUpdaters = [];
+      if (screen === "rack") refreshTakes(true).then((fetched) => { if (fetched) render(); });
     }
     const live = liveBody();
     const model = live ? R.rackModel(live, state.plugins, state.profiles) : null;

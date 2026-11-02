@@ -2680,3 +2680,42 @@ path**, nor has `sushi-rig recorder` run under `pw-jack` on the rig. The first
 RECORD from the page on a `--rig --headless` run, and `sushi-rig take check` on
 what it wrote, is the test; how long a stop takes on the rig (the 20 s
 `STOP_TIMEOUT` is a guess) is for it to measure. *(2026-11-02)*
+
+**Record from the web UI: answering review.** Ten findings and one flaky test,
+each with a test. (1) **`up` stopped a take and then refused**: the take is
+finished only for a command that takes the rig down (`down`, `restart`, a
+switch past its refusals, a model change past its), never for `up`. (2) **A
+start read the amp and let its lock go before starting**: it now holds the
+amp's lock, then the record lock, until the take has started (lifecycle, amp,
+record is the one order), so a fader or model change asked for meanwhile waits;
+a test holds a start in flight and sees both wait. (3) **A status could build a
+capture engine** beside a first start: a status now plans with `plan_for_run`
+alone and builds nothing, JACK-Client's absence is found once at the process's
+start (`engine_problem`), and the engines dict has its own lock. (4) **GET
+/record passed refusals on as `ok`**: a recorder's refusal is answered with the
+status its code means, and an answer without `recording`, `idle` or
+`unavailable` is 502. (5) **A stop whose read-back failed was a bare `failed`**:
+it names the take, says `stopped: true` with the read-back error beside it, and
+the agent logs the stop. (6) **A busy recorder was taken for a dead one**: only
+ENOENT and ECONNREFUSED are a crash's leftover; a connect timeout or EAGAIN is
+`RecorderTimeout` (`recorder_timeout` to the agent, 504 on a start), and `bind`
+never unlinks a socket it got no answer from (tested against a real socket
+whose queue is full). (7) **Every page checked every take every 10 s**: each
+take's summary is kept until a file in its folder changes, the stage no longer
+asks for /takes (the replace warning reads `names` from an idle GET /record),
+and the rack asks on arrival, every 10 s, and when a take starts or stops. (8)
+**Overlapping /takes answers** are numbered (`Latest`) and an older one is
+dropped; a test holds the first answer back and sends it last. (9) The start
+and stop routes and `_finish_take` read the rig once, inside the record lock.
+(10) **The recorder's request threads were kept** (`block_on_close`, every
+thread on Python 3.10): they are daemon threads now and not joined, chosen
+over serving one request at a time so a status never waits behind a stop; a
+stop in flight at exit is still finished, since `RecorderCore.close` waits for
+the core's lock. (11) `test_live_close.py`'s descriptor test counted the whole
+process's descriptors, which other tests' threads move: it now runs a warm-up
+batch and two equal ones and asserts the last grows by at most 2; with elkpy's
+own `close()` in place of `close_controller` it fails at 45 a batch (checked,
+then put back). Also found running the suite twice as pid 1:
+`carla_fake.OscCarla` binds TCP on the port number the system gave its UDP
+socket, which another socket may hold (`EADDRINUSE`, once); it now tries
+another pair. Still **NOT RUN AGAINST A LIVE PIPEWIRE**. *(2026-11-02)*

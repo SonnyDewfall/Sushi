@@ -953,11 +953,12 @@ function stemsText(stems) {
   return files.length ? `${files.length} stem${files.length === 1 ? "" : "s"}: ${files.join(", ")}` : "";
 }
 
-// The record bar, from /health, GET /record's answer, the name typed, GET
-// /takes's answer and the start or stop in flight from this page. Record and
+// The record bar, from /health, GET /record's answer (whose `names` are the
+// takes already in the folder), the name typed and the start or stop in
+// flight from this page. Record and
 // Stop are both always there; each is enabled when it would be acted on.
 // Neither is touched by the performance lock: recording is a stage action.
-export function recordBar(health, answer, typed, takes, pending) {
+export function recordBar(health, answer, typed, pending) {
   const agentUp = !!(health && health.ok);
   const rig = agentUp ? health.body.rig || {} : {};
   const busy = agentUp ? (health.body.agent || {}).busy || null : null;
@@ -982,8 +983,7 @@ export function recordBar(health, answer, typed, takes, pending) {
   if (body.state !== "idle") return off(body.reason || "The recorder did not say why.");
   const name = typeof typed === "string" ? typed.trim() : "";
   const problem = checkTakeName(name);
-  const listed = takes && takes.ok ? takes.body.takes || [] : [];
-  const replaces = name && !problem && listed.some((t) => t.name === name);
+  const replaces = name && !problem && (body.names || []).includes(name);
   const starting = pending === "start" || body.doing === "starting";
   return {
     state: "idle", title: "Record", reason: null, name: null, stems: stemsText(body.stems),
@@ -1042,4 +1042,17 @@ export function takeRows(answer, recording = null) {
     dir: body.takes_dir, rows, more: body.more || 0, archived: body.archived || 0,
     problem: body.exists === false ? "No takes yet: the folder is made by the first take." : null,
   };
+}
+
+// Answers to requests that may overlap, in order: `issue` numbers a request
+// as it is sent, and `accept` says whether its answer is still news, false
+// once an answer to a later request has been taken.
+export class Latest {
+  constructor() { this.issued = 0; this.applied = 0; }
+  issue() { this.issued += 1; return this.issued; }
+  accept(ticket) {
+    if (ticket <= this.applied) return false;
+    this.applied = ticket;
+    return true;
+  }
 }

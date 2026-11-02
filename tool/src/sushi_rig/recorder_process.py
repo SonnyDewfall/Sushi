@@ -55,11 +55,17 @@ the listener plans one: the same ports (`transport.rig_stems`), the same
 refusals, the same `TakeSession`. So a take carries the config as it is live
 at RECORD, with the amp as the agent last sent it (`amp`, written by
 `amp.write_amp` as SAVE writes it, #117) and the rig file as it is at RECORD
-(#110). A status reads the same files to say whether a take could be made
-now, once per change of them (`_available`).
+(#110). A status plans from the same files with `transport.plan_for_run` to
+say whether a take could be made now, once per change of them (`_available`),
+and builds nothing: no session and no engine, which only a start makes. That
+JACK-Client loads is checked once, when the process starts (`main`,
+`engine_problem`), and a status says so if it does not.
 
 One take at a time; a start and a stop are serialised (`_lock`), and a status
-never waits for them: it answers what is being done (`doing`).
+never waits for them: it answers what is being done (`doing`). Each request
+is served on a thread of its own, a daemon one that nothing keeps once it
+ends (`_Server`), so a status is not held behind a stop draining the writer
+and a recorder polled every second for hours keeps no record of each poll.
 
 **NOT VERIFIED: no take has been captured through this path.** The process,
 its socket and its sessions are tested with a stand-in engine; the engine
@@ -247,6 +253,7 @@ class RecorderCore:
         clock: Callable[[], float] = time.monotonic,
         now: Callable[[], datetime] = lambda: datetime.now(timezone.utc),
         say: Callable[[str], None] | None = None,
+        engine_problem: str | None = None,
     ) -> None:
         from .transport import _capture_engine, record_session
 
@@ -256,6 +263,10 @@ class RecorderCore:
         self.now = now
         self.say = say or (lambda message: print(f"sushi-rig recorder: {message}", file=sys.stderr, flush=True))
         self._engines: dict[tuple[int, int], Any] = {}
+        self._engines_lock = threading.Lock()  # one engine per key, however asked
+        # Why no capture engine can be made here (JACK-Client missing), found
+        # once at the process's start: what a status says without making one.
+        self.engine_problem = engine_problem
         self._lock = threading.Lock()  # one start or stop at a time
         self._take: _Take | None = None
         self.doing: str | None = None  # "starting" or "stopping", read by a status
@@ -293,18 +304,33 @@ class RecorderCore:
         return answer
 
     def _available(self, run: Run) -> dict[str, Any]:
-        key = run.key()
-        if self._plan is None or self._plan[0] != key:
-            from .transport import NoEngine
+        """What a status says of `run`: the plan `record_session` would make,
+        or its refusal in the same words, from `plan_for_run` alone. Reads
+        the run's files, once per change of them; makes no session and no
+        engine, so a status costs a stat of three files and changes nothing."""
+        from .transport import NoEngine, PlanError, plan_for_run
 
-            session = self._session(run, None)
-            if isinstance(session, NoEngine):
-                said = {"state": "unavailable", "reason": session.message}
-            else:
-                said = {"state": "idle", "stems": stems_shown(session.plan.stems),
-                        "takes_dir": str(session.plan.takes_dir)}
-            self._plan = (key, said)
-        return dict(self._plan[1])
+        if self.engine_problem:
+            return {"state": "unavailable", "reason": NoEngine(self.engine_problem).message}
+        key = run.key()
+        planned = self._plan
+        if planned is None or planned[0] != key:
+            try:
+                plan = plan_for_run(
+                    Path(run.rig) if run.rig else None, Path(run.config) if run.config else None,
+                    machine_file=Path(run.machine) if run.machine else None,
+                    takes_dir=Path(run.takes_dir) if run.takes_dir else None,
+                    root=Path(run.root) if run.root else None)
+                said = {"state": "idle", "stems": stems_shown(plan.stems), "takes_dir": str(plan.takes_dir)}
+            except PlanError as exc:
+                said = {"state": "unavailable",
+                        "reason": NoEngine(f"no take can be planned for this run: {exc}").message}
+            except Exception as exc:  # noqa: BLE001 -- as record_session says it
+                said = {"state": "unavailable", "reason": NoEngine(
+                    f"no take can be planned for this run: unexpected error: {exc}").message}
+            planned = (key, said)
+            self._plan = planned  # one assignment: a status racing it sees one plan or the other
+        return dict(planned[1])
 
     def _session(self, run: Run, amp: dict[str, Any] | None):
         """`record_session` for `run`, with the amp `amp` says (see
@@ -325,10 +351,14 @@ class RecorderCore:
         return session
 
     def _engine(self, sample_rate: int, quantum: int):
+        """The engine for this rate and quantum, made once. Only a start asks
+        (under `_lock`), but the dict has its own lock so that stays true of
+        whatever asks next."""
         key = (sample_rate, quantum)
-        if key not in self._engines:
-            self._engines[key] = self._make_engine(sample_rate, quantum)
-        return self._engines[key]
+        with self._engines_lock:
+            if key not in self._engines:
+                self._engines[key] = self._make_engine(sample_rate, quantum)
+            return self._engines[key]
 
     def start(self, name: str, run: Run, amp: dict[str, Any] | None) -> dict[str, Any]:
         """Begin take `name` of `run`: planned now (`_session`), then
@@ -388,15 +418,31 @@ class RecorderCore:
             finally:
                 self.doing = None
             self.say(f"{said} (stopped by {by})")
-            summary = take_summary(take.takes_dir / take.name)
+            folder = take.takes_dir / take.name
+            # The take has stopped whatever reading it back does: a summary
+            # that fails is said beside the stop, never in place of it, so the
+            # agent logs the stop and does not report a take still running.
+            try:
+                summary = take_summary(folder)
+            except Exception as exc:  # noqa: BLE001 -- said in the answer
+                reason = " ".join(f"{type(exc).__name__}: {exc}".split())
+                self.say(f"{take.name} stopped, but could not be read back: {reason}")
+                summary = {"folder": str(folder), "seconds": None, "complete": None,
+                           "problems": [f"the take stopped, but could not be read back to check it: {reason}; "
+                                        f"`sushi-rig take check {folder}` says more"],
+                           "error": reason}
             answer = {
-                "ok": error is None, "state": "idle", "name": take.name, "folder": summary["folder"],
+                "ok": error is None and "error" not in summary, "stopped": True, "state": "idle",
+                "name": take.name, "folder": summary["folder"],
                 "started_at": take.started_at, "seconds": summary["seconds"],
                 "complete": summary["complete"], "problems": summary["problems"],
                 "stems": take.stems, "said": said, "by": by,
             }
             if error is not None:
                 answer.update(code="failed", reason=said)
+            elif "error" in summary:
+                answer.update(code="failed", summary_error=summary["error"],
+                              reason=f"{take.name} stopped, but could not be read back: {summary['error']}")
             return answer
 
     def close(self) -> dict[str, Any] | None:
@@ -430,7 +476,14 @@ def ask(path: Path, request: dict[str, Any], timeout: float) -> dict[str, Any]:
         try:
             conn.connect(str(path))
         except (FileNotFoundError, ConnectionRefusedError) as exc:
+            # The only two that mean nobody is there: no file, or a file no
+            # process listens on (what a recorder killed outright leaves).
             raise RecorderDown(f"no recorder is listening on {path} ({exc.strerror or exc})") from exc
+        except (socket.timeout, BlockingIOError) as exc:
+            # A recorder whose queue of connections is full (EAGAIN), or that
+            # did not take this one in time: there, and busy, not gone.
+            raise RecorderTimeout(
+                f"the recorder on {path} did not take the connection within {timeout:g}s: it is busy") from exc
         except OSError as exc:
             raise RecorderDown(f"the recorder's socket {path} could not be reached: {exc}") from exc
         try:
@@ -500,10 +553,13 @@ def _handler(core: RecorderCore):
 class _Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
     # A status must not wait behind a stop draining the writer, so each
     # connection gets a thread; the core serialises start and stop itself.
-    # Not daemon threads, and joined on close, so a stop in progress is
-    # finished before the process ends.
-    daemon_threads = False
-    block_on_close = True
+    # Daemon threads, not joined on close: with `block_on_close` the server
+    # keeps every request's thread in a list it never trims (Python 3.10, the
+    # floor), and a recorder polled every second would grow without bound. A
+    # stop in flight when the process ends is still finished, since
+    # `RecorderCore.close` waits for the core's lock, which that stop holds.
+    daemon_threads = True
+    block_on_close = False
 
 
 def bind(path: Path, core: RecorderCore) -> _Server:
@@ -556,8 +612,8 @@ def serve(path: Path, core: RecorderCore, *, poll: float = 0.2) -> int:
         while not stopping.is_set():
             server.handle_request()
     finally:
-        server.server_close()  # joins requests in flight, a stop among them
-        finished = core.close()
+        server.server_close()  # no new requests; one in flight runs on
+        finished = core.close()  # waits for a start or stop in flight, then ends a take
         if finished is not None:
             core.say(f"finished {finished['name']} on the way out: {finished['said']}")
         try:
@@ -582,6 +638,7 @@ def main(path: Path | None = None) -> int:
     try:
         load_jack()
     except CaptureError as exc:
+        core.engine_problem = str(exc)
         core.say(f"RECORD is off: {exc}")
     try:
         return serve(path, core)

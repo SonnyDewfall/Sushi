@@ -71,12 +71,23 @@ class OscCarla:
         from pythonosc.osc_message import OscMessage
 
         self._decode = OscMessage
-        self.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
-        self.udp.bind(("127.0.0.1", 0))
-        self.port = self.udp.getsockname()[1]
-        self.tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
-        self.tcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
-        self.tcp.bind(("127.0.0.1", self.port))
+        # The UDP port is the system's choice and the TCP one must be the same
+        # number, which another socket may hold (seen once in a full run: an
+        # EADDRINUSE here): another pair is tried rather than failing.
+        for _ in range(20):
+            self.udp = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
+            self.udp.bind(("127.0.0.1", 0))
+            self.port = self.udp.getsockname()[1]
+            self.tcp = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            self.tcp.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
+            try:
+                self.tcp.bind(("127.0.0.1", self.port))
+                break
+            except OSError:
+                self.tcp.close()
+                self.udp.close()
+        else:
+            raise OSError("no loopback port was free for both UDP and TCP in 20 tries")
         self.tcp.listen(16)
         self.received: list = []
         self.connections = 0

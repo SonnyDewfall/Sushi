@@ -254,7 +254,9 @@ command's answer carries the stop's (`take`); the stop is logged with `by`
 naming the command. Finished, not refused: the command is the player's, made
 on purpose, and a refusal would leave a pedal's Program Change doing nothing
 mid-set. A switch or model change refused before it began leaves the take
-running. A recorder that cannot be asked is said, and the command goes on:
+running, and an `up` never finishes one: it refuses a rig that is running.
+A start holds the amp's lock until the take has started, so a fader or model
+change asked for meanwhile waits, and the take names the amp that played. A recorder that cannot be asked is said, and the command goes on:
 `down` must always be possible, and its SIGINT finishes the take anyway.
 
 `GET /takes` lists the takes folder (`take.list_takes`) off the loop: each
@@ -347,6 +349,7 @@ import functools
 import math
 import re
 import sys
+import threading
 import time
 from dataclasses import dataclass
 from datetime import datetime, timezone
@@ -1340,14 +1343,20 @@ class Agent:
         a pad pressed while `up` runs must not reach the rig coming up), and
         afterwards follows the rig as it now is, whatever happened.
 
-        A take recording from the web UI is finished first (`_finish_take`),
-        and its stop answered as the third value, None when none ran.
+        A take recording from the web UI is finished first for a `down` or
+        `restart` (`_finish_take`), and its stop answered as the third value,
+        None when none ran.
         """
         self._refuse_while_busy()
         async with self._lock:
             self.busy = command
             try:
-                take = await self._finish_take(origin or _MidiOrigin("POST", f"/rig/{command}"), command)
+                # Only a command that takes the rig down: `up` refuses a rig
+                # that is running, so finishing a take for it would end the
+                # take for nothing. A `down` or `restart` with no rig up has
+                # nothing recording, which `_finish_take` sees for itself.
+                take = (await self._finish_take(origin or _MidiOrigin("POST", f"/rig/{command}"), command)
+                        if command in ("down", "restart") else None)
                 await self._midi_stop(f"stopped while '{command}' runs")
                 outcome, args = await self._lifecycle_steps(steps, fallback)
             finally:
@@ -3464,8 +3473,11 @@ class Agent:
     # at a time and a lifecycle command waiting to finish the take goes after
     # a start in flight, never between its plan and its folder. A lifecycle
     # command takes it inside the lifecycle lock, and a model change inside
-    # the amp's; a start reads the amp under the amp's lock and lets it go
-    # before taking this one, so no two locks are ever taken in both orders.
+    # the amp's; a start takes the amp's lock first and holds both until the
+    # take has started, so the amp a take names is the one playing when it
+    # starts. Always lifecycle, then amp, then record: no two locks are ever
+    # taken in both orders. The cost: a fader moved during a start waits for
+    # it (the start's own deadline, `START_TIMEOUT`, bounds that).
 
     def _record_init(self, recorder: Any, takes_dir: Path | None) -> None:
         from .recorder_process import RecorderLink
@@ -3474,6 +3486,8 @@ class Agent:
         self.recorder = recorder or RecorderLink()
         self.takes_dir = Path(takes_dir) if takes_dir is not None else default_takes_dir()
         self._record_lock = asyncio.Lock()
+        self._takes_cache: dict[str, Any] = {}  # GET /takes: each take's summary, by what is in its folder
+        self._takes_lock = threading.Lock()  # the cache is read and written in worker threads
 
     def _record_routes(self, app) -> None:
         app.router.add_get("/record", self.record_route)
@@ -3510,12 +3524,17 @@ class Agent:
         return f"the recorder is not answering: {exc}"
 
     async def record_route(self, request):
-        """`GET /record`: `state` is `recording` (`name`, `started_at`,
-        `elapsed` in seconds as the recorder counts it, `stems`), `idle`
-        (`stems` a take would record now) or `unavailable` (`reason`, and a
-        `code`: `no_rig`, `panel`, `v1`, `no_recorder`, `recorder_timeout`,
-        or none when the recorder cannot plan a take, with its reason). `doing`
-        while a start or stop is under way. Always 200: unavailable is a state."""
+        """`GET /record`: `state` is always one of `recording` (`name`,
+        `started_at`, `elapsed` in seconds as the recorder counts it,
+        `stems`), `idle` (`stems` a take would record now, and `names`, the
+        takes already in the folder, so a page can say a name will replace
+        one) or `unavailable` (`reason`, and a `code`: `no_rig`, `panel`,
+        `v1`, `no_recorder`, `recorder_timeout`, or none when the recorder
+        cannot plan a take, with its reason). `doing` while a start or stop is
+        under way. 200 for each of those, since unavailable is a state; a
+        recorder that refuses the question itself is answered with the status
+        its code means (`RECORD_CODES`), and one that answers without a
+        state is 502, never passed on."""
         state, described, refused = await self._record_state()
         if refused is not None:
             reason, code = refused
@@ -3529,7 +3548,17 @@ class Agent:
         except RecorderTimeout as exc:
             return web.json_response({"ok": True, "state": "unavailable", "code": "recorder_timeout",
                                       "reason": str(exc)})
-        return web.json_response({**answer, "ok": True})
+        if not answer.get("ok"):
+            raise self._recorder_refused(request, answer)
+        if answer.get("state") not in RECORD_STATES:
+            reason = f"the recorder answered a status without a state it may have: {answer!r}"
+            self._remember([request.method, request.path], reason, kind="live")
+            raise web.HTTPBadGateway(reason=" ".join(reason.split())[:500])
+        if answer["state"] == "idle":
+            from .take import take_names
+
+            answer = {**answer, "names": await asyncio.to_thread(take_names, self.takes_dir)}
+        return web.json_response(answer)
 
     async def record_start_route(self, request):
         """`POST /record/start {"name"?}`: start a take. No name is
@@ -3541,7 +3570,12 @@ class Agent:
         The take's config is the one Sushi loaded for this run (the state
         file's, which a live switch rewrites) with the amp as the agent last
         sent it (`_take_amp`), and its rig.yaml the rig file as it is now:
-        both read at this RECORD, by the recorder.
+        both read at this RECORD, by the recorder. The amp's lock is held from
+        reading the amp until the take has started (and the record lock
+        inside it, the order a model change takes them in), so no model
+        change or fader move lands between the amp the take names and the
+        take: one asked for meanwhile waits for the start, and a model change
+        then finishes the take it would otherwise misdescribe.
 
         200 with `name`, `started_at`, `stems`, `said`, `amp` and the log
         `entry` (`op: "record"`, `action: "start"`). Refusals: 409 `busy`;
@@ -3549,7 +3583,8 @@ class Agent:
         `recording` (a take is running: stop it first); `no_recorder`;
         `unavailable` (no take can be planned for this run, with why). 502
         `failed` for a take tried that did not start (its folder says why),
-        504 when the recorder does not answer within `START_TIMEOUT`."""
+        504 `recorder_timeout` when the recorder does not answer within
+        `START_TIMEOUT`."""
         try:
             name = record_request(await self._json_body(request))
         except AgentError as exc:
@@ -3558,21 +3593,20 @@ class Agent:
 
         name = name or auto_name(datetime.now())
         self._refuse_while_busy()
-        _, _, refused = await self._record_state()
-        if refused is not None:
-            raise _conflict(*refused)
-        amp, amp_said = await self._take_amp()
-        async with self._record_lock:
-            self._refuse_while_busy()  # a lifecycle command may have begun while this waited
-            state, described, refused = await self._record_state()
-            if refused is not None:
-                raise _conflict(*refused)
-            run = recorder_run(state, self._midi_root(), self.takes_dir)
-            answer = await self._recorder_call(
-                request, state, described, {"op": "start", "name": name, "run": run, "amp": amp}, START_TIMEOUT)
-            entry = self._record("record", {
-                "action": "start", "name": name, "stems": [s["file"] for s in answer.get("stems") or []],
-                "amp": amp_said["saved"], **({"replaced": True} if answer.get("replaced") else {})}, None)
+        async with self._amp_lock:
+            async with self._record_lock:
+                self._refuse_while_busy()  # a lifecycle command may have begun while this waited
+                state, described, refused = await self._record_state()
+                if refused is not None:
+                    raise _conflict(*refused)
+                amp, amp_said = await self._take_amp()
+                run = recorder_run(state, self._midi_root(), self.takes_dir)
+                answer = await self._recorder_call(
+                    request, state, described, {"op": "start", "name": name, "run": run, "amp": amp},
+                    START_TIMEOUT)
+                entry = self._record("record", {
+                    "action": "start", "name": name, "stems": [s["file"] for s in answer.get("stems") or []],
+                    "amp": amp_said["saved"], **({"replaced": True} if answer.get("replaced") else {})}, None)
         return web.json_response({**answer, "amp": amp_said, "entry": entry})
 
     async def record_stop_route(self, request):
@@ -3580,16 +3614,15 @@ class Agent:
         `seconds`, `problems` (`take check`'s, empty when whole), `said` and
         the log `entry` (`op: "record"`, `action: "stop"`); 409
         `not_recording`, `no_rig`, `panel`, `v1`, `no_recorder`. A stop the
-        recorder could not make cleanly is 502 `failed` with the reason, and
-        is logged: the take is over either way. Not refused while a lifecycle
-        command runs: that command finishes the take itself, and this then
-        answers `not_recording`. No confirm: stopping a take loses nothing."""
+        recorder could not make cleanly, or could not read back, is 502
+        `failed` with the reason (`stopped: true` says the take did stop),
+        and is logged: the take is over either way. Not refused while a
+        lifecycle command runs: that command finishes the take itself, and
+        this then answers `not_recording`. No confirm: stopping a take loses
+        nothing."""
         body = await self._json_body(request)
         if body not in (None, {}):
             raise web.HTTPBadRequest(reason=f"the body of a stop must be empty, not {body!r}")
-        _, _, refused = await self._record_state()
-        if refused is not None:
-            raise _conflict(*refused)
         async with self._record_lock:
             state, described, refused = await self._record_state()
             if refused is not None:
@@ -3597,11 +3630,23 @@ class Agent:
             answer = await self._stop_take(request, state, described, "request")
         return web.json_response(answer, status=200 if answer["ok"] else 502)
 
+    def _recorder_refused(self, origin, answer: dict[str, Any]):
+        """The HTTP error a recorder's refusal means (`RECORD_CODES`; 502 for
+        `failed` and anything unknown, which is remembered for /health)."""
+        code = answer.get("code") or "failed"
+        reason = " ".join(str(answer.get("reason") or "the recorder refused, and did not say why").split())
+        status = RECORD_CODES.get(code, web.HTTPBadGateway)
+        if status in (web.HTTPBadGateway, web.HTTPInternalServerError):
+            self._remember([origin.method, origin.path], reason, kind="live")
+        error = status(reason=reason)
+        error.agent_code = code
+        return error
+
     async def _recorder_call(self, origin, state, described, ask: dict[str, Any], timeout: float) -> dict[str, Any]:
         """A start or a stop: its answer when it worked; otherwise the HTTP
-        refusal its `code` means (`RECORD_CODES`), or 409 `no_recorder`, or
-        504. A stop that ran and failed (`failed` with a `name`) is answered,
-        not raised: the take is over and is logged."""
+        refusal its `code` means (`_recorder_refused`), or 409 `no_recorder`,
+        or 504 `recorder_timeout`. A stop that ran and failed (`stopped`) is
+        answered, not raised: the take is over and is logged."""
         where = [origin.method, origin.path]
         try:
             answer = await self._ask_recorder(ask, timeout)
@@ -3610,17 +3655,12 @@ class Agent:
         except RecorderTimeout as exc:
             reason = (f"{exc}: it may still be doing it. Read GET /record before trying again")
             self._remember(where, reason, kind="live")
-            raise web.HTTPGatewayTimeout(reason=reason)
-        if answer.get("ok") or (ask["op"] == "stop" and answer.get("name")):
+            error = web.HTTPGatewayTimeout(reason=reason)
+            error.agent_code = "recorder_timeout"
+            raise error
+        if answer.get("ok") or (ask["op"] == "stop" and answer.get("stopped") and answer.get("name")):
             return answer
-        code = answer.get("code") or "failed"
-        reason = " ".join(str(answer.get("reason") or "the recorder refused, and did not say why").split())
-        status = RECORD_CODES.get(code, web.HTTPBadGateway)
-        if status is web.HTTPBadGateway:
-            self._remember(where, reason, kind="live")
-        error = status(reason=reason)
-        error.agent_code = code
-        raise error
+        raise self._recorder_refused(origin, answer)
 
     async def _stop_take(self, origin, state, described, by: str) -> dict[str, Any]:
         """Stop the running take and log it; held under `_record_lock`."""
@@ -3637,7 +3677,10 @@ class Agent:
         """Before `why` (a stop, restart, switch or model change) changes the
         rig under a take: finish the take cleanly, log it (`by: why`), and
         return the stop's answer for the command's own answer, or None when
-        no take was running. Called holding the lifecycle lock.
+        no take was running. Called holding the lifecycle lock, and only once
+        the command is going ahead: after its own refusals (a switch's, a
+        model change's), and never for `up`, which takes no rig down and
+        refuses when one is running (`_run_lifecycle`).
 
         Finished, not refused: the command is the player's, made on purpose,
         and the take ends whole either way; refusing would leave a pedal's
@@ -3645,10 +3688,10 @@ class Agent:
         (none, or not answering) is said, not a reason to refuse: `down`
         must always be possible, and its SIGINT finishes a take the recorder
         still holds (recorder_process.serve)."""
-        state, described, refused = await self._record_state()
-        if refused is not None:
-            return None  # no take of the agent's can be running: the listener's, if any, is the panel's
         async with self._record_lock:
+            state, described, refused = await self._record_state()
+            if refused is not None:
+                return None  # no take of the agent's can be running: the listener's, if any, is the panel's
             try:
                 return await self._stop_take(origin, state, described, why)
             except web.HTTPException as exc:
@@ -3665,30 +3708,37 @@ class Agent:
         save writes it (#117): `{"model": None}` for a run with no amp, so
         the take carries none; None for an amp whose model the state file
         does not say, so the config keeps the `_amp` it was compiled with
-        rather than a guess."""
-        async with self._amp_lock:
-            try:
-                amp, _, _ = await self._amp_now(writing=False)
-            except amp_live.AmpRefused as exc:
-                if exc.code == "no_amp":
-                    return {"model": None, "parameters": {}}, {
-                        "saved": False, "why": f"{exc}, so the take carries no amp"}
-                raise self._amp_http(exc)
-            if not amp.model:
-                return None, {"saved": False, "why": "the state file does not say which model the amp runs, "
-                                                     "so the take carries the amp the rig was compiled with"}
-            return {"model": amp.model, "parameters": dict(amp.values)}, {
-                "saved": True, "model": amp.model, "parameters": dict(amp.values),
-                "known": amp_live.KNOWN_SENT, "note": amp_live.KNOWN_NOTE[amp_live.KNOWN_SENT]}
+        rather than a guess. Called holding the amp's lock, which the caller
+        keeps until the take has started."""
+        try:
+            amp, _, _ = await self._amp_now(writing=False)
+        except amp_live.AmpRefused as exc:
+            if exc.code == "no_amp":
+                return {"model": None, "parameters": {}}, {
+                    "saved": False, "why": f"{exc}, so the take carries no amp"}
+            raise self._amp_http(exc)
+        if not amp.model:
+            return None, {"saved": False, "why": "the state file does not say which model the amp runs, "
+                                                 "so the take carries the amp the rig was compiled with"}
+        return {"model": amp.model, "parameters": dict(amp.values)}, {
+            "saved": True, "model": amp.model, "parameters": dict(amp.values),
+            "known": amp_live.KNOWN_SENT, "note": amp_live.KNOWN_NOTE[amp_live.KNOWN_SENT]}
 
     async def takes_route(self, request):
         """`GET /takes`: the takes in the takes folder, newest first, each
         with its name, when, length, stems, whether it was finished, audio
         lost and `take check`'s verdict (`take.list_takes`), read off the
-        loop. No rig is needed: takes are files."""
+        loop. No rig is needed: takes are files. Each take's summary is kept
+        until a file in its folder changes (`_takes_cache`), so a page asking
+        again re-checks only the takes that moved, not every stem header of
+        every take, on the machine playing the audio."""
         from .take import list_takes
 
-        listed = await asyncio.to_thread(list_takes, self.takes_dir)
+        def listing() -> dict[str, Any]:
+            with self._takes_lock:  # two pages asking at once share the cache one at a time
+                return list_takes(self.takes_dir, cache=self._takes_cache)
+
+        listed = await asyncio.to_thread(listing)
         return web.json_response({"ok": True, **listed})
 
     # ======================================================================= #
@@ -3971,6 +4021,11 @@ RECORD_CODES = {
     "name": web.HTTPBadRequest if web else None,
     "bad_request": web.HTTPInternalServerError if web else None,  # the agent's own request: a bug
 }
+
+
+# What GET /record's `state` may be; a recorder that says anything else is a
+# bug answered 502, not passed to a page that draws from it.
+RECORD_STATES = ("recording", "idle", "unavailable")
 
 
 def record_request(body: Any) -> str | None:

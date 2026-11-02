@@ -751,9 +751,12 @@ recorder crashed, and a run the recorder cannot plan a take for, with its
 reason. **A stop, restart, rig switch or model change while recording finishes
 the take first**, and its answer carries the take's; finished rather than
 refused, because the command is yours and made on purpose, and a refused
-Program Change would be a pedal doing nothing mid-set. `GET /takes` lists the
-takes folder: each take's length, stems, whether it was finished, audio lost,
-and `take check`'s problems. **Not run against a live PipeWire: no take has
+Program Change would be a pedal doing nothing mid-set (an `up`, which refuses
+a running rig, leaves the take alone). The amp a take names is the one playing
+when it starts: a fader or model change asked for during a start waits for it.
+`GET /takes` lists the takes folder: each take's length, stems, whether it was
+finished, audio lost, and `take check`'s problems, a take checked again only
+when a file in its folder changes; only the rack asks for it. **Not run against a live PipeWire: no take has
 been captured through this path**; shown against the recorder's real core and a
 real recorder process with the engine stood in.
 
