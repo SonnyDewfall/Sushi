@@ -88,6 +88,11 @@ class Dest:
     def channels(self) -> list[int]:
         return [2 * self.index, 2 * self.index + 1] if self.kind == "bus" else [self.index]
 
+    @property
+    def key(self) -> str:
+        """The routing entry's key this place is written under."""
+        return "engine_bus" if self.kind == "bus" else "engine_channel"
+
 
 def bus(n: int) -> Dest:
     return Dest("bus", n)
@@ -152,7 +157,22 @@ def track_route(track: Any, label: str, role: str | None = None) -> tuple[Route,
     selftest's probes (probes.py), so the two can never disagree on a port.
     `role` only words the problem; a track with no role is read the same way.
     """
-    route: list[Dest] = []
+    entries, problems = track_entries(track, label, role)
+    # One place on Sushi named twice is one port. A v2 rig's mono channel does
+    # exactly that — engine channel 0 into both halves of its track
+    # (rigfile.py) — and counted twice it would ask the role for two ports.
+    return tuple(dict.fromkeys(dest for _, dest in entries)), problems
+
+
+def track_entries(
+    track: Any, label: str, role: str | None = None
+) -> tuple[list[tuple[dict, Dest]], list[str]]:
+    """Each readable `inputs` or `outputs` entry of `track` beside the place on
+    Sushi it names, and every entry that cannot be placed — `track_route`
+    before it merges places named twice. For a caller that rewrites entries
+    (the probe track moves each to a free place) and must keep their order.
+    """
+    pairs: list[tuple[dict, Dest]] = []
     problems: list[str] = []
     for entry in getattr(track, label):
         where = f"track {track.name!r}: {label} entry {entry}"
@@ -165,17 +185,14 @@ def track_route(track: Any, label: str, role: str | None = None) -> tuple[Route,
             if problem:
                 problems.append(problem)
             else:
-                route.append((bus if has_bus else channel)(entry[key]))
+                pairs.append((entry, (bus if has_bus else channel)(entry[key])))
         else:
             taker = f"the role {role!r}" if role else "the track"
             problems.append(
                 f"{where} names no engine_bus or engine_channel, so which "
                 f"Sushi {label[:-1]} {taker} takes is unknown"
             )
-    # One place on Sushi named twice is one port. A v2 rig's mono channel does
-    # exactly that — engine channel 0 into both halves of its track
-    # (rigfile.py) — and counted twice it would ask the role for two ports.
-    return tuple(dict.fromkeys(route)), problems
+    return pairs, problems
 
 
 def _as_routes(value: Any) -> list[Route]:
