@@ -15,6 +15,8 @@ import asyncio
 import http.server
 import os
 import socket
+import subprocess
+import sys
 import threading
 from pathlib import Path
 
@@ -87,6 +89,19 @@ def test_status_through_the_agent_says_what_status_says_and_the_crashes_too():
 # --------------------------------------------------------------------------- #
 # The choice, both ways, through the CLI
 # --------------------------------------------------------------------------- #
+
+@pytest.fixture
+def living_pid():
+    """A pid that is alive and is not 1, for an address file to name. Not
+    this process's own: in the container job pytest runs as pid 1, which
+    `address_from` rightly takes for no agent at all."""
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    try:
+        yield proc.pid
+    finally:
+        proc.kill()
+        proc.wait()
+
 
 @pytest.fixture
 def direct(monkeypatch):
@@ -231,7 +246,7 @@ def test_a_web_server_that_is_not_the_agent_is_unusable():
         thread.join()
 
 
-def test_the_cli_against_a_served_agent(monkeypatch, capsys, direct):
+def test_the_cli_against_a_served_agent(monkeypatch, capsys, direct, living_pid):
     """The real routes and the real client, over a real socket; the agent's
     runner is a fake, so nothing starts."""
     pytest.importorskip("aiohttp")
@@ -268,7 +283,7 @@ def test_the_cli_against_a_served_agent(monkeypatch, capsys, direct):
     assert ready.wait(5)
     # As the agent's serve() says where it listens: an address beside the
     # state file, on a port that is not the default.
-    agent_client.write_address(f"http://127.0.0.1:{port}", os.getpid())
+    agent_client.write_address(f"http://127.0.0.1:{port}", living_pid)
     try:
         assert cli._main(["down"]) == 0
         assert cli._main(["status"]) == 0
@@ -308,8 +323,8 @@ def test_the_address_file_is_trusted_only_while_its_agent_lives():
     assert agent_client.address_from('{"url": "http://x", "pid": true}', lambda pid: True)[0] is None
 
 
-def test_the_cli_probes_the_address_a_running_agent_wrote_and_says_so(monkeypatch, capsys, direct):
-    agent_client.write_address("http://127.0.0.1:9123", os.getpid())
+def test_the_cli_probes_the_address_a_running_agent_wrote_and_says_so(monkeypatch, capsys, direct, living_pid):
+    agent_client.write_address("http://127.0.0.1:9123", living_pid)
     probed = []
 
     def absent(base, *args, **kwargs):
@@ -321,7 +336,7 @@ def test_the_cli_probes_the_address_a_running_agent_wrote_and_says_so(monkeypatc
     assert probed == ["http://127.0.0.1:9123"]
     line = capsys.readouterr().err.strip()
     assert line.startswith("sushi-rig: no agent is running at http://127.0.0.1:9123 (from ")
-    assert f"written by agent pid {os.getpid()}), so acting directly" in line
+    assert f"written by agent pid {living_pid}), so acting directly" in line
 
 
 def test_a_stale_address_file_is_said_and_the_default_probed(monkeypatch, capsys, direct):
