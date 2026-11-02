@@ -21,6 +21,10 @@ midi = ["alsa-midi>=1.0.4,<2"]
 # and numpy for the block buffers. Only 0.5.7 has been checked: capture.py's names are tested against it.
 capture = ["JACK-Client>=0.5.7,<0.6", "numpy>=1.24"]
 dev = ["pytest>=7.0"]
+# The web UI's browser tests (#31, tests/test_ui.py). The package brings no browser: after
+# installing, `python -m playwright install chromium` fetches the one this version drives
+# (add --with-deps on a bare Ubuntu for its system libraries). The UI itself needs none of this.
+ui-test = ["playwright>=1.49,<2"]
 
 [project.scripts]
 sushi-rig = "sushi_rig.cli:main"
@@ -31,6 +35,10 @@ build-backend = "setuptools.build_meta"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+# The web UI's files (#31) are served from the package, so a wheel must carry them.
+[tool.setuptools.package-data]
+sushi_rig = ["ui/static/*.html", "ui/static/*.css", "ui/static/*.js"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

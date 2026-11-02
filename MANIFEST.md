@@ -2108,3 +2108,80 @@ asks `compile_named_rig`, with the YAML typo and an unreadable file added. (8)
 **One seam for the state file**: `World.read_state` is gone, so `Switching` is
 the only way a test steers the state a switch reads and writes. Still not run
 against a live Sushi, and not heard. *(2026-11-02)*
+
+**The web UI, v0: the rack and the stage screen (#31).** The agent serves a
+page at `/` from `tool/src/sushi_rig/ui/static/`: plain HTML, CSS and JavaScript
+modules, no build step and no framework, since the rig machine has no Node and
+the UI must run from a checkout (`ui/__init__.py` says so). Two screens from the
+"Rig UI mockups v2" canvas and nothing else from it: **the rack** (S1), every
+channel a row of plugin cards with knobs from the profile, and **the stage
+screen** (S5), one glance and one tap at phone width, with a lock. It polls
+`/health`, `/live` and `/live/log` once a second and sends each change as it
+happens, one request in flight per control with the newest value next
+(`Sender`). Two routes are new, in a block of their own in `agent.py`:
+`GET /profiles`, every profile flattened for the browser (`ui.panel_profile`,
+no rig needed), and `GET /live/plugins`, which plugin each processor is, from
+Sushi's saved session (`live.read_live_plugins`), with the send and return
+marked by `live.protected_processor`; `/live` cannot say, since `ProcessorInfo`
+names no plugin. `Live` gains a `plugins` field (default None, which
+`/live/plugins` answers 501) and `app()` one line; nothing else outside the
+block. **Decisions are pure:** `panel_profile` in Python, and in `ui/static/rig.js`
+the value in real units (Sushi normalises linearly over the domain, so real =
+min + v·(max − min); a profile's `log` or `db` scale changes the drag and the
+text, never that), which controls a card shows (the profile's groups; `hidden`
+left out; what the profile names and the plugin lacks, and the reverse, each
+listed, not dropped), what is unsaved (netted from the log: each key against
+what its first change replaced, since the rig's start and the last rig switch),
+the undo on offer (the agent's `pick_undo`, tested against it on the same logs),
+the state line, and the lock's refusals. `test_ui.py` runs rig.js's functions in
+a bare Chromium page and drives both screens against a real agent over a fake
+rig (`tests/ui_fake.py`) whose parameter names and ranges are read from the
+repository's captured plugin data, and which says what it invents. **Failures
+are loud:** a refused change shows the agent's reason in an alert and beside the
+knob, and the knob shows the rig's value again; the agent's `last_error` and a
+failed MIDI listener are in the same glance. **Said on screen, not built:**
+load and xruns read "not measured" (the agent measures neither), so an up rig is
+amber, never green (#49); saving (S4); the lock is the page's own, in this
+browser's storage and on by default, because the agent has no performance lock
+(#29), so another client is not held by it; "unsaved" knows only changes made
+through the agent since the rig came up, so the OSC panel's, a MIDI mapping's
+inside Sushi, or a `sushi-rig save` since, are not reflected, and the log does
+not survive the agent; changes go over HTTP, not the WebSocket S1 names. CI
+gets Chromium from `python -m playwright install --with-deps chromium`, in
+`ci.yml` and in `ci/Dockerfile` (with the `[ui-test]` extra); without the
+package the browser tests skip, and a Chromium that will not start fails them.
+**Not run:** any of it against a live Sushi, a phone's own browser, or the
+Docker build (no Docker here; the Dockerfile step is untested until CI builds
+it). *(2026-11-02)*
+
+*Review of the web UI found nine; fixed, each with a test.* (1) **A rig of the
+same names showed the old plugin's profile**: which plugin each processor is
+was read again only when the processors' names changed, so a switch to a rig
+with the same names and another plugin kept the first one's profile. It is now
+keyed on the rig too: `/health`'s `config_name`, `rig` and `started_at`, and the
+newest rig switch in the live log, which a live swap writes without a restart
+(the coming `POST /rig/switch`); the old answer is dropped before the new one
+is asked for. (2) Ungrouped parameters were ranked by a group count taken
+mid-loop, so an undefined group named between two of them split them by file
+position; they are ranked once every group is known, last, by `order`. (3) A
+group that is not a name (`{value: [dirt]}`) or a `plugin` that is not a
+mapping raised in `panel_profile`, making `/profiles` a 500 for every profile;
+the plugin is read safely, and a profile that cannot be laid out
+(`PanelError`) is a problem naming its file while the rest are served. (4) The
+page took `/profiles`' loader problems for a failed fetch and asked again every
+10 s for ever; a failed fetch is retried, problems are shown once. (5)
+`live.read_live_plugins` copied `_session_plugins`; there is one walk of the
+session now, and it carries each processor's track (the remove's record already
+names the track and keeps only uri, uid and type). (6) A move of a processor
+removed since was dropped from "unsaved" and the remove's chain taken as the
+baseline: the move's own `previous` is used, its track found from a later
+remove, where the processor is, or a neighbour it had. (7) The first poll
+waited on `/library` (built on first use) and `/profiles` before drawing
+anything, and a failed `/library` was kept as empty for good: both are fetched
+beside the poll and retried. (8) A toggle control on a linear scale was never
+`aria-pressed`, the state being read from its text; it is read from its travel
+(`rig.isOn`), as its click is. (9) `/profiles` sent `min`, `max`, `order` and
+`enumeration`, which the page never reads: the range comes from Sushi's
+`parameter_info`, what Sushi normalises over, so they are no longer sent and
+the docstring says why. The package-data globs are checked against the UI's
+files by a test. Still not run against a live Sushi. *(2026-11-02)*

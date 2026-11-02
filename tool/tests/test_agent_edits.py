@@ -697,10 +697,12 @@ def test_the_plugin_to_put_back_is_read_from_the_saved_session():
     )
     asked = []
     controller = NS(audio_graph=graph, session=NS(get_session=lambda: asked.append(1) or session))
+    # With its track: the session walk is shared with the web UI's read; the
+    # removal keeps uri, uid and type (`check_remove`).
     assert read_live_removal("drive", controller=controller)["plugin"] == \
-        {"uri": GXTS9, "uid": None, "type": "lv2"}
+        {"track": "guitar", "uri": GXTS9, "uid": None, "type": "lv2"}
     assert read_live_removal("guitar_send", controller=controller)["plugin"] == \
-        {"uri": None, "uid": "sushi.testing.send", "type": "internal"}
+        {"track": "guitar", "uri": None, "uid": "sushi.testing.send", "type": "internal"}
     assert len(asked) == 2
     assert read_live_removal("nope", controller=controller)["plugin"] is None
     assert len(asked) == 2, "nothing to remove, so the session is not read"
