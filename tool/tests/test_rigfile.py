@@ -456,7 +456,7 @@ def test_a_level_is_the_sends_gain_and_unity_writes_nothing():
     _, state = compile_rig(parse_rig(_two_channel()))
     assert "parameters" not in state["processors"]["lead_send"]
     _, state = compile_rig(parse_rig(_two_channel(-6.0)))
-    assert state["processors"]["lead_send"]["parameters"] == {"gain": round(level_to_gain(-6.0), 6)}
+    assert state["processors"]["lead_send"]["parameters"] == {"gain": level_to_gain(-6.0)}  # emit rounds
     assert state["processors"]["lead_send"]["properties"] == {"destination_name": "master_return"}
     config = emit_rig(parse_rig(_two_channel(-6.0)))
     entry = next(e for e in config["initial_state"] if e["processor"] == "lead_send")
@@ -488,3 +488,54 @@ def test_a_send_gain_moved_live_is_saved_as_the_channels_level():
     assert "level" not in unity["channels"][1], "unity is the default, so nothing is written"
     back = fold_state(_two_channel(-6.0), {"processors": {"lead_send": {"parameters": {"gain": 0.8333330154418945}}}})
     assert back["channels"][1]["level"] == 0.0, "but a file that said -6 is told it is back at 0"
+    assert str(back["channels"][1]["level"]) == "0.0", "never -0.0, which YAML would write as such"
+
+
+def test_a_captured_gain_past_the_sends_range_is_clamped_not_refused():
+    assert gain_to_level(1.05) == 24.0 and gain_to_level(-0.1) == -120.0
+
+
+def test_a_level_written_with_more_precision_than_save_keeps_is_read_to_a_thousandth():
+    rig = parse_rig(_two_channel(-6.0004))
+    assert rig.channels[1].level == -6.0
+    folded = fold_state(_two_channel(-6.0004), {"processors": {"lead_send": {"parameters": {"gain": level_to_gain(-6.0)}}}})
+    assert folded["channels"][1]["level"] == -6.0
+
+
+def test_a_level_saved_into_a_commented_file_lands_after_the_chain(tmp_path):
+    """The path a real SAVE takes: fold_state adds `level` to a channel that
+    never had one, and write_rig has to insert it into a commented file."""
+    import textwrap
+
+    from sushi_rig.rigfile import write_rig
+    import yaml
+
+    path = tmp_path / "two.yaml"
+    path.write_text(textwrap.dedent("""\
+        # Two chains on one guitar.
+        kind: rig
+        schema_version: 1
+        name: two
+        channels:
+        - name: clean
+          input: guitar-in
+          width: mono
+          chain: []
+        # The lead, blended in with the pedal.
+        - name: lead
+          input: guitar-in
+          width: mono
+          chain:
+          - name: drive   # on for the solos
+            uri: urn:drive
+        master:
+          output: monitor-out
+          chain: []
+        """))
+    raw = yaml.safe_load(path.read_text())
+    folded = fold_state(raw, {"processors": {"lead_send": {"parameters": {"gain": level_to_gain(-6.0)}}}})
+    write_rig(path, folded)
+    text = path.read_text()
+    assert "level: -6.0" in text
+    assert "# The lead, blended in with the pedal." in text and "# on for the solos" in text
+    assert yaml.safe_load(text)["channels"][1]["level"] == -6.0

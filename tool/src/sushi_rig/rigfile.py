@@ -278,8 +278,6 @@ _SETTING_SHAPES = {
 
 # A track's gain, pan and mute at unity, normalised as Sushi stores them: 0 dB
 # on its -120..24 dB range, pan centred on -1..1, unmuted.
-UNITY_STRIP = {"gain": 120 / 144, "pan": 0.5, "mute": 0.0}
-
 # The send's gain parameter, from Sushi 1.3.0's send_plugin.cpp: dB, -120 to
 # +24, default 0, stored normalised. These two are its unit conversion.
 LEVEL_RANGE = (-120.0, 24.0)
@@ -293,9 +291,18 @@ def level_to_gain(level_db: float) -> float:
 
 def gain_to_level(gain: float) -> float:
     """The send's normalised `gain` as a level in dB, to a thousandth, which
-    is below anything audible and above a float32 capture's noise."""
+    is below anything audible and above a float32 capture's noise. Clamped
+    to the send's range, as Sushi clamps what it is sent, so a capture that
+    reads 1.05 is +24 dB and not a refusal at save; and never -0.0, which
+    YAML would write as `-0.0`."""
     low, high = LEVEL_RANGE
-    return round(low + float(gain) * (high - low), 3)
+    gain = min(1.0, max(0.0, float(gain)))
+    return round(low + gain * (high - low), 3) + 0.0
+
+
+# A strip at unity, as Sushi stores it: the gain is 0 dB on the same -120 to
+# +24 range a send has, derived rather than written twice.
+UNITY_STRIP = {"gain": level_to_gain(0.0), "pan": 0.5, "mute": 0.0}
 
 
 def _strip_problems(where: str, strip: dict[str, Any]) -> list[str]:
@@ -316,7 +323,8 @@ def _strip_problems(where: str, strip: dict[str, Any]) -> list[str]:
     return [
         f"{where}: strip {', '.join(off)} is not unity, and a channel's strip acts after "
         "its send — it would change the stem and not what the monitors hear. Leave it "
-        "at gain 0.833333, pan 0.5, mute 0 until the mixer strip (#18) is designed"
+        "at gain 0.833333, pan 0.5, mute 0; a channel's level in the mix is `level:` on the "
+        "channel, in dB, which is the send's gain (#18)"
     ]
 
 
@@ -403,7 +411,9 @@ def parse_rig(raw: Any) -> Rig:
             elif not low <= value <= high:
                 problems.append(f"{where}: level {value} dB is outside the send's {low:g} to {high:g}")
             else:
-                level = float(value)
+                # To a thousandth, the precision SAVE writes back, so a file
+                # holding more is not rewritten on a save that changed nothing.
+                level = round(float(value), 3) + 0.0
         if "strip" in entry and isinstance(entry.get("name"), str):
             # The track's own gain, pan and mute, normalised as Sushi stores them.
             strip = _settings(f"{where}: strip", {"parameters": entry["strip"]}, problems)
@@ -550,7 +560,7 @@ def compile_rig(rig: Rig) -> tuple[RigSpec, dict[str, Any]]:
         if channel.level != 0.0:
             # Unity is the send's default, so a channel at 0 dB writes nothing
             # and every existing rig compiles exactly as before.
-            processors[send]["parameters"] = {"gain": round(level_to_gain(channel.level), 6)}
+            processors[send]["parameters"] = {"gain": level_to_gain(channel.level)}  # emit rounds
         next_input += channel.inputs_used
     # Last, always: see the module docstring.
     tracks.append(TrackSpec(
