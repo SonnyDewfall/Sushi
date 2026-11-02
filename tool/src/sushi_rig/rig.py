@@ -223,11 +223,70 @@ def prepare_rig(
     defaults to this machine's. Raises `RigError` with the reason, since a rig
     whose channels cannot be wired must not come up half-wired.
     """
-    from .machine import MachineError, MachineSpec, machine_path, rig_controller
     from .patchbay import PatchbayError, patchbay_for, read_pw_dump
+
+    path, machine_file, machine, spec, compiled = _compile_named_rig(name, root, machine_file)
+
+    if dump is None:
+        try:
+            dump = read_pw_dump()
+        except PatchbayError as exc:
+            raise RigError("cannot read the PipeWire graph to wire the rig: " + "; ".join(exc.problems)) from exc
+    try:
+        xml, warnings = patchbay_for(
+            spec, machine, dump, tuner=tuner, rig_name=path.name,
+            machine_name=machine_file.name,
+        )
+    except PatchbayError as exc:
+        raise RigError(f"{path.name} cannot be wired on this machine:\n  " + "\n  ".join(exc.problems)) from exc
+
+    # Unconditional, as it was before the compile was shared: the provenance
+    # is the rig file's, whatever `_meta` turned out to be.
+    source = f"config/rigs/{name}.yaml"
+    config = write_compiled(name, compiled, runtime)
+    patchbay = config.parent / f"{name}.qpwgraph"
+    patchbay.write_text(xml)
+    return {
+        "config": config,
+        "patchbay": patchbay,
+        "source": source,
+        "warnings": warnings,
+        # What the config and patchbay were compiled against, for the state
+        # file: the listener's save check must compile against the same one.
+        "machine": machine_file,
+    }
+
+
+def _compile_named_rig(
+    name: str, root: Path, machine_file: Path | None = None,
+) -> tuple[Path, Path, Any, Any, dict[str, Any]]:
+    """`(rig file, machine file, machine, spec, compiled config)` for rig
+    `name` of config/rigs, or `RigError` with the reason: everything
+    `prepare_rig` needs before the live graph, and all a live switch (#93)
+    needs, which compares the compiled config with the running one and wires
+    nothing. One function, so the two cannot compile a rig differently.
+
+    Every failure is a `RigError`, not only the ones foreseen below: a YAML
+    syntax error, a file that cannot be read, anything the compiler raises.
+    A switch refuses on a `RigError` with the running rig left playing, and
+    anything else escaped it as a bare 500 with nothing in /health (found by
+    review); `midi_listener.rig_problem`, which this replaced, caught them
+    all too."""
+    path = root / "config" / "rigs" / f"{name}.yaml"
+    try:
+        return _compile_named_rig_unguarded(name, root, path, machine_file)
+    except RigError:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- said, with its type, as a refusal
+        raise RigError(f"{path.name}: {type(exc).__name__}: {exc}") from exc
+
+
+def _compile_named_rig_unguarded(
+    name: str, root: Path, path: Path, machine_file: Path | None,
+) -> tuple[Path, Path, Any, Any, dict[str, Any]]:
+    from .machine import MachineError, MachineSpec, machine_path, rig_controller
     from .rigfile import RigFileError, compile_rig, emit_compiled, load_rig
 
-    path = root / "config" / "rigs" / f"{name}.yaml"
     if not path.is_file():
         raise RigError(f"no such rig: {path}")
     try:
@@ -259,44 +318,31 @@ def prepare_rig(
         compiled = emit_compiled(loaded, spec, fixed)
     except RigFileError as exc:
         raise RigError(f"{path.name}:\n  " + "\n  ".join(exc.problems)) from exc
-
-    if dump is None:
-        try:
-            dump = read_pw_dump()
-        except PatchbayError as exc:
-            raise RigError("cannot read the PipeWire graph to wire the rig: " + "; ".join(exc.problems)) from exc
-    try:
-        xml, warnings = patchbay_for(
-            spec, machine, dump, tuner=tuner, rig_name=path.name,
-            machine_name=machine_file.name,
-        )
-    except PatchbayError as exc:
-        raise RigError(f"{path.name} cannot be wired on this machine:\n  " + "\n  ".join(exc.problems)) from exc
-
     # The provenance `emit` writes, so `resolve_rig_yaml` knows which file this
     # run came from and `save` (when it can write a v2 rig) saves there.
-    source = f"config/rigs/{name}.yaml"
     meta = compiled.setdefault("_meta", {})
     if isinstance(meta, dict):
-        meta["source"] = source
-    # Their own directory: the runtime root holds the state file (rig.json),
-    # the amp's project and its patchbay, so a rig called `rig` would otherwise
-    # share a name with the state file.
+        meta["source"] = f"config/rigs/{name}.yaml"
+    return path, machine_file, machine, spec, compiled
+
+
+def compile_named_rig(name: str, root: Path, machine_file: Path | None = None) -> dict[str, Any]:
+    """The config `up --rig name` would run, compiled and not written, or
+    `RigError`: what a live switch (#93) diffs against the running one."""
+    return _compile_named_rig(name, root, machine_file)[-1]
+
+
+def write_compiled(name: str, compiled: dict[str, Any], runtime: Path) -> Path:
+    """Write a compiled rig where a run's config lives, and return the path.
+
+    Their own directory: the runtime root holds the state file (rig.json),
+    the amp's project and its patchbay, so a rig called `rig` would otherwise
+    share a name with the state file."""
     out = runtime / "rigs"
     out.mkdir(parents=True, exist_ok=True)
     config = out / f"{name}.json"
     config.write_text(json.dumps(compiled, indent=2) + "\n")
-    patchbay = out / f"{name}.qpwgraph"
-    patchbay.write_text(xml)
-    return {
-        "config": config,
-        "patchbay": patchbay,
-        "source": source,
-        "warnings": warnings,
-        # What the config and patchbay were compiled against, for the state
-        # file: the listener's save check must compile against the same one.
-        "machine": machine_file,
-    }
+    return config
 
 
 def plan_children(
