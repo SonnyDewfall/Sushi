@@ -55,8 +55,52 @@ def test_a_profile_is_flattened_in_the_order_the_panel_lays_it_out():
         ("Level", "output", "primary"), ("BYPASS", None, "hidden"),
     ]
     level = flat["parameters"][2]
-    assert (level["min"], level["max"], level["unit"], level["scale"], level["control"], level["phone"]) == \
-        (-20.0, 4.0, None, "linear", "fader", 1), "the plugin declares no unit, so none is invented"
+    assert (level["unit"], level["scale"], level["control"], level["phone"]) == \
+        (None, "linear", "fader", 1), "the plugin declares no unit, so none is invented"
+
+
+def test_only_what_the_browser_reads_is_sent_and_no_range():
+    """The range comes from Sushi's parameter_info, which is what Sushi
+    normalises over; a profile's restated min and max, `order` (used here to
+    sort) and `enumeration` would be a contract the page does not honour."""
+    flat, _ = panel_profile(gxts9_profile())
+    assert set(flat["parameters"][0]) == {
+        "name", "label", "group", "visibility", "scale", "control", "phone", "description",
+        "unit", "integer", "toggled", "scale_points"}
+
+
+def test_ungrouped_parameters_go_last_in_their_own_order():
+    """Ranked once every group is known: an undefined group met between two
+    ungrouped parameters must not split them by file position."""
+    flat, problems = panel_profile({
+        "_file": "u.yaml", "groups": [{"id": "a", "label": "A"}],
+        "parameters": [
+            {"name": "U1", "order": {"value": 5}},
+            {"name": "X", "group": {"value": "x"}},
+            {"name": "U2", "order": {"value": 1}},
+        ],
+    })
+    assert [p["name"] for p in flat["parameters"]] == ["X", "U2", "U1"]
+    assert problems == ["u.yaml: X names group 'x', which groups does not define"]
+
+
+@pytest.mark.parametrize("bad, said", [
+    ({"parameters": [{"name": "Drive", "group": {"value": ["dirt"]}}]}, "Drive's group is not a name: ['dirt']"),
+    ({"plugin": "not a mapping", "parameters": [{"name": "Drive", "group": {"value": {"a": 1}}}]}, "group is not a name"),
+    ({"parameters": 3}, "parameters is not a list: 3"),
+    ({"groups": "dirt"}, "groups is not a list: 'dirt'"),
+])
+def test_a_profile_that_cannot_be_laid_out_is_named_and_the_rest_served(bad, said):
+    answer = panel_profiles({GXTS9: gxts9_profile(), "urn:bad": {"_file": "bad.yaml", **bad}}, [])
+    assert list(answer["profiles"]) == [GXTS9]
+    assert len(answer["problems"]) == 1
+    assert answer["problems"][0].startswith("bad.yaml: ") and said in answer["problems"][0]
+    assert answer["problems"][0].endswith("this profile is not used")
+
+
+def test_a_non_mapping_plugin_does_not_stop_a_profile_being_laid_out():
+    flat, problems = panel_profile({"_file": "p.yaml", "plugin": ["x"], "parameters": [{"name": "A"}]})
+    assert (flat["uri"], [p["name"] for p in flat["parameters"]], problems) == (None, ["A"], [])
 
 
 def test_what_a_profile_does_not_say_is_named_not_guessed():
@@ -107,7 +151,8 @@ def call(agent, method, path):
 
 def ui_agent(**kwargs):
     kwargs.setdefault("describe", lambda: {"verdict": "running", "running": True, "config_name": "x"})
-    return Agent(root=checkout_root(), **kwargs)
+    kwargs.setdefault("root", checkout_root())
+    return Agent(**kwargs)
 
 
 def test_the_page_and_its_files_are_served_and_nothing_beside_them():
@@ -118,6 +163,51 @@ def test_the_page_and_its_files_are_served_and_nothing_beside_them():
     for path in ("/ui/", "/ui/../__init__.py", "/ui/%2e%2e/__init__.py", "/ui/../../agent.py", "/ui/__init__.py"):
         status, _, body = call(ui_agent(live=UiRig()), "GET", path)
         assert status in (403, 404) and b"import" not in body, path
+
+
+def profiles_root(tmp_path, *extra):
+    """A checkout root whose profiles are gxts9's and `extra`, (name, text) pairs."""
+    import shutil
+
+    folder = tmp_path / PROFILES_DIR
+    folder.mkdir(parents=True)
+    shutil.copy(checkout_root() / PROFILES_DIR / "gxts9.yaml", folder / "gxts9.yaml")
+    for name, text in extra:
+        (folder / name).write_text(text, encoding="utf-8")
+    return tmp_path
+
+
+BAD_PROFILE = """schema_version: 1
+plugin: {uri: 'urn:bad', name: Bad}
+parameters:
+  - name: Drive
+    group: {value: [dirt], provenance: draft}
+"""
+
+
+def test_one_bad_profile_file_is_a_problem_not_a_500(tmp_path):
+    import json
+
+    root = profiles_root(tmp_path, ("bad.yaml", BAD_PROFILE))
+    status, _, body = call(ui_agent(live=UiRig(), root=root), "GET", "/profiles")
+    answer = json.loads(body)
+    assert status == 200 and list(answer["profiles"]) == [GXTS9]
+    assert answer["problems"] == ["bad.yaml: Drive's group is not a name: ['dirt']; this profile is not used"]
+
+
+def test_the_ui_files_are_in_the_package_data_a_wheel_carries():
+    """`add_static` serves them from the installed package, so a non-editable
+    install must carry every one: each file must match a package-data glob.
+    (A wheel built from this tree was checked to hold them, 2026-11-02.)"""
+    import fnmatch
+
+    tomllib = pytest.importorskip("tomllib")
+    config = tomllib.loads((checkout_root() / "tool" / "pyproject.toml").read_text(encoding="utf-8"))
+    globs = config["tool"]["setuptools"]["package-data"]["sushi_rig"]
+    package = UI_DIR.parent.parent
+    files = [path.relative_to(package).as_posix() for path in UI_DIR.iterdir() if path.is_file()]
+    assert sorted(files) == ["ui/static/app.js", "ui/static/index.html", "ui/static/rig.js", "ui/static/style.css"]
+    assert [f for f in files if not any(fnmatch.fnmatch(f, g) for g in globs)] == []
 
 
 def test_profiles_are_served_flattened_with_no_rig_needed():
@@ -396,6 +486,16 @@ def test_a_reordered_chain_is_unsaved_until_it_is_put_back(blank, served):
     assert unsaved(blank, [moved], rig.snapshot(rig.connect()))["items"] == []
 
 
+def test_a_move_of_a_processor_since_removed_keeps_the_chain_it_started_from(blank):
+    """[a, b, c]; c moved up, then removed. The move's own `previous` is the
+    baseline, not the chain the remove found."""
+    live = {"tracks": {"board": ["a", "b"]}, "processors": {}, "parameter_info": {}}
+    log = [entry("move", {"processor": "c", "direction": "up"}, ["a", "b", "c"]),
+           entry("remove", {"processor": "c"}, {"track": "board", "chain": ["a", "c", "b"], "uri": None, "uid": None, "type": "lv2"}, 11)]
+    assert unsaved(blank, log, live)["items"] == [
+        {"kind": "chain", "track": "board", "from": ["a", "b", "c"], "to": ["a", "b"], "source": None}]
+
+
 @pytest.mark.parametrize("log, first", [
     ([], 0),
     ([entry("parameter", {"processor": "a", "parameter": "x", "value": 1}, 0)], 0),
@@ -435,6 +535,16 @@ def test_an_up_rig_is_never_shown_as_measured_and_down_is_said(blank):
         ["busy", "electric_board", "restart is running", False],
         ["down", "Agent not answering", "the agent did not answer", False],
     ]
+
+
+def test_a_two_state_control_is_on_past_half_its_travel_whatever_its_scale(blank):
+    out = rigjs(blank, """
+      const info = (v) => ({automatable: true, value: v, min_domain_value: 0, max_domain_value: 1});
+      const linear = R.makeControl('m', info(0.3), {control: 'toggle', scale: 'linear'});
+      const toggled = R.makeControl('t', info(1), {scale: 'toggle', toggled: true});
+      return [R.isOn(linear, 0.3), R.isOn(linear, 0.7), R.isOn(linear, null), R.formatValue(linear, 0.7),
+              R.isOn(toggled, 1), R.isOn(toggled, 0)];""")
+    assert out == [False, True, False, "0.70", True, False]
 
 
 def test_the_lock_refuses_structure_and_lets_sound_through(blank):
@@ -663,3 +773,114 @@ def test_the_stage_shows_the_agents_last_error(stage, served):
     stage.get_by_role("button", name="Turn on octave").click()
     expect(stage.locator(".problem.agent")).to_contain_text("Sushi did not confirm the bypass (test)")
     expect(stage.locator(".problem.refused")).to_contain_text("Not changed: octave")
+
+
+# -- what the page fetches, and when ----------------------------------------------------
+
+def gxts9_info():
+    from ui_fake import FIXTURES, info_of, probe_ports
+
+    return info_of(probe_ports(FIXTURES / "probe_gxts9.json"))
+
+
+@pytest.mark.parametrize("how", ["config_name", "started_at", "rig switch in the log"])
+def test_a_rig_with_the_same_names_and_another_plugin_gets_that_plugins_profile(rack, served, how):
+    delay = rack.locator('.unit[data-unit="delay"]')
+    expect(delay).to_contain_text("no profile: every parameter")
+    with served.rig.lock:  # the agent reads the rig from its worker threads
+        served.rig.classes["delay"] = {"uri": GXTS9, "uid": None, "type": "lv2"}
+        served.rig.info["delay"] = gxts9_info()
+    before = served.state["describe"]
+    if how == "config_name":
+        served.state["describe"] = lambda: {**before(), "config_name": "electric_board_2", "rig": "electric_board_2"}
+    elif how == "started_at":
+        served.state["describe"] = lambda: {**before(), "started_at": datetime.now(timezone.utc).isoformat()}
+    else:  # a live swap (#93) writes a rig entry and need not restart
+        served._loop.call_soon_threadsafe(served.agent._record, "rig", {"rig": "electric_board", "program": 3}, "electric_board")
+    expect(delay).to_contain_text("GxTubeScreamer \u00b7 profile")
+    expect(delay.get_by_role("slider")).to_have_count(3)
+    expect(slider(rack, "delay Drive")).to_have_attribute("aria-valuetext", "0.50")
+
+
+TOGGLE_PROFILE = """schema_version: 1
+plugin: {uri: 'http://drobilla.net/plugins/mda/Delay', name: MDA Delay}
+parameters:
+  - name: FX Mix
+    visibility: {value: primary, provenance: draft}
+    scale: {value: linear, provenance: draft}
+    control: {value: toggle, provenance: draft}
+"""
+
+
+def test_a_toggle_control_on_a_linear_scale_says_whether_it_is_on(browser, tmp_path):
+    with Served(root=profiles_root(tmp_path, ("delay.yaml", TOGGLE_PROFILE))) as served:
+        page = Page(browser, served.url + "/#rack")
+        switch = page.page.get_by_role("button", name="delay FX Mix", exact=True)
+        expect(switch).to_have_attribute("aria-pressed", "false")  # 0.30
+        with served.rig.lock:
+            served.rig.info["delay"]["FX Mix"]["value"] = 0.7
+        expect(switch).to_have_attribute("aria-pressed", "true")
+        switch.click()
+        until(lambda: served.rig.info["delay"]["FX Mix"]["value"] == 0.0)
+        expect(switch).to_have_attribute("aria-pressed", "false")
+        page.close()
+
+
+def advance(page, seconds):
+    """Run the page's clock on, a second at a time, letting each poll's
+    requests come back in real time between."""
+    for _ in range(seconds):
+        page.clock.run_for(1000)
+        page.wait_for_timeout(120)
+
+
+def test_profile_problems_are_shown_once_and_not_fetched_for_again(browser, tmp_path):
+    with Served(root=profiles_root(tmp_path, ("bad.yaml", BAD_PROFILE))) as served:
+        page = Page.__new__(Page)
+        page.page = browser.new_page()
+        page.errors = []
+        asked = []
+        page.page.on("request", lambda r: asked.append(r.url) if r.url.endswith("/profiles") else None)
+        page.page.clock.install()
+        page.page.goto(served.url + "/#rack")
+        expect(page.page.locator(".problem.page")).to_contain_text("bad.yaml: Drive's group is not a name")
+        advance(page.page, 15)
+        assert len(asked) == 1, "a loader problem is not a failed fetch"
+        expect(page.page.locator('.unit[data-unit="overdrive"]')).to_contain_text("GxTubeScreamer \u00b7 profile")
+        page.close()
+
+
+def test_profiles_and_names_that_fail_to_arrive_are_asked_for_again_and_hold_nothing_up(browser, served):
+    page = Page.__new__(Page)
+    page.page = browser.new_page()
+    page.errors = []
+    calls = {"profiles": 0, "library": 0}
+    held = []
+
+    def profiles(route):
+        calls["profiles"] += 1
+        if calls["profiles"] == 1:
+            route.fulfill(status=500, json={"ok": False, "reason": "profiles folder unreadable (test)"})
+        else:
+            route.continue_()
+
+    def library(route):
+        calls["library"] += 1
+        if calls["library"] == 1:
+            held.append(route)  # the first library build has not finished
+        else:
+            route.continue_()
+
+    page.page.route("**/profiles", profiles)
+    page.page.route("**/library", library)
+    page.page.clock.install()
+    page.page.goto(served.url + "/#rack")
+    # The rig shows while the library is still being built.
+    expect(page.page.locator(".unit")).to_have_count(4)
+    expect(page.page.locator(".problem.page")).to_contain_text("profiles folder unreadable (test)")
+    held[0].abort()
+    advance(page.page, 12)
+    assert calls == {"profiles": 2, "library": 2}
+    expect(page.page.locator('.unit[data-unit="overdrive"]')).to_contain_text("GxTubeScreamer \u00b7 profile")
+    expect(page.page.locator(".problem.page")).to_have_count(0)
+    page.close()

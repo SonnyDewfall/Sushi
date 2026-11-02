@@ -257,11 +257,12 @@ class Served:
     """A real agent over `rig` on 127.0.0.1, in a thread of its own, until
     `close`. `url` is where it answers."""
 
-    def __init__(self, rig: UiRig | None = None, port: int = 0, describe=None):
+    def __init__(self, rig: UiRig | None = None, port: int = 0, describe=None, root: Path | None = None):
         self.rig = rig or UiRig()
         started = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(minutes=12)
         self.state = {"describe": describe or describe_up(started)}
-        self.agent = Agent(root=checkout_root(), live=self.rig, describe=lambda: self.state["describe"](),
+        # `root` is where the profiles are read from (tool/examples/profiles/ under it).
+        self.agent = Agent(root=root or checkout_root(), live=self.rig, describe=lambda: self.state["describe"](),
                            library=lambda: {"plugins": [], "problems": []})
         self._loop = asyncio.new_event_loop()
         self._ready = threading.Event()
@@ -288,6 +289,9 @@ class Served:
         self._loop.run_forever()
 
     def close(self):
+        if self._loop.is_closed():
+            return
+
         async def stop():
             await self._runner.cleanup()
 

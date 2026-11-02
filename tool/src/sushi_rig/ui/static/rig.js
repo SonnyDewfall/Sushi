@@ -99,6 +99,13 @@ export function valueAt(ctrl, position) {
   return normalisedOf(ctrl, real);
 }
 
+// Whether a two-state control (a toggle, by scale or by the profile's
+// control) is on: past half its travel, as a click flips it. Not from the
+// text, which is a number for a toggle control on a linear scale.
+export function isOn(ctrl, v) {
+  return isNumber(v) && positionOf(ctrl, v) >= 0.5;
+}
+
 // One key press's travel: one step of an integer control, else a hundredth.
 export function stepOf(ctrl) {
   if ((ctrl.integer || ctrl.scale === "enum") && ctrl.hasRange && !logMapped(ctrl)) return 1 / (ctrl.max - ctrl.min);
@@ -237,6 +244,26 @@ export function channelLevels(model, live) {
 // ---------------------------------------------------------------- unsaved
 
 const sameChain = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((x, i) => x === b[i]);
+// Which track a logged move was on. The log does not say, so: a later
+// remove of the processor says where it was; else where it is now; else the
+// track that still holds another processor of the chain the move started
+// from. Null only for a chain left with nothing of what it had.
+function moveTrack(log, i, processor, previous, live) {
+  for (let j = i + 1; j < log.length; j++) {
+    const later = log[j];
+    if (later.op === "remove" && (later.args || {}).processor === processor && later.previous && later.previous.track) {
+      return later.previous.track;
+    }
+  }
+  const now = trackOf(live, processor);
+  if (now) return now;
+  const others = Array.isArray(previous) ? previous.filter((p) => p !== processor) : [];
+  for (const [t, chain] of Object.entries((live && live.tracks) || {})) {
+    if (others.some((p) => chain.includes(p))) return t;
+  }
+  return null;
+}
+
 const trackOf = (live, processor) => {
   for (const [t, chain] of Object.entries((live && live.tracks) || {})) if (chain.includes(processor)) return t;
   return null;
@@ -273,7 +300,9 @@ export function unsavedChanges(logAnswer, live, rig) {
     if (op === "parameter") note(`p\u0000${a.processor}\u0000${a.parameter}`, "parameter", { processor: a.processor, parameter: a.parameter }, e.previous, e);
     else if (op === "bypass") note(`b\u0000${a.processor}`, "bypass", { processor: a.processor }, e.previous, e);
     else if (op === "move") {
-      const t = trackOf(live, a.processor);
+      // The move's own `previous` is the chain before it; only its track's
+      // name has to be found, and the processor may be gone since.
+      const t = moveTrack(log, i, a.processor, e.previous, live);
       if (t) note(`c\u0000${t}`, "chain", { track: t }, e.previous, e);
     } else if (op === "add") note(`c\u0000${a.track}`, "chain", { track: a.track }, e.previous, e);
     else if (op === "remove" && e.previous && e.previous.track) note(`c\u0000${e.previous.track}`, "chain", { track: e.previous.track }, e.previous.chain, e);

@@ -2044,3 +2044,35 @@ package the browser tests skip, and a Chromium that will not start fails them.
 **Not run:** any of it against a live Sushi, a phone's own browser, or the
 Docker build (no Docker here; the Dockerfile step is untested until CI builds
 it). *(2026-11-02)*
+
+*Review of the web UI found nine; fixed, each with a test.* (1) **A rig of the
+same names showed the old plugin's profile**: which plugin each processor is
+was read again only when the processors' names changed, so a switch to a rig
+with the same names and another plugin kept the first one's profile. It is now
+keyed on the rig too: `/health`'s `config_name`, `rig` and `started_at`, and the
+newest rig switch in the live log, which a live swap writes without a restart
+(the coming `POST /rig/switch`); the old answer is dropped before the new one
+is asked for. (2) Ungrouped parameters were ranked by a group count taken
+mid-loop, so an undefined group named between two of them split them by file
+position; they are ranked once every group is known, last, by `order`. (3) A
+group that is not a name (`{value: [dirt]}`) or a `plugin` that is not a
+mapping raised in `panel_profile`, making `/profiles` a 500 for every profile;
+the plugin is read safely, and a profile that cannot be laid out
+(`PanelError`) is a problem naming its file while the rest are served. (4) The
+page took `/profiles`' loader problems for a failed fetch and asked again every
+10 s for ever; a failed fetch is retried, problems are shown once. (5)
+`live.read_live_plugins` copied `_session_plugins`; there is one walk of the
+session now, and it carries each processor's track (the remove's record already
+names the track and keeps only uri, uid and type). (6) A move of a processor
+removed since was dropped from "unsaved" and the remove's chain taken as the
+baseline: the move's own `previous` is used, its track found from a later
+remove, where the processor is, or a neighbour it had. (7) The first poll
+waited on `/library` (built on first use) and `/profiles` before drawing
+anything, and a failed `/library` was kept as empty for good: both are fetched
+beside the poll and retried. (8) A toggle control on a linear scale was never
+`aria-pressed`, the state being read from its text; it is read from its travel
+(`rig.isOn`), as its click is. (9) `/profiles` sent `min`, `max`, `order` and
+`enumeration`, which the page never reads: the range comes from Sushi's
+`parameter_info`, what Sushi normalises over, so they are no longer sent and
+the docstring says why. The package-data globs are checked against the UI's
+files by a test. Still not run against a live Sushi. *(2026-11-02)*

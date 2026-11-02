@@ -34,8 +34,8 @@ function writeLocked(locked) {
 const state = {
   health: null, live: null, log: null,
   plugins: null, pluginsFor: null, pluginsError: null, pluginsAt: 0,
-  profiles: null, profilesError: null, profilesAt: 0,
-  names: null,               // plugin names by URI, from /library: decoration, so a failure is not shown
+  profiles: null, profilesError: null, profilesAt: 0, profileProblems: [],
+  names: null, namesAt: 0,   // plugin names by URI, from /library: decoration, so a failure is not shown
   locked: readLocked(), armed: false, armTimer: null,
   open: new Set(),           // units opened, by name
   failures: [],              // this page's refused changes, newest first
@@ -81,10 +81,25 @@ function fail(title, result, action = null) {
   state.failures.length = Math.min(state.failures.length, 4);
 }
 
-async function refreshPlugins(live) {
-  const key = JSON.stringify(live.tracks);
+// Which rig this is, beyond its processors' names: a switch can bring up a
+// rig with the same tracks and names and a different plugin under one of
+// them, by a restart (a new start time) or live (a new name, or a rig switch
+// in the agent's log, which the live swap of #93 writes without a restart).
+function rigIdentity(health, log) {
+  const rig = health && health.ok ? health.body.rig || {} : {};
+  let switched = null;
+  const entries = (log && log.log) || [];
+  for (let i = entries.length - 1; i >= 0; i--) {
+    if (entries[i].op === "rig") { switched = (log.first || 0) + i; break; }
+  }
+  return [rig.config_name ?? null, rig.rig ?? null, rig.started_at ?? null, switched];
+}
+
+async function refreshPlugins(live, identity) {
+  const key = JSON.stringify([live.tracks, identity]);
   const retry = state.pluginsError && Date.now() - state.pluginsAt > RETRY_MS;
   if (key === state.pluginsFor && !retry) return;
+  if (key !== state.pluginsFor) state.plugins = null; // never another rig's plugins, even for a moment
   const answer = await request("GET", "/live/plugins");
   state.pluginsFor = key;
   state.pluginsAt = Date.now();
@@ -92,23 +107,40 @@ async function refreshPlugins(live) {
   state.pluginsError = answer.ok ? null : answer.reason;
 }
 
+// The profiles and the plugins' names are files, not the rig, and the library
+// is built on its first request: neither may hold up the first sight of the
+// rig, so they are fetched beside the poll, not in it. A fetch that failed is
+// asked again after RETRY_MS; one that answered is kept, its loader problems
+// (a profile that would not load) shown and not a reason to ask again.
+const fetching = new Set();
+function inBackground(name, fetch) {
+  if (fetching.has(name)) return;
+  fetching.add(name);
+  fetch().then((fetched) => { fetching.delete(name); if (fetched) render(); });
+}
+
 async function refreshProfiles() {
-  if (state.profiles && !state.profilesError) return;
-  if (state.profilesAt && Date.now() - state.profilesAt < RETRY_MS) return;
+  if (state.profiles) return false;
+  if (state.profilesAt && Date.now() - state.profilesAt < RETRY_MS) return false;
   const answer = await request("GET", "/profiles");
   state.profilesAt = Date.now();
   if (answer.ok) {
     state.profiles = answer.body.profiles;
-    state.profilesError = answer.body.problems.length ? answer.body.problems.join("; ") : null;
+    state.profileProblems = answer.body.problems;
+    state.profilesError = null;
   } else {
     state.profilesError = answer.reason;
   }
+  return true;
 }
 
 async function refreshNames() {
-  if (state.names) return;
+  if (state.names) return false;
+  if (state.namesAt && Date.now() - state.namesAt < RETRY_MS) return false;
   const answer = await request("GET", "/library");
-  state.names = answer.ok ? Object.fromEntries(answer.body.plugins.map((p) => [p.uri, p.name])) : {};
+  state.namesAt = Date.now();
+  if (answer.ok) state.names = Object.fromEntries(answer.body.plugins.map((p) => [p.uri, p.name]));
+  return answer.ok;
 }
 
 async function poll() {
@@ -118,14 +150,16 @@ async function poll() {
   const seq = ++state.pollSeq;
   try {
     const [health, live, log] = await Promise.all([
-      request("GET", "/health"), request("GET", "/live"), request("GET", "/live/log"), refreshProfiles(), refreshNames(),
+      request("GET", "/health"), request("GET", "/live"), request("GET", "/live/log"),
     ]);
     state.health = health;
     state.live = live;
     state.log = log.ok ? log.body : null;
     state.seq = seq;
-    if (live.ok) await refreshPlugins(live.body);
+    if (live.ok) await refreshPlugins(live.body, rigIdentity(health, state.log));
     render();
+    inBackground("profiles", refreshProfiles);
+    inBackground("names", refreshNames);
   } finally {
     state.polling = false;
     state.timer = setTimeout(poll, POLL_MS);
@@ -264,14 +298,14 @@ function toggle(unit, ctrl) {
     h("span", { class: "label" }, ctrl.label), value);
   let current = null;
   el.addEventListener("click", () => {
-    const v = R.valueAt(ctrl, R.positionOf(ctrl, current ?? 0) >= 0.5 ? 0 : 1);
+    const v = R.valueAt(ctrl, R.isOn(ctrl, current) ? 0 : 1);
     sender.change(key, v, (x) => ({ path: "/live/parameter", json: { processor: unit.name, parameter: ctrl.name, value: x } }));
     render();
   });
   state.updaters.push((ctx) => {
     current = sender.displayed(key, R.valueOf(ctx.live, unit.name, ctrl.name), ctx.seq);
     value.textContent = R.formatValue(ctrl, current);
-    el.setAttribute("aria-pressed", String(R.formatValue(ctrl, current) === "on"));
+    el.setAttribute("aria-pressed", String(R.isOn(ctrl, current)));
     el.classList.toggle("unsaved", ctx.unsaved.has(key));
     el.classList.toggle("failed", state.failed.has(key));
   });
@@ -374,7 +408,8 @@ function problems() {
   const out = [];
   for (const p of R.agentProblems(state.health)) out.push({ kind: "agent", ...p });
   if (state.pluginsError) out.push({ kind: "page", title: "Which plugin each processor is", reason: `${state.pluginsError}: every card shows its parameters in a plain list, without profiles` });
-  if (state.profilesError) out.push({ kind: "page", title: "Profiles", reason: state.profilesError });
+  if (state.profilesError) out.push({ kind: "page", title: "Profiles could not be read", reason: `${state.profilesError}; asking again every ${RETRY_MS / 1000} s, and every card shows its parameters in a plain list meanwhile` });
+  for (const problem of state.profileProblems) out.push({ kind: "page", title: "Profile", reason: problem });
   return out;
 }
 
@@ -482,7 +517,7 @@ function renderRack(regions, model, unsaved, status) {
   ]);
   problemsRegion(regions.problems);
   const live = liveBody();
-  const structure = model ? JSON.stringify([model.tracks.map((t) => [t.name, t.chain, t.units.map((u) => [u.uri, u.profile, u.panel])]), state.locked, [...state.open]]) : "none";
+  const structure = model ? JSON.stringify([model.tracks.map((t) => [t.name, t.chain, t.units.map((u) => [u.uri, u.profile, u.panel])]), state.locked, [...state.open], !!state.names]) : "none";
   if (patch(regions.rack, structure, () => {
     state.updaters = [];
     if (!model) return h("p", { class: "empty" }, status.tone === "busy" ? "The rig is changing; the rack comes back when it is up." : "No rig to show: nothing is running in Sushi.");
