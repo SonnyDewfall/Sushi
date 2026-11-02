@@ -193,6 +193,96 @@ def test_a_v2_rig_is_compiled_and_wired_from_its_own_file(tmp_path):
     assert out["warnings"] == []
 
 
+def test_a_rig_with_a_midi_map_is_compiled_for_the_machines_controller(tmp_path):
+    """The machine file says what the MPD218 sends; the rig names its
+    controls; the compiled config carries Sushi's mappings."""
+    import textwrap
+
+    root = tmp_path / "checkout"
+    (root / "config" / "rigs").mkdir(parents=True)
+    (root / "config" / "rigs" / "blend.yaml").write_text(textwrap.dedent("""\
+        kind: rig
+        schema_version: 1
+        name: blend
+        channels:
+        - {name: clean, input: guitar-in, width: mono, chain: []}
+        - {name: lead, input: guitar-in, width: mono, chain: [], level: -3}
+        master: {output: monitor-out, chain: []}
+        midi:
+          controller: mpd218
+          controls:
+          - {control: knob1, blend: [clean, lead]}
+        """))
+    out = rig.prepare_rig("blend", root, tmp_path / "run", machine_file=MACHINE, dump=CAPTURED_DUMP)
+    mappings = json.loads(out["config"].read_text())["midi"]["cc_mappings"]
+    assert [(m["plugin_name"], m["cc_number"]) for m in mappings] == [("clean_send", 3), ("lead_send", 3)]
+
+    (root / "config" / "rigs" / "pedal.yaml").write_text(
+        (root / "config" / "rigs" / "blend.yaml").read_text().replace("controller: mpd218", "controller: fs6")
+    )
+    with pytest.raises(rig.RigError, match="written for controller 'fs6', which sonny-dewfall-XPS-9320.yaml does not describe"):
+        rig.prepare_rig("pedal", root, tmp_path / "run", machine_file=MACHINE, dump=CAPTURED_DUMP)
+
+
+def test_prepare_rig_reads_the_machine_file_once_and_says_which(tmp_path, monkeypatch):
+    """The patchbay and the MIDI map both need the machine; the file is
+    loaded and validated once, and the run's result names it so `up` can
+    record what the running rig was compiled against (the listener's save
+    check reads it back)."""
+    import textwrap
+
+    root = tmp_path / "checkout"
+    (root / "config" / "rigs").mkdir(parents=True)
+    (root / "config" / "rigs" / "blend.yaml").write_text(textwrap.dedent("""\
+        kind: rig
+        schema_version: 1
+        name: blend
+        channels:
+        - {name: clean, input: guitar-in, width: mono, chain: []}
+        - {name: lead, input: guitar-in, width: mono, chain: [], level: -3}
+        master: {output: monitor-out, chain: []}
+        midi:
+          controller: mpd218
+          controls:
+          - {control: knob1, blend: [clean, lead]}
+        """))
+    from sushi_rig.machine import MachineSpec
+
+    loads = []
+    real_load = MachineSpec.load.__func__
+    monkeypatch.setattr(MachineSpec, "load", classmethod(lambda cls, path: loads.append(path) or real_load(cls, path)))
+    out = rig.prepare_rig("blend", root, tmp_path / "run", machine_file=MACHINE, dump=CAPTURED_DUMP)
+    assert loads == [MACHINE]
+    assert out["machine"] == MACHINE
+
+
+def test_up_hands_the_supervisor_the_machine_file_the_rig_was_compiled_against(up_world, monkeypatch, tmp_path):
+    """So the state file can record it. A v1 run has none to record."""
+    compiled = tmp_path / "x.json"
+    compiled.write_text(json.dumps({"tracks": [], "_meta": {"source": "config/rigs/x.yaml"}}))
+    wired = tmp_path / "x.qpwgraph"
+    wired.write_text("<patchbay/>")
+    monkeypatch.setattr(rig, "prepare_rig", lambda name, root, runtime, **kw: {
+        "config": compiled, "patchbay": wired, "source": "config/rigs/x.yaml", "warnings": [],
+        "machine": MACHINE,
+    })
+    monkeypatch.setattr(rig, "plan_children", lambda *a, **kw: [])
+    seen = []
+    monkeypatch.setattr(rig, "_supervise", lambda *a, **kw: seen.append(kw))
+
+    def fork(supervise):
+        supervise(1)
+        ready_r, ready_w = os.pipe()
+        os.write(ready_w, b"READY\n")
+        os.close(ready_w)
+        state_file.write_state(running_state(config_name="x", rig="config/rigs/x.yaml"))
+        return 4242, ready_r
+
+    monkeypatch.setattr(rig, "_fork_supervisor", fork)
+    assert rig.up("x", headless=True, amp=False, rig=True) == 0
+    assert seen[0]["machine_file"] == MACHINE
+
+
 def test_a_rig_that_does_not_exist_is_refused_by_name(tmp_path):
     with pytest.raises(rig.RigError, match="no such rig"):
         rig.prepare_rig("nope", ROOT, tmp_path, machine_file=MACHINE, dump=CAPTURED_DUMP)
@@ -213,6 +303,7 @@ def test_up_on_a_v2_rig_uses_its_compiled_config_and_patchbay(up_world, monkeypa
     wired.write_text("<patchbay/>")
     monkeypatch.setattr(rig, "prepare_rig", lambda name, root, runtime, **kw: {
         "config": compiled, "patchbay": wired, "source": "config/rigs/x.yaml", "warnings": ["w"],
+        "machine": None,
     })
     seen = {}
 
@@ -238,6 +329,7 @@ def test_up_on_a_v2_rig_with_an_amp_wires_the_amp_into_the_generated_patchbay(up
     rewired = tmp_path / "rig-amp.qpwgraph"
     monkeypatch.setattr(rig, "prepare_rig", lambda name, root, runtime, **kw: {
         "config": compiled, "patchbay": wired, "source": "config/rigs/x.yaml", "warnings": [],
+        "machine": None,
     })
     seen = {}
 
@@ -255,6 +347,15 @@ def test_up_on_a_v2_rig_with_an_amp_wires_the_amp_into_the_generated_patchbay(up
     up_world.say("READY", then_write=running_state(config_name="x", rig="config/rigs/x.yaml"))
     assert rig.up("x", headless=True, amp=True, rig=True) == 0
     assert seen == {"base": wired, "patchbay": rewired}
+
+
+def test_the_machine_file_is_recorded_as_an_absolute_path(tmp_path, monkeypatch):
+    """The listener resolves it from its own directory, which is not where
+    `up` was run: a relative path would fail every SAVE check."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "box.yaml").write_text("x")
+    assert rig._machine_record(Path("box.yaml")) == str(tmp_path / "box.yaml")
+    assert rig._machine_record(None) is None
 
 
 def test_a_v2_runs_artefacts_cannot_collide_with_the_state_file(tmp_path):
@@ -343,6 +444,7 @@ def test_a_rig_run_with_a_panel_hands_its_file_to_the_listener(up_world, monkeyp
     wired.write_text("<patchbay/>")
     monkeypatch.setattr(rig, "prepare_rig", lambda name, root, runtime, **kw: {
         "config": compiled, "patchbay": wired, "source": "config/rigs/x.yaml", "warnings": [],
+        "machine": None,
     })
     monkeypatch.setattr(rig, "resolve_rig_yaml", lambda config, root: "config/rigs/x.yaml")
     seen = {}
@@ -1181,6 +1283,15 @@ def test_describe_rig_is_status_as_data(world, monkeypatch):
     assert described["children"]["fmit"] == {"pid": 4003, "alive": False}
     assert described["log_dir"] == state["log_dir"]
     assert "supervisor_pid" not in described, "the group is the handle, as for down"
+    assert "machine" not in described, "a v1 run records none, and none is shown"
+
+
+def test_the_machine_file_a_rig_was_compiled_against_is_described_and_shown(world, capsys):
+    world()
+    state_file.write_state(running_state(machine="/x/machines/box.yaml"))
+    assert rig.describe_rig()["machine"] == "/x/machines/box.yaml"
+    rig.status()
+    assert "machine    /x/machines/box.yaml" in capsys.readouterr().out
 
 
 def test_describe_rig_marks_a_child_pid_that_is_not_a_pid_as_unknown(world):

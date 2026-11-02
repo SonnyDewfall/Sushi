@@ -1353,6 +1353,59 @@ anything audible and above a float32 capture's noise. This is what the
 expression pedal's blend will drive: one CC, two channels' levels, opposite
 directions (#34). *(2026-11-02)*
 
+**A rig carries its MIDI map, compiled to Sushi's own mappings (#34).** The
+machine file gains `controllers`, each control named and described as what it
+sends (`cc` or `note`, the port as PipeWire lists it, the channel as Sushi
+counts it or `all`); the rig's `midi:` names a controller and binds its
+controls. Blend, parameter and mute compile into `cc_mappings`, verified
+against 1.3.0's `json_configurator.cpp` and `midi_dispatcher.cpp`: a CC drives
+a parameter as `min + (max - min) * value / 127` in its normalised domain, a
+reversed range inverts, a track's `mute` is a parameter, and any string for
+the channel is omni. A blend is two mappings on the two channels' sends, each
+from its channel's own level down to silence, so the mix is respected. A
+note cannot sweep and is refused for one; bypass and Program Change rig
+switching are returned for the agent, which Sushi cannot do natively. The
+spec still compiles for routing without the controller (the patchbay, the
+probes, SAVE's source check need no pedals), but a config does not: a rig
+running without its pedals would be silent degradation. The MPD218 is
+recorded as this machine's development controller with the facts measured on
+2026-11-01. Two hypotheses for the rig session: whether Sushi counts MIDI
+channels from 0 (the file passes the number through unchanged), and the name
+PipeWire gives Sushi's MIDI input, which the patchbay will need to link the
+pedal; a slow test loads a mapped rig in the container's Sushi to settle
+what `--dummy` accepts. *(2026-11-02)*
+
+**The MIDI map's follow-ups from review (#103).** `host.midi_inputs` is checked
+in `check_rig`, which `compile_rig` runs, as a whole number of 0 or more (an
+empty value is none given, as it always was), so a stray string is a named
+problem, from a file or a Rig built in code, and not an `int()` traceback from
+the compiler. A
+machine file whose controller has two controls sending the same cc, or the same
+note, is refused naming both, since a rig binding both would fire two mappings
+from one pedal; a cc and a note of one number are different messages and stay
+allowed. The agent's bindings are `fixed["agent"]`, a key of the compiled state
+beside `processors`, no longer a pseudo-processor in that map that two
+functions had to pop back out; the config's `_midi_agent` key is unchanged.
+The three places that resolved a rig's controller (`up --rig`, `emit`, the
+listener's save check) go through one `machine.rig_controller`, which takes a
+loaded machine, a path, or nothing for this host's; a loaded `MachineSpec`
+remembers the file it came from (`source`) for its messages, and `prepare_rig`
+loads the machine file once, passing the loaded spec on. The state
+file now records the machine file a rig run was compiled against (`machine`,
+as an absolute path, since the listener reads it from another directory;
+`status` and the agent's `/rig` show it for a rig run), and
+the listener's save check reads it back, so SAVE compiles against the file the
+running rig used and not this host's default. `up` has no `--machine` flag, so
+today the two are the same file; the record is what keeps them so when it gains
+one. A state file from before this change has no `machine` and falls back to the
+default. Not run live: the recorded path is tested through the state file and
+`up`'s hand-off to the supervisor, not through a real supervisor. The other write path to the blend hazard is closed too:
+`merged_state` ignores a captured `gain` on the send of a channel a blend
+drives, so `emit --state` with the pedal at toe no longer brings the rig up
+with a channel silent; the channel's `level` holds, and `fold_state` and
+`merged_state` share one `blended_channels` derivation. An unblended channel's
+captured gain still merges. *(2026-11-02)*
+
 **The capture engine is in the tool, with a check for silence that arrives as
 data.** #53's engine and #81's silent-block check, moved out of the spike into
 `capture.py`. A Python JACK callback is the engine, not a stopgap: the three

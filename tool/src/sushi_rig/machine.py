@@ -26,8 +26,10 @@ from typing import Any
 # that is silently wired to the wrong place.
 SCHEMA_VERSION = 1
 
-_KNOWN_KEYS = ("schema_version", "interface", "roles")
+_KNOWN_KEYS = ("schema_version", "interface", "roles", "controllers")
 _ROLE_KEYS = ("ports", "mono_to_stereo")
+_CONTROLLER_KEYS = ("port", "channel", "controls")
+MIDI_MAX = 127
 
 
 class MachineError(Exception):
@@ -53,12 +55,19 @@ class MachineSpec:
     schema_version: Any = None
     interface: Any = None
     roles: Any = field(default_factory=dict)
+    # MIDI controllers on this machine (#34): hardware varies by machine and
+    # venue, so a rig names a control (`expression`, `switch_a`) and the
+    # machine file says what that control sends.
+    controllers: Any = field(default_factory=dict)
     # Keys the schema does not define. Kept so validate() can name them — a
     # misspelt `role:` would otherwise load as a machine with no roles.
     unknown_keys: list[str] = field(default_factory=list)
     # PyYAML keeps the last of two equal keys and says nothing, so a role written
     # twice would silently lose the first. Found from the parse tree instead.
     duplicate_keys: list[tuple[str, Any, int]] = field(default_factory=list)
+    # The file `load` read, so a message about the machine can name it. None
+    # for a spec built in code.
+    source: Path | None = None
 
     @classmethod
     def load(cls, path: Path) -> "MachineSpec":
@@ -83,8 +92,10 @@ class MachineSpec:
             schema_version=raw.get("schema_version"),
             interface=raw.get("interface"),
             roles=raw.get("roles", {}),
+            controllers=raw.get("controllers", {}),
             unknown_keys=[str(k) for k in raw if k not in _KNOWN_KEYS],
             duplicate_keys=_duplicate_keys(tree),
+            source=Path(path),
         )
 
     def role_ports(self) -> dict[str, list[str]]:
@@ -221,7 +232,116 @@ class MachineSpec:
             # oversight: the saved patchbay feeds one capture port to both Sushi
             # and the tuner.
 
+        problems += self._controller_problems()
         return problems
+
+
+    def _controller_problems(self) -> list[str]:
+        """Every way the `controllers` section could be wrong, by name."""
+        problems: list[str] = []
+        if not isinstance(self.controllers, dict):
+            return [f"controllers must be a mapping of name to controller (got {self.controllers!r})"]
+        for name, spec in self.controllers.items():
+            where = f"controller {name!r}"
+            if not isinstance(spec, dict):
+                problems.append(f"{where}: must be a mapping with controls")
+                continue
+            for key in spec:
+                if key not in _CONTROLLER_KEYS:
+                    problems.append(f"{where}: unknown key {key!r} (expected {', '.join(_CONTROLLER_KEYS)})")
+            channel = spec.get("channel", "all")
+            if not (channel == "all" or (type(channel) is int and 0 <= channel <= 15)):
+                problems.append(f"{where}: channel must be 0 to 15 as Sushi counts it, or all (got {channel!r})")
+            if "port" in spec and not isinstance(spec["port"], str):
+                problems.append(f"{where}: port must be the MIDI port's name as PipeWire lists it")
+            controls = spec.get("controls")
+            if not isinstance(controls, dict) or not controls:
+                problems.append(f"{where}: controls must be a mapping of control name to what it sends")
+                continue
+            # Which control first sent each message. Two controls sending one
+            # number would, once a rig bound both, fire two mappings from one
+            # pedal with nothing to say so; a cc and a note of the same number
+            # are different messages and are not a clash.
+            claimed: dict[tuple[str, int], str] = {}
+            for control, sends in controls.items():
+                at = f"{where}: control {control!r}"
+                if not isinstance(sends, dict) or len(sends) != 1 or next(iter(sends)) not in ("cc", "note"):
+                    problems.append(f"{at}: must be exactly one of cc: <0-127> or note: <0-127>")
+                    continue
+                kind, number = next(iter(sends.items()))
+                if type(number) is not int or not 0 <= number <= MIDI_MAX:
+                    problems.append(f"{at}: {kind} must be 0 to {MIDI_MAX} (got {number!r})")
+                    continue
+                if (kind, number) in claimed:
+                    problems.append(
+                        f"{where}: controls {claimed[(kind, number)]!r} and {control!r} "
+                        f"both send {kind} {number}, so one pedal would fire both"
+                    )
+                else:
+                    claimed[(kind, number)] = control
+        return problems
+
+    def controller(self, name: str) -> dict[str, Any]:
+        """What `name`'s controls send: `{"port", "channel", "controls":
+        {control: ("cc"|"note", number)}}`, for the MIDI-map compiler.
+        Only valid after `validate()` returned nothing about controllers."""
+        spec = self.controllers[name]
+        return {
+            "port": spec.get("port"),
+            "channel": spec.get("channel", "all"),
+            "controls": {
+                control: next(iter(sends.items())) for control, sends in spec["controls"].items()
+            },
+        }
+
+    def controller_for(self, name: str) -> dict[str, Any]:
+        """`controller(name)` for a machine already loaded and validated, or
+        `MachineError` saying the file does not describe it."""
+        if name not in (self.controllers or {}):
+            file_name = self.source.name if self.source else "the machine file"
+            raise MachineError(
+                f"the rig is written for controller {name!r}, which {file_name} "
+                f"does not describe; its controllers: {', '.join(sorted(self.controllers or {})) or 'none'}"
+            )
+        return self.controller(name)
+
+
+def controller_for(controller_name: str, machine_file: Path) -> dict[str, Any]:
+    """The machine file's description of `controller_name`, for the MIDI-map
+    compiler, or `MachineError` saying why not. For a caller with only a
+    path. One that has loaded the machine already asks the spec
+    (`MachineSpec.controller_for`); callers with a rig go through
+    `rig_controller`."""
+    try:
+        machine = MachineSpec.load(machine_file)
+    except MachineError as exc:
+        raise MachineError(
+            f"the rig's MIDI map needs {machine_file.name}, which could not be read: {exc}"
+        ) from exc
+    problems = machine.validate()
+    if problems:
+        raise MachineError(f"{machine_file.name}: " + "; ".join(problems))
+    return machine.controller_for(controller_name)
+
+
+def rig_controller(rig: Any, machine: "MachineSpec | Path | None" = None) -> dict[str, Any] | None:
+    """The controller `rig`'s MIDI map names, as this machine describes it, or
+    None for a rig with no map; `MachineError` when the machine cannot say.
+
+    The one place `up --rig`, `emit` and the listener's save check resolve it,
+    so they refuse in the same words and cannot drift apart on the default.
+    `machine` is a machine already loaded and validated, which is used as it
+    is; or the path of a machine file to read; or None for this host's.
+    """
+    if rig.midi is None:
+        return None
+    if isinstance(machine, MachineSpec):
+        return machine.controller_for(rig.midi.controller)
+    if machine is None:
+        from .paths import checkout_root
+
+        machine = machine_path(checkout_root())
+    return controller_for(rig.midi.controller, machine)
 
 
 def _port_problem(port: Any) -> str | None:
@@ -250,6 +370,7 @@ def _duplicate_keys(tree: Any) -> list[tuple[str, Any, int]]:
     two where a repeat means anything.
     """
     import yaml
+
 
     def repeats(mapping: Any, where: str) -> list[tuple[str, Any, int]]:
         found = []
