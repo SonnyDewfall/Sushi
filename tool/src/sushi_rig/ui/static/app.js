@@ -116,7 +116,12 @@ const fetching = new Set();
 function inBackground(name, fetch) {
   if (fetching.has(name)) return;
   fetching.add(name);
-  fetch().then((fetched) => { fetching.delete(name); if (fetched) render(); });
+  // `request` never rejects, but the name is let go whatever happens, so a
+  // throw anywhere in a fetch can never stop its retry for good.
+  fetch()
+    .then((fetched) => { if (fetched) render(); })
+    .catch((error) => console.error(`fetching ${name}:`, error))
+    .finally(() => fetching.delete(name));
 }
 
 async function refreshProfiles() {
