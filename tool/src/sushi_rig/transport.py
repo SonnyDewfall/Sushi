@@ -1,4 +1,4 @@
-"""Record and stop: what the panel's record bar drives.
+"""Record and stop: what the panel's record bar drives, and the web UI's.
 
 Issue #57. The listener already takes a name and a save over OSC; this is the
 same shape for a take. A name arrives as its own message, RECORD starts a take
@@ -23,6 +23,14 @@ effects (`TakeSession`, which composes `take.start_take`, `recorder.Recorder`
 and a capture engine into one take, and finishes it with what the recorder
 says it captured), and which ports a take records (`rig_stems`, below), from
 which `record_session` builds the session the listener runs.
+
+The web UI records the same way, through another process: a headless rig has
+no listener, so `sushi-rig recorder` (recorder_process.py), a child of the
+rig, builds a session with `record_session` at each RECORD the agent sends it,
+from the run's files as they are then, and runs `TakeSession` start and stop.
+Same ports, same refusals, same take. The one difference: the listener reads
+the config Sushi loaded once, at its start, while the recorder reads it at
+each RECORD, since a live switch (#93) rewrites it under a running rig.
 
 The engine is `capture.CaptureEngine` (#53). When the listener cannot have one
 it runs `NoEngine`, which refuses every take with a sentence naming the reason.

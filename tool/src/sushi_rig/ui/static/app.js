@@ -30,6 +30,12 @@ const LOCK_KEY = "sushi-rig.locked";
 // copied in shows in the picker without a reload; a failed listing is asked
 // for again after RETRY_MS.
 const MODELS_MS = 30000;
+// GET /takes this often while the rack is shown (only the rack lists the
+// takes, and each answer checks takes on the machine playing the audio), and
+// at once when a take starts or stops, here or from another page.
+const TAKES_MS = 10000;
+// The running take's elapsed time is redrawn this often between polls.
+const TICK_MS = 250;
 // Colours for a unit's swatch, from the mockups; chosen by the plugin, so a
 // plugin keeps its colour wherever it sits. Decoration, nothing more.
 const SWATCHES = ["#D9C04E", "#F08A50", "#B59CF2", "#8FC25A", "#A98BF0", "#6FC6D1", "#E07A73"];
@@ -63,6 +69,12 @@ const state = {
   saveAsOpen: false, saveAsName: "",  // the Save as… form, and what is typed in it
   saveResult: null,          // what the last save from this page said (R.saveOutcome)
   confirming: false, confirmTimer: null,  // Stop's second tap
+  record: null, recordBase: null,  // GET /record, with /live; and {elapsed, at} of the take running
+  takes: null, takesAt: 0,   // GET /takes, on the rack only: every TAKES_MS, and after a start or stop
+  takesOrder: new R.Latest(),  // so an older /takes answer never replaces a newer one
+  takeName: "",              // what is typed in the record bar's name
+  recordPending: null,       // "start" or "stop", from this page, in flight
+  recordResult: null,        // what the last start or stop from this page said (R.recordOutcome)
   open: new Set(),           // units opened, by name
   failures: [],              // this page's refused changes, newest first
   failed: new Map(),         // control key -> the reason its last change was refused
@@ -205,16 +217,19 @@ async function poll() {
     // (`R.readsLive`): a down rig is a state, and asking /live for it was a
     // console error a second (#111). The log answers whatever the rig.
     const health = await request("GET", "/health");
-    const [live, log, amp] = await Promise.all([
+    const [live, log, amp, record] = await Promise.all([
       R.readsLive(health) ? request("GET", "/live") : null,
       health.ok ? request("GET", "/live/log") : null,
       // The amp is read when /live is, for the same reason: with no rig up
       // it can only be refused (#111).
       R.readsLive(health) ? request("GET", "/amp") : null,
+      // And the recorder: with no rig up there is none (R.recordBar says so).
+      R.readsLive(health) ? request("GET", "/record") : null,
     ]);
     state.health = health;
     state.live = live;
     state.amp = amp;
+    noteRecord(record);
     state.log = log && log.ok ? log.body : null;
     state.seq = seq;
     if (live && live.ok) await refreshPlugins(live.body, rigIdentity(health, state.log));
@@ -223,10 +238,38 @@ async function poll() {
     inBackground("names", refreshNames);
     inBackground("rigs", refreshRigs);
     if (amp && amp.ok) inBackground("amp models", refreshAmpModels);
+    if (state.screen === "rack") inBackground("takes", refreshTakes);
   } finally {
     state.polling = false;
     state.timer = setTimeout(poll, POLL_MS);
   }
+}
+
+// GET /takes every TAKES_MS, or now (`force`) after a take starts or stops,
+// and only while the rack, which lists them, is shown. Requests can overlap
+// (a forced one while a periodic one is out), so each is numbered and an
+// answer older than one already shown is dropped.
+async function refreshTakes(force = false) {
+  if (state.screen !== "rack") return false;
+  if (!force && state.takesAt && Date.now() - state.takesAt < TAKES_MS) return false;
+  state.takesAt = Date.now();
+  const ticket = state.takesOrder.issue();
+  const answer = await request("GET", "/takes");
+  if (!state.takesOrder.accept(ticket)) return false;
+  state.takes = answer;
+  return true;
+}
+
+// GET /record's answer, and the base the elapsed time counts on from.
+function noteRecord(record) {
+  const was = state.recordBase ? state.recordBase.name : null;
+  state.record = record;
+  const body = record && record.ok ? record.body : null;
+  state.recordBase = body && body.state === "recording" ? { elapsed: body.elapsed, at: Date.now(), name: body.name } : null;
+  // A take started or stopped, here or from another page: the list is
+  // read again now, so a take just stopped is not shown as unfinished.
+  const now = state.recordBase ? state.recordBase.name : null;
+  if (now !== was) refreshTakes(true).then((fetched) => { if (fetched) render(); });
 }
 
 // After a gesture that changes the rig's structure: read it now, not in a second.
@@ -574,6 +617,56 @@ async function save(name = null) {
   if (name) refreshRigs(true).then(render);
 }
 
+// RECORD and STOP (S7). Each is one tap, locked or not: recording is a
+// stage action, and Stop takes no confirm, since stopping a take loses
+// nothing. What the recorder says is shown under the buttons, and the bar
+// follows GET /record, not this page's idea of whether a take runs.
+async function recordStart() {
+  if (state.recordPending) return;
+  const problem = R.checkTakeName(state.takeName);
+  if (problem) { state.recordResult = { ok: false, title: "Not recording", reason: problem }; render(); return; }
+  state.recordPending = "start";
+  render();
+  const call = R.recordCall(state.takeName);
+  let answer;
+  try {
+    answer = await request("POST", call.path, call.json);
+  } finally {
+    state.recordPending = null;
+  }
+  const said = R.recordOutcome("start", answer);
+  // A take that started is said by the bar itself; only one that replaced
+  // an earlier take, or was refused, needs a line under it.
+  state.recordResult = said.ok && !said.text ? null : said;
+  if (answer.ok) { noteRecord(answer); state.takeName = ""; }
+  render();
+  kick();
+  refreshTakes(true).then(render);
+}
+
+async function recordStop() {
+  if (state.recordPending) return;
+  state.recordPending = "stop";
+  render();
+  let answer;
+  try {
+    answer = await request("POST", R.STOP_CALL.path, R.STOP_CALL.json);
+  } finally {
+    state.recordPending = null;
+  }
+  state.recordResult = R.recordOutcome("stop", answer);
+  if (answer.body && answer.body.name) noteRecord(null);
+  render();
+  kick();
+  refreshTakes(true).then(render);
+}
+
+// The running take's elapsed time, redrawn in place between polls.
+function tickElapsed() {
+  const shown = R.clockText(R.elapsedNow(state.recordBase, Date.now()));
+  for (const el of document.querySelectorAll(".record-elapsed")) el.textContent = shown || "";
+}
+
 // Start, stop and switch (#111). One at a time: while one runs, from this
 // page or another, the picker offers nothing (the agent would answer 409
 // busy) and says what is running. The answer's reason is shown on failure,
@@ -775,12 +868,14 @@ function rackFrame() {
     rack: h("main", { class: "rack" }),
     changes: h("div", { class: "changes-list" }),
     save: h("section", { class: "save", "aria-label": "Save" }),
+    takes: h("section", { class: "takes", "aria-label": "Takes" }),
   };
   // The amp first: it is in front of Sushi, between the guitar and the board.
   const frame = h("div", { class: "screen rack-screen" }, regions.header, regions.problems,
     h("div", { class: "rack-body" }, h("nav", { class: "channels", "aria-label": "Rigs and channels" }, regions.rigs, regions.channels),
       h("div", { class: "rack-main" }, regions.amp, regions.rack),
-      h("aside", { class: "changes", "aria-label": "Unsaved changes" }, regions.changes, regions.save)));
+      h("div", { class: "side" }, h("aside", { class: "changes", "aria-label": "Unsaved changes" }, regions.changes, regions.save),
+        regions.takes)));
   return { frame, regions };
 }
 
@@ -862,6 +957,7 @@ function renderRack(regions, model, unsaved, status) {
   ]);
   renderChanges(regions.changes, model, unsaved, live);
   saveRegion(regions.save, unsaved);
+  takesRegion(regions.takes);
 }
 
 function findControl(model, processor, parameter) {
@@ -970,19 +1066,105 @@ function saveAsForm(view) {
       h("button", { class: "save-act", type: "button", onclick: () => { state.saveAsOpen = false; render(); } }, "Cancel")));
 }
 
+// ---------------------------------------------------------------- recording (S7, S8)
+
+// The stage's record bar: the take's name, Record and Stop, and while a take
+// runs its name and elapsed time. Keyed without what is typed and without
+// the elapsed time (redrawn by `tickElapsed`), so neither a poll nor the
+// clock rebuilds the field under the fingers.
+function recordBarView(typed = state.takeName) {
+  return R.recordBar(state.health, state.record, typed, state.recordPending);
+}
+
+function recordRegion(el) {
+  const view = recordBarView();
+  const typing = document.activeElement && document.activeElement.name === "take-name";
+  const result = state.recordResult;
+  // What follows the typing (the check, Record's state) is drawn by the
+  // field's own handler (`drawNameCheck`), not by a rebuild.
+  const rebuilt = patch(el, JSON.stringify([recordBarView(""), result]), () => {
+    const recording = view.state === "recording";
+    el.className = `record-bar${recording ? " recording" : ""}${view.state === "unavailable" ? " off" : ""}`;
+    return [
+      h("div", { class: "record-head" },
+        h("span", { class: "rec-dot", "aria-hidden": "true" }),
+        h("h2", {}, view.title), h("span", { class: "spacer" }),
+        recording ? h("span", { class: "record-elapsed", role: "timer", "aria-label": "Elapsed" }) : null),
+      recording
+        ? h("div", { class: "take-now" }, h("span", { class: "k" }, "Take name"), h("span", { class: "v" }, view.name))
+        : view.state === "idle" ? nameField(view) : null,
+      view.reason ? h("p", { class: "record-note" }, view.reason) : null,
+      view.state === "idle" ? h("p", { class: "record-note", id: "take-note", "aria-live": "polite" }) : null,
+      recording && view.note ? h("p", { class: "record-note" }, view.note) : null,
+      view.stems ? h("p", { class: "record-stems" }, view.stems) : null,
+      h("div", { class: "record-acts" },
+        h("button", { class: "record-act rec", disabled: view.record.disabled, onclick: recordStart }, view.record.label),
+        h("button", { class: "record-act stop", disabled: view.stop.disabled, onclick: recordStop }, view.stop.label)),
+      result ? h("div", { class: `record-result ${result.ok ? "ok" : "refused"}`, role: result.ok ? "status" : "alert" },
+        h("strong", {}, result.title), result.ok ? (result.text ? h("span", {}, result.text) : null) : h("span", {}, result.reason),
+        h("button", { class: "dismiss", "aria-label": "Dismiss", onclick: () => { state.recordResult = null; render(); } }, "×")) : null,
+    ];
+  });
+  if (rebuilt && typing) {
+    const input = el.querySelector('input[name="take-name"]');
+    if (input) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
+  }
+  drawNameCheck(el);
+  tickElapsed();
+}
+
+function drawNameCheck(el) {
+  const view = recordBarView();
+  if (view.state !== "idle") return;
+  const note = el.querySelector("#take-note");
+  const button = el.querySelector("button.record-act.rec");
+  if (note) { note.textContent = view.note || ""; note.classList.toggle("bad", !!view.bad); }
+  if (button) { button.disabled = view.record.disabled; button.textContent = view.record.label; }
+}
+
+function nameField(view) {
+  const input = h("input", { name: "take-name", type: "text", autocomplete: "off", spellcheck: "false",
+    autocapitalize: "none", placeholder: "e.g. riff-idea", "aria-describedby": "take-note",
+    enterkeyhint: "go" });
+  input.value = state.takeName;
+  // Redrawn through render(), whose key holds the view and not the text, so
+  // the check under the field follows the typing without a rebuild.
+  input.addEventListener("input", () => { state.takeName = input.value; drawNameCheck(input.closest(".record-bar")); });
+  input.addEventListener("keydown", (event) => { if (event.key === "Enter" && !recordBarView().record.disabled) recordStart(); });
+  return h("label", { class: "take-name" }, h("span", {}, "Take name"), input);
+}
+
+// The rack's takes (S8): each take's name, length and `take check`'s verdict.
+function takesRegion(el) {
+  const body = state.record && state.record.ok ? state.record.body : null;
+  const recording = body && body.state === "recording" ? body.name : null;
+  const view = R.takeRows(state.takes, recording);
+  patch(el, JSON.stringify(view), () => [
+    h("h2", {}, "TAKES"),
+    view.dir ? h("p", { class: "sub" }, h("code", {}, view.dir)) : null,
+    view.problem ? h("p", { class: "sub" }, view.problem) : null,
+    view.rows.length ? h("ul", { class: "take-list", "aria-label": "Takes" }, view.rows.map((r) => h("li", { class: `take ${r.tone}`, title: r.title },
+      h("span", { class: "take-top" }, h("span", { class: "n" }, r.name), r.len ? h("span", { class: "len" }, r.len) : null),
+      h("span", { class: "note" }, r.note)))) : (view.dir && !view.problem ? h("p", { class: "sub" }, "No takes yet.") : null),
+    view.more ? h("p", { class: "sub" }, `and ${view.more} older, not listed`) : null,
+    view.archived ? h("p", { class: "sub" }, `${view.archived} earlier take${view.archived === 1 ? "" : "s"} kept in _archive/`) : null,
+  ]);
+}
+
 // ---------------------------------------------------------------- the stage (S5)
 
 function stageFrame() {
   const regions = {
     header: h("header", { class: "stage-head" }),
     problems: h("div", { class: "problems", "aria-live": "polite" }),
+    record: h("section", { class: "record-bar", "aria-label": "Record" }),
     levels: h("div", { class: "levels" }),
     amp: h("section", { class: "stage-amp", "aria-label": "Amp" }),
     cards: h("main", { class: "cards" }),
     tiles: h("div", { class: "tiles" }),
     rigs: h("section", { class: "rigs stage-rigs", "aria-label": "Rigs" }),
   };
-  const frame = h("div", { class: "screen stage-screen" }, regions.header, regions.problems, regions.levels, regions.amp, regions.cards, regions.rigs,
+  const frame = h("div", { class: "screen stage-screen" }, regions.header, regions.problems, regions.record, regions.levels, regions.amp, regions.cards, regions.rigs,
     h("nav", { class: "stage-nav" }, h("a", { href: "#stage", class: "here", "aria-current": "page" }, "Stage"), h("a", { href: "#rack" }, "Rack")));
   return { frame, regions };
 }
@@ -1010,6 +1192,7 @@ function renderStage(regions, model, status) {
   ]);
   tilesRegion(regions.tiles);
   problemsRegion(regions.problems);
+  recordRegion(regions.record);  // not behind the lock: recording is a stage action
   const live = liveBody();
   const levels = model ? R.channelLevels(model, live) : [];
   patch(regions.levels, JSON.stringify(levels), () => levels.length
@@ -1057,6 +1240,7 @@ function render() {
       state.regions = built.regions;
       state.updaters = [];
       state.ampUpdaters = [];
+      if (screen === "rack") refreshTakes(true).then((fetched) => { if (fetched) render(); });
     }
     const live = liveBody();
     const model = live ? R.rackModel(live, state.plugins, state.profiles) : null;
@@ -1091,4 +1275,5 @@ window.sushiRigUpdaters = () => ({ rack: state.updaters.length, amp: state.ampUp
 
 // A channel's link is a hash too; only a change of screen closes what was open.
 window.addEventListener("hashchange", () => { if (currentScreen() !== state.screen) state.open.clear(); render(); });
+setInterval(tickElapsed, TICK_MS);
 poll().then(pollLoad);

@@ -1073,6 +1073,16 @@ def _main(argv: list[str] | None = None) -> int:
     )
 
     p = sub.add_parser(
+        "recorder",
+        help="record takes for the agent on request: what `up --rig --headless` starts, under "
+        "pw-jack, so the web UI can record (recorder_process.py)",
+    )
+    p.add_argument(
+        "--socket", type=Path,
+        help="the Unix socket to answer on [default: recorder.sock beside the state file]",
+    )
+
+    p = sub.add_parser(
         "listen",
         help="run an OSC listener that saves a config on request (for the panel's save button)",
     )
@@ -1404,6 +1414,10 @@ def _main(argv: list[str] | None = None) -> int:
             return status()
         except (RigError, AmpError) as exc:
             sys.exit(str(exc))
+    elif args.command == "recorder":
+        from .recorder_process import main as recorder_main
+
+        return recorder_main(args.socket)
     elif args.command == "listen":
         from .listen import serve
         from .transport import NoEngine, record_session

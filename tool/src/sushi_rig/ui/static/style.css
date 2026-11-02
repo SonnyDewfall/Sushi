@@ -23,6 +23,11 @@
   --refused: #F2A08F;
   --refused-ground: #2A1715;
   --refused-edge: #7A3A30;
+  /* Recording (S7), from the mockups' Record frame: a take running is the
+     one red thing on the stage, so it is seen from across the room. */
+  --recording: #E0514B;
+  --recording-ground: #2A1A1A;
+  --recording-soft: #F0C0C0;
   --display: Newsreader, Georgia, "Times New Roman", serif;
   --body: "Instrument Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
   --mono: "Geist Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
@@ -211,7 +216,9 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 
 .send { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 6px 12px 6px 34px; border-radius: 12px; background: #12191B; border: 1px solid #1F3A3F; }
 
-.changes { flex: 0 1 320px; border-left: 1px solid var(--line); background: var(--panel); padding: 18px 16px; display: flex; flex-direction: column; gap: 12px; }
+/* The right column: the unsaved changes and Save, then the takes (S8). */
+.side { flex: 0 1 320px; border-left: 1px solid var(--line); background: var(--panel); padding: 18px 16px; display: flex; flex-direction: column; gap: 12px; }
+.changes { display: flex; flex-direction: column; gap: 12px; }
 .changes h2 { font-family: var(--display); font-size: 24px; }
 .changes .sub { margin: 0; font-size: 12px; color: var(--muted); line-height: 1.5; }
 .change { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border-radius: 8px; background: #1A1B20; }
@@ -297,7 +304,7 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 
 @media (max-width: 640px) {
   .bar { padding: 10px 16px; }
-  .channels, .changes { flex: 1 1 100%; border: none; }
+  .channels, .side { flex: 1 1 100%; border: none; }
   .rack-main { padding: 12px 16px; }
   .unit .who { width: auto; flex: 1 1 140px; }
   .unit .detail { padding-left: 12px; }
@@ -320,3 +327,45 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 .save-result strong { color: var(--text); }
 .save-result .commit { color: var(--accent-soft); }
 .save-result .dismiss { position: absolute; top: 4px; right: 4px; }
+
+/* ---------------------------------------------------------------- recording (S7, S8) */
+.record-bar { display: flex; flex-direction: column; gap: 10px; margin: 12px 16px 0; padding: 14px 16px; border-radius: 16px; background: var(--card); border: 1px solid var(--edge); }
+.record-bar.recording { background: var(--recording-ground); border: 2px solid var(--recording); }
+.record-head { display: flex; align-items: center; gap: 10px; }
+.record-head h2 { font-family: var(--display); font-size: 22px; }
+.rec-dot { width: 14px; height: 14px; border-radius: 50%; background: #4A4C57; flex: none; }
+.record-bar.recording .rec-dot { background: var(--recording); box-shadow: 0 0 12px var(--recording); }
+.record-elapsed { font-family: var(--mono); font-size: 26px; font-weight: 600; font-variant-numeric: tabular-nums; }
+.take-now { display: flex; flex-direction: column; gap: 2px; }
+.take-now .k, .take-name span { font-size: 12px; color: var(--muted); }
+.record-bar.recording .take-now .k { color: var(--recording-soft); }
+.take-now .v { font-family: var(--mono); font-size: 16px; overflow-wrap: anywhere; }
+.take-name { display: flex; flex-direction: column; gap: 6px; }
+.take-name input { min-height: 48px; box-sizing: border-box; padding: 0 12px; border-radius: 10px; background: var(--ground); border: 1px solid var(--edge); color: var(--text); font-family: var(--mono); font-size: 16px; }
+.record-note { margin: 0; font-size: 13px; color: var(--muted); line-height: 1.5; }
+.record-note:empty { display: none; }
+.record-note.bad { color: var(--refused); }
+.record-bar.recording .record-note { color: var(--recording-soft); }
+.record-stems { margin: 0; font-size: 12px; color: var(--muted); font-family: var(--mono); overflow-wrap: anywhere; }
+.record-acts { display: flex; gap: 10px; }
+.record-act { flex: 1; min-height: 64px; border-radius: 14px; font-family: var(--display); font-size: 22px; font-weight: 700; cursor: pointer; border: 1px solid var(--edge); background: transparent; }
+.record-act.rec:not(:disabled) { background: var(--recording); border-color: var(--recording); color: #FFFFFF; }
+.record-act.stop:not(:disabled) { background: var(--text); border-color: var(--text); color: var(--ground); }
+.record-act:disabled { color: var(--muted); cursor: default; opacity: .6; }
+.record-result { display: flex; flex-direction: column; gap: 4px; padding: 10px 52px 10px 12px; border-radius: 10px; font-size: 13px; line-height: 1.5; position: relative; background: var(--ground); border: 1px solid var(--edge); }
+.record-result.refused { background: var(--refused-ground); border-color: var(--refused-edge); color: var(--refused); }
+.record-result strong { color: var(--text); }
+.record-result .dismiss { position: absolute; top: 4px; right: 4px; }
+
+.takes { display: flex; flex-direction: column; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line); }
+.takes h2 { font-family: var(--display); font-size: 14px; font-weight: 500; letter-spacing: .1em; color: var(--muted); }
+.take-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
+.take { display: flex; flex-direction: column; gap: 3px; padding: 8px 12px; border-radius: 12px; background: var(--card); border: 1px solid var(--edge); }
+.take.warn { border-color: #5A4A1E; }
+.take.live { border-color: var(--recording); }
+.take-top { display: flex; align-items: baseline; gap: 8px; }
+.take .n { font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+.take .len { font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.take .note { font-size: 12px; color: var(--muted); line-height: 1.45; overflow-wrap: anywhere; }
+.take.warn .note { color: var(--accent-soft); }
+.take.live .note { color: var(--recording-soft); }

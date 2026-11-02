@@ -317,15 +317,15 @@ then.
 │
 ├── tool/                       ── TOOL: generates the configs above
 │   ├── pyproject.toml
-│   ├── src/sushi_rig/            42 modules and __init__, one job each:
+│   ├── src/sushi_rig/            44 modules and __init__, one job each:
 │   │                             spec, rigfile, convert, emit, dump, probe, probes,
 │   │                             profile, plugins, library, live, panel, listen,
 │   │                             save, state, procs, rig, supervisor, qpwgraph,
-│   │                             patchbay, machine, amp, top, doctor, verify,
-│   │                             render, nulltest, signals, analysis, selftest,
-│   │                             take, transport, recorder, capture, midi_listener,
-│   │                             agent, agent_client, service, yamlmerge, paths,
-│   │                             _numpy, cli
+│   │                             patchbay, machine, amp, amp_live, top, doctor,
+│   │                             verify, render, nulltest, signals, analysis,
+│   │                             selftest, take, transport, recorder,
+│   │                             recorder_process, capture, midi_listener, agent,
+│   │                             agent_client, service, yamlmerge, paths, _numpy, cli
 │   ├── tests/                    fast suite; fixtures/ holds captured artefacts
 │   ├── examples/
 │   │   ├── rig.example.yaml       annotated rig spec (real plugins)
@@ -421,6 +421,10 @@ curl -X POST localhost:8029/amp/parameter -d '{"name": "Output Lvl", "value": -3
 curl -X POST localhost:8029/amp/model -d '{"model": "Some Model.nam"}'   # restarts Carla alone: the sound stops for a moment
 curl -X POST localhost:8029/rig/save                                # the running rig into its own rig file, in place (S4)
 curl -X POST localhost:8029/rig/save -d '{"name": "electric-board-2"}'   # save as a new rig, which becomes the running one
+curl localhost:8029/record           # recording, idle, or why recording is off (S7)
+curl -X POST localhost:8029/record/start -d '{"name": "riff-idea"}'   # a take; no name is take-<date>-<time>
+curl -X POST localhost:8029/record/stop                              # finish it: take check's verdict in the answer
+curl localhost:8029/takes            # the takes, newest first, each with take check's verdict
 
 curl localhost:8029/health | jq .agent.midi   # the pedals: listening, or why not, and what was last heard
 ```
@@ -721,6 +725,41 @@ with the file and that state; undo passes over it to the change before, which
 leaves the rig unsaved again. **Not run against a live Sushi**: shown against
 a fake capture and real rig files.
 
+**Recording from the web UI** (S7). The panel's record bar belongs to its
+listener, and a headless rig has none, so `up --rig --headless` (what the page
+starts, and `--direct` too) starts **`sushi-rig recorder`** in the listener's
+place: a child of the rig, in its process group, under `pw-jack` with the rig's
+quantum, because the capture engine is a JACK client and the agent is not under
+`pw-jack` and must not be. The agent asks it over a Unix socket beside the state
+file (`recorder.sock`, mode 0600), so an agent started later, or one that never
+held the rig, finds it too. A child rather than started at the first RECORD:
+it is then supervised like Sushi (a crash is in `/health`, under
+`agent.supervisor.crashed`, and is **not restarted**), it stops with the rig
+(`down`'s SIGINT finishes a running take), and it opens no JACK client until a
+take. `POST /record/start {"name"?}` sends the run's files from the state file
+as it is now and the amp as the agent last sent it (the amp a save writes), and
+the recorder plans the take then with `transport.record_session`, the
+listener's own: the same eight columns for guitar_vocal, the same refusals, a
+take whose config is the one Sushi loaded for the rig running now (a live
+switch rewrites it) and whose rig.yaml is the rig file at RECORD.
+`POST /record/stop` answers `take check`'s verdict. Each start and stop is in
+`/live/log` (`op: "record"`), and undo passes over them. Refused, each with a
+`code`: no rig, the panel running (its record bar owns recording), a v1 run (a
+take records each channel's own output, which only a rig of channels has), a
+take already running, none running, a run with no recorder or one whose
+recorder crashed, and a run the recorder cannot plan a take for, with its
+reason. **A stop, restart, rig switch or model change while recording finishes
+the take first**, and its answer carries the take's; finished rather than
+refused, because the command is yours and made on purpose, and a refused
+Program Change would be a pedal doing nothing mid-set (an `up`, which refuses
+a running rig, leaves the take alone). The amp a take names is the one playing
+when it starts: a fader or model change asked for during a start waits for it.
+`GET /takes` lists the takes folder: each take's length, stems, whether it was
+finished, audio lost, and `take check`'s problems, a take checked again only
+when a file in its folder changes; only the rack asks for it. **Not run against a live PipeWire: no take has
+been captured through this path**; shown against the recorder's real core and a
+real recorder process with the engine stood in.
+
 **Two modes, for two ways of using the rig.** The default gives you the Open
 Stage Control panel and the save listener behind it, which is what you want when
 dialling in a tone: tweak, type a name, press save, and `config/<name>.json`
@@ -820,6 +859,17 @@ no Node and the UI has to run from a checkout. Two screens from the mockups:
   counts from that save: a change after it, or an undo past it, is unsaved
   again. Allowed while locked, since it changes neither the sound nor the
   structure. Not on the stage screen: saving is not a stage action.
+- **Record (S7, S8).** A record bar on the stage screen, as the canvas's Record
+  frame has it: a take name, a big Record and a big Stop, and while a take
+  runs its name and elapsed time in red. Both work locked (recording is a stage
+  action), and Stop takes no confirm, since stopping a take loses nothing.
+  Whether a take is running is the agent's answer, never the page's, so a page
+  opened mid-take shows it running. No name is a name from the time; a name
+  already taken says the earlier take moves to `_archive/`. Why recording is
+  off is said on the bar (no rig, the panel, a v1 run, no recorder, or the
+  recorder's own reason). The rack lists the takes beside Save, each with its
+  length and `take check`'s verdict: whole, or its first problem, a take cut
+  off saying so.
 
 It polls `/health` once a second, and `/live` only while a rig is up: a rig
 that is down is shown as a state, in grey, not as an error a second in the
@@ -841,8 +891,10 @@ the lock is the page's own, since the agent has no performance lock yet (#29);
 was last saved through it, so a change from the OSC panel, or a `sushi-rig
 save` since, is not reflected; changes go over HTTP, not a WebSocket. Of the
 canvas's Save, the commit (with its message), history with revert, "throw all
-away" and the rig file shown on screen are not built. Library, Record, Broken
-and Pedals from the canvas are not built. v0.1 answers a session on the real rig
+away" and the rig file shown on screen are not built. Of its Record, the
+meters (nothing measures levels yet), the free space and hours of takes left,
+and opening a take are not built. Library, Broken and Pedals from the canvas
+are not built. v0.1 answers a session on the real rig
 but has not run on it: the load route has not read a real `pw-top` (it parses
 the format `tool/tests/test_top.py` holds), the `ELKPY:` lines were silenced
 against elkpy 1.3.0 with no Sushi listening, and start, stop and switch from the
@@ -854,7 +906,8 @@ for the agent's add and remove.
 To try it without a rig: `cd tool && PYTHONPATH=src:tests python tests/ui_fake.py`
 serves the UI against that fake on port 8029 (`--down` to start with no rig up,
 `--amp` to give it an amp, with invented models and a stand-in Carla, `--save`
-to give it a rig file to save into, in a temporary checkout).
+to give it a rig file to save into, in a temporary checkout, `--record` to give
+that checkout a recorder, whose takes are real folders made by a stand-in engine).
 `/ui/` and `/ui` redirect to the page.
 
 ### Ports by role, not by device name
@@ -1148,8 +1201,10 @@ The capture engine (#53, `tool/src/sushi_rig/capture.py`) is the part that takes
 audio from PipeWire: a JACK client with one input port per column of a take,
 each linked to the port the take names, copying every block into the recorder.
 It is written and its decisions are tested, but **it has not been run against a
-live PipeWire**, and the listener does not construct one yet, so the record bar
-is still off and RECORD says there is no engine rather than doing nothing. A
+live PipeWire**. The listener constructs one for a `--rig` run with its panel
+(#57), and `sushi-rig recorder` for a headless one, which is how the web UI
+records (S7, under "The agent" above); either says why it has none rather
+than doing nothing. A
 Python callback was measured on the rig to keep up at quantums of 128 and 256,
 under load, with room to spare (the numbers are in `capture.py`), so this is the
 engine and not a stopgap before a native helper. It needs the `[capture]` extra

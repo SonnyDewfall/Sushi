@@ -44,7 +44,7 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Callable
 
-from .paths import checkout_root, log_dir, runtime_dir, state_path
+from .paths import checkout_root, log_dir, recorder_socket, runtime_dir, state_path
 from .procs import (
     SHUTDOWN_STEPS, pgid_alive, pid_alive, port_is_open, stop_group, wait_for_grpc,
 )
@@ -357,8 +357,14 @@ def plan_children(
     amp_values: dict[str, float] | None = None,
     patchbay: Path | None = None,
     machine_file: Path | None = None,
+    recorder_socket: Path | None = None,
 ) -> list[dict[str, Any]]:
     """The children to start, in order, as data.
+
+    `recorder_socket`, for a headless run of a rig of channels, plans the
+    recorder (`sushi-rig recorder`, recorder_process.py) in the listener's
+    place, answering on that socket: what records a take from the web UI,
+    which starts rigs headless and so has no listener.
 
     `machine_file` is the one a v2 rig was compiled against, handed to the
     listener so the record button taps the same inputs the patchbay wired.
@@ -449,6 +455,23 @@ def plan_children(
             children[-1]["command"] += ["--amp-model", amp_model]
             for name, value in (amp_values or {}).items():
                 children[-1]["command"] += ["--amp-parameter", f"{name}={value}"]
+    elif recorder_socket is not None:
+        # Records takes for the agent (the web UI's record bar): the
+        # listener's job in panel mode, which headless has no listener for.
+        # Under pw-jack with the rig's quantum for the listener's reason: the
+        # capture engine is a JACK client. Optional, as the tuner is: a rig
+        # that cannot record still plays, and GET /record says why it cannot.
+        # It takes nothing about the run: each request names the run's files,
+        # since a live switch or a save-as changes them while it runs.
+        children.append({
+            "name": "recorder",
+            "command": [
+                "pw-jack", str(root / "tool" / ".venv" / "bin" / "sushi-rig"), "recorder",
+                "--socket", str(recorder_socket),
+            ],
+            "optional": True,
+            "env_set": {"PIPEWIRE_QUANTUM": f"{QUANTUM}/{RATE}"},
+        })
 
     children.append({
         "name": "sushi",
@@ -1198,6 +1221,9 @@ def prepare_launch(
         root, config, rig_yaml, headless=headless, tuner=tuner,
         amp_project=amp_project, amp_model=amp_model_stored,
         amp_values=amp_values, patchbay=amp_patch, machine_file=rig_machine,
+        # A take is planned only for a rig of channels (transport.plan_for_run),
+        # so a v1 run gets no recorder, and the agent says why (GET /record).
+        recorder_socket=recorder_socket() if headless and rig else None,
     )
 
     return Launch(

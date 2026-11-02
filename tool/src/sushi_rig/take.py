@@ -1048,3 +1048,134 @@ def finish_take(
         library=meta.get("library"),
     ))
     return load_take(folder)
+
+
+# --------------------------------------------------------------------------- #
+# A list of takes, for the web UI (S8)
+# --------------------------------------------------------------------------- #
+
+# How many takes a list summarises, newest first. Each costs `check_take`: a
+# read of take.yaml, config.json and every stem's header. A guess at what a
+# rack shows usefully; the rest are counted, not dropped silently.
+TAKES_LISTED = 50
+
+
+def take_summary(folder: Path) -> dict[str, Any]:
+    """One take as a list shows it: its name, when, how long, its stems,
+    whether it was finished, any audio lost, and `take check`'s verdict
+    (`problems`, the same list `sushi-rig take check` prints; empty when the
+    take is whole). A folder that is not a take is said as one (`take:
+    false`), with why, rather than left out.
+
+    The length is the first readable stem's, from its header, so a take cut
+    off mid-write has the length it has on disk. A take still being recorded
+    reads as unfinished, which it is: the caller knows which one that is
+    (GET /record) and says so instead. Reads files; never raises for what is
+    in them."""
+    folder = Path(folder)
+    shown: dict[str, Any] = {"name": folder.name, "folder": str(folder)}
+    try:
+        take = load_take(folder)
+    except TakeError as exc:
+        return {**shown, "take": False, "complete": False, "recorded_at": None, "seconds": None,
+                "stems": [], "lost_ms": None, "problems": list(exc.problems)}
+    meta = take.metadata
+    rate = meta.get("sample_rate") if type(meta.get("sample_rate")) is int and meta["sample_rate"] > 0 else None
+    frames = None
+    for stem in take.stems:
+        try:
+            frames = wav_info(folder / str(stem.filename)).frames
+            break
+        except (ValueError, OSError):
+            continue  # unreadable, which `check_take` says; the next may be readable
+    capture = meta.get("capture") if isinstance(meta.get("capture"), dict) else {}
+    lost = _count(capture.get("lost_frames"))
+    return {
+        **shown, "take": True, "complete": take.complete,
+        "recorded_at": meta.get("recorded_at") if isinstance(meta.get("recorded_at"), str) else None,
+        "seconds": round(frames / rate, 3) if frames is not None and rate else None,
+        "stems": [stem.filename for stem in take.stems],
+        "lost_ms": round(1000.0 * lost / rate, 1) if rate else None,
+        "problems": check_take(take),
+    }
+
+
+def _is_take_folder(entry: Path) -> bool:
+    return not entry.name.startswith(("_", ".")) and entry.is_dir()
+
+
+def take_names(takes_dir: Path) -> list[str]:
+    """The names of the takes in `takes_dir`, sorted: a listing of one folder
+    and nothing read, for a page to say a name will replace a take."""
+    try:
+        return sorted(entry.name for entry in Path(takes_dir).iterdir() if _is_take_folder(entry))
+    except OSError:
+        return []
+
+
+def _folder_key(folder: Path) -> tuple:
+    """What is in a take's folder, by name, time and size: a summary made
+    from one key holds until a file in it is written, added or removed (a
+    take finished rewrites take.yaml; a take repaired rewrites its stems)."""
+    try:
+        return tuple(sorted((e.name, e.stat().st_mtime_ns, e.stat().st_size) for e in os.scandir(folder)))
+    except OSError:
+        return ("unreadable",)
+
+
+def list_takes(takes_dir: Path, limit: int = TAKES_LISTED, *,
+               cache: dict[str, Any] | None = None) -> dict[str, Any]:
+    """The takes in `takes_dir`, newest first, each as `take_summary` gives it:
+    `{"takes_dir", "exists", "takes", "more", "archived"}`. `more` counts the
+    takes past `limit`, not summarised; `archived` the earlier takes kept in
+    `_archive/`, which are not listed. Newest by take.yaml's own time on disk
+    (the folder's for one that has none), which `finish_take` rewrites, so a
+    take is placed by when it was last finished, without reading every one.
+
+    Folders whose names start with `_` or `.` are not takes: `_archive` is the
+    archive (a take's name cannot start with either, `NAME_PATTERN`).
+
+    `cache`, when given, keeps each take's summary by what is in its folder
+    (`_folder_key`: a stat per file), so a list asked for again checks only
+    the takes that changed; it is the caller's, and is trimmed to the takes
+    listed."""
+    takes_dir = Path(takes_dir)
+    answer: dict[str, Any] = {"takes_dir": str(takes_dir), "exists": takes_dir.is_dir(), "takes": [],
+                              "more": 0, "archived": 0}
+    if not answer["exists"]:
+        return answer
+    found = []
+    for entry in takes_dir.iterdir():
+        if not _is_take_folder(entry):
+            continue
+        try:
+            stamp = (entry / TAKE_FILE).stat().st_mtime_ns
+        except OSError:
+            try:
+                stamp = entry.stat().st_mtime_ns
+            except OSError:
+                continue
+        found.append((stamp, entry.name, entry))
+    found.sort(key=lambda item: (item[0], item[1]), reverse=True)
+    listed = found[:limit]
+    summaries = []
+    for _, name, entry in listed:
+        if cache is None:
+            summaries.append(take_summary(entry))
+            continue
+        key = _folder_key(entry)
+        kept = cache.get(name)
+        if kept is None or kept[0] != key:
+            kept = (key, take_summary(entry))
+            cache[name] = kept
+        summaries.append(kept[1])
+    if cache is not None:
+        for gone in set(cache) - {name for _, name, _ in listed}:
+            del cache[gone]
+    answer["takes"] = summaries
+    answer["more"] = max(0, len(found) - limit)
+    archive = takes_dir / ARCHIVE_DIR
+    if archive.is_dir():
+        answer["archived"] = sum(
+            1 for name in archive.iterdir() if name.is_dir() for kept in name.iterdir() if kept.is_dir())
+    return answer
