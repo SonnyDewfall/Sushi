@@ -91,10 +91,12 @@ RUN ./Sushi.AppImage --appimage-extract >/dev/null \
 # signal and analysis tests skip -- and a skip fails the job. `agent` brings
 # aiohttp, for the same reason, and `capture` brings JACK-Client, which needs the
 # libjack the apt line above installs: without both the capture tests skip.
+# `midi` brings alsa-midi, which links the libasound2t64 installed above; without
+# it test_midi_alsa.py skips.
 COPY . /rig
 WORKDIR /rig
 RUN python3 -m venv --system-site-packages /opt/venv \
-    && /opt/venv/bin/pip install --no-cache-dir -e "/rig/tool[dev,live,audio,agent,capture]"
+    && /opt/venv/bin/pip install --no-cache-dir -e "/rig/tool[dev,live,audio,agent,capture,midi]"
 ENV PATH="/opt/venv/bin:${PATH}"
 
 # `./sushi` at the repo root is where tests/test_configs.py and the README look.

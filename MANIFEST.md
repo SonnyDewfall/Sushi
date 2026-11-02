@@ -1760,6 +1760,160 @@ wherever a one-step move was possible, its opposite from the result is possible
 and restores the chain. Everything here is shown against the fake `Live` only.
 *(2026-11-02)*
 
+**The agent serves the pedals Sushi cannot: bypass and rig switching (#34, #93).**
+When the running rig's compiled config has `_midi_agent`, the agent opens the
+controller's port itself and serves it (`midi_listener.py`, wired in a block at
+the end of `Agent`). A pad's note on toggles its plugin's bypass through the
+calls `POST /live/bypass` makes (one connection, the live lock, the same read
+and check), a CC on a bypass is a switch (the effect on at 64 and above,
+bypassed below, acting only when it crosses; the first value heard counts as a
+crossing), a pad on a mute toggles the track's `mute` parameter, and a Program
+Change selects program *n* = the *n*th rig of `config/rigs/*.yaml` sorted by
+file name, brought up by `down` then `up --rig` through the same
+`_run_lifecycle` a request uses (the lifecycle route was refactored onto it),
+with the options `restart_arguments` reads from the state file less the amp
+model override. A Program Change for the rig already playing does nothing; one
+past the last rig is refused and said. `GET /rig` lists the order as `programs`
+while the rig switches by them. Each change is in the live log with `source:
+"midi"` and `control`; a switch is logged as op `rig`, which undo will have to
+refuse or handle. The decisions are pure and tested for every shape
+(`decode`, `parse_bindings`, `dispatch`, `next_bypass`, `next_mute`,
+`program_order`, `find_port`, `plan_for`); aftertouch, releases and unbound
+messages do nothing. The listener is a thread that opens, reads and closes the
+port and hands messages to the loop; it starts with `up` (and at the agent's
+start, for a rig already up) and stops before `down`, `restart` and a switch, and
+a generation number drops anything it handed over that was not yet acted on.
+A port that will not open, or dies, is a named problem in `/health`'s
+`agent.midi` (port, controller, what ALSA lists) and is not retried until the
+next `up` or `restart`; MIDI failures never reach `last_error` except a switch's
+lifecycle failure, which is one. The library is **alsa-midi** (new `midi` extra,
+in both CI installs, with `libasound2t64` on the runner): it reads the ALSA
+sequencer the machine file's port names come from, by those names, and has
+wheels for CPython 3.10 to 3.14; mido's python-rtmidi had none past 3.12 at
+1.5.8. Channels are 0-based in the agent's listener, as ALSA and `aseqdump` give
+them. What libasound's decoder makes of each MPD218 event is checked against
+`decode` with the real library (test_midi_alsa.py); the wiring is tested with a
+fake port and the fake Sushi. **Nothing has been heard from a real pedal**:
+`AlsaPort` has never opened a sequencer (none in CI or here), so the port name
+as the sequencer gives it, the channel the pedal sends on, a footswitch's CC
+and polarity, hearing the pedal alongside PipeWire's and Sushi's own
+subscriptions, and the unplug detection (system announcements) are for the rig
+session. Not done here: learn mode, a diff-based switch, the patchbay link from
+the controller to Sushi's MIDI input, and noticing a rig brought up from the
+CLI while the agent is already running. *(2026-11-02)*
+
+**The agent's pedals, answering review of the branch (#34, #93).** Seven
+findings. (1) **Undo stopped at a rig switch.** With `/live/undo` in (#107), an
+`op: "rig"` entry answered 400, and a skip then undid the previous rig's
+changes against the rig now running, whose processors can share their names.
+`pick_undo` treats a switch as a barrier (`UndoBarrier`): nothing before it is
+undone, skip included, and the answer is 409 `nothing_to_undo` saying a rig
+switch is in the way; changes after it undo as before. (2) **A failed switch
+left no rig and no pedals.** The rig switched to is now checked to compile
+first (`midi_listener.rig_problem`: load, machine file, controller, compile and
+emit, with no pw-dump and no Sushi), and refused with the running rig untouched
+and the reason in `last_error`; and if its `up` fails anyway, `_run_lifecycle`
+runs a fallback, the previous rig's `up` with the same options, and says which
+in the reason. (3) **`midi_release` cancels and awaits the actions first, then
+stops the listener**, and `_midi_sync` does nothing once released, so a switch
+cancelled mid-`up` no longer opens the port again from its finally. (4) **A CC
+switch's state is committed when its action went through** (or Sushi was
+already there), not when it was decided, so a dropped or failed crossing is
+played again by the next value on that side. (5) **Bindings on overlapping
+channels clash**: note 36 on "all" and on channel 1 are refused, since
+`dispatch` would only ever serve the first. (6) **`up` stops the listener too**,
+so one still following a rig that died outside the agent cannot act on the rig
+coming up. (7) **The program order is read off the loop**: a Program Change is
+decided in its task with the folder listed in a thread, and `/rig` lists it in
+one. Each is tested; still nothing heard from a real pedal, and the compile
+check cannot see what only `up` finds (the live graph, Sushi loading the rig),
+which is what the fallback is for. *(2026-11-02)*
+
+**The library and live chain edits (#32).** `GET /library`, `POST /live/add`
+and `POST /live/remove` on the agent, for S3 of the UX story: pick a plugin
+from the library, add it to a chain, drag it into place (`/live/move`, already
+there), take one out. **The library** (`library.py`) is every URI in
+`plugin-manifest.txt`, in its order, with a name, the port count, the bundle,
+whether a profile exists and the profile's groups; built on first use and kept
+for the agent's life; read from `plugins/` only, never the system's LV2 paths.
+lilv is not on every machine the agent runs on, so the bundles' Turtle is read
+directly: `parse_turtle` is enough of Turtle 1.1 for LV2 bundles, and a bundle
+is read as lilv reads it for these facts (`manifest.ttl`, then the
+`rdfs:seeAlso` data files of what it declares `a lv2:Plugin`; the plugin's own
+`doap:name`, since a file often names its project too: gxts9's says
+"Gxts9sim"). **Checked against lilv**: Ubuntu 24.04's packages for the
+manifest's plugins (guitarix-lv2, mda-lv2, rubberband-lv2, x42-plugins,
+dpf-plugins-lv2, swh-lv2, zynaddsubfx-lv2, ardour-lv2-plugins) were extracted to
+a scratch folder, `sushi-rig plugins assemble` built a `plugins/` from them (54
+of 55 URIs; the amp is not packaged, and was waived), and lilv 0.24.22, loaded
+from the extracted .debs rather than installed, agreed on every name and port
+count. That comparison is now a test, which runs where lilv and `plugins/` are
+both present (the container) and skips here. The fixtures are the captured
+`.ttl` files of three of those bundles, `mda.lv2` cut down to one data file and
+saying so. A name that cannot be read falls back to a profile's restated name,
+then the URI's last segment, marked (`name_from`) with a `note`. The amp is
+listed `addable: false`: it runs in Carla because Sushi cannot set its model,
+and on a Sushi chain it would pass audio with none. **An add** is checked for
+shape and against the manifest (400, Sushi untouched), then against a walk of
+the chains under the live lock (409 for a track the rig lacks, a name it
+already has anywhere, an `after` not on that track, or `after` the send). With
+no `name` it is named from the plugin (`derive_name`, to `save.NAME_PATTERN`);
+with no `after` it goes in front of the channel's send, never behind it, since
+the send carries the channel to the master. **A remove** is 409 for a track, a
+send or return (known by name where the compiler puts them and by uid where
+Sushi reports one) or what the rig lacks. Its plugin class comes from Sushi's
+saved session, the one place the gRPC API names the plugin a processor is
+(`ProcessorInfo` has no URI); a remove Sushi cannot name is refused (502)
+rather than made unundoable. Each edit is sent as decided, confirmed by reading
+the chain back, and logged only if the read-back matches (502 and not logged
+otherwise): `add` with the name used and the chain before, `remove` with the
+chain before and the plugin's `uri`, `uid` and `type`, so an undo can re-add it,
+at its defaults, since parameter values are not recorded. Routes, decisions and
+tests are in sections of their own (`test_agent_edits.py`) to keep the merge
+with `/live/undo` small; the log format is unchanged. Found on the way: lilv's
+Python collection iterator has no `__iter__`, so on Python 3.13 a comprehension
+over `world.get_all_plugins()` fails where a `for` loop works. **Not run against
+a live Sushi:** `create_processor_on_track(name, uid, path, processor_type,
+track_id, before_processor, add_to_back)`, `delete_processor_from_track(processor,
+track)` and `session.get_session()` (SaveSession) are read from elkpy 1.3.0's
+source, and the tests bind the calls to those signatures; whether Sushi 1.3.0
+places a processor as `before_processor` says, shows it in the chain read
+straight after confirming, and reports an LV2 plugin's URI in the session's
+`PluginClass.path` is not known. Add, move and remove on a rig that is `up`, and
+read `/live` after each, before relying on them. Not done from #32 yet: the mute
+ramp around an edit and the CPU budget check before an insert. *(2026-11-02)*
+*A review of the branch found nine more, seven in the Turtle reader.* (1)
+**Blank nodes from two files of a bundle were the same nodes**: each parse
+numbered its anonymous nodes from one, so a plugin with two anonymous ports in
+each of two data files had two; each file's blank nodes now carry a prefix of
+their own (`parse_turtle(blank_prefix=)`). (2) **Tokenising was quadratic**,
+counting the line from the start for every token (131 KB took a second, under
+the library's lock); the line is now counted as the text is consumed, and a
+megabyte with a thousand plugins reads in about a second. (3) A relative
+plugins folder crashed the build in `Path.as_uri` (a 500); bundles are resolved
+first. (4) A manifest that is not UTF-8 escaped as a 500; it is a
+`LibraryError` that names the file. (5) **An add knew the send by name only**,
+while a remove also knew it by uid, so an add on a rig whose send had another
+name went in behind it, read back as asked, and was logged and inaudible. One
+rule now, `live.protected_processor`, by uid and by name, serves the add, the
+remove and the move: the walk an add decides on and a move plans on reads the
+uids from Sushi's saved session (`read_live_chains(uids=True)`,
+`plan_live_move(uids=True)`), and `decide_move` has an outcome `protected` for
+a move of a send or return or a swap with one, which `/live/move` refuses (400,
+as its other refusals) and sends nothing. That closes the move behind the send
+reported above. The panel's listener plans its moves without the session read
+and keeps the name rule alone, so a renamed send can still be passed there. The
+cost: the agent's add and move now also depend on SaveSession, which is
+unverified against Sushi 1.3.0; if it is not answered they fail loudly (502),
+and do not fall back to names. (6) A bundle folder with no `manifest.ttl` was
+skipped silently, its plugins then "not found in plugins/"; it is a problem
+naming the folder. (7) The remove's read-back took `["chains"]` directly, a
+`KeyError` 500 for a walk without them; `_confirm` is the one accessor and
+returns the chains it confirmed, a 502 otherwise. (8) An unknown escape's
+`TurtleError` had no line; it has. (9) `plugins_described` scanned every triple
+three times per plugin; it indexes once per bundle. Every name and port count
+still agrees with lilv on the assembled `plugins/` (rerun). *(2026-11-02)*
+
 **The record bar records a `--rig` run (#57).** The listener now builds its
 session at start (`transport.record_session`) instead of always running
 `NoEngine`: a `TakeSession` over a `capture.CaptureEngine` when the run can be

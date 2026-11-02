@@ -6,7 +6,8 @@ one place that owns the rig instead, and this is its first slice: the lifecycle
 and the two things worth reading about a rig, served over HTTP on localhost.
 
     GET  /health        the agent and the rig, in one answer
-    GET  /rig           what is running, if anything (`describe_rig`)
+    GET  /rig           what is running, if anything (`describe_rig`), and which
+                        Program Change selects which rig when the rig's map switches rigs
     GET  /doctor        `doctor`'s checks, as data
     POST /rig/up        {"config_name" (required), "rig", "headless", "tuner", "amp", "amp_model"}
     POST /rig/down      {"force"}
@@ -113,8 +114,24 @@ goes on to the one before. An entry that can be undone is not skipped (409
 would let a request undo out of order. Any other body is 400, since a body that
 asked for more must not be answered as if understood.
 
-Out of scope: undoing an undo (a redo). The entries carry what it needs; it is
+A rig switch made by a Program Change (`op: "rig"`) is a barrier: nothing
+before it is undone (409 `nothing_to_undo`, saying so), since it was done to
+the rig that was up then. Out of scope: undoing an undo (a redo). The entries carry what it needs; it is
 not built. Also not verified against a live Sushi: it is shown against the fake.
+
+## MIDI: the bindings Sushi cannot serve (#34, #93)
+
+When the running rig's compiled config carries `_midi_agent`, the agent opens
+the controller's port itself and serves it: a pad toggles a plugin's bypass
+(and a CC switches it) through the calls `POST /live/bypass` makes, a pad on
+a mute toggles a track's `mute` parameter, and a Program Change switches
+rigs by running `down` and then `up --rig` with the options `restart` would
+bring back. Each change is in the live log with `source: "midi"`. The
+listener starts when a rig comes up (and at the agent's own start, for a rig
+already up) and stops before anything takes the rig down. A port that will
+not open is a named problem in `/health` (`agent.midi`), not a retry loop, and
+nothing the port does reaches the HTTP side. The decisions are in
+`midi_listener.py`; the wiring is the MIDI section at the end of `Agent`.
 
 ## Local-first, so localhost first
 
@@ -122,6 +139,31 @@ The CLI binds it to 127.0.0.1:8029 unless told otherwise. `--host 0.0.0.0`
 opens it to the LAN, and until the permission split the issue describes exists
 (local: everything; remote: start, stop, load, parameters) that is the
 operator's call to make, not a default.
+
+## The library and chain edits (#32)
+
+    GET  /library       every plugin in plugin-manifest.txt: uri, name, ports, profile and its groups
+    POST /live/add      {"track", "uri", "name"?, "after"?}
+    POST /live/remove   {"processor"}
+
+What S3 of the UX story needs: pick a plugin from the library, add it to a
+chain, drag it into place (`/live/move`), take one out. The library is built
+once, on first use, and kept for the agent's life (`library.read_library`:
+the manifest, the bundles in `plugins/` read without lilv, the profiles); it
+is the manifest's, never the system's LV2 paths. An add is checked in the same
+two stages as every live change: the request's shape and that the URI is in
+the manifest and can be hosted by Sushi (400, Sushi untouched); then, from a
+walk of the chains under the live lock, that the track exists, the name is
+free and `after` is on that track (409: a conflict with the rig as it is,
+which the next read may change). It goes in before the track's send unless
+told otherwise, never after it: the send is what carries a channel to the
+master, and audio placed after it is not heard. A remove of a send, a return
+or a track is 409, as is one of what the rig does not have, and a move of a
+send or return, or past one, is refused too: one rule (`live.protected_processor`)
+knows them, by the uid Sushi's session reports and by the compiler's names. Each is confirmed
+by reading the chain back, not by Sushi's acknowledgement alone, and an edit
+whose read-back is not what was asked is 502 and is not logged, as a change
+Sushi did not confirm is not. Not run against a live Sushi: see `live.py`.
 """
 
 from __future__ import annotations
@@ -139,9 +181,15 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Sequence
 
+from . import library as library_module
 from . import live as live_module
+from . import midi_listener
 from .live import DEFAULT_GRPC_ADDRESS, ElkpyMissing, LiveError, Move
+from .live import is_send, protected_processor
 from .rig import describe_rig
+from .save import NAME_PATTERN
+from .midi_listener import MidiError
+from .rig import describe_rig, restart_arguments
 
 try:
     from aiohttp import web
@@ -228,6 +276,11 @@ class Outcome:
     @property
     def abandoned(self) -> bool:
         return self.returncode is None
+
+    @property
+    def reason(self) -> str:
+        """Why it failed, in its own words where it gave any."""
+        return self.stderr.strip() or f"exit status {self.returncode}"
 
 
 Runner = Callable[[Sequence[str]], Awaitable[Outcome]]
@@ -410,6 +463,9 @@ def check_move(move: Move) -> None:
             f"the running rig has no processor {move.processor!r} on any track: it has "
             f"{_on_the_rig(move.chains, with_tracks=False)}"
         )
+    if move.outcome == "protected":
+        # A send or return is, or would be swapped with, the one moved (#32).
+        raise Conflict(move.message)
 
 
 def log_entry(
@@ -472,6 +528,11 @@ def undo_request(body: Any) -> bool:
         "it undoes the newest change")
 
 
+class UndoBarrier(AgentError):
+    """A rig switch stands between the undo and anything older: answered 409
+    `nothing_to_undo` with this reason."""
+
+
 def pick_undo(log: list[dict[str, Any]], first: int) -> tuple[int, dict[str, Any]] | None:
     """`(index, entry)` of the newest entry that is not an undo or a skip and
     has been neither undone nor marked stale, or None. `first` is the index of
@@ -484,10 +545,19 @@ def pick_undo(log: list[dict[str, Any]], first: int) -> tuple[int, dict[str, Any
     drops the oldest, can lose a target and keep its marker but never the
     reverse, so an entry that is still here is never mistaken for one not yet
     dealt with.
+
+    A rig switch (`op: "rig"`, made by a Program Change) is a barrier, raising
+    `UndoBarrier`: what came before it was done to another rig, and the rig now
+    up may have processors of the same names, so undoing it would change one
+    nobody touched since. It is neither undone nor skipped past.
     """
     handled: set[int] = set()
     for position in range(len(log) - 1, -1, -1):
         entry = log[position]
+        if entry["op"] == "rig":
+            raise UndoBarrier(
+                f"nothing to undo: a rig switch to {entry['args'].get('rig')!r} is in the way, and "
+                "what came before it was done to the rig that was up then")
         if entry["op"] == "undo":
             handled.add(entry["undoes"])
         elif entry["op"] == "stale":
@@ -584,6 +654,226 @@ def sushi_unreachable(exc: BaseException) -> bool:
     return isinstance(exc, SushiUnavailableError)
 
 
+# =========================================================================== #
+# The library and chain edits (#32): the decisions, pure
+# =========================================================================== #
+
+class Conflict(AgentError):
+    """A request the running rig cannot take as it is now (409): a name it
+    already has, a track it lacks, a send that must stay where it is. Unlike a
+    bad request it may succeed later, against a different rig."""
+
+
+class Unconfirmed(AgentError):
+    """Sushi did not give what an edit needs or did not do what it was asked,
+    as read back (502)."""
+
+
+def derive_name(plugin_name: str) -> str:
+    """A processor name from a plugin's name: lower case, every run of anything
+    but a-z and 0-9 one '_', at most 64 characters (`save.NAME_PATTERN`, which
+    a saved rig's names must match). "" when nothing is left, which
+    `add_request` refuses rather than inventing a name."""
+    name = re.sub(r"[^a-z0-9]+", "_", plugin_name.lower()).strip("_")
+    return name[:64].rstrip("_")
+
+
+@dataclass(frozen=True)
+class AddRequest:
+    """What an add asks for, checked for shape. `named` is whether the client
+    chose `name`, which only changes what a clash tells it to do."""
+
+    track: str
+    uri: str
+    name: str
+    after: str | None
+    named: bool
+
+
+def add_request(body: Any, library: dict[str, Any]) -> AddRequest:
+    """An `AddRequest` from a request body, or `AgentError` (400).
+
+    `library` is `library.read_library`'s answer. The URI must be one of its
+    entries -- the manifest is the list of what the rig may load -- and one
+    Sushi can host (`addable`; the amp is not). With no `name`, the plugin's
+    name as the library has it, made a config name (`derive_name`); a given
+    name must already be one, since it is what a save will write.
+    """
+    body = _object(body)
+    track, uri = _name(body, "track"), _name(body, "uri")
+    entries = {entry["uri"]: entry for entry in library.get("plugins", [])}
+    entry = entries.get(uri)
+    if entry is None:
+        raise AgentError(
+            f"{uri!r} is not in plugin-manifest.txt, which lists every plugin the rig "
+            f"may load: GET /library lists its {len(entries)}")
+    if not entry.get("addable", True):
+        raise AgentError(f"{entry['name']} cannot be added to a Sushi chain: {entry.get('why_not')}")
+    named = body.get("name") is not None
+    if named:
+        name = body["name"]
+        if not isinstance(name, str) or not NAME_PATTERN.fullmatch(name):
+            raise AgentError(f"'name' must match {NAME_PATTERN.pattern}, not {name!r}")
+    else:
+        name = derive_name(entry["name"])
+        if not NAME_PATTERN.fullmatch(name):
+            raise AgentError(
+                f"no processor name can be made from {entry['name']!r}: give it a 'name' "
+                f"matching {NAME_PATTERN.pattern}")
+    after = body.get("after")
+    if after is not None and (not isinstance(after, str) or not after):
+        raise AgentError(f"'after' must name a processor on the track, or be left out, not {after!r}")
+    return AddRequest(track, uri, name, after, named)
+
+
+
+def _track_of(chains: dict[str, list[str]], processor: str) -> str | None:
+    return next((track for track, chain in chains.items() if processor in chain), None)
+
+
+@dataclass(frozen=True)
+class Addition:
+    """An add decided on: where it goes, and the command that puts it there.
+
+    `chain` is the track's before, `expected` after. Sushi places a processor
+    "in front of" another or "at the back", so `before_id` is the id of the one
+    it goes in front of, or 0 with `add_to_back`; both from the reading the
+    decision was made on, as a move's are.
+    """
+
+    track: str
+    name: str
+    uri: str
+    after: str | None
+    chain: list[str]
+    expected: list[str]
+    track_id: int
+    before_id: int
+    add_to_back: bool
+
+
+def check_add(reading: dict[str, Any], request: AddRequest) -> Addition:
+    """Where `request` goes on the running rig, or `Conflict` (409).
+
+    `reading` is `live.read_live_chains(uids=True)`'s: `{"chains", "ids",
+    "uids"}`. The send is known by `live.is_send`, by its uid and its name, as a
+    remove and a move know it: by name alone, an add on a rig whose send was
+    called something else went in behind it, was confirmed, logged, and not
+    heard (found by review). The name must
+    be free across the whole rig -- Sushi's processor names are one namespace,
+    tracks included. With no `after` it goes last, but in front of the
+    track's send when it has one; `after` the send is refused, because the
+    send carries the channel to the master and whatever follows it is not
+    heard. The master's return is first on its track and stays first: an add
+    is always after something or at the back.
+    """
+    chains, ids = reading.get("chains", {}), reading.get("ids", {})
+    uids = reading.get("uids") or {}
+    track, name, after = request.track, request.name, request.after
+    if track not in chains:
+        raise Conflict(f"the running rig has no track {track!r}: it has {sorted(chains)}")
+    if name in chains:
+        raise Conflict(f"{name!r} is a track of the running rig; give the processor another name")
+    holder = _track_of(chains, name)
+    if holder is not None:
+        what = "give a 'name'" if not request.named else "give another name"
+        raise Conflict(f"{name!r} is already on the rig, on track {holder!r}: {what}")
+    chain = list(chains[track])
+    sends = [index for index, held in enumerate(chain) if is_send(track, held, uids.get(held))]
+    if after is not None:
+        if after not in chain:
+            raise Conflict(f"there is no processor {after!r} on track {track!r}: it has {chain}")
+        if chain.index(after) in sends:
+            raise Conflict(
+                f"nothing goes after {after!r}: the send must stay last, since it is what "
+                "carries the channel to the master")
+        index = chain.index(after) + 1
+    else:
+        index = sends[0] if sends else len(chain)
+    before = chain[index] if index < len(chain) else None
+    return Addition(
+        track=track, name=name, uri=request.uri, after=after, chain=chain,
+        expected=chain[:index] + [name] + chain[index:],
+        track_id=ids[track], before_id=ids[before] if before is not None else 0,
+        add_to_back=before is None,
+    )
+
+
+def remove_request(body: Any) -> str:
+    """The processor a remove names, or `AgentError` (400)."""
+    return _name(_object(body), "processor")
+
+
+@dataclass(frozen=True)
+class Removal:
+    """A remove decided on. `plugin` is `{"uri", "uid", "type"}` as Sushi's
+    session gave it, which with `track` and `chain` is what an undo needs to
+    put the processor back where it was."""
+
+    processor: str
+    track: str
+    chain: list[str]
+    expected: list[str]
+    plugin: dict[str, Any]
+    processor_id: int
+    track_id: int
+
+
+def check_remove(reading: dict[str, Any], processor: str) -> Removal:
+    """What removing `processor` from the running rig is, or `Conflict` (409)
+    for a track, a send or return, or a processor the rig does not have; or
+    `Unconfirmed` (502) when Sushi would not say which plugin it is.
+
+    `reading` is `live.read_live_removal`'s: `{"chains", "ids", "plugin"}`.
+    A remove that could not say what it removed could not be undone, so it is
+    not made: refusing is the loud failure, removing anyway the silent one.
+    """
+    chains, ids = reading.get("chains", {}), reading.get("ids", {})
+    if processor in chains:
+        raise Conflict(f"{processor!r} is a track, not a processor on one")
+    track = _track_of(chains, processor)
+    if track is None:
+        raise Conflict(
+            f"the running rig has no processor {processor!r}: it has "
+            f"{_on_the_rig(chains, with_tracks=False)}")
+    plugin = reading.get("plugin")
+    uid = (plugin or {}).get("uid") or (reading.get("uids") or {}).get(processor)
+    protected = protected_processor(track, processor, uid)
+    if protected:
+        raise Conflict(f"{protected}: the compiler's, and never removed")
+    if not plugin or not (plugin.get("uri") or plugin.get("uid")):
+        raise Unconfirmed(
+            f"Sushi could not say which plugin {processor!r} is (its session lists no "
+            "URI or uid for it), so it is not removed: the log could not say how to "
+            "put it back")
+    chain = list(chains[track])
+    return Removal(
+        processor=processor, track=track, chain=chain,
+        expected=[name for name in chain if name != processor],
+        plugin={key: plugin.get(key) for key in ("uri", "uid", "type")},
+        processor_id=ids[processor], track_id=ids[track],
+    )
+
+
+def confirm_chain(chains: dict[str, list[str]], track: str, expected: list[str], what: str) -> None:
+    """`Unconfirmed` (502) unless `track`'s chain, read back after an edit, is
+    `expected`. Sushi's acknowledgement says it carried out a command; the
+    read-back says the command did what the agent meant, and only that is
+    logged. A chain someone else changed in between (the panel's listener is
+    not behind the agent's lock) fails here too, which is the honest answer."""
+    if track not in chains:
+        raise Unconfirmed(f"Sushi confirmed it {what}, but the rig read back has no track {track!r}")
+    if chains[track] != expected:
+        raise Unconfirmed(
+            f"Sushi confirmed it {what}, but {track!r} read back {chains[track]}, not "
+            f"{expected}: read /live before trying again")
+
+
+# =========================================================================== #
+# (end of the library and chain edits' decisions)
+# =========================================================================== #
+
+
 @dataclass(frozen=True)
 class Live:
     """Everything the live routes need from Sushi, each a blocking call. A
@@ -612,6 +902,11 @@ class Live:
     set_parameter: Callable[[Any, str, str, float], None]
     set_bypass: Callable[[Any, str, bool], None]
     send_move: Callable[[Any, Move], Move]  # sends a planned move
+    # -- the chain edits (#32) --
+    walk: Callable[[Any], dict[str, Any]]  # {"chains", "ids"}: an add's reading, and every read-back
+    removal: Callable[[Any, str], dict[str, Any]]  # (processor) -> the walk plus its "plugin"
+    add: Callable[[Any, Addition], None]  # sends a decided add
+    remove: Callable[[Any, Removal], None]  # sends a decided remove
 
     @classmethod
     def at(cls, address: str = DEFAULT_GRPC_ADDRESS) -> "Live":
@@ -622,10 +917,17 @@ class Live:
             snapshot=lambda c: m.read_rig(address, c),
             parameter=lambda c, proc, name: m.read_live_parameter(proc, name, address, c),
             bypass=lambda c, proc: m.read_live_bypass(proc, address, c),
-            plan_move=lambda c, proc, direction: m.plan_live_move(proc, direction, address, c),
+            # uids: a send is known by Sushi's uid as well as its name (#32).
+            plan_move=lambda c, proc, direction: m.plan_live_move(proc, direction, address, c, uids=True),
             set_parameter=lambda c, proc, name, value: m.set_live_parameter(proc, name, value, address, c),
             set_bypass=lambda c, proc, state: m.set_live_bypass(proc, state, address, c),
             send_move=lambda c, move: m.send_live_move(move, address, c),
+            # -- the chain edits (#32) --
+            walk=lambda c, uids=False: m.read_live_chains(address, c, uids=uids),
+            removal=lambda c, proc: m.read_live_removal(proc, address, c),
+            add=lambda c, a: m.add_live_processor(
+                a.name, a.uri, a.track_id, a.before_id, a.add_to_back, address, c),
+            remove=lambda c, r: m.remove_live_processor(r.processor_id, r.track_id, address, c),
         )
 
 
@@ -690,6 +992,8 @@ class Agent:
         live: Live | None = None,
         clock: Callable[[], float] = time.monotonic,
         log_limit: int = LOG_LIMIT,
+        library: Callable[[], dict[str, Any]] | None = None,
+        midi: midi_listener.World | None = None,
     ) -> None:
         self.root = root
         self.log_limit = log_limit
@@ -711,6 +1015,11 @@ class Agent:
             max_workers=LIVE_WORKERS, thread_name_prefix="sushi-live")
         self._in_flight: set = set()  # calls to Sushi that have not returned
         self._abandoned: set = set()  # ... of which the agent has stopped waiting for these
+        # The library (#32): built on first use and kept; see `_library_now`.
+        self._build_library = library or self._read_library
+        self._library: dict[str, Any] | None = None
+        self._library_lock = asyncio.Lock()
+        self._midi_init(midi)  # the MIDI listener's state: see the MIDI section
 
     @property
     def stuck_live_calls(self) -> int:
@@ -738,6 +1047,7 @@ class Agent:
         app.router.add_post("/live/bypass", self.live_bypass)
         app.router.add_post("/live/move", self.live_move)
         app.router.add_post("/live/undo", self.live_undo)
+        self._edit_routes(app)
         return app
 
     async def health(self, request):
@@ -750,12 +1060,13 @@ class Agent:
                 "busy": self.busy,
                 "stuck_live_calls": self.stuck_live_calls,
                 "last_error": self.last_error,
+                "midi": self._midi_status(),
             },
             "rig": self.describe(),
         })
 
     async def rig(self, request):
-        return web.json_response(self.describe())
+        return web.json_response(await self._rig_answer())
 
     async def doctor_route(self, request):
         from .doctor import FAULT, UNCHECKED
@@ -777,22 +1088,7 @@ class Agent:
         except AgentError as exc:
             raise web.HTTPBadRequest(reason=str(exc))
 
-        self._refuse_while_busy()
-        async with self._lock:
-            self.busy = command
-            try:
-                outcome = await self.run(args)
-            finally:
-                self.busy = None
-            if outcome.ok and (self.last_error or {}).get("kind") == "lifecycle":
-                # A later success supersedes the old failure: left in place,
-                # a healthy agent reports a refused request forever and
-                # /health cannot be trusted to say "nothing is wrong now".
-                # Only a lifecycle failure, though: an unexpected error from
-                # /doctor or /rig says nothing about the rig coming up, so a
-                # `down` that works must not forget it.
-                self.last_error = None
-
+        outcome, args = await self._run_lifecycle(command, [args])
         answer: dict[str, Any] = {
             "ok": outcome.ok,
             "command": args,
@@ -806,10 +1102,58 @@ class Agent:
         # already running", "no rig to restart", Sushi never came up -- which
         # is a conflict with the rig's state, 409. The agent gave up waiting:
         # 504, and the rig in the answer is what to read next.
-        reason = outcome.stderr.strip() or f"exit status {outcome.returncode}"
-        self._remember(args, reason, kind="lifecycle")
-        answer["reason"] = reason
+        answer["reason"] = outcome.reason
         return web.json_response(answer, status=504 if outcome.abandoned else 409)
+
+    async def _run_lifecycle(
+        self, command: str, steps: list[list[str]], fallback: list[str] | None = None,
+    ) -> tuple[Outcome, list[str]]:
+        """Run lifecycle commands in order under the lifecycle lock, stopping
+        at the first that fails: one for a route, `down` then `up` for a rig
+        switched by Program Change, which therefore takes exactly the path a
+        request does. Answers what the last command run said, and its
+        arguments; a failure is remembered for /health.
+
+        `fallback` is run when a step after the first fails, which for a rig
+        switch is the `up` of the rig that `down` took away: the player gets
+        the old rig back rather than silence. The failure is still what is
+        answered and remembered, with what the fallback did beside it.
+
+        The MIDI listener is stopped before every command, `up` too (a
+        listener can still be following a rig that died outside the agent, and
+        a pad pressed while `up` runs must not reach the rig coming up), and
+        afterwards follows the rig as it now is, whatever happened.
+        """
+        self._refuse_while_busy()
+        async with self._lock:
+            self.busy = command
+            try:
+                await self._midi_stop(f"stopped while '{command}' runs")
+                restored = ""
+                for step, args in enumerate(steps):
+                    outcome = await self.run(args)
+                    if not outcome.ok:
+                        if fallback is not None and step > 0:
+                            back = await self.run(fallback)
+                            restored = (f"; {fallback[1]} was brought back" if back.ok else
+                                        f"; bringing {fallback[1]} back failed too: {back.reason}")
+                        break
+            finally:
+                self.busy = None
+                await self._midi_sync()
+            if outcome.ok and (self.last_error or {}).get("kind") == "lifecycle":
+                # A later success supersedes the old failure: left in place,
+                # a healthy agent reports a refused request forever and
+                # /health cannot be trusted to say "nothing is wrong now".
+                # Only a lifecycle failure, though: an unexpected error from
+                # /doctor or /rig says nothing about the rig coming up, so a
+                # `down` that works must not forget it.
+                self.last_error = None
+            if not outcome.ok:
+                self._remember(args, outcome.reason + restored, kind="lifecycle")
+                if restored:
+                    outcome = Outcome(False, outcome.returncode, outcome.stdout, outcome.stderr.strip() + restored)
+        return outcome, args
 
     # ------------------------------------------------------------------- live
 
@@ -1247,10 +1591,10 @@ class Agent:
         except AgentError as exc:
             raise web.HTTPBadRequest(reason=str(exc))
         self._refuse_while_busy()  # before the fast path: busy is the truer answer
-        if pick_undo(self.log, self._trimmed) is None:
+        if self._pick_undo() is None:
             raise _conflict("nothing to undo", "nothing_to_undo")
         async with self._connected_for_a_change(request) as controller:
-            picked = pick_undo(self.log, self._trimmed)  # the log may have changed while waiting
+            picked = self._pick_undo()  # the log may have changed while waiting
             if picked is None:
                 raise _conflict("nothing to undo", "nothing_to_undo")
             index, undone = picked
@@ -1276,6 +1620,15 @@ class Agent:
             entry = self._record("undo", {"of": op, **args}, previous, undoes=index)
         # `state` is what was set and Sushi confirmed, not read back again.
         return web.json_response({"ok": True, **entry, "undone": undone, "state": state})
+
+    def _pick_undo(self) -> tuple[int, dict[str, Any]] | None:
+        """`pick_undo` on the agent's log, a rig switch in the way answered as
+        409 `nothing_to_undo` with the reason (skip included: a switch is not
+        an entry that could not be undone, it is the end of what can be)."""
+        try:
+            return pick_undo(self.log, self._trimmed)
+        except UndoBarrier as exc:
+            raise _conflict(str(exc), "nothing_to_undo")
 
     async def release_workers(self, app=None) -> None:
         """Stop handing Sushi calls to the pool. Calls still inside Sushi are
@@ -1319,6 +1672,515 @@ class Agent:
             self._remember([request.method, request.path], reason)
             return web.json_response({"ok": False, "status": 500, "reason": reason}, status=500)
 
+    # ======================================================================= #
+    # The library and chain edits (#32): GET /library, POST /live/add|remove
+    # ======================================================================= #
+
+    def _edit_routes(self, app) -> None:
+        app.router.add_get("/library", self.library_route)
+        app.router.add_post("/live/add", self.live_add)
+        app.router.add_post("/live/remove", self.live_remove)
+
+    def _read_library(self) -> dict[str, Any]:
+        from .paths import checkout_root
+
+        return library_module.read_library(self.root or checkout_root())
+
+    async def _library_now(self) -> dict[str, Any]:
+        """The library, built on first use and kept for the agent's life: the
+        manifest, `plugins/` and the profiles change when the checkout does,
+        and the agent is restarted with it. Built off the loop (it reads a
+        hundred files or so), once however many requests ask at the same
+        time. A build that fails is 500 with the reason and is not kept, so
+        the next request tries again."""
+        if self._library is not None:
+            return self._library
+        async with self._library_lock:
+            if self._library is None:
+                try:
+                    built = await asyncio.get_running_loop().run_in_executor(None, self._build_library)
+                except library_module.LibraryError as exc:
+                    self._remember(["library"], str(exc))
+                    raise web.HTTPInternalServerError(reason=str(exc))
+                self._library = built
+        return self._library
+
+    async def library_route(self, request):
+        """Every plugin in the manifest, for the Library screen to pick from.
+        Needs no rig: it is files, not Sushi."""
+        return web.json_response({"ok": True, **(await self._library_now())})
+
+    async def live_add(self, request):
+        """Add a plugin from the library to a track of the running rig.
+
+        Body `{"track", "uri", "name"?, "after"?}`. Refused (400) before Sushi is
+        contacted for a bad shape, a URI not in the manifest or one Sushi cannot
+        host; refused (409) from a walk of the chains for a track the rig lacks,
+        a name it already has or an `after` not on the track. Sent as decided,
+        then confirmed from a second walk. Logged as op "add" with the name
+        actually used in `args` (an undo removes it by that) and `previous` the
+        track's chain before.
+        """
+        body = await self._json_body(request)
+        library = await self._library_now()
+        try:
+            asked = add_request(body, library)
+        except AgentError as exc:
+            raise web.HTTPBadRequest(reason=str(exc))
+        async with self._connected_for_a_change(request) as controller:
+            reading = await self._sushi(request, self.live.walk, controller, True, reading=True)
+            try:
+                addition = check_add(reading, asked)
+            except Conflict as exc:
+                raise web.HTTPConflict(reason=str(exc))
+            await self._sushi(request, self.live.add, controller, addition, reading=False)
+            after = await self._sushi(request, self.live.walk, controller, reading=False)
+            what = f"added {addition.name!r} to {addition.track!r}"
+            self._confirm(request, after, addition.track, addition.expected, what)
+            entry = self._record("add", {
+                "track": addition.track, "uri": addition.uri, "name": addition.name,
+                "after": addition.after,
+            }, list(addition.chain))
+        return web.json_response({
+            "ok": True, **entry, "chain": addition.expected,
+            "message": f"added {addition.name} to {addition.track}",
+        })
+
+    async def live_remove(self, request):
+        """Remove one processor from the running rig, by name.
+
+        Body `{"processor"}`. Refused (409) for a track, a channel's send, the
+        master's return, or a processor the rig lacks; 502 if Sushi will not
+        say which plugin it is, since the log must be able to put it back.
+        Confirmed from a walk afterwards. Logged as op "remove" with `previous`
+        `{"track", "chain", "uri", "uid", "type"}`: where it was and what it
+        was, which is what an undo re-adds. Its parameter values are not
+        recorded, so a re-add would come back at the plugin's defaults.
+        """
+        try:
+            processor = remove_request(await self._json_body(request))
+        except AgentError as exc:
+            raise web.HTTPBadRequest(reason=str(exc))
+        async with self._connected_for_a_change(request) as controller:
+            reading = await self._sushi(request, self.live.removal, controller, processor, reading=True)
+            try:
+                removal = check_remove(reading, processor)
+            except Conflict as exc:
+                raise web.HTTPConflict(reason=str(exc))
+            except Unconfirmed as exc:
+                self._remember([request.method, request.path], str(exc), kind="live")
+                raise web.HTTPBadGateway(reason=str(exc))
+            await self._sushi(request, self.live.remove, controller, removal, reading=False)
+            after = await self._sushi(request, self.live.walk, controller, reading=False)
+            what = f"removed {removal.processor!r} from {removal.track!r}"
+            chains = self._confirm(request, after, removal.track, removal.expected, what)
+            if _track_of(chains, removal.processor) is not None:
+                self._unconfirmed(request, f"Sushi confirmed it {what}, but it is still on the rig")
+            entry = self._record("remove", {"processor": removal.processor}, {
+                "track": removal.track, "chain": list(removal.chain), **removal.plugin,
+            })
+        return web.json_response({
+            "ok": True, **entry, "chain": removal.expected,
+            "message": f"removed {removal.processor} from {removal.track}",
+        })
+
+    def _confirm(
+        self, request, reading: Any, track: str, expected: list[str], what: str,
+    ) -> dict[str, list[str]]:
+        """The chains of a read-back, confirmed (`confirm_chain`), or 502. The
+        one place a read-back's chains are taken from it, so a reading with
+        none is a 502 like any other read-back that is wrong, not a KeyError's
+        500 (found by review)."""
+        chains = reading.get("chains") if isinstance(reading, dict) else None
+        if not isinstance(chains, dict):
+            self._unconfirmed(request, f"Sushi confirmed it {what}, but the read-back had no chains")
+        try:
+            confirm_chain(chains, track, expected, what)
+        except Unconfirmed as exc:
+            self._unconfirmed(request, str(exc))
+        return chains
+
+    def _unconfirmed(self, request, reason: str) -> None:
+        """502, remembered for /health, and nothing logged: the log holds edits
+        the rig was read back to have."""
+        self._remember([request.method, request.path], reason, kind="live")
+        raise web.HTTPBadGateway(reason=reason)
+
+    # ======================================================================= #
+    # (end of the library and chain edits' routes)
+    # ======================================================================= #
+    # =================================================================== MIDI
+    #
+    # The MIDI listener's wiring (#34, #93). The decisions are midi_listener.py's;
+    # this block only connects them to the routes' own machinery, and is kept
+    # in one place so it merges past other work on this file. Outside it the
+    # agent calls in at: __init__ (`_midi_init`), /health (`_midi_status`),
+    # /rig (`_rig_answer`), `_run_lifecycle` (`_midi_stop`, `_midi_sync`) and
+    # `serve` (`midi_adopt`, `midi_release`).
+    #
+    # Threading: the listener's thread reads the port and hands each message to
+    # the loop (`call_soon_threadsafe`); everything below runs on the loop. A
+    # generation number, bumped by every stop, tags each listener and each
+    # action it caused, so a message that was on its way when the rig went
+    # down is dropped rather than acted on against the rig that comes up next.
+
+    def _midi_init(self, world: midi_listener.World | None) -> None:
+        self._midi_world = world or midi_listener.World()
+        self._listener: midi_listener.Listener | None = None
+        self._midi_plan: midi_listener.Plan | None = None
+        self._midi_generation = 0
+        self._midi_switches: dict[str, bool] = {}  # each CC switch's last state, for `dispatch`
+        # One MIDI action at a time, in the order they were played: two toggles
+        # in quick succession must reach Sushi in that order, and a switch's
+        # off-then-on must not arrive on-then-off. Not the live lock: that
+        # serialises only the read-decide-set, and connections are made outside
+        # it, so two actions could otherwise overtake each other while connecting.
+        self._midi_lock = asyncio.Lock()
+        self._midi_tasks: set = set()
+        self._midi_released = False  # set by `midi_release`: nothing starts a listener after it
+        self._midi: dict[str, Any] = {
+            "state": "off", "reason": "the agent has not looked for a rig yet",
+            "rig": None, "controller": None, "port": None, "bindings": [], "programs": False,
+            "heard": 0, "last": None, "problem": None, "last_error": None,
+        }
+
+    def _midi_root(self) -> Path:
+        from .paths import checkout_root
+
+        return self.root or checkout_root()
+
+    def _midi_status(self) -> dict[str, Any]:
+        """The listener, for /health: `state` is off (with the `reason`),
+        opening, listening, or failed (with the `problem`). `heard` counts every
+        message the port delivered since it opened, aftertouch included, and
+        `last` is the last one the listener reads and what it did with it: what
+        to look at when a pedal seems to do nothing."""
+        listener = self._listener
+        return {**self._midi, "heard": listener.heard if listener is not None else self._midi["heard"]}
+
+    async def _rig_answer(self) -> dict[str, Any]:
+        """/rig: `describe_rig`, and when the running rig's map switches rigs by
+        Program Change, which number is which rig (`programs`), read now, as a
+        Program Change reads it (off the loop: it lists a folder)."""
+        described = self.describe()
+        plan = self._midi_plan
+        if plan is not None and plan.bindings.programs is not None:
+            rigs = await asyncio.to_thread(self._midi_world.rigs, self._midi_root())
+            described["programs"] = midi_listener.programs_table(rigs)
+        return described
+
+    def _midi_say(self, message: str) -> None:
+        print(f"sushi-rig agent: MIDI: {message}", file=sys.stderr, flush=True)
+
+    def _midi_off(self, reason: str) -> None:
+        self._midi.update(state="off", reason=reason, rig=None, controller=None, port=None,
+                          bindings=[], programs=False, problem=None)
+
+    def _midi_fail(self, problem: str) -> None:
+        self._midi.update(state="failed", reason=None, problem=problem)
+        self._midi_say(problem)
+
+    async def midi_adopt(self, app=None) -> None:
+        """At the agent's start: listen for a rig already up, which `up` from
+        the CLI leaves running whether or not an agent was there to see it."""
+        await self._midi_sync()
+
+    async def midi_release(self, app=None) -> None:
+        """At the agent's end: cancel the actions in flight and wait for them,
+        then stop the listener. In that order, and with `_midi_released` set
+        first, because a switch cancelled inside `_run_lifecycle` runs its
+        finally, whose `_midi_sync` would otherwise start a fresh listener
+        after this one had stopped the old."""
+        self._midi_released = True
+        for task in list(self._midi_tasks):
+            task.cancel()
+        await asyncio.gather(*list(self._midi_tasks), return_exceptions=True)
+        await self._midi_stop("the agent is stopping")
+
+    async def _midi_sync(self) -> None:
+        """Make the listener match the rig as it now is: none for no rig, or a
+        rig with nothing for the agent; the one its files describe otherwise.
+        A listener already serving that same plan is left alone. Never raises:
+        whatever goes wrong is the listener's problem, in /health, and not the
+        lifecycle command's. Does nothing once the agent has released MIDI."""
+        if self._midi_released:
+            return
+        try:
+            plan = await asyncio.to_thread(self._midi_world.plan, self.describe(), self._midi_root())
+        except Exception as exc:  # noqa: BLE001 -- the reason goes to /health and stderr
+            await self._midi_stop("the rig's files could not say what to serve")
+            detail = str(exc) if isinstance(exc, MidiError) else f"{type(exc).__name__}: {exc}"
+            self._midi_fail(f"MIDI is off for the running rig: {detail}")
+            return
+        if isinstance(plan, midi_listener.Off):
+            await self._midi_stop(plan.reason)
+            self._midi_off(plan.reason)
+            return
+        if plan == self._midi_plan and self._midi["state"] in ("opening", "listening"):
+            return
+        await self._midi_stop("replaced")
+        if not self._midi_released:  # released while the plan was being read
+            self._midi_start(plan)
+
+    def _midi_start(self, plan: midi_listener.Plan) -> None:
+        loop = asyncio.get_running_loop()
+        generation = self._midi_generation
+        self._midi_plan = plan
+        self._midi_switches = {}
+        self._midi.update(
+            state="opening", reason=None, rig=plan.rig, controller=plan.controller, port=plan.port,
+            bindings=[b.describe() for b in plan.bindings.controls],
+            programs=plan.bindings.programs is not None,
+            heard=0, last=None, problem=None, last_error=None,
+        )
+        self._listener = midi_listener.Listener(
+            plan.port, self._midi_world.open_port,
+            post=loop.call_soon_threadsafe,
+            on_open=functools.partial(self._midi_opened, generation),
+            on_message=functools.partial(self._midi_heard, generation),
+            on_failure=functools.partial(self._midi_failed, generation),
+        )
+        self._listener.start()
+
+    async def _midi_stop(self, reason: str) -> None:
+        """Stop the listener, if there is one, and drop what it handed over
+        that has not been acted on. Waits (off the loop) for its thread to let
+        go of the port; a thread stuck in ALSA past that is said and left, as a
+        daemon, rather than holding up a `down`."""
+        self._midi_generation += 1
+        self._midi_switches = {}
+        listener, self._listener = self._listener, None
+        if listener is None:
+            return
+        self._midi_plan = None
+        self._midi["heard"] = listener.heard
+        if not await asyncio.to_thread(listener.stop, 2 * midi_listener.POLL_SECONDS + 1.0):
+            self._midi_say(f"the listener on {listener.port_name!r} did not stop; left to end with the agent")
+        self._midi_off(reason)
+
+    def _midi_opened(self, generation: int) -> None:
+        if generation == self._midi_generation:
+            self._midi.update(state="listening")
+
+    def _midi_failed(self, generation: int, exc: BaseException, opened: bool) -> None:
+        if generation != self._midi_generation:
+            return
+        plan = self._midi_plan
+        doing = "stopped reading" if opened else "could not open"
+        who = f"the port of controller {plan.controller!r}, which {plan.rig}'s MIDI map is written for" if plan else "the port"
+        self._midi_fail(
+            f"{doing} MIDI port {self._midi['port']!r}, {who}: {exc}. Bypass and rig switching "
+            "from the pedals are off until the rig is next brought up or restarted"
+        )
+
+    def _midi_heard(self, generation: int, message: midi_listener.Message) -> None:
+        """A message from the listener, on the loop: decided now, in the order
+        played, and acted on in a task of its own, one at a time.
+
+        A Program Change is decided in its task instead, because deciding it
+        lists config/rigs/, which is file access and not for the loop. The
+        switch state `dispatch` returns is not kept here: `_midi_act` commits
+        it once the action has gone through."""
+        plan = self._midi_plan
+        if generation != self._midi_generation or plan is None:
+            return
+        try:
+            if message.kind == "program":
+                if plan.bindings.programs is None:
+                    action = None
+                else:
+                    action = message  # decided in `_midi_act`, off the loop
+            else:
+                # A switch's crossing is recorded as it is decided, so the values
+                # that follow on the same side (a pedal sends several) are not
+                # crossings too; `_midi_forget` takes it back if the action is
+                # dropped or fails, so the next value plays it again.
+                action, self._midi_switches = midi_listener.dispatch(message, plan.bindings, self._midi_switches)
+        except Exception as exc:  # noqa: BLE001 -- a loop callback's error would reach only the loop's log
+            self._midi["last_error"] = {
+                "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "message": f"{message.describe()}: {type(exc).__name__}: {exc}",
+            }
+            self._midi_say(self._midi["last_error"]["message"])
+            return
+        self._midi_last(message, action)
+        if action is None:
+            return
+        if len(self._midi_tasks) >= MIDI_PENDING:
+            # Sushi is not keeping up (a stuck call holds each action up to
+            # LIVE_TIMEOUT): a pedal's presses queued behind it would all land
+            # at once, long after they were played.
+            self._midi_error(action, f"{len(self._midi_tasks)} MIDI actions are still waiting on Sushi, so this one was dropped")
+            self._midi_forget(action)
+            return
+        task = asyncio.ensure_future(self._midi_act(generation, action))
+        self._midi_tasks.add(task)
+        task.add_done_callback(self._midi_tasks.discard)
+
+    def _midi_last(self, message: midi_listener.Message, action: Any) -> None:
+        if action is message:
+            done = "deciding which rig"
+        elif action is None:
+            done = "nothing (not bound, a release, or no change)"
+        else:
+            done = action.describe()
+        self._midi["last"] = {
+            "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "message": message.describe(), "action": done,
+        }
+
+    def _midi_error(self, action: Any, message: str) -> None:
+        """An action that could not be done: there is no client to answer, so
+        it is said on stderr and kept in /health (`agent.midi.last_error`)."""
+        text = f"{action.describe()}: {message}"
+        self._midi["last_error"] = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "message": text}
+        self._midi_say(text)
+
+    async def _midi_act(self, generation: int, action: Any) -> None:
+        async with self._midi_lock:
+            if generation != self._midi_generation:
+                return  # the listener that heard it has been stopped since
+            if isinstance(action, midi_listener.Message):  # a Program Change, to decide
+                message, plan = action, self._midi_plan
+                try:
+                    rigs = await asyncio.to_thread(self._midi_world.rigs, self._midi_root())
+                except Exception as exc:  # noqa: BLE001 -- said, the agent carries on
+                    self._midi["last_error"] = {
+                        "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                        "message": f"{message.describe()}: reading config/rigs/ failed: {type(exc).__name__}: {exc}"}
+                    self._midi_say(self._midi["last_error"]["message"])
+                    return
+                if generation != self._midi_generation or plan is None:
+                    return
+                action, _ = midi_listener.dispatch(message, plan.bindings, {}, rigs, plan.rig)
+                if self._midi["last"] and self._midi["last"]["action"] == "deciding which rig":
+                    self._midi_last(message, action)
+                if action is None:
+                    return
+            # What `_sushi` and the live lock read off a request, for a press.
+            origin = _MidiOrigin("MIDI", getattr(action, "control", None) or f"program {action.program}")
+            try:
+                if isinstance(action, midi_listener.Refused):
+                    raise MidiError(action.reason)
+                if isinstance(action, (midi_listener.ToggleBypass, midi_listener.SetBypass)):
+                    await self._midi_bypass(origin, action)
+                elif isinstance(action, midi_listener.ToggleMute):
+                    await self._midi_mute(origin, action)
+                elif isinstance(action, midi_listener.SelectRig):
+                    await self._midi_switch(action)
+            except web.HTTPException as exc:  # what a route would have answered
+                self._midi_error(action, exc.reason)
+                self._midi_forget(action, generation)
+            except (AgentError, MidiError) as exc:
+                self._midi_error(action, str(exc))
+                self._midi_forget(action, generation)
+            except Exception as exc:  # noqa: BLE001 -- said, with its type; the agent carries on
+                self._midi_error(action, f"{type(exc).__name__}: {exc}")
+                self._midi_forget(action, generation)
+
+    def _midi_forget(self, action: Any, generation: int | None = None) -> None:
+        """Take back the crossing a CC switch's dropped or failed action
+        recorded, so the next value on that side plays it again. Only while
+        the switch still holds this action's state (a later crossing stands)
+        and the listener that heard it is still the one listening."""
+        if not isinstance(action, midi_listener.SetBypass):
+            return
+        if generation is not None and generation != self._midi_generation:
+            return
+        if self._midi_switches.get(action.control) == (not action.bypassed):
+            self._midi_switches = {k: v for k, v in self._midi_switches.items() if k != action.control}
+
+    def _midi_logged(self, entry: dict[str, Any], control: str | None) -> None:
+        """Mark a live-log entry as MIDI's. `_record` returns the entry it
+        appended, so this marks the one in the log: no await comes between."""
+        entry["source"] = "midi"
+        if control is not None:
+            entry["control"] = control
+
+    async def _midi_bypass(self, origin: "_MidiOrigin", action: Any) -> None:
+        """`POST /live/bypass`'s path: one connection, the live lock, the same
+        read and the same check, then the set. A toggle sets the opposite of
+        what Sushi reports now; a switch sets its own state, and does nothing
+        when the plugin is already there (which is not logged, as a move
+        that changes nothing is not)."""
+        processor = action.processor
+        want = action.bypassed if isinstance(action, midi_listener.SetBypass) else None
+        async with self._connected_for_a_change(origin) as controller:
+            reading = await self._sushi(origin, self.live.bypass, controller, processor, reading=True)
+            previous = check_bypass(reading, processor)
+            bypassed = midi_listener.next_bypass(previous, want)
+            if bypassed == previous:
+                return
+            await self._sushi(origin, self.live.set_bypass, controller, processor, bypassed, reading=False)
+            self._midi_logged(
+                self._record("bypass", {"processor": processor, "bypassed": bypassed}, previous), action.control)
+
+    async def _midi_mute(self, origin: "_MidiOrigin", action: Any) -> None:
+        """`POST /live/parameter`'s path, on the track's `mute`."""
+        track = action.track
+        async with self._connected_for_a_change(origin) as controller:
+            reading = await self._sushi(origin, self.live.parameter, controller, track, "mute", reading=True)
+            previous = check_parameter(reading, track, "mute")
+            value = midi_listener.next_mute(previous)
+            await self._sushi(origin, self.live.set_parameter, controller, track, "mute", value, reading=False)
+            self._midi_logged(
+                self._record("parameter", {"processor": track, "parameter": "mute", "value": value}, previous),
+                action.control)
+
+    async def _midi_switch(self, action: Any) -> None:
+        """Bring up rig `action.rig` with the lifecycle a request runs, with
+        the options `restart` would bring the running rig back with: checked
+        to compile first, and with the previous rig brought back if its `up`
+        fails."""
+        state = await asyncio.to_thread(self._midi_world.read_state) or {}
+        steps = switch_steps(state, action.rig)
+        previous = self._midi_plan.rig if self._midi_plan is not None else None
+        # A rig that cannot compile is refused before the running one is taken
+        # down: otherwise the player is left with no rig and no pedals.
+        self._refuse_while_busy()
+        problem = await asyncio.to_thread(
+            self._midi_world.check_rig, action.rig, self._midi_root(), state.get("machine"))
+        if problem:
+            reason = f"not switched to {action.rig}, which would not come up: {problem}"
+            self._remember(["switch", action.rig], reason, kind="lifecycle")
+            raise MidiError(reason)
+        # And if its `up` fails anyway (what only `up` finds: the live graph,
+        # Sushi loading it), the rig that was playing is brought back.
+        fallback = switch_steps(state, previous)[1] if previous else None
+        outcome, args = await self._run_lifecycle("switch", steps, fallback=fallback)
+        if not outcome.ok:
+            raise MidiError(f"'{' '.join(args)}' failed: {outcome.reason}")
+        self._midi_logged(self._record("rig", {"rig": action.rig, "program": action.program}, previous), None)
+
+
+# A pending MIDI action past this many is dropped (and said), not queued.
+MIDI_PENDING = 16
+
+
+@dataclass(frozen=True)
+class _MidiOrigin:
+    """Where a MIDI action came from, in the two fields `Agent._sushi` and the
+    live lock read off a request for their messages: "MIDI" and the control."""
+
+    method: str
+    path: str
+
+
+def switch_steps(state: dict[str, Any], rig: str) -> list[list[str]]:
+    """The lifecycle commands that switch the running rig (`state`, the state
+    file) to rig `rig` of config/rigs: `down`, then `up --rig` with the
+    headless, tuner and amp choices `restart` would bring back
+    (`rig.restart_arguments`), so a switch keeps how the rig is being run.
+    Not the amp model override: that was chosen for the rig being left, and
+    the next one's own `_amp` says its model. `AgentError` for a rig name that
+    is not one. Pure."""
+    _, options = restart_arguments(state)
+    up = lifecycle_arguments("up", {
+        "config_name": rig, "rig": True,
+        "headless": options["headless"], "tuner": options["tuner"], "amp": options["amp"],
+    })
+    return [["down"], up]
+
 
 def serve(host: str, port: int, root: Path | None = None) -> int:
     """Run the agent until interrupted."""
@@ -1327,7 +2189,9 @@ def serve(host: str, port: int, root: Path | None = None) -> int:
 
     agent = Agent(root=root)
     app = agent.app()
+    app.on_startup.append(agent.midi_adopt)  # MIDI: a rig already up has its pedals served
     app.on_shutdown.append(agent.announce_stopping)
+    app.on_cleanup.append(agent.midi_release)  # MIDI: before the pool its actions use
     app.on_cleanup.append(agent.release_workers)
     print(f"sushi-rig agent {VERSION} on http://{host}:{port}  (Ctrl+C to stop)", flush=True)
     web.run_app(app, host=host, port=port, print=None, handle_signals=True)
