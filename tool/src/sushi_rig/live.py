@@ -33,6 +33,8 @@ import time
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable
 
+from .spec import PROBE_TRACK
+
 DEFAULT_GRPC_ADDRESS = "localhost:51051"
 
 
@@ -103,6 +105,21 @@ def capture(address: str = DEFAULT_GRPC_ADDRESS, controller: Any = None) -> dict
     track_order: dict[str, list[str]] = {}
     try:
         for track in controller.audio_graph.get_all_tracks():
+            if track.name == PROBE_TRACK:
+                # Left by a selftest killed mid-probe (probes.py): no part of
+                # any rig, so left out here, the one place every reader of a
+                # capture goes through. Kept in, SAVE refused the capture as
+                # "a different rig" and the save was lost under the wrong cause
+                # (found by review, 2026-11-02). It is inaudible — its inputs
+                # and outputs are ones the rig leaves free — so it is reported,
+                # not a reason to refuse.
+                print(
+                    f"warning: {PROBE_TRACK!r} is still in Sushi, left by a selftest "
+                    "that did not finish; it is no part of the rig and is left out "
+                    "of this capture. `sushi-rig restart` removes it",
+                    file=sys.stderr,
+                )
+                continue
             # The track itself is captured first, then its plugins in chain
             # order. `is_track` matters below: a track's bypass is not just its
             # own state.

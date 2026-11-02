@@ -405,6 +405,8 @@ curl -X POST localhost:8029/live/parameter -d '{"processor": "reverb", "paramete
 curl -X POST localhost:8029/live/bypass -d '{"processor": "drive", "bypassed": true}'
 curl -X POST localhost:8029/live/move -d '{"processor": "drive", "direction": "up"}'
 curl localhost:8029/live/log         # what was changed through /live, newest last
+curl -X POST localhost:8029/live/undo   # put back what the newest change not yet undone replaced
+curl -X POST localhost:8029/live/undo -d '{"skip": true}'   # give up on the newest one that cannot be
 ```
 
 The first slice of the control plane every v2 feature needs: one process that
@@ -446,8 +448,29 @@ once, from one look at the chains, and what is sent is what was decided: a
 processor already at that end of its chain is `changed: false`, even if it only
 got there since the request arrived. Each change that Sushi confirmed is appended to an
 in-memory log of the last 500 (`/live/log`: `at`, `op`, `args`, and the
-`previous` value where it was known), which is where undo will come from; there
-is no undo yet.
+`previous` value where it was known), which is where undo comes from.
+
+**Undo** (`POST /live/undo`, no body) puts back the newest change that is not an
+undo and has not been undone: a parameter to its previous value, a bypass to its
+previous state, a move by the opposite step, each through the same call the
+route makes, under the same lock and timeout and with the same `503`/`502`/`504`
+and `409 busy`. The answer is the undo's log entry (`op: "undo"`, `undoes`: the
+index of the entry it put back, `args` what it applied, `previous` what that
+replaced), the entry `undone`, and the `state` now. An index counts entries since
+the agent started, not places in the list, because the list is trimmed at the
+front; `/live/log` says the index of the first it holds (`first`). It refuses
+rather than guess, with nothing applied or logged, and a `409` carries a `code`
+beside its `reason`: `busy`; `nothing_to_undo` (an empty log or one of undos
+only, said without a Sushi to ask); `stale`, when the rig is not as the entry
+assumes — a move's processor is not exactly where the move left it, a parameter
+or bypass was changed since (so an undo never overwrites a hand on the panel),
+or Sushi never said what to put back. A processor the rig has lost is `400`, as
+on the other routes. A refused entry is not skipped for an older one, so the
+way past a stuck one is explicit: `{"skip": true}` checks the newest entry, and
+if it is refused marks it `op: "stale"` in the log (it is not removed) so the
+next undo goes on to the one before; an entry that can be undone is `409
+not_stale`. Any other body is `400`. Undoing an undo (redo) is not built. **Not run against a live Sushi**: shown
+against the fake only.
 
 **The library and chain edits** (#32): pick a plugin, add it to a chain, take one out.
 
@@ -964,6 +987,23 @@ of one side only fails on the silent side; with `--amp`, the amp is probed on
 its own and through Sushi, both required to add harmonics. What the plan cannot check it lists —
 today that includes whether guitar and vocal leak into each other, since both
 come out of bus 0. Linking the ports and capturing needs the rig machine.
+
+**A probe never shares an input with the instrument** (#81). It is played
+through `selftest_probe`, a copy of the chain under test on a Sushi input and
+output the rig leaves free — for `config/rigs/guitar_vocal.yaml`, input 2 and
+outputs 6/7; for `electric_board`, input 1 and outputs 4/5 — so the guitar
+keeps playing through its own track, the player hears nothing, and the guitar's
+noise is not in the measurement. Injecting beside the instrument, as the plan
+used to, measured wrong on the rig: Sushi reads only the first 64 frames of
+each quantum of an input with two links. The listing's `track` line says what
+the copy carries. What the copy cannot see — a fault only the running instance
+has, and the send and return into the master — is listed under NOT CHECKED. The
+amp cannot be copied, so its probes still go into the amp the guitar plays
+into, and say so (`beside guitar-in`): run those with the guitar quiet. A rig
+of three channels fills Sushi's eight outputs and leaves no room for the copy;
+its chains are listed as not probed rather than probed beside the instrument.
+A probe track left behind by a selftest that was killed is inaudible; SAVE
+leaves it out with a warning, and `sushi-rig restart` removes it.
 
 **If a URI is absent from `lv2ls`, Sushi cannot load it** regardless of what is
 on disk. That is the single most common failure in this project, and
