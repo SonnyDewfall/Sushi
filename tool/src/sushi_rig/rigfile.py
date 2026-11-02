@@ -86,7 +86,7 @@ MASTER_BUS = 0
 
 _KEYS = ("kind", "schema_version", "name", "description", "meta", "host", "amp",
          "channels", "master")
-_CHANNEL_KEYS = ("name", "input", "width", "strip", "chain")
+_CHANNEL_KEYS = ("name", "input", "width", "strip", "chain", "level")
 _MASTER_KEYS = ("output", "chain")
 _PLUGIN_KEYS = ("name", "uri", "path", "uid", "type")
 # A component's settings, as `emit` writes them into `initial_state`.
@@ -107,6 +107,11 @@ class Channel:
     input: str
     width: str
     chain: tuple[PluginSpec, ...] = ()
+    # The channel's level in the mix, in dB: what the monitors hear of it,
+    # with the stem untouched. It is the send's gain (#18): a strip would act
+    # after the send and change the stem, so the strip stays at unity and the
+    # level lives here. 0 is unity; the send allows -120 to +24.
+    level: float = 0.0
 
     @property
     def inputs_used(self) -> int:
@@ -275,6 +280,23 @@ _SETTING_SHAPES = {
 # on its -120..24 dB range, pan centred on -1..1, unmuted.
 UNITY_STRIP = {"gain": 120 / 144, "pan": 0.5, "mute": 0.0}
 
+# The send's gain parameter, from Sushi 1.3.0's send_plugin.cpp: dB, -120 to
+# +24, default 0, stored normalised. These two are its unit conversion.
+LEVEL_RANGE = (-120.0, 24.0)
+
+
+def level_to_gain(level_db: float) -> float:
+    """A level in dB as the send's normalised `gain`: 0 dB is 120/144."""
+    low, high = LEVEL_RANGE
+    return (float(level_db) - low) / (high - low)
+
+
+def gain_to_level(gain: float) -> float:
+    """The send's normalised `gain` as a level in dB, to a thousandth, which
+    is below anything audible and above a float32 capture's noise."""
+    low, high = LEVEL_RANGE
+    return round(low + float(gain) * (high - low), 3)
+
 
 def _strip_problems(where: str, strip: dict[str, Any]) -> list[str]:
     """A strip anywhere but unity changes the stem and not the monitors.
@@ -372,6 +394,16 @@ def parse_rig(raw: Any) -> Rig:
                 f"{where}: width must be one of {', '.join(WIDTHS)} (got {entry.get('width')!r})"
             )
         chain = _chain(where, entry.get("chain"), problems, settings)
+        level = 0.0
+        if "level" in entry:
+            value = entry["level"]
+            low, high = LEVEL_RANGE
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                problems.append(f"{where}: level must be a number in dB (got {value!r})")
+            elif not low <= value <= high:
+                problems.append(f"{where}: level {value} dB is outside the send's {low:g} to {high:g}")
+            else:
+                level = float(value)
         if "strip" in entry and isinstance(entry.get("name"), str):
             # The track's own gain, pan and mute, normalised as Sushi stores them.
             strip = _settings(f"{where}: strip", {"parameters": entry["strip"]}, problems)
@@ -390,7 +422,7 @@ def parse_rig(raw: Any) -> Rig:
                 problems += _strip_problems(where, strip["parameters"])
                 settings[entry["name"]] = strip
         if isinstance(entry.get("name"), str) and _is_width(entry.get("width")):
-            channels.append(Channel(entry["name"], str(entry.get("input")), entry["width"], chain))
+            channels.append(Channel(entry["name"], str(entry.get("input")), entry["width"], chain, level))
 
     description = raw.get("description")
     if description is not None and not isinstance(description, str):
@@ -515,6 +547,10 @@ def compile_rig(rig: Rig) -> tuple[RigSpec, dict[str, Any]]:
             source=channel.input,
         ))
         processors[send] = {"properties": {"destination_name": RETURN}}
+        if channel.level != 0.0:
+            # Unity is the send's default, so a channel at 0 dB writes nothing
+            # and every existing rig compiles exactly as before.
+            processors[send]["parameters"] = {"gain": round(level_to_gain(channel.level), 6)}
         next_input += channel.inputs_used
     # Last, always: see the module docstring.
     tracks.append(TrackSpec(
@@ -605,10 +641,9 @@ def fold_state(raw: dict[str, Any], captured: dict[str, Any] | None) -> dict[str
 
     Not folded, on purpose: a channel's strip, held at unity (`UNITY_STRIP`)
     because a strip moved live changes the stem and not the mix, and the
-    sends and the return, which are the compiler's. Where a channel's level
-    in the mix lives, the send's gain (#18), is not in the file yet; a send
-    gain moved live is lost at save until it is, and that is said here rather
-    than written as a strip.
+    sends' destinations and the return, which are the compiler's. A send's
+    gain is folded, as the channel's `level` in dB (#18): that is where a
+    channel's level in the mix lives.
 
     A capture naming a processor the rig does not have is refused, as `emit`
     refuses it: that is a capture of a different rig.
@@ -663,8 +698,19 @@ def fold_state(raw: dict[str, Any], captured: dict[str, Any] | None) -> dict[str
 
     out = copy.deepcopy(raw)
     for channel in out.get("channels") or []:
-        if isinstance(channel, dict) and channel.get("chain"):
+        if not isinstance(channel, dict):
+            continue
+        if channel.get("chain"):
             channel["chain"] = fold_chain(channel["chain"], channel["name"])
+        # The send's gain moved live is the channel's level (#18). Written
+        # when it differs from what the file says, as a level in dB.
+        send = processors.get(str(channel.get("name")) + SEND_SUFFIX) or {}
+        gain = (send.get("parameters") or {}).get("gain") if isinstance(send, dict) else None
+        if isinstance(gain, (int, float)) and not isinstance(gain, bool):
+            level = gain_to_level(gain)
+            current = channel.get("level", 0.0)
+            if level != current:
+                channel["level"] = level
     master = out.get("master")
     if isinstance(master, dict) and master.get("chain"):
         master["chain"] = fold_chain(master["chain"], MASTER)
