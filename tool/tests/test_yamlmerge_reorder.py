@@ -5,9 +5,9 @@ removed that was always right; when the order changed it used to fall back to
 matching by position, so a comment stayed at its line and ended up beside a
 different plugin (reviewer, 2026-11-01: `comp  # squash first` / `drive  # the
 dirt pedal`, drive moved first, came out `drive  # squash first`). These tests
-pin what a move carries: the comment lines above an entry, the blank lines
-that were between entries stay where the gaps are, and what follows the last
-entry stays last.
+pin what a move carries: the comment lines above an entry, and the blank line
+that was above it (a gap goes with the entry below it; what follows the last
+entry stays last, and a heading a blank line sets apart stays at the top).
 
 They drive `yamlmerge.merged` with small texts rather than a whole rig, so each
 case is one shape and the expected text is the whole of it.
@@ -217,10 +217,10 @@ def test_a_plugin_added_while_the_chain_is_reordered_gets_no_ones_comments():
         "chain:\n  # b lead\n  - name: b  # b eol\n  - name: n\n  # a lead\n  - name: a  # a eol\n"
 
 
-def test_a_removed_first_entry_leaves_its_lead_at_the_top_as_it_does_without_a_reorder():
-    text = "chain:\n  # first lead\n  - name: a  # a eol\n  # b lead\n  - name: b\n  - name: c\n"
-    # a goes (its trailing comment with it; its lead stays, as when a is removed alone), b and c swap.
-    assert reorder(text, ["c", "b"]) == "chain:\n  # first lead\n  - name: c\n  # b lead\n  - name: b\n"
+def test_a_removed_first_entry_takes_its_own_lead_and_leaves_a_heading_a_blank_line_sets_apart():
+    text = "chain:\n  # heading\n\n  # first lead\n  - name: a  # a eol\n  # b lead\n  - name: b\n  - name: c\n"
+    # a goes with `# first lead` and its trailing comment; b and c swap; the heading stays.
+    assert reorder(text, ["c", "b"]) == "chain:\n  # heading\n\n  - name: c\n  # b lead\n  - name: b\n"
 
 
 def test_comments_after_the_chain_stay_after_it_whatever_ends_up_last():
@@ -452,6 +452,29 @@ def test_6_the_pairing_is_worked_out_once_and_handed_to_reorder(monkeypatch):
     monkeypatch.setattr(yamlmerge, "_pairing", lambda old, new: calls.append(1) or real(old, new))
     merged("chain:\n  - name: a\n  - name: b\n", {"chain": [{"name": "b"}, {"name": "a"}]})
     assert len(calls) == 1
+
+
+# --- Second review ----------------------------------------------------------- #
+
+def test_a_plugin_renamed_while_another_is_inserted_keeps_its_comments_and_the_next_ones_lead():
+    text = "chain:\n  - name: a\n    uri: u1  # a eol\n  # about b\n  - name: b\n    uri: u2\n"
+    data = {"chain": [{"name": "a2", "uri": "u1"}, {"name": "x"}, {"name": "b", "uri": "u2"}]}
+    out = merged(text, data)
+    assert out == ("chain:\n  - name: a2\n    uri: u1  # a eol\n  - name: x\n"
+                   "  # about b\n  - name: b\n    uri: u2\n")
+    assert merged(out, data) == out
+    # ... and while another is removed.
+    text = "chain:\n  - name: a\n    uri: u1  # a eol\n  - name: z\n  # about b\n  - name: b\n    uri: u2\n"
+    data = {"chain": [{"name": "a2", "uri": "u1"}, {"name": "b", "uri": "u2"}]}
+    assert merged(text, data) == \
+        "chain:\n  - name: a2\n    uri: u1  # a eol\n  # about b\n  - name: b\n    uri: u2\n"
+
+
+def test_the_comment_above_a_first_entry_that_a_reorder_removes_goes_with_it():
+    text = ("chain:\n  # heading\n\n  # about a\n  - name: a\n  # about b\n  - name: b\n"
+            "  # about c\n  - name: c\n")
+    assert reorder(text, ["c", "b"]) == \
+        "chain:\n  # heading\n\n  # about c\n  - name: c\n  # about b\n  - name: b\n"
 
 
 # --- Refusals ---------------------------------------------------------------- #

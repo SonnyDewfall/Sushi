@@ -1304,8 +1304,10 @@ reviewer on 2026-11-01), which the player's SAVE would now do every time the
 panel reorders a chain. A reorder is now a move: each plugin takes the comment
 lines above it, what is inside it and its trailing comment, while a heading a
 blank line sets apart at the top, and what follows the last entry, stay at
-their positions. A plugin renamed in the same
-save is still the same plugin when its `uri` is unique. It refuses, naming the
+their positions. A plugin renamed in the same update
+(or beside an insertion or a removal) is still the same plugin when its
+`uri` is unique (a same name wins over a same uri). The comments directly above
+a first entry that goes with the reorder go with it. It refuses, naming the
 entry, a list whose comments sit in a slot it does not read. A comment after a
 `|` or `>` scalar is read correctly now (ruamel.yaml stores it as the scalar's
 trailing comment, which silently misattached it on remove and insert too), as is
