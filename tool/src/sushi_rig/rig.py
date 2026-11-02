@@ -209,22 +209,17 @@ def prepare_rig(
     defaults to this machine's. Raises `RigError` with the reason, since a rig
     whose channels cannot be wired must not come up half-wired.
     """
-    from .machine import MachineError, MachineSpec, machine_path
+    from .machine import MachineError, MachineSpec, controller_for, machine_path
     from .patchbay import PatchbayError, patchbay_for, read_pw_dump
-    from .rigfile import RigFileError, compile_rig, emit_rig, load_rig
+    from .rigfile import RigFileError, compile_rig, emit_compiled, load_rig
 
     path = root / "config" / "rigs" / f"{name}.yaml"
     if not path.is_file():
         raise RigError(f"no such rig: {path}")
     try:
-        loaded = load_rig(path)  # parsed and checked once; both forms come from it
-        compiled = emit_rig(loaded)
-        spec = compile_rig(loaded)[0]
+        loaded = load_rig(path)
     except RigFileError as exc:
         raise RigError(f"{path.name}:\n  " + "\n  ".join(exc.problems)) from exc
-    problems = spec.validate()
-    if problems:
-        raise RigError(f"{path.name}: " + "; ".join(problems))
 
     machine_file = machine_file or machine_path(root)
     try:
@@ -237,6 +232,21 @@ def prepare_rig(
     problems = machine.validate()
     if problems:
         raise RigError(f"{machine_file.name}: " + "; ".join(problems))
+
+    # The MIDI map (#34) names a controller the machine file describes.
+    controller = None
+    if loaded.midi is not None:
+        try:
+            controller = controller_for(loaded.midi.controller, machine_file)
+        except MachineError as exc:
+            raise RigError(f"{path.name}: {exc}") from exc
+    # Compiled once, with the map: the same spec wires the patchbay and
+    # becomes the config.
+    try:
+        spec, fixed = compile_rig(loaded, controller)
+        compiled = emit_compiled(loaded, spec, fixed)
+    except RigFileError as exc:
+        raise RigError(f"{path.name}:\n  " + "\n  ".join(exc.problems)) from exc
 
     if dump is None:
         try:

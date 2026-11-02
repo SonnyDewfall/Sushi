@@ -1352,3 +1352,25 @@ folds a send gain moved live back into the file as dB to a thousandth, below
 anything audible and above a float32 capture's noise. This is what the
 expression pedal's blend will drive: one CC, two channels' levels, opposite
 directions (#34). *(2026-11-02)*
+
+**A rig carries its MIDI map, compiled to Sushi's own mappings (#34).** The
+machine file gains `controllers`, each control named and described as what it
+sends (`cc` or `note`, the port as PipeWire lists it, the channel as Sushi
+counts it or `all`); the rig's `midi:` names a controller and binds its
+controls. Blend, parameter and mute compile into `cc_mappings`, verified
+against 1.3.0's `json_configurator.cpp` and `midi_dispatcher.cpp`: a CC drives
+a parameter as `min + (max - min) * value / 127` in its normalised domain, a
+reversed range inverts, a track's `mute` is a parameter, and any string for
+the channel is omni. A blend is two mappings on the two channels' sends, each
+from its channel's own level down to silence, so the mix is respected. A
+note cannot sweep and is refused for one; bypass and Program Change rig
+switching are returned for the agent, which Sushi cannot do natively. The
+spec still compiles for routing without the controller (the patchbay, the
+probes, SAVE's source check need no pedals), but a config does not: a rig
+running without its pedals would be silent degradation. The MPD218 is
+recorded as this machine's development controller with the facts measured on
+2026-11-01. Two hypotheses for the rig session: whether Sushi counts MIDI
+channels from 0 (the file passes the number through unchanged), and the name
+PipeWire gives Sushi's MIDI input, which the patchbay will need to link the
+pedal; a slow test loads a mapped rig in the container's Sushi to settle
+what `--dummy` accepts. *(2026-11-02)*

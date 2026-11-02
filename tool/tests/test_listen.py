@@ -229,3 +229,50 @@ def test_a_rig_of_channels_is_saved_as_one_with_its_comments(tmp_path, monkeypat
     assert not (tmp_path / "run" / "sushi-rig" / "rigs").exists(), "and not where the running rig's compiled config lives"
 
 
+
+
+def test_a_saved_rig_with_a_midi_map_is_checked_with_its_controller(tmp_path, monkeypatch):
+    """SAVE on a mapped rig compiles it for the check through the machine
+    file's controller, the same way `prepare_rig` does; without that the
+    check would refuse a rig that runs."""
+    import json
+    import textwrap
+
+    from sushi_rig.listen import _checkable
+
+    root = tmp_path / "checkout"
+    (root / "config" / "rigs").mkdir(parents=True)
+    (root / "machines").mkdir()
+    (root / "machines" / "box.yaml").write_text(textwrap.dedent("""\
+        schema_version: 1
+        interface: Audient iD14
+        roles:
+          guitar-in: {ports: ["Audient iD14:capture_AUX0"], mono_to_stereo: true}
+          monitor-out: ["Audient iD14:playback_FL", "Audient iD14:playback_FR"]
+        controllers:
+          mpd218:
+            port: "MPD218:MPD218 Port A"
+            channel: all
+            controls:
+              knob1: {cc: 3}
+        """))
+    source = root / "config" / "rigs" / "blend.yaml"
+    source.write_text(textwrap.dedent("""\
+        kind: rig
+        schema_version: 1
+        name: blend
+        channels:
+        - {name: clean, input: guitar-in, width: mono, chain: []}
+        - {name: lead, input: guitar-in, width: mono, chain: [], level: -3}
+        master: {output: monitor-out, chain: []}
+        midi:
+          controller: mpd218
+          controls:
+          - {control: knob1, blend: [clean, lead]}
+        """))
+    monkeypatch.setattr("sushi_rig.paths.checkout_root", lambda: root)
+    monkeypatch.setattr("sushi_rig.machine.machine_path", lambda r: root / "machines" / "box.yaml")
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
+    compiled = _checkable(source)
+    mappings = json.loads(compiled.read_text())["midi"]["cc_mappings"]
+    assert [m["plugin_name"] for m in mappings] == ["clean_send", "lead_send"]

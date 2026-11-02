@@ -539,3 +539,174 @@ def test_a_level_saved_into_a_commented_file_lands_after_the_chain(tmp_path):
     assert "level: -6.0" in text
     assert "# The lead, blended in with the pedal." in text and "# on for the solos" in text
     assert yaml.safe_load(text)["channels"][1]["level"] == -6.0
+
+
+# --------------------------------------------------------------------------- #
+# The MIDI map (#34): named controls, compiled to Sushi's own mappings
+# --------------------------------------------------------------------------- #
+
+from sushi_rig.rigfile import compile_midi  # noqa: E402
+
+MPD218 = {"port": "MPD218:MPD218 Port A", "channel": "all",
+          "controls": {"knob1": ("cc", 3), "knob2": ("cc", 9), "pad1": ("note", 36)}}
+
+
+def _midi_rig(controls, level=-6.0, **extra):
+    return {
+        "kind": "rig", "schema_version": 1, "name": "two",
+        "channels": [
+            {"name": "clean", "input": "guitar-in", "width": "mono",
+             "chain": [{"name": "comp", "uri": "urn:comp"}]},
+            {"name": "lead", "input": "guitar-in", "width": "mono", "level": level,
+             "chain": [{"name": "drive", "uri": "urn:drive"}, {"name": "hall", "uri": "urn:hall"}]},
+        ],
+        "master": {"output": "monitor-out", "chain": [{"name": "lim", "uri": "urn:lim"}]},
+        "midi": {"controller": "mpd218", "controls": controls, **extra},
+    }
+
+
+def test_a_blend_is_two_send_mappings_on_one_cc_in_opposite_directions():
+    """Sushi computes min + (max - min) * value / 127, so a reversed range
+    inverts: heel is the first channel at its own level, toe the second at
+    its own level. A channel's level is its loudest, so the blend respects
+    the mix. Verified against midi_dispatcher.cpp, 1.3.0."""
+    rig = parse_rig(_midi_rig([{"control": "knob1", "blend": ["clean", "lead"]}]))
+    section, agent = compile_midi(rig, MPD218)
+    assert agent == []
+    a, b = section["cc_mappings"]
+    assert a == {"port": 0, "channel": "all", "cc_number": 3, "plugin_name": "clean_send",
+                 "parameter_name": "gain", "min_range": round(level_to_gain(0.0), 6), "max_range": 0.0,
+                 "mode": "absolute"}
+    assert b == {"port": 0, "channel": "all", "cc_number": 3, "plugin_name": "lead_send",
+                 "parameter_name": "gain", "min_range": 0.0, "max_range": round(level_to_gain(-6.0), 6),
+                 "mode": "absolute"}
+
+
+def test_a_parameter_and_a_mute_compile_natively_and_a_bypass_goes_to_the_agent():
+    rig = parse_rig(_midi_rig([
+        {"control": "knob1", "parameter": "lead/hall/Mix", "range": [0.1, 0.9]},
+        {"control": "knob2", "mute": "lead"},
+        {"control": "pad1", "bypass": "lead/drive"},
+    ], programs="rigs", port=1))
+    section, agent = compile_midi(rig, MPD218)
+    assert section["cc_mappings"] == [
+        {"port": 1, "channel": "all", "cc_number": 3, "plugin_name": "hall", "parameter_name": "Mix",
+         "min_range": 0.1, "max_range": 0.9, "mode": "absolute"},
+        {"port": 1, "channel": "all", "cc_number": 9, "plugin_name": "lead", "parameter_name": "mute",
+         "min_range": 0.0, "max_range": 1.0, "mode": "absolute"},
+    ]
+    assert agent == [
+        {"control": "pad1", "note": 36, "channel": "all", "bypass": "lead/drive"},
+        {"programs": "rigs", "port": 1, "channel": "all"},
+    ]
+
+
+def test_a_note_cannot_sweep_and_an_unknown_control_is_named():
+    rig = parse_rig(_midi_rig([{"control": "pad1", "parameter": "lead/hall/Mix"}]))
+    with pytest.raises(RigFileError, match="sends a note, which cannot sweep"):
+        compile_midi(rig, MPD218)
+    rig = parse_rig(_midi_rig([{"control": "expression", "blend": ["clean", "lead"]}]))
+    with pytest.raises(RigFileError, match="'expression' is not a control of controller 'mpd218'; it has: knob1, knob2, pad1"):
+        compile_midi(rig, MPD218)
+
+
+@pytest.mark.parametrize("controls, said", [
+    ([{"control": "knob1", "blend": ["clean", "bass"]}], "names channel 'bass'"),
+    ([{"control": "knob1", "blend": ["clean", "clean"]}], "two different channels"),
+    ([{"control": "knob1", "parameter": "lead/verb/Mix"}], "'verb', which is not in lead's chain"),
+    ([{"control": "knob1", "mute": "bass"}], "mute names channel 'bass'"),
+    ([{"control": "knob1", "mute": "lead"}, {"control": "knob1", "mute": "clean"}], "bound twice"),
+    ([{"control": "knob1", "parameter": "lead/hall"}], "channel/plugin/parameter"),
+    ([{"control": "knob1", "mute": "lead", "bypass": "lead/drive"}], "exactly one of"),
+    ([{"control": "knob1", "mute": "lead", "range": [0, 1]}], "range applies to a parameter only"),
+    ([{"control": "knob1", "parameter": "lead/hall/Mix", "range": [0, 2]}], "two numbers from 0 to 1"),
+    ([{"knob": "knob1", "mute": "lead"}], "unknown key"),
+])
+def test_a_midi_map_that_names_what_the_rig_lacks_or_the_wrong_shape_is_refused(controls, said):
+    with pytest.raises(RigFileError, match=said):
+        parse_rig(_midi_rig(controls))
+
+
+def test_a_rig_with_a_map_still_compiles_for_routing_but_not_to_a_config_without_its_controller():
+    """The patchbay and the probes read a rig's routing through compile_rig
+    and must not need the controller; writing a config must, since a rig
+    running without its pedals would be the silent failure."""
+    rig = parse_rig(_midi_rig([{"control": "knob1", "blend": ["clean", "lead"]}]))
+    spec, _ = compile_rig(rig)
+    assert [t.name for t in spec.tracks] == ["clean", "lead", "master"] and spec.midi == {}
+    with pytest.raises(RigFileError, match="written for controller 'mpd218', and no controller was given"):
+        emit_rig(rig)
+    config = emit_rig(rig, controller=MPD218)
+    assert len(config["midi"]["cc_mappings"]) == 2
+
+
+def test_a_rig_without_a_map_compiles_as_before():
+    rig = parse_rig(_two_channel())
+    assert "midi" not in emit_rig(rig)
+
+
+@pytest.mark.slow
+def test_a_rig_with_a_midi_map_loads_in_sushi_with_its_mappings(tmp_path):
+    """The one thing the pure tests cannot settle: that Sushi 1.3.0 accepts
+    what `compile_midi` writes (port 0, channel "all", two mappings on the
+    sends' gain, one on a track's mute, `midi_inputs` in the host config)
+    and still loads the rig. Headless, through `verify`, which also reads
+    every send's destination back. Every chain is emptied first, the
+    master's included: a made-up LV2 URI fails to load with "Failed to load
+    tracks", which is how the first version of this test failed in CI."""
+    from sushi_rig.verify import verify
+
+    rig = parse_rig(_midi_rig([
+        {"control": "knob1", "blend": ["clean", "lead"]},
+        {"control": "knob2", "mute": "lead"},
+    ]))
+    for channel in rig.channels:
+        object.__setattr__(channel, "chain", ())
+    object.__setattr__(rig.master, "chain", ())
+    config = tmp_path / "two_midi.json"
+    config.write_text(json.dumps(emit_rig(rig, controller=MPD218), indent=2))
+    assert verify(config, str(SUSHI)) == []
+
+
+def test_the_agents_bindings_and_the_midi_port_are_written_into_the_config():
+    """What Sushi cannot serve (a bypass, a Program Change) is not dropped: it
+    sits in the config under an underscored key Sushi ignores, for the agent,
+    and the host opens enough MIDI inputs to hold the map's port."""
+    from sushi_rig.rigfile import AGENT_BINDINGS
+
+    rig = parse_rig(_midi_rig([
+        {"control": "knob1", "blend": ["clean", "lead"]},
+        {"control": "pad1", "bypass": "lead/drive"},
+    ], programs="rigs", port=1))
+    config = emit_rig(rig, controller=MPD218, captured={"processors": {"drive": {"bypassed": True}}})
+    assert config["host_config"]["midi_inputs"] == 2
+    assert config[AGENT_BINDINGS] == [
+        {"control": "pad1", "note": 36, "channel": "all", "bypass": "lead/drive"},
+        {"programs": "rigs", "port": 1, "channel": "all"},
+    ]
+    state = {entry["processor"]: entry for entry in config["initial_state"]}
+    assert state["drive"]["bypassed"] is True, "the capture still merges"
+    assert AGENT_BINDINGS not in state, "the bindings are not a processor"
+
+
+@pytest.mark.parametrize("target", ["lead//Mix", "/hall/Mix", "lead/hall/"])
+def test_a_parameter_target_with_an_empty_segment_is_refused(target):
+    with pytest.raises(RigFileError, match="channel/plugin/parameter"):
+        parse_rig(_midi_rig([{"control": "knob1", "parameter": target}]))
+
+
+def test_fold_state_does_not_save_a_blended_channels_gain_as_its_level():
+    """A blend drives both sends' gain, so at save time the gain is the
+    pedal's position, not the channel's level; folding it would make the
+    next blend silent at every position. An unblended channel's gain is
+    still the level (#18)."""
+    raw = _midi_rig([{"control": "knob1", "blend": ["clean", "lead"]}])
+    raw["channels"].append({"name": "vox", "input": "guitar-in", "width": "mono", "chain": []})
+    folded = fold_state(raw, {"processors": {
+        "clean_send": {"parameters": {"gain": level_to_gain(-40.0)}},
+        "lead_send": {"parameters": {"gain": level_to_gain(-1.0)}},
+        "vox_send": {"parameters": {"gain": level_to_gain(-9.0)}},
+    }})
+    assert "level" not in folded["channels"][0]
+    assert folded["channels"][1]["level"] == -6.0
+    assert folded["channels"][2]["level"] == -9.0
