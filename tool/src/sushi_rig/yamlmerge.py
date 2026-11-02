@@ -446,8 +446,11 @@ def _set_after(container: Any, ident: Any, value: str | None) -> None:
         # Only lines after it: the token starts at the first of them, at its column.
         eol, rest = _split(value)
         # `_get_after` reports no eol after a block scalar, and every caller builds
-        # `value` from what it reported, so there is none to lose here.
-        assert not eol, f"an eol comment {eol!r} after a block scalar"
+        # `value` from what it reported, so there is none to lose here. A raise
+        # rather than an assert: `python -O` strips asserts, and a comment
+        # silently dropped is the failure this module exists to prevent.
+        if eol:
+            raise MergeError(f"an eol comment {eol!r} after a block scalar has nowhere to go")
         indent = len(rest) - len(rest.lstrip(" "))
         value = rest[indent:] if rest.strip() else (rest or None)
         if value is not None:
