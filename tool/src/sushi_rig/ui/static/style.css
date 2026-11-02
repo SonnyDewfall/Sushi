@@ -302,3 +302,21 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
   .unit .who { width: auto; flex: 1 1 140px; }
   .unit .detail { padding-left: 12px; }
 }
+
+/* ---------------------------------------------------------------- saving (S4) */
+.save { display: flex; flex-direction: column; gap: 10px; padding-top: 12px; border-top: 1px solid var(--line); }
+.save-acts { display: flex; gap: 8px; flex-wrap: wrap; }
+.save-act { min-height: 48px; flex: 1 1 auto; padding: 0 14px; border-radius: 12px; background: transparent; border: 1px solid var(--edge); cursor: pointer; }
+.save-act.primary { background: var(--accent); border-color: var(--accent); color: #1A1206; font-weight: 600; }
+.save-act:disabled { background: transparent; border-color: var(--edge); color: var(--muted); cursor: default; font-weight: 400; }
+.save-as { display: flex; flex-direction: column; gap: 8px; }
+.save-as label { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--muted); }
+.save-as input { min-height: 44px; box-sizing: border-box; padding: 0 12px; border-radius: 10px; background: var(--card); border: 1px solid var(--edge); color: var(--text); font-family: var(--mono); font-size: 15px; }
+.save-check { margin: 0; font-size: 12px; color: var(--muted); line-height: 1.5; }
+.save-check.bad { color: var(--refused); }
+.save-result { display: flex; flex-direction: column; gap: 4px; padding: 10px 52px 10px 12px; border-radius: 10px; font-size: 13px; line-height: 1.5; position: relative; }
+.save-result.ok { background: var(--card); border: 1px solid var(--edge); }
+.save-result.refused { background: var(--refused-ground); border: 1px solid var(--refused-edge); color: var(--refused); }
+.save-result strong { color: var(--text); }
+.save-result .commit { color: var(--accent-soft); }
+.save-result .dismiss { position: absolute; top: 4px; right: 4px; }

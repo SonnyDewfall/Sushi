@@ -1,4 +1,4 @@
-"""The web UI, v0 (#31): the rack (S1) and the stage screen (S5).
+"""The web UI, v0 (#31): the rack (S1), its Save (S4), and the stage screen (S5).
 
 Three layers, in this order. The Python decisions (`ui.panel_profile`) and the
 agent's UI routes, with no browser. Then `rig.js`'s decisions, imported into a
@@ -529,6 +529,10 @@ def test_a_move_of_a_processor_since_removed_keeps_the_chain_it_started_from(bla
     ([entry("move", {}, []), entry("stale", {"of": "move"}, None, stale=0), entry("parameter", {}, 0), entry("undo", {}, 0, undoes=2)], 0),
     ([entry("parameter", {}, 0), entry("rig", {"rig": "b"}, "a")], 0),
     ([entry("rig", {"rig": "b"}, "a"), entry("bypass", {}, True)], 3),
+    ([entry("parameter", {}, 0), entry("save", {"file": "config/rigs/a.yaml"}, "config/rigs/a.yaml")], 2),
+    ([entry("save", {"file": "config/rigs/a.yaml"}, "config/rigs/a.yaml")], 0),
+    ([entry("rig", {"rig": "b"}, "a"), entry("save", {}, None)], 0),
+    ([entry("parameter", {}, 0), entry("save", {}, None), entry("undo", {}, 0, undoes=5)], 5),
 ])
 def test_the_undo_the_page_offers_is_the_one_the_agent_would_make(blank, log, first):
     try:
@@ -539,6 +543,102 @@ def test_the_undo_the_page_offers_is_the_one_the_agent_would_make(blank, log, fi
     got = rigjs(blank, """const n = R.nextUndo(arg);
       return n === null ? null : n.barrier ? {barrier: true} : {index: n.index};""", {"log": log, "first": first})
     assert got == expected
+
+
+# -- saving (S4) -------------------------------------------------------------------
+
+def test_unsaved_counts_from_the_newest_save_and_comes_back_after_it(blank, served):
+    live = served.rig.snapshot(served.rig.connect())  # Drive 0.62
+    drive = lambda v, was, s: entry("parameter", {"processor": "overdrive", "parameter": "Drive", "value": v}, was, s)  # noqa: E731
+    saved = entry("save", {"file": "config/rigs/electric_board.yaml", "how": "updated"}, "config/rigs/electric_board.yaml", 12)
+    assert len(unsaved(blank, [drive(0.62, 0.4, 10)], live)["items"]) == 1
+    assert unsaved(blank, [drive(0.62, 0.4, 10), saved], live)["items"] == [], "the save wrote it"
+    # A change after the save is unsaved, from what the save wrote.
+    after = unsaved(blank, [drive(0.62, 0.4, 10), saved, drive(0.62, 0.62, 13)], {**live})["items"]
+    assert after == [], "moved to what the file has is nothing to save"
+    changed = copy.deepcopy(live)
+    changed["parameter_info"]["overdrive"]["Drive"]["value"] = 0.3
+    assert unsaved(blank, [drive(0.62, 0.4, 10), saved, drive(0.3, 0.62, 13)], changed)["items"] == [
+        {"kind": "parameter", "processor": "overdrive", "parameter": "Drive", "from": 0.62, "to": 0.3, "source": None}]
+    # And so is an undo after it: undo passes over the save and puts back
+    # what the file does not have.
+    rolled = copy.deepcopy(live)
+    rolled["parameter_info"]["overdrive"]["Drive"]["value"] = 0.4
+    undo = entry("undo", {"of": "parameter", "processor": "overdrive", "parameter": "Drive", "value": 0.4}, 0.62, 14, undoes=0)
+    assert unsaved(blank, [drive(0.62, 0.4, 10), saved, undo], rolled)["items"] == [
+        {"kind": "parameter", "processor": "overdrive", "parameter": "Drive", "from": 0.62, "to": 0.4, "source": None}]
+    # A trimmed log that kept the save has its baseline: nothing is missing.
+    assert unsaved(blank, [saved], live, first=40)["partial"] is False
+
+
+@pytest.mark.parametrize("name", ["electric-board-2", "a", "x" * 64, "Board", "../hall", "-lead", "x" * 65,
+                                  "a b", "", "café", "hall\n"])
+def test_the_page_checks_a_name_by_the_rule_the_agent_saves_by(blank, name):
+    from sushi_rig.save import NAME_PATTERN, SaveError, validate_name
+
+    assert rigjs(blank, "return R.NAME_PATTERN;") == NAME_PATTERN.pattern
+    try:
+        validate_name(name)
+        accepted = True
+    except SaveError:
+        accepted = False
+    problem = rigjs(blank, "return R.checkRigName(arg);", name)
+    assert (problem is None) == accepted, problem
+    assert rigjs(blank, "return R.checkRigName(arg, arg);", "board") == "board is the running rig: Save writes into it."
+
+
+def test_save_is_offered_while_something_is_unsaved_and_save_as_while_a_rig_is_up(blank):
+    def view(rig, busy=None, items=1, pending=None):
+        health = {"ok": True, "body": {"rig": rig, "agent": {"busy": busy}}}
+        return rigjs(blank, "return R.saveView(arg.health, {items: new Array(arg.items).fill({})}, arg.pending);",
+                     {"health": health, "items": items, "pending": pending})
+
+    up = {"running": True, "config_name": "electric_board", "rig": "config/rigs/electric_board.yaml"}
+    v = view(up)
+    assert (v["save"]["label"], v["save"]["disabled"], v["saveAs"]["disabled"]) == ("Save to electric_board", False, False)
+    assert "not committed" in v["note"]
+    v = view(up, items=0)
+    assert v["save"]["disabled"] and not v["saveAs"]["disabled"] and v["note"].startswith("Nothing unsaved")
+    v = view(up, busy="restart")
+    assert v["save"]["disabled"] and v["saveAs"]["disabled"] and v["note"] == "restart is running: saving waits for it."
+    v = view(up, pending={"name": "b"})
+    assert v["save"]["disabled"] and v["note"] == "Saving as b…"
+    v = view({"running": False})
+    assert v["save"]["disabled"] and v["saveAs"]["disabled"] and v["note"] == "No rig is running to save."
+
+
+def test_a_saves_answer_says_what_was_written_and_the_commit_it_sits_on(blank):
+    def outcome(name, answer):
+        return rigjs(blank, "return R.saveOutcome(arg.name, arg.answer);", {"name": name, "answer": answer})
+
+    body = {"ok": True, "file": "config/rigs/electric_board.yaml", "rig": "electric_board", "how": "updated",
+            "previous": "config/rigs/electric_board.yaml", "library": {"commit": "0123456789ab", "dirty": True},
+            "amp": {"saved": True, "model": "amp/models/Clean Room.nam"}}
+    said = outcome(None, {"ok": True, "body": body})
+    assert said["title"] == "Saved electric_board"
+    assert said["text"].startswith("Wrote config/rigs/electric_board.yaml in place, keeping its comments.")
+    assert "as the agent last sent it (Clean Room)" in said["text"]
+    assert said["commit"].startswith("Not committed: changed on top of commit 0123456,")
+    new = {**body, "file": "config/rigs/b.yaml", "rig": "b", "how": "new", "library": {"commit": "0123456789ab", "dirty": False},
+           "amp": {"saved": False, "why": "the running rig has no amp: it was started with --no-amp, so the file's amp was left as it was"}}
+    said = outcome("b", {"ok": True, "body": new})
+    assert said["title"] == "Saved as b" and "now the running rig" in said["text"]
+    assert "without the comments of config/rigs/electric_board.yaml" in said["text"]
+    assert "The amp is not saved: the running rig has no amp" in said["text"]
+    assert said["commit"].startswith("Not committed: a new file git does not track yet, on commit 0123456, with no tracked file changed.")
+    assert outcome(None, {"ok": True, "body": {**body, "library": {"commit": "0123456789ab", "dirty": False}}})["commit"] == \
+        "Nothing to commit: the file is as commit 0123456 has it."
+    assert outcome(None, {"ok": True, "body": {**body, "library": None}})["commit"].startswith(
+        "Not committed. Which commit it sits on is not known")
+    refused = outcome("hall", {"ok": False, "reason": "a rig called hall already exists", "code": "taken"})
+    assert refused == {"ok": False, "title": "Not saved as hall", "reason": "a rig called hall already exists", "code": "taken"}
+
+
+def test_the_last_save_is_the_newest_save_in_the_log(blank):
+    log = [entry("save", {"file": "a"}, None, 10), entry("parameter", {}, 0, 11), entry("save", {"file": "b"}, None, 12)]
+    assert rigjs(blank, "return R.lastSave(arg);", {"log": log, "first": 0}) == {"file": "b", "at": at(12)}
+    assert rigjs(blank, "return R.lastSave(arg);", {"log": log[1:2], "first": 0}) is None
+    assert rigjs(blank, "return R.describeEntry(arg);", log[0]) == "save to a"
 
 
 # -- the rig's state, and the lock -------------------------------------------------
@@ -1576,4 +1676,160 @@ def test_a_model_copied_in_while_the_page_is_open_shows_in_the_picker(browser, a
     advance(p, 22)
     expect(p.locator(".amp-picker option[value='Fresh.nam']")).to_have_count(1)
     assert len(asked) == 2
+    page.close()
+
+
+# -- saving from the rack (S4) ----------------------------------------------------
+
+@pytest.fixture
+def save_served():
+    with Served(save=True) as served:
+        yield served
+
+
+def save_rack(browser, served):
+    page = Page(browser, served.url + "/#rack")
+    page.page.wait_for_selector(".unit")
+    return page
+
+
+def rig_file(served, name="electric_board"):
+    import yaml
+
+    return yaml.safe_load((served.save.root / "config" / "rigs" / f"{name}.yaml").read_text())
+
+
+def drive_of(doc):
+    return doc["channels"][0]["chain"][0].get("parameters", {}).get("Drive")
+
+
+def turn_drive_down(page, steps=10):
+    drive = slider(page, "overdrive Drive")
+    drive.focus()
+    for _ in range(steps):
+        page.keyboard.press("ArrowDown")
+    return drive
+
+
+def test_save_writes_the_running_rigs_file_in_place_and_says_it_is_not_committed(browser, save_served):
+    page = save_rack(browser, save_served)
+    p = page.page
+    save = p.get_by_role("button", name="Save to electric_board")
+    expect(save).to_be_disabled()
+    expect(p.locator(".save-note")).to_contain_text("Nothing unsaved")
+    turn_drive_down(p)
+    expect(p.locator("aside.changes h2")).to_have_text("1 unsaved change")
+    expect(save).to_be_enabled()
+    save.click()
+    result = p.locator(".save-result.ok")
+    expect(result).to_contain_text("Saved electric_board")
+    expect(result).to_contain_text("Wrote config/rigs/electric_board.yaml in place, keeping its comments.")
+    expect(result.locator(".commit")).to_have_text(
+        f"Not committed: changed on top of commit {save_served.save.commit[:7]}, in a checkout with uncommitted "
+        "changes (this file among them). sushi-rig does not commit: that is yours to do.")
+    assert abs(drive_of(rig_file(save_served)) - 0.52) < 1e-6
+    text = (save_served.save.root / "config" / "rigs" / "electric_board.yaml").read_text()
+    assert "# the drive: a comment the save keeps" in text
+    # Unsaved clears, the save is the baseline, and the button rests.
+    expect(p.locator("aside.changes h2")).to_have_text("0 unsaved changes")
+    expect(p.locator("aside.changes .sub").first).to_have_text("made through the agent since the last save")
+    expect(p.locator(".last-save")).to_contain_text("config/rigs/electric_board.yaml, not committed.")
+    expect(save).to_be_disabled()
+    expect(slider(p, "overdrive Drive")).not_to_have_class(re.compile(r"\bunsaved\b"))
+    page.close()
+
+
+def test_after_a_save_a_change_is_unsaved_again_and_so_is_an_undo(browser, save_served):
+    page = save_rack(browser, save_served)
+    p = page.page
+    turn_drive_down(p, 1)  # one step, one entry: 0.62 to 0.61
+    until(lambda: abs(save_served.rig.info["overdrive"]["Drive"]["value"] - 0.61) < 1e-9)
+    p.get_by_role("button", name="Save to electric_board").click()
+    expect(p.locator("aside.changes h2")).to_have_text("0 unsaved changes")
+    # A change after the save.
+    p.get_by_role("button", name="Bypass overdrive").click()
+    expect(p.locator("aside.changes h2")).to_have_text("1 unsaved change")
+    expect(p.locator("aside.changes .change")).to_have_text("board · overdriveon to bypassed")
+    # Undo it, then undo again: past the save, to the knob, which the file has.
+    undo = p.locator("button.undo")
+    expect(undo).to_have_text("Undo · bypass overdrive")
+    undo.click()
+    expect(p.locator("aside.changes h2")).to_have_text("0 unsaved changes")
+    expect(undo).to_have_text("Undo · overdrive · Drive")
+    undo.click()
+    until(lambda: abs(save_served.rig.info["overdrive"]["Drive"]["value"] - 0.62) < 1e-9)
+    expect(p.locator("aside.changes h2")).to_have_text("1 unsaved change")
+    expect(p.locator("aside.changes .change")).to_have_text("board · overdrive · Drive0.61 to 0.62")
+    assert abs(drive_of(rig_file(save_served)) - 0.61) < 1e-6, "the save is not undone"
+    page.close()
+
+
+def test_save_as_writes_a_new_rig_which_becomes_the_running_one(browser, save_served):
+    page = save_rack(browser, save_served)
+    p = page.page
+    turn_drive_down(p, 5)
+    p.get_by_role("button", name="Save as…").click()
+    name = p.get_by_label("New rig name")
+    name.fill("board-two")
+    expect(p.locator(".save-check")).to_have_text("Writes config/rigs/board-two.yaml, which becomes the running rig.")
+    p.get_by_role("button", name="Save as board-two").click()
+    result = p.locator(".save-result.ok")
+    expect(result).to_contain_text("Saved as board-two")
+    expect(result).to_contain_text("Wrote config/rigs/board-two.yaml, a new rig, which is now the running rig.")
+    expect(result.locator(".commit")).to_contain_text(
+        f"a new file git does not track yet, on commit {save_served.save.commit[:7]}, with no tracked file changed.")
+    assert abs(drive_of(rig_file(save_served, "board-two")) - 0.57) < 1e-6
+    assert drive_of(rig_file(save_served)) is None, "the source is untouched"
+    assert save_served.save.state["rig"] == "config/rigs/board-two.yaml"
+    assert save_served.save.compiled == ["board-two"]
+    # The page follows: the rig's name, the picker, the next plain save.
+    expect(p.locator("h1.rig-name")).to_have_text("board-two")
+    expect(p.locator(".rig", has_text="board-two")).to_contain_text("up")
+    expect(p.get_by_label("New rig name")).to_have_count(0)
+    turn_drive_down(p, 1)
+    p.get_by_role("button", name="Save to board-two").click()
+    expect(p.locator(".save-result.ok")).to_contain_text("Wrote config/rigs/board-two.yaml in place")
+    page.close()
+
+
+def test_a_name_the_rule_refuses_is_said_before_sending_and_a_taken_one_by_the_agent(browser, save_served):
+    hall = save_served.save.root / "config" / "rigs" / "hall.yaml"
+    hall.write_text("# another rig\n")
+    page = save_rack(browser, save_served)
+    p = page.page
+    p.get_by_role("button", name="Save as…").click()
+    name = p.get_by_label("New rig name")
+    name.fill("Board Two")
+    expect(p.locator(".save-check.bad")).to_contain_text("lowercase letters, digits, '-' and '_'")
+    expect(p.locator(".save-as button[type=submit]")).to_be_disabled()
+    name.fill("hall")
+    p.get_by_role("button", name="Save as hall").click()
+    refused = p.locator(".save-result.refused")
+    expect(refused).to_contain_text("Not saved as hall")
+    expect(refused).to_contain_text("a rig called hall already exists (config/rigs/hall.yaml)")
+    assert hall.read_text() == "# another rig\n"
+    assert save_served.save.state["rig"] == "config/rigs/electric_board.yaml"
+    expect(p.get_by_label("New rig name")).to_have_value("hall"), "the form stays, to choose another"
+    page.close()
+
+
+def test_in_panel_mode_the_save_is_refused_with_the_agents_reason(browser, save_served):
+    save_served.save.state["mode"] = "panel"
+    page = save_rack(browser, save_served)
+    p = page.page
+    turn_drive_down(p)
+    p.get_by_role("button", name="Save to electric_board").click()
+    refused = p.locator(".save-result.refused")
+    expect(refused).to_contain_text("Not saved")
+    expect(refused).to_contain_text("the rig runs with its panel")
+    expect(p.locator("aside.changes h2")).to_have_text("1 unsaved change")
+    assert drive_of(rig_file(save_served)) is None
+    page.close()
+
+
+def test_the_stage_has_no_save(browser, save_served):
+    page = Watched(browser, save_served, "/", width=390, height=844)
+    page.page.wait_for_selector(".card")
+    expect(page.page.locator(".save")).to_have_count(0)
+    expect(page.page.get_by_role("button", name=re.compile("^Save"))).to_have_count(0)
     page.close()

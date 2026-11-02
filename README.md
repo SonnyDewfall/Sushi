@@ -419,6 +419,8 @@ curl localhost:8029/amp              # the amp as last SENT to Carla: its model,
 curl localhost:8029/amp/models       # amp/models, each model's rate and whether it can be played
 curl -X POST localhost:8029/amp/parameter -d '{"name": "Output Lvl", "value": -3}'   # dB, clamped and said
 curl -X POST localhost:8029/amp/model -d '{"model": "Some Model.nam"}'   # restarts Carla alone: the sound stops for a moment
+curl -X POST localhost:8029/rig/save                                # the running rig into its own rig file, in place (S4)
+curl -X POST localhost:8029/rig/save -d '{"name": "electric-board-2"}'   # save as a new rig, which becomes the running one
 
 curl localhost:8029/health | jq .agent.midi   # the pedals: listening, or why not, and what was last heard
 ```
@@ -686,6 +688,33 @@ refused (`409 rig_problem`) with the running one left playing. **Not run
 against a live Sushi and not heard**: shown against the fake only, and how long
 a live switch takes is not measured.
 
+**Saving the running rig** (S4). `POST /rig/save` is the web UI's Save, since
+the panel's SAVE listener runs only beside the panel and the page starts rigs
+headless. It captures the running Sushi under the agent's live lock (and the
+amp's), so no change lands between the capture and the log entry, and folds it
+into the running rig's file with the same `save_rig` the panel's SAVE uses:
+in place, keeping the file's comments, a send level moved live written back as
+the channel's `level:`. The amp is what the agent last sent Carla; a run with
+no amp leaves the file's `amp` alone. `{"name": ...}` is "save as": a new
+`config/rigs/<name>.yaml` beside it (another rig's name is refused, `409
+taken`), written fresh, so without the source's comments, which then **is the
+running rig**: the state file names it as a live switch would, so `restart`
+brings it back, the next plain save writes there, and `/health` and `/rigs`
+say it. A plugin added or removed live is refused (`409 not_saved`): a save
+writes values, bypass and order, not which plugins a chain holds, and a
+plugin removed live used to stay in the file with nothing said (the panel's
+SAVE and `sushi-rig save` refuse it too now). Refused in panel mode (`409
+panel`: the panel's faders reach the amp through the listener, so the agent
+does not know what the amp is at), for a v1 run (`409 v1`: `sushi-rig save`
+saves a config), and while a lifecycle command runs (`409 busy`). **The file
+is written, never committed**: committing in your checkout is your call, and
+the answer gives the commit it sits on and whether tracked files are dirty
+(`take.library_state`; a new file is untracked, which git's dirty does not
+count). A save is `op: "save"` in `/live/log`, with the file and that commit
+state; undo passes over it to the change before, which leaves the rig unsaved
+again. **Not run against a live Sushi**: shown against a fake capture and real
+rig files.
+
 **Two modes, for two ways of using the rig.** The default gives you the Open
 Stage Control panel and the save listener behind it, which is what you want when
 dialling in a tone: tweak, type a name, press save, and `config/<name>.json`
@@ -771,6 +800,17 @@ no Node and the UI has to run from a checkout. Two screens from the mockups:
   output level, and only while the lock is off, as the rig picker is. With
   the panel running, the faders and picker are off and say the panel owns the
   amp.
+- **Save (S4).** Below the unsaved changes in the rack: Save writes the
+  running rig's own file of `config/rigs/` in place, keeping its comments, and
+  is enabled while anything is unsaved; Save as… asks for a name, checks it by
+  the rule the agent saves by (lowercase letters, digits, `-` and `_`) before
+  sending, and writes a new rig that becomes the running one. The answer says
+  what was written, that it is **not committed** (the agent never commits) and
+  the commit it sits on, or the agent's reason for refusing (another rig's
+  name, panel mode, a plugin added or removed live). The unsaved list then
+  counts from that save: a change after it, or an undo past it, is unsaved
+  again. Allowed while locked, since it changes neither the sound nor the
+  structure. Not on the stage screen: saving is not a stage action.
 
 It polls `/health` once a second, and `/live` only while a rig is up: a rig
 that is down is shown as a state, in grey, not as an error a second in the
@@ -787,10 +827,12 @@ reason on screen, beside the knob; nothing is put back without saying why.
 
 Not done yet, and said on screen where it shows: the sound (nothing measures
 it, so an up rig reads "sound not measured" and is never green, #49);
-saving (S4); the lock is the page's own, since the agent has no performance
-lock yet (#29); "unsaved" counts only changes made through the agent since the
-rig came up, so a change from the OSC panel, or a `sushi-rig save` since, is not
-reflected; changes go over HTTP, not a WebSocket. Library, Record, Broken, Save
+the lock is the page's own, since the agent has no performance lock yet (#29);
+"unsaved" counts only changes made through the agent since the rig came up or
+was last saved through it, so a change from the OSC panel, or a `sushi-rig
+save` since, is not reflected; changes go over HTTP, not a WebSocket. Of the
+canvas's Save, the commit (with its message), history with revert, "throw all
+away" and the rig file shown on screen are not built. Library, Record, Broken
 and Pedals from the canvas are not built. v0.1 answers a session on the real rig
 but has not run on it: the load route has not read a real `pw-top` (it parses
 the format `tool/tests/test_top.py` holds), the `ELKPY:` lines were silenced
@@ -802,7 +844,8 @@ for the agent's add and remove.
 
 To try it without a rig: `cd tool && PYTHONPATH=src:tests python tests/ui_fake.py`
 serves the UI against that fake on port 8029 (`--down` to start with no rig up,
-`--amp` to give it an amp, with invented models and a stand-in Carla).
+`--amp` to give it an amp, with invented models and a stand-in Carla, `--save`
+to give it a rig file to save into, in a temporary checkout).
 `/ui/` and `/ui` redirect to the page.
 
 ### Ports by role, not by device name

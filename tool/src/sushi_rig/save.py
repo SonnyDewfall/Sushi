@@ -3,7 +3,9 @@
 This is the core the brief for issue #10 asks for: a deterministic bridge from
 "the sound is right now" to "a config file on disk", callable from anywhere —
 the CLI (`sushi-rig save <name>`) and the OSC listener (`listen.py`) are both
-thin callers around `save_config`, not separate implementations of it. Per the
+thin callers around `save_any`, not separate implementations of it, and the
+agent's `POST /rig/save` (the web UI's Save) calls `save_rig` with a capture
+it made itself under its live lock. Per the
 issue #12 decision, this bridge is meant to outlive whatever live tool is used
 for exploration, so it deliberately doesn't assume Open Stage Control is the
 only caller.
@@ -16,6 +18,7 @@ archiving policy around that.
 
 from __future__ import annotations
 
+import copy
 import json
 import re
 import sys
@@ -156,6 +159,7 @@ def save_rig(
     amp_model: str | None = None,
     amp_parameters: dict[str, float] | None = None,
     raw: dict[str, Any] | None = None,
+    state: dict[str, Any] | None = None,
 ) -> Path:
     """Capture the running Sushi's state and write it into a rig of channels,
     `<name>.yaml` beside `rig_path` (#30's last slice, the half SAVE is).
@@ -171,7 +175,19 @@ def save_rig(
     A run without the amp (`--no-amp`, or an amp that failed to start) says
     nothing about the amp, so the file's `amp` is left as it is; `save_config`
     removes it from a config, which a config's archive can give back and a
-    rig file's cannot.
+    rig file's cannot. A parameter `amp_parameters` lacks is written as the
+    plugin's default (`amp.write_amp`), as the listener's SAVE always has.
+
+    `state` is a capture already made, which the agent passes (`POST
+    /rig/save`): it captures on its own connection, under its live lock, so
+    no change lands between the capture and the log entry that records the
+    save. Without one, Sushi at `address` is captured here.
+
+    A chain whose plugins are not the file's -- one added or removed live --
+    is refused (`structure_problems`), as a capture naming a processor the
+    file lacks always was: a save writes values, bypass and order, never
+    which plugins a chain holds, and before this check a plugin removed
+    live was kept in the file with nothing said.
     """
     import yaml
 
@@ -197,11 +213,17 @@ def save_rig(
             f"turn it into {rig_path.stem}. Choose another name, or run that rig and save it"
         )
 
-    state = capture(address)
+    state = capture(address) if state is None else copy.deepcopy(state)
     # Captured properties are for checking a rig, not for writing one (see
     # save_config and rigfile.merged_state).
     for values in state.get("processors", {}).values():
         values.pop("properties", None)
+    try:
+        problems = structure_problems(raw, state, rig_path.name)
+    except RigFileError as exc:
+        raise SaveError("; ".join(exc.problems)) from exc
+    if problems:
+        raise SaveError("; ".join(problems))
     try:
         folded = fold_state(raw, state)
     except RigFileError as exc:
@@ -218,6 +240,49 @@ def save_rig(
     except RigFileError as exc:
         raise SaveError("; ".join(exc.problems)) from exc
     return out_path
+
+
+def structure_problems(raw: dict[str, Any], captured: dict[str, Any], where: str = "the rig file") -> list[str]:
+    """Why a capture cannot be folded into the rig file `raw`, chain by chain:
+    a plugin the running chain has and the file does not (added live, by
+    `POST /live/add`), or one the file has and the running chain does not
+    (removed live). Empty when every chain the capture names holds the
+    file's plugins, in whatever order. Pure.
+
+    The compiler's own processors (each channel's send, the master's return)
+    are not the file's to list, so they are left out on both sides. A track
+    the capture does not name says nothing, so it is not checked: a capture
+    with no `tracks` (older state files) passes as it did. `RigFileError` for
+    a file `parse_rig` refuses.
+    """
+    from .rigfile import MASTER, RETURN, SEND_SUFFIX, parse_rig
+
+    rig = parse_rig(copy.deepcopy(raw))
+    orders = (captured or {}).get("tracks") or {}
+    internal = {ch.name + SEND_SUFFIX for ch in rig.channels} | {RETURN}
+    chains = {ch.name: [p.name for p in ch.chain] for ch in rig.channels}
+    chains[MASTER] = [p.name for p in rig.master.chain]
+    problems = []
+    for track, held in chains.items():
+        running = orders.get(track)
+        if not isinstance(running, list):
+            continue
+        running = [n for n in running if n not in internal]
+        added = [n for n in running if n not in held]
+        removed = [n for n in held if n not in running]
+        if not added and not removed:
+            continue
+        said = []
+        if added:
+            said.append(f"has {', '.join(added)}, which {where} does not")
+        if removed:
+            said.append(f"lacks {', '.join(removed)}, which {where} has")
+        problems.append(
+            f"the running {track} chain {' and '.join(said)}: a save writes values, bypass and order "
+            "into the file, never which plugins a chain holds, so nothing was saved. Put the chain "
+            f"back as the file has it (undo the add or remove), or edit {where} and restart the rig"
+        )
+    return problems
 
 
 def _claim(path: Path, *, directory: bool = False) -> Path:

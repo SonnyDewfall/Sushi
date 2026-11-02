@@ -40,6 +40,15 @@ a stand-in for the supervisor's Carla-only restart. Invented: the models
 weights, two at the rig's rate and one not), the starting levels, and what a
 restart does (it records the call and says the new model plays). Nothing
 here is Carla.
+
+Saving, `UiSave` (`Served(save=True)`): the agent's real POST /rig/save over
+a checkout in a temporary folder -- `config/rigs/electric_board.yaml`
+(`RIG_FILE`, `UiRig`'s rig written as a rig file, with a comment to keep),
+the repository's profiles linked in, and a git repository with that file
+committed -- and the state file held in memory. Invented: the rig file (it
+is `UiRig`'s invention again), the state file, and what compiling the saved
+rig gives (a stand-in that records the name: the real compile needs a
+machine file this fixture does not have).
 """
 
 from __future__ import annotations
@@ -350,6 +359,103 @@ class UiAmp:
         self._dir.cleanup()
 
 
+# `UiRig`'s rig as a rig file of config/rigs, for `UiSave`. The values in it
+# are the fake's starting values, so a save with nothing changed writes them
+# back; the comment is one a save must keep.
+RIG_FILE = f"""\
+# The fake rig of ui_fake.UiRig, as a rig file.
+kind: rig
+schema_version: 1
+name: electric_board
+channels:
+- name: board
+  input: guitar-in
+  width: mono
+  chain:
+  - name: overdrive   # the drive: a comment the save keeps
+    uri: {GXTS9}
+  - name: octave
+    uri: {RUBBERBAND}
+    bypassed: true
+  - name: delay
+    uri: {MDA_DELAY}
+- name: vocal
+  input: vocal-in
+  width: mono
+  level: -6.0
+  chain:
+  - name: vocal_delay
+    uri: {MDA_DELAY}
+master:
+  output: monitor-out
+  chain: []
+"""
+
+
+class UiSave:
+    """What a save reaches beyond Sushi, for the agent's real POST /rig/save:
+    a checkout in a temporary folder (`root`) with `RIG_FILE` committed in a
+    git repository and the repository's profiles linked in, and the state
+    file in memory (`state`), naming that file as `up --rig` does. A save-as
+    writes the state file through `write_state`, which the lifecycle's rig
+    follows. `compiled` records each rig compiled; `refuse_compile`, when
+    set, is the reason the next compile fails. Headless, with no amp."""
+
+    def __init__(self, lifecycle: "UiLifecycle"):
+        import subprocess
+        import tempfile
+
+        self.lifecycle = lifecycle
+        self._dir = tempfile.TemporaryDirectory(prefix="ui-save-")
+        self.root = Path(self._dir.name)
+        rigs = self.root / "config" / "rigs"
+        rigs.mkdir(parents=True)
+        (rigs / "electric_board.yaml").write_text(RIG_FILE)
+        profiles = self.root / "tool" / "examples" / "profiles"
+        profiles.parent.mkdir(parents=True)
+        profiles.symlink_to(checkout_root() / "tool" / "examples" / "profiles", target_is_directory=True)
+        git = ["git", "-C", str(self.root), "-c", "user.name=ui fake", "-c", "user.email=ui@fake.invalid",
+               "-c", "commit.gpgsign=false"]
+        subprocess.run(git + ["init", "-q"], check=True)
+        subprocess.run(git + ["add", "config"], check=True)
+        subprocess.run(git + ["commit", "-q", "-m", "the fake rig"], check=True)
+        self.commit = subprocess.run(git + ["rev-parse", "HEAD"], check=True, capture_output=True,
+                                     text=True).stdout.strip()
+        rig = lifecycle.rig or "electric_board"
+        self.state = {
+            "supervisor_pid": 4242, "pgid": 4242, "mode": "headless", "config_name": rig,
+            "config": f"/fake/rigs/{rig}.json", "rig": f"config/rigs/{rig}.yaml",
+            "started_at": lifecycle.started.isoformat(), "amp_requested": False, "amp_model": None,
+            "children": {"sushi": 4243},
+        }
+        self.compiled: list = []
+        self.refuse_compile: str | None = None
+
+    def write_state(self, state):
+        self.state = copy.deepcopy(state)
+        self.lifecycle.rig = state["config_name"]
+
+    def compile(self, name, root, machine):
+        self.compiled.append(name)
+        if self.refuse_compile:
+            raise RuntimeError(self.refuse_compile)
+        return {"tracks": [], "_meta": {"source": f"config/rigs/{name}.yaml"}}
+
+    def switching(self) -> Switching:
+        return Switching(read_state=lambda: copy.deepcopy(self.state), write_state=self.write_state,
+                         compile=self.compile, write_config=lambda name, compiled: f"/fake/rigs/{name}.json",
+                         read_config=lambda path: {"tracks": []})
+
+    def describe(self):
+        if self.lifecycle.rig is None:
+            return self.lifecycle.describe()
+        return {**describe_up(self.lifecycle.started, self.state["config_name"])(),
+                "mode": self.state["mode"], "rig": self.state["rig"], "config": self.state["config"]}
+
+    def close(self):
+        self._dir.cleanup()
+
+
 class UiLifecycle:
     """What `up`, `down` and a rig switch do, for the agent's real routes to
     run (see the module docstring for what is invented). `run` is the agent's
@@ -416,17 +522,25 @@ class Served:
     given, answers for the state file instead of it."""
 
     def __init__(self, rig: UiRig | None = None, port: int = 0, describe=None, root: Path | None = None,
-                 lifecycle: UiLifecycle | None = None, amp: bool = False):
+                 lifecycle: UiLifecycle | None = None, amp: bool = False, save: bool = False):
+        if amp and save:
+            raise ValueError("the fake has an amp or a rig file to save, not both yet")
         self.rig = rig or UiRig()
         self.lifecycle = lifecycle or UiLifecycle()
         # What GET /rig/load's pw-top prints; a test may change it.
         self.pw_top_output = (FIXTURES / "pw-top-b-n2.txt").read_text(encoding="utf-8")
         # The amp (`UiAmp`), when asked for: the rig then has a Carla.
         self.amp = UiAmp(self.lifecycle) if amp else None
-        self.state = {"describe": describe or (self.amp.describe if self.amp else self.lifecycle.describe)}
+        # A rig file to save into (`UiSave`), when asked for.
+        self.save = UiSave(self.lifecycle) if save else None
+        own = self.amp.describe if self.amp else self.save.describe if self.save else self.lifecycle.describe
+        self.state = {"describe": describe or own}
         extra = {}
         if self.amp:
             extra = {"switching": self.amp.switching(), "carla": self.amp.carla.carla()}
+        if self.save:
+            extra = {"switching": self.save.switching()}
+            root = root or self.save.root
         # `root` is where the profiles are read from (tool/examples/profiles/ under it).
         self.agent = Agent(root=root or checkout_root(), live=self.rig, describe=lambda: self.state["describe"](),
                            library=lambda: {"plugins": [], "problems": []}, run=self.lifecycle.run,
@@ -481,6 +595,8 @@ class Served:
         self.agent._executor.shutdown(wait=True, cancel_futures=True)
         if self.amp:
             self.amp.close()
+        if self.save:
+            self.save.close()
 
     def __enter__(self):
         return self
@@ -494,8 +610,10 @@ def main() -> int:
     parser.add_argument("--port", type=int, default=8029)
     parser.add_argument("--down", action="store_true", help="start with no rig up, to start one from the page")
     parser.add_argument("--amp", action="store_true", help="give the rig an amp, with invented models")
+    parser.add_argument("--save", action="store_true", help="give the rig a rig file to save, in a temporary checkout")
     args = parser.parse_args()
-    with Served(port=args.port, lifecycle=UiLifecycle(up=None if args.down else "electric_board"), amp=args.amp) as served:
+    with Served(port=args.port, lifecycle=UiLifecycle(up=None if args.down else "electric_board"), amp=args.amp,
+                save=args.save) as served:
         print(f"the web UI against a fake rig: {served.url}/  (Ctrl+C to stop)", flush=True)
         try:
             while True:

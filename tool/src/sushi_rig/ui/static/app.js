@@ -59,6 +59,9 @@ const state = {
   ampUpdaters: [],           // the amp region's own, emptied whenever it is rebuilt
   chosen: null,              // the rig picked in the picker; null follows the running rig
   pending: null,             // this page's lifecycle command in flight: {op, name}
+  saving: null,              // this page's save in flight: {name}, null for the running rig's own file
+  saveAsOpen: false, saveAsName: "",  // the Save as… form, and what is typed in it
+  saveResult: null,          // what the last save from this page said (R.saveOutcome)
   confirming: false, confirmTimer: null,  // Stop's second tap
   open: new Set(),           // units opened, by name
   failures: [],              // this page's refused changes, newest first
@@ -547,6 +550,30 @@ async function undo(skip = false) {
   kick();
 }
 
+// Save (S4): the running rig into its own file, or as a new one (`name`),
+// which then is the running rig. The agent writes the file and does not
+// commit it; what it wrote, the commit it sits on, or why it refused, is
+// shown under the buttons. Allowed locked: a save changes neither the sound
+// nor the rig's structure.
+async function save(name = null) {
+  if (state.saving) return;
+  state.saving = { name };
+  render();
+  const call = R.saveCall(name);
+  let answer;
+  try {
+    answer = await request("POST", call.path, call.json);
+  } finally {
+    state.saving = null;
+  }
+  state.saveResult = R.saveOutcome(name, answer);
+  if (answer.ok && name) { state.saveAsOpen = false; state.saveAsName = ""; }
+  render();
+  kick();
+  // A save-as adds a rig to config/rigs/, which the picker lists.
+  if (name) refreshRigs(true).then(render);
+}
+
 // Start, stop and switch (#111). One at a time: while one runs, from this
 // page or another, the picker offers nothing (the agent would answer 409
 // busy) and says what is running. The answer's reason is shown on failure,
@@ -746,12 +773,14 @@ function rackFrame() {
     channels: h("div", { class: "channel-list" }),
     amp: h("section", { class: "amp-card", "aria-label": "Amp" }),
     rack: h("main", { class: "rack" }),
-    changes: h("aside", { class: "changes", "aria-label": "Unsaved changes" }),
+    changes: h("div", { class: "changes-list" }),
+    save: h("section", { class: "save", "aria-label": "Save" }),
   };
   // The amp first: it is in front of Sushi, between the guitar and the board.
   const frame = h("div", { class: "screen rack-screen" }, regions.header, regions.problems,
     h("div", { class: "rack-body" }, h("nav", { class: "channels", "aria-label": "Rigs and channels" }, regions.rigs, regions.channels),
-      h("div", { class: "rack-main" }, regions.amp, regions.rack), regions.changes));
+      h("div", { class: "rack-main" }, regions.amp, regions.rack),
+      h("aside", { class: "changes", "aria-label": "Unsaved changes" }, regions.changes, regions.save)));
   return { frame, regions };
 }
 
@@ -832,6 +861,7 @@ function renderRack(regions, model, unsaved, status) {
     h("p", { class: "agent" }, `Agent on ${location.host}. Phone and laptop see the same rig.`),
   ]);
   renderChanges(regions.changes, model, unsaved, live);
+  saveRegion(regions.save, unsaved);
 }
 
 function findControl(model, processor, parameter) {
@@ -866,15 +896,71 @@ function renderChanges(el, model, unsaved, live) {
   const rows = model ? unsaved.items.map((i) => ({ ...changeText(model, i), pedal: i.source === "midi" })) : [];
   const undoLabel = !state.log ? "Undo: the log could not be read"
     : !next ? "Nothing to undo" : next.barrier ? "Nothing to undo past the rig switch" : `Undo · ${R.describeEntry(next.entry)}`;
-  patch(el, JSON.stringify([rows, unsaved.partial, undoLabel]), () => [
+  const last = R.lastSave(state.log);
+  patch(el, JSON.stringify([rows, unsaved.partial, undoLabel, !!last]), () => [
     h("h2", {}, rows.length === 1 ? "1 unsaved change" : `${rows.length} unsaved changes`),
-    h("p", { class: "sub" }, "made through the agent since the rig came up"),
+    h("p", { class: "sub" }, last ? "made through the agent since the last save" : "made through the agent since the rig came up"),
     rows.map((r) => h("div", { class: "change" }, h("span", { class: "where" }, r.where, r.pedal ? h("span", { class: "badge" }, "pedal") : null),
       h("span", { class: "diff" }, h("s", {}, r.from), " to ", h("b", {}, r.to)))),
     unsaved.partial ? h("p", { class: "warn" }, "The agent's log was trimmed since the rig came up, so older changes may be missing here.") : null,
     h("button", { class: "undo", disabled: !next || !!next.barrier, onclick: () => undo(false) }, undoLabel),
-    h("p", { class: "sub" }, "Saving is not on this screen yet (S4). On the rig, ", h("code", {}, "sushi-rig save"), " writes the file."),
   ]);
+}
+
+// Save and Save as… (S4), below the changes. Its own region, keyed without
+// what is typed in the name, so a poll does not rebuild the field under the
+// fingers; the name's check is drawn from the input's own handler.
+function saveRegion(el, unsaved) {
+  const view = R.saveView(state.health, unsaved, state.saving);
+  const last = R.lastSave(state.log);
+  const typing = document.activeElement && document.activeElement.name === "rig-name";
+  const rebuilt = patch(el, JSON.stringify([view, state.saveAsOpen, state.saveResult, last]), () => {
+    const result = state.saveResult;
+    return [
+      h("div", { class: "save-acts" },
+        h("button", { class: "save-act primary", disabled: view.save.disabled, onclick: () => save(null) }, view.save.label),
+        h("button", { class: "save-act", disabled: view.saveAs.disabled, "aria-expanded": String(state.saveAsOpen),
+          onclick: () => { state.saveAsOpen = !state.saveAsOpen; render(); } }, view.saveAs.label)),
+      state.saveAsOpen ? saveAsForm(view) : null,
+      h("p", { class: "sub save-note" }, view.note),
+      result ? h("div", { class: `save-result ${result.ok ? "ok" : "refused"}`, role: result.ok ? "status" : "alert" },
+        h("strong", {}, result.title),
+        h("span", {}, result.ok ? result.text : result.reason),
+        result.ok ? h("span", { class: "commit" }, result.commit) : null,
+        h("button", { class: "dismiss", "aria-label": "Dismiss", onclick: () => { state.saveResult = null; render(); } }, "×")) : null,
+      last ? h("p", { class: "sub last-save" }, `Last saved ${new Date(last.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} to `,
+        h("code", {}, last.file), ", not committed.") : null,
+    ];
+  });
+  if (rebuilt && typing) {
+    const input = el.querySelector('input[name="rig-name"]');
+    if (input) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
+  }
+}
+
+function saveAsForm(view) {
+  const check = h("p", { class: "save-check", "aria-live": "polite" });
+  const go = h("button", { class: "save-act primary", type: "submit" });
+  const input = h("input", { name: "rig-name", type: "text", autocomplete: "off", spellcheck: "false",
+    autocapitalize: "none", placeholder: "e.g. electric-board-2", "aria-describedby": "save-check" });
+  check.id = "save-check";
+  input.value = state.saveAsName;
+  const draw = () => {
+    const problem = R.checkRigName(input.value, view.running);
+    check.textContent = input.value ? (problem || `Writes config/rigs/${input.value}.yaml, which becomes the running rig.`) : "";
+    check.classList.toggle("bad", !!problem && !!input.value);
+    go.disabled = !!problem || view.saveAs.disabled;
+    go.textContent = problem ? "Save as" : `Save as ${input.value}`;
+  };
+  input.addEventListener("input", () => { state.saveAsName = input.value; draw(); });
+  draw();
+  return h("form", { class: "save-as", onsubmit: (event) => {
+    event.preventDefault();
+    if (!R.checkRigName(input.value, view.running)) save(input.value);
+  } },
+    h("label", {}, h("span", {}, "New rig name"), input), check,
+    h("div", { class: "save-acts" }, go,
+      h("button", { class: "save-act", type: "button", onclick: () => { state.saveAsOpen = false; render(); } }, "Cancel")));
 }
 
 // ---------------------------------------------------------------- the stage (S5)

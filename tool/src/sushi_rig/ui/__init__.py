@@ -1,4 +1,4 @@
-"""The web UI (#31, v0.1 #111): the rack (S1) and the stage screen (S5).
+"""The web UI (#31, v0.1 #111): the rack (S1), with Save (S4), and the stage screen (S5).
 
 The agent serves the page at `/` and its files under `/ui/` (`/ui/` itself
 redirects to `/`), and the page reads and changes the rig through the
@@ -56,7 +56,8 @@ Decisions are pure and tested (principle 1), in two places:
 
 and sends POST /live/parameter, /live/bypass, /live/move and /live/undo as
 they happen, POST /amp/parameter from the amp's faders, POST /amp/model from
-its picker, and POST /rig/up, /rig/down and /rig/switch from the rig picker. A
+its picker, POST /rig/up, /rig/down and /rig/switch from the rig picker, and
+POST /rig/save from the rack's Save and Save as…. A
 refusal's `reason` is shown on screen; nothing is reverted without saying
 why.
 
@@ -92,6 +93,18 @@ within eight seconds, because it cuts the sound. While a lifecycle command
 runs, from this page or another, nothing is offered (the agent would answer
 409 busy) and what is running is said. A switch says how it was made, live
 or by restart, and for a restart why.
+
+## Save (S4)
+
+Below the unsaved changes in the rack, never on the stage screen. Save
+writes the running rig's own file (POST /rig/save) and is offered while
+anything is unsaved; Save as… asks for a name, checked before sending by the
+rule the agent saves by (`checkRigName`, save.NAME_PATTERN), and the new rig
+becomes the running one. The agent writes and never commits: the answer is
+shown with the file written, that it is not committed and the commit it
+sits on, or the agent's reason for refusing. The unsaved list counts from
+the newest save in the log (`unsavedChanges`), so a change or an undo after
+it is unsaved again; undo passes over a save, as the agent's does.
 """
 
 from __future__ import annotations

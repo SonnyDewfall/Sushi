@@ -378,3 +378,42 @@ def test_save_any_chooses_by_the_files_kind(rigs, rig_path, tmp_path, monkeypatc
     assert out == tmp_path / "out" / "bright.json"
     with pytest.raises(SaveError, match="rig source not found"):
         save_any("x", tmp_path / "nope.yaml", tmp_path / "out", tmp_path / "archive")
+
+
+def test_save_rig_takes_a_capture_already_made_and_does_not_capture_again(rigs, monkeypatch):
+    """The agent captures on its own connection, under its live lock, and
+    hands the capture in (POST /rig/save)."""
+    monkeypatch.setattr("sushi_rig.save.capture", lambda address: pytest.fail("captured again"))
+    given = {"processors": {"eq": {"parameters": {"Low": 0.25}, "properties": {"f": "x"}}},
+             "tracks": {"board": ["eq", "board_send"], "master": ["master_return"]}}
+    save_rig("riff", rigs / "riff.yaml", state=given)
+    assert "Low: 0.25" in (rigs / "riff.yaml").read_text()
+    assert given["processors"]["eq"]["properties"] == {"f": "x"}, "the caller's capture is not changed"
+
+
+@pytest.mark.parametrize("chain, said", [
+    (["board_send"], "the running board chain lacks eq, which riff.yaml has"),
+    (["eq", "comp", "board_send"], "the running board chain has comp, which riff.yaml does not"),
+])
+def test_a_chain_changed_live_is_refused_rather_than_saved_wrong(rigs, monkeypatch, chain, said):
+    """A save writes values, bypass and order, not which plugins a chain
+    holds: a plugin removed live used to stay in the file with nothing said."""
+    monkeypatch.setattr("sushi_rig.save.capture", lambda address: {
+        "processors": {}, "tracks": {"board": chain, "master": ["master_return"]}})
+    with pytest.raises(SaveError, match=said):
+        save_rig("riff", rigs / "riff.yaml")
+    assert (rigs / "riff.yaml").read_text() == RIG_OF_CHANNELS
+
+
+def test_structure_problems_ignores_the_compilers_processors_and_unnamed_tracks():
+    import yaml
+
+    from sushi_rig.save import structure_problems
+
+    raw = yaml.safe_load(RIG_OF_CHANNELS)
+    assert structure_problems(raw, {"tracks": {"board": ["board_send", "eq"], "master": ["master_return"]}}) == []
+    assert structure_problems(raw, {"processors": {}}) == [], "a capture with no tracks says nothing"
+    assert structure_problems(raw, {"tracks": {"master": ["master_return", "limiter"]}}) == [
+        "the running master chain has limiter, which the rig file does not: a save writes values, bypass "
+        "and order into the file, never which plugins a chain holds, so nothing was saved. Put the chain "
+        "back as the file has it (undo the add or remove), or edit the rig file and restart the rig"]

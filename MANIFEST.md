@@ -2519,3 +2519,46 @@ agent now sets the amp in Carla over OSC itself (`amp_live.Carla`), so the
 agent needs python-osc as much as the listener does. Missing, the agent still
 refuses an amp write with a sentence rather than failing to start; the
 sentence now names the agent extra. *(2026-11-02)*
+
+**Save the running rig from the web UI (S4).** `POST /rig/save {name?}` on the
+agent, and Save and Save as… in the rack, since the panel's SAVE listener runs
+only beside the panel and the page starts rigs headless. The agent captures
+on its own connection under the live lock and the amp's, so no change lands
+between the capture and the log entry, and folds it into the running rig's
+file with `save.save_rig` (now taking the capture as `state=`): in place,
+keeping comments, the amp as the agent last sent it, a run with no amp
+leaving the file's `amp` alone. A name is "save as": a new
+`config/rigs/<name>.yaml` beside it, refused if another rig owns the name
+(`taken`), which becomes the running rig in the state file as a live switch
+records one (compiled config and `saved_as_state`), so `restart`, the next
+plain save, /health and /rigs follow it; the amp's record carries over as
+sent, and the MIDI listener follows the renamed rig. A save in place leaves
+the state file alone. Refused while a lifecycle command runs (`busy`), in
+panel mode (`panel`), for a v1 run (`v1`, pointing at `sushi-rig save`), and
+past `SAVE_TIMEOUT` for the write (504, said, nothing logged). A save is `op:
+"save"` in the log, with the file and `library` (commit, dirty, from
+`take.library_state`); `pick_undo` and the page's `nextUndo` pass over it,
+and the page's unsaved baseline is the newest save or rig switch, so a change
+or an undo after a save is unsaved again. **Not committed, by design**: the
+answer and the page say the file is not committed and the commit it sits on.
+Found on the way, and fixed in `save_rig` for every caller (the panel's SAVE
+and `sushi-rig save` too): **a plugin removed live was kept in the saved file
+with nothing said**, since `fold_state` keeps what a capture omits; a chain
+whose plugins differ from the file's is now refused (`structure_problems`),
+naming what was added or removed, as an added one always was (with a
+misleading "capture of a different rig"). Route tests against `ui_fake.UiRig`
+as the capture and real rig files in tmp (comments kept, amp from the agent's
+record, undo over a save, a change mid-capture waiting for the save, git state
+from a real repository); browser tests against `Served(save=True)` (save in
+place, save as, a refused name before sending and a taken one from the agent,
+panel mode, unsaved clearing and coming back). Of the UX doc's S4: the
+unsaved list in plain words was already there; **not met**: save does not
+commit, history does not list saves with revert (the rack shows the last
+save only), the rig file is not shown on screen, and the mockup's commit
+message and "throw all away" are not built. A save-as file is written fresh
+(`write_rig` has no source text for a new path), so it starts without the
+source's comments, which the answer says. **NOT RUN AGAINST A LIVE SUSHI.**
+Follow-ons: a commit route (the player's call to make, with a message, as the
+mockup has it), the history of saves with revert, carrying a save-as's
+comments over from its source, and saving a plugin added or removed live
+(rewriting a chain's membership in the file). *(2026-11-02)*
