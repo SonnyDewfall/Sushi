@@ -1175,7 +1175,7 @@ Verified on this machine:
 | PipeWire / JACK, qpwgraph, fmit | ✅ |
 | `lilv` Python bindings (system) | ✅ `python3-lilv` + `liblilv-dev` |
 | `elkpy` (in `tool/.venv`) | ✅ imports cleanly on Python 3.14 |
-| `python-osc` (in `tool/.venv`) | ✅ for `sushi-rig listen` — the panel's save button |
+| `python-osc` (in `tool/.venv`) | ✅ for `sushi-rig listen` (the panel's save button) and the agent's amp control; in the `live` and `agent` extras |
 
 Sushi's LV2 support is **Linux-only** — it is excluded from the macOS and Windows
 builds. Authoring has to happen here.

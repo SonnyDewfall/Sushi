@@ -481,7 +481,7 @@ class Carla:
                     from pythonosc.udp_client import SimpleUDPClient
                 except ImportError as exc:
                     raise AmpError("python-osc is not installed, so the agent cannot reach Carla: "
-                                   "pip install python-osc (the 'live' extra)") from exc
+                                   "pip install -e 'tool[agent]' (python-osc is in the agent extra)") from exc
                 held["client"] = SimpleUDPClient(host, port)
             held["client"].send_message(address, payload)
 

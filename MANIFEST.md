@@ -2512,3 +2512,10 @@ model view per (run, model) instead of reading the model on every poll. (9)
 `amp_live.same_model` from the checkout's root, so one `.nam` by a relative and
 an absolute path is no restart. (10) **amp/models was listed once**: the page
 lists it again every 30 s. Still **NOT RUN AGAINST A REAL CARLA**. *(2026-11-02)*
+
+**python-osc joins the agent extra.** CI's fast job installs `agent` but not
+`live`, and two of the amp tests failed there for want of `pythonosc`: the
+agent now sets the amp in Carla over OSC itself (`amp_live.Carla`), so the
+agent needs python-osc as much as the listener does. Missing, the agent still
+refuses an amp write with a sentence rather than failing to start; the
+sentence now names the agent extra. *(2026-11-02)*
