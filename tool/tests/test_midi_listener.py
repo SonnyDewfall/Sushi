@@ -14,8 +14,10 @@ bytes ALSA's own decoder produces for the same events are checked against
 from __future__ import annotations
 
 import json
+import os
 import queue
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -494,11 +496,32 @@ def test_a_port_that_fails_while_listening_is_reported_and_closed():
 
 def test_a_rig_to_switch_to_is_checked_to_compile_from_its_files(tmp_path):
     """What a switch checks before taking the running rig down: the real
-    files, through the real compiler, without a pw-dump or a Sushi."""
-    from sushi_rig.midi_listener import rig_problem
+    files, through the real compiler, without a pw-dump or a Sushi. One
+    compile for `up --rig` and a switch (`rig.compile_named_rig`, which
+    replaced `rig_problem` here), and every failure a `RigError` naming the
+    file: a YAML typo or an unreadable file too, not only what the compiler
+    foresees."""
+    from sushi_rig.rig import RigError, compile_named_rig
+
+    def problem(name):
+        try:
+            compile_named_rig(name, tmp_path, Path(described["machine"]))
+        except RigError as exc:
+            return str(exc)
+        return None
 
     described = rig_files(tmp_path)
-    assert rig_problem("lead", tmp_path, described["machine"]) is None
-    assert "No such file" in rig_problem("absent", tmp_path, described["machine"])
-    (tmp_path / "config" / "rigs" / "lead.yaml").write_text(RIG.replace("control: pad1", "control: pad9"))
-    assert "'pad9' is not a control of controller 'mpd218'" in rig_problem("lead", tmp_path, described["machine"])
+    assert problem("lead") is None
+    assert "no such rig" in problem("absent")
+    lead = tmp_path / "config" / "rigs" / "lead.yaml"
+    lead.write_text(RIG.replace("control: pad1", "control: pad9"))
+    assert "'pad9' is not a control of controller 'mpd218'" in problem("lead")
+    lead.write_text(RIG.replace("kind: rig", "kind: [rig"))
+    assert problem("lead").startswith("lead.yaml: ") and "Error" in problem("lead")
+    lead.write_text(RIG)
+    lead.chmod(0)
+    try:
+        if not os.access(lead, os.R_OK):  # root reads it anyway
+            assert "PermissionError" in problem("lead")
+    finally:
+        lead.chmod(0o644)

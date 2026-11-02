@@ -1459,8 +1459,14 @@ def diff(
         reset_properties = bool(was.get("properties")) and not will.get("properties")
         if unknown or reset_program or reset_properties:
             if protected or plugin.get("type") != "lv2":
-                need("parameter_default", f"{name!r} leaves {', '.join(unknown) or 'its program'} at a default "
-                                          "that is not known, and it cannot be added fresh")
+                # Named by what is actually left at a default: parameters, the
+                # program, the properties (found by review: a properties reset
+                # was said as "its program").
+                left = ([f"parameter {', '.join(unknown)}"] if unknown else []) + \
+                    (["its program"] if reset_program else []) + \
+                    ([f"its properties ({', '.join(sorted(was['properties']))})"] if reset_properties else [])
+                need("parameter_default", f"{name!r} leaves {' and '.join(left)} at a default that is "
+                                          "not known, and it cannot be added fresh")
                 continue
             survivors.discard(name)  # replaced: removed, and added fresh below
 
@@ -1577,3 +1583,43 @@ def apply_to_chains(chains: dict[str, list[str]], plan: SwitchPlan) -> dict[str,
             else:
                 chain.insert(chain.index(args["before"]), args["name"])
     return out
+
+
+# How far a value read back may be from what the plan set and still count as
+# set: `verify.TOLERANCE`, the same margin `diff_state` gives the config's own
+# values, so the two checks after a switch agree on what "applied" means.
+APPLIED_TOLERANCE = 0.005
+
+
+def unapplied(plan: SwitchPlan, reading: dict[str, Any]) -> list[str]:
+    """Every value `plan` set that `reading` (a `live.capture`, after the
+    switch) does not hold, as one line each. Pure.
+
+    `verify.diff_state` checks what the next config states, and a plan sets
+    more than that: the strips and sends it puts back to their defaults, and
+    the un-bypass of a processor the next rig leaves unstated. A set Sushi
+    acknowledged and did not apply would pass `diff_state` there and be
+    reported as a live switch that worked (found by review). So the switch is
+    checked against the plan's own targets too: each parameter's last value,
+    and each processor's last bypass, since an added processor is bypassed
+    and then brought in."""
+    want_values: dict[tuple[str, str], float] = {}
+    want_bypass: dict[str, bool] = {}
+    for step in plan.steps:
+        args = step.args
+        if step.op == "parameter":
+            want_values[(args["processor"], args["parameter"])] = args["value"]
+        elif step.op == "bypass":
+            want_bypass[args["processor"]] = bool(args["bypassed"])
+    processors = reading.get("processors") or {}
+    problems = []
+    for (processor, parameter), value in want_values.items():
+        got = ((processors.get(processor) or {}).get("parameters") or {}).get(parameter)
+        if not (isinstance(got, (int, float)) and not isinstance(got, bool)
+                and abs(got - value) <= APPLIED_TOLERANCE):
+            problems.append(f"{processor}: {parameter} was set to {value:.4f} and reads back {got!r}")
+    for processor, bypassed in want_bypass.items():
+        got = (processors.get(processor) or {}).get("bypassed")
+        if got is None or bool(got) != bypassed:
+            problems.append(f"{processor}: bypass was set to {bypassed} and reads back {got!r}")
+    return problems

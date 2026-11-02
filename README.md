@@ -544,7 +544,8 @@ Program Change, which takes the same path) turns the running rig into another
 rig of `config/rigs/` without restarting Sushi where the live operations can
 do it: the processors that differ are removed, moved and added, the
 parameters and bypasses that differ are set, and the rig is read back and
-checked against the next rig's config before the state file names it. The
+checked against the next rig's config, and against every value the switch
+set, before the state file names it. The
 answer says `how`: `live`, or `restart` with `why` -- every reason, by code.
 What restarts: a different amp (it runs in Carla), a track added, removed or
 reordered or of another shape, a channel on another input, a different host
@@ -553,8 +554,10 @@ program or property to set, a rig run with its panel (whose SAVE listener
 belongs to the rig being left) or with `--amp-model`, a rig changed by hand
 since it came up in a way the plan cannot follow, a step that fails, and a
 read-back that is not the next rig. A switch that fails part-way restarts into
-the next rig, never leaves one half-switched, and brings the previous rig back
-if that restart fails. Of the committed rigs, 26 of the 110 ordered pairs are
+the next rig, and brings the previous rig back if that restart fails; if the
+restart cannot even take the rig down, `/health` and the answer say the rig is
+**half-switched**, naming both rigs, and nothing more is tried: read `/live`
+and bring it down and up by hand. Of the committed rigs, 26 of the 110 ordered pairs are
 live (most others differ in the amp's settings). One `op: "rig"` entry goes in
 `/live/log` either way, and undo stops at it. A rig that would not compile is
 refused (`409 rig_problem`) with the running one left playing. **Not run

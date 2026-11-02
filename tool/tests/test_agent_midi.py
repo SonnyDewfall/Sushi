@@ -93,18 +93,12 @@ class FakeWorld:
         self.ports.append(port)
         return port
 
-    def check_rig(self, name, root, machine):
-        self.checked.append(name)
-        return self.bad_rigs.get(name)
-
     def world(self):
-        return World(open_port=self.open_port, plan=self.plan,
-                     read_state=lambda: dict(self.state), rigs=lambda root: list(RIGS),
-                     check_rig=self.check_rig)
+        return World(open_port=self.open_port, plan=self.plan, rigs=lambda root: list(RIGS))
 
     def compile(self, name, root, machine):
         """A switch compiles the next rig first (#93), and refuses one that
-        would not, as `check_rig` did for the switch before it."""
+        would not, before anything is taken down."""
         self.checked.append(name)
         if name in self.bad_rigs:
             raise RigError(self.bad_rigs[name])
@@ -381,6 +375,32 @@ def test_a_program_change_switches_live_where_the_two_rigs_allow_it():
         assert entry["op"] == "rig" and entry["source"] == "midi"
         assert entry["args"]["how"] == "live" and entry["args"]["program"] == 2
         assert entry["previous"] == "electric-delay"
+
+    served(agent, test)
+
+
+def test_a_program_change_to_a_rig_file_with_a_yaml_typo_is_refused_and_said(tmp_path):
+    """The real compile, through the Program Change path: the switch is
+    refused with the file named, in /health and the listener's own error,
+    and the pedals stay on the rig that is still playing."""
+    (tmp_path / "config" / "rigs").mkdir(parents=True)
+    (tmp_path / "config" / "rigs" / "lead.yaml").write_text("kind: [rig\n")
+    agent, fake, world, runner, _ = midi_agent()
+    agent.root = tmp_path
+    agent.switching = Switching(compile=Switching().compile, read_state=lambda: dict(world.state),
+                                write_state=world.state.update)
+
+    async def test(client):
+        port = await started(agent, world, client)
+        port.send(0xC0, 2)  # "lead"
+        await until(lambda: agent._midi["last_error"])
+        await settle(agent)
+        body = await (await client.get("/health")).json()
+        assert body["agent"]["last_error"]["kind"] == "lifecycle"
+        for message in (body["agent"]["last_error"]["message"], body["agent"]["midi"]["last_error"]["message"]):
+            assert "lead.yaml" in message and "Error" in message, message
+        assert runner.calls == []
+        assert not port.closed.is_set() and agent._midi["state"] == "listening"
 
     served(agent, test)
 
@@ -817,8 +837,7 @@ def test_the_program_order_is_read_off_the_loop():
         reads.append(threading.get_ident())
         return list(RIGS)
 
-    agent._midi_world = World(open_port=world.open_port, plan=world.plan,
-                              read_state=lambda: dict(world.state), rigs=rigs, check_rig=world.check_rig)
+    agent._midi_world = World(open_port=world.open_port, plan=world.plan, rigs=rigs)
 
     async def test(client):
         loop_threads.add(threading.get_ident())

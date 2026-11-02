@@ -448,3 +448,46 @@ def test_steps_name_only_what_the_routes_take():
     bodies = {"remove": {"processor"}, "move": {"processor", "direction"}, "bypass": {"processor", "bypassed"},
               "parameter": {"processor", "parameter", "value"}, "add": {"track", "name", "uri", "before"}}
     assert plan.steps and all(set(s.args) == bodies[s.op] for s in plan.steps)
+
+
+# --------------------------------------------------------------------------- #
+# Review of the branch
+# --------------------------------------------------------------------------- #
+
+def test_what_the_plan_set_is_checked_against_its_own_targets():
+    """`unapplied` reads each parameter's and processor's last target out of
+    the plan: an added processor is bypassed, then brought in."""
+    from sushi_rig.rigfile import SwitchStep, unapplied
+
+    plan = SwitchPlan((
+        SwitchStep("bypass", {"processor": "eq", "bypassed": True}),
+        SwitchStep("parameter", {"processor": "board_send", "parameter": "gain", "value": 0.8333}),
+        SwitchStep("bypass", {"processor": "eq", "bypassed": False}),
+    ))
+    held = {"processors": {"eq": {"bypassed": False, "parameters": {}},
+                           "board_send": {"bypassed": False, "parameters": {"gain": 0.83330001}}}}
+    assert unapplied(plan, held) == []
+    held["processors"]["board_send"]["parameters"]["gain"] = 0.2
+    held["processors"]["eq"]["bypassed"] = True
+    assert unapplied(plan, held) == [
+        "board_send: gain was set to 0.8333 and reads back 0.2",
+        "eq: bypass was set to False and reads back True",
+    ]
+    del held["processors"]["eq"]
+    assert "eq: bypass was set to False and reads back None" in unapplied(plan, held)
+
+
+def test_a_restart_for_a_default_names_what_is_left_at_it():
+    """A plugin that cannot be added fresh (not LV2) whose properties the next
+    rig leaves unset: said as its properties, not as its program."""
+    plugin = {"name": "vst", "type": "vst3x", "path": "/x.vst3", "uid": "x"}
+
+    def with_vst(c):
+        _board(c)["plugins"].insert(0, dict(plugin))
+
+    before, after = _changed(with_vst)
+    with_vst(before)
+    before["initial_state"].append({"processor": "vst", "properties": {"preset": "a"}})
+    decided = diff(before, after)
+    (reason,) = [r for r in decided.reasons if r.code == "parameter_default"]
+    assert "its properties (preset)" in reason.detail and "program" not in reason.detail

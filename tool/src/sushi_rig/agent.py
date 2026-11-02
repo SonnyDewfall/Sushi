@@ -145,12 +145,17 @@ explains, or every reason it cannot (the amp, the tracks, cc_mappings, the
 host, a program...). The plan is applied under the lifecycle lock and the
 live lock on one connection, through the read-check-set the live routes use,
 then the rig is read back and checked against the next config as
-`verify.diff_state` checks one. Only then are the compiled config and the
+`verify.diff_state` checks one, and against every value the plan set
+(`rigfile.unapplied`: the strip and send defaults and un-bypasses the config
+does not state). Only then are the compiled config and the
 state file written, so `restart`, `/rig` and the listener follow the next
 rig. A restart reason, a step that fails, or a reading back that is not the
 next rig is a restart into the next rig (`down`, `up --rig`, and the
 previous rig back if that `up` fails), said in the answer (`how`, `why`) and
-on stderr. A rig run with its panel restarts: the panel and its SAVE
+on stderr. If steps were applied live and that restart's `down` then
+fails, the rig is half-switched -- part of the next rig in Sushi, the
+previous one in the state file -- and that is what /health and the answer
+say, naming both; nothing further is tried. A rig run with its panel restarts: the panel and its SAVE
 listener were started for the rig being left. One `op: "rig"` entry is
 logged either way, and undo stops at it. Not run against a live Sushi and
 not heard: shown against the fake only, and the time a live switch takes is
@@ -2266,8 +2271,16 @@ class Agent:
         state = await asyncio.to_thread(world.read_state) or {}
         try:
             upcoming = await asyncio.to_thread(world.compile, name, self._midi_root(), state.get("machine"))
-        except RigError as exc:
-            reason = f"not switched to {name}, which would not come up: {exc}"
+        except Exception as exc:  # noqa: BLE001 -- every failure to compile is a refusal, said
+            # `compile_named_rig` raises only `RigError`, but the seam is
+            # injectable and a YAML or file error that escaped here was a bare
+            # 500 with nothing in /health (found by review): refused, with the
+            # running rig left playing, whatever it was.
+            why = str(exc) if isinstance(exc, RigError) else f"{type(exc).__name__}: {exc}"
+            # One line: a YAML error, and the compile's own list of problems,
+            # come with newlines, which an HTTP reason cannot carry (aiohttp
+            # raised over it, a 500 again: found testing the real compile).
+            reason = " ".join(f"not switched to {name}, which would not come up: {why}".split())
             self._remember(["switch", name], reason, kind="lifecycle")
             raise SwitchRefused(reason, "rig_problem") from exc
         previous = switching_from(state, described)
@@ -2318,6 +2331,23 @@ class Agent:
         if not outcome.ok:
             answer["reason"] = outcome.reason
             answer["abandoned"] = outcome.abandoned
+            if answer.get("applied") and args[:1] == ["down"]:
+                # Steps were applied live and the restart could not even take
+                # the rig down: Sushi holds part of the next rig while the
+                # state file names the previous one, a rig that is neither
+                # and that `restart` would bring back as the wrong one. Said
+                # as that, in /health over `down`'s own failure, and in the
+                # answer. Not recovered by guessing: what to do needs a look.
+                half = (
+                    f"the rig is HALF-SWITCHED: {answer['applied']} of {len(answer.get('plan') or [])} steps "
+                    f"of the switch from {previous} to {name} were applied live, then the restart into "
+                    f"{name} could not take it down ({outcome.reason}). Sushi holds part of {name} while "
+                    f"the state file still names {previous}: read /live, then bring the rig down and up "
+                    "by hand"
+                )
+                print(f"sushi-rig agent: {half}", file=sys.stderr, flush=True)
+                self._remember(["switch", name], half, kind="lifecycle")
+                answer.update(reason=half, half_switched=True)
         return answer
 
     async def _switch_live(
@@ -2349,7 +2379,10 @@ class Agent:
                         await self._switch_step(origin, controller, step)
                         progress["applied"] += 1
                     after = await self._sushi(origin, self.live.snapshot, controller, reading=True)
-            problems = diff_state(upcoming, after)
+            # What the next config states, and everything the plan set beyond
+            # that (strip and send defaults, un-bypasses): each against what
+            # was meant, so an acknowledged set Sushi did not apply is caught.
+            problems = [str(p) for p in diff_state(upcoming, after)] + rigfile.unapplied(plan, after)
         except asyncio.CancelledError:
             raise
         except web.HTTPException as exc:
@@ -2357,9 +2390,9 @@ class Agent:
         except Exception as exc:  # noqa: BLE001 -- AgentError and the rest: a restart, said
             return failed("failed", f"{type(exc).__name__}: {exc}")
         if problems:
-            shown = "; ".join(str(p) for p in problems[:5]) + (f" (and {len(problems) - 5} more)" if len(problems) > 5 else "")
+            shown = "; ".join(problems[:5]) + (f" (and {len(problems) - 5} more)" if len(problems) > 5 else "")
             return {**failed("unverified", f"the rig read back is not the next rig: {shown}"),
-                    "verification": [str(p) for p in problems]}
+                    "verification": problems}
         try:
             path = await asyncio.to_thread(self.switching.write_config, name, upcoming)
             now = await asyncio.to_thread(self.switching.read_state) or state
@@ -2544,6 +2577,13 @@ def place_switch_add(
         raise Conflict(f"{before!r}, which {name!r} goes in front of, is not on {track!r}: it has {chain}")
     else:
         index = chain.index(before)
+    # Never in front of the master's return, which is first on its track and
+    # stays first (`check_add`'s invariant, by `protected_processor`'s rule):
+    # ahead of it, a processor would get no channel's signal (found by review:
+    # `before: "master_return"` was accepted).
+    for held in chain[index:]:
+        if protected_processor(track, held, uids.get(held)) and not is_send(track, held, uids.get(held)):
+            raise Conflict(f"{name!r} would go in front of {held!r}, the master's return, which stays first")
     return Addition(
         track=track, name=name, uri=uri, after=chain[index - 1] if index else None, chain=chain,
         expected=chain[:index] + [name] + chain[index:], track_id=ids[track],
@@ -2572,7 +2612,11 @@ class Switching:
     """What a switch reaches outside the agent and Sushi, so its tests can
     stand each in: compiling the next rig (`RigError` with the reason),
     reading the running rig's compiled config by the path the state file
-    gives, writing the next one's where `up` would, and the state file."""
+    gives, writing the next one's where `up` would, and the state file. The
+    one seam for the state file and for compiling a rig to switch to, for the
+    route and the Program Change alike: `midi_listener.World` no longer has
+    its own (found by review: a test's `World(read_state=...)` had stopped
+    steering the switch while looking as if it did)."""
 
     compile: Callable[[str, Path, "str | None"], dict[str, Any]] = (
         lambda name, root, machine: compile_named_rig(name, root, Path(machine) if machine else None))

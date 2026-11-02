@@ -2083,7 +2083,7 @@ class RigLive(FakeLive):
             self.values[entry["processor"]].update(entry.get("parameters") or {})
             if "bypassed" in entry:
                 self.bypassed[entry["processor"]] = entry["bypassed"]
-        self.ignore = None  # (processor, parameter) whose set is confirmed and not applied
+        self.ignore = None  # (processor, parameter or "bypassed") whose set is confirmed and not applied
         self.drift = None  # called once, at the first reading, to change the rig under the agent
 
     @staticmethod
@@ -2129,7 +2129,8 @@ class RigLive(FakeLive):
 
     def set_bypass(self, connection, processor, bypassed):
         self._enter("set_bypass", connection, processor, bypassed)
-        self.bypassed[processor] = bypassed
+        if self.ignore != (processor, "bypassed"):
+            self.bypassed[processor] = bypassed
 
     def _uids(self):
         return {name: p["uid"] for name, p in self.plugins.items()}
@@ -2454,3 +2455,84 @@ def test_an_add_goes_in_front_of_what_follows_it_and_never_behind_a_send():
                                 ("board", "eq", "drive")]:
         with pytest.raises(Conflict):
             place_switch_add(reading, track, name, "urn:eq", before)
+
+
+
+# Review of the branch (#93): what the first version let through.
+
+def test_a_rig_file_with_a_yaml_typo_is_refused_as_a_rig_problem_not_a_500(tmp_path):
+    """The real compile, on a file that is not YAML: refused with the file
+    named, said in /health, the running rig untouched."""
+    (tmp_path / "config" / "rigs").mkdir(parents=True)
+    (tmp_path / "config" / "rigs" / "typo.yaml").write_text("kind: [rig\nname: typo\n")
+    world = SwitchWorld("electric-delay")
+    world.compile = Switching().compile
+    fake, runner = RigLive(switch_config("electric-delay")), FakeRunner()
+    agent = Agent(root=tmp_path, describe=world.described, run=runner, live=fake, switching=world.switching())
+    status, body = call(agent, "POST", "/rig/switch", json={"config_name": "typo"})
+    assert status == 409 and body["code"] == "rig_problem", body
+    assert "typo.yaml" in body["reason"] and "Error" in body["reason"]
+    error = call(agent, "GET", "/health")[1]["agent"]["last_error"]
+    assert error["kind"] == "lifecycle" and "typo.yaml" in error["message"]
+    assert runner.calls == [] and fake.calls == []
+
+
+@pytest.mark.parametrize("drift, ignored", [
+    (lambda rig: rig.values["board_send"].update(gain=0.2), ("board_send", "gain")),
+    (lambda rig: rig.bypassed.update(board_send=True), ("board_send", "bypassed")),
+], ids=["a send's gain put back to unity", "an un-bypass the next rig leaves unstated"])
+def test_a_set_sushi_acknowledged_and_did_not_apply_is_caught_even_where_the_config_states_nothing(
+        drift, ignored):
+    """The next config states neither, so `diff_state` alone passed them; the
+    plan set them, and is checked against its own targets."""
+    agent, fake, world, runner = switch_agent("electric-delay")
+    fake.drift, fake.ignore = drift, ignored
+    status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-octave-up"})
+    assert status == 200 and body["how"] == "restart", body
+    (why,) = body["why"]
+    assert why["code"] == "unverified" and f"{ignored[0]}: " in why["detail"]
+    assert any(p.startswith(f"{ignored[0]}: ") and "reads back" in p for p in body["verification"])
+    assert runner.calls == [["down"], ["up", "electric-octave-up", "--rig", "--headless"]]
+    assert world.written_states == []
+
+
+def test_a_switch_that_fails_part_way_and_cannot_be_taken_down_is_said_to_be_half_switched():
+    """Sushi holds part of the next rig and the state file names the previous
+    one: said as that, naming both, in the answer and /health. No recovery is
+    guessed at: nothing else is run."""
+    runner = FakeRunner(Outcome(False, 1, "", "could not stop the running rig"))
+    agent, fake, world, _ = switch_agent("electric-chorus", runner=runner)
+    fake.fail, fake.fail_on = RuntimeError("Sushi said no"), "add"
+    status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-delay"})
+    assert status == 409 and not body["ok"] and body["half_switched"] is True, body
+    assert body["applied"] > 0
+    for said in (body["reason"], call(agent, "GET", "/health")[1]["agent"]["last_error"]["message"]):
+        assert "HALF-SWITCHED" in said and "from electric-chorus to electric-delay" in said
+        assert "could not stop the running rig" in said and "state file still names electric-chorus" in said
+    assert runner.calls == [["down"]], "nothing guessed after the down failed"
+    assert world.written_states == []
+
+
+def test_a_down_that_fails_before_anything_was_applied_is_not_half_switched():
+    runner = FakeRunner(Outcome(False, 1, "", "could not stop the running rig"))
+    agent, fake, world, _ = switch_agent("accustomed", runner=runner)
+    status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-chorus-2"})
+    assert status == 409 and "half_switched" not in body and "HALF" not in body["reason"]
+
+
+def test_an_add_never_goes_in_front_of_the_masters_return():
+    from sushi_rig.agent import Conflict
+
+    reading = {"chains": {"master": ["master_return", "limiter"]},
+               "ids": {"master": 1, "master_return": 2, "limiter": 3},
+               "uids": {"master_return": _rigfile.RETURN_UID}}
+    with pytest.raises(Conflict, match="master's return"):
+        place_switch_add(reading, "master", "eq", "urn:eq", "master_return")
+    renamed = {**reading, "chains": {"master": ["ret", "limiter"]}, "ids": {"master": 1, "ret": 2, "limiter": 3},
+               "uids": {"ret": _rigfile.RETURN_UID}}
+    with pytest.raises(Conflict, match="master's return"):
+        place_switch_add(renamed, "master", "eq", "urn:eq", "ret")
+    assert place_switch_add(reading, "master", "eq", "urn:eq", "limiter").expected == \
+        ["master_return", "eq", "limiter"]
+    assert place_switch_add(reading, "master", "eq", "urn:eq", None).expected == \
+        ["master_return", "limiter", "eq"]

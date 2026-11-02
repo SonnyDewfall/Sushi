@@ -232,7 +232,9 @@ def prepare_rig(
     except PatchbayError as exc:
         raise RigError(f"{path.name} cannot be wired on this machine:\n  " + "\n  ".join(exc.problems)) from exc
 
-    source = compiled["_meta"]["source"]
+    # Unconditional, as it was before the compile was shared: the provenance
+    # is the rig file's, whatever `_meta` turned out to be.
+    source = f"config/rigs/{name}.yaml"
     config = write_compiled(name, compiled, runtime)
     patchbay = config.parent / f"{name}.qpwgraph"
     patchbay.write_text(xml)
@@ -254,11 +256,29 @@ def _compile_named_rig(
     `name` of config/rigs, or `RigError` with the reason: everything
     `prepare_rig` needs before the live graph, and all a live switch (#93)
     needs, which compares the compiled config with the running one and wires
-    nothing. One function, so the two cannot compile a rig differently."""
+    nothing. One function, so the two cannot compile a rig differently.
+
+    Every failure is a `RigError`, not only the ones foreseen below: a YAML
+    syntax error, a file that cannot be read, anything the compiler raises.
+    A switch refuses on a `RigError` with the running rig left playing, and
+    anything else escaped it as a bare 500 with nothing in /health (found by
+    review); `midi_listener.rig_problem`, which this replaced, caught them
+    all too."""
+    path = root / "config" / "rigs" / f"{name}.yaml"
+    try:
+        return _compile_named_rig_unguarded(name, root, path, machine_file)
+    except RigError:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- said, with its type, as a refusal
+        raise RigError(f"{path.name}: {type(exc).__name__}: {exc}") from exc
+
+
+def _compile_named_rig_unguarded(
+    name: str, root: Path, path: Path, machine_file: Path | None,
+) -> tuple[Path, Path, Any, Any, dict[str, Any]]:
     from .machine import MachineError, MachineSpec, machine_path, rig_controller
     from .rigfile import RigFileError, compile_rig, emit_compiled, load_rig
 
-    path = root / "config" / "rigs" / f"{name}.yaml"
     if not path.is_file():
         raise RigError(f"no such rig: {path}")
     try:
