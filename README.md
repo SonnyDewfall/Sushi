@@ -407,6 +407,8 @@ curl -X POST localhost:8029/live/move -d '{"processor": "drive", "direction": "u
 curl localhost:8029/live/log         # what was changed through /live, newest last
 curl -X POST localhost:8029/live/undo   # put back what the newest change not yet undone replaced
 curl -X POST localhost:8029/live/undo -d '{"skip": true}'   # give up on the newest one that cannot be
+
+curl localhost:8029/health | jq .agent.midi   # the pedals: listening, or why not, and what was last heard
 ```
 
 The first slice of the control plane every v2 feature needs: one process that
@@ -416,7 +418,8 @@ they already are, in a child process, because `up` forks the supervisor and a
 fork from a threaded HTTP server is where deadlocks come from. So the
 supervisor is still the one `up` has always detached; the agent becoming the
 supervisor, and running as a service so a phone can press start, is the next
-slice. Needs `pip install -e tool[agent]` (aiohttp). One lifecycle command at a
+slice. Needs `pip install -e tool[agent]` (aiohttp), and `tool[agent,midi]`
+(alsa-midi, and libasound) for the pedals. One lifecycle command at a
 time: a second request while one runs gets `409 busy`, because `up` and `down`
 racing is a second rig on top of a running one. `up` must be told which
 config (`config_name` is required, so a stray empty POST starts nothing). Every argument is checked
@@ -501,6 +504,38 @@ is `502` and not logged. The log entry for an add has the name used and the
 chain before; for a remove, the chain before and the plugin's URI, uid and
 type, from Sushi's saved session, so an undo can put it back (at its defaults:
 parameter values are not recorded). **Not yet run against a live Sushi.**
+**Pedals** (#34, #93). What a rig's MIDI map asks of the agent — a bypass, a
+pad on a mute, Program Change rig switching; Sushi does the sweeps, blends
+and CC mutes itself — the agent serves while the rig is up, by opening the
+controller's port itself (the port the machine file names, through the ALSA
+sequencer). A pad press (note on) toggles its plugin's bypass, exactly as
+`POST /live/bypass` would; a CC bound to a bypass is a switch, the effect on at
+64 and above and bypassed below, acting only when it crosses 64, so an
+expression pedal or a chattering switch does nothing between crossings; a pad
+on a mute toggles the channel's `mute`. Releases and aftertouch (an MPD218 pad
+sends it while held) do nothing. A Program Change on the controller switches
+rigs: program *n* is the *n*th file of `config/rigs/*.yaml` sorted by file name,
+counted from 0 (a pedal may display it as *n*+1), and `GET /rig` lists the
+order as `programs` while the running rig switches by them. The switch is
+`down` then `up --rig` with the mode, tuner and amp choices `restart` would
+keep (not an `--amp-model` override, which belonged to the rig being left),
+about five seconds of silence, and the next rig switches on only if its own
+map says `programs: rigs`. The rig switched to is compiled first, and one that
+would not is refused with the running rig left playing; if its `up` fails
+anyway, the rig that was playing is brought back. `/live/undo` stops at a rig
+switch: what came before it was done to the other rig. A Program Change for the rig already playing does
+nothing; one past the last rig is refused and said. Each change is in
+`/live/log` with `source: "midi"` and the control that made it. The listener
+starts when a rig comes up through the agent, or is already up when the agent
+starts, and stops before `down`, `restart` or a switch; a rig brought up from
+the CLI while the agent runs is not heard until the agent is restarted.
+`/health` shows it under `agent.midi`: `listening`, `off` with the reason, or
+`failed` with the problem — a port that will not open is said once, naming the
+port, the controller and what ALSA does list, and not retried until the next
+`up` or `restart`. `heard` and `last` (the last message and what it did) are
+what to read when a pedal seems to do nothing. Channels are counted from 0 there,
+as `aseqdump` prints them. **Not yet heard from a real pedal**: see the list below
+the MIDI map in *Channels and a master*.
 
 **Two modes, for two ways of using the rig.** The default gives you the Open
 Stage Control panel and the save listener behind it, which is what you want when
@@ -668,13 +703,23 @@ midi:
 Blend, parameter and mute compile into Sushi's own `cc_mappings` and run in
 the engine with no Python in the path; a blend is two mappings on the two
 channels' sends with their ranges reversed, each channel's own level being
-its loudest. Bypass and rig switching by Program Change go through the agent, which
-reads them from the compiled config's `_midi_agent`; a blended channel's
+its loudest. Bypass, a pad on a mute, and rig switching by Program Change go
+through the agent, which reads them from the compiled config's `_midi_agent` and
+opens the controller's port itself while the rig is up (`sushi-rig agent`, with
+the `midi` extra; see *The agent*): so they work only with the agent running.
+To switch rigs from the pedal, add `programs: rigs` to `midi:`; program 0 is the
+first rig in `config/rigs/` by file name, and every rig you switch to needs it
+too for the next switch to work. A blended channel's
 send gain is a pedal position, so SAVE does not write it back as the level.
 A rig with a map refuses to compile to a config without its controller, since
 a rig running without its pedals would be the silent failure. Still to verify
 on the rig: that Sushi counts MIDI channels from 0, and the name PipeWire
-gives Sushi's MIDI input so the patchbay can link the pedal to it.
+gives Sushi's MIDI input so the patchbay can link the pedal to it. For the
+agent's own listener, which counts channels from 0 as ALSA does: that the
+machine file's `port` is exactly how the sequencer names the pedal (client,
+`:`, port, as `aseqdump -l`'s two name columns), that a footswitch sends what
+it is written to (and which way round its CC is), and that the agent hears the
+pedal while PipeWire and Sushi are also subscribed to it.
 
 
 ```bash
