@@ -350,10 +350,10 @@ def plan_probes(rig: Any, *, amp: bool, sushi_node: str = SUSHI_NODE) -> ProbePl
         if not inject or not captures:
             # A master is fed by sends rather than inputs, and a channel with no
             # output of its own is heard through the master: neither is unprobed.
+            missing = "inputs" if not inject else "outputs"
             if not ((is_master and not inject) or (sends and inject and not captures)):
-                missing = "inputs" if not inject else "outputs"
                 not_checked.append(f"{track.name}: no {missing} on Sushi, so nothing to probe")
-            own_why[track.name] = f"{track.name} has no {"inputs" if not inject else "outputs"} on Sushi"
+            own_why[track.name] = f"{track.name} has no {missing} on Sushi"
             continue
         routed[track.name] = (inject, captures)
         twin, why = _probe_track(track, track, (track,), used, sushi_node)
