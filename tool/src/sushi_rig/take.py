@@ -641,7 +641,11 @@ def _check_capture_witnesses(capture: dict[str, Any], meta: dict[str, Any],
     engine = capture.get("engine")
     if isinstance(engine, dict):
         if engine.get("error"):
-            problems.append(f"the capture engine failed: {engine['error']}")
+            errors = _count(engine.get("errors"))
+            problems.append(
+                f"the capture engine failed: {engine['error']}"
+                + (f" ({errors} time(s) in all)" if errors > 1 else "")
+            )
         if _count(engine.get("xruns")):
             problems.append(
                 f"the audio server reported {engine['xruns']} xrun(s) during the take — a "
@@ -652,6 +656,12 @@ def _check_capture_witnesses(capture: dict[str, Any], meta: dict[str, Any],
                 f"the capture engine could not copy {engine['skipped_frames']} frame(s) in "
                 f"{_count(engine.get('skipped_blocks'))} block(s), so they are not in the stems "
                 f"and the recorder does not know"
+            )
+        if _count(engine.get("off_quantum_blocks")):
+            problems.append(
+                f"{engine['off_quantum_blocks']} block(s) were not the take's quantum of "
+                f"{meta.get('quantum')} frames — the graph ran at another block size than the "
+                f"plan, so take.yaml says quantum: {meta.get('quantum')} for audio that did not"
             )
         if _count(engine.get("quantum_changes")):
             problems.append(

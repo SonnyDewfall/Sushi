@@ -225,7 +225,8 @@ def test_the_account_always_has_the_same_keys_so_clean_differs_from_absent():
     account = BlockPump(Bus(1).ports, lambda block: 0, Q).account(SR)
     assert set(account) == {
         "quantum", "blocks", "xruns", "quantum_changes", "off_quantum_blocks",
-        "skipped_blocks", "skipped_frames", "push_errors", "slowest_callback_us", "budget_us", "error",
+        "skipped_blocks", "skipped_frames", "push_errors", "errors", "gated_cycles",
+        "slowest_callback_us", "budget_us", "error",
     }
     assert account["xruns"] == 0 and account["error"] == ""
 
@@ -235,3 +236,59 @@ def test_a_pump_that_could_not_hold_a_block_is_refused(args):
     ports, quantum = args
     with pytest.raises(ValueError):
         BlockPump(ports, lambda block: 0, quantum, max_frames=512)
+
+
+def test_every_exception_is_counted_and_the_first_message_is_the_one_kept():
+    """The cycles after an exception are tried normally, so only the cycles
+    that themselves raise are counted; each of them is."""
+    bus = Bus(1)
+    raised = []
+
+    def push(block):
+        raised.append(1)
+        if len(raised) in (2, 3):
+            raise RuntimeError(f"failure {len(raised)}")
+        return len(block)
+
+    pump = BlockPump(bus.ports, push, Q)
+    for _ in range(5):
+        bus.cycle(pump)
+    assert pump.blocks == 3 and pump.errors == 2 and pump.push_errors == 2
+    assert pump.error == "RuntimeError: failure 2"
+
+
+def test_a_gated_pump_copies_and_pushes_nothing_and_counts_the_cycles():
+    pushed = []
+    bus = Bus(2)
+    pump = BlockPump(bus.ports, lambda block: pushed.append(len(block)) or len(block), Q, gated=True)
+    for _ in range(3):
+        bus.cycle(pump)
+    assert pushed == [] and pump.blocks == 0 and pump.gated_cycles == 3
+    pump.open_gate()
+    bus.cycle(pump)
+    assert pushed == [Q] and pump.blocks == 1 and pump.gated_cycles == 3
+
+
+def test_the_start_up_quantum_transient_is_not_a_change_mid_take():
+    """The block size was seen to go 256, 1024, 256 as a client started, and
+    JACK calls the block size callback once on activation. None of that is a
+    change during the take."""
+    pump = BlockPump(Bus(1).ports, lambda block: 0, Q, gated=True)
+    for size in (Q, 1024, Q):
+        pump.blocksize(size)
+    pump.xrun(1.0)
+    assert (pump.quantum_changes, pump.xruns) == (0, 0)
+    pump.open_gate()
+    pump.blocksize(1024)
+    pump.xrun(1.0)
+    assert (pump.quantum_changes, pump.xruns) == (1, 1)
+
+
+def test_cycles_at_the_wrong_size_before_the_gate_are_not_off_quantum_blocks():
+    bus = Bus(1)
+    pump = BlockPump(bus.ports, lambda block: len(block), Q, gated=True)
+    bus.cycle(pump, 1024)
+    pump.open_gate()
+    bus.cycle(pump, Q)
+    bus.cycle(pump, 1024)
+    assert pump.off_quantum_blocks == 1

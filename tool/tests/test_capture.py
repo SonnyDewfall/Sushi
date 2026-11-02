@@ -84,7 +84,7 @@ def test_two_columns_from_one_port_are_refused_even_across_stems():
     channel landing on another stem's port is the same fault, and only visible
     once the channels are expanded."""
     clash = ((GUITAR, 2), (Stem("vocal", PROCESSED, "sushi:audio_output_1"), 1))
-    with pytest.raises(CaptureError, match=r"guitar.wav\[1\] and vocal.wav\[0\] .*audio_output_1.*one signal"):
+    with pytest.raises(CaptureError, match=r"guitar.wav\[1\] and vocal.wav .*audio_output_1.*one signal"):
         capture.plan_columns(clash)
 
 
@@ -114,7 +114,7 @@ def test_a_graph_with_every_source_has_nothing_missing():
 
 def test_a_missing_source_is_named_with_the_ports_that_do_exist():
     problems = capture.missing_sources(COLUMNS, [s for s in EVERY_SOURCE if "AUX0" not in s])
-    assert "no port called 'Audient iD14:capture_AUX0' (for guitar-dry.wav[0])" in problems[0]
+    assert "no port called 'Audient iD14:capture_AUX0' (for guitar-dry.wav)" in problems[0]
     assert "output ports in the graph include:" in problems[-1]
     assert "capture_AUX1" in problems[-1]
 
@@ -134,7 +134,7 @@ def test_a_link_that_did_not_take_is_named():
     actual[2] = []
     (problem,) = capture.check_links(COLUMNS, actual)
     assert "sushi-rig-capture:in_2 should be fed by Audient iD14:capture_AUX0 alone" in problem
-    assert "(for guitar-dry.wav[0])" in problem and "fed by nothing" in problem
+    assert "(for guitar-dry.wav)" in problem and "fed by nothing" in problem
 
 
 def test_an_extra_link_is_refused_because_it_would_be_summed_in():
@@ -201,7 +201,7 @@ def test_an_engine_without_jack_fails_start_with_the_sentence_not_a_traceback(mo
     engine = capture.CaptureEngine(48000, 256)
     with pytest.raises(CaptureUnavailable):
         engine.start(PLAN, lambda block: 0)
-    assert engine.stop() == {}, "nothing was started, so stop has nothing to say and does not raise"
+    assert engine.stop() is None, "nothing was started: the protocol's None, not an empty account"
 
 
 def test_a_plan_that_cannot_be_linked_is_refused_before_jack_is_touched(monkeypatch):
@@ -220,7 +220,7 @@ def test_an_engine_cannot_be_built_for_a_nonsense_format():
 
 
 def test_a_column_knows_its_own_port_name():
-    assert Column(3, "vocal.wav", 0, "x:y").port == "in_3"
+    assert Column(3, "vocal.wav", 0, "x:y", "vocal.wav").port == "in_3"
 
 
 def test_a_machine_with_the_package_but_no_libjack_skips_the_jack_tests_not_errors():
@@ -248,3 +248,13 @@ def test_a_machine_with_the_package_but_no_libjack_skips_the_jack_tests_not_erro
     # the collection error this guards against.
     assert out.returncode == 5, out.stdout + out.stderr
     assert "1 skipped" in out.stdout and "error" not in out.stdout.lower()
+
+
+def test_a_column_is_named_as_the_recorder_and_take_yaml_name_it():
+    """One naming: a mono stem is its bare file name, a stereo channel is
+    `file[channel]`, as `recorder.column_labels` has it."""
+    from sushi_rig.recorder import column_labels
+
+    assert [c.label for c in COLUMNS] == column_labels(
+        [(Path(stem.filename), width) for stem, width in PLAN])
+    assert [c.label for c in COLUMNS][:3] == ["guitar.wav[0]", "guitar.wav[1]", "guitar-dry.wav"]

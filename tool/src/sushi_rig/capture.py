@@ -62,6 +62,11 @@ the Audient iD14 and Sushi through `pw-jack`, and the claim below that a stereo
 stem's ports are consecutive, are all unverified. The first run on the rig is
 the test, and its result goes in the MANIFEST either way.
 
+One client does everything, and its process callback is live from `activate`,
+so the pump is gated (`BlockPump`) until every link has been read back: the
+recorder is fed nothing before then, and the first take reads the graph's
+quantum on the client it captures with.
+
 Three things to know before that run. The process has to be started under
 `pw-jack`, or JACK-Client finds a libjack that talks to no server. Nothing in
 `listen` constructs a `CaptureEngine` yet: that needs the port names a take
@@ -84,9 +89,11 @@ from __future__ import annotations
 import re
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any, Callable, Iterable, Sequence
 
 from ._numpy import require_numpy
+from .recorder import column_labels
 from .take import Stem
 
 # The name the client has in the graph, and so in qpwgraph and pw-top.
@@ -153,6 +160,9 @@ class Column:
     stem: str  # the stem's file name
     channel: int  # within the stem, from 0
     source: str  # JACK port name, `<client>:<port>`
+    # What every message and take.yaml call the column: `recorder.column_labels`,
+    # the bare file name for a mono stem and `file[channel]` otherwise.
+    label: str
 
     @property
     def port(self) -> str:
@@ -212,8 +222,9 @@ def plan_columns(stems: Sequence[tuple[Stem, int]]) -> list[Column]:
         if isinstance(ports, str):
             problems.append(f"stem {stem.filename}: {ports}")
             continue
+        labels = column_labels([(Path(stem.filename), channels)])
         for channel, source in enumerate(ports):
-            columns.append(Column(len(columns), stem.filename, channel, source))
+            columns.append(Column(len(columns), stem.filename, channel, source, labels[channel]))
     if not columns and not problems:
         problems.append("a capture needs at least one column")
     seen: dict[str, Column] = {}
@@ -221,7 +232,7 @@ def plan_columns(stems: Sequence[tuple[Stem, int]]) -> list[Column]:
         earlier = seen.setdefault(column.source, column)
         if earlier is not column:
             problems.append(
-                f"{earlier.stem}[{earlier.channel}] and {column.stem}[{column.channel}] "
+                f"{earlier.label} and {column.label} "
                 f"would both be captured from {column.source}, so they are one signal "
                 f"under two names"
             )
@@ -249,7 +260,7 @@ def missing_sources(columns: Sequence[Column], available: Iterable[str]) -> list
         if present else "there are no output ports in the graph at all"
     )
     return [
-        f"no port called {c.source!r} (for {c.stem}[{c.channel}]) is in the graph" for c in absent
+        f"no port called {c.source!r} (for {c.label}) is in the graph" for c in absent
     ] + [hint]
 
 
@@ -269,7 +280,7 @@ def check_links(columns: Sequence[Column], actual: Sequence[Sequence[str]],
             got = ", ".join(linked) if linked else "nothing"
             problems.append(
                 f"{client}:{column.port} should be fed by {column.source} alone "
-                f"(for {column.stem}[{column.channel}]), but is fed by {got}"
+                f"(for {column.label}), but is fed by {got}"
             )
     if len(actual) != len(columns):
         problems.append(f"{len(columns)} columns but {len(actual)} ports read back")
@@ -307,7 +318,7 @@ def check_granted(sample_rate: int, quantum: int, granted_rate: int, granted_qua
     change the plan once the take exists, so it refuses; the caller builds
     the plan for the quantum PipeWire is set to. PipeWire applies
     `PIPEWIRE_QUANTUM` to a node only when it starts, which is why the granted
-    value is read after activation (`CaptureEngine._read_granted`).
+    value is read after activation (`CaptureEngine._settle_and_read`).
     """
     problems = []
     if granted_rate != sample_rate:
@@ -339,15 +350,29 @@ class BlockPump:
     `frames` rows, so a block size that changes mid-take is still recorded,
     where the spike skipped it and left the take short with nothing saying so.
 
-    Every cycle is accounted for. A block that cannot be copied is counted in
-    frames, a push that raises is counted apart (see `__call__`), and an exception in the callback is held, not raised: JACK removes
-    a client whose callback fails, which would silently end the capture, so the
-    first one is kept for the report and the cycles after it are counted as
-    skipped.
+    **The gate.** The process callback is live from `activate`, but a pump made
+    with `gated=True` copies and pushes nothing, and counts no xrun, block size
+    change or off-size block, until `open_gate`. The engine opens it once every
+    link is in place, so the first block pushed is the first with all columns
+    linked (otherwise the take opens with silence, and columns linked on
+    different cycles sit a quantum apart while the take declares no offset), and
+    so the block size's start-up transient (seen on the rig going 256, 1024,
+    256, and JACK calls the callback once on activation) is not reported as a
+    change mid-take. Cycles that ran closed are counted as `gated_cycles`.
+
+    Every cycle that ran open is accounted for. A block that cannot be copied is
+    counted in frames. A push that raises is counted apart (see `__call__`).
+    No exception leaves the callback: JACK removes a client whose callback
+    raises, which would silently end the capture. The cycle that raised is
+    counted and the next is tried as if nothing had happened, so a transient
+    fault costs one block, not the take. Every exception is counted in `errors`;
+    the message of the first is kept in `error`, since the later ones are
+    usually the same fault and the first is the cause.
     """
 
     def __init__(self, ports: Sequence[Any], push: Callable[[Any], int], quantum: int,
-                 *, max_frames: int = MAX_BLOCK, clock: Callable[[], int] = time.perf_counter_ns):
+                 *, max_frames: int = MAX_BLOCK, gated: bool = False,
+                 clock: Callable[[], int] = time.perf_counter_ns):
         np = require_numpy()
         if not ports:
             raise ValueError("a pump needs at least one port")
@@ -363,6 +388,9 @@ class BlockPump:
         self.skipped_blocks = 0
         self.skipped_frames = 0
         self.push_errors = 0  # `push` raised: the ring may or may not hold the block
+        self.errors = 0  # every exception, copy or push; `error` is the first one's message
+        self.gated_cycles = 0
+        self._gated = gated
         self.xruns = 0
         self.quantum_changes = 0
         self.slowest_ns = 0
@@ -370,6 +398,9 @@ class BlockPump:
 
     def __call__(self, frames: int) -> None:
         """The process callback: copy this cycle's ports into one block and push it."""
+        if self._gated:
+            self.gated_cycles += 1
+            return
         started = self._clock()
         copied = False
         try:
@@ -378,7 +409,7 @@ class BlockPump:
                 self.skipped_frames += max(frames, 0)
                 return
             if frames != self.quantum:
-                self.off_quantum_blocks += 1
+                self.off_quantum_blocks += 1  # open cycles only: the gate returned above
             block = self._block
             for column, port in enumerate(self._ports):
                 block[:frames, column] = port.get_array()
@@ -386,6 +417,7 @@ class BlockPump:
             self._push(block[:frames])
             self.blocks += 1
         except Exception as exc:  # noqa: BLE001 — held and reported, see the class docstring
+            self.errors += 1
             self.error = self.error or f"{type(exc).__name__}: {exc}"
             if copied:
                 # `Recorder.push` copies into the ring and then runs the silence
@@ -402,15 +434,21 @@ class BlockPump:
             if elapsed > self.slowest_ns:
                 self.slowest_ns = elapsed
 
+    def open_gate(self) -> None:
+        """Start pushing, and start counting. See the class docstring."""
+        self._gated = False
+
     def xrun(self, delay: float = 0.0) -> None:
         """JACK's xrun callback: a deadline was missed, so audio may be missing
-        that nothing else counts."""
-        self.xruns += 1
+        that nothing else counts. Not counted while the gate is closed."""
+        if not self._gated:
+            self.xruns += 1
 
     def blocksize(self, size: int) -> None:
         """JACK's block size callback. A change from the quantum the take was
-        planned for means `take.yaml`'s quantum is no longer what it ran at."""
-        if size != self.quantum:
+        planned for means `take.yaml`'s quantum is no longer what it ran at. Not
+        counted while the gate is closed: that is the start-up transient."""
+        if not self._gated and size != self.quantum:
             self.quantum_changes += 1
 
     def account(self, sample_rate: int) -> dict[str, Any]:
@@ -426,6 +464,8 @@ class BlockPump:
             "skipped_blocks": self.skipped_blocks,
             "skipped_frames": self.skipped_frames,
             "push_errors": self.push_errors,
+            "errors": self.errors,
+            "gated_cycles": self.gated_cycles,
             "slowest_callback_us": round(self.slowest_ns / 1000.0, 1),
             "budget_us": round(1e6 * self.quantum / sample_rate, 1),
             "error": self.error,
@@ -465,7 +505,7 @@ class CaptureEngine:
     capture at a time; `stop` may be called twice, or after a failed `start`.
 
     The graph's rate and quantum are read once per engine, not once per take
-    (`prepare`): reading them costs an activation and a wait, on the thread
+    (`prepare`, or the first `start`): reading them costs a wait, on the thread
     that called `start`, which in the listener is the one OSC thread. A graph
     that changes quantum later is not noticed up front; it shows in the take's
     account as `quantum_changes` and `off_quantum_blocks` instead.
@@ -496,13 +536,19 @@ class CaptureEngine:
         """Read the graph's rate and quantum now, so the first `start` does not.
 
         Call it where a pause is harmless, at the listener's start, not inside
-        RECORD. `start` calls it itself if nobody has, so forgetting is a
-        delay and not a fault. Uses a throwaway client, closed before returning.
+        RECORD. Optional: `start` reads them itself on the client it is about
+        to use if nobody has. Uses a throwaway client with a name of its own
+        (`<name>-probe`), so a server slow to reap it cannot make the capture
+        client's name `<name>-01`, and closed before returning.
         """
         jack = load_jack()
-        client = self._open(jack)
+        client = self._open(jack, f"{self.client_name}-probe")
         try:
-            self._granted = self._read_granted(client)
+            client.activate()
+            try:
+                self._granted = self._settle_and_read(client)
+            finally:
+                client.deactivate()
         finally:
             try:
                 client.close()
@@ -510,8 +556,16 @@ class CaptureEngine:
                 pass
 
     def start(self, stems: Sequence[tuple[Stem, int]], push: Callable[[Any], int]) -> None:
-        """Register, check, activate, link, read the links back. Any failure
-        tears the client down and raises `CaptureError` with every problem."""
+        """Register, activate, check, link, read the links back, open the gate.
+        Any failure tears the client down and raises `CaptureError` with every
+        problem it found at that step.
+
+        One client does it all. The process callback runs from `activate`, so
+        the pump is gated (see `BlockPump`) until the links have settled; that
+        is what lets the first take read the quantum on the client it captures
+        with, instead of opening a second one, and keeps the recorder fed
+        nothing while links are made and read back.
+        """
         if self._client is not None:
             raise CaptureError(["already capturing"])
         # First, before anything can fail: a start refused at the plan or at
@@ -521,29 +575,30 @@ class CaptureEngine:
         self._account = {}
         columns = plan_columns(stems)
         jack = load_jack()
-        if self._granted is None:
-            self.prepare()
-        rate, quantum = self._granted
-        problems = check_granted(self.sample_rate, self.quantum, rate, quantum)
-        if problems:
-            # Read again next time: the answer may have been wrong for a reason
-            # that has since been fixed (the environment, another client).
-            self._granted = None
-        client = self._open(jack)
+        client = self._open(jack, self.client_name)
         self._client = client
         try:
             ports = [client.inports.register(column.port) for column in columns]
             available = [p.name for p in client.get_ports(is_output=True, is_audio=True)]
-            problems += missing_sources(columns, available)
+            problems = missing_sources(columns, available)
             if problems:
                 raise CaptureError(problems)
-            pump = BlockPump(ports, push, quantum)
+            pump = BlockPump(ports, push, self.quantum, gated=True)
             self._pump = pump
             client.set_process_callback(pump)
             client.set_xrun_callback(pump.xrun)
             client.set_blocksize_callback(pump.blocksize)
             client.set_shutdown_callback(self._on_shutdown)
             client.activate()
+            if self._granted is None:
+                self._granted = self._settle_and_read(client)
+            problems = check_granted(self.sample_rate, self.quantum, *self._granted)
+            if problems:
+                # Read again next time: the answer may have been wrong for a
+                # reason that has since been fixed (the environment, another
+                # client).
+                self._granted = None
+                raise CaptureError(problems)
             for column, port in zip(columns, ports):
                 client.connect(column.source, port)
             problems = settle_links(
@@ -552,44 +607,43 @@ class CaptureEngine:
             )
             if problems:
                 raise CaptureError(problems)
+            pump.open_gate()
         except BaseException:
             self._teardown()
             raise
 
-    def stop(self) -> dict[str, Any]:
+    def stop(self) -> dict[str, Any] | None:
         """Stop calling `push`, and return the account of what was seen.
 
-        Safe to call twice: the second returns the same account. Raises
-        nothing for a server that has already gone; that is in the account.
+        None when there is no account to give: nothing was started, or the
+        start failed before the pump existed. That is the protocol's "nothing
+        to add", and keeps an empty `engine: {}` out of take.yaml. Safe to call
+        twice: the second returns the same account. Raises nothing for a server
+        that has already gone; that is in the account.
         """
         self._teardown()
-        return dict(self._account)
+        return dict(self._account) or None
 
-    def _open(self, jack):
+    def _open(self, jack, name: str):
         """A client, or `CaptureError` saying there is no server to join."""
         try:
-            return jack.Client(self.client_name, no_start_server=True)
+            return jack.Client(name, no_start_server=True)
         except jack.JackError as exc:
             raise CaptureError([
                 f"no JACK or PipeWire server to connect to ({exc}); run under pw-jack"
             ]) from exc
 
-    def _read_granted(self, client) -> tuple[int, int]:
+    def _settle_and_read(self, client) -> tuple[int, int]:
         """The rate and block size the graph runs at, read the only way they
-        can be: activate with no process callback, let the block size settle,
-        read, deactivate. `client.blocksize` before activation is the server's
-        default (1024 on the rig), and PIPEWIRE_QUANTUM reaches a node only once
-        it starts. Read early, the spike sized its buffers for 1024 on a run at
-        256, skipped every real block, and recorded 20 s of silence with every
-        counter at zero. The wait is the settling: the block size was seen to go
-        256, 1024, 256 as the client started, and there is no event to wait on
-        before a process callback exists."""
-        client.activate()
-        try:
-            time.sleep(self.settle_s)
-            return client.samplerate, client.blocksize
-        finally:
-            client.deactivate()
+        can be: after the client is active. `client.blocksize` before
+        activation is the server's default (1024 on the rig), and
+        PIPEWIRE_QUANTUM reaches a node only once it starts. Read early, the
+        spike sized its buffers for 1024 on a run at 256, skipped every real
+        block, and recorded 20 s of silence with every counter at zero. The wait
+        is the settling: the block size was seen to go 256, 1024, 256 as the
+        client started, and there is no event to wait on that says it is done."""
+        time.sleep(self.settle_s)
+        return client.samplerate, client.blocksize
 
     def _on_shutdown(self, status, reason) -> None:
         # JACK calls this from its own thread when the server goes away.

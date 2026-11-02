@@ -241,9 +241,12 @@ class TakeSession:
 
 
 def _nothing_captured(error: str) -> dict[str, Any]:
-    """A recorder's summary for a take that never got as far as a recorder."""
+    """A recorder's summary for a take that never got as far as a recorder.
+
+    No `silent_blocks`: `{}` there means watched and found clean, and nothing
+    was watching."""
     return {"frames": 0, "lost_frames": 0, "dropouts": [], "unrecorded_episodes": 0,
-            "error": error, "silent_blocks": {}}
+            "error": error}
 
 
 def _finish(folder: Path, capture: dict[str, Any]):

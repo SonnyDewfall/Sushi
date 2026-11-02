@@ -300,9 +300,10 @@ class Recording:
         """Everything about the capture `take.yaml` carries: not only the gaps
         that fitted in the table but the true total, the episodes that did not
         fit, and any error that ended the writer — so a take whose disk filled
-        is never marked complete and clean. `silent_blocks` is always present, so
-        a take that was watched and found clean (`{}`) differs from one made
-        before the watch existed (no key)."""
+        is never marked complete and clean. `silent_blocks` is present whenever a
+        recorder ran, so a take that was watched and found clean (`{}`) differs
+        from one nobody watched (no key): a take made before the watch existed,
+        or one whose recorder never started."""
         return {
             "frames": self.frames,
             "lost_frames": self.dropped_frames,

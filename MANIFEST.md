@@ -1413,10 +1413,35 @@ kept the block was counted as skipped frames, telling the take they were
 missing from stems that hold them; a raise in the push is now `push_errors`
 and claims no frames. A refused start no longer returns the previous take's
 account from `stop`; the account of an engine that failed to start is now kept
-under `capture.engine`, and a take that never got a recorder carries
-`silent_blocks: {}` like every other. The JACK test module skipped on a missing
+under `capture.engine`. (A take that never got a recorder was first
+given `silent_blocks: {}` as well; a second review pointed out that `{}` means
+watched and found clean, so it now carries no key, and absent reads as "nobody
+watched": a take from before the watch, or one whose recorder never started.) The JACK test module skipped on a missing
 package but errored at collection on a missing libjack (`importorskip` catches
 only `ImportError`); it skips for both, and CI, which has both, still runs it.
 The flow of calls in `CaptureEngine` is now tested against a hand-written
 stand-in for JACK, which proves its own decisions (what it calls, how often,
-what it does when a read is empty) and nothing about JACK itself. *(2026-11-02)*
+what it does when a read is empty) and nothing about JACK itself. A second review found nine
+more, all fixed. The start sequence activated the client, and so ran the
+process callback, before any link existed, pushing zeros into the recorder:
+the take opened with silence, columns linked on different cycles sat a quantum
+apart while the take declares no offset, and a refused start had already fed
+the recorder. The pump is now gated until every link has been read back; the
+gate also hides the block size's start-up transient (256, 1024, 256, plus the
+one callback JACK makes on activation), which had been counted as a change
+mid-take on clean takes, and xruns before the gate are not the take's. One
+client does the whole start, reading the quantum after activation, where the
+first take had opened a throwaway probe of the same name first (so two opens
+and a possible `-01` rename); `prepare()` stays for a listener that wants the
+answer early, on a client named `-probe`. `check_take` now reports blocks that
+ran at another size than the take's quantum, which a client granted a size it
+was not planned for (a stale cached read, no change event) would otherwise show
+as clean. A failed start before the pump existed returned `{}`, which became
+`engine: {}` in take.yaml; `stop()` returns None for no account, as the
+protocol says, and the account counts every callback exception (`errors`),
+keeping the first message. Engine messages name a column as the recorder does
+(`guitar-dry.wav`, `guitar.wav[1]`) and the JACK test now checks the keyword and
+positional names the engine calls with, not only that the names exist. Still
+unverified: all of it against a live PipeWire, and in particular that
+`client.blocksize` read after activation plus a fixed wait is settled, and
+that a cached read stays true between takes. *(2026-11-02)*

@@ -24,6 +24,8 @@ try:
 except (ImportError, OSError) as exc:
     pytest.skip(f"needs the capture extra and libjack ({exc})", allow_module_level=True)
 
+import inspect  # noqa: E402
+
 from sushi_rig import capture  # noqa: E402
 
 
@@ -40,6 +42,44 @@ def test_the_client_attributes_the_engine_uses_exist(name):
 @pytest.mark.parametrize("name", capture.JACK_OWN_PORT_ATTRIBUTES)
 def test_the_port_attributes_the_engine_uses_exist(name):
     assert hasattr(jack.OwnPort, name)
+
+
+def parameters(function):
+    return list(inspect.signature(function).parameters)[1:]  # without self
+
+
+@pytest.mark.parametrize("function, required", [
+    ("Client.__init__", ["name", "no_start_server"]),
+    ("Client.connect", ["source", "destination"]),
+    ("Client.get_all_connections", ["port"]),
+    ("Client.get_ports", ["is_output", "is_audio"]),
+    ("Client.deactivate", []),
+    ("Client.close", []),
+    ("Client.set_process_callback", ["callback"]),
+    ("Client.set_xrun_callback", ["callback"]),
+    ("Client.set_blocksize_callback", ["callback"]),
+    ("Client.set_shutdown_callback", ["callback"]),
+    ("Ports.register", ["shortname"]),
+])
+def test_the_signatures_the_engine_calls_with_are_the_installed_ones(function, required):
+    """Not only that a name exists: that it takes the arguments, by the names,
+    the engine passes. `no_start_server=` in particular is what keeps the engine
+    from launching a jackd of its own."""
+    owner, name = function.split(".")
+    assert set(required) <= set(parameters(getattr(getattr(jack, owner), name)))
+
+
+def test_connect_takes_a_port_name_and_an_own_port():
+    """The engine calls `connect(<str>, <OwnPort>)` and `get_all_connections(
+    <OwnPort>)`. JACK-Client converts a `Port` to its name and passes a string
+    through, so an `OwnPort` must be a `Port`; checked here by class, since
+    constructing one needs a server."""
+    assert issubclass(jack.OwnPort, jack.Port)
+
+
+def test_a_clients_inports_is_a_ports_list_with_register():
+    assert isinstance(jack.Client.inports, property)
+    assert callable(jack.Ports.register)
 
 
 def test_load_jack_returns_the_module_that_imported():

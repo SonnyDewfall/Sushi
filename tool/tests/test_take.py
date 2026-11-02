@@ -792,6 +792,27 @@ def test_what_the_engine_saw_is_a_problem_each(tmp_path):
     assert any("block size changed 1 time(s)" in p and "(256)" in p for p in problems)
 
 
+def test_blocks_that_ran_at_another_size_than_the_take_says_are_reported(tmp_path):
+    """A client granted another block size than planned has no change event to
+    count, and take.yaml says `quantum: 256`: the blocks themselves are the
+    evidence."""
+    seen = dict(CAPTURE, lost_frames=0, dropouts=[], engine={
+        "xruns": 0, "skipped_frames": 0, "quantum_changes": 0, "off_quantum_blocks": 1900,
+        "errors": 0, "error": "",
+    })
+    (problem,) = take.check_take(finished_with(tmp_path, seen))
+    assert "1900 block(s) were not the take's quantum of 256 frames" in problem
+    assert "says quantum: 256" in problem
+
+
+def test_an_engine_that_raised_more_than_once_says_how_often(tmp_path):
+    seen = dict(CAPTURE, lost_frames=0, dropouts=[], engine={
+        "error": "OSError: gone", "errors": 7, "xruns": 0, "skipped_frames": 0, "quantum_changes": 0,
+    })
+    (problem,) = take.check_take(finished_with(tmp_path, seen))
+    assert "capture engine failed: OSError: gone (7 time(s) in all)" in problem
+
+
 @pytest.mark.parametrize("garbage", [
     {"silent_blocks": ["not", "a", "mapping"]},
     {"silent_blocks": {"guitar.wav": "lots", "vocal.wav": {"count": "many"}, "x": {"count": True}}},

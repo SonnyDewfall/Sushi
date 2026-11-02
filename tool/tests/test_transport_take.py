@@ -145,17 +145,19 @@ def test_an_engine_that_failed_to_start_still_has_its_account_in_the_take(tmp_pa
         session.start("riff-idea")
     kept = take.load_take(tmp_path / "riff-idea").metadata["capture"]
     assert kept["engine"] == {"xruns": 0, "error": "", "blocks": 0}
-    assert kept["silent_blocks"] == {}, "present on every take the watch could have seen, or none says so"
+    assert kept["silent_blocks"] == {}, "the recorder ran, so the watch did: watched, nothing seen"
 
 
-def test_a_take_that_never_got_a_recorder_still_carries_the_key(tmp_path):
+def test_a_take_that_never_got_a_recorder_was_never_watched_so_has_no_report(tmp_path):
+    """`silent_blocks: {}` means watched and found clean. A take with no
+    recorder was not watched, and must not say it was."""
     def broken(*_args, **_kwargs):
         raise OSError("read-only file system")
 
     session = TakeSession(plan(tmp_path), FakeEngine(), recorder_factory=broken)
     with pytest.raises(TransportError):
         session.start("riff-idea")
-    assert take.load_take(tmp_path / "riff-idea").metadata["capture"]["silent_blocks"] == {}
+    assert "silent_blocks" not in take.load_take(tmp_path / "riff-idea").metadata["capture"]
 
 
 def test_an_engine_with_nothing_to_add_leaves_no_engine_key(tmp_path):
