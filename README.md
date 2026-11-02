@@ -400,6 +400,7 @@ curl localhost:8029/doctor           # `doctor` as data
 curl -X POST localhost:8029/rig/up -d '{"config_name": "guitar_vocal", "rig": true, "headless": true}'
 curl -X POST localhost:8029/rig/down
 curl -X POST localhost:8029/rig/restart
+curl -X POST localhost:8029/rig/switch -d '{"config_name": "electric-octave-up"}'   # live where it can be (#93)
 curl localhost:8029/live             # the running rig's parameters, bypass and chains, with ranges
 curl -X POST localhost:8029/live/parameter -d '{"processor": "reverb", "parameter": "Mix", "value": 0.4}'
 curl -X POST localhost:8029/live/bypass -d '{"processor": "drive", "bypassed": true}'
@@ -517,10 +518,11 @@ sends it while held) do nothing. A Program Change on the controller switches
 rigs: program *n* is the *n*th file of `config/rigs/*.yaml` sorted by file name,
 counted from 0 (a pedal may display it as *n*+1), and `GET /rig` lists the
 order as `programs` while the running rig switches by them. The switch is
-`down` then `up --rig` with the mode, tuner and amp choices `restart` would
-keep (not an `--amp-model` override, which belonged to the rig being left),
-about five seconds of silence, and the next rig switches on only if its own
-map says `programs: rigs`. The rig switched to is compiled first, and one that
+`POST /rig/switch`'s (below): live where it can be, otherwise `down` then
+`up --rig` with the mode, tuner and amp choices `restart` would keep (not an
+`--amp-model` override, which belonged to the rig being left), about five
+seconds of silence; and the next rig switches on only if its own map says
+`programs: rigs`. The rig switched to is compiled first, and one that
 would not is refused with the running rig left playing; if its `up` fails
 anyway, the rig that was playing is brought back. `/live/undo` stops at a rig
 switch: what came before it was done to the other rig. A Program Change for the rig already playing does
@@ -536,6 +538,31 @@ port, the controller and what ALSA does list, and not retried until the next
 what to read when a pedal seems to do nothing. Channels are counted from 0 there,
 as `aseqdump` prints them. **Not yet heard from a real pedal**: see the list below
 the MIDI map in *Channels and a master*.
+
+**Switching rigs live** (#93). `POST /rig/switch {"config_name"}` (and a
+Program Change, which takes the same path) turns the running rig into another
+rig of `config/rigs/` without restarting Sushi where the live operations can
+do it: the processors that differ are removed, moved and added, the
+parameters and bypasses that differ are set, and the rig is read back and
+checked against the next rig's config, and against every value the switch
+set, before the state file names it. The
+answer says `how`: `live`, or `restart` with `why` -- every reason, by code.
+What restarts: a different amp (it runs in Carla), a track added, removed or
+reordered or of another shape, a channel on another input, a different host
+config or MIDI map (`cc_mappings`, which Sushi loads only with the config), a
+program or property to set, a rig run with its panel (whose SAVE listener
+belongs to the rig being left) or with `--amp-model`, a rig changed by hand
+since it came up in a way the plan cannot follow, a step that fails, and a
+read-back that is not the next rig. A switch that fails part-way restarts into
+the next rig, and brings the previous rig back if that restart fails; if the
+restart cannot even take the rig down, `/health` and the answer say the rig is
+**half-switched**, naming both rigs, and nothing more is tried: read `/live`
+and bring it down and up by hand. Of the committed rigs, 26 of the 110 ordered pairs are
+live (most others differ in the amp's settings). One `op: "rig"` entry goes in
+`/live/log` either way, and undo stops at it. A rig that would not compile is
+refused (`409 rig_problem`) with the running one left playing. **Not run
+against a live Sushi and not heard**: shown against the fake only, and how long
+a live switch takes is not measured.
 
 **Two modes, for two ways of using the rig.** The default gives you the Open
 Stage Control panel and the save listener behind it, which is what you want when

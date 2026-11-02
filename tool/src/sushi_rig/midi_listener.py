@@ -714,51 +714,15 @@ class Listener:
 # Everything the agent's wiring touches, injectable
 # --------------------------------------------------------------------------- #
 
-def rig_problem(name: str, root: Path, machine: str | None) -> str | None:
-    """Why rig `name` of config/rigs/ would not come up, as far as can be told
-    without taking the running rig down: it must load, its machine file must
-    validate, its MIDI map must name the machine's controller, and it must
-    compile to a config. None if all of that holds. What it cannot tell is
-    what only `up` finds: the live graph wiring it, Sushi loading it. Checked
-    before a switch's `down`, because a rig switched to that cannot compile
-    leaves the player with no rig and no pedals."""
-    from .machine import MachineError, MachineSpec, machine_path, rig_controller
-    from .rigfile import RigFileError, compile_rig, emit_compiled, load_rig
-
-    path = Path(root) / "config" / "rigs" / f"{name}.yaml"
-    machine_file = Path(machine) if machine else machine_path(Path(root))
-    try:
-        rig = load_rig(path)
-        spec = MachineSpec.load(machine_file)
-        problems = spec.validate()
-        if problems:
-            return f"{machine_file.name}: " + "; ".join(problems)
-        compiled, fixed = compile_rig(rig, rig_controller(rig, spec))
-        emit_compiled(rig, compiled, fixed)
-    except RigFileError as exc:
-        return f"{path.name}: " + "; ".join(exc.problems)
-    except MachineError as exc:
-        return f"{path.name}: {exc}"
-    except Exception as exc:  # noqa: BLE001 -- a YAML or file error: said, and the switch refused
-        return f"{path.name}: {type(exc).__name__}: {exc}"
-    return None
-
-
-def _read_state():
-    from .state import read_state
-
-    return read_state()
-
-
 @dataclass(frozen=True)
 class World:
     """What the agent's MIDI wiring reaches outside itself, so its tests can
-    stand each in: opening a port, what the running rig asks for, the state
-    file (for the options a switch brings a rig up with), the program order,
-    and whether a rig to switch to compiles."""
+    stand each in: opening a port, what the running rig asks for, and the
+    program order. A rig switch, whatever started it, reaches the state file
+    and compiles the next rig through `agent.Switching`, the one seam for
+    both (#93): this used to carry a second `read_state` and a `check_rig`
+    of its own, which a switch no longer used."""
 
     open_port: Callable[[str], Port] = AlsaPort
     plan: Callable[[dict[str, Any], Path], "Plan | Off"] = plan_for
-    read_state: Callable[[], "dict[str, Any] | None"] = _read_state
     rigs: Callable[[Path], list[str]] = program_order
-    check_rig: Callable[[str, Path, "str | None"], "str | None"] = rig_problem
