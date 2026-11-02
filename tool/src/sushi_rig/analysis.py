@@ -109,6 +109,45 @@ def rms_dbfs(signal) -> float:
     return _power_to_dbfs(float(np.mean(_frames(signal) ** 2)))
 
 
+@dataclass(frozen=True)
+class ChannelBalance:
+    """Left against right in a stereo signal.
+
+    `correlation` is Pearson's at zero lag: 1.0 for two identical channels,
+    -1.0 for one the other's inverse, near 0 for unrelated ones. None when
+    either channel is constant (digital silence, usually), where it is
+    undefined: a silent right channel is the case this exists to report, and
+    a number in its place would read as a measurement.
+    """
+
+    left_dbfs: float
+    right_dbfs: float
+    correlation: float | None
+
+
+def channel_balance(signal) -> ChannelBalance:
+    """Each channel's RMS and the correlation between them, for a stereo signal.
+
+    Written for the mono-to-stereo question (a guitar on one input reaching
+    both monitors): `rms_dbfs` measures every channel together, so a render
+    with its right channel silent comes out only 3 dB down and passes as a
+    sound. Refuses anything but two channels rather than picking two.
+    """
+    np = require_numpy()
+    arr = _frames(signal)
+    if arr.shape[1] != 2:
+        raise ValueError(f"channel_balance needs a stereo signal, got {arr.shape[1]} channels")
+    left, right = arr[:, 0], arr[:, 1]
+    correlation = None
+    if np.std(left) > 0.0 and np.std(right) > 0.0:
+        correlation = float(np.corrcoef(left, right)[0, 1])
+    return ChannelBalance(
+        left_dbfs=_power_to_dbfs(float(np.mean(left ** 2))),
+        right_dbfs=_power_to_dbfs(float(np.mean(right ** 2))),
+        correlation=correlation,
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Safety checks
 # --------------------------------------------------------------------------- #

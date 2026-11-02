@@ -28,3 +28,15 @@ def runtime(tmp_path, monkeypatch):
     """
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
     return tmp_path / "run" / "sushi-rig"
+
+
+def pytest_terminal_summary(terminalreporter):
+    """Print the stereo renders' table (test_stereo.py), when any ran: the
+    CI container's log is the only place those numbers can be read."""
+    import stereo_table
+
+    found = terminalreporter.config.stash.get(stereo_table.ROWS, [])
+    if found:
+        terminalreporter.section(stereo_table.TITLE)
+        for line in stereo_table.lines(found):
+            terminalreporter.write_line(line)
