@@ -649,61 +649,21 @@ class LivePort:
     # which differs from the alias for an ALSA device. None when the dump
     # lacks either half.
     name: str | None = None
-    # The name a JACK client sees the port under through `pw-jack`
-    # (`jack_client_name`), which is what the recorder links from. None when
-    # the dump lacks the port's name, or when more than one node would carry
-    # the same JACK name, so which one it means cannot be told from here.
-    jack: str | None = None
-
-
-def jack_client_name(props: dict) -> str | None:
-    """The client name PipeWire's JACK layer gives a node, as a JACK client
-    (the recorder, `capture.CaptureEngine`) sees it.
-
-    A JACK port is `<client>:<port.name>`, and the client is the node's
-    description, else its nick, else its `node.name`, prefixed with
-    `<application.name>/` when it has one that differs. The order is
-    pipewire-jack's (`registry_event_global` in pipewire-jack.c, as read, not
-    run here), and the part that matters on the rig is observed: on
-    2026-11-02 the recorder's own refusal listed the iD14's capture ports as
-    `Audient iD14 Multichannel:capture_AUX0`, its `node.description` and
-    `port.name`, while the machine file and this module's alias say
-    `Audient iD14:capture_AUX0`; and Sushi's are `sushi:audio_output_0`, where
-    the two coincide. A name this gets wrong is not linked silently: the
-    engine looks for it among the ports JACK lists and refuses the take,
-    naming both spellings (`capture.missing_sources`).
-    """
-    base = _display_name(props)
-    if base is None:
-        return None
-    app = props.get("application.name")
-    return f"{app}/{base}" if app and app != base else base
 
 
 def live_port_nodes(dump: str) -> dict[str, list[LivePort]]:
-    """Port alias -> the ports that carry it, with their node, direction,
-    `pw-link` name and JACK name.
+    """Port alias -> the ports that carry it, with their node, direction and
+    `pw-link` name.
 
     A list because nothing makes an alias unique: `Audient iD14:capture_AUX0` is
     the same under every ALSA profile of the device, so two profiles live at once
     would both answer to it. The one reader of ports in the dump: everything
-    that needs a port's node, its `pw-link` name or its JACK name derives from
-    this. The patchbay wires through it, and the recorder links through it
-    (`jack_port_names`), because the machine file names a port once, by its
-    alias, and two readers that resolved it differently is how recording broke
-    on the rig while the patchbay wired the same port fine (2026-11-02).
+    that needs a port's node or its `pw-link` name derives from this. The
+    recorder does not read the dump: it finds a take's ports among the ports
+    its own JACK client lists, by name or alias (`capture.match_sources`).
     """
     objects = _objects(dump)
     nodes = {o.get("id"): _props(o) for o in objects if o.get("type") == _NODE}
-    # How many nodes each JACK client name would belong to. More than one, and
-    # pipewire-jack renames some of them in a way this cannot predict, so the
-    # name is left unknown rather than guessed (the webcams in the rig's dump
-    # share one description, so this is not hypothetical).
-    clients: dict[str, int] = {}
-    for props in nodes.values():
-        client = jack_client_name(props)
-        if client:
-            clients[client] = clients.get(client, 0) + 1
     found: dict[str, list[LivePort]] = {}
     for obj in objects:
         if obj.get("type") != _PORT:
@@ -714,9 +674,7 @@ def live_port_nodes(dump: str) -> dict[str, list[LivePort]]:
         if alias and owner:
             node_name, port_name = node.get("node.name"), props.get("port.name")
             name = f"{node_name}:{port_name}" if node_name and port_name else None
-            client = jack_client_name(node)
-            jack = f"{client}:{port_name}" if client and port_name and clients.get(client) == 1 else None
-            port = LivePort(owner, props.get("port.direction"), name, jack)
+            port = LivePort(owner, props.get("port.direction"), name)
             if port not in found.setdefault(alias, []):
                 found[alias].append(port)
     return found
@@ -727,10 +685,8 @@ def resolve_port(port: str, direction: str, port_nodes: Mapping[str, list[LivePo
 
     `port` is written as the machine file writes it, which is the port's
     alias; `direction` is "out" for a port read from (a capture, or Sushi's
-    output) and "in" for one written to. Shared by the patchbay
-    (`resolve_nodes`) and the recorder (`jack_port_names`), so the two cannot
-    disagree about which port a name means. Returns a string, the reason,
-    so the caller can gather every reason and say whose port it was.
+    output) and "in" for one written to. One port's half of `resolve_nodes`,
+    so each refusal is one sentence the caller can say whose port it was.
 
     Without the direction check, a playback port named as a source resolves
     cleanly and the link asked for can never be made, which looks exactly
@@ -757,34 +713,6 @@ def resolve_port(port: str, direction: str, port_nodes: Mapping[str, list[LivePo
             "which one is meant"
         )
     return right[0]
-
-
-def jack_port_names(
-    ports: Collection[str], port_nodes: Mapping[str, list[LivePort]], direction: str = "out",
-) -> tuple[dict[str, str], dict[str, str]]:
-    """`({machine-file port: JACK name}, {machine-file port: why not})`.
-
-    How the recorder turns the ports a take names, which are the machine
-    file's (and Sushi's, whose alias and JACK name coincide), into the ports
-    a JACK client links from: through `resolve_port`, the patchbay's own
-    reading, and then the port's JACK name. Every port is answered one way or
-    the other, so a caller can say which column each problem is for.
-    """
-    names: dict[str, str] = {}
-    problems: dict[str, str] = {}
-    for port in ports:
-        resolved = resolve_port(port, direction, port_nodes)
-        if isinstance(resolved, str):
-            problems[port] = resolved
-        elif resolved.jack is None:
-            problems[port] = (
-                f"{port!r} is on {resolved.node!r}, and the name a JACK client sees it under "
-                "cannot be told: the dump gives the port no name, or more than one node "
-                "would carry that client name and PipeWire's JACK layer renames all but one"
-            )
-        else:
-            names[port] = resolved.jack
-    return names, problems
 
 
 def live_port_names(dump: str) -> dict[str, list[str]]:

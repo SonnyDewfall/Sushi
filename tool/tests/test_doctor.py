@@ -659,58 +659,59 @@ def planned_columns():
     return plan_columns(planned_stems())
 
 
-def without_alias(alias: str) -> str:
-    """The capture with one port's `port.alias` renamed: a machine file whose
-    port is not the graph's. The one field changed is that alias."""
-    objects = json.loads(CAPTURED)
-    for o in objects:
-        props = o.get("info", {}).get("props", {})
-        if o.get("type") == "PipeWire:Interface:Port" and props.get("port.alias") == alias:
-            props["port.alias"] = alias + "-renamed"
-    return json.dumps(objects)
+def jack_listing(drop=(), extra=None):
+    """What a JACK client lists on the rig (`jack_fake.JACK_PORTS`: the names
+    observed, the aliases a guess), as `capture.jack_ports` reads it, with
+    some ports dropped or added: the one thing each test changes."""
+    from sushi_rig.capture import JackPort
+    from jack_fake import JACK_PORTS
+
+    ports = {name: aliases for name, aliases in JACK_PORTS.items() if name not in drop}
+    ports.update(extra or {})
+    return [JackPort(name, tuple(aliases)) for name, aliases in ports.items()]
 
 
-def test_the_recorders_ports_resolve_in_the_captured_graph_and_say_their_jack_names():
-    from sushi_rig.patchbay import live_port_nodes
-
-    check = doctor.record_ports_check(planned_columns(), live_port_nodes(CAPTURED))
+def test_the_recorders_ports_are_found_among_jacks_and_say_which_by_alias():
+    check = doctor.record_ports_check(planned_columns(), jack_listing())
     assert check.state == OK, check.message
     assert "8 column(s)" in check.message
     assert "Audient iD14:capture_AUX0 is Audient iD14 Multichannel:capture_AUX0" in check.message
 
 
-def test_a_dry_tap_whose_port_is_not_in_the_graph_is_a_fault_naming_it():
-    from sushi_rig.patchbay import live_port_nodes
-
-    check = doctor.record_ports_check(planned_columns(), live_port_nodes(without_alias("Audient iD14:capture_AUX0")))
+def test_a_dry_tap_jack_has_no_port_for_is_a_fault_naming_it_and_every_port():
+    check = doctor.record_ports_check(planned_columns(), jack_listing(drop={"Audient iD14 Multichannel:capture_AUX0"}))
     assert check.state == FAULT
-    assert "guitar-dry.wav cannot be captured from 'Audient iD14:capture_AUX0'" in check.message
-    assert "port.alias" in check.remedy
+    assert "no JACK port is called or aliased 'Audient iD14:capture_AUX0' (for guitar-dry.wav)" in check.message
+    assert "Audient iD14 Multichannel:capture_AUX1 (aliases:" in check.message
+    assert "jack_lsp -A" in check.remedy
 
 
-@pytest.mark.parametrize("dump", ["captured", "alias gone", "sushi gone"])
-def test_doctor_fails_exactly_when_the_engine_would_refuse_the_take(dump, monkeypatch):
-    """The same plan through the capture engine (JACK stood in by `jack_fake`,
-    listing the rig's own port names) and through doctor, on one graph."""
+@pytest.mark.parametrize("graph", ["the rig's", "guitar gone", "sushi gone", "two profiles"])
+def test_doctor_fails_exactly_when_the_engine_would_refuse_the_take(graph, monkeypatch):
+    """One plan through the capture engine (JACK stood in by `jack_fake`) and
+    through doctor, on one JACK listing, read the same way (`jack_ports`)."""
     pytest.importorskip("numpy")
     from sushi_rig import capture
-    from sushi_rig.patchbay import live_port_nodes
-    from jack_fake import FakeJack
+    from jack_fake import JACK_PORTS, FakeJack
 
-    graph = {"captured": CAPTURED, "alias gone": without_alias("Audient iD14:capture_AUX1"),
-             "sushi gone": without_alias("sushi:audio_output_0")}[dump]
-    FakeJack().install(monkeypatch)
-    stems = planned_stems()
-    columns = planned_columns()
-    engine = capture.CaptureEngine(48000, 256, settle_s=0.0, link_retry_s=0.0, read_dump=lambda: graph)
+    ports = dict(JACK_PORTS)
+    if graph == "guitar gone":
+        del ports["Audient iD14 Multichannel:capture_AUX0"]
+    elif graph == "sushi gone":
+        del ports["sushi:audio_output_0"]
+    elif graph == "two profiles":
+        ports["Audient iD14 Pro:capture_AUX1"] = ("alsa:acp:iD14:1:capture:capture_1", "Audient iD14:capture_AUX1")
+    jack = FakeJack(ports=ports)
+    jack.install(monkeypatch)
+    engine = capture.CaptureEngine(48000, 256, settle_s=0.0, link_retry_s=0.0)
     try:
-        engine.start(stems, lambda block: len(block))
+        engine.start(planned_stems(), lambda block: len(block))
         refused = False
         engine.stop()
     except capture.CaptureError:
         refused = True
-    assert (doctor.record_ports_check(columns, live_port_nodes(graph)).state == FAULT) is refused
-    assert refused is (dump != "captured")
+    assert (doctor.record_ports_check(planned_columns(), jack.listed()).state == FAULT) is refused
+    assert refused is (graph != "the rig's")
 
 
 def running_rig(tmp_path, **state):
@@ -722,56 +723,105 @@ def running_rig(tmp_path, **state):
     config = tmp_path / "guitar_vocal.json"
     config.write_text(json.dumps(emit_compiled(rig, *compile_rig(rig))))
     recorded = {"config_name": "guitar_vocal", "config": str(config), "rig": str(GUITAR_VOCAL),
-                "machine": str(THIS_MACHINE), **state}
+                "machine": str(THIS_MACHINE), "pgid": 8301, "started_at": "2026-11-02T20:30:00+00:00", **state}
     return recorded, {"running": True, "children": {}}
 
 
 def test_the_record_check_plans_the_running_rig_from_its_state_file(tmp_path):
-    from sushi_rig.patchbay import live_port_nodes
-
     state, described = running_rig(tmp_path)
-    check = doctor.record_check(ROOT, live_port_nodes(CAPTURED), described, state)
+    check = doctor.record_check(ROOT, described, state, list_ports=jack_listing)
     assert check.state == OK and "Audient iD14 Multichannel:capture_AUX0" in check.message
 
 
-@pytest.mark.parametrize("case, state_change, said", [
-    ("down", None, "no rig is running"),
-    ("v1", {"rig": None}, "is a v1 config"),
-    ("no graph", {}, "the live graph could not be read"),
+@pytest.mark.parametrize("case, said", [
+    ("down", "no rig is running"),
+    ("v1", "is a v1 config"),
 ])
-def test_the_record_check_is_unchecked_where_there_is_nothing_to_ask(tmp_path, case, state_change, said):
-    from sushi_rig.patchbay import live_port_nodes
-
+def test_the_record_check_is_unchecked_where_there_is_nothing_to_ask(tmp_path, case, said):
     state, described = running_rig(tmp_path)
     if case == "down":
         described = {"running": False}
     else:
-        state.update(state_change)
-    port_nodes = None if case == "no graph" else live_port_nodes(CAPTURED)
-    check = doctor.record_check(ROOT, port_nodes, described, state)
+        state["rig"] = None
+
+    def never():
+        raise AssertionError("JACK is not asked when there is no take to plan")
+
+    check = doctor.record_check(ROOT, described, state, list_ports=never)
     assert check.state == UNCHECKED and said in check.message
 
 
-def test_a_run_the_recorder_cannot_plan_is_a_fault_in_its_words(tmp_path):
-    from sushi_rig.patchbay import live_port_nodes
+def test_where_no_jack_client_can_be_opened_the_record_check_needs_jack_not_green(tmp_path):
+    from sushi_rig.capture import JackUnreachable
 
+    def unreachable():
+        raise JackUnreachable(["pw-jack is not installed, so no JACK client can be opened here"])
+
+    state, described = running_rig(tmp_path)
+    check = doctor.record_check(ROOT, described, state, list_ports=unreachable)
+    assert check.state == UNCHECKED
+    assert check.message.startswith("needs JACK:") and "pw-jack is not installed" in check.message
+
+
+def test_the_jack_listing_runs_under_pw_jack_and_says_why_when_it_cannot(monkeypatch):
+    """The listing runs in a child under `pw-jack` (doctor is not under it),
+    and every way that fails is `JackUnreachable`, not a traceback."""
+    import shutil
+    import subprocess
+    from types import SimpleNamespace
+
+    from sushi_rig import capture
+
+    monkeypatch.setattr(shutil, "which", lambda name: None)
+    with pytest.raises(capture.JackUnreachable, match="pw-jack is not installed"):
+        capture.list_jack_ports()
+    monkeypatch.setattr(shutil, "which", lambda name: "/usr/bin/pw-jack")
+    ran = []
+    answers = iter([
+        SimpleNamespace(returncode=1, stdout="", stderr="no JACK or PipeWire server to connect to"),
+        SimpleNamespace(returncode=0, stdout='[{"name": "a:b", "aliases": ["c:d"]}]', stderr=""),
+    ])
+    monkeypatch.setattr(subprocess, "run", lambda command, **k: ran.append(command) or next(answers))
+    with pytest.raises(capture.JackUnreachable, match="no JACK or PipeWire server"):
+        capture.list_jack_ports()
+    assert capture.list_jack_ports() == [capture.JackPort("a:b", ("c:d",))]
+    assert ran[0][0] == "/usr/bin/pw-jack" and ran[0][-2:] == ["-m", "sushi_rig.capture"]
+
+
+def test_a_run_the_recorder_cannot_plan_is_a_fault_in_its_words(tmp_path):
     state, described = running_rig(tmp_path, config=str(tmp_path / "gone.json"))
-    check = doctor.record_check(ROOT, live_port_nodes(CAPTURED), described, state)
+    check = doctor.record_check(ROOT, described, state, list_ports=jack_listing)
     assert check.state == FAULT and "gone.json, could not be read" in check.message
 
 
+def test_an_unexpected_error_planning_the_take_is_that_checks_fault_not_doctors_end(tmp_path, monkeypatch):
+    """The recorder catches anything planning a take (`record_session`); doctor
+    stopped at it with a traceback, every check after it lost."""
+    from sushi_rig import transport
+
+    def broken(*a, **k):
+        raise KeyError("tracks")
+
+    monkeypatch.setattr(transport, "plan_for_run", broken)
+    state, described = running_rig(tmp_path)
+    check = doctor.record_check(ROOT, described, state, list_ports=jack_listing)
+    assert check.state == FAULT and "failed unexpectedly: KeyError: 'tracks'" in check.message
+
+
 def test_run_reports_the_recorders_ports(tmp_path, monkeypatch):
-    """The whole examination, with the graph and the rig stood in: the check
-    is there, between the patchbay and the machine around it."""
+    """The whole examination, with the graph, the rig and JACK stood in: the
+    check is there, between the patchbay and the machine around it."""
     from sushi_rig import patchbay, rig as rig_module, state as state_module
 
     state, described = running_rig(tmp_path)
-    monkeypatch.setattr(patchbay, "read_pw_dump", lambda *a, **k: without_alias("Audient iD14:capture_AUX0"))
+    monkeypatch.setattr(patchbay, "read_pw_dump", lambda *a, **k: CAPTURED)
     monkeypatch.setattr(state_module, "read_state", lambda: state)
     monkeypatch.setattr(rig_module, "describe_rig", lambda recorded=None: described)
-    checks = doctor.run(ROOT, machine_file=THIS_MACHINE)
+    checks = doctor.run(ROOT, machine_file=THIS_MACHINE,
+                        list_ports=lambda: jack_listing(drop={"Audient iD14 Multichannel:capture_AUX0"}))
     record = next(c for c in checks if c.name == "record-ports")
     assert record.state == FAULT and "guitar-dry.wav" in record.message
+    assert [c.name for c in checks].index("record-ports") > [c.name for c in checks].index("machine-file")
 
 
 # --------------------------------------------------------------------------- #
@@ -779,6 +829,17 @@ def test_run_reports_the_recorders_ports(tmp_path, monkeypatch):
 # --------------------------------------------------------------------------- #
 
 FMIT_LINKS = {"PipeWire ALSA [fmit]/ALSA Capture [fmit]": ["a"]}
+# The state file of the run that is up: which run a crash record must name.
+RUN = {"pgid": 8301, "started_at": "2026-11-02T20:30:00+00:00"}
+
+
+def fmit_crash(**run):
+    """The supervisor's record of the tuner killed on the rig, of the run `run`
+    (the running one by default)."""
+    from sushi_rig.supervisor import exit_record
+
+    return exit_record("fmit", 8302, -15, at="2026-11-02T21:08:22+00:00", phase="running",
+                       config_name="electric-chorus-2", log=None, **{**RUN, **run})
 
 
 def test_an_absent_tuner_with_the_rig_down_is_the_rig_being_down():
@@ -790,11 +851,9 @@ def test_an_absent_tuner_with_the_rig_down_is_the_rig_being_down():
 def test_a_tuner_the_agent_saw_killed_is_said_as_a_crash_not_a_rig_that_is_down():
     """What doctor said on the rig after `kill` of fmit: "while the rig is down
     -> run `sushi-rig up`", of a rig that was up."""
-    crashed = [{"name": "fmit", "pid": 8302, "returncode": -15, "signal": "SIGTERM",
-                "at": "2026-11-02T21:08:22+00:00", "phase": "running"}]
     checks = doctor.patchbay_checks({}, FMIT_LINKS, file_name="rig.qpwgraph", links=20,
                                     rig={"running": True, "children": {"fmit": {"pid": 8302, "alive": False}}},
-                                    crashed=crashed)
+                                    crashed=[fmit_crash()], state=RUN)
     check = checks[0]
     assert check.state == UNCHECKED
     assert "the rig is up" in check.message and "rig is down" not in check.message
@@ -814,3 +873,32 @@ def test_a_rig_started_without_the_tuner_is_said_so_with_nothing_to_fix():
                                     rig={"running": True, "children": {"sushi": {"pid": 9, "alive": True}}})
     assert "the rig was started without the tuner (fmit)" in checks[0].message
     assert "restart" not in checks[0].remedy
+
+
+def test_a_crash_of_an_earlier_run_is_not_told_as_the_running_rigs():
+    """The agent keeps crash records after their rig is gone. A tuner that died
+    in an earlier run said nothing about this one, whose tuner is alive here
+    by its pid, and must not be blamed on it."""
+    earlier = fmit_crash(pgid=7001, started_at="2026-11-02T19:00:00+00:00")
+    checks = doctor.patchbay_checks({}, FMIT_LINKS, file_name="rig.qpwgraph", links=20,
+                                    rig={"running": True, "children": {"fmit": {"pid": 9302, "alive": True}}},
+                                    crashed=[earlier], state=RUN)
+    assert "the agent saw it" not in checks[0].message
+    assert "the tuner (fmit) (pid 9302) is running but has no node in the graph" in checks[0].message
+    same_group_new_start = fmit_crash(started_at="2026-11-02T22:00:00+00:00")
+    assert "the agent saw it" not in doctor.patchbay_checks(
+        {}, FMIT_LINKS, file_name="p", links=1, rig={"running": True, "children": {}},
+        crashed=[same_group_new_start], state=RUN)[0].message
+
+
+def test_doctor_says_a_child_in_the_supervisors_own_words():
+    """One copy of what a child is and how it ended: `supervisor.CHILD_ROLES`
+    and `how_it_ended`, which the crash line and the web UI use too."""
+    from sushi_rig.supervisor import child_label, crash_message, how_it_ended
+
+    record = fmit_crash()
+    message = doctor.patchbay_checks({}, FMIT_LINKS, file_name="p", links=1,
+                                     rig={"running": True, "children": {}}, crashed=[record], state=RUN)[0].message
+    assert f"{child_label('fmit')} {how_it_ended(record)}" in message
+    assert how_it_ended(record) in crash_message(record)
+    assert record["label"] == child_label("fmit") and record["means"] == "sound is unaffected; there is no tuner"

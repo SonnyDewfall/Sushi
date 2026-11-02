@@ -1006,32 +1006,48 @@ def test_the_stage_shows_the_agents_last_error(stage, served):
 # so, and a text search of either screen found nothing: the page drew
 # `agent.last_error` and not `agent.supervisor.crashed`.
 
-FMIT_CRASH = {"name": "fmit", "pid": 8302, "returncode": -15, "signal": "SIGTERM",
-              "at": "2026-11-02T21:08:22+00:00", "phase": "running", "config_name": "electric-chorus-2",
-              "log": "/run/user/1000/sushi-rig/logs/fmit.log"}
+def fmit_crash(started_at="2026-11-02T20:30:00+00:00", pgid=8301):
+    """The supervisor's own record of the tuner killed on the rig."""
+    from sushi_rig.supervisor import exit_record
+
+    return exit_record("fmit", 8302, -15, at="2026-11-02T21:08:22+00:00", phase="running",
+                       config_name="electric-chorus-2", log=Path("/run/user/1000/sushi-rig/logs/fmit.log"),
+                       pgid=pgid, started_at=started_at)
+
+
+RUNNING = {"running": True, "pgid": 8301, "started_at": "2026-11-02T20:30:00+00:00"}
 
 
 def test_a_crashed_child_is_named_with_what_it_means_and_what_to_do(blank):
-    up, down = rigjs(blank, "return [R.crashProblem(arg, true), R.crashProblem(arg, false)];", FMIT_CRASH)
+    up, earlier = rigjs(blank, "return [R.crashProblem(arg.c, arg.rig), R.crashProblem(arg.c, {...arg.rig, started_at: 'x'})];",
+                        {"c": fmit_crash(), "rig": RUNNING})
     assert up["title"] == "The tuner (fmit) exited"
     assert up["reason"] == ("The tuner (fmit) was killed by SIGTERM in electric-chorus-2; sound is unaffected; "
                             "there is no tuner. Restart the rig to bring it back: nothing restarts it on its own. "
                             "Its log is /run/user/1000/sushi-rig/logs/fmit.log.")
-    assert up["at"] == FMIT_CRASH["at"]
-    assert "That rig has since stopped." in down["reason"] and "Restart" not in down["reason"]
-    amp = rigjs(blank, "return R.crashProblem(arg, true);", {**FMIT_CRASH, "name": "amp", "signal": None, "returncode": 1})
-    assert amp["title"] == "The amp (Carla) exited" and "exited with status 1" in amp["reason"]
-    assert "the guitar through the amp is silent" in amp["reason"]
+    assert up["at"] == "2026-11-02T21:08:22+00:00" and "kind" not in up
+    assert earlier["kind"] == "page" and earlier["title"] == "The tuner (fmit) exited in an earlier run"
+    assert "Restart" not in earlier["reason"] and "no longer the one up" in earlier["reason"]
 
 
-def test_crashes_and_the_supervisors_problems_come_before_the_last_error(blank):
-    health = {"ok": True, "body": {"rig": {"running": True}, "agent": {
+def test_what_a_child_is_comes_from_the_agent_not_a_copy_in_the_page(blank):
+    """The labels are the supervisor's (`CHILD_ROLES`), carried in each crash
+    record; a name the page has never heard of is said as the agent says it."""
+    record = {**fmit_crash(), "name": "newchild", "label": "the new child", "means": "it means this"}
+    got = rigjs(blank, "return R.crashProblem(arg.c, arg.rig);", {"c": record, "rig": RUNNING})
+    assert got["title"] == "The new child exited" and "; it means this." in got["reason"]
+    source = (UI_DIR / "rig.js").read_text()
+    assert "sound is unaffected" not in source and "the tuner (fmit)" not in source.lower()
+
+
+def test_crashes_and_the_supervisors_problems_come_before_the_last_error_and_earlier_runs_last(blank):
+    health = {"ok": True, "body": {"rig": RUNNING, "agent": {
         "last_error": {"message": "record failed", "command": ["POST", "/record/start"], "at": "t"},
-        "supervisor": {"crashed": [FMIT_CRASH], "problems": [
+        "supervisor": {"crashed": [fmit_crash(pgid=7001), fmit_crash()], "problems": [
             {"kind": "holder_lost", "at": "t2", "message": "the group holder of x (pid 9) exited"}]}}}}
     got = rigjs(blank, "return R.agentProblems(arg);", health)
     assert [g["title"] for g in got] == ["The tuner (fmit) exited", "The rig's supervisor",
-                                         "Last error (POST /record/start)"]
+                                         "Last error (POST /record/start)", "The tuner (fmit) exited in an earlier run"]
     assert got[1]["reason"] == "the group holder of x (pid 9) exited"
 
 
@@ -1042,13 +1058,16 @@ def test_a_crashed_child_is_on_both_screens_as_loudly_as_the_last_error(browser,
     p = page.page
     p.wait_for_selector(".card" if screen == "stage" else ".unit")
     expect(p.locator(".problem")).to_have_count(0)
-    served.agent.supervisor.crashed.append(dict(FMIT_CRASH))
+    up = served.state["describe"]()
+    served.agent.supervisor.crashed.append(fmit_crash(pgid=up["pgid"], started_at=up["started_at"]))
+    served.agent.supervisor.crashed.append(fmit_crash(pgid=999, started_at=up["started_at"]))
     served.agent.supervisor.problems.append({"kind": "stuck", "at": "2026-11-02T21:09:00+00:00",
                                              "message": "the rig's group would not stop: pids 1, 2 are left"})
     crash = p.locator(".problem.agent", has_text="The tuner (fmit) exited")
     expect(crash).to_contain_text("sound is unaffected")
     expect(crash).to_contain_text("Restart the rig to bring it back")
     expect(p.locator(".problem.agent", has_text="The rig's supervisor")).to_contain_text("would not stop")
+    expect(p.locator(".problem.page", has_text="in an earlier run")).to_have_count(1)
     # The same element, and so the same weight, the last error is given.
     assert crash.evaluate("(e) => getComputedStyle(e).backgroundColor") == \
         p.evaluate("() => { const e = document.createElement('div'); e.className = 'problem agent'; "

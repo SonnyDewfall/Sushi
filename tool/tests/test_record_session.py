@@ -487,18 +487,18 @@ def record(session, name):
 
 def test_a_take_of_the_planned_stems_checks_clean(tmp_path, monkeypatch):
     """Real folder, real recorder, real stems, and the real capture engine,
-    over guitar_vocal on this machine's file, a real pw-dump of the rig, and
-    the ports JACK listed on the rig: only JACK itself stands in
-    (`jack_fake.py`). The machine file's `Audient iD14:capture_AUX0` is not a
-    JACK name, `Audient iD14 Multichannel:capture_AUX0` is, and the take must
-    link the second for the first. The stand-in this replaced pushed blocks
+    over guitar_vocal on this machine's file and the ports JACK listed on the
+    rig: only JACK itself stands in (`jack_fake.py`, whose aliases are a
+    guess). The machine file's `Audient iD14:capture_AUX0` is not a JACK name,
+    `Audient iD14 Multichannel:capture_AUX0` is and carries it as an alias, and
+    the take must link the second for the first. The stand-in this replaced pushed blocks
     without asking which ports, and so passed while the rig could not record
     at all (2026-11-02)."""
     np = pytest.importorskip("numpy")
     import yaml
 
     from sushi_rig.take import check_take, load_take, wav_info
-    from jack_fake import ALIAS, JACK_NAME, JACK_PORTS, RIG_DUMP, FakeJack
+    from jack_fake import ALIAS, JACK_NAME, JACK_PORTS, FakeJack
 
     assert ALIAS not in JACK_PORTS, "the two spellings differ, as they did on the rig"
     levels = {port: (i + 1) / 40 for i, port in enumerate(JACK_PORTS)}
@@ -509,7 +509,7 @@ def test_a_take_of_the_planned_stems_checks_clean(tmp_path, monkeypatch):
     session = record_session(
         GUITAR_VOCAL, config_path, machine_file=THIS_MACHINE, takes_dir=tmp_path / "takes", root=tmp_path,
         engine=lambda rate, quantum: capture.CaptureEngine(
-            rate, quantum, settle_s=0.0, link_retry_s=0.0, read_dump=lambda: RIG_DUMP))
+            rate, quantum, settle_s=0.0, link_retry_s=0.0))
     assert session.start("first-idea") == "recording first-idea"
     for _ in range(40):
         jack.clients[-1].process(256)

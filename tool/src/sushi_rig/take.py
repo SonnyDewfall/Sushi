@@ -530,7 +530,29 @@ def capture_failure(capture: Any) -> str | None:
     callback that carried on, a block lost and counted, and the take around it
     is still a take. `check_take` reports both on their own."""
     if isinstance(capture, dict) and isinstance(capture.get("error"), str) and capture["error"]:
+        if capture["error"].startswith(OLD_STOP_ERROR):
+            return None  # an old take's stop failure: see `stop_failure`
         return capture["error"]
+    return None
+
+
+# What `transport.TakeSession.stop` wrote into `capture.error` before
+# 2026-11-02, when an engine would not stop, for a take whose stems are whole.
+# It is now `capture.stop_error`; an old take is read the same way.
+OLD_STOP_ERROR = "the capture engine did not stop cleanly"
+
+
+def stop_failure(capture: Any) -> str | None:
+    """An engine that would not stop: `capture.stop_error`, or the same
+    sentence in an old take's `capture.error`. Not a failed capture: the
+    recorder holds every block pushed."""
+    if not isinstance(capture, dict):
+        return None
+    stop, error = capture.get("stop_error"), capture.get("error")
+    if isinstance(stop, str) and stop:
+        return stop
+    if isinstance(error, str) and error.startswith(OLD_STOP_ERROR):
+        return error
     return None
 
 
@@ -765,9 +787,10 @@ def check_take(take: Take) -> list[str]:
                 f"the recorder stopped early: {failed} — the stems hold "
                 "what was written before it"
             )
-        if isinstance(capture.get("stop_error"), str) and capture["stop_error"]:
+        stopped = stop_failure(capture)
+        if stopped:
             problems.append(
-                f"{capture['stop_error']} — the stems hold every block it pushed, but what "
+                f"{stopped} — the stems hold every block it pushed, but what "
                 "it saw of the take (xruns, blocks it could not copy) is not in take.yaml"
             )
         if failed and take.complete:

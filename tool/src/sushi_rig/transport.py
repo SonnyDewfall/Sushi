@@ -70,11 +70,11 @@ two ports must be two consecutively numbered ones, because that is all
 The plan names those ports as the machine file does, by PipeWire alias
 (`Audient iD14:capture_AUX0`), and takes carry them so. It is not what a JACK
 client links from: through `pw-jack` the same port is `Audient iD14
-Multichannel:capture_AUX0`, and a plan that handed the alias to JACK refused
-every take on the rig (2026-11-02, the MANIFEST). The engine resolves each port
-on the live graph at each RECORD, through the patchbay's own reader
-(`capture.resolve_sources`, `patchbay.jack_port_names`), because the graph is
-only there to read at RECORD: the listener plans before Sushi has started.
+Multichannel:capture_AUX0`, and an engine that looked the alias up among JACK's
+names alone refused every take on the rig (2026-11-02, the MANIFEST). The
+engine finds each port at each RECORD among the ports its client lists, by name
+or by JACK alias (`capture.match_sources`), because JACK is only there to ask
+at RECORD: the listener plans before Sushi has started.
 
 Channels that play from one input (a blend of two chains on one guitar) share
 one dry tap, recorded once and named for the role, `guitar-in-dry.wav`: it is
@@ -102,9 +102,9 @@ SAVE rewrites the one and a commit moves the other while the listener runs.
 against a live PipeWire past the refusal above; the tests plan ports and stand
 the engine in. Answered by the rig: the machine file's port names (written as
 qpwgraph shows them) are *not* the names JACK clients see through `pw-jack`,
-which is why they are resolved. Unknown until the rig machine says: whether
-the JACK names resolved are the right ones in every case
-(`patchbay.jack_client_name`), whether eight columns keep up as the spike's
+which is why they are matched by alias. Unknown until the rig machine says:
+whether pipewire-jack's aliases carry the machine file's names (`pw-jack
+jack_lsp -A`, the MANIFEST's rig check), whether eight columns keep up as the spike's
 six did, and whether tapping an output the patchbay leaves unlinked reads its
 signal. The first press of RECORD on a `--rig` run, and `sushi-rig take
 check` on what it wrote, is the test.

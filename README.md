@@ -773,9 +773,10 @@ real recorder process with the engine stood in. The first RECORD on the rig
 (2026-11-02) was refused, every time: the machine file names the guitar's port
 by its PipeWire alias (`Audient iD14:capture_AUX0`, what the patchbay matches),
 and JACK calls it `Audient iD14 Multichannel:capture_AUX0`. The capture engine
-now resolves each port the take names through the patchbay's own reader of the
-graph and links the name JACK has; the machine file stays as it is, since the
-patchbay needs the alias.
+now finds each port the take names among the ports its own JACK client lists, by
+name or by JACK alias, and links the port it finds; the machine file stays as it
+is, since the patchbay needs the alias. That pipewire-jack lists the PipeWire
+alias among a port's JACK aliases is expected and not yet seen on the rig.
 
 **Two modes, for two ways of using the rig.** The default gives you the Open
 Stage Control panel and the save listener behind it, which is what you want when
@@ -1302,11 +1303,12 @@ The capture engine (#53, `tool/src/sushi_rig/capture.py`) is the part that takes
 audio from PipeWire: a JACK client with one input port per column of a take,
 each linked to the port the take names, copying every block into the recorder.
 A take names its ports as the machine file does, by PipeWire alias; at each
-RECORD the engine reads `pw-dump` and resolves them through
-`patchbay.jack_port_names`, the reader the patchbay wires through, into the
-names a JACK client sees (`Audient iD14 Multichannel:capture_AUX0` for the
-machine file's `Audient iD14:capture_AUX0`), and `take.yaml` records what was
-linked under `capture.engine.sources`.
+RECORD the engine matches each against the JACK ports its client lists, by
+name or alias (`capture.match_sources`), so `Audient iD14:capture_AUX0` is found
+as `Audient iD14 Multichannel:capture_AUX0`, which is expected to carry it as an
+alias (`pw-jack jack_lsp -A` shows them). A name no port carries, or more than
+one does, is refused with every port and its aliases listed, and `take.yaml`
+records what was linked under `capture.engine.sources`.
 It is written and its decisions are tested, but **it has not been run against a
 live PipeWire**. The listener constructs one for a `--rig` run with its panel
 (#57), and `sushi-rig recorder` for a headless one, which is how the web UI
@@ -1458,13 +1460,13 @@ and a running rig, so on a bare machine `doctor` tells you what it could not
 look at rather than going quiet.
 
 With a rig of channels up, `record-ports` plans a take of it exactly as the
-recorder does, from the files the state file names, and resolves every port in
-the live graph the way the capture engine does, so doctor fails when RECORD
-would be refused at that step and says which stem and port; the line names the
-JACK name each machine-file port resolved to. (On 2026-11-02 doctor passed 11
-checks while every take was refused.) It cannot open a JACK client, which needs
-`pw-jack`, so a JACK name derived wrongly still passes here and is refused at
-RECORD with both spellings. A node of the rig's own that is absent with the rig
+recorder does, from the files the state file names, lists JACK's ports in a
+client under `pw-jack` (doctor itself is not under it) and matches them the
+way the capture engine does, so doctor fails when RECORD would be refused at
+that step and says which stem and port; the line names the JACK port each
+machine-file port was found as. Where no JACK client can be opened it says
+"needs JACK", unchecked, never green. (On 2026-11-02 doctor passed 11 checks
+while every take was refused.) A node of the rig's own that is absent with the rig
 up is said as what it is: the agent's crash record when an agent is running
 (the command asks it), else the state file's pid, else a child the rig was
 started without; not "the rig is down".

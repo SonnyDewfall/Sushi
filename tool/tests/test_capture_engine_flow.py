@@ -4,8 +4,9 @@ Read `jack_fake.py` for what the stand-in is: written from JACK-Client's
 documented shape, not a capture, so it proves the engine's own logic (what it
 calls, how many times, what it does when a read comes back empty) and nothing
 about JACK or PipeWire. Where the real library behaves otherwise, these pass
-and the rig run fails. The graph around it is a real `pw-dump`, and the ports
-JACK lists are the rig's, whose names are not the machine file's aliases.
+and the rig run fails. The ports JACK lists have the rig's names, which are
+not the machine file's spelling; their aliases, which carry that spelling, are
+a guess until the rig shows them (`jack_fake.py`).
 
 Its own module because it needs numpy (the pump allocates its buffer).
 """
@@ -21,14 +22,13 @@ np = pytest.importorskip("numpy")
 from sushi_rig import capture  # noqa: E402
 from sushi_rig.take import DRY, PROCESSED, Stem  # noqa: E402
 
-from jack_fake import ALIAS, JACK_NAME, JACK_PORTS, RIG_DUMP, FakeJack  # noqa: E402
+from jack_fake import ALIAS, JACK_NAME, JACK_PORTS, FakeJack  # noqa: E402
 
 SOURCE = ALIAS
 PLAN = ((Stem("guitar", DRY, SOURCE), 1),)
 
 
 def engine(**kwargs):
-    kwargs.setdefault("read_dump", lambda: RIG_DUMP)
     return capture.CaptureEngine(48000, 256, settle_s=0.0, link_retry_s=0.0, **kwargs)
 
 
@@ -62,7 +62,7 @@ def test_the_quantum_is_read_once_not_once_per_take(monkeypatch):
     jack = FakeJack()
     jack.install(monkeypatch)
     waits = counting_sleep(monkeypatch)
-    e = capture.CaptureEngine(48000, 256, settle_s=0.123, link_retry_s=0.0, read_dump=lambda: RIG_DUMP)
+    e = capture.CaptureEngine(48000, 256, settle_s=0.123, link_retry_s=0.0)
     e.start(PLAN, lambda block: len(block))
     e.stop()
     assert (len(jack.clients), jack.activations) == (1, 1)
@@ -76,7 +76,7 @@ def test_prepare_pays_the_wait_ahead_of_the_first_take_on_a_client_of_its_own(mo
     jack = FakeJack()
     jack.install(monkeypatch)
     waits = counting_sleep(monkeypatch)
-    e = capture.CaptureEngine(48000, 256, settle_s=0.123, link_retry_s=0.0, read_dump=lambda: RIG_DUMP)
+    e = capture.CaptureEngine(48000, 256, settle_s=0.123, link_retry_s=0.0)
     e.prepare()
     probe = jack.clients[0]
     assert probe.closed and probe.name != e.client_name, "a name of its own, so no -01 rename"
@@ -162,13 +162,13 @@ def test_a_start_that_fails_early_does_not_hand_back_the_last_takes_account(monk
 
 # -- which port a column is linked from (the rig, 2026-11-02) ------------------------------
 
-def test_a_machine_file_port_is_linked_from_the_name_jack_knows_it_by(monkeypatch):
+def test_a_machine_file_port_is_linked_from_the_jack_port_that_carries_it_as_an_alias(monkeypatch):
     """The rig refused every take: `no port called 'Audient iD14:capture_AUX0'
     (for board-dry.wav) is in the graph`, listing `Audient iD14
     Multichannel:capture_AUX0` among those that were. The machine file names the
-    alias, which the patchbay needs; JACK lists the description. The alias is
-    resolved through the patchbay's reader to the name JACK has."""
-    assert ALIAS not in JACK_PORTS and JACK_NAME in JACK_PORTS, "the two spellings differ, as on the rig"
+    alias, which the patchbay needs; JACK names the port otherwise and lists the
+    alias among its aliases (a guess until the rig shows it)."""
+    assert ALIAS not in JACK_PORTS and ALIAS in JACK_PORTS[JACK_NAME], "the two spellings differ"
     jack = FakeJack(levels={JACK_NAME: 0.25, "sushi:audio_output_2": 0.5, "sushi:audio_output_3": 0.75})
     jack.install(monkeypatch)
     pushed = []
@@ -184,35 +184,76 @@ def test_a_machine_file_port_is_linked_from_the_name_jack_knows_it_by(monkeypatc
     }
 
 
-def test_a_port_the_live_graph_does_not_have_is_refused_before_any_port_is_made(monkeypatch):
+def test_a_port_jack_does_not_have_is_refused_before_any_port_is_made_with_every_port_listed(monkeypatch):
     jack = FakeJack()
     jack.install(monkeypatch)
     with pytest.raises(capture.CaptureError) as caught:
         engine().start(((Stem("guitar", DRY, "Audient iD14:capture_AUX42"), 1),), lambda block: 0)
-    assert "guitar-dry.wav cannot be captured from 'Audient iD14:capture_AUX42': no live port with alias" in str(caught.value)
+    said = caught.value.problems
+    assert said[0] == "no JACK port is called or aliased 'Audient iD14:capture_AUX42' (for guitar-dry.wav)"
+    assert f"{JACK_NAME} (aliases: alsa:acp:iD14:2:capture:capture_0, {ALIAS})" in said[-1]
+    assert all(name in said[-1] for name in JACK_PORTS), "every port JACK lists, with its aliases"
     assert jack.clients[0].inports == [] and jack.clients[0].closed
 
 
-def test_a_jack_name_jack_does_not_list_names_both_spellings(monkeypatch):
-    """If `patchbay.jack_client_name` is wrong for a device, the take is refused
-    with the name looked for and the one the machine file has, and the ports
-    that exist: not linked silently from nothing."""
-    FakeJack(ports=[p for p in JACK_PORTS if p != JACK_NAME]).install(monkeypatch)
+def test_an_alias_two_ports_carry_is_refused_naming_both(monkeypatch):
+    """Two profiles of one interface live at once would both carry
+    `Audient iD14:capture_AUX0`: which to record is not guessed."""
+    ports = {**JACK_PORTS, "Audient iD14 Pro:capture_AUX0": ("alsa:acp:iD14:1:capture:capture_0", ALIAS)}
+    FakeJack(ports=ports).install(monkeypatch)
     with pytest.raises(capture.CaptureError) as caught:
         engine().start(PLAN, lambda block: 0)
-    said = caught.value.problems
-    assert said[0] == (f"no port called {JACK_NAME!r}, which is {ALIAS!r} as the machine file names it "
-                       "(for guitar-dry.wav) is in the graph JACK shows")
-    assert said[-1].startswith("output ports in the graph include: ")
+    first = caught.value.problems[0]
+    assert first.startswith(f"{ALIAS!r} (for guitar-dry.wav) names more than one JACK port: ")
+    assert JACK_NAME in first and "Audient iD14 Pro:capture_AUX0" in first
 
 
-def test_a_graph_that_cannot_be_read_is_a_refusal_saying_so(monkeypatch):
-    from sushi_rig.patchbay import PatchbayError
-
+def test_a_port_named_as_jack_names_it_is_found_too(monkeypatch):
     FakeJack().install(monkeypatch)
+    e = engine()
+    e.start(((Stem("guitar", DRY, JACK_NAME), 1),), lambda block: len(block))
+    assert e.stop()["sources"] == {"guitar-dry.wav": JACK_NAME}
 
-    def unreadable():
-        raise PatchbayError(["pw-dump is not installed, so the live graph cannot be read"])
 
-    with pytest.raises(capture.CaptureError, match="the live graph, which could not be read: pw-dump is not installed"):
-        engine(read_dump=unreadable).start(PLAN, lambda block: 0)
+def test_the_engine_reads_no_pw_dump(monkeypatch):
+    """The earlier fix read `pw-dump` in a subprocess at every RECORD, to
+    predict JACK's names: latency at the start of a take, and a take refused
+    whenever pw-dump stalled. The client's own listing is all it asks."""
+    import subprocess
+
+    from sushi_rig import patchbay
+
+    def no(*a, **k):
+        raise AssertionError("the engine must not read pw-dump or run anything")
+
+    monkeypatch.setattr(patchbay, "read_pw_dump", no)
+    monkeypatch.setattr(subprocess, "run", no)
+    FakeJack().install(monkeypatch)
+    e = engine()
+    e.start(PLAN, lambda block: len(block))
+    e.stop()
+
+
+def test_the_listing_doctor_runs_under_pw_jack_prints_every_port_and_its_aliases(monkeypatch, capsys):
+    """`python -m sushi_rig.capture`, what `capture.list_jack_ports` runs:
+    the same `jack_ports` the engine matches on, as JSON."""
+    import json
+
+    jack = FakeJack()
+    jack.install(monkeypatch)
+    assert capture._print_ports() == 0
+    listed = json.loads(capsys.readouterr().out)
+    assert {p["name"]: tuple(p["aliases"]) for p in listed} == JACK_PORTS
+    assert jack.clients[0].closed and jack.clients[0].inports == [], "it lists, and registers nothing"
+
+
+def test_the_listing_says_why_when_there_is_no_server(monkeypatch, capsys):
+    jack = FakeJack()
+
+    def refuse(name, no_start_server=False):
+        raise jack.JackError("server not running")
+
+    jack.Client = refuse
+    jack.install(monkeypatch)
+    assert capture._print_ports() == 1
+    assert "no JACK or PipeWire server to connect to" in capsys.readouterr().err

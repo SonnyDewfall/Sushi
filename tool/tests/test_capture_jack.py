@@ -44,6 +44,13 @@ def test_the_port_attributes_the_engine_uses_exist(name):
     assert hasattr(jack.OwnPort, name)
 
 
+@pytest.mark.parametrize("name", capture.JACK_PORT_ATTRIBUTES)
+def test_the_listed_port_attributes_the_engine_matches_on_exist(name):
+    """`aliases` is how a machine-file port, written by its PipeWire alias, is
+    found among JACK's (`capture.match_sources`)."""
+    assert hasattr(jack.Port, name)
+
+
 def parameters(function):
     return list(inspect.signature(function).parameters)[1:]  # without self
 

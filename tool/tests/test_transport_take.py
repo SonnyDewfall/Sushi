@@ -360,3 +360,27 @@ def test_an_engine_that_would_not_stop_leaves_a_whole_take_that_says_so(tmp_path
     assert finished.metadata["capture"]["error"] == ""
     assert any(p.startswith("the capture engine did not stop cleanly: stuck — the stems hold every block")
                for p in take.check_take(finished))
+
+
+def test_an_old_take_whose_engine_would_not_stop_is_still_whole(tmp_path):
+    """Before 2026-11-02 the stop failure was written into `capture.error`,
+    beside a take whose stems are whole. Read as a failure, every such take
+    would be called incomplete and flagged as a contradiction."""
+    import yaml
+
+    session = TakeSession(plan(tmp_path), FakeEngine(stop_error=RuntimeError("stuck")))
+    session.start("riff-idea")
+    session.stop()
+    path = tmp_path / "riff-idea" / take.TAKE_FILE
+    meta = yaml.safe_load(path.read_text())
+    capture = meta["capture"]
+    capture["error"] = capture.pop("stop_error")  # as the old writer put it
+    assert capture["error"] == "the capture engine did not stop cleanly: stuck"
+    path.write_text(yaml.safe_dump(meta, sort_keys=False))
+    old = take.load_take(tmp_path / "riff-idea")
+    assert old.complete and old.failed is None
+    problems = take.check_take(old)
+    assert any(p.startswith("the capture engine did not stop cleanly: stuck — the stems hold every block")
+               for p in problems)
+    assert not any("complete: true beside a capture that failed" in p or "stopped early" in p for p in problems)
+    assert take.take_summary(tmp_path / "riff-idea")["complete"] is True

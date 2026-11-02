@@ -470,3 +470,17 @@ def test_a_file_that_is_not_json_is_a_sentence_not_a_traceback(tmp_path, capsys)
     assert cli.main(["verify", str(path)]) == 1
     err = capsys.readouterr().err
     assert "board.json: CANNOT CHECK" in err and "is not a Sushi config: it is not JSON" in err
+
+
+def test_a_yml_rig_file_is_refused_because_up_runs_only_yaml(tmp_path, monkeypatch):
+    """`compile_named_rig` loads `config/rigs/<name>.yaml`: given `x.yml` it
+    would have compiled whatever `x.yaml` is, or said there is no such rig."""
+    from sushi_rig import verify as verify_module
+    from sushi_rig.verify import VerifyError
+
+    rigs = tmp_path / "config" / "rigs"
+    rigs.mkdir(parents=True)
+    (rigs / "board.yml").write_text("kind: rig\n")
+    monkeypatch.setattr(verify_module, "checkout_root", lambda: tmp_path)
+    with pytest.raises(VerifyError, match=r"ends in \.yml, and `up --rig` runs only a rig file called config/rigs/<name>\.yaml"):
+        verify_module.verify(rigs / "board.yml")

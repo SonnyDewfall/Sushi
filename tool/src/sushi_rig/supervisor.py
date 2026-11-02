@@ -178,27 +178,75 @@ def parse_lifecycle(args: Sequence[str]) -> tuple[str, dict[str, Any]]:
     raise ValueError(f"not a lifecycle command: {' '.join(args)!r}")
 
 
+# What each of the rig's processes is to a player, and what its exit means for
+# the sound, by the state file's child names. The one copy: an exit record
+# carries both (`exit_record`), so the web UI shows them as given, and
+# `doctor` says the same of an absent child (`child_label`).
+CHILD_ROLES: dict[str, tuple[str, str]] = {
+    "sushi": ("Sushi", "there is no sound: every channel runs in it"),
+    "amp": ("the amp (Carla)", "the guitar through the amp is silent; the rest of the rig plays on"),
+    "fmit": ("the tuner (fmit)", "sound is unaffected; there is no tuner"),
+    "qpwgraph": ("the patchbay (qpwgraph)",
+                 "the links it made may stay, but nothing keeps or remakes them: listen"),
+    "recorder": ("the recorder",
+                 "sound is unaffected, but Record cannot start a take, and a take it was "
+                 "recording is cut off"),
+    "group holder": ("the rig's group holder",
+                     "the children play on, but `status` reads the rig as orphaned"),
+}
+
+
+def child_label(name: str) -> str:
+    """What the rig's process `name` is, for a sentence: "the tuner (fmit)"."""
+    return CHILD_ROLES.get(name, (name, ""))[0]
+
+
+def how_it_ended(record: dict[str, Any]) -> str:
+    """"was killed by SIGTERM" or "exited with status 1", from an exit record."""
+    return (f"was killed by {record['signal']}" if record.get("signal")
+            else f"exited with status {record.get('returncode')}")
+
+
 def exit_record(
     name: str, pid: int, returncode: int, *, at: str, phase: str,
-    config_name: str, log: Path | None,
+    config_name: str, log: Path | None, pgid: int | None = None, started_at: str | None = None,
 ) -> dict[str, Any]:
     """One child's exit, as /health shows it. A negative status is the signal
-    that killed it, named, since "-11" is not something a player can read."""
+    that killed it, named, since "-11" is not something a player can read.
+
+    `label` and `means` are `CHILD_ROLES`'s, for a page to show as given.
+    `pgid` and `started_at` are the run it belonged to, as the state file has
+    them: a crash outlives its rig in `crashed`, and a reader matches these
+    against the rig up now before it says the crash is that rig's (an earlier
+    held rig's tuner is not the running rig's)."""
     try:
         killed_by = signal.Signals(-returncode).name if returncode < 0 else None
     except ValueError:
         killed_by = None
+    label, means = CHILD_ROLES.get(name, (name, ""))
     return {
         "name": name, "pid": pid, "returncode": returncode, "signal": killed_by,
         "at": at, "phase": phase, "config_name": config_name,
         "log": str(log) if log is not None else None,
+        "label": label, "means": means or None, "pgid": pgid, "started_at": started_at,
     }
+
+
+def same_run(record: dict[str, Any], state: dict[str, Any] | None) -> bool:
+    """Whether an exit record belongs to the run `state` (the state file)
+    describes: the same group and the same start. Pure; `doctor` and the
+    agent's /health use it, so a crash of an earlier rig is not told as the
+    running one's."""
+    if not state or not isinstance(record, dict):
+        return False
+    return (record.get("pgid") is not None and record.get("pgid") == state.get("pgid")
+            and record.get("started_at") == state.get("started_at"))
 
 
 def crash_message(record: dict[str, Any]) -> str:
     """The stderr line for a crash: what died, how, where its log is, and that
     nothing was done about it, so a journal read later says the whole story."""
-    how = f"was killed by {record['signal']}" if record["signal"] else f"exited with status {record['returncode']}"
+    how = how_it_ended(record)
     when = "while it was starting" if record["phase"] == "startup" else "while it was up"
     log = f"; its log is {record['log']}" if record["log"] else ""
     return (
@@ -565,6 +613,8 @@ class Supervisor:
                 self._sweep(held)
                 held.ready = True
                 for exited in held.startup_exits:
+                    # Seen before the state file existed: stamped with the run now.
+                    exited.update(pgid=held.pgid, started_at=record.get("started_at"))
                     self.crashed.append(exited)
                     self._say(crash_message(exited))
         except BaseException:
@@ -832,7 +882,7 @@ class Supervisor:
             child.exit = exit_record(
                 child.name, child.proc.pid, child.proc.returncode, at=_now(),
                 phase="running" if held.ready else "startup",
-                config_name=self._running_name(held), log=child.log,
+                config_name=self._running_name(held), log=child.log, **self._run_of(held),
             )
             if held.stopping or child.name in held.restarting:
                 continue
@@ -844,7 +894,7 @@ class Supervisor:
         if held.holder_exit is None and held.holder.poll() is not None:
             held.holder_exit = exit_record(
                 "group holder", held.pgid, held.holder.returncode, at=_now(), phase="running",
-                config_name=self._running_name(held), log=None,
+                config_name=self._running_name(held), log=None, **self._run_of(held),
             )
             if not held.stopping:
                 message = (
@@ -856,6 +906,14 @@ class Supervisor:
                 )
                 self.problems.append({"kind": "holder_lost", "at": held.holder_exit["at"], "message": message})
                 self._say(message)
+
+    def _run_of(self, held: Held) -> dict[str, Any]:
+        """The held run's group and start, for an exit record (`same_run`),
+        from the record the start wrote: a live switch and an amp restart
+        rewrite the state file and keep its `started_at`, so the start's is
+        the run's. None yet for a start's own exit, stamped once it is up.
+        Not read from the file: this runs on the loop."""
+        return {"pgid": held.pgid, "started_at": (held.record or {}).get("started_at")}
 
     def _running_name(self, held: Held) -> str:
         """The held rig's name as it is now: the state file's, which a live
@@ -1008,7 +1066,7 @@ def _rig_env(launch: "rig_module.Launch") -> dict[str, str]:
 
 
 def _how(record: dict[str, Any]) -> str:
-    return f"was killed by {record['signal']}" if record.get("signal") else f"exited with status {record['returncode']}"
+    return how_it_ended(record)
 
 
 def _plain(exc: BaseException) -> bool:

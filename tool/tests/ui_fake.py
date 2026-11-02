@@ -290,7 +290,7 @@ def describe_up(started: datetime, name: str = "electric_board", amp_model: str 
     def describe():
         return {
             "verdict": "running", "running": True, "config_name": name, "mode": "headless",
-            "started_at": started.isoformat(), "uptime_seconds": (datetime.now(timezone.utc) - started).total_seconds(),
+            "pgid": 4242, "started_at": started.isoformat(), "uptime_seconds": (datetime.now(timezone.utc) - started).total_seconds(),
             "amp_model": amp_model, "rig": name,
             "children": {"amp": {"pid": 4244, "alive": amp_alive}} if amp_model else {},
             "message": f"{name} (headless mode)",

@@ -108,21 +108,28 @@ COLUMNS = capture.plan_columns(PLAN)
 EVERY_SOURCE = [c.source for c in COLUMNS]
 
 
+def ports(names):
+    return [capture.JackPort(n) for n in names]
+
+
 def test_a_graph_with_every_source_has_nothing_missing():
-    assert capture.missing_sources(COLUMNS, EVERY_SOURCE + ["other:port"]) == []
+    matched, problems = capture.match_sources(COLUMNS, ports(EVERY_SOURCE + ["other:port"]))
+    assert problems == [] and [c.jack for c in matched] == [c.source for c in COLUMNS]
 
 
-def test_a_missing_source_is_named_with_the_ports_that_do_exist():
-    problems = capture.missing_sources(COLUMNS, [s for s in EVERY_SOURCE if "AUX0" not in s])
-    assert "no port called 'Audient iD14:capture_AUX0' (for guitar-dry.wav)" in problems[0]
-    assert "output ports in the graph include:" in problems[-1]
-    assert "capture_AUX1" in problems[-1]
+def test_a_missing_source_is_named_with_every_port_and_its_aliases():
+    listed = ports([s for s in EVERY_SOURCE if "AUX0" not in s]) + [capture.JackPort("x:y", ("x alias:y",))]
+    _, problems = capture.match_sources(COLUMNS, listed)
+    assert problems[0] == "no JACK port is called or aliased 'Audient iD14:capture_AUX0' (for guitar-dry.wav)"
+    assert problems[-1].startswith("the output ports JACK lists are: ")
+    assert "Audient iD14:capture_AUX1 (no aliases)" in problems[-1] and "x:y (aliases: x alias:y)" in problems[-1]
+    assert problems[-1].count("(") == len(listed), "every port, not the first eight"
 
 
 def test_an_empty_graph_says_so_rather_than_listing_nothing():
-    problems = capture.missing_sources(COLUMNS, [])
+    _, problems = capture.match_sources(COLUMNS, [])
     assert len(problems) == len(COLUMNS) + 1
-    assert "no output ports in the graph at all" in problems[-1]
+    assert problems[-1] == "JACK lists no output ports at all"
 
 
 def test_links_that_took_are_clean():

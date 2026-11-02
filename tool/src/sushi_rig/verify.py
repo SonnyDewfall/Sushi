@@ -363,7 +363,10 @@ def _without_state(config: Path) -> Path:
     return Path(handle.name)
 
 
-RIG_SUFFIXES = (".yaml", ".yml")
+# What a rig file of `config/rigs/` is called: `rig.compile_named_rig` loads
+# `<name>.yaml` and nothing else, as `up --rig <name>` does.
+RIG_SUFFIX = ".yaml"
+YAML_SUFFIXES = (".yaml", ".yml")
 
 
 def compiled_rig(path: Path, root: Path) -> Path:
@@ -383,6 +386,12 @@ def compiled_rig(path: Path, root: Path) -> Path:
     from .rig import RigError, compile_named_rig
 
     rigs = (Path(root) / "config" / "rigs").resolve()
+    if path.suffix != RIG_SUFFIX:
+        raise VerifyError(
+            f"{path} ends in {path.suffix}, and `up --rig` runs only a rig file called "
+            f"config/rigs/<name>{RIG_SUFFIX}, so there is no rig of that name to compile: "
+            f"rename it to {path.stem}{RIG_SUFFIX}, or pass a config .json"
+        )
     if path.resolve().parent != rigs:
         raise VerifyError(
             f"{path} is YAML, and verify checks a compiled Sushi config: pass a rig of "
@@ -413,7 +422,7 @@ def verify(config: Path, sushi_bin: str = "sushi", quick: bool = False) -> list[
     config = Path(config)
     if not config.is_file():
         raise VerifyError(f"no such config: {config}")
-    if config.suffix.lower() in RIG_SUFFIXES:
+    if config.suffix.lower() in YAML_SUFFIXES:
         config = compiled_rig(config, root)
 
     try:

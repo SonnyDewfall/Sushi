@@ -440,35 +440,41 @@ export function rigStatus(health, live) {
   return { tone: "up", title: name, detail: `Up${up ? " " + up : ""} · sound not measured`, measured: false };
 }
 
-// What each of the rig's processes is to a player, and what its exit means
-// for the sound: the state file's child names, as the supervisor's crash
-// records use them (doctor.CHILD_LABELS says the same of each, in Python).
-// "Restart the rig" is the remedy throughout because the agent heals nothing
-// on its own (principle 9).
-const CHILDREN = {
-  sushi: { what: "Sushi", means: "there is no sound: every channel runs in it" },
-  amp: { what: "The amp (Carla)", means: "the guitar through the amp is silent; the rest of the rig plays on" },
-  fmit: { what: "The tuner (fmit)", means: "sound is unaffected; there is no tuner" },
-  qpwgraph: { what: "The patchbay (qpwgraph)", means: "the links it made may stay, but nothing keeps or remakes them: listen" },
-  recorder: { what: "The recorder", means: "sound is unaffected, but Record cannot start a take, and a take it was recording is cut off" },
-};
-
 // A child of the rig that exited, from the agent's crash record
 // (`agent.supervisor.crashed`, supervisor.exit_record), as a problem a player
 // can act on: which process, what that means, and what to do. On the rig on
 // 2026-11-02 a killed tuner was in /health, `status` and the agent's terminal
-// and nowhere on either screen. `running` is whether a rig is up now: a crash
-// outlives its rig in the record, and once that rig is down there is
-// nothing to restart.
-export function crashProblem(record, running) {
-  const known = CHILDREN[record.name] || { what: record.name, means: "the rig is not whole" };
+// and nowhere on either screen. What each process is and what its exit means
+// are the record's own (`label`, `means`, supervisor.CHILD_ROLES), not a copy
+// kept here.
+//
+// `rig` is /health's rig. A crash outlives its rig in the record, so it is
+// the running rig's only when its group and start are the running rig's
+// (supervisor.same_run); one of an earlier run is said as past, quietly, with
+// nothing to restart (`kind: "page"`, the muted box).
+const capital = (text) => text ? text[0].toUpperCase() + text.slice(1) : text;
+
+export function sameRun(record, rig) {
+  return !!(rig && rig.running && record.pgid !== null && record.pgid !== undefined
+    && record.pgid === rig.pgid && record.started_at === rig.started_at);
+}
+
+export function crashProblem(record, rig) {
+  const what = capital(record.label || record.name);
   const how = record.signal ? `was killed by ${record.signal}` : `exited with status ${record.returncode}`;
   const where = record.config_name ? ` in ${record.config_name}` : "";
   const when = record.phase === "startup" ? " while it was starting" : "";
-  const then = running ? "Restart the rig to bring it back: nothing restarts it on its own." : "That rig has since stopped.";
+  const log = record.log ? ` Its log is ${record.log}.` : "";
+  if (!sameRun(record, rig)) {
+    return {
+      kind: "page", title: `${what} exited in an earlier run`,
+      reason: `${what} ${how}${when}${where}, a run that is no longer the one up.${log}`, at: record.at || null,
+    };
+  }
+  const means = record.means ? `; ${record.means}` : "";
   return {
-    title: `${known.what} exited`,
-    reason: `${known.what} ${how}${when}${where}; ${known.means}. ${then}${record.log ? ` Its log is ${record.log}.` : ""}`,
+    title: `${what} exited`,
+    reason: `${what} ${how}${when}${where}${means}. Restart the rig to bring it back: nothing restarts it on its own.${log}`,
     at: record.at || null,
   };
 }
@@ -480,12 +486,13 @@ export function crashProblem(record, running) {
 export function agentProblems(health) {
   if (!health || !health.ok) return [];
   const agent = health.body.agent || {};
-  const running = !!(health.body.rig || {}).running;
+  const rig = health.body.rig || {};
   const supervisor = agent.supervisor || {};
   const out = [];
-  for (const record of Array.isArray(supervisor.crashed) ? supervisor.crashed : []) {
-    if (record && typeof record === "object") out.push(crashProblem(record, running));
-  }
+  const crashes = (Array.isArray(supervisor.crashed) ? supervisor.crashed : [])
+    .filter((record) => record && typeof record === "object").map((record) => crashProblem(record, rig));
+  // The running rig's first, as loudly as the last error; earlier runs' last.
+  out.push(...crashes.filter((c) => !c.kind));
   for (const p of Array.isArray(supervisor.problems) ? supervisor.problems : []) {
     if (p && typeof p === "object") out.push({ title: "The rig's supervisor", reason: p.message || p.kind || "a problem with no message", at: p.at || null });
   }
@@ -495,6 +502,7 @@ export function agentProblems(health) {
   }
   if (agent.midi && agent.midi.state === "failed") out.push({ title: "Pedals", reason: agent.midi.problem || "the MIDI listener failed", at: null });
   if (agent.stuck_live_calls) out.push({ title: "Sushi", reason: `${agent.stuck_live_calls} call(s) to Sushi never returned`, at: null });
+  out.push(...crashes.filter((c) => c.kind));
   return out;
 }
 

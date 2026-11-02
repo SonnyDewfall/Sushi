@@ -449,19 +449,6 @@ def machine_check(problems: list[str], *, file_name: str, readable: bool = True,
     return Check("machine-file", OK, f"{file_name} is valid")
 
 
-# What each of the rig's own processes is, for a sentence a player can act on.
-# Keyed by the state file's child names (`children`), which the supervisor's
-# crash records use too. Not everything the rig starts has a node: qpwgraph and
-# the recorder are absent from `top.CHILD_NODES`, so no patchbay link names them.
-CHILD_LABELS = {
-    "sushi": "Sushi",
-    "amp": "the amp (Carla)",
-    "fmit": "the tuner (fmit)",
-    "qpwgraph": "the patchbay (qpwgraph)",
-    "recorder": "the recorder",
-}
-
-
 def child_of_node(node: str) -> str | None:
     """Which of the rig's processes (the state file's child name) a saved
     patchbay node names, or None for a device. Through `patchbay`'s own
@@ -472,17 +459,22 @@ def child_of_node(node: str) -> str | None:
     return next((child for child, names in CHILD_NODES.items() if found in names), None)
 
 
-def _why_absent(child: str, children: dict, crashed: list[dict]) -> tuple[str, bool]:
+def _why_absent(child: str, children: dict, crashed: list[dict],
+                state: dict | None) -> tuple[str, bool]:
     """Why the rig's process `child` has no node while the rig is up, and
     whether restarting the rig is the remedy. The agent's crash record is the
-    best witness (it read the exit status); the state file's pid, probed, is
-    the next; a child the state file does not list was not started."""
-    label = CHILD_LABELS.get(child, child)
-    record = next((r for r in reversed(crashed) if isinstance(r, dict) and r.get("name") == child), None)
+    best witness (it read the exit status), but only one of the running rig
+    (`supervisor.same_run`, the state file's group and start): an earlier
+    held rig's crash stays in the agent's record. The state file's pid,
+    probed, is the next witness; a child the state file does not list was not
+    started. The words are the supervisor's (`child_label`, `how_it_ended`)."""
+    from .supervisor import child_label, how_it_ended, same_run
+
+    label = child_label(child)
+    record = next((r for r in reversed(crashed)
+                   if isinstance(r, dict) and r.get("name") == child and same_run(r, state)), None)
     if record is not None:
-        how = f"was killed by {record['signal']}" if record.get("signal") else \
-            f"exited with status {record.get('returncode')}"
-        return f"{label} {how} at {record.get('at')} (the agent saw it)", True
+        return f"{label} {how_it_ended(record)} at {record.get('at')} (the agent saw it)", True
     entry = children.get(child)
     if entry is None:
         return f"the rig was started without {label}", False
@@ -493,7 +485,7 @@ def _why_absent(child: str, children: dict, crashed: list[dict]) -> tuple[str, b
 
 def patchbay_checks(missing: dict, not_running: dict, *, file_name: str,
                     links: int, rig: dict | None = None,
-                    crashed: list[dict] | None = None) -> list[Check]:
+                    crashed: list[dict] | None = None, state: dict | None = None) -> list[Check]:
     """What the saved patchbay's node names did against the live graph.
 
     Takes the two dictionaries rather than `patchbay.NodeCheck` itself, so this
@@ -508,8 +500,9 @@ def patchbay_checks(missing: dict, not_running: dict, *, file_name: str,
     whichever came last, and the first thing to do so was this module's own
     tests.
 
-    `rig` is `rig.describe_rig`'s answer and `crashed` the agent's crash
-    records (`agent.supervisor.crashed`), when an agent was asked. With the rig
+    `rig` is `rig.describe_rig`'s answer, `crashed` the agent's crash
+    records (`agent.supervisor.crashed`) when an agent was asked, and `state`
+    the state file, which says which run a crash record must belong to. With the rig
     up, a node of its own that is absent is not "the rig is down": on the rig
     on 2026-11-02 that sentence, and its `sushi-rig up`, were given for a tuner
     that had been killed. So the check says which process it is and why it is
@@ -544,7 +537,7 @@ def patchbay_checks(missing: dict, not_running: dict, *, file_name: str,
             whose.setdefault(child_of_node(node) or node, []).append(node)
         reasons, restart = [], False
         for child, nodes in whose.items():
-            why, dead = _why_absent(child, children, list(crashed or []))
+            why, dead = _why_absent(child, children, list(crashed or []), state)
             reasons.append(f"{why}, so {', '.join(repr(n) for n in nodes)} is not in the graph")
             restart = restart or dead
         checks.append(Check(
@@ -562,50 +555,52 @@ def patchbay_checks(missing: dict, not_running: dict, *, file_name: str,
     return checks
 
 
-def record_ports_check(columns: list, port_nodes: dict) -> Check:
-    """Do the ports the recorder plans to link resolve in the live graph?
+def record_ports_check(columns: list, ports: list) -> Check:
+    """Can the recorder find every port it plans to link?
 
     Pure. `columns` are `capture.plan_columns` of the running rig's plan and
-    `port_nodes` is `patchbay.live_port_nodes` of the graph: the same plan and
-    the same call (`capture.resolve_sources`) the capture engine makes at
-    RECORD, so this fails exactly when a take would be refused at that step.
-    Added after the rig, on 2026-11-02, passed 11 checks while every RECORD
-    was refused: the machine file names the guitar by alias, which the
-    patchbay matched and the recorder did not.
-
-    It cannot see JACK itself, which needs a client under `pw-jack`, so a JACK
-    name this derives wrongly still passes here and is refused at RECORD,
-    naming both spellings. The message gives every dry tap's JACK name, so
-    the two can be compared.
+    `ports` what a JACK client under `pw-jack` lists (`capture.jack_ports`):
+    the same plan, the same listing and the same match (`capture.match_sources`)
+    the capture engine makes at RECORD, so this fails exactly when a take would
+    be refused at that step. Added after the rig, on 2026-11-02, passed 11
+    checks while every RECORD was refused: the machine file names the guitar
+    by its PipeWire alias, and the recorder looked among JACK's names alone.
+    The message gives each port the machine file names that JACK knows by
+    another name, so the two can be compared.
     """
-    from .capture import resolve_sources
+    from .capture import match_sources
 
-    resolved, problems = resolve_sources(columns, port_nodes)
+    matched, problems = match_sources(columns, ports)
     if problems:
         return Check(
             "record-ports", FAULT,
             f"a take of the running rig would be refused: {'; '.join(problems)}",
-            "the machine file names each port by its PipeWire alias, as qpwgraph shows it: "
-            "check the role's ports against `pw-dump` (`port.alias`), or `sushi-rig patchbay "
-            "check`; recording resolves them the way the patchbay does",
+            "the machine file names each port by its PipeWire alias, as qpwgraph shows it; "
+            "compare it with `pw-jack jack_lsp -A`, which lists every JACK port with its "
+            "aliases, and the recorder matches either",
         )
-    renamed = [f"{c.source} is {c.jack}" for c in resolved if c.jack != c.source]
+    renamed = [f"{c.source} is {c.jack}" for c in matched if c.jack != c.source]
     return Check(
         "record-ports", OK,
-        f"the recorder's {len(resolved)} column(s) resolve in the graph"
-        + (f" (to JACK, {'; '.join(renamed)})" if renamed else ""),
+        f"the recorder's {len(matched)} column(s) are all JACK ports"
+        + (f" ({'; '.join(renamed)}, by alias)" if renamed else ""),
     )
 
 
-def record_check(root: Path, port_nodes: dict | None, rig: dict, state: dict | None,
-                 *, reason: str = "") -> Check:
+def record_check(root: Path, rig: dict, state: dict | None, *,
+                 list_ports: Any = None) -> Check:
     """`record_ports_check` for the running rig, planned as the recorder plans
     it (`transport.plan_for_run`, from the files the state file names), or
     why it could not be asked.
 
-    A plan the recorder would refuse is a fault here too, in its words; a rig
-    that is down, a v1 run, or a graph that could not be read is unchecked."""
-    from .capture import CaptureError, plan_columns
+    A plan the recorder would refuse is a fault here too, in its words, and
+    so is an error the recorder would meet planning it: the recorder catches
+    anything there (`transport.record_session`), and a bug in a plan must
+    not take the rest of doctor down. A rig that is down or a v1 run is
+    unchecked. So is a machine where no JACK client can be opened
+    (`list_ports`, `capture.list_jack_ports` by default, which runs one under
+    `pw-jack`): "needs JACK", never green."""
+    from .capture import CaptureError, JackUnreachable, list_jack_ports, plan_columns
     from .transport import PlanError, plan_for_run
 
     if not rig.get("running") or not state:
@@ -617,10 +612,6 @@ def record_check(root: Path, port_nodes: dict | None, rig: dict, state: dict | N
                      f"{state.get('config_name') or 'the running config'} is a v1 config, and takes are "
                      "planned only for a rig of channels, so recording is off for this run",
                      "start a rig of channels (`sushi-rig up --rig <name>`) to record")
-    if port_nodes is None:
-        return Check("record-ports", UNCHECKED,
-                     "the live graph could not be read, so the recorder's ports went unchecked"
-                     + (f": {reason}" if reason else ""), "")
 
     def absolute(value: Any) -> Path | None:
         if not isinstance(value, str) or not value:
@@ -635,7 +626,19 @@ def record_check(root: Path, port_nodes: dict | None, rig: dict, state: dict | N
         return Check("record-ports", FAULT,
                      f"no take can be planned for the running rig: {'; '.join(exc.problems)}",
                      "the record panel says the same; fix what it names and restart the rig")
-    return record_ports_check(columns, port_nodes)
+    except Exception as exc:  # noqa: BLE001 -- the recorder's own rule, and doctor goes on
+        return Check("record-ports", FAULT,
+                     f"planning a take of the running rig failed unexpectedly: {type(exc).__name__}: {exc}",
+                     "a take would be refused the same way; this is a bug in sushi-rig, worth reporting")
+    try:
+        ports = (list_ports or list_jack_ports)()
+    except JackUnreachable as exc:
+        return Check("record-ports", UNCHECKED,
+                     "needs JACK: the recorder's ports are found among a JACK client's, and none "
+                     f"could be opened here: {'; '.join(exc.problems)}",
+                     "run doctor on the rig machine with the rig up; `pw-jack jack_lsp -A` lists "
+                     "the ports by hand")
+    return record_ports_check(columns, ports)
 
 
 # --------------------------------------------------------------------------- #
@@ -1031,7 +1034,8 @@ def gather_environment(root: Path) -> Environment:
 # --------------------------------------------------------------------------- #
 
 def run(root: Path, machine_file: Path | None = None,
-        patchbay_file: Path | None = None, crashed: list[dict] | None = None) -> list[Check]:
+        patchbay_file: Path | None = None, crashed: list[dict] | None = None,
+        list_ports: Any = None) -> list[Check]:
     """Every check, in the order the command prints them.
 
     This was the body of the CLI command until the agent (#29) needed the same
@@ -1043,6 +1047,8 @@ def run(root: Path, machine_file: Path | None = None,
     (`agent.supervisor.crashed`): the agent passes its own, the command asks a
     running agent for it, and None is "no agent was asked". The state file,
     read once here, says whether a rig is up and which children it started.
+    `list_ports` lists JACK's ports for the record check
+    (`capture.list_jack_ports` by default).
     """
     from .rig import QUANTUM, describe_rig
     from .state import read_state
@@ -1071,13 +1077,12 @@ def run(root: Path, machine_file: Path | None = None,
     # for the patchbay check a few lines below. One of two readers of the same
     # bytes being guarded is the kind of asymmetry that only shows on the day it
     # happens.
-    dump, nodes, port_nodes, why = None, None, None, ""
+    dump, nodes, why = None, None, ""
     try:
         dump = patchbay.read_pw_dump()
         nodes = patchbay.nodes_by_id(dump)
-        port_nodes = patchbay.live_port_nodes(dump)
     except PatchbayError as exc:
-        dump, nodes, port_nodes, why = None, None, None, "; ".join(exc.problems)
+        dump, nodes, why = None, None, "; ".join(exc.problems)
     state = read_state()
     rig = describe_rig(state)
 
@@ -1114,8 +1119,9 @@ def run(root: Path, machine_file: Path | None = None,
             checks += patchbay_checks(
                 result.missing, result.not_running,
                 file_name=patchbay_file.name, links=len(links), rig=rig, crashed=crashed,
+                state=state,
             )
 
-    checks.append(record_check(root, port_nodes, rig, state, reason=why))
+    checks.append(record_check(root, rig, state, list_ports=list_ports))
     checks += environment_checks(gather_environment(root))
     return checks

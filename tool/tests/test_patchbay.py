@@ -1235,60 +1235,12 @@ def test_generate_names_the_file_for_a_bad_rig_and_a_yaml_error(tmp_path):
 
 
 # --------------------------------------------------------------------------- #
-# The JACK name of a machine-file port: what the recorder links from (2026-11-02)
+# One port's resolution, shared by every role
 # --------------------------------------------------------------------------- #
 
-def test_the_guitars_alias_is_not_its_jack_name_in_the_captured_graph():
-    """The rig refused every take because the recorder looked the alias up
-    among JACK's names. Asserted against the capture, whose iD14 node is
-    `Audient iD14 Multichannel` and whose port alias is `Audient iD14:...`;
-    JACK's spelling is the one the rig's own refusal listed."""
-    names, problems = patchbay.jack_port_names(
-        ["Audient iD14:capture_AUX0", "Audient iD14:capture_AUX1", "sushi:audio_output_2"],
-        live_port_nodes(CAPTURED))
-    assert problems == {}
-    assert names == {
-        "Audient iD14:capture_AUX0": "Audient iD14 Multichannel:capture_AUX0",
-        "Audient iD14:capture_AUX1": "Audient iD14 Multichannel:capture_AUX1",
-        "sushi:audio_output_2": "sushi:audio_output_2",  # name and alias coincide for Sushi's
-    }
-
-
-def test_the_recorder_and_the_patchbay_resolve_a_port_to_one_node():
-    """One reader: the node the patchbay wires a role from is the node whose
-    port the recorder links."""
+def test_one_port_resolves_to_its_node_or_says_why_not():
     port_nodes = live_port_nodes(CAPTURED)
-    nodes, problems = resolve_nodes({"guitar-in": ["Audient iD14:capture_AUX0"]}, {"guitar-in"}, set(), port_nodes)
-    names, _ = patchbay.jack_port_names(["Audient iD14:capture_AUX0"], port_nodes)
-    assert problems == []
-    assert names["Audient iD14:capture_AUX0"].split(":")[0] == nodes["Audient iD14:capture_AUX0"]
-
-
-def test_a_client_with_an_application_name_is_prefixed_with_it():
-    """pipewire-jack's composition, as read from its source; the tuner's node
-    in the capture carries one."""
-    props = {"node.description": "ALSA Capture [fmit]", "application.name": "PipeWire ALSA [fmit]"}
-    assert patchbay.jack_client_name(props) == "PipeWire ALSA [fmit]/ALSA Capture [fmit]"
-    assert patchbay.jack_client_name({"node.name": "sushi", "node.description": "sushi"}) == "sushi"
-    assert patchbay.jack_client_name({}) is None
-
-
-def test_a_jack_name_more_than_one_node_would_carry_is_not_guessed():
-    """The capture's webcams share a description; pipewire-jack renames some of
-    them in a way this cannot predict, so a port on one is refused, not linked."""
-    ipu6 = [p for p in live_port_nodes(CAPTURED)["ipu6:capture_1"]]
-    assert ipu6 and all(p.jack is None for p in ipu6)
-    ports = [_port(10, 1, "Twin A:capture_1", "out"), _port(11, 2, "Twin B:capture_1", "out")]
-    for port in ports:
-        port["info"]["props"]["port.name"] = "capture_1"
-    nodes = [_node(1, **{"node.description": "Twin"}), _node(2, **{"node.description": "Twin"})]
-    names, problems = patchbay.jack_port_names(["Twin A:capture_1"], live_port_nodes(json.dumps(nodes + ports)))
-    assert names == {} and "more than one node would carry that client name" in problems["Twin A:capture_1"]
-    nodes[1]["info"]["props"]["node.description"] = "Other"
-    names, _ = patchbay.jack_port_names(["Twin A:capture_1"], live_port_nodes(json.dumps(nodes + ports)))
-    assert names == {"Twin A:capture_1": "Twin:capture_1"}, "unique, it is named"
-
-
-def test_a_port_the_recorder_reads_must_be_an_output():
-    names, problems = patchbay.jack_port_names(["sushi:audio_input_0"], live_port_nodes(CAPTURED))
-    assert names == {} and "must have direction 'out'" in problems["sushi:audio_input_0"]
+    found = patchbay.resolve_port("Audient iD14:capture_AUX0", "out", port_nodes)
+    assert found.node == "Audient iD14 Multichannel"
+    assert "no live port with alias" in patchbay.resolve_port("Audient iD14:capture_AUX42", "out", port_nodes)
+    assert "must have direction 'out'" in patchbay.resolve_port("sushi:audio_input_0", "out", port_nodes)
