@@ -647,11 +647,12 @@ def test_a_rig_already_using_a_probe_name_is_refused(tmp_path):
           inputs: [{engine_bus: 1, track_bus: 0}]
           outputs: [{engine_bus: 1, track_bus: 0}]
         """)
+    from sushi_rig.spec import probe_track_problem
+
     with pytest.raises(ProbeError) as caught:
         plan_probes(spec, amp=False)
-    assert [p.split(" is in the rig")[0] for p in caught.value.problems] == [
-        "'eq_probe'", "'selftest_probe'",
-    ]
+    assert caught.value.problems[0] == probe_track_problem(PROBE_TRACK)
+    assert [p.split(" is in the rig")[0] for p in caught.value.problems[1:]] == ["'eq_probe'"]
 
 
 # The `pw-link -l` listing live_paths.py captured on the rig machine on
@@ -699,6 +700,8 @@ def _track_on_bus(n: int) -> ProbeTrack:
         name=PROBE_TRACK, copy_of=("guitar",), channels=2,
         inputs=((("engine_channel", 2), ("track_channel", 0)),),
         outputs=((("engine_bus", n), ("track_bus", 0)),),
+        input_ports=("sushi:audio_input_2",),
+        output_ports=(f"sushi:audio_output_{2 * n}", f"sushi:audio_output_{2 * n + 1}"),
     )
 
 
@@ -782,3 +785,73 @@ def test_the_probe_tracks_name_is_kept_from_every_rig(tmp_path):
           outputs: [{engine_bus: 0, track_bus: 0}]
         """)
     assert any("'selftest_probe': a name selftest gives" in p for p in spec.validate())
+
+
+# --------------------------------------------------------------------------- #
+# Second review (2026-11-02)
+# --------------------------------------------------------------------------- #
+
+def test_a_guitar_heard_only_through_a_full_master_is_blamed_on_room(tmp_path):
+    """No outputs of its own, so its one probe goes through the master; with
+    all eight outputs taken that probe has no room, and that is the cause the
+    amp's note must give, not the missing stem."""
+    spec = rig(tmp_path, textwrap.dedent("""\
+        - name: g
+          channels: 2
+          source: guitar-in
+          inputs: [{engine_channel: 0, track_channel: 0}, {engine_channel: 0, track_channel: 1}]
+          outputs: []
+          plugins: [{name: g_send, type: internal, uid: sushi.testing.send}]
+        """) + "".join(textwrap.dedent(f"""\
+        - name: f{n}
+          channels: 2
+          inputs: [{{engine_channel: {n}, track_channel: 0}}]
+          outputs: [{{engine_bus: {n}, track_bus: 0}}]
+        """) for n in (1, 2, 3)) + textwrap.dedent("""\
+        - name: master
+          channels: 2
+          inputs: []
+          outputs: [{engine_bus: 0, track_bus: 0}]
+          plugins:
+            - {name: master_return, type: internal, uid: sushi.testing.return}
+            - {name: limiter, uri: "http://drobilla.net/plugins/mda/Limiter"}
+        """))
+    notes = plan_probes(spec, amp=True).not_checked
+    (note,) = [n for n in notes if n.startswith("g via amp")]
+    assert note.startswith("g via amp: no Sushi output pair is free for selftest_probe")
+    assert "has no outputs" not in note
+
+
+def test_a_name_that_could_only_clash_with_an_uncopied_send_is_allowed(tmp_path):
+    """Sends and returns are never copied, so `<send>_probe` is never made."""
+    spec = rig(tmp_path, """\
+        - name: a
+          channels: 2
+          inputs: [{engine_bus: 0, track_bus: 0}]
+          outputs: [{engine_bus: 0, track_bus: 0}]
+          plugins:
+            - {name: a_send, type: internal, uid: sushi.testing.send}
+            - {name: a_send_probe, uri: "http://distrho.sf.net/plugins/3BandEQ"}
+        """)
+    plan = plan_probes(spec, amp=False)
+    assert [c.plugin.name for c in plan.points[0].track.plugins] == ["a_send_probe_probe"]
+
+
+def test_the_probe_tracks_name_is_refused_once_in_one_wording(tmp_path):
+    """One check, the spec's, which every path to a running rig reaches."""
+    from sushi_rig.rigfile import RigFileError
+    from sushi_rig.spec import probe_track_problem
+
+    with pytest.raises(RigFileError) as caught:
+        v2(tmp_path, [{"name": PROBE_TRACK, "input": "guitar-in", "width": "mono", "chain": []}])
+    assert caught.value.problems == [probe_track_problem(PROBE_TRACK)]
+
+
+def test_a_probe_tracks_ports_are_worked_out_once_and_carried(tmp_path):
+    from sushi_rig.rigfile import spec_of
+
+    for point in plan_probes(spec_of(RIGS / "guitar_vocal.yaml"), amp=True).points:
+        if point.track is not None:
+            assert point.track.output_ports == ("sushi:audio_output_6", "sushi:audio_output_7")
+            assert point.track.input_ports == ("sushi:audio_input_2",)
+            assert point.capture in point.track.output_ports

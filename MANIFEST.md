@@ -1420,4 +1420,14 @@ chain was empty (now its own NOT CHECKED line); the "via amp" note blamed a lack
 of free ports when the guitar track had no inputs (the two causes are now told
 apart); and the probe track's routing re-parsed track entries beside
 `track_route` (`patchbay.track_entries` is now the one reading of them).
+A second review found four more, also fixed: a guitar with no stem whose probe
+through the master had no room was still blamed on the missing stem (the amp's
+note now gives the cause of the path tried last); a rig was refused over
+`<send>_probe`, a name no copy is ever given, since sends and returns are not
+copied; the `selftest_probe` name check existed three times, and is now one
+function in spec.py, run by `RigSpec.validate` — which every path to a running
+rig reaches, a v2 rig through `compile_rig` — and called by the plan for a spec
+given to it unvalidated, so `check_rig` no longer has its own copy; and a probe
+track's ports are worked out once when it is planned and carried on it, rather
+than rebuilt from its routing at every use. The listings are unchanged.
 *(2026-11-02)*

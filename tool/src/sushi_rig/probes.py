@@ -193,7 +193,7 @@ from .rigfile import (
     SEND_SUFFIX,
     SEND_UID,
 )
-from .spec import PROBE_TRACK, PluginSpec, TrackSpec
+from .spec import PROBE_TRACK, PluginSpec, TrackSpec, probe_track_problem
 
 # What a copied processor's name gains; the probe track's own name is
 # spec.PROBE_TRACK, kept from every rig there. Sushi names every track and
@@ -223,7 +223,9 @@ class ProbeTrack:
 
     `inputs` and `outputs` are Sushi routing entries, held as sorted pairs so
     the plan stays immutable; `to_spec` gives them back as Sushi writes them.
-    `copy_of` is whose chains it carries, in order.
+    `copy_of` is whose chains it carries, in order. `input_ports` and
+    `output_ports` are those entries as Sushi's ports, worked out once when the
+    track is planned.
     """
 
     name: str
@@ -234,6 +236,8 @@ class ProbeTrack:
     plugins: tuple[CopiedPlugin, ...] = ()
     multibus: bool = False
     buses: int | None = None
+    input_ports: tuple[str, ...] = ()
+    output_ports: tuple[str, ...] = ()
 
     def to_spec(self) -> TrackSpec:
         """The probe track as a `TrackSpec`, which is what the effect creates."""
@@ -308,10 +312,19 @@ def plan_probes(rig: Any, *, amp: bool, sushi_node: str = SUSHI_NODE) -> ProbePl
     senders: list[tuple[Any, bool]] = []
     # The guitar's probe tracks, kept for the amp: (its own, through the master).
     twins: dict[str, list[ProbeTrack | None]] = {}
-    # Why a track has no probe track, for the amp's note: no room is one cause,
-    # a track with nothing to probe is another, and the fix differs.
-    unprobed: dict[str, str] = {}
+    # Why a track has no probe track, for the amp's note, per path: its own
+    # (no room, or nothing to probe) and through the master (no room). The amp
+    # note gives the cause of the path that was tried last, since a channel
+    # with no stem is tried through the master and fails there for room.
+    own_why: dict[str, str] = {}
+    through_why: dict[str, str] = {}
     used = _used(rig)
+    # The master's outputs, read once: every path to the monitors ends there.
+    master_ports: tuple[str, ...] = ()
+    master_broken: list[str] = []
+    if master is not None:
+        master_out, master_broken = track_route(master, "outputs")
+        master_ports = _ports(sushi_node, "output", master_out)
     for track in rig.tracks:
         into, found = track_route(track, "inputs", track.source)
         out, more = track_route(track, "outputs", track.sink)
@@ -340,21 +353,20 @@ def plan_probes(rig: Any, *, amp: bool, sushi_node: str = SUSHI_NODE) -> ProbePl
             if not ((is_master and not inject) or (sends and inject and not captures)):
                 missing = "inputs" if not inject else "outputs"
                 not_checked.append(f"{track.name}: no {missing} on Sushi, so nothing to probe")
-            unprobed[track.name] = f"{track.name} has no {'inputs' if not inject else 'outputs'} on Sushi"
+            own_why[track.name] = f"{track.name} has no {"inputs" if not inject else "outputs"} on Sushi"
             continue
         routed[track.name] = (inject, captures)
-        twin, why = _probe_track(track, track, (track,), used)
+        twin, why = _probe_track(track, track, (track,), used, sushi_node)
         twins.setdefault(track.name, [None, None])[0] = twin
         if twin is None:
             not_checked.append(f"{track.name}: {why}, so its chain is not probed")
-            unprobed[track.name] = why
+            own_why[track.name] = why
             continue
         points += _through(twin, f"{track.name} through {sushi_node}", sushi_node)
 
     # A master whose outputs cannot be read is already in `problems`.
-    if master is not None and senders and not track_route(master, "outputs")[1]:
-        outputs = _ports(sushi_node, "output", track_route(master, "outputs")[0])
-        if not outputs:
+    if master is not None and senders and not master_broken:
+        if not master_ports:
             not_checked.append(
                 f"{', '.join(s.name for s, _ in senders)}: sent to the {master.name}, "
                 "which has no outputs on Sushi, so nothing reaches the monitors to probe"
@@ -381,13 +393,13 @@ def plan_probes(rig: Any, *, amp: bool, sushi_node: str = SUSHI_NODE) -> ProbePl
             for sender, own in senders:
                 if sender.name in again:
                     continue
-                twin, why = _probe_track(sender, master, (sender, master), used)
+                twin, why = _probe_track(sender, master, (sender, master), used, sushi_node)
                 twins.setdefault(sender.name, [None, None])[1] = twin
                 if twin is None:
                     not_checked.append(
                         f"{sender.name} through the {master.name}: {why}, so it is not probed"
                     )
-                    unprobed.setdefault(sender.name, why)
+                    through_why[sender.name] = why
                     continue
                 points += _through(twin, f"{sender.name} through the {master.name}", sushi_node)
 
@@ -404,7 +416,7 @@ def plan_probes(rig: Any, *, amp: bool, sushi_node: str = SUSHI_NODE) -> ProbePl
             )
         else:
             (track, captures, sends), = guitar
-            monitors = sends and master is not None and bool(track_route(master, "outputs")[0])
+            monitors = sends and master is not None and bool(master_ports)
             if captures is not None and not captures and not monitors:
                 problems.append(
                     f"the amp is in front of {track.name!r}, which has no outputs on Sushi "
@@ -416,7 +428,8 @@ def plan_probes(rig: Any, *, amp: bool, sushi_node: str = SUSHI_NODE) -> ProbePl
                 ))
                 own, through = twins.get(track.name, [None, None])
                 if own is None and through is None:
-                    cause = unprobed.get(track.name, f"{track.name} has no probe track")
+                    cause = (through_why.get(track.name) or own_why.get(track.name)
+                             or f"{track.name} has no probe track")
                     not_checked.append(
                         f"{track.name} via amp: {cause}, so whether the amp's output "
                         "reaches Sushi is not probed"
@@ -428,7 +441,7 @@ def plan_probes(rig: Any, *, amp: bool, sushi_node: str = SUSHI_NODE) -> ProbePl
                     # The amp's output into the probe track, as the patchbay
                     # links it into the guitar's own: what the monitors hear
                     # of the amp is the point of the second of these.
-                    links = tuple((AMP_OUTPUT, port) for port in _twin_ports(twin, "inputs", sushi_node))
+                    links = tuple((AMP_OUTPUT, port) for port in twin.input_ports)
                     points += [
                         replace(point, inject=(AMP_INPUT,), links=links, nonlinear=True,
                                 beside=GUITAR_ROLE)
@@ -485,7 +498,7 @@ def crowded_ports(
     client = stimulus.rsplit(":", 1)[0]
     sinks = [sink for _, sink in probe_links(point, stimulus)
              if sink.startswith(f"{sushi_node}:audio_input_")]
-    outputs = _twin_ports(point.track, "outputs", sushi_node) if point.track else ()
+    outputs = point.track.output_ports if point.track else ()
     links = listed_links(listing)
     found = []
     for sink in dict.fromkeys(sinks):
@@ -510,14 +523,8 @@ def crowded_ports(
 
 
 def _through(twin: ProbeTrack, name: str, sushi_node: str) -> list[ProbePoint]:
-    inject = _twin_ports(twin, "inputs", sushi_node)
-    return [ProbePoint(f"{name} ({port})", inject, port, track=twin)
-            for port in _twin_ports(twin, "outputs", sushi_node)]
-
-
-def _twin_ports(twin: ProbeTrack, label: str, sushi_node: str) -> tuple[str, ...]:
-    route, _ = track_route(twin.to_spec(), label)
-    return _ports(sushi_node, "input" if label == "inputs" else "output", route)
+    return [ProbePoint(f"{name} ({port})", twin.input_ports, port, track=twin)
+            for port in twin.output_ports]
 
 
 def _used(rig: Any) -> dict[str, set[int]]:
@@ -549,8 +556,9 @@ def _free(dest: Dest, taken: set[int]) -> Dest | None:
     return None
 
 
-def _moved(track: Any, label: str, used: set[int]) -> tuple | str:
-    """`track`'s `label` entries with each engine number moved to a free one.
+def _moved(track: Any, label: str, used: set[int]) -> tuple[tuple, tuple[Dest, ...]] | str:
+    """`track`'s `label` entries with each engine number moved to a free one,
+    and the places they now name.
 
     The same place named twice — a mono channel's one input into both halves —
     moves to the same new place, so the shape is kept. Returns why not, as
@@ -569,13 +577,15 @@ def _moved(track: Any, label: str, used: set[int]) -> tuple | str:
             )
         moves[dest] = new
         taken.update(new.channels())
-    return tuple(
+    entries = tuple(
         tuple(sorted({**entry, dest.key: moves[dest].index}.items())) for entry, dest in pairs
     )
+    return entries, tuple(moves.values())
 
 
 def _probe_track(
-    shape_in: Any, shape_out: Any, chains: tuple[Any, ...], used: dict[str, set[int]]
+    shape_in: Any, shape_out: Any, chains: tuple[Any, ...], used: dict[str, set[int]],
+    sushi_node: str,
 ) -> tuple[ProbeTrack | None, str]:
     """A probe track with `shape_in`'s inputs, `shape_out`'s outputs, both
     moved to free places, carrying the chains of `chains` in order; or None
@@ -587,31 +597,38 @@ def _probe_track(
             return None, why
     plugins = tuple(
         CopiedPlugin(source=p.name, plugin=replace(p, name=p.name + PROBE_SUFFIX))
-        for track in chains for p in track.plugins if getattr(p, "uid", None) not in _NOT_COPIED
+        for track in chains for p in _copyable(track)
     )
     return ProbeTrack(
         name=PROBE_TRACK,
         copy_of=tuple(track.name for track in chains),
         channels=shape_in.channels,
-        inputs=inputs,
-        outputs=outputs,
+        inputs=inputs[0],
+        outputs=outputs[0],
         plugins=plugins,
+        input_ports=_ports(sushi_node, "input", inputs[1]),
+        output_ports=_ports(sushi_node, "output", outputs[1]),
         multibus=getattr(shape_in, "multibus", False),
         buses=getattr(shape_in, "buses", None),
     ), ""
 
 
 def _name_problems(rig: Any) -> list[str]:
-    """Names the probe track would take that the rig already has."""
+    """Names the probe track would take that the rig already has.
+
+    Only names a copy could really be given: a send or return is never copied,
+    so `<send>_probe` can never clash. The track's own name is the spec's check
+    (`spec.probe_track_problem`), repeated here in its wording because a plan
+    can be asked of a spec nothing has validated.
+    """
     names = {track.name for track in rig.tracks} | {
         p.name for track in rig.tracks for p in track.plugins
     }
-    wanted = {PROBE_TRACK} | {
-        p.name + PROBE_SUFFIX for track in rig.tracks for p in track.plugins
-    }
-    return [
-        f"{name!r} is in the rig, and is a name selftest gives its probe track or a "
-        f"processor copied onto it; rename it, since a probe that removed its own "
+    wanted = {p.name + PROBE_SUFFIX for track in rig.tracks for p in _copyable(track)}
+    problems = [probe_track_problem(t.name) for t in rig.tracks if probe_track_problem(t.name)]
+    return problems + [
+        f"{name!r} is in the rig, and is a name selftest gives a processor copied "
+        "onto its probe track; rename it, since a probe that removed its own "
         "afterwards would remove the rig's"
         for name in sorted(names & wanted)
     ]
@@ -632,9 +649,14 @@ def _master(rig: Any) -> Any | None:
     return None
 
 
+def _copyable(track: Any) -> list[Any]:
+    """The plugins of `track` a probe track copies: all but sends and returns."""
+    return [p for p in track.plugins if getattr(p, "uid", None) not in _NOT_COPIED]
+
+
 def _copied(track: Any) -> bool:
     """Whether a copy of `track`'s chain would carry anything."""
-    return any(getattr(p, "uid", None) not in _NOT_COPIED for p in track.plugins)
+    return bool(_copyable(track))
 
 
 def _sends_to_master(track: Any) -> bool:

@@ -38,6 +38,21 @@ _VALID_TYPES = {"lv2", "vst2x", "vst3x", "internal"}
 PROBE_TRACK = "selftest_probe"
 
 
+def probe_track_problem(name: str) -> str | None:
+    """The one wording for a rig track that takes the probe track's name.
+
+    Checked once, in `RigSpec.validate`, which every path to a running rig
+    reaches — a v2 rig through `rigfile.compile_rig` — and called by
+    `probes.plan_probes` for a spec handed to it unvalidated.
+    """
+    if name != PROBE_TRACK:
+        return None
+    return (
+        f"track {name!r}: a name selftest gives its probe track, which a capture "
+        "leaves out; rename it"
+    )
+
+
 @dataclass
 class PluginSpec:
     name: str
@@ -146,11 +161,9 @@ class RigSpec:
                     f"(already used as a {seen[track.name]})"
                 )
             seen[track.name] = "track"
-            if track.name == PROBE_TRACK:
-                problems.append(
-                    f"track {track.name!r}: a name selftest gives its probe track, "
-                    "which a capture leaves out; rename it"
-                )
+            probe = probe_track_problem(track.name)
+            if probe:
+                problems.append(probe)
 
             if track.multibus:
                 if track.buses is None:
