@@ -131,6 +131,32 @@ def _safe(fn, *args):
         return None
 
 
+# The processors already warned about for having no parameters, by track and
+# name, for the life of this process. See `_no_parameters`.
+_SAID_NO_PARAMETERS: set[tuple[str, str]] = set()
+
+
+def _no_parameters(track: str, processor: str) -> None:
+    """Say, once, that a processor returned no parameters, unless it is one
+    that has none by design.
+
+    `capture` runs under the web UI's poll, about once a second, and the
+    warning it gave every time for the master's return (`master_return`, a
+    send/return pair has nothing to set) filled the agent's terminal on the
+    rig on 2026-11-02 and buried the two lines that mattered, a crashed tuner
+    and a refused take. The compiler's own send and return
+    (`protected_processor`) are expected to have none and are not mentioned.
+    Anything else is said once per processor per process: a plugin with no
+    parameters is worth knowing about, not worth repeating. An internal
+    processor the compiler did not put there cannot be told by name here
+    (the capture reads no session), so it falls to the once-only rule."""
+    if protected_processor(track, processor) is not None or (track, processor) in _SAID_NO_PARAMETERS:
+        return
+    _SAID_NO_PARAMETERS.add((track, processor))
+    print(f"warning: {processor!r} on {track!r} returned no parameters "
+          "(said once; it is not repeated while this process runs)", file=sys.stderr)
+
+
 def capture(address: str = DEFAULT_GRPC_ADDRESS, controller: Any = None) -> dict[str, Any]:
     """Read the full normalised parameter state of a running Sushi.
 
@@ -185,7 +211,7 @@ def capture(address: str = DEFAULT_GRPC_ADDRESS, controller: Any = None) -> dict
             for proc_id, proc_name, is_track in targets:
                 param_infos = controller.parameters.get_processor_parameters(proc_id)
                 if not param_infos:
-                    print(f"warning: {proc_name!r} returned no parameters", file=sys.stderr)
+                    _no_parameters(track.name, proc_name)
 
                 params: dict[str, float] = {}
                 for param in param_infos:

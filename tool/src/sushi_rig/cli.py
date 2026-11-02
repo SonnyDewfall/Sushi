@@ -663,12 +663,30 @@ def _nulltest(args: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
+def _agent_crashes() -> list[dict] | None:
+    """The rig's children a running agent saw exit (`agent.supervisor.crashed`),
+    or None when no agent answers. Only the agent that started a rig can read
+    its children's exits; doctor uses them to say that an absent node of the
+    rig's is a crash rather than a rig that is down. Asked briefly, and never
+    a reason for doctor to fail: without it, doctor reads the state file."""
+    from .agent_client import Absent, Unusable, find_agent, probe
+
+    try:
+        health = probe(find_agent()[0])
+    except (Absent, Unusable):
+        return None
+    supervisor = (health.get("agent") or {}).get("supervisor")
+    crashed = supervisor.get("crashed") if isinstance(supervisor, dict) else None
+    return crashed if isinstance(crashed, list) else None
+
+
 def _doctor(args: argparse.Namespace) -> int:
     """`doctor`: everything about this machine that has to be true before you play."""
     from .doctor import faults, run, unchecked
     from .paths import checkout_root
 
-    checks = run(checkout_root(), machine_file=args.machine, patchbay_file=args.patchbay)
+    checks = run(checkout_root(), machine_file=args.machine, patchbay_file=args.patchbay,
+                 crashed=_agent_crashes())
     for check in checks:
         print(check)
     broken, skipped = faults(checks), unchecked(checks)

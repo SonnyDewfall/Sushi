@@ -312,3 +312,75 @@ def test_lost_audio_is_on_the_panel_not_only_in_the_file(tmp_path):
     session.start("riff-idea")
     said = session.stop()
     assert "lost audio" in said
+
+
+# -- a take whose capture failed is not complete (the rig, 2026-11-02) --------------------
+
+def test_a_take_whose_engine_did_not_start_is_finished_but_not_complete(tmp_path):
+    """On the rig, ui-take-1's take.yaml said `complete: true` beside `frames:
+    0` and an engine that never started. Anything filtering takes on the flag
+    would have kept it as a good one."""
+    session = TakeSession(plan(tmp_path), FakeEngine(start_error=OSError("no port called 'x:y'")))
+    with pytest.raises(TransportError):
+        session.start("ui-take-1")
+    failed = take.load_take(tmp_path / "ui-take-1")
+    assert failed.metadata["complete"] is False and failed.failed.endswith("no port called 'x:y'")
+    problems = take.check_take(failed)
+    assert problems[0] == "nothing was recorded: the capture engine did not start: no port called 'x:y' — the stems hold no audio"
+    assert not any("never finished" in p for p in problems), "it was finished: it failed, it was not cut off"
+    assert failed.metadata["alignment"]["note"].startswith("This take failed, so no offsets were measured")
+    assert take.take_summary(tmp_path / "ui-take-1")["complete"] is False
+
+
+def test_a_take_written_complete_beside_a_failure_is_flagged(tmp_path):
+    """The writer before this fix: the rig's ~/sushi-rig-takes/ui-take-1, as its
+    take.yaml was shown in the results (the error shortened)."""
+    session = TakeSession(plan(tmp_path), FakeEngine(start_error=OSError("no port")))
+    with pytest.raises(TransportError):
+        session.start("ui-take-1")
+    path = tmp_path / "ui-take-1" / take.TAKE_FILE
+    import yaml
+
+    meta = yaml.safe_load(path.read_text())
+    meta["complete"] = True
+    path.write_text(yaml.safe_dump(meta, sort_keys=False))
+    old = take.load_take(tmp_path / "ui-take-1")
+    problems = take.check_take(old)
+    assert any(p.startswith("take.yaml says complete: true beside a capture that failed") for p in problems)
+    assert any(p.startswith("nothing was recorded: the capture engine did not start") for p in problems)
+    assert take.take_summary(tmp_path / "ui-take-1")["complete"] is False, "a list does not call it whole"
+
+
+def test_an_engine_that_would_not_stop_leaves_a_whole_take_that_says_so(tmp_path):
+    session = TakeSession(plan(tmp_path), FakeEngine(stop_error=RuntimeError("stuck")))
+    session.start("riff-idea")
+    session.stop()
+    finished = take.load_take(tmp_path / "riff-idea")
+    assert finished.complete and finished.failed is None
+    assert finished.metadata["capture"]["error"] == ""
+    assert any(p.startswith("the capture engine did not stop cleanly: stuck — the stems hold every block")
+               for p in take.check_take(finished))
+
+
+def test_an_old_take_whose_engine_would_not_stop_is_still_whole(tmp_path):
+    """Before 2026-11-02 the stop failure was written into `capture.error`,
+    beside a take whose stems are whole. Read as a failure, every such take
+    would be called incomplete and flagged as a contradiction."""
+    import yaml
+
+    session = TakeSession(plan(tmp_path), FakeEngine(stop_error=RuntimeError("stuck")))
+    session.start("riff-idea")
+    session.stop()
+    path = tmp_path / "riff-idea" / take.TAKE_FILE
+    meta = yaml.safe_load(path.read_text())
+    capture = meta["capture"]
+    capture["error"] = capture.pop("stop_error")  # as the old writer put it
+    assert capture["error"] == "the capture engine did not stop cleanly: stuck"
+    path.write_text(yaml.safe_dump(meta, sort_keys=False))
+    old = take.load_take(tmp_path / "riff-idea")
+    assert old.complete and old.failed is None
+    problems = take.check_take(old)
+    assert any(p.startswith("the capture engine did not stop cleanly: stuck — the stems hold every block")
+               for p in problems)
+    assert not any("complete: true beside a capture that failed" in p or "stopped early" in p for p in problems)
+    assert take.take_summary(tmp_path / "riff-idea")["complete"] is True

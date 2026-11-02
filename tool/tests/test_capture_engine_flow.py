@@ -1,12 +1,12 @@
 """`CaptureEngine`'s sequence of calls, against a hand-written stand-in for JACK.
 
-Read this for what it is. The stand-in is a few dozen lines of Python written
-from JACK-Client's documented shape, not a capture of the real thing, so it
-proves the engine's own logic (what it calls, how many times, what it does when
-a read comes back empty) and nothing about JACK or PipeWire. Where the real
-library behaves otherwise, these pass and the rig run fails. That is why each
-test here is about a decision the engine makes, and the engine's `capture.py`
-docstring still lists the live behaviour as unverified.
+Read `jack_fake.py` for what the stand-in is: written from JACK-Client's
+documented shape, not a capture, so it proves the engine's own logic (what it
+calls, how many times, what it does when a read comes back empty) and nothing
+about JACK or PipeWire. Where the real library behaves otherwise, these pass
+and the rig run fails. The ports JACK lists have the rig's names, which are
+not the machine file's spelling; their aliases, which carry that spelling, are
+a guess until the rig shows them (`jack_fake.py`).
 
 Its own module because it needs numpy (the pump allocates its buffer).
 """
@@ -14,96 +14,18 @@ Its own module because it needs numpy (the pump allocates its buffer).
 from __future__ import annotations
 
 import sys
-import types
 
 import pytest
 
 np = pytest.importorskip("numpy")
 
 from sushi_rig import capture  # noqa: E402
-from sushi_rig.take import DRY, Stem  # noqa: E402
+from sushi_rig.take import DRY, PROCESSED, Stem  # noqa: E402
 
-SOURCE = "Audient iD14:capture_AUX0"
+from jack_fake import ALIAS, JACK_NAME, JACK_PORTS, FakeJack  # noqa: E402
+
+SOURCE = ALIAS
 PLAN = ((Stem("guitar", DRY, SOURCE), 1),)
-
-
-class FakeJack:
-    """Just enough of `jack` for `CaptureEngine`. `visible_after` is how many
-    reads of a port's connections come back empty before the link shows, which
-    is what a registry that updates asynchronously would do."""
-
-    class JackError(Exception):
-        pass
-
-    def __init__(self, blocksize=256, visible_after=0):
-        self.blocksize, self.visible_after = blocksize, visible_after
-        self.activations = 0
-        self.clients = []
-        self.on_activate = []  # called with the client, to play things that happen at activation
-        self.on_connect = []   # called after each connect, to play a cycle between links
-        outer = self
-
-        class Port:
-            def __init__(self, name):
-                self.name = name
-                self.reads = 0
-
-            def get_array(self):
-                return np.zeros(outer.blocksize, dtype=np.float32)
-
-        class Ports(list):
-            def register(self, short):
-                port = Port(f"sushi-rig-capture:{short}")
-                self.append(port)
-                return port
-
-        class Client:
-            def __init__(self, name, no_start_server=False):
-                self.name, self.inports, self.links = name, Ports(), {}
-                self.samplerate = 48000
-                self.closed = False
-                outer.clients.append(self)
-
-            @property
-            def blocksize(self):
-                return outer.blocksize
-
-            def get_ports(self, **kwargs):
-                return [types.SimpleNamespace(name=SOURCE)]
-
-            def activate(self):
-                outer.activations += 1
-                for hook in outer.on_activate:
-                    hook(self)
-
-            def deactivate(self, ignore_errors=True):
-                pass
-
-            def close(self, ignore_errors=True):
-                self.closed = True
-
-            def connect(self, source, port):
-                self.links[port.name] = source
-                for hook in outer.on_connect:
-                    hook(self)
-
-            def get_all_connections(self, port):
-                port.reads += 1
-                if port.reads <= outer.visible_after or port.name not in self.links:
-                    return []
-                return [types.SimpleNamespace(name=self.links[port.name])]
-
-            def set_process_callback(self, fn): self.process = fn
-            def set_xrun_callback(self, fn): pass
-            def set_blocksize_callback(self, fn): self.blocksize_cb = fn
-            def set_shutdown_callback(self, fn): pass
-
-        self.Client = Client
-
-    def install(self, monkeypatch):
-        module = types.ModuleType("jack")
-        module.Client, module.JackError = self.Client, self.JackError
-        monkeypatch.setitem(sys.modules, "jack", module)
 
 
 def engine(**kwargs):
@@ -122,7 +44,7 @@ def test_a_link_that_shows_up_a_moment_late_is_not_a_refused_capture(monkeypatch
 def test_a_link_that_never_shows_is_refused_after_trying(monkeypatch):
     FakeJack(visible_after=10**6).install(monkeypatch)
     e = engine()
-    with pytest.raises(capture.CaptureError, match="should be fed by Audient iD14:capture_AUX0 alone"):
+    with pytest.raises(capture.CaptureError, match="should be fed by Audient iD14 Multichannel:capture_AUX0 alone"):
         e.start(PLAN, lambda block: len(block))
 
 
@@ -236,3 +158,102 @@ def test_a_start_that_fails_early_does_not_hand_back_the_last_takes_account(monk
         with pytest.raises(capture.CaptureUnavailable):
             e.start(PLAN, lambda block: len(block))
     assert e.stop() is None, "no account at all, not an empty one the take would keep as `engine: {}`"
+
+
+# -- which port a column is linked from (the rig, 2026-11-02) ------------------------------
+
+def test_a_machine_file_port_is_linked_from_the_jack_port_that_carries_it_as_an_alias(monkeypatch):
+    """The rig refused every take: `no port called 'Audient iD14:capture_AUX0'
+    (for board-dry.wav) is in the graph`, listing `Audient iD14
+    Multichannel:capture_AUX0` among those that were. The machine file names the
+    alias, which the patchbay needs; JACK names the port otherwise and lists the
+    alias among its aliases (a guess until the rig shows it)."""
+    assert ALIAS not in JACK_PORTS and ALIAS in JACK_PORTS[JACK_NAME], "the two spellings differ"
+    jack = FakeJack(levels={JACK_NAME: 0.25, "sushi:audio_output_2": 0.5, "sushi:audio_output_3": 0.75})
+    jack.install(monkeypatch)
+    pushed = []
+    e = engine()
+    plan = ((Stem("board", PROCESSED, "sushi:audio_output_2"), 2), (Stem("board", DRY, ALIAS), 1))
+    e.start(plan, lambda block: pushed.append(block.copy()) or len(block))
+    assert [source for source, _ in jack.connected] == ["sushi:audio_output_2", "sushi:audio_output_3", JACK_NAME]
+    jack.clients[0].process(256)
+    assert pushed[0][0].tolist() == [0.5, 0.75, 0.25], "each column holds its own port's signal"
+    assert e.stop()["sources"] == {
+        "board.wav[0]": "sushi:audio_output_2", "board.wav[1]": "sushi:audio_output_3",
+        "board-dry.wav": JACK_NAME,
+    }
+
+
+def test_a_port_jack_does_not_have_is_refused_before_any_port_is_made_with_every_port_listed(monkeypatch):
+    jack = FakeJack()
+    jack.install(monkeypatch)
+    with pytest.raises(capture.CaptureError) as caught:
+        engine().start(((Stem("guitar", DRY, "Audient iD14:capture_AUX42"), 1),), lambda block: 0)
+    said = caught.value.problems
+    assert said[0] == "no JACK port is called or aliased 'Audient iD14:capture_AUX42' (for guitar-dry.wav)"
+    assert f"{JACK_NAME} (aliases: alsa:acp:iD14:2:capture:capture_0, {ALIAS})" in said[-1]
+    assert all(name in said[-1] for name in JACK_PORTS), "every port JACK lists, with its aliases"
+    assert jack.clients[0].inports == [] and jack.clients[0].closed
+
+
+def test_an_alias_two_ports_carry_is_refused_naming_both(monkeypatch):
+    """Two profiles of one interface live at once would both carry
+    `Audient iD14:capture_AUX0`: which to record is not guessed."""
+    ports = {**JACK_PORTS, "Audient iD14 Pro:capture_AUX0": ("alsa:acp:iD14:1:capture:capture_0", ALIAS)}
+    FakeJack(ports=ports).install(monkeypatch)
+    with pytest.raises(capture.CaptureError) as caught:
+        engine().start(PLAN, lambda block: 0)
+    first = caught.value.problems[0]
+    assert first.startswith(f"{ALIAS!r} (for guitar-dry.wav) names more than one JACK port: ")
+    assert JACK_NAME in first and "Audient iD14 Pro:capture_AUX0" in first
+
+
+def test_a_port_named_as_jack_names_it_is_found_too(monkeypatch):
+    FakeJack().install(monkeypatch)
+    e = engine()
+    e.start(((Stem("guitar", DRY, JACK_NAME), 1),), lambda block: len(block))
+    assert e.stop()["sources"] == {"guitar-dry.wav": JACK_NAME}
+
+
+def test_the_engine_reads_no_pw_dump(monkeypatch):
+    """The earlier fix read `pw-dump` in a subprocess at every RECORD, to
+    predict JACK's names: latency at the start of a take, and a take refused
+    whenever pw-dump stalled. The client's own listing is all it asks."""
+    import subprocess
+
+    from sushi_rig import patchbay
+
+    def no(*a, **k):
+        raise AssertionError("the engine must not read pw-dump or run anything")
+
+    monkeypatch.setattr(patchbay, "read_pw_dump", no)
+    monkeypatch.setattr(subprocess, "run", no)
+    FakeJack().install(monkeypatch)
+    e = engine()
+    e.start(PLAN, lambda block: len(block))
+    e.stop()
+
+
+def test_the_listing_doctor_runs_under_pw_jack_prints_every_port_and_its_aliases(monkeypatch, capsys):
+    """`python -m sushi_rig.capture`, what `capture.list_jack_ports` runs:
+    the same `jack_ports` the engine matches on, as JSON."""
+    import json
+
+    jack = FakeJack()
+    jack.install(monkeypatch)
+    assert capture._print_ports() == 0
+    listed = json.loads(capsys.readouterr().out)
+    assert {p["name"]: tuple(p["aliases"]) for p in listed} == JACK_PORTS
+    assert jack.clients[0].closed and jack.clients[0].inports == [], "it lists, and registers nothing"
+
+
+def test_the_listing_says_why_when_there_is_no_server(monkeypatch, capsys):
+    jack = FakeJack()
+
+    def refuse(name, no_start_server=False):
+        raise jack.JackError("server not running")
+
+    jack.Client = refuse
+    jack.install(monkeypatch)
+    assert capture._print_ports() == 1
+    assert "no JACK or PipeWire server to connect to" in capsys.readouterr().err

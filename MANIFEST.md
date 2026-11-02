@@ -2878,3 +2878,111 @@ against `decide_move`, and cli uses `render.v1_reference_path`. (10)
 `apply_to_chains` removes by `stereo.units`, as `check_remove` does. **Not run
 against a live Sushi**: every undo above, and `get_processor_id` for an added
 processor's id. *(2026-11-02)*
+
+**Record from the web UI: the live test's findings.** The first RECORD on the
+rig (`RESULTS-ui-2026-11-02.md` on `claude/ui-tests`) was refused every time:
+`cannot record ui-take-1: the capture engine did not start: no port called
+'Audient iD14:capture_AUX0' (for board-dry.wav) is in the graph; output ports
+in the graph include: ... Audient iD14 Multichannel:capture_AUX0, ...`. **Two
+port readers disagreed.** The machine file names a port by its PipeWire alias,
+which the patchbay matches (`live_port_nodes`) and must keep matching, so the
+file is unchanged; `capture.missing_sources` looked that alias up among JACK's
+names, which for an ALSA device are `<node.description>:<port.name>`. Sushi's
+ports, whose alias and JACK name coincide, were found, so only the dry taps
+failed. Now a take still names its ports as the machine file does, and at each
+RECORD `CaptureEngine.start` reads `pw-dump` and resolves them through
+`patchbay.jack_port_names` (`resolve_port`, shared with `resolve_nodes`, then
+`LivePort.jack`, from `jack_client_name`: description, nick or `node.name`,
+prefixed by a differing `application.name`, as pipewire-jack names a client,
+read from its source and not run), checks those names against JACK's list, and
+links them; what was linked is `capture.engine.sources` in take.yaml. A JACK
+name more than one node would carry is refused rather than guessed. The places
+that turn a machine-file port into a JACK port were the capture engine alone
+(`rig_stems` plans by alias, the listener and `sushi-rig recorder` build the
+engine with `record_session`, and the amp's `guitar_port`, the patchbay, the
+tuner tap, `rig.wait_for_links` and the probes name aliases, `pw-link` names
+or Sushi's and NAM's own ports, never a JACK name); `doctor` is the second
+caller now. The fakes listed the alias as a JACK name and satisfied both
+spellings: `tests/jack_fake.py` pairs the real `pw-dump` capture with the JACK
+names the rig's refusal listed, and the whole-take test in
+`test_record_session.py` runs guitar_vocal through the real engine on them,
+checking the dry stem holds the guitar's port. Eight more: (1) **doctor's
+`record-ports`** plans the running rig's take as the recorder does and
+resolves it by the same call, so it fails when RECORD would at that step, and
+names each JACK name; a test runs one plan through both on three graphs. (2)
+**A failed take is `complete: false`**: `finish_take` writes it so beside a
+capture error (an engine or recorder that did not start, a writer that
+stopped); an engine that would not stop is `stop_error`, the take whole;
+`take check` says "nothing was recorded" of a take with no frames and names
+`complete: true` beside a failure in an old take, and the takes list does not
+call one whole. (3) **`'master_return' returned no parameters`** about once a
+second: the compiler's send and return are not mentioned, anything else once
+per processor per process. (4) **A crashed child is on both screens**, in the
+last error's box, naming it and what it means ("the tuner (fmit) was killed by
+SIGTERM ...; sound is unaffected; there is no tuner. Restart the rig to bring
+it back"), and so are the supervisor's problems (`rig.js` `crashProblem`;
+Chromium, both screens). (5) **A one-knob save is one line** (#117):
+`fold_state` keeps the file's own value when the capture's is the same number,
+and a float stays a float, tested by saving one knob into a copy of
+electric-chorus-2 and accustomed. (6) **Doctor's unchecked patchbay item** with
+the rig up says which process is absent and why (the agent's crash record,
+which the command asks a running agent for; the state file's pid; or a child
+not started), with `sushi-rig restart` and not `up`. (7) **`verify
+<rig>.yaml`** compiles a rig file of `config/rigs/` as `up --rig` does
+(`rig.compile_named_rig`) and checks that, chosen over refusing since the
+compiled file lives under the runtime directory; any other YAML, or a file
+that is not JSON, is a sentence saying what to pass. (8) **The amp is named by
+its file** everywhere (`amp_live` `name` is the stem, the metadata name is
+`declared`, shown as what the file calls itself); the UI fake's models now
+call themselves something other than their files, as the rig's do. **NOT RUN
+ON THE RIG**: RECORD on the stage screen and `sushi-rig take check` on what it
+writes is the test, and whether `jack_client_name` names every device as
+pipewire-jack does past the two spellings observed, whether a take's eight
+columns keep up, and doctor's agent query and wording with a real crash, are
+all for it to say. *(2026-11-02)*
+
+**Record from the web UI: answering review of the port fix.** Nine findings.
+(7, the main one) **Ports are found through JACK's own aliases, not a
+prediction of JACK's names.** The rig's refusal came from comparing the machine
+file's names with JACK's port names alone; pipewire-jack gives every port
+aliases, and its own port lookup matches them. The engine now matches each
+column's machine-file name against the name and aliases of each port its own
+client lists (`capture.jack_ports`, `match_sources`), at RECORD; a name no port
+carries, or more than one does, is refused with every port and its aliases
+listed (the rig's refusal cut the list at eight). Gone with it:
+`patchbay.jack_client_name`, `jack_port_names`, `LivePort.jack` and the
+per-RECORD `pw-dump` subprocess, which also settles (1) the uniqueness rule
+that refused a port whenever two nodes shared a description, though
+pipewire-jack renames only duplicates of different clients (the iD14's
+pro-audio profile, whose sink and source share "Audient iD14 Pro", would have
+refused every take), and (8) the latency and stall a pw-dump added to a take's
+start. `patchbay.resolve_port` stays, as one port's half of `resolve_nodes`.
+doctor's `record-ports` lists JACK's ports in a child under `pw-jack`
+(`capture.list_jack_ports`, running `python -m sushi_rig.capture`, which lists
+with `jack_ports`) and matches with `match_sources`; where no client can be
+opened it is "needs JACK", unchecked. `tests/jack_fake.py` lists ports whose
+name is `Audient iD14 Multichannel:capture_AUX0` and whose aliases include
+`Audient iD14:capture_AUX0`; **that alias list is a guess until seen on the
+rig.** (2) An unexpected error planning a take in `record_check` is that
+check's fault, not the end of doctor. (3) and (4) A crash record carries its
+run (`pgid`, `started_at`, stamped by the supervisor) and is the running rig's
+only when they match the state file (`supervisor.same_run`; `sameRun` in
+rig.js): doctor no longer blames an earlier rig's crash on this one, and the
+page shows an earlier run's crash last, muted, with nothing to restart. (5) An
+old take's "the capture engine did not stop cleanly" in `capture.error` is read
+as a stop failure (`take.stop_failure`), whole and complete, as `stop_error` is
+now. (6) `verify` refuses a `.yml` rig file, since `compile_named_rig` loads
+only `<name>.yaml`. (9) What each child is and what its exit means is
+`supervisor.CHILD_ROLES`, carried in every exit record as `label` and `means`;
+doctor words an absent child with `child_label` and `how_it_ended`, which
+`crash_message` uses too, and rig.js shows the record's own words and keeps no
+copy. **Rig check, before anything else is trusted**: with the rig up, run
+
+    pw-jack jack_lsp -A | grep -A3 capture_AUX0
+
+and paste the output here. If `Audient iD14:capture_AUX0` is not among the
+aliases printed under `Audient iD14 Multichannel:capture_AUX0`, the engine
+refuses every take (saying so, with every port listed) and this fix comes back.
+Then RECORD on the stage screen, `sushi-rig take check` on what it wrote, and
+`sushi-rig doctor` with the rig up (`record-ports`). None of it has run on the
+rig. *(2026-11-02)*

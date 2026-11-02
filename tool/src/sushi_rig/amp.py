@@ -461,6 +461,8 @@ def describe_model(path: Path | str) -> dict[str, Any]:
 
     return {
         "name": meta.get("name") or path.stem,
+        # What the file calls itself, or None: `name` falls back to the file.
+        "declared": meta.get("name") if isinstance(meta.get("name"), str) else None,
         "path": str(path),
         "architecture": architecture,
         "slimmable": architecture == SLIMMABLE,

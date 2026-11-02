@@ -993,6 +993,32 @@ def _rounded(value: Any) -> Any:
     return int(rounded) if rounded == int(rounded) and value == int(value) else rounded
 
 
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _folded(written: Any, captured: Any) -> Any:
+    """The value a save writes for a parameter the file holds as `written`
+    and the capture read as `captured`.
+
+    Rounded as `emit` rounds (`_rounded`), and then, where the file had a
+    number: the file's own value when the two are the same number, so `1.0`
+    stays `1.0` and is not rewritten as `1`; and a float when the file had a
+    float. `_rounded` writes a whole number as an int, and in YAML `1` is an
+    int where `1.0` was a float, so the first save of a rig rewrote every
+    whole-number float, sixteen lines for one knob on the rig (#117,
+    2026-11-02): equal values, a different file, and the player's change lost
+    among them in `git diff`. A value the file did not have is written as
+    `_rounded` gives it."""
+    value = _rounded(captured)
+    if _is_number(written) and _is_number(value):
+        if value == written:
+            return written
+        if isinstance(written, float) and isinstance(value, int):
+            return float(value)
+    return value
+
+
 def fold_state(raw: dict[str, Any], captured: dict[str, Any] | None) -> dict[str, Any]:
     """The rig file's document with a live capture folded into it: what SAVE
     writes for a rig of channels (#30's last slice).
@@ -1082,9 +1108,10 @@ def fold_state(raw: dict[str, Any], captured: dict[str, Any] | None) -> dict[str
                 # noise (0.35 reads back as 0.3500000238418579) that would
                 # rewrite every parameter line on every save and show a value
                 # that did not change as changed.
+                written = entry.get("parameters") or {}
                 entry["parameters"] = {
-                    **(entry.get("parameters") or {}),
-                    **{k: _rounded(v) for k, v in values["parameters"].items()},
+                    **written,
+                    **{k: _folded(written.get(k), v) for k, v in values["parameters"].items()},
                 }
         return folded
 

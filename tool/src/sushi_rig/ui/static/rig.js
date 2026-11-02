@@ -440,18 +440,69 @@ export function rigStatus(health, live) {
   return { tone: "up", title: name, detail: `Up${up ? " " + up : ""} · sound not measured`, measured: false };
 }
 
-// The agent's own record of what last went wrong, and a MIDI listener that
-// failed: both belong in the same glance as everything else (rule 2).
+// A child of the rig that exited, from the agent's crash record
+// (`agent.supervisor.crashed`, supervisor.exit_record), as a problem a player
+// can act on: which process, what that means, and what to do. On the rig on
+// 2026-11-02 a killed tuner was in /health, `status` and the agent's terminal
+// and nowhere on either screen. What each process is and what its exit means
+// are the record's own (`label`, `means`, supervisor.CHILD_ROLES), not a copy
+// kept here.
+//
+// `rig` is /health's rig. A crash outlives its rig in the record, so it is
+// the running rig's only when its group and start are the running rig's
+// (supervisor.same_run); one of an earlier run is said as past, quietly, with
+// nothing to restart (`kind: "page"`, the muted box).
+const capital = (text) => text ? text[0].toUpperCase() + text.slice(1) : text;
+
+export function sameRun(record, rig) {
+  return !!(rig && rig.running && record.pgid !== null && record.pgid !== undefined
+    && record.pgid === rig.pgid && record.started_at === rig.started_at);
+}
+
+export function crashProblem(record, rig) {
+  const what = capital(record.label || record.name);
+  const how = record.signal ? `was killed by ${record.signal}` : `exited with status ${record.returncode}`;
+  const where = record.config_name ? ` in ${record.config_name}` : "";
+  const when = record.phase === "startup" ? " while it was starting" : "";
+  const log = record.log ? ` Its log is ${record.log}.` : "";
+  if (!sameRun(record, rig)) {
+    return {
+      kind: "page", title: `${what} exited in an earlier run`,
+      reason: `${what} ${how}${when}${where}, a run that is no longer the one up.${log}`, at: record.at || null,
+    };
+  }
+  const means = record.means ? `; ${record.means}` : "";
+  return {
+    title: `${what} exited`,
+    reason: `${what} ${how}${when}${where}${means}. Restart the rig to bring it back: nothing restarts it on its own.${log}`,
+    at: record.at || null,
+  };
+}
+
+// The agent's own record of what last went wrong, the rig's children that
+// exited and the supervisor's problems, and a MIDI listener that failed: all
+// belong in the same glance as everything else (rule 2), and the crashes as
+// loudly as the last error.
 export function agentProblems(health) {
   if (!health || !health.ok) return [];
   const agent = health.body.agent || {};
+  const rig = health.body.rig || {};
+  const supervisor = agent.supervisor || {};
   const out = [];
+  const crashes = (Array.isArray(supervisor.crashed) ? supervisor.crashed : [])
+    .filter((record) => record && typeof record === "object").map((record) => crashProblem(record, rig));
+  // The running rig's first, as loudly as the last error; earlier runs' last.
+  out.push(...crashes.filter((c) => !c.kind));
+  for (const p of Array.isArray(supervisor.problems) ? supervisor.problems : []) {
+    if (p && typeof p === "object") out.push({ title: "The rig's supervisor", reason: p.message || p.kind || "a problem with no message", at: p.at || null });
+  }
   if (agent.last_error) {
     const e = agent.last_error;
     out.push({ title: `Last error${e.command ? " (" + [].concat(e.command).join(" ") + ")" : ""}`, reason: e.message, at: e.at || null });
   }
   if (agent.midi && agent.midi.state === "failed") out.push({ title: "Pedals", reason: agent.midi.problem || "the MIDI listener failed", at: null });
   if (agent.stuck_live_calls) out.push({ title: "Sushi", reason: `${agent.stuck_live_calls} call(s) to Sushi never returned`, at: null });
+  out.push(...crashes.filter((c) => c.kind));
   return out;
 }
 
@@ -807,15 +858,20 @@ export function ampCard(answer, models, { locked = false, pending = null } = {})
   const shown = params.filter((p) => !p.panel).map((p) => ({
     name: p.name, text: ampText(p, p.value), note: p.name === "Quality" ? QUALITY_NOTE : null,
   }));
+  // A model is named by its file, here as on the stage and in the log
+  // (`modelName`); the name the file gives itself is its description
+  // (`declared`), never its title: the two screens named one model two ways
+  // on the rig (2026-11-02, amp_live.declared_name).
   const model = b.model ? {
-    name: b.model.name, stored: b.model.stored, description: b.model.description || null,
+    name: modelName(b.model.stored), stored: b.model.stored, description: b.model.description || null,
+    declared: b.model.declared || null,
     problem: b.model.problem || null, warning: b.model.warning || null,
   } : null;
   const listed = models && models.ok ? models.body.models : [];
   const options = listed.map((m) => ({
     model: m.model, playing: !!m.playing, usable: !!m.usable && !m.playing,
-    label: m.name + (m.playing ? " (playing)" : !m.usable ? " (cannot be played here)" : ""),
-    why: m.why || null,
+    label: modelName(m.model) + (m.playing ? " (playing)" : !m.usable ? " (cannot be played here)" : ""),
+    why: m.why || null, declared: m.declared || null,
   }));
   let why = null;
   if (panel) why = "The panel is running and owns the amp: change it there, or run the rig headless.";

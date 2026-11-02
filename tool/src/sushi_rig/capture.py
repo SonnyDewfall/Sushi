@@ -57,10 +57,37 @@ calls exist in the installed JACK-Client.
 
 Not run by anyone: **this module against a live PipeWire.** There was no
 PipeWire, JACK or soundcard where it was written. `CaptureEngine`'s calls into
-JACK, the order of activate and connect, the exact port names PipeWire gives
-the Audient iD14 and Sushi through `pw-jack`, and the claim below that a stereo
+JACK, the order of activate and connect, and the claim below that a stereo
 stem's ports are consecutive, are all unverified. The first run on the rig is
 the test, and its result goes in the MANIFEST either way.
+
+## Which port a column is linked from
+
+The first RECORD on the rig (2026-11-02) answered one of those questions and
+refused the take: `no port called 'Audient iD14:capture_AUX0' (for
+board-dry.wav) is in the graph`, listing `Audient iD14
+Multichannel:capture_AUX0` among the ports that were. The machine file names a
+port by its PipeWire alias, which is what the patchbay matches on and must keep
+matching on; a JACK client sees the same port as `<node description>:<port
+name>`. The two spellings differ for an ALSA device and coincide for Sushi's
+ports, so only the dry taps failed. One file cannot carry both, and two readers
+that each took one of them is the bug.
+
+So a take still names its ports as the machine file does (`Stem.port`, and
+`Column.source`), and `start` finds each one among the ports its own JACK client
+lists, by the port's JACK name or by any of its JACK aliases (`match_sources`).
+pipewire-jack gives every port aliases, and its own `jack_port_by_name` matches
+them; the PipeWire port alias, which is the machine file's spelling, is expected
+to be one of them. **That is a guess until the rig shows it** (`pw-jack jack_lsp
+-A`, the MANIFEST's rig check): the fixture's alias lists are written from it,
+not captured. A name that matches no port, or more than one, is refused with
+every port's name and aliases listed. Nothing predicts JACK's names from
+`pw-dump`: an earlier fix did, rebuilding pipewire-jack's naming rule, and read
+the graph with a subprocess at every RECORD to do it. `doctor`'s record check
+lists JACK's ports the same way (`jack_ports`, under `pw-jack`) and matches with
+the same function, so it fails exactly when this would refuse at that step. The
+JACK port each column was linked from is in the take's account,
+`capture.engine.sources`.
 
 One client does everything, and its process callback is live from `activate`,
 so the pump is gated (`BlockPump`) until every link has been read back: the
@@ -91,7 +118,7 @@ import re
 import time
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Any, Callable, Iterable, Sequence
+from typing import Any, Callable, Sequence
 
 from ._numpy import require_numpy
 from .recorder import column_labels
@@ -130,8 +157,9 @@ JACK_CLIENT_ATTRIBUTES = (
     "set_process_callback", "set_xrun_callback", "set_blocksize_callback",
     "set_shutdown_callback",
 )
-JACK_MODULE_NAMES = ("Client", "JackError", "OwnPort")
+JACK_MODULE_NAMES = ("Client", "JackError", "OwnPort", "Port")
 JACK_OWN_PORT_ATTRIBUTES = ("name", "get_array")
+JACK_PORT_ATTRIBUTES = ("name", "aliases")
 
 
 class CaptureError(RuntimeError):
@@ -160,16 +188,27 @@ class Column:
     index: int
     stem: str  # the stem's file name
     channel: int  # within the stem, from 0
-    source: str  # JACK port name, `<client>:<port>`
+    # The port as the take names it, `<client>:<port>`: the machine file's
+    # alias for a dry tap, Sushi's port for a processed stem.
+    source: str
     # What every message and take.yaml call the column: `recorder.column_labels`,
     # the bare file name for a mono stem and `file[channel]` otherwise.
     label: str
+    # The JACK port `source` matched in the client's own listing
+    # (`match_sources`), which is what is linked from. None until matched.
+    jack: str | None = None
 
     @property
     def port(self) -> str:
         """The name of this engine's own input port for the column. Fixed by
         the column, so a port is the same one in every take."""
         return f"in_{self.index}"
+
+    @property
+    def linked_from(self) -> str:
+        """The port this column is linked from: its JACK name once matched.
+        Before that (a test of the bookkeeping alone), the take's own name."""
+        return self.jack if self.jack is not None else self.source
 
 
 _TRAILING_NUMBER = re.compile(r"^(.*?)(\d+)$")
@@ -242,27 +281,72 @@ def plan_columns(stems: Sequence[tuple[Stem, int]]) -> list[Column]:
     return columns
 
 
-def missing_sources(columns: Sequence[Column], available: Iterable[str]) -> list[str]:
-    """Every source port that is not in the graph, named, with a few that are.
+@dataclass(frozen=True)
+class JackPort:
+    """A port as a JACK client lists it: its name, and its aliases."""
 
-    Run before anything is linked, so a mistyped port or an unplugged interface
-    is one sentence naming it, not a half-linked client. The ports that do
-    exist are listed because the name PipeWire gives a device through JACK is
-    not the one its own tools print, and the fix is to copy the right one.
+    name: str
+    aliases: tuple[str, ...] = ()
+
+    def shown(self) -> str:
+        return f"{self.name} (aliases: {', '.join(self.aliases)})" if self.aliases else f"{self.name} (no aliases)"
+
+
+def match_sources(columns: Sequence[Column], ports: Sequence[JackPort]) -> tuple[list[Column], list[str]]:
+    """Each column with the JACK port its source names, and every column whose
+    source names no port or more than one, said with every port listed.
+
+    A source names a port when it is the port's JACK name or one of its
+    aliases. The take's sources are the machine file's ports, by PipeWire
+    alias, and through `pw-jack` the iD14's guitar input is the port
+    `Audient iD14 Multichannel:capture_AUX0` (seen on the rig, 2026-11-02),
+    whose aliases are expected to hold `Audient iD14:capture_AUX0`: matched
+    here, not predicted from the graph. Every port is listed in a refusal
+    because what fixes it is reading which port carries which alias, and a
+    list cut at eight is how the rig's refusal hid it. Pure: the engine calls
+    it on its client's listing at each start, `doctor` on a listing of its own.
     """
-    present = set(available)
-    absent = [c for c in columns if c.source not in present]
-    if not absent:
-        return []
-    shown = sorted(present)[:8]
-    hint = (
-        f"output ports in the graph include: {', '.join(shown)}"
-        f"{' …' if len(present) > len(shown) else ''}"
-        if present else "there are no output ports in the graph at all"
-    )
-    return [
-        f"no port called {c.source!r} (for {c.label}) is in the graph" for c in absent
-    ] + [hint]
+    from dataclasses import replace
+
+    problems: list[str] = []
+    matched: list[Column] = []
+    for column in columns:
+        found = [p for p in ports if column.source == p.name or column.source in p.aliases]
+        if len(found) == 1:
+            matched.append(replace(column, jack=found[0].name))
+            continue
+        matched.append(column)
+        if found:
+            problems.append(
+                f"{column.source!r} (for {column.label}) names more than one JACK port: "
+                + "; ".join(p.shown() for p in found)
+                + ", so which one to record cannot be told"
+            )
+        else:
+            problems.append(
+                f"no JACK port is called or aliased {column.source!r} (for {column.label})"
+            )
+    if problems:
+        problems.append(
+            "the output ports JACK lists are: " + "; ".join(p.shown() for p in ports)
+            if ports else "JACK lists no output ports at all"
+        )
+    return matched, problems
+
+
+def jack_ports(client) -> list[JackPort]:
+    """The audio output ports `client` sees, with their aliases: what
+    `match_sources` matches against, read the same way by the engine (on its
+    capture client) and by `doctor` (`list_jack_ports`). An alias that cannot
+    be read is treated as none, and the name still matches."""
+    found = []
+    for port in client.get_ports(is_output=True, is_audio=True):
+        try:
+            aliases = tuple(str(a) for a in (port.aliases or ()))
+        except Exception:  # noqa: BLE001 — a port without readable aliases is still a port
+            aliases = ()
+        found.append(JackPort(str(port.name), aliases))
+    return found
 
 
 def check_links(columns: Sequence[Column], actual: Sequence[Sequence[str]],
@@ -277,10 +361,10 @@ def check_links(columns: Sequence[Column], actual: Sequence[Sequence[str]],
     problems = []
     for column, linked in zip(columns, actual):
         linked = list(linked)
-        if linked != [column.source]:
+        if linked != [column.linked_from]:
             got = ", ".join(linked) if linked else "nothing"
             problems.append(
-                f"{client}:{column.port} should be fed by {column.source} alone "
+                f"{client}:{column.port} should be fed by {column.linked_from} alone "
                 f"(for {column.label}), but is fed by {got}"
             )
     if len(actual) != len(columns):
@@ -477,6 +561,16 @@ class BlockPump:
 # Effects
 # --------------------------------------------------------------------------- #
 
+def open_client(jack, name: str):
+    """A client, or `CaptureError` saying there is no server to join."""
+    try:
+        return jack.Client(name, no_start_server=True)
+    except jack.JackError as exc:
+        raise CaptureError([
+            f"no JACK or PipeWire server to connect to ({exc}); run under pw-jack"
+        ]) from exc
+
+
 def load_jack():
     """Import JACK-Client, or raise `CaptureUnavailable` saying how to get it.
 
@@ -512,8 +606,13 @@ class CaptureEngine:
     account as `quantum_changes` and `off_quantum_blocks` instead.
 
     `stop` returns the engine's account (`BlockPump.account`) for the take to
-    keep. It deactivates the client, which guarantees no further callback, and
-    only then reads the counters, so they are final.
+    keep, with `sources`, the JACK port each column was linked from. It
+    deactivates the client, which guarantees no further callback, and only
+    then reads the counters, so they are final.
+
+    The take's ports are matched at every start against the ports the
+    capture client lists, by name or alias (`match_sources`), since the graph
+    can change between takes (an interface replugged, a profile switched).
 
     **Not run against a live PipeWire.** See the module docstring.
     """
@@ -527,6 +626,7 @@ class CaptureEngine:
         self.client_name = client_name
         self.settle_s = settle_s
         self.link_retry_s = link_retry_s
+        self._sources: dict[str, str] = {}
         self._granted: tuple[int, int] | None = None
         self._client = None
         self._pump: BlockPump | None = None
@@ -574,16 +674,20 @@ class CaptureEngine:
         # this one's.
         self._shutdown = ""
         self._account = {}
+        self._sources = {}
         columns = plan_columns(stems)
         jack = load_jack()
         client = self._open(jack, self.client_name)
         self._client = client
         try:
-            ports = [client.inports.register(column.port) for column in columns]
-            available = [p.name for p in client.get_ports(is_output=True, is_audio=True)]
-            problems = missing_sources(columns, available)
+            # Matched before anything is registered or linked, so a port the
+            # client cannot find is one refusal naming it, not a half-linked
+            # client.
+            columns, problems = match_sources(columns, jack_ports(client))
             if problems:
                 raise CaptureError(problems)
+            self._sources = {column.label: column.linked_from for column in columns}
+            ports = [client.inports.register(column.port) for column in columns]
             pump = BlockPump(ports, push, self.quantum, gated=True)
             self._pump = pump
             client.set_process_callback(pump)
@@ -601,7 +705,7 @@ class CaptureEngine:
                 self._granted = None
                 raise CaptureError(problems)
             for column, port in zip(columns, ports):
-                client.connect(column.source, port)
+                client.connect(column.linked_from, port)
             problems = settle_links(
                 lambda: [[p.name for p in client.get_all_connections(port)] for port in ports],
                 columns, client=client.name, wait_s=self.link_retry_s,
@@ -626,13 +730,7 @@ class CaptureEngine:
         return dict(self._account) or None
 
     def _open(self, jack, name: str):
-        """A client, or `CaptureError` saying there is no server to join."""
-        try:
-            return jack.Client(name, no_start_server=True)
-        except jack.JackError as exc:
-            raise CaptureError([
-                f"no JACK or PipeWire server to connect to ({exc}); run under pw-jack"
-            ]) from exc
+        return open_client(jack, name)
 
     def _settle_and_read(self, client) -> tuple[int, int]:
         """The rate and block size the graph runs at, read the only way they
@@ -661,5 +759,80 @@ class CaptureEngine:
                     pass
         if pump is not None:
             self._account = pump.account(self.sample_rate)
+            self._account["sources"] = dict(self._sources)
             if self._shutdown and not self._account["error"]:
                 self._account["error"] = self._shutdown
+
+
+# --------------------------------------------------------------------------- #
+# JACK's ports, for a process that is not under pw-jack (doctor)
+# --------------------------------------------------------------------------- #
+
+# How long `list_jack_ports` waits for its child. Opening a client and listing
+# is well under a second; the bound is for a server that never answers.
+LIST_TIMEOUT_S = 10.0
+
+
+class JackUnreachable(CaptureError):
+    """JACK's ports could not be listed here: no `pw-jack`, no JACK-Client,
+    no server, or a child that did not answer."""
+
+
+def list_jack_ports(timeout: float = LIST_TIMEOUT_S) -> list[JackPort]:
+    """The audio output ports a JACK client under `pw-jack` sees, with their
+    aliases, or `JackUnreachable` saying why not.
+
+    For `doctor`, which runs in the CLI or the agent, neither under `pw-jack`:
+    a libjack loaded there talks to no PipeWire, so the listing runs in a child
+    started the way `up` starts the recorder (`pw-jack <python> -m
+    sushi_rig.capture`), which lists with `jack_ports`, as the engine does."""
+    import json
+    import shutil
+    import subprocess
+    import sys
+
+    pw_jack = shutil.which("pw-jack")
+    if pw_jack is None:
+        raise JackUnreachable(["pw-jack is not installed, so no JACK client can be opened here"])
+    try:
+        done = subprocess.run([pw_jack, sys.executable, "-m", "sushi_rig.capture"],
+                              capture_output=True, text=True, timeout=timeout, check=False)
+    except subprocess.TimeoutExpired as exc:
+        raise JackUnreachable([f"a JACK client under pw-jack did not answer within {timeout:g}s"]) from exc
+    except OSError as exc:
+        raise JackUnreachable([f"pw-jack could not be run: {exc}"]) from exc
+    if done.returncode != 0:
+        raise JackUnreachable([done.stderr.strip() or f"the JACK listing exited {done.returncode}"])
+    try:
+        listed = json.loads(done.stdout)
+        return [JackPort(str(p["name"]), tuple(str(a) for a in p.get("aliases") or ())) for p in listed]
+    except (ValueError, TypeError, KeyError) as exc:
+        raise JackUnreachable([f"the JACK listing was not understood: {exc}"]) from exc
+
+
+def _print_ports() -> int:
+    """`python -m sushi_rig.capture`, under pw-jack: JACK's audio output ports
+    and their aliases as JSON on stdout, for `list_jack_ports`; why not on
+    stderr, exit 1."""
+    import json
+    import sys
+
+    try:
+        jack = load_jack()
+        client = open_client(jack, f"{CLIENT_NAME}-list")
+    except CaptureError as exc:
+        print("; ".join(exc.problems), file=sys.stderr)
+        return 1
+    try:
+        ports = jack_ports(client)
+    finally:
+        try:
+            client.close()
+        except Exception:  # noqa: BLE001 — the listing is already in hand
+            pass
+    print(json.dumps([{"name": p.name, "aliases": list(p.aliases)} for p in ports]))
+    return 0
+
+
+if __name__ == "__main__":
+    raise SystemExit(_print_ports())

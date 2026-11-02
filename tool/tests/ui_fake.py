@@ -290,7 +290,7 @@ def describe_up(started: datetime, name: str = "electric_board", amp_model: str 
     def describe():
         return {
             "verdict": "running", "running": True, "config_name": name, "mode": "headless",
-            "started_at": started.isoformat(), "uptime_seconds": (datetime.now(timezone.utc) - started).total_seconds(),
+            "pgid": 4242, "started_at": started.isoformat(), "uptime_seconds": (datetime.now(timezone.utc) - started).total_seconds(),
             "amp_model": amp_model, "rig": name,
             "children": {"amp": {"pid": 4244, "alive": amp_alive}} if amp_model else {},
             "message": f"{name} (headless mode)",
@@ -325,9 +325,13 @@ class UiAmp:
         self.root = Path(self._dir.name)
         models = self.root / "amp" / "models"
         models.mkdir(parents=True)
-        nam(models / "Clean Room.nam", "Clean Room")
-        nam(models / "Edge.nam", "Edge")
-        nam(models / "Slow Tape.nam", "Slow Tape", rate=44100)
+        # Each model calls itself something other than its file, as the rig's
+        # do ("Neve 2.nam" says "Rupert Tape 1 Silk RED Tape rupert Tape 1"):
+        # with the two the same, the rack titling a model by its metadata and
+        # the stage by its file looked like one name (2026-11-02).
+        nam(models / "Clean Room.nam", "Invented Twin Clean Room Mic")
+        nam(models / "Edge.nam", "Invented Edge Drive 2")
+        nam(models / "Slow Tape.nam", "Invented Slow Tape Deck", rate=44100)
         self.carla = FakeCarla()
         self.model = self.MODEL
         self.override = None

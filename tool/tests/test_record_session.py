@@ -485,14 +485,47 @@ def record(session, name):
     assert said.startswith(f"recorded {name}"), said
 
 
-def test_a_take_of_the_planned_stems_checks_clean(duo, tmp_path):
-    """Real folder, real recorder, real stems; only the engine stands in."""
-    pytest.importorskip("numpy")
-    from sushi_rig.take import check_take, load_take
+def test_a_take_of_the_planned_stems_checks_clean(tmp_path, monkeypatch):
+    """Real folder, real recorder, real stems, and the real capture engine,
+    over guitar_vocal on this machine's file and the ports JACK listed on the
+    rig: only JACK itself stands in (`jack_fake.py`, whose aliases are a
+    guess). The machine file's `Audient iD14:capture_AUX0` is not a JACK name,
+    `Audient iD14 Multichannel:capture_AUX0` is and carries it as an alias, and
+    the take must link the second for the first. The stand-in this replaced pushed blocks
+    without asking which ports, and so passed while the rig could not record
+    at all (2026-11-02)."""
+    np = pytest.importorskip("numpy")
+    import yaml
 
-    record(session_for(duo, tmp_path, engine=Pushing), "first-idea")
-    assert check_take(load_take(tmp_path / "takes" / "first-idea")) == []
-    assert (tmp_path / "takes" / "first-idea" / "rig.yaml").read_text() == TWO_CHANNELS
+    from sushi_rig.take import check_take, load_take, wav_info
+    from jack_fake import ALIAS, JACK_NAME, JACK_PORTS, FakeJack
+
+    assert ALIAS not in JACK_PORTS, "the two spellings differ, as they did on the rig"
+    levels = {port: (i + 1) / 40 for i, port in enumerate(JACK_PORTS)}
+    jack = FakeJack(levels=levels)
+    jack.install(monkeypatch)
+    config = config_of(load_rig(GUITAR_VOCAL))
+    config_path = write(tmp_path / "run" / "guitar_vocal.json", json.dumps(config))
+    session = record_session(
+        GUITAR_VOCAL, config_path, machine_file=THIS_MACHINE, takes_dir=tmp_path / "takes", root=tmp_path,
+        engine=lambda rate, quantum: capture.CaptureEngine(
+            rate, quantum, settle_s=0.0, link_retry_s=0.0))
+    assert session.start("first-idea") == "recording first-idea"
+    for _ in range(40):
+        jack.clients[-1].process(256)
+    said = session.stop()
+    assert said.startswith("recorded first-idea"), said
+    folder = tmp_path / "takes" / "first-idea"
+    take = load_take(folder)
+    assert check_take(take) == [] and take.complete
+    meta = yaml.safe_load((folder / "take.yaml").read_text())
+    assert {s["file"]: s["port"] for s in meta["stems"]}["guitar-dry.wav"] == ALIAS, "named as the machine file names it"
+    assert meta["capture"]["engine"]["sources"]["guitar-dry.wav"] == JACK_NAME, "linked as JACK names it"
+    from sushi_rig.signals import read_wav
+
+    dry = read_wav(folder / "guitar-dry.wav").samples
+    assert np.allclose(dry, levels[JACK_NAME]), "the dry stem holds the guitar's port, not silence"
+    assert wav_info(folder / "master.wav").frames == 40 * 256
 
 
 def test_a_shared_dry_tap_makes_a_take_that_checks_clean(tmp_path):

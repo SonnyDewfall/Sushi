@@ -136,3 +136,27 @@ def test_a_save_made_with_a_probe_left_running_still_folds(controller):
         "master": {"output": "monitor-out", "chain": []},
     }
     assert fold_state(raw, live.capture())["channels"][0]["name"] == "guitar"
+
+
+def test_the_masters_return_having_no_parameters_is_not_a_warning_at_every_poll(controller, capsys, monkeypatch):
+    """On the rig on 2026-11-02, `warning: 'master_return' returned no
+    parameters` came about once a second under the web UI's poll and buried
+    the crash and the refused take. The compiler's return has none by design;
+    another processor with none is said once, not at every capture."""
+    monkeypatch.setattr(live, "_SAID_NO_PARAMETERS", set())
+    tracks = [SimpleNamespace(id=0, name="guitar"), SimpleNamespace(id=5, name="master")]
+    chains = {0: [SimpleNamespace(id=1, name="guitar_send"), SimpleNamespace(id=2, name="fuzz")],
+              5: [SimpleNamespace(id=6, name="master_return")]}
+    controller.audio_graph.get_all_tracks = lambda: tracks
+    controller.audio_graph.get_track_processors = lambda tid: chains[tid]
+    params = controller.parameters
+    params.props.update({2: [], 5: [], 6: []})
+    gain = params.get_processor_parameters
+    params.get_processor_parameters = lambda pid: [SimpleNamespace(id=0, name="gain", automatable=True)] \
+        if pid in (0, 5) else gain(pid)
+    params.values.update({(0, 0): 0.7, (5, 0): 0.7})
+    for _ in range(3):
+        live.capture()
+    err = capsys.readouterr().err
+    assert "master_return" not in err
+    assert err.count("'fuzz' on 'guitar' returned no parameters") == 1, err

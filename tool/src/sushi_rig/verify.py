@@ -363,14 +363,77 @@ def _without_state(config: Path) -> Path:
     return Path(handle.name)
 
 
+# What a rig file of `config/rigs/` is called: `rig.compile_named_rig` loads
+# `<name>.yaml` and nothing else, as `up --rig <name>` does.
+RIG_SUFFIX = ".yaml"
+YAML_SUFFIXES = (".yaml", ".yml")
+
+
+def compiled_rig(path: Path, root: Path) -> Path:
+    """A rig file of `config/rigs/`, compiled as `sushi-rig up --rig` compiles
+    it for this machine (`rig.compile_named_rig`, the one compile `up` and a
+    live switch share) and written to a temporary file, or `VerifyError`.
+
+    `verify` checks what Sushi loads, which for a rig of channels is the
+    compiled config, never the YAML. Given a rig file it threw a bare
+    JSONDecodeError on the rig (2026-11-02); compiling it is chosen over
+    refusing because the compiled form is a run's artefact under the runtime
+    directory, which nobody should have to find to check a rig. Only
+    `config/rigs/` is compiled, because that is where `up --rig <name>` finds
+    a rig: a rig file elsewhere is refused with what to pass instead."""
+    import tempfile
+
+    from .rig import RigError, compile_named_rig
+
+    rigs = (Path(root) / "config" / "rigs").resolve()
+    if path.suffix != RIG_SUFFIX:
+        raise VerifyError(
+            f"{path} ends in {path.suffix}, and `up --rig` runs only a rig file called "
+            f"config/rigs/<name>{RIG_SUFFIX}, so there is no rig of that name to compile: "
+            f"rename it to {path.stem}{RIG_SUFFIX}, or pass a config .json"
+        )
+    if path.resolve().parent != rigs:
+        raise VerifyError(
+            f"{path} is YAML, and verify checks a compiled Sushi config: pass a rig of "
+            f"channels from config/rigs/ (config/rigs/<name>.yaml, which it compiles the way "
+            f"`sushi-rig up --rig <name>` does) or a config .json"
+        )
+    try:
+        compiled = compile_named_rig(path.stem, Path(root))
+    except RigError as exc:
+        raise VerifyError(f"{path.name} could not be compiled for this machine: {exc}") from exc
+    handle = tempfile.NamedTemporaryFile(
+        "w", suffix=".json", prefix=f"verify-{path.stem}-compiled-", delete=False
+    )
+    with handle:
+        json.dump(compiled, handle)
+    print(f"{path.name}: checking the config `up --rig {path.stem}` compiles from it, "
+          f"written to {handle.name}", file=sys.stderr)
+    return Path(handle.name)
+
+
 def verify(config: Path, sushi_bin: str = "sushi", quick: bool = False) -> list[Problem]:
-    """Run the checks over one config and return everything wrong with it."""
+    """Run the checks over one config and return everything wrong with it.
+
+    `config` is a Sushi config (.json), or a rig file of `config/rigs/`, which
+    is compiled first (`compiled_rig`). A file that is neither is a
+    `VerifyError` saying what to pass, not a traceback."""
     root = checkout_root()
     config = Path(config)
     if not config.is_file():
         raise VerifyError(f"no such config: {config}")
+    if config.suffix.lower() in YAML_SUFFIXES:
+        config = compiled_rig(config, root)
 
-    parsed = json.loads(config.read_text())
+    try:
+        parsed = json.loads(config.read_text())
+    except (UnicodeDecodeError, ValueError) as exc:
+        raise VerifyError(
+            f"{config} is not a Sushi config: it is not JSON ({exc}). Pass a config .json, "
+            f"or a rig file from config/rigs/, which is compiled first"
+        ) from exc
+    if not isinstance(parsed, dict):
+        raise VerifyError(f"{config} is JSON but not a Sushi config: it is not an object")
 
     # The plugin dump is taken from the config with `initial_state` removed.
     #

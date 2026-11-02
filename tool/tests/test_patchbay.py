@@ -1232,3 +1232,15 @@ def test_generate_names_the_file_for_a_bad_rig_and_a_yaml_error(tmp_path):
     with pytest.raises(SystemExit) as caught:
         cli.main(["patchbay", "generate", str(broken), "--machine", str(THIS_MACHINE), "--offline"])
     assert str(caught.value.code).startswith(f"{broken}: ")
+
+
+# --------------------------------------------------------------------------- #
+# One port's resolution, shared by every role
+# --------------------------------------------------------------------------- #
+
+def test_one_port_resolves_to_its_node_or_says_why_not():
+    port_nodes = live_port_nodes(CAPTURED)
+    found = patchbay.resolve_port("Audient iD14:capture_AUX0", "out", port_nodes)
+    assert found.node == "Audient iD14 Multichannel"
+    assert "no live port with alias" in patchbay.resolve_port("Audient iD14:capture_AUX42", "out", port_nodes)
+    assert "must have direction 'out'" in patchbay.resolve_port("sushi:audio_input_0", "out", port_nodes)
