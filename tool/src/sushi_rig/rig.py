@@ -235,7 +235,7 @@ def prepare_rig(
 
     # The MIDI map (#34) names a controller the machine file describes.
     try:
-        controller = rig_controller(loaded, machine_file, machine=machine)
+        controller = rig_controller(loaded, machine)
     except MachineError as exc:
         raise RigError(f"{path.name}: {exc}") from exc
     # Compiled once, with the map: the same spec wires the patchbay and
@@ -618,7 +618,7 @@ def _supervise(
             # The machine file that run was compiled against, None for a v1
             # config. The listener's save check recompiles the rig and must
             # read the same file, not whatever this host's default is.
-            "machine": str(machine_file) if machine_file else None,
+            "machine": _machine_record(machine_file),
         })
 
         for problem in problems:
@@ -637,6 +637,13 @@ def _supervise(
             signal.pause()
         except InterruptedError:
             continue
+
+
+def _machine_record(machine_file: Path | None) -> str | None:
+    """The machine file as the state file holds it. Absolute: the listener
+    reads it from its own working directory, and a path relative to where
+    `up` was run would fail every SAVE check there."""
+    return str(machine_file.resolve()) if machine_file else None
 
 
 def _patchbay_in(children_plan: list[dict[str, Any]], root: Path) -> Path:
@@ -863,7 +870,7 @@ def up(
         config = prepared_rig["config"]
         rig_patchbay = prepared_rig["patchbay"]
         rig_source = prepared_rig["source"]
-        rig_machine = prepared_rig.get("machine")
+        rig_machine = prepared_rig["machine"]
         for warning in prepared_rig["warnings"]:
             print(f"warning: {warning}", file=sys.stderr)
 
@@ -1191,6 +1198,9 @@ def describe_rig(
         "rig": state.get("rig") if isinstance(state.get("rig"), str) else None,
         "log_dir": state.get("log_dir"),
     })
+    if isinstance(state.get("machine"), str):
+        # Which machine file a rig run was compiled against; a v1 run has none.
+        described["machine"] = state["machine"]
     age = format_uptime(uptime) if uptime is not None else "unknown"
     described["message"] = f"{described['config_name']} ({described['mode']} mode), up {age}"
     return described
@@ -1205,6 +1215,8 @@ def status() -> int:
     print(f"  config     {described['config']}")
     if described["rig"]:
         print(f"  rig        {described['rig']}")
+    if described.get("machine"):
+        print(f"  machine    {described['machine']}")
     print(f"  group      {described['pgid']}")
     for name, child in described["children"].items():
         if child["alive"] is None:

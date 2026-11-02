@@ -475,14 +475,6 @@ def parse_rig(raw: Any) -> Rig:
     host = raw.get("host")
     if host is not None and not isinstance(host, dict):
         problems.append(f"host must be a mapping (got {host!r})")
-    elif host is not None and "midi_inputs" in host:
-        # `compile_rig` raises it to hold the MIDI map's port. Checked here so
-        # a stray string is a problem with the file, named, and not an
-        # `int()` traceback from the compiler. `bool` is an `int`, and `true`
-        # is not a count of ports.
-        count = host["midi_inputs"]
-        if type(count) is not int or count < 0:
-            problems.append(f"host.midi_inputs must be a whole number, 0 or more (got {count!r})")
     for key in ("meta", "amp"):
         if raw.get(key) is not None and not isinstance(raw[key], dict):
             problems.append(f"{key} must be a mapping (got {raw[key]!r})")
@@ -579,6 +571,15 @@ def parse_rig(raw: Any) -> Rig:
 def check_rig(rig: Rig) -> list[str]:
     """Names and the channel ceiling. Every problem, with the arithmetic."""
     problems = []
+    if isinstance(rig.host, dict) and rig.host.get("midi_inputs") is not None:
+        # `compile_rig` raises it to hold the MIDI map's port. Here rather
+        # than in `parse_rig`, so a Rig built any other way meets the same
+        # named problem and not a TypeError from `max`. `null` is absent, as
+        # the compiler has always read it. `bool` is an `int`, and `true` is
+        # not a count of ports.
+        count = rig.host["midi_inputs"]
+        if type(count) is not int or count < 0:
+            problems.append(f"host.midi_inputs must be a whole number, 0 or more (got {count!r})")
     seen: set[str] = set()
     reserved = {MASTER, RETURN} | {c.name + SEND_SUFFIX for c in rig.channels}
     for channel in rig.channels:
@@ -794,7 +795,7 @@ def compile_rig(
         # Sushi opens `midi_inputs` ports and refuses a mapping on one it did
         # not open, so the host asks for enough to hold the map's port.
         # `check_rig` has already refused a value that is not a count.
-        host["midi_inputs"] = max(host.get("midi_inputs", 0), rig.midi.port + 1)
+        host["midi_inputs"] = max(host.get("midi_inputs") or 0, rig.midi.port + 1)
     tracks = []
     processors: dict[str, Any] = copy.deepcopy(rig.settings)
     next_input = 0

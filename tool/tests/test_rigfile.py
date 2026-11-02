@@ -689,7 +689,7 @@ def test_the_agents_bindings_and_the_midi_port_are_written_into_the_config():
     assert AGENT_BINDINGS not in state, "the bindings are not a processor"
 
 
-@pytest.mark.parametrize("value", ["two", -1, 1.5, True, [1], None])
+@pytest.mark.parametrize("value", ["two", -1, 1.5, True, [1]])
 def test_a_host_midi_inputs_that_is_not_a_count_is_a_rig_file_problem(value):
     """`compile_rig` reads host.midi_inputs to size the MIDI inputs, and used
     to meet a string there as a bare ValueError from `int()`. It is checked
@@ -697,6 +697,25 @@ def test_a_host_midi_inputs_that_is_not_a_count_is_a_rig_file_problem(value):
     raw = _midi_rig([{"control": "knob1", "blend": ["clean", "lead"]}])
     raw["host"] = {"samplerate": 48000, "midi_inputs": value}
     assert any("host.midi_inputs must be a whole number, 0 or more" in p for p in problems(raw))
+
+
+def test_a_rig_built_directly_with_a_bad_midi_inputs_is_refused_by_the_compiler_not_a_typeerror():
+    """`compile_rig` runs `check_rig`, so the count is checked there, not
+    only on the way in from a file."""
+    import dataclasses
+
+    rig = parse_rig(_midi_rig([{"control": "knob1", "blend": ["clean", "lead"]}]))
+    rig = dataclasses.replace(rig, host={"samplerate": 48000, "midi_inputs": "two"})
+    with pytest.raises(RigFileError, match="host.midi_inputs must be a whole number"):
+        compile_rig(rig, MPD218)
+
+
+def test_an_empty_midi_inputs_is_none_given_as_it_always_was():
+    """`midi_inputs:` with no value is YAML null, which the compiler has
+    always read as 0; it is not a problem with the file."""
+    raw = _midi_rig([{"control": "knob1", "blend": ["clean", "lead"]}], port=1)
+    raw["host"] = {"samplerate": 48000, "midi_inputs": None}
+    assert emit_rig(parse_rig(raw), controller=MPD218)["host_config"]["midi_inputs"] == 2
 
 
 def test_a_host_midi_inputs_that_is_a_count_is_kept_and_raised_to_the_maps_port():

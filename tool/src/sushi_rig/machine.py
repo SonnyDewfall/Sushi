@@ -65,6 +65,9 @@ class MachineSpec:
     # PyYAML keeps the last of two equal keys and says nothing, so a role written
     # twice would silently lose the first. Found from the parse tree instead.
     duplicate_keys: list[tuple[str, Any, int]] = field(default_factory=list)
+    # The file `load` read, so a message about the machine can name it. None
+    # for a spec built in code.
+    source: Path | None = None
 
     @classmethod
     def load(cls, path: Path) -> "MachineSpec":
@@ -92,6 +95,7 @@ class MachineSpec:
             controllers=raw.get("controllers", {}),
             unknown_keys=[str(k) for k in raw if k not in _KNOWN_KEYS],
             duplicate_keys=_duplicate_keys(tree),
+            source=Path(path),
         )
 
     def role_ports(self) -> dict[str, list[str]]:
@@ -290,11 +294,11 @@ class MachineSpec:
             },
         }
 
-    def controller_for(self, name: str, file_name: str = "the machine file") -> dict[str, Any]:
+    def controller_for(self, name: str) -> dict[str, Any]:
         """`controller(name)` for a machine already loaded and validated, or
-        `MachineError` saying the file does not describe it. `file_name` is
-        only for the message: the spec does not remember where it was read."""
+        `MachineError` saying the file does not describe it."""
         if name not in (self.controllers or {}):
+            file_name = self.source.name if self.source else "the machine file"
             raise MachineError(
                 f"the rig is written for controller {name!r}, which {file_name} "
                 f"does not describe; its controllers: {', '.join(sorted(self.controllers or {})) or 'none'}"
@@ -317,30 +321,27 @@ def controller_for(controller_name: str, machine_file: Path) -> dict[str, Any]:
     problems = machine.validate()
     if problems:
         raise MachineError(f"{machine_file.name}: " + "; ".join(problems))
-    return machine.controller_for(controller_name, machine_file.name)
+    return machine.controller_for(controller_name)
 
 
-def rig_controller(
-    rig: Any, machine_file: Path | None = None, *, machine: MachineSpec | None = None,
-) -> dict[str, Any] | None:
+def rig_controller(rig: Any, machine: "MachineSpec | Path | None" = None) -> dict[str, Any] | None:
     """The controller `rig`'s MIDI map names, as this machine describes it, or
     None for a rig with no map; `MachineError` when the machine cannot say.
 
     The one place `up --rig`, `emit` and the listener's save check resolve it,
     so they refuse in the same words and cannot drift apart on the default.
-    `machine_file` defaults to this host's. A caller that has loaded and
-    validated the machine already passes it as `machine`, and the file (still
-    wanted, for its name in a message) is not read again.
+    `machine` is a machine already loaded and validated, which is used as it
+    is; or the path of a machine file to read; or None for this host's.
     """
     if rig.midi is None:
         return None
-    if machine_file is None:
+    if isinstance(machine, MachineSpec):
+        return machine.controller_for(rig.midi.controller)
+    if machine is None:
         from .paths import checkout_root
 
-        machine_file = machine_path(checkout_root())
-    if machine is not None:
-        return machine.controller_for(rig.midi.controller, machine_file.name)
-    return controller_for(rig.midi.controller, machine_file)
+        machine = machine_path(checkout_root())
+    return controller_for(rig.midi.controller, machine)
 
 
 def _port_problem(port: Any) -> str | None:

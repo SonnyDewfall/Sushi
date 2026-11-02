@@ -1376,8 +1376,10 @@ pedal; a slow test loads a mapped rig in the container's Sushi to settle
 what `--dummy` accepts. *(2026-11-02)*
 
 **The MIDI map's follow-ups from review (#103).** `host.midi_inputs` is checked
-with the rest of the rig file, as a whole number of 0 or more, so a stray
-string is a named problem and not an `int()` traceback from the compiler. A
+in `check_rig`, which `compile_rig` runs, as a whole number of 0 or more (an
+empty value is none given, as it always was), so a stray string is a named
+problem, from a file or a Rig built in code, and not an `int()` traceback from
+the compiler. A
 machine file whose controller has two controls sending the same cc, or the same
 note, is refused naming both, since a rig binding both would fire two mappings
 from one pedal; a cc and a note of one number are different messages and stay
@@ -1385,9 +1387,13 @@ allowed. The agent's bindings are `fixed["agent"]`, a key of the compiled state
 beside `processors`, no longer a pseudo-processor in that map that two
 functions had to pop back out; the config's `_midi_agent` key is unchanged.
 The three places that resolved a rig's controller (`up --rig`, `emit`, the
-listener's save check) go through one `machine.rig_controller`, and
-`prepare_rig` loads the machine file once, passing the loaded spec on. The state
-file now records the machine file a rig run was compiled against (`machine`), and
+listener's save check) go through one `machine.rig_controller`, which takes a
+loaded machine, a path, or nothing for this host's; a loaded `MachineSpec`
+remembers the file it came from (`source`) for its messages, and `prepare_rig`
+loads the machine file once, passing the loaded spec on. The state
+file now records the machine file a rig run was compiled against (`machine`,
+as an absolute path, since the listener reads it from another directory;
+`status` and the agent's `/rig` show it for a rig run), and
 the listener's save check reads it back, so SAVE compiles against the file the
 running rig used and not this host's default. `up` has no `--machine` flag, so
 today the two are the same file; the record is what keeps them so when it gains

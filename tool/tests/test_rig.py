@@ -303,6 +303,7 @@ def test_up_on_a_v2_rig_uses_its_compiled_config_and_patchbay(up_world, monkeypa
     wired.write_text("<patchbay/>")
     monkeypatch.setattr(rig, "prepare_rig", lambda name, root, runtime, **kw: {
         "config": compiled, "patchbay": wired, "source": "config/rigs/x.yaml", "warnings": ["w"],
+        "machine": None,
     })
     seen = {}
 
@@ -328,6 +329,7 @@ def test_up_on_a_v2_rig_with_an_amp_wires_the_amp_into_the_generated_patchbay(up
     rewired = tmp_path / "rig-amp.qpwgraph"
     monkeypatch.setattr(rig, "prepare_rig", lambda name, root, runtime, **kw: {
         "config": compiled, "patchbay": wired, "source": "config/rigs/x.yaml", "warnings": [],
+        "machine": None,
     })
     seen = {}
 
@@ -345,6 +347,15 @@ def test_up_on_a_v2_rig_with_an_amp_wires_the_amp_into_the_generated_patchbay(up
     up_world.say("READY", then_write=running_state(config_name="x", rig="config/rigs/x.yaml"))
     assert rig.up("x", headless=True, amp=True, rig=True) == 0
     assert seen == {"base": wired, "patchbay": rewired}
+
+
+def test_the_machine_file_is_recorded_as_an_absolute_path(tmp_path, monkeypatch):
+    """The listener resolves it from its own directory, which is not where
+    `up` was run: a relative path would fail every SAVE check."""
+    monkeypatch.chdir(tmp_path)
+    (tmp_path / "box.yaml").write_text("x")
+    assert rig._machine_record(Path("box.yaml")) == str(tmp_path / "box.yaml")
+    assert rig._machine_record(None) is None
 
 
 def test_a_v2_runs_artefacts_cannot_collide_with_the_state_file(tmp_path):
@@ -433,6 +444,7 @@ def test_a_rig_run_with_a_panel_hands_its_file_to_the_listener(up_world, monkeyp
     wired.write_text("<patchbay/>")
     monkeypatch.setattr(rig, "prepare_rig", lambda name, root, runtime, **kw: {
         "config": compiled, "patchbay": wired, "source": "config/rigs/x.yaml", "warnings": [],
+        "machine": None,
     })
     monkeypatch.setattr(rig, "resolve_rig_yaml", lambda config, root: "config/rigs/x.yaml")
     seen = {}
@@ -1271,6 +1283,15 @@ def test_describe_rig_is_status_as_data(world, monkeypatch):
     assert described["children"]["fmit"] == {"pid": 4003, "alive": False}
     assert described["log_dir"] == state["log_dir"]
     assert "supervisor_pid" not in described, "the group is the handle, as for down"
+    assert "machine" not in described, "a v1 run records none, and none is shown"
+
+
+def test_the_machine_file_a_rig_was_compiled_against_is_described_and_shown(world, capsys):
+    world()
+    state_file.write_state(running_state(machine="/x/machines/box.yaml"))
+    assert rig.describe_rig()["machine"] == "/x/machines/box.yaml"
+    rig.status()
+    assert "machine    /x/machines/box.yaml" in capsys.readouterr().out
 
 
 def test_describe_rig_marks_a_child_pid_that_is_not_a_pid_as_unknown(world):

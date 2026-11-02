@@ -346,9 +346,19 @@ def test_a_cc_and_a_note_of_one_number_are_different_messages_and_allowed():
 
 def test_a_loaded_machine_answers_for_its_controller_and_refuses_one_it_lacks():
     machine = _with_controllers({"x": {"controls": {"k": {"cc": 3}}}})
-    assert machine.controller_for("x", "box.yaml")["controls"] == {"k": ("cc", 3)}
-    with pytest.raises(MachineError, match="controller 'y', which box.yaml does not describe; its controllers: x"):
-        machine.controller_for("y", "box.yaml")
+    assert machine.controller_for("x")["controls"] == {"k": ("cc", 3)}
+    with pytest.raises(MachineError, match="controller 'y', which the machine file does not describe; its controllers: x"):
+        machine.controller_for("y")
+
+
+def test_a_loaded_machine_remembers_where_it_was_read_from_and_names_it(tmp_path):
+    path = tmp_path / "box.yaml"
+    path.write_text("schema_version: 1\ninterface: x\nroles:\n  r: {ports: ['A:in']}\n"
+                    "controllers:\n  x:\n    controls:\n      k: {cc: 3}\n")
+    machine = MachineSpec.load(path)
+    assert machine.source == path
+    with pytest.raises(MachineError, match="which box.yaml does not describe"):
+        machine.controller_for("y")
 
 
 def test_rig_controller_is_one_helper_for_every_caller(tmp_path):
@@ -364,10 +374,10 @@ def test_rig_controller_is_one_helper_for_every_caller(tmp_path):
     mapped = SimpleNamespace(midi=SimpleNamespace(controller="x"))
     assert rig_controller(SimpleNamespace(midi=None), machine_file) is None
     assert rig_controller(mapped, machine_file)["controls"] == {"k": ("cc", 3)}
-    # An already-loaded machine is used as it is: the file is not read again.
+    # An already-loaded machine is used as it is, whatever the file does next.
     loaded = MachineSpec.load(machine_file)
     machine_file.unlink()
-    assert rig_controller(mapped, machine_file, machine=loaded)["controls"] == {"k": ("cc", 3)}
+    assert rig_controller(mapped, loaded)["controls"] == {"k": ("cc", 3)}
     with pytest.raises(MachineError, match="could not be read"):
         rig_controller(mapped, machine_file)
 
