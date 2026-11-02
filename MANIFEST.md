@@ -1642,3 +1642,45 @@ counted for ever, inflating `stuck_live_calls` and the count in the 503; it is
 now counted first and uncounted if it has already returned. The second is shown
 with a future that completes from inside the check; neither was run against a
 live Sushi. *(2026-11-02)*
+
+**The agent serves the pedals Sushi cannot: bypass and rig switching (#34, #93).**
+When the running rig's compiled config has `_midi_agent`, the agent opens the
+controller's port itself and serves it (`midi_listener.py`, wired in a block at
+the end of `Agent`). A pad's note on toggles its plugin's bypass through the
+calls `POST /live/bypass` makes (one connection, the live lock, the same read
+and check), a CC on a bypass is a switch (the effect on at 64 and above,
+bypassed below, acting only when it crosses; the first value heard counts as a
+crossing), a pad on a mute toggles the track's `mute` parameter, and a Program
+Change selects program *n* = the *n*th rig of `config/rigs/*.yaml` sorted by
+file name, brought up by `down` then `up --rig` through the same
+`_run_lifecycle` a request uses (the lifecycle route was refactored onto it),
+with the options `restart_arguments` reads from the state file less the amp
+model override. A Program Change for the rig already playing does nothing; one
+past the last rig is refused and said. `GET /rig` lists the order as `programs`
+while the rig switches by them. Each change is in the live log with `source:
+"midi"` and `control`; a switch is logged as op `rig`, which undo will have to
+refuse or handle. The decisions are pure and tested for every shape
+(`decode`, `parse_bindings`, `dispatch`, `next_bypass`, `next_mute`,
+`program_order`, `find_port`, `plan_for`); aftertouch, releases and unbound
+messages do nothing. The listener is a thread that opens, reads and closes the
+port and hands messages to the loop; it starts with `up` (and at the agent's
+start, for a rig already up) and stops before `down`, `restart` and a switch, and
+a generation number drops anything it handed over that was not yet acted on.
+A port that will not open, or dies, is a named problem in `/health`'s
+`agent.midi` (port, controller, what ALSA lists) and is not retried until the
+next `up` or `restart`; MIDI failures never reach `last_error` except a switch's
+lifecycle failure, which is one. The library is **alsa-midi** (new `midi` extra,
+in both CI installs, with `libasound2t64` on the runner): it reads the ALSA
+sequencer the machine file's port names come from, by those names, and has
+wheels for CPython 3.10 to 3.14; mido's python-rtmidi had none past 3.12 at
+1.5.8. Channels are 0-based in the agent's listener, as ALSA and `aseqdump` give
+them. What libasound's decoder makes of each MPD218 event is checked against
+`decode` with the real library (test_midi_alsa.py); the wiring is tested with a
+fake port and the fake Sushi. **Nothing has been heard from a real pedal**:
+`AlsaPort` has never opened a sequencer (none in CI or here), so the port name
+as the sequencer gives it, the channel the pedal sends on, a footswitch's CC
+and polarity, hearing the pedal alongside PipeWire's and Sushi's own
+subscriptions, and the unplug detection (system announcements) are for the rig
+session. Not done here: learn mode, a diff-based switch, the patchbay link from
+the controller to Sushi's MIDI input, and noticing a rig brought up from the
+CLI while the agent is already running. *(2026-11-02)*

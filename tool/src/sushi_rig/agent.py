@@ -6,7 +6,8 @@ one place that owns the rig instead, and this is its first slice: the lifecycle
 and the two things worth reading about a rig, served over HTTP on localhost.
 
     GET  /health        the agent and the rig, in one answer
-    GET  /rig           what is running, if anything (`describe_rig`)
+    GET  /rig           what is running, if anything (`describe_rig`), and which
+                        Program Change selects which rig when the rig's map switches rigs
     GET  /doctor        `doctor`'s checks, as data
     POST /rig/up        {"config_name" (required), "rig", "headless", "tuner", "amp", "amp_model"}
     POST /rig/down      {"force"}
@@ -74,6 +75,20 @@ Every change that succeeded is appended to the operation log, which is where
 undo will come from; there is no undo yet. It lives in this process and is
 lost when the agent stops.
 
+## MIDI: the bindings Sushi cannot serve (#34, #93)
+
+When the running rig's compiled config carries `_midi_agent`, the agent opens
+the controller's port itself and serves it: a pad toggles a plugin's bypass
+(and a CC switches it) through the calls `POST /live/bypass` makes, a pad on
+a mute toggles a track's `mute` parameter, and a Program Change switches
+rigs by running `down` and then `up --rig` with the options `restart` would
+bring back. Each change is in the live log with `source: "midi"`. The
+listener starts when a rig comes up (and at the agent's own start, for a rig
+already up) and stops before anything takes the rig down. A port that will
+not open is a named problem in `/health` (`agent.midi`), not a retry loop, and
+nothing the port does reaches the HTTP side. The decisions are in
+`midi_listener.py`; the wiring is the MIDI section at the end of `Agent`.
+
 ## Local-first, so localhost first
 
 The CLI binds it to 127.0.0.1:8029 unless told otherwise. `--host 0.0.0.0`
@@ -98,8 +113,10 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Sequence
 
 from . import live as live_module
+from . import midi_listener
 from .live import DEFAULT_GRPC_ADDRESS, ElkpyMissing, LiveError, Move
-from .rig import describe_rig
+from .midi_listener import MidiError
+from .rig import describe_rig, restart_arguments
 
 try:
     from aiohttp import web
@@ -186,6 +203,11 @@ class Outcome:
     @property
     def abandoned(self) -> bool:
         return self.returncode is None
+
+    @property
+    def reason(self) -> str:
+        """Why it failed, in its own words where it gave any."""
+        return self.stderr.strip() or f"exit status {self.returncode}"
 
 
 Runner = Callable[[Sequence[str]], Awaitable[Outcome]]
@@ -496,6 +518,7 @@ class Agent:
         run: Runner = run_cli,
         live: Live | None = None,
         clock: Callable[[], float] = time.monotonic,
+        midi: midi_listener.World | None = None,
     ) -> None:
         self.root = root
         self.describe = describe
@@ -515,6 +538,7 @@ class Agent:
             max_workers=LIVE_WORKERS, thread_name_prefix="sushi-live")
         self._in_flight: set = set()  # calls to Sushi that have not returned
         self._abandoned: set = set()  # ... of which the agent has stopped waiting for these
+        self._midi_init(midi)  # the MIDI listener's state: see the MIDI section
 
     @property
     def stuck_live_calls(self) -> int:
@@ -553,12 +577,13 @@ class Agent:
                 "busy": self.busy,
                 "stuck_live_calls": self.stuck_live_calls,
                 "last_error": self.last_error,
+                "midi": self._midi_status(),
             },
             "rig": self.describe(),
         })
 
     async def rig(self, request):
-        return web.json_response(self.describe())
+        return web.json_response(self._rig_answer())
 
     async def doctor_route(self, request):
         from .doctor import FAULT, UNCHECKED
@@ -580,22 +605,7 @@ class Agent:
         except AgentError as exc:
             raise web.HTTPBadRequest(reason=str(exc))
 
-        self._refuse_while_busy()
-        async with self._lock:
-            self.busy = command
-            try:
-                outcome = await self.run(args)
-            finally:
-                self.busy = None
-            if outcome.ok and (self.last_error or {}).get("kind") == "lifecycle":
-                # A later success supersedes the old failure: left in place,
-                # a healthy agent reports a refused request forever and
-                # /health cannot be trusted to say "nothing is wrong now".
-                # Only a lifecycle failure, though: an unexpected error from
-                # /doctor or /rig says nothing about the rig coming up, so a
-                # `down` that works must not forget it.
-                self.last_error = None
-
+        outcome, args = await self._run_lifecycle(command, [args])
         answer: dict[str, Any] = {
             "ok": outcome.ok,
             "command": args,
@@ -609,10 +619,44 @@ class Agent:
         # already running", "no rig to restart", Sushi never came up -- which
         # is a conflict with the rig's state, 409. The agent gave up waiting:
         # 504, and the rig in the answer is what to read next.
-        reason = outcome.stderr.strip() or f"exit status {outcome.returncode}"
-        self._remember(args, reason, kind="lifecycle")
-        answer["reason"] = reason
+        answer["reason"] = outcome.reason
         return web.json_response(answer, status=504 if outcome.abandoned else 409)
+
+    async def _run_lifecycle(self, command: str, steps: list[list[str]]) -> tuple[Outcome, list[str]]:
+        """Run lifecycle commands in order under the lifecycle lock, stopping
+        at the first that fails: one for a route, `down` then `up` for a rig
+        switched by Program Change, which therefore takes exactly the path a
+        request does. Answers what the last command run said, and its
+        arguments; a failure is remembered for /health.
+
+        The MIDI listener is stopped before anything that can take the rig
+        down (a pad pressed mid-`down` must not reach the rig coming up next),
+        and afterwards follows the rig as it now is, whatever happened.
+        """
+        self._refuse_while_busy()
+        async with self._lock:
+            self.busy = command
+            try:
+                if command != "up":
+                    await self._midi_stop(f"stopped while '{command}' runs")
+                for args in steps:
+                    outcome = await self.run(args)
+                    if not outcome.ok:
+                        break
+            finally:
+                self.busy = None
+                await self._midi_sync()
+            if outcome.ok and (self.last_error or {}).get("kind") == "lifecycle":
+                # A later success supersedes the old failure: left in place,
+                # a healthy agent reports a refused request forever and
+                # /health cannot be trusted to say "nothing is wrong now".
+                # Only a lifecycle failure, though: an unexpected error from
+                # /doctor or /rig says nothing about the rig coming up, so a
+                # `down` that works must not forget it.
+                self.last_error = None
+            if not outcome.ok:
+                self._remember(args, outcome.reason, kind="lifecycle")
+        return outcome, args
 
     # ------------------------------------------------------------------- live
 
@@ -979,6 +1023,302 @@ class Agent:
             self._remember([request.method, request.path], reason)
             return web.json_response({"ok": False, "status": 500, "reason": reason}, status=500)
 
+    # =================================================================== MIDI
+    #
+    # The MIDI listener's wiring (#34, #93). The decisions are midi_listener.py's;
+    # this block only connects them to the routes' own machinery, and is kept
+    # in one place so it merges past other work on this file. Outside it the
+    # agent calls in at: __init__ (`_midi_init`), /health (`_midi_status`),
+    # /rig (`_rig_answer`), `_run_lifecycle` (`_midi_stop`, `_midi_sync`) and
+    # `serve` (`midi_adopt`, `midi_release`).
+    #
+    # Threading: the listener's thread reads the port and hands each message to
+    # the loop (`call_soon_threadsafe`); everything below runs on the loop. A
+    # generation number, bumped by every stop, tags each listener and each
+    # action it caused, so a message that was on its way when the rig went
+    # down is dropped rather than acted on against the rig that comes up next.
+
+    def _midi_init(self, world: midi_listener.World | None) -> None:
+        self._midi_world = world or midi_listener.World()
+        self._listener: midi_listener.Listener | None = None
+        self._midi_plan: midi_listener.Plan | None = None
+        self._midi_generation = 0
+        self._midi_switches: dict[str, bool] = {}  # each CC switch's last state, for `dispatch`
+        # One MIDI action at a time, in the order they were played: two toggles
+        # in quick succession must reach Sushi in that order, and a switch's
+        # off-then-on must not arrive on-then-off. Not the live lock: that
+        # serialises only the read-decide-set, and connections are made outside
+        # it, so two actions could otherwise overtake each other while connecting.
+        self._midi_lock = asyncio.Lock()
+        self._midi_tasks: set = set()
+        self._midi: dict[str, Any] = {
+            "state": "off", "reason": "the agent has not looked for a rig yet",
+            "rig": None, "controller": None, "port": None, "bindings": [], "programs": False,
+            "heard": 0, "last": None, "problem": None, "last_error": None,
+        }
+
+    def _midi_root(self) -> Path:
+        from .paths import checkout_root
+
+        return self.root or checkout_root()
+
+    def _midi_status(self) -> dict[str, Any]:
+        """The listener, for /health: `state` is off (with the `reason`),
+        opening, listening, or failed (with the `problem`). `heard` counts every
+        message the port delivered since it opened, aftertouch included, and
+        `last` is the last one the listener reads and what it did with it: what
+        to look at when a pedal seems to do nothing."""
+        listener = self._listener
+        return {**self._midi, "heard": listener.heard if listener is not None else self._midi["heard"]}
+
+    def _rig_answer(self) -> dict[str, Any]:
+        """/rig: `describe_rig`, and when the running rig's map switches rigs by
+        Program Change, which number is which rig (`programs`), read now, as a
+        Program Change reads it."""
+        described = self.describe()
+        plan = self._midi_plan
+        if plan is not None and plan.bindings.programs is not None:
+            described["programs"] = midi_listener.programs_table(self._midi_world.rigs(self._midi_root()))
+        return described
+
+    def _midi_say(self, message: str) -> None:
+        print(f"sushi-rig agent: MIDI: {message}", file=sys.stderr, flush=True)
+
+    def _midi_off(self, reason: str) -> None:
+        self._midi.update(state="off", reason=reason, rig=None, controller=None, port=None,
+                          bindings=[], programs=False, problem=None)
+
+    def _midi_fail(self, problem: str) -> None:
+        self._midi.update(state="failed", reason=None, problem=problem)
+        self._midi_say(problem)
+
+    async def midi_adopt(self, app=None) -> None:
+        """At the agent's start: listen for a rig already up, which `up` from
+        the CLI leaves running whether or not an agent was there to see it."""
+        await self._midi_sync()
+
+    async def midi_release(self, app=None) -> None:
+        """At the agent's end: stop the listener and any action in flight."""
+        await self._midi_stop("the agent is stopping")
+        for task in list(self._midi_tasks):
+            task.cancel()
+        await asyncio.gather(*list(self._midi_tasks), return_exceptions=True)
+
+    async def _midi_sync(self) -> None:
+        """Make the listener match the rig as it now is: none for no rig, or a
+        rig with nothing for the agent; the one its files describe otherwise.
+        A listener already serving that same plan is left alone. Never raises:
+        whatever goes wrong is the listener's problem, in /health, and not the
+        lifecycle command's."""
+        try:
+            plan = await asyncio.to_thread(self._midi_world.plan, self.describe(), self._midi_root())
+        except Exception as exc:  # noqa: BLE001 -- the reason goes to /health and stderr
+            await self._midi_stop("the rig's files could not say what to serve")
+            detail = str(exc) if isinstance(exc, MidiError) else f"{type(exc).__name__}: {exc}"
+            self._midi_fail(f"MIDI is off for the running rig: {detail}")
+            return
+        if isinstance(plan, midi_listener.Off):
+            await self._midi_stop(plan.reason)
+            self._midi_off(plan.reason)
+            return
+        if plan == self._midi_plan and self._midi["state"] in ("opening", "listening"):
+            return
+        await self._midi_stop("replaced")
+        self._midi_start(plan)
+
+    def _midi_start(self, plan: midi_listener.Plan) -> None:
+        loop = asyncio.get_running_loop()
+        generation = self._midi_generation
+        self._midi_plan = plan
+        self._midi_switches = {}
+        self._midi.update(
+            state="opening", reason=None, rig=plan.rig, controller=plan.controller, port=plan.port,
+            bindings=[b.describe() for b in plan.bindings.controls],
+            programs=plan.bindings.programs is not None,
+            heard=0, last=None, problem=None, last_error=None,
+        )
+        self._listener = midi_listener.Listener(
+            plan.port, self._midi_world.open_port,
+            post=loop.call_soon_threadsafe,
+            on_open=functools.partial(self._midi_opened, generation),
+            on_message=functools.partial(self._midi_heard, generation),
+            on_failure=functools.partial(self._midi_failed, generation),
+        )
+        self._listener.start()
+
+    async def _midi_stop(self, reason: str) -> None:
+        """Stop the listener, if there is one, and drop what it handed over
+        that has not been acted on. Waits (off the loop) for its thread to let
+        go of the port; a thread stuck in ALSA past that is said and left, as a
+        daemon, rather than holding up a `down`."""
+        self._midi_generation += 1
+        self._midi_switches = {}
+        listener, self._listener = self._listener, None
+        if listener is None:
+            return
+        self._midi_plan = None
+        self._midi["heard"] = listener.heard
+        if not await asyncio.to_thread(listener.stop, 2 * midi_listener.POLL_SECONDS + 1.0):
+            self._midi_say(f"the listener on {listener.port_name!r} did not stop; left to end with the agent")
+        self._midi_off(reason)
+
+    def _midi_opened(self, generation: int) -> None:
+        if generation == self._midi_generation:
+            self._midi.update(state="listening")
+
+    def _midi_failed(self, generation: int, exc: BaseException, opened: bool) -> None:
+        if generation != self._midi_generation:
+            return
+        plan = self._midi_plan
+        doing = "stopped reading" if opened else "could not open"
+        who = f"the port of controller {plan.controller!r}, which {plan.rig}'s MIDI map is written for" if plan else "the port"
+        self._midi_fail(
+            f"{doing} MIDI port {self._midi['port']!r}, {who}: {exc}. Bypass and rig switching "
+            "from the pedals are off until the rig is next brought up or restarted"
+        )
+
+    def _midi_heard(self, generation: int, message: midi_listener.Message) -> None:
+        """A message from the listener, on the loop: decided now, in the order
+        played, and acted on in a task of its own, one at a time."""
+        plan = self._midi_plan
+        if generation != self._midi_generation or plan is None:
+            return
+        try:
+            # The program order is read only for a Program Change, and read
+            # now, so it is the order GET /rig shows at this moment.
+            rigs = self._midi_world.rigs(self._midi_root()) if message.kind == "program" else ()
+            action, self._midi_switches = midi_listener.dispatch(
+                message, plan.bindings, self._midi_switches, rigs, plan.rig)
+        except Exception as exc:  # noqa: BLE001 -- a loop callback's error would reach only the loop's log
+            self._midi["last_error"] = {
+                "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                "message": f"{message.describe()}: {type(exc).__name__}: {exc}",
+            }
+            self._midi_say(self._midi["last_error"]["message"])
+            return
+        self._midi["last"] = {
+            "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "message": message.describe(),
+            "action": action.describe() if action is not None else "nothing (not bound, a release, or no change)",
+        }
+        if action is None:
+            return
+        if len(self._midi_tasks) >= MIDI_PENDING:
+            # Sushi is not keeping up (a stuck call holds each action up to
+            # LIVE_TIMEOUT): a pedal's presses queued behind it would all land
+            # at once, long after they were played.
+            self._midi_error(action, f"{len(self._midi_tasks)} MIDI actions are still waiting on Sushi, so this one was dropped")
+            return
+        task = asyncio.ensure_future(self._midi_act(generation, action))
+        self._midi_tasks.add(task)
+        task.add_done_callback(self._midi_tasks.discard)
+
+    def _midi_error(self, action: Any, message: str) -> None:
+        """An action that could not be done: there is no client to answer, so
+        it is said on stderr and kept in /health (`agent.midi.last_error`)."""
+        text = f"{action.describe()}: {message}"
+        self._midi["last_error"] = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "message": text}
+        self._midi_say(text)
+
+    async def _midi_act(self, generation: int, action: Any) -> None:
+        async with self._midi_lock:
+            if generation != self._midi_generation:
+                return  # the listener that heard it has been stopped since
+            # What `_sushi` and the live lock read off a request, for a press.
+            origin = _MidiOrigin("MIDI", getattr(action, "control", None) or f"program {action.program}")
+            try:
+                if isinstance(action, midi_listener.Refused):
+                    raise MidiError(action.reason)
+                if isinstance(action, (midi_listener.ToggleBypass, midi_listener.SetBypass)):
+                    await self._midi_bypass(origin, action)
+                elif isinstance(action, midi_listener.ToggleMute):
+                    await self._midi_mute(origin, action)
+                elif isinstance(action, midi_listener.SelectRig):
+                    await self._midi_switch(action)
+            except web.HTTPException as exc:  # what a route would have answered
+                self._midi_error(action, exc.reason)
+            except (AgentError, MidiError) as exc:
+                self._midi_error(action, str(exc))
+            except Exception as exc:  # noqa: BLE001 -- said, with its type; the agent carries on
+                self._midi_error(action, f"{type(exc).__name__}: {exc}")
+
+    def _midi_logged(self, entry: dict[str, Any], control: str | None) -> None:
+        """Mark a live-log entry as MIDI's. `_record` returns the entry it
+        appended, so this marks the one in the log: no await comes between."""
+        entry["source"] = "midi"
+        if control is not None:
+            entry["control"] = control
+
+    async def _midi_bypass(self, origin: "_MidiOrigin", action: Any) -> None:
+        """`POST /live/bypass`'s path: one connection, the live lock, the same
+        read and the same check, then the set. A toggle sets the opposite of
+        what Sushi reports now; a switch sets its own state, and does nothing
+        when the plugin is already there (which is not logged, as a move
+        that changes nothing is not)."""
+        processor = action.processor
+        want = action.bypassed if isinstance(action, midi_listener.SetBypass) else None
+        async with self._connected_for_a_change(origin) as controller:
+            reading = await self._sushi(origin, self.live.bypass, controller, processor, reading=True)
+            previous = check_bypass(reading, processor)
+            bypassed = midi_listener.next_bypass(previous, want)
+            if bypassed == previous:
+                return
+            await self._sushi(origin, self.live.set_bypass, controller, processor, bypassed, reading=False)
+            self._midi_logged(
+                self._record("bypass", {"processor": processor, "bypassed": bypassed}, previous), action.control)
+
+    async def _midi_mute(self, origin: "_MidiOrigin", action: Any) -> None:
+        """`POST /live/parameter`'s path, on the track's `mute`."""
+        track = action.track
+        async with self._connected_for_a_change(origin) as controller:
+            reading = await self._sushi(origin, self.live.parameter, controller, track, "mute", reading=True)
+            previous = check_parameter(reading, track, "mute")
+            value = midi_listener.next_mute(previous)
+            await self._sushi(origin, self.live.set_parameter, controller, track, "mute", value, reading=False)
+            self._midi_logged(
+                self._record("parameter", {"processor": track, "parameter": "mute", "value": value}, previous),
+                action.control)
+
+    async def _midi_switch(self, action: Any) -> None:
+        """Bring up rig `action.rig` with the lifecycle a request runs, with
+        the options `restart` would bring the running rig back with."""
+        state = await asyncio.to_thread(self._midi_world.read_state) or {}
+        steps = switch_steps(state, action.rig)
+        previous = self._midi_plan.rig if self._midi_plan is not None else None
+        outcome, args = await self._run_lifecycle("switch", steps)
+        if not outcome.ok:
+            raise MidiError(f"'{' '.join(args)}' failed: {outcome.reason}")
+        self._midi_logged(self._record("rig", {"rig": action.rig, "program": action.program}, previous), None)
+
+
+# A pending MIDI action past this many is dropped (and said), not queued.
+MIDI_PENDING = 16
+
+
+@dataclass(frozen=True)
+class _MidiOrigin:
+    """Where a MIDI action came from, in the two fields `Agent._sushi` and the
+    live lock read off a request for their messages: "MIDI" and the control."""
+
+    method: str
+    path: str
+
+
+def switch_steps(state: dict[str, Any], rig: str) -> list[list[str]]:
+    """The lifecycle commands that switch the running rig (`state`, the state
+    file) to rig `rig` of config/rigs: `down`, then `up --rig` with the
+    headless, tuner and amp choices `restart` would bring back
+    (`rig.restart_arguments`), so a switch keeps how the rig is being run.
+    Not the amp model override: that was chosen for the rig being left, and
+    the next one's own `_amp` says its model. `AgentError` for a rig name that
+    is not one. Pure."""
+    _, options = restart_arguments(state)
+    up = lifecycle_arguments("up", {
+        "config_name": rig, "rig": True,
+        "headless": options["headless"], "tuner": options["tuner"], "amp": options["amp"],
+    })
+    return [["down"], up]
+
 
 def serve(host: str, port: int, root: Path | None = None) -> int:
     """Run the agent until interrupted."""
@@ -987,7 +1327,9 @@ def serve(host: str, port: int, root: Path | None = None) -> int:
 
     agent = Agent(root=root)
     app = agent.app()
+    app.on_startup.append(agent.midi_adopt)  # MIDI: a rig already up has its pedals served
     app.on_shutdown.append(agent.announce_stopping)
+    app.on_cleanup.append(agent.midi_release)  # MIDI: before the pool its actions use
     app.on_cleanup.append(agent.release_workers)
     print(f"sushi-rig agent {VERSION} on http://{host}:{port}  (Ctrl+C to stop)", flush=True)
     web.run_app(app, host=host, port=port, print=None, handle_signals=True)

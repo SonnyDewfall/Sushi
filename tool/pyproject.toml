@@ -13,6 +13,10 @@ live = ["elkpy", "python-osc"]
 audio = ["numpy>=1.24"]  # offline signal generation and analysis (signals, analysis)
 probe = []  # lilv has no PyPI wheel; install python3-lilv via apt (see README)
 agent = ["aiohttp>=3.9"]  # the rig agent (#29): `sushi-rig agent`
+# The agent's MIDI listener (#34, #93): pedals on bypass, Program Change rig switching.
+# alsa-midi talks to the ALSA sequencer and needs libasound at run time (apt: libasound2t64);
+# chosen over mido + python-rtmidi, which had no wheel past CPython 3.12 (midi_listener.py says why).
+midi = ["alsa-midi>=1.0.4,<2"]
 # The capture engine (#53, capture.py). Needs libjack on the machine as well (apt: libjack-jackd2-0),
 # and numpy for the block buffers. Only 0.5.7 has been checked: capture.py's names are tested against it.
 capture = ["JACK-Client>=0.5.7,<0.6", "numpy>=1.24"]
