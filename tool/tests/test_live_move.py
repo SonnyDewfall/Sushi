@@ -124,3 +124,28 @@ def test_by_default_the_deferral_goes_through_the_timer_helper(fake_osc, monkeyp
 def test_refresh_without_a_tab_only_reloads(fake_osc):
     refresh_panel("/tmp/panel.json", tab_delay=0)
     assert fake_osc.sent == [("/SESSION/OPEN", "/tmp/panel.json")]
+
+
+# --------------------------------------------------------------------------- #
+# The decision a move request is made on, pure
+# --------------------------------------------------------------------------- #
+
+CHAINS = {"main": ["comp", "drive", "reverb"], "aux": ["delay"]}
+IDS = {"main": 1, "comp": 2, "drive": 3, "reverb": 4, "aux": 9, "delay": 7}
+
+
+@pytest.mark.parametrize("processor, direction, outcome, command", [
+    ("drive", -1, "planned", (3, 1, 2, False)),   # before comp
+    ("comp", 1, "planned", (2, 1, 4, False)),     # before reverb: one step later
+    ("drive", 1, "planned", (3, 1, 0, True)),     # past the last: the back of the chain
+    ("delay", 1, "unchanged", None),
+    ("comp", -1, "unchanged", None),
+    ("reverb", 1, "unchanged", None),
+    ("main", -1, "absent", None),                 # a track is not on a chain
+    ("nope", 1, "absent", None),
+])
+def test_a_move_is_decided_once_from_what_the_walk_found(processor, direction, outcome, command):
+    move = live.decide_move(CHAINS, IDS, processor, direction)
+    assert (move.outcome, move.command) == (outcome, command)
+    assert move.chains == CHAINS
+    assert move.chain == (None if outcome == "absent" else CHAINS["aux" if processor == "delay" else "main"])

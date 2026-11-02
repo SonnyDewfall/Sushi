@@ -431,8 +431,17 @@ rig does not have (or a read-only one, or a track where a pedal is meant); what
 the rig has is read for that one request, not by walking every parameter, so a
 fader can send many changes a second. `503` means no rig is up; `502` that Sushi
 went away, refused, or did not confirm the change, with the reason, and nothing
-is logged for it; `500` that elkpy is not installed. They are `409 busy` while a
-lifecycle command runs. Each change that Sushi confirmed is appended to an
+is logged for it; `500` that elkpy is not installed; `504` that Sushi did not
+answer within 20 seconds (`LIVE_TIMEOUT`), where the agent stops waiting and
+frees the next request, but the stuck call itself cannot be cancelled, and a
+change that timed out may or may not have been applied: read `/live` before
+trying again. They are `409 busy` while a lifecycle command runs. Changes are
+made one at a time so each `previous` is true; reading `/live` does not wait for
+them and they do not wait for it, so a panel can poll it. Each request makes one
+connection to Sushi and does its reading and changing on it. A move is decided
+once, from one look at the chains, and what is sent is what was decided: a
+processor already at that end of its chain is `changed: false`, even if it only
+got there since the request arrived. Each change that Sushi confirmed is appended to an
 in-memory log of the last 500 (`/live/log`: `at`, `op`, `args`, and the
 `previous` value where it was known), which is where undo will come from; there
 is no undo yet.

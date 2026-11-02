@@ -32,10 +32,10 @@ from __future__ import annotations
 import json
 import sys
 from pathlib import Path
-from typing import TYPE_CHECKING
+from typing import TYPE_CHECKING, Any, Callable
 
 from .amp import AmpError, CARLA_OSC_PORT, parameter_message
-from .live import DEFAULT_GRPC_ADDRESS, LiveError, move_processor, refresh_panel
+from .live import DEFAULT_GRPC_ADDRESS, ElkpyMissing, LiveError, move_live_processor, refresh_panel
 from .save import SaveError, save_any
 
 if TYPE_CHECKING:
@@ -182,6 +182,47 @@ def move_direction(args: tuple) -> int:
         raise ValueError("non-numeric direction") from exc
 
 
+def handle_move(
+    processor: str,
+    direction: int,
+    address: str,
+    report: Callable[[str], None],
+    rebuild_panel: Callable[[str], None],
+    move: Callable[..., Any] = move_live_processor,
+) -> None:
+    """Carry out one move request from the panel and say how it went, deciding
+    on the move's outcome as data rather than on the words of its status line.
+
+    The panel is rebuilt whenever the move may have changed the rig's order:
+    when Sushi confirmed it, and also when Sushi was asked and did not confirm
+    (`LiveError`: an error reply, or silence past `CONFIRM_TIMEOUT`). In that
+    second case the move may well have been applied, late, and a panel left
+    with its old tab order would say nothing about it -- so the panel is
+    rebuilt from what Sushi now reports and the status line says the move may
+    have happened. (Strictness arrived with the agent: before it, a move that
+    was slow to confirm was reported as made.)
+
+    Not rebuilt where nothing was sent: no such processor, already at that
+    end, elkpy not installed, or Sushi unreachable.
+    """
+    try:
+        result = move(processor, direction, address)
+    except ElkpyMissing as exc:  # nothing was asked of Sushi
+        report(f"move failed: {exc}")
+        return
+    except LiveError as exc:
+        report(f"move not confirmed: {exc}; the move may have happened, rebuilding the panel")
+        rebuild_panel(processor)
+        return
+    except Exception as exc:  # noqa: BLE001 - a bad move must not kill the listener
+        report(f"move failed: {exc}")
+        return
+
+    report(result.message)
+    if result.outcome == "moved":
+        rebuild_panel(processor)
+
+
 def serve(
     rig_path: Path | None,
     out_dir: Path,
@@ -307,15 +348,7 @@ def serve(
         if direction == 0:
             _report(f"move failed: {processor} got no direction")
             return
-        try:
-            outcome = move_processor(processor, direction, address)
-        except Exception as exc:  # noqa: BLE001 - a bad move must not kill the listener
-            _report(f"move failed: {exc}")
-            return
-
-        _report(outcome)
-        if outcome.startswith("moved "):
-            _rebuild_panel(processor)
+        handle_move(processor, direction, address, _report, _rebuild_panel)
 
     def _rebuild_panel(select_tab: str) -> None:
         """Regenerate the panel and have open-stage-control reload it, so the
@@ -363,7 +396,7 @@ def serve(
             if said:
                 _report(said, RECORD_STATUS_ADDRESS)
         except Exception as exc:  # noqa: BLE001 - see docstring
-            _report(f"panel refresh failed (the move still applied): {exc}")
+            _report(f"panel refresh failed (the panel may show the old order): {exc}")
 
     dispatcher = Dispatcher()
     for address, handler in (

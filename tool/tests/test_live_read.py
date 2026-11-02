@@ -77,10 +77,23 @@ def controller(monkeypatch):
 
 
 def test_the_chains_are_the_tracks_and_nothing_else(controller):
-    assert live.get_live_chains() == {
-        "main": ["comp", "drive", "reverb"], "aux": ["delay", "eq", "gate"],
-    }
+    chains, ids = live._walk_chains(controller)
+    assert chains == {"main": ["comp", "drive", "reverb"], "aux": ["delay", "eq", "gate"]}
+    assert ids == controller.ids, "tracks and processors, by name"
     assert controller.calls == ["get_all_tracks", "get_track_processors", "get_track_processors"]
+
+
+def test_a_controller_the_caller_passes_is_used_and_left_open(controller, monkeypatch):
+    """Finding 3: the agent reads what a request names and sets it on one
+    connection, so these must not build (or close) one of their own."""
+    monkeypatch.setattr(live, "_controller", lambda address: pytest.fail("built a second connection"))
+    assert live.read_live_parameter("drive", "p7", controller=controller)["value"] == 0.25
+    assert live.read_live_bypass("drive", controller=controller)["bypassed"] is True
+    assert not controller.closed, "it is the caller's to close"
+
+
+def test_without_one_each_read_builds_and_closes_its_own(controller):
+    live.read_live_bypass("drive")
     assert controller.closed
 
 

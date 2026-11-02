@@ -7,7 +7,7 @@ import textwrap
 import pytest
 
 from sushi_rig.amp import AmpError
-from sushi_rig.listen import AMP_ADDRESS_PREFIX, amp_command, handle_save, move_direction
+from sushi_rig.listen import AMP_ADDRESS_PREFIX, amp_command, handle_move, handle_save, move_direction
 
 RIG_YAML = textwrap.dedent(
     """\
@@ -242,3 +242,62 @@ def test_a_rig_of_channels_is_saved_as_one_with_its_comments(tmp_path, monkeypat
     assert not (tmp_path / "run" / "sushi-rig" / "rigs").exists(), "and not where the running rig's compiled config lives"
 
 
+
+
+# --------------------------------------------------------------------------- #
+# A move from the panel: when the panel is rebuilt
+# --------------------------------------------------------------------------- #
+
+def _moved(outcome):
+    """A stand-in for `live.move_live_processor` that answers with `outcome`."""
+    from sushi_rig.live import Move
+
+    def move(processor, direction, address):
+        return Move(outcome, processor, direction, ["a", processor], {})
+    return move
+
+
+def _raising(exc):
+    def move(processor, direction, address):
+        raise exc
+    return move
+
+
+def _handle(move):
+    said, rebuilt = [], []
+    handle_move("drive", -1, "somewhere:1", said.append, rebuilt.append, move=move)
+    return said, rebuilt
+
+
+def test_a_confirmed_move_is_said_and_the_panel_rebuilt_on_that_tab():
+    said, rebuilt = _handle(_moved("moved"))
+    assert said == ["moved drive earlier"]
+    assert rebuilt == ["drive"]
+
+
+@pytest.mark.parametrize("outcome", ["unchanged", "absent"])
+def test_a_move_that_sent_nothing_does_not_rebuild_the_panel(outcome):
+    said, rebuilt = _handle(_moved(outcome))
+    assert len(said) == 1 and rebuilt == []
+
+
+def test_a_move_sushi_did_not_confirm_may_have_happened_so_the_panel_is_rebuilt_and_says_so():
+    """Strictness made a move that Sushi applied but confirmed late raise
+    `LiveError`; the listener used to report "move failed" and skip the
+    rebuild, leaving the panel's tab order stale with no hint."""
+    from sushi_rig.live import LiveError
+
+    said, rebuilt = _handle(_raising(LiveError("Sushi did not confirm the command within 5s")))
+    assert rebuilt == ["drive"]
+    assert len(said) == 1
+    assert "did not confirm" in said[0] and "may have happened" in said[0]
+    assert "move failed" not in said[0]
+
+
+def test_a_move_that_failed_any_other_way_is_a_failure_and_the_panel_is_left_alone():
+    from sushi_rig.live import ElkpyMissing
+
+    for exc in (ElkpyMissing("elkpy not found"), ConnectionError("no route")):
+        said, rebuilt = _handle(_raising(exc))
+        assert said == [f"move failed: {exc}"]
+        assert rebuilt == []

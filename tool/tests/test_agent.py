@@ -13,6 +13,7 @@ from __future__ import annotations
 import asyncio
 import sys
 import threading
+from dataclasses import replace
 
 import pytest
 
@@ -20,6 +21,7 @@ aiohttp = pytest.importorskip("aiohttp")
 from aiohttp.test_utils import TestClient, TestServer  # noqa: E402
 
 from sushi_rig import agent as agent_module  # noqa: E402
+from sushi_rig.live import decide_move  # noqa: E402
 from sushi_rig.agent import (  # noqa: E402
     Agent,
     AgentError,
@@ -486,20 +488,37 @@ def test_the_hint_for_a_bypass_names_only_what_can_be_bypassed():
     assert str(caught.value).endswith("it has ['comp', 'drive', 'reverb']")
 
 
-@pytest.mark.parametrize("processor, direction, would_change", [
-    ("drive", "up", True), ("drive", "down", True),
-    ("comp", "up", False), ("reverb", "down", False),
+IDS = {"main": 1, "comp": 2, "drive": 3, "reverb": 4}
+
+
+def planned(processor, direction):
+    """What a walk of `CHAINS` decides for a request, as the agent gets it."""
+    return decide_move(CHAINS, IDS, processor, agent_module.DIRECTIONS[direction])
+
+
+@pytest.mark.parametrize("processor, direction, outcome", [
+    ("drive", "up", "planned"), ("drive", "down", "planned"),
+    ("comp", "up", "unchanged"), ("reverb", "down", "unchanged"),
 ])
-def test_a_move_at_the_end_of_the_chain_is_not_a_change(processor, direction, would_change):
-    chain, changes = check_move(CHAINS, processor, direction)
-    assert chain == ["comp", "drive", "reverb"]
-    assert changes is would_change
+def test_a_move_at_the_end_of_the_chain_is_not_a_change(processor, direction, outcome):
+    move = planned(processor, direction)
+    check_move(move)  # not a refusal
+    assert move.outcome == outcome
+    assert move.chain == ["comp", "drive", "reverb"]
 
 
 def test_a_move_of_what_is_on_no_track_is_refused():
     for name in ("main", "nope"):
         with pytest.raises(AgentError, match="on any track"):
-            check_move(CHAINS, name, "up")
+            check_move(planned(name, "up"))
+
+
+def test_the_names_a_refusal_offers_are_the_rigs_with_or_without_its_tracks():
+    from sushi_rig.agent import _on_the_rig
+
+    chains = {"main": ["drive", "comp"], "aux": ["comp", "delay"]}
+    assert _on_the_rig(chains) == ["aux", "comp", "delay", "drive", "main"]
+    assert _on_the_rig(chains, with_tracks=False) == ["comp", "delay", "drive"]
 
 
 def test_a_log_entry_always_has_the_same_four_keys():
@@ -523,39 +542,64 @@ def test_the_log_keeps_the_newest_in_place():
 # --------------------------------------------------------------------------- #
 
 class FakeLive:
-    """A Sushi that records what it was asked and answers from a state."""
+    """A Sushi that records what it was asked and answers from a state.
+
+    A request makes one connection and does everything on it: `connect` hands
+    out a numbered connection, and every other call takes it and fails the test
+    if it is not the open one. `calls` is what was asked of Sushi (not the
+    connecting), `opened` and `closed` the connections.
+    """
 
     def __init__(self):
         self.calls = []
+        self.opened = []
+        self.closed = []
         self.threads = set()
         self.info = {p: {n: dict(v) for n, v in ps.items()} for p, ps in INFO.items()}
         self.chain = list(CHAINS["main"])
         self.bypassed = dict(BYPASS)
         self.fail = None  # an exception to raise from every call
         self.fail_on = None  # ... or only from this one
-        self.move_says = None  # what `move` reports, if not "moved ..."
         self.during = None  # called inside set_parameter
+        self.hang_on = None  # a call to block in until `release` is set
+        self.reached = threading.Event()  # set when the hanging call is in
+        self.release = threading.Event()
 
-    def _enter(self, name, *args):
-        self.calls.append((name, *args))
-        self.threads.add(threading.get_ident())
+    def _fail(self, name):
         if self.fail is not None and self.fail_on in (None, name):
             raise self.fail
 
-    def snapshot(self):
-        self._enter("snapshot")
+    def _enter(self, name, connection, *args):
+        assert connection in self.opened and connection not in self.closed, \
+            f"{name} was not given the request's open connection"
+        self.calls.append((name, *args))
+        self.threads.add(threading.get_ident())
+        self._fail(name)
+        if name == self.hang_on:
+            self.hang_on = None  # the next request is not stuck too
+            self.reached.set()
+            self.release.wait(10)
+
+    def connect(self):
+        self.threads.add(threading.get_ident())
+        self._fail("connect")
+        connection = len(self.opened) + 1
+        self.opened.append(connection)
+        return connection
+
+    def disconnect(self, connection):
+        self.closed.append(connection)
+
+    def snapshot(self, connection):
+        self._enter("snapshot", connection)
         return {
             "processors": {"reverb": {"parameters": {"Mix": 0.3}}},
             "tracks": {"main": list(self.chain)},
             "parameter_info": self.info,
         }
 
-    def chains(self):
-        self._enter("chains")
-        return {"main": list(self.chain)}
-
-    def parameter(self, processor, parameter):
-        self._enter("parameter", processor, parameter)
+    def parameter(self, connection, processor, parameter):
+        self._enter("parameter", connection, processor, parameter)
         parameters = self.info.get(processor)
         value = None
         if parameters is not None and parameter in parameters and parameters[parameter]["automatable"]:
@@ -567,30 +611,37 @@ class FakeLive:
             "value": value,
         }
 
-    def bypass(self, processor):
-        self._enter("bypass", processor)
+    def bypass(self, connection, processor):
+        self._enter("bypass", connection, processor)
         return {"chains": {"main": list(self.chain)}, "bypassed": self.bypassed.get(processor)}
 
-    def set_parameter(self, processor, parameter, value):
-        self._enter("set_parameter", processor, parameter, value)
+    def set_parameter(self, connection, processor, parameter, value):
+        self._enter("set_parameter", connection, processor, parameter, value)
         if self.during:
             self.during()
         self.info[processor][parameter]["value"] = value
 
-    def set_bypass(self, processor, bypassed):
-        self._enter("set_bypass", processor, bypassed)
+    def set_bypass(self, connection, processor, bypassed):
+        self._enter("set_bypass", connection, processor, bypassed)
         self.bypassed[processor] = bypassed
 
-    def move(self, processor, direction):
-        self._enter("move", processor, direction)
-        if self.move_says:
-            return self.move_says
-        i = self.chain.index(processor)
-        self.chain.insert(i + direction, self.chain.pop(i))
-        return f"moved {processor} {'earlier' if direction < 0 else 'later'}"
+    def plan_move(self, connection, processor, direction):
+        self._enter("plan_move", connection, processor, direction)
+        ids = {"main": 1, **{name: 2 + i for i, name in enumerate(self.chain)}}
+        return decide_move({"main": list(self.chain)}, ids, processor, direction)
+
+    def send_move(self, connection, move):
+        self._enter("move", connection, move.processor, move.direction)
+        self.sent = move
+        i = self.chain.index(move.processor)
+        self.chain.insert(i + move.direction, self.chain.pop(i))
+        return replace(move, outcome="moved")
 
     def writes(self):
         return [c for c in self.calls if c[0] in ("set_parameter", "set_bypass", "move")]
+
+    def one_connection_per_request_all_closed(self):
+        return sorted(self.closed) == self.opened
 
 
 def live_agent(fake=None, **kwargs):
@@ -756,12 +807,29 @@ def test_a_move_uses_the_plan_and_logs_the_chain_it_changed():
     assert len(call(agent, "GET", "/live/log")[1]["log"]) == 1, "and is not logged"
 
 
-def test_a_move_sushi_did_not_make_is_a_bad_gateway_and_not_logged():
+def test_a_move_is_decided_once_and_the_command_sent_is_the_one_decided_on():
+    """Success used to be read off the words `move_processor` returned, after a
+    second walk and a second plan whose answer could differ from the first."""
     agent, fake = live_agent()
-    fake.move_says = "no processor named 'drive' on any track"
     status, body = call(agent, "POST", "/live/move", json={"processor": "drive", "direction": "down"})
-    assert status == 502
-    assert "did not happen" in body["reason"] and "no processor named" in body["reason"]
+    assert status == 200 and body["changed"] is True
+    assert [c[0] for c in fake.calls] == ["plan_move", "move"], "one decision, one command"
+    assert fake.sent.command == (3, 1, 0, True), \
+        "sent as planned: drive (3) on main (1), to the back of the chain"
+    assert body["message"] == "moved drive later"
+    assert call(agent, "GET", "/live/log")[1]["log"][0]["previous"] == ["comp", "drive", "reverb"]
+
+
+def test_a_processor_found_already_at_the_end_is_unchanged_not_a_failure():
+    """The case the second walk made a 502: the processor is where the request
+    wants it only when the one walk looks."""
+    agent, fake = live_agent()
+    fake.chain = ["drive", "comp", "reverb"]
+    status, body = call(agent, "POST", "/live/move", json={"processor": "drive", "direction": "up"})
+    assert (status, body["changed"]) == (200, False)
+    assert body["message"] == "drive is already first in the chain"
+    assert body["chain"] == ["drive", "comp", "reverb"]
+    assert fake.writes() == []
     assert call(agent, "GET", "/live/log")[1]["log"] == []
 
 
@@ -887,10 +955,10 @@ def test_a_change_sushi_refused_or_did_not_confirm_is_a_bad_gateway_and_not_logg
     assert call(agent, "GET", "/health")[1]["agent"]["last_error"]["kind"] == "live"
 
 
-def test_a_read_queued_behind_a_change_is_busy_if_a_lifecycle_command_started_meanwhile():
-    """The busy check is made when the read gets its turn, as the changes do,
-    not when it queued: otherwise it reads Sushi mid-restart and a 502 is
-    remembered as a live fault."""
+def test_a_change_queued_behind_a_change_is_busy_if_a_lifecycle_command_started_meanwhile():
+    """The busy check is made when the change gets its turn, not when it
+    queued: otherwise it reads Sushi mid-restart and a 502 is remembered as a
+    live fault. (A read does not queue at all: see below.)"""
     agent, fake = live_agent()
     entered, release = threading.Event(), threading.Event()
     started, finish = asyncio.Event(), asyncio.Event()
@@ -914,7 +982,8 @@ def test_a_read_queued_behind_a_change_is_busy_if_a_lifecycle_command_started_me
             change = asyncio.ensure_future(client.post(
                 "/live/parameter", json={"processor": "reverb", "parameter": "Mix", "value": 0.5}))
             await loop.run_in_executor(None, entered.wait, 5)
-            read = asyncio.ensure_future(client.get("/live"))
+            read = asyncio.ensure_future(client.post(
+                "/live/parameter", json={"processor": "reverb", "parameter": "Mix", "value": 0.7}))
             await asyncio.sleep(0.1)  # queued on the live lock
             up = asyncio.ensure_future(client.post("/rig/up", json={"config_name": "electric_board"}))
             await started.wait()
@@ -927,7 +996,8 @@ def test_a_read_queued_behind_a_change_is_busy_if_a_lifecycle_command_started_me
 
     status, body = asyncio.run(go())
     assert status == 409 and "busy: 'up' is still running" in body["reason"]
-    assert ("snapshot",) not in fake.calls, "Sushi was not read"
+    assert [c[0] for c in fake.calls].count("parameter") == 1, "the queued change did not read Sushi"
+    assert len(fake.opened) == 1, "nor connect"
     assert agent.last_error is None
 
 
@@ -949,6 +1019,152 @@ def test_live_changes_are_serialised_so_each_previous_is_what_it_replaced():
     assert log[0]["previous"] == 0.3
     for before, after in zip(log, log[1:]):
         assert after["previous"] == before["args"]["value"]
+
+
+def test_a_read_is_not_queued_behind_a_change():
+    """A panel polling GET /live must not make fader writes wait on a full-rig
+    read, nor the read wait on a write: a read cannot disturb the `previous` the
+    lock exists to keep true."""
+    agent, fake = live_agent()
+    entered, release = threading.Event(), threading.Event()
+    fake.during = lambda: (entered.set(), release.wait(5))
+
+    async def go():
+        loop = asyncio.get_running_loop()
+        async with TestClient(TestServer(agent.app())) as client:
+            change = asyncio.ensure_future(client.post(
+                "/live/parameter", json={"processor": "reverb", "parameter": "Mix", "value": 0.5}))
+            await loop.run_in_executor(None, entered.wait, 5)
+            try:
+                response = await asyncio.wait_for(client.get("/live"), 2)
+                status = response.status
+            except asyncio.TimeoutError:
+                status = "queued behind the change"
+            finally:
+                release.set()
+            assert (await change).status == 200
+            return status
+
+    assert asyncio.run(go()) == 200
+
+
+def test_a_change_waits_for_a_change_but_not_for_a_read():
+    """The other direction: while a read is in Sushi a change goes ahead."""
+    agent, fake = live_agent()
+    fake.hang_on = "snapshot"
+
+    async def go():
+        loop = asyncio.get_running_loop()
+        async with TestClient(TestServer(agent.app())) as client:
+            read = asyncio.ensure_future(client.get("/live"))
+            await loop.run_in_executor(None, fake.reached.wait, 5)
+            try:
+                response = await asyncio.wait_for(client.post(
+                    "/live/parameter", json={"processor": "reverb", "parameter": "Mix", "value": 0.5}), 2)
+                status = response.status
+            except asyncio.TimeoutError:
+                status = "queued behind the read"
+            finally:
+                fake.release.set()
+            assert (await read).status == 200
+            return status
+
+    assert asyncio.run(go()) == 200
+
+
+@pytest.mark.parametrize("method, path, body", [
+    ("GET", "/live", None),
+    ("POST", "/live/parameter", {"processor": "reverb", "parameter": "Mix", "value": 0.5}),
+    ("POST", "/live/bypass", {"processor": "drive", "bypassed": False}),
+    ("POST", "/live/move", {"processor": "drive", "direction": "up"}),
+    ("POST", "/live/parameter", {"processor": "delay", "parameter": "Mix", "value": 0.5}),  # refused
+])
+def test_a_request_makes_one_connection_does_everything_on_it_and_closes_it(method, path, body):
+    """A read and a change used to make a connection each: a dozen
+    sub-controllers, an RPC and a notification thread, twice. (The fake fails a
+    call that is not given the request's open connection.)"""
+    agent, fake = live_agent()
+    status, _ = call(agent, method, path, json=body)
+    assert status in (200, 400)
+    assert fake.opened == [1]
+    assert fake.one_connection_per_request_all_closed()
+    assert fake.calls, "and it was used"
+
+
+def test_a_connection_is_closed_when_the_request_fails_too():
+    agent, fake = live_agent()
+    fake.fail, fake.fail_on = ValueError("refused"), "set_bypass"
+    assert call(agent, "POST", "/live/bypass", json={"processor": "drive", "bypassed": False})[0] == 502
+    assert fake.one_connection_per_request_all_closed() and fake.opened == [1]
+
+
+def test_a_connection_that_will_not_close_is_said_not_swallowed(capsys):
+    agent, fake = live_agent()
+
+    def broken(connection):
+        raise OSError("socket already gone")
+
+    fake.disconnect = broken
+    status, body = call(agent, "POST", "/live/bypass", json={"processor": "drive", "bypassed": False})
+    assert status == 200, "the change was made; the answer says so"
+    assert "closing the connection to Sushi failed: OSError: socket already gone" in capsys.readouterr().err
+    last = agent.last_error
+    assert last["kind"] == "live" and "socket already gone" in last["message"]
+
+
+@pytest.mark.parametrize("method, path, body, hangs_in, applied_unknown", [
+    ("POST", "/live/parameter", {"processor": "reverb", "parameter": "Mix", "value": 0.5}, "set_parameter", True),
+    ("POST", "/live/move", {"processor": "drive", "direction": "up"}, "move", True),
+    ("POST", "/live/bypass", {"processor": "drive", "bypassed": False}, "bypass", False),
+    ("GET", "/live", None, "snapshot", False),
+])
+def test_a_call_to_sushi_that_never_returns_is_a_504_and_frees_the_lock(
+    monkeypatch, method, path, body, hangs_in, applied_unknown
+):
+    """One hung gRPC call used to hold the live lock for ever: every later
+    /live request waited behind it with no 409, 502 or timeout. The agent now
+    stops waiting. The stuck worker thread cannot be cancelled and is not
+    stopped; that is stated in `LIVE_TIMEOUT`, and shown here by the call still
+    being inside Sushi when the next request is answered."""
+    monkeypatch.setattr(agent_module, "LIVE_TIMEOUT", 0.3)
+    agent, fake = live_agent()
+    fake.hang_on = hangs_in
+
+    async def go():
+        async with TestClient(TestServer(agent.app())) as client:
+            try:
+                first = await client.request(method, path, json=body)
+                stuck = (first.status, await first.json())
+                # The lock is free and the stuck call is still inside Sushi:
+                # the next request is answered, on a connection of its own.
+                inside = not fake.release.is_set()
+                second = await asyncio.wait_for(client.get("/live"), 5)
+                return stuck, inside, second.status, await (await client.get("/live/log")).json()
+            finally:
+                fake.release.set()
+
+    (status, answer), inside, second, log = asyncio.run(go())
+    assert status == 504
+    assert "did not answer within 0.3s" in answer["reason"]
+    assert ("may or may not have been applied" in answer["reason"]) is applied_unknown
+    assert inside and second == 200
+    assert log["log"] == [], "a change nobody saw confirmed is not logged"
+    assert agent.last_error["kind"] == "live" and "did not answer" in agent.last_error["message"]
+    assert len(fake.opened) == 2 and fake.closed == [2], \
+        "the abandoned request's connection is not closed from under its stuck call"
+
+
+def test_a_connect_that_never_returns_is_a_504_too(monkeypatch):
+    monkeypatch.setattr(agent_module, "LIVE_TIMEOUT", 0.2)
+    agent, fake = live_agent()
+    release = threading.Event()
+    real = fake.connect
+    fake.connect = lambda: (release.wait(5), real())[1]
+    try:
+        status, body = call(agent, "GET", "/live")
+    finally:
+        release.set()
+    assert status == 504 and "did not answer" in body["reason"]
 
 
 def test_the_log_is_the_last_500_newest_last():

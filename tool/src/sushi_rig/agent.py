@@ -56,7 +56,12 @@ request gets its turn, because a rig half up or half down is not one to be
 changing; they do not take the lifecycle lock, so a `down` can still begin while
 one is in flight and will make it fail as `502`. They are serialised among
 themselves, so the "previous value" each change records is the value it actually
-replaced. A rig that is not up is `503`. Sushi going away, refusing, or not
+replaced; a read (`GET /live`) takes no part in that, since it cannot disturb a
+`previous`, so a panel polling it does not make fader writes wait. Each request
+makes one connection to Sushi, does its reading and changing on it, and closes
+it. No call to Sushi may take longer than `LIVE_TIMEOUT`: past it the agent
+stops waiting, releases the lock and answers `504`, though it cannot stop the
+call (see the constant). A rig that is not up is `503`. Sushi going away, refusing, or not
 confirming a change in time is `502` with the reason, and then nothing is logged:
 the log holds changes Sushi confirmed. elkpy not being installed is `500`, the
 agent's own install and not Sushi's doing. All but the `503` are remembered in
@@ -77,6 +82,7 @@ operator's call to make, not a default.
 from __future__ import annotations
 
 import asyncio
+import contextlib
 import functools
 import math
 import re
@@ -88,7 +94,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Sequence
 
 from . import live as live_module
-from .live import DEFAULT_GRPC_ADDRESS, ElkpyMissing, LiveError, plan_move
+from .live import DEFAULT_GRPC_ADDRESS, ElkpyMissing, LiveError, Move
 from .rig import describe_rig
 
 try:
@@ -102,6 +108,23 @@ VERSION = "0.1"
 # SHUTDOWN_STEPS, both well inside this; a command still running at the limit
 # is stuck, and is killed rather than holding the lock forever.
 LIFECYCLE_TIMEOUT = 120.0
+
+# How long one blocking call to Sushi (connecting, a read, a change) may take
+# before the agent stops waiting for it and answers 504. elkpy's gRPC calls
+# carry no deadline of their own, so a Sushi that accepts the connection and
+# then stops answering would hold the live lock, and with it every /live
+# request, for ever. The longest thing a call legitimately does is a full read
+# of the rig (hundreds of RPCs at about a millisecond each on loopback) or a
+# change waiting `live.CONFIRM_TIMEOUT` (5 s) for Sushi to confirm; this is
+# four times that. A guess, not a measurement: no live Sushi was to hand.
+#
+# What the timeout does not do: stop the call. A thread in a blocking gRPC call
+# cannot be cancelled from Python, so the worker stays stuck in the executor
+# (and the connection it holds stays open: it is not closed from under it)
+# until Sushi answers or the process ends. The agent only stops waiting, and
+# lets the next request through. A Sushi that is stuck for good therefore leaks
+# one thread per request, each of which costs LIVE_TIMEOUT to find out.
+LIVE_TIMEOUT = 20.0
 
 # The CLI is run as this module, not as `sushi-rig` from PATH, so the agent
 # drives the installation it was started from.
@@ -122,7 +145,7 @@ LIFECYCLE = ("up", "down", "restart")
 LOG_LIMIT = 500
 
 # "up" the chain is earlier in it, as the panel's move buttons are: the
-# direction `move_processor` takes is negative for earlier, positive for later.
+# direction `live.plan_move` takes is negative for earlier, positive for later.
 DIRECTIONS = {"up": -1, "down": 1}
 
 
@@ -216,9 +239,9 @@ def _object(body: Any) -> dict[str, Any]:
 
 
 def _name(body: dict[str, Any], key: str) -> str:
-    value = body.get(key)
     if key not in body:
         raise AgentError(f"{key!r} is required")
+    value = body[key]
     if not isinstance(value, str) or not value:
         raise AgentError(f"{key!r} must be a non-empty string, not {value!r}")
     return value
@@ -264,9 +287,14 @@ def move_request(body: Any) -> tuple[str, str]:
     return processor, direction
 
 
-def _on_the_rig(chains: dict[str, list[str]]) -> list[str]:
-    """Every track and every processor on one, by name."""
-    return sorted({name for track, chain in chains.items() for name in [track, *chain]})
+def _on_the_rig(chains: dict[str, list[str]], with_tracks: bool = True) -> list[str]:
+    """Every processor on a chain, by name, and with `with_tracks` the tracks
+    too: what a refusal offers, sorted. A refusal names only what the request
+    could have meant -- a bypass cannot mean a track."""
+    return sorted({
+        name for track, chain in chains.items()
+        for name in ([track, *chain] if with_tracks else chain)
+    })
 
 
 def check_parameter(reading: dict[str, Any], processor: str, parameter: str) -> float:
@@ -307,22 +335,19 @@ def check_bypass(reading: dict[str, Any], processor: str) -> bool | None:
             f"{processor!r} is a track, not a processor on one: bypassing a track "
             "silences everything on it"
         )
-    on_chains = sorted({name for chain in chains.values() for name in chain})
+    on_chains = _on_the_rig(chains, with_tracks=False)
     if processor not in on_chains:
         raise AgentError(f"the running rig has no processor {processor!r}: it has {on_chains}")
     return reading.get("bypassed")
 
 
-def check_move(chains: dict[str, list[str]], processor: str, direction: str) -> tuple[list[str], bool]:
-    """`(the chain it is on, whether moving would change it)`, or `AgentError`
-    if the processor is on no track. Whether it would is `plan_move`'s decision:
-    a processor already at that end of its chain is not an error, and not a
-    change.
+def check_move(move: Move) -> None:
+    """`AgentError` if the move's processor is on no track. A processor already
+    at that end of its chain is not an error and not a change: `move.outcome`
+    says which, from `live.decide_move`, the one place that decides it.
     """
-    for chain in chains.values():
-        if processor in chain:
-            return list(chain), plan_move(chain, processor, DIRECTIONS[direction]) is not None
-    raise AgentError(f"the running rig has no processor {processor!r} on any track")
+    if move.outcome == "absent":
+        raise AgentError(f"the running rig has no processor {move.processor!r} on any track")
 
 
 def log_entry(op: str, args: dict[str, Any], previous: Any, at: str) -> dict[str, Any]:
@@ -348,33 +373,46 @@ def sushi_unreachable(exc: BaseException) -> bool:
 
 @dataclass(frozen=True)
 class Live:
-    """Everything the live routes need from Sushi, each a blocking call. The
-    reads are targeted -- they cost what the request names, not a walk of
+    """Everything the live routes need from Sushi, each a blocking call. A
+    request makes one connection (`connect`), does all its reading and changing
+    on it, and closes it (`disconnect`): each connection builds a dozen
+    sub-controllers, makes an RPC and starts a notification thread, so a read
+    and a change on separate ones paid that twice for nothing. Every other
+    call takes the connection first.
+
+    The reads are targeted -- they cost what the request names, not a walk of
     every parameter of the rig -- and their answers are what the `check_*`
     functions decide on. Defaults to `live.py`.
+
+    One connection per request, not one held for the agent's life: a held one
+    would need reconnecting when Sushi restarts (which `up`, `down` and
+    `restart` do on purpose) and the failure to reconnect would be state that
+    outlives the request that met it. Not run against a live Sushi.
     """
 
-    snapshot: Callable[[], dict[str, Any]]  # capture + "parameter_info", one connection
-    chains: Callable[[], dict[str, list[str]]]
-    parameter: Callable[[str, str], dict[str, Any]]  # (processor, parameter) -> reading
-    bypass: Callable[[str], dict[str, Any]]  # (processor) -> reading
-    set_parameter: Callable[[str, str, float], None]
-    set_bypass: Callable[[str, bool], None]
-    move: Callable[[str, int], str]
+    connect: Callable[[], Any]
+    disconnect: Callable[[Any], None]
+    snapshot: Callable[[Any], dict[str, Any]]  # capture + "parameter_info"
+    parameter: Callable[[Any, str, str], dict[str, Any]]  # (processor, parameter) -> reading
+    bypass: Callable[[Any, str], dict[str, Any]]  # (processor) -> reading
+    plan_move: Callable[[Any, str, int], Move]  # decides, sends nothing
+    set_parameter: Callable[[Any, str, str, float], None]
+    set_bypass: Callable[[Any, str, bool], None]
+    send_move: Callable[[Any, Move], Move]  # sends a planned move
 
     @classmethod
     def at(cls, address: str = DEFAULT_GRPC_ADDRESS) -> "Live":
-        def bound(fn):
-            return functools.partial(fn, address=address)
-
+        m = live_module
         return cls(
-            snapshot=bound(live_module.read_rig),
-            chains=bound(live_module.get_live_chains),
-            parameter=bound(live_module.read_live_parameter),
-            bypass=bound(live_module.read_live_bypass),
-            set_parameter=bound(live_module.set_live_parameter),
-            set_bypass=bound(live_module.set_live_bypass),
-            move=bound(live_module.move_processor),
+            connect=functools.partial(m.connect, address),
+            disconnect=lambda c: c.close(),
+            snapshot=lambda c: m.read_rig(address, c),
+            parameter=lambda c, proc, name: m.read_live_parameter(proc, name, address, c),
+            bypass=lambda c, proc: m.read_live_bypass(proc, address, c),
+            plan_move=lambda c, proc, direction: m.plan_live_move(proc, direction, address, c),
+            set_parameter=lambda c, proc, name, value: m.set_live_parameter(proc, name, value, address, c),
+            set_bypass=lambda c, proc, state: m.set_live_bypass(proc, state, address, c),
+            send_move=lambda c, move: m.send_live_move(move, address, c),
         )
 
 
@@ -450,7 +488,7 @@ class Agent:
         self.last_error: dict[str, Any] | None = None
         self.busy: str | None = None  # the lifecycle command running, if one is
         self._lock = asyncio.Lock()  # lifecycle: one command at a time
-        self._live_lock = asyncio.Lock()  # live: one change at a time; waits, not 409
+        self._live_lock = asyncio.Lock()  # live: one change at a time; waits, not 409. Reads do not take it
         self.log: list[dict[str, Any]] = []  # operations made through /live, newest last
 
     def _doctor(self) -> list:
@@ -563,6 +601,10 @@ class Agent:
     async def _sushi(self, request, fn: Callable[..., Any], *args: Any, reading: bool) -> Any:
         """Run one blocking Sushi call off the loop, and say how it failed.
 
+        - No answer within `LIVE_TIMEOUT` is 504, whatever was asked: the
+          caller's lock is released, the stuck call is not stopped (see
+          `LIVE_TIMEOUT`), and for a change it is not known whether it was
+          applied.
         - No Sushi to connect to is 503 when a request is only being read
           (nothing has changed), and 502 once a change is under way.
         - Sushi refusing, or not confirming (`LiveError`), or failing any other
@@ -573,7 +615,17 @@ class Agent:
         """
         where = [request.method, request.path]
         try:
-            return await asyncio.get_running_loop().run_in_executor(None, fn, *args)
+            return await asyncio.wait_for(
+                asyncio.get_running_loop().run_in_executor(None, fn, *args), LIVE_TIMEOUT,
+            )
+        except asyncio.TimeoutError:
+            reason = (
+                f"Sushi did not answer within {LIVE_TIMEOUT:g}s"
+                + ("" if reading else ", so the change may or may not have been applied")
+                + ": read /live before trying again"
+            )
+            self._remember(where, reason, kind="live")
+            raise web.HTTPGatewayTimeout(reason=reason)
         except ElkpyMissing as exc:
             self._remember(where, str(exc), kind="live")
             raise web.HTTPInternalServerError(reason=str(exc))
@@ -591,6 +643,39 @@ class Agent:
             self._remember(where, message, kind="live")
             raise web.HTTPBadGateway(reason=message)
 
+    @contextlib.asynccontextmanager
+    async def _connected(self, request):
+        """One connection to Sushi for the whole of a request: opened here,
+        closed when the request is done, however it ended.
+
+        Not closed after a timeout or a cancellation: a worker thread is still
+        inside a call on it, and closing a connection under a call is not ours
+        to do. It stays open until that call returns, and is leaked if it never
+        does (see `LIVE_TIMEOUT`).
+
+        A close that fails does not change the answer to the request -- what it
+        was asked has been done -- but is not silent: it is printed and
+        remembered for /health.
+        """
+        controller = await self._sushi(request, self.live.connect, reading=True)
+        abandoned = False
+        try:
+            yield controller
+        except (web.HTTPGatewayTimeout, asyncio.CancelledError):
+            abandoned = True
+            raise
+        finally:
+            if not abandoned:
+                try:
+                    await asyncio.wait_for(
+                        asyncio.get_running_loop().run_in_executor(None, self.live.disconnect, controller),
+                        LIVE_TIMEOUT,
+                    )
+                except Exception as exc:  # noqa: BLE001 -- said, not raised over the answer
+                    message = " ".join(f"closing the connection to Sushi failed: {type(exc).__name__}: {exc}".split())
+                    print(f"sushi-rig agent: {message}", file=sys.stderr, flush=True)
+                    self._remember([request.method, request.path], message, kind="live")
+
     def _record(self, op: str, args: dict[str, Any], previous: Any) -> dict[str, Any]:
         entry = log_entry(op, args, previous, datetime.now(timezone.utc).isoformat(timespec="seconds"))
         self.log.append(entry)
@@ -600,9 +685,16 @@ class Agent:
         return entry
 
     async def live_state(self, request):
-        async with self._live_lock:
-            self._refuse_while_busy()
-            rig = await self._sushi(request, self.live.snapshot, reading=True)
+        """The whole running rig. Takes no part in `_live_lock`: a read changes
+        nothing, so it cannot disturb the `previous` a change records, and a
+        panel polling this must not make fader writes queue behind it. It is
+        refused while a lifecycle command runs, as the changes are. A read made
+        mid-change sees the rig before or after it, as any read of a live rig
+        does.
+        """
+        self._refuse_while_busy()
+        async with self._connected(request) as controller:
+            rig = await self._sushi(request, self.live.snapshot, controller, reading=True)
         return web.json_response({
             "ok": True,
             "processors": rig.get("processors", {}),
@@ -628,15 +720,18 @@ class Agent:
             raise web.HTTPBadRequest(reason=str(exc))
         async with self._live_lock:
             self._refuse_while_busy()
-            reading = await self._sushi(request, self.live.parameter, processor, parameter, reading=True)
-            try:
-                previous = check_parameter(reading, processor, parameter)
-            except AgentError as exc:
-                raise web.HTTPBadRequest(reason=str(exc))
-            await self._sushi(request, self.live.set_parameter, processor, parameter, value, reading=False)
-            entry = self._record(
-                "parameter", {"processor": processor, "parameter": parameter, "value": value}, previous,
-            )
+            async with self._connected(request) as controller:
+                reading = await self._sushi(
+                    request, self.live.parameter, controller, processor, parameter, reading=True)
+                try:
+                    previous = check_parameter(reading, processor, parameter)
+                except AgentError as exc:
+                    raise web.HTTPBadRequest(reason=str(exc))
+                await self._sushi(
+                    request, self.live.set_parameter, controller, processor, parameter, value, reading=False)
+                entry = self._record(
+                    "parameter", {"processor": processor, "parameter": parameter, "value": value}, previous,
+                )
         return web.json_response({"ok": True, **entry})
 
     async def live_bypass(self, request):
@@ -647,13 +742,15 @@ class Agent:
             raise web.HTTPBadRequest(reason=str(exc))
         async with self._live_lock:
             self._refuse_while_busy()
-            reading = await self._sushi(request, self.live.bypass, processor, reading=True)
-            try:
-                previous = check_bypass(reading, processor)
-            except AgentError as exc:
-                raise web.HTTPBadRequest(reason=str(exc))
-            await self._sushi(request, self.live.set_bypass, processor, bypassed, reading=False)
-            entry = self._record("bypass", {"processor": processor, "bypassed": bypassed}, previous)
+            async with self._connected(request) as controller:
+                reading = await self._sushi(request, self.live.bypass, controller, processor, reading=True)
+                try:
+                    previous = check_bypass(reading, processor)
+                except AgentError as exc:
+                    raise web.HTTPBadRequest(reason=str(exc))
+                await self._sushi(
+                    request, self.live.set_bypass, controller, processor, bypassed, reading=False)
+                entry = self._record("bypass", {"processor": processor, "bypassed": bypassed}, previous)
         return web.json_response({"ok": True, **entry})
 
     async def live_move(self, request):
@@ -667,29 +764,27 @@ class Agent:
             raise web.HTTPBadRequest(reason=str(exc))
         async with self._live_lock:
             self._refuse_while_busy()
-            chains = await self._sushi(request, self.live.chains, reading=True)
-            try:
-                chain, would_change = check_move(chains, processor, direction)
-            except AgentError as exc:
-                raise web.HTTPBadRequest(reason=str(exc))
-            if not would_change:
-                edge = "first" if direction == "up" else "last"
-                return web.json_response({
-                    "ok": True, "changed": False, "chain": chain,
-                    "message": f"{processor} is already {edge} in the chain",
-                })
-            message = await self._sushi(
-                request, self.live.move, processor, DIRECTIONS[direction], reading=False)
-            # `move_processor` reports in words. Anything but "moved" means
-            # the chain was not what it was a moment ago (or Sushi declined):
-            # said as it was said, not logged.
-            if not str(message).startswith("moved "):
-                reason = f"the move did not happen: {message}"
-                self._remember([request.method, request.path], reason, kind="live")
-                raise web.HTTPBadGateway(reason=reason)
-            entry = self._record(
-                "move", {"processor": processor, "direction": direction}, chain)
-        return web.json_response({"ok": True, "changed": True, "message": message, **entry})
+            async with self._connected(request) as controller:
+                # One walk, one decision (`live.decide_move`), and the command
+                # sent is the one decided on: success is what Sushi confirmed,
+                # not a word in a status line, and a processor found already
+                # at that end only now is "unchanged", not a failure.
+                planned = await self._sushi(
+                    request, self.live.plan_move, controller, processor, DIRECTIONS[direction],
+                    reading=True)
+                try:
+                    check_move(planned)
+                except AgentError as exc:
+                    raise web.HTTPBadRequest(reason=str(exc))
+                if planned.outcome == "unchanged":
+                    return web.json_response({
+                        "ok": True, "changed": False, "chain": planned.chain,
+                        "message": planned.message,
+                    })
+                moved = await self._sushi(request, self.live.send_move, controller, planned, reading=False)
+                entry = self._record(
+                    "move", {"processor": processor, "direction": direction}, planned.chain)
+        return web.json_response({"ok": True, "changed": True, "message": moved.message, **entry})
 
     async def announce_stopping(self, app=None) -> None:
         """Say on stdout that the agent is stopping, and whether it was

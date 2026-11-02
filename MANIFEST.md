@@ -1380,3 +1380,64 @@ chain's ids, `get_parameter_id` with `set_parameter_value`, and
 exercised; only the unreachable path ran for real, `capture` against a closed
 port giving elkpy's `SushiUnavailableError`. Run a parameter, a bypass and a
 move against `up` before relying on them. *(2026-11-02)*
+
+**The agent's live routes, answering the second review of PR #102 (#29).** Eight
+findings, behaviour changing in four places. (1) **A bound on every call to
+Sushi.** elkpy's gRPC calls have no deadline, so one hung call held `_live_lock`
+for ever and every later `/live` request waited behind it with no 409, 502 or
+timeout. `Agent._sushi` now wraps the executor call in `asyncio.wait_for` with
+`LIVE_TIMEOUT` (20 s, a guess: four times the 5 s `CONFIRM_TIMEOUT` and well
+over a full read of the rig; not measured on a live Sushi); past it the lock is
+released and the answer is `504` with a reason, remembered in `last_error`, and,
+for a change, saying it may or may not have been applied. The stuck worker
+thread cannot be cancelled and stays in the executor, holding its connection
+open, until Sushi answers or the process ends; a Sushi that is stuck for good
+leaks a thread per request. That is stated beside the constant rather than
+hidden. (2) **Reads no longer take the lock.** `GET /live` held `_live_lock` for
+a full-rig read, so a polling panel starved fader writes; a read cannot disturb
+the `previous` the lock exists to keep true, so only changes take it, and a read
+keeps the busy check (409 during a lifecycle command). (3) **One connection per
+request**, read and set on the same controller (the pattern `read_rig` already
+used): each `SushiController` builds a dozen sub-controllers, makes an RPC and
+starts a notification thread, and a request used to build two. Chosen over one
+long-lived controller on the `Agent`, which would have to reconnect whenever
+Sushi restarts (`up`, `down` and `restart` do that on purpose) and whose failed
+reconnection would be state outliving the request that met it; reconnect
+logic I could not exercise without a Sushi is not something to add on spec.
+`live.py`'s reads and setters take an optional `controller=` (a context manager,
+`_connection`, builds and closes one only if none is passed); the `Live` record
+the agent injects now has `connect` and `disconnect` and every call takes the
+connection first; a connection is not closed after a timeout (a worker is still
+inside a call on it), and one that will not close is printed to stderr and
+remembered, not swallowed. Using one controller from two executor threads (the
+read and the set are separate hops) rests on gRPC channels and elkpy's
+`run_coroutine_threadsafe` being thread-safe, as read from elkpy's source: not
+run on a live Sushi. `get_live_chains` had no caller left and is gone.
+(4) **A move is decided once and nothing matches text.** `live_move` read the
+chains, then called `move_processor`, which walked again, planned again (its
+answer could differ) and returned a sentence the route prefix-matched with
+`"moved "`, so a processor found already at the end only on the second look was
+a 502. Now `live.decide_move` (pure, tested) turns one walk into a `Move`
+(`planned`, `unchanged`, `absent`, then `moved`), `plan_live_move` reads and
+`send_live_move` sends the very command that was planned, and the route maps
+the outcome: absent is 400, unchanged is `changed: false`, moved is logged. The
+`503` for an unreachable Sushi is kept, because the plan is a read and the send
+a change. `move_processor` and `agent.check_move`'s chain arguments are gone;
+`Move.message` is the panel's line. (5) That walk is `_walk_chains`, which
+`move_processor` had been duplicating by hand. (6) **The listener's move.**
+Strictness made a move Sushi applied but confirmed late raise `LiveError`, which
+the OSC listener reported as "move failed" without rebuilding the panel, leaving
+its tab order stale with no hint. `listen.handle_move` (extracted from the
+closure so it can be tested) now rebuilds the panel on a `LiveError` and says
+"the move may have happened"; it does not rebuild when nothing was sent
+(unchanged, absent), when elkpy is missing, or when the move failed some other
+way. Chosen over a lenient move because the point of the strict wait is that
+nothing says "moved" of a change Sushi did not confirm, and a rebuild reads the
+truth from Sushi either way. (7) `check_bypass`'s inline list of the processors
+on chains is `_on_the_rig(chains, with_tracks=False)`. (8) `_name` checks
+`key not in body` before reading it. **Not run against a live Sushi:** the
+timeout, the shared connection and the late-confirmed move are shown against
+fakes and a stand-in controller; the only thing run for real is elkpy against a
+closed port, which still gives `503` through the new connect-then-read path.
+Run a parameter, a bypass, a move and a read in a loop against `up`, and a
+Sushi paused with SIGSTOP, before relying on the 504. *(2026-11-02)*
