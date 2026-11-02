@@ -1086,10 +1086,24 @@ def elkpy_print(*args: Any, sep: str = " ", end: str = "\n", file: Any = None, f
             print(line, file=sys.stderr, flush=True)
 
 
-def quiet_elkpy() -> bool:
+_quieted: list[str] | None = None  # the modules `quiet_elkpy` patched, once it has run
+# Not `_elkpy_lock`: importing an elkpy module can print through a module
+# already patched, which takes that one, and it is not reentrant.
+_quiet_lock = threading.Lock()
+
+
+def quiet_elkpy() -> list[str]:
     """Give elkpy's printing modules `elkpy_print` as their `print`, for the
-    life of the process. Idempotent; False where elkpy is not installed (the
-    first live call then says so, as ever).
+    life of the process, and say which were patched. Idempotent: the work is
+    done once, and later calls answer what it found.
+
+    Module by module, and never raising: a module elkpy does not have (a
+    version that moved one), or one whose import fails some other way, is
+    left printing as it did and named once on stderr, and the rest are still
+    patched. Quiet output is not worth a rig the agent cannot serve, so this
+    must never be what stops it. Called on the agent's first connection
+    (`agent.connect_quietly`), not at its start, so an agent that never
+    talks to Sushi never imports elkpy, gRPC and protobuf.
 
     A module-level name that shadows the builtin, not a redirect of
     sys.stdout: a redirect is the whole process's, so the agent's own lines
@@ -1097,12 +1111,25 @@ def quiet_elkpy() -> bool:
     nothing but elkpy's own calls to `print` (principle 4: the one
     customisation of elkpy here, recorded with what it works around).
     """
+    global _quieted
     import importlib
 
-    try:
-        modules = [importlib.import_module(f"elkpy.{name}") for name in ELKPY_PRINTING]
-    except ImportError:
-        return False
-    for module in modules:
-        module.print = elkpy_print  # type: ignore[attr-defined]
-    return True
+    with _quiet_lock:
+        if _quieted is not None:
+            return list(_quieted)
+        patched, missed = [], []
+        for name in ELKPY_PRINTING:
+            try:
+                module = importlib.import_module(f"elkpy.{name}")
+                module.print = elkpy_print  # type: ignore[attr-defined]
+            except Exception as exc:  # noqa: BLE001 -- said below, never raised
+                missed.append(f"elkpy.{name} ({type(exc).__name__}: {exc})")
+            else:
+                patched.append(name)
+        _quieted = patched
+    if missed and patched:
+        # With none patched, elkpy itself is missing or broken, and the
+        # connection being made says so (ElkpyMissing), louder than this.
+        print("sushi-rig: elkpy's own prints are not silenced for " + "; ".join(missed),
+              file=sys.stderr, flush=True)
+    return list(patched)

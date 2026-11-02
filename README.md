@@ -402,7 +402,7 @@ sushi-rig agent install-service      # or run it as a systemd user service (prin
 curl localhost:8029/health           # the agent and the rig in one answer, crashed children included
 curl localhost:8029/rig              # `status` as data
 curl localhost:8029/doctor           # `doctor` as data
-curl localhost:8029/rigs             # the rigs of config/rigs/ a start or switch can name, and which is up
+curl localhost:8029/rigs             # the rigs of config/rigs/ a start or switch can name
 curl localhost:8029/rig/load         # one pw-top sample of the rig's nodes: load, xruns, the block budget
 curl -X POST localhost:8029/rig/up -d '{"config_name": "guitar_vocal", "rig": true, "headless": true}'
 curl -X POST localhost:8029/rig/down
@@ -722,10 +722,12 @@ no Node and the UI has to run from a checkout. Two screens from the mockups:
 It polls `/health` once a second, and `/live` only while a rig is up: a rig
 that is down is shown as a state, in grey, not as an error a second in the
 console (#111), while a `/live` failure with the rig up is still shown as the
-failure it is. Load and xruns come from `GET /rig/load`, one `pw-top -b -n 2`
-every two seconds while a rig is up: LOAD is the rig's nodes' share of the
+failure it is. Load and xruns come from `GET /rig/load`, asked every two seconds
+while a rig is up: one `pw-top -b -n 2` at a time, its sample shared by every page
+asking within 1.5 s, so two pages do not keep pw-top running beside the rig. LOAD is the rig's nodes' share of the
 block (B/Q, summed as `sushi-rig top` sums it) against the block's length from
-Sushi's driver, XRUNS how many since the page opened, marked when rising. A
+Sushi's driver, XRUNS how many since the page opened, counted per node, marked
+when rising. A
 pw-top that is missing or fails shows as "unreadable" with the reason. Each
 change is sent as it happens. A change the agent refuses shows the agent's
 reason on screen, beside the knob; nothing is put back without saying why.

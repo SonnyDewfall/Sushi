@@ -38,6 +38,9 @@ BUSY_WARN = 0.70
 
 BAR_WIDTH = 24
 
+# What starts every sample block `pw-top -b` prints: the column header.
+PW_TOP_HEADER = "S   ID  QUANT"
+
 _UNITS = {"ns": 1e-9, "us": 1e-6, "µs": 1e-6, "ms": 1e-3, "s": 1.0}
 
 
@@ -71,7 +74,7 @@ def parse_pw_top(output: str) -> list[dict[str, Any]]:
     visible, which is worth seeing on its own — a webcam that had joined the
     graph through the tuner was clocking this rig at 2048 and nothing said so.
     """
-    blocks = output.split("S   ID  QUANT")
+    blocks = output.split(PW_TOP_HEADER)
     if len(blocks) < 2:
         return []
 
@@ -284,12 +287,20 @@ def read_pw_top(timeout: float) -> str:
     if result.returncode != 0:
         said = " ".join((result.stderr or result.stdout or "").split())[-300:] or "nothing"
         raise LoadError(f"pw-top failed (exit {result.returncode}): {said}", "failed")
-    if "S   ID  QUANT" not in result.stdout:
+    samples = result.stdout.count(PW_TOP_HEADER)
+    if samples == 0:
         # Not a pw-top this parser knows, or a PipeWire with no graph: the
         # header is what `parse_pw_top` splits on, so without it every rig
         # node would read as missing, which is a different claim.
         said = " ".join(result.stdout.split())[:200] or "nothing"
         raise LoadError(f"pw-top printed no sample this tool can read: {said}", "no_sample")
+    if samples < 2:
+        # The first block is all zeros (see `parse_pw_top`), so read alone it
+        # is 0 % load and no xruns, measured: the quiet lie this is to avoid
+        # (found by review).
+        raise LoadError(
+            "pw-top printed one sample, not the two asked for, and the first is all zeros: "
+            "nothing was measured", "no_sample")
     return result.stdout
 
 

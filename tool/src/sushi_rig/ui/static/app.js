@@ -209,8 +209,8 @@ function kick() {
 // GET /rig/load beside the poll, at its own pace, and only while a rig is up
 // and still: with none, there is nothing to read and the tiles say so. The
 // tiles are decided here, when an answer arrives, since "rising" compares it
-// with the one before; the xruns' first count is per rig run (its name and
-// start), and starts again if the count falls, as a node that reappeared does.
+// with the one before (`R.xrunsStep`, per node); the count starts again for
+// each rig run (its name and start).
 async function pollLoad() {
   clearTimeout(state.loadTimer);
   try {
@@ -220,12 +220,9 @@ async function pollLoad() {
       const run = JSON.stringify([rig.config_name ?? null, rig.started_at ?? null]);
       if (run !== state.xrunsFor) { state.xruns = null; state.xrunsFor = run; }
       state.load = answer;
-      state.loadView = R.loadTiles(answer, true, state.xruns);
-      if (answer.ok) {
-        const total = R.xrunTotal(answer.body);
-        const first = state.xruns && state.xruns.first <= total ? state.xruns.first : total;
-        state.xruns = { first, last: total };
-      }
+      const step = answer.ok ? R.xrunsStep(state.xruns, answer.body) : null;
+      if (step) state.xruns = step.seen;
+      state.loadView = R.loadTiles(answer, true, step);
     } else {
       state.load = null;
       state.loadView = null;
@@ -467,9 +464,15 @@ function tileViews(health) {
   return [...measured, { k: "AMP", v: rig.amp_model || "none", s: null, title: null, tone: "" }];
 }
 
-function tiles(views) {
-  return views.map((t) => h("span", { class: `tile${t.tone ? " " + t.tone : ""}`, title: t.title },
-    h("span", { class: "k" }, t.k), h("span", { class: "v" }, t.v), t.s ? h("span", { class: "s" }, t.s) : null));
+// The tiles in an element of their own, kept across the header's rebuilds:
+// they change with every load sample, and were in the header's key, so the
+// whole header, Lock button and Stage link included, was rebuilt every 2 s,
+// losing a click between press and release, and keyboard focus (found by
+// review).
+function tilesRegion(el) {
+  const views = tileViews(state.health);
+  patch(el, JSON.stringify(views), () => views.map((t) => h("span", { class: `tile${t.tone ? " " + t.tone : ""}`, title: t.title },
+    h("span", { class: "k" }, t.k), h("span", { class: "v" }, t.v), t.s ? h("span", { class: "s" }, t.s) : null)));
 }
 
 function problems() {
@@ -593,6 +596,7 @@ function rackFrame() {
   const regions = {
     header: h("header", { class: "bar" }),
     problems: h("div", { class: "problems", "aria-live": "polite" }),
+    tiles: h("span", { class: "tile-row" }),
     rigs: h("section", { class: "rigs", "aria-label": "Rigs" }),
     channels: h("div", { class: "channel-list" }),
     rack: h("main", { class: "rack" }),
@@ -648,15 +652,17 @@ function detail(unit, size) {
 }
 
 function renderRack(regions, model, unsaved, status) {
-  const views = tileViews(state.health);
-  patch(regions.header, JSON.stringify([status, state.locked, state.armed, views]), () => [
+  patch(regions.header, JSON.stringify([status, state.locked, state.armed]), () => [
     h("svg", { width: 28, height: 28, viewBox: "0 0 28 28", "aria-hidden": "true", class: "mark" }, h("path", { d: "M5 18a9 9 0 0 1 18 0" }), h("path", { d: "M10 18a4 4 0 0 1 8 0" })),
     h("h1", { class: "rig-name" }, status.title), statusLine(status),
-    h("span", { class: "spacer" }), ...tiles(views), h("a", { class: "go", href: "#stage" }, "Stage"), lockButton(),
+    h("span", { class: "spacer" }), regions.tiles, h("a", { class: "go", href: "#stage" }, "Stage"), lockButton(),
   ]);
+  tilesRegion(regions.tiles);
   problemsRegion(regions.problems);
   const live = liveBody();
-  const structure = model ? JSON.stringify([model.tracks.map((t) => [t.name, t.chain, t.units.map((u) => [u.uri, u.profile, u.panel])]), state.locked, [...state.open], !!state.names]) : "none";
+  // With no rig, the message depends on the tone (changing, or down), so
+  // the tone is in the key, or it would never be redrawn (found by review).
+  const structure = model ? JSON.stringify([model.tracks.map((t) => [t.name, t.chain, t.units.map((u) => [u.uri, u.profile, u.panel])]), state.locked, [...state.open], !!state.names]) : JSON.stringify(["none", status.tone]);
   if (patch(regions.rack, structure, () => {
     state.updaters = [];
     if (!model) {
@@ -726,6 +732,7 @@ function stageFrame() {
     problems: h("div", { class: "problems", "aria-live": "polite" }),
     levels: h("div", { class: "levels" }),
     cards: h("main", { class: "cards" }),
+    tiles: h("div", { class: "tiles" }),
     rigs: h("section", { class: "rigs stage-rigs", "aria-label": "Rigs" }),
   };
   const frame = h("div", { class: "screen stage-screen" }, regions.header, regions.problems, regions.levels, regions.cards, regions.rigs,
@@ -749,12 +756,12 @@ function card(unit) {
 }
 
 function renderStage(regions, model, status) {
-  const views = tileViews(state.health);
-  patch(regions.header, JSON.stringify([status, state.locked, state.armed, views]), () => [
+  patch(regions.header, JSON.stringify([status, state.locked, state.armed]), () => [
     h("div", { class: "row" }, h("span", { class: `dot tone-${status.tone}`, "aria-hidden": "true" }), h("h1", { class: "rig-name" }, status.title), h("span", { class: "spacer" }), lockButton()),
     h("div", { class: `detail-line tone-${status.tone}`, title: status.tone === "up" ? SOUND_NOTE : null }, status.detail),
-    h("div", { class: "tiles" }, ...tiles(views)),
+    regions.tiles,
   ]);
+  tilesRegion(regions.tiles);
   problemsRegion(regions.problems);
   const live = liveBody();
   const levels = model ? R.channelLevels(model, live) : [];

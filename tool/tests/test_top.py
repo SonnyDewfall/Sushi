@@ -11,6 +11,7 @@ import pytest
 from sushi_rig.top import (
     BUSY_WARN,
     CHILD_NODES,
+    PW_TOP_HEADER,
     LoadError,
     bar,
     format_sample,
@@ -340,6 +341,17 @@ def test_a_pw_top_that_prints_no_sample_is_not_read_as_no_rig(pw_top_on_path):
     with pytest.raises(LoadError) as caught:
         read_pw_top(5)
     assert caught.value.code == "no_sample" and "usage: pw-top" in str(caught.value)
+
+
+def test_a_pw_top_that_prints_only_its_all_zero_first_sample_is_not_read_as_measured(pw_top_on_path, tmp_path):
+    """The first block is all zeros; read alone it is 0 % load and no xruns,
+    as if measured (found by review). Two samples, or none is read."""
+    first = PW_TOP[:PW_TOP.index(PW_TOP_HEADER, 1)]
+    (tmp_path / "one.txt").write_text(first)
+    pw_top_on_path(f"cat {tmp_path}/one.txt")
+    with pytest.raises(LoadError) as caught:
+        read_pw_top(5)
+    assert caught.value.code == "no_sample" and "one sample" in str(caught.value)
 
 
 def test_a_pw_top_that_overruns_is_stopped_at_the_deadline(pw_top_on_path):

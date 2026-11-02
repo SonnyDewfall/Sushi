@@ -423,22 +423,40 @@ export function agentProblems(health) {
 
 // ---------------------------------------------------------------- load and xruns
 
-// Every rig node's xruns, summed: what `loadTiles` counts from.
-export function xrunTotal(body) {
-  return ((body && body.nodes) || []).reduce((sum, n) => sum + (isNumber(n.xruns) ? n.xruns : 0), 0);
+// The xruns the page has seen happen, counted per node by name, from one
+// GET /rig/load answer after another: `seen` is the last step's (null to
+// begin), and the answer is {seen, added}, `added` what this sample added.
+//
+// pw-top's counts are cumulative since each node appeared and never reset,
+// so what is new is each node's rise since its last sample. A node absent
+// from a sample keeps its last count and adds nothing; back again, it is
+// compared with that, not taken as new (one sum over every node did that,
+// and showed a node's whole lifetime as new and rising: found by review). A
+// count that falls is a node that appeared afresh, all of whose xruns
+// happened since. A node's first sample is its baseline, adding nothing.
+export function xrunsStep(seen, body) {
+  const last = { ...((seen && seen.last) || {}) };
+  let count = (seen && seen.count) || 0;
+  let added = 0;
+  for (const n of (body && body.nodes) || []) {
+    if (!isNumber(n.xruns)) continue;
+    const before = last[n.name];
+    if (isNumber(before)) added += n.xruns >= before ? n.xruns - before : n.xruns;
+    last[n.name] = n.xruns;
+  }
+  count += added;
+  return { seen: { last, count }, added };
 }
 
 // The LOAD and XRUNS tiles from GET /rig/load's answer (`top.load_report`),
 // as {k, v, s, title, tone}; tone is "", "warn", "over" or "failed". `up` is
-// whether a rig is up; `xruns` is {first, last}, the totals the page saw when
-// it began watching this rig and last time, or null.
+// whether a rig is up; `xruns` is this answer's `xrunsStep`, or null.
 //
 // Load is the sum of the rig's nodes' B/Q, the fraction of each block they
 // used, as `sushi-rig top` totals it; never 0 % unless pw-top measured 0.
-// Xruns are cumulative since each node appeared and never reset, so the
-// number shown is how many since the page began watching, and "rising" when
-// the last sample added some: what predicts trouble (top.py) is a count that
-// climbs, not its size.
+// Xruns: how many since the page began watching, and "rising" when the last
+// sample added some: what predicts trouble (top.py) is a count that climbs,
+// not its size.
 export function loadTiles(answer, up, xruns) {
   const none = (s, title, tone = "") => [
     { k: "LOAD", v: "—", s, title, tone },
@@ -467,11 +485,10 @@ export function loadTiles(answer, up, xruns) {
   load.title = [perNode || "no rig node in pw-top", budget.quantum ? `quantum ${budget.quantum} @ ${budget.rate} Hz` : null,
     budget.driver ? `clocked by ${budget.driver}` : null, ...notes].filter(Boolean).join(" · ");
   if (!(b.nodes || []).length) load.s = "no rig nodes";
-  const total = xrunTotal(b);
-  const first = xruns && isNumber(xruns.first) && xruns.first <= total ? xruns.first : total;
-  const rising = !!(xruns && isNumber(xruns.last) && total > xruns.last);
+  const total = (b.nodes || []).reduce((sum, n) => sum + (isNumber(n.xruns) ? n.xruns : 0), 0);
+  const rising = !!(xruns && xruns.added > 0);
   const xrun = {
-    k: "XRUNS", v: String(total - first), s: rising ? "rising" : "since opened",
+    k: "XRUNS", v: String(xruns ? xruns.seen.count : 0), s: rising ? "rising" : "since opened",
     tone: rising ? "warn" : "",
     title: `${total} in all since each node appeared (pw-top never resets them): ` +
       ((b.nodes || []).map((n) => `${n.name} ${n.xruns}`).join(", ") || "no rig nodes"),
@@ -494,7 +511,7 @@ export function lifecycleCall(op, name) {
 }
 
 // The rig picker: the rigs of config/rigs/ (GET /rigs's answer), which one is
-// up and which is chosen, and what can be done. `pending` is this page's
+// up (from /health) and which is chosen, and what can be done. `pending` is this page's
 // command in flight ({op, name}) or null; the agent's own `busy` covers one
 // another client started. Either way nothing is offered while one runs (the
 // agent would answer 409 busy), and what is running is said.

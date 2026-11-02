@@ -333,6 +333,8 @@ class Served:
                  lifecycle: UiLifecycle | None = None):
         self.rig = rig or UiRig()
         self.lifecycle = lifecycle or UiLifecycle()
+        # What GET /rig/load's pw-top prints; a test may change it.
+        self.pw_top_output = (FIXTURES / "pw-top-b-n2.txt").read_text(encoding="utf-8")
         self.state = {"describe": describe or self.lifecycle.describe}
         # `root` is where the profiles are read from (tool/examples/profiles/ under it).
         self.agent = Agent(root=root or checkout_root(), live=self.rig, describe=lambda: self.state["describe"](),
@@ -340,7 +342,7 @@ class Served:
                            # No pedals: the MIDI listener follows a rig after every
                            # lifecycle command, and this rig has no compiled config.
                            midi=midi_listener.World(plan=lambda described, root: midi_listener.Off("the fake rig has no pedals")),
-                           pw_top=lambda timeout: (FIXTURES / "pw-top-b-n2.txt").read_text(encoding="utf-8"))
+                           pw_top=lambda timeout: self.pw_top_output)
         self.lifecycle.agent = self.agent
         self.agent._switch_held = self.lifecycle.switch_held
         self._loop = asyncio.new_event_loop()

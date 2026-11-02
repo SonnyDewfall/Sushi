@@ -2392,3 +2392,33 @@ agent's routes, lock and busy real): a start with busy shown, a refused start,
 stop with confirm and cancel, a live switch, a restart switch, the stage
 picker hidden while locked. Fast suite 2696 -> 2732 passed. NOT VERIFIED on the
 rig: any of it against real Sushi, PipeWire and pw-top. *(2026-11-02)*
+
+**Web UI v0.1, answering review (#111).** Ten findings. (1) **"Sushi is not
+reachable" stayed in /health** after Sushi answered or the rig stopped, and a
+later outage kept the first one's time: the agent now keeps the outage's record
+apart (`_unreachable`) and clears it when a call to Sushi next answers or
+/health finds no rig running; a new outage has its own `at`. (2) **The rack's
+empty-state message never redrew** (its key was a constant with no rig): the
+tone is in the key, tested through a start that fails. (3) **The xruns
+baseline was one sum**, so a node missing from one sample and back showed its
+lifetime count as new and rising: `xrunsStep` counts per node by name, a node's
+fall in count read as a fresh node. (4) **The header was rebuilt every load
+sample**, Lock button and Stage link with it, losing a click mid-press and the
+focus: the tiles are patched in an element of their own, and a browser test
+holds the Lock button's element and focus across a load update. (5) **pw-top's
+first, all-zero sample alone read as 0 % and no xruns, measured**: fewer than
+two samples is now `no_sample`. (6) **Every GET /rig/load ran its own pw-top**:
+one run at a time now, its output shared for `LOAD_SHARED` (1.5 s); two
+requests at once make one run. (7) **`quiet_elkpy` patched all or nothing, and
+any import error but ImportError stopped the agent starting**; it now goes
+module by module, never raises, names what it could not patch once, and runs
+on the first connection (`connect_quietly`), so an Agent no longer imports
+elkpy, gRPC and protobuf at start (tested in a child process). (8) **The
+unreachable fault overwrote a lifecycle failure's reason**: beside one it goes
+in `also`, and leaves with the outage. (9) The `pw-top` header text is one
+constant, `top.PW_TOP_HEADER`. (10) `/rigs` no longer answers `running` (the
+page reads /health), and `rig_load`'s alias is gone. With #114's
+`close_controller` merged, the child-process test of a poll's output no longer
+needs `os._exit` to dodge elkpy's teardown noise: it exits normally and asserts
+the child printed nothing else, stable over five runs here. Fast suite 2736 ->
+2746 passed. Still NOT VERIFIED on the rig. *(2026-11-02)*

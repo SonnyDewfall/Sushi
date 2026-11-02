@@ -177,22 +177,18 @@ def test_the_ui_folder_itself_sends_the_browser_to_the_page(path):
     assert asyncio.run(go()) == (302, "/")
 
 
-def test_the_rigs_a_start_or_switch_can_name_are_config_rigs_with_the_running_one():
+def test_the_rigs_a_start_or_switch_can_name_are_config_rigs():
     """The picker's list: config/rigs/ by name, in program order, whether or
     not the running rig's MIDI map switches rigs (which is when /rig lists
-    them as `programs`)."""
+    them as `programs`). Which one is up is /health's to say."""
     import json
 
-    status, _, body = call(ui_agent(live=UiRig(), describe=lambda: {
-        "running": True, "config_name": "electric-delay"}), "GET", "/rigs")
+    status, _, body = call(ui_agent(live=UiRig()), "GET", "/rigs")
     answer = json.loads(body)
     # By file name, as a Program Change counts them: "electric-chorus-2.yaml"
     # sorts before "electric-chorus.yaml", though its name sorts after.
     names = [p.stem for p in sorted((checkout_root() / "config" / "rigs").glob("*.yaml"), key=lambda p: p.name)]
-    assert status == 200 and answer["rigs"] == names and "electric_board" in names
-    assert answer["running"] == "electric-delay"
-    status, _, body = call(ui_agent(live=UiRig(), describe=lambda: {"running": False}), "GET", "/rigs")
-    assert json.loads(body)["running"] is None
+    assert status == 200 and answer == {"ok": True, "rigs": names} and "electric_board" in names
 
 
 def profiles_root(tmp_path, *extra):
@@ -964,11 +960,9 @@ def test_load_and_xruns_are_read_as_top_reads_them_and_unknowns_are_said(blank):
         failed: R.loadTiles({ok: false, reason: 'pw-top is not installed'}, true, null).map((x) => [x.v, x.s, x.tone, x.title]),
         fine: show(R.loadTiles(ok(load), true, null)),
         title: R.loadTiles(ok(load), true, null)[0].title,
-        // The page saw 2 at first and 2 last time; now 5: three since, and climbing.
-        rising: show(R.loadTiles(ok({...load, nodes: [{...load.nodes[0], xruns: 5}, load.nodes[1]]}), true, {first: 2, last: 2})),
-        steady: show(R.loadTiles(ok({...load, nodes: [{...load.nodes[0], xruns: 5}, load.nodes[1]]}), true, {first: 2, last: 5})),
-        // A node that reappeared counts from nothing again: never a negative count.
-        reset: R.loadTiles(ok(load), true, {first: 9, last: 9})[1].v,
+        // Three seen since the page began, the last sample adding them: climbing.
+        rising: show(R.loadTiles(ok(load), true, {seen: {last: {}, count: 3}, added: 3})),
+        steady: show(R.loadTiles(ok(load), true, {seen: {last: {}, count: 3}, added: 0})),
         near: show(R.loadTiles(ok({...load, total_load: 0.71}), true, null))[0],
         over: show(R.loadTiles(ok({...load, total_load: 1.2}), true, null))[0],
         unmeasured: R.loadTiles(ok({...load, total_load: null, nodes: [{...load.nodes[1], load: null}]}), true, null)[0],
@@ -982,7 +976,6 @@ def test_load_and_xruns_are_read_as_top_reads_them_and_unknowns_are_said(blank):
     assert tiles["title"] == "NAM 23%, sushi 3% · quantum 256 @ 48000 Hz · clocked by alsa_in"
     assert tiles["rising"][1] == ["XRUNS", "3", "rising", "warn"]
     assert tiles["steady"][1] == ["XRUNS", "3", "since opened", ""]
-    assert tiles["reset"] == "0"
     assert tiles["near"] == ["LOAD", "71%", "of 5.3 ms", "warn"]
     assert tiles["over"] == ["LOAD", "120%", "over budget", "over"]
     assert (tiles["unmeasured"]["v"], tiles["unmeasured"]["s"]) == ("—", "not measured"), "never 0 % unmeasured"
@@ -990,6 +983,30 @@ def test_load_and_xruns_are_read_as_top_reads_them_and_unknowns_are_said(blank):
     assert tiles["split"]["tone"] == "warn"
     assert "split across 2 clocks (alsa_in, Dummy-Driver)" in tiles["split"]["title"]
     assert "pw-top does not list fmit" in tiles["split"]["title"]
+
+
+def test_xruns_are_counted_per_node_so_one_missing_then_back_adds_nothing(blank):
+    """One sum over every node, reset when it fell, read a node missing from
+    one sample and back in the next as its whole lifetime count, new and
+    rising (found by review)."""
+    steps = rigjs(blank, """
+      const sample = (...pairs) => ({nodes: pairs.map(([name, xruns]) => ({name, xruns}))});
+      const out = [];
+      let seen = null;
+      for (const body of [
+        sample(['NAM', 2], ['sushi', 0]),      // the page's first look: a baseline, nothing new
+        sample(['sushi', 0]),                  // NAM missing from this sample
+        sample(['NAM', 2], ['sushi', 0]),      // ...and back, as it was: still nothing new
+        sample(['NAM', 4], ['sushi', 1]),      // three more: rising
+        sample(['NAM', 4], ['sushi', 1]),      // steady
+        sample(['NAM', 1], ['sushi', 1]),      // NAM appeared afresh, with one already: one more
+      ]) {
+        const step = R.xrunsStep(seen, body);
+        seen = step.seen;
+        out.push([step.seen.count, step.added]);
+      }
+      return out;""")
+    assert steps == [[0, 0], [0, 0], [0, 0], [3, 3], [3, 0], [4, 1]]
 
 
 def test_a_start_is_a_headless_rig_of_channels_and_a_switch_names_its_rig(blank):
@@ -1222,3 +1239,43 @@ def test_on_stage_the_picker_is_there_only_once_unlocked(browser, served):
     lock.click()
     expect(p.locator(".stage-rigs")).to_be_hidden()
     page.close()
+
+
+def test_a_load_update_leaves_the_lock_button_and_its_focus_alone(browser, served):
+    """The tiles change with every sample. In the header's key, they rebuilt
+    it every 2 s, Lock button and Stage link included: a click between press
+    and release was lost, and so was keyboard focus (found by review)."""
+    page = rack_page(browser, served)
+    p = page.page
+    load = p.locator(".tile").first
+    expect(load).to_contain_text("26%")
+    lock = p.locator("button.lock")
+    lock.focus()
+    handle = lock.element_handle()
+    served.pw_top_output = served.pw_top_output.replace("0.23    2", "0.53    2")  # NAM's B/Q
+    expect(load).to_contain_text("56%", timeout=8000)
+    assert handle.evaluate("(e) => e.isConnected && document.activeElement === e"), \
+        "the same Lock button, still focused"
+    page.close()
+
+
+def test_the_racks_empty_message_follows_the_rig_through_a_start_that_fails(browser):
+    """With no rig the message depends on the tone, which was not in its
+    key: "Choose one under RIGS" stayed while a rig started, and "The rig is
+    changing" after a start that failed (found by review)."""
+    from ui_fake import UiLifecycle
+
+    world = UiLifecycle(up=None)
+    world.delay = 1.5
+    world.refuse_up = "no machine file for this host (test)"
+    with Served(lifecycle=world) as served:
+        page = rack_page(browser, served)
+        p = page.page
+        empty = p.locator(".rack .empty")
+        expect(empty).to_contain_text("Choose one under RIGS to start it")
+        p.locator(".rig", has_text="electric-delay").click()
+        p.get_by_role("button", name="Start electric-delay").click()
+        expect(empty).to_have_text("The rig is changing; the rack comes back when it is up.")
+        expect(p.locator(".problem.refused")).to_contain_text("Not started: electric-delay", timeout=8000)
+        expect(empty).to_contain_text("Choose one under RIGS to start it")
+        page.close()
