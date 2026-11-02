@@ -100,3 +100,39 @@ def test_a_listing_that_fails_is_said_on_stderr(controller, capsys):
     controller.parameters.get_processor_properties = lambda pid: (_ for _ in ()).throw(RuntimeError("x"))
     live.capture()
     assert "properties could not be listed" in capsys.readouterr().err
+
+
+def test_a_probe_track_left_running_is_left_out_and_said(controller, capsys):
+    """A selftest killed mid-probe leaves its track in Sushi. It is no part of
+    any rig, so a capture leaves it out and says why, rather than SAVE refusing
+    the capture as "a different rig" and losing the save (found by review)."""
+    from sushi_rig.spec import PROBE_TRACK
+
+    tracks = [SimpleNamespace(id=0, name="guitar"), SimpleNamespace(id=7, name=PROBE_TRACK)]
+    controller.audio_graph.get_all_tracks = lambda: tracks
+    asked = []
+    original = controller.audio_graph.get_track_processors
+    controller.audio_graph.get_track_processors = lambda tid: asked.append(tid) or original(tid)
+    state = live.capture()
+    assert PROBE_TRACK not in state["tracks"] and PROBE_TRACK not in state["processors"]
+    assert asked == [0]
+    err = capsys.readouterr().err
+    assert f"{PROBE_TRACK!r} is still in Sushi" in err
+    assert "selftest that did not finish" in err
+
+
+def test_a_save_made_with_a_probe_left_running_still_folds(controller):
+    """The path the review found: SAVE of a rig of channels after a killed
+    selftest. The capture carries nothing of the probe, so the fold is the
+    rig's own and nothing names a 'different rig'."""
+    from sushi_rig.rigfile import fold_state
+    from sushi_rig.spec import PROBE_TRACK
+
+    controller.audio_graph.get_all_tracks = lambda: [
+        SimpleNamespace(id=0, name="guitar"), SimpleNamespace(id=7, name=PROBE_TRACK)]
+    raw = {
+        "kind": "rig", "schema_version": 1, "name": "t",
+        "channels": [{"name": "guitar", "input": "guitar-in", "width": "mono", "chain": []}],
+        "master": {"output": "monitor-out", "chain": []},
+    }
+    assert fold_state(raw, live.capture())["channels"][0]["name"] == "guitar"
