@@ -1643,6 +1643,123 @@ now counted first and uncounted if it has already returned. The second is shown
 with a future that completes from inside the check; neither was run against a
 live Sushi. *(2026-11-02)*
 
+**A probe plays through a probe track, never beside the instrument (#81).**
+*Supersedes the 2026-10-31 entry above ("selftest's probes are planned from
+the rig"), which had probes add a link into the track's own input.* The rig
+results of 31 Oct showed why that fails: PipeWire sums two links into one
+input at unity, but Sushi 1.3.0 reads only the first 64 frames of each quantum
+of a doubly-linked input, so at 256 the probe read back at a quarter of its
+level, aligned and with nothing to say so, and the guitar sharing the input
+would have been chopped the same way. `live_paths.py`'s own
+`pipewire_sums_two_links` check reads `false` in all four committed reports for
+this reason. Each probe through Sushi now drives `selftest_probe`, the track
+under test with its engine numbers moved to the lowest ones no track uses and a
+copy of its chain (sends and returns left off, settings read from the running
+processors). For `config/rigs/guitar_vocal.yaml` that is input 2 and outputs
+6/7, for `electric_board` input 1 and outputs 4/5; tests pin both, with and
+without the amp, and hold every committed rig to probing no port a track uses.
+Unlinking the guitar for the probe was the alternative and is rejected: qpwgraph
+reconnects a missing link by itself, which would put the second link back
+mid-probe without a word, and a run killed between unlink and relink leaves a
+silent guitar. The copy's cost is said in the plan rather than hidden: a fault
+only the running instance has, the tracks' own outputs, and the send and return
+into the master (verify's, #88) are not probed, and with the master's chain
+empty the monitor path is not probed twice. The amp cannot be copied — a second
+Carla would pass while the running one is dead, #49's own failure — so its
+probes still go into the amp the guitar plays into and carry `beside`; the "via
+amp" probe links `NAM:Output` into the probe track, the shape of link seen to
+survive qpwgraph on the rig. `crowded_ports` is the live check the effect runs
+before playing, on both ends of the probe track — an input with a second link,
+an output linked to anything but the selftest's own capture — tested against
+the `pw-link -l` listing the spike captured. A
+three-channel rig has no free output pair and its chains are listed as not
+probed. Untested, since no PipeWire or soundcard was available: creating and
+removing a track over gRPC in a running Sushi, whether a copied chain sounds as
+its source does, and whether Carla reads all of a doubly-linked `NAM:Input`.
+The effect itself is still unwritten; selftest.py lists what it owes the plan.
+A review the same day found five things, all fixed: the live check covered the
+probe track's inputs only, so an output left linked to the monitors would have
+played the probe to the player (now both ends); a probe track left by a killed
+run made SAVE refuse the capture as "a different rig", losing the save under
+the wrong cause (`live.capture` now leaves the track out with a warning naming
+it, and `selftest_probe` is a name no rig may take, so nothing real is ever
+dropped); the amp-to-monitors path vanished without a word when the master's
+chain was empty (now its own NOT CHECKED line); the "via amp" note blamed a lack
+of free ports when the guitar track had no inputs (the two causes are now told
+apart); and the probe track's routing re-parsed track entries beside
+`track_route` (`patchbay.track_entries` is now the one reading of them).
+A second review found four more, also fixed: a guitar with no stem whose probe
+through the master had no room was still blamed on the missing stem (the amp's
+note now gives the cause of the path tried last); a rig was refused over
+`<send>_probe`, a name no copy is ever given, since sends and returns are not
+copied; the `selftest_probe` name check existed three times, and is now one
+function in spec.py, run by `RigSpec.validate` — which every path to a running
+rig reaches, a v2 rig through `compile_rig` — and called by the plan for a spec
+given to it unvalidated, so `check_rig` no longer has its own copy; and a probe
+track's ports are worked out once when it is planned and carried on it, rather
+than rebuilt from its routing at every use. The listings are unchanged.
+
+**The agent's undo, `POST /live/undo` (#29).** The newest log entry that is not an
+undo and has not been undone is put back through the calls the routes use: a
+parameter to `previous`, a bypass to `previous`, a move by the opposite step. The
+undo is logged as `op: "undo"` with `undoes: <index>`, `args` (`of` the op, then
+what was applied) and `previous` (what it replaced), so a redo can be built from
+the entry alone; the answer carries that entry, the entry `undone` and the
+`state` set. **The index is a count of entries since the agent started**, not a
+position, because `trim_log` drops from the front and a position would change
+under the `undoes` pointing at it; the agent keeps how many it has dropped and
+`GET /live/log` reports `first`. Ordinary entries keep their four keys; only
+undos have `undoes`. A single pass from the newest end is enough because an undo
+is always newer than its target: trimming can lose a target and keep its undo, but
+never the reverse (tested with `LOG_LIMIT` lowered, which needed `_record` to read
+the module's value instead of `trim_log`'s default bound at definition). **Refused
+rather than guessed**, as 409 with a reason and nothing logged: nothing to undo
+(empty log or only undos; answered without connecting, so no rig need be up); a
+`previous` of None (Sushi would not say a bypass state); a processor the rig no
+longer has; and a move whose processor is not exactly where the move left it,
+checked by `chain_after_move` against the chain read now, since the panel's
+listener also moves processors and is not behind the agent's lock. A refused entry
+is not skipped to reach an older one. A body is 400. Same busy checks, lock,
+`LIVE_TIMEOUT` and 503/502/504 mapping as the other changes. **Not done:** undoing
+an undo. **Not run against a live Sushi:** the three undos are shown against the
+fake `Live`, so that `set_live_parameter` takes the value back, that moving the
+other way is exact on Sushi's real chain, and that the chain read for the check is
+still the chain at the moment of the send (it is read under the lock, but the
+listener is outside it) are unverified; try each against `up`.
+
+*A review of the same branch found six more.* (1) **The stack could wedge.** The
+newest entry being a move the panel's listener has since disturbed (it moves
+processors outside the agent's lock) was refused and never skipped, and the route
+took no body, so every older change was unreachable. The way out is
+`{"skip": true}`, not naming an entry (a named index would let a request undo
+out of order): it runs the same checks as an undo without sending, and if the
+newest entry is refused records an `op: "stale"` entry with `stale: <index>` and
+the reason, so the history stays honest and `pick_undo` passes over it; an entry
+that can be undone is refused with `not_stale`, so a skip cannot give up on a
+change that would have gone through. (2) **A parameter or bypass undo overwrote
+whatever had been set meanwhile**; `check_undo_state` now refuses unless the rig
+still has what the change set. The parameter comparison has a tolerance
+(`PARAMETER_TOLERANCE`, 1e-4) because Sushi holds a float32 and a value read
+back is not bit-equal to the one sent: a guess, not measured, and the first
+thing to check on a live Sushi (too tight and every parameter undo is `stale`).
+A value Sushi would not say is refused, not assumed equal. (3) **Undo no longer
+duplicates the routes**: `_apply_parameter`, `_apply_bypass` and `_apply_move`
+are the read-check-set of each, called by the route and by undo with an `expect`
+hook (undo's staleness check, run after the existing checks and before sending)
+and a `dry_run` (skip); `live_undo` dispatches on `op` once. (4) **Busy is
+checked before the "nothing to undo" fast path**, which had reported an empty log
+during a lifecycle command. (5) **Statuses and a `code`**: 409 `busy`,
+`nothing_to_undo` and `stale` are told apart by a `code` field beside `reason`
+(on the busy refusal of every live route too); a processor the rig lost is 400,
+as `check_parameter` and `check_bypass` are on the other routes, where it had
+been 409 here. (6) **The log limit is `Agent(log_limit=...)`** and not a module
+global re-read at call time (the tests now pass it to the constructor);
+`trim_log`'s default, dead since, is gone. The unreachable "not planned" branch
+after `check_undo_move` is removed, replaced by a test of the fact it leaned on:
+wherever a one-step move was possible, its opposite from the result is possible
+and restores the chain. Everything here is shown against the fake `Live` only.
+*(2026-11-02)*
+
 **The agent serves the pedals Sushi cannot: bypass and rig switching (#34, #93).**
 When the running rig's compiled config has `_midi_agent`, the agent opens the
 controller's port itself and serves it (`midi_listener.py`, wired in a block at

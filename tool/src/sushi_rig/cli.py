@@ -374,7 +374,19 @@ def _probes(args: argparse.Namespace) -> int:
         return 1
     for point in plan.points:
         expect = "  must add harmonics" if point.nonlinear else ""
-        print(f"{point.name}\n  inject  {', '.join(point.inject)}\n  listen  {point.capture}{expect}")
+        print(f"{point.name}\n  inject  {', '.join(point.inject)}")
+        for source, sink in point.links:
+            print(f"  link    {source} -> {sink}")
+        print(f"  listen  {point.capture}{expect}")
+        if point.track is not None:
+            # The track is what makes the injection safe to run with the
+            # instrument plugged in, so the listing says what it carries.
+            chains = " then ".join(f"{name}'s chain" for name in point.track.copy_of)
+            print(f"  track   {point.track.name}: a copy of {chains} "
+                  f"({len(point.track.plugins)} plugins)")
+        if point.beside:
+            print(f"  beside  {point.beside}: the instrument feeds this too, so it is in "
+                  "the measurement and the player hears it; keep it quiet")
     for note in plan.not_checked:
         print(f"NOT CHECKED {note}")
     return 0
@@ -990,7 +1002,8 @@ def _main(argv: list[str] | None = None) -> int:
     p = sub.add_parser(
         "probes",
         help="where selftest will inject and listen for a rig: the ports each "
-        "probe links. Reads nothing live; exit 1 if the rig cannot be probed",
+        "probe links, on a probe track of its own beside the instrument's. Reads "
+        "nothing live; exit 1 if the rig cannot be probed",
     )
     p.add_argument("rig", type=Path, help="a rig file (config/rigs/*.yaml) or a rig.yaml (config/src/*.yaml)")
     p.add_argument(
