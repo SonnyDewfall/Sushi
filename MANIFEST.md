@@ -1406,6 +1406,99 @@ with a channel silent; the channel's `level` holds, and `fold_state` and
 `merged_state` share one `blended_channels` derivation. An unblended channel's
 captured gain still merges. *(2026-11-02)*
 
+**The capture engine is in the tool, with a check for silence that arrives as
+data.** #53's engine and #81's silent-block check, moved out of the spike into
+`capture.py`. A Python JACK callback is the engine, not a stopgap: the three
+rig runs of 31 Oct 2026 (`capture-*.json`) had 0 xruns and 0 lost frames at
+quantum 256 idle (p99.9 862 us of 5333), 256 under 16 busy processes (293 us),
+and 128 idle (889 us of 2667), and the callback was faster under load than
+idle. The module registers one input port per column of a take, refuses a
+graph not running at the rate and quantum the take was planned for, refuses a
+source port that is not in the graph (naming ports that are), links, then reads
+the links back and refuses any port fed by more than its one source, since a
+second link would be summed in. The spike's counter source is now a test
+fixture. The silent-block check is in the recorder, where every engine's blocks
+pass: a block of exact zeros on a column that carried signal in the block
+before is counted per column, and `take.yaml` carries it under
+`capture.silent_blocks` with the time of the first; `take check` names the stem
+and the port. That is the shape of the one thing the runs found: in the 256
+idle run three of six ports delivered 256 zeros at 207.6 s, in one of two
+identical 600 s runs, with every counter green; the read-back called it 257
+jumps and the results file showed it was silence in place. Cause not found.
+The check is evidence, not a verdict: a noise gate looks the same, and a port
+that never carried signal is not counted, since "went silent" needs a before
+(a port that cannot be linked is refused at start instead). It costs about 9 us
+a 256 by six block, measured on a development machine, not the rig. Two things
+the spike did silently are now counted: it skipped any block whose size was not
+the quantum, leaving the take short with nothing saying so (blocks of another
+size are now recorded and counted), and an exception in the callback would have
+made JACK drop the client and end the capture (it is now held and reported).
+Take format: `capture` gains `silent_blocks` (always present, `{}` when watched
+and clean, so a take from before the watch differs from a clean one) and
+`engine` (the engine's account: xruns, block size changes, skipped frames,
+slowest callback against its budget); both additive, so the schema version
+stays 1, and `Engine.stop` may return that account. JACK-Client is the
+`[capture]` extra, imported only inside `load_jack`, because `import jack` fails
+with `OSError` where libjack is absent and every pure part would then be
+untestable; `ci.yml` installs libjack and the extra, the container image
+already had libjack and now has the extra, and the pure tests run with neither
+numpy nor jack importable. The one JACK test checks that the names the engine
+calls exist in JACK-Client 0.5.7; the no-server path through `Client(...)` ran
+for real, nothing else did. Found while reading: the 1 Nov hear-v2 results do
+not mention the capture runs; they are in the 31 Oct file, and so are dated
+here. **Not run: the engine against a live PipeWire.** Untested are the order
+of activate and connect, the port names PipeWire gives the iD14 and Sushi
+through `pw-jack`, that a stereo stem's ports are the consecutive numbers from
+the one named (true of Sushi's outputs in `patchbay.py`, an assumption for
+anything else), that the listener can run under `pw-jack`, and that a take's
+silent blocks line up with what is heard. The listener does not construct an
+engine yet, because the ports a take records follow from the machine file and
+the rig. Found by review the same day, and fixed: the engine read the graph's
+quantum with an activation and a half-second wait on every `start`, on what
+will be the listener's one OSC thread, so every RECORD would have stalled the
+panel; it is now read once per engine (`prepare`, to be called where a pause is
+harmless), and a quantum that changes later shows in the take's `engine`
+account instead of being refused up front. The link read-back ran the instant
+after `connect`, which under pipewire-jack may be before the client sees its
+own link; it now retries for up to half a second, and whether the read is
+synchronous there is still unverified. A `push` that raised after the ring had
+kept the block was counted as skipped frames, telling the take they were
+missing from stems that hold them; a raise in the push is now `push_errors`
+and claims no frames. A refused start no longer returns the previous take's
+account from `stop`; the account of an engine that failed to start is now kept
+under `capture.engine`. (A take that never got a recorder was first
+given `silent_blocks: {}` as well; a second review pointed out that `{}` means
+watched and found clean, so it now carries no key, and absent reads as "nobody
+watched": a take from before the watch, or one whose recorder never started.) The JACK test module skipped on a missing
+package but errored at collection on a missing libjack (`importorskip` catches
+only `ImportError`); it skips for both, and CI, which has both, still runs it.
+The flow of calls in `CaptureEngine` is now tested against a hand-written
+stand-in for JACK, which proves its own decisions (what it calls, how often,
+what it does when a read is empty) and nothing about JACK itself. A second review found nine
+more, all fixed. The start sequence activated the client, and so ran the
+process callback, before any link existed, pushing zeros into the recorder:
+the take opened with silence, columns linked on different cycles sat a quantum
+apart while the take declares no offset, and a refused start had already fed
+the recorder. The pump is now gated until every link has been read back; the
+gate also hides the block size's start-up transient (256, 1024, 256, plus the
+one callback JACK makes on activation), which had been counted as a change
+mid-take on clean takes, and xruns before the gate are not the take's. One
+client does the whole start, reading the quantum after activation, where the
+first take had opened a throwaway probe of the same name first (so two opens
+and a possible `-01` rename); `prepare()` stays for a listener that wants the
+answer early, on a client named `-probe`. `check_take` now reports blocks that
+ran at another size than the take's quantum, which a client granted a size it
+was not planned for (a stale cached read, no change event) would otherwise show
+as clean. A failed start before the pump existed returned `{}`, which became
+`engine: {}` in take.yaml; `stop()` returns None for no account, as the
+protocol says, and the account counts every callback exception (`errors`),
+keeping the first message. Engine messages name a column as the recorder does
+(`guitar-dry.wav`, `guitar.wav[1]`) and the JACK test now checks the keyword and
+positional names the engine calls with, not only that the names exist. Still
+unverified: all of it against a live PipeWire, and in particular that
+`client.blocksize` read after activation plus a fixed wait is settled, and
+that a cached read stays true between takes. *(2026-11-02)*
+
 **The agent's second slice: live operations (#29).** `/live` reads the running
 rig (`live.read_rig`: `capture` and `get_live_parameter_info` on one connection,
 so a client has each parameter's range) and changes it: `POST /live/parameter`,

@@ -9,6 +9,8 @@ question, not this module's.
 
 from __future__ import annotations
 
+from pathlib import Path
+
 import pytest
 
 np = pytest.importorskip("numpy")
@@ -455,3 +457,119 @@ def test_stopping_twice_returns_a_recording_both_times(tmp_path):
     first = rec.stop()
     second = rec.stop()
     assert second.frames == first.frames and not second.error
+
+
+# --------------------------------------------------------------------------- #
+# Silence that arrives as data (#81)
+# --------------------------------------------------------------------------- #
+
+def signal_block(columns, frames=Q, silent=()):
+    """Nonzero everywhere except the named columns, which are exact zeros."""
+    block = np.full((frames, columns), 0.25, dtype=np.float32)
+    block[:, list(silent)] = 0.0
+    return block
+
+
+def test_columns_are_named_by_file_and_channel():
+    stems = [(Path("t/guitar.wav"), 2), (Path("t/guitar-dry.wav"), 1)]
+    assert recorder.column_labels(stems) == ["guitar.wav[0]", "guitar.wav[1]", "guitar-dry.wav"]
+
+
+def test_a_block_of_zeros_after_signal_is_counted_against_that_column_only():
+    watch = recorder.SilenceWatch(["a", "b", "c"], SR)
+    watch.observe(signal_block(3))
+    watch.observe(signal_block(3, silent=[1]))
+    assert watch.counts.tolist() == [0, 1, 0]
+    assert watch.report() == {"b": {"count": 1, "first_at_seconds": round(Q / SR, 3)}}
+
+
+def test_a_long_silence_is_one_event_and_each_return_to_signal_rearms_it():
+    watch = recorder.SilenceWatch(["a"], SR)
+    for silent in [False, True, True, True, False, True, True]:
+        watch.observe(signal_block(1, silent=[0] if silent else []))
+    assert watch.counts.tolist() == [2]
+
+
+def test_a_column_that_never_carried_signal_is_not_counted():
+    """There is no "went silent" without a before. A link that never existed is
+    the engine's to refuse; this is not the place that notices it."""
+    watch = recorder.SilenceWatch(["a", "b"], SR)
+    for _ in range(5):
+        watch.observe(signal_block(2, silent=[0]))
+    assert watch.report() == {}
+
+
+def test_one_nonzero_sample_is_signal_and_negative_zero_is_not():
+    watch = recorder.SilenceWatch(["a"], SR)
+    watch.observe(signal_block(1))
+    quiet = np.zeros((Q, 1), dtype=np.float32)
+    quiet[-1, 0] = 1e-30
+    watch.observe(quiet)
+    assert watch.counts.tolist() == [0], "a single faint sample is not silence"
+    watch.observe(np.full((Q, 1), -0.0, dtype=np.float32))
+    assert watch.counts.tolist() == [1]
+
+
+def test_nan_is_not_silence():
+    watch = recorder.SilenceWatch(["a"], SR)
+    watch.observe(signal_block(1))
+    watch.observe(np.full((Q, 1), np.nan, dtype=np.float32))
+    assert watch.counts.tolist() == [0]
+
+
+def test_an_empty_block_changes_nothing():
+    watch = recorder.SilenceWatch(["a"], SR)
+    watch.observe(signal_block(1))
+    watch.observe(np.zeros((0, 1), dtype=np.float32))
+    watch.observe(signal_block(1))
+    assert watch.counts.tolist() == [0]
+
+
+def test_the_first_position_is_in_frames_offered_and_stays_the_first():
+    watch = recorder.SilenceWatch(["a"], SR)
+    for silent in [False, False, True, False, True]:
+        watch.observe(signal_block(1, frames=100, silent=[0] if silent else []))
+    assert watch.report() == {"a": {"count": 2, "first_at_seconds": round(200 / SR, 3)}}
+
+
+@pytest.mark.parametrize("args", [([], SR), (["a"], 0)])
+def test_a_watch_of_nothing_is_refused(args):
+    with pytest.raises(ValueError):
+        recorder.SilenceWatch(*args)
+
+
+def test_the_recorder_reports_the_silent_columns_in_its_summary(tmp_path):
+    rec = Recorder([(tmp_path / "guitar.wav", 2), (tmp_path / "guitar-dry.wav", 1)], SR, Q)
+    rec.start()
+    rec.push(signal_block(3))
+    rec.push(signal_block(3, silent=[2]))
+    rec.push(signal_block(3))
+    summary = rec.stop().summary()
+    assert summary["silent_blocks"] == {"guitar-dry.wav": {"count": 1, "first_at_seconds": round(Q / SR, 3)}}
+    assert summary["lost_frames"] == 0 and summary["error"] == ""
+
+
+def test_a_clean_take_says_it_was_watched_with_an_empty_report(tmp_path):
+    """Present and empty is "watched, none"; absent is a take from before."""
+    rec = Recorder([(tmp_path / "a.wav", 1)], SR, Q)
+    rec.start()
+    rec.push(signal_block(1))
+    assert rec.stop().summary()["silent_blocks"] == {}
+
+
+def test_the_watch_sees_blocks_the_ring_had_no_room_for(tmp_path):
+    """A column's silence is a fact about the input, not about whether the
+    writer kept up. Never started, so nothing is drained and the ring fills."""
+    rec = Recorder([(tmp_path / "a.wav", 1)], SR, Q, headroom_s=1e-9)
+    rec.push(signal_block(1))
+    rec.push(signal_block(1))
+    assert rec.push(signal_block(1, silent=[0])) == 0, "dropped by the full ring"
+    assert rec.silence.counts.tolist() == [1]
+
+
+def test_a_block_of_the_wrong_width_is_refused_before_the_watch_sees_it(tmp_path):
+    rec = Recorder([(tmp_path / "a.wav", 2)], SR, Q)
+    rec.push(signal_block(2))
+    with pytest.raises(ValueError):
+        rec.push(signal_block(1, silent=[0]))
+    assert rec.silence.counts.tolist() == [0, 0]

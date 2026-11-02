@@ -13,6 +13,9 @@ live = ["elkpy", "python-osc"]
 audio = ["numpy>=1.24"]  # offline signal generation and analysis (signals, analysis)
 probe = []  # lilv has no PyPI wheel; install python3-lilv via apt (see README)
 agent = ["aiohttp>=3.9"]  # the rig agent (#29): `sushi-rig agent`
+# The capture engine (#53, capture.py). Needs libjack on the machine as well (apt: libjack-jackd2-0),
+# and numpy for the block buffers. Only 0.5.7 has been checked: capture.py's names are tested against it.
+capture = ["JACK-Client>=0.5.7,<0.6", "numpy>=1.24"]
 dev = ["pytest>=7.0"]
 
 [project.scripts]
