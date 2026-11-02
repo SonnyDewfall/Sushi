@@ -34,14 +34,30 @@ from typing import Any, Callable
 DEFAULT_GRPC_ADDRESS = "localhost:51051"
 
 
+class LiveError(Exception):
+    """A live call that Sushi did not carry out: it reported an error, or did
+    not confirm in time. The change may or may not have been applied."""
+
+
+class ElkpyMissing(LiveError):
+    """elkpy is not installed. Not Sushi's doing, and not a reason to exit the
+    process from a library: the CLI turns it into an exit (`cli.main`), and a
+    long-running caller (the listener, the agent) reports it and carries on.
+    """
+
+
+# How long a strict `_wait` gives Sushi to confirm a command.
+CONFIRM_TIMEOUT = 5.0
+
+
 def _controller(address: str):
     try:
         from elkpy import sushicontroller as sc
     except ImportError:
-        sys.exit(
+        raise ElkpyMissing(
             "elkpy not found. Install it into the tool's venv: "
             "pip install elkpy (see README: Environment)"
-        )
+        ) from None
     return sc.SushiController(address)
 
 
@@ -52,7 +68,7 @@ def _safe(fn, *args):
         return None
 
 
-def capture(address: str = DEFAULT_GRPC_ADDRESS) -> dict[str, Any]:
+def capture(address: str = DEFAULT_GRPC_ADDRESS, controller: Any = None) -> dict[str, Any]:
     """Read the full normalised parameter state of a running Sushi.
 
     Returns a dict of processor name to {"parameters": {...}, "program": int?,
@@ -71,7 +87,10 @@ def capture(address: str = DEFAULT_GRPC_ADDRESS) -> dict[str, Any]:
     chain order, and this function already walks it. The key is additive, so
     state files written before it existed stay valid and simply don't reorder.
     """
-    controller = _controller(address)
+    # `controller` lets a caller that also wants something else share one
+    # connection (`read_rig`); it then stays the caller's to close.
+    own = controller is None
+    controller = controller or _controller(address)
     processors: dict[str, Any] = {}
     track_order: dict[str, list[str]] = {}
     try:
@@ -188,12 +207,15 @@ def capture(address: str = DEFAULT_GRPC_ADDRESS) -> dict[str, Any]:
 
                 processors[proc_name] = entry
     finally:
-        controller.close()
+        if own:
+            controller.close()
 
     return {"processors": processors, "tracks": track_order}
 
 
-def get_live_parameter_info(address: str = DEFAULT_GRPC_ADDRESS) -> dict[str, dict[str, dict]]:
+def get_live_parameter_info(
+    address: str = DEFAULT_GRPC_ADDRESS, controller: Any = None
+) -> dict[str, dict[str, dict]]:
     """Per-processor, per-parameter {"automatable", "value", "min_domain_value",
     "max_domain_value"}.
 
@@ -216,7 +238,8 @@ def get_live_parameter_info(address: str = DEFAULT_GRPC_ADDRESS) -> dict[str, di
     travel. `panel.py` uses these bounds to decide which faders need
     `logScale`.
     """
-    controller = _controller(address)
+    own = controller is None
+    controller = controller or _controller(address)
     result: dict[str, dict[str, dict]] = {}
     try:
         for track in controller.audio_graph.get_all_tracks():
@@ -235,7 +258,8 @@ def get_live_parameter_info(address: str = DEFAULT_GRPC_ADDRESS) -> dict[str, di
                     }
                 result[proc_name] = params
     finally:
-        controller.close()
+        if own:
+            controller.close()
 
     return result
 
@@ -296,7 +320,8 @@ def set_live_parameter(
     try:
         proc_id = controller.audio_graph.get_processor_id(processor)
         param_id = controller.parameters.get_parameter_id(proc_id, parameter)
-        _wait(controller.parameters.set_parameter_value(proc_id, param_id, float(value)))
+        _wait(controller.parameters.set_parameter_value(proc_id, param_id, float(value)),
+              strict=True)
     finally:
         controller.close()
 
@@ -313,7 +338,100 @@ def set_live_bypass(
     controller = _controller(address)
     try:
         proc_id = controller.audio_graph.get_processor_id(processor)
-        _wait(controller.audio_graph.set_processor_bypass_state(proc_id, bool(bypassed)))
+        _wait(controller.audio_graph.set_processor_bypass_state(proc_id, bool(bypassed)),
+              strict=True)
+    finally:
+        controller.close()
+
+
+def _walk_chains(controller) -> tuple[dict[str, list[str]], dict[str, int]]:
+    """`({track: [processor names in chain order]}, {name: id})` for every
+    track and processor: one call for the tracks and one per track, however many
+    parameters anything has. What the targeted reads below start from."""
+    chains: dict[str, list[str]] = {}
+    ids: dict[str, int] = {}
+    for track in controller.audio_graph.get_all_tracks():
+        ids[track.name] = track.id
+        procs = list(controller.audio_graph.get_track_processors(track.id))
+        chains[track.name] = [proc.name for proc in procs]
+        for proc in procs:
+            ids[proc.name] = proc.id
+    return chains, ids
+
+
+def get_live_chains(address: str = DEFAULT_GRPC_ADDRESS) -> dict[str, list[str]]:
+    """`{track: [processor names in chain order]}`, and nothing else: the
+    cheapest read that says what the rig has and in what order."""
+    controller = _controller(address)
+    try:
+        return _walk_chains(controller)[0]
+    finally:
+        controller.close()
+
+
+def read_live_parameter(
+    processor: str, parameter: str, address: str = DEFAULT_GRPC_ADDRESS
+) -> dict[str, Any]:
+    """What a request to set one parameter needs to be decided, from one
+    connection and without walking the rig's parameters:
+
+        {"chains": {track: [processors]},
+         "parameters": {name: {"automatable": bool}} | None,
+         "value": float | None}
+
+    `parameters` is that one processor's (a track counts: it has gain and pan)
+    and is None if the rig has no such processor; `value` is the named
+    parameter's current normalised value, and is None unless it exists and is
+    automatable. The cost is the tracks, the processor's parameter listing and
+    one value, not every value of every processor as `get_live_parameter_info`.
+    """
+    controller = _controller(address)
+    try:
+        chains, ids = _walk_chains(controller)
+        reading: dict[str, Any] = {"chains": chains, "parameters": None, "value": None}
+        if processor in ids:
+            infos = {
+                info.name: info
+                for info in controller.parameters.get_processor_parameters(ids[processor])
+            }
+            reading["parameters"] = {
+                name: {"automatable": bool(getattr(info, "automatable", True))}
+                for name, info in infos.items()
+            }
+            info = infos.get(parameter)
+            if info is not None and reading["parameters"][parameter]["automatable"]:
+                reading["value"] = controller.parameters.get_parameter_value(
+                    ids[processor], info.id
+                )
+        return reading
+    finally:
+        controller.close()
+
+
+def read_live_bypass(processor: str, address: str = DEFAULT_GRPC_ADDRESS) -> dict[str, Any]:
+    """`{"chains": ..., "bypassed": bool | None}`: the chains, and the named
+    processor's bypass state (None for a track, an unknown name, or a state
+    Sushi would not give). One connection, one bypass read.
+    """
+    controller = _controller(address)
+    try:
+        chains, ids = _walk_chains(controller)
+        bypassed = None
+        if processor in ids and processor not in chains:
+            state = _safe(controller.audio_graph.get_processor_bypass_state, ids[processor])
+            bypassed = None if state is None else bool(state)
+        return {"chains": chains, "bypassed": bypassed}
+    finally:
+        controller.close()
+
+
+def read_rig(address: str = DEFAULT_GRPC_ADDRESS) -> dict[str, Any]:
+    """`capture`'s answer plus `"parameter_info"`, on one connection."""
+    controller = _controller(address)
+    try:
+        state = capture(address, controller)
+        state["parameter_info"] = get_live_parameter_info(address, controller)
+        return state
     finally:
         controller.close()
 
@@ -458,7 +576,8 @@ def move_processor(
                 before_id,
                 target["add_to_back"],
             )
-            _wait(response)
+            # Strict: "moved" is said only of a move Sushi confirmed.
+            _wait(response, strict=True)
             # Deliberately says only what happened. It used to append
             # "regenerate the panel to reorder tabs", which was both a chore to
             # read on every move and based on a wrong belief that
@@ -471,8 +590,16 @@ def move_processor(
         controller.close()
 
 
-def _wait(response: Any, timeout: float = 5.0, interval: float = 0.02) -> None:
+def _wait(
+    response: Any, timeout: float | None = None, interval: float = 0.02, strict: bool = False
+) -> None:
     """Poll a SushiCommandResponse until Sushi confirms the command.
+
+    Lenient by default, for `push`, which builds a whole rig and carries on past
+    a slow answer with a warning. With `strict`, a command Sushi reports as
+    failed, or does not confirm within `timeout` (`CONFIRM_TIMEOUT`), raises
+    `LiveError` instead: the live setters and `move_processor` use it, because
+    their callers report the change as made.
 
     Not `.wait()` — see the module docstring. `is_set()` is a plain attribute
     read on `asyncio.Event`, safe to poll from a thread other than the one
@@ -481,9 +608,16 @@ def _wait(response: Any, timeout: float = 5.0, interval: float = 0.02) -> None:
     is_set = getattr(response, "is_set", None)
     if is_set is None:
         return
+    if timeout is None:
+        timeout = CONFIRM_TIMEOUT
     deadline = time.monotonic() + timeout
     while not is_set():
         if time.monotonic() > deadline:
+            if strict:
+                raise LiveError(
+                    f"Sushi did not confirm the command within {timeout:g}s, so it "
+                    "may or may not have been applied"
+                )
             print(
                 f"warning: command not confirmed within {timeout}s, continuing anyway",
                 file=sys.stderr,
@@ -491,6 +625,8 @@ def _wait(response: Any, timeout: float = 5.0, interval: float = 0.02) -> None:
             return
         time.sleep(interval)
     if getattr(response, "error", False):
+        if strict:
+            raise LiveError("Sushi reported an error completing the command")
         print("warning: Sushi reported an error completing the command", file=sys.stderr)
 
 

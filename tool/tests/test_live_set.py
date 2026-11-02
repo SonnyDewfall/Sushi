@@ -6,6 +6,8 @@ available when they were added."""
 
 from __future__ import annotations
 
+import sys
+
 import pytest
 
 from sushi_rig import live
@@ -26,11 +28,15 @@ class _Controller:
         self.calls.append(("get_parameter_id", pid, name))
         return {"Mix": 3}[name]
 
+    response = None  # what a setter hands back; None is a Sushi that answered at once
+
     def set_parameter_value(self, pid, param_id, value):
         self.calls.append(("set_parameter_value", pid, param_id, value))
+        return self.response
 
     def set_processor_bypass_state(self, pid, state):
         self.calls.append(("set_processor_bypass_state", pid, state))
+        return self.response
 
     def close(self):
         self.closed = True
@@ -71,3 +77,86 @@ def test_an_unknown_name_propagates_and_the_connection_is_still_closed(controlle
     with pytest.raises(KeyError):
         call()
     assert controller.closed
+
+
+# --------------------------------------------------------------------------- #
+# A change Sushi did not confirm is an error, not a warning
+# --------------------------------------------------------------------------- #
+
+class _Response:
+    """Stands in for elkpy's SushiCommandResponse: an event Sushi sets, with
+    `error` true if what it set it for was a failure."""
+
+    def __init__(self, set_=True, error=False):
+        self._set, self.error = set_, error
+
+    def is_set(self):
+        return self._set
+
+
+def test_a_strict_wait_raises_on_an_error_and_on_silence():
+    live._wait(_Response(), strict=True)
+    with pytest.raises(live.LiveError, match="reported an error"):
+        live._wait(_Response(error=True), strict=True)
+    with pytest.raises(live.LiveError, match="did not confirm"):
+        live._wait(_Response(set_=False), timeout=0.05, interval=0.01, strict=True)
+
+
+def test_a_lenient_wait_still_only_warns(capsys):
+    """`push` builds a whole rig with it and carries on past a slow answer."""
+    live._wait(_Response(error=True))
+    live._wait(_Response(set_=False), timeout=0.05, interval=0.01)
+    err = capsys.readouterr().err
+    assert "Sushi reported an error" in err and "not confirmed" in err
+
+
+@pytest.mark.parametrize("response", [_Response(error=True), _Response(set_=False)])
+@pytest.mark.parametrize("call", [
+    lambda: live.set_live_parameter("reverb", "Mix", 0.5),
+    lambda: live.set_live_bypass("reverb", True),
+])
+def test_a_setter_raises_when_sushi_does_not_confirm(controller, monkeypatch, response, call):
+    monkeypatch.setattr(live, "CONFIRM_TIMEOUT", 0.05)
+    controller.response = response
+    with pytest.raises(live.LiveError):
+        call()
+    assert controller.closed
+
+
+def test_a_missing_elkpy_is_an_exception_with_the_hint_not_an_exit(monkeypatch):
+    """A library module that exits the process takes the agent's executor
+    thread, and with it the event loop, down."""
+    monkeypatch.setitem(sys.modules, "elkpy", None)
+    monkeypatch.delitem(sys.modules, "elkpy.sushicontroller", raising=False)
+    with pytest.raises(live.ElkpyMissing, match="pip install elkpy") as caught:
+        live._controller("localhost:1")
+    assert isinstance(caught.value, live.LiveError)
+
+
+def test_a_move_is_only_reported_when_sushi_confirmed_it(monkeypatch):
+    """`move_processor` said "moved ..." whatever Sushi answered, and the agent
+    and the listener both act on that word."""
+    from types import SimpleNamespace
+
+    class Graph:
+        def get_all_tracks(self):
+            return [SimpleNamespace(id=1, name="main")]
+
+        def get_track_processors(self, tid):
+            return [SimpleNamespace(id=2, name="comp"), SimpleNamespace(id=3, name="drive")]
+
+        def move_processor_on_track(self, *args):
+            return fake.response
+
+    fake = _Controller()
+    fake.audio_graph = Graph()
+    monkeypatch.setattr(live, "_controller", lambda address: fake)
+    monkeypatch.setattr(live, "CONFIRM_TIMEOUT", 0.05)
+
+    fake.response = _Response()
+    assert live.move_processor("drive", -1) == "moved drive earlier"
+    for response in (_Response(error=True), _Response(set_=False)):
+        fake.response = response
+        with pytest.raises(live.LiveError):
+            live.move_processor("drive", -1)
+        assert fake.closed

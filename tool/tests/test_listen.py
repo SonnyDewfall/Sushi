@@ -175,6 +175,19 @@ def test_a_system_exit_from_library_code_is_a_message_not_the_end(tmp_path, rig_
     assert handle_save("riff", rig_path, tmp_path, tmp_path / "archive") == "save failed: elkpy not found"
 
 
+def test_a_missing_elkpy_is_the_same_message_it_was_when_it_exited(tmp_path, rig_path, monkeypatch):
+    """live.py raises `ElkpyMissing` now instead of calling sys.exit; the
+    player is told the same thing, and the listener is still not ended."""
+    from sushi_rig.live import ElkpyMissing
+
+    def missing(address):
+        raise ElkpyMissing("elkpy not found. Install it into the tool's venv")
+
+    monkeypatch.setattr("sushi_rig.save.capture", missing)
+    assert handle_save("riff", rig_path, tmp_path, tmp_path / "archive") == \
+        "save failed: elkpy not found. Install it into the tool's venv"
+
+
 def test_a_capture_of_a_different_rig_is_refused_not_written_into_a_rig_of_channels(tmp_path, fake_capture):
     """The autouse capture is of the v1 test rig (`comp` on `fx_track`); folded
     into guitar_vocal it would be a different rig under that name."""

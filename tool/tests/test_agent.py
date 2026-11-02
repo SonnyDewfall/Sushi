@@ -421,44 +421,69 @@ def test_bypass_and_move_requests():
             move_request(body)
 
 
+# The rig the live tests run against: one track "main" carrying comp, drive and
+# reverb. `INFO` is what each has to set; `BYPASS` what Sushi says of each
+# (None: it would not say).
+CHAINS = {"main": ["comp", "drive", "reverb"]}
 INFO = {
     "reverb": {
         "Mix": {"automatable": True, "value": 0.3, "min_domain_value": 0.0, "max_domain_value": 1.0},
         "Latency OUT": {"automatable": False, "value": 0.0, "min_domain_value": 0.0, "max_domain_value": 1.0},
     },
     "main": {"gain": {"automatable": True, "value": 0.8, "min_domain_value": 0.0, "max_domain_value": 1.0}},
+    "comp": {}, "drive": {},
 }
+BYPASS = {"comp": False, "drive": True, "reverb": None}
+
+
+def parameter_reading(processor, parameter):
+    """What `live.read_live_parameter` would say of `INFO`."""
+    parameters = INFO.get(processor)
+    value = None
+    if parameters is not None and parameter in parameters and parameters[parameter]["automatable"]:
+        value = parameters[parameter]["value"]
+    return {
+        "chains": CHAINS,
+        "parameters": None if parameters is None else
+        {n: {"automatable": p["automatable"]} for n, p in parameters.items()},
+        "value": value,
+    }
 
 
 def test_a_parameter_the_rig_lacks_or_cannot_set_is_refused_naming_what_it_has():
-    assert check_parameter(INFO, "reverb", "Mix") == 0.3, "and says what it replaces"
-    with pytest.raises(AgentError, match=r"no processor 'delay'.*\['main', 'reverb'\]"):
-        check_parameter(INFO, "delay", "Mix")
+    assert check_parameter(parameter_reading("reverb", "Mix"), "reverb", "Mix") == 0.3, \
+        "and says what it replaces"
+    assert check_parameter(parameter_reading("main", "gain"), "main", "gain") == 0.8, \
+        "a track has parameters too"
+    with pytest.raises(AgentError, match=r"no processor 'delay'.*\['comp', 'drive', 'main', 'reverb'\]"):
+        check_parameter(parameter_reading("delay", "Mix"), "delay", "Mix")
     with pytest.raises(AgentError, match=r"no parameter 'Tone'.*'Latency OUT', 'Mix'"):
-        check_parameter(INFO, "reverb", "Tone")
+        check_parameter(parameter_reading("reverb", "Tone"), "reverb", "Tone")
     with pytest.raises(AgentError, match="read-only"):
-        check_parameter(INFO, "reverb", "Latency OUT")
+        check_parameter(parameter_reading("reverb", "Latency OUT"), "reverb", "Latency OUT")
 
 
-STATE = {
-    "processors": {
-        "main": {"parameters": {"gain": 0.8}},
-        "comp": {"parameters": {}, "bypassed": False},
-        "drive": {"parameters": {}, "bypassed": True},
-        "reverb": {"parameters": {}},
-    },
-    "tracks": {"main": ["comp", "drive", "reverb"]},
-}
+def bypass_reading(processor):
+    return {"chains": CHAINS, "bypassed": BYPASS.get(processor)}
 
 
 def test_bypass_is_for_a_processor_of_the_rig_not_a_track():
-    assert check_bypass(STATE, "drive") is True
-    assert check_bypass(STATE, "comp") is False
-    assert check_bypass(STATE, "reverb") is None, "Sushi would not say: unknown, not False"
+    assert check_bypass(bypass_reading("drive"), "drive") is True
+    assert check_bypass(bypass_reading("comp"), "comp") is False
+    assert check_bypass(bypass_reading("reverb"), "reverb") is None, \
+        "Sushi would not say: unknown, not False"
     with pytest.raises(AgentError, match="is a track"):
-        check_bypass(STATE, "main")
+        check_bypass(bypass_reading("main"), "main")
     with pytest.raises(AgentError, match="no processor 'nope'"):
-        check_bypass(STATE, "nope")
+        check_bypass(bypass_reading("nope"), "nope")
+
+
+def test_the_hint_for_a_bypass_names_only_what_can_be_bypassed():
+    """The track is refused one line above; offering it would send the player
+    straight back into the refusal."""
+    with pytest.raises(AgentError) as caught:
+        check_bypass(bypass_reading("nope"), "nope")
+    assert str(caught.value).endswith("it has ['comp', 'drive', 'reverb']")
 
 
 @pytest.mark.parametrize("processor, direction, would_change", [
@@ -466,7 +491,7 @@ def test_bypass_is_for_a_processor_of_the_rig_not_a_track():
     ("comp", "up", False), ("reverb", "down", False),
 ])
 def test_a_move_at_the_end_of_the_chain_is_not_a_change(processor, direction, would_change):
-    chain, changes = check_move(STATE, processor, direction)
+    chain, changes = check_move(CHAINS, processor, direction)
     assert chain == ["comp", "drive", "reverb"]
     assert changes is would_change
 
@@ -474,7 +499,7 @@ def test_a_move_at_the_end_of_the_chain_is_not_a_change(processor, direction, wo
 def test_a_move_of_what_is_on_no_track_is_refused():
     for name in ("main", "nope"):
         with pytest.raises(AgentError, match="on any track"):
-            check_move(STATE, name, "up")
+            check_move(CHAINS, name, "up")
 
 
 def test_a_log_entry_always_has_the_same_four_keys():
@@ -504,10 +529,8 @@ class FakeLive:
         self.calls = []
         self.threads = set()
         self.info = {p: {n: dict(v) for n, v in ps.items()} for p, ps in INFO.items()}
-        self.state = {
-            "processors": {p: dict(v) for p, v in STATE["processors"].items()},
-            "tracks": {t: list(c) for t, c in STATE["tracks"].items()},
-        }
+        self.chain = list(CHAINS["main"])
+        self.bypassed = dict(BYPASS)
         self.fail = None  # an exception to raise from every call
         self.fail_on = None  # ... or only from this one
         self.move_says = None  # what `move` reports, if not "moved ..."
@@ -519,13 +542,34 @@ class FakeLive:
         if self.fail is not None and self.fail_on in (None, name):
             raise self.fail
 
-    def capture(self):
-        self._enter("capture")
-        return self.state
+    def snapshot(self):
+        self._enter("snapshot")
+        return {
+            "processors": {"reverb": {"parameters": {"Mix": 0.3}}},
+            "tracks": {"main": list(self.chain)},
+            "parameter_info": self.info,
+        }
 
-    def parameter_info(self):
-        self._enter("parameter_info")
-        return self.info
+    def chains(self):
+        self._enter("chains")
+        return {"main": list(self.chain)}
+
+    def parameter(self, processor, parameter):
+        self._enter("parameter", processor, parameter)
+        parameters = self.info.get(processor)
+        value = None
+        if parameters is not None and parameter in parameters and parameters[parameter]["automatable"]:
+            value = parameters[parameter]["value"]
+        return {
+            "chains": {"main": list(self.chain)},
+            "parameters": None if parameters is None else
+            {n: {"automatable": p["automatable"]} for n, p in parameters.items()},
+            "value": value,
+        }
+
+    def bypass(self, processor):
+        self._enter("bypass", processor)
+        return {"chains": {"main": list(self.chain)}, "bypassed": self.bypassed.get(processor)}
 
     def set_parameter(self, processor, parameter, value):
         self._enter("set_parameter", processor, parameter, value)
@@ -535,15 +579,14 @@ class FakeLive:
 
     def set_bypass(self, processor, bypassed):
         self._enter("set_bypass", processor, bypassed)
-        self.state["processors"][processor]["bypassed"] = bypassed
+        self.bypassed[processor] = bypassed
 
     def move(self, processor, direction):
         self._enter("move", processor, direction)
         if self.move_says:
             return self.move_says
-        chain = self.state["tracks"]["main"]
-        i = chain.index(processor)
-        chain.insert(i + direction, chain.pop(i))
+        i = self.chain.index(processor)
+        self.chain.insert(i + direction, self.chain.pop(i))
         return f"moved {processor} {'earlier' if direction < 0 else 'later'}"
 
     def writes(self):
@@ -561,11 +604,12 @@ def test_live_serves_the_running_rig_with_each_parameters_range():
     status, body = call(agent, "GET", "/live")
     assert status == 200
     assert body["ok"] is True
-    assert body["processors"] == STATE["processors"]
-    assert body["tracks"] == STATE["tracks"]
+    assert body["processors"] == {"reverb": {"parameters": {"Mix": 0.3}}}
+    assert body["tracks"] == CHAINS
     assert body["parameter_info"]["reverb"]["Mix"] == INFO["reverb"]["Mix"], \
         "range and unit come with it"
     assert fake.writes() == []
+    assert fake.calls == [("snapshot",)], "one read of the rig, not two"
     assert fake.threads and threading.get_ident() not in fake.threads, \
         "gRPC blocks, so it runs off the event loop"
 
@@ -802,17 +846,89 @@ def test_a_failing_read_that_is_not_a_missing_rig_is_a_bad_gateway():
     assert body["reason"] == "RuntimeError: proto mismatch"
 
 
-def test_a_missing_elkpy_exits_the_process_in_live_py_but_is_an_error_here():
-    """`_controller` calls sys.exit; raised in an executor thread that would
-    end the event loop, and the agent with it."""
+def test_a_missing_elkpy_is_the_agents_install_not_sushi_and_is_not_a_bad_gateway():
+    """live.py raises it (it used to exit the process, which in an executor
+    thread would end the event loop). It is 500, said with its hint, and the
+    agent goes on serving."""
+    from sushi_rig.live import ElkpyMissing
+
     agent, fake = live_agent()
-    fake.fail = SystemExit("elkpy not found. Install it into the tool's venv")
-    status, body = call(agent, "GET", "/live")
-    assert status == 502
-    assert "elkpy not found" in body["reason"]
+    fake.fail = ElkpyMissing("elkpy not found. Install it into the tool's venv: pip install elkpy")
+    for method, path, body in [
+        ("GET", "/live", None),
+        ("POST", "/live/bypass", {"processor": "drive", "bypassed": True}),
+    ]:
+        status, answer = call(agent, method, path, json=body)
+        assert status == 500
+        assert "pip install elkpy" in answer["reason"]
     assert call(agent, "GET", "/rig")[0] == 200, "and the agent is still serving"
+    assert call(agent, "GET", "/health")[1]["agent"]["last_error"]["kind"] == "live"
     fake.fail = None
     assert call(agent, "GET", "/live")[0] == 200
+
+
+@pytest.mark.parametrize("path, body, fails", [
+    ("/live/parameter", {"processor": "reverb", "parameter": "Mix", "value": 0.5}, "set_parameter"),
+    ("/live/bypass", {"processor": "drive", "bypassed": False}, "set_bypass"),
+    ("/live/move", {"processor": "drive", "direction": "up"}, "move"),
+])
+def test_a_change_sushi_refused_or_did_not_confirm_is_a_bad_gateway_and_not_logged(path, body, fails):
+    """live.py raises LiveError where Sushi errors or stays silent (it used
+    to warn on stderr and return), so the operation log, which undo will read,
+    cannot hold a change that never happened."""
+    from sushi_rig.live import LiveError
+
+    agent, fake = live_agent()
+    fake.fail, fake.fail_on = LiveError("Sushi did not confirm the command within 5s"), fails
+    status, answer = call(agent, "POST", path, json=body)
+    assert status == 502
+    assert answer["reason"] == "Sushi did not confirm the command within 5s"
+    assert call(agent, "GET", "/live/log")[1]["log"] == []
+    assert call(agent, "GET", "/health")[1]["agent"]["last_error"]["kind"] == "live"
+
+
+def test_a_read_queued_behind_a_change_is_busy_if_a_lifecycle_command_started_meanwhile():
+    """The busy check is made when the read gets its turn, as the changes do,
+    not when it queued: otherwise it reads Sushi mid-restart and a 502 is
+    remembered as a live fault."""
+    agent, fake = live_agent()
+    entered, release = threading.Event(), threading.Event()
+    started, finish = asyncio.Event(), asyncio.Event()
+
+    def slow_set():
+        entered.set()
+        release.wait(5)
+
+    fake.during = slow_set
+
+    async def lifecycle(args):
+        started.set()
+        await finish.wait()
+        return Outcome(True, 0, "", "")
+
+    agent.run = lifecycle
+
+    async def go():
+        loop = asyncio.get_running_loop()
+        async with TestClient(TestServer(agent.app())) as client:
+            change = asyncio.ensure_future(client.post(
+                "/live/parameter", json={"processor": "reverb", "parameter": "Mix", "value": 0.5}))
+            await loop.run_in_executor(None, entered.wait, 5)
+            read = asyncio.ensure_future(client.get("/live"))
+            await asyncio.sleep(0.1)  # queued on the live lock
+            up = asyncio.ensure_future(client.post("/rig/up", json={"config_name": "electric_board"}))
+            await started.wait()
+            release.set()
+            assert (await change).status == 200
+            response = await read
+            finish.set()
+            await up
+            return response.status, await response.json()
+
+    status, body = asyncio.run(go())
+    assert status == 409 and "busy: 'up' is still running" in body["reason"]
+    assert ("snapshot",) not in fake.calls, "Sushi was not read"
+    assert agent.last_error is None
 
 
 def test_live_changes_are_serialised_so_each_previous_is_what_it_replaced():

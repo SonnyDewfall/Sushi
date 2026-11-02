@@ -35,7 +35,7 @@ from pathlib import Path
 from typing import TYPE_CHECKING
 
 from .amp import AmpError, CARLA_OSC_PORT, parameter_message
-from .live import DEFAULT_GRPC_ADDRESS, move_processor, refresh_panel
+from .live import DEFAULT_GRPC_ADDRESS, LiveError, move_processor, refresh_panel
 from .save import SaveError, save_any
 
 if TYPE_CHECKING:
@@ -122,12 +122,12 @@ def handle_save(
             name, rig_path, out_dir, archive_dir, address,
             amp_model=amp_model, amp_parameters=amp_parameters,
         )
-    except SaveError as exc:
+    except (SaveError, LiveError) as exc:
+        # LiveError: Sushi would not answer, or elkpy is not installed.
         return f"save failed: {exc}"
     except SystemExit as exc:
-        # Library code that still calls sys.exit (live._controller when elkpy
-        # is missing) must not take the listener with it. A bare exit code is
-        # no reason a player can act on.
+        # Library code that still calls sys.exit must not take the listener
+        # with it. A bare exit code is no reason a player can act on.
         reason = exc.code if isinstance(exc.code, str) and exc.code else "a tool exited without saying why"
         return f"save failed: {reason}"
     except Exception as exc:  # noqa: BLE001 - keep the listener alive
@@ -239,8 +239,8 @@ def serve(
         """A handler that cannot end the listener.
 
         python-osc's server catches Exception from a handler and nothing else,
-        so a SystemExit from library code (live._controller, emit before it
-        grew EmitError) propagated out of serve_forever and the listener died
+        so a SystemExit from library code (live._controller before it raised
+        ElkpyMissing, emit before it grew EmitError) propagated out of serve_forever and the listener died
         with the save button: found by the audit. Every message that could do
         that is reported to the panel instead. KeyboardInterrupt still stops
         the listener, as it should.

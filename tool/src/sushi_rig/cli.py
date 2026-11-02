@@ -636,6 +636,19 @@ def _doctor(args: argparse.Namespace) -> int:
 
 
 def main(argv: list[str] | None = None) -> int:
+    """Run one command. A missing elkpy ends the process with its message, as it
+    always has here; `live.py` raises it instead, so that the listener and the
+    agent, which must outlive it, can report it and carry on.
+    """
+    from .live import ElkpyMissing
+
+    try:
+        return _main(argv)
+    except ElkpyMissing as exc:
+        sys.exit(str(exc))
+
+
+def _main(argv: list[str] | None = None) -> int:
     parser = argparse.ArgumentParser(prog="sushi-rig", description=__doc__.splitlines()[0])
     sub = parser.add_subparsers(dest="command", required=True)
 

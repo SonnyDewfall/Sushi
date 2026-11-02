@@ -1343,29 +1343,39 @@ reordered from the panel, is closed by the yamlmerge entry above: a
 reordered chain now moves each entry with its comments. *(2026-11-01)*
 
 **The agent's second slice: live operations (#29).** `/live` reads the running
-rig (`live.capture` and `get_live_parameter_info`, so a client has each
-parameter's range) and changes it: `POST /live/parameter`, `/live/bypass` and
-`/live/move`, with `GET /live/log`. A parameter is set by processor and
-parameter name to a normalised 0 to 1 value, and nothing else until the
-profiles bring real units. The decisions are pure and tested directly: the
-shape of a request is refused before Sushi is contacted at all; whether the
-rig has the processor and parameter, whether the parameter is writable (a meter
-is not), and whether a name is a track where a pedal was meant (a track's
-bypass cascades to everything on it) are decided from what Sushi reports,
+rig (`live.read_rig`: `capture` and `get_live_parameter_info` on one connection,
+so a client has each parameter's range) and changes it: `POST /live/parameter`,
+`/live/bypass` and `/live/move`, with `GET /live/log`. A parameter is set by
+processor and parameter name to a normalised 0 to 1 value, and nothing else
+until the profiles bring real units. The decisions are pure and tested
+directly: the shape of a request is refused before Sushi is contacted at all;
+whether the rig has the processor and parameter, whether the parameter is
+writable (a meter is not), and whether a name is a track where a pedal was meant
+(a track's bypass cascades to everything on it) are decided from a targeted read
+(`read_live_parameter`, `read_live_bypass`, `get_live_chains`: the tracks, one
+processor's parameter listing and one value, never every parameter of the rig),
 before anything is set; a move already at the end of its chain is
 `changed: false` and never sent. Live calls are `409 busy` while a lifecycle
-command runs but do not take its lock, and are serialised among themselves so
-each logged `previous` is the value that change replaced. A rig not up is
-`503`; Sushi gone or refusing mid-change is `502` with the reason, remembered in
-`last_error` until a live change next works. Each change is appended to an
-in-memory log (`at`, `op`, `args`, `previous`; last 500, newest last): the
-source undo will use, not built yet, and lost when the agent stops. One thing
-found on the way: `live._controller` exits the process when elkpy is missing,
-and a SystemExit raised in an executor thread ends the event loop, so the agent
-turns it into an error before it leaves the thread. `live.py` gained
-`set_live_parameter` and `set_live_bypass`; its other functions are unchanged.
-**Not run against a live Sushi:** no Sushi was available, so the two new elkpy
-calls (`get_parameter_id` with `set_parameter_value`, and
+command runs, checked when the request gets its turn, but do not take its lock,
+and are serialised among themselves so each logged `previous` is the value that
+change replaced. A rig not up is `503`; Sushi gone, refusing or not confirming
+is `502` with the reason, and **not logged**; elkpy missing is `500`. All but
+the `503` are remembered in `last_error` until a live change next works. Each
+confirmed change is appended to an in-memory log (`at`, `op`, `args`,
+`previous`; last 500, newest last): the source undo will use, not built yet, and
+lost when the agent stops. Found on the way and fixed after review:
+`live._wait` turned a Sushi error or silence into a stderr warning, so the
+agent answered 200 and logged a change that never happened; the setters and
+`move_processor` now wait strictly and raise `LiveError` (`push` keeps the
+lenient wait it was built with, since it carries on past a slow answer). And
+`live._controller` called `sys.exit` when elkpy was missing, which in an executor
+thread ends the event loop: it raises `ElkpyMissing` now, `cli.main` turns that
+back into the same exit, and the listener reports it as it did a SystemExit.
+`live.py` gained `set_live_parameter`, `set_live_bypass` and the reads above;
+`capture` and `get_live_parameter_info` take an optional shared connection.
+**Not run against a live Sushi:** no Sushi was available, so the elkpy calls the
+new functions make (`get_parameter_value` and `get_processor_parameters` on a
+chain's ids, `get_parameter_id` with `set_parameter_value`, and
 `set_processor_bypass_state`) were read from elkpy 1.3.0's source, not
 exercised; only the unreachable path ran for real, `capture` against a closed
 port giving elkpy's `SushiUnavailableError`. Run a parameter, a bypass and a

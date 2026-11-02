@@ -44,17 +44,23 @@ running one, which is what takes a live session down.
 functions in `live.py` (names, not ids). A request is checked in two stages:
 its shape and types first, with no Sushi involved (a value that is not a number
 from 0 to 1 is refused having touched nothing); then what the running rig has,
-read from Sushi (a processor or parameter it lacks, a read-only parameter, a
-track where a pedal is meant). Only then is anything changed. Values are
+from a read that costs what the request names -- the tracks and chains, that one
+processor's parameters and the one value -- and not a walk of every parameter
+of the rig, which a fader sending twenty changes a second could not afford. A
+processor or parameter the rig lacks, a read-only parameter, a track where a
+pedal is meant: refused (400) from that read, before anything is set. Values are
 normalised, 0 to 1, for now: real units come with the profiles.
 
-They refuse (`409 busy`) while a lifecycle command runs, because a rig half up
-or half down is not one to be changing, but they do not take the lifecycle lock,
-so a `down` can still begin while one is in flight and will make it fail as
-`502`. They are serialised among themselves, so the "previous value" each
-change records is the value it actually replaced. A rig that is not up is
-`503`; Sushi going away or refusing mid-change is `502`, with the reason, and
-is remembered in `last_error` like any unexpected error.
+They refuse (`409 busy`) while a lifecycle command runs, checked when the
+request gets its turn, because a rig half up or half down is not one to be
+changing; they do not take the lifecycle lock, so a `down` can still begin while
+one is in flight and will make it fail as `502`. They are serialised among
+themselves, so the "previous value" each change records is the value it actually
+replaced. A rig that is not up is `503`. Sushi going away, refusing, or not
+confirming a change in time is `502` with the reason, and then nothing is logged:
+the log holds changes Sushi confirmed. elkpy not being installed is `500`, the
+agent's own install and not Sushi's doing. All but the `503` are remembered in
+`last_error` until a live change next works.
 
 Every change that succeeded is appended to the operation log, which is where
 undo will come from; there is no undo yet. It lives in this process and is
@@ -82,7 +88,7 @@ from pathlib import Path
 from typing import Any, Awaitable, Callable, Sequence
 
 from . import live as live_module
-from .live import DEFAULT_GRPC_ADDRESS, plan_move
+from .live import DEFAULT_GRPC_ADDRESS, ElkpyMissing, LiveError, plan_move
 from .rig import describe_rig
 
 try:
@@ -258,49 +264,62 @@ def move_request(body: Any) -> tuple[str, str]:
     return processor, direction
 
 
-def check_parameter(info: dict[str, dict[str, dict]], processor: str, parameter: str) -> float:
+def _on_the_rig(chains: dict[str, list[str]]) -> list[str]:
+    """Every track and every processor on one, by name."""
+    return sorted({name for track, chain in chains.items() for name in [track, *chain]})
+
+
+def check_parameter(reading: dict[str, Any], processor: str, parameter: str) -> float:
     """The parameter's current normalised value, or `AgentError` if the running
     rig has no such processor or parameter, or it is read-only (a meter).
 
-    `info` is `get_live_parameter_info`'s answer. The names offered in a
-    refusal are the rig's own, so a typo can be seen.
+    `reading` is `read_live_parameter`'s answer: the chains, that one
+    processor's parameters (None if it has none because it does not exist) and
+    the one value. The names offered in a refusal are the rig's own, so a typo
+    can be seen.
     """
-    if processor not in info:
-        raise AgentError(f"the running rig has no processor {processor!r}: it has {sorted(info)}")
-    parameters = info[processor]
+    parameters = reading.get("parameters")
+    if parameters is None:
+        raise AgentError(
+            f"the running rig has no processor {processor!r}: it has "
+            f"{_on_the_rig(reading.get('chains', {}))}"
+        )
     if parameter not in parameters:
         raise AgentError(
             f"{processor!r} has no parameter {parameter!r}: it has {sorted(parameters)}"
         )
     if not parameters[parameter].get("automatable", True):
         raise AgentError(f"{processor!r} parameter {parameter!r} is read-only")
-    return parameters[parameter]["value"]
+    return reading["value"]
 
 
-def check_bypass(state: dict[str, Any], processor: str) -> bool | None:
+def check_bypass(reading: dict[str, Any], processor: str) -> bool | None:
     """The processor's current bypass state (None where Sushi would not say),
     or `AgentError` if it is not a processor of the running rig. A track is
     refused: its bypass cascades to every processor on it (see `live.capture`),
     which is not what a request to bypass one pedal means.
+
+    `reading` is `read_live_bypass`'s answer.
     """
-    if processor in state.get("tracks", {}):
+    chains = reading.get("chains", {})
+    if processor in chains:
         raise AgentError(
             f"{processor!r} is a track, not a processor on one: bypassing a track "
             "silences everything on it"
         )
-    processors = state.get("processors", {})
-    if processor not in processors:
-        raise AgentError(f"the running rig has no processor {processor!r}: it has {sorted(processors)}")
-    return processors[processor].get("bypassed")
+    on_chains = sorted({name for chain in chains.values() for name in chain})
+    if processor not in on_chains:
+        raise AgentError(f"the running rig has no processor {processor!r}: it has {on_chains}")
+    return reading.get("bypassed")
 
 
-def check_move(state: dict[str, Any], processor: str, direction: str) -> tuple[list[str], bool]:
+def check_move(chains: dict[str, list[str]], processor: str, direction: str) -> tuple[list[str], bool]:
     """`(the chain it is on, whether moving would change it)`, or `AgentError`
     if the processor is on no track. Whether it would is `plan_move`'s decision:
     a processor already at that end of its chain is not an error, and not a
     change.
     """
-    for chain in state.get("tracks", {}).values():
+    for chain in chains.values():
         if processor in chain:
             return list(chain), plan_move(chain, processor, DIRECTIONS[direction]) is not None
     raise AgentError(f"the running rig has no processor {processor!r} on any track")
@@ -319,14 +338,6 @@ def trim_log(log: list, limit: int = LOG_LIMIT) -> None:
         del log[: len(log) - limit]
 
 
-class LiveError(Exception):
-    """Sushi failed a live call: gone, or refusing."""
-
-
-class LiveUnreachable(LiveError):
-    """Sushi could not be connected to at all: no rig up."""
-
-
 def sushi_unreachable(exc: BaseException) -> bool:
     try:
         from elkpy.sushierrors import SushiUnavailableError
@@ -335,46 +346,35 @@ def sushi_unreachable(exc: BaseException) -> bool:
     return isinstance(exc, SushiUnavailableError)
 
 
-def _guarded(fn: Callable[..., Any], *args: Any) -> Any:
-    """Run a blocking Sushi call in a worker thread and say how it failed.
-
-    `_controller` exits the process when elkpy is missing; SystemExit raised
-    inside an executor thread is re-raised in the event loop's task, which ends
-    the loop, so it is turned into an ordinary error here.
-    """
-    try:
-        return fn(*args)
-    except SystemExit as exc:
-        raise LiveError(str(exc.code)) from None
-    except Exception as exc:  # noqa: BLE001 -- said, with its type, never swallowed
-        message = " ".join(f"{type(exc).__name__}: {exc}".split())
-        if sushi_unreachable(exc):
-            raise LiveUnreachable(message) from exc
-        raise LiveError(message) from exc
-
-
 @dataclass(frozen=True)
 class Live:
-    """Everything the live routes need from Sushi. Defaults to `live.py`."""
+    """Everything the live routes need from Sushi, each a blocking call. The
+    reads are targeted -- they cost what the request names, not a walk of
+    every parameter of the rig -- and their answers are what the `check_*`
+    functions decide on. Defaults to `live.py`.
+    """
 
-    capture: Callable[[], dict[str, Any]]
-    parameter_info: Callable[[], dict[str, dict[str, dict]]]
+    snapshot: Callable[[], dict[str, Any]]  # capture + "parameter_info", one connection
+    chains: Callable[[], dict[str, list[str]]]
+    parameter: Callable[[str, str], dict[str, Any]]  # (processor, parameter) -> reading
+    bypass: Callable[[str], dict[str, Any]]  # (processor) -> reading
     set_parameter: Callable[[str, str, float], None]
     set_bypass: Callable[[str, bool], None]
     move: Callable[[str, int], str]
 
     @classmethod
     def at(cls, address: str = DEFAULT_GRPC_ADDRESS) -> "Live":
-        bound = functools.partial
+        def bound(fn):
+            return functools.partial(fn, address=address)
+
         return cls(
-            capture=bound(live_module.capture, address),
-            parameter_info=bound(live_module.get_live_parameter_info, address),
-            set_parameter=lambda processor, parameter, value: live_module.set_live_parameter(
-                processor, parameter, value, address),
-            set_bypass=lambda processor, bypassed: live_module.set_live_bypass(
-                processor, bypassed, address),
-            move=lambda processor, direction: live_module.move_processor(
-                processor, direction, address),
+            snapshot=bound(live_module.read_rig),
+            chains=bound(live_module.get_live_chains),
+            parameter=bound(live_module.read_live_parameter),
+            bypass=bound(live_module.read_live_bypass),
+            set_parameter=bound(live_module.set_live_parameter),
+            set_bypass=bound(live_module.set_live_bypass),
+            move=bound(live_module.move_processor),
         )
 
 
@@ -511,8 +511,7 @@ class Agent:
         except AgentError as exc:
             raise web.HTTPBadRequest(reason=str(exc))
 
-        if self._lock.locked():
-            raise web.HTTPConflict(reason=f"busy: '{self.busy}' is still running")
+        self._refuse_while_busy()
         async with self._lock:
             self.busy = command
             try:
@@ -562,23 +561,35 @@ class Agent:
             raise web.HTTPConflict(reason=f"busy: '{self.busy}' is still running")
 
     async def _sushi(self, request, fn: Callable[..., Any], *args: Any, reading: bool) -> Any:
-        """Run one blocking Sushi call off the loop. A rig that is not there is
-        503 when it is being read for a request (nothing has changed), and 502
-        once a change is under way, like every other failure of the call; both
-        say why, and the 502 is remembered.
+        """Run one blocking Sushi call off the loop, and say how it failed.
+
+        - No Sushi to connect to is 503 when a request is only being read
+          (nothing has changed), and 502 once a change is under way.
+        - Sushi refusing, or not confirming (`LiveError`), or failing any other
+          way is 502, with the reason.
+        - elkpy not installed (`ElkpyMissing`) is not Sushi's doing: 500.
+        Everything but the 503 is remembered for /health until a live change
+        next works.
         """
+        where = [request.method, request.path]
         try:
-            return await asyncio.get_running_loop().run_in_executor(None, _guarded, fn, *args)
-        except LiveUnreachable as exc:
-            if reading:
-                raise web.HTTPServiceUnavailable(
-                    reason=f"Sushi is not reachable, so no rig is up to read or change: {exc}"
-                )
-            self._remember([request.method, request.path], str(exc), kind="live")
-            raise web.HTTPBadGateway(reason=f"Sushi went away during the change: {exc}")
-        except LiveError as exc:
-            self._remember([request.method, request.path], str(exc), kind="live")
+            return await asyncio.get_running_loop().run_in_executor(None, fn, *args)
+        except ElkpyMissing as exc:
+            self._remember(where, str(exc), kind="live")
+            raise web.HTTPInternalServerError(reason=str(exc))
+        except LiveError as exc:  # our own words, not an elkpy type's
+            self._remember(where, str(exc), kind="live")
             raise web.HTTPBadGateway(reason=str(exc))
+        except Exception as exc:  # noqa: BLE001 -- said, with its type, never swallowed
+            message = " ".join(f"{type(exc).__name__}: {exc}".split())  # one line
+            if sushi_unreachable(exc):
+                if reading:
+                    raise web.HTTPServiceUnavailable(
+                        reason=f"Sushi is not reachable, so no rig is up to read or change: {message}"
+                    )
+                message = f"Sushi went away during the change: {message}"
+            self._remember(where, message, kind="live")
+            raise web.HTTPBadGateway(reason=message)
 
     def _record(self, op: str, args: dict[str, Any], previous: Any) -> dict[str, Any]:
         entry = log_entry(op, args, previous, datetime.now(timezone.utc).isoformat(timespec="seconds"))
@@ -589,15 +600,14 @@ class Agent:
         return entry
 
     async def live_state(self, request):
-        self._refuse_while_busy()
         async with self._live_lock:
-            state = await self._sushi(request, self.live.capture, reading=True)
-            info = await self._sushi(request, self.live.parameter_info, reading=True)
+            self._refuse_while_busy()
+            rig = await self._sushi(request, self.live.snapshot, reading=True)
         return web.json_response({
             "ok": True,
-            "processors": state.get("processors", {}),
-            "tracks": state.get("tracks", {}),
-            "parameter_info": info,
+            "processors": rig.get("processors", {}),
+            "tracks": rig.get("tracks", {}),
+            "parameter_info": rig.get("parameter_info", {}),
         })
 
     async def live_log(self, request):
@@ -618,9 +628,9 @@ class Agent:
             raise web.HTTPBadRequest(reason=str(exc))
         async with self._live_lock:
             self._refuse_while_busy()
-            info = await self._sushi(request, self.live.parameter_info, reading=True)
+            reading = await self._sushi(request, self.live.parameter, processor, parameter, reading=True)
             try:
-                previous = check_parameter(info, processor, parameter)
+                previous = check_parameter(reading, processor, parameter)
             except AgentError as exc:
                 raise web.HTTPBadRequest(reason=str(exc))
             await self._sushi(request, self.live.set_parameter, processor, parameter, value, reading=False)
@@ -637,9 +647,9 @@ class Agent:
             raise web.HTTPBadRequest(reason=str(exc))
         async with self._live_lock:
             self._refuse_while_busy()
-            state = await self._sushi(request, self.live.capture, reading=True)
+            reading = await self._sushi(request, self.live.bypass, processor, reading=True)
             try:
-                previous = check_bypass(state, processor)
+                previous = check_bypass(reading, processor)
             except AgentError as exc:
                 raise web.HTTPBadRequest(reason=str(exc))
             await self._sushi(request, self.live.set_bypass, processor, bypassed, reading=False)
@@ -657,9 +667,9 @@ class Agent:
             raise web.HTTPBadRequest(reason=str(exc))
         async with self._live_lock:
             self._refuse_while_busy()
-            state = await self._sushi(request, self.live.capture, reading=True)
+            chains = await self._sushi(request, self.live.chains, reading=True)
             try:
-                chain, would_change = check_move(state, processor, direction)
+                chain, would_change = check_move(chains, processor, direction)
             except AgentError as exc:
                 raise web.HTTPBadRequest(reason=str(exc))
             if not would_change:

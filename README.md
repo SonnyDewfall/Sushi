@@ -427,12 +427,15 @@ that is your call, not a default.
 over gRPC. A parameter `value` is Sushi's normalised 0 to 1 for now; real units
 come with the profiles. A request is refused with `400` before anything changes
 if it is mistyped or out of range, or names a processor or parameter the running
-rig does not have (or a read-only one, or a track where a pedal is meant); `503`
-means no rig is up, `502` that Sushi went away or refused mid-change, with the
-reason. They are `409 busy` while a lifecycle command runs. Each change that
-worked is appended to an in-memory log of the last 500 (`/live/log`: `at`, `op`,
-`args`, and the `previous` value where it was known), which is where undo will
-come from; there is no undo yet.
+rig does not have (or a read-only one, or a track where a pedal is meant); what
+the rig has is read for that one request, not by walking every parameter, so a
+fader can send many changes a second. `503` means no rig is up; `502` that Sushi
+went away, refused, or did not confirm the change, with the reason, and nothing
+is logged for it; `500` that elkpy is not installed. They are `409 busy` while a
+lifecycle command runs. Each change that Sushi confirmed is appended to an
+in-memory log of the last 500 (`/live/log`: `at`, `op`, `args`, and the
+`previous` value where it was known), which is where undo will come from; there
+is no undo yet.
 
 **Two modes, for two ways of using the rig.** The default gives you the Open
 Stage Control panel and the save listener behind it, which is what you want when
