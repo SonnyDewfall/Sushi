@@ -1279,3 +1279,257 @@ def test_the_racks_empty_message_follows_the_rig_through_a_start_that_fails(brow
         expect(p.locator(".problem.refused")).to_contain_text("Not started: electric-delay", timeout=8000)
         expect(empty).to_contain_text("Choose one under RIGS to start it")
         page.close()
+
+
+# --------------------------------------------------------------------------- #
+# The amp: what was last sent to Carla, faders, and the model picker
+# --------------------------------------------------------------------------- #
+#
+# Against `Served(amp=True)`: the agent's real amp routes over `UiAmp` in
+# ui_fake.py (a FakeCarla, invented models, a stand-in for the Carla-only
+# restart). Nothing here is Carla, or the restart's silence.
+
+def amp_answer(**over):
+    body = {
+        "ok": True, "known": "sent", "known_note": "what this agent last sent Carla, not what Carla holds",
+        "model": {"stored": "amp/models/Clean Room.nam", "name": "Clean Room", "path": "/x/Clean Room.nam",
+                  "description": "Clean Room  (/x)\n  rate      48000 Hz  (matches the rig)", "problem": None,
+                  "warning": None},
+        "parameters": [
+            {"name": "Input Lvl", "value": 0.0, "min": -20.0, "max": 20.0, "unit": "dB", "panel": True, "source": "replayed"},
+            {"name": "Output Lvl", "value": -3.0, "min": -20.0, "max": 20.0, "unit": "dB", "panel": True, "source": "sent"},
+            {"name": "Quality", "value": None, "min": 0.0, "max": 1.0, "unit": None, "panel": False, "source": None},
+        ],
+        "carla": {"pid": 4244, "alive": True}, "held": True, "override": None,
+    }
+    body.update(over)
+    return {"ok": True, "status": 200, "body": body}
+
+
+MODELS = {"ok": True, "status": 200, "body": {"rate": 48000, "models": [
+    {"model": "Clean Room.nam", "name": "Clean Room", "usable": True, "playing": True, "why": None},
+    {"model": "Edge.nam", "name": "Edge", "usable": True, "playing": False, "why": None},
+    {"model": "Slow Tape.nam", "name": "Slow Tape", "usable": False, "playing": False,
+     "why": "Slow Tape was trained at 44100 Hz"},
+]}}
+
+
+def test_the_amp_card_has_faders_for_the_panels_parameters_and_quality_shown_beside(blank):
+    card = rigjs(blank, "return R.ampCard(arg.amp, arg.models);", {"amp": amp_answer(), "models": MODELS})
+    assert card["state"] == "up" and card["known"] == "sent"
+    assert [f["name"] for f in card["faders"]] == ["Input Lvl", "Output Lvl"]
+    assert card["faders"][0] == {"name": "Input Lvl", "label": "Input Lvl", "min": -20.0, "max": 20.0, "unit": "dB",
+                                 "step": 0.1, "disabled": False}
+    assert card["shown"] == [{"name": "Quality", "text": "not sent",
+                              "note": "not on a fader: it trades CPU for accuracy (a lite or a full path), not tone"}]
+    assert card["model"]["name"] == "Clean Room" and "48000 Hz" in card["model"]["description"]
+    options = card["picker"]["options"]
+    assert [(o["model"], o["usable"], o["label"]) for o in options] == [
+        ("Clean Room.nam", False, "Clean Room (playing)"), ("Edge.nam", True, "Edge"),
+        ("Slow Tape.nam", False, "Slow Tape (cannot be played here)")]
+    assert card["picker"]["canChange"] and card["picker"]["why"] is None
+    assert "sound cuts out for a moment" in card["picker"]["warning"]
+
+
+@pytest.mark.parametrize("over, options, why", [
+    ({"known": "panel"}, {}, "The panel is running and owns the amp"),
+    ({"carla": {"pid": 4244, "alive": False}}, {}, "Carla is not running"),
+    ({"held": False}, {}, "did not start the running rig"),
+    ({}, {"locked": True}, "Locked: changing the amp's model cuts the sound"),
+    ({}, {"pending": "Edge.nam"}, "Loading Edge"),
+])
+def test_the_model_picker_says_why_it_cannot_be_used_when_it_cannot(blank, over, options, why):
+    card = rigjs(blank, "return R.ampCard(arg.amp, arg.models, arg.options);",
+                 {"amp": amp_answer(**over), "models": MODELS, "options": options})
+    assert not card["picker"]["canChange"] and why in card["picker"]["why"]
+    writable = "known" not in over and "carla" not in over
+    assert all(f["disabled"] is not writable for f in card["faders"])
+
+
+def test_an_amp_card_is_hidden_with_no_rig_and_says_why_with_no_amp(blank):
+    states = rigjs(blank, """return [
+        R.ampCard(null, null), R.ampCard({ok: false, code: 'no_rig', reason: 'x'}, null),
+        R.ampCard({ok: false, code: 'busy', reason: 'x'}, null),
+        R.ampCard({ok: false, code: 'no_amp', reason: 'the running rig has no amp: it was started with --no-amp'}, null),
+        R.ampCard({ok: false, status: 0, reason: 'the agent did not answer'}, null)];""")
+    assert [s["state"] for s in states] == ["hidden", "hidden", "hidden", "none", "failed"]
+    assert states[3]["why"].endswith("--no-amp") and states[4]["why"] == "the agent did not answer"
+
+
+def test_amp_values_are_in_their_own_units_and_one_never_sent_says_so(blank):
+    shown = rigjs(blank, """const db = {unit: 'dB', min: -20, max: 20}, q = {unit: null, min: 0, max: 1};
+        return [R.ampText(db, -3), R.ampText(db, 0), R.ampText(db, -0.04), R.ampText(q, 1), R.ampText(db, null),
+                R.modelName('amp/models/Edge.nam'), R.modelName('/m/x.nam'), R.modelName(null)];""")
+    assert shown == ["−3.0 dB", "0.0 dB", "0.0 dB", "1.00", "not sent", "Edge", "x", "none"]
+
+
+def test_the_stage_amp_is_the_model_and_the_output_level_only(blank):
+    view = rigjs(blank, "return [R.stageAmp(arg), R.stageAmp(null)];", amp_answer())
+    assert view[0]["name"] == "Clean Room" and view[0]["output"]["name"] == "Output Lvl"
+    assert view[1] is None
+
+
+def test_unsaved_amp_changes_are_what_was_sent_against_what_the_first_replaced(blank, served):
+    log = [entry("amp", {"name": "Output Lvl", "value": -1.0}, -3.0),
+           entry("amp", {"name": "Output Lvl", "value": 2.0}, -1.0),
+           entry("amp", {"name": "Input Lvl", "value": 1.0}, 0.0),
+           entry("undo", {"of": "amp", "name": "Input Lvl", "value": 0.0}, 1.0, undoes=2),
+           entry("amp_model", {"model": "amp/models/Edge.nam"}, "amp/models/Clean Room.nam")]
+    amp = amp_answer(model={"stored": "amp/models/Edge.nam", "name": "Edge"})["body"]
+    amp["parameters"][1]["value"] = 2.0
+    got = rigjs(blank, "return R.unsavedChanges({log: arg.log, first: 0}, arg.live, null, arg.amp).items;",
+                {"log": log, "live": served.rig.snapshot(0), "amp": amp})
+    assert [(i["kind"], i.get("name"), i["from"], i["to"]) for i in got] == [
+        ("amp", "Output Lvl", -3.0, 2.0), ("amp_model", None, "amp/models/Clean Room.nam", "amp/models/Edge.nam")]
+    assert rigjs(blank, "return [R.describeEntry(arg[0]), R.describeEntry(arg[1])];", [log[0], log[4]]) == \
+        ["amp · Output Lvl", "amp model Edge"]
+    without = rigjs(blank, "return R.unsavedChanges({log: arg.log, first: 0}, arg.live, null).items;",
+                    {"log": log, "live": served.rig.snapshot(0)})
+    assert without == [], "no amp read: not said either way"
+
+
+@pytest.fixture
+def amp_served():
+    with Served(amp=True) as served:
+        yield served
+
+
+def amp_rack(browser, served):
+    page = Page(browser, served.url + "/#rack")
+    page.page.wait_for_selector(".amp-card .fader")
+    return page
+
+
+def test_the_rack_shows_the_amp_with_its_model_faders_and_quality_not_on_one(browser, amp_served):
+    page = amp_rack(browser, amp_served)
+    p = page.page
+    card = p.locator(".amp-card")
+    expect(card.locator(".amp-model")).to_have_text("Clean Room")
+    expect(card).to_contain_text("values are what was last sent, not read back")
+    expect(card.get_by_role("slider")).to_have_count(2)
+    expect(p.get_by_role("slider", name="amp Input Lvl")).to_have_attribute("aria-valuetext", "0.0 dB")
+    expect(p.get_by_role("slider", name="amp Output Lvl")).to_have_attribute("aria-valuetext", "−3.0 dB")
+    expect(p.get_by_role("slider", name="amp Quality")).to_have_count(0)
+    expect(card.locator(".shown")).to_contain_text("Quality1.00")
+    expect(card.locator("details.amp-about pre")).to_contain_text("matches the rig")
+    expect(p.locator(".tile").last).to_have_text("AMPClean Room")
+    page.close()
+
+
+def test_an_amp_fader_is_sent_to_carla_marked_unsaved_and_undone(browser, amp_served):
+    page = amp_rack(browser, amp_served)
+    p = page.page
+    output = p.get_by_role("slider", name="amp Output Lvl")
+    output.focus()
+    p.keyboard.press("ArrowRight")  # one step: a tenth of a dB, one change logged
+    until(lambda: abs(amp_served.amp.carla.values().get("Output Lvl", 0) - -2.9) < 1e-6)
+    expect(output).to_have_attribute("aria-valuetext", "−2.9 dB")
+    expect(p.locator(".amp-card .fader.unsaved")).to_contain_text("was −3.0 dB")
+    expect(p.locator("aside.changes .change")).to_have_text("amp · Output Lvl−3.0 dB to −2.9 dB")
+    undo = p.locator("button.undo")
+    expect(undo).to_have_text("Undo · amp · Output Lvl")
+    undo.click()
+    until(lambda: amp_served.amp.carla.values()["Output Lvl"] == -3.0)
+    expect(output).to_have_attribute("aria-valuetext", "−3.0 dB")
+    expect(p.locator("aside.changes h2")).to_have_text("0 unsaved changes")
+    page.close()
+
+
+def test_an_amp_change_carla_does_not_answer_shows_the_agents_reason(browser, amp_served):
+    page = amp_rack(browser, amp_served)
+    p = page.page
+    amp_served.amp.carla.answering = False
+    p.get_by_role("slider", name="amp Input Lvl").focus()
+    p.keyboard.press("ArrowRight")
+    expect(p.locator(".problem.refused")).to_contain_text("Carla is not answering")
+    expect(p.locator(".amp-card .fader.failed")).to_contain_text("refused: Carla is not answering")
+    assert amp_served.amp.carla.sent == []
+    page.close()
+
+
+def test_the_model_is_changed_only_unlocked_and_after_a_confirm_that_warns_of_the_cut(browser, amp_served):
+    page = amp_rack(browser, amp_served)
+    p = page.page
+    picker = p.get_by_role("combobox", name="Amp model")
+    expect(picker).to_be_disabled()
+    expect(p.locator(".amp-picker")).to_contain_text("Locked: changing the amp's model cuts the sound")
+    lock = p.locator("button.lock")
+    lock.click()
+    lock.click()
+    expect(picker).to_be_enabled()
+    expect(p.locator(".amp-picker")).to_contain_text("the sound cuts out for a moment")
+    # The option's own property: Playwright's to_be_disabled reads an
+    # option as enabled whatever its attribute (seen with 1.63).
+    expect(picker.locator("option[value='Slow Tape.nam']")).to_have_js_property("disabled", True)
+    picker.select_option("Edge.nam")
+    confirm = p.get_by_role("group", name="Confirm the model change")
+    expect(confirm).to_contain_text("Load Edge? Changing the model restarts the amp: the sound cuts out for a moment")
+    assert amp_served.amp.restarts == [], "nothing until the confirm"
+    confirm.get_by_role("button", name="Load Edge").click()
+    until(lambda: amp_served.amp.restarts)
+    (restart,) = amp_served.amp.restarts
+    assert restart["model"] == "amp/models/Edge.nam" and restart["override"] == "Edge.nam"
+    assert restart["values"] == {"Input Lvl": 0.0, "Output Lvl": -3.0, "Quality": 1.0}
+    expect(p.locator(".notice")).to_contain_text("the amp now plays Edge.nam. The sound stopped")
+    expect(p.locator(".amp-card .amp-model")).to_have_text("Edge")
+    expect(p.locator("aside.changes .change")).to_have_text("amp · modelClean Room to Edge")
+    page.close()
+
+
+def test_a_model_change_that_failed_says_so_and_whether_the_old_one_is_back(browser, amp_served):
+    from sushi_rig.supervisor import AmpRestart
+
+    amp_served.amp.restart_result = AmpRestart(False, "Carla exited as it started (status 1)", pid=7, restored=True)
+    page = amp_rack(browser, amp_served)
+    p = page.page
+    lock = p.locator("button.lock")
+    lock.click()
+    lock.click()
+    p.get_by_role("combobox", name="Amp model").select_option("Edge.nam")
+    p.get_by_role("button", name="Load Edge").click()
+    alert = p.locator(".problem.refused")
+    expect(alert).to_contain_text("Amp model not changed: Edge")
+    expect(alert).to_contain_text("Carla exited as it started (status 1); the previous model was brought back")
+    expect(p.locator(".amp-card .amp-model")).to_have_text("Clean Room")
+    page.close()
+
+
+def test_with_the_panel_running_the_amp_card_writes_nothing_and_says_why(browser, amp_served):
+    amp_served.amp.mode = "panel"
+    page = amp_rack(browser, amp_served)
+    p = page.page
+    expect(p.get_by_role("slider", name="amp Output Lvl")).to_be_disabled()
+    expect(p.locator(".amp-card")).to_contain_text("the panel's faders may have moved them since")
+    expect(p.locator(".amp-picker")).to_contain_text("The panel is running and owns the amp")
+    page.close()
+
+
+def test_on_stage_the_amp_is_its_model_and_output_level_and_only_unlocked(browser, amp_served):
+    page = Watched(browser, amp_served, "/", width=390, height=844)
+    p = page.page
+    p.wait_for_selector(".card")
+    expect(p.locator(".stage-amp")).to_be_hidden()
+    lock = p.locator("button.lock")
+    lock.click()
+    lock.click()
+    amp = p.locator(".stage-amp")
+    expect(amp.locator(".amp-model")).to_have_text("Clean Room")
+    expect(amp.get_by_role("slider")).to_have_count(1)
+    output = amp.get_by_role("slider", name="amp Output Lvl")
+    expect(output).to_have_attribute("aria-valuetext", "−3.0 dB")
+    height = output.evaluate("(e) => e.closest('.fader').getBoundingClientRect().height")
+    assert height >= 44, "a thumb's target"
+    output.focus()
+    p.keyboard.press("ArrowLeft")
+    until(lambda: abs(amp_served.amp.carla.values().get("Output Lvl", 0) - -3.1) < 1e-6)
+    width = p.evaluate("() => [document.documentElement.scrollWidth, innerWidth]")
+    assert width[0] <= width[1], "it fits a phone"
+    lock.click()
+    expect(p.locator(".stage-amp")).to_be_hidden()
+    page.close()
+
+
+def test_a_model_change_in_flight_is_said_as_the_amp_restarting(blank):
+    status = rigjs(blank, """return R.rigStatus({ok: true, body: {rig: {running: true, config_name: 'board'},
+        agent: {busy: 'amp_model'}}}, null);""")
+    assert status["tone"] == "busy" and status["detail"].startswith("The amp is restarting on another model")

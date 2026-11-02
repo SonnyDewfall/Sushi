@@ -48,6 +48,10 @@ const state = {
   locked: readLocked(), armed: false, armTimer: null,
   load: null, loadView: null, xruns: null, xrunsFor: null, loadTimer: null,  // GET /rig/load, every LOAD_MS
   rigs: null, rigsAt: 0,     // GET /rigs: kept once it answers, read again after a lifecycle command
+  amp: null,                 // GET /amp, with /live: what the agent last sent Carla
+  ampModels: null, ampModelsAt: 0,  // GET /amp/models: kept once it answers, read again after a model change
+  ampChoice: null,           // the model picked in the amp card, awaiting its confirm
+  ampPending: null,          // the model change in flight
   chosen: null,              // the rig picked in the picker; null follows the running rig
   pending: null,             // this page's lifecycle command in flight: {op, name}
   confirming: false, confirmTimer: null,  // Stop's second tap
@@ -172,6 +176,16 @@ async function refreshRigs(force = false) {
   return true;
 }
 
+// amp/models, for the amp card's picker: once it answers, and again after a
+// model change (which one is playing moves); after RETRY_MS while it fails.
+async function refreshAmpModels(force = false) {
+  if (!force && state.ampModels && state.ampModels.ok) return false;
+  if (!force && state.ampModelsAt && Date.now() - state.ampModelsAt < RETRY_MS) return false;
+  state.ampModels = await request("GET", "/amp/models");
+  state.ampModelsAt = Date.now();
+  return true;
+}
+
 async function poll() {
   if (state.polling) return;
   state.polling = true;
@@ -182,12 +196,16 @@ async function poll() {
     // (`R.readsLive`): a down rig is a state, and asking /live for it was a
     // console error a second (#111). The log answers whatever the rig.
     const health = await request("GET", "/health");
-    const [live, log] = await Promise.all([
+    const [live, log, amp] = await Promise.all([
       R.readsLive(health) ? request("GET", "/live") : null,
       health.ok ? request("GET", "/live/log") : null,
+      // The amp is read when /live is, for the same reason: with no rig up
+      // it can only be refused (#111).
+      R.readsLive(health) ? request("GET", "/amp") : null,
     ]);
     state.health = health;
     state.live = live;
+    state.amp = amp;
     state.log = log && log.ok ? log.body : null;
     state.seq = seq;
     if (live && live.ok) await refreshPlugins(live.body, rigIdentity(health, state.log));
@@ -195,6 +213,7 @@ async function poll() {
     inBackground("profiles", refreshProfiles);
     inBackground("names", refreshNames);
     inBackground("rigs", refreshRigs);
+    if (amp && amp.ok) inBackground("amp models", refreshAmpModels);
   } finally {
     state.polling = false;
     state.timer = setTimeout(poll, POLL_MS);
@@ -461,7 +480,7 @@ function statusLine(status) {
 function tileViews(health) {
   const rig = health && health.ok ? health.body.rig || {} : {};
   const measured = state.loadView && R.readsLive(health) ? state.loadView : R.loadTiles(null, !!rig.running, null);
-  return [...measured, { k: "AMP", v: rig.amp_model || "none", s: null, title: null, tone: "" }];
+  return [...measured, { k: "AMP", v: rig.amp_model ? R.modelName(rig.amp_model) : "none", s: null, title: rig.amp_model || null, tone: "" }];
 }
 
 // The tiles in an element of their own, kept across the header's rebuilds:
@@ -553,6 +572,29 @@ async function lifecycle(op, name) {
   refreshRigs(true).then(render);
 }
 
+// A model change restarts the amp, so it takes a confirm that says the
+// sound will cut out (R.MODEL_WARNING), and is refused while locked.
+async function changeAmpModel(model) {
+  const refusal = R.lockRefusal(state.locked, "amp_model");
+  if (refusal) { fail(`Amp model not changed: ${R.modelName(model)}`, { reason: refusal }); render(); return; }
+  if (state.ampPending) return;
+  state.ampPending = model;
+  state.ampChoice = null;
+  render();
+  let answer;
+  try {
+    answer = await request("POST", R.ampModelCall(model).path, R.ampModelCall(model).json);
+  } finally {
+    state.ampPending = null;
+  }
+  const said = R.ampModelOutcome(model, answer);
+  if (said.ok) state.notice = said.text;
+  else fail(said.title, { reason: said.reason, code: answer.code });
+  render();
+  kick();
+  refreshAmpModels(true).then(render);
+}
+
 function armStop() {
   state.confirming = true;
   clearTimeout(state.confirmTimer);
@@ -590,6 +632,100 @@ function rigsRegion(el) {
   ]);
 }
 
+// ---------------------------------------------------------------- the amp
+
+// One of the amp's parameters as a fader, in its own unit (dB), sent as it
+// moves through the same Sender as a knob: one request in flight, the
+// newest wins, a refusal shown beside it with the agent's reason.
+function ampFader(f) {
+  const key = `a\u0000${f.name}`;
+  const input = h("input", {
+    type: "range", min: f.min, max: f.max, step: f.step, disabled: f.disabled,
+    "aria-label": `amp ${f.label}`,
+  });
+  const value = h("span", { class: "value" });
+  const note = h("span", { class: "note" });
+  const draw = (v, unsaved) => {
+    if (document.activeElement !== input || !sender.busy(key)) input.value = String(v ?? (f.min + f.max) / 2);
+    const text = R.ampText(f, v);
+    value.textContent = text;
+    input.setAttribute("aria-valuetext", text);
+    const failed = state.failed.get(key);
+    const notes = [];
+    if (failed) notes.push(`refused: ${failed}`);
+    if (unsaved) notes.push(`was ${R.ampText(f, unsaved.from)}`);
+    if (v === null) notes.push("never sent: at the plugin's own default, which is not known here");
+    note.textContent = notes.join(" · ");
+    el.classList.toggle("unsaved", !!unsaved);
+    el.classList.toggle("failed", !!failed);
+  };
+  input.addEventListener("input", () => {
+    const v = Number(input.value);
+    sender.change(key, v, (x) => R.ampParameterCall(f.name, x));
+    draw(v, null);
+  });
+  const el = h("label", { class: "fader" }, h("span", { class: "label" }, f.label), input, value, note);
+  state.updaters.push((ctx) => {
+    const body = state.amp && state.amp.ok ? state.amp.body : null;
+    draw(sender.displayed(key, R.ampValueOf(body, f.name), ctx.seq), ctx.unsaved.get(key) || null);
+  });
+  return el;
+}
+
+// The rack's amp card: the model and what it declares, the panel's faders,
+// Quality shown and not on a fader, and the model picker with its warning.
+function ampRegion(el, rebuilt) {
+  const view = R.ampCard(state.amp, state.ampModels, { locked: state.locked, pending: state.ampPending });
+  if (rebuilt) state.keys.delete(el);
+  patch(el, JSON.stringify([view, state.ampChoice]), () => {
+    if (view.state === "hidden") return [];
+    if (view.state !== "up") {
+      return [h("h2", {}, "AMP"), h("p", { class: view.state === "failed" ? "missing" : "amp-none" }, view.why)];
+    }
+    const chosen = state.ampChoice && view.picker.options.find((o) => o.model === state.ampChoice);
+    const select = h("select", { "aria-label": "Amp model", disabled: !view.picker.canChange },
+      h("option", { value: "" }, "Choose another model…"),
+      view.picker.options.map((o) => h("option", { value: o.model, disabled: !o.usable, title: o.why }, o.label)));
+    select.value = chosen ? chosen.model : "";
+    select.addEventListener("change", () => { state.ampChoice = select.value || null; render(); });
+    return [
+      h("div", { class: "amp-head" },
+        h("span", { class: "swatch", style: "background:#E07A73" }),
+        h("div", { class: "who" }, h("h2", {}, "AMP"), h("span", { class: "amp-model" }, view.model ? view.model.name : "no model"),
+          h("span", { class: "sub" }, view.known === "panel" ? view.note : "in Carla · values are what was last sent, not read back"))),
+      view.model && view.model.problem ? h("p", { class: "missing" }, view.model.problem) : null,
+      view.model && view.model.warning ? h("p", { class: "warn" }, view.model.warning) : null,
+      view.model && view.model.description ? h("details", { class: "amp-about" }, h("summary", {}, "What the model declares"),
+        h("pre", {}, view.model.description)) : null,
+      view.down ? h("p", { class: "missing" }, "Carla is not running: restart the rig to bring the amp back.") : null,
+      h("div", { class: "faders" }, view.faders.map(ampFader),
+        view.shown.map((p) => h("div", { class: "shown", title: p.note }, h("span", { class: "label" }, p.name), h("span", { class: "value" }, p.text),
+          p.note ? h("span", { class: "note" }, p.note) : null))),
+      h("div", { class: "amp-picker" },
+        h("label", { class: "selector" }, h("span", { class: "label" }, "Model"), select),
+        // The warning is said once: under the picker, or in the confirm.
+        view.picker.why ? h("p", { class: "sub" }, view.picker.why)
+          : !(chosen && view.picker.canChange) ? h("p", { class: "sub" }, view.picker.warning) : null,
+        chosen && view.picker.canChange ? h("div", { class: "confirm", role: "group", "aria-label": "Confirm the model change" },
+          h("p", {}, `Load ${chosen.label}? ${view.picker.warning}`),
+          h("button", { class: "rig-act danger", onclick: () => changeAmpModel(chosen.model) }, `Load ${chosen.label}`),
+          h("button", { class: "rig-act", onclick: () => { state.ampChoice = null; render(); } }, "Cancel")) : null),
+    ];
+  });
+}
+
+// The stage's amp: the model's name and the output level only, hidden
+// while the lock is on (as the rig picker is).
+function stageAmpRegion(el, rebuilt) {
+  if (state.locked) { patch(el, "locked", () => []); return; }
+  const view = R.stageAmp(state.amp);
+  if (rebuilt) state.keys.delete(el);
+  patch(el, JSON.stringify(view), () => view ? [
+    h("h2", {}, "AMP"), h("span", { class: "amp-model" }, view.name),
+    view.output ? ampFader(view.output) : null,
+  ] : []);
+}
+
 // ---------------------------------------------------------------- the rack (S1)
 
 function rackFrame() {
@@ -599,12 +735,14 @@ function rackFrame() {
     tiles: h("span", { class: "tile-row" }),
     rigs: h("section", { class: "rigs", "aria-label": "Rigs" }),
     channels: h("div", { class: "channel-list" }),
+    amp: h("section", { class: "amp-card", "aria-label": "Amp" }),
     rack: h("main", { class: "rack" }),
     changes: h("aside", { class: "changes", "aria-label": "Unsaved changes" }),
   };
+  // The amp first: it is in front of Sushi, between the guitar and the board.
   const frame = h("div", { class: "screen rack-screen" }, regions.header, regions.problems,
     h("div", { class: "rack-body" }, h("nav", { class: "channels", "aria-label": "Rigs and channels" }, regions.rigs, regions.channels),
-      h("div", { class: "rack-main" }, regions.rack), regions.changes));
+      h("div", { class: "rack-main" }, regions.amp, regions.rack), regions.changes));
   return { frame, regions };
 }
 
@@ -663,7 +801,7 @@ function renderRack(regions, model, unsaved, status) {
   // With no rig, the message depends on the tone (changing, or down), so
   // the tone is in the key, or it would never be redrawn (found by review).
   const structure = model ? JSON.stringify([model.tracks.map((t) => [t.name, t.chain, t.units.map((u) => [u.uri, u.profile, u.panel])]), state.locked, [...state.open], !!state.names]) : JSON.stringify(["none", status.tone]);
-  if (patch(regions.rack, structure, () => {
+  const rebuilt = patch(regions.rack, structure, () => {
     state.updaters = [];
     if (!model) {
       return h("p", { class: "empty" }, status.tone === "busy" ? "The rig is changing; the rack comes back when it is up."
@@ -675,7 +813,10 @@ function renderRack(regions, model, unsaved, status) {
         h("span", { class: "hint" }, track.units.length ? `${track.units.length} plugin${track.units.length === 1 ? "" : "s"} · open a unit for all its controls` : "no plugins")),
       track.units.map((u, i) => unitRow(track, u, i)),
       track.send ? h("div", { class: "send" }, h("span", { class: "k" }, "SEND TO MASTER"), control(track.send, track.send.panel.groups[0].controls[0], "small")) : null));
-  })) { /* rebuilt: its updaters are new */ }
+  });
+  // After the rack, whose rebuild empties the updaters: the amp's faders are
+  // rebuilt with it, so theirs are there again.
+  ampRegion(regions.amp, rebuilt);
   rigsRegion(regions.rigs);
   patch(regions.channels, model ? JSON.stringify(model.tracks.map((t) => [t.name, t.units.length])) : "none", () => [
     h("h2", {}, "CHANNELS"),
@@ -701,6 +842,11 @@ function changeText(model, item) {
     const show = (v) => (ctrl ? R.formatValue(ctrl, v) : (typeof v === "number" ? v.toFixed(3) : "unknown"));
     return { where: [track, item.processor, ctrl ? ctrl.label : item.parameter].filter(Boolean).join(" · "), from: show(item.from), to: show(item.to) };
   }
+  if (item.kind === "amp") {
+    const param = (state.amp && state.amp.ok ? state.amp.body.parameters || [] : []).find((p) => p.name === item.name) || {};
+    return { where: `amp · ${item.name}`, from: R.ampText(param, item.from), to: R.ampText(param, item.to) };
+  }
+  if (item.kind === "amp_model") return { where: "amp · model", from: R.modelName(item.from), to: R.modelName(item.to) };
   if (item.kind === "bypass") {
     const word = (b) => (b === null || b === undefined ? "unknown" : b ? "bypassed" : "on");
     return { where: `${findControl(model, item.processor).track || "?"} · ${item.processor}`, from: word(item.from), to: word(item.to) };
@@ -731,11 +877,12 @@ function stageFrame() {
     header: h("header", { class: "stage-head" }),
     problems: h("div", { class: "problems", "aria-live": "polite" }),
     levels: h("div", { class: "levels" }),
+    amp: h("section", { class: "stage-amp", "aria-label": "Amp" }),
     cards: h("main", { class: "cards" }),
     tiles: h("div", { class: "tiles" }),
     rigs: h("section", { class: "rigs stage-rigs", "aria-label": "Rigs" }),
   };
-  const frame = h("div", { class: "screen stage-screen" }, regions.header, regions.problems, regions.levels, regions.cards, regions.rigs,
+  const frame = h("div", { class: "screen stage-screen" }, regions.header, regions.problems, regions.levels, regions.amp, regions.cards, regions.rigs,
     h("nav", { class: "stage-nav" }, h("a", { href: "#stage", class: "here", "aria-current": "page" }, "Stage"), h("a", { href: "#rack" }, "Rack")));
   return { frame, regions };
 }
@@ -773,7 +920,7 @@ function renderStage(regions, model, status) {
     state.locked
       ? "Add, remove and reorder are off while locked, and start, stop and switch are hidden. Knobs and bypass still work. This is the page's lock: the agent does not enforce one yet."
       : "Lock off: the rack can reorder the rig, and the rig can be started, stopped or switched below.");
-  patch(regions.cards, structure, () => {
+  const rebuilt = patch(regions.cards, structure, () => {
     state.updaters = [];
     if (!model) {
       return [h("p", { class: "empty" }, status.tone === "busy" ? "The rig is changing; the cards come back when it is up."
@@ -784,6 +931,7 @@ function renderStage(regions, model, status) {
       lockNote(),
     ];
   });
+  stageAmpRegion(regions.amp, rebuilt);
   // Hidden, not disabled, while locked: on stage a Stop within reach of a
   // thumb is the mistake the lock is there to prevent.
   if (state.locked) patch(regions.rigs, "locked", () => []);
@@ -812,7 +960,8 @@ function render() {
     const live = liveBody();
     const model = live ? R.rackModel(live, state.plugins, state.profiles) : null;
     const rig = state.health && state.health.ok ? state.health.body.rig : null;
-    const unsaved = live ? R.unsavedChanges(state.log, live, rig) : { items: [], partial: false };
+    const amp = state.amp && state.amp.ok ? state.amp.body : null;
+    const unsaved = live ? R.unsavedChanges(state.log, live, rig, amp) : { items: [], partial: false };
     const status = R.rigStatus(state.health, state.live);
     document.title = `${status.title} · sushi-rig`;
     if (screen === "stage") renderStage(state.regions, model, status);
@@ -822,6 +971,7 @@ function render() {
       for (const item of unsaved.items) {
         if (item.kind === "parameter") keyed.set(`p\u0000${item.processor}\u0000${item.parameter}`, item);
         else if (item.kind === "bypass") keyed.set(`b\u0000${item.processor}`, item);
+        else if (item.kind === "amp") keyed.set(`a\u0000${item.name}`, item);
       }
       const ctx = { live, seq: state.seq, unsaved: keyed };
       for (const update of state.updaters) update(ctx);

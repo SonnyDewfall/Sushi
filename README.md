@@ -415,6 +415,10 @@ curl -X POST localhost:8029/live/move -d '{"processor": "drive", "direction": "u
 curl localhost:8029/live/log         # what was changed through /live, newest last
 curl -X POST localhost:8029/live/undo   # put back what the newest change not yet undone replaced
 curl -X POST localhost:8029/live/undo -d '{"skip": true}'   # give up on the newest one that cannot be
+curl localhost:8029/amp              # the amp as last SENT to Carla: its model, each parameter
+curl localhost:8029/amp/models       # amp/models, each model's rate and whether it can be played
+curl -X POST localhost:8029/amp/parameter -d '{"name": "Output Lvl", "value": -3}'   # dB, clamped and said
+curl -X POST localhost:8029/amp/model -d '{"model": "Some Model.nam"}'   # restarts Carla alone: the sound stops for a moment
 
 curl localhost:8029/health | jq .agent.midi   # the pedals: listening, or why not, and what was last heard
 ```
@@ -617,26 +621,63 @@ what to read when a pedal seems to do nothing. Channels are counted from 0 there
 as `aseqdump` prints them. **Not yet heard from a real pedal**: see the list below
 the MIDI map in *Channels and a master*.
 
+**The amp from the agent.** The neural amp runs in Carla, not Sushi, and
+Carla cannot be read back, so what the agent holds is **what it last sent**:
+`GET /amp` answers the model (its path and what the `.nam` declares) and each
+parameter with its value, range, unit and whether the panel puts it on a
+fader, with `known: "sent"` so nothing can present it as what Carla holds. It
+is seeded for each run of the rig from the running config's `_amp`, which `up`
+replays, and a parameter the config does not state is `null`, not a guessed
+default. `POST /amp/parameter {"name", "value"}` sends one parameter, in its
+own unit; a value outside the range is clamped and the answer says so. Before
+each send the agent opens a TCP connection to Carla's OSC port (Carla serves
+OSC over TCP and UDP; the send itself is UDP, which succeeds whether anything
+listens or not): no connection is `502` and nothing is recorded. That proves a
+Carla is listening, not that it applied the value. Each change is in
+`/live/log` (op `amp`), and `/live/undo` puts back what was last sent before
+it, refusing as `stale` once something else was sent since. `POST /amp/model
+{"model"}` plays another model of `amp/models` (a path only from this machine,
+as `--amp-model`), refusing one trained at another rate than the rig's as
+`doctor` faults it: **the sound stops for a moment**, because Carla is stopped
+and started again on a rewritten project, alone, inside the group the agent
+holds, with its knobs replayed; Sushi and everything else play on. If the new
+model does not come up, the previous one is put back, and the answer says
+whether that worked. The state file records the model, so `restart` keeps it.
+It needs a rig this agent started (`409 not_held` otherwise), and is refused
+while a lifecycle command runs. **With the panel running, the panel owns the
+amp**: its faders reach Carla through the listener, which keeps its own
+record for SAVE, so the agent says `known: "panel"` and writes nothing
+(`409 panel`) rather than keep a second record neither could trust. **Not run
+against a real Carla**: Carla is a stand-in in every test (an in-memory one,
+and a real UDP and TCP listener), and the restart's silence is not measured.
+
 **Switching rigs live** (#93). `POST /rig/switch {"config_name"}` (and a
 Program Change, which takes the same path) turns the running rig into another
 rig of `config/rigs/` without restarting Sushi where the live operations can
 do it: the processors that differ are removed, moved and added, the
-parameters and bypasses that differ are set, and the rig is read back and
-checked against the next rig's config, and against every value the switch
-set, before the state file names it. The
+parameters and bypasses that differ are set, the amp's parameters that differ
+from what the agent last sent are sent to Carla (the call `POST
+/amp/parameter` makes), and the rig is read back and checked against the next
+rig's config, and against every value the switch set, before the state file
+names it. Carla cannot be read back, so an amp step is checked only by Carla
+answering. The
 answer says `how`: `live`, or `restart` with `why` -- every reason, by code.
-What restarts: a different amp (it runs in Carla), a track added, removed or
+What restarts: a different amp model, or an amp in one rig and not the other
+(Carla loads a model only as it starts, and is started, with the patchbay
+wired through it, only with the rig), a track added, removed or
 reordered or of another shape, a channel on another input, a different host
 config or MIDI map (`cc_mappings`, which Sushi loads only with the config), a
 program or property to set, a rig run with its panel (whose SAVE listener
-belongs to the rig being left) or with `--amp-model`, a rig changed by hand
+belongs to the rig being left) or with `--amp-model` or a model chosen through
+`POST /amp/model`, a rig changed by hand
 since it came up in a way the plan cannot follow, a step that fails, and a
 read-back that is not the next rig. A switch that fails part-way restarts into
 the next rig, and brings the previous rig back if that restart fails; if the
 restart cannot even take the rig down, `/health` and the answer say the rig is
 **half-switched**, naming both rigs, and nothing more is tried: read `/live`
-and bring it down and up by hand. Of the committed rigs, 26 of the 110 ordered pairs are
-live (most others differ in the amp's settings). One `op: "rig"` entry goes in
+and bring it down and up by hand. Of the committed rigs, 72 of the 110 ordered pairs are
+live (26 while the amp's parameters were a restart); the rest have an amp on
+one side only, or other tracks. One `op: "rig"` entry goes in
 `/live/log` either way, and undo stops at it. A rig that would not compile is
 refused (`409 rig_problem`) with the running one left playing. **Not run
 against a live Sushi and not heard**: shown against the fake only, and how long
@@ -718,6 +759,15 @@ no Node and the UI has to run from a checkout. Two screens from the mockups:
   or by restart, and why. While a command runs, from this page or another,
   nothing else is offered and what is running is said; a refusal shows the
   agent's reason.
+- **The amp.** A card at the top of the rack, since the amp is in front of the
+  board: the model's name and what it declares, faders for Input and Output in
+  dB, Quality shown but not on a fader (it trades CPU for accuracy, not tone),
+  and a model picker that takes a confirm saying the sound cuts out for a
+  moment, refused while locked. Values are labelled as what was last sent,
+  never as read back. On the stage screen, only the model's name and the
+  output level, and only while the lock is off, as the rig picker is. With
+  the panel running, the faders and picker are off and say the panel owns the
+  amp.
 
 It polls `/health` once a second, and `/live` only while a rig is up: a rig
 that is down is shown as a state, in grey, not as an error a second in the
@@ -748,7 +798,8 @@ each processor is comes from Sushi's saved session, unverified against 1.3.0 as
 for the agent's add and remove.
 
 To try it without a rig: `cd tool && PYTHONPATH=src:tests python tests/ui_fake.py`
-serves the UI against that fake on port 8029 (`--down` to start with no rig up).
+serves the UI against that fake on port 8029 (`--down` to start with no rig up,
+`--amp` to give it an amp, with invented models and a stand-in Carla).
 `/ui/` and `/ui` redirect to the page.
 
 ### Ports by role, not by device name

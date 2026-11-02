@@ -20,9 +20,21 @@ Parameter values here are what we last **sent**, not what Carla currently holds.
 Carla's OSC is write-only from where we sit — it has a feedback channel for
 registered clients, but that is a much larger thing to implement. On the Sushi
 side `capture` asks the rig what it is actually doing; here we can only report
-what we asked for. The two agree as long as the panel is the only thing touching
-Carla, which it is, but they are not the same guarantee and should not be
-described as if they were.
+what we asked for. The two agree as long as one thing at a time touches Carla
+— the panel's listener in panel mode, the agent (amp_live.py) in headless
+mode, which refuses to write while the panel runs — but they are not the same
+guarantee and should not be described as if they were.
+
+What runs the amp, and who changes it while it runs:
+
+- `prepare` writes a run's project and its patchbay; `up` starts Carla on it
+  and replays the knobs (`rig._replay_amp`).
+- In panel mode the panel's faders reach Carla through the listener
+  (listen.py `_on_amp`), which remembers what it sent for SAVE.
+- In headless mode the agent does (amp_live.py: GET /amp, POST
+  /amp/parameter), and it changes the model by restarting Carla alone on a
+  rewritten project (`supervisor.Supervisor.restart_amp`), with
+  `carla_project` here.
 """
 
 from __future__ import annotations

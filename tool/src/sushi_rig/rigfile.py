@@ -1169,6 +1169,14 @@ def heard(config: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
 #
 # The live calls the agent makes for each step carry their own unverified
 # list in live.py (placing an add, the session read, the read-back).
+#
+# The amp is the one part of a rig outside Sushi (amp.py). Its parameters
+# are set live, over Carla's OSC, by the call `POST /amp/parameter` makes
+# (`amp` steps); its model is loaded only when Carla starts, and Carla is
+# started, and the patchbay wired through it, only with the rig, so a model
+# or an amp present in one rig and not the other stays a restart. What a
+# parameter is at in Carla cannot be read back: an `amp` step is compared
+# with what the agent last sent, never with what Carla holds.
 
 # Below float32's resolution on 0..1 (about 6e-8) and the six decimals a rig
 # file holds, so a value read back from Sushi that only carries float32 noise
@@ -1182,7 +1190,8 @@ RESTART_REASONS = {
     # elkpy's connect_cc_to_parameter may make this live; unverified, see above.
     "midi": "Sushi's midi section (cc_mappings) is loaded only with the config",
     "config_section": "a section of the config the live operations do not reach differs",
-    "amp": "the amp runs in Carla, which no live operation reaches",
+    "amp": "the amp's model differs, or one rig has an amp and the other not: Carla loads a model "
+           "only when it starts, and is started, with the patchbay wired through it, only with the rig",
     "wiring": "a channel's input or the master's output is another role, which only the patchbay wires",
     "wiring_unknown": "a config does not say which roles its tracks are wired to (compiled before #93)",
     "track_added": "a track would be added: the live operations make no tracks",
@@ -1264,6 +1273,78 @@ def _close(a: Any, b: Any) -> bool:
     return numbers and abs(a - b) <= SET_TOLERANCE
 
 
+def _amp_plan(
+    amp_r: Any, amp_n: Any, sent: dict[str, Any] | None,
+) -> tuple[list[SwitchStep], list[RestartReason]]:
+    """The `amp` steps that set the next rig's amp parameters, or the reasons
+    the amp needs a restart. Pure.
+
+    `sent` is what the agent last sent Carla for each parameter (None where
+    it has sent nothing), from the live reading; without one, the running
+    rig's `_amp` stands for it, as its config stands for Sushi's values. Each
+    stated parameter of the next rig is sent where it differs from that; one
+    the next rig leaves unstated, which the running rig did set, is a restart:
+    the plugin's own default is known only to the plugin, as with a Sushi
+    parameter left at its default (`parameter_default`). Values are clamped as
+    `amp.clamp` clamps what is sent, so a value outside the range is a step to
+    its end, and one that is not a number is a restart rather than a guess.
+    """
+    from .amp import PARAMETER_INDEX, AmpError, clamp
+
+    if amp_r is None and amp_n is None:
+        return [], []
+    if amp_r is None or amp_n is None:
+        which = "the next rig has an amp and the running one has none" if amp_r is None \
+            else "the running rig has an amp and the next has none"
+        return [], [RestartReason("amp", which)]
+    if not isinstance(amp_r, dict) or not isinstance(amp_n, dict):
+        return [], [RestartReason("amp", "an _amp section is not a mapping")]
+    shape_r = {k: v for k, v in amp_r.items() if k != "parameters"}
+    shape_n = {k: v for k, v in amp_n.items() if k != "parameters"}
+    if shape_r != shape_n:
+        keys = sorted(k for k in set(shape_r) | set(shape_n) if shape_r.get(k) != shape_n.get(k))
+        said = ", ".join(f"{k} {shape_r.get(k)!r} becomes {shape_n.get(k)!r}" for k in keys)
+        return [], [RestartReason("amp", f"the amp's {said}")]
+    will = amp_n.get("parameters") or {}
+    was = amp_r.get("parameters") or {}
+    if not isinstance(will, dict) or not isinstance(was, dict):
+        return [], [RestartReason("amp", "an _amp section's parameters are not a mapping")]
+
+    reasons: list[RestartReason] = []
+    targets: dict[str, float] = {}
+    for name, value in will.items():
+        if name not in PARAMETER_INDEX:
+            reasons.append(RestartReason("amp", f"the next rig sets amp parameter {name!r}, which the amp does not have"))
+            continue
+        try:
+            if isinstance(value, bool) or not isinstance(value, (int, float)):
+                raise AmpError(f"{name} is {value!r}")
+            targets[name] = clamp(name, value)
+        except AmpError as exc:
+            reasons.append(RestartReason("amp", f"the next rig's amp {exc}, not a value to send"))
+    if sent is None:
+        current: dict[str, Any] = {}
+        for name, value in was.items():
+            try:
+                current[name] = clamp(name, value) if name in PARAMETER_INDEX else None
+            except (AmpError, TypeError, ValueError):
+                current[name] = None
+    else:
+        current = dict(sent)
+    steps: list[SwitchStep] = []
+    for name in PARAMETER_INDEX:  # Carla's order, so a plan reads the same each time
+        now = current.get(name)
+        if name not in will:
+            if now is not None:
+                reasons.append(RestartReason(
+                    "amp", f"the next rig leaves amp parameter {name} unstated, and its default is known "
+                           "only to the plugin"))
+            continue
+        if name in targets and not _close(now, targets[name]):
+            steps.append(SwitchStep("amp", {"name": name, "value": targets[name]}))
+    return ([], reasons) if reasons else (steps, [])
+
+
 def _cc_targets(midi: Any) -> set[str]:
     """Every processor Sushi's midi section names, cc_mappings above all:
     a mapping is bound to the processor when the config loads (a guess about
@@ -1291,7 +1372,9 @@ def diff(
     positions that are not there: `drifted`), and a parameter or bypass is
     compared with the value Sushi reports, so a knob turned during the last
     song is put where the next rig says rather than left, which verification
-    would then refuse.
+    would then refuse. Its `amp`, `{"parameters": {name: value or None}}`, is
+    what the agent last sent Carla, which is all that can be known of the amp
+    (amp.py); without it, the running rig's `_amp` stands for that.
 
     A processor survives the switch when the next rig has one of the same
     name, on the same track, of the same plugin. Its parameters and bypass are
@@ -1329,6 +1412,8 @@ def diff(
     6. **Parameters**, after the adds, since a parameter can be set only on a
        processor that exists; every stated one for an added processor (fresh
        ones are at the plugin's defaults), the ones that differ otherwise.
+       Then **the amp's parameters** (`amp` steps, `_amp_plan`), the ones that
+       differ from what was last sent Carla, in Carla's parameter order.
     7. **Bypass off** last: a pedal comes in only once its parameters are the
        next rig's.
 
@@ -1366,8 +1451,10 @@ def diff(
         # refused rather than assumed harmless.
         if running.get(key) != next_config.get(key):
             need("config_section", f"{key!r} differs")
-    if (running.get("_amp") or None) != (next_config.get("_amp") or None):
-        need("amp", "the amp differs (its model or its parameters), and it runs in Carla")
+    amp_steps, amp_reasons = _amp_plan(
+        running.get("_amp") or None, next_config.get("_amp") or None,
+        ((live or {}).get("amp") or {}).get("parameters") if live is not None and "amp" in live else None)
+    reasons.extend(amp_reasons)
     wiring_r, wiring_n = running.get(WIRING), next_config.get(WIRING)
     if not isinstance(wiring_r, dict) or not isinstance(wiring_n, dict):
         which = "the running rig's" if not isinstance(wiring_r, dict) else "the next rig's"
@@ -1556,7 +1643,7 @@ def diff(
             adds.append(SwitchStep("bypass", {"processor": name, "bypassed": True}))
             if not (state_n.get(name) or {}).get("bypassed", False):
                 comes_in.append(SwitchStep("bypass", {"processor": name, "bypassed": False}))
-    return SwitchPlan(tuple(bypass_on + removes + moves + adds + parameters + comes_in + bypass_off))
+    return SwitchPlan(tuple(bypass_on + removes + moves + adds + parameters + amp_steps + comes_in + bypass_off))
 
 
 def apply_to_chains(chains: dict[str, list[str]], plan: SwitchPlan) -> dict[str, list[str]]:
@@ -1602,7 +1689,9 @@ def unapplied(plan: SwitchPlan, reading: dict[str, Any]) -> list[str]:
     reported as a live switch that worked (found by review). So the switch is
     checked against the plan's own targets too: each parameter's last value,
     and each processor's last bypass, since an added processor is bypassed
-    and then brought in."""
+    and then brought in. Not the `amp` steps: Carla cannot be read back, so
+    a step it took is one it answered for (see `agent._amp_send`), and that
+    is all a switch can check of it."""
     want_values: dict[tuple[str, str], float] = {}
     want_bypass: dict[str, bool] = {}
     for step in plan.steps:

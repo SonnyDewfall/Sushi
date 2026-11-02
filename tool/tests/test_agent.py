@@ -2521,7 +2521,12 @@ class RigLive(FakeLive):
 HEADLESS = {"supervisor_pid": 4242, "pgid": 4242, "mode": "headless", "config_name": "electric-delay",
             "config": "/run/rigs/electric-delay.json", "rig": "config/rigs/electric-delay.yaml",
             "tuner_requested": True, "amp_requested": True, "amp_model_requested": None,
-            "machine": "/m/box.yaml", "children": {"sushi": 4243}}
+            "amp_model": "amp/models/the-rigs-model.nam", "started_at": "2026-11-02T10:00:00+00:00",
+            "machine": "/m/box.yaml", "children": {"sushi": 4243, "amp": 4244}}
+
+
+# A rig with no `_amp`, which runs no Carla.
+NO_AMP = {**HEADLESS, "amp_model": None, "children": {"sushi": 4243}}
 
 
 class SwitchWorld:
@@ -2561,14 +2566,19 @@ class SwitchWorld:
     def described(self):
         return {"verdict": "running", "running": True, "config_name": self.state["config_name"],
                 "config": self.state["config"], "rig": self.state["rig"], "mode": self.state["mode"],
+                "children": {name: {"pid": pid, "alive": True} for name, pid in self.state["children"].items()},
                 "message": f"{self.state['config_name']} ({self.state['mode']} mode), up 2m"}
 
 
-def switch_agent(running="electric-delay", state=None, runner=None):
+def switch_agent(running="electric-delay", state=None, runner=None, carla=None):
+    from carla_fake import FakeCarla
+
     world = SwitchWorld(running, state)
     fake = RigLive(switch_config(running))
     runner = runner or FakeRunner()
-    agent = Agent(describe=world.described, run=runner, live=fake, switching=world.switching())
+    world.carla = carla or FakeCarla()
+    agent = Agent(describe=world.described, run=runner, live=fake, switching=world.switching(),
+                  carla=world.carla.carla())
     return agent, fake, world, runner
 
 
@@ -2588,7 +2598,7 @@ def test_a_switch_the_live_operations_can_make_is_made_live_and_verified():
     (state,) = world.written_states
     assert (state["config_name"], state["rig"], state["config"]) == (
         "electric-octave-up", "config/rigs/electric-octave-up.yaml", "/run/rigs/electric-octave-up.json")
-    assert state["pgid"] == 4242 and state["children"] == {"sushi": 4243}, "the same supervisor"
+    assert state["pgid"] == 4242 and state["children"] == {"sushi": 4243, "amp": 4244}, "the same supervisor"
     assert body["applied"] == len(body["plan"]) > 0
     (entry,) = call(agent, "GET", "/live/log")[1]["log"]
     assert entry["op"] == "rig" and entry["args"]["how"] == "live"
@@ -2613,19 +2623,74 @@ def test_a_switch_that_removes_adds_and_moves_reaches_the_next_rigs_chains():
 
 
 def test_a_switch_the_live_operations_cannot_make_restarts_and_says_why():
-    """accustomed to electric-chorus-2: the amp's settings differ, and the amp
-    runs in Carla. A restart, the MIDI switch's: down, then up --rig with the
-    options restart would keep. Sushi is not touched; the state file is the
-    restart's to write."""
-    agent, fake, world, runner = switch_agent("accustomed")
-    status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-chorus-2"})
+    """electric_board to electric-delay: the next rig has an amp and the
+    running one none, and Carla starts, with the patchbay wired through it,
+    only with the rig. A restart, the MIDI switch's: down, then up --rig with
+    the options restart would keep. Sushi is not touched; the state file is
+    the restart's to write."""
+    agent, fake, world, runner = switch_agent("electric_board", state=NO_AMP)
+    status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-delay"})
     assert status == 200 and body["ok"] and body["how"] == "restart", body
     assert [r["code"] for r in body["why"]] == ["amp"]
-    assert runner.calls == [["down"], ["up", "electric-chorus-2", "--rig", "--headless"]]
+    assert runner.calls == [["down"], ["up", "electric-delay", "--rig", "--headless"]]
     assert fake.calls == [] and fake.opened == []
     assert world.written_states == [] and world.written_configs == []
+    assert world.carla.sent == []
     (entry,) = call(agent, "GET", "/live/log")[1]["log"]
-    assert entry["op"] == "rig" and entry["args"] == {"rig": "electric-chorus-2", "how": "restart", "why": ["amp"]}
+    assert entry["op"] == "rig" and entry["args"] == {"rig": "electric-delay", "how": "restart", "why": ["amp"]}
+
+
+def test_a_switch_that_differs_in_the_amps_levels_is_made_live_through_carla():
+    """accustomed to electric-chorus-2: two of Sushi's parameters and the
+    amp's two levels, which once made it a restart. Each amp step is the
+    call POST /amp/parameter makes, after Carla answered; Sushi is read back
+    as for any switch, and nothing is restarted."""
+    agent, fake, world, runner = switch_agent("accustomed")
+    status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-chorus-2"})
+    assert status == 200 and body["how"] == "live", body
+    assert runner.calls == []
+    assert body["counts"] == {"parameter": 2, "amp": 2}
+    assert world.carla.values() == {"Input Lvl": 0.0, "Output Lvl": 6.0}
+    assert world.carla.asked == 2, "Carla was asked whether it answers before each send"
+    status, amp = call(agent, "GET", "/amp")
+    assert status == 200, amp
+    values = {p["name"]: (p["value"], p["source"]) for p in amp["parameters"]}
+    assert values == {"Input Lvl": (0.0, "sent"), "Output Lvl": (6.0, "sent"), "Quality": (1.0, "replayed")}, \
+        "what the steps sent carries over to the next rig's run"
+
+
+def test_a_switch_whose_carla_does_not_answer_restarts_into_the_next_rig():
+    from carla_fake import FakeCarla
+
+    agent, fake, world, runner = switch_agent("accustomed", carla=FakeCarla(answering=False))
+    status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-chorus-2"})
+    assert status == 200 and body["how"] == "restart", body
+    assert [r["code"] for r in body["why"]] == ["failed"]
+    assert "Carla is not answering" in body["why"][0]["detail"]
+    assert runner.calls == [["down"], ["up", "electric-chorus-2", "--rig", "--headless"]]
+    assert world.carla.sent == []
+
+
+def test_a_rig_run_with_no_amp_drops_the_amp_steps_since_a_restart_would_start_none():
+    state = {**HEADLESS, "amp_requested": False, "children": {"sushi": 4243}}
+    agent, fake, world, runner = switch_agent("accustomed", state=state)
+    status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-chorus-2"})
+    assert status == 200 and body["how"] == "live", body
+    assert body["counts"] == {"parameter": 2}
+    assert world.carla.sent == [] and world.carla.asked == 0
+
+
+def test_an_amp_knob_turned_since_is_put_where_the_next_rig_says_by_the_switch():
+    """The plan compares with what the agent last sent, so a level moved
+    through POST /amp/parameter goes back to the next rig's on a switch to a
+    rig whose _amp is the same as the running one's."""
+    agent, fake, world, runner = switch_agent("electric-delay")
+    status, _ = call(agent, "POST", "/amp/parameter", json={"name": "Output Lvl", "value": 3.0})
+    assert status == 200
+    status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-octave-up"})
+    assert status == 200 and body["how"] == "live", body
+    assert body["counts"].get("amp") == 1
+    assert world.carla.values()["Output Lvl"] == -0.4
 
 
 def test_a_switch_whose_reading_back_is_not_the_next_rig_restarts_into_it():
@@ -2759,11 +2824,12 @@ def test_a_switch_whose_restart_fails_brings_the_previous_rig_back_and_says_so()
             return Outcome(True, 0, "", "")
 
     runner = UpOfNextFails()
-    agent, fake, world, _ = switch_agent("accustomed", runner=runner)
+    # A rig with no amp to one with one: a restart.
+    agent, fake, world, _ = switch_agent("electric_board", runner=runner, state=NO_AMP)
     status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-chorus-2"})
     assert status == 409 and not body["ok"] and body["how"] == "restart"
-    assert runner.calls[-1] == ["up", "accustomed", "--rig", "--headless"]
-    assert "Sushi never came up" in body["reason"] and "accustomed was brought back" in body["reason"]
+    assert runner.calls[-1] == ["up", "electric_board", "--rig", "--headless"]
+    assert "Sushi never came up" in body["reason"] and "electric_board was brought back" in body["reason"]
     (entry,) = call(agent, "GET", "/live/log")[1]["log"]
     assert entry["op"] == "rig" and entry["args"]["ok"] is False, "a barrier still: the rig was restarted"
 
@@ -2848,7 +2914,7 @@ def test_a_switch_that_fails_part_way_and_cannot_be_taken_down_is_said_to_be_hal
 
 def test_a_down_that_fails_before_anything_was_applied_is_not_half_switched():
     runner = FakeRunner(Outcome(False, 1, "", "could not stop the running rig"))
-    agent, fake, world, _ = switch_agent("accustomed", runner=runner)
+    agent, fake, world, _ = switch_agent("electric_board", runner=runner, state=NO_AMP)
     status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-chorus-2"})
     assert status == 409 and "half_switched" not in body and "HALF" not in body["reason"]
 

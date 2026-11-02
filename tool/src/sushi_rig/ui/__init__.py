@@ -49,11 +49,31 @@ Decisions are pure and tested (principle 1), in two places:
                        10 s while it fails; a profile that would not load is a
                        problem shown, not a failure)
     GET /library       the plugins' names, the same way
+    GET /amp           with /live, and only when /live is asked: the amp as last
+                       sent to Carla, for the amp card and the stage's amp
+    GET /amp/models    amp/models for the amp card's picker: once, and again after
+                       a model change
 
 and sends POST /live/parameter, /live/bypass, /live/move and /live/undo as
-they happen, and POST /rig/up, /rig/down and /rig/switch from the picker. A
+they happen, POST /amp/parameter from the amp's faders, POST /amp/model from
+its picker, and POST /rig/up, /rig/down and /rig/switch from the rig picker. A
 refusal's `reason` is shown on screen; nothing is reverted without saying
 why.
+
+## The amp
+
+The amp runs in Carla, not Sushi, and what the agent knows of it is what it
+last sent (amp_live.py), so the card says "values are what was last sent,
+not read back", and a value never sent is "not sent", not a default. The
+rack's card (above the channels, since the amp is in front of the board)
+has the model and what it declares, faders for the panel's two parameters,
+Quality shown and not on a fader (amp.PANEL_PARAMETERS says why), and a
+model picker that is a two-step change: choose, then a confirm that says the
+sound cuts out for a moment, since a model change restarts Carla. The lock
+refuses a model change, as it refuses structure. On the stage, only the
+model's name and the output level, and only while the lock is off. With the
+panel running the faders and the picker are off and say why: the panel owns
+the amp then.
 
 /live is not asked while the rig is down (#111): it can only answer 503
 then, and a 503 a second was a console error a second, 110 of them in one
