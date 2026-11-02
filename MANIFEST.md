@@ -1374,3 +1374,37 @@ channels from 0 (the file passes the number through unchanged), and the name
 PipeWire gives Sushi's MIDI input, which the patchbay will need to link the
 pedal; a slow test loads a mapped rig in the container's Sushi to settle
 what `--dummy` accepts. *(2026-11-02)*
+
+**A probe plays through a probe track, never beside the instrument (#81).**
+*Supersedes the 2026-10-31 entry above ("selftest's probes are planned from
+the rig"), which had probes add a link into the track's own input.* The rig
+results of 31 Oct showed why that fails: PipeWire sums two links into one
+input at unity, but Sushi 1.3.0 reads only the first 64 frames of each quantum
+of a doubly-linked input, so at 256 the probe read back at a quarter of its
+level, aligned and with nothing to say so, and the guitar sharing the input
+would have been chopped the same way. `live_paths.py`'s own
+`pipewire_sums_two_links` check reads `false` in all four committed reports for
+this reason. Each probe through Sushi now drives `selftest_probe`, the track
+under test with its engine numbers moved to the lowest ones no track uses and a
+copy of its chain (sends and returns left off, settings read from the running
+processors). For `config/rigs/guitar_vocal.yaml` that is input 2 and outputs
+6/7, for `electric_board` input 1 and outputs 4/5; tests pin both, with and
+without the amp, and hold every committed rig to probing no port a track uses.
+Unlinking the guitar for the probe was the alternative and is rejected: qpwgraph
+reconnects a missing link by itself, which would put the second link back
+mid-probe without a word, and a run killed between unlink and relink leaves a
+silent guitar. The copy's cost is said in the plan rather than hidden: a fault
+only the running instance has, the tracks' own outputs, and the send and return
+into the master (verify's, #88) are not probed, and with the master's chain
+empty the monitor path is not probed twice. The amp cannot be copied — a second
+Carla would pass while the running one is dead, #49's own failure — so its
+probes still go into the amp the guitar plays into and carry `beside`; the "via
+amp" probe links `NAM:Output` into the probe track, the shape of link seen to
+survive qpwgraph on the rig. `crowded_inputs` is the live check the effect runs
+before playing: tested against the `pw-link -l` listing the spike captured. A
+three-channel rig has no free output pair and its chains are listed as not
+probed. Untested, since no PipeWire or soundcard was available: creating and
+removing a track over gRPC in a running Sushi, whether a copied chain sounds as
+its source does, and whether Carla reads all of a doubly-linked `NAM:Input`.
+The effect itself is still unwritten; selftest.py lists what it owes the plan.
+*(2026-11-02)*

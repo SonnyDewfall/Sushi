@@ -885,6 +885,21 @@ its own and through Sushi, both required to add harmonics. What the plan cannot 
 today that includes whether guitar and vocal leak into each other, since both
 come out of bus 0. Linking the ports and capturing needs the rig machine.
 
+**A probe never shares an input with the instrument** (#81). It is played
+through `selftest_probe`, a copy of the chain under test on a Sushi input and
+output the rig leaves free — for `config/rigs/guitar_vocal.yaml`, input 2 and
+outputs 6/7; for `electric_board`, input 1 and outputs 4/5 — so the guitar
+keeps playing through its own track, the player hears nothing, and the guitar's
+noise is not in the measurement. Injecting beside the instrument, as the plan
+used to, measured wrong on the rig: Sushi reads only the first 64 frames of
+each quantum of an input with two links. The listing's `track` line says what
+the copy carries. What the copy cannot see — a fault only the running instance
+has, and the send and return into the master — is listed under NOT CHECKED. The
+amp cannot be copied, so its probes still go into the amp the guitar plays
+into, and say so (`beside guitar-in`): run those with the guitar quiet. A rig
+of three channels fills Sushi's eight outputs and leaves no room for the copy;
+its chains are listed as not probed rather than probed beside the instrument.
+
 **If a URI is absent from `lv2ls`, Sushi cannot load it** regardless of what is
 on disk. That is the single most common failure in this project, and
 `plugins check` is the version of it that fails loudly — it resolves every URI

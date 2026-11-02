@@ -50,6 +50,31 @@ also found that `pw-record --target <id>` silently ignores its target and falls
 back to the default source, which produced a convincing false positive from a
 webcam hearing the monitors — so the capture half, when it lands, links ports by
 hand with `pw-link` and verifies with `pw-link -l`. Both in MANIFEST.md.
+
+## What the live half owes the plan, when it lands
+
+Where to inject is `probes.py`'s, and since #81 it is a probe track beside the
+instrument's rather than the instrument's own input — that module's docstring
+says why. The effect that carries a `ProbePoint` out is **not written and not
+run anywhere**; there is no PipeWire or soundcard where this was decided. What
+it has to do, in order, so the decisions stay true when it exists:
+
+1. Remove any track named `probes.PROBE_TRACK` left by a killed run, and refuse
+   to go on if it cannot.
+2. Create `point.track.to_spec()` in the running Sushi, with each copied
+   processor's parameters, properties, program and bypass read off its
+   `source` — the chain as it is playing.
+3. Make `probes.probe_links(point, stimulus)`, then read `pw-link -l` and
+   refuse the probe if `probes.crowded_inputs` names anything: a second link on
+   a Sushi input is read 64 frames per quantum, so a measurement taken through
+   one is wrong in a way no check below can see.
+4. Capture, then remove the links made and the probe track, in a `finally`.
+   Nothing the rig linked is ever unlinked, so nothing of the rig's needs
+   putting back.
+
+For a point with `beside` set — the amp, which cannot be copied — the player
+hears the stimulus and the instrument is in the capture; the run says so before
+playing it.
 """
 
 from __future__ import annotations

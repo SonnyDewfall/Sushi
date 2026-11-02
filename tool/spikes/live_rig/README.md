@@ -121,7 +121,7 @@ same client. **Pass:** every value under `checks` is true.
 | `send_costs_nothing` | The master is exactly as late as the stems live. Offline it was 0 samples; live it depends on Sushi running every track on one thread. |
 | `port_to_port_samples` | About one quantum. Measured against this client's own loopback, a different reference path from October's 257 (pw-record), so a one-sample difference is the path, not Sushi. Record whatever it is. |
 | `separate_channels` | Noise in the guitar's input is not in the vocal's stem. |
-| `pipewire_sums_two_links` | Two links into one input are summed. `probes.py` assumes this. |
+| `pipewire_sums_two_links` | Two links into one input are summed. Read `false` on 31 Oct 2026: PipeWire sums, but Sushi reads only 64 frames of each quantum of a doubly-linked input. `probes.py` no longer relies on it (2026-11-02): a probe plays through a probe track on an input nothing else feeds. |
 | `all_gains_as_expected` | Every path at the gain the docstring's table predicts. |
 
 Run it three times and record all three. Read `sushi.log`, whose path is in
