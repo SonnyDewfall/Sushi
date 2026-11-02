@@ -797,3 +797,364 @@ def test_restart_brings_back_the_rig_the_state_file_names_after_a_live_switch(wo
     outcome = run(go())
     assert outcome.ok and outcome.stdout.startswith("Restarting u...\nStopping u (headless mode)...")
     assert [a["config_name"] for a in world.asked] == ["t", "u"]
+
+
+# --------------------------------------------------------------------------- #
+# The amp alone: Carla stopped and started again inside the held group
+# --------------------------------------------------------------------------- #
+#
+# Carla is a stand-in that starts a helper of its own and sleeps, so that
+# "stopped by its pid, with what it started" is the kernel's answer. The
+# project file is real; what Carla would make of it is not shown.
+
+CARLA = [sys.executable, "-c",
+         "import subprocess, sys, time; "
+         "subprocess.Popen([sys.executable, '-c', 'import time; time.sleep(60)']); time.sleep(60)"]
+
+
+class Carlas(Spawner):
+    """A Spawner whose Carla (`pw-jack carla ...`; Sushi is under pw-jack
+    too) is each of `carlas` in turn, the last one for ever after."""
+
+    def __init__(self, carlas):
+        super().__init__()
+        self.carlas = list(carlas)
+
+    def __call__(self, command, *, cwd, env, log, process_group):
+        command = list(command)
+        if command[:2] == ["pw-jack", "carla"]:
+            script = self.carlas.pop(0) if len(self.carlas) > 1 else self.carlas[0]
+            self.asked.append((command, process_group))
+            proc = supervisor_module._spawn(script, cwd=cwd, env=env, log=log, process_group=process_group)
+            self.started.append(proc)
+            return proc
+        return super().__call__(command, cwd=cwd, env=env, log=log, process_group=process_group)
+
+    def carla_starts(self):
+        return [command for command, _ in self.asked if command[:2] == ["pw-jack", "carla"]]
+
+
+@pytest.fixture
+def amp_world(world, runtime):
+    """`world`, with a rig that has an amp: its project in the runtime dir,
+    planned as `plan_children` plans it, and `replays` recording each
+    `replay_amp` (`replay_fails` says how many raise first)."""
+    from sushi_rig.supervisor import child_pids
+
+    runtime.mkdir(parents=True, exist_ok=True)
+    project = runtime / "amp.carxp"
+    project.write_text("<old project/>")
+    world.project = project
+    world.replays = []
+    world.replay_fails = 0
+    world.spawner = Carlas([CARLA])
+
+    def replay(values):
+        world.replays.append(dict(values))
+        if world.replay_fails > 0:
+            world.replay_fails -= 1
+            raise RuntimeError("Carla's OSC server never came up")
+
+    def launch(name="t", *, headless=True, tuner=False, **over):
+        plan = plan_children(world.root, world.root / "config" / "t.json", None, headless=headless, tuner=tuner,
+                             amp_project=project, amp_model="amp/models/Old.nam", amp_values={"Output Lvl": 6.0})
+        fields = dict(
+            root=world.root, config_name=name, config=world.root / "config" / "t.json", children=plan,
+            headless=headless, amp_model="amp/models/Old.nam", amp_values={"Output Lvl": 6.0},
+            tuner_requested=tuner, amp_requested=True, amp_model_requested=None, rig_source=None,
+            machine_file=None)
+        fields.update(over)
+        return Launch(**fields)
+
+    def start_qpwgraph(child, root, env, logs, process_group=None):
+        return world.spawner(child["command"], cwd=root, env=env, log=logs / "qpwgraph.log",
+                             process_group=process_group)
+
+    world.state["launch"] = launch
+    world.world = dataclasses.replace(world.world, spawn=world.spawner, replay_amp=replay,
+                                      start_qpwgraph=start_qpwgraph)
+    world.child_pids = child_pids
+    yield world
+    for proc in world.spawner.started:
+        try:
+            os.killpg(proc.pid, signal.SIGKILL) if os.getpgid(proc.pid) == proc.pid else proc.kill()
+        except (ProcessLookupError, PermissionError):
+            pass
+        try:
+            proc.wait(timeout=5)
+        except subprocess.TimeoutExpired:
+            pass
+
+
+def test_the_amp_alone_is_restarted_on_a_new_project_in_the_held_group(amp_world):
+    world = amp_world
+    supervisor = Supervisor(world.world, say=lambda m: None)
+
+    async def go():
+        assert (await supervisor.up("t", headless=True)).ok
+        held = supervisor.held
+        before = {name: child.proc.pid for name, child in held.children.items()}
+        await settle_until(lambda: world.child_pids(before["amp"]))
+        helper = world.child_pids(before["amp"])
+        result = await supervisor.restart_amp(
+            "<new project/>", {"Output Lvl": 3.0}, model="amp/models/New.nam", override="New.nam")
+        await asyncio.sleep(0.2)  # long enough for the watch to have seen any exit
+        after = {name: child.proc.pid for name, child in held.children.items()}
+        groups = {os.getpgid(pid) for pid in after.values()}
+        alive = {name: held.children[name].proc.poll() is None for name in after}
+        recorded = state_file.read_state()
+        crashed = list(supervisor.crashed)
+        described = supervisor.describe()
+        await supervisor.down()
+        return result, before, after, helper, groups, alive, recorded, crashed, described, held
+
+    result, before, after, helper, groups, alive, recorded, crashed, described, held = run(go())
+    assert result.ok and result.pid == after["amp"], result
+    assert after["amp"] != before["amp"], "a new Carla"
+    assert {n: p for n, p in after.items() if n != "amp"} == {n: p for n, p in before.items() if n != "amp"}, \
+        "nothing else was restarted: Sushi and qpwgraph kept their pids"
+    assert all(alive.values()), "and everything was running afterwards"
+    assert groups == {held.pgid}, "the new Carla is in the held group"
+    from sushi_rig.supervisor import running
+
+    assert not running(before["amp"]) and not any(running(pid) for pid in helper), \
+        "the old Carla and the helper it started are gone (a zombie is gone: CI runs as pid 1)"
+    assert world.project.read_text() == "<new project/>"
+    assert world.replays == [{"Output Lvl": 6.0}, {"Output Lvl": 3.0}], "up's replay, then the restart's"
+    assert world.spawner.carla_starts() == [["pw-jack", "carla", "-n", str(world.project)]] * 2, \
+        "Carla started by the planned command, twice"
+    assert crashed == [], "the stop was the restart's, not a crash"
+    assert described["holds"]["children"]["amp"] == {"pid": after["amp"], "running": True, "returncode": None}
+    assert recorded["children"]["amp"] == after["amp"]
+    assert (recorded["amp_model"], recorded["amp_model_requested"]) == ("amp/models/New.nam", "New.nam")
+    assert rig.restart_arguments(recorded)[1]["amp_model"] == "New.nam", "restart keeps the model"
+    assert held.launch.amp_model_requested == "New.nam"
+
+
+def test_a_new_model_that_does_not_come_up_puts_the_previous_one_back(amp_world):
+    world = amp_world
+    supervisor = Supervisor(world.world, say=lambda m: None)
+
+    async def go():
+        assert (await supervisor.up("t", headless=True)).ok
+        world.replay_fails = 1
+        result = await supervisor.restart_amp(
+            "<new project/>", {"Output Lvl": 3.0}, model="amp/models/New.nam", override="New.nam")
+        await asyncio.sleep(0.2)
+        recorded = state_file.read_state()
+        crashed = list(supervisor.crashed)
+        amp = supervisor.held.children["amp"].proc
+        running = amp.poll() is None
+        await supervisor.down()
+        return result, recorded, crashed, amp.pid, running
+
+    result, recorded, crashed, pid, running = run(go())
+    assert not result.ok and result.restored is True and "never came up" in result.reason
+    assert running and result.pid == pid
+    assert world.project.read_text() == "<old project/>", "the previous model's project, back"
+    assert len(world.spawner.carla_starts()) == 3, "up's, the new model's, the previous one's"
+    assert recorded["children"]["amp"] == pid
+    assert (recorded["amp_model"], recorded["amp_model_requested"]) == ("amp/models/Old.nam", None)
+    assert crashed == []
+
+
+def test_a_carla_that_exits_on_its_new_model_is_said_and_the_previous_one_comes_back(amp_world):
+    world = amp_world
+    world.spawner.carlas = [CARLA, crasher(1, after=0.0), CARLA]
+
+    def slow_replay(values):
+        world.replays.append(dict(values))
+        time.sleep(0.3)  # long enough for the stand-in to have exited
+
+    world.world = dataclasses.replace(world.world, replay_amp=slow_replay)
+    supervisor = Supervisor(world.world, say=lambda m: None)
+
+    async def go():
+        assert (await supervisor.up("t", headless=True)).ok
+        result = await supervisor.restart_amp("<new/>", {}, model="amp/models/New.nam", override="New.nam")
+        crashed = list(supervisor.crashed)
+        await supervisor.down()
+        return result, crashed
+
+    result, crashed = run(go())
+    assert not result.ok and result.restored is True
+    assert "Carla exited as it started (status 1)" in result.reason and "amp.log" in result.reason
+    assert crashed == []
+
+
+def test_an_amp_that_comes_back_on_neither_model_is_a_problem_said_loudly(amp_world):
+    world = amp_world
+    lines = []
+    supervisor = Supervisor(world.world, say=lines.append)
+
+    async def go():
+        assert (await supervisor.up("t", headless=True)).ok
+        world.replay_fails = 2
+        result = await supervisor.restart_amp("<new/>", {}, model="amp/models/New.nam", override="New.nam")
+        await asyncio.sleep(0.2)
+        described = supervisor.describe()
+        await supervisor.down()
+        return result, described
+
+    result, described = run(go())
+    assert not result.ok and result.restored is False and "NO AMP" in result.reason
+    assert [p["kind"] for p in described["problems"]] == ["no_amp"]
+    assert described["crashed"] == [], "a problem, said once, not a crash too"
+    assert any("NO AMP" in line for line in lines)
+    assert world.project.read_text() == "<old project/>"
+
+
+def test_the_amp_is_restarted_only_in_a_rig_this_agent_holds_and_that_has_one(amp_world):
+    world = amp_world
+    supervisor = Supervisor(world.world, say=lambda m: None)
+    result = run(supervisor.restart_amp("<new/>", {}, model="m", override="m"))
+    assert not result.ok and result.restored is None and "does not hold a running rig" in result.reason
+    assert result.code == "not_held"
+
+    no_amp = world.state["launch"]
+    world.state["launch"] = lambda name="t", **kw: dataclasses.replace(
+        no_amp(name, **kw), children=plan_children(world.root, world.root / "config" / "t.json", None,
+                                                   headless=True, tuner=False))
+
+    async def go():
+        assert (await supervisor.up("t", headless=True)).ok
+        result = await supervisor.restart_amp("<new/>", {}, model="m", override="m")
+        await supervisor.down()
+        return result
+
+    result = run(go())
+    assert not result.ok and result.restored is None and "no amp" in result.reason
+    assert result.code == "no_amp"
+    assert world.project.read_text() == "<old project/>"
+
+
+def test_post_amp_model_restarts_carla_alone_through_the_agent(amp_world, tmp_path):
+    """The agent's route, with the real supervisor and a real state file:
+    the model changes, Sushi keeps its pid, and the state file says what
+    `restart` will bring back."""
+    pytest.importorskip("aiohttp")
+    import json
+
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from sushi_rig.agent import Agent
+
+    from carla_fake import FakeCarla
+
+    world = amp_world
+    models = world.root / "amp" / "models"
+    models.mkdir(parents=True)
+    for name in ("Old", "New"):
+        (models / f"{name}.nam").write_text(json.dumps(
+            {"architecture": "WaveNet", "sample_rate": 48000, "config": {"layers": []}, "weights": [],
+             "metadata": {"name": name}}))
+    carla = FakeCarla()
+    supervisor = Supervisor(world.world, say=lambda m: None)
+    agent = Agent(root=world.root, supervisor=supervisor, carla=carla.carla())
+
+    async def go():
+        async with TestClient(TestServer(agent.app())) as client:
+            assert (await client.post("/rig/up", json={"config_name": "t", "headless": True})).status == 200
+            sushi = supervisor.held.children["sushi"].proc.pid
+            knob = await client.post("/amp/parameter", json={"name": "Output Lvl", "value": 2.0})
+            assert knob.status == 200, await knob.text()
+            changed = await client.post("/amp/model", json={"model": "New.nam"})
+            body = await changed.json()
+            amp = await (await client.get("/amp")).json()
+            health = await (await client.get("/health")).json()
+            same = supervisor.held.children["sushi"].proc.pid == sushi
+            await client.post("/rig/down")
+            agent._executor.shutdown(wait=True)
+            return changed.status, body, amp, health, same
+
+    status, body, amp, health, same = run(go())
+    assert status == 200 and body["changed"], body
+    assert same, "Sushi was not restarted"
+    assert world.replays[-1] == {"Output Lvl": 2.0}, "the knob as last sent, replayed to the new Carla"
+    assert amp["model"]["name"] == "New" and amp["held"] is True
+    assert health["rig"]["amp_model"] == "amp/models/New.nam"
+    assert health["rig"]["children"]["amp"]["pid"] == body["pid"]
+    assert health["agent"]["supervisor"]["crashed"] == []
+
+
+def test_after_a_live_switch_the_new_model_is_recorded_into_the_switched_rig_not_the_one_up_started(amp_world):
+    """A live switch rewrites the state file to the next rig; the held launch
+    is still the rig `up` started. The model goes into the run as it is now:
+    the switch's config, name and start, so `restart` brings back the rig
+    that is playing and the agent does not reseed the amp (review)."""
+    world = amp_world
+    supervisor = Supervisor(world.world, say=lambda m: None)
+
+    async def go():
+        assert (await supervisor.up("t", headless=True)).ok
+        switched = {**state_file.read_state(), "config_name": "u", "config": "/run/rigs/u.json",
+                    "rig": "config/rigs/u.yaml", "switched_at": "later"}
+        state_file.write_state(switched)
+        result = await supervisor.restart_amp("<new/>", {}, model="amp/models/New.nam", override="New.nam")
+        recorded = state_file.read_state()
+        await supervisor.down()
+        return switched, result, recorded
+
+    switched, result, recorded = run(go())
+    assert result.ok, result
+    assert {k: v for k, v in recorded.items() if k not in ("children", "amp_model", "amp_model_requested")} == \
+        {k: v for k, v in switched.items() if k not in ("children", "amp_model", "amp_model_requested")}
+    assert recorded["config"] == "/run/rigs/u.json" and recorded["started_at"] == switched["started_at"]
+    assert rig.restart_arguments(recorded)[0] == "u"
+
+
+@pytest.mark.parametrize("how, code", [("gone", "no_state"), ("another", "no_state"), ("project", "project_unreadable")])
+def test_a_restart_that_could_not_be_recorded_or_put_back_is_refused_with_carla_untouched(amp_world, how, code):
+    world = amp_world
+    supervisor = Supervisor(world.world, say=lambda m: None)
+
+    async def go():
+        assert (await supervisor.up("t", headless=True)).ok
+        pid = supervisor.held.children["amp"].proc.pid
+        if how == "gone":
+            state_file.clear_state()
+        elif how == "another":
+            state_file.write_state({**state_file.read_state(), "pgid": 1234})
+        else:
+            world.project.unlink()
+        result = await supervisor.restart_amp("<new/>", {}, model="m", override="m")
+        same = supervisor.held.children["amp"].proc.pid == pid and supervisor.held.children["amp"].proc.poll() is None
+        await supervisor.down()
+        return result, same
+
+    result, same = run(go())
+    assert not result.ok and result.restored is None and result.pid is None and result.code == code, result
+    assert same, "Carla was not touched"
+    assert len(world.spawner.carla_starts()) == 1
+
+
+def test_the_restart_reads_and_writes_its_files_off_the_event_loop(amp_world, monkeypatch):
+    world = amp_world
+    supervisor = Supervisor(world.world, say=lambda m: None)
+    seen = []
+    for name in ("read_state", "write_state"):
+        original = getattr(supervisor_module, name)
+
+        def watched(*args, _original=original, _name=name):
+            seen.append((_name, threading.current_thread() is threading.main_thread()))
+            return _original(*args)
+
+        monkeypatch.setattr(supervisor_module, name, watched)
+
+    async def go():
+        assert (await supervisor.up("t", headless=True)).ok
+        # The watch names a rig by reading the state file when a child exits
+        # (`_running_name`), as it always has; the old Carla's exit is one.
+        # That is the watch's read, not the restart's, and is set aside here.
+        supervisor._running_name = lambda held: "t"
+        seen.clear()
+        result = await supervisor.restart_amp("<new/>", {}, model="m", override="m")
+        calls = list(seen)
+        await supervisor.down()
+        return result, calls
+
+    result, calls = run(go())
+    assert result.ok
+    restart_io = [c for c in calls if c[0] in ("read_state", "write_state")]
+    assert ("write_state", False) in restart_io
+    assert all(not on_loop for _, on_loop in restart_io), restart_io

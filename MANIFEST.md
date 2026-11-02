@@ -2422,3 +2422,100 @@ page reads /health), and `rig_load`'s alias is gone. With #114's
 needs `os._exit` to dodge elkpy's teardown noise: it exits normally and asserts
 the child printed nothing else, stable over five runs here. Fast suite 2736 ->
 2746 passed. Still NOT VERIFIED on the rig. *(2026-11-02)*
+
+**The amp from the web UI (agent, rig switch, UI).** The first of three: change
+the amp from the page; save and record follow, and save will read the amp
+state this keeps. (1) **The agent holds the amp's live state**
+(`amp_live.py`): what it last sent Carla for each parameter, seeded per run of
+the rig (group, start, config) from the running config's `_amp` as `up`
+replays it, and the model the state file says ran. `GET /amp` answers the
+model (path, and `summarise_model`'s description) and each parameter with
+value, range, unit and `panel`, under `known: "sent"`; a value the config does
+not state is `null`, not a default. `GET /amp/models` lists amp/models with
+each model's rate, refusing (`usable: false`) one at another rate as `doctor`
+faults it. (2) **`POST /amp/parameter {name, value}`** sends through
+`parameter_message`; unknown names are 400, out-of-range values clamped and
+said (`clamped`). Carla answering is decided as a TCP connection to its OSC
+port before each UDP send (Carla serves OSC on both; `rig._replay_amp` waits on
+the same thing): refused, it is 502 `carla_not_answering` and nothing is
+recorded. That proves a listener, not that the value took. Each change is in
+the live log (op `amp`); `/live/undo` puts back the previous value through the
+same call, and stale detection compares only with what was last sent (a later
+send, a restart's replay), never with Carla. (3) **`POST /amp/model {model}`
+restarts Carla alone** (`Supervisor.restart_amp`): the project is rewritten,
+Carla stopped by its pid and what it started (never the group, which is the
+whole rig), started again through `rig.start_child` (factored out of
+`start_children`, the one way a planned child starts) into the held group, its
+knobs replayed by `World.replay_amp`, the patchbay's links checked; a model
+that does not come up has the previous project put back and started the same
+way, and one that comes back on neither is a `no_amp` problem in /health. Its
+exit is the restart's, not a crash (`Held.restarting`). Refused while a
+lifecycle command runs (`busy: "amp_model"`), for a model at another rate
+(`wrong_rate`), a path from a remote caller (`MODEL_NAME`), or a rig this agent
+did not start (`not_held`). The state file records the model as an override
+(`amp_restarted_state`), so `restart` keeps it; choosing the config's own
+model again records none. The sound stopping is said in the answer, on stderr
+and in the page's confirm. Undo restarts Carla on the model before. (4) **Rig
+switch: amp parameters are live steps** (`rigfile._amp_plan`, op `amp`, sent
+by the call `/amp/parameter` makes, after Sushi's parameters), compared with
+what the agent last sent when the agent passes it in the reading. A model
+change, or an amp on one side only, **stays a restart reason**: Carla is
+started with the patchbay wired through it only with the rig, and a Carla
+restart cannot be verified by reading back as the switch verifies Sushi, so
+it does not fit verify-then-commit. An amp parameter the next rig leaves
+unstated, or cannot send, is a restart rather than a guessed default. 26 of
+110 committed pairs were live; 72 are now (of the 38 that restart, 36 have an
+amp on one side only, 20 other tracks). (5) **The panel owns the amp while it runs**: GET /amp says
+`known: "panel"` and every write is 409 `panel`. Chosen over forwarding the
+listener's amp messages to the agent: that adds a channel from the listener to
+the agent for a mode the page never starts, and the listener would still keep
+its own record for SAVE, two records again. (6) **UI**: an amp card above the
+rack's channels (model, description, Input and Output faders in dB, Quality
+shown and not on a fader, a model picker behind a confirm that says the sound
+cuts out, refused while locked) and, on the stage, the model and the output
+level only, hidden while locked. Tested in Chromium against `ui_fake.UiAmp`
+(the agent's real amp routes over a FakeCarla and invented models). Fast suite
+2746 -> 2850 passed, 27 skipped as before. **NOT RUN AGAINST A REAL CARLA**:
+that the TCP probe at fader rates is harmless to Carla's liblo server, that a
+Carla stopped by SIGINT releases its JACK client and OSC port before the next
+starts, how long the restart silences the amp, that qpwgraph rewires the new
+Carla's ports, and that a model change sounds as `up` on that model would.
+*(2026-11-02)*
+
+**The amp from the web UI: answering review.** Ten findings, each with a test.
+(1) **A rig up with `--no-amp` restarted for an amp that was not running**:
+`_amp_plan` still made a model or an amp on one side a restart reason, and the
+agent only dropped amp steps from a plan. `rigfile.diff(..., amp_off=True)` now
+leaves both rigs' `_amp` out entirely, before and during the live attempt, so
+such a rig switches live to one with another model or none. (2) **The panel
+rule**: the agent refused writes only for `mode == "panel"`, so a state file
+with no mode let it write beside a panel. One function, `rig.runs_panel`
+(anything but "headless"), now serves `state_blockers`, `restart_arguments`
+and the amp. (3) **The amp faders' updaters leaked** into the rack's list on
+every amp-region rebuild: the region keeps its own (`ampUpdaters`), emptied as
+it rebuilds; a browser test holds the count flat over five pick-and-cancels.
+(4) **A model change after a live switch recorded the rig `up` started**
+(`held.provisional()`, a fresh `started_at`): `restart_amp` now reads the state
+file before touching Carla, refuses (`no_state`) when it does not name the held
+group, and writes the new model into the run as it is, the switch's config
+included. (5) **Every refusal was `not_held`**: `AmpRestart.code` says which
+(`not_held`, `no_amp`, `project_unreadable`, `no_state`; `would_not_stop`,
+`did_not_start` for failures) and the agent answers with it. (6) The project
+read and the state file's read and write are off the event loop. (7) **A TCP
+probe and a new UDP client per send**: one client per Carla run (its pid),
+dropped on a new run or a failed send; the probe on the first send to a run,
+after any failure, and at most every `PROBE_EVERY` (2 s) otherwise. Every send
+still checks Carla's process is alive, so what a quiet interval can miss is a
+Carla alive whose OSC went silent, for at most 2 s. (8) GET /amp keeps its
+model view per (run, model) instead of reading the model on every poll. (9)
+**A model was compared as written**: `_amp_plan` compares it as a file with
+`amp_live.same_model` from the checkout's root, so one `.nam` by a relative and
+an absolute path is no restart. (10) **amp/models was listed once**: the page
+lists it again every 30 s. Still **NOT RUN AGAINST A REAL CARLA**. *(2026-11-02)*
+
+**python-osc joins the agent extra.** CI's fast job installs `agent` but not
+`live`, and two of the amp tests failed there for want of `pythonosc`: the
+agent now sets the amp in Carla over OSC itself (`amp_live.Carla`), so the
+agent needs python-osc as much as the listener does. Missing, the agent still
+refuses an amp write with a sentence rather than failing to start; the
+sentence now names the agent extra. *(2026-11-02)*

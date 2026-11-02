@@ -645,6 +645,47 @@ def spawn_child(command: list[str], *, cwd: Path, env: dict[str, str], log: Path
                                 stdout=sink, stderr=sink)
 
 
+def start_child(
+    child: dict[str, Any], *, root: Path, env: dict[str, str], logs: Path,
+    spawn: Callable[..., subprocess.Popen],
+) -> tuple[subprocess.Popen, Path]:
+    """Start one planned child (not qpwgraph, which has its own retries):
+    its process and its log, `logs/<name>.log`. `OSError` if it cannot be
+    started. The one way a planned child is started, by `start_children` and
+    by the agent's Carla-only restart (`Supervisor.restart_amp`), so the amp
+    comes back with exactly the command and environment `up` gave it."""
+    log = logs / f"{child['name']}.log"
+    return spawn(child["command"], cwd=root, env=child_environment(env, child), log=log), log
+
+
+def amp_project_of(children: list[dict[str, Any]]) -> Path | None:
+    """The Carla project the planned amp child loads (the last argument of
+    `carla -n <project>`, as `plan_children` builds it), or None for a plan
+    with no amp. Pure."""
+    for child in children:
+        if child.get("name") == "amp":
+            command = list(child.get("command") or [])
+            return Path(command[-1]) if len(command) > 1 else None
+    return None
+
+
+def amp_restarted_state(
+    state: dict[str, Any], *, model: str, override: str, pid: int,
+) -> dict[str, Any]:
+    """The state file after the amp alone was restarted on another model (the
+    agent's POST /amp/model): the new Carla's pid, the model that runs
+    (`amp_model`, prepare's form), and the override as `restart` brings it
+    back (`amp_model_requested`, a name in amp/models or an absolute path,
+    as `--amp-model` takes it). Everything else as it was. Pure.
+
+    Recorded as an override because that is what it is: the rig's own config
+    still names its own model, and `restart` (`restart_arguments`) would load
+    that one again without it, silently undoing a change the player made."""
+    children = dict(state.get("children") or {})
+    children["amp"] = pid
+    return {**state, "children": children, "amp_model": model, "amp_model_requested": override}
+
+
 def start_children(
     launch: "Launch",
     *,
@@ -702,9 +743,8 @@ def start_children(
                 return procs, problems, "abandoned"
             continue
         step(f"starting {name}")
-        log = logs / f"{name}.log"
         try:
-            proc = spawn(child["command"], cwd=root, env=child_environment(env, child), log=log)
+            proc, log = start_child(child, root=root, env=env, logs=logs, spawn=spawn)
         except OSError as exc:
             if child["optional"]:
                 problems.append(f"{name} did not start ({exc})")
@@ -1356,6 +1396,15 @@ def _clear_state_of(pgid: Any) -> None:
         clear_state()
 
 
+def runs_panel(state: dict[str, Any]) -> bool:
+    """Whether the rig a state file describes runs with its panel (and the
+    panel's listener, which writes to Carla itself). Anything but an explicit
+    "headless" is the panel: `up`'s default, and the safe reading of a state
+    file that does not say. The one rule for `restart_arguments`, the live
+    switch's `state_blockers` and the agent's amp (amp_live.amp_problem). Pure."""
+    return state.get("mode") != "headless"
+
+
 def restart_arguments(state: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     """What `up` should be called with to bring back the rig `state` describes.
 
@@ -1381,7 +1430,7 @@ def restart_arguments(state: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     tuner = state.get("tuner_requested")
     amp = state.get("amp_requested")
     return state.get("config_name", DEFAULT_CONFIG_NAME), {
-        "headless": state.get("mode") == "headless",
+        "headless": not runs_panel(state),
         "tuner": tuner if isinstance(tuner, bool) else "fmit" in children,
         "amp": amp if isinstance(amp, bool) else "amp" in children,
         "amp_model": state.get("amp_model_requested") or None,

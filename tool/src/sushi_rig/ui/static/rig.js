@@ -279,7 +279,11 @@ const trackOf = (live, processor) => {
 // was trimmed past the rig's start, so the list may be short. Entries before
 // the last rig switch, or older than the rig's start (a restart reloads its
 // file), are another rig's.
-export function unsavedChanges(logAnswer, live, rig) {
+//
+// The amp's changes (op "amp" and "amp_model") are compared with `amp`, GET
+// /amp's answer: what the agent last sent Carla, which is all there is to
+// compare with (amp_live.py). Without one they are left out, not guessed.
+export function unsavedChanges(logAnswer, live, rig, amp = null) {
   const log = (logAnswer && logAnswer.log) || [];
   const first = (logAnswer && logAnswer.first) || 0;
   let start = 0;
@@ -306,6 +310,8 @@ export function unsavedChanges(logAnswer, live, rig) {
       if (t) note(`c\u0000${t}`, "chain", { track: t }, e.previous, e);
     } else if (op === "add") note(`c\u0000${a.track}`, "chain", { track: a.track }, e.previous, e);
     else if (op === "remove" && e.previous && e.previous.track) note(`c\u0000${e.previous.track}`, "chain", { track: e.previous.track }, e.previous.chain, e);
+    else if (op === "amp") note(`a\u0000${a.name}`, "amp", { name: a.name }, e.previous, e);
+    else if (op === "amp_model") note("m", "amp_model", {}, e.previous, e);
   }
   const items = [];
   for (const item of keys.values()) {
@@ -318,6 +324,13 @@ export function unsavedChanges(logAnswer, live, rig) {
       if (!p) continue;
       const now = p.bypassed ?? null;
       if (now !== item.from) items.push({ ...item, to: now });
+    } else if (item.kind === "amp") {
+      const now = ampValueOf(amp, item.name);
+      if (now === null) continue; // no amp read: not said either way
+      if (!isNumber(item.from) || Math.abs(now - item.from) > TOLERANCE) items.push({ ...item, to: now });
+    } else if (item.kind === "amp_model") {
+      const now = amp && amp.model ? amp.model.stored : null;
+      if (now !== null && now !== item.from) items.push({ ...item, to: now });
     } else {
       const now = live && live.tracks ? live.tracks[item.track] : undefined;
       if (now && !sameChain(now, item.from)) items.push({ ...item, to: [...now] });
@@ -356,6 +369,8 @@ export function describeEntry(entry) {
     case "move": return `move ${a.processor} ${a.direction}`;
     case "add": return `add ${a.name}`;
     case "remove": return `remove ${a.processor}`;
+    case "amp": return `amp · ${a.name}`;
+    case "amp_model": return `amp model ${modelName(a.model)}`;
     default: return entry.op;
   }
 }
@@ -399,6 +414,7 @@ export function rigStatus(health, live) {
   const rig = health.body.rig || {};
   const agent = health.body.agent || {};
   const name = rig.config_name || "rig";
+  if (agent.busy === "amp_model") return { tone: "busy", title: name, detail: "The amp is restarting on another model: its sound is cut until it is back", measured: false };
   if (agent.busy) return { tone: "busy", title: name, detail: `${agent.busy} is running`, measured: false };
   if (!rig.running) return { tone: "off", title: "Rig down", detail: rig.message || rig.verdict || "not running", measured: false };
   if (live && !live.ok) return { tone: "down", title: name, detail: `Up, but Sushi did not answer: ${live.reason}`, measured: false };
@@ -572,8 +588,119 @@ export function lifecycleOutcome(op, name, answer) {
 const STRUCTURAL = { move: "reordering", add: "adding a plugin", remove: "removing a plugin" };
 
 export function lockRefusal(locked, op) {
+  if (locked && op === "amp_model") {
+    return "Locked: changing the amp's model cuts the sound while the amp restarts, which the lock refuses. Unlock to change it.";
+  }
   if (!locked || !(op in STRUCTURAL)) return null;
   return `Locked: ${STRUCTURAL[op]} changes the rig's structure, which the lock refuses. Unlock to edit it.`;
+}
+
+// ---------------------------------------------------------------- the amp
+// GET /amp is what the agent last SENT Carla (amp_live.py): Carla cannot be
+// read back, so nothing here says what the amp "is at", only what was sent,
+// and a value never sent is said as not sent rather than as a default.
+
+export const MODEL_WARNING = "Changing the model restarts the amp: the sound cuts out for a moment while it does. The rest of the rig keeps playing.";
+const QUALITY_NOTE = "not on a fader: it trades CPU for accuracy (a lite or a full path), not tone";
+
+export function modelName(stored) {
+  if (typeof stored !== "string" || !stored) return "none";
+  return stored.split("/").pop().replace(/\.nam$/, "");
+}
+
+export function ampValueOf(amp, name) {
+  const p = amp && (amp.parameters || []).find((x) => x.name === name);
+  return p && isNumber(p.value) ? p.value : null;
+}
+
+// A value in the parameter's own unit: a decimal for dB's -20 to +20, two
+// for Quality's 0 to 1, as panel.py's readout chooses by span.
+export function ampText(param, v) {
+  if (!isNumber(v)) return "not sent";
+  const span = isNumber(param.max) && isNumber(param.min) ? param.max - param.min : 1;
+  let text = v.toFixed(span >= 10 ? 1 : 2);
+  if (/^-0(\.0+)?$/.test(text)) text = text.slice(1);
+  return minus(text) + (param.unit ? " " + param.unit : "");
+}
+
+// What the rack's amp card shows (`answer` is GET /amp's, `models` GET
+// /amp/models's, both {ok, status, body, reason, code} or null). `state`:
+// "hidden" (no rig, or one changing), "none" (a rig with no amp, said why),
+// "failed" (the read failed, said why), "up". Faders for the panel
+// parameters, Quality shown and not on one; and the model picker, with why
+// it cannot be used when it cannot.
+export function ampCard(answer, models, { locked = false, pending = null } = {}) {
+  if (!answer) return { state: "hidden" };
+  if (!answer.ok) {
+    if (answer.code === "no_rig" || answer.code === "busy") return { state: "hidden" };
+    if (answer.code === "no_amp") return { state: "none", why: answer.reason };
+    return { state: "failed", why: answer.reason };
+  }
+  const b = answer.body;
+  const panel = b.known === "panel";
+  const down = !!(b.carla && b.carla.alive === false);
+  const writable = !panel && !down;
+  const params = b.parameters || [];
+  const faders = params.filter((p) => p.panel).map((p) => ({
+    name: p.name, label: p.name, min: p.min, max: p.max, unit: p.unit,
+    step: isNumber(p.max) && isNumber(p.min) && p.max - p.min >= 10 ? 0.1 : 0.01, disabled: !writable,
+  }));
+  const shown = params.filter((p) => !p.panel).map((p) => ({
+    name: p.name, text: ampText(p, p.value), note: p.name === "Quality" ? QUALITY_NOTE : null,
+  }));
+  const model = b.model ? {
+    name: b.model.name, stored: b.model.stored, description: b.model.description || null,
+    problem: b.model.problem || null, warning: b.model.warning || null,
+  } : null;
+  const listed = models && models.ok ? models.body.models : [];
+  const options = listed.map((m) => ({
+    model: m.model, playing: !!m.playing, usable: !!m.usable && !m.playing,
+    label: m.name + (m.playing ? " (playing)" : !m.usable ? " (cannot be played here)" : ""),
+    why: m.why || null,
+  }));
+  let why = null;
+  if (panel) why = "The panel is running and owns the amp: change it there, or run the rig headless.";
+  else if (down) why = "Carla is not running, so the amp cannot be changed: restart the rig.";
+  else if (!b.held) why = "This agent did not start the running rig, so it cannot restart the amp alone: start the rig from here to change its model.";
+  else if (locked) why = lockRefusal(true, "amp_model");
+  else if (pending) why = `Loading ${modelName(pending)}…`;
+  else if (models && !models.ok) why = `amp/models could not be listed: ${models.reason}`;
+  return {
+    state: "up", known: b.known, note: b.known_note, panel, down, model, faders, shown,
+    override: b.override || null,
+    picker: { options, canChange: !why, why, warning: MODEL_WARNING },
+  };
+}
+
+// The stage screen's amp: the model's name and the output level, nothing
+// else, and only while the lock is off (app.js hides it while locked, as it
+// hides the rig picker). Null when there is no amp to show.
+export function stageAmp(answer) {
+  const card = ampCard(answer, null);
+  if (card.state !== "up") return null;
+  const output = card.faders.find((f) => f.name === "Output Lvl") || null;
+  return { name: card.model ? card.model.name : "no model", output, known: card.known };
+}
+
+export function ampParameterCall(name, value) {
+  return { path: "/amp/parameter", json: { name, value } };
+}
+
+export function ampModelCall(model) {
+  return { path: "/amp/model", json: { model } };
+}
+
+// What a model change answered, for the page: {ok, text} or {ok: false,
+// title, reason}, the agent's words, and whether the previous model is back.
+export function ampModelOutcome(model, answer) {
+  const body = answer.body || {};
+  if (answer.ok) {
+    if (body.changed === false) return { ok: true, text: body.message || `${modelName(model)} is already playing.` };
+    return { ok: true, text: body.message || `The amp now plays ${modelName(model)}.` };
+  }
+  const back = body.restored === true ? " The previous model was brought back."
+    : body.restored === false ? " The amp did not come back: restart the rig." : "";
+  return { ok: false, title: `Amp model not changed: ${modelName(model)}`, reason: answer.reason + (answer.reason.includes("brought back") ? "" : back) };
 }
 
 // ---------------------------------------------------------------- sending

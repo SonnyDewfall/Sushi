@@ -12,7 +12,9 @@ dependencies = [
 live = ["elkpy", "python-osc"]
 audio = ["numpy>=1.24"]  # offline signal generation and analysis (signals, analysis)
 probe = []  # lilv has no PyPI wheel; install python3-lilv via apt (see README)
-agent = ["aiohttp>=3.9"]  # the rig agent (#29): `sushi-rig agent`
+# The rig agent (#29): `sushi-rig agent`. python-osc too: the agent sets the amp
+# in Carla over OSC itself (amp_live.py), with no listener in between.
+agent = ["aiohttp>=3.9", "python-osc"]
 # The agent's MIDI listener (#34, #93): pedals on bypass, Program Change rig switching.
 # alsa-midi talks to the ALSA sequencer and needs libasound at run time (apt: libasound2t64);
 # chosen over mido + python-rtmidi, which had no wheel past CPython 3.12 (midi_listener.py says why).

@@ -22,6 +22,10 @@ and the two things worth reading about a rig, served over HTTP on localhost.
                         `first`, the index of the oldest one held
     POST /live/undo     {} -- put back what the newest change not yet undone replaced;
                         {"skip": true} -- give up on the newest one that cannot be
+    GET  /amp           the amp as last sent to Carla: its model and each parameter (`known: "sent"`)
+    GET  /amp/models    amp/models, each model's rate and whether it can be played
+    POST /amp/parameter {"name", "value"}   value in the parameter's own unit (dB), clamped and said
+    POST /amp/model     {"model"} -- restarts Carla alone, so THE SOUND STOPS for a moment
 
 ## A fixed command set, never a shell
 
@@ -152,9 +156,9 @@ nothing the port does reaches the HTTP side. The decisions are in
 `POST /rig/switch {"config_name"}`, and a Program Change, switch the running
 rig to another of config/rigs without restarting Sushi where the two allow
 it: `rigfile.diff` of the two compiled configs says which processors to
-remove, move and add and which parameters and bypasses to set, in an order it
-explains, or every reason it cannot (the amp, the tracks, cc_mappings, the
-host, a program...). The plan is applied under the lifecycle lock and the
+remove, move and add and which parameters and bypasses to set, and which of
+the amp's parameters to send Carla, in an order it explains, or every reason
+it cannot (the amp's model, the tracks, cc_mappings, the host, a program...). The plan is applied under the lifecycle lock and the
 live lock on one connection, through the read-check-set the live routes use,
 then the rig is read back and checked against the next config as
 `verify.diff_state` checks one, and against every value the plan set
@@ -172,6 +176,23 @@ listener were started for the rig being left. One `op: "rig"` entry is
 logged either way, and undo stops at it. Not run against a live Sushi and
 not heard: shown against the fake only, and the time a live switch takes is
 not measured.
+
+## The amp (Carla's, not Sushi's)
+
+The neural amp runs in Carla (amp.py), so its routes reach Carla's OSC, not
+Sushi: what the agent holds of it is what it last sent, seeded per run from
+the running config's `_amp` as `up` replays it, and every answer says so.
+`POST /amp/parameter` sends one parameter once Carla's OSC port takes a
+connection (502 and nothing recorded if it does not), and logs it (op
+"amp"); `POST /amp/model` restarts Carla alone in the held group
+(`Supervisor.restart_amp`), never Sushi, and records the model in the state
+file so `restart` keeps it. Undo reaches both, checking each against what was
+last sent, which is all a stale check can compare with here. With the panel
+running, the panel owns the amp and the agent writes nothing (409 `panel`);
+a rig switch sets the amp's parameters live, as steps of its plan, and
+restarts only for a model or an amp on one side. Decisions in amp_live.py,
+whose docstring says what is and is not known; wiring in the amp's block at
+the end of `Agent`. Not run against a real Carla.
 
 ## Local-first, so localhost first
 
@@ -267,6 +288,7 @@ from . import library as library_module
 from . import live as live_module
 from . import midi_listener
 from . import top as top_module  # GET /rig/load (#111)
+from . import amp_live  # the amp: GET /amp, POST /amp/parameter and /amp/model
 from .live import DEFAULT_GRPC_ADDRESS, ElkpyMissing, LiveError, Move
 from .live import is_send, protected_processor
 from .rig import describe_rig
@@ -1064,6 +1086,7 @@ class Agent:
         midi: midi_listener.World | None = None,
         switching: "Switching | None" = None,
         pw_top: Callable[[float], str] | None = None,
+        carla: "amp_live.Carla | None" = None,
     ) -> None:
         self.root = root
         self.log_limit = log_limit
@@ -1094,6 +1117,7 @@ class Agent:
         self._library_lock = asyncio.Lock()
         self._midi_init(midi)  # the MIDI listener's state: see the MIDI section
         self.switching = switching or Switching()  # the live switch (#93): see its section
+        self._amp_init(carla)  # the amp: see its block
         # #111: what the agent says in place of elkpy's dropped prints (see
         # "Quiet"; they are dropped on the first connection, `connect_quietly`):
         # a Sushi gone while the rig is up, said once an outage, and the
@@ -1136,6 +1160,7 @@ class Agent:
         self._edit_routes(app)
         self._switch_routes(app)  # the live switch (#93)
         self._ui_routes(app)  # the web UI (#31): see its block
+        self._amp_routes(app)  # the amp: see its block
         return app
 
     async def health(self, request):
@@ -1753,6 +1778,11 @@ class Agent:
         is the one thing skip must not do by mistake. Chosen over targeting an
         entry by index, which would let a request undo out of order.
 
+        An amp change (`op` "amp" or "amp_model") is undone by the amp's own
+        path, `_undo_amp`, with the same codes: what it was last sent is what
+        "still as the change left it" is checked against, since Carla cannot
+        be read back.
+
         Undoing an undo is not supported: an undo is passed over, and a redo is
         for later. Not run against a live Sushi.
         """
@@ -1761,13 +1791,21 @@ class Agent:
         except AgentError as exc:
             raise web.HTTPBadRequest(reason=str(exc))
         self._refuse_while_busy()  # before the fast path: busy is the truer answer
-        if self._pick_undo() is None:
+        picked = self._pick_undo()
+        if picked is None:
             raise _conflict("nothing to undo", "nothing_to_undo")
+        if picked[1]["op"] in amp_live.OPS:
+            # Carla's, not Sushi's: no connection to Sushi, the amp's own lock
+            # (and for a model, the lifecycle's), see the amp's block.
+            return await self._undo_amp(request, picked[1]["op"], skip)
         async with self._connected_for_a_change(request) as controller:
             picked = self._pick_undo()  # the log may have changed while waiting
             if picked is None:
                 raise _conflict("nothing to undo", "nothing_to_undo")
             index, undone = picked
+            if undone["op"] in amp_live.OPS:
+                raise _conflict("the newest change became one of the amp's while this undo waited: "
+                                "undo again", "changed")
             try:
                 op, args = undo_inverse(undone)
                 previous, state = await {
@@ -2539,7 +2577,10 @@ class Agent:
         previous = switching_from(state, described)
         try:
             running = await asyncio.to_thread(world.read_config, described.get("config"))
-            decided = rigfile.diff(running, upcoming)
+            # As the live attempt will see the amp: none at all for a run
+            # with no amp, so its `_amp` alone never forces a restart.
+            decided = rigfile.diff(running, upcoming, root=self._amp_root(),
+                                   amp_off=state.get("amp_requested") is False)
         except Exception as exc:  # noqa: BLE001 -- unreadable is a reason to restart, said
             running = None
             decided = rigfile.NeedsRestart((rigfile.RestartReason(
@@ -2617,11 +2658,21 @@ class Agent:
                      if progress["plan"] else "")
             return {**progress, "ok": False, "failed": rigfile.RestartReason(code, detail + where)}
 
+        # The amp as the agent last sent it, which is what the plan compares
+        # the next rig's `_amp` with (`rigfile.diff`'s `live["amp"]`). A rig
+        # run with no amp (`--no-amp`) has none: no Carla runs and a
+        # restart into the next rig would start none, so neither rig's `_amp`
+        # is a step or a reason (`amp_off`). One whose Carla should be there and is not
+        # keeps its steps, so the first fails and the switch restarts into the
+        # next rig, Carla with it.
+        amp = self._amp_for(state, running)
+        amp_off = state.get("amp_requested") is False
         try:
             async with self._connected(origin) as controller:
                 async with self._live_lock:
                     before = await self._sushi(origin, self.live.snapshot, controller, reading=True)
-                    plan = rigfile.diff(running, upcoming, before)
+                    plan = rigfile.diff(running, upcoming, {**before, "amp": {"parameters": amp.sent()}},
+                                        root=self._amp_root(), amp_off=amp_off)
                     if isinstance(plan, rigfile.NeedsRestart):
                         reason = plan.reasons[0]
                         detail = "; ".join(f"{r.code}: {r.detail}" for r in plan.reasons)
@@ -2649,9 +2700,15 @@ class Agent:
         try:
             path = await asyncio.to_thread(self.switching.write_config, name, upcoming)
             now = await asyncio.to_thread(self.switching.read_state) or state
-            await asyncio.to_thread(self.switching.write_state, switched_state(now, name, path))
+            after_state = switched_state(now, name, path)
+            await asyncio.to_thread(self.switching.write_state, after_state)
         except Exception as exc:  # noqa: BLE001 -- a rig the state file does not name would restart as the old one
             return failed("failed", f"the rig switched, but recording it failed: {type(exc).__name__}: {exc}")
+        # The same Carla, sent the next rig's values by the steps: what the
+        # agent sent carries over to the next rig's run rather than being
+        # taken from its config as if `up` had replayed it.
+        if self._amp is amp:
+            amp.run = amp_live.run_of(after_state)
         return {**progress, "ok": True}
 
     async def _switch_step(self, origin, controller, step: rigfile.SwitchStep) -> None:
@@ -2676,6 +2733,13 @@ class Agent:
             after = await self._sushi(origin, self.live.walk, controller, reading=False)
             confirm_chain((after or {}).get("chains") or {}, removal.track, removal.expected,
                           f"removed {removal.processor!r} from {removal.track!r}")
+        elif step.op == "amp":
+            # The call POST /amp/parameter makes, with its checks: Carla must
+            # answer, or the step fails and the switch restarts.
+            try:
+                await self._amp_set(origin, args["name"], args["value"])
+            except amp_live.AmpRefused as exc:
+                raise Unconfirmed(f"the amp's {args['name']} was not set: {exc}") from exc
         elif step.op == "add":
             reading = await self._sushi(origin, self.live.walk, controller, True, reading=True)
             addition = place_switch_add(reading, args["track"], args["name"], args["uri"], args["before"])
@@ -2688,6 +2752,362 @@ class Agent:
 
     # ======================================================================= #
     # (end of switching rigs live)
+    # ======================================================================= #
+    # ======================================================================= #
+    # The amp: GET /amp, GET /amp/models, POST /amp/parameter, POST /amp/model
+    # ======================================================================= #
+    #
+    # Kept in one block so it merges past other work on this file. Outside it
+    # the agent calls in at: __init__ (`_amp_init`), `app` (`_amp_routes`),
+    # `live_undo` (`_undo_amp`) and the live switch (`_amp_for`, `_amp_set`).
+    # The decisions are amp_live.py's, and its docstring says what the agent
+    # can know of Carla and what it cannot.
+    #
+    # Locks: a parameter takes the amp's own lock (`_amp_lock`), so the value
+    # each change records as `previous` is the one it replaced; a model takes
+    # the lifecycle lock first (`busy: "amp_model"`), since it stops and starts
+    # a child of the rig, then the amp's. A switch holds the lifecycle and live
+    # locks and takes the amp's for each amp step. Always in that order.
+
+    def _amp_init(self, carla: "amp_live.Carla | None") -> None:
+        self.carla = carla or amp_live.Carla.at()
+        self._carla_run = None  # the Carla (its pid) the UDP client was used with
+        self._carla_probe: tuple | None = None  # (run, clock) of the last probe that answered
+        self._amp: amp_live.AmpState | None = None  # the running rig's, seeded per run
+        self._amp_lock = asyncio.Lock()
+        self._amp_shelf = amp_live.ModelShelf()
+        # GET /amp's model view for one (run, model): polled every second by
+        # every page, it is read once per run and model, not per poll.
+        self._amp_model_view: tuple[tuple, Any] | None = None
+
+    def _amp_routes(self, app) -> None:
+        app.router.add_get("/amp", self.amp_route)
+        app.router.add_get("/amp/models", self.amp_models_route)
+        app.router.add_post("/amp/parameter", self.amp_parameter_route)
+        app.router.add_post("/amp/model", self.amp_model_route)
+
+    def _amp_root(self) -> Path:
+        from .paths import checkout_root
+
+        return self.root or checkout_root()
+
+    @staticmethod
+    def _amp_http(exc: "amp_live.AmpRefused", hint: str = ""):
+        """The HTTP error for a refusal, carrying its `code`."""
+        kind = {400: web.HTTPBadRequest, 409: web.HTTPConflict, 500: web.HTTPInternalServerError,
+                502: web.HTTPBadGateway}.get(exc.status, web.HTTPConflict)
+        error = kind(reason=" ".join((str(exc) + hint).split()))
+        if exc.code:
+            error.agent_code = exc.code
+        return error
+
+    def _amp_for(self, state: dict[str, Any], config: dict[str, Any] | None) -> "amp_live.AmpState":
+        """The amp state of the run `state` describes: the one held, or a new
+        seed from `config` (the running rig's compiled config) when the run
+        is another, since a restart or a switch by restart replayed a config."""
+        if self._amp is None or self._amp.run != amp_live.run_of(state):
+            self._amp = amp_live.seed(state, config)
+        return self._amp
+
+    def _read_running_config(self, state: dict[str, Any]) -> dict[str, Any] | None:
+        try:
+            return self.switching.read_config(state.get("config"))
+        except Exception:  # noqa: BLE001 -- no config to seed from: every value is then unknown, and said so
+            return None
+
+    async def _amp_now(self, *, writing: bool) -> tuple["amp_live.AmpState", dict[str, Any], dict[str, Any]]:
+        """`(amp, state, described)` for the running rig, or `AmpRefused`."""
+        described = self.describe()
+        state = await asyncio.to_thread(self.switching.read_state) or {}
+        problem = amp_live.amp_problem(state, described, writing=writing)
+        if problem is not None:
+            raise problem
+        if self._amp is None or self._amp.run != amp_live.run_of(state):
+            config = await asyncio.to_thread(self._read_running_config, state)
+            self._amp_for(state, config)
+        return self._amp, state, described
+
+    async def _amp_send(
+        self, origin, amp: "amp_live.AmpState", name: str, value: float, described: dict[str, Any],
+    ) -> None:
+        """Send one parameter to Carla, and only once it is sent, record it.
+
+        Carla answering is a TCP connection to its OSC port, made when
+        `amp_live.needs_probe` says (the first send to this Carla run, after
+        a failure, at most every `PROBE_EVERY` otherwise; see amp_live's
+        docstring): refused, it is 502 `carla_not_answering` and nothing is
+        sent or recorded. A send that raises is 502 too, and a python-osc that
+        is not installed 500; each is remembered for /health. A new Carla run
+        (its pid, from `described`) gets a new UDP client."""
+        from .amp import CARLA_OSC_PORT, AmpError, parameter_message
+
+        address, payload = parameter_message(name, value)
+        where = [origin.method, origin.path]
+        run = ((described.get("children") or {}).get("amp") or {}).get("pid")
+        if run != self._carla_run:
+            await asyncio.to_thread(self.carla.forget)
+            self._carla_run, self._carla_probe = run, None
+        if amp_live.needs_probe(self._carla_probe, run, self.clock()):
+            if not await asyncio.to_thread(self.carla.answering):
+                self._carla_probe = None
+                reason = (f"Carla is not answering on its OSC port ({CARLA_OSC_PORT}), so {name} was not sent "
+                          "and the amp is where it was")
+                self._remember(where, reason, kind="live")
+                raise amp_live.AmpRefused(reason, 502, "carla_not_answering")
+            self._carla_probe = (run, self.clock())
+        try:
+            await asyncio.to_thread(self.carla.send, address, payload)
+        except AmpError as exc:
+            self._remember(where, str(exc), kind="live")
+            raise amp_live.AmpRefused(str(exc), 500) from exc
+        except OSError as exc:
+            self._carla_probe = None
+            await asyncio.to_thread(self.carla.forget)
+            reason = f"sending {name} to Carla failed: {type(exc).__name__}: {exc}"
+            self._remember(where, reason, kind="live")
+            raise amp_live.AmpRefused(reason, 502, "carla_not_answering") from exc
+        amp.values[name] = payload[1]
+        amp.sources[name] = amp_live.SENT
+
+    async def _amp_set(self, origin, name: str, value: float) -> tuple[float | None, float]:
+        """`(previous, sent)`: one parameter set, under the amp's lock, with
+        the checks a write makes. What a route, an undo and a switch's step
+        share."""
+        async with self._amp_lock:
+            amp, _, described = await self._amp_now(writing=True)
+            previous = amp.values.get(name)
+            await self._amp_send(origin, amp, name, value, described)
+            return previous, amp.values[name]
+
+    async def amp_route(self, request):
+        """The amp as the agent last sent it (amp_live.amp_view): the model,
+        each parameter with its range, unit and whether the panel puts it on
+        a fader, and `known`. 409 `no_rig` or `no_amp`, and `busy` while a
+        lifecycle command runs, as /live is."""
+        self._refuse_while_busy()
+        try:
+            amp, state, described = await self._amp_now(writing=False)
+        except amp_live.AmpRefused as exc:
+            raise self._amp_http(exc)
+        key = (amp.run, amp.model)
+        if self._amp_model_view is None or self._amp_model_view[0] != key:
+            model = await asyncio.to_thread(amp_live.model_view, amp.model, self._amp_root(), self._amp_shelf)
+            self._amp_model_view = (key, model)
+        view = amp_live.amp_view(amp, state, self._amp_model_view[1])
+        view["carla"] = (described.get("children") or {}).get("amp")
+        view["held"] = self._amp_held()
+        return web.json_response(view)
+
+    def _amp_held(self) -> bool:
+        """Whether this agent holds the running rig, which a model change needs."""
+        held = getattr(self.supervisor, "held", None)
+        return held is not None and held.ready and not held.stopping
+
+    async def amp_models_route(self, request):
+        """amp/models, for the picker (amp_live.library): each model by file
+        name, its rate, and whether it can be played here. Needs no rig."""
+        state = await asyncio.to_thread(self.switching.read_state) or {}
+        current = state.get("amp_model") if self.describe().get("running") else None
+        models = await asyncio.to_thread(amp_live.library, self._amp_root(), self._amp_shelf, current)
+        from .amp import RIG_SAMPLE_RATE
+
+        return web.json_response({"ok": True, "rate": RIG_SAMPLE_RATE, "models": models})
+
+    async def amp_parameter_route(self, request):
+        """`POST /amp/parameter {"name", "value"}`: send one parameter to
+        Carla and log it (op "amp", `previous` what was last sent, None if
+        nothing was). A value outside the range is clamped, and the answer
+        says so (`clamped`). 400 for a name the amp lacks or a value that is
+        not a number; 409 `busy`, `no_rig`, `no_amp`, `panel`; 502
+        `carla_down` or `carla_not_answering`, with nothing recorded."""
+        try:
+            name, asked, sent = amp_live.parameter_request(await self._json_body(request))
+        except amp_live.AmpRefused as exc:
+            raise self._amp_http(exc)
+        self._refuse_while_busy()
+        try:
+            previous, sent = await self._amp_set(request, name, sent)
+        except amp_live.AmpRefused as exc:
+            raise self._amp_http(exc)
+        entry = self._record("amp", {"name": name, "value": sent}, previous)
+        return web.json_response({"ok": True, **entry, "asked": asked,
+                                  "clamped": amp_live.clamped_said(name, asked, sent)})
+
+    async def amp_model_route(self, request):
+        """`POST /amp/model {"model"}`: play another model, by restarting
+        Carla alone (`Supervisor.restart_amp`). **The sound stops** while
+        Carla stops and starts; the answer and stderr say so. Refused before
+        anything stops: 400 for a model that is not a name in amp/models (a
+        path, from this machine only: `MODEL_NAME`), cannot be read, or was
+        trained at another rate (`wrong_rate`); 409 `busy`, `no_rig`,
+        `no_amp`, `panel`, and `not_held` for a rig this agent did not start;
+        502 `carla_down`. A restart that fails is 502 with `restored`: whether
+        the previous model was brought back. The state file records the
+        model as `--amp-model` would, so `restart` keeps it (and a live
+        switch then restarts: `state_blockers`). Logged as op "amp_model"."""
+        root = self._amp_root()
+        try:
+            override, path = amp_live.model_request(
+                await self._json_body(request), local=is_local(request.remote), root=root,
+                name_pattern=MODEL_NAME)
+        except amp_live.AmpRefused as exc:
+            raise self._amp_http(exc)
+        described_model = await asyncio.to_thread(self._amp_shelf.read, path)
+        if "error" in described_model:
+            raise self._amp_http(amp_live.AmpRefused(described_model["error"], 400, "unreadable"))
+        wrong = amp_live.rate_problem(described_model)
+        if wrong:
+            raise self._amp_http(amp_live.AmpRefused(wrong, 400, "wrong_rate"))
+        answer = await self._change_model(request, override, path)
+        return web.json_response(answer, status=200 if answer["ok"] else 502)
+
+    async def _change_model(self, origin, override: str, path: Path, *, undoing: tuple | None = None,
+                            skip: bool = False) -> dict[str, Any]:
+        """Change the model under the lifecycle lock and the amp's, and log
+        it: the route's, and an undo's (`undoing`, `(index, entry)`: checked
+        stale first, logged as its undo; with `skip`, only checked)."""
+        from .amp import carla_project, read_amp
+
+        self._refuse_while_busy()
+        async with self._lock:
+            self.busy = "amp_model"
+            try:
+                async with self._amp_lock:
+                    try:
+                        amp, state, _ = await self._amp_now(writing=True)
+                    except amp_live.AmpRefused as exc:
+                        if undoing is not None and skip and exc.code in ("no_amp", "panel"):
+                            return self._amp_skip(*undoing, exc)
+                        raise self._amp_http(exc)
+                    root = self._amp_root()
+                    if undoing is not None:
+                        picked = self._pick_undo()  # the log may have moved on while this waited
+                        if picked is None or picked[0] != undoing[0]:
+                            raise _conflict("the newest change changed while this undo waited: undo again",
+                                            "changed")
+                        refused = None
+                        try:
+                            amp_live.undo_check(undoing[1], amp, root)
+                        except amp_live.AmpRefused as exc:
+                            refused = exc
+                        if skip:
+                            if refused is None:
+                                raise _conflict("the newest change can be undone as it stands: undo it, "
+                                                "a skip is only for one that cannot be", "not_stale")
+                            return self._amp_skip(*undoing, refused)
+                        if refused is not None:
+                            raise self._amp_http(refused, '; to give up on this entry and go on to the one '
+                                                          'before it, send {"skip": true}')
+                    stored = amp_live.stored_model(override)
+                    if amp_live.same_model(amp.model, stored, root):
+                        return {"ok": True, "changed": False, "model": stored,
+                                "message": f"the amp already plays {Path(stored).name}: nothing was restarted"}
+                    if self.supervisor is None or not self._amp_held():
+                        raise self._amp_http(amp_live.AmpRefused(
+                            "this agent did not start the running rig (it was started with 'up --direct', or "
+                            "by an agent before this one), so it cannot restart its Carla alone: restart the "
+                            "rig through the agent first", 409, "not_held"))
+                    # The rig's own config names its own model; choosing that
+                    # one again is no override, so `restart` and a switch
+                    # treat the rig as their own again.
+                    config = await asyncio.to_thread(self._read_running_config, state)
+                    own = (read_amp(config or {}) or {}).get("model")
+                    recorded = None if amp_live.same_model(own, stored, root) else override
+                    started = self.clock()
+                    print(f"sushi-rig agent: changing the amp's model to {path.name}: THE SOUND STOPS while "
+                          "Carla restarts", file=sys.stderr, flush=True)
+                    result = await self.supervisor.restart_amp(
+                        carla_project(path), dict(amp.values), model=stored, override=recorded)
+                    seconds = round(self.clock() - started, 3)
+                    if not result.ok:
+                        if result.restored is None and result.pid is None:
+                            # Refused before Carla was touched, each with its own code
+                            # (`AmpRestart.code`): nothing changed, nothing to remember.
+                            raise self._amp_http(amp_live.AmpRefused(result.reason, 409, result.code))
+                        said = (f"the amp's model was not changed to {path.name}: {result.reason}"
+                                + ("; the previous model was brought back" if result.restored else ""))
+                        print(f"sushi-rig agent: {said}", file=sys.stderr, flush=True)
+                        self._remember([origin.method, origin.path], said, kind="lifecycle")
+                        return {"ok": False, "status": 502, "code": result.code, "reason": said,
+                                "restored": result.restored, "problems": list(result.problems),
+                                "seconds": seconds}
+                    previous = amp.model
+                    amp.model = stored
+                    if undoing is None:
+                        entry = self._record("amp_model", {"model": stored}, previous)
+                    else:
+                        entry = self._record("undo", {"of": "amp_model", "model": stored}, previous,
+                                             undoes=undoing[0])
+                    return {"ok": True, "changed": True, **entry, "seconds": seconds, "pid": result.pid,
+                            "problems": list(result.problems),
+                            "message": f"the amp now plays {path.name}. The sound stopped for {seconds:g} s "
+                                       "while Carla restarted; the rest of the rig played on"}
+            finally:
+                self.busy = None
+
+    def _amp_skip(self, index: int, undone: dict[str, Any], exc: Exception) -> dict[str, Any]:
+        entry = self._record("stale", {"of": undone["op"], "reason": str(exc)}, None, stale=index)
+        return {"ok": True, **entry, "skipped": undone}
+
+    async def _undo_amp(self, request, op: str, skip: bool):
+        """Undo the newest change, an amp one (`pick_undo` found it): a
+        parameter goes back to what was last sent before it, through the
+        route's own call; a model goes back by restarting Carla on the one
+        before. Stale (409) unless the amp is still as the change left it, by
+        what was last sent: amp_live.undo_check. The rest as `live_undo`."""
+        if op == "amp_model":
+            index, undone = self._pick_undo()
+            from .amp import AmpError, resolve_model
+
+            previous = undone.get("previous")
+            root = self._amp_root()
+            try:
+                if not previous:
+                    raise AmpError("the model before it is not known")
+                path = resolve_model(previous, root)
+            except AmpError as exc:
+                refused = amp_live.AmpRefused(f"cannot undo the model change: {str(exc).splitlines()[0]}",
+                                              409, "stale")
+                if skip:
+                    return web.json_response(self._amp_skip(index, undone, refused))
+                raise self._amp_http(refused)
+            override = amp_live.override_of(previous, root)
+            answer = await self._change_model(request, override, path, undoing=(index, undone), skip=skip)
+            if answer.get("ok") and answer.get("op") == "undo":
+                answer.update(undone=undone, state={"model": answer["args"]["model"]})
+            return web.json_response(answer, status=200 if answer["ok"] else 502)
+        async with self._amp_lock:
+            self._refuse_while_busy()
+            picked = self._pick_undo()
+            if picked is None:
+                raise _conflict("nothing to undo", "nothing_to_undo")
+            index, undone = picked
+            if undone["op"] != "amp":
+                raise _conflict("the newest change changed while this undo waited: undo again", "changed")
+            name, value = undone["args"]["name"], undone["previous"]
+            try:
+                amp, _, described = await self._amp_now(writing=True)
+                amp_live.undo_check(undone, amp, self._amp_root())
+            except amp_live.AmpRefused as exc:
+                if skip and exc.code in ("stale", "no_amp", "panel"):
+                    return web.json_response(self._amp_skip(index, undone, exc))
+                hint = '; to give up on this entry and go on to the one before it, send {"skip": true}'
+                raise self._amp_http(exc, hint if exc.code == "stale" else "")
+            if skip:
+                raise _conflict("the newest change can be undone as it stands: undo it, "
+                                "a skip is only for one that cannot be", "not_stale")
+            try:
+                previous = amp.values.get(name)
+                await self._amp_send(request, amp, name, value, described)
+            except amp_live.AmpRefused as exc:
+                raise self._amp_http(exc)
+            entry = self._record("undo", {"of": "amp", "name": name, "value": amp.values[name]}, previous,
+                                 undoes=index)
+        return web.json_response({"ok": True, **entry, "undone": undone,
+                                  "state": {"name": name, "value": amp.values[name]}})
+
+    # ======================================================================= #
+    # (end of the amp)
     # ======================================================================= #
 
 
@@ -2740,8 +3160,8 @@ class SwitchRefused(AgentError):
 SWITCH_RESTART_REASONS = {
     "panel": "the rig runs with its panel and SAVE listener, which were started for the running "
              "rig: switched live, SAVE would write the next rig's sound into the previous rig's file",
-    "amp_override": "the amp runs a model given with --amp-model, which belonged to the rig being "
-                    "left; the next rig's own amp comes with a restart",
+    "amp_override": "the amp runs a model given with --amp-model or chosen with POST /amp/model, "
+                    "which belonged to the rig being left; the next rig's own amp comes with a restart",
     "failed": "a step of the live switch failed, so it restarts into the next rig rather than "
               "leave one half-switched",
     "unverified": "the rig read back after the live switch is not the next rig",
@@ -2760,8 +3180,10 @@ def switch_request(body: Any) -> str:
 def state_blockers(state: dict[str, Any]) -> list[rigfile.RestartReason]:
     """What, in how the running rig is being run, rules a live switch out
     (`SWITCH_RESTART_REASONS`). Pure."""
+    from .rig import runs_panel
+
     found = []
-    if state.get("mode") != "headless":
+    if runs_panel(state):
         found.append(rigfile.RestartReason("panel", SWITCH_RESTART_REASONS["panel"]))
     if state.get("amp_model_requested") and state.get("amp_requested", True):
         found.append(rigfile.RestartReason(

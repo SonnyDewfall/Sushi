@@ -32,6 +32,14 @@ builds one -- `how`, `why` as `RestartReason.as_dict` gives it, `seconds` --
 but decided by the test, not by `rigfile.diff`. GET /rig/load answers with
 `fixtures/pw-top-b-n2.txt`, which is test_top.py's sample of `pw-top -b -n 2`
 (said there to be real output, trimmed) copied as it is.
+
+The amp, `UiAmp` (`Served(amp=True)`): the agent's real amp routes over a
+`carla_fake.FakeCarla`, a state file and compiled config held in memory, and
+a stand-in for the supervisor's Carla-only restart. Invented: the models
+(`.nam` files written to a temporary amp/models with made-up names and no
+weights, two at the rig's rate and one not), the starting levels, and what a
+restart does (it records the call and says the new model plays). Nothing
+here is Carla.
 """
 
 from __future__ import annotations
@@ -47,7 +55,8 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from sushi_rig import midi_listener
-from sushi_rig.agent import Agent
+from sushi_rig.agent import Agent, Switching
+from sushi_rig.supervisor import AmpRestart
 from sushi_rig.library import IRI, Literal, parse_turtle
 from sushi_rig.live import LiveError, decide_move
 from sushi_rig.paths import checkout_root
@@ -252,16 +261,93 @@ class UiRig:
         return [c for c in self.calls if c[0] in ("set_parameter", "set_bypass", "move")]
 
 
-def describe_up(started: datetime, name: str = "electric_board"):
-    """`describe_rig`'s answer for rig `name`: up since `started`."""
+def describe_up(started: datetime, name: str = "electric_board", amp_model: str | None = None,
+                amp_alive: bool = True):
+    """`describe_rig`'s answer for rig `name`: up since `started`, with a
+    Carla when `amp_model` names what it plays."""
     def describe():
         return {
             "verdict": "running", "running": True, "config_name": name, "mode": "headless",
             "started_at": started.isoformat(), "uptime_seconds": (datetime.now(timezone.utc) - started).total_seconds(),
-            "amp_model": None, "rig": name, "children": {},
+            "amp_model": amp_model, "rig": name,
+            "children": {"amp": {"pid": 4244, "alive": amp_alive}} if amp_model else {},
             "message": f"{name} (headless mode)",
         }
     return describe
+
+
+def nam(path: Path, name: str, rate: int = 48000) -> None:
+    """An invented `.nam`, as `amp.describe_model` reads one: no weights."""
+    path.write_text(json.dumps({
+        "architecture": "WaveNet", "sample_rate": rate, "config": {"layers": [{"channels": 8}]}, "weights": [],
+        "metadata": {"name": name, "gear_make": "Invented", "gear_type": "amp"},
+    }))
+
+
+class UiAmp:
+    """The amp a page sees through the agent's real routes: a state file and
+    a compiled config in memory, invented models in a temporary amp/models,
+    a `FakeCarla`, and the supervisor's part of a model change (`held`,
+    `restart_amp`, `describe`). `restart_result`, when set, is what the next
+    restart answers instead of success. `delay` holds a restart that long."""
+
+    MODEL = "amp/models/Clean Room.nam"
+
+    def __init__(self, lifecycle: "UiLifecycle"):
+        import tempfile
+
+        from carla_fake import FakeCarla
+
+        self.lifecycle = lifecycle
+        self._dir = tempfile.TemporaryDirectory(prefix="ui-amp-")
+        self.root = Path(self._dir.name)
+        models = self.root / "amp" / "models"
+        models.mkdir(parents=True)
+        nam(models / "Clean Room.nam", "Clean Room")
+        nam(models / "Edge.nam", "Edge")
+        nam(models / "Slow Tape.nam", "Slow Tape", rate=44100)
+        self.carla = FakeCarla()
+        self.model = self.MODEL
+        self.override = None
+        self.config = {"tracks": [], "_amp": {"plugin": "nam", "model": self.MODEL,
+                                              "parameters": {"Input Lvl": 0.0, "Output Lvl": -3.0, "Quality": 1.0}}}
+        self.mode = "headless"
+        self.alive = True
+        self.held = type("Held", (), {"ready": True, "stopping": False})()
+        self.restarts: list = []
+        self.restart_result: AmpRestart | None = None
+        self.delay = 0.0
+        self.crashed: list = []
+        self.problems: list = []
+
+    def state(self):
+        rig = self.lifecycle.rig
+        return {
+            "supervisor_pid": 4242, "pgid": 4242, "mode": self.mode, "config_name": rig,
+            "config": f"/fake/{rig}.json", "started_at": self.lifecycle.started.isoformat(),
+            "amp_model": self.model, "amp_requested": True, "amp_model_requested": self.override,
+            "children": {"sushi": 4243, "amp": 4244},
+        }
+
+    def switching(self) -> Switching:
+        return Switching(read_state=self.state, read_config=lambda path: copy.deepcopy(self.config))
+
+    def describe(self):
+        if self.lifecycle.rig is None:
+            return self.lifecycle.describe()
+        return describe_up(self.lifecycle.started, self.lifecycle.rig, self.model, self.alive)()
+
+    async def restart_amp(self, project, values, *, model, override):
+        self.restarts.append({"model": model, "override": override, "values": dict(values)})
+        await asyncio.sleep(self.delay)
+        if self.restart_result is not None:
+            result, self.restart_result = self.restart_result, None
+            return result
+        self.model, self.override = model, override
+        return AmpRestart(True, pid=5000 + len(self.restarts))
+
+    def close(self):
+        self._dir.cleanup()
 
 
 class UiLifecycle:
@@ -330,19 +416,31 @@ class Served:
     given, answers for the state file instead of it."""
 
     def __init__(self, rig: UiRig | None = None, port: int = 0, describe=None, root: Path | None = None,
-                 lifecycle: UiLifecycle | None = None):
+                 lifecycle: UiLifecycle | None = None, amp: bool = False):
         self.rig = rig or UiRig()
         self.lifecycle = lifecycle or UiLifecycle()
         # What GET /rig/load's pw-top prints; a test may change it.
         self.pw_top_output = (FIXTURES / "pw-top-b-n2.txt").read_text(encoding="utf-8")
-        self.state = {"describe": describe or self.lifecycle.describe}
+        # The amp (`UiAmp`), when asked for: the rig then has a Carla.
+        self.amp = UiAmp(self.lifecycle) if amp else None
+        self.state = {"describe": describe or (self.amp.describe if self.amp else self.lifecycle.describe)}
+        extra = {}
+        if self.amp:
+            extra = {"switching": self.amp.switching(), "carla": self.amp.carla.carla()}
         # `root` is where the profiles are read from (tool/examples/profiles/ under it).
         self.agent = Agent(root=root or checkout_root(), live=self.rig, describe=lambda: self.state["describe"](),
                            library=lambda: {"plugins": [], "problems": []}, run=self.lifecycle.run,
                            # No pedals: the MIDI listener follows a rig after every
                            # lifecycle command, and this rig has no compiled config.
                            midi=midi_listener.World(plan=lambda described, root: midi_listener.Off("the fake rig has no pedals")),
-                           pw_top=lambda timeout: self.pw_top_output)
+                           pw_top=lambda timeout: self.pw_top_output, **extra)
+        if self.amp:
+            # The amp's models are the invented ones; the profiles stay the checkout's.
+            self.agent._amp_root = lambda: self.amp.root
+            # The supervisor's part of a model change, stood in; /health's
+            # account of what it holds stays the real (empty) one.
+            self.agent._amp_held = lambda: self.amp.held.ready
+            self.agent.supervisor.restart_amp = self.amp.restart_amp
         self.lifecycle.agent = self.agent
         self.agent._switch_held = self.lifecycle.switch_held
         self._loop = asyncio.new_event_loop()
@@ -381,6 +479,8 @@ class Served:
         self._thread.join(10)
         self._loop.close()
         self.agent._executor.shutdown(wait=True, cancel_futures=True)
+        if self.amp:
+            self.amp.close()
 
     def __enter__(self):
         return self
@@ -393,8 +493,9 @@ def main() -> int:
     parser = argparse.ArgumentParser(description="Serve the web UI against a rig held in memory.")
     parser.add_argument("--port", type=int, default=8029)
     parser.add_argument("--down", action="store_true", help="start with no rig up, to start one from the page")
+    parser.add_argument("--amp", action="store_true", help="give the rig an amp, with invented models")
     args = parser.parse_args()
-    with Served(port=args.port, lifecycle=UiLifecycle(up=None if args.down else "electric_board")) as served:
+    with Served(port=args.port, lifecycle=UiLifecycle(up=None if args.down else "electric_board"), amp=args.amp) as served:
         print(f"the web UI against a fake rig: {served.url}/  (Ctrl+C to stop)", flush=True)
         try:
             while True:

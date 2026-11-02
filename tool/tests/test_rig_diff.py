@@ -9,6 +9,10 @@ knows. The model is invented, not captured: it holds what a config states,
 and treats a parameter it does not state as "at the plugin's default", which
 is what Sushi is assumed to load (not observed here: no Sushi in this suite).
 The agent's use of the plan, against a fake Sushi, is in test_agent.py.
+
+The amp is in the model too, as what was last sent Carla: an `amp` step
+sets it, and a restart (a config load) sets it to the next rig's `_amp`.
+Nothing here is Carla's: what it holds cannot be read, only what was sent.
 """
 
 from __future__ import annotations
@@ -21,6 +25,7 @@ from pathlib import Path
 import pytest
 
 from sushi_rig import rigfile
+from sushi_rig.amp import PARAMETER_INDEX
 from sushi_rig.live import protected_processor
 from sushi_rig.rigfile import (
     RESTART_REASONS, SEND_UID, UNITY_STRIP, WIRING, NeedsRestart, SwitchPlan, apply_to_chains, diff,
@@ -61,6 +66,8 @@ class Model:
         self.values = {name: dict((state.get(name) or {}).get("parameters") or {})
                        for name in list(self.plugins) + list(self.tracks)}
         self.bypassed = {name: bool((state.get(name) or {}).get("bypassed", False)) for name in self.plugins}
+        # What Carla was sent: `up` replays the config's `_amp` parameters.
+        self.amp = dict(((config.get("_amp") or {}).get("parameters")) or {})
 
     def _track(self, name):
         return next((t for t, chain in self.chains.items() if name in chain), None)
@@ -104,6 +111,9 @@ class Model:
             elif step.op == "bypass":
                 assert args["processor"] in self.bypassed, f"bypass of {args['processor']!r}, not a processor"
                 self.bypassed[args["processor"]] = args["bypassed"]
+            elif step.op == "amp":
+                assert args["name"] in PARAMETER_INDEX, f"amp parameter {args['name']!r}, not the amp's"
+                self.amp[args["name"]] = args["value"]
             else:
                 raise AssertionError(f"unknown op {step.op!r}")
         return self
@@ -118,7 +128,7 @@ class Model:
                    if not (p in known.get(name, {}) and abs(v - known[name][p]) < 1e-9)}
             for name, params in self.values.items()
         }
-        return self.chains, self.plugins, values, self.bypassed
+        return self.chains, self.plugins, values, self.bypassed, self.amp
 
 
 def capture_of(config):
@@ -137,7 +147,7 @@ def capture_of(config):
 
 def shape(plan):
     """The plan's ops as letters, to check their order."""
-    return "".join({"bypass": "B", "remove": "R", "move": "M", "add": "A", "parameter": "P"}[s.op]
+    return "".join({"bypass": "B", "remove": "R", "move": "M", "add": "A", "parameter": "P", "amp": "N"}[s.op]
                    for s in plan.steps)
 
 
@@ -166,25 +176,34 @@ def test_every_pair_is_a_plan_that_reaches_the_next_rig_or_a_named_restart(runni
     chains = {t["name"]: [p["name"] for p in t["plugins"]] for t in before["tracks"]}
     assert apply_to_chains(chains, decided) == Model(after).chains
     # The order the docstring gives: bypass on, removes, moves, each add with
-    # its bypass, parameters, then what comes in.
-    assert re.fullmatch(r"B*R*M*(AB)*P*B*", shape(decided)), shape(decided)
+    # its bypass, parameters, the amp's, then what comes in.
+    assert re.fullmatch(r"B*R*M*(AB)*P*N*B*", shape(decided)), shape(decided)
 
 
 @pytest.mark.parametrize("running, upcoming", PAIRS, ids=[f"{a}->{b}" for a, b in PAIRS])
 def test_every_pair_restarts_exactly_where_the_live_operations_cannot_reach(running, upcoming):
     """For the committed rigs, which have no MIDI maps and one host config,
-    what decides is the amp (Carla's, out of reach) and the tracks (none are
-    made or removed live): a restart for those, and only those."""
+    what decides is the amp's presence and model (Carla loads a model only as
+    it starts, and is started only with the rig) and the tracks (none are
+    made or removed live): a restart for those, and only those. The amp's
+    parameters differing is not one: they are `amp` steps."""
     before, after = compiled(running), compiled(upcoming)
     decided = diff(before, after)
     tracks_differ = [t["name"] for t in before["tracks"]] != [t["name"] for t in after["tracks"]]
-    amp_differs = (before.get("_amp") or None) != (after.get("_amp") or None)
+
+    def carla(config):
+        amp = config.get("_amp")
+        return None if amp is None else {k: v for k, v in amp.items() if k != "parameters"}
+
+    amp_differs = carla(before) != carla(after)
     assert isinstance(decided, NeedsRestart) == (tracks_differ or amp_differs)
     if isinstance(decided, NeedsRestart):
         if tracks_differ:
             assert {"track_added", "track_removed"} & set(decided.codes)
-        else:
+        if amp_differs:
             assert "amp" in decided.codes
+    elif before["_amp"]["parameters"] != after["_amp"]["parameters"]:
+        assert any(s.op == "amp" for s in decided.steps), "the amp's settings are steps"
 
 
 @pytest.mark.parametrize("running, upcoming", PAIRS, ids=[f"{a}->{b}" for a, b in PAIRS])
@@ -199,6 +218,18 @@ def test_both_kinds_of_pair_are_among_the_rigs():
     """Not vacuous: some pairs switch live and some restart."""
     kinds = {type(diff(compiled(a), compiled(b))) for a, b in PAIRS}
     assert kinds == {SwitchPlan, NeedsRestart}
+
+
+def test_how_many_of_the_committed_pairs_switch_live():
+    """The README's count. 26 of the 110 while the amp's parameters were a
+    restart; with them as steps, every pair of two rigs with the same tracks
+    and the same amp model (all nine with an amp use one) is live. What is
+    left restarts for an amp on one side only, or for the tracks."""
+    live = [pair for pair in PAIRS if isinstance(diff(compiled(pair[0]), compiled(pair[1])), SwitchPlan)]
+    assert (len(live), len(PAIRS)) == (72, 110)
+    amp_only = [pair for pair in PAIRS if pair not in live
+                and diff(compiled(pair[0]), compiled(pair[1])).codes == ["amp"]]
+    assert len(amp_only) == 18, "an amp on one side only, nothing else between them"
 
 
 def test_moves_are_the_fewest_steps_that_put_the_survivors_in_order():
@@ -279,9 +310,79 @@ def test_an_unknown_section_is_refused_rather_than_assumed_harmless():
     assert _codes(before, after) == ["config_section"]
 
 
-def test_the_amp_is_carlas_and_a_restart():
-    before, after = _changed(lambda c: c.update(_amp={"plugin": "nam", "model": "amp/models/Other.nam"}))
+def test_the_amps_model_is_loaded_only_as_carla_starts_and_is_a_restart():
+    before, after = _changed(lambda c: c["_amp"].update(model="amp/models/Other.nam"))
     assert _codes(before, after) == ["amp"]
+    assert "becomes 'amp/models/Other.nam'" in diff(before, after).reasons[0].detail
+
+
+def test_an_amp_on_one_side_only_is_a_restart_since_carla_and_its_wiring_come_with_the_rig():
+    before, after = _changed(lambda c: c.pop("_amp"))
+    assert _codes(before, after) == ["amp"]
+    assert _codes(after, before) == ["amp"]
+    assert "the next rig has an amp" in diff(after, before).reasons[0].detail
+
+
+def amp_steps(plan):
+    return [s.as_dict() for s in plan.steps if s.op == "amp"]
+
+
+def test_the_amps_parameters_are_steps_sent_as_the_route_sends_them():
+    """accustomed to electric-chorus-2: two of Sushi's parameters, and the
+    amp's two levels, each an `amp` step whose args are the body of POST
+    /amp/parameter, in Carla's parameter order, after Sushi's."""
+    plan = diff(compiled("accustomed"), compiled("electric-chorus-2"))
+    assert shape(plan) == "PPNN"
+    assert amp_steps(plan) == [
+        {"op": "amp", "name": "Input Lvl", "value": 0.0},
+        {"op": "amp", "name": "Output Lvl", "value": 6.0},
+    ]
+
+
+def test_an_amp_knob_moved_since_the_rig_came_up_is_put_where_the_next_rig_says():
+    """With a live reading the plan compares with what the agent last sent
+    Carla, as it compares Sushi's values with what Sushi reports: the same
+    rig's `_amp`, after a knob was turned, is a step back."""
+    before = compiled("electric-delay")
+    sent = {"Input Lvl": 0.0, "Output Lvl": 3.0, "Quality": 1.0}
+    reading = {**capture_of(before), "amp": {"parameters": sent}}
+    assert amp_steps(diff(before, compiled("electric-octave-up"), reading)) == [
+        {"op": "amp", "name": "Output Lvl", "value": -0.4}]
+    assert amp_steps(diff(before, compiled("electric-octave-up"))) == [], \
+        "without a reading, the running rig's _amp is what was sent"
+
+
+def test_a_parameter_never_sent_is_sent_since_what_carla_holds_cannot_be_read():
+    before = compiled("electric-delay")
+    reading = {**capture_of(before), "amp": {"parameters": {"Input Lvl": 0.0, "Output Lvl": None, "Quality": 1.0}}}
+    assert amp_steps(diff(before, compiled("electric-delay"), reading)) == [
+        {"op": "amp", "name": "Output Lvl", "value": -0.4}]
+
+
+def test_an_amp_parameter_the_next_rig_leaves_unstated_is_a_restart_not_a_guessed_default():
+    before, after = _changed(lambda c: c["_amp"]["parameters"].pop("Quality"))
+    assert _codes(before, after) == ["amp"]
+    assert "Quality unstated" in diff(before, after).reasons[0].detail
+    # Unstated in both, and never sent: it stays at the plugin's default either way.
+    after_too = copy.deepcopy(after)
+    assert diff(after, after_too) == SwitchPlan(())
+
+
+@pytest.mark.parametrize("parameters, said", [
+    ({"Input Lvl": 0.0, "Output Lvl": -0.4, "Quality": 1.0, "Gain": 1.0}, "'Gain', which the amp does not have"),
+    ({"Input Lvl": float("nan"), "Output Lvl": -0.4, "Quality": 1.0}, "not a value to send"),
+    ({"Input Lvl": "loud", "Output Lvl": -0.4, "Quality": 1.0}, "not a value to send"),
+    ({"Input Lvl": True, "Output Lvl": -0.4, "Quality": 1.0}, "not a value to send"),
+])
+def test_an_amp_parameter_that_cannot_be_sent_is_a_restart(parameters, said):
+    before, after = _changed(lambda c: c["_amp"].update(parameters=parameters))
+    assert _codes(before, after) == ["amp"]
+    assert said in diff(before, after).reasons[0].detail
+
+
+def test_an_amp_value_past_the_range_is_a_step_to_its_end_as_carla_is_sent_it():
+    before, after = _changed(lambda c: c["_amp"]["parameters"].update({"Output Lvl": 99.0}))
+    assert amp_steps(diff(before, after)) == [{"op": "amp", "name": "Output Lvl", "value": 20.0}]
 
 
 def test_a_channel_on_another_input_is_a_restart_since_only_the_patchbay_wires_it():
@@ -444,10 +545,12 @@ def test_a_bypass_sushi_would_not_report_is_set_rather_than_assumed():
 def test_steps_name_only_what_the_routes_take():
     """Each step's args are its route's body, so the agent applies them
     through the same calls, and an add's is Sushi's own placing."""
-    plan = diff(compiled("electric-chorus"), compiled("electric-delay"))
     bodies = {"remove": {"processor"}, "move": {"processor", "direction"}, "bypass": {"processor", "bypassed"},
-              "parameter": {"processor", "parameter", "value"}, "add": {"track", "name", "uri", "before"}}
-    assert plan.steps and all(set(s.args) == bodies[s.op] for s in plan.steps)
+              "parameter": {"processor", "parameter", "value"}, "add": {"track", "name", "uri", "before"},
+              "amp": {"name", "value"}}
+    for running, upcoming in (("electric-chorus", "electric-delay"), ("accustomed", "electric-chorus-2")):
+        plan = diff(compiled(running), compiled(upcoming))
+        assert plan.steps and all(set(s.args) == bodies[s.op] for s in plan.steps)
 
 
 # --------------------------------------------------------------------------- #
@@ -491,3 +594,36 @@ def test_a_restart_for_a_default_names_what_is_left_at_it():
     decided = diff(before, after)
     (reason,) = [r for r in decided.reasons if r.code == "parameter_default"]
     assert "its properties (preset)" in reason.detail and "program" not in reason.detail
+
+
+# --------------------------------------------------------------------------- #
+# Review of the amp branch
+# --------------------------------------------------------------------------- #
+
+def test_with_no_amp_running_neither_rigs_amp_is_a_step_or_a_reason():
+    """`up --no-amp`: no Carla runs, and a restart would start none, so a
+    model that differs, or an amp on one side only, is no reason to restart
+    and nothing is sent."""
+    before, after = _changed(lambda c: c["_amp"].update(model="amp/models/Other.nam",
+                                                         parameters={"Output Lvl": 9.0}))
+    assert diff(before, after, amp_off=True) == SwitchPlan(())
+    no_amp = copy.deepcopy(before)
+    no_amp.pop("_amp")
+    assert diff(no_amp, before, amp_off=True) == SwitchPlan(())
+    assert diff(before, no_amp, amp_off=True) == SwitchPlan(())
+    assert _codes(before, after) == ["amp"], "with an amp running it is still a restart"
+
+
+def test_one_model_written_two_ways_is_the_same_model(tmp_path):
+    """Compared as the file it names, from the checkout's root."""
+    models = tmp_path / "amp" / "models"
+    models.mkdir(parents=True)
+    (models / "M.nam").write_text("{}")
+    before, after = _changed(lambda c: c["_amp"].update(model=str(models / "M.nam")))
+    before["_amp"]["model"] = "amp/models/M.nam"
+    assert isinstance(diff(before, after, root=tmp_path), SwitchPlan)
+    assert _codes(before, after) == ["amp"], "without a root, as written"
+    other = copy.deepcopy(after)
+    (models / "N.nam").write_text("{}")
+    other["_amp"]["model"] = str(models / "N.nam")
+    assert diff(before, other, root=tmp_path).codes == ["amp"], "another file is another model"

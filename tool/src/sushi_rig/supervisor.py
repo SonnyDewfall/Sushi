@@ -46,6 +46,15 @@ around them:
   with no agent running. Crashes in such a rig show as `DEAD` children in
   `/rig`, from probing their pids, rather than in `crashed`.
 
+**The amp alone can be restarted** (`restart_amp`, for the agent's POST
+/amp/model): Carla is the one child whose state is chosen at start (its
+model, by the project it loads) and that can be stopped and started again
+inside the held group without taking the rest of the rig down. It is
+stopped by its own pid, never the group (the group is the whole rig), then
+started again by `rig.start_child` and given its knobs by `World.replay_amp`,
+the path `start_children` takes, and its exit on the way is not a crash.
+Nothing else is ever restarted this way.
+
 What runs is not decided here. `rig.prepare_launch` refuses, compiles and
 plans (`plan_children` stays the one planner); `rig.start_children` starts
 and checks the children, for both supervisors, here in a worker thread with
@@ -58,6 +67,7 @@ injectable (`World`) so the lifecycle is tested with fake children.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import functools
 import io
 import os
@@ -65,6 +75,7 @@ import signal
 import subprocess
 import sys
 import threading
+import time
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
@@ -242,6 +253,93 @@ def group_members(pgid: int) -> list[int]:
     return sorted(members)
 
 
+def child_pids(pid: int) -> list[int]:
+    """Every process whose parent is `pid`, and theirs, from /proc: what a
+    child started of its own, which signalling the child alone would leave.
+    Empty where /proc cannot be read."""
+    parents: dict[int, list[int]] = {}
+    try:
+        entries = os.listdir("/proc")
+    except OSError:
+        return []
+    for entry in entries:
+        if not entry.isdigit():
+            continue
+        try:
+            with open(f"/proc/{entry}/stat") as stat:
+                fields = stat.read().rsplit(")", 1)[1].split()
+        except (OSError, IndexError):
+            continue
+        if len(fields) > 1 and fields[1].isdigit():
+            parents.setdefault(int(fields[1]), []).append(int(entry))
+    found, todo = [], [pid]
+    while todo:
+        for kid in parents.get(todo.pop(), []):
+            if kid not in found:
+                found.append(kid)
+                todo.append(kid)
+    return sorted(found)
+
+
+def running(pid: int) -> bool:
+    """Whether `pid` is a process that has not exited: alive, and not a
+    zombie. A helper whose parent died before reaping it is reparented to
+    whatever reaps orphans, and where nothing does (a process running as pid
+    1 in a container, as CI runs the tests) it stays a zombie for good: dead,
+    though `kill(pid, 0)` still finds it."""
+    from .procs import pid_alive
+
+    try:
+        with open(f"/proc/{pid}/stat") as stat:
+            return stat.read().rsplit(")", 1)[1].split()[0] != "Z"
+    except (OSError, IndexError):
+        return pid_alive(pid)
+
+
+def stop_child(proc: subprocess.Popen, steps: tuple) -> list[int]:
+    """Stop one child of the rig, and what it started, by pid, through the
+    shutdown escalation `steps`: the pids still alive afterwards, empty when
+    every one has gone. Not `stop_group`: the group is the whole rig.
+
+    What it started is found first, since once the child has gone they are
+    no longer its children; each is signalled with it, so a helper Carla
+    spawned is not left holding the amp's JACK client or its OSC port while
+    the next Carla tries to take them."""
+    kids = child_pids(proc.pid)
+    for sig, wait in steps:
+        for pid in [proc.pid, *kids]:
+            try:
+                os.kill(pid, sig)
+            except (ProcessLookupError, PermissionError):
+                pass
+        deadline = time.monotonic() + wait
+        while time.monotonic() < deadline:
+            if proc.poll() is not None and not any(running(kid) for kid in kids):
+                return []
+            time.sleep(0.05)
+    proc.poll()
+    return [pid for pid in [proc.pid, *kids] if (pid != proc.pid or proc.returncode is None) and running(pid)]
+
+
+@dataclass(frozen=True)
+class AmpRestart:
+    """How `Supervisor.restart_amp` went. `ok` is the new model playing,
+    replayed, with `pid` its Carla. Otherwise `reason` says why, and
+    `restored` whether the previous model was brought back (True), could not
+    be (False), or was never taken away (None: refused before Carla was
+    touched). `code` says which refusal or failure, for the agent's answer:
+    `not_held`, `no_amp`, `project_unreadable`, `no_state` (refused);
+    `would_not_stop`, `did_not_start` (failed). `problems` are said either
+    way: links the patchbay did not remake, a log to read."""
+
+    ok: bool
+    reason: str | None = None
+    pid: int | None = None
+    restored: bool | None = None
+    problems: tuple[str, ...] = ()
+    code: str | None = None
+
+
 @dataclass(frozen=True)
 class World:
     """What the supervisor reaches outside itself, so its tests can stand each
@@ -297,6 +395,9 @@ class Held:
     holder_exit: dict[str, Any] | None = None
     startup_exits: list[dict[str, Any]] = field(default_factory=list)  # the start's, not crashes
     task: "asyncio.Task | None" = None
+    # Children being stopped on purpose, one at a time (`restart_amp`): their
+    # exit is the restart's, not a crash, as `stopping` is for the whole rig.
+    restarting: set = field(default_factory=set)
 
     @property
     def pgid(self) -> int:
@@ -435,10 +536,7 @@ class Supervisor:
         world = self.world
         logs = world.log_dir()
         logs.mkdir(parents=True, exist_ok=True)
-        env = dict(os.environ)
-        # As `_supervise` does, and for its reason: plugins/ alone, so a plugin
-        # the rig lacks fails loudly instead of resolving against a system copy.
-        env["LV2_PATH"] = str(launch.root / "plugins")
+        env = _rig_env(launch)
         holder = world.spawn(world.holder, cwd=launch.root, env=env, log=None, process_group=0)
         held = Held(launch=launch, holder=holder, logs=logs)
         self.held, self.crashed, self.problems = held, [], []
@@ -530,6 +628,177 @@ class Supervisor:
             self.problems = [p for p in self.problems if p["kind"] != "stuck"]
         return Outcome(code == 0, code, out.getvalue(), err.getvalue())
 
+    async def restart_amp(
+        self, project: str, values: dict[str, float], *, model: str, override: str,
+    ) -> AmpRestart:
+        """Restart Carla alone, in the held group, on another model: the rest
+        of the rig plays on, and the sound stops only for as long as Carla
+        takes to stop and start (not measured: no Carla was to hand).
+
+        1. Refused, with Carla untouched, unless this agent holds a rig that
+           is up and planned an amp, its project can be read (to put back),
+           and the state file names the held group: the run as it is now,
+           a live switch's config included, is what the new model is
+           recorded into, never the rig `up` first started.
+        2. Carla is stopped by its pid and what it started (`stop_child`),
+           its exit marked as the restart's. One that will not stop is a
+           failure, and nothing is started over it.
+        3. `project` (amp.carla_project's text) replaces the planned project
+           file, and Carla is started from it by `rig.start_child`, into the
+           group, as `start_children` starts it; `World.replay_amp` sends
+           `values` once its OSC answers. Carla exiting, or its OSC never
+           answering, is a failure.
+        4. On a failure after Carla was stopped, the previous project is put
+           back and Carla is started from it the same way, so the player
+           gets the old amp back rather than none; `restored` says whether
+           that worked.
+        5. Then the patchbay's links are checked (`World.link_problems`,
+           which waits for them): qpwgraph keeps its patch, so it should wire
+           the new Carla's ports as they appear, and a link it did not remake
+           is a guitar that is dry or silent, said in `problems`.
+        6. On success the state file is rewritten (`rig.amp_restarted_state`)
+           when it names the held group, and the held launch follows, so
+           `restart` keeps the model and /health names the new pid.
+
+        The caller holds the agent's lifecycle lock; this bounds itself by the
+        shutdown escalation and replay_amp's own wait, twice at most."""
+        held = self.held
+        if held is None or not held.ready or held.stopping:
+            return AmpRestart(False, (
+                "this agent does not hold a running rig, so it cannot restart its amp: a rig "
+                "started with 'up --direct', or by an agent before this one, is restarted whole "
+                "(POST /rig/restart)"), code="not_held")
+        planned = next((c for c in held.launch.children if c.get("name") == "amp"), None)
+        path = rig_module.amp_project_of(held.launch.children)
+        child = held.children.get("amp")
+        if planned is None or path is None or child is None:
+            return AmpRestart(False, "the rig was started with no amp, so there is no Carla to restart",
+                              code="no_amp")
+        world = self.world
+        try:
+            previous, recorded = await asyncio.to_thread(lambda: (path.read_text(), read_state()))
+        except OSError as exc:
+            return AmpRestart(False, f"the amp's project {path} cannot be read ({exc}), so the model "
+                                     "it plays could not be put back: not restarted",
+                              code="project_unreadable")
+        if not recorded or recorded.get("pgid") != held.pgid:
+            return AmpRestart(False, (
+                "the state file does not name the rig this agent holds (it is gone, or names group "
+                f"{(recorded or {}).get('pgid')} and not {held.pgid}), so the new model could not be "
+                "recorded for restart to keep: not restarted. POST /rig/restart writes it again"),
+                code="no_state")
+        env = _rig_env(held.launch)
+        held.restarting.add("amp")
+        try:
+            self.doing = f"stopping the amp (Carla, pid {child.proc.pid})"
+            left = await asyncio.to_thread(stop_child, child.proc, world.shutdown_steps)
+            self._sweep(held)
+            if left:
+                return AmpRestart(False, (
+                    f"Carla would not stop: pid(s) {', '.join(map(str, left))} are still running, so "
+                    "no new Carla was started over it. The amp may be half there: POST /rig/restart"),
+                    restored=False, code="would_not_stop")
+            failure = await self._start_amp(held, planned, env, path, project, values)
+            if failure is None:
+                problems = await self._amp_links(held)
+                await self._record_amp(held, recorded, model=model, override=override)
+                return AmpRestart(True, pid=held.children["amp"].proc.pid, problems=tuple(problems))
+            self._say(f"the amp did not come up on {model}: {failure}; putting the previous model back")
+            back = await self._start_amp(held, planned, env, path, previous, values)
+            if back is None:
+                problems = await self._amp_links(held)
+                await self._record_amp(held, recorded, model=None, override=None)
+                return AmpRestart(False, failure, pid=held.children["amp"].proc.pid, restored=True,
+                                  problems=tuple(problems), code="did_not_start")
+            said = (f"the amp did not come back on its previous model either: {back}. There is NO AMP "
+                    "in the signal path, so the guitar is running dry: POST /rig/restart")
+            self._say(said)
+            self.problems.append({"kind": "no_amp", "at": _now(), "message": said})
+            return AmpRestart(False, f"{failure}; and {said}", restored=False, code="did_not_start")
+        finally:
+            # Seen while still marked, so a Carla that this restart stopped,
+            # or that failed to come up, is the restart's and not a crash.
+            self._sweep(held)
+            held.restarting.discard("amp")
+            self.doing = None
+
+    async def _start_amp(
+        self, held: Held, planned: dict[str, Any], env: dict[str, str], path: Path, project: str,
+        values: dict[str, float],
+    ) -> str | None:
+        """Write `project`, start Carla from it into the held group and replay
+        `values`: None once it plays, or what went wrong (with anything that
+        did start stopped again, so a second try starts clean)."""
+        world = self.world
+        self.doing = "starting the amp (Carla) and restoring its knobs"
+
+        def start() -> str | None:
+            path.write_text(project)
+            try:
+                proc, log = rig_module.start_child(
+                    planned, root=held.launch.root, env=env, logs=held.logs,
+                    spawn=functools.partial(world.spawn, process_group=held.pgid))
+            except OSError as exc:
+                return f"Carla did not start: {exc}"
+            held.add("amp", proc, log)
+            try:
+                world.replay_amp(dict(values))
+                failed = None
+            except Exception as exc:  # noqa: BLE001 -- said, and the old model is put back
+                failed = f"its knobs could not be restored ({exc})"
+            if proc.poll() is not None:
+                # Not `startup_exit_problem`'s words, which say there is no
+                # amp: the caller may yet bring the previous model back.
+                failed = f"Carla exited as it started (status {proc.returncode}): see {log}"
+            if failed is not None and proc.poll() is None:
+                stop_child(proc, world.shutdown_steps)
+            return failed
+
+        return await asyncio.to_thread(start)
+
+    async def _amp_links(self, held: Held) -> list[str]:
+        """The patchbay's links, checked as `start_children` checks them once
+        the rig is up: only when qpwgraph is one of the children running."""
+        running = {name for name, child in list(held.children.items())
+                   if child.exit is None and child.proc.poll() is None}
+        if "qpwgraph" not in running:
+            return []
+        self.doing = "checking the patchbay's links were made to the new Carla"
+        try:
+            return await asyncio.to_thread(
+                self.world.link_problems, held.launch.children, held.launch.root, running,
+                held.launch.rig_source is not None)
+        except Exception as exc:  # noqa: BLE001 -- a check that cannot run is said, not fatal
+            return [f"could not check the patchbay's links after the amp restarted: {exc}"]
+
+    async def _record_amp(
+        self, held: Held, recorded: dict[str, Any], *, model: str | None, override: str | None,
+    ) -> None:
+        """The state file, and the held launch, after Carla was restarted: the
+        new pid always, and the model when it changed (None: it was put back).
+
+        Written over the run as it is now: the state file as it reads now if
+        it still names the held group, else as it read when the restart began
+        (`recorded`, checked then to name it). Never `held.provisional()`,
+        which is the rig `up` started, with a fresh `started_at`: after a live
+        switch that would bring the switched-from rig back on `restart`, and
+        reseed the amp from its config. Off the loop: it reads and writes."""
+        pid = held.children["amp"].proc.pid
+
+        def write() -> dict[str, Any]:
+            now = read_state()
+            base = now if now and now.get("pgid") == held.pgid else recorded
+            if model is None:
+                updated = {**base, "children": {**(base.get("children") or {}), "amp": pid}}
+            else:
+                updated = rig_module.amp_restarted_state(base, model=model, override=override, pid=pid)
+            write_state(updated)
+            return updated
+
+        held.record = await asyncio.to_thread(write)
+        if model is not None:
+            held.launch = dataclasses.replace(held.launch, amp_model=model, amp_model_requested=override)
+
     async def restart(self) -> Outcome:
         """`rig.restart`'s steps with the agent's own `down` and `up`, and its
         words. What to bring back is read from the state file first, as the
@@ -565,7 +834,7 @@ class Supervisor:
                 phase="running" if held.ready else "startup",
                 config_name=self._running_name(held), log=child.log,
             )
-            if held.stopping:
+            if held.stopping or child.name in held.restarting:
                 continue
             if held.ready:
                 self.crashed.append(child.exit)
@@ -727,6 +996,16 @@ class Supervisor:
 
 
 # --------------------------------------------------------------------------- #
+
+def _rig_env(launch: "rig_module.Launch") -> dict[str, str]:
+    """The environment the rig's children start from. As `_supervise` makes
+    it, and for its reason: plugins/ alone on LV2_PATH, so a plugin the rig
+    lacks fails loudly instead of resolving against a system copy. One
+    function, so Carla restarted alone gets the environment `up` gave it."""
+    env = dict(os.environ)
+    env["LV2_PATH"] = str(launch.root / "plugins")
+    return env
+
 
 def _how(record: dict[str, Any]) -> str:
     return f"was killed by {record['signal']}" if record.get("signal") else f"exited with status {record['returncode']}"

@@ -338,6 +338,11 @@ def serve(
         Remembering is the reason this goes through the listener at all. Carla's
         OSC is write-only from here, so the value we last sent is the only
         record there is of where the amp is set — and the save button needs it.
+
+        The listener is the amp's one writer while the panel runs: the agent
+        refuses to write to Carla in panel mode (409 `panel`, amp_live.py)
+        rather than keep a second record this one cannot see. Nothing is
+        forwarded to the agent, so its GET /amp says `known: "panel"`.
         """
         try:
             osc_path, payload, name, remembered = amp_command(osc_address, args)
