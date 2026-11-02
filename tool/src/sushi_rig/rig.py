@@ -502,56 +502,49 @@ def format_uptime(seconds: float) -> str:
 
 
 def state_record(
+    launch: "Launch",
     *,
     supervisor_pid: int,
     pgid: int,
-    headless: bool,
-    config_name: str,
-    config: Path,
     children: dict[str, int],
     log_dir: Path,
     started_at: str,
-    amp_model: str | None = None,
-    tuner_requested: bool = True,
-    amp_requested: bool = True,
-    amp_model_requested: str | None = None,
-    rig_source: str | None = None,
-    machine_file: Path | None = None,
 ) -> dict[str, Any]:
     """The state file for a rig that is up: what `status`, `down` and
     `restart` read. Pure.
 
-    `supervisor_pid` is whatever leads the group and lives as long as the rig:
-    the forked supervisor itself, or the agent's group holder. `liveness`
-    requires the two ids to be equal, which both supervisors make true by
-    construction.
+    `launch` says what was asked for and what was planned; the rest is what
+    starting it produced. `supervisor_pid` is whatever leads the group and
+    lives as long as the rig: the forked supervisor itself, or the agent's
+    group holder. `liveness` requires the two ids to be equal, which both
+    supervisors make true by construction.
     """
     return {
         "supervisor_pid": supervisor_pid,
         "pgid": pgid,
-        "mode": "headless" if headless else "panel",
-        "config_name": config_name,
-        "config": str(config),
+        "mode": "headless" if launch.headless else "panel",
+        "config_name": launch.config_name,
+        "config": str(launch.config),
         "started_at": started_at,
         "children": dict(children),
         "log_dir": str(log_dir),
-        "amp_model": amp_model,
+        "amp_model": launch.amp_model,
         # What was asked for, which `children` cannot say once an optional
         # child has failed to start. `restart` reads these.
-        "tuner_requested": tuner_requested,
-        "amp_requested": amp_requested,
+        "tuner_requested": launch.tuner_requested,
+        "amp_requested": launch.amp_requested,
         # The override as the caller gave it, None when there was none. Not
         # `amp_model`, which is what *ran* and so includes the config's own
         # choice: restoring that would pin today's model for good, and a
         # later edit to the config would be ignored by every restart.
-        "amp_model_requested": amp_model_requested,
+        "amp_model_requested": launch.amp_model_requested,
         # The rig file a v2 run was compiled from, None for a v1 config.
         # `restart` brings back the same kind; `status` says which.
-        "rig": rig_source,
+        "rig": launch.rig_source,
         # The machine file that run was compiled against, None for a v1
         # config. The listener's save check recompiles the rig and must
         # read the same file, not whatever this host's default is.
-        "machine": _machine_record(machine_file),
+        "machine": _machine_record(launch.machine_file),
     }
 
 
@@ -609,30 +602,193 @@ def up_summary(config_name: str, headless: bool, state: dict[str, Any]) -> str:
     return "\n".join(lines) + "\n"
 
 
+# How long `sushi-rig panel` may take to read the live rig and write the panel:
+# long enough for every parameter of a big rig over gRPC, and a bound so that
+# a hung one fails the start rather than holding it for ever. A guess, not a
+# measurement; both supervisors use it.
+PANEL_TIMEOUT = 60.0
+
+
+def sushi_ready(alive: Callable[[], bool] | None) -> bool:
+    """Whether Sushi's gRPC answered within `GRPC_TIMEOUT`, giving up early
+    once `alive` says our Sushi has exited."""
+    return wait_for_grpc(GRPC_HOST, GRPC_PORT, GRPC_TIMEOUT, alive)
+
+
+def generate_panel(command: list[str], root: Path, env: dict[str, str]) -> tuple[int, str]:
+    """Run `sushi-rig panel` to completion: its exit status and stderr."""
+    try:
+        done = subprocess.run(
+            command, cwd=root, env=env, capture_output=True, text=True, check=False,
+            timeout=PANEL_TIMEOUT,
+        )
+    except subprocess.TimeoutExpired:
+        return 1, f"'sushi-rig panel' did not finish within {PANEL_TIMEOUT:g}s"
+    except OSError as exc:
+        return 1, str(exc)
+    return done.returncode, done.stderr
+
+
+def link_problems(plan: list[dict[str, Any]], root: Path, running: set[str], rig_run: bool) -> list[str]:
+    """What to say about the loaded patchbay's links (`_unmade_link_problems`)."""
+    return _unmade_link_problems(_patchbay_in(plan, root), running, rig_run=rig_run)
+
+
+def spawn_child(command: list[str], *, cwd: Path, env: dict[str, str], log: Path | None) -> subprocess.Popen:
+    """Start one child, its output to `log` (or nowhere), its stdin closed.
+    The forked supervisor's spawn; the agent's adds the group it holds."""
+    if log is None:
+        return subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+                                stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+    with open(log, "wb") as sink:
+        return subprocess.Popen(command, cwd=cwd, env=env, stdin=subprocess.DEVNULL,
+                                stdout=sink, stderr=sink)
+
+
+def start_children(
+    launch: "Launch",
+    *,
+    env: dict[str, str],
+    logs: Path,
+    spawn: Callable[..., subprocess.Popen],
+    start_qpwgraph: Callable[..., "subprocess.Popen | None"],
+    sushi_ready: Callable[["Callable[[], bool] | None"], bool],
+    generate_panel: Callable[[list[str], Path, dict[str, str]], tuple[int, str]],
+    link_problems: Callable[[list, Path, set, bool], list[str]],
+    replay_amp: Callable[[dict[str, float]], None],
+    on_start: Callable[[str, subprocess.Popen, Path], None] = lambda name, proc, log: None,
+    step: Callable[[str], None] = lambda doing: None,
+    abandoned: Callable[[], bool] = lambda: False,
+) -> tuple[dict[str, subprocess.Popen], list[str], str | None]:
+    """Start the planned children, in order, with every check a start makes:
+    `(the children started, the problems to warn of, the failure that stopped
+    the start or None)`. Blocking.
+
+    The one start routine (#29): the forked supervisor runs it in its own
+    process, and the agent runs it in a worker thread with `spawn` and
+    `start_qpwgraph` bound to the group it holds. What a start checks, and in
+    what order, therefore cannot drift between the two, as it had begun to.
+
+    `on_start` hears each child as it starts, so the agent watches it from the
+    first moment; `step` hears what is being done, for the agent to say what
+    was still running if it gives up waiting; `abandoned` is asked after each
+    process starts, and once it says yes nothing more is started, and what was
+    started last is stopped (the agent has torn the rest down by then).
+    """
+    root = launch.root
+    procs: dict[str, subprocess.Popen] = {}
+    problems: list[str] = []
+
+    def started(name: str, proc: subprocess.Popen, log: Path) -> bool:
+        if abandoned():
+            proc.kill()
+            proc.wait()
+            return False
+        procs[name] = proc
+        on_start(name, proc, log)
+        return True
+
+    for child in launch.children:
+        if abandoned():
+            return procs, problems, "abandoned"
+        name = child["name"]
+        if name == "qpwgraph":
+            step("starting qpwgraph, clearing any it finds first")
+            proc = start_qpwgraph(child, root, env, logs)
+            if proc is None:
+                problems.append(qpwgraph_problem(root))
+                continue
+            if not started(name, proc, logs / "qpwgraph.log"):
+                return procs, problems, "abandoned"
+            continue
+        step(f"starting {name}")
+        log = logs / f"{name}.log"
+        try:
+            proc = spawn(child["command"], cwd=root, env=child_environment(env, child), log=log)
+        except OSError as exc:
+            if child["optional"]:
+                problems.append(f"{name} did not start ({exc})")
+                continue
+            return procs, problems, f"{name} did not start: {exc}"
+        if not started(name, proc, log):
+            return procs, problems, "abandoned"
+
+    sushi_proc = procs.get("sushi")
+    alive = (lambda: sushi_proc.poll() is None) if sushi_proc else None
+    step(f"waiting for Sushi's gRPC on {GRPC_HOST}:{GRPC_PORT}")
+    if not sushi_ready(alive):
+        why = (
+            "Sushi exited during startup"
+            if sushi_proc and sushi_proc.poll() is not None
+            else f"Sushi's gRPC never came up on {GRPC_HOST}:{GRPC_PORT}"
+        )
+        return procs, problems, f"{why} — see {logs / 'sushi.log'}"
+    if abandoned():
+        return procs, problems, "abandoned"
+
+    if not launch.headless:
+        step("generating the panel (sushi-rig panel)")
+        generate, serve = panel_commands(root, launch.config)
+        code, err = generate_panel(generate, root, env)
+        if code != 0:
+            return procs, problems, f"could not generate the panel:\n{err.strip()}"
+        step("starting open-stage-control")
+        try:
+            osc = spawn(serve, cwd=root, env=env, log=logs / "panel.log")
+        except OSError as exc:
+            return procs, problems, f"open-stage-control did not start: {exc}"
+        # In `procs` too, so the liveness check below covers the panel. It
+        # was once the one child that check missed, being started outside
+        # the loop above.
+        if not started("open-stage-control", osc, logs / "panel.log"):
+            return procs, problems, "abandoned"
+
+    # A child that starts and *then* exits was, until this check, silent.
+    # Popen succeeding only means the binary existed; Carla dying a second
+    # later for want of a JACK server left `up` printing READY and a rig
+    # with no amp in it, which is precisely the "processing silence while
+    # looking perfectly healthy" failure principle 8 exists to forbid. The
+    # amp's own symptom was worse than absence: the only warning came from
+    # the parameter replay timing out, which reads as "your knobs are at
+    # their defaults" rather than "you have no amp".
+    for name, proc in procs.items():
+        if proc.poll() is not None:
+            problems.append(startup_exit_problem(name, proc.returncode, logs))
+
+    # Every link the loaded patchbay asked for, the tuner's included: a
+    # channel whose source never reaches it is a rig that comes up healthy
+    # and silent, which is how the committed patchbay would have treated a
+    # v2 guitar_vocal (read off the files, 2026-11-01), and a tuner whose
+    # tap is missing is one that shows nothing. Non-fatal like its
+    # neighbours, and guarded: a `pw-dump` or `pw-link` that cannot run
+    # must not cost a rig that is playing.
+    running = {name for name, proc in procs.items() if proc.poll() is None}
+    if "qpwgraph" in running:
+        step("checking the patchbay's links were made")
+        problems += link_problems(launch.children, root, running, launch.rig_source is not None)
+
+    if launch.amp_model and "amp" in running:
+        # Carla starts with the model but with the plugin's own default
+        # knob positions; the saved values have to be sent once it is
+        # listening. Never fatal — a rig with an amp at its defaults is
+        # much better than no rig.
+        step("restoring the amp's knobs")
+        try:
+            replay_amp(launch.amp_values or {})
+        except Exception as exc:  # noqa: BLE001 - see above
+            problems.append(f"amp parameters not restored: {exc}")
+    return procs, problems, None
+
+
 # --- process helpers --------------------------------------------------------
 
 
-def _supervise(
-    root: Path,
-    config: Path,
-    children_plan: list[dict[str, Any]],
-    *,
-    headless: bool,
-    config_name: str,
-    ready_w: int,
-    amp_model: str | None = None,
-    amp_values: dict[str, float] | None = None,
-    tuner_requested: bool = True,
-    amp_requested: bool = True,
-    amp_model_requested: str | None = None,
-    rig_source: str | None = None,
-    machine_file: Path | None = None,
-) -> None:
+def _supervise(launch: "Launch", *, ready_w: int) -> None:
     """The supervisor process: own the group, start the children, then wait.
 
     The supervisor when no agent is running; the agent's own is
-    `supervisor.Supervisor`, which takes the same steps through the same
-    helpers. Runs only in the forked child. `os.setsid()` makes it session and process
+    `supervisor.Supervisor`. Both start the children with `start_children`.
+    Runs only in the forked child. `os.setsid()` makes it session and process
     group leader, and every child spawned from here inherits that group — so
     `down` can reach the whole tree with one `killpg`, including Sushi's
     re-exec'd `sushi.bin` and open-stage-control's Electron helpers.
@@ -646,6 +802,7 @@ def _supervise(
     failure as a failure rather than returning a cheerful prompt.
     """
     os.setsid()
+    root = launch.root
     logs = log_dir()
     logs.mkdir(parents=True, exist_ok=True)
 
@@ -671,116 +828,25 @@ def _supervise(
     # portability break.
     env["LV2_PATH"] = str(root / "plugins")
 
-    started: dict[str, int] = {}
-    procs: dict[str, subprocess.Popen] = {}
-    problems: list[str] = []
-
     def report(message: str) -> None:
         os.write(ready_w, (message + "\n").encode())
 
     try:
-        for child in children_plan:
-            name = child["name"]
-            if name == "qpwgraph":
-                proc = start_qpwgraph(child, root, env, logs)
-                if proc is None:
-                    problems.append(qpwgraph_problem(root))
-                    continue
-                started[name] = proc.pid
-                procs[name] = proc
-                continue
-            handle = logs / f"{name}.log"
-            child_env = child_environment(env, child)
-            with open(handle, "wb") as sink:
-                try:
-                    proc = subprocess.Popen(
-                        child["command"], cwd=root, env=child_env,
-                        stdin=subprocess.DEVNULL, stdout=sink, stderr=sink,
-                    )
-                except OSError as exc:
-                    if child["optional"]:
-                        problems.append(f"{name} did not start ({exc})")
-                        continue
-                    report(f"FAIL {name} did not start: {exc}")
-                    return
-            started[name] = proc.pid
-            procs[name] = proc
-
-        sushi_proc = procs.get("sushi")
-        alive = (lambda: sushi_proc.poll() is None) if sushi_proc else None
-        if not wait_for_grpc(GRPC_HOST, GRPC_PORT, GRPC_TIMEOUT, alive):
-            why = (
-                "Sushi exited during startup"
-                if sushi_proc and sushi_proc.poll() is not None
-                else f"Sushi's gRPC never came up on {GRPC_HOST}:{GRPC_PORT}"
-            )
-            report(f"FAIL {why} — see {logs / 'sushi.log'}")
+        # The module's names, looked up now, so a test that stands one in
+        # (the real-fork tests do) has it reach the routine.
+        procs, problems, failure = start_children(
+            launch, env=env, logs=logs, spawn=spawn_child, start_qpwgraph=start_qpwgraph,
+            sushi_ready=sushi_ready, generate_panel=generate_panel,
+            link_problems=link_problems, replay_amp=_replay_amp,
+        )
+        if failure is not None:
+            report(f"FAIL {failure}")
             return
-
-        if not headless:
-            generate, serve = panel_commands(root, config)
-            panel = subprocess.run(
-                generate, cwd=root, env=env, capture_output=True, text=True, check=False,
-            )
-            if panel.returncode != 0:
-                report(f"FAIL could not generate the panel:\n{panel.stderr.strip()}")
-                return
-            with open(logs / "panel.log", "wb") as sink:
-                osc = subprocess.Popen(
-                    serve, cwd=root, env=env,
-                    stdin=subprocess.DEVNULL, stdout=sink, stderr=sink,
-                )
-            started["open-stage-control"] = osc.pid
-            # In `procs` too, so the liveness check below covers the panel.
-            # It was the one child the check missed, because it is started
-            # outside the loop that fills `procs`.
-            procs["open-stage-control"] = osc
-
-        # A child that starts and *then* exits was, until this check, silent.
-        # Popen succeeding only means the binary existed; Carla dying a second
-        # later for want of a JACK server left `up` printing READY and a rig
-        # with no amp in it, which is precisely the "processing silence while
-        # looking perfectly healthy" failure principle 8 exists to forbid. The
-        # amp's own symptom was worse than absence: the only warning came from
-        # the parameter replay timing out, which reads as "your knobs are at
-        # their defaults" rather than "you have no amp".
-        for name, proc in procs.items():
-            if proc.poll() is None:
-                continue
-            problems.append(startup_exit_problem(name, proc.returncode, logs))
-
-        # Every link the loaded patchbay asked for, the tuner's included: a
-        # channel whose source never reaches it is a rig that comes up healthy
-        # and silent, which is how the committed patchbay would have treated a
-        # v2 guitar_vocal (read off the files, 2026-11-01), and a tuner whose
-        # tap is missing is one that shows nothing. Non-fatal like its
-        # neighbours, and guarded: a `pw-dump` or `pw-link` that cannot run
-        # must not cost a rig that is playing.
-        if "qpwgraph" in procs and procs["qpwgraph"].poll() is None:
-            running = {name for name, proc in procs.items() if proc.poll() is None}
-            problems += _unmade_link_problems(
-                _patchbay_in(children_plan, root), running, rig_run=rig_source is not None,
-            )
-
-        if amp_model and "amp" in procs and procs["amp"].poll() is None:
-            # Carla starts with the model but with the plugin's own default
-            # knob positions; the saved values have to be sent once it is
-            # listening. Never fatal — a rig with an amp at its defaults is
-            # much better than no rig.
-            try:
-                _replay_amp(amp_values or {})
-            except Exception as exc:  # noqa: BLE001 - see above
-                problems.append(f"amp parameters not restored: {exc}")
-
         write_state(state_record(
-            supervisor_pid=os.getpid(), pgid=os.getpgrp(), headless=headless,
-            config_name=config_name, config=config, children=started, log_dir=logs,
-            started_at=datetime.now(timezone.utc).isoformat(), amp_model=amp_model,
-            tuner_requested=tuner_requested, amp_requested=amp_requested,
-            amp_model_requested=amp_model_requested, rig_source=rig_source,
-            machine_file=machine_file,
+            launch, supervisor_pid=os.getpid(), pgid=os.getpgrp(),
+            children={name: proc.pid for name, proc in procs.items()}, log_dir=logs,
+            started_at=datetime.now(timezone.utc).isoformat(),
         ))
-
         for problem in problems:
             report(f"WARN {problem}")
         report("READY")
@@ -1128,16 +1194,7 @@ def up(
     launch = prepare_launch(
         config_name, headless=headless, tuner=tuner, amp=amp, amp_model=amp_model, rig=rig,
     )
-    pid, ready_r = _fork_supervisor(
-        lambda ready_w: _supervise(
-            launch.root, launch.config, launch.children,
-            headless=headless, config_name=config_name, ready_w=ready_w,
-            amp_model=launch.amp_model, amp_values=launch.amp_values,
-            tuner_requested=tuner, amp_requested=amp,
-            amp_model_requested=amp_model, rig_source=launch.rig_source,
-            machine_file=launch.machine_file,
-        )
-    )
+    pid, ready_r = _fork_supervisor(lambda ready_w: _supervise(launch, ready_w=ready_w))
     outcome = ""
     with os.fdopen(ready_r) as pipe:
         for line in pipe:
@@ -1194,7 +1251,10 @@ def _kill_group_of(pid: int) -> None:
         return
 
 
-def down(force: bool = False, *, out: Any = None, err: Any = None) -> int:
+def down(
+    force: bool = False, *, out: Any = None, err: Any = None,
+    state: dict[str, Any] | None = None,
+) -> int:
     """Stop the rig, then verify it is actually stopped.
 
     Signals the recorded process group, never a command-line pattern. That is
@@ -1208,20 +1268,25 @@ def down(force: bool = False, *, out: Any = None, err: Any = None) -> int:
     group anyway.
 
     `out` and `err` are where it speaks, the process's own streams unless
-    given: the agent runs this in a worker thread for a rig it did not start
-    (#29), and swapping `sys.stdout` there would capture every other thread's
-    output too.
+    given: the agent runs this in a worker thread (#29), and swapping
+    `sys.stdout` there would capture every other thread's output too.
+
+    `state` is the rig to stop when the caller knows it better than the file:
+    the agent's record of a rig it holds, whose state file is gone or was
+    never written (a start that failed and left processes). The state file is
+    cleared only when it names the group that was stopped, so stopping one
+    rig never erases the record of another.
     """
     out = out or sys.stdout
     err = err or sys.stderr
-    state = read_state()
+    state = state if state is not None else read_state()
     verdict = liveness(state, pid_alive, pgid_alive)
     if verdict == "absent":
         print("No rig is running.", file=out)
         return 0
     if verdict == "gone":
         print("No rig is running (clearing a stale state file).", file=out)
-        clear_state()
+        _clear_state_of(state.get("pgid"))
         return 0
 
     pgid = state.get("pgid")
@@ -1279,9 +1344,16 @@ def down(force: bool = False, *, out: Any = None, err: Any = None) -> int:
         )
         return 1
 
-    clear_state()
+    _clear_state_of(pgid)
     print("Rig offline.", file=out)
     return 0
+
+
+def _clear_state_of(pgid: Any) -> None:
+    """Remove the state file if it describes group `pgid`, and only then."""
+    recorded = read_state()
+    if recorded is not None and recorded.get("pgid") == pgid:
+        clear_state()
 
 
 def restart_arguments(state: dict[str, Any]) -> tuple[str, dict[str, Any]]:
@@ -1331,18 +1403,28 @@ def restart() -> int:
     """
     state = read_state()
     if not state:
-        raise RigError(
-            "no rig is running, so there is nothing to restart.\n"
-            "Start one with: sushi-rig up <config>"
-        )
+        raise RigError(NOTHING_TO_RESTART)
 
     config_name, options = restart_arguments(state)
 
-    print(f"Restarting {config_name}...")
+    print(restart_heading(config_name))
     outcome = down()
     if outcome != 0:
-        raise RigError("could not stop the running rig, so it was not restarted")
+        raise RigError(NOT_RESTARTED)
     return up(config_name, **options)
+
+
+# `restart`'s words, shared with the agent's (#29), which takes the same steps
+# with its own `down` and `up` and must say the same things about them.
+NOTHING_TO_RESTART = (
+    "no rig is running, so there is nothing to restart.\n"
+    "Start one with: sushi-rig up <config>"
+)
+NOT_RESTARTED = "could not stop the running rig, so it was not restarted"
+
+
+def restart_heading(config_name: str) -> str:
+    return f"Restarting {config_name}..."
 
 
 def describe_rig(

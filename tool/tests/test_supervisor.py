@@ -241,8 +241,8 @@ def test_the_state_file_the_agent_writes_round_trips_through_status(world, capsy
     recorded, described = run(go())
     assert recorded["supervisor_pid"] == recorded["pgid"], "the holder is the supervisor of record"
     assert set(recorded) == set(rig.state_record(
-        supervisor_pid=2, pgid=2, headless=True, config_name="t", config=Path("c"),
-        children={}, log_dir=Path("l"), started_at="s"))
+        world.state["launch"](), supervisor_pid=2, pgid=2, children={}, log_dir=Path("l"),
+        started_at="s"))
     assert recorded["mode"] == "headless" and recorded["tuner_requested"] is False
     assert described["verdict"] == "running"
     assert set(described["children"]) == {"qpwgraph", "sushi"}
@@ -503,21 +503,36 @@ def test_the_rig_outlives_the_agent_and_the_next_agent_stops_it(world):
     assert not pgid_alive(pgid)
 
 
-def test_a_group_stopped_outside_the_agent_is_a_stop_not_a_crash(world):
-    """`sushi-rig down --direct` signals the group from the state file: the
-    holder dies of it at once, and the exits that follow are that stop."""
+def test_a_holder_that_dies_alone_is_a_problem_and_the_children_are_still_judged_each_on_its_own(world):
+    """A kill of the recorded supervisor pid, or the OOM killer: the rig is
+    still playing, so /health must not call it stopping, and a child that
+    crashes after is a crash."""
     lines: list[str] = []
     supervisor = Supervisor(world.world, say=lines.append)
 
     async def go():
         assert (await supervisor.up("t", headless=True)).ok
-        os.killpg(supervisor.held.pgid, signal.SIGTERM)
-        await settle_until(lambda: supervisor.held is None)
-        return supervisor.describe()
+        holder = supervisor.held.holder
+        os.kill(holder.pid, signal.SIGKILL)
+        await settle_until(lambda: supervisor.problems)
+        playing = supervisor.describe()
+        os.kill(supervisor.held.children["fmit"].proc.pid, signal.SIGTERM)
+        await settle_until(lambda: supervisor.crashed)
+        later = supervisor.describe()
+        verdict = rig.describe_rig()["verdict"]
+        stopped = await supervisor.down()
+        return playing, later, verdict, stopped
 
-    described = run(go())
-    assert described["crashed"] == []
-    assert "signalled from outside the agent" in described["note"]
+    playing, later, verdict, stopped = run(go())
+    [problem] = playing["problems"]
+    assert problem["kind"] == "holder_lost" and "killed by SIGKILL" in problem["message"]
+    assert playing["holds"]["state"] == "up", "a playing rig is not 'stopping'"
+    assert playing["holds"]["holder"]["running"] is False
+    assert playing["crashed"] == []
+    assert [(c["name"], c["signal"]) for c in later["crashed"]] == [("fmit", "SIGTERM")]
+    assert verdict == "orphaned", "status says what the state file now amounts to"
+    assert stopped.ok, "down still stops the group by its id"
+    assert any("group holder" in line for line in lines)
 
 
 # --------------------------------------------------------------------------- #
@@ -572,8 +587,8 @@ def test_a_bug_while_starting_still_stops_what_started(world):
 
 def test_a_held_rig_is_held_in_a_group_the_holder_keeps_through_the_polite_signal(world):
     """The holder dies of SIGINT at once, as the forked supervisor did; the
-    group lives on while a slower member does, so `down`'s escalation is
-    still what ends it."""
+    group lives on while a slower member does, so `down`'s escalation (the
+    CLI's, shared) is still what ends it."""
     deaf = world.root / "deaf"  # written once SIGINT is ignored, so the signal cannot win the race
     world.spawner.scripts["pw-jack"] = [
         sys.executable, "-c",
@@ -591,4 +606,160 @@ def test_a_held_rig_is_held_in_a_group_the_holder_keeps_through_the_polite_signa
 
     sushi, outcome = run(go())
     assert outcome.ok
-    assert sushi.returncode == -signal.SIGKILL, "it took the last step to end it"
+    # `rig.down`'s own escalation, the CLI's: SIGINT, then SIGTERM.
+    assert sushi.returncode == -signal.SIGTERM, "it took the next step to end it"
+
+
+# --------------------------------------------------------------------------- #
+# No step holds the lifecycle lock for ever
+# --------------------------------------------------------------------------- #
+
+def test_a_preparation_that_hangs_is_abandoned_with_what_was_running(world):
+    release = threading.Event()
+
+    def hangs(config_name, **kwargs):
+        release.wait(30)
+        raise rig.RigError("too late to matter")
+
+    world.world = dataclasses.replace(world.world, prepare=hangs)
+    supervisor = Supervisor(world.world, say=lambda m: None, timeout=0.3)
+
+    async def go():
+        try:
+            return await supervisor.run(["up", "t", "--headless"])
+        finally:
+            release.set()  # before the loop closes, which waits for its threads
+
+    outcome = run(go())
+    assert outcome.abandoned
+    assert "'up t --headless' did not finish within 0.3s" in outcome.reason
+    assert "preparing the rig (rig.prepare_launch" in outcome.reason
+    assert "Nothing had been started." in outcome.reason
+    assert world.spawner.asked == [] and supervisor.doing is None
+
+
+def test_a_start_that_hangs_is_abandoned_and_what_it_started_is_stopped(world):
+    release = threading.Event()
+
+    def stuck_qpwgraph(child, root, env, logs, process_group=None):
+        proc = world.spawner(child["command"], cwd=root, env=env, log=logs / "qpwgraph.log",
+                             process_group=process_group)
+        release.wait(30)
+        return proc
+
+    world.world = dataclasses.replace(world.world, start_qpwgraph=stuck_qpwgraph)
+    supervisor = Supervisor(world.world, say=lambda m: None, timeout=0.5)
+
+    async def go():
+        try:
+            outcome = await supervisor.run(["up", "t", "--headless"])
+            pgid = world.spawner.started[0].pid
+            return outcome, pgid
+        finally:
+            release.set()
+
+    outcome, pgid = run(go())
+    assert outcome.abandoned
+    assert "It was starting qpwgraph" in outcome.reason
+    assert "What it had started was stopped." in outcome.reason
+    assert not pgid_alive(pgid) and supervisor.held is None
+    for proc in world.spawner.started:
+        proc.wait(timeout=5)  # the late one too, killed once the start saw it was abandoned
+    assert [c for c, _ in world.spawner.asked if c[0] == "pw-jack"] == [], "nothing started after"
+    assert state_file.read_state() is None
+
+
+def test_a_hung_up_is_a_504_and_frees_the_lock_for_the_next_request(world):
+    pytest.importorskip("aiohttp")
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from sushi_rig.agent import Agent
+
+    release = threading.Event()
+
+    def hangs(config_name, **kwargs):
+        release.wait(30)
+        raise rig.RigError("too late")
+
+    world.world = dataclasses.replace(world.world, prepare=hangs)
+    agent = Agent(supervisor=Supervisor(world.world, say=lambda m: None, timeout=0.3))
+
+    async def go():
+        try:
+            async with TestClient(TestServer(agent.app())) as client:
+                up = await client.post("/rig/up", json={"config_name": "t", "headless": True})
+                body = await up.json()
+                down = await client.post("/rig/down")
+                return up.status, body, down.status
+        finally:
+            release.set()
+            agent._executor.shutdown(wait=True)
+
+    status, body, down = run(go())
+    assert status == 504 and "did not finish within 0.3s" in body["reason"]
+    assert down == 200, "not 409 busy: the lock was let go"
+
+
+# --------------------------------------------------------------------------- #
+# A start that fails says what it leaves, and keeps its exits to itself
+# --------------------------------------------------------------------------- #
+
+def test_a_start_whose_group_will_not_stop_keeps_it_held_and_says_which_pids_are_left(world):
+    world.world = dataclasses.replace(
+        world.world, sushi_ready=lambda alive: False, stop_group=lambda pgid, steps, poll=None: False)
+    lines: list[str] = []
+    supervisor = Supervisor(world.world, say=lines.append)
+
+    async def go():
+        outcome = await supervisor.up("t", headless=True)
+        described = supervisor.describe()
+        pgid = supervisor.held.pgid if supervisor.held else None
+        again = await supervisor.down()  # the real escalation, through rig.down
+        return outcome, described, pgid, again, supervisor.describe()
+
+    outcome, described, pgid, again, after = run(go())
+    assert not outcome.ok
+    assert f"did NOT all stop: pid(s) {pgid}" in outcome.reason
+    assert "POST /rig/down (or sushi-rig down) tries again" in outcome.reason
+    assert described["holds"]["state"] == "stuck" and pgid in described["holds"]["left"]
+    assert [p["kind"] for p in described["problems"]] == ["stuck"]
+    assert any("did NOT all stop" in line for line in lines)
+    assert state_file.read_state() is None, "no state file was ever written for it"
+    assert again.ok and "Rig offline." in again.stdout
+    assert not pgid_alive(pgid) and after["holds"] is None and after["problems"] == []
+
+
+def test_a_child_that_exits_during_a_failed_start_is_the_failures_not_a_crash(world):
+    world.spawner.scripts["fmit"] = crasher(1, after=0.0)
+
+    def never(alive):
+        time.sleep(0.3)  # the tuner has gone by now
+        return False
+
+    world.world = dataclasses.replace(world.world, sushi_ready=never)
+    lines: list[str] = []
+    supervisor = Supervisor(world.world, say=lines.append)
+    outcome = run(supervisor.up("t", headless=True))
+    assert not outcome.ok
+    assert "Sushi's gRPC never came up" in outcome.reason
+    assert "fmit exited with status 1 while starting; see " in outcome.reason
+    assert supervisor.crashed == []
+    assert "restart" not in outcome.reason and not any("restart" in line for line in lines), \
+        "there is no state file for a restart to bring back"
+
+
+def test_restart_brings_back_the_rig_the_state_file_names_after_a_live_switch(world):
+    """A live switch (#93) rewrites the state file to the rig it switched to;
+    the agent's record of what it started is older than that."""
+    supervisor = Supervisor(world.world, say=lambda m: None)
+
+    async def go():
+        assert (await supervisor.up("t", headless=True)).ok
+        state_file.write_state({**state_file.read_state(), "config_name": "u"})
+        outcome = await supervisor.restart()
+        await supervisor.down()
+        return outcome
+
+    outcome = run(go())
+    assert outcome.ok and outcome.stdout.startswith("Restarting u...\nStopping u (headless mode)...")
+    assert [a["config_name"] for a in world.asked] == ["t", "u"]

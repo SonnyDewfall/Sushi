@@ -40,7 +40,9 @@ noticed and reported in `/health` (`agent.supervisor.crashed`), and is not
 restarted: principle 9, recovery is `restart`, asked for. It is not done by
 forking, as `up` does, because a fork from this threaded process inherits
 whatever locks another thread held at that instant; processes are started with
-`subprocess`'s fork-and-exec, which runs no Python in between.
+`subprocess`'s fork-and-exec, which runs no Python in between. No step holds
+the lifecycle lock for longer than `supervisor.LIFECYCLE_TIMEOUT`: past it the
+answer is 504, saying what was still running, and what it started is stopped.
 
 The rig outlives the agent. A rig running when the agent starts -- one `up`
 started with no agent, or an earlier agent's -- is not held, since its exit
@@ -276,7 +278,9 @@ LIVE_WORKERS = 8
 # in it would be looked up outside those folders, so both are refused here
 # first: letters, digits and a few marks, no separators, and never a leading
 # '-' that would read as a flag. `fullmatch`, because `$` matches before a
-# trailing newline.
+# trailing newline. The one exception is an amp model by absolute path from
+# this machine (`is_local`), which is what the CLI's --amp-model has always
+# taken; from anywhere else, a model is a name.
 CONFIG_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 MODEL_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_ .,()'+-]*")
 
@@ -297,7 +301,19 @@ class AgentError(Exception):
 Runner = Callable[[Sequence[str]], Awaitable[Outcome]]
 
 
-def lifecycle_arguments(command: str, body: dict[str, Any] | None) -> list[str]:
+def is_local(remote: str | None) -> bool:
+    """Whether a request came from this machine: a loopback peer. Pure.
+
+    Not proof of who sent it -- any local process, a browser page posting to
+    localhost, or a reverse proxy on this machine all look local -- so it is
+    used only to allow what the CLI on this machine could do anyway without
+    the agent (an amp model by path), never to widen what reaches the rig."""
+    if not remote:
+        return False
+    return remote == "::1" or remote.startswith("127.") or remote.startswith("::ffff:127.")
+
+
+def lifecycle_arguments(command: str, body: dict[str, Any] | None, *, local: bool = False) -> list[str]:
     """The CLI arguments for one lifecycle request, or `AgentError`.
 
     Pure, and the whole of the request's influence on what runs: anything not
@@ -340,9 +356,19 @@ def lifecycle_arguments(command: str, body: dict[str, Any] | None) -> list[str]:
             args.append("--no-amp")
         model = body.get("amp_model")
         if model is not None:
-            if not isinstance(model, str) or not MODEL_NAME.fullmatch(model) or ".." in model:
+            if local and isinstance(model, str) and "/" in model:
+                # `sushi-rig up --amp-model <path>` on this machine, through
+                # the agent: the CLI takes a path to audition a model kept
+                # anywhere, and would read it itself with no agent running.
+                # Absolute, since the agent's working directory is not the
+                # caller's (the CLI resolves a relative one first), and one
+                # line, since it becomes one argument.
+                if not model.startswith("/") or any(c in model for c in "\n\r\0"):
+                    raise AgentError(f"invalid amp model path {model!r}: an absolute path, on one line")
+            elif not isinstance(model, str) or not MODEL_NAME.fullmatch(model) or ".." in model:
                 raise AgentError(
                     f"invalid amp model {model!r}: the name of a file in amp/models, not a path"
+                    + ("" if local else " (a path is taken only from this machine)")
                 )
             args += ["--amp-model", model]
         return args
@@ -1068,7 +1094,7 @@ class Agent:
         command = request.path.rsplit("/", 1)[-1]
         body = await self._json_body(request)
         try:
-            args = lifecycle_arguments(command, body)
+            args = lifecycle_arguments(command, body, local=is_local(request.remote))
         except AgentError as exc:
             raise web.HTTPBadRequest(reason=str(exc))
 
@@ -2586,13 +2612,28 @@ def serve(host: str, port: int, root: Path | None = None) -> int:
     if web is None:
         raise AgentError("aiohttp is not installed; pip install -e tool[agent]")
 
+    import os
+
+    from .agent_client import agent_url, remove_address, write_address
+
     agent = Agent(root=root)
     app = agent.app()
+
+    # Where this agent listens, beside the state file, so the CLI finds it on
+    # whatever --host and --port it was given; taken away at the end.
+    async def say_where(app) -> None:
+        write_address(agent_url(host, port), os.getpid())
+
+    async def unsay_where(app) -> None:
+        remove_address(os.getpid())
+
+    app.on_startup.append(say_where)
     app.on_startup.append(agent.midi_adopt)  # MIDI: a rig already up has its pedals served
     app.on_shutdown.append(agent.announce_stopping)
     app.on_cleanup.append(agent.midi_release)  # MIDI: before the pool its actions use
     app.on_cleanup.append(agent.supervisor.release)  # stop watching; the rig plays on
     app.on_cleanup.append(agent.release_workers)
+    app.on_cleanup.append(unsay_where)
     print(f"sushi-rig agent {VERSION} on http://{host}:{port}  (Ctrl+C to stop)", flush=True)
     web.run_app(app, host=host, port=port, print=None, handle_signals=True)
     return 0

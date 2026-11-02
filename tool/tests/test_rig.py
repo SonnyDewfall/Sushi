@@ -268,7 +268,7 @@ def test_up_hands_the_supervisor_the_machine_file_the_rig_was_compiled_against(u
     })
     monkeypatch.setattr(rig, "plan_children", lambda *a, **kw: [])
     seen = []
-    monkeypatch.setattr(rig, "_supervise", lambda *a, **kw: seen.append(kw))
+    monkeypatch.setattr(rig, "_supervise", lambda launch, **kw: seen.append(launch))
 
     def fork(supervise):
         supervise(1)
@@ -280,7 +280,7 @@ def test_up_hands_the_supervisor_the_machine_file_the_rig_was_compiled_against(u
 
     monkeypatch.setattr(rig, "_fork_supervisor", fork)
     assert rig.up("x", headless=True, amp=False, rig=True) == 0
-    assert seen[0]["machine_file"] == MACHINE
+    assert seen[0].machine_file == MACHINE
 
 
 def test_a_rig_that_does_not_exist_is_refused_by_name(tmp_path):
@@ -1493,8 +1493,8 @@ def test_up_tells_the_supervisor_what_was_asked_for(runtime, monkeypatch):
     monkeypatch.setattr(rig, "port_is_open", lambda *a, **k: False)
     got = {}
 
-    def supervise(*args, ready_w, **kwargs):
-        got.update(kwargs)
+    def supervise(launch, *, ready_w):
+        got.update(vars(launch))
         os.write(ready_w, b"READY\n")
 
     def fork(run):

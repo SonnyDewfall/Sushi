@@ -23,7 +23,7 @@ import socket
 import sys
 import urllib.error
 import urllib.request
-from typing import Any, TextIO
+from typing import Any, Callable, TextIO
 
 DEFAULT_HOST = "127.0.0.1"
 DEFAULT_PORT = 8029
@@ -49,7 +49,79 @@ class Unusable(Exception):
 
 
 def agent_url(host: str = DEFAULT_HOST, port: int = DEFAULT_PORT) -> str:
+    """The address a client on this machine reaches an agent bound to `host`
+    at: a wildcard bind is reached on loopback, an IPv6 address in brackets.
+    Pure."""
+    if host in ("", "0.0.0.0"):
+        host = "127.0.0.1"
+    elif host == "::":
+        host = "::1"
+    if ":" in host:
+        host = f"[{host}]"
     return f"http://{host}:{port}"
+
+
+def address_from(text: str, alive: Callable[[int], bool]) -> tuple[str | None, str]:
+    """What an agent file says: `(url, why)`, the url None when the file
+    cannot be trusted, with why. Pure over `alive`, the pid probe."""
+    try:
+        recorded = json.loads(text)
+    except ValueError:
+        return None, "is not JSON"
+    if not isinstance(recorded, dict):
+        return None, "is not an object"
+    url, pid = recorded.get("url"), recorded.get("pid")
+    if not isinstance(url, str) or not url.startswith("http://"):
+        return None, "names no http:// address"
+    if not isinstance(pid, int) or isinstance(pid, bool) or pid <= 1:
+        return None, "names no agent pid"
+    if not alive(pid):
+        return None, f"names agent pid {pid}, which is gone"
+    return url, f"written by agent pid {pid}"
+
+
+def find_agent() -> tuple[str, str]:
+    """Where to look for the agent, and how that was decided, for the line
+    the CLI prints: the address a running agent wrote (`paths.agent_path`),
+    or the default when there is none or it is stale."""
+    from .paths import agent_path
+    from .procs import pid_alive
+
+    path = agent_path()
+    default = agent_url()
+    try:
+        text = path.read_text()
+    except FileNotFoundError:
+        return default, f"the default; no agent has written {path}"
+    except OSError as exc:
+        return default, f"the default; {path} could not be read: {exc}"
+    url, why = address_from(text, pid_alive)
+    if url is None:
+        return default, f"the default; {path} {why}"
+    return url, f"from {path}, {why}"
+
+
+def write_address(url: str, pid: int) -> None:
+    """Said by the agent at its start: where it listens."""
+    from .paths import agent_path
+
+    path = agent_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"url": url, "pid": pid}) + "\n")
+
+
+def remove_address(pid: int) -> None:
+    """Unsaid by the agent at its end, if the file is still its own: a second
+    agent that failed to bind must not erase the first one's."""
+    from .paths import agent_path
+
+    path = agent_path()
+    try:
+        recorded = json.loads(path.read_text())
+    except (OSError, ValueError):
+        return
+    if isinstance(recorded, dict) and recorded.get("pid") == pid:
+        path.unlink(missing_ok=True)
 
 
 def _open(request: urllib.request.Request, timeout: float):
@@ -111,13 +183,29 @@ def lifecycle_request(command: str, args: Any) -> tuple[str, dict[str, Any]]:
             "tuner": args.tuner, "amp": args.amp,
         }
         if args.amp_model is not None:
-            body["amp_model"] = args.amp_model
+            body["amp_model"] = model_for_agent(args.amp_model)
         return "/rig/up", body
     if command == "down":
         return "/rig/down", {"force": args.force}
     if command == "restart":
         return "/rig/restart", {}
     raise ValueError(f"not a lifecycle command: {command!r}")
+
+
+def model_for_agent(model: str, root: Any = None) -> str:
+    """`--amp-model` as the agent takes it: a bare name as it is (a file in
+    amp/models), a path made absolute against the checkout root, which is
+    where `amp.prepare` resolves a relative one when the CLI acts directly.
+    The agent, whose working directory is not this shell's, takes a path only
+    from this machine and only absolute."""
+    from pathlib import Path
+
+    from .paths import checkout_root
+
+    if "/" not in model:
+        return model
+    path = Path(model)
+    return str(path if path.is_absolute() else Path(root or checkout_root()) / path)
 
 
 def lifecycle_result(status: int, body: Any) -> tuple[int, str, str]:
@@ -140,8 +228,9 @@ def lifecycle_result(status: int, body: Any) -> tuple[int, str, str]:
 
 def status_text(health: dict[str, Any]) -> str:
     """`status` from the agent's /health: what `status` prints from the state
-    file, then each child the agent saw crash, which the state file cannot
-    say. Pure."""
+    file, then each child the agent saw crash and each problem it found (a
+    lost group holder, a start that left processes), which the state file
+    cannot say. Pure."""
     from .rig import status_lines
 
     lines = status_lines(health.get("rig") or {"message": "the agent did not say", "running": False})
@@ -150,6 +239,8 @@ def status_text(health: dict[str, Any]) -> str:
         how = f"killed by {crash['signal']}" if crash.get("signal") else f"exited {crash.get('returncode')}"
         lines.append(f"  CRASHED    {crash.get('name')} (pid {crash.get('pid')}) {how} at {crash.get('at')}"
                      f"{' — see ' + crash['log'] if crash.get('log') else ''}")
+    for problem in supervisor.get("problems") or []:
+        lines.append(f"  PROBLEM    {problem.get('message')}")
     if supervisor.get("note"):
         lines.append(f"  note       {supervisor['note']}")
     return "\n".join(lines) + "\n"
@@ -169,11 +260,14 @@ def route(
     one line on stderr, which it took."""
     out = out or sys.stdout
     err = err or sys.stderr
-    base = base or agent_url()
+    if base is None:
+        base, source = find_agent()
+    else:
+        source = "as given"
     try:
         health = probe(base)
     except Absent:
-        print(f"sushi-rig: no agent is running at {base}, so acting directly", file=err)
+        print(f"sushi-rig: no agent is running at {base} ({source}), so acting directly", file=err)
         return None
     print(f"sushi-rig: asking the agent at {base}", file=err)
     if command == "status":

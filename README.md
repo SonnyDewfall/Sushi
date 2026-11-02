@@ -423,21 +423,44 @@ the tuner and the amp, and unless headless the listener and the panel, as one
 process group the agent holds; it plans them with the same `plan_children`
 and writes the same state file as `up` always has, so `status`, `restart` and
 `describe_rig` cannot tell which started a rig. `down` and `restart` act on
-what the agent holds. A child that crashes is noticed within half a
-second and reported: in `/health` under `agent.supervisor.crashed` (its name,
-pid, exit status or the signal that killed it, when, and its log), on the
-agent's stderr, and as `CRASHED` in `sushi-rig status`. It is **not
-restarted** (principle 9): the agent heals nothing on its own, and the way
-back is `restart`, which you ask for.
+what the agent holds. A child that exits with no `down` asking it to is
+noticed within a fifth of a second and reported: in `/health` under
+`agent.supervisor.crashed` (its name, pid, exit status or the signal that
+killed it, when, and its log), on the agent's stderr, and as `CRASHED` in
+`sushi-rig status`. Each child is judged on its own, so a group signalled from
+outside the agent (`down --direct`, a `kill`) shows its children's exits there
+too, by signal. It is **not restarted** (principle 9): the agent heals nothing
+on its own, and the way back is `restart`, which you ask for. What is wrong
+beyond a child, `agent.supervisor.problems` says (and `status`, as `PROBLEM`):
+the group holder dying on its own (the rig plays on, but `status` reads it as
+orphaned and `up` refuses until `down`), or a failed start whose processes
+would not stop, named by pid and still held, so `down` can be asked again. A
+child that exits during a start that fails is part of that failure's answer,
+not a crash, since there is no rig to restart.
 
-**The CLI asks the agent when it is running.** `up`, `down`, `restart` and
-`status` look for an agent on 127.0.0.1:8029 first. If one answers, they go
-through it; if nothing is listening, they do what they always did, forking
-their own supervisor. Each says which in one line on stderr (`asking the
-agent at ...` or `no agent is running at ..., so acting directly`), so stdout
-is unchanged. Something on that port that does not answer as the agent does
-(an agent that is stuck, another program) is refused with nothing done, rather
-than guessed at; `--direct` on any of the four acts without asking.
+**No lifecycle step holds the agent for ever.** `up`, `down` and `restart` are
+each given two minutes (`LIFECYCLE_TIMEOUT`, as when the agent ran them as the
+CLI): past it the answer is `504`, saying what was still running (compiling the
+rig, clearing a stale qpwgraph, waiting for Sushi...), and what the step had
+started is stopped. The stuck part runs in a thread that cannot be interrupted;
+it is left to finish and nothing it does afterwards is kept. `agent.supervisor.doing`
+in `/health` says what a step is doing while it runs.
+
+**The CLI asks the agent when it is running.** A running agent writes where it
+listens to `agent.json` beside the state file (and removes it when it stops),
+so `up`, `down`, `restart` and `status` look there first, on whatever `--host`
+and `--port` the agent was given, and at 127.0.0.1:8029 when there is no file
+or its agent is gone. If one answers, they go through it; if nothing is
+listening, they do what they always did, forking their own supervisor. Each
+says which in one line on stderr (`asking the agent at ...`, or `no agent is
+running at ... (where that address came from), so acting directly`), so stdout
+is unchanged. Something there that does not answer as the agent does (an
+agent that is stuck, another program) is refused with nothing done, rather
+than guessed at; `--direct` on any of the four acts without asking. `up
+--amp-model <path>` works through the agent: the CLI makes the path absolute
+against the checkout, as `up` always resolved it, and the agent takes a model
+by path only from this machine (a loopback peer); from anywhere else a model
+is a name in `amp/models/`.
 
 How the group is held, because the obvious ways do not work: the agent cannot
 fork a supervisor, since a fork from a threaded server is where deadlocks come

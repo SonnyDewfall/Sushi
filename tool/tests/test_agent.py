@@ -2010,7 +2010,7 @@ def test_the_agent_runs_the_lifecycle_itself_through_its_supervisor():
     agent = Agent(describe=lambda: dict(DOWN))
     assert agent.run == agent.supervisor.run
     _, health = call(agent, "GET", "/health")
-    assert health["agent"]["supervisor"] == {"holds": None, "crashed": [], "note": None}
+    assert health["agent"]["supervisor"] == {"holds": None, "crashed": [], "problems": [], "note": None}
 
 
 def test_a_successful_command_carries_its_warnings_for_a_phone_to_read():
@@ -2534,3 +2534,33 @@ def test_an_add_never_goes_in_front_of_the_masters_return():
         ["master_return", "eq", "limiter"]
     assert place_switch_add(reading, "master", "eq", "urn:eq", None).expected == \
         ["master_return", "limiter", "eq"]
+
+
+# --------------------------------------------------------------------------- #
+# An amp model by path, from this machine only
+# --------------------------------------------------------------------------- #
+
+def test_an_amp_model_path_is_taken_from_this_machine_and_refused_from_elsewhere():
+    body = {"config_name": "x", "amp_model": "/home/p/models/M.nam"}
+    assert lifecycle_arguments("up", body, local=True) == ["up", "x", "--amp-model", "/home/p/models/M.nam"]
+    with pytest.raises(AgentError, match="a path is taken only from this machine"):
+        lifecycle_arguments("up", body)
+    for bad in ("amp/models/M.nam", "/x\n--headless"):
+        with pytest.raises(AgentError):
+            lifecycle_arguments("up", {"config_name": "x", "amp_model": bad}, local=True)
+
+
+@pytest.mark.parametrize("remote, local", [
+    ("127.0.0.1", True), ("127.0.1.1", True), ("::1", True), ("::ffff:127.0.0.1", True),
+    ("192.168.1.20", False), ("10.0.0.2", False), ("::ffff:192.168.1.2", False), (None, False), ("", False),
+])
+def test_only_a_loopback_peer_is_this_machine(remote, local):
+    assert agent_module.is_local(remote) is local
+
+
+def test_the_cli_on_this_machine_can_name_a_model_by_path():
+    runner = FakeRunner()
+    agent = Agent(describe=lambda: dict(UP), run=runner)
+    status, _ = call(agent, "POST", "/rig/up", json={"config_name": "x", "amp_model": "/m/M.nam"})
+    assert status == 200, "a TestClient is a loopback peer"
+    assert runner.calls == [["up", "x", "--amp-model", "/m/M.nam"]]

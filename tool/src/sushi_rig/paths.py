@@ -48,4 +48,11 @@ def log_dir() -> Path:
     return runtime_dir() / "logs"
 
 
+def agent_path() -> Path:
+    """Where a running agent says where it listens (#29), so the CLI finds an
+    agent started with another `--port` or `--host` instead of acting
+    directly beside it."""
+    return runtime_dir() / "agent.json"
+
+
 # --- pure logic -------------------------------------------------------------

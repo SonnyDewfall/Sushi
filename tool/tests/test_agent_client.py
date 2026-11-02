@@ -13,8 +13,10 @@ from __future__ import annotations
 import argparse
 import asyncio
 import http.server
+import os
 import socket
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -27,6 +29,12 @@ def namespace(**over):
                   amp=True, amp_model=None, force=False)
     values.update(over)
     return argparse.Namespace(**values)
+
+
+@pytest.fixture(autouse=True)
+def _private_runtime(runtime):
+    """A private runtime dir, so an agent.json of a real agent is never read."""
+    return runtime
 
 
 HEALTH = {"ok": True, "agent": {"supervisor": {"holds": None, "crashed": [], "note": None}},
@@ -69,9 +77,11 @@ def test_status_through_the_agent_says_what_status_says_and_the_crashes_too():
     health = {"rig": running, "agent": {"supervisor": {"crashed": [
         {"name": "fmit", "pid": 4001, "returncode": 3, "signal": None, "at": "T",
          "log": "/logs/fmit.log"}], "note": None}}}
+    health["agent"]["supervisor"]["problems"] = [{"kind": "holder_lost", "message": "the group holder died"}]
     text = agent_client.status_text(health)
     assert text.splitlines()[: len(rig.status_lines(running))] == rig.status_lines(running)
     assert "  CRASHED    fmit (pid 4001) exited 3 at T — see /logs/fmit.log" in text
+    assert "  PROBLEM    the group holder died" in text
 
 
 # --------------------------------------------------------------------------- #
@@ -105,7 +115,10 @@ def test_with_no_agent_running_each_command_acts_directly_and_says_so(direct, mo
         ("down", True), ("restart",), ("status",),
     ]
     said = capsys.readouterr().err.splitlines()
-    assert said == ["sushi-rig: no agent is running at http://127.0.0.1:8029, so acting directly"] * 4
+    assert len(said) == 4 and len(set(said)) == 1
+    assert said[0].startswith("sushi-rig: no agent is running at http://127.0.0.1:8029 (the default; "
+                              "no agent has written ")
+    assert said[0].endswith("agent.json), so acting directly")
 
 
 def test_with_the_agent_running_each_command_asks_it_and_says_so(direct, monkeypatch, capsys):
@@ -253,7 +266,9 @@ def test_the_cli_against_a_served_agent(monkeypatch, capsys, direct):
     thread = threading.Thread(target=serve)
     thread.start()
     assert ready.wait(5)
-    monkeypatch.setattr(agent_client, "agent_url", lambda: f"http://127.0.0.1:{port}")
+    # As the agent's serve() says where it listens: an address beside the
+    # state file, on a port that is not the default.
+    agent_client.write_address(f"http://127.0.0.1:{port}", os.getpid())
     try:
         assert cli._main(["down"]) == 0
         assert cli._main(["status"]) == 0
@@ -266,3 +281,84 @@ def test_the_cli_against_a_served_agent(monkeypatch, capsys, direct):
     printed = capsys.readouterr()
     assert printed.out == "Stopping x (headless mode)...\nRig offline.\nNo rig is running.\n"
     assert printed.err.count(f"asking the agent at http://127.0.0.1:{port}") == 2
+
+
+# --------------------------------------------------------------------------- #
+# Where the agent is: what it wrote, or the default
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("host, port, url", [
+    ("127.0.0.1", 8029, "http://127.0.0.1:8029"),
+    ("0.0.0.0", 9000, "http://127.0.0.1:9000"),
+    ("192.168.1.5", 8029, "http://192.168.1.5:8029"),
+    ("::", 8029, "http://[::1]:8029"),
+])
+def test_an_agent_is_reached_where_it_can_be_from_this_machine(host, port, url):
+    assert agent_client.agent_url(host, port) == url
+
+
+def test_the_address_file_is_trusted_only_while_its_agent_lives():
+    good = '{"url": "http://127.0.0.1:9000", "pid": 4242}'
+    assert agent_client.address_from(good, lambda pid: True) == (
+        "http://127.0.0.1:9000", "written by agent pid 4242")
+    assert agent_client.address_from(good, lambda pid: False) == (
+        None, "names agent pid 4242, which is gone")
+    assert agent_client.address_from("[]", lambda pid: True)[0] is None
+    assert agent_client.address_from('{"url": "file:///x", "pid": 4242}', lambda pid: True)[0] is None
+    assert agent_client.address_from('{"url": "http://x", "pid": true}', lambda pid: True)[0] is None
+
+
+def test_the_cli_probes_the_address_a_running_agent_wrote_and_says_so(monkeypatch, capsys, direct):
+    agent_client.write_address("http://127.0.0.1:9123", os.getpid())
+    probed = []
+
+    def absent(base, *args, **kwargs):
+        probed.append(base)
+        raise Absent(base)
+
+    monkeypatch.setattr(agent_client, "probe", absent)
+    assert cli._main(["status"]) == 0
+    assert probed == ["http://127.0.0.1:9123"]
+    line = capsys.readouterr().err.strip()
+    assert line.startswith("sushi-rig: no agent is running at http://127.0.0.1:9123 (from ")
+    assert f"written by agent pid {os.getpid()}), so acting directly" in line
+
+
+def test_a_stale_address_file_is_said_and_the_default_probed(monkeypatch, capsys, direct):
+    agent_client.write_address("http://127.0.0.1:9123", 2 ** 22 + 7)  # beyond any pid in use
+    probed = []
+    monkeypatch.setattr(agent_client, "probe", lambda base, *a, **k: probed.append(base) or nothing_listening(base))
+    assert cli._main(["status"]) == 0
+    assert probed == ["http://127.0.0.1:8029"]
+    assert "which is gone), so acting directly" in capsys.readouterr().err
+
+
+def test_an_agent_takes_its_address_away_only_if_it_is_its_own():
+    from sushi_rig.paths import agent_path
+
+    agent_client.write_address("http://127.0.0.1:9000", 4242)
+    agent_client.remove_address(4243)
+    assert agent_path().is_file(), "another agent's address is not erased"
+    agent_client.remove_address(4242)
+    assert not agent_path().exists()
+
+
+# --------------------------------------------------------------------------- #
+# --amp-model by path, through the agent
+# --------------------------------------------------------------------------- #
+
+def test_an_amp_model_path_is_made_absolute_against_the_checkout_as_up_would(tmp_path):
+    assert agent_client.model_for_agent("Some Amp.nam") == "Some Amp.nam"
+    assert agent_client.model_for_agent("/abs/M.nam") == "/abs/M.nam"
+    assert agent_client.model_for_agent("amp/models/M.nam", tmp_path) == str(tmp_path / "amp/models/M.nam")
+
+
+def test_up_with_an_amp_model_path_goes_through_the_agent(monkeypatch, direct):
+    from sushi_rig.paths import checkout_root
+
+    asked = []
+    monkeypatch.setattr(agent_client, "probe", lambda base, timeout=None: HEALTH)
+    monkeypatch.setattr(agent_client, "ask", lambda base, method, path, body=None, timeout=None: (
+        asked.append(body) or (200, {"ok": True, "output": "", "warnings": []})))
+    assert cli._main(["up", "x", "--amp-model", "../elsewhere/M.nam"]) == 0
+    assert asked[0]["amp_model"] == str(checkout_root() / "../elsewhere/M.nam")

@@ -2183,3 +2183,61 @@ guitar_vocal` (it must say it asked the agent), play, `kill -SEGV` the tuner's
 pid and read `curl localhost:8029/health | jq .agent.supervisor`, `systemctl
 --user restart sushi-rig-agent.service` while playing (the sound must not
 stop), then `sushi-rig down`. Record the result here either way. *(2026-11-02)*
+
+**The agent's supervisor, answering review (#29).** Ten findings. (1) **A step
+had no overall bound** once `run_cli` went, so a hang in `prepare_launch`, the
+amp's preparation or the qpwgraph cleanup held the lifecycle lock, and every
+`/rig/*` and Program Change was `409 busy` until the agent restarted.
+`Supervisor.run` now gives each step `LIFECYCLE_TIMEOUT` (120 s, as before):
+past it the answer is `504`, saying what was still running (`agent.supervisor.doing`
+names it while it runs), what the step had started is stopped, and the stuck
+worker thread is left to finish, told it is abandoned so it starts nothing
+more. Tested with a preparation and a qpwgraph start that hang, and through
+the route (504, then `down` is not busy). (2) **The holder's death was taken for
+the group's stop**, after which every crash read as a stop and `/health` said
+"stopping" for a playing rig. Each child is now judged on its own; the holder
+dying is a problem of its own in `agent.supervisor.problems` (and `PROBLEM` in
+`status`). The cost: a group signalled from outside the agent shows its
+children's exits as crashes, by signal. (3) **A start's teardown that failed was
+forgotten**: the group is now kept held and said, by pid (from /proc), in the
+answer and in `problems`, and `down` stops it through `rig.down` with the
+agent's record, there being no state file. Tested with a teardown that fails
+and the `down` that then succeeds. The teardown also reaps any child of ours in
+the group (`waitpid(-pgid)`), since a start abandoned mid-step can have started
+one the watch did not know yet, whose zombie kept the group alive. (4) **A
+child that exited during a failed start was a crash** pointing at a restart
+with nothing to restart; it is now part of the failure's answer. (5) **The CLI
+saw only 127.0.0.1:8029**: the agent writes `agent.json` beside the state file
+at start (its address on loopback for a wildcard bind, and its pid) and removes
+it at stop if it is still its own; the CLI probes what it names while that pid
+lives, and the "acting directly" line says which address and where it came
+from. Run here: an agent on `--port 8131` was found and asked, and the file was
+gone after SIGTERM. (6) **`up --amp-model <path>` through the agent was 400.**
+`MODEL_NAME` exists so a LAN client cannot name a file on the machine; a
+loopback peer (`agent.is_local`) may now pass an absolute path, which the CLI
+makes from a relative one against the checkout, as `amp.prepare` resolves it.
+Not proof of who sent it -- a local process, a browser page posting to
+localhost, or a reverse proxy on this machine all look local -- which is why it
+allows only what the CLI here could do without the agent. (7) **One start
+routine**, `rig.start_children`, run by `_supervise` and, in a worker thread,
+by the agent with `spawn` and `start_qpwgraph` bound to the held group; the
+panel bound (`PANEL_TIMEOUT`, now in rig.py) and the amp replay guard are the
+same for both. (8) **`down` is `rig.down`** for the held rig too, given the state
+file when it names the held group and the agent's record otherwise (`state=`;
+the file is cleared only when it names the group stopped). The agent's
+escalation is therefore the CLI's again (SIGINT, SIGTERM, SIGKILL).
+`restart` shares `rig.restart`'s words (`NOTHING_TO_RESTART`, `NOT_RESTARTED`,
+`restart_heading`) and now reads the state file first: after a live switch
+(#112) the file names the rig switched to, and the agent's own record of what
+it started named the one before, so restart would have brought back the wrong
+rig. (9) **Not done:** carrying the request's options to `Supervisor.up` instead of
+argv. The steps `switch_steps` and `fallback_arguments` build (#112) are argv,
+`_lifecycle_steps` remembers them, and the answers carry them as `command`, so
+changing the step's type changes that branch's answer shape; `parse_lifecycle`
+stays, pinned as `lifecycle_arguments`' inverse. (10) **`_supervise(launch,
+ready_w)` and `state_record(launch, ...)`** take the `Launch`. Fast suite 2612
+-> 2639 passed. Run here with the stand-in scripts: a SIGKILL to the holder
+alone was reported as a problem with the rig still "up", `status` read it as
+orphaned, and `down` stopped the group by its id. Still NOT VERIFIED on the rig:
+the service and the agent-run `up` against real Sushi and PipeWire, as the
+entry above says. *(2026-11-02)*
