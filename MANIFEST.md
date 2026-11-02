@@ -2318,3 +2318,54 @@ alone was reported as a problem with the rig still "up", `status` read it as
 orphaned, and `down` stopped the group by its id. Still NOT VERIFIED on the rig:
 the service and the agent-run `up` against real Sushi and PipeWire, as the
 entry above says. *(2026-11-02)*
+
+**Web UI v0.1: what the first real session found (#111).** Sonny's first use of
+the UI on the rig laptop found four faults and asked for one feature. (1) **A
+down rig flooded the console**: the page asked `/live` every second whatever
+the rig, and with none up each was a 503, 110 console errors in one session,
+burying any real one. The page now asks `/health` first and `/live` only while
+it says a rig is up and no lifecycle command runs (`readsLive` in rig.js); a
+rig that is down is a state, grey (`tone: "off"`), not red, and a `/live`
+failure with the rig up is still the red failure it was. Tested both ways in
+Chromium: no `/live` request and no console error over three polls of a down
+rig; the 502 and its reason shown for an up one. (2) **LOAD and XRUNS read "not
+measured" with a rig up and playing.** New `GET /rig/load`: one `pw-top -b -n 2`
+off the loop with a deadline (`LOAD_TIMEOUT`, 5 s, killed past it), read by
+`top.parse_pw_top` and summed by `top.load_report` as `sushi-rig top` sums it,
+the budget from Sushi's driver row. Missing pw-top 500 `no_pw_top`, a failure or
+output without a sample 502, an overrun 504, no rig 409 `no_rig`; said once on
+stderr when it starts failing, not put in `last_error`. The page reads it every
+2 s while a rig is up. `parse_pw_top` now keeps a row whose timings are `---`
+(the one such row on record, in tool/spikes/live_rig/RESULTS-...-2026-10-31.md)
+as unmeasured, and no longer lets it act as the driver of the rows after it:
+dropped, Sushi in that state read as absent. Sound stays "not measured", with a
+tooltip saying what load and xruns are not. **Not run against a real pw-top**:
+the parsing rests on test_top.py's sample (said there to be real output, trimmed)
+and the spike's one line. Note that the two disagree on followers: the sample's
+follower rows carry B/Q figures, the spike's state-C follower carries `---`; the
+route handles both, and which a running Sushi shows is the first thing to look at
+on the rig. (3) **Three `ELKPY:` lines per poll**, from elkpy 1.3.0's own prints on
+every connection (`grpc_gen`, `sushicontroller`, `notificationcontroller`).
+`live.quiet_elkpy` gives elkpy's modules a `print` that drops the chatter and
+sends anything else to stderr (an API mismatch once); a module-level `print`,
+not a redirect of stdout, which would be the whole process's. "Could not find a
+running Sushi" is among the dropped, because the agent now says it itself from
+the call that fails: with the state file saying a rig is up, a read finding no
+Sushi is remembered in `/health` and printed once until Sushi answers again.
+Tested against the real elkpy with nothing listening, in a child process: three
+polls with no rig print nothing at all, three with one "up" print one line.
+`Live.at`'s close path is untouched: elkpy's leaking `close()` is fixed apart
+(claude/elkpy-close), and the child in that test leaves with `os._exit` because
+those leaked controllers are torn down noisily at exit. (4) **`/ui/` answered a
+JSON 403**: `/ui` and `/ui/` now 302 to `/`. (5) **Start, stop and switch from the
+page.** `GET /rigs` lists config/rigs/ in program order with the running rig
+(`/rig`'s `programs` exists only when a MIDI map switches rigs). A picker, the
+rack's left column as the mockups' S1 draws it and, on the stage screen, only
+while unlocked: Start (`rig: true`, headless), Switch (`/rig/switch`, saying live
+or restart and why), Stop behind a confirm. Nothing is offered while a command
+runs here or elsewhere, and what runs is said. Tested in Chromium against the
+fake, whose lifecycle and switch body are stand-ins (`ui_fake.UiLifecycle`, the
+agent's routes, lock and busy real): a start with busy shown, a refused start,
+stop with confirm and cancel, a live switch, a restart switch, the stage
+picker hidden while locked. Fast suite 2696 -> 2732 passed. NOT VERIFIED on the
+rig: any of it against real Sushi, PipeWire and pw-top. *(2026-11-02)*

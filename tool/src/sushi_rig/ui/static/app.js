@@ -8,9 +8,18 @@ import * as R from "./rig.js";
 // GET /live once a second, as the brief asks: often enough that a pedal's
 // bypass shows on the card within a second, rare enough for a Pi's browser.
 const POLL_MS = 1000;
+// GET /rig/load this long after the last answer, and only while a rig is up:
+// each is a pw-top run of about a second on the rig, so slower than /live,
+// and load and xruns move slowly enough to read at this rate (#111).
+const LOAD_MS = 2000;
 // A failed read of which plugin each processor is, or of the profiles, is
 // asked again this often, not on every poll: a session read is heavy.
 const RETRY_MS = 10000;
+// How long "Stop now" stays offered after Stop: stopping cuts the sound, so
+// it takes two taps, and a first tap left alone is forgotten.
+const CONFIRM_MS = 8000;
+// Said wherever "sound not measured" is: what the figures are, and are not.
+const SOUND_NOTE = "Nothing measures the rig's sound yet (#49). Load and xruns say whether the rig keeps up with its blocks, not whether it sounds right.";
 // Pixels of drag for a knob's whole travel: a thumb's comfortable sweep.
 const DRAG_PIXELS = 200;
 // How long the first tap on "Locked" stays armed: unlocking takes two taps
@@ -37,6 +46,11 @@ const state = {
   profiles: null, profilesError: null, profilesAt: 0, profileProblems: [],
   names: null, namesAt: 0,   // plugin names by URI, from /library: decoration, so a failure is not shown
   locked: readLocked(), armed: false, armTimer: null,
+  load: null, loadView: null, xruns: null, xrunsFor: null, loadTimer: null,  // GET /rig/load, every LOAD_MS
+  rigs: null, rigsAt: 0,     // GET /rigs: kept once it answers, read again after a lifecycle command
+  chosen: null,              // the rig picked in the picker; null follows the running rig
+  pending: null,             // this page's lifecycle command in flight: {op, name}
+  confirming: false, confirmTimer: null,  // Stop's second tap
   open: new Set(),           // units opened, by name
   failures: [],              // this page's refused changes, newest first
   failed: new Map(),         // control key -> the reason its last change was refused
@@ -148,23 +162,39 @@ async function refreshNames() {
   return answer.ok;
 }
 
+// config/rigs/, for the picker. Kept once it answers; asked again after
+// RETRY_MS while it fails, and at once (`force`) after a start, stop or switch.
+async function refreshRigs(force = false) {
+  if (!force && state.rigs && state.rigs.ok) return false;
+  if (!force && state.rigsAt && Date.now() - state.rigsAt < RETRY_MS) return false;
+  state.rigs = await request("GET", "/rigs");
+  state.rigsAt = Date.now();
+  return true;
+}
+
 async function poll() {
   if (state.polling) return;
   state.polling = true;
   clearTimeout(state.timer);
   const seq = ++state.pollSeq;
   try {
-    const [health, live, log] = await Promise.all([
-      request("GET", "/health"), request("GET", "/live"), request("GET", "/live/log"),
+    // /health first, and /live only when it says a rig is up and still
+    // (`R.readsLive`): a down rig is a state, and asking /live for it was a
+    // console error a second (#111). The log answers whatever the rig.
+    const health = await request("GET", "/health");
+    const [live, log] = await Promise.all([
+      R.readsLive(health) ? request("GET", "/live") : null,
+      health.ok ? request("GET", "/live/log") : null,
     ]);
     state.health = health;
     state.live = live;
-    state.log = log.ok ? log.body : null;
+    state.log = log && log.ok ? log.body : null;
     state.seq = seq;
-    if (live.ok) await refreshPlugins(live.body, rigIdentity(health, state.log));
+    if (live && live.ok) await refreshPlugins(live.body, rigIdentity(health, state.log));
     render();
     inBackground("profiles", refreshProfiles);
     inBackground("names", refreshNames);
+    inBackground("rigs", refreshRigs);
   } finally {
     state.polling = false;
     state.timer = setTimeout(poll, POLL_MS);
@@ -174,6 +204,36 @@ async function poll() {
 // After a gesture that changes the rig's structure: read it now, not in a second.
 function kick() {
   if (!state.polling) poll();
+}
+
+// GET /rig/load beside the poll, at its own pace, and only while a rig is up
+// and still: with none, there is nothing to read and the tiles say so. The
+// tiles are decided here, when an answer arrives, since "rising" compares it
+// with the one before; the xruns' first count is per rig run (its name and
+// start), and starts again if the count falls, as a node that reappeared does.
+async function pollLoad() {
+  clearTimeout(state.loadTimer);
+  try {
+    if (R.readsLive(state.health)) {
+      const answer = await request("GET", "/rig/load");
+      const rig = state.health && state.health.ok ? state.health.body.rig || {} : {};
+      const run = JSON.stringify([rig.config_name ?? null, rig.started_at ?? null]);
+      if (run !== state.xrunsFor) { state.xruns = null; state.xrunsFor = run; }
+      state.load = answer;
+      state.loadView = R.loadTiles(answer, true, state.xruns);
+      if (answer.ok) {
+        const total = R.xrunTotal(answer.body);
+        const first = state.xruns && state.xruns.first <= total ? state.xruns.first : total;
+        state.xruns = { first, last: total };
+      }
+    } else {
+      state.load = null;
+      state.loadView = null;
+    }
+    render();
+  } finally {
+    state.loadTimer = setTimeout(pollLoad, LOAD_MS);
+  }
 }
 
 // ---------------------------------------------------------------- DOM helpers
@@ -394,19 +454,22 @@ function lockButton() {
 }
 
 function statusLine(status) {
-  return h("span", { class: `status tone-${status.tone}` }, h("span", { class: "dot", "aria-hidden": "true" }), status.detail);
+  return h("span", { class: `status tone-${status.tone}`, title: status.tone === "up" ? SOUND_NOTE : null },
+    h("span", { class: "dot", "aria-hidden": "true" }), status.detail);
 }
 
-// What the agent cannot tell us yet, said as such rather than left off: a
-// screen that looked the same with these unknown would be lying by omission.
-function tiles(health) {
+// Load and xruns from pw-top (GET /rig/load, `R.loadTiles`), and the amp.
+// What is not known is said as such rather than left off: a screen that
+// looked the same with these unknown would be lying by omission.
+function tileViews(health) {
   const rig = health && health.ok ? health.body.rig || {} : {};
-  const unmeasured = "The agent does not measure this yet (#49)";
-  return [
-    h("span", { class: "tile", title: unmeasured }, h("span", { class: "k" }, "LOAD"), h("span", { class: "v" }, "—"), h("span", { class: "s" }, "not measured")),
-    h("span", { class: "tile", title: unmeasured }, h("span", { class: "k" }, "XRUNS"), h("span", { class: "v" }, "—"), h("span", { class: "s" }, "not measured")),
-    h("span", { class: "tile" }, h("span", { class: "k" }, "AMP"), h("span", { class: "v" }, rig.amp_model || "none")),
-  ];
+  const measured = state.loadView && R.readsLive(health) ? state.loadView : R.loadTiles(null, !!rig.running, null);
+  return [...measured, { k: "AMP", v: rig.amp_model || "none", s: null, title: null, tone: "" }];
+}
+
+function tiles(views) {
+  return views.map((t) => h("span", { class: `tile${t.tone ? " " + t.tone : ""}`, title: t.title },
+    h("span", { class: "k" }, t.k), h("span", { class: "v" }, t.v), t.s ? h("span", { class: "s" }, t.s) : null));
 }
 
 function problems() {
@@ -456,18 +519,88 @@ async function undo(skip = false) {
   kick();
 }
 
+// Start, stop and switch (#111). One at a time: while one runs, from this
+// page or another, the picker offers nothing (the agent would answer 409
+// busy) and says what is running. The answer's reason is shown on failure,
+// and a switch says how it was made and why.
+async function lifecycle(op, name) {
+  if (state.pending) return;
+  clearTimeout(state.confirmTimer);
+  state.confirming = false;
+  state.pending = { op, name };
+  render();
+  const call = R.lifecycleCall(op, name);
+  let answer;
+  try {
+    answer = await request("POST", call.path, call.json);
+  } finally {
+    state.pending = null;
+  }
+  const said = R.lifecycleOutcome(op, name, answer);
+  if (said.ok) {
+    state.notice = said.text;
+    // Follow the rig that is up now; after a stop, keep the one stopped, so
+    // starting it again is one tap.
+    state.chosen = op === "stop" ? name : null;
+  } else {
+    fail(said.title, { reason: said.reason, code: answer.code });
+  }
+  render();
+  kick();
+  refreshRigs(true).then(render);
+}
+
+function armStop() {
+  state.confirming = true;
+  clearTimeout(state.confirmTimer);
+  state.confirmTimer = setTimeout(() => { state.confirming = false; render(); }, CONFIRM_MS);
+  render();
+}
+
+// The picker: config/rigs/ as a list, the running rig marked, one chosen, and
+// what can be done with it (`R.rigPicker`). The rack's left column, as the
+// mockups' S1 has it; on the stage, below the cards and only while unlocked.
+function rigsRegion(el) {
+  const rig = state.health && state.health.ok ? state.health.body.rig || {} : {};
+  const running = rig.running ? rig.config_name : null;
+  const view = R.rigPicker(state.health, state.rigs, state.chosen ?? running, state.pending);
+  const stop = view.actions.find((a) => a.op === "stop" && !a.disabled);
+  const confirming = state.confirming && !!stop;
+  patch(el, JSON.stringify([view, confirming]), () => [
+    h("h2", {}, "RIGS"),
+    view.problem ? h("p", { class: "rig-problem" }, view.problem) : null,
+    view.rows.length ? h("div", { class: "rig-list", role: "group", "aria-label": "Rigs in config/rigs" },
+      view.rows.map((r) => h("button", {
+        class: `rig${r.up ? " up" : ""}${r.chosen ? " chosen" : ""}`, "aria-pressed": String(r.chosen),
+        onclick: () => { state.chosen = r.name; state.confirming = false; render(); },
+      }, h("span", { class: "n" }, r.name), r.up ? h("span", { class: "tag" }, "up now") : null))) : null,
+    view.busy ? h("p", { class: "rig-busy", role: "status" }, view.busy) : null,
+    confirming
+      ? h("div", { class: "confirm", role: "group", "aria-label": "Confirm stopping the rig" },
+        h("p", {}, `Stop ${stop.name || "the rig"}? The sound stops until a rig is started again.`),
+        h("button", { class: "rig-act danger", onclick: () => lifecycle("stop", stop.name) }, "Stop now"),
+        h("button", { class: "rig-act", onclick: () => { clearTimeout(state.confirmTimer); state.confirming = false; render(); } }, "Cancel"))
+      : h("div", { class: "rig-actions" }, view.actions.map((a) => h("button", {
+        class: `rig-act${a.primary ? " primary" : ""}`, disabled: a.disabled,
+        onclick: () => (a.op === "stop" ? armStop() : lifecycle(a.op, a.name)),
+      }, a.label))),
+  ]);
+}
+
 // ---------------------------------------------------------------- the rack (S1)
 
 function rackFrame() {
   const regions = {
     header: h("header", { class: "bar" }),
     problems: h("div", { class: "problems", "aria-live": "polite" }),
-    channels: h("nav", { class: "channels", "aria-label": "Channels" }),
+    rigs: h("section", { class: "rigs", "aria-label": "Rigs" }),
+    channels: h("div", { class: "channel-list" }),
     rack: h("main", { class: "rack" }),
     changes: h("aside", { class: "changes", "aria-label": "Unsaved changes" }),
   };
   const frame = h("div", { class: "screen rack-screen" }, regions.header, regions.problems,
-    h("div", { class: "rack-body" }, regions.channels, h("div", { class: "rack-main" }, regions.rack), regions.changes));
+    h("div", { class: "rack-body" }, h("nav", { class: "channels", "aria-label": "Rigs and channels" }, regions.rigs, regions.channels),
+      h("div", { class: "rack-main" }, regions.rack), regions.changes));
   return { frame, regions };
 }
 
@@ -515,23 +648,29 @@ function detail(unit, size) {
 }
 
 function renderRack(regions, model, unsaved, status) {
-  patch(regions.header, JSON.stringify([status, state.locked, state.armed, state.health && state.health.ok && state.health.body.rig.amp_model]), () => [
+  const views = tileViews(state.health);
+  patch(regions.header, JSON.stringify([status, state.locked, state.armed, views]), () => [
     h("svg", { width: 28, height: 28, viewBox: "0 0 28 28", "aria-hidden": "true", class: "mark" }, h("path", { d: "M5 18a9 9 0 0 1 18 0" }), h("path", { d: "M10 18a4 4 0 0 1 8 0" })),
     h("h1", { class: "rig-name" }, status.title), statusLine(status),
-    h("span", { class: "spacer" }), ...tiles(state.health), h("a", { class: "go", href: "#stage" }, "Stage"), lockButton(),
+    h("span", { class: "spacer" }), ...tiles(views), h("a", { class: "go", href: "#stage" }, "Stage"), lockButton(),
   ]);
   problemsRegion(regions.problems);
   const live = liveBody();
   const structure = model ? JSON.stringify([model.tracks.map((t) => [t.name, t.chain, t.units.map((u) => [u.uri, u.profile, u.panel])]), state.locked, [...state.open], !!state.names]) : "none";
   if (patch(regions.rack, structure, () => {
     state.updaters = [];
-    if (!model) return h("p", { class: "empty" }, status.tone === "busy" ? "The rig is changing; the rack comes back when it is up." : "No rig to show: nothing is running in Sushi.");
+    if (!model) {
+      return h("p", { class: "empty" }, status.tone === "busy" ? "The rig is changing; the rack comes back when it is up."
+        : status.tone === "off" ? "No rig to show: nothing is running in Sushi. Choose one under RIGS to start it."
+          : "No rig to show: nothing is running in Sushi.");
+    }
     return model.tracks.map((track) => h("section", { class: "track", id: `t-${track.name}` },
       h("div", { class: "track-head" }, h("span", { class: "ring", "aria-hidden": "true" }), h("h2", {}, track.name),
         h("span", { class: "hint" }, track.units.length ? `${track.units.length} plugin${track.units.length === 1 ? "" : "s"} · open a unit for all its controls` : "no plugins")),
       track.units.map((u, i) => unitRow(track, u, i)),
       track.send ? h("div", { class: "send" }, h("span", { class: "k" }, "SEND TO MASTER"), control(track.send, track.send.panel.groups[0].controls[0], "small")) : null));
   })) { /* rebuilt: its updaters are new */ }
+  rigsRegion(regions.rigs);
   patch(regions.channels, model ? JSON.stringify(model.tracks.map((t) => [t.name, t.units.length])) : "none", () => [
     h("h2", {}, "CHANNELS"),
     model ? model.tracks.map((t) => h("a", { class: "channel", href: `#t-${t.name}` }, h("span", { class: "n" }, t.name),
@@ -587,8 +726,9 @@ function stageFrame() {
     problems: h("div", { class: "problems", "aria-live": "polite" }),
     levels: h("div", { class: "levels" }),
     cards: h("main", { class: "cards" }),
+    rigs: h("section", { class: "rigs stage-rigs", "aria-label": "Rigs" }),
   };
-  const frame = h("div", { class: "screen stage-screen" }, regions.header, regions.problems, regions.levels, regions.cards,
+  const frame = h("div", { class: "screen stage-screen" }, regions.header, regions.problems, regions.levels, regions.cards, regions.rigs,
     h("nav", { class: "stage-nav" }, h("a", { href: "#stage", class: "here", "aria-current": "page" }, "Stage"), h("a", { href: "#rack" }, "Rack")));
   return { frame, regions };
 }
@@ -609,10 +749,11 @@ function card(unit) {
 }
 
 function renderStage(regions, model, status) {
-  patch(regions.header, JSON.stringify([status, state.locked, state.armed, state.health && state.health.ok && state.health.body.rig.amp_model]), () => [
+  const views = tileViews(state.health);
+  patch(regions.header, JSON.stringify([status, state.locked, state.armed, views]), () => [
     h("div", { class: "row" }, h("span", { class: `dot tone-${status.tone}`, "aria-hidden": "true" }), h("h1", { class: "rig-name" }, status.title), h("span", { class: "spacer" }), lockButton()),
-    h("div", { class: `detail-line tone-${status.tone}` }, status.detail),
-    h("div", { class: "tiles" }, ...tiles(state.health)),
+    h("div", { class: `detail-line tone-${status.tone}`, title: status.tone === "up" ? SOUND_NOTE : null }, status.detail),
+    h("div", { class: "tiles" }, ...tiles(views)),
   ]);
   problemsRegion(regions.problems);
   const live = liveBody();
@@ -620,18 +761,26 @@ function renderStage(regions, model, status) {
   patch(regions.levels, JSON.stringify(levels), () => levels.length
     ? [h("span", { class: "k" }, "CHANNELS"), ...levels.map((l) => h("span", { class: "level" }, h("span", { class: "n" }, l.channel), h("span", { class: "v" }, l.text)))]
     : []);
-  const structure = model ? JSON.stringify([model.tracks.map((t) => [t.name, t.chain, t.units.map((u) => [u.uri, u.profile, u.panel])]), state.locked, [...state.open]]) : "none";
+  const structure = model ? JSON.stringify([model.tracks.map((t) => [t.name, t.chain, t.units.map((u) => [u.uri, u.profile, u.panel])]), state.locked, [...state.open]]) : JSON.stringify(["none", status.tone, state.locked]);
+  const lockNote = () => h("p", { class: `lock-note${state.locked ? " locked" : ""}` }, state.locked ? lockIcon() : null,
+    state.locked
+      ? "Add, remove and reorder are off while locked, and start, stop and switch are hidden. Knobs and bypass still work. This is the page's lock: the agent does not enforce one yet."
+      : "Lock off: the rack can reorder the rig, and the rig can be started, stopped or switched below.");
   patch(regions.cards, structure, () => {
     state.updaters = [];
-    if (!model) return h("p", { class: "empty" }, "No rig to show: nothing is running in Sushi.");
+    if (!model) {
+      return [h("p", { class: "empty" }, status.tone === "busy" ? "The rig is changing; the cards come back when it is up."
+        : "No rig to show: nothing is running in Sushi."), lockNote()];
+    }
     return [
       ...model.tracks.filter((t) => t.units.length).map((t) => h("section", { class: "track" }, h("h2", {}, t.name), t.units.map(card))),
-      h("p", { class: `lock-note${state.locked ? " locked" : ""}` }, state.locked ? lockIcon() : null,
-        state.locked
-          ? "Add, remove and reorder are off while locked. Knobs and bypass still work. This is the page's lock: the agent does not enforce one yet."
-          : "Lock off: the rack can reorder the rig."),
+      lockNote(),
     ];
   });
+  // Hidden, not disabled, while locked: on stage a Stop within reach of a
+  // thumb is the mistake the lock is there to prevent.
+  if (state.locked) patch(regions.rigs, "locked", () => []);
+  else rigsRegion(regions.rigs);
 }
 
 // ---------------------------------------------------------------- render
@@ -680,4 +829,4 @@ function render() {
 
 // A channel's link is a hash too; only a change of screen closes what was open.
 window.addEventListener("hashchange", () => { if (currentScreen() !== state.screen) state.open.clear(); render(); });
-poll();
+poll().then(pollLoad);

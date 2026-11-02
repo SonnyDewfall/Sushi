@@ -1,0 +1,9 @@
+S   ID  QUANT   RATE    WAIT    BUSY   W/Q   B/Q  ERR FORMAT           NAME
+R   45      0      0   0.0us   0.0us  0.00  0.00    0                  Dummy-Driver
+R  130      0      0   0.0us   0.0us  0.00  0.00    0                   + sushi
+S   ID  QUANT   RATE    WAIT    BUSY   W/Q   B/Q  ERR FORMAT           NAME
+R   45   1024  48000   5.8ms   3.0us  0.27  0.00    1   S32LE 10 48000 alsa_input.usb-Audient
+R  127      0      0  40.6us   6.2us  0.00  0.00    0                   + fmit
+R  130      0      0  34.3us 674.6us  0.00  0.03    0                   + sushi
+R  159      0      0  51.3us   3.0us  0.00  0.00    0                   + Carla
+R  143      0      0  51.3us   4.9ms  0.00  0.23    2                   + NAM

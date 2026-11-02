@@ -371,10 +371,27 @@ export function duration(seconds) {
   return `${Math.floor(m / 60)} h ${m % 60} min`;
 }
 
-// The state line. `tone` is down, busy or up, and never "measured": green is
-// for a rig whose sound was measured (principle 8, #49), and nothing measures
-// it yet, so an up rig is shown as up and unmeasured, not as fine.
-// `health` and `live` are the page's last answers: {ok, status, body, reason}.
+// Whether to ask /live at all (#111). Only for a rig the agent says is up and
+// not changing: with none up, /live can only answer 503, and asking once a
+// second filled the console with errors (110 in one session on the rig
+// laptop) that buried any real one. A rig going up or down is 409 busy, the
+// same noise. Asked whenever the rig is up, so a /live failure then is the
+// error it is, and is shown as one (`rigStatus`).
+export function readsLive(health) {
+  if (!health || !health.ok) return false;
+  const rig = health.body.rig || {};
+  const agent = health.body.agent || {};
+  return !!rig.running && !agent.busy;
+}
+
+// The state line. `tone` is off, down, busy or up, and never "measured":
+// green is for a rig whose sound was measured (principle 8, #49), and
+// nothing measures it yet, so an up rig is shown as up and unmeasured, not as
+// fine. `off` is a rig that is simply not running, a state the player chose;
+// `down` is a failure: an agent not answering, or a rig up whose Sushi does
+// not (#111: the two looked the same, and the first is no error).
+// `health` and `live` are the page's last answers: {ok, status, body, reason};
+// `live` is null when it was not asked (`readsLive`).
 export function rigStatus(health, live) {
   if (!health || !health.ok) {
     return { tone: "down", title: "Agent not answering", detail: (health && health.reason) || "no answer yet", measured: false };
@@ -383,7 +400,7 @@ export function rigStatus(health, live) {
   const agent = health.body.agent || {};
   const name = rig.config_name || "rig";
   if (agent.busy) return { tone: "busy", title: name, detail: `${agent.busy} is running`, measured: false };
-  if (!rig.running) return { tone: "down", title: "Rig down", detail: rig.message || rig.verdict || "not running", measured: false };
+  if (!rig.running) return { tone: "off", title: "Rig down", detail: rig.message || rig.verdict || "not running", measured: false };
   if (live && !live.ok) return { tone: "down", title: name, detail: `Up, but Sushi did not answer: ${live.reason}`, measured: false };
   const up = duration(rig.uptime_seconds);
   return { tone: "up", title: name, detail: `Up${up ? " " + up : ""} · sound not measured`, measured: false };
@@ -402,6 +419,132 @@ export function agentProblems(health) {
   if (agent.midi && agent.midi.state === "failed") out.push({ title: "Pedals", reason: agent.midi.problem || "the MIDI listener failed", at: null });
   if (agent.stuck_live_calls) out.push({ title: "Sushi", reason: `${agent.stuck_live_calls} call(s) to Sushi never returned`, at: null });
   return out;
+}
+
+// ---------------------------------------------------------------- load and xruns
+
+// Every rig node's xruns, summed: what `loadTiles` counts from.
+export function xrunTotal(body) {
+  return ((body && body.nodes) || []).reduce((sum, n) => sum + (isNumber(n.xruns) ? n.xruns : 0), 0);
+}
+
+// The LOAD and XRUNS tiles from GET /rig/load's answer (`top.load_report`),
+// as {k, v, s, title, tone}; tone is "", "warn", "over" or "failed". `up` is
+// whether a rig is up; `xruns` is {first, last}, the totals the page saw when
+// it began watching this rig and last time, or null.
+//
+// Load is the sum of the rig's nodes' B/Q, the fraction of each block they
+// used, as `sushi-rig top` totals it; never 0 % unless pw-top measured 0.
+// Xruns are cumulative since each node appeared and never reset, so the
+// number shown is how many since the page began watching, and "rising" when
+// the last sample added some: what predicts trouble (top.py) is a count that
+// climbs, not its size.
+export function loadTiles(answer, up, xruns) {
+  const none = (s, title, tone = "") => [
+    { k: "LOAD", v: "—", s, title, tone },
+    { k: "XRUNS", v: "—", s, title, tone },
+  ];
+  if (!up) return none("rig down", "Read from pw-top while a rig is up");
+  if (!answer) return none("reading", "Asking the agent for a pw-top sample");
+  if (!answer.ok) return none("unreadable", `pw-top could not be read: ${answer.reason}`, "failed");
+  const b = answer.body;
+  const budget = b.budget || {};
+  const notes = [];
+  if ((b.missing || []).length) notes.push(`pw-top does not list ${b.missing.join(", ")}`);
+  if ((b.drivers || []).length > 1) notes.push(`split across ${b.drivers.length} clocks (${b.drivers.join(", ")}): not one graph cycle`);
+  const unmeasured = (b.nodes || []).filter((n) => n.load === null).map((n) => n.name);
+  if (unmeasured.length) notes.push(`no timing for ${unmeasured.join(", ")}`);
+  let load;
+  if (b.total_load === null || b.total_load === undefined) {
+    load = { k: "LOAD", v: "—", s: "not measured", tone: "warn" };
+  } else {
+    const tone = b.total_load >= 1 ? "over" : b.total_load >= b.warn_at ? "warn" : "";
+    const block = isNumber(budget.block_ms) ? `of ${budget.block_ms.toFixed(1)} ms` : "no block size";
+    load = { k: "LOAD", v: `${Math.round(b.total_load * 100)}%`, s: tone === "over" ? "over budget" : block, tone };
+  }
+  if (notes.length && !load.tone) load.tone = "warn";
+  const perNode = (b.nodes || []).map((n) => `${n.name} ${n.load === null ? "—" : Math.round(n.load * 100) + "%"}`).join(", ");
+  load.title = [perNode || "no rig node in pw-top", budget.quantum ? `quantum ${budget.quantum} @ ${budget.rate} Hz` : null,
+    budget.driver ? `clocked by ${budget.driver}` : null, ...notes].filter(Boolean).join(" · ");
+  if (!(b.nodes || []).length) load.s = "no rig nodes";
+  const total = xrunTotal(b);
+  const first = xruns && isNumber(xruns.first) && xruns.first <= total ? xruns.first : total;
+  const rising = !!(xruns && isNumber(xruns.last) && total > xruns.last);
+  const xrun = {
+    k: "XRUNS", v: String(total - first), s: rising ? "rising" : "since opened",
+    tone: rising ? "warn" : "",
+    title: `${total} in all since each node appeared (pw-top never resets them): ` +
+      ((b.nodes || []).map((n) => `${n.name} ${n.xruns}`).join(", ") || "no rig nodes"),
+  };
+  return [load, xrun];
+}
+
+// ---------------------------------------------------------------- start, stop, switch
+
+const VERBS = { start: "Starting", stop: "Stopping", switch: "Switching to" };
+
+// The request for a lifecycle gesture. A start is a rig of channels
+// (config/rigs/, `rig: true`) and headless: the page replaces the OSC panel,
+// and a rig run with its panel cannot be switched live (#93).
+export function lifecycleCall(op, name) {
+  if (op === "start") return { path: "/rig/up", json: { config_name: name, rig: true, headless: true } };
+  if (op === "stop") return { path: "/rig/down", json: {} };
+  if (op === "switch") return { path: "/rig/switch", json: { config_name: name } };
+  throw new Error(`unknown lifecycle gesture ${op}`);
+}
+
+// The rig picker: the rigs of config/rigs/ (GET /rigs's answer), which one is
+// up and which is chosen, and what can be done. `pending` is this page's
+// command in flight ({op, name}) or null; the agent's own `busy` covers one
+// another client started. Either way nothing is offered while one runs (the
+// agent would answer 409 busy), and what is running is said.
+export function rigPicker(health, rigsAnswer, chosen, pending) {
+  const agentUp = !!(health && health.ok);
+  const rig = agentUp ? health.body.rig || {} : {};
+  const busy = agentUp ? (health.body.agent || {}).busy || null : null;
+  const running = rig.running ? rig.config_name || null : null;
+  const names = rigsAnswer && rigsAnswer.ok ? rigsAnswer.body.rigs : [];
+  const pick = chosen && names.includes(chosen) ? chosen : null;
+  const view = {
+    rows: names.map((name) => ({ name, up: name === running, chosen: name === pick })),
+    problem: rigsAnswer && !rigsAnswer.ok ? `config/rigs/ could not be listed: ${rigsAnswer.reason}` : null,
+    busy: pending ? `${VERBS[pending.op]} ${pending.name || "the rig"}…` : busy ? `${busy} is running` : null,
+    actions: [],
+  };
+  if (!agentUp) { view.problem = view.problem || "The agent is not answering, so no rig can be started or stopped."; return view; }
+  const idle = !pending && !busy;
+  if (!rig.running) {
+    view.actions.push({ op: "start", name: pick, label: pick ? `Start ${pick}` : "Choose a rig to start", disabled: !idle || !pick, primary: true });
+  } else {
+    if (pick && pick !== running) view.actions.push({ op: "switch", name: pick, label: `Switch to ${pick}`, disabled: !idle, primary: true });
+    view.actions.push({ op: "stop", name: running, label: `Stop ${running || "the rig"}`, disabled: !idle, primary: false });
+  }
+  return view;
+}
+
+// What a lifecycle answer says, for the page to show: {ok, title, text} for
+// a notice, or {ok: false, title, reason} for a failure, the agent's reason
+// as it gave it. A switch says how it was made and, for a restart, why.
+export function lifecycleOutcome(op, name, answer) {
+  const body = answer.body || {};
+  const why = (body.why || []).map((r) => `${r.code}: ${r.detail}`).join("; ");
+  const secs = isNumber(body.seconds) ? ` in ${body.seconds < 10 ? body.seconds.toFixed(1) : Math.round(body.seconds)} s` : "";
+  if (op === "switch") {
+    if (answer.ok) {
+      return body.how === "live"
+        ? { ok: true, title: `Switched to ${name}`, text: `Switched to ${name} live${secs}: Sushi was not restarted.` }
+        : { ok: true, title: `Switched to ${name}`, text: `Switched to ${name} by restart${secs}, because ${why || "the agent gave no reason"}.` };
+    }
+    return { ok: false, title: `Not switched to ${name}${body.how === "restart" ? " (by restart)" : ""}`,
+      reason: answer.reason + (body.how === "restart" && why ? `. It restarted because ${why}` : "") };
+  }
+  const warnings = (body.warnings || []).length ? ` Warnings: ${body.warnings.join("; ")}` : "";
+  if (op === "start") {
+    return answer.ok ? { ok: true, title: `Started ${name}`, text: `Started ${name}, headless.${warnings}` }
+      : { ok: false, title: `Not started: ${name}`, reason: answer.reason };
+  }
+  return answer.ok ? { ok: true, title: "Stopped", text: `Stopped ${name || "the rig"}.` }
+    : { ok: false, title: `Not stopped: ${name || "the rig"}`, reason: answer.reason };
 }
 
 // ---------------------------------------------------------------- the lock

@@ -402,6 +402,8 @@ sushi-rig agent install-service      # or run it as a systemd user service (prin
 curl localhost:8029/health           # the agent and the rig in one answer, crashed children included
 curl localhost:8029/rig              # `status` as data
 curl localhost:8029/doctor           # `doctor` as data
+curl localhost:8029/rigs             # the rigs of config/rigs/ a start or switch can name, and which is up
+curl localhost:8029/rig/load         # one pw-top sample of the rig's nodes: load, xruns, the block budget
 curl -X POST localhost:8029/rig/up -d '{"config_name": "guitar_vocal", "rig": true, "headless": true}'
 curl -X POST localhost:8029/rig/down
 curl -X POST localhost:8029/rig/restart
@@ -691,9 +693,9 @@ sushi-rig agent                      # then open http://127.0.0.1:8029/ (the rac
                                      # or http://127.0.0.1:8029/#stage (the stage screen; the default on a phone)
 ```
 
-![The rack: two channels and a master, the overdrive open with its profile's groups, one knob turned and listed as unsaved](docs/ui/rack.png)
+![The rack: the rigs of config/rigs on the left with the running one marked and another chosen to switch to, two channels and a master, the overdrive open with its profile's groups, one knob turned and listed as unsaved, load and xruns from pw-top](docs/ui/rack.png)
 
-<img src="docs/ui/stage.png" alt="The stage screen at phone width: the rig's name and state, what is not measured, each channel's level, one card per plugin with a big bypass switch, and the lock" width="300">
+<img src="docs/ui/stage.png" alt="The stage screen at phone width: the rig's name and state, load and xruns from pw-top, each channel's level, one card per plugin with a big bypass switch, and the lock, with start, stop and switch hidden while it is on" width="300">
 
 The agent serves the UI at `/`, from `tool/src/sushi_rig/ui/static/`: plain HTML, CSS
 and JavaScript with no build step and no framework, because the rig machine has
@@ -705,27 +707,47 @@ no Node and the UI has to run from a checkout. Two screens from the mockups:
   does not. Values are in the plugin's own range, never 0 to 1. A turned knob is
   sent at once and marked unsaved, with what it was; the side panel lists what
   changed since the rig came up and undoes the newest change.
-- **The stage screen (S5).** One glance: the rig, up or down, each channel's
-  level, and the last error. One tap: a 56 px bypass per plugin, or a card opened
-  for its knobs. Locked by default; unlocking takes two taps.
+- **The stage screen (S5).** One glance: the rig, up or down, load and xruns,
+  each channel's level, and the last error. One tap: a 56 px bypass per plugin,
+  or a card opened for its knobs. Locked by default; unlocking takes two taps.
+- **Start, stop and switch (v0.1, #111).** The rigs of `config/rigs/` in a
+  list (the rack's left column; on the stage screen only while the lock is
+  off): pick one and Start it (a rig of channels, headless, since the page
+  replaces the panel), Switch to it, or Stop the one that is up, which takes a
+  second tap because it cuts the sound. A switch says whether it was made live
+  or by restart, and why. While a command runs, from this page or another,
+  nothing else is offered and what is running is said; a refusal shows the
+  agent's reason.
 
-It polls `/live` once a second and sends each change as it happens. A change the
-agent refuses shows the agent's reason on screen, beside the knob; nothing is put
-back without saying why.
+It polls `/health` once a second, and `/live` only while a rig is up: a rig
+that is down is shown as a state, in grey, not as an error a second in the
+console (#111), while a `/live` failure with the rig up is still shown as the
+failure it is. Load and xruns come from `GET /rig/load`, one `pw-top -b -n 2`
+every two seconds while a rig is up: LOAD is the rig's nodes' share of the
+block (B/Q, summed as `sushi-rig top` sums it) against the block's length from
+Sushi's driver, XRUNS how many since the page opened, marked when rising. A
+pw-top that is missing or fails shows as "unreadable" with the reason. Each
+change is sent as it happens. A change the agent refuses shows the agent's
+reason on screen, beside the knob; nothing is put back without saying why.
 
-Not done yet, and said on screen where it shows: load and xruns (the agent does
-not measure them, so they read "not measured", and an up rig is never green,
-#49); saving (S4); the lock is the page's own, since the agent has no performance
+Not done yet, and said on screen where it shows: the sound (nothing measures
+it, so an up rig reads "sound not measured" and is never green, #49);
+saving (S4); the lock is the page's own, since the agent has no performance
 lock yet (#29); "unsaved" counts only changes made through the agent since the
 rig came up, so a change from the OSC panel, or a `sushi-rig save` since, is not
 reflected; changes go over HTTP, not a WebSocket. Library, Record, Broken, Save
-and Pedals from the canvas are not built. None of it has met a real Sushi: it is
-tested against the agent over a fake rig (`tool/tests/ui_fake.py`, which says
-what in it is observed), and which plugin each processor is comes from Sushi's
-saved session, unverified against 1.3.0 as for the agent's add and remove.
+and Pedals from the canvas are not built. v0.1 answers a session on the real rig
+but has not run on it: the load route has not read a real `pw-top` (it parses
+the format `tool/tests/test_top.py` holds), the `ELKPY:` lines were silenced
+against elkpy 1.3.0 with no Sushi listening, and start, stop and switch from the
+page have not driven a real rig. All of it is tested against the agent over a fake rig
+(`tool/tests/ui_fake.py`, which says what in it is observed), and which plugin
+each processor is comes from Sushi's saved session, unverified against 1.3.0 as
+for the agent's add and remove.
 
 To try it without a rig: `cd tool && PYTHONPATH=src:tests python tests/ui_fake.py`
-serves the UI against that fake on port 8029.
+serves the UI against that fake on port 8029 (`--down` to start with no rig up).
+`/ui/` and `/ui` redirect to the page.
 
 ### Ports by role, not by device name
 

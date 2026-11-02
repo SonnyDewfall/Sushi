@@ -18,6 +18,9 @@ times everything else combined.
 counts everything since the device appeared and never resets. What matters is
 whether it is *climbing*, so this reports the change between samples rather than
 the total.
+
+The agent serves the same reading as data at GET /rig/load (`load_report`,
+`read_pw_top`, #111), for the web UI's LOAD and XRUNS tiles.
 """
 
 from __future__ import annotations
@@ -80,7 +83,12 @@ def parse_pw_top(output: str) -> list[dict[str, Any]]:
             continue
         busy = parse_duration(fields[5])
         try:
-            load = float(fields[7])
+            # "---" is what pw-top prints for a node it has no timing for: a
+            # row in state C, observed in tool/spikes/live_rig/RESULTS-...
+            # (2026-10-31). Kept, with no load, rather than dropped: a rig node
+            # PipeWire lists but does not schedule is a different fault from
+            # one it does not list, and the load route says which.
+            load = None if fields[7] == "---" else float(fields[7])
             xruns = int(fields[8])
         except ValueError:
             continue
@@ -92,16 +100,21 @@ def parse_pw_top(output: str) -> list[dict[str, Any]]:
             "busy": busy,
             "load": load,
             "xruns": xruns,
-            "is_driver": "+" not in fields,
+            # An unmeasured row is not scheduled, so it drives nothing, and
+            # must not become the driver of the rows printed after it.
+            "is_driver": "+" not in fields and load is not None,
         }
         if node["is_driver"]:
             driver = node
         # None, not the node itself, when no driver row has been seen: naming a
         # follower as its own driver prints "[clocked by sushi]", which is
         # never true of anything.
-        node["driver"] = driver["name"] if driver else None
-        node["driver_quantum"] = driver["quantum"] if driver else node["quantum"]
-        node["driver_rate"] = driver["rate"] if driver else node["rate"]
+        # Nor is an unscheduled row (no "+", no timing) under the driver
+        # printed before it: it follows nothing.
+        under = driver if node["is_driver"] or "+" in fields else None
+        node["driver"] = under["name"] if under else None
+        node["driver_quantum"] = under["quantum"] if under else node["quantum"]
+        node["driver_rate"] = under["rate"] if under else node["rate"]
         nodes.append(node)
     return nodes
 
@@ -182,6 +195,104 @@ def driver_groups(nodes: list[dict[str, Any]]) -> list[str]:
     return seen
 
 
+# --------------------------------------------------------------------------- #
+# The agent's GET /rig/load: the same reading, as data (the web UI's LOAD and
+# XRUNS tiles)
+# --------------------------------------------------------------------------- #
+
+class LoadError(Exception):
+    """pw-top could not be read: `code` says how (`no_pw_top`, `timeout`,
+    `failed`, `no_sample`), the message says it to a person."""
+
+    def __init__(self, message: str, code: str):
+        super().__init__(message)
+        self.code = code
+
+
+def _number(text: Any) -> int | None:
+    return int(text) if isinstance(text, str) and text.isdigit() else None
+
+
+def load_report(nodes: list[dict[str, Any]], children: dict[str, Any] | None) -> dict[str, Any]:
+    """What `format_sample` shows, as data. Pure.
+
+    `nodes` is `parse_pw_top`'s, `children` the state file's (`describe_rig`'s
+    `children`). Each rig node with the child it belongs to, its load (B/Q,
+    the fraction of the block it used; None where pw-top printed "---"), its
+    busy time and its cumulative xruns; the budget from Sushi's driver, never
+    a follower's row (see `parse_pw_top`); every driver the nodes run under,
+    since more than one is a fault with no other symptom; and `missing`, the
+    nodes the running children should have that pw-top does not list (only
+    when the children are known: with none, every known name is looked for,
+    as `rig_nodes` does, and an absent amp would be no news).
+
+    `total_load` sums the measured loads, as `format_sample`'s total does: the
+    amp and Sushi run one after the other in the same cycle. None when no node
+    was measured, so nothing reads as 0 % that was not measured. `warn_at` is
+    `BUSY_WARN`, so the page does not keep a second threshold.
+    """
+    shown = rig_nodes(nodes, children)
+    owner = {name: child for child, names in CHILD_NODES.items() for name in names}
+    source = budget_source(shown)
+    quantum = rate = block_ms = driver = None
+    if source is not None:
+        quantum = _number(source.get("driver_quantum") or source.get("quantum"))
+        rate = _number(source.get("driver_rate") or source.get("rate"))
+        driver = source.get("driver")
+        if quantum and rate:
+            block_ms = round(1000 * quantum / rate, 3)
+    expected = [name for child in DISPLAY_ORDER if child in (children or {})
+                for name in CHILD_NODES.get(child, ())]
+    names = {node["name"] for node in shown}
+    measured = [node["load"] for node in shown if node["load"] is not None]
+    return {
+        "nodes": [{
+            "name": node["name"],
+            "child": owner.get(node["name"]),
+            "running": node["running"],
+            "load": node["load"],
+            "busy_ms": None if node["busy"] is None else round(node["busy"] * 1000, 3),
+            "xruns": node["xruns"],
+            "driver": node.get("driver"),
+        } for node in shown],
+        "missing": [name for name in expected if name not in names],
+        "budget": {"quantum": quantum, "rate": rate, "block_ms": block_ms, "driver": driver},
+        "drivers": driver_groups(shown),
+        "total_load": round(sum(measured), 4) if measured else None,
+        "warn_at": BUSY_WARN,
+    }
+
+
+def read_pw_top(timeout: float) -> str:
+    """One `pw-top -b -n 2` (two samples: see `parse_pw_top`), its output, or
+    `LoadError` saying why not. Blocking, so the agent runs it off its loop;
+    `timeout` is a deadline, past which the child is killed (`subprocess.run`
+    does that) rather than left running beside the agent.
+
+    `sample()` above, for `sushi-rig top`, shows an empty frame when pw-top
+    fails; a figure on the stage screen must not quietly become nothing, so
+    every way this fails is said."""
+    try:
+        result = subprocess.run(
+            ["pw-top", "-b", "-n", "2"], capture_output=True, text=True, check=False, timeout=timeout)
+    except FileNotFoundError:
+        raise LoadError(
+            "pw-top is not installed, so load and xruns cannot be read "
+            "(it comes with PipeWire's tools: the pipewire-bin package)", "no_pw_top") from None
+    except subprocess.TimeoutExpired:
+        raise LoadError(f"pw-top did not finish within {timeout:g}s and was stopped", "timeout") from None
+    if result.returncode != 0:
+        said = " ".join((result.stderr or result.stdout or "").split())[-300:] or "nothing"
+        raise LoadError(f"pw-top failed (exit {result.returncode}): {said}", "failed")
+    if "S   ID  QUANT" not in result.stdout:
+        # Not a pw-top this parser knows, or a PipeWire with no graph: the
+        # header is what `parse_pw_top` splits on, so without it every rig
+        # node would read as missing, which is a different claim.
+        said = " ".join(result.stdout.split())[:200] or "nothing"
+        raise LoadError(f"pw-top printed no sample this tool can read: {said}", "no_sample")
+    return result.stdout
+
+
 def bar(load: float, width: int = BAR_WIDTH) -> str:
     filled = max(0, min(width, round(load * width)))
     return "█" * filled + "░" * (width - filled)
@@ -227,16 +338,18 @@ def format_sample(
     for node in nodes:
         busy = node["busy"] or 0.0
         total_busy += busy
-        total_load += node["load"]
+        load = node["load"]
+        total_load += load or 0.0
         delta = deltas.get(node["name"], 0)
         # The cumulative count is nearly meaningless — it never resets. A change
         # since the last sample is the thing worth seeing.
         xruns = f"{node['xruns']}" + (f"  (+{delta})" if delta else "")
-        mark = " !" if node["load"] >= BUSY_WARN else "  "
+        mark = " !" if load is not None and load >= BUSY_WARN else "  "
         dead = "" if node["running"] else "  (not running)"
+        shown = "   —" if load is None else f"{load * 100:4.0f}"
         lines.append(
-            f"  {node['name']:<10} {_ms(busy):>9}  {bar(node['load'])} "
-            f"{node['load'] * 100:4.0f}%{mark} {xruns}{dead}"
+            f"  {node['name']:<10} {_ms(busy):>9}  {bar(load or 0.0)} "
+            f"{shown}%{mark} {xruns}{dead}"
         )
 
     lines.append(f"  {'-' * (BAR_WIDTH + 34)}")

@@ -11,10 +11,13 @@ import pytest
 from sushi_rig.top import (
     BUSY_WARN,
     CHILD_NODES,
+    LoadError,
     bar,
     format_sample,
+    load_report,
     parse_duration,
     parse_pw_top,
+    read_pw_top,
     rig_nodes,
 )
 
@@ -237,3 +240,114 @@ R  130      0      0  34.3us 674.6us  0.00  0.03    0                   + sushi
     nodes = parse_pw_top(only_followers)
     assert nodes[0]["driver"] is None
     assert "clocked by" not in format_sample(nodes, {}, "rig")
+
+
+# --- a row pw-top has no timing for (#111) -----------------------------------
+
+# Observed: the one line quoted in tool/spikes/live_rig/RESULTS-sonny-dewfall-
+# XPS-9320-2026-10-31.md (a follower in state C, every timing "---"). Invented:
+# its name is the rig's Sushi here, and the rows around it are PW_TOP's.
+UNTIMED = """S   ID  QUANT   RATE    WAIT    BUSY   W/Q   B/Q  ERR FORMAT           NAME
+R   45   1024  48000   5.8ms   3.0us  0.27  0.00    1   S32LE 10 48000 alsa_input.usb-Audient
+C  130      0      0    ---     ---   ---   ---     0         sushi
+R  143      0      0  51.3us   4.9ms  0.00  0.23    2                   + NAM
+"""
+
+
+def test_a_row_with_no_timing_is_kept_unmeasured_and_drives_nothing():
+    """Dropped, it read as Sushi missing from the graph, a different fault from
+    Sushi listed and not scheduled. Taken as a driver (it has no "+"), it
+    would have clocked the rows after it."""
+    nodes = {n["name"]: n for n in parse_pw_top(UNTIMED)}
+    assert nodes["sushi"]["load"] is None and nodes["sushi"]["busy"] is None
+    assert nodes["sushi"]["xruns"] == 0 and nodes["sushi"]["is_driver"] is False
+    assert nodes["NAM"]["driver"] == "alsa_input.usb-Audient"
+    out = format_sample(rig_nodes(list(nodes.values()), {"sushi": 1, "amp": 2}), {}, "rig")
+    assert "sushi" in out and "  —%" in out
+
+
+# --- the agent's GET /rig/load (#111) ------------------------------------------
+
+
+def test_the_load_report_is_the_rigs_nodes_their_budget_and_what_is_missing():
+    report = load_report(parse_pw_top(PW_TOP), {"sushi": 1, "amp": 2, "listen": 3})
+    assert [(n["name"], n["child"], n["load"], n["xruns"]) for n in report["nodes"]] == [
+        ("NAM", "amp", 0.23, 2), ("Carla", "amp", 0.0, 0), ("sushi", "sushi", 0.03, 0)]
+    assert report["nodes"][2]["busy_ms"] == pytest.approx(0.675, abs=1e-3)
+    # From Sushi's driver row, never its own (a follower's reads 0).
+    assert report["budget"] == {"quantum": 1024, "rate": 48000, "block_ms": 21.333,
+                                "driver": "alsa_input.usb-Audient"}
+    assert report["total_load"] == pytest.approx(0.26)
+    assert report["missing"] == [] and report["drivers"] == ["alsa_input.usb-Audient"]
+    assert report["warn_at"] == BUSY_WARN
+
+
+def test_a_running_child_pw_top_does_not_list_is_named():
+    without_sushi = "\n".join(line for line in PW_TOP.splitlines() if not line.endswith("+ sushi"))
+    report = load_report(parse_pw_top(without_sushi), {"sushi": 1, "fmit": 2})
+    assert report["missing"] == ["sushi"]
+    assert [n["name"] for n in report["nodes"]] == ["fmit"]
+
+
+def test_with_no_children_known_nothing_is_called_missing():
+    report = load_report(parse_pw_top(PW_TOP), {})
+    assert report["missing"] == []
+    assert {n["name"] for n in report["nodes"]} == {"NAM", "Carla", "sushi", "fmit"}
+
+
+def test_nothing_measured_is_no_total_rather_than_zero():
+    report = load_report(parse_pw_top(UNTIMED), {"sushi": 1})
+    assert report["total_load"] is None
+    assert report["nodes"][0]["load"] is None and report["budget"]["block_ms"] is None
+
+
+@pytest.fixture
+def pw_top_on_path(tmp_path, monkeypatch):
+    """Put a stand-in `pw-top` (a shell script, `body`) first on PATH. With
+    `exec`, so a timeout's kill reaches the process that holds the pipes."""
+    def install(body):
+        script = tmp_path / "pw-top"
+        script.write_text("#!/bin/sh\n" + body + "\n")
+        script.chmod(0o755)
+        monkeypatch.setenv("PATH", f"{tmp_path}:/usr/bin:/bin")
+    return install
+
+
+def test_pw_top_is_run_for_two_samples_and_its_output_returned(pw_top_on_path, tmp_path):
+    (tmp_path / "sample.txt").write_text(PW_TOP)
+    pw_top_on_path(f'echo "$@" > {tmp_path}/args; cat {tmp_path}/sample.txt')
+    assert read_pw_top(5) == PW_TOP
+    assert (tmp_path / "args").read_text().split() == ["-b", "-n", "2"]
+
+
+def test_a_pw_top_that_is_not_installed_is_said_so(monkeypatch, tmp_path):
+    monkeypatch.setenv("PATH", str(tmp_path))
+    with pytest.raises(LoadError) as caught:
+        read_pw_top(5)
+    assert caught.value.code == "no_pw_top" and "pw-top is not installed" in str(caught.value)
+
+
+def test_a_pw_top_that_fails_is_said_with_what_it_said(pw_top_on_path):
+    pw_top_on_path('echo "failed to connect to PipeWire" >&2; exit 1')
+    with pytest.raises(LoadError) as caught:
+        read_pw_top(5)
+    assert caught.value.code == "failed"
+    assert str(caught.value) == "pw-top failed (exit 1): failed to connect to PipeWire"
+
+
+def test_a_pw_top_that_prints_no_sample_is_not_read_as_no_rig(pw_top_on_path):
+    pw_top_on_path('echo "usage: pw-top [options]"')
+    with pytest.raises(LoadError) as caught:
+        read_pw_top(5)
+    assert caught.value.code == "no_sample" and "usage: pw-top" in str(caught.value)
+
+
+def test_a_pw_top_that_overruns_is_stopped_at_the_deadline(pw_top_on_path):
+    import time
+
+    pw_top_on_path("exec sleep 30")
+    started = time.monotonic()
+    with pytest.raises(LoadError) as caught:
+        read_pw_top(0.5)
+    assert caught.value.code == "timeout" and "within 0.5s" in str(caught.value)
+    assert time.monotonic() - started < 5, "killed at the deadline, not waited for"

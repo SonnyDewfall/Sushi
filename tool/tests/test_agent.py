@@ -15,6 +15,7 @@ import asyncio
 import sys
 import threading
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -850,7 +851,7 @@ def test_live_serves_the_running_rig_with_each_parameters_range():
 
 def test_live_with_no_rig_up_is_unavailable_and_says_why():
     elkpy_errors = pytest.importorskip("elkpy.sushierrors")
-    agent, fake = live_agent()
+    agent, fake = live_agent(describe=lambda: dict(DOWN))
     fake.fail = elkpy_errors.SushiUnavailableError("failed to connect", "")
     status, body = call(agent, "GET", "/live")
     assert status == 503
@@ -891,6 +892,176 @@ def test_live_against_a_real_elkpy_and_no_sushi_is_unavailable(tmp_path):
     )
     assert done.returncode == 0, done.stderr
     assert "503 Sushi is not reachable" in done.stdout, done.stdout
+
+
+def test_a_poll_prints_nothing_and_sushi_gone_while_up_is_said_once(tmp_path):
+    """#111: elkpy printed three ELKPY: lines on every connection, so a page
+    polling /live buried everything the agent said. Against the real elkpy
+    and no Sushi, in a child process as the test above is and for its
+    reason: polls with no rig up print nothing at all, and with the state
+    file saying a rig is up, the one thing that matters -- Sushi is not
+    there -- is printed once, not once a poll, and reaches /health."""
+    pytest.importorskip("elkpy")
+    import json
+    import os
+    import socket
+    import subprocess
+    from pathlib import Path
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    script = (
+        "import asyncio, json, sys\n"
+        "from aiohttp.test_utils import TestClient, TestServer\n"
+        "from sushi_rig.agent import Agent, Live\n"
+        "rig = {'running': False}\n"
+        "async def go():\n"
+        "    agent = Agent(describe=lambda: dict(rig), live=Live.at(f'localhost:{sys.argv[1]}'))\n"
+        "    out = {}\n"
+        "    async with TestClient(TestServer(agent.app())) as client:\n"
+        "        async def poll(n):\n"
+        "            return [(await client.get('/live')).status for _ in range(n)]\n"
+        "        out['down'] = await poll(3)\n"
+        "        sys.stdout.write('--- up\\n'); sys.stdout.flush()\n"
+        "        sys.stderr.write('--- up\\n'); sys.stderr.flush()\n"
+        "        rig.update(running=True, config_name='x')\n"
+        "        out['up'] = await poll(3)\n"
+        "        out['health'] = (await (await client.get('/health')).json())['agent']['last_error']\n"
+        "    with open(sys.argv[2], 'w') as f: json.dump(out, f)\n"
+        "asyncio.run(go())\n"
+        # Out at once: elkpy 1.3.0's controllers are not released by close()
+        # and are torn down at interpreter exit, sometimes with "Event loop is
+        # closed" from their __del__ (seen in a full run, not alone). That is
+        # elkpy's close, handled apart from this; it is not a poll printing.
+        "sys.stdout.flush(); sys.stderr.flush()\n"
+        "import os; os._exit(0)\n"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", script, str(port), str(tmp_path / "out.json")],
+        capture_output=True, text=True, timeout=60,
+        env={**os.environ, "PYTHONPATH": str(Path(agent_module.__file__).parents[1])},
+    )
+    assert done.returncode == 0, done.stderr
+    out = json.loads((tmp_path / "out.json").read_text())
+    assert out["down"] == [503, 503, 503] and out["up"] == [503, 503, 503]
+    assert done.stdout == "--- up\n", "nothing on stdout, ELKPY: lines least of all"
+    down, up = done.stderr.split("--- up\n")
+    assert down == "", "polls with no rig up print nothing"
+    said = up.splitlines()
+    assert len(said) == 1, up
+    assert said[0].startswith("sushi-rig agent: the rig is up but Sushi is not reachable: ")
+    assert "ELKPY" not in done.stderr
+    assert out["health"]["kind"] == "live"
+    assert out["health"]["message"].startswith("the rig is up but Sushi is not reachable")
+
+
+def test_sushi_gone_while_up_is_said_again_once_it_has_come_back_and_gone_again(capsys):
+    elkpy_errors = pytest.importorskip("elkpy.sushierrors")
+    agent, fake = live_agent()
+
+    async def go():
+        async with TestClient(TestServer(agent.app())) as client:
+            statuses = []
+            for gone in (True, True, False, True):
+                fake.fail = elkpy_errors.SushiUnavailableError("failed to connect (test)", "") if gone else None
+                statuses.append((await client.get("/live")).status)
+            return statuses
+
+    assert asyncio.run(go()) == [503, 503, 200, 503]
+    assert capsys.readouterr().err.count("the rig is up but Sushi is not reachable") == 2
+
+
+def test_elkpys_chatter_is_dropped_and_anything_else_it_says_reaches_stderr():
+    from sushi_rig.live import elkpy_line
+
+    said: set = set()
+    for chatter in ("ELKPY: Compiled proto found!", "ELKPY: Synchronous context detected.",
+                    "ELKPY: Asyncio context detected.", "ELKPY: Sushi API match! -> 1.2.0",
+                    "ELKPY: Could not find a running Sushi at localhost:51051"):
+        assert elkpy_line(chatter, said) is None, chatter
+    mismatch = "ELKPY: API version mismatch! Sushi = 1.3.0 <-> Elkpy = 1.2.0"
+    assert elkpy_line(mismatch, said) == f"sushi-rig: elkpy said: {mismatch}"
+    assert elkpy_line(mismatch, said) is None, "true of every connection: said once"
+    assert elkpy_line("Some gRPC context", said) == "sushi-rig: elkpy said: Some gRPC context"
+    assert elkpy_line("Some gRPC context", said) is not None, "anything else, every time"
+
+
+def test_elkpys_prints_go_through_the_quiet_print_once_installed(capsys):
+    pytest.importorskip("elkpy")
+    from elkpy import grpc_gen, notificationcontroller, sushicontroller
+
+    from sushi_rig.live import elkpy_print, quiet_elkpy
+
+    assert quiet_elkpy() is True
+    assert grpc_gen.print is sushicontroller.print is notificationcontroller.print is elkpy_print
+    grpc_gen.print("ELKPY: Compiled proto found!")
+    sushicontroller.print("ELKPY: Sushi API match! -> 1.2.0")
+    notificationcontroller.print("a real problem (test)")
+    out, err = capsys.readouterr()
+    assert out == "" and err == "sushi-rig: elkpy said: a real problem (test)\n"
+
+
+# --------------------------------------------------------------------------- #
+# GET /rig/load (#111): pw-top stood in; tests/test_top.py runs the real call
+# against a stand-in executable
+# --------------------------------------------------------------------------- #
+
+PW_TOP_SAMPLE = (Path(__file__).parent / "fixtures" / "pw-top-b-n2.txt").read_text(encoding="utf-8")
+
+
+def load_agent(pw_top, rig=None):
+    return Agent(describe=lambda: dict(rig or {**UP, "children": {"sushi": 1, "amp": 2}}), pw_top=pw_top)
+
+
+def test_the_load_is_the_running_rigs_nodes_from_one_pw_top_sample():
+    timeouts = []
+    agent = load_agent(lambda timeout: timeouts.append(timeout) or PW_TOP_SAMPLE)
+    status, body = call(agent, "GET", "/rig/load")
+    assert status == 200 and body["ok"]
+    assert [n["name"] for n in body["nodes"]] == ["NAM", "Carla", "sushi"]
+    assert body["total_load"] == pytest.approx(0.26) and body["budget"]["block_ms"] == 21.333
+    assert body["missing"] == [] and "at" in body
+    assert timeouts == [agent_module.LOAD_TIMEOUT], "always with a deadline"
+
+
+def test_no_load_is_read_with_no_rig_up():
+    asked = []
+    status, body = call(load_agent(lambda t: asked.append(t), rig=DOWN), "GET", "/rig/load")
+    assert (status, body["code"]) == (409, "no_rig")
+    assert asked == [], "pw-top is not run for a rig that is not there"
+
+
+@pytest.mark.parametrize("code, status", [("no_pw_top", 500), ("timeout", 504), ("failed", 502), ("no_sample", 502)])
+def test_a_pw_top_that_cannot_be_read_is_refused_loudly_and_said_once(code, status, capsys):
+    from sushi_rig.top import LoadError
+
+    failing = {"now": True}
+
+    def pw_top(timeout):
+        if failing["now"]:
+            raise LoadError(f"pw-top went wrong ({code}, test)", code)
+        return PW_TOP_SAMPLE
+
+    agent = load_agent(pw_top)
+
+    async def go():
+        async with TestClient(TestServer(agent.app())) as client:
+            answers = []
+            for flip in (True, True, False, True):
+                failing["now"] = flip
+                response = await client.get("/rig/load")
+                answers.append((response.status, await response.json()))
+            health = await (await client.get("/health")).json()
+            return answers, health
+
+    answers, health = asyncio.run(go())
+    assert [a[0] for a in answers] == [status, status, 200, status]
+    assert answers[0][1]["code"] == code and answers[0][1]["reason"] == f"pw-top went wrong ({code}, test)"
+    err = capsys.readouterr().err
+    # Once when it began, not on the second poll; again after it had worked.
+    assert err.count(f"sushi-rig agent: load: pw-top went wrong ({code}, test)") == 2
+    assert health["agent"]["last_error"] is None, "a figure polled every 2 s is not the rig's last error"
 
 
 def test_a_parameter_is_set_by_name_and_logged_with_what_it_replaced():

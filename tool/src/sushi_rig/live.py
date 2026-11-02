@@ -966,3 +966,91 @@ def remove_live_processor(
     Strict, as `add_live_processor`."""
     with _connection(address, controller) as c:
         _wait(c.audio_graph.delete_processor_from_track(processor_id, track_id), strict=True)
+
+
+# --------------------------------------------------------------------------- #
+# elkpy's prints, for a long-running caller (the agent, #111)
+# --------------------------------------------------------------------------- #
+
+# What elkpy 1.3.0 prints on every connection, read from its source: one
+# `SushiController` prints three of these (grpc_gen.py, sushicontroller.py,
+# notificationcontroller.py). The CLI connects once and the lines are noise;
+# the agent connects once per request, so a page polling /live printed three
+# a second and buried everything the agent had to say (found live on the rig
+# laptop, 2026-11-02).
+#
+# "Could not find a running Sushi" is among them because it is not the
+# failure itself: elkpy prints it and carries on, and the call after it is
+# what fails (SushiUnavailableError), which the agent answers, remembers and
+# says itself (`Agent._sushi`). elkpy 1.3.0 prints it for a version mismatch
+# too, since its own `except Exception` turns SushiAPIMismatchError into
+# SushiNotFoundError.
+ELKPY_CHATTER = (
+    "ELKPY: Compiled proto found!",
+    "ELKPY: Compiled proto file!",
+    "ELKPY: Asyncio context detected.",
+    "ELKPY: Synchronous context detected.",
+    "ELKPY: Sushi API match!",
+    "ELKPY: Could not find a running Sushi",
+)
+
+# Printed once each, then not again: true of every connection while it is
+# true at all, so said once it is said.
+ELKPY_ONCE = ("ELKPY: API version mismatch!",)
+
+# The elkpy modules that call print(); each gets `elkpy_print` as its `print`.
+ELKPY_PRINTING = ("grpc_gen", "sushicontroller", "notificationcontroller", "sushierrors", "sushi_info_types")
+
+
+def elkpy_line(text: str, said: set[str]) -> str | None:
+    """What becomes of one line elkpy prints: None if it is dropped, else the
+    line to write to stderr, marked as elkpy's. `said` holds the once-only
+    lines already written, and is added to. Pure but for `said`."""
+    if text.startswith(ELKPY_CHATTER):
+        return None
+    if text.startswith(ELKPY_ONCE):
+        if text in said:
+            return None
+        said.add(text)
+    return f"sushi-rig: elkpy said: {text}"
+
+
+_elkpy_said: set[str] = set()
+_elkpy_lock = threading.Lock()
+
+
+def elkpy_print(*args: Any, sep: str = " ", end: str = "\n", file: Any = None, flush: bool = False) -> None:
+    """`print` for elkpy's modules: its chatter dropped (`elkpy_line`), the
+    rest to stderr, never stdout. A print with an explicit `file` is left as
+    it was asked. Called from Sushi worker threads, hence the lock."""
+    if file is not None:
+        print(*args, sep=sep, end=end, file=file, flush=flush)
+        return
+    text = sep.join(str(a) for a in args)
+    with _elkpy_lock:
+        lines = [elkpy_line(line, _elkpy_said) for line in text.splitlines() or [""]]
+    for line in lines:
+        if line is not None:
+            print(line, file=sys.stderr, flush=True)
+
+
+def quiet_elkpy() -> bool:
+    """Give elkpy's printing modules `elkpy_print` as their `print`, for the
+    life of the process. Idempotent; False where elkpy is not installed (the
+    first live call then says so, as ever).
+
+    A module-level name that shadows the builtin, not a redirect of
+    sys.stdout: a redirect is the whole process's, so the agent's own lines
+    printed by another thread meanwhile would be caught by it. This touches
+    nothing but elkpy's own calls to `print` (principle 4: the one
+    customisation of elkpy here, recorded with what it works around).
+    """
+    import importlib
+
+    try:
+        modules = [importlib.import_module(f"elkpy.{name}") for name in ELKPY_PRINTING]
+    except ImportError:
+        return False
+    for module in modules:
+        module.print = elkpy_print  # type: ignore[attr-defined]
+    return True
