@@ -21,18 +21,20 @@ aiohttp = pytest.importorskip("aiohttp")
 from aiohttp.test_utils import TestClient, TestServer  # noqa: E402
 
 from sushi_rig import agent as agent_module  # noqa: E402
-from sushi_rig.live import decide_move  # noqa: E402
+from sushi_rig.live import decide_move, plan_move  # noqa: E402
 from sushi_rig.agent import (  # noqa: E402
     Agent,
     AgentError,
     Live,
     Outcome,
+    StaleUndo,
     bypass_request,
     check_bypass,
     check_move,
     chain_after_move,
     check_parameter,
     check_undo_move,
+    check_undo_state,
     lifecycle_arguments,
     log_entry,
     move_request,
@@ -565,7 +567,7 @@ def test_the_log_keeps_the_newest_in_place():
 # --------------------------------------------------------------------------- #
 
 def _entry(op, args, previous, **extra):
-    return {**log_entry(op, args, previous, "t"), **extra}
+    return {**log_entry(op, args, previous, "t", **extra)}
 
 
 def test_the_newest_change_not_already_undone_is_picked_with_its_index():
@@ -578,6 +580,14 @@ def test_the_newest_change_not_already_undone_is_picked_with_its_index():
     assert pick_undo([a, b, c, undo_c], 0) == (1, b), "an undone entry is passed over"
     undo_b = _entry("undo", {}, None, undoes=1)
     assert pick_undo([a, b, c, undo_c, undo_b], 0) == (0, a)
+
+
+def test_an_entry_marked_stale_is_passed_over_like_an_undone_one():
+    a = _entry("parameter", {"processor": "reverb", "parameter": "Mix", "value": 0.6}, 0.3)
+    b = _entry("move", {"processor": "drive", "direction": "up"}, ["comp", "drive", "reverb"])
+    stale_b = _entry("stale", {"of": "move"}, None, stale=1)
+    assert pick_undo([a, b, stale_b], 0) == (0, a)
+    assert pick_undo([a, b, stale_b, _entry("stale", {"of": "parameter"}, None, stale=0)], 0) is None
 
 
 def test_there_is_nothing_to_pick_in_an_empty_log_or_one_of_undos_only():
@@ -602,7 +612,7 @@ def test_an_undo_is_the_inverse_of_the_entry_through_the_routes_own_arguments():
 
 def test_an_entry_whose_previous_is_not_known_is_refused_not_guessed():
     unknown = _entry("bypass", {"processor": "reverb", "bypassed": True}, None)
-    with pytest.raises(AgentError, match="did not say what reverb was before"):
+    with pytest.raises(StaleUndo, match="did not say what reverb was before"):
         undo_inverse(unknown)
 
 
@@ -631,17 +641,59 @@ def test_a_move_is_undone_only_where_the_chain_still_is_what_the_move_left():
             check_undo_move(up, now)
 
 
-@pytest.mark.parametrize("body", [None, {}])
-def test_an_undo_request_is_empty(body):
-    undo_request(body)
+@pytest.mark.parametrize("body", [None, {}, {"skip": False}])
+def test_an_undo_request_is_empty_or_says_no_skip(body):
+    assert undo_request(body) is False
 
 
-@pytest.mark.parametrize("body", [{"index": 3}, [], "undo", 3, {"processor": "drive"}])
+def test_an_undo_request_may_ask_to_skip_the_newest_entry_it_cannot_undo():
+    assert undo_request({"skip": True}) is True
+
+
+@pytest.mark.parametrize("body", [
+    {"index": 3}, [], "undo", 3, {"processor": "drive"},
+    {"skip": "yes"}, {"skip": 1}, {"skip": True, "index": 1},
+])
 def test_an_undo_request_that_says_anything_is_refused_not_ignored(body):
     """It undoes the newest and nothing else; a body that asks for more would
     otherwise be answered as if it had been understood."""
     with pytest.raises(AgentError, match="empty"):
         undo_request(body)
+
+
+@pytest.mark.parametrize("entry, current", [
+    (_entry("parameter", {"processor": "reverb", "parameter": "Mix", "value": 0.6}, 0.3), 0.6),
+    (_entry("parameter", {"processor": "reverb", "parameter": "Mix", "value": 0.6}, 0.3), 0.6000000238418579),
+    (_entry("bypass", {"processor": "drive", "bypassed": False}, True), False),
+])
+def test_a_parameter_or_bypass_is_undone_only_where_the_change_left_it(entry, current):
+    check_undo_state(entry, current)  # not a refusal
+
+
+@pytest.mark.parametrize("entry, current", [
+    (_entry("parameter", {"processor": "reverb", "parameter": "Mix", "value": 0.6}, 0.3), 0.7),
+    (_entry("parameter", {"processor": "reverb", "parameter": "Mix", "value": 0.6}, 0.3), None),
+    (_entry("bypass", {"processor": "drive", "bypassed": False}, True), True),
+    (_entry("bypass", {"processor": "drive", "bypassed": False}, True), None),
+])
+def test_a_value_changed_since_is_a_stale_undo_and_so_is_one_nobody_can_read(entry, current):
+    with pytest.raises(StaleUndo, match="no longer as the change left it"):
+        check_undo_state(entry, current)
+
+
+@pytest.mark.parametrize("chain", [["a"], ["a", "b"], ["a", "b", "c"], ["a", "b", "c", "d"]])
+@pytest.mark.parametrize("direction", ["up", "down"])
+def test_the_opposite_step_always_puts_a_chain_back(chain, direction):
+    """Why the undo of a move needs no "nothing to move" branch: wherever a
+    one-step move was possible, its opposite from the result is possible and
+    restores the chain, so a chain that passed `check_undo_move` always plans."""
+    for processor in chain:
+        after = chain_after_move(chain, processor, direction)
+        if after is None:
+            continue
+        opposite = agent_module.OPPOSITE[direction]
+        assert plan_move(after, processor, agent_module.DIRECTIONS[opposite]) is not None
+        assert chain_after_move(after, processor, opposite) == chain
 
 
 # --------------------------------------------------------------------------- #
@@ -1683,28 +1735,29 @@ def test_a_move_whose_chain_has_changed_since_is_refused_and_nothing_is_sent():
     assert fake.bypassed["drive"] is False
 
 
-def test_a_move_of_a_processor_since_removed_is_refused_too():
+def test_a_move_of_a_processor_since_removed_is_refused_as_the_move_route_would():
     agent, fake = _seeded()
     fake.chain = ["comp", "reverb"]
     status, body = call(agent, "POST", "/live/undo")
-    assert status == 409 and fake.writes() == []
+    assert status == 400 and "on any track" in body["reason"] and fake.writes() == []
 
 
 def test_a_change_whose_previous_sushi_would_not_say_is_refused():
     agent, fake = live_agent()
     call(agent, "POST", "/live/bypass", json={"processor": "reverb", "bypassed": True})
     status, body = call(agent, "POST", "/live/undo")
-    assert status == 409 and "did not say what reverb was before" in body["reason"]
+    assert (status, body["code"]) == (409, "stale")
+    assert "did not say what reverb was before" in body["reason"]
     assert fake.writes() == [("set_bypass", "reverb", True)], "only the original change"
 
 
-def test_a_processor_the_rig_no_longer_has_is_a_conflict_not_a_bad_request():
-    """The request was well formed; it is the rig that has moved on."""
+def test_a_processor_the_rig_no_longer_has_is_the_status_the_bypass_route_gives_it():
     agent, fake = _seeded()
     call(agent, "POST", "/live/undo")  # the move
     fake.bypass = lambda connection, processor: {"chains": {"main": ["comp"]}, "bypassed": None}
     status, body = call(agent, "POST", "/live/undo")
-    assert status == 409 and "no processor 'drive'" in body["reason"]
+    assert status == 400 and "no processor 'drive'" in body["reason"]
+    assert "skip" in body["reason"], "and says the way out"
 
 
 def test_an_undo_with_a_body_is_refused_before_sushi_is_contacted():
@@ -1714,9 +1767,8 @@ def test_an_undo_with_a_body_is_refused_before_sushi_is_contacted():
     assert fake.calls == []
 
 
-def test_the_log_trimmed_past_an_undone_entry_still_finds_the_next_to_undo(monkeypatch):
-    monkeypatch.setattr(agent_module, "LOG_LIMIT", 3)
-    agent, fake = live_agent()
+def test_the_log_trimmed_past_an_undone_entry_still_finds_the_next_to_undo():
+    agent, fake = live_agent(log_limit=3)
     for value in (0.4, 0.5, 0.6):  # entries 0, 1, 2 with previous 0.3, 0.4, 0.5
         call(agent, "POST", "/live/parameter",
              json={"processor": "reverb", "parameter": "Mix", "value": value})
@@ -1735,9 +1787,8 @@ def test_the_log_trimmed_past_an_undone_entry_still_finds_the_next_to_undo(monke
     assert (status, body["reason"]) == (409, "nothing to undo")
 
 
-def test_an_undo_whose_target_was_trimmed_away_does_not_resurrect_an_older_change(monkeypatch):
-    monkeypatch.setattr(agent_module, "LOG_LIMIT", 2)
-    agent, fake = live_agent()
+def test_an_undo_whose_target_was_trimmed_away_does_not_resurrect_an_older_change():
+    agent, fake = live_agent(log_limit=2)
     for value in (0.4, 0.5):
         call(agent, "POST", "/live/parameter",
              json={"processor": "reverb", "parameter": "Mix", "value": value})
@@ -1816,6 +1867,122 @@ def test_an_undo_that_sushi_never_answers_is_a_504_and_frees_the_lock(monkeypatc
     assert second == 200
     assert len(agent.log) == 1, "an undo nobody saw confirmed is not logged"
 
+
+
+def test_the_log_limit_is_the_agents_own_and_defaults_to_500():
+    agent, _ = live_agent(log_limit=7)
+    assert call(agent, "GET", "/live/log")[1]["limit"] == 7
+    assert call(live_agent()[0], "GET", "/live/log")[1]["limit"] == 500
+
+
+def test_a_value_changed_meanwhile_is_not_overwritten_by_an_undo():
+    agent, fake = _seeded()
+    call(agent, "POST", "/live/undo")  # the move
+    call(agent, "POST", "/live/undo")  # the bypass
+    fake.info["reverb"]["Mix"]["value"] = 0.9  # the panel turned the knob
+    fake.calls.clear()
+    status, body = call(agent, "POST", "/live/undo")
+    assert (status, body["code"]) == (409, "stale")
+    assert "no longer as the change left it" in body["reason"]
+    assert fake.writes() == [] and fake.info["reverb"]["Mix"]["value"] == 0.9
+
+
+def test_a_bypass_changed_meanwhile_is_not_overwritten_by_an_undo():
+    agent, fake = _seeded()
+    call(agent, "POST", "/live/undo")  # the move
+    fake.bypassed["drive"] = True  # the panel switched it back on
+    fake.calls.clear()
+    status, body = call(agent, "POST", "/live/undo")
+    assert (status, body["code"]) == (409, "stale") and fake.writes() == []
+
+
+def test_a_stale_entry_does_not_wedge_the_undo_stack():
+    """The panel's listener moves processors outside the agent's lock, so a
+    move can become impossible to undo; without a way out, every older change
+    would be unreachable for good."""
+    agent, fake = _seeded()
+    fake.chain = ["comp", "reverb", "drive"]
+    status, body = call(agent, "POST", "/live/undo")
+    assert (status, body["code"]) == (409, "stale")
+    assert 'skip' in body["reason"], "the refusal says the way out"
+    assert call(agent, "POST", "/live/undo")[0] == 409, "and asking again is no way out"
+
+    status, body = call(agent, "POST", "/live/undo", json={"skip": True})
+    assert status == 200 and fake.writes() == [], "marked, nothing sent to Sushi"
+    assert (body["op"], body["stale"]) == ("stale", 2)
+    assert body["skipped"]["op"] == "move"
+    assert "no longer where the move left it" in body["args"]["reason"]
+    log = call(agent, "GET", "/live/log")[1]["log"]
+    assert [e["op"] for e in log] == ["parameter", "bypass", "move", "stale"], "the history says so"
+    assert log[-1]["stale"] == 2
+
+    status, body = call(agent, "POST", "/live/undo")  # now the one before
+    assert status == 200 and body["undone"]["op"] == "bypass" and body["undoes"] == 1
+    assert fake.writes() == [("set_bypass", "drive", True)]
+
+
+def test_only_an_entry_that_cannot_be_undone_may_be_skipped():
+    agent, fake = _seeded()
+    status, body = call(agent, "POST", "/live/undo", json={"skip": True})
+    assert (status, body["code"]) == (409, "not_stale")
+    assert "can be undone" in body["reason"]
+    assert fake.writes() == []
+    assert len(call(agent, "GET", "/live/log")[1]["log"]) == 3, "nothing marked"
+
+
+def test_an_entry_with_no_previous_can_be_skipped_too():
+    agent, fake = live_agent()
+    call(agent, "POST", "/live/bypass", json={"processor": "reverb", "bypassed": True})
+    call(agent, "POST", "/live/bypass", json={"processor": "drive", "bypassed": False})
+    call(agent, "POST", "/live/undo")  # drive back to True
+    assert call(agent, "POST", "/live/undo")[1]["code"] == "stale"  # reverb: Sushi would not say
+    status, body = call(agent, "POST", "/live/undo", json={"skip": True})
+    assert status == 200 and body["stale"] == 0
+    assert call(agent, "POST", "/live/undo")[1]["code"] == "nothing_to_undo"
+
+
+def test_a_skip_has_nothing_to_skip_in_an_empty_log():
+    agent, fake = live_agent()
+    status, body = call(agent, "POST", "/live/undo", json={"skip": True})
+    assert (status, body["code"], body["reason"]) == (409, "nothing_to_undo", "nothing to undo")
+    assert fake.opened == []
+
+
+def test_skipping_waits_on_busy_and_a_sushi_that_fails_like_any_change():
+    from sushi_rig.live import LiveError
+
+    agent, fake = _seeded()
+    fake.chain = ["comp", "reverb", "drive"]
+    fake.fail, fake.fail_on = LiveError("gone"), "plan_move"
+    assert call(agent, "POST", "/live/undo", json={"skip": True})[0] == 502
+    assert len(call(agent, "GET", "/live/log")[1]["log"]) == 3, "a skip is judged on what Sushi says"
+
+
+def test_nothing_to_undo_is_said_with_a_code_and_busy_wins_over_it():
+    started, release = asyncio.Event(), asyncio.Event()
+
+    async def slow(args):
+        started.set()
+        await release.wait()
+        return Outcome(True, 0, "", "")
+
+    agent, fake = live_agent(run=slow)
+
+    async def go():
+        async with TestClient(TestServer(agent.app())) as client:
+            lifecycle = asyncio.ensure_future(client.post("/rig/up", json={"config_name": "electric_board"}))
+            await started.wait()
+            response = await client.post("/live/undo")  # an empty log
+            answer = (response.status, await response.json())
+            release.set()
+            assert (await lifecycle).status == 200
+            return answer
+
+    status, body = asyncio.run(go())
+    assert status == 409 and body["code"] == "busy"
+    assert body["reason"] == "busy: 'up' is still running", "not 'nothing to undo'"
+    status, body = call(agent, "POST", "/live/undo")
+    assert (status, body["code"], body["reason"]) == (409, "nothing_to_undo", "nothing to undo")
 
 # --------------------------------------------------------------------------- #
 # The runner, for real

@@ -406,6 +406,7 @@ curl -X POST localhost:8029/live/bypass -d '{"processor": "drive", "bypassed": t
 curl -X POST localhost:8029/live/move -d '{"processor": "drive", "direction": "up"}'
 curl localhost:8029/live/log         # what was changed through /live, newest last
 curl -X POST localhost:8029/live/undo   # put back what the newest change not yet undone replaced
+curl -X POST localhost:8029/live/undo -d '{"skip": true}'   # give up on the newest one that cannot be
 ```
 
 The first slice of the control plane every v2 feature needs: one process that
@@ -457,13 +458,18 @@ and `409 busy`. The answer is the undo's log entry (`op: "undo"`, `undoes`: the
 index of the entry it put back, `args` what it applied, `previous` what that
 replaced), the entry `undone`, and the `state` now. An index counts entries since
 the agent started, not places in the list, because the list is trimmed at the
-front; `/live/log` says the index of the first it holds (`first`). It refuses,
-`409` with the reason and nothing logged, rather than guess: `nothing to undo`
-for an empty log or one of undos only (said without a Sushi to ask); an entry
-whose `previous` Sushi would not say; a processor the rig has lost; and a move
-whose chain has changed since, because the processor must be exactly where the
-move left it. A refused entry is not skipped for an older one. A body is `400`.
-Undoing an undo (redo) is not built. **Not run against a live Sushi**: shown
+front; `/live/log` says the index of the first it holds (`first`). It refuses
+rather than guess, with nothing applied or logged, and a `409` carries a `code`
+beside its `reason`: `busy`; `nothing_to_undo` (an empty log or one of undos
+only, said without a Sushi to ask); `stale`, when the rig is not as the entry
+assumes — a move's processor is not exactly where the move left it, a parameter
+or bypass was changed since (so an undo never overwrites a hand on the panel),
+or Sushi never said what to put back. A processor the rig has lost is `400`, as
+on the other routes. A refused entry is not skipped for an older one, so the
+way past a stuck one is explicit: `{"skip": true}` checks the newest entry, and
+if it is refused marks it `op: "stale"` in the log (it is not removed) so the
+next undo goes on to the one before; an entry that can be undone is `409
+not_stale`. Any other body is `400`. Undoing an undo (redo) is not built. **Not run against a live Sushi**: shown
 against the fake only.
 
 **Two modes, for two ways of using the rig.** The default gives you the Open
