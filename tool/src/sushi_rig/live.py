@@ -585,39 +585,6 @@ def refresh_panel(
         (schedule or _start_timer)(tab_delay, _reselect)
 
 
-def plan_move(chain: list[str], processor: str, direction: int) -> dict[str, Any] | None:
-    """Where `processor` should land to move one step through `chain`.
-
-    Pure, so the position maths is testable without a running Sushi — it is
-    fiddly enough to be worth pinning, and getting it wrong silently rearranges
-    someone's signal chain.
-
-    Returns `None` when the move is a no-op (already at that end, or the
-    processor isn't on the track), otherwise the `move_processor_on_track`
-    arguments that achieve it: `{"before": <processor name or None>,
-    "add_to_back": bool}`.
-
-    Sushi's API expresses position as "before this processor" or "at the back",
-    so moving *later* past the final element has to become `add_to_back`
-    rather than "before" anything.
-    """
-    if processor not in chain:
-        return None
-    index = chain.index(processor)
-
-    if direction < 0:
-        if index == 0:
-            return None
-        return {"before": chain[index - 1], "add_to_back": False}
-
-    if index >= len(chain) - 1:
-        return None
-    if index + 1 == len(chain) - 1:
-        # The neighbour is last, so "after it" is the end of the chain.
-        return {"before": None, "add_to_back": True}
-    return {"before": chain[index + 2], "add_to_back": False}
-
-
 @dataclass(frozen=True)
 class Move:
     """What a request to move a processor found and did, as data, so no caller
@@ -649,6 +616,11 @@ class Move:
     command: tuple[int, int, int, bool] | None = field(default=None, repr=False, compare=False)
     why: str | None = field(default=None, compare=False)
     then: tuple[tuple[int, int, int, bool], ...] = field(default=(), repr=False, compare=False)
+    # With `then`: the command that puts the plugin back in front of its copy
+    # if the copy's own command fails, so the two are never left apart, and
+    # the names, for saying what state the chain is in if that fails too.
+    back: tuple[int, int, int, bool] | None = field(default=None, repr=False, compare=False)
+    unit: tuple[str, ...] = field(default=(), repr=False, compare=False)
 
     @property
     def message(self) -> str:
@@ -703,14 +675,17 @@ def decide_move(
     if grouped[index][0] != processor:
         # A copy to stereo, asked to move by itself: it goes with its plugin.
         return Move("protected", processor, direction, chain, chains,
-                    why=f"{protected_processor(track, processor, uids.get(processor))}, "
-                        "which stays where the compiler put it")
+                    why=f"{protected_processor(track, processor, uids.get(processor))}, which moves "
+                        f"with {stereo.source_of(processor)!r}: move that instead")
     other = index + (-1 if direction < 0 else 1)
     if not 0 <= other < len(grouped):
         return Move("unchanged", processor, direction, chain, chains)
     for name in (processor, grouped[other][0]):
         why = protected_processor(track, name, uids.get(name))
-        if why:
+        # A copy heading a unit is a stray: one with no plugin before it,
+        # left by a two-command edit that failed half way and could not be
+        # undone. Moving it is part of the repair, so it is allowed.
+        if why and not stereo.is_copy(name, uids.get(name)):
             return Move("protected", processor, direction, chain, chains,
                         why=f"{why}, which stays where the compiler put it")
     # Each of this unit, in order, in front of the neighbour's head (up), or
@@ -719,11 +694,14 @@ def decide_move(
         ahead_of = grouped[other][0]
     else:
         ahead_of = grouped[other + 1][0] if other + 1 < len(grouped) else None
+    unit = grouped[index]
     commands = tuple(
         (ids[name], ids[track], ids[ahead_of] if ahead_of else 0, ahead_of is None)
-        for name in grouped[index]
+        for name in unit
     )
-    return Move("planned", processor, direction, chain, chains, commands[0], then=commands[1:])
+    back = (ids[unit[0]], ids[track], ids[unit[1]], False) if len(unit) > 1 else None
+    return Move("planned", processor, direction, chain, chains, commands[0], then=commands[1:],
+                back=back, unit=tuple(unit))
 
 
 def plan_live_move(
@@ -761,13 +739,33 @@ def send_live_move(
     """
     if move.outcome != "planned" or move.command is None:
         raise ValueError(f"only a planned move can be sent, not {move.outcome!r}")
+    def send(c, command) -> None:
+        processor_id, track_id, before_id, add_to_back = command
+        response = c.audio_graph.move_processor_on_track(
+            processor_id, track_id, track_id, before_id, add_to_back,
+        )
+        # Strict: "moved" is said only of a move Sushi confirmed.
+        _wait(response, strict=True)
+
     with _connection(address, controller) as c:
-        for processor_id, track_id, before_id, add_to_back in (move.command, *move.then):
-            response = c.audio_graph.move_processor_on_track(
-                processor_id, track_id, track_id, before_id, add_to_back,
-            )
-            # Strict: "moved" is said only of a move Sushi confirmed.
-            _wait(response, strict=True)
+        send(c, move.command)
+        for command in move.then:
+            try:
+                send(c, command)
+            except Exception as exc:  # noqa: BLE001 -- put the plugin back, then say so
+                head, copy = move.unit[0], move.unit[-1]
+                try:
+                    send(c, move.back)
+                except Exception as again:  # noqa: BLE001
+                    raise LiveError(
+                        f"moved {head!r} but not its copy to stereo {copy!r} ({exc}), and putting "
+                        f"{head!r} back in front of it failed too ({again}): the two are apart, so the "
+                        f"right channel is silent after {head!r} and {copy!r} folds what comes before it. "
+                        f"A copy with no plugin before it can be moved or removed: move or remove "
+                        f"{copy!r}, or restart the rig") from again
+                raise LiveError(
+                    f"moved {head!r} but not its copy to stereo {copy!r} ({exc}), so {head!r} was put "
+                    "back in front of it: nothing moved") from exc
     return replace(move, outcome="moved")
 
 
@@ -920,7 +918,7 @@ def protected_processor(track: str, processor: str, uid: str | None = None) -> s
     if stereo.is_copy(processor, uid):
         # The compiler's copy to stereo after a mono plugin (stereo.py): it
         # goes, moves and is removed with its plugin, never on its own.
-        return f"{processor!r} is {stereo.source_of(processor)!r}'s copy to stereo, which goes with it"
+        return f"{processor!r} is {stereo.source_of(processor)!r}'s copy to stereo"
     return None
 
 
@@ -1055,6 +1053,17 @@ def add_live_copy(
             track_id=track_id, before_processor=before_id, add_to_back=add_to_back,
         )
         _wait(response, strict=True)
+
+
+def remove_live_processor_named(
+    name: str, track_id: int, address: str = DEFAULT_GRPC_ADDRESS, controller: Any = None,
+) -> None:
+    """Delete processor `name` from the track with `track_id`, its id asked
+    of Sushi first (`get_processor_id`, as `push` asks a track's): for undoing
+    an add, whose new processor's id no reading holds yet. Strict."""
+    with _connection(address, controller) as c:
+        processor_id = c.audio_graph.get_processor_id(name)
+        _wait(c.audio_graph.delete_processor_from_track(processor_id, track_id), strict=True)
 
 
 def remove_live_processor(

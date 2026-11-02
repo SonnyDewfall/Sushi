@@ -239,7 +239,8 @@ def _patchbay(args: argparse.Namespace) -> int:
     from .rigfile import RigFileError, spec_of
 
     try:
-        rig = spec_of(args.rig)
+        # Routing only: the patchbay wires ports and never loads the chains.
+        rig = spec_of(args.rig, routing_only=True)
         machine_file = args.machine or machine_path(root)
         machine = MachineSpec.load(machine_file)
     except RigFileError as exc:
@@ -431,6 +432,22 @@ def _take(args: argparse.Namespace) -> int:
     return 1 if problems else 0
 
 
+def _references_of(ref_stem: str, stem: str, is_rig: bool) -> bool:
+    """Whether a reference named `ref_stem` is one the target `stem` would
+    produce: a rig's `<stem>` or `<stem>.<channel>`, a v1 config's the same
+    with `.v1-mono` after it. A rig that cannot compile must not exempt its v1
+    config's references from the orphan check, nor the reverse (review)."""
+    from .render import V1_REFERENCE_SUFFIX
+
+    if ref_stem.endswith(V1_REFERENCE_SUFFIX):
+        if is_rig:
+            return False
+        ref_stem = ref_stem[: -len(V1_REFERENCE_SUFFIX)]
+    elif not is_rig:
+        return False
+    return ref_stem == stem or ref_stem.startswith(f"{stem}.")
+
+
 def _nulltest(args: argparse.Namespace) -> int:
     """`nulltest`: has any config, or any channel of one, changed its sound.
 
@@ -447,8 +464,8 @@ def _nulltest(args: argparse.Namespace) -> int:
     from .nulltest import compare, from_dict, keep_wider, to_dict
     from .paths import checkout_root
     from .render import (
-        SOUND_DIR, V1_REFERENCE_SUFFIX, RenderError, calibrate, channels_of, measure,
-        offline_problem, reference_path, rig_channels, rigs_to_check,
+        SOUND_DIR, RenderError, calibrate, channels_of, measure, offline_problem,
+        reference_path, rig_channels, rigs_to_check, v1_reference_path,
     )
     from .rigfile import RigFileError
     from .verify import configs_to_check
@@ -466,7 +483,9 @@ def _nulltest(args: argparse.Namespace) -> int:
     checked = 0
     unrenderable: list[str] = []
     expected: set[str] = set()
-    unexpanded: list[str] = []
+    # (stem, is_rig) of each target that could not be expanded into channels:
+    # its own references are kept out of the orphan check, and only its own.
+    unexpanded: list[tuple[str, bool]] = []
 
     def cannot_check(label: str, exc: Exception) -> None:
         nonlocal failed
@@ -487,17 +506,18 @@ def _nulltest(args: argparse.Namespace) -> int:
                 # TypeError and AttributeError too: a config that is a list, or
                 # whose tracks are null, must cost one line, not the whole run
                 # and the orphan check after it.
-                unexpanded.append(target.stem)
+                unexpanded.append((target.stem, is_rig))
                 checked += 1
                 cannot_check(target.name, exc)
                 continue
 
             for channel in channels:
                 checked += 1
-                ref_name = channel.name if is_rig else channel.name + V1_REFERENCE_SUFFIX
+                ref_file = (reference_path(root, Path(f"{channel.name}.json")) if is_rig
+                            else v1_reference_path(root, Path(f"{channel.name}.json")))
+                ref_name = ref_file.stem
                 expected.add(ref_name)
                 work = Path(tmp) / ref_name
-                ref_file = reference_path(root, Path(f"{ref_name}.json"))
                 if args.calibrate and args.missing and ref_file.exists():
                     # --missing calibrates only what has no reference yet, so
                     # adding a channel does not quietly re-baseline the others,
@@ -617,7 +637,7 @@ def _nulltest(args: argparse.Namespace) -> int:
         sound = root / "config" / SOUND_DIR
         for ref in sorted(sound.glob("*.yaml")) if sound.is_dir() else []:
             if ref.stem in expected or any(
-                ref.stem == stem or ref.stem.startswith(f"{stem}.") for stem in unexpanded
+                _references_of(ref.stem, stem, is_rig) for stem, is_rig in unexpanded
             ):
                 continue
             print(

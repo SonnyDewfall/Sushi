@@ -357,3 +357,13 @@ def test_a_schema_1_reference_is_read_and_its_channels_are_not_compared():
 def test_the_floor_between_two_runs_counts_each_channel():
     floor = floor_between(_fp(_stereo()), _fp(_stereo(0.9)))
     assert floor.level_db == pytest.approx(-20 * np.log10(0.9), abs=1e-3)
+
+
+def test_a_channel_below_the_silence_floor_is_silent_however_its_residue_moves():
+    """The v1 configs' right channel is float residue near -279 dBFS: a move
+    of decibels down there is not a change in sound."""
+    tolerance = Tolerance(0.001, 0.001, 0, "measured")
+    reference = _fp(_stereo(1e-14))
+    assert compare(reference, _fp(_stereo(1e-13)), tolerance) == []
+    assert [f.check for f in compare(reference, _fp(_stereo(1.0)), tolerance)
+            if f.check == "channel-changed"] == ["channel-changed"]

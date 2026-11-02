@@ -261,13 +261,20 @@ def load_any(path: Path) -> "Rig | RigSpec":
     return RigSpec.from_dict(raw, path)
 
 
-def spec_of(path: Path) -> RigSpec:
+def spec_of(path: Path, *, routing_only: bool = False) -> RigSpec:
     """The tracks either kind of rig file runs as: compiled from channels and a
-    master, or read as written. For the tools that read routing — the patchbay
-    and the probes. Anything that writes a config goes through `emit_rig`
-    instead, because the sends need state this does not carry."""
+    master, or read as written. For the tools that read the spec rather than
+    write a config -- the patchbay, SAVE's source check and the probes.
+    Anything that writes a config goes through `emit_rig` instead, because the
+    sends need state this does not carry.
+
+    `routing_only` is for a caller that reads tracks, roles and names and
+    never puts the chains in front of Sushi (the patchbay, SAVE's source
+    check): it compiles without the copies to stereo, so it needs no
+    `plugin-ports.txt` and refuses no plugin for missing from it. The probes
+    build tracks Sushi loads from these chains, so they take the default."""
     rig = load_any(path)
-    return compile_rig(rig)[0] if isinstance(rig, Rig) else rig
+    return compile_rig(rig, routing_only=routing_only)[0] if isinstance(rig, Rig) else rig
 
 
 def _unknown(where: str, entry: dict, known: tuple[str, ...]) -> list[str]:
@@ -798,6 +805,7 @@ def _stereo_chain(where: str, chain: tuple[PluginSpec, ...], ports: dict[str, An
 
 def compile_rig(
     rig: Rig, controller: dict[str, Any] | None = None, ports: dict[str, Any] | None = None,
+    *, routing_only: bool = False,
 ) -> tuple[RigSpec, dict[str, Any]]:
     """The `RigSpec` that runs `rig`, and the state its sends need.
 
@@ -817,12 +825,18 @@ def compile_rig(
     `ports` is each plugin's audio ports by URI (`stereo.load_ports`), the
     committed `plugin-ports.txt` unless given: a plugin with one output gets
     its copy to stereo after it, and one the table does not list is refused
-    by name.
+    by name. That is for every caller whose chains Sushi will load (`emit`,
+    `up --rig`, the renders, the probes). `routing_only` is for a caller that
+    reads only tracks and roles and never loads the chains (the patchbay,
+    SAVE's source check, `spec_of(routing_only=True)`): the chains are
+    compiled as written, without the copies, and need no table.
     """
     problems = check_rig(rig)
     if problems:
         raise RigFileError(problems)
-    if ports is None:
+    if routing_only:
+        ports = None
+    elif ports is None:
         from .paths import checkout_root
 
         try:
@@ -830,8 +844,12 @@ def compile_rig(
         except stereo.PortsError as exc:
             raise RigFileError(exc.problems) from exc
     problems = []
-    chains = {c.name: _stereo_chain(f"channel {c.name!r}", c.chain, ports, problems) for c in rig.channels}
-    master_chain = _stereo_chain("master", rig.master.chain, ports, problems)
+    if routing_only:
+        chains = {c.name: list(c.chain) for c in rig.channels}
+        master_chain = list(rig.master.chain)
+    else:
+        chains = {c.name: _stereo_chain(f"channel {c.name!r}", c.chain, ports, problems) for c in rig.channels}
+        master_chain = _stereo_chain("master", rig.master.chain, ports, problems)
     if problems:
         raise RigFileError(problems)
     # Without a controller the spec is still right for routing (the patchbay,
@@ -1188,8 +1206,11 @@ def heard(config: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
     (test_send_return.py). One config for a one-channel rig, named after it; one
     per channel otherwise, named `<rig>.<channel>`. Each is `render._alone`'s
     cut of that channel — the names and the cut `render.channels_of` gives a v1
-    config — with the master put back, so a v2 rig is checked against the
-    reference its v1 config was calibrated to.
+    config — with the master put back. The names are the rig's own references,
+    `config/sound/<name>.yaml` (`render.rig_channels`, `nulltest --all`); it
+    used to be checked against its v1 config's, until the compiler's copies to
+    stereo (stereo.py, 2026-11-02) made the two sound different, and the v1
+    config's are `<name>.v1-mono.yaml` now.
     """
     from .render import _alone
 
@@ -1284,6 +1305,7 @@ RESTART_REASONS = {
     "midi_target": "a processor a cc_mapping drives would be replaced, and the mapping is bound at load",
     "drifted": "the running rig is no longer what its config says, so a plan made from it would be wrong",
     "stereo": "a plugin has a copy to stereo in one rig and not the other (plugin-ports.txt changed between them)",
+    "stereo_missing": "the running rig was compiled before the copies to stereo existed, so a restart adds them",
 }
 
 # The settings of the compiler's own processors that the next rig may leave
@@ -1625,11 +1647,6 @@ def diff(
         name for name, (track, plugin) in where_n.items()
         if name in where_r and where_r[name][0] == track and _identity(where_r[name][1]) == _identity(plugin)
     }
-    for name in sorted(survivors):
-        if (name in copied_r) != (name in copied_n):
-            # The same plugin, so the same ports: only a changed
-            # plugin-ports.txt between the two compiles does this.
-            need("stereo", f"{name!r} has a copy to stereo in one rig and not the other")
 
     def defaults(name: str) -> dict[str, float] | None:
         """What the compiler's own processors and the tracks are at when the
@@ -1670,6 +1687,21 @@ def diff(
                 continue
             survivors.discard(name)  # replaced: removed, and added fresh below
 
+    # Checked on the survivors left once the replacements are dropped: a
+    # replaced plugin is removed with its copy and added with its own.
+    if copied_n and not copied_r:
+        # The running rig has no copies at all: compiled before 2026-11-02,
+        # when the compiler began making them, so its mono plugins play the
+        # left channel only. Not a table that changed: a restart compiles them.
+        need("stereo_missing", "the running rig was compiled without copies to stereo, so its mono "
+                               f"plugins ({', '.join(sorted(copied_n & survivors)) or 'all of them'}) play "
+                               "the left channel only; a restart puts the copies in")
+    else:
+        for name in sorted(survivors):
+            if (name in copied_r) != (name in copied_n):
+                # The same plugin, so the same ports: only a changed
+                # plugin-ports.txt between the two compiles does this.
+                need("stereo", f"{name!r} has a copy to stereo in one rig and not the other")
     removed = [name for name in where_r if name not in survivors]
     added = [name for name in where_n if name not in survivors]
     for name in added:
@@ -1771,14 +1803,22 @@ def apply_to_chains(chains: dict[str, list[str]], plan: SwitchPlan) -> dict[str,
     for step in plan.steps:
         args = step.args
         if step.op == "remove":
-            for chain in out.values():
-                if args["processor"] in chain:
-                    chain.remove(args["processor"])
-                    if stereo.copy_name(args["processor"]) in chain:
-                        chain.remove(stereo.copy_name(args["processor"]))
+            # The processor's unit, as `agent.check_remove` takes it: with its
+            # copy to stereo only when that directly follows it.
+            for track, chain in out.items():
+                unit = next((u for u in stereo.units(chain) if u[0] == args["processor"]), None)
+                if unit is not None:
+                    out[track] = [name for name in chain if name not in unit]
         elif step.op == "move":
-            track = next(t for t, c in out.items() if args["processor"] in c)
-            out[track] = stereo.step_units(out[track], args["processor"], -1 if args["direction"] == "up" else 1)
+            track = next((t for t, c in out.items() if args["processor"] in c), None)
+            moved = None if track is None else stereo.step_units(
+                out[track], args["processor"], -1 if args["direction"] == "up" else 1)
+            if moved is None:
+                # Not stored: a None chain made the next step's TypeError the
+                # report (found by review).
+                raise ValueError(f"{step.as_dict()} cannot be applied: {args['processor']!r} is not the head "
+                                 f"of a unit on any chain, or is already at that end ({out.get(track)})")
+            out[track] = moved
         elif step.op == "add":
             chain = out[args["track"]]
             names = [args["name"]] + ([args["copy"]] if args.get("copy") else [])

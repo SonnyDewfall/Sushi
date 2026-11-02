@@ -31,7 +31,12 @@ show, so `compressor` followed by `compressor_to_stereo` reads as what it is
 compiler's: never in a rig file, never saved, not shown by the web UI, never
 moved, removed or bypassed on its own. It moves and is removed with its
 plugin, as one unit (`units`), and a live add of a one-output plugin adds it
-in the same operation. Names ending in `_to_stereo` are refused for anything
+in the same operation. Each of those is two of Sushi's commands, and if the
+second fails the first is undone (the plugin removed again, the copy put
+back, the plugin moved back in front of its copy); if the undo fails too, the
+error says what the chain holds, and a copy left with no plugin before it --
+a stray, the only case -- may then be moved or removed to repair it. Names
+ending in `_to_stereo` are refused for anything
 else (`reserved_problem`), so the name alone is unambiguous where no uid was
 read. Sushi 1.3.0 keeps processor names in a map from std::string with no
 length limit (processor_container.cpp), so the suffix cannot push a name past
@@ -63,11 +68,15 @@ in CI's container; the guitar through the iD14's two monitors is the test.
 
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any, Mapping
 
 COPY_UID = "sushi.testing.mono_summing"
+# ASCII digits only: `str.isdigit` also accepts "²" and "٣", which `int` then
+# refuses with a bare ValueError that crashed every compile (found by review).
+_COUNT = re.compile(r"[0-9]+")
 COPY_SUFFIX = "_to_stereo"
 PORTS_FILE = "plugin-ports.txt"
 
@@ -97,7 +106,7 @@ def read_ports(text: str) -> dict[str, Ports]:
         if not line or line.startswith("#"):
             continue
         parts = line.split()
-        if len(parts) != 3 or not parts[0].isdigit() or not parts[1].isdigit():
+        if len(parts) != 3 or not _COUNT.fullmatch(parts[0]) or not _COUNT.fullmatch(parts[1]):
             problems.append(f"{PORTS_FILE} line {number}: expected 'inputs outputs uri', got {raw!r}")
             continue
         uri = parts[2]
@@ -122,7 +131,11 @@ def load_ports(root: Path) -> dict[str, Ports]:
         raise PortsError([f"no {PORTS_FILE} at {root}: the compiler needs each plugin's audio ports"])
     cached = _CACHE.get(path)
     if cached is None or cached[0] != stamp:
-        cached = (stamp, read_ports(path.read_text()))
+        try:
+            text = path.read_text(encoding="utf-8")
+        except (OSError, UnicodeDecodeError) as exc:
+            raise PortsError([f"cannot read {path}: {exc}"]) from exc
+        cached = (stamp, read_ports(text))
         _CACHE[path] = cached
     return cached[1]
 

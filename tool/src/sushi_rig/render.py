@@ -458,9 +458,11 @@ def v1_reference_path(root: Path, config: Path) -> Path:
 
 def rig_channels(path: Path) -> list[Channel]:
     """What the null test renders for a rig of channels: the master as the
-    monitors hear it, one channel at a time (`rigfile.heard`), compiled for
-    routing without the MIDI map, which no render can play. Raises
-    `rigfile.RigFileError` for a rig that does not compile."""
+    monitors hear it, one channel at a time (`rigfile.heard`), compiled
+    without the MIDI map, which no render can play. Compiled as Sushi will
+    load it, not for routing only: the copies to stereo are in the sound being
+    checked, so a plugin `plugin-ports.txt` lacks is refused here as by `up`.
+    Raises `rigfile.RigFileError` for a rig that does not compile."""
     from .rigfile import compile_rig, emit_compiled, heard, load_rig
 
     rig = load_rig(path)

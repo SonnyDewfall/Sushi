@@ -454,7 +454,7 @@ LOAD_SHARED = 1.5
 LOG_LIMIT = 500
 
 # "up" the chain is earlier in it, as the panel's move buttons are: the
-# direction `live.plan_move` takes is negative for earlier, positive for later.
+# direction `live.decide_move` takes is negative for earlier, positive for later.
 DIRECTIONS = {"up": -1, "down": 1}
 
 
@@ -1063,8 +1063,11 @@ class Removal:
     track_id: int
     # Its copy to stereo, removed with it, first (`stereo.py`): one left
     # behind would follow whatever came before, folding a stereo plugin.
+    # `copy_before_id` is what followed the copy (None: the back), where it
+    # goes back if the plugin's own remove fails.
     copy: str | None = None
     copy_id: int | None = None
+    copy_before_id: int | None = None
 
 
 def check_remove(reading: dict[str, Any], processor: str) -> Removal:
@@ -1087,7 +1090,14 @@ def check_remove(reading: dict[str, Any], processor: str) -> Removal:
     plugin = reading.get("plugin")
     uid = (plugin or {}).get("uid") or (reading.get("uids") or {}).get(processor)
     protected = protected_processor(track, processor, uid)
-    if protected:
+    if protected and stereo.is_copy(processor, uid):
+        unit = next(u for u in stereo.units(list(chains[track]), reading.get("uids") or {}) if processor in u)
+        if unit[0] != processor:
+            raise Conflict(f"{protected}, removed with {stereo.source_of(processor)!r}: remove that instead")
+        # A copy with no plugin before it: a stray, left by a two-command edit
+        # that failed half way and could not be undone. Removing it is the
+        # repair, so it is allowed (review, 2026-11-02).
+    elif protected:
         raise Conflict(f"{protected}: the compiler's, and never removed")
     if not plugin or not (plugin.get("uri") or plugin.get("uid")):
         raise Unconfirmed(
@@ -1097,12 +1107,14 @@ def check_remove(reading: dict[str, Any], processor: str) -> Removal:
     chain = list(chains[track])
     unit = next(u for u in stereo.units(chain, reading.get("uids") or {}) if u[0] == processor)
     copy = unit[1] if len(unit) > 1 else None
+    after = chain.index(unit[-1]) + 1
     return Removal(
         processor=processor, track=track, chain=chain,
         expected=[name for name in chain if name not in unit],
         plugin={key: plugin.get(key) for key in ("uri", "uid", "type")},
         processor_id=ids[processor], track_id=ids[track],
         copy=copy, copy_id=ids[copy] if copy else None,
+        copy_before_id=ids[chain[after]] if copy and after < len(chain) else None,
     )
 
 
@@ -1197,23 +1209,57 @@ def _add_with_copy(address: str, controller: Any, addition: "Addition") -> None:
     """Add the plugin, then its copy to stereo in the same place, so the copy
     lands straight after it: in front of the same processor, or at the back
     after it. Two of Sushi's commands, each strict; the read-back that
-    follows confirms both or neither."""
+    follows confirms both or neither. If the copy cannot be added, the plugin
+    is removed again, so a plugin is never left without its copy; if that
+    fails too, the error says what the chain holds (review, 2026-11-02)."""
     m = live_module
     m.add_live_processor(addition.name, addition.uri, addition.track_id, addition.before_id,
                          addition.add_to_back, address, controller)
-    if addition.copy:
+    if not addition.copy:
+        return
+    try:
         m.add_live_copy(addition.copy, addition.track_id, addition.before_id, addition.add_to_back,
                         address, controller)
+    except Exception as exc:  # noqa: BLE001 -- undone, then said
+        try:
+            m.remove_live_processor_named(addition.name, addition.track_id, address, controller)
+        except Exception as again:  # noqa: BLE001
+            raise LiveError(
+                f"added {addition.name!r} but not its copy to stereo {addition.copy!r} ({exc}), and "
+                f"removing {addition.name!r} again failed too ({again}): {addition.name!r} is on "
+                f"{addition.track!r} without its copy, so the right channel is silent after it. "
+                f"Remove {addition.name!r}, or restart the rig") from again
+        raise LiveError(
+            f"added {addition.name!r} but not its copy to stereo {addition.copy!r} ({exc}), so "
+            f"{addition.name!r} was removed again: nothing was added") from exc
 
 
 def _remove_with_copy(address: str, controller: Any, removal: "Removal") -> None:
     """Remove the copy to stereo first, then its plugin: the moment between
     has the right channel silent, which is what the rig had before the copy
-    existed, rather than a lone copy folding whatever stereo came before."""
+    existed, rather than a lone copy folding whatever stereo came before. If
+    the plugin cannot then be removed, the copy is put back where it was;
+    if that fails too, the error says what the chain holds."""
     m = live_module
-    if removal.copy_id is not None:
-        m.remove_live_processor(removal.copy_id, removal.track_id, address, controller)
-    m.remove_live_processor(removal.processor_id, removal.track_id, address, controller)
+    if removal.copy_id is None:
+        m.remove_live_processor(removal.processor_id, removal.track_id, address, controller)
+        return
+    m.remove_live_processor(removal.copy_id, removal.track_id, address, controller)
+    try:
+        m.remove_live_processor(removal.processor_id, removal.track_id, address, controller)
+    except Exception as exc:  # noqa: BLE001 -- undone, then said
+        try:
+            m.add_live_copy(removal.copy, removal.track_id, removal.copy_before_id or 0,
+                            removal.copy_before_id is None, address, controller)
+        except Exception as again:  # noqa: BLE001
+            raise LiveError(
+                f"removed {removal.processor!r}'s copy to stereo {removal.copy!r} but not "
+                f"{removal.processor!r} ({exc}), and putting the copy back failed too ({again}): "
+                f"{removal.processor!r} is on {removal.track!r} without its copy, so the right channel "
+                f"is silent after it. Remove {removal.processor!r} again, or restart the rig") from again
+        raise LiveError(
+            f"removed {removal.processor!r}'s copy to stereo {removal.copy!r} but not "
+            f"{removal.processor!r} ({exc}), so the copy was put back: nothing was removed") from exc
 
 
 class Agent:

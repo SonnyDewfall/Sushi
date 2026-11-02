@@ -2824,3 +2824,57 @@ the sends), the two-command move and remove, and Sushi placing the second of
 two adds in front of the same processor. Known limits: on a stereo channel a
 mono plugin hears the left input only; a track bypassed whole would bypass
 the copy too (nothing here bypasses a track). *(2026-11-02)*
+
+**The copy to stereo: the rigs' references, and answering review.** The rigs'
+own references are committed from CI's candidates for fabbc12, where the suite
+failed only for their absence (11 "no reference" in `test_convert.py`), every
+guarantee test passed, and all 12 v1 rows sounded the same against the renamed
+`.v1-mono.yaml`. `config/sound/<rig>.yaml`, twelve, as calibrated, except
+`electric-octave-up.yaml` and `electric_board.yaml`, which calibrated at
+0.0001 dB and about 0.003 dB: both render non-deterministically in this
+container (30 Oct; a NaN render of electric-octave-up twice on 2 Nov), so
+they carry the v1 references' hand-set 0.01 dB band and level and the same
+note. Ten `.v1-mono.yaml` gain their per-channel levels (schema 2), checked
+against the candidates: every other measurement and every tolerance
+identical, the committed note kept. electric-octave-up's and electric_board's
+v1 candidates measured differently within their tolerance, so those two stay
+as they were, schema 1. To watch: `electric-delay.yaml` measures a delay of
+19440 samples where its v1 reference measures 0. Channel 0's strongest path
+is now the delay's echo, likely because the delay is fed on both sides; it is
+unverified, and the reference fails on delay alone if the dry signal and the
+echo ever swap places, as electric_board's note already warns for its own
+delay. A channel's level below -200 dBFS now counts as silent when comparing
+(`nulltest.SILENCE_FLOOR_DBFS`): the v1 right channel is float residue near
+-279 dBFS, which could move by decibels for nothing.
+
+Review of ba0f918..fabbc12, ten findings, each with a test
+(`test_stereo_compile.py` unless said). (1) **A pair left apart**: an add,
+remove or move of a mono plugin is two commands. If the second fails, the
+first is undone (plugin removed again, copy put back where it was, plugin
+moved back in front of its copy), and if that fails too, the error says what
+the chain holds. A copy with no plugin before it, the stray that leaves, may
+then be moved or removed. Each path is tested against a fake graph that fails
+the commands named. (2) `apply_to_chains` stored `step_units`' None and
+raised TypeError on the next step; it now raises ValueError naming the step.
+(3) `read_ports` took `str.isdigit`, which accepts "²" and "٣", and then a
+bare ValueError crashed every compile and GET /library. It now checks ASCII
+digits, raises PortsError with the line, and an unreadable file is a
+PortsError too. (4) The diff's `stereo` restart ran before replacements were
+dropped, and named a changed table for a running rig compiled before the
+copies existed. It now runs after them, and that case is `stereo_missing`,
+said as what it is. (5) A rig that did not compile exempted its v1 config's
+`.v1-mono` references from the orphan check; now only its own
+(`test_render.py`). (6) `compile_rig(routing_only=True)`, and
+`spec_of(routing_only=True)` for the patchbay and SAVE's source check, need
+no table and make no copies. SAVE's check leaves the copies out of the
+running config's names. The renders and the probes keep the copies, since
+Sushi loads their chains (render.rig_channels renders what `up --rig` loads,
+so it is not routing-only). Each docstring says which kind. (7) The refusal
+for moving a copy reads "... is 'comp''s copy to stereo, which moves with
+'comp': move that instead", and for removing one "... removed with 'ts':
+remove that instead". (8) `heard`'s docstring names the rig's own
+references. (9) `live.plan_move` is removed; its position tests now run
+against `decide_move`, and cli uses `render.v1_reference_path`. (10)
+`apply_to_chains` removes by `stereo.units`, as `check_remove` does. **Not run
+against a live Sushi**: every undo above, and `get_processor_id` for an added
+processor's id. *(2026-11-02)*

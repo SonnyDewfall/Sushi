@@ -24,7 +24,7 @@ from aiohttp.test_utils import TestClient, TestServer  # noqa: E402
 
 from sushi_rig import agent as agent_module  # noqa: E402
 from sushi_rig import stereo  # noqa: E402
-from sushi_rig.live import decide_move, plan_move  # noqa: E402
+from sushi_rig.live import decide_move  # noqa: E402
 from sushi_rig.agent import (  # noqa: E402
     Agent,
     AgentError,
@@ -710,7 +710,8 @@ def test_the_opposite_step_always_puts_a_chain_back(chain, direction):
         if after is None:
             continue
         opposite = agent_module.OPPOSITE[direction]
-        assert plan_move(after, processor, agent_module.DIRECTIONS[opposite]) is not None
+        ids = {name: i for i, name in enumerate(["t", *after])}
+        assert decide_move({"t": after}, ids, processor, agent_module.DIRECTIONS[opposite]).outcome == "planned"
         assert chain_after_move(after, processor, opposite) == chain
 
 

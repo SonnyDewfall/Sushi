@@ -1116,8 +1116,16 @@ What this does not do:
   copy puts that on both sides. No committed rig has a stereo channel.
 - A plugin with no audio output would silence everything after it, and is
   refused.
-- Moving a mono plugin is two of Sushi's commands; for the moment between
-  them the right channel can be silent, or a stereo plugin's image folded.
+- Moving, adding or removing a mono plugin is two of Sushi's commands; for
+  the moment between them the right channel can be silent, or a stereo
+  plugin's image folded. If the second fails, the first is undone; if that
+  fails too, the agent says what the chain holds, and a copy left with no
+  plugin before it may then be moved or removed, which is the repair.
+- The patchbay and SAVE's check of which rig file describes the running rig
+  compile for routing only, without the copies, and need no
+  `plugin-ports.txt`; everything whose chains Sushi loads (`up --rig`,
+  `emit`, the renders, the probes) has the copies and refuses a plugin the
+  table lacks.
 - **None of this has been heard on the rig.** It is offline renders in CI's
   container; the iD14's two monitors are the test.
 

@@ -12,45 +12,54 @@ import types
 import pytest
 
 from sushi_rig import live
-from sushi_rig.live import TAB_RESELECT_DELAY, plan_move, refresh_panel
+from sushi_rig.live import TAB_RESELECT_DELAY, decide_move, refresh_panel
 
 CHAIN = ["compressor", "overdrive", "octave", "eq", "chorus", "delay", "reverb"]
 
 
+def command(chain, processor, direction):
+    """Where `decide_move` sends `processor`, as (before, add_to_back) by name,
+    or None when nothing would be sent."""
+    ids = {"t": 100, **{name: i + 1 for i, name in enumerate(chain)}}
+    move = decide_move({"t": chain}, ids, processor, direction)
+    if move.outcome != "planned":
+        return None
+    by_id = {i: name for name, i in ids.items()}
+    _, _, before, back = move.command
+    return {"before": None if back else by_id[before], "add_to_back": back}
+
+
 def test_moving_earlier_lands_before_the_previous_processor():
-    assert plan_move(CHAIN, "overdrive", -1) == {
-        "before": "compressor",
-        "add_to_back": False,
-    }
+    assert command(CHAIN, "overdrive", -1) == {"before": "compressor", "add_to_back": False}
 
 
 def test_moving_later_lands_before_the_one_after_next():
     """Moving past exactly one neighbour means inserting before whatever
     follows that neighbour."""
-    assert plan_move(CHAIN, "overdrive", 1) == {"before": "eq", "add_to_back": False}
+    assert command(CHAIN, "overdrive", 1) == {"before": "eq", "add_to_back": False}
 
 
 def test_moving_the_second_to_last_later_goes_to_the_back():
     """There is nothing to be "before" past the end, so Sushi needs
     add_to_back instead."""
-    assert plan_move(CHAIN, "delay", 1) == {"before": None, "add_to_back": True}
+    assert command(CHAIN, "delay", 1) == {"before": None, "add_to_back": True}
 
 
 def test_first_cannot_move_earlier():
-    assert plan_move(CHAIN, "compressor", -1) is None
+    assert command(CHAIN, "compressor", -1) is None
 
 
 def test_last_cannot_move_later():
-    assert plan_move(CHAIN, "reverb", 1) is None
+    assert command(CHAIN, "reverb", 1) is None
 
 
 def test_unknown_processor_is_a_no_op():
-    assert plan_move(CHAIN, "not-on-this-track", 1) is None
+    assert command(CHAIN, "not-on-this-track", 1) is None
 
 
 def test_single_plugin_chain_cannot_move_either_way():
-    assert plan_move(["only"], "only", -1) is None
-    assert plan_move(["only"], "only", 1) is None
+    assert command(["only"], "only", -1) is None
+    assert command(["only"], "only", 1) is None
 
 
 class _FakeClient:

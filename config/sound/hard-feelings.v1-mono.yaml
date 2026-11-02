@@ -1,4 +1,4 @@
-schema_version: 1
+schema_version: 2
 config: hard-feelings
 stimulus: log_sweep 20-20000Hz 5s -20dBFS 2ch
 sample_rate: 48000
@@ -6,6 +6,9 @@ frames: 240000
 measured:
   peak_dbfs: -6.6692
   rms_dbfs: -18.9585
+  channel_rms_dbfs:
+  - -15.9482
+  - -278.7147
   delay_samples: 0
   bands:
   - low_hz: 20.0

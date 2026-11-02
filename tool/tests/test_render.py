@@ -844,3 +844,45 @@ def test_orphans_count_as_checks_so_the_summary_adds_up(tmp_path, monkeypatch, c
         (sound / f"{name}.yaml").write_text((sound / "electric-clean.v1-mono.yaml").read_text())
     assert cli.main(["nulltest", "--all"]) == 1
     assert "3 of 4 check(s) could not be confirmed" in capsys.readouterr().err
+
+
+# --- rigs of channels, and the v1 configs' own references (2026-11-02) --------
+
+def _channels_rig(root):
+    (root / "plugin-ports.txt").write_text((Path(__file__).resolve().parents[2] / "plugin-ports.txt").read_text())
+    rigs = root / "config" / "rigs"
+    rigs.mkdir(parents=True, exist_ok=True)
+    (rigs / "electric-clean.yaml").write_text(
+        "kind: rig\nschema_version: 1\nname: electric-clean\n"
+        "channels:\n- {name: board, input: guitar-in, width: mono, chain: []}\n"
+        "master: {output: monitor-out, chain: []}\n")
+    return rigs / "electric-clean.yaml"
+
+
+def test_a_rig_and_its_v1_config_have_a_reference_each(tmp_path, monkeypatch, capsys):
+    cli, _ = _rig(tmp_path, monkeypatch)
+    _channels_rig(tmp_path)
+    assert cli.main(["nulltest", "--all", "--calibrate"]) == 0
+    assert sorted(p.name for p in (tmp_path / "config" / "sound").iterdir()) == [
+        "electric-clean.v1-mono.yaml", "electric-clean.yaml"]
+    assert cli.main(["nulltest", "--all"]) == 0
+    out = capsys.readouterr().out
+    assert "electric-clean.json: sounds the same" in out and "electric-clean.yaml: sounds the same" in out
+
+
+def test_a_rig_that_does_not_compile_exempts_only_its_own_references_from_the_orphan_check(
+    tmp_path, monkeypatch, capsys
+):
+    """Found by review: its stem used to exempt the v1 config's `.v1-mono`
+    references too, so a v1 config removed beside a broken rig left an orphan
+    nobody was told of."""
+    cli, config = _rig(tmp_path, monkeypatch)
+    rig = _channels_rig(tmp_path)
+    assert cli.main(["nulltest", "--all", "--calibrate"]) == 0
+    rig.write_text("kind: rig\nschema_version: 1\nname: electric-clean\nchannels: nope\n")
+    config.unlink()
+    assert cli.main(["nulltest", "--all"]) == 1
+    err = capsys.readouterr().err
+    assert "electric-clean.yaml: CANNOT CHECK" in err
+    assert "electric-clean.v1-mono.yaml: ORPHANED REFERENCE" in err
+    assert "sound/electric-clean.yaml: ORPHANED" not in err, "the broken rig's own reference is not an orphan"

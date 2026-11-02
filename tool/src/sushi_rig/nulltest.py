@@ -257,9 +257,9 @@ def compare(
         else:
             for index, (ref_v, test_v) in enumerate(zip(reference.channel_rms_dbfs, test.channel_rms_dbfs)):
                 which = CHANNEL_NAMES.get(index, f"channel {index}")
-                if ref_v == test_v:
-                    continue  # silent in both included: -inf minus -inf is not a number
-                if float("-inf") in (ref_v, test_v):
+                if not _audible(ref_v) and not _audible(test_v):
+                    continue  # silent in both (`SILENCE_FLOOR_DBFS`), -inf included
+                if not _audible(ref_v) or not _audible(test_v):
                     findings.append(Finding(
                         "channel-changed", f"the {which} channel is silent in one render and not the other",
                     ))
@@ -283,6 +283,17 @@ def compare(
 
 
 CHANNEL_NAMES = {0: "left", 1: "right"}
+
+# A channel this quiet is silent, for comparing: the v1 configs' right channel
+# measures about -279 dBFS (CI, 2026-11-02), float residue rather than sound,
+# and a residue that far down can move by decibels on a change too small to
+# matter anywhere else, which a reference written to 0.0001 dB would report.
+# Far below anything audible or any plugin's own noise, far above that residue.
+SILENCE_FLOOR_DBFS = -200.0
+
+
+def _audible(level: float) -> bool:
+    return level > SILENCE_FLOOR_DBFS
 
 
 def render_findings(rendered, sample_rate: int) -> list[Finding]:
@@ -326,7 +337,7 @@ def floor_between(a: Fingerprint, b: Fingerprint) -> Tolerance:
     if a.channel_rms_dbfs is not None and b.channel_rms_dbfs is not None:
         observed_level = max([observed_level] + [
             abs(y - x) for x, y in zip(a.channel_rms_dbfs, b.channel_rms_dbfs)
-            if float("-inf") not in (x, y)
+            if _audible(x) and _audible(y)
         ])
     note = "measured: the largest difference between two renders of this config"
     if max(observed_band, observed_level) < WRITTEN_RESOLUTION_DB:

@@ -1,4 +1,4 @@
-schema_version: 1
+schema_version: 2
 config: electric-clean
 stimulus: log_sweep 20-20000Hz 5s -20dBFS 2ch
 sample_rate: 48000
@@ -6,6 +6,9 @@ frames: 240000
 measured:
   peak_dbfs: -17.0428
   rms_dbfs: -29.5608
+  channel_rms_dbfs:
+  - -26.5505
+  - -276.7952
   delay_samples: 0
   bands:
   - low_hz: 20.0
