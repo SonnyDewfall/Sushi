@@ -80,6 +80,9 @@ WIDTHS = {"mono": 1, "stereo": 2}
 MASTER = "master"
 RETURN = "master_return"
 SEND_SUFFIX = "_send"
+# Where the compiled config carries the MIDI bindings Sushi cannot hold (bypass,
+# a note on a mute, Program Change rig switching), for the agent to serve.
+AGENT_BINDINGS = "_midi_agent"
 SEND_UID = "sushi.testing.send"
 RETURN_UID = "sushi.testing.return"
 MASTER_BUS = 0
@@ -441,9 +444,9 @@ def _parse_midi(raw: Any, problems: list[str]) -> MidiMap | None:
                 span = (float(value[0]), float(value[1]))
         shapes = {
             "blend": isinstance(target, list) and len(target) == 2 and all(isinstance(t, str) for t in target),
-            "parameter": isinstance(target, str) and target.count("/") == 2,
+            "parameter": isinstance(target, str) and target.count("/") == 2 and all(target.split("/")),
             "mute": isinstance(target, str) and bool(target),
-            "bypass": isinstance(target, str) and target.count("/") == 1,
+            "bypass": isinstance(target, str) and target.count("/") == 1 and all(target.split("/")),
         }
         if not shapes[binding]:
             problems.append(f"{at} ({name}): {binding} must be {shapes_said[binding]}")
@@ -691,7 +694,8 @@ def compile_midi(rig: Rig, controller: dict[str, Any]) -> tuple[dict[str, Any], 
       in; heel is the first channel, toe the second. A channel's `level` is
       its loudest, so the blend respects the mix.
     - **bypass**: Sushi has no CC-to-bypass connection, so nothing is
-      written; the binding is returned for the agent to serve over gRPC.
+      written whether the control is a note or a CC; the binding is returned
+      for the agent to serve over gRPC (a CC as a switch: on at 64 and above).
     - **programs**: a Program Change reaches a plugin's program in Sushi,
       not a rig, so rig switching is the agent's too (#93).
 
@@ -772,8 +776,13 @@ def compile_rig(
     # the probes, SAVE's source check), only without its MIDI map. Writing a
     # config is where a missing controller is refused: `emit_rig`.
     midi_section: dict[str, Any] = {}
+    agent_bindings: list[dict[str, Any]] = []
+    host = dict(rig.host or {"samplerate": 48000})
     if rig.midi is not None and controller is not None:
-        midi_section, _ = compile_midi(rig, controller)
+        midi_section, agent_bindings = compile_midi(rig, controller)
+        # Sushi opens `midi_inputs` ports and refuses a mapping on one it did
+        # not open, so the host asks for enough to hold the map's port.
+        host["midi_inputs"] = max(int(host.get("midi_inputs") or 0), rig.midi.port + 1)
     tracks = []
     processors: dict[str, Any] = copy.deepcopy(rig.settings)
     next_input = 0
@@ -803,7 +812,7 @@ def compile_rig(
         sink=rig.master.output,
     ))
     spec = RigSpec(
-        host=dict(rig.host or {"samplerate": 48000}),
+        host=host,
         tracks=tracks,
         meta={"name": rig.name, **({"description": rig.description} if rig.description else {}),
               **rig.meta},
@@ -812,6 +821,10 @@ def compile_rig(
     problems = spec.validate()
     if problems:
         raise RigFileError(problems)
+    if agent_bindings:
+        # Carried beside the processors' state so `emit_rig` can write them
+        # into the config for the agent; `merged_state` passes them through.
+        processors[AGENT_BINDINGS] = agent_bindings
     return spec, {"processors": processors}
 
 
@@ -831,6 +844,7 @@ def merged_state(fixed: dict[str, Any], captured: dict[str, Any] | None) -> dict
     # The file's settings first, a capture over them: a capture is newer, the
     # same relation a capture has to a v1 rig.yaml's.
     processors = copy.deepcopy(fixed["processors"])
+    bindings = processors.pop(AGENT_BINDINGS, None)
     for name, values in (captured.get("processors") or {}).items():
         if not isinstance(values, dict):
             continue
@@ -854,6 +868,8 @@ def merged_state(fixed: dict[str, Any], captured: dict[str, Any] | None) -> dict
                 "destination_name": values["properties"]["destination_name"],
             }
     merged["processors"] = processors
+    if bindings:
+        merged[AGENT_BINDINGS] = bindings
     return merged
 
 
@@ -938,6 +954,10 @@ def fold_state(raw: dict[str, Any], captured: dict[str, Any] | None) -> dict[str
                 }
         return folded
 
+    blended = {
+        name for control in (rig.midi.controls if rig.midi else ())
+        if control.binding == "blend" for name in control.target
+    }
     out = copy.deepcopy(raw)
     for channel in out.get("channels") or []:
         if not isinstance(channel, dict):
@@ -945,7 +965,12 @@ def fold_state(raw: dict[str, Any], captured: dict[str, Any] | None) -> dict[str
         if channel.get("chain"):
             channel["chain"] = fold_chain(channel["chain"], channel["name"])
         # The send's gain moved live is the channel's level (#18). Written
-        # when it differs from what the file says, as a level in dB.
+        # when it differs from what the file says, as a level in dB. Not for
+        # a channel a blend drives: there the gain is the pedal's position,
+        # and saving it as the level would make the next blend silent at
+        # every position (found by review, 2026-11-02).
+        if channel.get("name") in blended:
+            continue
         send = processors.get(str(channel.get("name")) + SEND_SUFFIX) or {}
         gain = (send.get("parameters") or {}).get("gain") if isinstance(send, dict) else None
         if isinstance(gain, (int, float)) and not isinstance(gain, bool):
@@ -993,14 +1018,22 @@ def emit_rig(
     controller is refused: its controls cannot be resolved to anything Sushi
     can hear, and a config written without its pedals would run silently
     without them."""
-    from .emit import emit
-
     if rig.midi is not None and controller is None:
         raise RigFileError([
             f"the rig's MIDI map is written for controller {rig.midi.controller!r}, and no "
             "controller was given: the machine file says what its controls send"
         ])
     spec, fixed = compile_rig(rig, controller)
+    return emit_compiled(rig, spec, fixed, captured)
+
+
+def emit_compiled(
+    rig: Rig, spec: RigSpec, fixed: dict[str, Any], captured: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """`emit_rig`'s second half, for a caller that already compiled the rig
+    (`prepare_rig` compiles once for the patchbay and the config)."""
+    from .emit import emit
+
     state = merged_state(fixed, captured)
     problems = [
         problem for channel in rig.channels
@@ -1012,9 +1045,14 @@ def emit_rig(
     if problems:
         # A capture can carry a strip moved live, which the file never had.
         raise RigFileError(problems)
+    bindings = state.pop(AGENT_BINDINGS, None)
     config = pin_monitor_path(emit(spec, state))
     if rig.amp:
         config["_amp"] = copy.deepcopy(rig.amp)
+    if bindings:
+        # What the agent serves: Sushi ignores an underscored key, as it does
+        # `_amp` and `_meta`, and `up` leaves nothing of the map unrecorded.
+        config[AGENT_BINDINGS] = bindings
     return config
 
 

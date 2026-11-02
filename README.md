@@ -567,6 +567,8 @@ controllers:
     channel: all                 # or 0 to 15, as Sushi counts it
     controls:
       knob1: {cc: 3}
+      knob2: {cc: 9}
+      knob3: {cc: 12}
       pad1: {note: 36}
 
 # config/rigs/<name>.yaml
@@ -576,13 +578,15 @@ midi:
   - {control: knob1, blend: [clean, lead]}        # one pedal fades clean out as lead comes in
   - {control: knob2, parameter: lead/hall/Mix}     # a sweep, 0 to 1 normalised, or range: [a, b]
   - {control: knob3, mute: lead}                   # a whole channel, native
-  - {control: pad1, bypass: lead/drive}            # one plugin: the agent's, Sushi has no CC-to-bypass
+  - {control: pad1, bypass: lead/drive}            # one plugin: the agent's, Sushi has no CC-to-bypass; a CC here is a switch
 ```
 
 Blend, parameter and mute compile into Sushi's own `cc_mappings` and run in
 the engine with no Python in the path; a blend is two mappings on the two
 channels' sends with their ranges reversed, each channel's own level being
-its loudest. Bypass and rig switching by Program Change go through the agent.
+its loudest. Bypass and rig switching by Program Change go through the agent, which
+reads them from the compiled config's `_midi_agent`; a blended channel's
+send gain is a pedal position, so SAVE does not write it back as the level.
 A rig with a map refuses to compile to a config without its controller, since
 a rig running without its pedals would be the silent failure. Still to verify
 on the rig: that Sushi counts MIDI channels from 0, and the name PipeWire

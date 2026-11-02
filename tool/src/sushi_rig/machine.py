@@ -278,6 +278,27 @@ class MachineSpec:
         }
 
 
+def controller_for(controller_name: str, machine_file: Path) -> dict[str, Any]:
+    """The machine file's description of `controller_name`, for the MIDI-map
+    compiler, or `MachineError` saying why not. One place for `up --rig`,
+    `emit` and the listener's save check, so they refuse in the same words."""
+    try:
+        machine = MachineSpec.load(machine_file)
+    except MachineError as exc:
+        raise MachineError(
+            f"the rig's MIDI map needs {machine_file.name}, which could not be read: {exc}"
+        ) from exc
+    problems = machine.validate()
+    if problems:
+        raise MachineError(f"{machine_file.name}: " + "; ".join(problems))
+    if controller_name not in (machine.controllers or {}):
+        raise MachineError(
+            f"the rig is written for controller {controller_name!r}, which {machine_file.name} "
+            f"does not describe; its controllers: {', '.join(sorted(machine.controllers or {})) or 'none'}"
+        )
+    return machine.controller(controller_name)
+
+
 def _port_problem(port: Any) -> str | None:
     """Why this is not a port name, or None.
 

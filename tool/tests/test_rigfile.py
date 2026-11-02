@@ -662,3 +662,47 @@ def test_a_rig_with_a_midi_map_loads_in_sushi_with_its_mappings(tmp_path):
     config = tmp_path / "two_midi.json"
     config.write_text(json.dumps(emit_rig(rig, controller=MPD218), indent=2))
     assert verify(config, str(SUSHI)) == []
+
+
+def test_the_agents_bindings_and_the_midi_port_are_written_into_the_config():
+    """What Sushi cannot serve (a bypass, a Program Change) is not dropped: it
+    sits in the config under an underscored key Sushi ignores, for the agent,
+    and the host opens enough MIDI inputs to hold the map's port."""
+    from sushi_rig.rigfile import AGENT_BINDINGS
+
+    rig = parse_rig(_midi_rig([
+        {"control": "knob1", "blend": ["clean", "lead"]},
+        {"control": "pad1", "bypass": "lead/drive"},
+    ], programs="rigs", port=1))
+    config = emit_rig(rig, controller=MPD218, captured={"processors": {"drive": {"bypassed": True}}})
+    assert config["host_config"]["midi_inputs"] == 2
+    assert config[AGENT_BINDINGS] == [
+        {"control": "pad1", "note": 36, "channel": "all", "bypass": "lead/drive"},
+        {"programs": "rigs", "port": 1, "channel": "all"},
+    ]
+    state = {entry["processor"]: entry for entry in config["initial_state"]}
+    assert state["drive"]["bypassed"] is True, "the capture still merges"
+    assert AGENT_BINDINGS not in state, "the bindings are not a processor"
+
+
+@pytest.mark.parametrize("target", ["lead//Mix", "/hall/Mix", "lead/hall/"])
+def test_a_parameter_target_with_an_empty_segment_is_refused(target):
+    with pytest.raises(RigFileError, match="channel/plugin/parameter"):
+        parse_rig(_midi_rig([{"control": "knob1", "parameter": target}]))
+
+
+def test_fold_state_does_not_save_a_blended_channels_gain_as_its_level():
+    """A blend drives both sends' gain, so at save time the gain is the
+    pedal's position, not the channel's level; folding it would make the
+    next blend silent at every position. An unblended channel's gain is
+    still the level (#18)."""
+    raw = _midi_rig([{"control": "knob1", "blend": ["clean", "lead"]}])
+    raw["channels"].append({"name": "vox", "input": "guitar-in", "width": "mono", "chain": []})
+    folded = fold_state(raw, {"processors": {
+        "clean_send": {"parameters": {"gain": level_to_gain(-40.0)}},
+        "lead_send": {"parameters": {"gain": level_to_gain(-1.0)}},
+        "vox_send": {"parameters": {"gain": level_to_gain(-9.0)}},
+    }})
+    assert "level" not in folded["channels"][0]
+    assert folded["channels"][1]["level"] == -6.0
+    assert folded["channels"][2]["level"] == -9.0
