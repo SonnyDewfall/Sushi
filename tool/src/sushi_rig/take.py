@@ -92,7 +92,7 @@ import sys
 from dataclasses import dataclass, field
 from datetime import datetime, timezone
 from pathlib import Path
-from typing import Any, Sequence
+from typing import Any, Collection, Sequence
 
 from .save import NAME_PATTERN, unused_path
 from .signals import SUBTYPES, repair_wav, wav_info
@@ -348,22 +348,49 @@ def check_format(sample_rate: Any, subtype: Any, quantum: Any) -> list[str]:
     return problems
 
 
-def check_channels(stems: Sequence[Stem], config: Any) -> list[str]:
+def check_channels(stems: Sequence[Stem], config: Any, roles: Collection[str] = ()) -> list[str]:
     """Every stem's channel is a track the config actually has.
 
     A stem is named after its track, and that name is how a take is re-amped:
     `guitr.wav` beside a config with no `guitr` track cannot be put back through
     anything.
+
+    The one exception is a dry tap shared by channels that play from one
+    input (`transport.rig_stems`): it is one signal, so it is named for the
+    input role, which is how the rig says which channels to re-amp it through.
+    `roles` are the input roles of the take's rig (`rig_input_roles`).
     """
     tracks = config.get("tracks") if isinstance(config, dict) else None
     if not isinstance(tracks, list):
         return []
     names = {t.get("name") for t in tracks if isinstance(t, dict)}
+    roles = set(roles)
     return [
         f"stem {stem.filename} names channel {stem.channel!r}, but the config has no "
         f"such track (it has {', '.join(sorted(map(str, names))) or 'none'})"
-        for stem in stems if stem.channel not in names
+        + (f" and the rig no such input (it has {', '.join(sorted(roles))})"
+           if stem.tap == DRY and roles else "")
+        for stem in stems
+        if stem.channel not in names and not (stem.tap == DRY and stem.channel in roles)
     ]
+
+
+def rig_input_roles(rig_text: str | None) -> set[str]:
+    """The input roles a rig file's channels play from; empty for no rig, or
+    one that cannot be read (its own check reports that)."""
+    import yaml
+
+    if rig_text is None:
+        return set()
+    try:
+        parsed = yaml.safe_load(rig_text)
+    except yaml.YAMLError:
+        return set()
+    channels = parsed.get("channels") if isinstance(parsed, dict) else None
+    return {
+        c["input"] for c in (channels if isinstance(channels, list) else [])
+        if isinstance(c, dict) and isinstance(c.get("input"), str)
+    }
 
 
 def describe_alignment(take: "Take") -> str | None:
@@ -739,7 +766,13 @@ def check_take(take: Take) -> list[str]:
         if not isinstance(parsed, dict) or not isinstance(parsed.get("tracks"), list):
             problems.append(f"{CONFIG_FILE} has no tracks, so it is not a Sushi config")
         else:
-            problems += check_channels(take.stems, parsed)
+            rig_text = None
+            if meta.get("rig") == RIG_FILE:
+                try:
+                    rig_text = (take.folder / RIG_FILE).read_text()
+                except OSError:
+                    pass  # reported by _check_rig_file below
+            problems += check_channels(take.stems, parsed, rig_input_roles(rig_text))
 
     rig = meta.get("rig")
     if rig is not None:
@@ -894,7 +927,7 @@ def start_take(
     if not isinstance(config, dict) or not isinstance(config.get("tracks"), list):
         problems.append("the config has no tracks, so it is not a Sushi config")
     else:
-        problems += check_channels(stems, config)
+        problems += check_channels(stems, config, rig_input_roles(rig_text))
     if rig_text is not None:
         problems += _check_rig_text(rig_text)
     problems += check_library(library)

@@ -1914,6 +1914,92 @@ returns the chains it confirmed, a 502 otherwise. (8) An unknown escape's
 three times per plugin; it indexes once per bundle. Every name and port count
 still agrees with lilv on the assembled `plugins/` (rerun). *(2026-11-02)*
 
+**The record bar records a `--rig` run (#57).** The listener now builds its
+session at start (`transport.record_session`) instead of always running
+`NoEngine`: a `TakeSession` over a `capture.CaptureEngine` when the run can be
+recorded, and otherwise a `NoEngine` whose message names the reason, printed in
+the listener's log at start and shown on the panel at the first press.
+**Which ports a take records** (`transport.rig_stems`, decided in its module
+docstring): for a rig of channels, in the rig's order, each channel's stem (its
+track's own output, engine bus 1 + index, which the patchbay links to nothing,
+so it is the channel alone, after its chain and before its level), its dry tap
+(the machine file's port(s) for its input role: the physical input, because with
+the amp running Sushi's input is the amp's output), and then the master
+(`sushi:audio_output_0`/`_1`, the only place the mix and the master chain are).
+guitar_vocal on this machine is eight columns: `sushi:audio_output_2`/`_3`,
+`Audient iD14:capture_AUX0`, `_4`/`_5`, `capture_AUX1`, `_0`/`_1`. Sushi's
+ports are spelt by `patchbay.sushi_ports`, which selftest's probes now share
+rather than keeping their own copy, from `track_route`; the inputs by
+`MachineSpec.role_ports`. A two-port stem must be two consecutively numbered
+ports, since that is all `capture.numbered_ports` links; anything else is
+refused. The rate is the compiled config's `host_config.samplerate`, the quantum
+`rig.QUANTUM`; the take carries the config Sushi loaded, read at start, with the
+amp as the listener last sent it (`TakeSession.amend_config`, set by `serve`,
+the rule SAVE uses), `rig.yaml` as read at start, and `library_state`.
+Parameters moved since `up` are not in the take's config: a take does not
+capture Sushi's state as SAVE does. **Each fallback, as the panel words it
+after "recording is not available:"**: JACK-Client or libjack missing
+(`CaptureUnavailable`'s own sentence, with the pip extra or the package);
+no `--rig`; a rig.yaml of tracks (v1), which gets no plan because the routing
+that ships sums its tracks into the monitor bus ("run it with `sushi-rig up
+--rig <name>`"); no `--panel-config`; a config with no sample rate; a machine
+file that cannot be read or does not validate; any problem in the plan (an
+input role the machine file lacks, a channel whose width does not match its
+role's ports, ports not consecutively numbered, two stems on one port); an
+engine that cannot be made; and anything unexpected, all prefixed "no take can
+be planned for this run:" where the plan is the cause. `NoEngine` takes a
+`reason`; with none it says what it said before. **`up` changes:** the listener
+starts under `pw-jack` with `PIPEWIRE_QUANTUM` at the rig's quantum, as Sushi
+and the amp do, because the capture engine is a JACK client; and it is given
+`--machine`, the file the rig was compiled against, since the state file that
+records it is written after the children start. `listen` gains `--machine` and
+`--takes-dir`. `CaptureEngine.prepare` is not called at start: the listener
+starts before Sushi, so the quantum read then may not be the one Sushi holds;
+the first RECORD reads it, half a second once. Tested without JACK or PipeWire
+(`test_record_session.py`): the plans for a two-channel rig and guitar_vocal,
+that no channel stem is on a port the patchbay links, each fallback's sentence,
+that `sushi-rig listen` hands `serve` a `TakeSession` with the engine stood in,
+the amp hook, `up`'s listener command, and a whole take through the planned
+stems (real recorder, engine stood in) that `take check` passes. **NOT
+VERIFIED: no take has been recorded this way.** Nothing ran against a live
+PipeWire. Unknown: whether the machine file's port names (as qpwgraph shows
+them) are what a JACK client sees through `pw-jack`; whether eight columns keep
+up as the spike's six did; whether an output the patchbay leaves unlinked
+carries its signal to a capture client; whether `pw-jack` in front of the
+listener changes anything else about it. **The check, on the rig:** `sushi-rig
+up --rig guitar_vocal`, confirm the listener's log says "RECORD records ...",
+press RECORD, play both inputs for ten seconds, press STOP, then `sushi-rig take
+check ~/sushi-rig-takes/<name>`, and listen to each stem alone: the guitar stem
+must hold no vocal, the dry taps no effects, and the master both. Record the
+result here either way. *(2026-11-02)*
+
+*A review of the same branch found nine more.* (1) **Two channels on one input
+were refused**, since both dry taps landed on one port; a blend of two chains on
+one guitar is a supported rig. They now share one dry tap, recorded once and
+named for the role (`guitar-in-dry.wav`), and `take.check_channels` accepts a
+dry stem named for one of the take's rig's inputs, at start and in `take check`.
+(2) The "RECORD records ..." line went to block-buffered stdout, which the
+SIGTERM from `down` could lose; it goes to stderr. (3) The listener's
+`PIPEWIRE_QUANTUM` hard-coded 48000 while the plan read the config's rate. The
+rate is fixed at 48000 for Sushi too, so it is `rig.RATE` in all three
+`env_set`s, and a config at another rate is refused when the plan is made
+rather than by the engine at every RECORD. (4) A failure in the amp hook
+escaped as "unexpected error"; it is now "cannot record <name>: the config it
+would carry could not be made (...)", before anything is written. (5) The rig
+file and `library_state` were read once at listener start, so takes after a
+SAVE or a commit recorded stale provenance; `TakePlan` carries `rig_path` and
+`library_root`, read at each RECORD. (6) `NoEngine`'s default says no take was
+planned for this run. (7) The amp rule lived in `serve` as an isinstance patch;
+`record_session` now builds every `TakeSession` with it, over the dict the
+listener updates in place (`serve` no longer copies `amp_parameters`). (8)
+probes call `sushi_ports` directly. (9) The stem outputs are read off the
+tracks of the config Sushi loaded, not a fresh compile of the rig file, so they
+are the ports running; a channel the loaded config lacks is refused with "the
+rig file has changed since `up`, so restart the rig". The channels and their
+input roles still come from the rig file, read at listener start: the config
+does not say which role a track plays from. Still NOT VERIFIED on the rig; the
+check above stands, with a blend rig added if one is to hand. *(2026-11-02)*
+
 **Switching rigs live by diff (#93).** `POST /rig/switch {"config_name"}`, and
 the Program Change switch, which now takes the same path, turn the running rig
 into another rig of `config/rigs/` through the live operations instead of

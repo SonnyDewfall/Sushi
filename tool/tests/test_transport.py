@@ -128,7 +128,7 @@ def test_without_an_engine_record_says_why_it_cannot():
     transport = Transport()
     said = transport.on_record()
     assert said == f"record failed: {NoEngine.MESSAGE}"
-    assert "no capture engine" in said
+    assert "no take was planned for this run" in said
     assert transport.recording is None
 
 

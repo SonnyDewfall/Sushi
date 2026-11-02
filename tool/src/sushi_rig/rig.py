@@ -72,6 +72,12 @@ GRPC_TIMEOUT = 15.0
 # 512-sample headroom dominates, so the gain gets small and the risk does not.
 QUANTUM = 256
 
+# The graph rate the rig asks PipeWire for, beside the quantum in every
+# `PIPEWIRE_QUANTUM` it sets. Every config here declares 48000; a take is
+# planned only for a config at this rate (`transport.plan_for_run`), since the
+# capture engine refuses a graph running at another.
+RATE = 48000
+
 # The PipeWire node `fmit` registers as, via the ALSA compatibility layer.
 TUNER_NODE = "alsa_capture.fmit"
 
@@ -322,8 +328,14 @@ def plan_children(
     amp_model: str | None = None,
     amp_values: dict[str, float] | None = None,
     patchbay: Path | None = None,
+    machine_file: Path | None = None,
 ) -> list[dict[str, Any]]:
     """The children to start, in order, as data.
+
+    `machine_file` is the one a v2 rig was compiled against, handed to the
+    listener so the record button taps the same inputs the patchbay wired.
+    The state file records it too, but is written after the children start,
+    so the listener cannot read it from there when it plans its takes.
 
     Pure so the two personas' differences can be asserted without launching
     anything. Each entry is `{name, command, optional}` — `optional` marks a
@@ -376,15 +388,21 @@ def plan_children(
     })
 
     if not headless:
-        # Serves the panel's save button and its reorder buttons. Headless has
-        # no panel, so nothing would ever talk to it.
+        # Serves the panel's save button, its reorder buttons and its record
+        # bar. Headless has no panel, so nothing would ever talk to it.
         children.append({
             "name": "listen",
             "command": [
+                # Under pw-jack, for the reason Sushi and the amp are: the
+                # record bar's capture engine is a JACK client, and the system
+                # libjack finds no server on a PipeWire-only machine (see
+                # capture.py). Nothing else in the listener touches JACK.
+                "pw-jack",
                 str(root / "tool" / ".venv" / "bin" / "sushi-rig"), "listen",
                 # Without a source the listener still serves the reorder and
-                # amp buttons; SAVE answers with why it cannot.
+                # amp buttons; SAVE and RECORD answer with why they cannot.
                 *(["--rig", rig_yaml] if rig_yaml else []),
+                *(["--machine", str(Path(machine_file).resolve())] if machine_file else []),
                 "--out-dir", "config",
                 "--archive-dir", "config/archive",
                 "--panel-config", str(config),
@@ -392,6 +410,11 @@ def plan_children(
                 "--sushi", "./sushi",
             ],
             "optional": False,
+            # The quantum Sushi runs at, which a take is planned for: the
+            # capture engine refuses a graph that grants another
+            # (`capture.check_granted`), and PipeWire applies this to a client
+            # only when it starts.
+            "env_set": {"PIPEWIRE_QUANTUM": f"{QUANTUM}/{RATE}"},
         })
         if amp_model:
             # So the save button can write the amp into the config it saves.
@@ -403,7 +426,7 @@ def plan_children(
         "name": "sushi",
         "command": ["pw-jack", "./sushi", "-j", "-c", str(config)],
         "optional": False,
-        "env_set": {"PIPEWIRE_QUANTUM": f"{QUANTUM}/48000"},
+        "env_set": {"PIPEWIRE_QUANTUM": f"{QUANTUM}/{RATE}"},
     })
 
     if amp_project is not None:
@@ -426,7 +449,7 @@ def plan_children(
             "optional": True,
             # The same quantum as Sushi. Two JACK clients each locking a
             # different one is a fight nobody wins.
-            "env_set": {"PIPEWIRE_QUANTUM": f"{QUANTUM}/48000"},
+            "env_set": {"PIPEWIRE_QUANTUM": f"{QUANTUM}/{RATE}"},
         })
 
     return children
@@ -934,7 +957,7 @@ def up(
     children_plan = plan_children(
         root, config, rig_yaml, headless=headless, tuner=tuner,
         amp_project=amp_project, amp_model=amp_model_stored,
-        amp_values=amp_values, patchbay=amp_patch,
+        amp_values=amp_values, patchbay=amp_patch, machine_file=rig_machine,
     )
 
     pid, ready_r = _fork_supervisor(
