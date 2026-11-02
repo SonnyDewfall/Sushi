@@ -514,13 +514,20 @@ class Supervisor:
         # In a thread: the escalation sleeps. Exited children are reaped by the
         # watch on the loop meanwhile, since a zombie still counts as a member
         # of its group and the escalation would otherwise run in full.
-        code = await asyncio.to_thread(lambda: rig_module.down(force, out=out, err=err, state=state))
-        if held is not None:
-            if code == 0:
-                await self._settle(held)
-                self.problems = [p for p in self.problems if p["kind"] != "stuck"]
-            else:
+        code = None
+        try:
+            code = await asyncio.to_thread(lambda: rig_module.down(force, out=out, err=err, state=state))
+        finally:
+            # A stop that failed, or was abandoned at LIFECYCLE_TIMEOUT (the
+            # await is cancelled, so nothing after it runs), leaves the rig
+            # watched again: left `stopping`, every later crash of a rig still
+            # playing would pass as part of the stop and /health would say
+            # nothing. A crash wrongly reported is the safer mistake.
+            if held is not None and code != 0:
                 held.stopping = False
+        if held is not None and code == 0:
+            await self._settle(held)
+            self.problems = [p for p in self.problems if p["kind"] != "stuck"]
         return Outcome(code == 0, code, out.getvalue(), err.getvalue())
 
     async def restart(self) -> Outcome:

@@ -412,6 +412,40 @@ def test_down_stops_every_member_and_is_not_a_crash(world):
     assert state_file.read_state() is None
 
 
+def test_a_down_abandoned_at_the_time_limit_leaves_the_rig_watched(world, monkeypatch):
+    """A `down` that hangs past the limit is cancelled mid-await. The rig it
+    did not stop is still playing, so a crash after it must still be seen:
+    left marked as stopping, every exit would pass as part of the stop."""
+    release = threading.Event()
+    real_down = rig.down
+
+    def hangs(*args, **kwargs):
+        release.wait(30)
+        return 1
+
+    world.spawner.scripts["fmit"] = crasher(3, after=1.5)
+    supervisor = Supervisor(world.world, say=lambda m: None)
+
+    async def go():
+        try:
+            assert (await supervisor.up("t", headless=True)).ok
+            monkeypatch.setattr(supervisor_module.rig_module, "down", hangs)
+            supervisor.timeout = 0.3
+            outcome = await supervisor.run(["down"])
+            assert outcome.abandoned, outcome
+            assert supervisor.held is not None and not supervisor.held.stopping
+            await settle_until(lambda: supervisor.crashed)  # fmit's, after the abandoned down
+            return supervisor.crashed
+        finally:
+            release.set()
+            monkeypatch.setattr(supervisor_module.rig_module, "down", real_down)
+            supervisor.timeout = 30
+            await supervisor.down()
+
+    [crash] = run(go())
+    assert crash["name"] == "fmit"
+
+
 def test_down_stops_the_held_rig_even_with_its_state_file_gone(world):
     """What the agent holds, it stops: a deleted rig.json does not leave a
     rig playing that `down` cannot reach."""
