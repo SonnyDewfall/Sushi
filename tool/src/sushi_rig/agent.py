@@ -12,6 +12,7 @@ and the two things worth reading about a rig, served over HTTP on localhost.
     POST /rig/up        {"config_name" (required), "rig", "headless", "tuner", "amp", "amp_model"}
     POST /rig/down      {"force"}
     POST /rig/restart   {}
+    POST /rig/switch    {"config_name" (required)} -- to a rig of config/rigs, live where it can be (#93)
     GET  /live          the running rig's parameters, bypass and chains, with each parameter's range
     POST /live/parameter  {"processor", "parameter", "value"}   value is normalised, 0 to 1
     POST /live/bypass   {"processor", "bypassed"}
@@ -114,7 +115,7 @@ goes on to the one before. An entry that can be undone is not skipped (409
 would let a request undo out of order. Any other body is 400, since a body that
 asked for more must not be answered as if understood.
 
-A rig switch made by a Program Change (`op: "rig"`) is a barrier: nothing
+A rig switch (`op: "rig"`, by `/rig/switch` or a Program Change) is a barrier: nothing
 before it is undone (409 `nothing_to_undo`, saying so), since it was done to
 the rig that was up then. Out of scope: undoing an undo (a redo). The entries carry what it needs; it is
 not built. Also not verified against a live Sushi: it is shown against the fake.
@@ -125,13 +126,40 @@ When the running rig's compiled config carries `_midi_agent`, the agent opens
 the controller's port itself and serves it: a pad toggles a plugin's bypass
 (and a CC switches it) through the calls `POST /live/bypass` makes, a pad on
 a mute toggles a track's `mute` parameter, and a Program Change switches
-rigs by running `down` and then `up --rig` with the options `restart` would
-bring back. Each change is in the live log with `source: "midi"`. The
+rigs by the path `POST /rig/switch` takes: live where it can be, otherwise
+`down` and then `up --rig` with the options `restart` would bring back. Each
+change is in the live log with `source: "midi"`. The
 listener starts when a rig comes up (and at the agent's own start, for a rig
 already up) and stops before anything takes the rig down. A port that will
 not open is a named problem in `/health` (`agent.midi`), not a retry loop, and
 nothing the port does reaches the HTTP side. The decisions are in
 `midi_listener.py`; the wiring is the MIDI section at the end of `Agent`.
+
+## Switching rigs live (#93)
+
+`POST /rig/switch {"config_name"}`, and a Program Change, switch the running
+rig to another of config/rigs without restarting Sushi where the two allow
+it: `rigfile.diff` of the two compiled configs says which processors to
+remove, move and add and which parameters and bypasses to set, in an order it
+explains, or every reason it cannot (the amp, the tracks, cc_mappings, the
+host, a program...). The plan is applied under the lifecycle lock and the
+live lock on one connection, through the read-check-set the live routes use,
+then the rig is read back and checked against the next config as
+`verify.diff_state` checks one, and against every value the plan set
+(`rigfile.unapplied`: the strip and send defaults and un-bypasses the config
+does not state). Only then are the compiled config and the
+state file written, so `restart`, `/rig` and the listener follow the next
+rig. A restart reason, a step that fails, or a reading back that is not the
+next rig is a restart into the next rig (`down`, `up --rig`, and the
+previous rig back if that `up` fails), said in the answer (`how`, `why`) and
+on stderr. If steps were applied live and that restart's `down` then
+fails, the rig is half-switched -- part of the next rig in Sushi, the
+previous one in the state file -- and that is what /health and the answer
+say, naming both; nothing further is tried. A rig run with its panel restarts: the panel and its SAVE
+listener were started for the rig being left. One `op: "rig"` entry is
+logged either way, and undo stops at it. Not run against a live Sushi and
+not heard: shown against the fake only, and the time a live switch takes is
+not measured.
 
 ## Local-first, so localhost first
 
@@ -190,6 +218,10 @@ from .rig import describe_rig
 from .save import NAME_PATTERN
 from .midi_listener import MidiError
 from .rig import describe_rig, restart_arguments
+from . import rigfile  # the live switch (#93)
+from .rig import RigError, compile_named_rig
+from .state import read_state, write_state
+from .verify import diff_state
 
 try:
     from aiohttp import web
@@ -546,7 +578,8 @@ def pick_undo(log: list[dict[str, Any]], first: int) -> tuple[int, dict[str, Any
     reverse, so an entry that is still here is never mistaken for one not yet
     dealt with.
 
-    A rig switch (`op: "rig"`, made by a Program Change) is a barrier, raising
+    A rig switch (`op: "rig"`, by `/rig/switch` or a Program Change, live or
+    by restart, and one that failed) is a barrier, raising
     `UndoBarrier`: what came before it was done to another rig, and the rig now
     up may have processors of the same names, so undoing it would change one
     nobody touched since. It is neither undone nor skipped past.
@@ -994,6 +1027,7 @@ class Agent:
         log_limit: int = LOG_LIMIT,
         library: Callable[[], dict[str, Any]] | None = None,
         midi: midi_listener.World | None = None,
+        switching: "Switching | None" = None,
     ) -> None:
         self.root = root
         self.log_limit = log_limit
@@ -1020,6 +1054,7 @@ class Agent:
         self._library: dict[str, Any] | None = None
         self._library_lock = asyncio.Lock()
         self._midi_init(midi)  # the MIDI listener's state: see the MIDI section
+        self.switching = switching or Switching()  # the live switch (#93): see its section
 
     @property
     def stuck_live_calls(self) -> int:
@@ -1048,6 +1083,7 @@ class Agent:
         app.router.add_post("/live/move", self.live_move)
         app.router.add_post("/live/undo", self.live_undo)
         self._edit_routes(app)
+        self._switch_routes(app)  # the live switch (#93)
         return app
 
     async def health(self, request):
@@ -1129,30 +1165,40 @@ class Agent:
             self.busy = command
             try:
                 await self._midi_stop(f"stopped while '{command}' runs")
-                restored = ""
-                for step, args in enumerate(steps):
-                    outcome = await self.run(args)
-                    if not outcome.ok:
-                        if fallback is not None and step > 0:
-                            back = await self.run(fallback)
-                            restored = (f"; {fallback[1]} was brought back" if back.ok else
-                                        f"; bringing {fallback[1]} back failed too: {back.reason}")
-                        break
+                outcome, args = await self._lifecycle_steps(steps, fallback)
             finally:
                 self.busy = None
                 await self._midi_sync()
-            if outcome.ok and (self.last_error or {}).get("kind") == "lifecycle":
-                # A later success supersedes the old failure: left in place,
-                # a healthy agent reports a refused request forever and
-                # /health cannot be trusted to say "nothing is wrong now".
-                # Only a lifecycle failure, though: an unexpected error from
-                # /doctor or /rig says nothing about the rig coming up, so a
-                # `down` that works must not forget it.
-                self.last_error = None
+        return outcome, args
+
+    async def _lifecycle_steps(
+        self, steps: list[list[str]], fallback: list[str] | None = None,
+    ) -> tuple[Outcome, list[str]]:
+        """`_run_lifecycle`'s commands, its fallback and what is remembered of
+        them, for a caller already holding the lifecycle lock with the MIDI
+        listener stopped: `_run_lifecycle` itself, and a rig switch (#93) that
+        restarts after deciding it cannot switch live."""
+        restored = ""
+        for step, args in enumerate(steps):
+            outcome = await self.run(args)
             if not outcome.ok:
-                self._remember(args, outcome.reason + restored, kind="lifecycle")
-                if restored:
-                    outcome = Outcome(False, outcome.returncode, outcome.stdout, outcome.stderr.strip() + restored)
+                if fallback is not None and step > 0:
+                    back = await self.run(fallback)
+                    restored = (f"; {fallback[1]} was brought back" if back.ok else
+                                f"; bringing {fallback[1]} back failed too: {back.reason}")
+                break
+        if outcome.ok and (self.last_error or {}).get("kind") == "lifecycle":
+            # A later success supersedes the old failure: left in place,
+            # a healthy agent reports a refused request forever and
+            # /health cannot be trusted to say "nothing is wrong now".
+            # Only a lifecycle failure, though: an unexpected error from
+            # /doctor or /rig says nothing about the rig coming up, so a
+            # `down` that works must not forget it.
+            self.last_error = None
+        if not outcome.ok:
+            self._remember(args, outcome.reason + restored, kind="lifecycle")
+            if restored:
+                outcome = Outcome(False, outcome.returncode, outcome.stdout, outcome.stderr.strip() + restored)
         return outcome, args
 
     # ------------------------------------------------------------------- live
@@ -2128,29 +2174,268 @@ class Agent:
                 action.control)
 
     async def _midi_switch(self, action: Any) -> None:
-        """Bring up rig `action.rig` with the lifecycle a request runs, with
-        the options `restart` would bring the running rig back with: checked
-        to compile first, and with the previous rig brought back if its `up`
-        fails."""
-        state = await asyncio.to_thread(self._midi_world.read_state) or {}
-        steps = switch_steps(state, action.rig)
-        previous = self._midi_plan.rig if self._midi_plan is not None else None
-        # A rig that cannot compile is refused before the running one is taken
-        # down: otherwise the player is left with no rig and no pedals.
+        """Switch to rig `action.rig` by the path `POST /rig/switch` takes
+        (`_switch`, #93): live where the two rigs' configs allow it, and
+        otherwise the restart this used to be, `down` then `up --rig` with the
+        options `restart` would bring back, with the previous rig brought back
+        if its `up` fails. A rig that would not compile is refused before
+        anything is touched. The log entry is marked as MIDI's."""
+        origin = _MidiOrigin("MIDI", f"program {action.program}")
+        # A restart instead of a live switch is said on stderr by `_switch`,
+        # and is in the log entry's `why`.
+        answer = await self._switch(
+            origin, action.rig, program=action.program, mark=lambda entry: self._midi_logged(entry, None))
+        if not answer["ok"]:
+            raise MidiError(f"'{' '.join(answer['command'])}' failed: {answer['reason']}")
+
+    # ======================================================================= #
+    # Switching rigs live (#93): POST /rig/switch, and the Program Change path
+    # ======================================================================= #
+    #
+    # Kept in one block so it merges past other work on this file. Outside it
+    # the agent calls in at: __init__ (`switching`), `app` (`_switch_routes`),
+    # and `_midi_switch`, which is this path with a Program Change's marks.
+
+    def _switch_routes(self, app) -> None:
+        app.router.add_post("/rig/switch", self.switch_route)
+
+    async def switch_route(self, request):
+        """`POST /rig/switch {"config_name"}`: switch the running rig to rig
+        `config_name` of config/rigs, live where `rigfile.diff` says it can
+        be and by restart where not (`_switch`). 200 with `how` ("live" or
+        "restart") and, for a restart, `why`; 409 for a refusal that left the
+        running rig as it was (`code`: `busy`, `no_rig`, `rig_problem`), or a
+        restart that failed (with `reason`, and the previous rig brought back
+        if it could be); 504 if the agent gave up waiting on a command."""
+        try:
+            name = switch_request(await self._json_body(request))
+        except AgentError as exc:
+            raise web.HTTPBadRequest(reason=str(exc))
+        try:
+            answer = await self._switch(request, name)
+        except SwitchRefused as exc:
+            raise _conflict(str(exc), exc.code)
+        status = 200 if answer["ok"] else (504 if answer.get("abandoned") else 409)
+        return web.json_response(answer, status=status)
+
+    async def _switch(
+        self, origin, name: str, *, program: int | None = None,
+        mark: Callable[[dict[str, Any]], None] | None = None,
+    ) -> dict[str, Any]:
+        """Switch the running rig to rig `name`, and answer what happened.
+
+        Under the lifecycle lock throughout (`busy: "switch"`), so no `up`,
+        `down` or live change can come between the reading the plan is made
+        from and the state file that records the result; live changes asked
+        for meanwhile are `409 busy`, as during a restart.
+
+        1. Refused (`SwitchRefused`), with the running rig and its pedals left
+           as they were: no rig up, or a next rig that does not compile (what
+           the MIDI switch has always checked first).
+        2. Decided without Sushi: `rigfile.diff` of the running rig's compiled
+           config and the next one's, with what only the state file can say
+           (`state_blockers`). A restart reason goes straight to 5.
+        3. Applied live (`_switch_live`), on one connection under the live
+           lock: a reading first, from which the plan is made again
+           (`diff(..., live=reading)`, so a value turned meanwhile is put
+           right and a chain changed meanwhile is a restart), then each step
+           through the same read-check-set the routes use, then a reading
+           checked against the next config as `verify.diff_state` does.
+        4. Only then are the compiled config and the state file written, so
+           `restart`, `/rig` and the listener follow the next rig; and one
+           `op: "rig"` entry is logged, a barrier to undo.
+        5. Otherwise a restart into the next rig, `down` then `up --rig`, with
+           the running rig brought back if that `up` fails: the MIDI switch's
+           path and its fallback. A live switch that failed part-way restarts
+           too, into the next rig, so nothing is left half-switched.
+
+        The MIDI listener is stopped once the switch is decided on, and
+        follows the rig as it is afterwards, whatever happened.
+        """
         self._refuse_while_busy()
-        problem = await asyncio.to_thread(
-            self._midi_world.check_rig, action.rig, self._midi_root(), state.get("machine"))
-        if problem:
-            reason = f"not switched to {action.rig}, which would not come up: {problem}"
-            self._remember(["switch", action.rig], reason, kind="lifecycle")
-            raise MidiError(reason)
-        # And if its `up` fails anyway (what only `up` finds: the live graph,
-        # Sushi loading it), the rig that was playing is brought back.
-        fallback = switch_steps(state, previous)[1] if previous else None
-        outcome, args = await self._run_lifecycle("switch", steps, fallback=fallback)
+        async with self._lock:
+            self.busy = "switch"
+            try:
+                return await self._switch_held(origin, name, program, mark)
+            finally:
+                self.busy = None
+                await self._midi_sync()
+
+    async def _switch_held(self, origin, name, program, mark) -> dict[str, Any]:
+        started = self.clock()
+        described = self.describe()
+        if not described.get("running"):
+            raise SwitchRefused(
+                f"no rig is running to switch from ({described.get('message')}): POST /rig/up", "no_rig")
+        world = self.switching
+        state = await asyncio.to_thread(world.read_state) or {}
+        try:
+            upcoming = await asyncio.to_thread(world.compile, name, self._midi_root(), state.get("machine"))
+        except Exception as exc:  # noqa: BLE001 -- every failure to compile is a refusal, said
+            # `compile_named_rig` raises only `RigError`, but the seam is
+            # injectable and a YAML or file error that escaped here was a bare
+            # 500 with nothing in /health (found by review): refused, with the
+            # running rig left playing, whatever it was.
+            why = str(exc) if isinstance(exc, RigError) else f"{type(exc).__name__}: {exc}"
+            # One line: a YAML error, and the compile's own list of problems,
+            # come with newlines, which an HTTP reason cannot carry (aiohttp
+            # raised over it, a 500 again: found testing the real compile).
+            reason = " ".join(f"not switched to {name}, which would not come up: {why}".split())
+            self._remember(["switch", name], reason, kind="lifecycle")
+            raise SwitchRefused(reason, "rig_problem") from exc
+        previous = switching_from(state, described)
+        try:
+            running = await asyncio.to_thread(world.read_config, described.get("config"))
+            decided = rigfile.diff(running, upcoming)
+        except Exception as exc:  # noqa: BLE001 -- unreadable is a reason to restart, said
+            running = None
+            decided = rigfile.NeedsRestart((rigfile.RestartReason(
+                "unreadable", f"the running rig's compiled config could not be read: {type(exc).__name__}: {exc}"),))
+        blockers = state_blockers(state)
+        if blockers:
+            decided = rigfile.NeedsRestart(tuple(blockers) + (
+                decided.reasons if isinstance(decided, rigfile.NeedsRestart) else ()))
+
+        await self._midi_stop("stopped while a rig switch runs")
+        answer: dict[str, Any] = {"rig": name, "previous": previous}
+        if isinstance(decided, rigfile.SwitchPlan):
+            tried = await self._switch_live(origin, name, running, upcoming, state)
+            failure = tried.pop("failed", None)  # a RestartReason, said under `why` below
+            answer.update(tried)
+            if tried["ok"]:
+                entry = self._record("rig", {
+                    "rig": name, "how": "live", **({"program": program} if program is not None else {}),
+                    "plan": tried["counts"]}, previous)
+                if mark:
+                    mark(entry)
+                return {**answer, "how": "live", "entry": entry,
+                        "seconds": round(self.clock() - started, 3), "state": self.describe()}
+            reasons = [failure]
+        else:
+            reasons = list(decided.reasons)
+
+        why = [reason.as_dict() for reason in reasons]
+        said = "; ".join(f"{r.code}: {r.detail}" for r in reasons)
+        print(f"sushi-rig agent: switching to {name} by restart, not live: {said}", file=sys.stderr, flush=True)
+        steps = switch_steps(state, name)
+        outcome, args = await self._lifecycle_steps(steps, fallback_arguments(state))
+        entry = self._record("rig", {
+            "rig": name, "how": "restart", **({"program": program} if program is not None else {}),
+            "why": [r.code for r in reasons], **({} if outcome.ok else {"ok": False})}, previous)
+        if mark:
+            mark(entry)
+        answer.update({
+            "ok": outcome.ok, "how": "restart", "why": why, "command": args, "output": outcome.stdout,
+            "entry": entry, "seconds": round(self.clock() - started, 3), "state": self.describe(),
+        })
         if not outcome.ok:
-            raise MidiError(f"'{' '.join(args)}' failed: {outcome.reason}")
-        self._midi_logged(self._record("rig", {"rig": action.rig, "program": action.program}, previous), None)
+            answer["reason"] = outcome.reason
+            answer["abandoned"] = outcome.abandoned
+            if answer.get("applied") and args[:1] == ["down"]:
+                # Steps were applied live and the restart could not even take
+                # the rig down: Sushi holds part of the next rig while the
+                # state file names the previous one, a rig that is neither
+                # and that `restart` would bring back as the wrong one. Said
+                # as that, in /health over `down`'s own failure, and in the
+                # answer. Not recovered by guessing: what to do needs a look.
+                half = (
+                    f"the rig is HALF-SWITCHED: {answer['applied']} of {len(answer.get('plan') or [])} steps "
+                    f"of the switch from {previous} to {name} were applied live, then the restart into "
+                    f"{name} could not take it down ({outcome.reason}). Sushi holds part of {name} while "
+                    f"the state file still names {previous}: read /live, then bring the rig down and up "
+                    "by hand"
+                )
+                print(f"sushi-rig agent: {half}", file=sys.stderr, flush=True)
+                self._remember(["switch", name], half, kind="lifecycle")
+                answer.update(reason=half, half_switched=True)
+        return answer
+
+    async def _switch_live(
+        self, origin, name: str, running: dict[str, Any], upcoming: dict[str, Any], state: dict[str, Any],
+    ) -> dict[str, Any]:
+        """Apply the plan and verify it; `{"ok", "plan", "applied", "counts"}`,
+        and `failed` (a `RestartReason`) when it did not go through. Never
+        raises for what Sushi does: every failure is a reason to restart."""
+        progress = {"plan": [], "applied": 0, "counts": {}}
+
+        def failed(code: str, detail: str) -> dict[str, Any]:
+            done = progress["applied"]
+            where = (f" after {done} of {len(progress['plan'])} steps had been applied"
+                     if progress["plan"] else "")
+            return {**progress, "ok": False, "failed": rigfile.RestartReason(code, detail + where)}
+
+        try:
+            async with self._connected(origin) as controller:
+                async with self._live_lock:
+                    before = await self._sushi(origin, self.live.snapshot, controller, reading=True)
+                    plan = rigfile.diff(running, upcoming, before)
+                    if isinstance(plan, rigfile.NeedsRestart):
+                        reason = plan.reasons[0]
+                        detail = "; ".join(f"{r.code}: {r.detail}" for r in plan.reasons)
+                        return {**progress, "ok": False, "failed": rigfile.RestartReason(reason.code, detail)}
+                    progress["plan"] = [step.as_dict() for step in plan.steps]
+                    progress["counts"] = plan.counts()
+                    for step in plan.steps:
+                        await self._switch_step(origin, controller, step)
+                        progress["applied"] += 1
+                    after = await self._sushi(origin, self.live.snapshot, controller, reading=True)
+            # What the next config states, and everything the plan set beyond
+            # that (strip and send defaults, un-bypasses): each against what
+            # was meant, so an acknowledged set Sushi did not apply is caught.
+            problems = [str(p) for p in diff_state(upcoming, after)] + rigfile.unapplied(plan, after)
+        except asyncio.CancelledError:
+            raise
+        except web.HTTPException as exc:
+            return failed("failed", f"Sushi: {exc.reason}")
+        except Exception as exc:  # noqa: BLE001 -- AgentError and the rest: a restart, said
+            return failed("failed", f"{type(exc).__name__}: {exc}")
+        if problems:
+            shown = "; ".join(problems[:5]) + (f" (and {len(problems) - 5} more)" if len(problems) > 5 else "")
+            return {**failed("unverified", f"the rig read back is not the next rig: {shown}"),
+                    "verification": problems}
+        try:
+            path = await asyncio.to_thread(self.switching.write_config, name, upcoming)
+            now = await asyncio.to_thread(self.switching.read_state) or state
+            await asyncio.to_thread(self.switching.write_state, switched_state(now, name, path))
+        except Exception as exc:  # noqa: BLE001 -- a rig the state file does not name would restart as the old one
+            return failed("failed", f"the rig switched, but recording it failed: {type(exc).__name__}: {exc}")
+        return {**progress, "ok": True}
+
+    async def _switch_step(self, origin, controller, step: rigfile.SwitchStep) -> None:
+        """One step of a plan, through what the route for it uses: the same
+        reads and checks (`check_remove`, `_apply_move`, ...) and each chain
+        edit confirmed by reading the chain back. `AgentError` (or an HTTP
+        error from `_sushi`) when the rig is not as the plan expects."""
+        args = step.args
+        if step.op == "parameter":
+            await self._apply_parameter(origin, controller, args["processor"], args["parameter"], args["value"])
+        elif step.op == "bypass":
+            await self._apply_bypass(origin, controller, args["processor"], args["bypassed"])
+        elif step.op == "move":
+            planned, moved = await self._apply_move(origin, controller, args["processor"], args["direction"])
+            if moved is None:
+                raise Unconfirmed(f"{args['processor']!r} was already at that end of {planned.chain}, "
+                                  "so the chain is not the one the plan was made from")
+        elif step.op == "remove":
+            reading = await self._sushi(origin, self.live.removal, controller, args["processor"], reading=True)
+            removal = check_remove(reading, args["processor"])
+            await self._sushi(origin, self.live.remove, controller, removal, reading=False)
+            after = await self._sushi(origin, self.live.walk, controller, reading=False)
+            confirm_chain((after or {}).get("chains") or {}, removal.track, removal.expected,
+                          f"removed {removal.processor!r} from {removal.track!r}")
+        elif step.op == "add":
+            reading = await self._sushi(origin, self.live.walk, controller, True, reading=True)
+            addition = place_switch_add(reading, args["track"], args["name"], args["uri"], args["before"])
+            await self._sushi(origin, self.live.add, controller, addition, reading=False)
+            after = await self._sushi(origin, self.live.walk, controller, reading=False)
+            confirm_chain((after or {}).get("chains") or {}, addition.track, addition.expected,
+                          f"added {addition.name!r} to {addition.track!r}")
+        else:
+            raise AgentError(f"a switch step of op {step.op!r} is not one the agent makes")
+
+    # ======================================================================= #
+    # (end of switching rigs live)
+    # ======================================================================= #
 
 
 # A pending MIDI action past this many is dropped (and said), not queued.
@@ -2181,6 +2466,164 @@ def switch_steps(state: dict[str, Any], rig: str) -> list[list[str]]:
     })
     return [["down"], up]
 
+
+
+# =========================================================================== #
+# Switching rigs live (#93): the decisions, pure, and the world they reach
+# =========================================================================== #
+
+class SwitchRefused(AgentError):
+    """A switch not made, with the running rig left as it was: answered 409
+    with `code` (`no_rig`, `rig_problem`) by the route, and said in /health
+    by the Program Change path."""
+
+    def __init__(self, reason: str, code: str):
+        super().__init__(reason)
+        self.code = code
+
+
+# Why a switch restarts, beyond the configs' differences (`rigfile.RESTART_REASONS`):
+# what only the state file, or the attempt itself, can say.
+SWITCH_RESTART_REASONS = {
+    "panel": "the rig runs with its panel and SAVE listener, which were started for the running "
+             "rig: switched live, SAVE would write the next rig's sound into the previous rig's file",
+    "amp_override": "the amp runs a model given with --amp-model, which belonged to the rig being "
+                    "left; the next rig's own amp comes with a restart",
+    "failed": "a step of the live switch failed, so it restarts into the next rig rather than "
+              "leave one half-switched",
+    "unverified": "the rig read back after the live switch is not the next rig",
+}
+
+
+def switch_request(body: Any) -> str:
+    """The rig a switch names, or `AgentError` (400). A name of a file in
+    config/rigs, checked as `up`'s is: a name, never a path."""
+    body = _object(body) if body is not None else {}
+    if "config_name" not in body:
+        raise AgentError("config_name is required: the name of a rig in config/rigs/")
+    return lifecycle_arguments("up", {"config_name": body["config_name"], "rig": True})[1]
+
+
+def state_blockers(state: dict[str, Any]) -> list[rigfile.RestartReason]:
+    """What, in how the running rig is being run, rules a live switch out
+    (`SWITCH_RESTART_REASONS`). Pure."""
+    found = []
+    if state.get("mode") != "headless":
+        found.append(rigfile.RestartReason("panel", SWITCH_RESTART_REASONS["panel"]))
+    if state.get("amp_model_requested") and state.get("amp_requested", True):
+        found.append(rigfile.RestartReason(
+            "amp_override", f"the amp runs {state['amp_model_requested']!r}, given with --amp-model"))
+    return found
+
+
+def switching_from(state: dict[str, Any], described: dict[str, Any]) -> str | None:
+    """The name of the rig a switch leaves: a rig of channels by its file,
+    a v1 config by its name."""
+    rig = state.get("rig") or described.get("rig")
+    if isinstance(rig, str) and rig:
+        return Path(rig).stem
+    return state.get("config_name") or described.get("config_name")
+
+
+def fallback_arguments(state: dict[str, Any]) -> list[str] | None:
+    """The `up` that brings the running rig back if a switch's `up` fails:
+    a rig of channels as the MIDI switch has always brought it back
+    (`switch_steps`), a v1 config as `restart` would. Pure."""
+    rig = state.get("rig")
+    if isinstance(rig, str) and rig:
+        return switch_steps(state, Path(rig).stem)[1]
+    name, options = restart_arguments(state)
+    try:
+        return lifecycle_arguments("up", {"config_name": name, **options})
+    except AgentError:
+        return None
+
+
+def switched_state(state: dict[str, Any], name: str, config: Any) -> dict[str, Any]:
+    """The state file after a live switch to rig `name`, whose compiled config
+    is at `config`: the same supervisor, group, children and options, now
+    naming the next rig, so `restart`, `status` and the listener follow it.
+    `switched_at` says when; `started_at` stays the supervisor's. Pure."""
+    return {
+        **state, "config_name": name, "config": str(config), "rig": f"config/rigs/{name}.yaml",
+        "switched_at": datetime.now(timezone.utc).isoformat(),
+    }
+
+
+def place_switch_add(
+    reading: dict[str, Any], track: str, name: str, uri: str, before: str | None,
+) -> Addition:
+    """Where a switch's add goes: in front of `before`, or at the back, as
+    `rigfile.diff` decided and Sushi's own API places a processor. `Conflict`
+    when the rig is not as the plan expects: no such track, the name taken,
+    `before` not on it, or the back of a chain that ends in its send. Pure.
+
+    Not `check_add`, which places "after" a processor or before the send:
+    the plan says what each add goes in front of, which also reaches the front
+    of a chain. The URI is the next rig's, not checked against the manifest:
+    the rig file is the authority here, as it is for `up`."""
+    chains, ids = reading.get("chains", {}), reading.get("ids", {})
+    uids = reading.get("uids") or {}
+    if track not in chains:
+        raise Conflict(f"the running rig has no track {track!r} to add {name!r} to")
+    if name in chains or _track_of(chains, name) is not None:
+        raise Conflict(f"{name!r} is already on the rig")
+    chain = list(chains[track])
+    if before is None:
+        if any(is_send(track, held, uids.get(held)) for held in chain):
+            raise Conflict(f"{name!r} would go behind {track!r}'s send, where it is not heard")
+        index = len(chain)
+    elif before not in chain:
+        raise Conflict(f"{before!r}, which {name!r} goes in front of, is not on {track!r}: it has {chain}")
+    else:
+        index = chain.index(before)
+    # Never in front of the master's return, which is first on its track and
+    # stays first (`check_add`'s invariant, by `protected_processor`'s rule):
+    # ahead of it, a processor would get no channel's signal (found by review:
+    # `before: "master_return"` was accepted).
+    for held in chain[index:]:
+        if protected_processor(track, held, uids.get(held)) and not is_send(track, held, uids.get(held)):
+            raise Conflict(f"{name!r} would go in front of {held!r}, the master's return, which stays first")
+    return Addition(
+        track=track, name=name, uri=uri, after=chain[index - 1] if index else None, chain=chain,
+        expected=chain[:index] + [name] + chain[index:], track_id=ids[track],
+        before_id=ids[before] if before is not None else 0, add_to_back=before is None,
+    )
+
+
+def _read_compiled(path: Any) -> dict[str, Any]:
+    import json
+
+    config = json.loads(Path(path).read_text())
+    if not isinstance(config, dict):
+        raise ValueError(f"{path} is not a config")
+    return config
+
+
+def _write_compiled(name: str, compiled: dict[str, Any]) -> Path:
+    from .paths import runtime_dir
+    from .rig import write_compiled
+
+    return write_compiled(name, compiled, runtime_dir())
+
+
+@dataclass(frozen=True)
+class Switching:
+    """What a switch reaches outside the agent and Sushi, so its tests can
+    stand each in: compiling the next rig (`RigError` with the reason),
+    reading the running rig's compiled config by the path the state file
+    gives, writing the next one's where `up` would, and the state file. The
+    one seam for the state file and for compiling a rig to switch to, for the
+    route and the Program Change alike: `midi_listener.World` no longer has
+    its own (found by review: a test's `World(read_state=...)` had stopped
+    steering the switch while looking as if it did)."""
+
+    compile: Callable[[str, Path, "str | None"], dict[str, Any]] = (
+        lambda name, root, machine: compile_named_rig(name, root, Path(machine) if machine else None))
+    read_config: Callable[[Any], dict[str, Any]] = _read_compiled
+    write_config: Callable[[str, dict[str, Any]], Any] = _write_compiled
+    read_state: Callable[[], "dict[str, Any] | None"] = read_state
+    write_state: Callable[[dict[str, Any]], None] = write_state
 
 def serve(host: str, port: int, root: Path | None = None) -> int:
     """Run the agent until interrupted."""

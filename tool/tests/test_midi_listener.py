@@ -16,6 +16,7 @@ from __future__ import annotations
 import json
 import queue
 import threading
+from pathlib import Path
 
 import pytest
 
@@ -492,13 +493,41 @@ def test_a_port_that_fails_while_listening_is_reported_and_closed():
     assert port.closed.is_set()
 
 
-def test_a_rig_to_switch_to_is_checked_to_compile_from_its_files(tmp_path):
+def test_a_rig_to_switch_to_is_checked_to_compile_from_its_files(tmp_path, monkeypatch):
     """What a switch checks before taking the running rig down: the real
-    files, through the real compiler, without a pw-dump or a Sushi."""
-    from sushi_rig.midi_listener import rig_problem
+    files, through the real compiler, without a pw-dump or a Sushi. One
+    compile for `up --rig` and a switch (`rig.compile_named_rig`, which
+    replaced `rig_problem` here), and every failure a `RigError` naming the
+    file: a YAML typo or an unreadable file too, not only what the compiler
+    foresees."""
+    from sushi_rig.rig import RigError, compile_named_rig
+
+    def problem(name):
+        try:
+            compile_named_rig(name, tmp_path, Path(described["machine"]))
+        except RigError as exc:
+            return str(exc)
+        return None
 
     described = rig_files(tmp_path)
-    assert rig_problem("lead", tmp_path, described["machine"]) is None
-    assert "No such file" in rig_problem("absent", tmp_path, described["machine"])
-    (tmp_path / "config" / "rigs" / "lead.yaml").write_text(RIG.replace("control: pad1", "control: pad9"))
-    assert "'pad9' is not a control of controller 'mpd218'" in rig_problem("lead", tmp_path, described["machine"])
+    assert problem("lead") is None
+    assert "no such rig" in problem("absent")
+    lead = tmp_path / "config" / "rigs" / "lead.yaml"
+    lead.write_text(RIG.replace("control: pad1", "control: pad9"))
+    assert "'pad9' is not a control of controller 'mpd218'" in problem("lead")
+    lead.write_text(RIG.replace("kind: rig", "kind: [rig"))
+    assert problem("lead").startswith("lead.yaml: ") and "Error" in problem("lead")
+    lead.write_text(RIG)
+    # Unreadable. Stood in, because a mode of 0 is no obstacle to root, which
+    # the container job runs as, and an assertion that root passes over tests
+    # nothing there.
+    real_read = Path.read_text
+
+    def refuse(self, *args, **kwargs):
+        if self == lead:
+            raise PermissionError(13, "Permission denied", str(self))
+        return real_read(self, *args, **kwargs)
+
+    monkeypatch.setattr(Path, "read_text", refuse)
+    said = problem("lead")
+    assert said is not None and said.startswith("lead.yaml: ") and "PermissionError" in said, said
