@@ -49,6 +49,9 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         libjack-jackd2-0 libasound2t64 \
         python3 python3-venv python3-pip python3-lilv \
         lilv-utils liblilv-dev lv2-dev \
+        # git: a save reports the rig file's own git state (save.file_git_state)
+        # and its tests build a real repository; the rig is always a checkout.
+        git \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 

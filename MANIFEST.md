@@ -2592,3 +2592,9 @@ panel's SAVE). (10) **A rig whose file name the name rule refuses could not
 be saved in place** (`Guitar.Vocal.yaml` compiles): `save_rig` checks only a
 name chosen for a new file, and in place keeps the file's own `name:`.
 Still **NOT RUN AGAINST A LIVE SUSHI**. *(2026-11-02)*
+
+**git joins the CI image.** The container job had no `git` binary, so the save
+tests that build a real repository (`file_git_state`, the UI fake's checkout)
+errored there while the fast job, on a runner with git, passed. The code itself
+already said "no git state" without git rather than failing; the tests check
+the real thing, so the image now has what the rig machine always has. *(2026-11-02)*
