@@ -18,10 +18,17 @@ jobs:
         with:
           python-version: ${{ matrix.python-version }}
 
-      # `audio` (numpy) and `agent` (aiohttp) are pure-PyPI, so the signal,
-      # analysis and agent tests run here instead of skipping.
-      - name: Install the tool with dev, audio and agent extras
-        run: pip install -e "tool[dev,audio,agent]"
+      # JACK-Client opens libjack when it is imported, and fails without it. No
+      # server is needed, only the library, so the capture tests can check the
+      # names the engine calls against the installed JACK-Client.
+      - name: Install libjack
+        run: sudo apt-get update && sudo apt-get install -y --no-install-recommends libjack-jackd2-0
+
+      # `audio` (numpy), `agent` (aiohttp) and `capture` (JACK-Client) are
+      # pure-PyPI, so the signal, analysis, agent and capture tests run here
+      # instead of skipping.
+      - name: Install the tool with dev, audio, agent and capture extras
+        run: pip install -e "tool[dev,audio,agent,capture]"
 
       # Slow tests are excluded on purpose: they start a real Sushi binary,
       # which this runner does not have. Tests that need python3-lilv or ./sushi

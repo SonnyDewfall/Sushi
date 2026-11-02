@@ -23,10 +23,12 @@ effects (`TakeSession`, which composes `take.start_take`, `recorder.Recorder`
 and a capture engine into one take, and finishes it with what the recorder
 says it captured).
 
-Not here: the engine — whatever reads the rig's ports and calls `push` — which
-needs the rig machine (#53). Until one exists, the listener runs `NoEngine`,
-which refuses every take with a sentence saying so. That is deliberate: a
-record button that silently did nothing would be worse than none.
+Not here: the engine — whatever reads the rig's ports and calls `push`. That
+is `capture.CaptureEngine` (#53), written but not yet run against a live
+PipeWire, and not yet constructed by the listener, which needs the ports a take
+records (below). Until the listener has one it runs `NoEngine`, which refuses
+every take with a sentence saying so. That is deliberate: a record button that
+silently did nothing would be worse than none.
 
 Also not here: which ports a take records, which follows from the machine file
 and the rig and arrives with per-channel outputs, and measuring the stems'
@@ -106,12 +108,15 @@ class Engine(Protocol):
 
     `start` begins calling `push` from the audio thread with blocks whose
     columns are the stems' channels, in the order given. `stop` returns once
-    it will call `push` no more.
+    it will call `push` no more, and may return the engine's own account of the
+    take (xruns, blocks it could not copy; see `capture.BlockPump.account`) for
+    `take.yaml` to keep beside the recorder's. An engine with nothing to add
+    returns None.
     """
 
     def start(self, stems: Sequence[tuple[Stem, int]], push: Callable[[Any], int]) -> None: ...
 
-    def stop(self) -> None: ...
+    def stop(self) -> dict[str, Any] | None: ...
 
 
 @dataclass(frozen=True)
@@ -189,12 +194,15 @@ class TakeSession:
             reason = f"the capture engine did not start: {exc}"
             # It may have got part of the way — a thread running, some ports
             # connected — so it is told to stop before the recorder is.
+            account = None
             try:
-                self.engine.stop()
+                account = self.engine.stop()
             except Exception:  # noqa: BLE001 — the start failure is the news
                 pass
             summary = recorder.stop().summary()
             summary["error"] = summary["error"] or reason
+            if isinstance(account, dict):
+                summary["engine"] = account
             _finish(folder, summary)
             raise TransportError(f"cannot record {name}: {reason}") from exc
         self._folder, self._recorder = folder, recorder
@@ -211,14 +219,19 @@ class TakeSession:
         folder, recorder = self._folder, self._recorder
         self._folder = self._recorder = None
         engine_error = ""
+        account = None
         try:
-            self.engine.stop()
+            account = self.engine.stop()
         except Exception as exc:  # noqa: BLE001 — the recorder still has to stop
             engine_error = f"the capture engine did not stop cleanly: {exc}"
         recording = recorder.stop()
         summary = recording.summary()
         if engine_error and not summary["error"]:
             summary["error"] = engine_error
+        if isinstance(account, dict):
+            # Kept apart from the recorder's own numbers: they are different
+            # witnesses, and an xrun the engine saw is not a frame the ring lost.
+            summary["engine"] = account
         take = _finish(folder, summary)
         problems = check_take(take)
         said = f"recorded {folder.name}: {recording.seconds:.1f} s"
@@ -228,7 +241,10 @@ class TakeSession:
 
 
 def _nothing_captured(error: str) -> dict[str, Any]:
-    """A recorder's summary for a take that never got as far as a recorder."""
+    """A recorder's summary for a take that never got as far as a recorder.
+
+    No `silent_blocks`: `{}` there means watched and found clean, and nothing
+    was watching."""
     return {"frames": 0, "lost_frames": 0, "dropouts": [], "unrecorded_episodes": 0,
             "error": error}
 

@@ -605,6 +605,72 @@ def load_take(folder: Path) -> Take:
     return Take(folder, raw, stems)
 
 
+def _count(value: Any) -> int:
+    """A whole number from a hand-editable file, or 0: a take.yaml that says
+    `xruns: lots` has not told us of any, and `check_take` must not crash on it."""
+    return value if type(value) is int and value > 0 else 0
+
+
+def _check_capture_witnesses(capture: dict[str, Any], meta: dict[str, Any],
+                             stems: Sequence[Stem]) -> list[str]:
+    """What the capture engine and the recorder's silence watch saw, as problems.
+
+    Neither is a lost frame, which is why the recorder's own count can read
+    zero beside them: audio that arrived as zeros (#81), a missed deadline, a
+    block size that changed mid-take. Each is something a person should know
+    before trusting the take, and none is certain, so each says what it might
+    be rather than that it is a fault.
+    """
+    problems: list[str] = []
+    silent = capture.get("silent_blocks")
+    if isinstance(silent, dict):
+        port_of = {stem.filename: stem.port for stem in stems}
+        for label, info in sorted(silent.items(), key=lambda item: str(item[0])):
+            count = _count(info.get("count")) if isinstance(info, dict) else 0
+            if not count:
+                continue
+            at = info.get("first_at_seconds")
+            where = f", first {at:.1f} s in" if isinstance(at, (int, float)) and not isinstance(at, bool) else ""
+            port = port_of.get(str(label).split("[")[0])
+            problems.append(
+                f"{label}{f' (captured from {port})' if port else ''} went silent {count} time(s) "
+                f"after carrying signal{where}: a block of exact zeros, which is what a dropped "
+                f"link looks like and nothing was counted as lost. A noise gate or a muted "
+                f"chain looks the same; listen at that point"
+            )
+    engine = capture.get("engine")
+    if isinstance(engine, dict):
+        if engine.get("error"):
+            errors = _count(engine.get("errors"))
+            problems.append(
+                f"the capture engine failed: {engine['error']}"
+                + (f" ({errors} time(s) in all)" if errors > 1 else "")
+            )
+        if _count(engine.get("xruns")):
+            problems.append(
+                f"the audio server reported {engine['xruns']} xrun(s) during the take — a "
+                f"deadline was missed, so audio may be missing that nothing counted as lost"
+            )
+        if _count(engine.get("skipped_frames")):
+            problems.append(
+                f"the capture engine could not copy {engine['skipped_frames']} frame(s) in "
+                f"{_count(engine.get('skipped_blocks'))} block(s), so they are not in the stems "
+                f"and the recorder does not know"
+            )
+        if _count(engine.get("off_quantum_blocks")):
+            problems.append(
+                f"{engine['off_quantum_blocks']} block(s) were not the take's quantum of "
+                f"{meta.get('quantum')} frames — the graph ran at another block size than the "
+                f"plan, so take.yaml says quantum: {meta.get('quantum')} for audio that did not"
+            )
+        if _count(engine.get("quantum_changes")):
+            problems.append(
+                f"the block size changed {engine['quantum_changes']} time(s) during the take, "
+                f"so its quantum ({meta.get('quantum')}) is not what all of it ran at"
+            )
+    return problems
+
+
 def check_take(take: Take) -> list[str]:
     """Every problem with a take, including that it was never finished.
 
@@ -626,19 +692,20 @@ def check_take(take: Take) -> list[str]:
                 f"the recorder stopped early: {capture['error']} — the stems hold "
                 "what was written before it"
             )
-        lost = capture.get("lost_frames")
-        if type(lost) is int and lost > 0:
+        lost = _count(capture.get("lost_frames"))
+        if lost:
             dropouts = capture.get("dropouts") or []
             episodes = (len(dropouts) if isinstance(dropouts, list) else 0) + (
                 capture.get("unrecorded_episodes") or 0
             )
-            rate = meta.get("sample_rate") if type(meta.get("sample_rate")) is int else 0
+            rate = _count(meta.get("sample_rate"))
             problems.append(
                 f"the recorder lost audio {episodes} time(s)"
                 + (f", {1000.0 * lost / rate:.1f} ms in all" if rate else "")
                 + " — the stems are still aligned with each other, but each gap is "
                 "a skip in the performance"
             )
+        problems += _check_capture_witnesses(capture, meta, take.stems)
     problems += check_name(meta.get("name"))
     entries = meta.get("stems")
     if not isinstance(entries, list):
