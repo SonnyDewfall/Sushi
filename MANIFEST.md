@@ -2341,3 +2341,84 @@ later elkpy that renames them fails there. Not yet run against a live Sushi;
 the check on the rig is the UI open for ten minutes on a running rig, with
 `ls /proc/$(pgrep -f "sushi-rig agent" | head -1)/fd | wc -l` read at the start
 and the end. *(2026-11-02)*
+
+**Web UI v0.1: what the first real session found (#111).** Sonny's first use of
+the UI on the rig laptop found four faults and asked for one feature. (1) **A
+down rig flooded the console**: the page asked `/live` every second whatever
+the rig, and with none up each was a 503, 110 console errors in one session,
+burying any real one. The page now asks `/health` first and `/live` only while
+it says a rig is up and no lifecycle command runs (`readsLive` in rig.js); a
+rig that is down is a state, grey (`tone: "off"`), not red, and a `/live`
+failure with the rig up is still the red failure it was. Tested both ways in
+Chromium: no `/live` request and no console error over three polls of a down
+rig; the 502 and its reason shown for an up one. (2) **LOAD and XRUNS read "not
+measured" with a rig up and playing.** New `GET /rig/load`: one `pw-top -b -n 2`
+off the loop with a deadline (`LOAD_TIMEOUT`, 5 s, killed past it), read by
+`top.parse_pw_top` and summed by `top.load_report` as `sushi-rig top` sums it,
+the budget from Sushi's driver row. Missing pw-top 500 `no_pw_top`, a failure or
+output without a sample 502, an overrun 504, no rig 409 `no_rig`; said once on
+stderr when it starts failing, not put in `last_error`. The page reads it every
+2 s while a rig is up. `parse_pw_top` now keeps a row whose timings are `---`
+(the one such row on record, in tool/spikes/live_rig/RESULTS-...-2026-10-31.md)
+as unmeasured, and no longer lets it act as the driver of the rows after it:
+dropped, Sushi in that state read as absent. Sound stays "not measured", with a
+tooltip saying what load and xruns are not. **Not run against a real pw-top**:
+the parsing rests on test_top.py's sample (said there to be real output, trimmed)
+and the spike's one line. Note that the two disagree on followers: the sample's
+follower rows carry B/Q figures, the spike's state-C follower carries `---`; the
+route handles both, and which a running Sushi shows is the first thing to look at
+on the rig. (3) **Three `ELKPY:` lines per poll**, from elkpy 1.3.0's own prints on
+every connection (`grpc_gen`, `sushicontroller`, `notificationcontroller`).
+`live.quiet_elkpy` gives elkpy's modules a `print` that drops the chatter and
+sends anything else to stderr (an API mismatch once); a module-level `print`,
+not a redirect of stdout, which would be the whole process's. "Could not find a
+running Sushi" is among the dropped, because the agent now says it itself from
+the call that fails: with the state file saying a rig is up, a read finding no
+Sushi is remembered in `/health` and printed once until Sushi answers again.
+Tested against the real elkpy with nothing listening, in a child process: three
+polls with no rig print nothing at all, three with one "up" print one line.
+`Live.at`'s close path is untouched: elkpy's leaking `close()` is fixed apart
+(claude/elkpy-close), and the child in that test leaves with `os._exit` because
+those leaked controllers are torn down noisily at exit. (4) **`/ui/` answered a
+JSON 403**: `/ui` and `/ui/` now 302 to `/`. (5) **Start, stop and switch from the
+page.** `GET /rigs` lists config/rigs/ in program order with the running rig
+(`/rig`'s `programs` exists only when a MIDI map switches rigs). A picker, the
+rack's left column as the mockups' S1 draws it and, on the stage screen, only
+while unlocked: Start (`rig: true`, headless), Switch (`/rig/switch`, saying live
+or restart and why), Stop behind a confirm. Nothing is offered while a command
+runs here or elsewhere, and what runs is said. Tested in Chromium against the
+fake, whose lifecycle and switch body are stand-ins (`ui_fake.UiLifecycle`, the
+agent's routes, lock and busy real): a start with busy shown, a refused start,
+stop with confirm and cancel, a live switch, a restart switch, the stage
+picker hidden while locked. Fast suite 2696 -> 2732 passed. NOT VERIFIED on the
+rig: any of it against real Sushi, PipeWire and pw-top. *(2026-11-02)*
+
+**Web UI v0.1, answering review (#111).** Ten findings. (1) **"Sushi is not
+reachable" stayed in /health** after Sushi answered or the rig stopped, and a
+later outage kept the first one's time: the agent now keeps the outage's record
+apart (`_unreachable`) and clears it when a call to Sushi next answers or
+/health finds no rig running; a new outage has its own `at`. (2) **The rack's
+empty-state message never redrew** (its key was a constant with no rig): the
+tone is in the key, tested through a start that fails. (3) **The xruns
+baseline was one sum**, so a node missing from one sample and back showed its
+lifetime count as new and rising: `xrunsStep` counts per node by name, a node's
+fall in count read as a fresh node. (4) **The header was rebuilt every load
+sample**, Lock button and Stage link with it, losing a click mid-press and the
+focus: the tiles are patched in an element of their own, and a browser test
+holds the Lock button's element and focus across a load update. (5) **pw-top's
+first, all-zero sample alone read as 0 % and no xruns, measured**: fewer than
+two samples is now `no_sample`. (6) **Every GET /rig/load ran its own pw-top**:
+one run at a time now, its output shared for `LOAD_SHARED` (1.5 s); two
+requests at once make one run. (7) **`quiet_elkpy` patched all or nothing, and
+any import error but ImportError stopped the agent starting**; it now goes
+module by module, never raises, names what it could not patch once, and runs
+on the first connection (`connect_quietly`), so an Agent no longer imports
+elkpy, gRPC and protobuf at start (tested in a child process). (8) **The
+unreachable fault overwrote a lifecycle failure's reason**: beside one it goes
+in `also`, and leaves with the outage. (9) The `pw-top` header text is one
+constant, `top.PW_TOP_HEADER`. (10) `/rigs` no longer answers `running` (the
+page reads /health), and `rig_load`'s alias is gone. With #114's
+`close_controller` merged, the child-process test of a poll's output no longer
+needs `os._exit` to dodge elkpy's teardown noise: it exits normally and asserts
+the child printed nothing else, stable over five runs here. Fast suite 2736 ->
+2746 passed. Still NOT VERIFIED on the rig. *(2026-11-02)*

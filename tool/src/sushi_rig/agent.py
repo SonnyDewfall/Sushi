@@ -207,15 +207,45 @@ Sushi did not confirm is not. Not run against a live Sushi: see `live.py`.
 
 ## The web UI (#31)
 
-    GET  /              the UI's page; its files are under /ui/ (`sushi_rig/ui/static/`)
+    GET  /              the UI's page; its files are under /ui/ (`sushi_rig/ui/static/`),
+                        and /ui and /ui/ themselves redirect here (#111: the folder is not a page)
     GET  /profiles      every profile, flattened for the browser (`ui.panel_profile`)
     GET  /live/plugins  {processor: {"track", "uri", "uid", "type", "role"}}, from Sushi's session
+    GET  /rigs          the rigs of config/rigs/ a start or a switch can name
+    GET  /rig/load      one pw-top sample of the running rig's nodes: load, xruns, the budget
 
 The page polls the routes above and sends the live changes itself; the agent
 adds only what the browser could not get: the files, the profiles (files, no
 rig needed) and which plugin each processor is, which `/live` does not say
 because only Sushi's session does (`live.read_live_plugins`). The routes are
 in a block of their own at the end of the routes, before the MIDI section.
+
+`/rigs` lists config/rigs/ by name, as a Program Change counts them
+(`midi_listener.program_order`), because `/rig`'s `programs` exists only
+while a MIDI map switches rigs, and the page's picker needs the list always.
+`/rig/load` is `sushi-rig top`'s reading (`top.read_pw_top`, `load_report`)
+as data, for the stage screen's LOAD and XRUNS: one `pw-top -b -n 2` off the
+loop with a deadline (`LOAD_TIMEOUT`), killed past it, and shared: one run
+at a time, its output answering every request for `LOAD_SHARED` seconds, so
+pages polling do not keep pw-top running beside the rig. A pw-top that is
+missing (500), fails or prints fewer than two samples (502) or overruns (504) is
+refused with a `code` and the reason, and said once on stderr when it starts
+or its reason changes; it is not `last_error`, which a figure polled every
+two seconds would keep displacing. No rig up is 409 `no_rig`. Nothing
+measures sound, so it is not here.
+
+## Quiet, except for what matters (#111)
+
+elkpy prints three `ELKPY:` lines on every connection, which at one
+connection per poll buried the agent's own output; they are dropped from the
+first connection on (`connect_quietly`, `live.quiet_elkpy`, which says why
+each one may be). The one of them that mattered, Sushi not being found, is
+said by the agent instead, from the call that fails: a read that finds no
+Sushi while the state file says a rig is up is a fault, so it is in /health
+(as `last_error`, or beside a lifecycle failure's, which it does not
+displace) and printed once, from when the outage began until Sushi answers
+again or the rig is down, when /health stops saying it. With no rig up it is
+still the 503 it was, neither remembered nor printed, since nothing is wrong.
 """
 
 from __future__ import annotations
@@ -236,6 +266,7 @@ from typing import Any, Awaitable, Callable, Sequence
 from . import library as library_module
 from . import live as live_module
 from . import midi_listener
+from . import top as top_module  # GET /rig/load (#111)
 from .live import DEFAULT_GRPC_ADDRESS, ElkpyMissing, LiveError, Move
 from .live import is_send, protected_processor
 from .rig import describe_rig
@@ -297,6 +328,18 @@ CONFIG_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 MODEL_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_ .,()'+-]*")
 
 LIFECYCLE = ("up", "down", "restart")
+
+# How long GET /rig/load gives `pw-top -b -n 2`, which samples twice and is
+# read for the second (see `top.parse_pw_top`), at what should be pw-top's
+# one-second refresh: so about a second. Past it pw-top is killed and the
+# answer is 504. A guess with room in it, not a measurement: no pw-top was to
+# hand where this was written.
+LOAD_TIMEOUT = 5.0
+
+# How long one pw-top sample answers GET /rig/load for every page asking:
+# under the page's 2 s poll, so one page still gets a fresh sample each time,
+# and two pages share one run instead of keeping pw-top running.
+LOAD_SHARED = 1.5
 
 # The operation log keeps this many entries, newest last.
 LOG_LIMIT = 500
@@ -924,6 +967,15 @@ def confirm_chain(chains: dict[str, list[str]], track: str, expected: list[str],
 # =========================================================================== #
 
 
+def connect_quietly(address: str) -> Any:
+    """`live.connect`, with elkpy's per-connection prints silenced first
+    (`live.quiet_elkpy`, which does its work once and never raises). Here,
+    on the first connection, rather than at the agent's start, so an agent
+    that never reaches Sushi never imports elkpy."""
+    live_module.quiet_elkpy()
+    return live_module.connect(address)
+
+
 @dataclass(frozen=True)
 class Live:
     """Everything the live routes need from Sushi, each a blocking call. A
@@ -964,7 +1016,7 @@ class Live:
     def at(cls, address: str = DEFAULT_GRPC_ADDRESS) -> "Live":
         m = live_module
         return cls(
-            connect=functools.partial(m.connect, address),
+            connect=functools.partial(connect_quietly, address),  # #111: elkpy's prints
             disconnect=m.close_controller,  # not c.close(): see close_controller
             snapshot=lambda c: m.read_rig(address, c),
             parameter=lambda c, proc, name: m.read_live_parameter(proc, name, address, c),
@@ -993,7 +1045,8 @@ class Agent:
     without a rig, a PipeWire or a child process: `describe` answers for the
     state file, `doctor` for the examination, `supervisor` for the rig's
     children and `run` for one lifecycle step (the supervisor's own runner
-    unless given), `live` for Sushi's gRPC.
+    unless given), `live` for Sushi's gRPC, `pw_top` for GET /rig/load's
+    pw-top run.
     """
 
     def __init__(
@@ -1010,6 +1063,7 @@ class Agent:
         library: Callable[[], dict[str, Any]] | None = None,
         midi: midi_listener.World | None = None,
         switching: "Switching | None" = None,
+        pw_top: Callable[[float], str] | None = None,
     ) -> None:
         self.root = root
         self.log_limit = log_limit
@@ -1040,6 +1094,18 @@ class Agent:
         self._library_lock = asyncio.Lock()
         self._midi_init(midi)  # the MIDI listener's state: see the MIDI section
         self.switching = switching or Switching()  # the live switch (#93): see its section
+        # #111: what the agent says in place of elkpy's dropped prints (see
+        # "Quiet"; they are dropped on the first connection, `connect_quietly`):
+        # a Sushi gone while the rig is up, said once an outage, and the
+        # /health record of it, which is cleared when Sushi answers again.
+        self._said_unreachable: str | None = None
+        self._unreachable: dict[str, Any] | None = None
+        self._said_load: str | None = None
+        # GET /rig/load's one effect, `pw-top -b -n 2` with a deadline; a
+        # test stands in its output (or its `LoadError`).
+        self.pw_top = pw_top or top_module.read_pw_top
+        self._load_run: asyncio.Future | None = None  # the pw-top run in flight, shared
+        self._load_last: tuple[float, str] | None = None  # (clock, output) of the last that worked
 
     @property
     def stuck_live_calls(self) -> int:
@@ -1074,6 +1140,8 @@ class Agent:
 
     async def health(self, request):
         rig = self.describe()
+        if not rig.get("running"):
+            self._unreachable_over()  # a rig that is down has no Sushi to miss (#111)
         return web.json_response({
             "ok": True,
             "agent": {
@@ -1267,7 +1335,13 @@ class Agent:
         future = self._submit(fn, *args)
         try:
             try:
-                return await asyncio.wait_for(asyncio.wrap_future(future), LIVE_TIMEOUT)
+                result = await asyncio.wait_for(asyncio.wrap_future(future), LIVE_TIMEOUT)
+                if fn is not self.live.connect:
+                    # Sushi answered: the outage, if there was one, is over.
+                    # Not on a connect: elkpy's succeeds with no Sushi there
+                    # (it prints, and carries on), so it says nothing.
+                    self._unreachable_over()
+                return result
             except asyncio.TimeoutError:
                 if future.done() and not future.cancelled():
                     # It returned (perhaps in this instant), so this is its own
@@ -1301,12 +1375,64 @@ class Agent:
             message = " ".join(f"{type(exc).__name__}: {exc}".split())  # one line
             if sushi_unreachable(exc):
                 if reading:
+                    self._unreachable_while_up(where, message)
                     raise web.HTTPServiceUnavailable(
                         reason=f"Sushi is not reachable, so no rig is up to read or change: {message}"
                     )
                 message = f"Sushi went away during the change: {message}"
             self._remember(where, message, kind="live")
             raise web.HTTPBadGateway(reason=message)
+
+    def _unreachable_while_up(self, where: list[str], message: str) -> None:
+        """A read that found no Sushi. Nothing is wrong when no rig is up (a
+        page asking anyway is told 503, and that is all); with the state
+        file saying a rig is running it is a fault -- Sushi died or stopped
+        listening -- and elkpy's own line about it is dropped (`quiet_elkpy`),
+        so it is said here: remembered for /health, and printed once until a
+        call to Sushi works again, not once a poll."""
+        try:
+            up = bool(self.describe().get("running"))
+        except Exception:  # noqa: BLE001 -- an unreadable state file: say it, to be safe
+            up = True
+        if not up:
+            self._unreachable_over()
+            return
+        reason = f"the rig is up but Sushi is not reachable: {message}"
+        if self._said_unreachable != message:
+            self._said_unreachable = message
+            print(f"sushi-rig agent: {reason}", file=sys.stderr, flush=True)
+        record = self._unreachable
+        if record is None:  # a new outage, with its own time
+            record = {"kind": "live", "command": where,
+                      "at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "message": reason}
+        else:  # the same outage: when it began stays, what it says follows
+            record["message"] = reason
+        self._unreachable = record
+        current = self.last_error
+        if current is not None and current is not record and current.get("kind") == "lifecycle":
+            # A lifecycle failure says why the rig is as it is, which this
+            # does not displace (found by review): said beside it instead.
+            also = current.setdefault("also", [])
+            also[:] = [m for m in also if not m.startswith("the rig is up but Sushi is not reachable")]
+            also.append(reason)
+        else:
+            self.last_error = record
+
+    def _unreachable_over(self) -> None:
+        """The outage `_unreachable_while_up` recorded is over -- Sushi
+        answered, or the rig is down -- so /health stops saying it, and the
+        next one is news again, with its own time. Another failure
+        remembered since is left alone."""
+        record, self._unreachable, self._said_unreachable = self._unreachable, None, None
+        if record is None:
+            return
+        current = self.last_error
+        if current is record:
+            self.last_error = None
+        elif current is not None and record["message"] in current.get("also", []):
+            current["also"].remove(record["message"])
+            if not current["also"]:
+                del current["also"]
 
     @contextlib.asynccontextmanager
     async def _connected(self, request):
@@ -1866,11 +1992,74 @@ class Agent:
         from .ui import UI_DIR
 
         app.router.add_get("/", self.ui_page)
+        # Before the static route, which would answer the folder itself with a
+        # JSON 403 (#111: typed by hand on the rig laptop, it read as broken).
+        app.router.add_get("/ui", self.ui_redirect)
+        app.router.add_get("/ui/", self.ui_redirect)
         # aiohttp's static route refuses paths that leave the folder and does
         # not follow symlinks out of it; no listing, so /ui/ is not a browser.
         app.router.add_static("/ui/", UI_DIR, show_index=False)
         app.router.add_get("/profiles", self.profiles_route)
         app.router.add_get("/live/plugins", self.live_plugins)
+        app.router.add_get("/rigs", self.rigs_route)
+        app.router.add_get("/rig/load", self.rig_load)
+
+    async def ui_redirect(self, request):
+        """/ui and /ui/ are where the page's files are, not a page: send the
+        browser to the page. 302, not 301, which a browser keeps for good."""
+        raise web.HTTPFound("/")
+
+    async def rigs_route(self, request):
+        """`{"rigs": [names]}`: config/rigs/*.yaml by name, sorted as a Program
+        Change counts them, read now (off the loop: it lists a folder). Which
+        is up is /health's to say; the page reads it there."""
+        rigs = await asyncio.to_thread(midi_listener.program_order, self._midi_root())
+        return web.json_response({"ok": True, "rigs": rigs})
+
+    async def _pw_top_sample(self) -> str:
+        """One pw-top run's output, shared: a request while one runs waits
+        for that one, and one within `LOAD_SHARED` of the last that worked
+        gets its output. Each run is about a second of pw-top on the rig's
+        CPU while it plays, and every page polls every two seconds: without
+        this, two pages kept one running nearly all the time (found by
+        review). A failure is shared by those waiting for it, not kept.
+        Shielded, so a client that goes does not cancel the run the others
+        wait for."""
+        if self._load_last is not None and self.clock() - self._load_last[0] < LOAD_SHARED:
+            return self._load_last[1]
+        if self._load_run is None:
+            run = asyncio.ensure_future(asyncio.to_thread(self.pw_top, LOAD_TIMEOUT))
+
+            def finished(task) -> None:
+                if self._load_run is task:
+                    self._load_run = None
+                if not task.cancelled() and task.exception() is None:  # retrieves it either way
+                    self._load_last = (self.clock(), task.result())
+
+            run.add_done_callback(finished)
+            self._load_run = run
+        return await asyncio.shield(self._load_run)
+
+    async def rig_load(self, request):
+        """One pw-top sample of the running rig (`top.load_report`); see the
+        module docstring's web UI section for how it refuses."""
+        described = self.describe()
+        if not described.get("running"):
+            raise _conflict("no rig is running, so there is no load to read", "no_rig")
+        try:
+            output = await self._pw_top_sample()
+        except top_module.LoadError as exc:
+            if self._said_load != str(exc):
+                self._said_load = str(exc)
+                print(f"sushi-rig agent: load: {exc}", file=sys.stderr, flush=True)
+            status = {"no_pw_top": web.HTTPInternalServerError, "timeout": web.HTTPGatewayTimeout}
+            error = status.get(exc.code, web.HTTPBadGateway)(reason=str(exc))
+            error.agent_code = exc.code
+            raise error
+        self._said_load = None
+        report = top_module.load_report(top_module.parse_pw_top(output), described.get("children"))
+        return web.json_response({
+            "ok": True, "at": datetime.now(timezone.utc).isoformat(timespec="seconds"), **report})
 
     async def ui_page(self, request):
         from .ui import UI_DIR

@@ -1,7 +1,8 @@
-"""The web UI, v0 (#31): the rack (S1) and the stage screen (S5).
+"""The web UI (#31, v0.1 #111): the rack (S1) and the stage screen (S5).
 
-The agent serves the files in `static/` at `/` and `/ui/`, and the page
-reads and changes the rig through the agent's own routes, nothing else.
+The agent serves the page at `/` and its files under `/ui/` (`/ui/` itself
+redirects to `/`), and the page reads and changes the rig through the
+agent's own routes, nothing else.
 
 ## Plain files, no build step and no framework
 
@@ -30,8 +31,15 @@ Decisions are pure and tested (principle 1), in two places:
 ## What the page reads
 
     GET /health        once a second: up or down, which rig since when, the last error, MIDI
-    GET /live          once a second: tracks, chains, values, ranges, bypass
+    GET /live          once a second, and only while /health says a rig is up and no
+                       lifecycle command is running (`readsLive` in rig.js): tracks,
+                       chains, values, ranges, bypass
     GET /live/log      once a second: what is unsaved, and what undo would take back
+    GET /rig/load      every 2 s while a rig is up: pw-top's load and xruns for the
+                       LOAD and XRUNS tiles. Slower than /live because each is a
+                       pw-top run of about a second on the rig
+    GET /rigs          config/rigs/, for the picker: until it answers, and again
+                       after every start, stop or switch
     GET /live/plugins  which plugin each processor is: again whenever the processors'
                        names change or the rig does (its name, its start, a rig
                        switch in the log), since a rig of the same names can hold
@@ -43,8 +51,27 @@ Decisions are pure and tested (principle 1), in two places:
     GET /library       the plugins' names, the same way
 
 and sends POST /live/parameter, /live/bypass, /live/move and /live/undo as
-they happen. A refusal's `reason` is shown on screen; nothing is reverted
-without saying why.
+they happen, and POST /rig/up, /rig/down and /rig/switch from the picker. A
+refusal's `reason` is shown on screen; nothing is reverted without saying
+why.
+
+/live is not asked while the rig is down (#111): it can only answer 503
+then, and a 503 a second was a console error a second, 110 of them in one
+session, burying any real failure. A rig that is down is shown as a state
+(muted, not red); a /live failure while the rig is up is still shown as the
+failure it is.
+
+## Start, stop and switch (#111)
+
+A picker lists config/rigs/ (the rack's left column, as the mockups' S1 has
+it; on the stage screen only while the lock is off, since a Stop within a
+thumb's reach on stage is what the lock is for). A start is always a rig of
+channels and headless, because this page replaces the OSC panel and a rig run
+with its panel can only be switched by restart. Stop takes a second tap
+within eight seconds, because it cuts the sound. While a lifecycle command
+runs, from this page or another, nothing is offered (the agent would answer
+409 busy) and what is running is said. A switch says how it was made, live
+or by restart, and for a restart why.
 """
 
 from __future__ import annotations

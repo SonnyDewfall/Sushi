@@ -23,6 +23,15 @@ cannot know of Sushi: that it lists an output control port (the octave's
 shape of `test_agent.py`'s "Latency OUT" but is not captured; and that the
 session names an LV2 plugin's URI in `path`, which `live.read_live_plugins`
 assumes and nobody has seen.
+
+Start, stop and switch (#111), `UiLifecycle`: the agent's own routes, lock
+and busy, over a stand-in for what they run. Invented: the whole of what a
+lifecycle step does (it flips the rig up or down and records the call), and
+the answer of a switch (`switch_held`), shaped as `Agent._switch_held`
+builds one -- `how`, `why` as `RestartReason.as_dict` gives it, `seconds` --
+but decided by the test, not by `rigfile.diff`. GET /rig/load answers with
+`fixtures/pw-top-b-n2.txt`, which is test_top.py's sample of `pw-top -b -n 2`
+(said there to be real output, trimmed) copied as it is.
 """
 
 from __future__ import annotations
@@ -37,11 +46,13 @@ from dataclasses import replace
 from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
+from sushi_rig import midi_listener
 from sushi_rig.agent import Agent
 from sushi_rig.library import IRI, Literal, parse_turtle
 from sushi_rig.live import LiveError, decide_move
 from sushi_rig.paths import checkout_root
 from sushi_rig.rigfile import LEVEL_RANGE, RETURN_UID, SEND_UID, level_to_gain
+from sushi_rig.supervisor import Outcome
 
 FIXTURES = Path(__file__).parent / "fixtures"
 LV2 = "http://lv2plug.in/ns/lv2core#"
@@ -241,29 +252,99 @@ class UiRig:
         return [c for c in self.calls if c[0] in ("set_parameter", "set_bypass", "move")]
 
 
-def describe_up(started: datetime):
-    """`describe_rig`'s answer for the rig: up since `started`."""
+def describe_up(started: datetime, name: str = "electric_board"):
+    """`describe_rig`'s answer for rig `name`: up since `started`."""
     def describe():
         return {
-            "verdict": "running", "running": True, "config_name": "electric_board", "mode": "headless",
+            "verdict": "running", "running": True, "config_name": name, "mode": "headless",
             "started_at": started.isoformat(), "uptime_seconds": (datetime.now(timezone.utc) - started).total_seconds(),
-            "amp_model": None, "rig": "electric_board", "children": {},
-            "message": "electric_board (headless mode)",
+            "amp_model": None, "rig": name, "children": {},
+            "message": f"{name} (headless mode)",
         }
     return describe
 
 
+class UiLifecycle:
+    """What `up`, `down` and a rig switch do, for the agent's real routes to
+    run (see the module docstring for what is invented). `run` is the agent's
+    runner: `up` brings rig `args[1]` up unless `refuse_up` says why not, and
+    `down` takes it down. `switch_held` stands in the body of a switch, after
+    the agent has taken its lock and set `busy`: `how` (rig name to "live"
+    or ("restart", [why...])) decides each one, live by default. `delay`
+    holds every command that long, so a page can be seen busy. Its methods
+    run on the agent's loop."""
+
+    def __init__(self, up: str | None = "electric_board"):
+        self.rig = up
+        self.started = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(minutes=12)
+        self.refuse_up: str | None = None
+        self.how: dict = {}
+        self.delay = 0.0
+        self.calls: list = []
+        self.agent: Agent | None = None
+
+    def describe(self):
+        if self.rig is None:
+            return {"verdict": "absent", "running": False, "message": "No rig is running."}
+        return describe_up(self.started, self.rig)()
+
+    async def run(self, args):
+        self.calls.append(list(args))
+        await asyncio.sleep(self.delay)
+        if args[0] == "up":
+            if self.refuse_up:
+                return Outcome(False, 1, "", f"error: {self.refuse_up}\n")
+            if self.rig is not None:
+                return Outcome(False, 1, "", f"error: a rig is already running ({self.rig}); 'sushi-rig down' first\n")
+            self.rig, self.started = args[1], datetime.now(timezone.utc).replace(microsecond=0)
+            return Outcome(True, 0, f"{self.rig} up (headless mode)\n", "")
+        if args[0] == "down":
+            if self.rig is None:
+                return Outcome(False, 1, "", "error: no rig is running\n")
+            self.rig = None
+            return Outcome(True, 0, "down\n", "")
+        return Outcome(False, 2, "", f"error: the fake does not know {args[0]!r}\n")
+
+    async def switch_held(self, origin, name, program, mark):
+        self.calls.append(["switch", name])
+        await asyncio.sleep(self.delay)
+        previous = self.rig
+        how = self.how.get(name, "live")
+        answer = {"ok": True, "rig": name, "previous": previous, "seconds": 0.4 if how == "live" else 6.2}
+        if how == "live":
+            answer["how"] = "live"
+            entry = self.agent._record("rig", {"rig": name, "how": "live"}, previous)
+        else:
+            _, why = how
+            self.started = datetime.now(timezone.utc).replace(microsecond=0)
+            answer.update(how="restart", why=why, command=["up", name, "--rig", "--headless"], output="")
+            entry = self.agent._record("rig", {"rig": name, "how": "restart", "why": [w["code"] for w in why]}, previous)
+        self.rig = name
+        return {**answer, "entry": entry, "state": self.describe()}
+
+
 class Served:
     """A real agent over `rig` on 127.0.0.1, in a thread of its own, until
-    `close`. `url` is where it answers."""
+    `close`. `url` is where it answers. `lifecycle` is what its lifecycle and
+    switch routes run (`UiLifecycle`, a rig up by default); `describe`, when
+    given, answers for the state file instead of it."""
 
-    def __init__(self, rig: UiRig | None = None, port: int = 0, describe=None, root: Path | None = None):
+    def __init__(self, rig: UiRig | None = None, port: int = 0, describe=None, root: Path | None = None,
+                 lifecycle: UiLifecycle | None = None):
         self.rig = rig or UiRig()
-        started = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(minutes=12)
-        self.state = {"describe": describe or describe_up(started)}
+        self.lifecycle = lifecycle or UiLifecycle()
+        # What GET /rig/load's pw-top prints; a test may change it.
+        self.pw_top_output = (FIXTURES / "pw-top-b-n2.txt").read_text(encoding="utf-8")
+        self.state = {"describe": describe or self.lifecycle.describe}
         # `root` is where the profiles are read from (tool/examples/profiles/ under it).
         self.agent = Agent(root=root or checkout_root(), live=self.rig, describe=lambda: self.state["describe"](),
-                           library=lambda: {"plugins": [], "problems": []})
+                           library=lambda: {"plugins": [], "problems": []}, run=self.lifecycle.run,
+                           # No pedals: the MIDI listener follows a rig after every
+                           # lifecycle command, and this rig has no compiled config.
+                           midi=midi_listener.World(plan=lambda described, root: midi_listener.Off("the fake rig has no pedals")),
+                           pw_top=lambda timeout: self.pw_top_output)
+        self.lifecycle.agent = self.agent
+        self.agent._switch_held = self.lifecycle.switch_held
         self._loop = asyncio.new_event_loop()
         self._ready = threading.Event()
         self._port = port
@@ -311,8 +392,9 @@ class Served:
 def main() -> int:
     parser = argparse.ArgumentParser(description="Serve the web UI against a rig held in memory.")
     parser.add_argument("--port", type=int, default=8029)
+    parser.add_argument("--down", action="store_true", help="start with no rig up, to start one from the page")
     args = parser.parse_args()
-    with Served(port=args.port) as served:
+    with Served(port=args.port, lifecycle=UiLifecycle(up=None if args.down else "electric_board")) as served:
         print(f"the web UI against a fake rig: {served.url}/  (Ctrl+C to stop)", flush=True)
         try:
             while True:

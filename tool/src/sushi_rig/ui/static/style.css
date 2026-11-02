@@ -51,11 +51,43 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 .tone-busy { color: var(--muted); }
 .tone-down .dot, .dot.tone-down { background: var(--refused); }
 .tone-down { color: var(--refused); }
+/* A rig that is not running is a state, not a failure (#111): muted, not red. */
+.tone-off .dot, .dot.tone-off { background: #4A4C57; }
+.tone-off { color: var(--muted); }
 
 .tile { display: inline-flex; align-items: baseline; gap: 8px; min-height: 36px; padding: 6px 12px; border-radius: 18px; background: var(--card); }
 .tile .k { font-size: 12px; color: var(--muted); letter-spacing: .08em; }
 .tile .v { font-family: var(--mono); font-size: 13px; }
 .tile .s { font-size: 11px; color: var(--muted); }
+/* The rack's tiles sit in the bar as if the bar held them directly. */
+.tile-row { display: contents; }
+.tile.warn .v, .tile.warn .s { color: var(--accent-soft); }
+.tile.over .v, .tile.over .s, .tile.failed .s { color: var(--refused); }
+.tile.over, .tile.failed { border: 1px solid var(--refused-edge); }
+
+/* The rig picker (#111): config/rigs/ as the mockups' S1 lists it, the rig
+   that is up in the accent, and the start, switch and stop under it. */
+.rigs { display: flex; flex-direction: column; gap: 8px; }
+.rigs:empty { display: none; }
+.rigs h2 { font-family: var(--display); font-size: 14px; font-weight: 500; letter-spacing: .1em; color: var(--muted); }
+.rig-list { display: flex; flex-direction: column; gap: 4px; }
+.rig {
+  min-height: 48px; display: flex; align-items: center; gap: 10px; padding: 0 12px; border-radius: 10px;
+  background: transparent; border: 1px solid transparent; cursor: pointer; text-align: left;
+}
+.rig .n { flex: 1; font-size: 15px; overflow-wrap: anywhere; }
+.rig .tag { font-family: var(--mono); font-size: 11px; color: var(--accent-soft); }
+.rig.up .n { font-weight: 600; }
+.rig.chosen { background: var(--accent-ground); border-color: var(--accent); }
+.rig:not(.chosen):hover { border-color: var(--edge); }
+.rig-actions, .confirm { display: flex; flex-wrap: wrap; gap: 8px; }
+.confirm p { flex: 1 0 100%; margin: 0; font-size: 14px; color: var(--refused); }
+.rig-act { min-height: 48px; flex: 1 1 auto; padding: 0 14px; border-radius: 12px; background: transparent; border: 1px solid var(--edge); cursor: pointer; }
+.rig-act.primary { background: var(--accent); border-color: var(--accent); color: #1A1206; font-weight: 600; }
+.rig-act.danger { background: var(--refused-ground); border-color: var(--refused); color: var(--refused); font-weight: 600; }
+.rig-act:disabled { opacity: .5; cursor: default; }
+.rig-busy { margin: 0; font-size: 13px; color: var(--accent-soft); }
+.rig-problem { margin: 0; font-size: 13px; color: var(--refused); }
 
 .lock {
   min-height: 44px; display: inline-flex; align-items: center; gap: 8px; padding: 0 14px;
@@ -145,6 +177,8 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 .channel .n { font-size: 15px; font-weight: 600; }
 .channel .s, .channels .agent { font-size: 12px; color: var(--muted); line-height: 1.5; }
 .channels .agent { margin-top: auto; }
+.channel-list { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; flex: 1; }
+.stage-rigs { padding: 0 16px 14px; }
 
 .rack-main { flex: 999 1 560px; min-width: 0; padding: 14px 20px 24px; }
 .rack { display: flex; flex-direction: column; gap: 6px; }

@@ -160,9 +160,35 @@ def test_the_page_and_its_files_are_served_and_nothing_beside_them():
     assert status == 200 and kind.startswith("text/html") and b'src="/ui/app.js"' in body
     status, kind, _ = call(ui_agent(live=UiRig()), "GET", "/ui/rig.js")
     assert status == 200 and "javascript" in kind, "a module script must be served as JavaScript"
-    for path in ("/ui/", "/ui/../__init__.py", "/ui/%2e%2e/__init__.py", "/ui/../../agent.py", "/ui/__init__.py"):
+    for path in ("/ui/../__init__.py", "/ui/%2e%2e/__init__.py", "/ui/../../agent.py", "/ui/__init__.py"):
         status, _, body = call(ui_agent(live=UiRig()), "GET", path)
         assert status in (403, 404) and b"import" not in body, path
+
+
+@pytest.mark.parametrize("path", ["/ui/", "/ui"])
+def test_the_ui_folder_itself_sends_the_browser_to_the_page(path):
+    """#111: /ui/ typed by hand answered a JSON 403, which read as a broken
+    UI. The folder is not a page; the page is /. A 302, not a 301, which a
+    browser would keep for good."""
+    async def go():
+        async with TestClient(TestServer(ui_agent(live=UiRig()).app())) as client:
+            response = await client.get(path, allow_redirects=False)
+            return response.status, response.headers.get("Location")
+    assert asyncio.run(go()) == (302, "/")
+
+
+def test_the_rigs_a_start_or_switch_can_name_are_config_rigs():
+    """The picker's list: config/rigs/ by name, in program order, whether or
+    not the running rig's MIDI map switches rigs (which is when /rig lists
+    them as `programs`). Which one is up is /health's to say."""
+    import json
+
+    status, _, body = call(ui_agent(live=UiRig()), "GET", "/rigs")
+    answer = json.loads(body)
+    # By file name, as a Program Change counts them: "electric-chorus-2.yaml"
+    # sorts before "electric-chorus.yaml", though its name sorts after.
+    names = [p.stem for p in sorted((checkout_root() / "config" / "rigs").glob("*.yaml"), key=lambda p: p.name)]
+    assert status == 200 and answer == {"ok": True, "rigs": names} and "electric_board" in names
 
 
 def profiles_root(tmp_path, *extra):
@@ -524,17 +550,33 @@ def test_an_up_rig_is_never_shown_as_measured_and_down_is_said(blank):
       return [
         R.rigStatus(health(up), {ok: true}),
         R.rigStatus(health(up), {ok: false, reason: 'Sushi went away'}),
-        R.rigStatus(health({running: false, message: 'No rig is running.'}), {ok: false}),
-        R.rigStatus(health(up, {busy: 'restart'}), {ok: false}),
+        R.rigStatus(health({running: false, message: 'No rig is running.'}), null),
+        R.rigStatus(health(up, {busy: 'restart'}), null),
         R.rigStatus({ok: false, reason: 'the agent did not answer'}, null),
       ].map((s) => [s.tone, s.title, s.detail, s.measured]);""")
     assert states == [
         ["up", "electric_board", "Up 1 h 12 min · sound not measured", False],
         ["down", "electric_board", "Up, but Sushi did not answer: Sushi went away", False],
-        ["down", "Rig down", "No rig is running.", False],
+        # A rig not running is a state the player chose, not a failure (#111).
+        ["off", "Rig down", "No rig is running.", False],
         ["busy", "electric_board", "restart is running", False],
         ["down", "Agent not answering", "the agent did not answer", False],
     ]
+
+
+def test_live_is_asked_for_only_while_a_rig_is_up_and_still(blank):
+    """#111: with no rig up, /live answers 503 every second, and those were
+    110 console errors in one session that buried any real one."""
+    asks = rigjs(blank, """
+      const health = (rig, agent = {}) => ({ok: true, body: {rig, agent}});
+      return [
+        R.readsLive(health({running: true})),
+        R.readsLive(health({running: false})),
+        R.readsLive(health({running: true}, {busy: 'up'})),
+        R.readsLive({ok: false, reason: 'no agent'}),
+        R.readsLive(null),
+      ];""")
+    assert asks == [True, False, False, False, False]
 
 
 def test_a_two_state_control_is_on_past_half_its_travel_whatever_its_scale(blank):
@@ -736,7 +778,11 @@ def test_one_glance_says_which_rig_whether_it_is_up_and_what_is_not_measured(sta
     expect(stage.locator(".stage-head .detail-line")).to_have_text("Up 12 min · sound not measured")
     # Up and unmeasured: the up colour, never the measured one (#49).
     expect(stage.locator(".stage-head .dot")).to_have_class("dot tone-up")
-    expect(stage.locator(".tile")).to_have_text(["LOAD—not measured", "XRUNS—not measured", "AMPnone"])
+    # From pw-top (fixtures/pw-top-b-n2.txt): sushi 3 % and NAM 23 % of a
+    # 1024-sample block at 48 kHz, which Sushi's driver states; 2 xruns
+    # before the page looked, so none since.
+    expect(stage.locator(".tile")).to_have_text(["LOAD26%of 21.3 ms", "XRUNS0since opened", "AMPnone"])
+    expect(stage.locator(".detail-line")).to_have_attribute("title", re.compile(r"^Nothing measures the rig's sound yet"))
     expect(stage.locator(".level")).to_have_text(["board0 dB", "vocal−6 dB"])
     expect(stage.locator(".card .name")).to_have_text(["overdrive", "octave", "delay", "vocal_delay"])
     expect(stage.locator('.card[data-unit="overdrive"] .vals')).to_have_text("Drive 0.62 · Level −3.0 · Tone 480")
@@ -757,6 +803,9 @@ def test_the_stage_fits_a_phone_and_every_target_takes_a_thumb(stage):
 def test_on_stage_one_tap_bypasses_and_one_opens_the_knobs_lock_on(stage, served):
     expect(stage.locator("button.lock")).to_have_text("Locked")
     expect(stage.locator(".lock-note")).to_contain_text("Add, remove and reorder are off while locked")
+    # Start, stop and switch are not there to be tapped at all while locked.
+    expect(stage.locator(".stage-rigs")).to_be_hidden()
+    expect(stage.get_by_role("button", name=re.compile("^Stop "))).to_have_count(0)
     stage.get_by_role("button", name="Bypass delay").click()
     until(lambda: served.rig.bypassed["delay"] is True)
     expect(stage.locator('.card[data-unit="delay"]')).to_have_class(re.compile(r"\bbypassed\b"))
@@ -884,3 +933,349 @@ def test_profiles_and_names_that_fail_to_arrive_are_asked_for_again_and_hold_not
     expect(page.page.locator('.unit[data-unit="overdrive"]')).to_contain_text("GxTubeScreamer \u00b7 profile")
     expect(page.page.locator(".problem.page")).to_have_count(0)
     page.close()
+
+
+# --------------------------------------------------------------------------- #
+# v0.1 (#111): a down rig is quiet, load from pw-top, start, stop and switch
+# --------------------------------------------------------------------------- #
+
+LOAD = {
+    "nodes": [
+        {"name": "NAM", "child": "amp", "running": True, "load": 0.23, "busy_ms": 4.9, "xruns": 2, "driver": "alsa_in"},
+        {"name": "sushi", "child": "sushi", "running": True, "load": 0.03, "busy_ms": 0.675, "xruns": 0, "driver": "alsa_in"},
+    ],
+    "missing": [], "budget": {"quantum": 256, "rate": 48000, "block_ms": 5.333, "driver": "alsa_in"},
+    "drivers": ["alsa_in"], "total_load": 0.26, "warn_at": 0.7,
+}
+
+
+def test_load_and_xruns_are_read_as_top_reads_them_and_unknowns_are_said(blank):
+    tiles = rigjs(blank, """
+      const ok = (body) => ({ok: true, body});
+      const load = arg;
+      const show = (t) => t.map((x) => [x.k, x.v, x.s, x.tone]);
+      return {
+        down: show(R.loadTiles(null, false, null)),
+        waiting: show(R.loadTiles(null, true, null)),
+        failed: R.loadTiles({ok: false, reason: 'pw-top is not installed'}, true, null).map((x) => [x.v, x.s, x.tone, x.title]),
+        fine: show(R.loadTiles(ok(load), true, null)),
+        title: R.loadTiles(ok(load), true, null)[0].title,
+        // Three seen since the page began, the last sample adding them: climbing.
+        rising: show(R.loadTiles(ok(load), true, {seen: {last: {}, count: 3}, added: 3})),
+        steady: show(R.loadTiles(ok(load), true, {seen: {last: {}, count: 3}, added: 0})),
+        near: show(R.loadTiles(ok({...load, total_load: 0.71}), true, null))[0],
+        over: show(R.loadTiles(ok({...load, total_load: 1.2}), true, null))[0],
+        unmeasured: R.loadTiles(ok({...load, total_load: null, nodes: [{...load.nodes[1], load: null}]}), true, null)[0],
+        split: R.loadTiles(ok({...load, drivers: ['alsa_in', 'Dummy-Driver'], missing: ['fmit']}), true, null)[0],
+      };""", LOAD)
+    assert tiles["down"] == [["LOAD", "—", "rig down", ""], ["XRUNS", "—", "rig down", ""]]
+    assert tiles["waiting"] == [["LOAD", "—", "reading", ""], ["XRUNS", "—", "reading", ""]]
+    assert tiles["failed"][0][:3] == ["—", "unreadable", "failed"]
+    assert tiles["failed"][0][3] == "pw-top could not be read: pw-top is not installed"
+    assert tiles["fine"] == [["LOAD", "26%", "of 5.3 ms", ""], ["XRUNS", "0", "since opened", ""]]
+    assert tiles["title"] == "NAM 23%, sushi 3% · quantum 256 @ 48000 Hz · clocked by alsa_in"
+    assert tiles["rising"][1] == ["XRUNS", "3", "rising", "warn"]
+    assert tiles["steady"][1] == ["XRUNS", "3", "since opened", ""]
+    assert tiles["near"] == ["LOAD", "71%", "of 5.3 ms", "warn"]
+    assert tiles["over"] == ["LOAD", "120%", "over budget", "over"]
+    assert (tiles["unmeasured"]["v"], tiles["unmeasured"]["s"]) == ("—", "not measured"), "never 0 % unmeasured"
+    assert "no timing for sushi" in tiles["unmeasured"]["title"]
+    assert tiles["split"]["tone"] == "warn"
+    assert "split across 2 clocks (alsa_in, Dummy-Driver)" in tiles["split"]["title"]
+    assert "pw-top does not list fmit" in tiles["split"]["title"]
+
+
+def test_xruns_are_counted_per_node_so_one_missing_then_back_adds_nothing(blank):
+    """One sum over every node, reset when it fell, read a node missing from
+    one sample and back in the next as its whole lifetime count, new and
+    rising (found by review)."""
+    steps = rigjs(blank, """
+      const sample = (...pairs) => ({nodes: pairs.map(([name, xruns]) => ({name, xruns}))});
+      const out = [];
+      let seen = null;
+      for (const body of [
+        sample(['NAM', 2], ['sushi', 0]),      // the page's first look: a baseline, nothing new
+        sample(['sushi', 0]),                  // NAM missing from this sample
+        sample(['NAM', 2], ['sushi', 0]),      // ...and back, as it was: still nothing new
+        sample(['NAM', 4], ['sushi', 1]),      // three more: rising
+        sample(['NAM', 4], ['sushi', 1]),      // steady
+        sample(['NAM', 1], ['sushi', 1]),      // NAM appeared afresh, with one already: one more
+      ]) {
+        const step = R.xrunsStep(seen, body);
+        seen = step.seen;
+        out.push([step.seen.count, step.added]);
+      }
+      return out;""")
+    assert steps == [[0, 0], [0, 0], [0, 0], [3, 3], [3, 0], [4, 1]]
+
+
+def test_a_start_is_a_headless_rig_of_channels_and_a_switch_names_its_rig(blank):
+    calls = rigjs(blank, """return [R.lifecycleCall('start', 'electric-delay'), R.lifecycleCall('stop', 'x'),
+                                    R.lifecycleCall('switch', 'accustomed')];""")
+    assert calls == [
+        {"path": "/rig/up", "json": {"config_name": "electric-delay", "rig": True, "headless": True}},
+        {"path": "/rig/down", "json": {}},
+        {"path": "/rig/switch", "json": {"config_name": "accustomed"}},
+    ]
+
+
+def test_the_picker_offers_what_the_rig_can_take_and_nothing_while_busy(blank):
+    views = rigjs(blank, """
+      const health = (rig, agent = {}) => ({ok: true, body: {rig, agent}});
+      const rigs = {ok: true, body: {rigs: ['accustomed', 'electric-delay', 'electric_board']}};
+      const up = {running: true, config_name: 'electric_board'};
+      const acts = (v) => v.actions.map((a) => [a.op, a.label, a.disabled]);
+      return {
+        down: acts(R.rigPicker(health({running: false}), rigs, 'accustomed', null)),
+        none: acts(R.rigPicker(health({running: false}), rigs, null, null)),
+        gone: acts(R.rigPicker(health({running: false}), rigs, 'deleted-since', null)),
+        same: acts(R.rigPicker(health(up), rigs, 'electric_board', null)),
+        other: acts(R.rigPicker(health(up), rigs, 'electric-delay', null)),
+        mine: R.rigPicker(health(up), rigs, 'electric-delay', {op: 'switch', name: 'electric-delay'}),
+        theirs: R.rigPicker(health(up, {busy: 'restart'}), rigs, 'electric-delay', null),
+        rows: R.rigPicker(health(up), rigs, 'electric-delay', null).rows,
+        unlisted: R.rigPicker(health(up), {ok: false, reason: '500 boom'}, null, null).problem,
+        noAgent: R.rigPicker({ok: false, reason: 'x'}, rigs, null, null),
+      };""")
+    assert views["down"] == [["start", "Start accustomed", False]]
+    assert views["none"] == [["start", "Choose a rig to start", True]]
+    assert views["gone"] == [["start", "Choose a rig to start", True]], "only a rig config/rigs/ still holds"
+    assert views["same"] == [["stop", "Stop electric_board", False]]
+    assert views["other"] == [["switch", "Switch to electric-delay", False], ["stop", "Stop electric_board", False]]
+    assert views["mine"]["busy"] == "Switching to electric-delay…"
+    assert all(a["disabled"] for a in views["mine"]["actions"])
+    assert views["theirs"]["busy"] == "restart is running", "another client's command holds this one too"
+    assert all(a["disabled"] for a in views["theirs"]["actions"])
+    assert views["rows"] == [
+        {"name": "accustomed", "up": False, "chosen": False},
+        {"name": "electric-delay", "up": False, "chosen": True},
+        {"name": "electric_board", "up": True, "chosen": False},
+    ]
+    assert views["unlisted"] == "config/rigs/ could not be listed: 500 boom"
+    assert views["noAgent"]["actions"] == [] and "not answering" in views["noAgent"]["problem"]
+
+
+def test_what_a_lifecycle_answer_says_how_and_why_a_switch_was_made(blank):
+    said = rigjs(blank, """
+      const ok = (body) => ({ok: true, status: 200, body});
+      const no = (status, body) => ({ok: false, status, body, reason: body.reason, code: body.code});
+      return [
+        R.lifecycleOutcome('switch', 'electric-delay', ok({how: 'live', seconds: 0.412})),
+        R.lifecycleOutcome('switch', 'accustomed', ok({how: 'restart', seconds: 6.2,
+          why: [{code: 'amp', detail: 'the amp runs in Carla'}, {code: 'tracks', detail: 'master differs'}]})),
+        R.lifecycleOutcome('switch', 'accustomed', no(409, {how: 'restart', why: [{code: 'amp', detail: 'x'}],
+          reason: 'up failed; electric_board was brought back'})),
+        R.lifecycleOutcome('switch', 'accustomed', no(409, {code: 'busy', reason: "busy: 'up' is still running"})),
+        R.lifecycleOutcome('start', 'electric_board', ok({warnings: ['a patchbay link was not made']})),
+        R.lifecycleOutcome('start', 'electric_board', no(409, {reason: 'error: a rig is already running'})),
+        R.lifecycleOutcome('stop', 'electric_board', ok({})),
+      ];""")
+    assert said[0] == {"ok": True, "title": "Switched to electric-delay",
+                       "text": "Switched to electric-delay live in 0.4 s: Sushi was not restarted."}
+    assert said[1]["text"] == ("Switched to accustomed by restart in 6.2 s, because amp: the amp runs in Carla; "
+                               "tracks: master differs.")
+    assert said[2] == {"ok": False, "title": "Not switched to accustomed (by restart)",
+                       "reason": "up failed; electric_board was brought back. It restarted because amp: x"}
+    assert said[3] == {"ok": False, "title": "Not switched to accustomed", "reason": "busy: 'up' is still running"}
+    assert said[4]["text"] == "Started electric_board, headless. Warnings: a patchbay link was not made"
+    assert said[5] == {"ok": False, "title": "Not started: electric_board", "reason": "error: a rig is already running"}
+    assert said[6]["text"] == "Stopped electric_board."
+
+
+class Watched(Page):
+    """A page, every request it made by path, and every console error: what
+    #111 counted (110 errors while the rig was down)."""
+
+    def __init__(self, browser, served, url, **size):
+        self.asked = []
+        self.console = []
+        self.page = browser.new_page(viewport={"width": size.get("width", 1280), "height": size.get("height", 900)})
+        self.errors = []
+        self.page.on("pageerror", lambda error: self.errors.append(str(error)))
+        self.page.on("console", lambda m: self.console.append(m.text) if m.type == "error" else None)
+        self.page.on("request", lambda r: self.asked.append(r.url[len(served.url):]))
+        self.page.goto(served.url + url)
+
+
+def test_a_down_rig_is_a_state_and_the_page_does_not_ask_it_for_anything(browser):
+    from ui_fake import UiLifecycle
+
+    with Served(lifecycle=UiLifecycle(up=None)) as served:
+        page = Watched(browser, served, "/#rack")
+        expect(page.page.locator(".rig-name")).to_have_text("Rig down")
+        expect(page.page.locator(".status")).to_have_class(re.compile(r"\btone-off\b"))
+        page.page.wait_for_timeout(3500)  # three polls and more
+        assert page.asked.count("/health") >= 3
+        assert "/live" not in page.asked and "/rig/load" not in page.asked
+        assert page.console == [], "a rig that is down is not an error"
+        expect(page.page.locator(".problem")).to_have_count(0)
+        expect(page.page.locator(".tile").first).to_have_text("LOAD—rig down")
+        page.close()
+
+
+def test_a_live_that_fails_while_the_rig_is_up_is_still_the_error_it_is(browser):
+    rig = UiRig()
+
+    def refuse(*_):
+        raise __import__("sushi_rig.live", fromlist=["LiveError"]).LiveError("Sushi stopped answering (test)")
+
+    rig.connect = refuse
+    with Served(rig) as served:
+        page = Watched(browser, served, "/#rack")
+        status = page.page.locator(".status")
+        expect(status).to_have_text("Up, but Sushi did not answer: Sushi stopped answering (test)")
+        expect(status).to_have_class(re.compile(r"\btone-down\b"))
+        expect(page.page.locator(".problem.agent")).to_contain_text("Sushi stopped answering (test)")
+        assert "/live" in page.asked
+        assert any("502" in line for line in page.console), page.console
+        page.close()
+
+
+def rack_page(browser, served):
+    page = Watched(browser, served, "/#rack")
+    page.page.wait_for_selector(".rigs .rig")
+    return page
+
+
+def test_a_rig_is_started_from_the_picker_headless_and_busy_is_shown_meanwhile(browser):
+    from ui_fake import UiLifecycle
+
+    world = UiLifecycle(up=None)
+    world.delay = 1.5
+    with Served(lifecycle=world) as served:
+        page = rack_page(browser, served)
+        p = page.page
+        start = p.get_by_role("button", name="Choose a rig to start")
+        expect(start).to_be_disabled()
+        p.locator(".rig", has_text="electric_board").click()
+        p.get_by_role("button", name="Start electric_board").click()
+        expect(p.locator(".rig-busy")).to_have_text("Starting electric_board…")
+        expect(p.get_by_role("button", name="Start electric_board")).to_be_disabled()
+        expect(p.locator(".rig-name")).to_have_text("electric_board")  # the agent's busy line meanwhile
+        expect(p.locator(".notice")).to_contain_text("Started electric_board, headless.", timeout=8000)
+        assert world.calls == [["up", "electric_board", "--rig", "--headless"]]
+        expect(p.locator(".rig.up")).to_have_text("electric_boardup now")
+        expect(p.locator(".unit")).to_have_count(4)
+        expect(p.get_by_role("button", name="Stop electric_board")).to_be_enabled()
+        page.close()
+
+
+def test_a_refused_start_shows_the_agents_reason_and_nothing_starts(browser):
+    from ui_fake import UiLifecycle
+
+    world = UiLifecycle(up=None)
+    world.refuse_up = "no machine file for this host (test)"
+    with Served(lifecycle=world) as served:
+        page = rack_page(browser, served)
+        p = page.page
+        p.locator(".rig", has_text="electric-delay").click()
+        p.get_by_role("button", name="Start electric-delay").click()
+        alert = p.locator(".problem.refused")
+        expect(alert).to_contain_text("Not started: electric-delay")
+        expect(alert).to_contain_text("error: no machine file for this host (test)")
+        expect(p.locator(".rig-name")).to_have_text("Rig down")
+        assert world.calls == [["up", "electric-delay", "--rig", "--headless"]]
+        page.close()
+
+
+def test_stop_takes_a_confirm_because_it_cuts_the_sound(browser, served):
+    page = rack_page(browser, served)
+    p = page.page
+    p.get_by_role("button", name="Stop electric_board").click()
+    expect(p.locator(".confirm")).to_contain_text("Stop electric_board? The sound stops until a rig is started again.")
+    p.get_by_role("button", name="Cancel").click()
+    expect(p.locator(".confirm")).to_have_count(0)
+    p.get_by_role("button", name="Stop electric_board").click()
+    assert served.lifecycle.calls == [], "one tap stops nothing"
+    p.get_by_role("button", name="Stop now").click()
+    expect(p.locator(".rig-name")).to_have_text("Rig down")
+    expect(p.locator(".notice")).to_contain_text("Stopped electric_board.")
+    assert served.lifecycle.calls == [["down"]]
+    expect(p.get_by_role("button", name="Start electric_board")).to_be_enabled()
+    page.close()
+
+
+def test_a_switch_made_live_says_so(browser, served):
+    page = rack_page(browser, served)
+    p = page.page
+    p.locator(".rig", has_text="electric-delay").click()
+    p.get_by_role("button", name="Switch to electric-delay").click()
+    expect(p.locator(".notice")).to_have_text(re.compile(
+        r"^Switched to electric-delay live in 0\.4 s: Sushi was not restarted\."))
+    expect(p.locator(".rig-name")).to_have_text("electric-delay")
+    expect(p.locator(".rig.up")).to_have_text("electric-delayup now")
+    assert served.lifecycle.calls == [["switch", "electric-delay"]]
+    page.close()
+
+
+def test_a_switch_made_by_restart_says_why(browser, served):
+    served.lifecycle.how["accustomed"] = ("restart", [{"code": "amp", "detail": "the amp's settings differ (test)"}])
+    page = rack_page(browser, served)
+    p = page.page
+    p.locator(".rig", has_text="accustomed").click()
+    p.get_by_role("button", name="Switch to accustomed").click()
+    expect(p.locator(".notice")).to_have_text(re.compile(
+        r"^Switched to accustomed by restart in 6\.2 s, because amp: the amp's settings differ \(test\)\."))
+    expect(p.locator(".rig-name")).to_have_text("accustomed")
+    page.close()
+
+
+def test_on_stage_the_picker_is_there_only_once_unlocked(browser, served):
+    page = Watched(browser, served, "/", width=390, height=844)
+    p = page.page
+    p.wait_for_selector(".card")
+    expect(p.locator(".stage-rigs")).to_be_hidden()
+    lock = p.locator("button.lock")
+    lock.click()
+    lock.click()
+    expect(lock).to_have_text("Lock off · editing")
+    expect(p.locator(".stage-rigs .rig")).not_to_have_count(0)
+    expect(p.get_by_role("button", name="Stop electric_board")).to_be_visible()
+    width = p.evaluate("() => [document.documentElement.scrollWidth, innerWidth]")
+    assert width[0] <= width[1], "the picker fits a phone"
+    small = p.evaluate("""() => [...document.querySelectorAll('.stage-rigs button')]
+      .map((e) => [e.textContent.trim(), e.getBoundingClientRect().height]).filter((s) => s[1] < 44)""")
+    assert small == [], small
+    lock.click()
+    expect(p.locator(".stage-rigs")).to_be_hidden()
+    page.close()
+
+
+def test_a_load_update_leaves_the_lock_button_and_its_focus_alone(browser, served):
+    """The tiles change with every sample. In the header's key, they rebuilt
+    it every 2 s, Lock button and Stage link included: a click between press
+    and release was lost, and so was keyboard focus (found by review)."""
+    page = rack_page(browser, served)
+    p = page.page
+    load = p.locator(".tile").first
+    expect(load).to_contain_text("26%")
+    lock = p.locator("button.lock")
+    lock.focus()
+    handle = lock.element_handle()
+    served.pw_top_output = served.pw_top_output.replace("0.23    2", "0.53    2")  # NAM's B/Q
+    expect(load).to_contain_text("56%", timeout=8000)
+    assert handle.evaluate("(e) => e.isConnected && document.activeElement === e"), \
+        "the same Lock button, still focused"
+    page.close()
+
+
+def test_the_racks_empty_message_follows_the_rig_through_a_start_that_fails(browser):
+    """With no rig the message depends on the tone, which was not in its
+    key: "Choose one under RIGS" stayed while a rig started, and "The rig is
+    changing" after a start that failed (found by review)."""
+    from ui_fake import UiLifecycle
+
+    world = UiLifecycle(up=None)
+    world.delay = 1.5
+    world.refuse_up = "no machine file for this host (test)"
+    with Served(lifecycle=world) as served:
+        page = rack_page(browser, served)
+        p = page.page
+        empty = p.locator(".rack .empty")
+        expect(empty).to_contain_text("Choose one under RIGS to start it")
+        p.locator(".rig", has_text="electric-delay").click()
+        p.get_by_role("button", name="Start electric-delay").click()
+        expect(empty).to_have_text("The rig is changing; the rack comes back when it is up.")
+        expect(p.locator(".problem.refused")).to_contain_text("Not started: electric-delay", timeout=8000)
+        expect(empty).to_contain_text("Choose one under RIGS to start it")
+        page.close()

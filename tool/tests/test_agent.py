@@ -15,6 +15,7 @@ import asyncio
 import sys
 import threading
 from dataclasses import replace
+from pathlib import Path
 
 import pytest
 
@@ -850,7 +851,7 @@ def test_live_serves_the_running_rig_with_each_parameters_range():
 
 def test_live_with_no_rig_up_is_unavailable_and_says_why():
     elkpy_errors = pytest.importorskip("elkpy.sushierrors")
-    agent, fake = live_agent()
+    agent, fake = live_agent(describe=lambda: dict(DOWN))
     fake.fail = elkpy_errors.SushiUnavailableError("failed to connect", "")
     status, body = call(agent, "GET", "/live")
     assert status == 503
@@ -891,6 +892,340 @@ def test_live_against_a_real_elkpy_and_no_sushi_is_unavailable(tmp_path):
     )
     assert done.returncode == 0, done.stderr
     assert "503 Sushi is not reachable" in done.stdout, done.stdout
+
+
+def test_a_poll_prints_nothing_and_sushi_gone_while_up_is_said_once(tmp_path):
+    """#111: elkpy printed three ELKPY: lines on every connection, so a page
+    polling /live buried everything the agent said. Against the real elkpy
+    and no Sushi, in a child process as the test above is and for its
+    reason: polls with no rig up print nothing at all, and with the state
+    file saying a rig is up, the one thing that matters -- Sushi is not
+    there -- is printed once, not once a poll, and reaches /health."""
+    pytest.importorskip("elkpy")
+    import json
+    import os
+    import socket
+    import subprocess
+    from pathlib import Path
+
+    with socket.socket() as sock:
+        sock.bind(("127.0.0.1", 0))
+        port = sock.getsockname()[1]
+    script = (
+        "import asyncio, json, sys\n"
+        "from aiohttp.test_utils import TestClient, TestServer\n"
+        "from sushi_rig.agent import Agent, Live\n"
+        "rig = {'running': False}\n"
+        "async def go():\n"
+        "    agent = Agent(describe=lambda: dict(rig), live=Live.at(f'localhost:{sys.argv[1]}'))\n"
+        "    out = {}\n"
+        "    async with TestClient(TestServer(agent.app())) as client:\n"
+        "        async def poll(n):\n"
+        "            return [(await client.get('/live')).status for _ in range(n)]\n"
+        "        out['down'] = await poll(3)\n"
+        "        sys.stdout.write('--- up\\n'); sys.stdout.flush()\n"
+        "        sys.stderr.write('--- up\\n'); sys.stderr.flush()\n"
+        "        rig.update(running=True, config_name='x')\n"
+        "        out['up'] = await poll(3)\n"
+        "        out['health'] = (await (await client.get('/health')).json())['agent']['last_error']\n"
+        "    with open(sys.argv[2], 'w') as f: json.dump(out, f)\n"
+        "asyncio.run(go())\n"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", script, str(port), str(tmp_path / "out.json")],
+        capture_output=True, text=True, timeout=60,
+        env={**os.environ, "PYTHONPATH": str(Path(agent_module.__file__).parents[1])},
+    )
+    assert done.returncode == 0, done.stderr
+    out = json.loads((tmp_path / "out.json").read_text())
+    assert out["down"] == [503, 503, 503] and out["up"] == [503, 503, 503]
+    assert done.stdout == "--- up\n", "nothing on stdout, ELKPY: lines least of all"
+    down, up = done.stderr.split("--- up\n")
+    assert down == "", "polls with no rig up print nothing"
+    said = up.splitlines()
+    assert len(said) == 1, up
+    assert said[0].startswith("sushi-rig agent: the rig is up but Sushi is not reachable: ")
+    assert "ELKPY" not in done.stderr
+    assert out["health"]["kind"] == "live"
+    assert out["health"]["message"].startswith("the rig is up but Sushi is not reachable")
+
+
+def test_sushi_gone_while_up_is_said_again_once_it_has_come_back_and_gone_again(capsys):
+    elkpy_errors = pytest.importorskip("elkpy.sushierrors")
+    agent, fake = live_agent()
+
+    async def go():
+        async with TestClient(TestServer(agent.app())) as client:
+            statuses = []
+            for gone in (True, True, False, True):
+                fake.fail = elkpy_errors.SushiUnavailableError("failed to connect (test)", "") if gone else None
+                statuses.append((await client.get("/live")).status)
+            return statuses
+
+    assert asyncio.run(go()) == [503, 503, 200, 503]
+    assert capsys.readouterr().err.count("the rig is up but Sushi is not reachable") == 2
+
+
+def unreachable_agent(runner=None):
+    """An agent over FakeLive whose rig `state["rig"]` describes, and a way
+    to make Sushi go and come back."""
+    elkpy_errors = pytest.importorskip("elkpy.sushierrors")
+    state = {"rig": dict(UP)}
+    agent, fake = live_agent(describe=lambda: dict(state["rig"]), run=runner or FakeRunner())
+
+    def sushi(gone):
+        fake.fail = elkpy_errors.SushiUnavailableError("failed to connect (test)", "") if gone else None
+    return agent, state, sushi
+
+
+def served_steps(agent, steps):
+    """Run `steps(client)`, a coroutine function, against the served agent."""
+    async def go():
+        async with TestClient(TestServer(agent.app())) as client:
+            return await steps(client)
+    return asyncio.run(go())
+
+
+async def last_error(client):
+    return (await (await client.get("/health")).json())["agent"]["last_error"]
+
+
+def test_sushi_gone_while_up_is_in_health_until_it_answers_and_a_new_outage_has_its_own_time():
+    """Found by review: only the stderr note was reset, so /health kept the
+    old fault on a healthy rig, and a later outage kept the first one's time."""
+    agent, state, sushi = unreachable_agent()
+
+    async def steps(client):
+        seen = []
+        sushi(True)
+        await client.get("/live")
+        seen.append(dict(await last_error(client)))
+        agent.last_error["at"] = "when it began"  # to tell this outage's record from a new one's
+        await client.get("/live")
+        seen.append(dict(await last_error(client)))
+        sushi(False)
+        assert (await client.get("/live")).status == 200
+        seen.append(await last_error(client))
+        sushi(True)
+        await client.get("/live")
+        seen.append(dict(await last_error(client)))
+        return seen
+
+    first, same, healthy, again = served_steps(agent, steps)
+    assert first["kind"] == "live" and first["message"].startswith("the rig is up but Sushi is not reachable")
+    assert same["at"] == "when it began", "one outage keeps the time it began"
+    assert healthy is None, "Sushi answers again: /health stops saying it"
+    assert again["message"] == first["message"] and again["at"] != "when it began", "a new outage, its own time"
+
+
+def test_sushi_gone_is_no_longer_said_once_the_rig_is_down():
+    agent, state, sushi = unreachable_agent()
+
+    async def steps(client):
+        sushi(True)
+        await client.get("/live")
+        up = await last_error(client)
+        state["rig"] = dict(DOWN)
+        return up, await last_error(client)
+
+    up, down = served_steps(agent, steps)
+    assert up is not None and down is None
+
+
+def test_sushi_gone_is_said_beside_a_lifecycle_failure_not_over_it():
+    """Found by review: it overwrote any last_error, a failed restart's
+    reason included, which says why the rig is as it is."""
+    agent, state, sushi = unreachable_agent(FakeRunner(Outcome(False, 1, "", "error: Sushi did not come up (test)\n")))
+
+    async def steps(client):
+        assert (await client.post("/rig/restart")).status == 409
+        sushi(True)
+        await client.get("/live")
+        await client.get("/live")
+        during = await last_error(client)
+        sushi(False)
+        await client.get("/live")
+        return during, await last_error(client)
+
+    during, after = served_steps(agent, steps)
+    assert during["kind"] == "lifecycle" and during["message"] == "error: Sushi did not come up (test)"
+    assert len(during["also"]) == 1 and during["also"][0].startswith("the rig is up but Sushi is not reachable")
+    assert after["kind"] == "lifecycle" and "also" not in after, "the outage over, only the failure is left"
+
+
+def test_elkpys_chatter_is_dropped_and_anything_else_it_says_reaches_stderr():
+    from sushi_rig.live import elkpy_line
+
+    said: set = set()
+    for chatter in ("ELKPY: Compiled proto found!", "ELKPY: Synchronous context detected.",
+                    "ELKPY: Asyncio context detected.", "ELKPY: Sushi API match! -> 1.2.0",
+                    "ELKPY: Could not find a running Sushi at localhost:51051"):
+        assert elkpy_line(chatter, said) is None, chatter
+    mismatch = "ELKPY: API version mismatch! Sushi = 1.3.0 <-> Elkpy = 1.2.0"
+    assert elkpy_line(mismatch, said) == f"sushi-rig: elkpy said: {mismatch}"
+    assert elkpy_line(mismatch, said) is None, "true of every connection: said once"
+    assert elkpy_line("Some gRPC context", said) == "sushi-rig: elkpy said: Some gRPC context"
+    assert elkpy_line("Some gRPC context", said) is not None, "anything else, every time"
+
+
+def test_elkpys_prints_go_through_the_quiet_print_once_installed(capsys, monkeypatch):
+    pytest.importorskip("elkpy")
+    from elkpy import grpc_gen, notificationcontroller, sushicontroller
+
+    from sushi_rig import live
+    from sushi_rig.live import elkpy_print, quiet_elkpy
+
+    monkeypatch.setattr(live, "_quieted", None)
+    assert quiet_elkpy() == list(live.ELKPY_PRINTING)
+    assert grpc_gen.print is sushicontroller.print is notificationcontroller.print is elkpy_print
+    grpc_gen.print("ELKPY: Compiled proto found!")
+    sushicontroller.print("ELKPY: Sushi API match! -> 1.2.0")
+    notificationcontroller.print("a real problem (test)")
+    out, err = capsys.readouterr()
+    assert out == "" and err == "sushi-rig: elkpy said: a real problem (test)\n"
+
+
+def test_quieting_elkpy_goes_module_by_module_and_never_raises(capsys, monkeypatch):
+    """Found by review: one comprehension and `except ImportError` meant one
+    missing module patched nothing, and any other import error stopped the
+    agent starting. Now each module on its own, and what was not patched is
+    said once."""
+    pytest.importorskip("elkpy")
+    import importlib
+
+    from sushi_rig import live
+
+    real = importlib.import_module
+
+    def import_module(name, *args):
+        if name == "elkpy.notificationcontroller":
+            raise RuntimeError("protobuf is the wrong version (test)")
+        return real(name, *args)
+
+    monkeypatch.setattr(live, "_quieted", None)
+    monkeypatch.setattr(live, "ELKPY_PRINTING", ("grpc_gen", "no_such_module", "notificationcontroller"))
+    monkeypatch.setattr(importlib, "import_module", import_module)
+    assert live.quiet_elkpy() == ["grpc_gen"]
+    assert live.quiet_elkpy() == ["grpc_gen"], "once: the second call does nothing"
+    err = capsys.readouterr().err
+    assert err.count("elkpy's own prints are not silenced for") == 1
+    assert "elkpy.no_such_module (ModuleNotFoundError" in err
+    assert "elkpy.notificationcontroller (RuntimeError: protobuf is the wrong version (test))" in err
+
+
+def test_an_agent_imports_elkpy_only_when_it_first_connects():
+    """Quieting elkpy at the agent's start imported elkpy, gRPC and protobuf
+    in every Agent (found by review). It is done on the first connection."""
+    import os
+    import subprocess
+
+    script = (
+        "import sys\n"
+        "from sushi_rig.agent import Agent\n"
+        "Agent()\n"
+        "print(sorted(m for m in ('elkpy', 'grpc', 'google.protobuf') if m in sys.modules))\n"
+    )
+    done = subprocess.run(
+        [sys.executable, "-c", script], capture_output=True, text=True, timeout=60,
+        env={**os.environ, "PYTHONPATH": str(Path(agent_module.__file__).parents[1])},
+    )
+    assert (done.returncode, done.stdout, done.stderr) == (0, "[]\n", "")
+
+
+# --------------------------------------------------------------------------- #
+# GET /rig/load (#111): pw-top stood in; tests/test_top.py runs the real call
+# against a stand-in executable
+# --------------------------------------------------------------------------- #
+
+PW_TOP_SAMPLE = (Path(__file__).parent / "fixtures" / "pw-top-b-n2.txt").read_text(encoding="utf-8")
+
+
+def load_agent(pw_top, rig=None):
+    return Agent(describe=lambda: dict(rig or {**UP, "children": {"sushi": 1, "amp": 2}}), pw_top=pw_top)
+
+
+def test_the_load_is_the_running_rigs_nodes_from_one_pw_top_sample():
+    timeouts = []
+    agent = load_agent(lambda timeout: timeouts.append(timeout) or PW_TOP_SAMPLE)
+    status, body = call(agent, "GET", "/rig/load")
+    assert status == 200 and body["ok"]
+    assert [n["name"] for n in body["nodes"]] == ["NAM", "Carla", "sushi"]
+    assert body["total_load"] == pytest.approx(0.26) and body["budget"]["block_ms"] == 21.333
+    assert body["missing"] == [] and "at" in body
+    assert timeouts == [agent_module.LOAD_TIMEOUT], "always with a deadline"
+
+
+def test_no_load_is_read_with_no_rig_up():
+    asked = []
+    status, body = call(load_agent(lambda t: asked.append(t), rig=DOWN), "GET", "/rig/load")
+    assert (status, body["code"]) == (409, "no_rig")
+    assert asked == [], "pw-top is not run for a rig that is not there"
+
+
+def test_pages_asking_at_once_share_one_pw_top_run_and_its_sample_for_a_while():
+    """Found by review: each request ran its own pw-top, about a second of
+    the rig's CPU, so two pages polling every 2 s kept one running."""
+    release = threading.Event()
+    runs = []
+    now = [100.0]
+
+    def pw_top(timeout):
+        runs.append(timeout)
+        release.wait(10)
+        return PW_TOP_SAMPLE
+
+    agent = Agent(describe=lambda: dict(UP), pw_top=pw_top, clock=lambda: now[0])
+
+    async def steps(client):
+        both = [asyncio.ensure_future(client.get("/rig/load")) for _ in range(2)]
+        await asyncio.sleep(0.3)
+        release.set()
+        statuses = [r.status for r in await asyncio.gather(*both)]
+        after = [len(runs)]
+        now[0] += agent_module.LOAD_SHARED - 0.1
+        statuses.append((await client.get("/rig/load")).status)  # within the time a sample is shared
+        after.append(len(runs))
+        now[0] += 0.2
+        statuses.append((await client.get("/rig/load")).status)  # past it: a fresh sample
+        after.append(len(runs))
+        return statuses, after
+
+    statuses, after = served_steps(agent, steps)
+    assert statuses == [200, 200, 200, 200]
+    assert after == [1, 1, 2], "one run for two at once; the next shares it; then a new one"
+
+
+@pytest.mark.parametrize("code, status", [("no_pw_top", 500), ("timeout", 504), ("failed", 502), ("no_sample", 502)])
+def test_a_pw_top_that_cannot_be_read_is_refused_loudly_and_said_once(code, status, capsys):
+    from sushi_rig.top import LoadError
+
+    failing = {"now": True}
+
+    def pw_top(timeout):
+        if failing["now"]:
+            raise LoadError(f"pw-top went wrong ({code}, test)", code)
+        return PW_TOP_SAMPLE
+
+    clock = iter(range(0, 10_000, 10))  # 10 s a reading: no request shares another's sample
+    agent = Agent(describe=lambda: dict(UP), pw_top=pw_top, clock=lambda: next(clock))
+
+    async def go():
+        async with TestClient(TestServer(agent.app())) as client:
+            answers = []
+            for flip in (True, True, False, True):
+                failing["now"] = flip
+                response = await client.get("/rig/load")
+                answers.append((response.status, await response.json()))
+            health = await (await client.get("/health")).json()
+            return answers, health
+
+    answers, health = asyncio.run(go())
+    assert [a[0] for a in answers] == [status, status, 200, status]
+    assert answers[0][1]["code"] == code and answers[0][1]["reason"] == f"pw-top went wrong ({code}, test)"
+    err = capsys.readouterr().err
+    # Once when it began, not on the second poll; again after it had worked.
+    assert err.count(f"sushi-rig agent: load: pw-top went wrong ({code}, test)") == 2
+    assert health["agent"]["last_error"] is None, "a figure polled every 2 s is not the rig's last error"
 
 
 def test_a_parameter_is_set_by_name_and_logged_with_what_it_replaced():
