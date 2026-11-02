@@ -193,6 +193,37 @@ def test_a_v2_rig_is_compiled_and_wired_from_its_own_file(tmp_path):
     assert out["warnings"] == []
 
 
+def test_a_rig_with_a_midi_map_is_compiled_for_the_machines_controller(tmp_path):
+    """The machine file says what the MPD218 sends; the rig names its
+    controls; the compiled config carries Sushi's mappings."""
+    import textwrap
+
+    root = tmp_path / "checkout"
+    (root / "config" / "rigs").mkdir(parents=True)
+    (root / "config" / "rigs" / "blend.yaml").write_text(textwrap.dedent("""\
+        kind: rig
+        schema_version: 1
+        name: blend
+        channels:
+        - {name: clean, input: guitar-in, width: mono, chain: []}
+        - {name: lead, input: guitar-in, width: mono, chain: [], level: -3}
+        master: {output: monitor-out, chain: []}
+        midi:
+          controller: mpd218
+          controls:
+          - {control: knob1, blend: [clean, lead]}
+        """))
+    out = rig.prepare_rig("blend", root, tmp_path / "run", machine_file=MACHINE, dump=CAPTURED_DUMP)
+    mappings = json.loads(out["config"].read_text())["midi"]["cc_mappings"]
+    assert [(m["plugin_name"], m["cc_number"]) for m in mappings] == [("clean_send", 3), ("lead_send", 3)]
+
+    (root / "config" / "rigs" / "pedal.yaml").write_text(
+        (root / "config" / "rigs" / "blend.yaml").read_text().replace("controller: mpd218", "controller: fs6")
+    )
+    with pytest.raises(rig.RigError, match="written for controller 'fs6', which sonny-dewfall-XPS-9320.yaml does not describe"):
+        rig.prepare_rig("pedal", root, tmp_path / "run", machine_file=MACHINE, dump=CAPTURED_DUMP)
+
+
 def test_a_rig_that_does_not_exist_is_refused_by_name(tmp_path):
     with pytest.raises(rig.RigError, match="no such rig"):
         rig.prepare_rig("nope", ROOT, tmp_path, machine_file=MACHINE, dump=CAPTURED_DUMP)

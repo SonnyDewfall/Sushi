@@ -85,7 +85,10 @@ RETURN_UID = "sushi.testing.return"
 MASTER_BUS = 0
 
 _KEYS = ("kind", "schema_version", "name", "description", "meta", "host", "amp",
-         "channels", "master")
+         "channels", "master", "midi")
+_MIDI_KEYS = ("controller", "port", "programs", "controls")
+_CONTROL_KEYS = ("control", "blend", "parameter", "mute", "bypass", "range")
+_BINDINGS = ("blend", "parameter", "mute", "bypass")
 _CHANNEL_KEYS = ("name", "input", "width", "strip", "chain", "level")
 _MASTER_KEYS = ("output", "chain")
 _PLUGIN_KEYS = ("name", "uri", "path", "uid", "type")
@@ -125,6 +128,32 @@ class Master:
 
 
 @dataclass(frozen=True)
+class MidiControl:
+    """One binding in a rig's MIDI map (#34): a named control on the machine's
+    controller, and what it does. `binding` is one of `_BINDINGS`; `target` is
+    the channel pair for a blend, `channel/plugin/parameter` for a parameter,
+    a channel for mute, `channel/plugin` for bypass. `range` is the normalised
+    span a sweep covers, (0, 1) unless the file narrows it."""
+
+    control: str
+    binding: str
+    target: Any
+    range: tuple[float, float] = (0.0, 1.0)
+
+
+@dataclass(frozen=True)
+class MidiMap:
+    """The rig's MIDI map: which controller it is written for, Sushi's MIDI
+    input it arrives on, whether Program Changes switch rigs (the agent's
+    job, #93), and the controls."""
+
+    controller: str
+    controls: tuple[MidiControl, ...] = ()
+    port: int = 0
+    programs: str | None = None
+
+
+@dataclass(frozen=True)
 class Rig:
     name: str
     channels: tuple[Channel, ...]
@@ -138,6 +167,7 @@ class Rig:
     # provenance a config's `_meta` carried beyond its name and description.
     amp: dict[str, Any] | None = None
     meta: dict[str, Any] = field(default_factory=dict)
+    midi: MidiMap | None = None
 
 
 # --------------------------------------------------------------------------- #
@@ -352,6 +382,76 @@ def _chain(where: str, raw: Any, problems: list[str],
     return tuple(plugins)
 
 
+def _parse_midi(raw: Any, problems: list[str]) -> MidiMap | None:
+    """The `midi:` section: a controller named in the machine file, and the
+    controls it binds. Shapes only; what the targets name is checked by
+    `check_rig`, which knows the channels."""
+    if not isinstance(raw, dict):
+        problems.append(f"midi must be a mapping (got {raw!r})")
+        return None
+    problems += _unknown("midi", raw, _MIDI_KEYS)
+    controller = raw.get("controller")
+    if not isinstance(controller, str) or not controller:
+        problems.append("midi: controller must name a controller in the machine file")
+        controller = ""
+    port = raw.get("port", 0)
+    if type(port) is not int or port < 0:
+        problems.append(f"midi: port must be Sushi's MIDI input number, 0 or more (got {port!r})")
+        port = 0
+    programs = raw.get("programs")
+    if programs is not None and programs != "rigs":
+        problems.append(f"midi: programs must be 'rigs' (a Program Change switches rigs) or absent (got {programs!r})")
+    controls: list[MidiControl] = []
+    entries = raw.get("controls", [])
+    if not isinstance(entries, list):
+        problems.append(f"midi: controls must be a list (got {entries!r})")
+        entries = []
+    shapes_said = {
+        "blend": "a list of two channel names",
+        "parameter": "channel/plugin/parameter",
+        "mute": "a channel name",
+        "bypass": "channel/plugin",
+    }
+    for index, entry in enumerate(entries):
+        at = f"midi: control {index + 1}"
+        if not isinstance(entry, dict):
+            problems.append(f"{at} is {entry!r}, not a mapping")
+            continue
+        problems += _unknown(at, entry, _CONTROL_KEYS)
+        name = entry.get("control")
+        if not isinstance(name, str) or not name:
+            problems.append(f"{at}: control must name a control on the controller")
+            continue
+        bound = [key for key in _BINDINGS if key in entry]
+        if len(bound) != 1:
+            problems.append(f"{at} ({name}): exactly one of {', '.join(_BINDINGS)}")
+            continue
+        binding, target = bound[0], entry[bound[0]]
+        span = (0.0, 1.0)
+        if "range" in entry:
+            value = entry["range"]
+            numbers = isinstance(value, list) and len(value) == 2 and all(
+                isinstance(v, (int, float)) and not isinstance(v, bool) and 0 <= v <= 1 for v in value
+            )
+            if not numbers:
+                problems.append(f"{at} ({name}): range must be two numbers from 0 to 1, normalised")
+            elif binding != "parameter":
+                problems.append(f"{at} ({name}): range applies to a parameter only")
+            else:
+                span = (float(value[0]), float(value[1]))
+        shapes = {
+            "blend": isinstance(target, list) and len(target) == 2 and all(isinstance(t, str) for t in target),
+            "parameter": isinstance(target, str) and target.count("/") == 2,
+            "mute": isinstance(target, str) and bool(target),
+            "bypass": isinstance(target, str) and target.count("/") == 1,
+        }
+        if not shapes[binding]:
+            problems.append(f"{at} ({name}): {binding} must be {shapes_said[binding]}")
+            continue
+        controls.append(MidiControl(name, binding, tuple(target) if isinstance(target, list) else target, span))
+    return MidiMap(controller, tuple(controls), port, programs)
+
+
 def parse_rig(raw: Any) -> Rig:
     """A `Rig` from a parsed YAML document, or `RigFileError` naming every problem."""
     if not isinstance(raw, dict):
@@ -434,6 +534,8 @@ def parse_rig(raw: Any) -> Rig:
         if isinstance(entry.get("name"), str) and _is_width(entry.get("width")):
             channels.append(Channel(entry["name"], str(entry.get("input")), entry["width"], chain, level))
 
+    midi = _parse_midi(raw.get("midi"), problems) if "midi" in raw else None
+
     description = raw.get("description")
     if description is not None and not isinstance(description, str):
         problems.append(f"description must be text (got {description!r})")
@@ -452,7 +554,7 @@ def parse_rig(raw: Any) -> Rig:
     if problems:
         raise RigFileError(problems)
     rig = Rig(str(name), tuple(channels), master, description or "", host,
-              settings, raw.get("amp"), dict(raw.get("meta") or {}))
+              settings, raw.get("amp"), dict(raw.get("meta") or {}), midi)
     problems = check_rig(rig)
     if problems:
         raise RigFileError(problems)
@@ -516,6 +618,8 @@ def check_rig(rig: Rig) -> list[str]:
             f"and 2 for each channel's stem — and Sushi has {MAX_FRONTEND_CHANNELS}, "
             f"so a rig has at most {MAX_FRONTEND_CHANNELS // 2 - 1} channels"
         )
+    if rig.midi is not None:
+        problems += _midi_problems(rig)
     return problems
 
 
@@ -533,16 +637,143 @@ def _inputs(first: int, width: str) -> list[dict[str, int]]:
     ]
 
 
-def compile_rig(rig: Rig) -> tuple[RigSpec, dict[str, Any]]:
+def _midi_problems(rig: Rig) -> list[str]:
+    """Every MIDI binding names something the rig has."""
+    problems: list[str] = []
+    channels = {c.name for c in rig.channels}
+    chains = {c.name: {p.name for p in c.chain} for c in rig.channels}
+    chains[MASTER] = {p.name for p in rig.master.chain}
+    seen: set[str] = set()
+    for control in rig.midi.controls:
+        at = f"midi: {control.control}"
+        if control.control in seen:
+            problems.append(f"{at} is bound twice")
+        seen.add(control.control)
+        if control.binding == "blend":
+            a, b = control.target
+            for name in (a, b):
+                if name not in channels:
+                    problems.append(f"{at}: blend names channel {name!r}, which the rig does not have")
+            if a == b:
+                problems.append(f"{at}: a blend needs two different channels")
+        elif control.binding == "mute":
+            if control.target not in channels:
+                problems.append(f"{at}: mute names channel {control.target!r}, which the rig does not have")
+        else:
+            channel, plugin = control.target.split("/")[:2]
+            if channel not in chains:
+                problems.append(f"{at}: {control.binding} names channel {channel!r}, which the rig does not have")
+            elif plugin not in chains[channel]:
+                problems.append(f"{at}: {control.binding} names {plugin!r}, which is not in {channel}'s chain")
+    return problems
+
+
+def compile_midi(rig: Rig, controller: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
+    """Sushi's `midi` section for the rig's map on `controller`, and the
+    bindings Sushi cannot hold, which are the agent's.
+
+    `controller` is `MachineSpec.controller(name)`: the port, the channel
+    and each control's (`cc`|`note`, number). What goes to Sushi, verified
+    against 1.3.0's `json_configurator.cpp` and `midi_dispatcher.cpp` on
+    2026-11-01, is `cc_mappings` only: a CC drives a parameter as
+    `min_range + (max_range - min_range) * value / 127`, in the parameter's
+    normalised domain, in the engine with no Python in the path. The channel
+    is written as the machine file gives it, as Sushi counts it, or "all"
+    (any string is omni to Sushi); whether Sushi counts channels from 0 is
+    not verified yet and is on the rig session's list.
+
+    - **parameter**: one mapping, the control's range.
+    - **mute**: one mapping on the channel's track, parameter `mute`, 0 to 1;
+      a track's `mute` is a parameter, so a whole channel mutes natively.
+    - **blend**: two mappings on the two channels' sends, parameter `gain`,
+      one from the channel's own level down to silence and the other the
+      reverse, so a single pedal fades one channel out as the other comes
+      in; heel is the first channel, toe the second. A channel's `level` is
+      its loudest, so the blend respects the mix.
+    - **bypass**: Sushi has no CC-to-bypass connection, so nothing is
+      written; the binding is returned for the agent to serve over gRPC.
+    - **programs**: a Program Change reaches a plugin's program in Sushi,
+      not a rig, so rig switching is the agent's too (#93).
+
+    A note cannot sweep, so a control that sends a note may only bypass, or
+    mute as a switch through the agent. `RigFileError` for a control the
+    controller does not have, or a note bound to a sweep.
+    """
+    sends = controller["controls"]
+    channel = controller.get("channel", "all")
+    port = rig.midi.port
+    levels = {c.name: c.level for c in rig.channels}
+    mappings: list[dict[str, Any]] = []
+    agent: list[dict[str, Any]] = []
+    problems: list[str] = []
+
+    def mapping(plugin: str, parameter: str, low: float, high: float, number: int) -> dict[str, Any]:
+        return {
+            "port": port, "channel": channel, "cc_number": number,
+            "plugin_name": plugin, "parameter_name": parameter,
+            "min_range": round(low, 6), "max_range": round(high, 6), "mode": "absolute",
+        }
+
+    for control in rig.midi.controls:
+        if control.control not in sends:
+            problems.append(
+                f"midi: {control.control!r} is not a control of controller {rig.midi.controller!r}; "
+                f"it has: {', '.join(sorted(sends))}"
+            )
+            continue
+        kind, number = sends[control.control]
+        if control.binding == "bypass":
+            agent.append({"control": control.control, kind: number, "channel": channel,
+                          "bypass": control.target})
+            continue
+        if kind == "note":
+            if control.binding != "mute":
+                problems.append(f"midi: {control.control!r} sends a note, which cannot sweep a {control.binding}")
+                continue
+            agent.append({"control": control.control, kind: number, "channel": channel,
+                          "mute": control.target})
+            continue
+        if control.binding == "parameter":
+            _, plugin, parameter = control.target.split("/")
+            mappings.append(mapping(plugin, parameter, *control.range, number))
+        elif control.binding == "mute":
+            mappings.append(mapping(control.target, "mute", 0.0, 1.0, number))
+        else:
+            first, second = control.target
+            mappings.append(mapping(first + SEND_SUFFIX, "gain", level_to_gain(levels[first]), 0.0, number))
+            mappings.append(mapping(second + SEND_SUFFIX, "gain", 0.0, level_to_gain(levels[second]), number))
+    if rig.midi.programs:
+        agent.append({"programs": rig.midi.programs, "port": port, "channel": channel})
+    if problems:
+        raise RigFileError(problems)
+    section = {"cc_mappings": mappings} if mappings else {}
+    return section, agent
+
+
+def compile_rig(
+    rig: Rig, controller: dict[str, Any] | None = None
+) -> tuple[RigSpec, dict[str, Any]]:
     """The `RigSpec` that runs `rig`, and the state its sends need.
 
     The state is what `emit` takes as captured state: each send's
     `destination_name`, without which a send goes nowhere and the channel is
     silent in the monitors while its stem looks healthy.
+
+    `controller` is the machine's description of the controller the rig's
+    MIDI map names (`MachineSpec.controller`). Without one the MIDI map is
+    left out, which is right for reading the rig's routing and wrong for
+    running it: `emit_rig` refuses that, since a rig quietly running without
+    its pedals is the silent failure principle 8 forbids.
     """
     problems = check_rig(rig)
     if problems:
         raise RigFileError(problems)
+    # Without a controller the spec is still right for routing (the patchbay,
+    # the probes, SAVE's source check), only without its MIDI map. Writing a
+    # config is where a missing controller is refused: `emit_rig`.
+    midi_section: dict[str, Any] = {}
+    if rig.midi is not None and controller is not None:
+        midi_section, _ = compile_midi(rig, controller)
     tracks = []
     processors: dict[str, Any] = copy.deepcopy(rig.settings)
     next_input = 0
@@ -576,6 +807,7 @@ def compile_rig(rig: Rig) -> tuple[RigSpec, dict[str, Any]]:
         tracks=tracks,
         meta={"name": rig.name, **({"description": rig.description} if rig.description else {}),
               **rig.meta},
+        midi=midi_section,
     )
     problems = spec.validate()
     if problems:
@@ -752,11 +984,23 @@ def pin_monitor_path(config: dict[str, Any]) -> dict[str, Any]:
     return config
 
 
-def emit_rig(rig: Rig, captured: dict[str, Any] | None = None) -> dict[str, Any]:
-    """The Sushi config for `rig`, with any captured state folded in."""
+def emit_rig(
+    rig: Rig, captured: dict[str, Any] | None = None,
+    controller: dict[str, Any] | None = None,
+) -> dict[str, Any]:
+    """The Sushi config for `rig`, with any captured state folded in, and
+    its MIDI map compiled for `controller`. A rig with a MIDI map and no
+    controller is refused: its controls cannot be resolved to anything Sushi
+    can hear, and a config written without its pedals would run silently
+    without them."""
     from .emit import emit
 
-    spec, fixed = compile_rig(rig)
+    if rig.midi is not None and controller is None:
+        raise RigFileError([
+            f"the rig's MIDI map is written for controller {rig.midi.controller!r}, and no "
+            "controller was given: the machine file says what its controls send"
+        ])
+    spec, fixed = compile_rig(rig, controller)
     state = merged_state(fixed, captured)
     problems = [
         problem for channel in rig.channels

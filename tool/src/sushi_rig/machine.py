@@ -26,8 +26,10 @@ from typing import Any
 # that is silently wired to the wrong place.
 SCHEMA_VERSION = 1
 
-_KNOWN_KEYS = ("schema_version", "interface", "roles")
+_KNOWN_KEYS = ("schema_version", "interface", "roles", "controllers")
 _ROLE_KEYS = ("ports", "mono_to_stereo")
+_CONTROLLER_KEYS = ("port", "channel", "controls")
+MIDI_MAX = 127
 
 
 class MachineError(Exception):
@@ -53,6 +55,10 @@ class MachineSpec:
     schema_version: Any = None
     interface: Any = None
     roles: Any = field(default_factory=dict)
+    # MIDI controllers on this machine (#34): hardware varies by machine and
+    # venue, so a rig names a control (`expression`, `switch_a`) and the
+    # machine file says what that control sends.
+    controllers: Any = field(default_factory=dict)
     # Keys the schema does not define. Kept so validate() can name them — a
     # misspelt `role:` would otherwise load as a machine with no roles.
     unknown_keys: list[str] = field(default_factory=list)
@@ -83,6 +89,7 @@ class MachineSpec:
             schema_version=raw.get("schema_version"),
             interface=raw.get("interface"),
             roles=raw.get("roles", {}),
+            controllers=raw.get("controllers", {}),
             unknown_keys=[str(k) for k in raw if k not in _KNOWN_KEYS],
             duplicate_keys=_duplicate_keys(tree),
         )
@@ -221,7 +228,54 @@ class MachineSpec:
             # oversight: the saved patchbay feeds one capture port to both Sushi
             # and the tuner.
 
+        problems += self._controller_problems()
         return problems
+
+
+    def _controller_problems(self) -> list[str]:
+        """Every way the `controllers` section could be wrong, by name."""
+        problems: list[str] = []
+        if not isinstance(self.controllers, dict):
+            return [f"controllers must be a mapping of name to controller (got {self.controllers!r})"]
+        for name, spec in self.controllers.items():
+            where = f"controller {name!r}"
+            if not isinstance(spec, dict):
+                problems.append(f"{where}: must be a mapping with controls")
+                continue
+            for key in spec:
+                if key not in _CONTROLLER_KEYS:
+                    problems.append(f"{where}: unknown key {key!r} (expected {', '.join(_CONTROLLER_KEYS)})")
+            channel = spec.get("channel", "all")
+            if not (channel == "all" or (type(channel) is int and 0 <= channel <= 15)):
+                problems.append(f"{where}: channel must be 0 to 15 as Sushi counts it, or all (got {channel!r})")
+            if "port" in spec and not isinstance(spec["port"], str):
+                problems.append(f"{where}: port must be the MIDI port's name as PipeWire lists it")
+            controls = spec.get("controls")
+            if not isinstance(controls, dict) or not controls:
+                problems.append(f"{where}: controls must be a mapping of control name to what it sends")
+                continue
+            for control, sends in controls.items():
+                at = f"{where}: control {control!r}"
+                if not isinstance(sends, dict) or len(sends) != 1 or next(iter(sends)) not in ("cc", "note"):
+                    problems.append(f"{at}: must be exactly one of cc: <0-127> or note: <0-127>")
+                    continue
+                kind, number = next(iter(sends.items()))
+                if type(number) is not int or not 0 <= number <= MIDI_MAX:
+                    problems.append(f"{at}: {kind} must be 0 to {MIDI_MAX} (got {number!r})")
+        return problems
+
+    def controller(self, name: str) -> dict[str, Any]:
+        """What `name`'s controls send: `{"port", "channel", "controls":
+        {control: ("cc"|"note", number)}}`, for the MIDI-map compiler.
+        Only valid after `validate()` returned nothing about controllers."""
+        spec = self.controllers[name]
+        return {
+            "port": spec.get("port"),
+            "channel": spec.get("channel", "all"),
+            "controls": {
+                control: next(iter(sends.items())) for control, sends in spec["controls"].items()
+            },
+        }
 
 
 def _port_problem(port: Any) -> str | None:
@@ -250,6 +304,7 @@ def _duplicate_keys(tree: Any) -> list[tuple[str, Any, int]]:
     two where a repeat means anything.
     """
     import yaml
+
 
     def repeats(mapping: Any, where: str) -> list[tuple[str, Any, int]]:
         found = []

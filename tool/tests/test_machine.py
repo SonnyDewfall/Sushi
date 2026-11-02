@@ -286,3 +286,47 @@ def test_long_form_ports_are_validated_like_plain_ones(tmp_path):
     assert machine.validate() == ["role 'r': has no ports"]
     machine = _load(tmp_path, "schema_version: 1\nroles:\n  r:\n    ports: ['bad']\n")
     assert "<client>:<port> form" in machine.validate()[0]
+
+
+# --- controllers (#34) ------------------------------------------------------
+
+
+def _with_controllers(controllers):
+    return MachineSpec(schema_version=1, interface="x",
+                       roles={"guitar-in": {"ports": ["A:in"], "mono_to_stereo": True}, "monitor-out": ["A:l", "A:r"]},
+                       controllers=controllers)
+
+
+def test_a_controller_describes_what_each_control_sends():
+    machine = _with_controllers({"mpd218": {"port": "MPD218:MPD218 Port A", "channel": 0,
+                                            "controls": {"knob1": {"cc": 3}, "pad1": {"note": 36}}}})
+    assert machine.validate() == []
+    assert machine.controller("mpd218") == {
+        "port": "MPD218:MPD218 Port A", "channel": 0,
+        "controls": {"knob1": ("cc", 3), "pad1": ("note", 36)},
+    }
+    assert _with_controllers({"x": {"controls": {"k": {"cc": 1}}}}).controller("x")["channel"] == "all"
+
+
+@pytest.mark.parametrize("controllers, said", [
+    ("mpd218", "controllers must be a mapping"),
+    ({"x": "cc 3"}, "must be a mapping with controls"),
+    ({"x": {"controls": {}}}, "controls must be a mapping"),
+    ({"x": {"controls": {"k": {"cc": 3, "note": 1}}}}, "exactly one of cc"),
+    ({"x": {"controls": {"k": {"pc": 3}}}}, "exactly one of cc"),
+    ({"x": {"controls": {"k": {"cc": 128}}}}, "cc must be 0 to 127"),
+    ({"x": {"channel": 16, "controls": {"k": {"cc": 3}}}}, "channel must be 0 to 15"),
+    ({"x": {"ports": "y", "controls": {"k": {"cc": 3}}}}, "unknown key 'ports'"),
+    ({"x": {"port": 3, "controls": {"k": {"cc": 3}}}}, "port must be the MIDI port's name"),
+])
+def test_a_controller_that_is_not_one_is_named(controllers, said):
+    problems = _with_controllers(controllers).validate()
+    assert any(said in p for p in problems), problems
+
+
+def test_the_rig_machines_file_describes_the_mpd218():
+    from pathlib import Path
+
+    machine = MachineSpec.load(Path(__file__).parent.parent.parent / "machines" / "sonny-dewfall-XPS-9320.yaml")
+    assert machine.validate() == []
+    assert machine.controller("mpd218")["controls"]["knob1"] == ("cc", 3)

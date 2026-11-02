@@ -272,6 +272,31 @@ def _patchbay(args: argparse.Namespace) -> int:
     return 0
 
 
+def _controller_for(rig) -> dict | None:
+    """The machine's description of the controller a rig's MIDI map names, or
+    None when the rig has no map. A map whose controller this machine does
+    not describe is an exit with the reason, never a config without it."""
+    from .machine import MachineError, MachineSpec, machine_path
+    from .paths import checkout_root
+
+    if rig.midi is None:
+        return None
+    machine_file = machine_path(checkout_root())
+    try:
+        machine = MachineSpec.load(machine_file)
+    except MachineError as exc:
+        sys.exit(f"the rig's MIDI map needs {machine_file.name}, which could not be read: {exc}")
+    problems = machine.validate()
+    if problems:
+        sys.exit(f"{machine_file.name}: " + "; ".join(problems))
+    if rig.midi.controller not in (machine.controllers or {}):
+        sys.exit(
+            f"the rig is written for controller {rig.midi.controller!r}, which "
+            f"{machine_file.name} does not describe"
+        )
+    return machine.controller(rig.midi.controller)
+
+
 def _emit_any(path: Path, state: dict | None) -> dict:
     """A config from either kind of rig file: channels and a master (#30), or
     tracks spelt out by hand. The file says which, by its `kind`."""
@@ -282,7 +307,8 @@ def _emit_any(path: Path, state: dict | None) -> dict:
 
     try:
         rig = load_any(path)
-        config = emit_rig(rig, state) if isinstance(rig, Rig) else emit(rig, state)
+        controller = _controller_for(rig) if isinstance(rig, Rig) else None
+        config = emit_rig(rig, state, controller=controller) if isinstance(rig, Rig) else emit(rig, state)
     except (RigFileError, EmitError) as exc:
         sys.exit(f"{path}:\n  " + "\n  ".join(exc.problems))
     # Where this config came from, so `up` can find the rig SAVE saves from

@@ -218,7 +218,6 @@ def prepare_rig(
         raise RigError(f"no such rig: {path}")
     try:
         loaded = load_rig(path)  # parsed and checked once; both forms come from it
-        compiled = emit_rig(loaded)
         spec = compile_rig(loaded)[0]
     except RigFileError as exc:
         raise RigError(f"{path.name}:\n  " + "\n  ".join(exc.problems)) from exc
@@ -237,6 +236,22 @@ def prepare_rig(
     problems = machine.validate()
     if problems:
         raise RigError(f"{machine_file.name}: " + "; ".join(problems))
+
+    # The MIDI map (#34) names a controller the machine file describes; the
+    # map compiles into the config, so the config is written only now.
+    controller = None
+    if loaded.midi is not None:
+        if loaded.midi.controller not in (machine.controllers or {}):
+            raise RigError(
+                f"{path.name} is written for controller {loaded.midi.controller!r}, which "
+                f"{machine_file.name} does not describe; its controllers: "
+                f"{', '.join(sorted(machine.controllers or {})) or 'none'}"
+            )
+        controller = machine.controller(loaded.midi.controller)
+    try:
+        compiled = emit_rig(loaded, controller=controller)
+    except RigFileError as exc:
+        raise RigError(f"{path.name}:\n  " + "\n  ".join(exc.problems)) from exc
 
     if dump is None:
         try:
