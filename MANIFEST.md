@@ -1684,9 +1684,7 @@ otherwise): `add` with the name used and the chain before, `remove` with the
 chain before and the plugin's `uri`, `uid` and `type`, so an undo can re-add it,
 at its defaults, since parameter values are not recorded. Routes, decisions and
 tests are in sections of their own (`test_agent_edits.py`) to keep the merge
-with `/live/undo` small; the log format is unchanged. Found on the way, not
-changed: `/live/move` will move a pedal behind its channel's send, and the send
-or the master's return themselves, and neither is refused there; and lilv's
+with `/live/undo` small; the log format is unchanged. Found on the way: lilv's
 Python collection iterator has no `__iter__`, so on Python 3.13 a comprehension
 over `world.get_all_plugins()` fails where a `for` loop works. **Not run against
 a live Sushi:** `create_processor_on_track(name, uid, path, processor_type,
@@ -1698,3 +1696,34 @@ straight after confirming, and reports an LV2 plugin's URI in the session's
 `PluginClass.path` is not known. Add, move and remove on a rig that is `up`, and
 read `/live` after each, before relying on them. Not done from #32 yet: the mute
 ramp around an edit and the CPU budget check before an insert. *(2026-11-02)*
+*A review of the branch found nine more, seven in the Turtle reader.* (1)
+**Blank nodes from two files of a bundle were the same nodes**: each parse
+numbered its anonymous nodes from one, so a plugin with two anonymous ports in
+each of two data files had two; each file's blank nodes now carry a prefix of
+their own (`parse_turtle(blank_prefix=)`). (2) **Tokenising was quadratic**,
+counting the line from the start for every token (131 KB took a second, under
+the library's lock); the line is now counted as the text is consumed, and a
+megabyte with a thousand plugins reads in about a second. (3) A relative
+plugins folder crashed the build in `Path.as_uri` (a 500); bundles are resolved
+first. (4) A manifest that is not UTF-8 escaped as a 500; it is a
+`LibraryError` that names the file. (5) **An add knew the send by name only**,
+while a remove also knew it by uid, so an add on a rig whose send had another
+name went in behind it, read back as asked, and was logged and inaudible. One
+rule now, `live.protected_processor`, by uid and by name, serves the add, the
+remove and the move: the walk an add decides on and a move plans on reads the
+uids from Sushi's saved session (`read_live_chains(uids=True)`,
+`plan_live_move(uids=True)`), and `decide_move` has an outcome `protected` for
+a move of a send or return or a swap with one, which `/live/move` refuses (400,
+as its other refusals) and sends nothing. That closes the move behind the send
+reported above. The panel's listener plans its moves without the session read
+and keeps the name rule alone, so a renamed send can still be passed there. The
+cost: the agent's add and move now also depend on SaveSession, which is
+unverified against Sushi 1.3.0; if it is not answered they fail loudly (502),
+and do not fall back to names. (6) A bundle folder with no `manifest.ttl` was
+skipped silently, its plugins then "not found in plugins/"; it is a problem
+naming the folder. (7) The remove's read-back took `["chains"]` directly, a
+`KeyError` 500 for a walk without them; `_confirm` is the one accessor and
+returns the chains it confirmed, a 502 otherwise. (8) An unknown escape's
+`TurtleError` had no line; it has. (9) `plugins_described` scanned every triple
+three times per plugin; it indexes once per bundle. Every name and port count
+still agrees with lilv on the assembled `plugins/` (rerun). *(2026-11-02)*

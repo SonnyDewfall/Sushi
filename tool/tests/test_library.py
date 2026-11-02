@@ -15,6 +15,7 @@ installed.
 
 from __future__ import annotations
 
+import shutil
 from pathlib import Path
 
 import pytest
@@ -296,3 +297,95 @@ def test_the_reader_agrees_with_lilv_on_every_bundle_in_plugins():
     found, _ = scan_plugins(plugins_dir)
     ours = {u: (m["name"], m["ports"]) for u, m in found.items()}
     assert ours == truth
+
+
+# --------------------------------------------------------------------------- #
+# Found by review (2026-11-02)
+# --------------------------------------------------------------------------- #
+
+def _bundle(tmp_path, files):
+    bundle = tmp_path / "x.lv2"
+    bundle.mkdir(parents=True)
+    for name, text in files.items():
+        (bundle / name).write_bytes(text if isinstance(text, bytes) else text.encode())
+    return bundle
+
+
+PREFIXES = ("@prefix lv2: <http://lv2plug.in/ns/lv2core#> .\n"
+            "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n"
+            "@prefix doap: <http://usefulinc.com/ns/doap#> .\n")
+
+
+def test_blank_nodes_from_different_files_of_a_bundle_are_different_nodes(tmp_path):
+    """Each parse numbered its anonymous nodes from b1, so two data files'
+    ports were the same two nodes once their triples were put together."""
+    two_ports = PREFIXES + '<urn:x> lv2:port [ lv2:index {0} ] , [ lv2:index {1} ] .\n'
+    bundle = _bundle(tmp_path, {
+        "manifest.ttl": PREFIXES + "<urn:x> a lv2:Plugin ; rdfs:seeAlso <a.ttl> , <b.ttl> .\n",
+        "a.ttl": two_ports.format(0, 1) + '<urn:x> doap:name "X" .\n',
+        "b.ttl": two_ports.format(2, 3),
+    })
+    found, problems = read_bundle(bundle)
+    assert problems == []
+    assert found["urn:x"]["ports"] == 4
+    labelled = PREFIXES + "<urn:x> lv2:port _:p .\n"
+    bundle = _bundle(tmp_path / "labelled", {
+        "manifest.ttl": PREFIXES + "<urn:x> a lv2:Plugin ; rdfs:seeAlso <a.ttl> , <b.ttl> .\n",
+        "a.ttl": labelled, "b.ttl": labelled,
+    })
+    assert read_bundle(bundle)[0]["urn:x"]["ports"] == 2, "a label is scoped to its document"
+
+
+def test_tokenising_is_linear_in_the_length_of_the_file():
+    """The line number was counted from the start of the text for every token:
+    131 KB took a second, and a plugins/ holds megabytes of Turtle, all read
+    under the library's lock. 1 MB, a thousand plugins: about a second here,
+    and about a minute as it was (scaled from the review's 1.1 s for 131 KB)."""
+    import time
+
+    plugins = "".join(
+        f'<urn:p{i}> a lv2:Plugin ; doap:name "P{i}" ;\n'
+        + "".join(f"  lv2:port [ lv2:index {j} ; lv2:symbol \"s{j}\" ] ;\n" for j in range(20))
+        + "  lv2:symbol \"p\" .\n"
+        for i in range(1000)
+    )
+    text = PREFIXES + plugins
+    assert len(text) > 1_000_000
+    started = time.monotonic()
+    described = plugins_described(parse_turtle(text, "file:///big.ttl"))
+    assert time.monotonic() - started < 10, "quadratically it was about a minute"
+    assert len(described) == 1000 and described["urn:p7"] == {"name": "P7", "ports": 20}
+
+
+def test_an_error_late_in_a_file_says_its_line():
+    text = PREFIXES + "\n" * 40 + '<urn:x> doap:name "bad \\q escape" .\n'
+    with pytest.raises(TurtleError, match="line 44: unknown escape"):
+        parse_turtle(text, "file:///f.ttl")
+    with pytest.raises(TurtleError, match="line 44: unexpected"):
+        parse_turtle(PREFIXES + "\n" * 40 + "<urn:x> doap:name {} .\n", "file:///f.ttl")
+
+
+def test_a_relative_plugins_folder_is_read_not_a_crash(monkeypatch):
+    monkeypatch.chdir(FIXTURES.parent.parent)  # tool/tests
+    result = read_library(ROOT, plugins_dir=Path("fixtures/lv2"))
+    entries = {e["uri"]: e for e in result["plugins"]}
+    assert entries[GXTS9]["name_from"] == "plugin"
+    found, problems = read_bundle(Path("fixtures/lv2/gxts9.lv2"))
+    assert found[GXTS9]["name"] == "GxTubeScreamer" and problems == []
+
+
+def test_a_manifest_that_is_not_text_is_a_library_error(tmp_path):
+    (tmp_path / "plugin-manifest.txt").write_bytes(b"urn:x\n\xff\xfe\n")
+    with pytest.raises(library.LibraryError, match="plugin-manifest.txt"):
+        read_library(tmp_path)
+
+
+def test_a_bundle_folder_with_no_manifest_is_said_not_passed_over(tmp_path):
+    shutil.copytree(FIXTURES / "gxts9.lv2", tmp_path / "gxts9.lv2")
+    (tmp_path / "broken.lv2").mkdir()
+    (tmp_path / "archive").mkdir()
+    (tmp_path / "loose.ttl").write_text("")
+    found, problems = scan_plugins(tmp_path)
+    assert set(found) == {GXTS9}
+    assert len(problems) == 1
+    assert "broken.lv2" in problems[0] and "no manifest.ttl" in problems[0]

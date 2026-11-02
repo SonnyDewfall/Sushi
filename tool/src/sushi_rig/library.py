@@ -138,15 +138,20 @@ def _unescape(text: str) -> str:
 
 
 def _tokens(text: str) -> list[tuple[str, Any, int]]:
-    """`(kind, value, line)` for each token; whitespace and comments dropped."""
+    """`(kind, value, line)` for each token; whitespace and comments dropped.
+
+    The line is counted as the text is consumed, over each token's own span.
+    Counted from the start of the text for every token, it made reading a file
+    quadratic: 131 KB took a second (found by review), and the library reads
+    megabytes of Turtle before its first answer, under its lock.
+    """
     out: list[tuple[str, Any, int]] = []
     pos = 0
+    line = 1
     while pos < len(text):
         match = _TOKEN.match(text, pos)
         if match is None:
-            line = text.count("\n", 0, pos) + 1
             raise TurtleError(f"line {line}: unexpected {text[pos:pos + 20]!r}")
-        line = text.count("\n", 0, pos) + 1
         kind = match.lastgroup
         if kind in ("prefix", "local"):  # inner groups of a pname
             kind = "pname"
@@ -155,9 +160,14 @@ def _tokens(text: str) -> list[tuple[str, Any, int]]:
         elif kind == "string":
             raw = match.group("string")
             quote = 3 if raw[:3] in ('"""', "'''") else 1
-            out.append(("string", _unescape(raw[quote:-quote]), line))
+            try:
+                value = _unescape(raw[quote:-quote])
+            except TurtleError as exc:  # every TurtleError says where
+                raise TurtleError(f"line {line}: {exc}") from None
+            out.append(("string", value, line))
         elif kind != "ws":
             out.append((kind, match.group(kind), line))
+        line += text.count("\n", pos, match.end())
         pos = match.end()
     return out
 
@@ -165,8 +175,9 @@ def _tokens(text: str) -> list[tuple[str, Any, int]]:
 class _Parser:
     """Recursive descent over the token list, appending triples as it goes."""
 
-    def __init__(self, tokens: list[tuple[str, Any, int]], base: str):
+    def __init__(self, tokens: list[tuple[str, Any, int]], base: str, blank_prefix: str = ""):
         self.tokens = tokens
+        self.blank_prefix = blank_prefix
         self.i = 0
         self.base = base
         self.prefixes: dict[str, str] = {}
@@ -205,7 +216,10 @@ class _Parser:
 
     def fresh(self) -> BNode:
         self.blanks += 1
-        return BNode(f"b{self.blanks}")
+        return BNode(f"{self.blank_prefix}b{self.blanks}")
+
+    def labelled(self, label: str) -> BNode:
+        return BNode(f"{self.blank_prefix}_{label}")
 
     # -- grammar
     def document(self) -> list[tuple[str, str, str]]:
@@ -250,7 +264,7 @@ class _Parser:
         if kind == "pname":
             return self.pname(*value, line)
         if kind == "bnode":
-            return BNode("_" + value)
+            return self.labelled(value)
         if kind == "punct" and value == "(":
             self.i -= 1
             return self.collection()
@@ -296,7 +310,7 @@ class _Parser:
         if kind == "pname":
             return self.pname(*value, line)
         if kind == "bnode":
-            return BNode("_" + value)
+            return self.labelled(value)
         if kind == "number":
             datatype = "decimal" if "." in value and "e" not in value.lower() else (
                 "double" if "e" in value.lower() else "integer")
@@ -346,12 +360,19 @@ class _Parser:
         return head
 
 
-def parse_turtle(text: str, base: str) -> list[tuple[str, str, str]]:
+def parse_turtle(text: str, base: str, blank_prefix: str = "") -> list[tuple[str, str, str]]:
     """The triples of a Turtle document, in order: `(subject, predicate,
     object)`, where an IRI is `IRI` (relative ones resolved against `base`),
     a blank node `BNode` and a literal `Literal`. `TurtleError`, with the line,
-    for what it cannot read. Pure."""
-    return _Parser(_tokens(text), base).document()
+    for what it cannot read. Pure.
+
+    A blank node is scoped to its document, so the triples of two parses can be
+    put together only if their blank nodes cannot meet: `blank_prefix` starts
+    every blank node's label, and each document read together needs its own.
+    Without it two files' anonymous ports were the same two nodes, and a plugin
+    with two in each file had two (found by review).
+    """
+    return _Parser(_tokens(text), base, blank_prefix).document()
 
 
 def plugins_described(triples: list[tuple[str, str, str]]) -> dict[str, dict[str, Any]]:
@@ -364,12 +385,20 @@ def plugins_described(triples: list[tuple[str, str, str]]) -> dict[str, dict[str
     node), None if it declares none, since a plugin with no ports at all is not
     something these files describe. Pure.
     """
-    plugins = [s for s, p, o in triples if p == RDF_TYPE and o == LV2_PLUGIN and isinstance(s, IRI)]
+    # Indexed in one pass and looked up per plugin: a scan of every triple per
+    # plugin was plugins x triples (found by review).
+    index: dict[str, dict[str, list[str]]] = {}
+    plugins: list[str] = []
+    for s, p, o in triples:
+        index.setdefault(s, {}).setdefault(p, []).append(o)
+        if p == RDF_TYPE and o == LV2_PLUGIN and isinstance(s, IRI):
+            plugins.append(s)
     described: dict[str, dict[str, Any]] = {}
     for uri in dict.fromkeys(plugins):
-        names = [o for s, p, o in triples if s == uri and p == DOAP_NAME and isinstance(o, Literal)]
+        about = index.get(uri, {})
+        names = [o for o in about.get(DOAP_NAME, []) if isinstance(o, Literal)]
         names.sort(key=lambda n: (n.lang is not None, n.lang != "en"))
-        ports = {o for s, p, o in triples if s == uri and p == LV2_PORT}
+        ports = set(about.get(LV2_PORT, []))
         described[str(uri)] = {
             "name": str(names[0]) if names else None,
             "ports": len(ports) or None,
@@ -387,9 +416,11 @@ def uri_segment(uri: str) -> str:
 # Bundles: effects (reading files), nothing else
 # --------------------------------------------------------------------------- #
 
-def _read_turtle(path: Path, problems: list[str]) -> list[tuple[str, str, str]]:
+def _read_turtle(path: Path, problems: list[str], blank_prefix: str = "") -> list[tuple[str, str, str]]:
+    # `path` must be absolute (`read_bundle` resolves its bundle): `as_uri`
+    # raises ValueError for a relative one, which escaped as a 500.
     try:
-        return parse_turtle(path.read_text(encoding="utf-8"), path.as_uri())
+        return parse_turtle(path.read_text(encoding="utf-8"), path.as_uri(), blank_prefix)
     except (OSError, UnicodeDecodeError) as exc:
         problems.append(f"{path.parent.name}/{path.name} cannot be read: {exc}")
     except TurtleError as exc:
@@ -408,9 +439,12 @@ def read_bundle(bundle: Path) -> tuple[dict[str, dict[str, Any]], list[str]]:
     bundle by bundle). Every file that cannot be read is a problem, said once.
     """
     problems: list[str] = []
-    manifest = _read_turtle(bundle / "manifest.ttl", problems)
+    name = bundle.name
+    # Resolved first: a relative plugins folder (a relative --root, a test's
+    # cwd) crashed the build in `as_uri` (found by review).
+    bundle = root = bundle.resolve()
+    manifest = _read_turtle(bundle / "manifest.ttl", problems, "f0.")
     declared = plugins_described(manifest)
-    root = bundle.resolve()
     data: list[Path] = []
     for s, p, o in manifest:
         if p != RDFS_SEE_ALSO or str(s) not in declared or not isinstance(o, IRI):
@@ -418,15 +452,15 @@ def read_bundle(bundle: Path) -> tuple[dict[str, dict[str, Any]], list[str]]:
         parsed = urlparse(o)
         path = Path(unquote(parsed.path)) if parsed.scheme == "file" else None
         if path is None or root not in path.resolve().parents:
-            problems.append(f"{bundle.name}: {o} is outside the bundle, so it is not read")
+            problems.append(f"{name}: {o} is outside the bundle, so it is not read")
             continue
         if path not in data:
             data.append(path)
     triples = list(manifest)
-    for path in data:
-        triples += _read_turtle(path, problems)
+    for number, path in enumerate(data, 1):
+        triples += _read_turtle(path, problems, f"f{number}.")
     described = plugins_described(triples)
-    return {uri: {**described[uri], "bundle": bundle.name} for uri in declared}, problems
+    return {uri: {**described[uri], "bundle": name} for uri in declared}, problems
 
 
 def scan_plugins(plugins_dir: Path) -> tuple[dict[str, dict[str, Any]], list[str]]:
@@ -440,7 +474,13 @@ def scan_plugins(plugins_dir: Path) -> tuple[dict[str, dict[str, Any]], list[str
     found: dict[str, dict[str, Any]] = {}
     problems: list[str] = []
     for bundle in sorted(plugins_dir.iterdir()):
-        if not bundle.is_dir() or bundle.name == ARCHIVE_DIR or not (bundle / "manifest.ttl").exists():
+        if not bundle.is_dir() or bundle.name == ARCHIVE_DIR:
+            continue
+        if not (bundle / "manifest.ttl").exists():
+            # Said, not passed over: skipped silently, its plugins were
+            # reported "not found in plugins/", which points at the wrong cause.
+            problems.append(f"{bundle.name} in {plugins_dir} has no manifest.ttl, so it is not an "
+                            "LV2 bundle lilv or Sushi can read: copy it again from its package")
             continue
         plugins, said = read_bundle(bundle)
         problems += said
@@ -567,8 +607,8 @@ def read_library(root: Path, plugins_dir: Path | None = None) -> dict[str, Any]:
     read is in `problems`."""
     manifest_path = root / MANIFEST_FILE
     try:
-        manifest = read_manifest(manifest_path.read_text())
-    except OSError as exc:
+        manifest = read_manifest(manifest_path.read_text(encoding="utf-8"))
+    except (OSError, UnicodeDecodeError) as exc:
         raise LibraryError(f"cannot read {manifest_path}: {exc}") from exc
     plugins_dir = plugins_dir if plugins_dir is not None else root / "plugins"
     profiles_dir = root / PROFILES_DIR

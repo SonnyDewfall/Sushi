@@ -559,8 +559,11 @@ class Move:
       "moved"     -- Sushi confirmed the command
       "unchanged" -- already at that end of its chain; nothing was sent
       "absent"    -- on no track; nothing was sent
+      "protected" -- it is, or it would swap with, a channel's send or the
+                     master's return (`protected_processor`); nothing was sent
     `chain` is the chain it was on before the move, in order (None if absent);
-    `chains` is every track's, for a refusal to name.
+    `chains` is every track's, for a refusal to name; `why` says what is
+    protected, for a "protected" move.
     """
 
     outcome: str
@@ -572,6 +575,7 @@ class Move:
     # made on: (processor, track, before, add_to_back). Only a "planned" or
     # "moved" move has them.
     command: tuple[int, int, int, bool] | None = field(default=None, repr=False, compare=False)
+    why: str | None = field(default=None, compare=False)
 
     @property
     def message(self) -> str:
@@ -582,6 +586,8 @@ class Move:
             edge = "first" if self.direction < 0 else "last"
             return f"{self.processor} is already {edge} in the chain"
         where = "earlier" if self.direction < 0 else "later"
+        if self.outcome == "protected":
+            return f"{self.processor} cannot move {where}: {self.why}"
         if self.outcome == "planned":
             return f"{self.processor} would move {where}"
         # Deliberately says only what happened. It used to append
@@ -593,11 +599,18 @@ class Move:
 
 
 def decide_move(
-    chains: dict[str, list[str]], ids: dict[str, int], processor: str, direction: int
+    chains: dict[str, list[str]], ids: dict[str, int], processor: str, direction: int,
+    uids: dict[str, str | None] | None = None,
 ) -> Move:
     """The decision half of a move, pure: given the tracks and ids a walk found
-    (`_walk_chains`), is `processor` absent, already at that end, or to be moved
-    -- and if so by which command. Nothing here talks to Sushi.
+    (`_walk_chains`), is `processor` absent, already at that end, protected, or
+    to be moved -- and if so by which command. Nothing here talks to Sushi.
+
+    A move is a swap with a neighbour, so it is "protected" when either is a
+    send or a return (`protected_processor`, by name and, with `uids`, by the
+    uid Sushi reports): a pedal moved behind its channel's send is not heard,
+    and the send or return moved is the compiled routing broken (found by
+    review; it was allowed).
     """
     track = next((t for t, chain in chains.items() if processor in chain), None)
     if track is None:
@@ -606,6 +619,12 @@ def decide_move(
     target = plan_move(chain, processor, direction)
     if target is None:
         return Move("unchanged", processor, direction, chain, chains)
+    neighbour = chain[chain.index(processor) + (-1 if direction < 0 else 1)]
+    for name in (processor, neighbour):
+        why = protected_processor(track, name, (uids or {}).get(name))
+        if why:
+            return Move("protected", processor, direction, chain, chains,
+                        why=f"{why}, which stays where the compiler put it")
     before = ids[target["before"]] if target["before"] else 0
     return Move(
         "planned", processor, direction, chain, chains,
@@ -615,15 +634,22 @@ def decide_move(
 
 def plan_live_move(
     processor: str, direction: int,
-    address: str = DEFAULT_GRPC_ADDRESS, controller: Any = None,
+    address: str = DEFAULT_GRPC_ADDRESS, controller: Any = None, uids: bool = False,
 ) -> Move:
     """Walk the tracks once and decide (`decide_move`); sends nothing. A "planned"
     move is handed to `send_live_move` as it is, so the command sent is the one
     decided on, not one worked out again from a second walk.
+
+    With `uids`, Sushi's session is read too (`session_uids`), so a send or
+    return is known by its uid and not only its name: the agent asks for that.
+    The panel's listener does not, and keeps the name rule alone, because the
+    session read is not yet verified against Sushi and the listener's moves
+    worked without it.
     """
     with _connection(address, controller) as c:
         chains, ids = _walk_chains(c)
-        return decide_move(chains, ids, processor, direction)
+        known = session_uids(c) if uids else None
+        return decide_move(chains, ids, processor, direction, known)
 
 
 def send_live_move(
@@ -780,54 +806,98 @@ def push(rig, address: str = DEFAULT_GRPC_ADDRESS) -> None:
 # what it saved. Sushi 1.3.0's own source was not read for it.
 # --------------------------------------------------------------------------- #
 
-def read_live_chains(address: str = DEFAULT_GRPC_ADDRESS, controller: Any = None) -> dict[str, Any]:
+def protected_processor(track: str, processor: str, uid: str | None = None) -> str | None:
+    """What makes `processor` on `track` the compiler's, or None: one rule for
+    the agent's add, remove and move, and the listener's move.
+
+    A channel's send is `<track>_send` (`rigfile.SEND_SUFFIX`) or any processor
+    Sushi reports with the send's uid; the master's return is `master_return`
+    on `master`, or the return's uid. The uid is the stronger of the two -- a
+    send renamed by hand is still the send -- and the name serves where no uid
+    was read. Pure.
+    """
+    # Here, not at the top: rigfile imports save, which imports this module.
+    from .rigfile import MASTER, RETURN, RETURN_UID, SEND_SUFFIX, SEND_UID
+
+    if uid == SEND_UID or processor == track + SEND_SUFFIX:
+        return f"{processor!r} is {track!r}'s send"
+    if uid == RETURN_UID or (track == MASTER and processor == RETURN):
+        return f"{processor!r} is the master's return"
+    return None
+
+
+def is_send(track: str, processor: str, uid: str | None = None) -> bool:
+    """`protected_processor`'s send half: what an add goes in front of."""
+    from .rigfile import SEND_SUFFIX, SEND_UID
+
+    return uid == SEND_UID or processor == track + SEND_SUFFIX
+
+
+def read_live_chains(
+    address: str = DEFAULT_GRPC_ADDRESS, controller: Any = None, uids: bool = False,
+) -> dict[str, Any]:
     """`{"chains": {track: [processor names]}, "ids": {name: id}}`, from one
-    walk of the tracks (`_walk_chains`): what an add is decided on, and the
-    read-back that confirms an add or a remove."""
+    walk of the tracks (`_walk_chains`), and with `uids` `"uids": {name: uid}`
+    from Sushi's session (`session_uids`): what an add is decided on, which
+    needs to know the send; and, without it, the read-back that confirms an
+    add or a remove."""
     with _connection(address, controller) as c:
         chains, ids = _walk_chains(c)
-        return {"chains": chains, "ids": ids}
+        reading: dict[str, Any] = {"chains": chains, "ids": ids}
+        if uids:
+            reading["uids"] = session_uids(c)
+        return reading
 
 
-def _plugin_class(controller, processor: str) -> dict[str, Any] | None:
-    """`{"uri", "uid", "type"}` of the processor named `processor`, from
-    Sushi's session, or None if the session does not list it.
+def session_uids(controller) -> dict[str, str | None]:
+    """`{processor name: uid or None}` for everything Sushi's session lists."""
+    return {name: plugin["uid"] for name, plugin in _session_plugins(controller).items()}
+
+
+def _session_plugins(controller) -> dict[str, dict[str, Any]]:
+    """`{processor name: {"uri", "uid", "type"}}` from Sushi's session.
 
     The session is the only place Sushi's gRPC API says which plugin a running
     processor is: `ProcessorInfo` has an id, a label and a name, and nothing
     that names the plugin (elkpy 1.3.0's `sushi_rpc.proto`, `ProcessorInfo`).
     `SessionState.tracks[].processors[]` is a `PluginClass` with `name`, `uid`,
-    `path` and `type`. A save of the whole session is heavier than any other
-    read here, and paid only by a remove, which is rare.
+    `path` and `type`; its `uid` is how a send or return is known whatever it
+    is called. A save of the whole session is heavier than any other read
+    here, and is paid by the agent's add, remove and move, which are a
+    person's gestures, never by a fader's stream of parameter changes. If
+    Sushi 1.3.0 does not answer SaveSession (unverified), those three fail
+    loudly (502) rather than fall back to names alone.
     """
     from elkpy import sushi_info_types as info
 
+    plugins: dict[str, dict[str, Any]] = {}
     session = controller.session.get_session()
     for track in getattr(session, "tracks", None) or []:
         for plugin in getattr(track, "processors", None) or []:
-            if plugin.name != processor:
-                continue
             try:
                 kind = info.PluginType(plugin.type.type).name.lower()
             except (AttributeError, ValueError):
                 kind = None
-            return {"uri": plugin.path or None, "uid": plugin.uid or None, "type": kind}
-    return None
+            plugins[plugin.name] = {"uri": plugin.path or None, "uid": plugin.uid or None, "type": kind}
+    return plugins
 
 
 def read_live_removal(
     processor: str, address: str = DEFAULT_GRPC_ADDRESS, controller: Any = None,
 ) -> dict[str, Any]:
-    """`{"chains", "ids", "plugin"}`: a walk, and for a processor found on a
-    chain its plugin class (`_plugin_class`), else None. The session is read
-    only when there is something to remove, so a refused request does not pay
-    for it."""
+    """`{"chains", "ids", "uids", "plugin"}`: a walk, and for a processor found
+    on a chain Sushi's session (`_session_plugins`): every processor's uid and
+    this one's plugin class (None if the session does not list it). The
+    session is read only when there is something to remove, so a refused
+    request does not pay for it."""
     with _connection(address, controller) as c:
         chains, ids = _walk_chains(c)
         on_a_chain = any(processor in chain for chain in chains.values())
+        plugins = _session_plugins(c) if on_a_chain else {}
         return {
             "chains": chains, "ids": ids,
-            "plugin": _plugin_class(c, processor) if on_a_chain else None,
+            "uids": {name: plugin["uid"] for name, plugin in plugins.items()},
+            "plugin": plugins.get(processor),
         }
 
 

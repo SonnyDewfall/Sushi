@@ -468,7 +468,9 @@ on first use, and kept until the agent restarts. The amp is listed but
 An add needs a manifest URI and a track; with no `name` it is named from the
 plugin (`MDA Delay` is `mda_delay`), and with no `after` it goes last but in
 front of the channel's send, never behind it, since the send is what reaches the
-monitors. A bad request is `400` with Sushi untouched; a name the rig already
+monitors; the send is known by its uid in Sushi's session as well as by its
+name, and `/live/move` now refuses (`400`) to move a send or the return, or a
+pedal past one. A bad request is `400` with Sushi untouched; a name the rig already
 has, a track it lacks, an `after` not on that track, or a remove of a send,
 the master's return, a track or something not there, is `409`. Both edits are
 confirmed by reading the chain back, and one that does not read back as asked

@@ -99,7 +99,9 @@ free and `after` is on that track (409: a conflict with the rig as it is,
 which the next read may change). It goes in before the track's send unless
 told otherwise, never after it: the send is what carries a channel to the
 master, and audio placed after it is not heard. A remove of a send, a return
-or a track is 409, as is one of what the rig does not have. Each is confirmed
+or a track is 409, as is one of what the rig does not have, and a move of a
+send or return, or past one, is refused too: one rule (`live.protected_processor`)
+knows them, by the uid Sushi's session reports and by the compiler's names. Each is confirmed
 by reading the chain back, not by Sushi's acknowledgement alone, and an edit
 whose read-back is not what was asked is 502 and is not logged, as a change
 Sushi did not confirm is not. Not run against a live Sushi: see `live.py`.
@@ -123,8 +125,8 @@ from typing import Any, Awaitable, Callable, Sequence
 from . import library as library_module
 from . import live as live_module
 from .live import DEFAULT_GRPC_ADDRESS, ElkpyMissing, LiveError, Move
+from .live import is_send, protected_processor
 from .rig import describe_rig
-from .rigfile import MASTER, RETURN, RETURN_UID, SEND_SUFFIX, SEND_UID
 from .save import NAME_PATTERN
 
 try:
@@ -394,6 +396,9 @@ def check_move(move: Move) -> None:
             f"the running rig has no processor {move.processor!r} on any track: it has "
             f"{_on_the_rig(move.chains, with_tracks=False)}"
         )
+    if move.outcome == "protected":
+        # A send or return is, or would be swapped with, the one moved (#32).
+        raise Conflict(move.message)
 
 
 def log_entry(op: str, args: dict[str, Any], previous: Any, at: str) -> dict[str, Any]:
@@ -489,20 +494,6 @@ def add_request(body: Any, library: dict[str, Any]) -> AddRequest:
     return AddRequest(track, uri, name, after, named)
 
 
-def _send_of(track: str) -> str:
-    return track + SEND_SUFFIX
-
-
-def _protected(track: str, processor: str, uid: str | None = None) -> str | None:
-    """What makes `processor` the compiler's, or None: a channel's send (named
-    `<track>_send`, last on its track) or the master's return, known by name
-    where it sits and by the uid Sushi reports for it when there is one."""
-    if uid == SEND_UID or processor == _send_of(track):
-        return f"{processor!r} is {track!r}'s send"
-    if uid == RETURN_UID or (track == MASTER and processor == RETURN):
-        return f"{processor!r} is the master's return"
-    return None
-
 
 def _track_of(chains: dict[str, list[str]], processor: str) -> str | None:
     return next((track for track, chain in chains.items() if processor in chain), None)
@@ -532,7 +523,11 @@ class Addition:
 def check_add(reading: dict[str, Any], request: AddRequest) -> Addition:
     """Where `request` goes on the running rig, or `Conflict` (409).
 
-    `reading` is `live.read_live_chains`'s: `{"chains", "ids"}`. The name must
+    `reading` is `live.read_live_chains(uids=True)`'s: `{"chains", "ids",
+    "uids"}`. The send is known by `live.is_send`, by its uid and its name, as a
+    remove and a move know it: by name alone, an add on a rig whose send was
+    called something else went in behind it, was confirmed, logged, and not
+    heard (found by review). The name must
     be free across the whole rig -- Sushi's processor names are one namespace,
     tracks included. With no `after` it goes last, but in front of the
     track's send when it has one; `after` the send is refused, because the
@@ -541,6 +536,7 @@ def check_add(reading: dict[str, Any], request: AddRequest) -> Addition:
     is always after something or at the back.
     """
     chains, ids = reading.get("chains", {}), reading.get("ids", {})
+    uids = reading.get("uids") or {}
     track, name, after = request.track, request.name, request.after
     if track not in chains:
         raise Conflict(f"the running rig has no track {track!r}: it has {sorted(chains)}")
@@ -551,17 +547,17 @@ def check_add(reading: dict[str, Any], request: AddRequest) -> Addition:
         what = "give a 'name'" if not request.named else "give another name"
         raise Conflict(f"{name!r} is already on the rig, on track {holder!r}: {what}")
     chain = list(chains[track])
+    sends = [index for index, held in enumerate(chain) if is_send(track, held, uids.get(held))]
     if after is not None:
         if after not in chain:
             raise Conflict(f"there is no processor {after!r} on track {track!r}: it has {chain}")
-        if after == _send_of(track):
+        if chain.index(after) in sends:
             raise Conflict(
                 f"nothing goes after {after!r}: the send must stay last, since it is what "
                 "carries the channel to the master")
         index = chain.index(after) + 1
     else:
-        send = _send_of(track)
-        index = chain.index(send) if send in chain else len(chain)
+        index = sends[0] if sends else len(chain)
     before = chain[index] if index < len(chain) else None
     return Addition(
         track=track, name=name, uri=request.uri, after=after, chain=chain,
@@ -609,7 +605,8 @@ def check_remove(reading: dict[str, Any], processor: str) -> Removal:
             f"the running rig has no processor {processor!r}: it has "
             f"{_on_the_rig(chains, with_tracks=False)}")
     plugin = reading.get("plugin")
-    protected = _protected(track, processor, (plugin or {}).get("uid"))
+    uid = (plugin or {}).get("uid") or (reading.get("uids") or {}).get(processor)
+    protected = protected_processor(track, processor, uid)
     if protected:
         raise Conflict(f"{protected}: the compiler's, and never removed")
     if not plugin or not (plugin.get("uri") or plugin.get("uid")):
@@ -688,12 +685,13 @@ class Live:
             snapshot=lambda c: m.read_rig(address, c),
             parameter=lambda c, proc, name: m.read_live_parameter(proc, name, address, c),
             bypass=lambda c, proc: m.read_live_bypass(proc, address, c),
-            plan_move=lambda c, proc, direction: m.plan_live_move(proc, direction, address, c),
+            # uids: a send is known by Sushi's uid as well as its name (#32).
+            plan_move=lambda c, proc, direction: m.plan_live_move(proc, direction, address, c, uids=True),
             set_parameter=lambda c, proc, name, value: m.set_live_parameter(proc, name, value, address, c),
             set_bypass=lambda c, proc, state: m.set_live_bypass(proc, state, address, c),
             send_move=lambda c, move: m.send_live_move(move, address, c),
             # -- the chain edits (#32) --
-            walk=lambda c: m.read_live_chains(address, c),
+            walk=lambda c, uids=False: m.read_live_chains(address, c, uids=uids),
             removal=lambda c, proc: m.read_live_removal(proc, address, c),
             add=lambda c, a: m.add_live_processor(
                 a.name, a.uri, a.track_id, a.before_id, a.add_to_back, address, c),
@@ -1306,7 +1304,7 @@ class Agent:
         except AgentError as exc:
             raise web.HTTPBadRequest(reason=str(exc))
         async with self._connected_for_a_change(request) as controller:
-            reading = await self._sushi(request, self.live.walk, controller, reading=True)
+            reading = await self._sushi(request, self.live.walk, controller, True, reading=True)
             try:
                 addition = check_add(reading, asked)
             except Conflict as exc:
@@ -1351,8 +1349,8 @@ class Agent:
             await self._sushi(request, self.live.remove, controller, removal, reading=False)
             after = await self._sushi(request, self.live.walk, controller, reading=False)
             what = f"removed {removal.processor!r} from {removal.track!r}"
-            self._confirm(request, after, removal.track, removal.expected, what)
-            if _track_of(after["chains"], removal.processor) is not None:
+            chains = self._confirm(request, after, removal.track, removal.expected, what)
+            if _track_of(chains, removal.processor) is not None:
                 self._unconfirmed(request, f"Sushi confirmed it {what}, but it is still on the rig")
             entry = self._record("remove", {"processor": removal.processor}, {
                 "track": removal.track, "chain": list(removal.chain), **removal.plugin,
@@ -1362,11 +1360,21 @@ class Agent:
             "message": f"removed {removal.processor} from {removal.track}",
         })
 
-    def _confirm(self, request, reading: dict[str, Any], track: str, expected: list[str], what: str) -> None:
+    def _confirm(
+        self, request, reading: Any, track: str, expected: list[str], what: str,
+    ) -> dict[str, list[str]]:
+        """The chains of a read-back, confirmed (`confirm_chain`), or 502. The
+        one place a read-back's chains are taken from it, so a reading with
+        none is a 502 like any other read-back that is wrong, not a KeyError's
+        500 (found by review)."""
+        chains = reading.get("chains") if isinstance(reading, dict) else None
+        if not isinstance(chains, dict):
+            self._unconfirmed(request, f"Sushi confirmed it {what}, but the read-back had no chains")
         try:
-            confirm_chain(reading.get("chains", {}), track, expected, what)
+            confirm_chain(chains, track, expected, what)
         except Unconfirmed as exc:
             self._unconfirmed(request, str(exc))
+        return chains
 
     def _unconfirmed(self, request, reason: str) -> None:
         """502, remembered for /health, and nothing logged: the log holds edits

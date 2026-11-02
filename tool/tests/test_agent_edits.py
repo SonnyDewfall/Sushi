@@ -16,6 +16,7 @@ from __future__ import annotations
 
 import asyncio
 import copy
+from dataclasses import replace
 from pathlib import Path
 
 import pytest
@@ -38,7 +39,8 @@ from sushi_rig.agent import (  # noqa: E402
     remove_request,
 )
 from sushi_rig.library import build_library, read_bundle, read_library  # noqa: E402
-from sushi_rig.live import LiveError  # noqa: E402
+from sushi_rig.agent import _track_of, check_move  # noqa: E402
+from sushi_rig.live import LiveError, decide_move, protected_processor  # noqa: E402
 from sushi_rig.paths import checkout_root  # noqa: E402
 
 ROOT = checkout_root()
@@ -66,7 +68,8 @@ CLASSES = {
 
 
 def reading():
-    return {"chains": copy.deepcopy(CHAINS), "ids": dict(IDS)}
+    return {"chains": copy.deepcopy(CHAINS), "ids": dict(IDS),
+            "uids": {name: c["uid"] for name, c in CLASSES.items()}}
 
 
 def removal_reading(processor):
@@ -286,6 +289,7 @@ class EditingLive:
         self.fail_on = None
         self.misplace = False
         self.keep = False
+        self.walk_without_chains = False  # a read-back with no "chains" key
 
     def _enter(self, name, connection, *args):
         assert connection in self.opened and connection not in self.closed, \
@@ -302,14 +306,35 @@ class EditingLive:
     def disconnect(self, connection):
         self.closed.append(connection)
 
-    def walk(self, connection):
-        self._enter("walk", connection)
-        return {"chains": copy.deepcopy(self.chains), "ids": dict(self.ids)}
+    def walk(self, connection, uids=False):
+        self._enter("walk", connection, uids)
+        reading = {"chains": copy.deepcopy(self.chains), "ids": dict(self.ids)}
+        if uids:
+            reading["uids"] = self.uids()
+        if self.walk_without_chains and not uids:
+            del reading["chains"]
+        return reading
+
+    def uids(self):
+        return {name: (c or {}).get("uid") for name, c in self.classes.items()}
+
+    def plan_move(self, connection, processor, direction):
+        """As `live.plan_live_move(uids=True)`: the walk and the session's uids."""
+        self._enter("plan_move", connection, processor, direction)
+        return decide_move(copy.deepcopy(self.chains), dict(self.ids), processor, direction, self.uids())
+
+    def send_move(self, connection, move):
+        self._enter("move", connection, move.processor, move.direction)
+        chain = self.chains[_track_of(self.chains, move.processor)]
+        i = chain.index(move.processor)
+        chain.insert(i + move.direction, chain.pop(i))
+        return replace(move, outcome="moved")
 
     def removal(self, connection, processor):
         self._enter("removal", connection, processor)
         on_a_chain = any(processor in chain for chain in self.chains.values())
         return {"chains": copy.deepcopy(self.chains), "ids": dict(self.ids),
+                "uids": self.uids() if on_a_chain else {},
                 "plugin": copy.deepcopy(self.classes.get(processor)) if on_a_chain else None}
 
     def add(self, connection, addition):
@@ -331,7 +356,7 @@ class EditingLive:
             self.chains[removal.track].remove(removal.processor)
 
     def writes(self):
-        return [c for c in self.calls if c[0] in ("add", "remove")]
+        return [c for c in self.calls if c[0] in ("add", "remove", "move")]
 
 
 def edit_agent(**kwargs):
@@ -418,7 +443,9 @@ def test_an_add_goes_in_before_the_send_and_is_logged_with_the_chain_before():
     assert body["message"] == "added ts to guitar"
     assert (body["op"], body["previous"]) == ("add", ["comp", "drive", "guitar_send"])
     assert body["args"] == {"track": "guitar", "uri": GXTS9, "name": "ts", "after": None}
-    assert [c[0] for c in fake.calls] == ["walk", "add", "walk"], "read, change, read back"
+    assert [c[:1] + c[-1:] for c in fake.calls if c[0] == "walk"] == [("walk", True), ("walk", False)], \
+        "read with the uids (to know the send), change, read back"
+    assert [c[0] for c in fake.calls] == ["walk", "add", "walk"]
     assert [(e["op"], e["previous"]) for e in log(agent)] == [("add", ["comp", "drive", "guitar_send"])]
     assert set(log(agent)[0]) == {"at", "op", "args", "previous"}
 
@@ -677,3 +704,123 @@ def test_the_plugin_to_put_back_is_read_from_the_saved_session():
     assert len(asked) == 2
     assert read_live_removal("nope", controller=controller)["plugin"] is None
     assert len(asked) == 2, "nothing to remove, so the session is not read"
+
+
+# --------------------------------------------------------------------------- #
+# One rule for the send and the return: add, remove and move (found by review)
+# --------------------------------------------------------------------------- #
+
+RENAMED = {"guitar": ["comp", "drive", "out"], "master": ["back", "limiter"]}
+RENAMED_IDS = {"guitar": 1, "comp": 2, "drive": 3, "out": 4, "master": 5, "back": 6, "limiter": 7}
+RENAMED_UIDS = {"comp": None, "drive": None, "out": "sushi.testing.send",
+                "back": "sushi.testing.return", "limiter": None}
+
+
+def test_the_rule_knows_a_send_or_return_by_uid_or_by_name():
+    assert protected_processor("guitar", "guitar_send") == "'guitar_send' is 'guitar''s send"
+    assert protected_processor("guitar", "out", "sushi.testing.send") == "'out' is 'guitar''s send"
+    assert protected_processor("master", "master_return") == "'master_return' is the master's return"
+    assert protected_processor("master", "back", "sushi.testing.return")
+    assert protected_processor("guitar", "out") is None, "no uid read, and not the compiler's name"
+    assert protected_processor("guitar", "delay_send") is None, "a player's plugin may end in _send"
+
+
+def test_an_add_goes_in_front_of_a_send_known_only_by_its_uid():
+    """By name alone the add went in behind a send called something else:
+    confirmed by the read-back, logged, and not heard."""
+    state = {"chains": copy.deepcopy(RENAMED), "ids": dict(RENAMED_IDS), "uids": dict(RENAMED_UIDS)}
+    addition = check_add(state, request())
+    assert addition.expected == ["comp", "drive", "new", "out"]
+    assert (addition.before_id, addition.add_to_back) == (4, False)
+    with pytest.raises(Conflict, match="send must stay last"):
+        check_add(state, request(after="out"))
+    assert check_add(state, request(track="master", after="back")).expected == ["back", "new", "limiter"]
+
+
+def test_a_remove_refuses_a_send_known_only_by_the_walks_uids():
+    state = {"chains": copy.deepcopy(RENAMED), "ids": dict(RENAMED_IDS), "uids": dict(RENAMED_UIDS),
+             "plugin": None}
+    with pytest.raises(Conflict, match="'out' is 'guitar''s send"):
+        check_remove(state, "out")
+
+
+@pytest.mark.parametrize("processor, direction, why", [
+    ("drive", 1, "'guitar_send' is 'guitar''s send"),      # behind the send
+    ("guitar_send", -1, "'guitar_send' is 'guitar''s send"),  # the send itself
+    ("limiter", -1, "'master_return' is the master's return"),  # before the return
+    ("master_return", 1, "'master_return' is the master's return"),
+])
+def test_a_move_past_or_of_a_send_or_return_is_protected(processor, direction, why):
+    move = decide_move(CHAINS, IDS, processor, direction)
+    assert move.outcome == "protected" and move.command is None
+    assert why in move.message
+    with pytest.raises(Conflict, match="cannot move"):
+        check_move(move)
+
+
+def test_a_move_knows_a_renamed_send_by_its_uid():
+    assert decide_move(RENAMED, RENAMED_IDS, "drive", 1).outcome == "planned", \
+        "without uids, the name rule only: this is the listener's case"
+    assert decide_move(RENAMED, RENAMED_IDS, "drive", 1, RENAMED_UIDS).outcome == "protected"
+    assert decide_move(RENAMED, RENAMED_IDS, "comp", 1, RENAMED_UIDS).outcome == "planned"
+    assert decide_move(CHAINS, IDS, "guitar_send", 1).outcome == "unchanged", \
+        "already last: no move, so nothing to protect"
+
+
+def test_the_move_route_refuses_a_move_behind_the_send_and_sends_nothing():
+    agent, fake = edit_agent()
+    status, body = call(agent, "POST", "/live/move", json={"processor": "drive", "direction": "down"})
+    assert status == 400
+    assert "drive cannot move later: 'guitar_send' is 'guitar''s send" in body["reason"]
+    assert fake.writes() == [] and log(agent) == []
+    status, body = call(agent, "POST", "/live/move", json={"processor": "drive", "direction": "up"})
+    assert status == 200 and body["changed"] is True
+    assert fake.chains["guitar"] == ["drive", "comp", "guitar_send"]
+
+
+def test_the_agent_asks_live_for_the_uids_on_a_move_and_on_an_adds_reading(monkeypatch):
+    from sushi_rig import live as live_module
+    from sushi_rig.agent import Live
+
+    asked = []
+    monkeypatch.setattr(live_module, "plan_live_move",
+                        lambda proc, direction, address, c, uids=False: asked.append(("move", uids)))
+    monkeypatch.setattr(live_module, "read_live_chains",
+                        lambda address, c, uids=False: asked.append(("walk", uids)))
+    wired = Live.at("localhost:1")
+    wired.plan_move("c", "drive", 1)
+    wired.walk("c", True)
+    wired.walk("c")
+    assert asked == [("move", True), ("walk", True), ("walk", False)]
+
+
+def test_plan_live_move_reads_the_session_only_when_asked():
+    pytest.importorskip("elkpy")
+    from types import SimpleNamespace as NS
+
+    from sushi_rig.live import plan_live_move
+
+    def plugin(name, uid):
+        return NS(name=name, uid=uid, path="", type=NS(type=1))
+
+    asked = []
+    session = NS(tracks=[NS(processors=[plugin("drive", ""), plugin("out", "sushi.testing.send")])])
+    controller = NS(
+        audio_graph=NS(get_all_tracks=lambda: [NS(id=1, name="guitar")],
+                       get_track_processors=lambda t: [NS(id=3, name="drive"), NS(id=4, name="out")]),
+        session=NS(get_session=lambda: asked.append(1) or session),
+    )
+    assert plan_live_move("drive", 1, controller=controller).outcome == "planned"
+    assert asked == []
+    assert plan_live_move("drive", 1, controller=controller, uids=True).outcome == "protected"
+    assert asked == [1]
+
+
+def test_a_read_back_with_no_chains_is_a_bad_gateway_not_a_crash():
+    agent, fake = edit_agent()
+    fake.walk_without_chains = True
+    status, body = call(agent, "POST", "/live/remove", json={"processor": "drive"})
+    assert status == 502 and "read-back had no chains" in body["reason"]
+    assert log(agent) == []
+    status, body = call(agent, "POST", "/live/add", json={"track": "guitar", "uri": GXTS9})
+    assert status == 502 and "read-back had no chains" in body["reason"]
