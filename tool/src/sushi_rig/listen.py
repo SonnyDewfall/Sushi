@@ -260,8 +260,14 @@ def serve(
     receipt of an unauthenticated UDP message; widening it past localhost is
     a deliberate choice for the caller to make, never the default.
 
-    `session` records takes for the record bar. Without one the record bar's
-    messages are still answered, by `NoEngine`, which says why it cannot.
+    `session` records takes for the record bar (`transport.record_session`
+    builds it). Without one the record bar's messages are still answered, by
+    `NoEngine`, which says why it cannot.
+
+    `amp_parameters` is updated in place as the amp's faders move: it is the
+    listener's record of what it last sent, and a session built with the same
+    dict (`record_session(amp_parameters=...)`) writes those values into each
+    take's config.
     """
     from .transport import Transport
 
@@ -277,9 +283,9 @@ def serve(
 
     status_client = SimpleUDPClient(status_host, status_port)
     last_name = ""
-    # What we last sent the amp. Not what Carla holds — see amp.py.
-    amp_state: dict[str, float] = dict(amp_parameters or {})
-
+    # What we last sent the amp. Not what Carla holds — see amp.py. The
+    # caller's dict, not a copy, so a session sharing it sees each move.
+    amp_state: dict[str, float] = amp_parameters if amp_parameters is not None else {}
     transport = Transport(session)
 
     def _report(message: str, status_address: str = STATUS_ADDRESS) -> None:

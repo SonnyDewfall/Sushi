@@ -195,6 +195,18 @@ def track_entries(
     return pairs, problems
 
 
+def sushi_ports(sushi_node: str, direction: str, route: Route) -> tuple[str, ...]:
+    """The Sushi ports a route names, `<node>:audio_<direction>_<n>`, in channel
+    order and each once. `direction` is "input" or "output".
+
+    The one spelling of a Sushi port from a route, shared by selftest's probes
+    and the record button's take plan (`transport.rig_stems`), so a stem and a
+    probe of the same track can never name different ports.
+    """
+    channels = [c for dest in route for c in dest.channels()]
+    return tuple(f"{sushi_node}:audio_{direction}_{c}" for c in dict.fromkeys(channels))
+
+
 def _as_routes(value: Any) -> list[Route]:
     """Accept a bare `Dest` for a one-entry route, which is what most callers mean."""
     return [(r,) if isinstance(r, Dest) else tuple(r) for r in value]
