@@ -229,7 +229,11 @@ def parse_bindings(raw: Any) -> Bindings:
     problems: list[str] = []
     controls: list[Binding] = []
     programs: Programs | None = None
-    claimed: dict[tuple[str, int, int | None], str] = {}
+    # (kind, number) -> [(channel, control)]: a clash is the same message on
+    # overlapping channels, and "all" (None) overlaps every channel, so note 36
+    # on "all" and note 36 on channel 1 clash -- `dispatch` would only ever
+    # serve the first.
+    claimed: dict[tuple[str, int], list[tuple[int | None, str]]] = {}
     for index, entry in enumerate(raw):
         at = f"_midi_agent entry {index + 1}"
         if not isinstance(entry, dict):
@@ -279,11 +283,12 @@ def parse_bindings(raw: Any) -> Bindings:
                 problems.append(f"{at}: mute must be a channel name (got {written!r})")
                 continue
             target = written
-        key = (kind, number, channel)
-        if key in claimed:
-            problems.append(f"{at}: {claimed[key]!r} and {name!r} both send {kind} {number}")
+        clash = next((other for ch, other in claimed.get((kind, number), [])
+                      if ch is None or channel is None or ch == channel), None)
+        if clash is not None:
+            problems.append(f"{at}: {clash!r} and {name!r} both send {kind} {number} on overlapping channels")
             continue
-        claimed[key] = name
+        claimed.setdefault((kind, number), []).append((channel, name))
         controls.append(Binding(name, kind, number, channel, action, target, written))
     if problems:
         raise BindingError(problems)
@@ -361,7 +366,10 @@ def dispatch(
 
     `switches` is each CC switch's last state (True for on, at 64 and above),
     which is what makes a CC act only when it crosses 64; the one returned is
-    new, and the one given is not changed. A switch never heard from is not
+    new, and the one given is not changed. The caller commits it only once
+    the action went through (or Sushi was already there): a crossing whose
+    action was dropped or failed is then played again by the next value on
+    that side, instead of being believed and ignored. A switch never heard from is not
     known, so its first value is a transition. `rigs` is the program order
     (`program_order`) and `current` the rig that is running, which a Program
     Change for it leaves alone: a switch is seconds of silence, and the
@@ -706,6 +714,36 @@ class Listener:
 # Everything the agent's wiring touches, injectable
 # --------------------------------------------------------------------------- #
 
+def rig_problem(name: str, root: Path, machine: str | None) -> str | None:
+    """Why rig `name` of config/rigs/ would not come up, as far as can be told
+    without taking the running rig down: it must load, its machine file must
+    validate, its MIDI map must name the machine's controller, and it must
+    compile to a config. None if all of that holds. What it cannot tell is
+    what only `up` finds: the live graph wiring it, Sushi loading it. Checked
+    before a switch's `down`, because a rig switched to that cannot compile
+    leaves the player with no rig and no pedals."""
+    from .machine import MachineError, MachineSpec, machine_path, rig_controller
+    from .rigfile import RigFileError, compile_rig, emit_compiled, load_rig
+
+    path = Path(root) / "config" / "rigs" / f"{name}.yaml"
+    machine_file = Path(machine) if machine else machine_path(Path(root))
+    try:
+        rig = load_rig(path)
+        spec = MachineSpec.load(machine_file)
+        problems = spec.validate()
+        if problems:
+            return f"{machine_file.name}: " + "; ".join(problems)
+        compiled, fixed = compile_rig(rig, rig_controller(rig, spec))
+        emit_compiled(rig, compiled, fixed)
+    except RigFileError as exc:
+        return f"{path.name}: " + "; ".join(exc.problems)
+    except MachineError as exc:
+        return f"{path.name}: {exc}"
+    except Exception as exc:  # noqa: BLE001 -- a YAML or file error: said, and the switch refused
+        return f"{path.name}: {type(exc).__name__}: {exc}"
+    return None
+
+
 def _read_state():
     from .state import read_state
 
@@ -716,9 +754,11 @@ def _read_state():
 class World:
     """What the agent's MIDI wiring reaches outside itself, so its tests can
     stand each in: opening a port, what the running rig asks for, the state
-    file (for the options a switch brings a rig up with), the program order."""
+    file (for the options a switch brings a rig up with), the program order,
+    and whether a rig to switch to compiles."""
 
     open_port: Callable[[str], Port] = AlsaPort
     plan: Callable[[dict[str, Any], Path], "Plan | Off"] = plan_for
     read_state: Callable[[], "dict[str, Any] | None"] = _read_state
     rigs: Callable[[Path], list[str]] = program_order
+    check_rig: Callable[[str, Path, "str | None"], "str | None"] = rig_problem

@@ -114,7 +114,9 @@ goes on to the one before. An entry that can be undone is not skipped (409
 would let a request undo out of order. Any other body is 400, since a body that
 asked for more must not be answered as if understood.
 
-Out of scope: undoing an undo (a redo). The entries carry what it needs; it is
+A rig switch made by a Program Change (`op: "rig"`) is a barrier: nothing
+before it is undone (409 `nothing_to_undo`, saying so), since it was done to
+the rig that was up then. Out of scope: undoing an undo (a redo). The entries carry what it needs; it is
 not built. Also not verified against a live Sushi: it is shown against the fake.
 
 ## MIDI: the bindings Sushi cannot serve (#34, #93)
@@ -494,6 +496,11 @@ def undo_request(body: Any) -> bool:
         "it undoes the newest change")
 
 
+class UndoBarrier(AgentError):
+    """A rig switch stands between the undo and anything older: answered 409
+    `nothing_to_undo` with this reason."""
+
+
 def pick_undo(log: list[dict[str, Any]], first: int) -> tuple[int, dict[str, Any]] | None:
     """`(index, entry)` of the newest entry that is not an undo or a skip and
     has been neither undone nor marked stale, or None. `first` is the index of
@@ -506,10 +513,19 @@ def pick_undo(log: list[dict[str, Any]], first: int) -> tuple[int, dict[str, Any
     drops the oldest, can lose a target and keep its marker but never the
     reverse, so an entry that is still here is never mistaken for one not yet
     dealt with.
+
+    A rig switch (`op: "rig"`, made by a Program Change) is a barrier, raising
+    `UndoBarrier`: what came before it was done to another rig, and the rig now
+    up may have processors of the same names, so undoing it would change one
+    nobody touched since. It is neither undone nor skipped past.
     """
     handled: set[int] = set()
     for position in range(len(log) - 1, -1, -1):
         entry = log[position]
+        if entry["op"] == "rig":
+            raise UndoBarrier(
+                f"nothing to undo: a rig switch to {entry['args'].get('rig')!r} is in the way, and "
+                "what came before it was done to the rig that was up then")
         if entry["op"] == "undo":
             handled.add(entry["undoes"])
         elif entry["op"] == "stale":
@@ -781,7 +797,7 @@ class Agent:
         })
 
     async def rig(self, request):
-        return web.json_response(self._rig_answer())
+        return web.json_response(await self._rig_answer())
 
     async def doctor_route(self, request):
         from .doctor import FAULT, UNCHECKED
@@ -820,26 +836,38 @@ class Agent:
         answer["reason"] = outcome.reason
         return web.json_response(answer, status=504 if outcome.abandoned else 409)
 
-    async def _run_lifecycle(self, command: str, steps: list[list[str]]) -> tuple[Outcome, list[str]]:
+    async def _run_lifecycle(
+        self, command: str, steps: list[list[str]], fallback: list[str] | None = None,
+    ) -> tuple[Outcome, list[str]]:
         """Run lifecycle commands in order under the lifecycle lock, stopping
         at the first that fails: one for a route, `down` then `up` for a rig
         switched by Program Change, which therefore takes exactly the path a
         request does. Answers what the last command run said, and its
         arguments; a failure is remembered for /health.
 
-        The MIDI listener is stopped before anything that can take the rig
-        down (a pad pressed mid-`down` must not reach the rig coming up next),
-        and afterwards follows the rig as it now is, whatever happened.
+        `fallback` is run when a step after the first fails, which for a rig
+        switch is the `up` of the rig that `down` took away: the player gets
+        the old rig back rather than silence. The failure is still what is
+        answered and remembered, with what the fallback did beside it.
+
+        The MIDI listener is stopped before every command, `up` too (a
+        listener can still be following a rig that died outside the agent, and
+        a pad pressed while `up` runs must not reach the rig coming up), and
+        afterwards follows the rig as it now is, whatever happened.
         """
         self._refuse_while_busy()
         async with self._lock:
             self.busy = command
             try:
-                if command != "up":
-                    await self._midi_stop(f"stopped while '{command}' runs")
-                for args in steps:
+                await self._midi_stop(f"stopped while '{command}' runs")
+                restored = ""
+                for step, args in enumerate(steps):
                     outcome = await self.run(args)
                     if not outcome.ok:
+                        if fallback is not None and step > 0:
+                            back = await self.run(fallback)
+                            restored = (f"; {fallback[1]} was brought back" if back.ok else
+                                        f"; bringing {fallback[1]} back failed too: {back.reason}")
                         break
             finally:
                 self.busy = None
@@ -853,7 +881,9 @@ class Agent:
                 # `down` that works must not forget it.
                 self.last_error = None
             if not outcome.ok:
-                self._remember(args, outcome.reason, kind="lifecycle")
+                self._remember(args, outcome.reason + restored, kind="lifecycle")
+                if restored:
+                    outcome = Outcome(False, outcome.returncode, outcome.stdout, outcome.stderr.strip() + restored)
         return outcome, args
 
     # ------------------------------------------------------------------- live
@@ -1292,10 +1322,10 @@ class Agent:
         except AgentError as exc:
             raise web.HTTPBadRequest(reason=str(exc))
         self._refuse_while_busy()  # before the fast path: busy is the truer answer
-        if pick_undo(self.log, self._trimmed) is None:
+        if self._pick_undo() is None:
             raise _conflict("nothing to undo", "nothing_to_undo")
         async with self._connected_for_a_change(request) as controller:
-            picked = pick_undo(self.log, self._trimmed)  # the log may have changed while waiting
+            picked = self._pick_undo()  # the log may have changed while waiting
             if picked is None:
                 raise _conflict("nothing to undo", "nothing_to_undo")
             index, undone = picked
@@ -1321,6 +1351,15 @@ class Agent:
             entry = self._record("undo", {"of": op, **args}, previous, undoes=index)
         # `state` is what was set and Sushi confirmed, not read back again.
         return web.json_response({"ok": True, **entry, "undone": undone, "state": state})
+
+    def _pick_undo(self) -> tuple[int, dict[str, Any]] | None:
+        """`pick_undo` on the agent's log, a rig switch in the way answered as
+        409 `nothing_to_undo` with the reason (skip included: a switch is not
+        an entry that could not be undone, it is the end of what can be)."""
+        try:
+            return pick_undo(self.log, self._trimmed)
+        except UndoBarrier as exc:
+            raise _conflict(str(exc), "nothing_to_undo")
 
     async def release_workers(self, app=None) -> None:
         """Stop handing Sushi calls to the pool. Calls still inside Sushi are
@@ -1392,6 +1431,7 @@ class Agent:
         # it, so two actions could otherwise overtake each other while connecting.
         self._midi_lock = asyncio.Lock()
         self._midi_tasks: set = set()
+        self._midi_released = False  # set by `midi_release`: nothing starts a listener after it
         self._midi: dict[str, Any] = {
             "state": "off", "reason": "the agent has not looked for a rig yet",
             "rig": None, "controller": None, "port": None, "bindings": [], "programs": False,
@@ -1412,14 +1452,15 @@ class Agent:
         listener = self._listener
         return {**self._midi, "heard": listener.heard if listener is not None else self._midi["heard"]}
 
-    def _rig_answer(self) -> dict[str, Any]:
+    async def _rig_answer(self) -> dict[str, Any]:
         """/rig: `describe_rig`, and when the running rig's map switches rigs by
         Program Change, which number is which rig (`programs`), read now, as a
-        Program Change reads it."""
+        Program Change reads it (off the loop: it lists a folder)."""
         described = self.describe()
         plan = self._midi_plan
         if plan is not None and plan.bindings.programs is not None:
-            described["programs"] = midi_listener.programs_table(self._midi_world.rigs(self._midi_root()))
+            rigs = await asyncio.to_thread(self._midi_world.rigs, self._midi_root())
+            described["programs"] = midi_listener.programs_table(rigs)
         return described
 
     def _midi_say(self, message: str) -> None:
@@ -1439,18 +1480,25 @@ class Agent:
         await self._midi_sync()
 
     async def midi_release(self, app=None) -> None:
-        """At the agent's end: stop the listener and any action in flight."""
-        await self._midi_stop("the agent is stopping")
+        """At the agent's end: cancel the actions in flight and wait for them,
+        then stop the listener. In that order, and with `_midi_released` set
+        first, because a switch cancelled inside `_run_lifecycle` runs its
+        finally, whose `_midi_sync` would otherwise start a fresh listener
+        after this one had stopped the old."""
+        self._midi_released = True
         for task in list(self._midi_tasks):
             task.cancel()
         await asyncio.gather(*list(self._midi_tasks), return_exceptions=True)
+        await self._midi_stop("the agent is stopping")
 
     async def _midi_sync(self) -> None:
         """Make the listener match the rig as it now is: none for no rig, or a
         rig with nothing for the agent; the one its files describe otherwise.
         A listener already serving that same plan is left alone. Never raises:
         whatever goes wrong is the listener's problem, in /health, and not the
-        lifecycle command's."""
+        lifecycle command's. Does nothing once the agent has released MIDI."""
+        if self._midi_released:
+            return
         try:
             plan = await asyncio.to_thread(self._midi_world.plan, self.describe(), self._midi_root())
         except Exception as exc:  # noqa: BLE001 -- the reason goes to /health and stderr
@@ -1465,7 +1513,8 @@ class Agent:
         if plan == self._midi_plan and self._midi["state"] in ("opening", "listening"):
             return
         await self._midi_stop("replaced")
-        self._midi_start(plan)
+        if not self._midi_released:  # released while the plan was being read
+            self._midi_start(plan)
 
     def _midi_start(self, plan: midi_listener.Plan) -> None:
         loop = asyncio.get_running_loop()
@@ -1520,16 +1569,23 @@ class Agent:
 
     def _midi_heard(self, generation: int, message: midi_listener.Message) -> None:
         """A message from the listener, on the loop: decided now, in the order
-        played, and acted on in a task of its own, one at a time."""
+        played, and acted on in a task of its own, one at a time.
+
+        A Program Change is decided in its task instead, because deciding it
+        lists config/rigs/, which is file access and not for the loop. The
+        switch state `dispatch` returns is not kept here: `_midi_act` commits
+        it once the action has gone through."""
         plan = self._midi_plan
         if generation != self._midi_generation or plan is None:
             return
         try:
-            # The program order is read only for a Program Change, and read
-            # now, so it is the order GET /rig shows at this moment.
-            rigs = self._midi_world.rigs(self._midi_root()) if message.kind == "program" else ()
-            action, self._midi_switches = midi_listener.dispatch(
-                message, plan.bindings, self._midi_switches, rigs, plan.rig)
+            if message.kind == "program":
+                if plan.bindings.programs is None:
+                    action = None
+                else:
+                    action = message  # decided in `_midi_act`, off the loop
+            else:
+                action, _ = midi_listener.dispatch(message, plan.bindings, self._midi_switches)
         except Exception as exc:  # noqa: BLE001 -- a loop callback's error would reach only the loop's log
             self._midi["last_error"] = {
                 "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -1537,11 +1593,7 @@ class Agent:
             }
             self._midi_say(self._midi["last_error"]["message"])
             return
-        self._midi["last"] = {
-            "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-            "message": message.describe(),
-            "action": action.describe() if action is not None else "nothing (not bound, a release, or no change)",
-        }
+        self._midi_last(message, action)
         if action is None:
             return
         if len(self._midi_tasks) >= MIDI_PENDING:
@@ -1554,6 +1606,18 @@ class Agent:
         self._midi_tasks.add(task)
         task.add_done_callback(self._midi_tasks.discard)
 
+    def _midi_last(self, message: midi_listener.Message, action: Any) -> None:
+        if action is message:
+            done = "deciding which rig"
+        elif action is None:
+            done = "nothing (not bound, a release, or no change)"
+        else:
+            done = action.describe()
+        self._midi["last"] = {
+            "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "message": message.describe(), "action": done,
+        }
+
     def _midi_error(self, action: Any, message: str) -> None:
         """An action that could not be done: there is no client to answer, so
         it is said on stderr and kept in /health (`agent.midi.last_error`)."""
@@ -1565,6 +1629,23 @@ class Agent:
         async with self._midi_lock:
             if generation != self._midi_generation:
                 return  # the listener that heard it has been stopped since
+            if isinstance(action, midi_listener.Message):  # a Program Change, to decide
+                message, plan = action, self._midi_plan
+                try:
+                    rigs = await asyncio.to_thread(self._midi_world.rigs, self._midi_root())
+                except Exception as exc:  # noqa: BLE001 -- said, the agent carries on
+                    self._midi["last_error"] = {
+                        "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                        "message": f"{message.describe()}: reading config/rigs/ failed: {type(exc).__name__}: {exc}"}
+                    self._midi_say(self._midi["last_error"]["message"])
+                    return
+                if generation != self._midi_generation or plan is None:
+                    return
+                action, _ = midi_listener.dispatch(message, plan.bindings, {}, rigs, plan.rig)
+                if self._midi["last"] and self._midi["last"]["action"] == "deciding which rig":
+                    self._midi_last(message, action)
+                if action is None:
+                    return
             # What `_sushi` and the live lock read off a request, for a press.
             origin = _MidiOrigin("MIDI", getattr(action, "control", None) or f"program {action.program}")
             try:
@@ -1572,6 +1653,12 @@ class Agent:
                     raise MidiError(action.reason)
                 if isinstance(action, (midi_listener.ToggleBypass, midi_listener.SetBypass)):
                     await self._midi_bypass(origin, action)
+                    if isinstance(action, midi_listener.SetBypass) and generation == self._midi_generation:
+                        # Set, or Sushi was already there: only now has the
+                        # switch crossed. A dropped or failed action leaves it
+                        # where it was, so the next value on this side plays
+                        # the crossing again.
+                        self._midi_switches = {**self._midi_switches, action.control: not action.bypassed}
                 elif isinstance(action, midi_listener.ToggleMute):
                     await self._midi_mute(origin, action)
                 elif isinstance(action, midi_listener.SelectRig):
@@ -1622,11 +1709,25 @@ class Agent:
 
     async def _midi_switch(self, action: Any) -> None:
         """Bring up rig `action.rig` with the lifecycle a request runs, with
-        the options `restart` would bring the running rig back with."""
+        the options `restart` would bring the running rig back with: checked
+        to compile first, and with the previous rig brought back if its `up`
+        fails."""
         state = await asyncio.to_thread(self._midi_world.read_state) or {}
         steps = switch_steps(state, action.rig)
         previous = self._midi_plan.rig if self._midi_plan is not None else None
-        outcome, args = await self._run_lifecycle("switch", steps)
+        # A rig that cannot compile is refused before the running one is taken
+        # down: otherwise the player is left with no rig and no pedals.
+        self._refuse_while_busy()
+        problem = await asyncio.to_thread(
+            self._midi_world.check_rig, action.rig, self._midi_root(), state.get("machine"))
+        if problem:
+            reason = f"not switched to {action.rig}, which would not come up: {problem}"
+            self._remember(["switch", action.rig], reason, kind="lifecycle")
+            raise MidiError(reason)
+        # And if its `up` fails anyway (what only `up` finds: the live graph,
+        # Sushi loading it), the rig that was playing is brought back.
+        fallback = switch_steps(state, previous)[1] if previous else None
+        outcome, args = await self._run_lifecycle("switch", steps, fallback=fallback)
         if not outcome.ok:
             raise MidiError(f"'{' '.join(args)}' failed: {outcome.reason}")
         self._midi_logged(self._record("rig", {"rig": action.rig, "program": action.program}, previous), None)

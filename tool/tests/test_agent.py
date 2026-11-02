@@ -590,6 +590,22 @@ def test_an_entry_marked_stale_is_passed_over_like_an_undone_one():
     assert pick_undo([a, b, stale_b, _entry("stale", {"of": "parameter"}, None, stale=0)], 0) is None
 
 
+def test_a_rig_switch_is_a_barrier_nothing_before_it_is_picked():
+    """A switch by Program Change brings up another rig, which may have
+    processors of the same names: an older entry undone after it would change
+    the new rig. Newer entries are still picked."""
+    from sushi_rig.agent import UndoBarrier
+
+    a = _entry("bypass", {"processor": "drive", "bypassed": False}, True)
+    switch = _entry("rig", {"rig": "lead", "program": 2}, "guitar_vocal")
+    b = _entry("bypass", {"processor": "drive", "bypassed": True}, False)
+    assert pick_undo([a, switch, b], 0) == (2, b)
+    with pytest.raises(UndoBarrier, match="rig switch"):
+        pick_undo([a, switch], 0)
+    with pytest.raises(UndoBarrier, match="rig switch"):
+        pick_undo([a, switch, b, _entry("undo", {}, None, undoes=2)], 0)
+
+
 def test_there_is_nothing_to_pick_in_an_empty_log_or_one_of_undos_only():
     assert pick_undo([], 0) is None
     a = _entry("parameter", {"processor": "reverb", "parameter": "Mix", "value": 0.6}, 0.3)

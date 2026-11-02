@@ -1801,3 +1801,30 @@ subscriptions, and the unplug detection (system announcements) are for the rig
 session. Not done here: learn mode, a diff-based switch, the patchbay link from
 the controller to Sushi's MIDI input, and noticing a rig brought up from the
 CLI while the agent is already running. *(2026-11-02)*
+
+**The agent's pedals, answering review of the branch (#34, #93).** Seven
+findings. (1) **Undo stopped at a rig switch.** With `/live/undo` in (#107), an
+`op: "rig"` entry answered 400, and a skip then undid the previous rig's
+changes against the rig now running, whose processors can share their names.
+`pick_undo` treats a switch as a barrier (`UndoBarrier`): nothing before it is
+undone, skip included, and the answer is 409 `nothing_to_undo` saying a rig
+switch is in the way; changes after it undo as before. (2) **A failed switch
+left no rig and no pedals.** The rig switched to is now checked to compile
+first (`midi_listener.rig_problem`: load, machine file, controller, compile and
+emit, with no pw-dump and no Sushi), and refused with the running rig untouched
+and the reason in `last_error`; and if its `up` fails anyway, `_run_lifecycle`
+runs a fallback, the previous rig's `up` with the same options, and says which
+in the reason. (3) **`midi_release` cancels and awaits the actions first, then
+stops the listener**, and `_midi_sync` does nothing once released, so a switch
+cancelled mid-`up` no longer opens the port again from its finally. (4) **A CC
+switch's state is committed when its action went through** (or Sushi was
+already there), not when it was decided, so a dropped or failed crossing is
+played again by the next value on that side. (5) **Bindings on overlapping
+channels clash**: note 36 on "all" and on channel 1 are refused, since
+`dispatch` would only ever serve the first. (6) **`up` stops the listener too**,
+so one still following a rig that died outside the agent cannot act on the rig
+coming up. (7) **The program order is read off the loop**: a Program Change is
+decided in its task with the folder listed in a thread, and `/rig` lists it in
+one. Each is tested; still nothing heard from a real pedal, and the compile
+check cannot see what only `up` finds (the live graph, Sushi loading the rig),
+which is what the fallback is for. *(2026-11-02)*

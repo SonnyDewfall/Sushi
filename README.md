@@ -491,7 +491,10 @@ order as `programs` while the running rig switches by them. The switch is
 `down` then `up --rig` with the mode, tuner and amp choices `restart` would
 keep (not an `--amp-model` override, which belonged to the rig being left),
 about five seconds of silence, and the next rig switches on only if its own
-map says `programs: rigs`. A Program Change for the rig already playing does
+map says `programs: rigs`. The rig switched to is compiled first, and one that
+would not is refused with the running rig left playing; if its `up` fails
+anyway, the rig that was playing is brought back. `/live/undo` stops at a rig
+switch: what came before it was done to the other rig. A Program Change for the rig already playing does
 nothing; one past the last rig is refused and said. Each change is in
 `/live/log` with `source: "midi"` and the control that made it. The listener
 starts when a rig comes up through the agent, or is already up when the agent

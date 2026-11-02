@@ -137,6 +137,9 @@ def test_a_numbered_channel_is_kept_as_the_machine_file_gives_it():
     # one here means a config this listener does not understand.
     ([{"control": "knob3", "cc": 9, "channel": "all", "mute": "lead"}], "Sushi's own cc_mappings"),
     ([PAD_BYPASS, dict(PAD_MUTE, note=36)], "both send note 36"),
+    # "all" overlaps every channel: one of the two would never be served.
+    ([PAD_BYPASS, dict(PAD_MUTE, note=36, channel=1)], "both send note 36"),
+    ([dict(PAD_BYPASS, channel=1), dict(PAD_MUTE, note=36)], "both send note 36"),
     ([PROGRAMS, PROGRAMS], "Program Change is bound twice"),
     ([dict(PROGRAMS, programs="presets")], "programs must be \"rigs\""),
     ([dict(PAD_BYPASS, colour="red")], "unknown key 'colour'"),
@@ -144,6 +147,11 @@ def test_a_numbered_channel_is_kept_as_the_machine_file_gives_it():
 def test_a_binding_the_listener_does_not_understand_is_refused_not_guessed(raw, said):
     with pytest.raises(BindingError, match=said):
         parse_bindings(raw)
+
+
+def test_one_number_on_two_separate_channels_is_two_bindings():
+    parsed = parse_bindings([dict(PAD_BYPASS, channel=1), dict(PAD_MUTE, note=36, channel=2)])
+    assert len(parsed.controls) == 2
 
 
 def test_every_problem_is_named_at_once():
@@ -482,3 +490,15 @@ def test_a_port_that_fails_while_listening_is_reported_and_closed():
     listener.thread.join(2)
     assert not listener.thread.is_alive()
     assert port.closed.is_set()
+
+
+def test_a_rig_to_switch_to_is_checked_to_compile_from_its_files(tmp_path):
+    """What a switch checks before taking the running rig down: the real
+    files, through the real compiler, without a pw-dump or a Sushi."""
+    from sushi_rig.midi_listener import rig_problem
+
+    described = rig_files(tmp_path)
+    assert rig_problem("lead", tmp_path, described["machine"]) is None
+    assert "No such file" in rig_problem("absent", tmp_path, described["machine"])
+    (tmp_path / "config" / "rigs" / "lead.yaml").write_text(RIG.replace("control: pad1", "control: pad9"))
+    assert "'pad9' is not a control of controller 'mpd218'" in rig_problem("lead", tmp_path, described["machine"])

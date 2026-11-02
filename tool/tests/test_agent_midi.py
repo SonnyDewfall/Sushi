@@ -73,6 +73,8 @@ class FakeWorld:
         self.refuse = None
         self.state = dict(STATE)
         self.has_plan = plan
+        self.bad_rigs: dict[str, str] = {}  # rig name -> why it would not compile
+        self.checked: list[str] = []
 
     def plan(self, described, root):
         if not described.get("running"):
@@ -90,9 +92,14 @@ class FakeWorld:
         self.ports.append(port)
         return port
 
+    def check_rig(self, name, root, machine):
+        self.checked.append(name)
+        return self.bad_rigs.get(name)
+
     def world(self):
         return World(open_port=self.open_port, plan=self.plan,
-                     read_state=lambda: dict(self.state), rigs=lambda root: list(RIGS))
+                     read_state=lambda: dict(self.state), rigs=lambda root: list(RIGS),
+                     check_rig=self.check_rig)
 
 
 class Rig:
@@ -525,3 +532,226 @@ def test_the_module_imports_without_the_midi_extra():
     names = {a.name for n in top for a in n.names} | {getattr(n, "module", None) for n in top}
     assert "alsa_midi" not in names
     assert agent_module.midi_listener is midi_listener
+
+
+# --------------------------------------------------------------------------- #
+# Review of the branch: a switch is a barrier to undo, a failed switch, release,
+# switch state, overlapping channels, `up` stops the listener, the loop
+# --------------------------------------------------------------------------- #
+
+def test_undo_does_not_walk_past_a_rig_switch():
+    """Both rigs can have a "drive"; undoing the old rig's bypass against the
+    new one would change a plugin nobody touched since the switch."""
+    agent, fake, world, runner, _ = midi_agent()
+
+    async def test(client):
+        port = await started(agent, world, client)
+        port.send(0x90, 36, 100)                     # a bypass on guitar_vocal
+        await until(lambda: fake.writes())
+        await settle(agent)
+        port.send(0xC0, 2)                           # switch to lead
+        await until(lambda: len(runner.calls) == 2)
+        await settle(agent)
+        for body in (None, {"skip": True}):
+            r = await client.post("/live/undo", json=body)
+            answer = await r.json()
+            assert r.status == 409 and answer["code"] == "nothing_to_undo", answer
+            assert "rig switch" in answer["reason"]
+        assert fake.writes() == [("set_bypass", "drive", False)], "nothing was put back"
+        assert [e["op"] for e in await log(client)] == ["bypass", "rig"], "and nothing marked stale"
+
+    served(agent, test)
+
+
+def test_a_change_after_a_switch_can_still_be_undone():
+    agent, fake, world, runner, _ = midi_agent()
+
+    async def test(client):
+        port = await started(agent, world, client)
+        port.send(0xC0, 2)
+        await until(lambda: len(runner.calls) == 2)
+        await settle(agent)
+        await until(lambda: agent._midi["state"] == "listening")
+        world.ports[-1].send(0x90, 36, 100)
+        await until(lambda: fake.writes())
+        await settle(agent)
+        r = await client.post("/live/undo")
+        assert r.status == 200, await r.json()
+
+    served(agent, test)
+
+
+def test_a_switch_to_a_rig_that_does_not_compile_leaves_the_rig_up():
+    world = FakeWorld()
+    world.bad_rigs["lead"] = "lead.yaml: midi: 'pad9' is not a control of controller 'mpd218'"
+    agent, fake, _, runner, _ = midi_agent(world)
+
+    async def test(client):
+        port = await started(agent, world, client)
+        port.send(0xC0, 2)
+        await until(lambda: agent._midi["last_error"])
+        await settle(agent)
+        assert runner.calls == [], "the running rig is not taken down for a rig that cannot come up"
+        body = await (await client.get("/health")).json()
+        assert "pad9" in body["agent"]["last_error"]["message"]
+        assert "pad9" in body["agent"]["midi"]["last_error"]["message"]
+        assert agent._midi["state"] == "listening" and len(world.ports) == 1
+        assert not port.closed.is_set(), "the pedals stay on the rig that is still playing"
+
+    served(agent, test)
+
+
+def test_a_switch_whose_up_fails_brings_the_previous_rig_back():
+    from sushi_rig.agent import Outcome
+
+    rig = Rig(RIG_UP)
+
+    class UpOfLeadFails(SwitchingRunner):
+        async def __call__(self, args):
+            self.outcome = Outcome(False, 1, "", "Sushi never came up") if args[:2] == ["up", "lead"] \
+                else Outcome(True, 0, "", "")
+            return await super().__call__(args)
+
+    runner = UpOfLeadFails(rig)
+    agent, fake, world, _, _ = midi_agent(runner=runner)
+    agent.describe = rig
+    runner.rig = rig
+
+    async def test(client):
+        port = await started(agent, world, client)
+        port.send(0xC0, 2)
+        await until(lambda: len(runner.calls) == 3)
+        await settle(agent)
+        assert runner.calls == [
+            ["down"], ["up", "lead", "--rig", "--headless", "--no-tuner"],
+            ["up", "guitar_vocal", "--rig", "--headless", "--no-tuner"],
+        ]
+        await until(lambda: agent._midi["state"] == "listening")
+        assert agent._midi["rig"] == "guitar_vocal", "and its pedals with it"
+        body = await (await client.get("/health")).json()
+        message = body["agent"]["last_error"]["message"]
+        assert "Sushi never came up" in message and "guitar_vocal was brought back" in message
+
+    served(agent, test)
+
+
+def test_release_during_a_switch_starts_no_listener_after_it():
+    """A switch cancelled by the agent stopping runs `_run_lifecycle`'s
+    finally; that must not open the port again once the agent has let go."""
+    started_up, hang = asyncio.Event(), asyncio.Event()
+    rig = Rig(RIG_UP)
+
+    class HangingUp(SwitchingRunner):
+        async def __call__(self, args):
+            if args[0] == "up":
+                started_up.set()
+                await hang.wait()
+            return await super().__call__(args)
+
+    runner = HangingUp(rig)
+    agent, fake, world, _, _ = midi_agent(runner=runner)
+    agent.describe = rig
+
+    async def go():
+        try:
+            async with TestClient(TestServer(agent.app())) as client:
+                port = await started(agent, world, client)
+                port.send(0xC0, 2)
+                await asyncio.wait_for(started_up.wait(), 3)
+                rig.described = dict(RIG_UP)  # as if the rig were up again
+                await agent.midi_release()
+                await asyncio.sleep(0.3)
+                assert len(world.opened) == 1, "no listener after release"
+                assert agent._listener is None
+                await agent._midi_sync()
+                assert len(world.opened) == 1, "and a sync after release does nothing"
+        finally:
+            agent._executor.shutdown(wait=True, cancel_futures=True)
+
+    asyncio.run(go())
+
+
+def test_a_dropped_switch_action_does_not_count_as_a_crossing(monkeypatch):
+    """The switch's state is what Sushi was set to, not what was decided: a
+    crossing whose action was dropped (or failed) is played again by the next
+    value on that side of 64."""
+    agent, fake, world, *_ = midi_agent()
+
+    async def test(client):
+        port = await started(agent, world, client)
+        monkeypatch.setattr(agent_module, "MIDI_PENDING", 0)
+        port.send(0xB0, 80, 0)                      # dropped: nothing waits, nothing set
+        await until(lambda: agent._midi["last_error"])
+        assert fake.writes() == []
+        monkeypatch.setattr(agent_module, "MIDI_PENDING", 16)
+        port.send(0xB0, 80, 5)                      # the same side of 64: the crossing again
+        await until(lambda: fake.writes())
+        await settle(agent)
+        assert fake.writes() == [("set_bypass", "comp", True)]
+
+    served(agent, test)
+
+
+def test_a_failed_switch_action_does_not_count_as_a_crossing():
+    agent, fake, world, *_ = midi_agent()
+    fake.fail, fake.fail_on = RuntimeError("Sushi went sideways"), "set_bypass"
+
+    async def test(client):
+        port = await started(agent, world, client)
+        port.send(0xB0, 80, 0)
+        await until(lambda: agent._midi["last_error"])
+        await settle(agent)
+        fake.fail = None
+        port.send(0xB0, 80, 5)
+        await until(lambda: len(fake.writes()) == 2)
+        await settle(agent)
+        assert fake.writes()[-1] == ("set_bypass", "comp", True)
+
+    served(agent, test)
+
+
+def test_up_stops_a_listener_still_following_a_rig_that_died():
+    """A rig that died outside the agent leaves its listener running; `up`
+    must stop it before starting the next rig, so a press during `up` cannot
+    reach the rig coming up."""
+    agent, fake, world, runner, rig = midi_agent()
+
+    async def test(client):
+        port = await started(agent, world, client)
+        rig.described = {"verdict": "gone", "running": False}
+        seen = []
+
+        async def watching(args):
+            seen.append((agent._listener is None, port.closed.is_set()))
+            return await SwitchingRunner.__call__(runner, args)
+
+        agent.run = watching
+        r = await client.post("/rig/up", json={"config_name": "guitar_vocal", "rig": True})
+        assert r.status == 200
+        assert seen == [(True, True)], "stopped before the up ran"
+
+    served(agent, test)
+
+
+def test_the_program_order_is_read_off_the_loop():
+    loop_threads = set()
+    agent, fake, world, runner, _ = midi_agent()
+    reads = []
+
+    def rigs(root):
+        reads.append(threading.get_ident())
+        return list(RIGS)
+
+    agent._midi_world = World(open_port=world.open_port, plan=world.plan,
+                              read_state=lambda: dict(world.state), rigs=rigs, check_rig=world.check_rig)
+
+    async def test(client):
+        loop_threads.add(threading.get_ident())
+        port = await started(agent, world, client)
+        assert "programs" in await (await client.get("/rig")).json()
+        port.send(0xC0, 2)
+        await until(lambda: len(runner.calls) == 2)
+        await settle(agent)
+        assert len(reads) >= 2 and not set(reads) & loop_threads
+
+    served(agent, test)
