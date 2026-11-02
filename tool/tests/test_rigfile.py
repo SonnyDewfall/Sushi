@@ -648,20 +648,34 @@ def test_a_rig_without_a_map_compiles_as_before():
 @pytest.mark.slow
 def test_a_rig_with_a_midi_map_loads_in_sushi_with_its_mappings(tmp_path):
     """The one thing the pure tests cannot settle: that Sushi 1.3.0 accepts
-    what `compile_midi` writes (port 0, channel "all", two mappings on the
-    sends' gain) and still loads the rig. Headless, through `verify`, which
-    also reads every send's destination back."""
+    what `compile_midi` writes (port 0, channel "all", a mapping on a send's
+    gain and one on a track's mute, `midi_inputs` in the host config) and
+    still loads the rig. Headless, through `verify`, which also reads every
+    send's destination back.
+
+    Through `heard`, not the config itself: Sushi's offline frontend has one
+    stereo bus and a two-channel rig puts its stems on buses 1 and 2, so the
+    whole config fails to load ("Failed to load tracks", as test_render
+    records). Each cut keeps the mappings on what it still has (`_alone`), so
+    the clean cut carries the blend's first half and the lead cut its second
+    and the mute. Found when the first version of this test, written without
+    a Sushi to run it, failed in CI on 2026-11-02."""
+    from sushi_rig.rigfile import heard
     from sushi_rig.verify import verify
 
     rig = parse_rig(_midi_rig([
         {"control": "knob1", "blend": ["clean", "lead"]},
         {"control": "knob2", "mute": "lead"},
     ]))
-    for channel in rig.channels:  # real plugins, so the config loads
+    for channel in rig.channels:  # no LV2 plugins needed, so the config loads anywhere
         object.__setattr__(channel, "chain", ())
-    config = tmp_path / "two_midi.json"
-    config.write_text(json.dumps(emit_rig(rig, controller=MPD218), indent=2))
-    assert verify(config, str(SUSHI)) == []
+    views = dict(heard(emit_rig(rig, controller=MPD218)))
+    assert [m["plugin_name"] for m in views["two.clean"]["midi"]["cc_mappings"]] == ["clean_send"]
+    assert [m["plugin_name"] for m in views["two.lead"]["midi"]["cc_mappings"]] == ["lead_send", "lead"]
+    for name, view in views.items():
+        config = tmp_path / f"{name}.json"
+        config.write_text(json.dumps(view, indent=2))
+        assert verify(config, str(SUSHI)) == [], name
 
 
 def test_the_agents_bindings_and_the_midi_port_are_written_into_the_config():
