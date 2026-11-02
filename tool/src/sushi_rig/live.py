@@ -834,9 +834,9 @@ def protected_processor(track: str, processor: str, uid: str | None = None) -> s
     was read. Pure.
     """
     # Here, not at the top: rigfile imports save, which imports this module.
-    from .rigfile import MASTER, RETURN, RETURN_UID, SEND_SUFFIX, SEND_UID
+    from .rigfile import MASTER, RETURN, RETURN_UID
 
-    if uid == SEND_UID or processor == track + SEND_SUFFIX:
+    if is_send(track, processor, uid):
         return f"{processor!r} is {track!r}'s send"
     if uid == RETURN_UID or (track == MASTER and processor == RETURN):
         return f"{processor!r} is the master's return"
@@ -844,7 +844,9 @@ def protected_processor(track: str, processor: str, uid: str | None = None) -> s
 
 
 def is_send(track: str, processor: str, uid: str | None = None) -> bool:
-    """`protected_processor`'s send half: what an add goes in front of."""
+    """Whether `processor` on `track` is the channel's send: what an add goes
+    in front of, and `protected_processor`'s send half, so the two cannot
+    disagree about which processor is the send."""
     from .rigfile import SEND_SUFFIX, SEND_UID
 
     return uid == SEND_UID or processor == track + SEND_SUFFIX
