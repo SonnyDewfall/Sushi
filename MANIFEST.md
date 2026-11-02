@@ -1828,3 +1828,88 @@ decided in its task with the folder listed in a thread, and `/rig` lists it in
 one. Each is tested; still nothing heard from a real pedal, and the compile
 check cannot see what only `up` finds (the live graph, Sushi loading the rig),
 which is what the fallback is for. *(2026-11-02)*
+
+**The library and live chain edits (#32).** `GET /library`, `POST /live/add`
+and `POST /live/remove` on the agent, for S3 of the UX story: pick a plugin
+from the library, add it to a chain, drag it into place (`/live/move`, already
+there), take one out. **The library** (`library.py`) is every URI in
+`plugin-manifest.txt`, in its order, with a name, the port count, the bundle,
+whether a profile exists and the profile's groups; built on first use and kept
+for the agent's life; read from `plugins/` only, never the system's LV2 paths.
+lilv is not on every machine the agent runs on, so the bundles' Turtle is read
+directly: `parse_turtle` is enough of Turtle 1.1 for LV2 bundles, and a bundle
+is read as lilv reads it for these facts (`manifest.ttl`, then the
+`rdfs:seeAlso` data files of what it declares `a lv2:Plugin`; the plugin's own
+`doap:name`, since a file often names its project too: gxts9's says
+"Gxts9sim"). **Checked against lilv**: Ubuntu 24.04's packages for the
+manifest's plugins (guitarix-lv2, mda-lv2, rubberband-lv2, x42-plugins,
+dpf-plugins-lv2, swh-lv2, zynaddsubfx-lv2, ardour-lv2-plugins) were extracted to
+a scratch folder, `sushi-rig plugins assemble` built a `plugins/` from them (54
+of 55 URIs; the amp is not packaged, and was waived), and lilv 0.24.22, loaded
+from the extracted .debs rather than installed, agreed on every name and port
+count. That comparison is now a test, which runs where lilv and `plugins/` are
+both present (the container) and skips here. The fixtures are the captured
+`.ttl` files of three of those bundles, `mda.lv2` cut down to one data file and
+saying so. A name that cannot be read falls back to a profile's restated name,
+then the URI's last segment, marked (`name_from`) with a `note`. The amp is
+listed `addable: false`: it runs in Carla because Sushi cannot set its model,
+and on a Sushi chain it would pass audio with none. **An add** is checked for
+shape and against the manifest (400, Sushi untouched), then against a walk of
+the chains under the live lock (409 for a track the rig lacks, a name it
+already has anywhere, an `after` not on that track, or `after` the send). With
+no `name` it is named from the plugin (`derive_name`, to `save.NAME_PATTERN`);
+with no `after` it goes in front of the channel's send, never behind it, since
+the send carries the channel to the master. **A remove** is 409 for a track, a
+send or return (known by name where the compiler puts them and by uid where
+Sushi reports one) or what the rig lacks. Its plugin class comes from Sushi's
+saved session, the one place the gRPC API names the plugin a processor is
+(`ProcessorInfo` has no URI); a remove Sushi cannot name is refused (502)
+rather than made unundoable. Each edit is sent as decided, confirmed by reading
+the chain back, and logged only if the read-back matches (502 and not logged
+otherwise): `add` with the name used and the chain before, `remove` with the
+chain before and the plugin's `uri`, `uid` and `type`, so an undo can re-add it,
+at its defaults, since parameter values are not recorded. Routes, decisions and
+tests are in sections of their own (`test_agent_edits.py`) to keep the merge
+with `/live/undo` small; the log format is unchanged. Found on the way: lilv's
+Python collection iterator has no `__iter__`, so on Python 3.13 a comprehension
+over `world.get_all_plugins()` fails where a `for` loop works. **Not run against
+a live Sushi:** `create_processor_on_track(name, uid, path, processor_type,
+track_id, before_processor, add_to_back)`, `delete_processor_from_track(processor,
+track)` and `session.get_session()` (SaveSession) are read from elkpy 1.3.0's
+source, and the tests bind the calls to those signatures; whether Sushi 1.3.0
+places a processor as `before_processor` says, shows it in the chain read
+straight after confirming, and reports an LV2 plugin's URI in the session's
+`PluginClass.path` is not known. Add, move and remove on a rig that is `up`, and
+read `/live` after each, before relying on them. Not done from #32 yet: the mute
+ramp around an edit and the CPU budget check before an insert. *(2026-11-02)*
+*A review of the branch found nine more, seven in the Turtle reader.* (1)
+**Blank nodes from two files of a bundle were the same nodes**: each parse
+numbered its anonymous nodes from one, so a plugin with two anonymous ports in
+each of two data files had two; each file's blank nodes now carry a prefix of
+their own (`parse_turtle(blank_prefix=)`). (2) **Tokenising was quadratic**,
+counting the line from the start for every token (131 KB took a second, under
+the library's lock); the line is now counted as the text is consumed, and a
+megabyte with a thousand plugins reads in about a second. (3) A relative
+plugins folder crashed the build in `Path.as_uri` (a 500); bundles are resolved
+first. (4) A manifest that is not UTF-8 escaped as a 500; it is a
+`LibraryError` that names the file. (5) **An add knew the send by name only**,
+while a remove also knew it by uid, so an add on a rig whose send had another
+name went in behind it, read back as asked, and was logged and inaudible. One
+rule now, `live.protected_processor`, by uid and by name, serves the add, the
+remove and the move: the walk an add decides on and a move plans on reads the
+uids from Sushi's saved session (`read_live_chains(uids=True)`,
+`plan_live_move(uids=True)`), and `decide_move` has an outcome `protected` for
+a move of a send or return or a swap with one, which `/live/move` refuses (400,
+as its other refusals) and sends nothing. That closes the move behind the send
+reported above. The panel's listener plans its moves without the session read
+and keeps the name rule alone, so a renamed send can still be passed there. The
+cost: the agent's add and move now also depend on SaveSession, which is
+unverified against Sushi 1.3.0; if it is not answered they fail loudly (502),
+and do not fall back to names. (6) A bundle folder with no `manifest.ttl` was
+skipped silently, its plugins then "not found in plugins/"; it is a problem
+naming the folder. (7) The remove's read-back took `["chains"]` directly, a
+`KeyError` 500 for a walk without them; `_confirm` is the one accessor and
+returns the chains it confirmed, a 502 otherwise. (8) An unknown escape's
+`TurtleError` had no line; it has. (9) `plugins_described` scanned every triple
+three times per plugin; it indexes once per bundle. Every name and port count
+still agrees with lilv on the assembled `plugins/` (rerun). *(2026-11-02)*
