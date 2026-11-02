@@ -449,6 +449,34 @@ in-memory log of the last 500 (`/live/log`: `at`, `op`, `args`, and the
 `previous` value where it was known), which is where undo will come from; there
 is no undo yet.
 
+**The library and chain edits** (#32): pick a plugin, add it to a chain, take one out.
+
+```bash
+curl localhost:8029/library          # every plugin in plugin-manifest.txt: uri, name, ports, profile, groups
+curl -X POST localhost:8029/live/add -d '{"track": "guitar", "uri": "http://guitarix.sourceforge.net/plugins/gxts9#ts9sim"}'
+curl -X POST localhost:8029/live/add -d '{"track": "guitar", "uri": "http://drobilla.net/plugins/mda/Delay", "name": "slap", "after": "guitar_overdrive"}'
+curl -X POST localhost:8029/live/remove -d '{"processor": "slap"}'
+```
+
+`/library` lists the manifest, not the machine: names and port counts come from
+the bundles in `plugins/`, read without lilv (and checked against lilv on every
+bundle the packages provide), never from the system's LV2 paths. A name that
+could not be read is the URI's last segment, marked `name_from: "uri"` with a
+`note` saying why; a profile's groups come with its plugin. It is built once,
+on first use, and kept until the agent restarts. The amp is listed but
+`addable: false`: it runs in Carla, and on a Sushi chain it would have no model.
+An add needs a manifest URI and a track; with no `name` it is named from the
+plugin (`MDA Delay` is `mda_delay`), and with no `after` it goes last but in
+front of the channel's send, never behind it, since the send is what reaches the
+monitors. A bad request is `400` with Sushi untouched; a name the rig already
+has, a track it lacks, an `after` not on that track, or a remove of a send,
+the master's return, a track or something not there, is `409`. Both edits are
+confirmed by reading the chain back, and one that does not read back as asked
+is `502` and not logged. The log entry for an add has the name used and the
+chain before; for a remove, the chain before and the plugin's URI, uid and
+type, from Sushi's saved session, so an undo can put it back (at its defaults:
+parameter values are not recorded). **Not yet run against a live Sushi.**
+
 **Two modes, for two ways of using the rig.** The default gives you the Open
 Stage Control panel and the save listener behind it, which is what you want when
 dialling in a tone: tweak, type a name, press save, and `config/<name>.json`

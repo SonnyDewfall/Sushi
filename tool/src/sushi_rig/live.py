@@ -749,3 +749,116 @@ def push(rig, address: str = DEFAULT_GRPC_ADDRESS) -> None:
                 print(f"  + {plugin.name!r} ({plugin.uri or plugin.path})")
     finally:
         controller.close()
+
+
+# --------------------------------------------------------------------------- #
+# Adding and removing a processor (#32), for the agent's /live/add and
+# /live/remove. The decisions -- where it goes, what may be removed, whether the
+# read-back confirms it -- are the agent's (`agent.check_add`, `check_remove`,
+# `confirm_chain`), and pure; these only read and send.
+#
+# NOT RUN AGAINST A LIVE SUSHI. No Sushi was available when they were written
+# (2026-11-02). The calls are read from elkpy 1.3.0's installed source:
+#
+#   AudioGraphController.create_processor_on_track(
+#       self, name: str, uid: str, path: str,
+#       processor_type: info_types.PluginType, track_id: int,
+#       before_processor: int, add_to_back: bool) -> SushiCommandResponse
+#   AudioGraphController.delete_processor_from_track(
+#       self, processor: int, track: int) -> SushiCommandResponse
+#   SessionController.get_session(self)   # the SaveSession RPC: a SessionState
+#
+# `push` already calls `create_processor_on_track` with these keyword names
+# (written against elkpy 1.2.0, where they are the same). PluginType.LV2 is 4
+# in `sushi_info_types`. What is unverified: that Sushi 1.3.0 places a new
+# processor as `before_processor` says when `add_to_back` is false, that the
+# chain read straight after the confirmation already shows the change, and that
+# SaveSession's `PluginClass.path` holds an LV2 plugin's URI. That last is
+# inferred: the create request's field is also `path`, which elkpy documents as
+# "the path to the processor library (for vst2 or vst3 processors) or the URI
+# of an installed lv2 plugin", and a saved session must be able to recreate
+# what it saved. Sushi 1.3.0's own source was not read for it.
+# --------------------------------------------------------------------------- #
+
+def read_live_chains(address: str = DEFAULT_GRPC_ADDRESS, controller: Any = None) -> dict[str, Any]:
+    """`{"chains": {track: [processor names]}, "ids": {name: id}}`, from one
+    walk of the tracks (`_walk_chains`): what an add is decided on, and the
+    read-back that confirms an add or a remove."""
+    with _connection(address, controller) as c:
+        chains, ids = _walk_chains(c)
+        return {"chains": chains, "ids": ids}
+
+
+def _plugin_class(controller, processor: str) -> dict[str, Any] | None:
+    """`{"uri", "uid", "type"}` of the processor named `processor`, from
+    Sushi's session, or None if the session does not list it.
+
+    The session is the only place Sushi's gRPC API says which plugin a running
+    processor is: `ProcessorInfo` has an id, a label and a name, and nothing
+    that names the plugin (elkpy 1.3.0's `sushi_rpc.proto`, `ProcessorInfo`).
+    `SessionState.tracks[].processors[]` is a `PluginClass` with `name`, `uid`,
+    `path` and `type`. A save of the whole session is heavier than any other
+    read here, and paid only by a remove, which is rare.
+    """
+    from elkpy import sushi_info_types as info
+
+    session = controller.session.get_session()
+    for track in getattr(session, "tracks", None) or []:
+        for plugin in getattr(track, "processors", None) or []:
+            if plugin.name != processor:
+                continue
+            try:
+                kind = info.PluginType(plugin.type.type).name.lower()
+            except (AttributeError, ValueError):
+                kind = None
+            return {"uri": plugin.path or None, "uid": plugin.uid or None, "type": kind}
+    return None
+
+
+def read_live_removal(
+    processor: str, address: str = DEFAULT_GRPC_ADDRESS, controller: Any = None,
+) -> dict[str, Any]:
+    """`{"chains", "ids", "plugin"}`: a walk, and for a processor found on a
+    chain its plugin class (`_plugin_class`), else None. The session is read
+    only when there is something to remove, so a refused request does not pay
+    for it."""
+    with _connection(address, controller) as c:
+        chains, ids = _walk_chains(c)
+        on_a_chain = any(processor in chain for chain in chains.values())
+        return {
+            "chains": chains, "ids": ids,
+            "plugin": _plugin_class(c, processor) if on_a_chain else None,
+        }
+
+
+def add_live_processor(
+    name: str, uri: str, track_id: int, before_id: int, add_to_back: bool,
+    address: str = DEFAULT_GRPC_ADDRESS, controller: Any = None,
+) -> None:
+    """Create LV2 plugin `uri` as processor `name` on the track with `track_id`,
+    in front of the processor with `before_id`, or at the back. Strict: raises
+    `LiveError` if Sushi reports an error or does not confirm, in which case it
+    may or may not have been created. Sushi looks the URI up on its own
+    `LV2_PATH` (`plugins/`); a URI it cannot find is its refusal.
+
+    `before_processor` is 0 when `add_to_back` is set, as `send_live_move`
+    sends it: Sushi reads the position from `add_to_back` first.
+    """
+    from elkpy import sushi_info_types as info
+
+    with _connection(address, controller) as c:
+        response = c.audio_graph.create_processor_on_track(
+            name=name, uid="", path=uri, processor_type=info.PluginType.LV2,
+            track_id=track_id, before_processor=before_id, add_to_back=add_to_back,
+        )
+        _wait(response, strict=True)
+
+
+def remove_live_processor(
+    processor_id: int, track_id: int,
+    address: str = DEFAULT_GRPC_ADDRESS, controller: Any = None,
+) -> None:
+    """Delete the processor with `processor_id` from the track with `track_id`.
+    Strict, as `add_live_processor`."""
+    with _connection(address, controller) as c:
+        _wait(c.audio_graph.delete_processor_from_track(processor_id, track_id), strict=True)

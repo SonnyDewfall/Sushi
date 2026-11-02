@@ -80,6 +80,29 @@ The CLI binds it to 127.0.0.1:8029 unless told otherwise. `--host 0.0.0.0`
 opens it to the LAN, and until the permission split the issue describes exists
 (local: everything; remote: start, stop, load, parameters) that is the
 operator's call to make, not a default.
+
+## The library and chain edits (#32)
+
+    GET  /library       every plugin in plugin-manifest.txt: uri, name, ports, profile and its groups
+    POST /live/add      {"track", "uri", "name"?, "after"?}
+    POST /live/remove   {"processor"}
+
+What S3 of the UX story needs: pick a plugin from the library, add it to a
+chain, drag it into place (`/live/move`), take one out. The library is built
+once, on first use, and kept for the agent's life (`library.read_library`:
+the manifest, the bundles in `plugins/` read without lilv, the profiles); it
+is the manifest's, never the system's LV2 paths. An add is checked in the same
+two stages as every live change: the request's shape and that the URI is in
+the manifest and can be hosted by Sushi (400, Sushi untouched); then, from a
+walk of the chains under the live lock, that the track exists, the name is
+free and `after` is on that track (409: a conflict with the rig as it is,
+which the next read may change). It goes in before the track's send unless
+told otherwise, never after it: the send is what carries a channel to the
+master, and audio placed after it is not heard. A remove of a send, a return
+or a track is 409, as is one of what the rig does not have. Each is confirmed
+by reading the chain back, not by Sushi's acknowledgement alone, and an edit
+whose read-back is not what was asked is 502 and is not logged, as a change
+Sushi did not confirm is not. Not run against a live Sushi: see `live.py`.
 """
 
 from __future__ import annotations
@@ -97,9 +120,12 @@ from datetime import datetime, timezone
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Sequence
 
+from . import library as library_module
 from . import live as live_module
 from .live import DEFAULT_GRPC_ADDRESS, ElkpyMissing, LiveError, Move
 from .rig import describe_rig
+from .rigfile import MASTER, RETURN, RETURN_UID, SEND_SUFFIX, SEND_UID
+from .save import NAME_PATTERN
 
 try:
     from aiohttp import web
@@ -391,6 +417,234 @@ def sushi_unreachable(exc: BaseException) -> bool:
     return isinstance(exc, SushiUnavailableError)
 
 
+# =========================================================================== #
+# The library and chain edits (#32): the decisions, pure
+# =========================================================================== #
+
+class Conflict(AgentError):
+    """A request the running rig cannot take as it is now (409): a name it
+    already has, a track it lacks, a send that must stay where it is. Unlike a
+    bad request it may succeed later, against a different rig."""
+
+
+class Unconfirmed(AgentError):
+    """Sushi did not give what an edit needs or did not do what it was asked,
+    as read back (502)."""
+
+
+def derive_name(plugin_name: str) -> str:
+    """A processor name from a plugin's name: lower case, every run of anything
+    but a-z and 0-9 one '_', at most 64 characters (`save.NAME_PATTERN`, which
+    a saved rig's names must match). "" when nothing is left, which
+    `add_request` refuses rather than inventing a name."""
+    name = re.sub(r"[^a-z0-9]+", "_", plugin_name.lower()).strip("_")
+    return name[:64].rstrip("_")
+
+
+@dataclass(frozen=True)
+class AddRequest:
+    """What an add asks for, checked for shape. `named` is whether the client
+    chose `name`, which only changes what a clash tells it to do."""
+
+    track: str
+    uri: str
+    name: str
+    after: str | None
+    named: bool
+
+
+def add_request(body: Any, library: dict[str, Any]) -> AddRequest:
+    """An `AddRequest` from a request body, or `AgentError` (400).
+
+    `library` is `library.read_library`'s answer. The URI must be one of its
+    entries -- the manifest is the list of what the rig may load -- and one
+    Sushi can host (`addable`; the amp is not). With no `name`, the plugin's
+    name as the library has it, made a config name (`derive_name`); a given
+    name must already be one, since it is what a save will write.
+    """
+    body = _object(body)
+    track, uri = _name(body, "track"), _name(body, "uri")
+    entries = {entry["uri"]: entry for entry in library.get("plugins", [])}
+    entry = entries.get(uri)
+    if entry is None:
+        raise AgentError(
+            f"{uri!r} is not in plugin-manifest.txt, which lists every plugin the rig "
+            f"may load: GET /library lists its {len(entries)}")
+    if not entry.get("addable", True):
+        raise AgentError(f"{entry['name']} cannot be added to a Sushi chain: {entry.get('why_not')}")
+    named = body.get("name") is not None
+    if named:
+        name = body["name"]
+        if not isinstance(name, str) or not NAME_PATTERN.fullmatch(name):
+            raise AgentError(f"'name' must match {NAME_PATTERN.pattern}, not {name!r}")
+    else:
+        name = derive_name(entry["name"])
+        if not NAME_PATTERN.fullmatch(name):
+            raise AgentError(
+                f"no processor name can be made from {entry['name']!r}: give it a 'name' "
+                f"matching {NAME_PATTERN.pattern}")
+    after = body.get("after")
+    if after is not None and (not isinstance(after, str) or not after):
+        raise AgentError(f"'after' must name a processor on the track, or be left out, not {after!r}")
+    return AddRequest(track, uri, name, after, named)
+
+
+def _send_of(track: str) -> str:
+    return track + SEND_SUFFIX
+
+
+def _protected(track: str, processor: str, uid: str | None = None) -> str | None:
+    """What makes `processor` the compiler's, or None: a channel's send (named
+    `<track>_send`, last on its track) or the master's return, known by name
+    where it sits and by the uid Sushi reports for it when there is one."""
+    if uid == SEND_UID or processor == _send_of(track):
+        return f"{processor!r} is {track!r}'s send"
+    if uid == RETURN_UID or (track == MASTER and processor == RETURN):
+        return f"{processor!r} is the master's return"
+    return None
+
+
+def _track_of(chains: dict[str, list[str]], processor: str) -> str | None:
+    return next((track for track, chain in chains.items() if processor in chain), None)
+
+
+@dataclass(frozen=True)
+class Addition:
+    """An add decided on: where it goes, and the command that puts it there.
+
+    `chain` is the track's before, `expected` after. Sushi places a processor
+    "in front of" another or "at the back", so `before_id` is the id of the one
+    it goes in front of, or 0 with `add_to_back`; both from the reading the
+    decision was made on, as a move's are.
+    """
+
+    track: str
+    name: str
+    uri: str
+    after: str | None
+    chain: list[str]
+    expected: list[str]
+    track_id: int
+    before_id: int
+    add_to_back: bool
+
+
+def check_add(reading: dict[str, Any], request: AddRequest) -> Addition:
+    """Where `request` goes on the running rig, or `Conflict` (409).
+
+    `reading` is `live.read_live_chains`'s: `{"chains", "ids"}`. The name must
+    be free across the whole rig -- Sushi's processor names are one namespace,
+    tracks included. With no `after` it goes last, but in front of the
+    track's send when it has one; `after` the send is refused, because the
+    send carries the channel to the master and whatever follows it is not
+    heard. The master's return is first on its track and stays first: an add
+    is always after something or at the back.
+    """
+    chains, ids = reading.get("chains", {}), reading.get("ids", {})
+    track, name, after = request.track, request.name, request.after
+    if track not in chains:
+        raise Conflict(f"the running rig has no track {track!r}: it has {sorted(chains)}")
+    if name in chains:
+        raise Conflict(f"{name!r} is a track of the running rig; give the processor another name")
+    holder = _track_of(chains, name)
+    if holder is not None:
+        what = "give a 'name'" if not request.named else "give another name"
+        raise Conflict(f"{name!r} is already on the rig, on track {holder!r}: {what}")
+    chain = list(chains[track])
+    if after is not None:
+        if after not in chain:
+            raise Conflict(f"there is no processor {after!r} on track {track!r}: it has {chain}")
+        if after == _send_of(track):
+            raise Conflict(
+                f"nothing goes after {after!r}: the send must stay last, since it is what "
+                "carries the channel to the master")
+        index = chain.index(after) + 1
+    else:
+        send = _send_of(track)
+        index = chain.index(send) if send in chain else len(chain)
+    before = chain[index] if index < len(chain) else None
+    return Addition(
+        track=track, name=name, uri=request.uri, after=after, chain=chain,
+        expected=chain[:index] + [name] + chain[index:],
+        track_id=ids[track], before_id=ids[before] if before is not None else 0,
+        add_to_back=before is None,
+    )
+
+
+def remove_request(body: Any) -> str:
+    """The processor a remove names, or `AgentError` (400)."""
+    return _name(_object(body), "processor")
+
+
+@dataclass(frozen=True)
+class Removal:
+    """A remove decided on. `plugin` is `{"uri", "uid", "type"}` as Sushi's
+    session gave it, which with `track` and `chain` is what an undo needs to
+    put the processor back where it was."""
+
+    processor: str
+    track: str
+    chain: list[str]
+    expected: list[str]
+    plugin: dict[str, Any]
+    processor_id: int
+    track_id: int
+
+
+def check_remove(reading: dict[str, Any], processor: str) -> Removal:
+    """What removing `processor` from the running rig is, or `Conflict` (409)
+    for a track, a send or return, or a processor the rig does not have; or
+    `Unconfirmed` (502) when Sushi would not say which plugin it is.
+
+    `reading` is `live.read_live_removal`'s: `{"chains", "ids", "plugin"}`.
+    A remove that could not say what it removed could not be undone, so it is
+    not made: refusing is the loud failure, removing anyway the silent one.
+    """
+    chains, ids = reading.get("chains", {}), reading.get("ids", {})
+    if processor in chains:
+        raise Conflict(f"{processor!r} is a track, not a processor on one")
+    track = _track_of(chains, processor)
+    if track is None:
+        raise Conflict(
+            f"the running rig has no processor {processor!r}: it has "
+            f"{_on_the_rig(chains, with_tracks=False)}")
+    plugin = reading.get("plugin")
+    protected = _protected(track, processor, (plugin or {}).get("uid"))
+    if protected:
+        raise Conflict(f"{protected}: the compiler's, and never removed")
+    if not plugin or not (plugin.get("uri") or plugin.get("uid")):
+        raise Unconfirmed(
+            f"Sushi could not say which plugin {processor!r} is (its session lists no "
+            "URI or uid for it), so it is not removed: the log could not say how to "
+            "put it back")
+    chain = list(chains[track])
+    return Removal(
+        processor=processor, track=track, chain=chain,
+        expected=[name for name in chain if name != processor],
+        plugin={key: plugin.get(key) for key in ("uri", "uid", "type")},
+        processor_id=ids[processor], track_id=ids[track],
+    )
+
+
+def confirm_chain(chains: dict[str, list[str]], track: str, expected: list[str], what: str) -> None:
+    """`Unconfirmed` (502) unless `track`'s chain, read back after an edit, is
+    `expected`. Sushi's acknowledgement says it carried out a command; the
+    read-back says the command did what the agent meant, and only that is
+    logged. A chain someone else changed in between (the panel's listener is
+    not behind the agent's lock) fails here too, which is the honest answer."""
+    if track not in chains:
+        raise Unconfirmed(f"Sushi confirmed it {what}, but the rig read back has no track {track!r}")
+    if chains[track] != expected:
+        raise Unconfirmed(
+            f"Sushi confirmed it {what}, but {track!r} read back {chains[track]}, not "
+            f"{expected}: read /live before trying again")
+
+
+# =========================================================================== #
+# (end of the library and chain edits' decisions)
+# =========================================================================== #
+
+
 @dataclass(frozen=True)
 class Live:
     """Everything the live routes need from Sushi, each a blocking call. A
@@ -419,6 +673,11 @@ class Live:
     set_parameter: Callable[[Any, str, str, float], None]
     set_bypass: Callable[[Any, str, bool], None]
     send_move: Callable[[Any, Move], Move]  # sends a planned move
+    # -- the chain edits (#32) --
+    walk: Callable[[Any], dict[str, Any]]  # {"chains", "ids"}: an add's reading, and every read-back
+    removal: Callable[[Any, str], dict[str, Any]]  # (processor) -> the walk plus its "plugin"
+    add: Callable[[Any, Addition], None]  # sends a decided add
+    remove: Callable[[Any, Removal], None]  # sends a decided remove
 
     @classmethod
     def at(cls, address: str = DEFAULT_GRPC_ADDRESS) -> "Live":
@@ -433,6 +692,12 @@ class Live:
             set_parameter=lambda c, proc, name, value: m.set_live_parameter(proc, name, value, address, c),
             set_bypass=lambda c, proc, state: m.set_live_bypass(proc, state, address, c),
             send_move=lambda c, move: m.send_live_move(move, address, c),
+            # -- the chain edits (#32) --
+            walk=lambda c: m.read_live_chains(address, c),
+            removal=lambda c, proc: m.read_live_removal(proc, address, c),
+            add=lambda c, a: m.add_live_processor(
+                a.name, a.uri, a.track_id, a.before_id, a.add_to_back, address, c),
+            remove=lambda c, r: m.remove_live_processor(r.processor_id, r.track_id, address, c),
         )
 
 
@@ -496,6 +761,7 @@ class Agent:
         run: Runner = run_cli,
         live: Live | None = None,
         clock: Callable[[], float] = time.monotonic,
+        library: Callable[[], dict[str, Any]] | None = None,
     ) -> None:
         self.root = root
         self.describe = describe
@@ -515,6 +781,10 @@ class Agent:
             max_workers=LIVE_WORKERS, thread_name_prefix="sushi-live")
         self._in_flight: set = set()  # calls to Sushi that have not returned
         self._abandoned: set = set()  # ... of which the agent has stopped waiting for these
+        # The library (#32): built on first use and kept; see `_library_now`.
+        self._build_library = library or self._read_library
+        self._library: dict[str, Any] | None = None
+        self._library_lock = asyncio.Lock()
 
     @property
     def stuck_live_calls(self) -> int:
@@ -541,6 +811,7 @@ class Agent:
         app.router.add_post("/live/parameter", self.live_parameter)
         app.router.add_post("/live/bypass", self.live_bypass)
         app.router.add_post("/live/move", self.live_move)
+        self._edit_routes(app)
         return app
 
     async def health(self, request):
@@ -978,6 +1249,134 @@ class Agent:
             reason = f"{type(exc).__name__}: {exc}"
             self._remember([request.method, request.path], reason)
             return web.json_response({"ok": False, "status": 500, "reason": reason}, status=500)
+
+    # ======================================================================= #
+    # The library and chain edits (#32): GET /library, POST /live/add|remove
+    # ======================================================================= #
+
+    def _edit_routes(self, app) -> None:
+        app.router.add_get("/library", self.library_route)
+        app.router.add_post("/live/add", self.live_add)
+        app.router.add_post("/live/remove", self.live_remove)
+
+    def _read_library(self) -> dict[str, Any]:
+        from .paths import checkout_root
+
+        return library_module.read_library(self.root or checkout_root())
+
+    async def _library_now(self) -> dict[str, Any]:
+        """The library, built on first use and kept for the agent's life: the
+        manifest, `plugins/` and the profiles change when the checkout does,
+        and the agent is restarted with it. Built off the loop (it reads a
+        hundred files or so), once however many requests ask at the same
+        time. A build that fails is 500 with the reason and is not kept, so
+        the next request tries again."""
+        if self._library is not None:
+            return self._library
+        async with self._library_lock:
+            if self._library is None:
+                try:
+                    built = await asyncio.get_running_loop().run_in_executor(None, self._build_library)
+                except library_module.LibraryError as exc:
+                    self._remember(["library"], str(exc))
+                    raise web.HTTPInternalServerError(reason=str(exc))
+                self._library = built
+        return self._library
+
+    async def library_route(self, request):
+        """Every plugin in the manifest, for the Library screen to pick from.
+        Needs no rig: it is files, not Sushi."""
+        return web.json_response({"ok": True, **(await self._library_now())})
+
+    async def live_add(self, request):
+        """Add a plugin from the library to a track of the running rig.
+
+        Body `{"track", "uri", "name"?, "after"?}`. Refused (400) before Sushi is
+        contacted for a bad shape, a URI not in the manifest or one Sushi cannot
+        host; refused (409) from a walk of the chains for a track the rig lacks,
+        a name it already has or an `after` not on the track. Sent as decided,
+        then confirmed from a second walk. Logged as op "add" with the name
+        actually used in `args` (an undo removes it by that) and `previous` the
+        track's chain before.
+        """
+        body = await self._json_body(request)
+        library = await self._library_now()
+        try:
+            asked = add_request(body, library)
+        except AgentError as exc:
+            raise web.HTTPBadRequest(reason=str(exc))
+        async with self._connected_for_a_change(request) as controller:
+            reading = await self._sushi(request, self.live.walk, controller, reading=True)
+            try:
+                addition = check_add(reading, asked)
+            except Conflict as exc:
+                raise web.HTTPConflict(reason=str(exc))
+            await self._sushi(request, self.live.add, controller, addition, reading=False)
+            after = await self._sushi(request, self.live.walk, controller, reading=False)
+            what = f"added {addition.name!r} to {addition.track!r}"
+            self._confirm(request, after, addition.track, addition.expected, what)
+            entry = self._record("add", {
+                "track": addition.track, "uri": addition.uri, "name": addition.name,
+                "after": addition.after,
+            }, list(addition.chain))
+        return web.json_response({
+            "ok": True, **entry, "chain": addition.expected,
+            "message": f"added {addition.name} to {addition.track}",
+        })
+
+    async def live_remove(self, request):
+        """Remove one processor from the running rig, by name.
+
+        Body `{"processor"}`. Refused (409) for a track, a channel's send, the
+        master's return, or a processor the rig lacks; 502 if Sushi will not
+        say which plugin it is, since the log must be able to put it back.
+        Confirmed from a walk afterwards. Logged as op "remove" with `previous`
+        `{"track", "chain", "uri", "uid", "type"}`: where it was and what it
+        was, which is what an undo re-adds. Its parameter values are not
+        recorded, so a re-add would come back at the plugin's defaults.
+        """
+        try:
+            processor = remove_request(await self._json_body(request))
+        except AgentError as exc:
+            raise web.HTTPBadRequest(reason=str(exc))
+        async with self._connected_for_a_change(request) as controller:
+            reading = await self._sushi(request, self.live.removal, controller, processor, reading=True)
+            try:
+                removal = check_remove(reading, processor)
+            except Conflict as exc:
+                raise web.HTTPConflict(reason=str(exc))
+            except Unconfirmed as exc:
+                self._remember([request.method, request.path], str(exc), kind="live")
+                raise web.HTTPBadGateway(reason=str(exc))
+            await self._sushi(request, self.live.remove, controller, removal, reading=False)
+            after = await self._sushi(request, self.live.walk, controller, reading=False)
+            what = f"removed {removal.processor!r} from {removal.track!r}"
+            self._confirm(request, after, removal.track, removal.expected, what)
+            if _track_of(after["chains"], removal.processor) is not None:
+                self._unconfirmed(request, f"Sushi confirmed it {what}, but it is still on the rig")
+            entry = self._record("remove", {"processor": removal.processor}, {
+                "track": removal.track, "chain": list(removal.chain), **removal.plugin,
+            })
+        return web.json_response({
+            "ok": True, **entry, "chain": removal.expected,
+            "message": f"removed {removal.processor} from {removal.track}",
+        })
+
+    def _confirm(self, request, reading: dict[str, Any], track: str, expected: list[str], what: str) -> None:
+        try:
+            confirm_chain(reading.get("chains", {}), track, expected, what)
+        except Unconfirmed as exc:
+            self._unconfirmed(request, str(exc))
+
+    def _unconfirmed(self, request, reason: str) -> None:
+        """502, remembered for /health, and nothing logged: the log holds edits
+        the rig was read back to have."""
+        self._remember([request.method, request.path], reason, kind="live")
+        raise web.HTTPBadGateway(reason=reason)
+
+    # ======================================================================= #
+    # (end of the library and chain edits' routes)
+    # ======================================================================= #
 
 
 def serve(host: str, port: int, root: Path | None = None) -> int:

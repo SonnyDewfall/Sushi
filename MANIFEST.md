@@ -1642,3 +1642,59 @@ counted for ever, inflating `stuck_live_calls` and the count in the 503; it is
 now counted first and uncounted if it has already returned. The second is shown
 with a future that completes from inside the check; neither was run against a
 live Sushi. *(2026-11-02)*
+
+**The library and live chain edits (#32).** `GET /library`, `POST /live/add`
+and `POST /live/remove` on the agent, for S3 of the UX story: pick a plugin
+from the library, add it to a chain, drag it into place (`/live/move`, already
+there), take one out. **The library** (`library.py`) is every URI in
+`plugin-manifest.txt`, in its order, with a name, the port count, the bundle,
+whether a profile exists and the profile's groups; built on first use and kept
+for the agent's life; read from `plugins/` only, never the system's LV2 paths.
+lilv is not on every machine the agent runs on, so the bundles' Turtle is read
+directly: `parse_turtle` is enough of Turtle 1.1 for LV2 bundles, and a bundle
+is read as lilv reads it for these facts (`manifest.ttl`, then the
+`rdfs:seeAlso` data files of what it declares `a lv2:Plugin`; the plugin's own
+`doap:name`, since a file often names its project too: gxts9's says
+"Gxts9sim"). **Checked against lilv**: Ubuntu 24.04's packages for the
+manifest's plugins (guitarix-lv2, mda-lv2, rubberband-lv2, x42-plugins,
+dpf-plugins-lv2, swh-lv2, zynaddsubfx-lv2, ardour-lv2-plugins) were extracted to
+a scratch folder, `sushi-rig plugins assemble` built a `plugins/` from them (54
+of 55 URIs; the amp is not packaged, and was waived), and lilv 0.24.22, loaded
+from the extracted .debs rather than installed, agreed on every name and port
+count. That comparison is now a test, which runs where lilv and `plugins/` are
+both present (the container) and skips here. The fixtures are the captured
+`.ttl` files of three of those bundles, `mda.lv2` cut down to one data file and
+saying so. A name that cannot be read falls back to a profile's restated name,
+then the URI's last segment, marked (`name_from`) with a `note`. The amp is
+listed `addable: false`: it runs in Carla because Sushi cannot set its model,
+and on a Sushi chain it would pass audio with none. **An add** is checked for
+shape and against the manifest (400, Sushi untouched), then against a walk of
+the chains under the live lock (409 for a track the rig lacks, a name it
+already has anywhere, an `after` not on that track, or `after` the send). With
+no `name` it is named from the plugin (`derive_name`, to `save.NAME_PATTERN`);
+with no `after` it goes in front of the channel's send, never behind it, since
+the send carries the channel to the master. **A remove** is 409 for a track, a
+send or return (known by name where the compiler puts them and by uid where
+Sushi reports one) or what the rig lacks. Its plugin class comes from Sushi's
+saved session, the one place the gRPC API names the plugin a processor is
+(`ProcessorInfo` has no URI); a remove Sushi cannot name is refused (502)
+rather than made unundoable. Each edit is sent as decided, confirmed by reading
+the chain back, and logged only if the read-back matches (502 and not logged
+otherwise): `add` with the name used and the chain before, `remove` with the
+chain before and the plugin's `uri`, `uid` and `type`, so an undo can re-add it,
+at its defaults, since parameter values are not recorded. Routes, decisions and
+tests are in sections of their own (`test_agent_edits.py`) to keep the merge
+with `/live/undo` small; the log format is unchanged. Found on the way, not
+changed: `/live/move` will move a pedal behind its channel's send, and the send
+or the master's return themselves, and neither is refused there; and lilv's
+Python collection iterator has no `__iter__`, so on Python 3.13 a comprehension
+over `world.get_all_plugins()` fails where a `for` loop works. **Not run against
+a live Sushi:** `create_processor_on_track(name, uid, path, processor_type,
+track_id, before_processor, add_to_back)`, `delete_processor_from_track(processor,
+track)` and `session.get_session()` (SaveSession) are read from elkpy 1.3.0's
+source, and the tests bind the calls to those signatures; whether Sushi 1.3.0
+places a processor as `before_processor` says, shows it in the chain read
+straight after confirming, and reports an LV2 plugin's URI in the session's
+`PluginClass.path` is not known. Add, move and remove on a rig that is `up`, and
+read `/live` after each, before relying on them. Not done from #32 yet: the mute
+ramp around an edit and the CPU budget check before an insert. *(2026-11-02)*
