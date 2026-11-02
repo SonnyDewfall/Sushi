@@ -262,11 +262,14 @@ def serve(
 
     `session` records takes for the record bar (`transport.record_session`
     builds it). Without one the record bar's messages are still answered, by
-    `NoEngine`, which says why it cannot. A `TakeSession` is given the amp as
-    this listener last sent it, for the take's config, by the rule SAVE uses.
+    `NoEngine`, which says why it cannot.
+
+    `amp_parameters` is updated in place as the amp's faders move: it is the
+    listener's record of what it last sent, and a session built with the same
+    dict (`record_session(amp_parameters=...)`) writes those values into each
+    take's config.
     """
-    from .amp import write_amp
-    from .transport import TakeSession, Transport
+    from .transport import Transport
 
     try:
         from pythonosc.dispatcher import Dispatcher
@@ -280,11 +283,9 @@ def serve(
 
     status_client = SimpleUDPClient(status_host, status_port)
     last_name = ""
-    # What we last sent the amp. Not what Carla holds — see amp.py.
-    amp_state: dict[str, float] = dict(amp_parameters or {})
-
-    if isinstance(session, TakeSession) and session.amend_config is None:
-        session.amend_config = lambda config: write_amp(config, amp_model, amp_state)
+    # What we last sent the amp. Not what Carla holds — see amp.py. The
+    # caller's dict, not a copy, so a session sharing it sees each move.
+    amp_state: dict[str, float] = amp_parameters if amp_parameters is not None else {}
     transport = Transport(session)
 
     def _report(message: str, status_address: str = STATUS_ADDRESS) -> None:

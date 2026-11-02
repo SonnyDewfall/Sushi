@@ -1972,3 +1972,30 @@ press RECORD, play both inputs for ten seconds, press STOP, then `sushi-rig take
 check ~/sushi-rig-takes/<name>`, and listen to each stem alone: the guitar stem
 must hold no vocal, the dry taps no effects, and the master both. Record the
 result here either way. *(2026-11-02)*
+
+*A review of the same branch found nine more.* (1) **Two channels on one input
+were refused**, since both dry taps landed on one port; a blend of two chains on
+one guitar is a supported rig. They now share one dry tap, recorded once and
+named for the role (`guitar-in-dry.wav`), and `take.check_channels` accepts a
+dry stem named for one of the take's rig's inputs, at start and in `take check`.
+(2) The "RECORD records ..." line went to block-buffered stdout, which the
+SIGTERM from `down` could lose; it goes to stderr. (3) The listener's
+`PIPEWIRE_QUANTUM` hard-coded 48000 while the plan read the config's rate. The
+rate is fixed at 48000 for Sushi too, so it is `rig.RATE` in all three
+`env_set`s, and a config at another rate is refused when the plan is made
+rather than by the engine at every RECORD. (4) A failure in the amp hook
+escaped as "unexpected error"; it is now "cannot record <name>: the config it
+would carry could not be made (...)", before anything is written. (5) The rig
+file and `library_state` were read once at listener start, so takes after a
+SAVE or a commit recorded stale provenance; `TakePlan` carries `rig_path` and
+`library_root`, read at each RECORD. (6) `NoEngine`'s default says no take was
+planned for this run. (7) The amp rule lived in `serve` as an isinstance patch;
+`record_session` now builds every `TakeSession` with it, over the dict the
+listener updates in place (`serve` no longer copies `amp_parameters`). (8)
+probes call `sushi_ports` directly. (9) The stem outputs are read off the
+tracks of the config Sushi loaded, not a fresh compile of the rig file, so they
+are the ports running; a channel the loaded config lacks is refused with "the
+rig file has changed since `up`, so restart the rig". The channels and their
+input roles still come from the rig file, read at listener start: the config
+does not say which role a track plays from. Still NOT VERIFIED on the rig; the
+check above stands, with a blend rig added if one is to hand. *(2026-11-02)*

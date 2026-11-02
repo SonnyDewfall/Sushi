@@ -291,10 +291,6 @@ class ProbePlan:
     not_checked: tuple[str, ...] = ()
 
 
-# One spelling of a Sushi port, shared with the take plan: see patchbay.sushi_ports.
-_ports = sushi_ports
-
-
 def plan_probes(rig: Any, *, amp: bool, sushi_node: str = SUSHI_NODE) -> ProbePlan:
     """Every probe point in `rig`, or `ProbeError` naming everything wrong.
 
@@ -325,12 +321,12 @@ def plan_probes(rig: Any, *, amp: bool, sushi_node: str = SUSHI_NODE) -> ProbePl
     master_broken: list[str] = []
     if master is not None:
         master_out, master_broken = track_route(master, "outputs")
-        master_ports = _ports(sushi_node, "output", master_out)
+        master_ports = sushi_ports(sushi_node, "output", master_out)
     for track in rig.tracks:
         into, found = track_route(track, "inputs", track.source)
         out, more = track_route(track, "outputs", track.sink)
-        inject = _ports(sushi_node, "input", into)
-        captures = _ports(sushi_node, "output", out)
+        inject = sushi_ports(sushi_node, "input", into)
+        captures = sushi_ports(sushi_node, "output", out)
         is_master = master is not None and track is master
         sends = master is not None and _sends_to_master(track)
         if track.source == GUITAR_ROLE:
@@ -607,8 +603,8 @@ def _probe_track(
         inputs=inputs[0],
         outputs=outputs[0],
         plugins=plugins,
-        input_ports=_ports(sushi_node, "input", inputs[1]),
-        output_ports=_ports(sushi_node, "output", outputs[1]),
+        input_ports=sushi_ports(sushi_node, "input", inputs[1]),
+        output_ports=sushi_ports(sushi_node, "output", outputs[1]),
         multibus=getattr(shape_in, "multibus", False),
         buses=getattr(shape_in, "buses", None),
     ), ""
