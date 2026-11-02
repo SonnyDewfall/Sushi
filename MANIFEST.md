@@ -2562,3 +2562,33 @@ Follow-ons: a commit route (the player's call to make, with a message, as the
 mockup has it), the history of saves with revert, carrying a save-as's
 comments over from its source, and saving a plugin added or removed live
 (rewriting a chain's membership in the file). *(2026-11-02)*
+
+**Save from the web UI: answering review.** Ten findings, each with a test.
+(1) **A save-as was logged before it was the running rig**: if recording the
+new rig failed, the log held a save, the page reset its unsaved baseline and
+the rig ran on under its old name. The save is now logged only once it has
+wholly happened; a save-as whose file was written but could not be made the
+running rig is a 500 that says exactly that (and that retrying the name is
+refused as taken because the file is there), logs nothing, and the page
+titles it "Written, but not running". (2) **Save was off whenever the unsaved
+list was empty**, which is only what the agent saw: it is now offered
+whenever a saveable rig is up, and an empty list says "No changes seen"
+since when (the newest of the last save, the rig's start and the agent's).
+(3, 7) **The structure check moved into `rigfile.fold_state`**, after its
+check for a capture of another rig, so a switch racing a save is not told as
+a chain edit, and there is one copy of which processors are the compiler's;
+`save.structure_problems` is gone. An added plugin is said as "a capture of
+a different rig, or a plugin added live". (4) The save-as's state write and
+the amp's record moving to the renamed run happen under the amp lock, in one
+step, before the save is logged. (5) **"This file among them" was said
+whenever the checkout was dirty**: `save.file_git_state` asks git about the
+file itself (untracked, changed, unchanged, ignored) and whether other
+tracked files are changed, and the page says each. (6) The last-save line
+says "not committed when saved", since it is from the log and cannot see a
+commit made since. (8) A save-as reads the state file once under its locks
+and uses that reading; no third read. (9) For a v1 run or one with its panel
+Save and Save as… are off and say how to save instead (the CLI line; the
+panel's SAVE). (10) **A rig whose file name the name rule refuses could not
+be saved in place** (`Guitar.Vocal.yaml` compiles): `save_rig` checks only a
+name chosen for a new file, and in place keeps the file's own `name:`.
+Still **NOT RUN AGAINST A LIVE SUSHI**. *(2026-11-02)*

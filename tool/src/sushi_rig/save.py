@@ -184,18 +184,26 @@ def save_rig(
     save. Without one, Sushi at `address` is captured here.
 
     A chain whose plugins are not the file's -- one added or removed live --
-    is refused (`structure_problems`), as a capture naming a processor the
-    file lacks always was: a save writes values, bypass and order, never
-    which plugins a chain holds, and before this check a plugin removed
-    live was kept in the file with nothing said.
+    is refused by `fold_state`: a save writes values, bypass and order, never
+    which plugins a chain holds, and a plugin removed live used to be kept in
+    the file with nothing said.
+
+    Under the source's own name the file is the one the rig runs from, so
+    the name is not checked against `NAME_PATTERN` and the file's own `name:`
+    is kept: a rig file called `Guitar.Vocal.yaml` compiles, and must save in
+    place. Only a name chosen for a new file is checked, since it becomes a
+    file name.
     """
     import yaml
 
     from .rigfile import RigFileError, fold_state, write_rig
     from .spec import looks_like_rig_file
 
-    validate_name(name)
     rig_path = Path(rig_path)
+    in_place = name == rig_path.stem and rig_path.suffix == ".yaml"
+    if not in_place:
+        validate_name(name)  # before the name is made a path
+    out_path = rig_path.with_name(f"{name}.yaml")
     if raw is None:
         if not rig_path.is_file():
             raise SaveError(f"rig source not found: {rig_path}")
@@ -206,7 +214,6 @@ def save_rig(
     if not looks_like_rig_file(raw):
         raise SaveError(f"{rig_path} is not a rig of channels; save_config saves a v1 rig")
 
-    out_path = rig_path.with_name(f"{name}.yaml")
     if out_path != rig_path and out_path.exists():
         raise SaveError(
             f"a rig called {name} already exists at {out_path}; saving over it would "
@@ -219,17 +226,12 @@ def save_rig(
     for values in state.get("processors", {}).values():
         values.pop("properties", None)
     try:
-        problems = structure_problems(raw, state, rig_path.name)
-    except RigFileError as exc:
-        raise SaveError("; ".join(exc.problems)) from exc
-    if problems:
-        raise SaveError("; ".join(problems))
-    try:
         folded = fold_state(raw, state)
     except RigFileError as exc:
         raise SaveError("; ".join(exc.problems)) from exc
 
-    folded["name"] = name
+    if not in_place:
+        folded["name"] = name
     if amp_model is not None:
         # The amp rides in the rig file as it does in a config: the values the
         # listener last sent, since Carla cannot be asked. See amp.py.
@@ -242,47 +244,57 @@ def save_rig(
     return out_path
 
 
-def structure_problems(raw: dict[str, Any], captured: dict[str, Any], where: str = "the rig file") -> list[str]:
-    """Why a capture cannot be folded into the rig file `raw`, chain by chain:
-    a plugin the running chain has and the file does not (added live, by
-    `POST /live/add`), or one the file has and the running chain does not
-    (removed live). Empty when every chain the capture names holds the
-    file's plugins, in whatever order. Pure.
+def file_git_state(root: Path, path: Path) -> dict[str, Any] | None:
+    """What git says of one file of the checkout at `root`, beside what
+    `take.library_state` says of the checkout: `{"file", "others"}`, or None
+    when git cannot be read there. `file` is "untracked" (a new rig a save-as
+    wrote), "changed" (staged or not), "unchanged" (as HEAD has it) or
+    "ignored"; `others` is whether any other tracked file has uncommitted
+    changes. `library_state`'s `dirty` cannot say either: it is the whole
+    checkout's, and blind to untracked files. Called after the caller checked
+    `root` is a checkout's top (`library_state` not None).
 
-    The compiler's own processors (each channel's send, the master's return)
-    are not the file's to list, so they are left out on both sides. A track
-    the capture does not name says nothing, so it is not checked: a capture
-    with no `tracks` (older state files) passes as it did. `RigFileError` for
-    a file `parse_rig` refuses.
+    Two git calls at most, each with `library_state`'s ten-second limit, and
+    without the index lock, which a save must not take from the player's git.
     """
-    from .rigfile import MASTER, RETURN, SEND_SUFFIX, parse_rig
+    import os
+    import subprocess
 
-    rig = parse_rig(copy.deepcopy(raw))
-    orders = (captured or {}).get("tracks") or {}
-    internal = {ch.name + SEND_SUFFIX for ch in rig.channels} | {RETURN}
-    chains = {ch.name: [p.name for p in ch.chain] for ch in rig.channels}
-    chains[MASTER] = [p.name for p in rig.master.chain]
-    problems = []
-    for track, held in chains.items():
-        running = orders.get(track)
-        if not isinstance(running, list):
+    env = {**os.environ, "GIT_OPTIONAL_LOCKS": "0"}
+
+    def git(*args: str) -> str | None:
+        try:
+            done = subprocess.run(["git", "-C", str(root), *args], capture_output=True, text=True,
+                                  check=False, timeout=10, env=env)
+        except (OSError, subprocess.SubprocessError):
+            return None
+        return done.stdout if done.returncode == 0 else None
+
+    try:
+        rel = Path(path).resolve().relative_to(Path(root).resolve()).as_posix()
+    except (OSError, ValueError):
+        return None
+    status = git("status", "--porcelain=v1", "-z", "--untracked-files=all")
+    if status is None:
+        return None
+    fields = status.split("\0")
+    mine, others, i = None, False, 0
+    while i < len(fields):
+        record = fields[i]
+        i += 1
+        if len(record) < 4:
             continue
-        running = [n for n in running if n not in internal]
-        added = [n for n in running if n not in held]
-        removed = [n for n in held if n not in running]
-        if not added and not removed:
-            continue
-        said = []
-        if added:
-            said.append(f"has {', '.join(added)}, which {where} does not")
-        if removed:
-            said.append(f"lacks {', '.join(removed)}, which {where} has")
-        problems.append(
-            f"the running {track} chain {' and '.join(said)}: a save writes values, bypass and order "
-            "into the file, never which plugins a chain holds, so nothing was saved. Put the chain "
-            f"back as the file has it (undo the add or remove), or edit {where} and restart the rig"
-        )
-    return problems
+        code, name = record[:2], record[3:]
+        if code[0] in "RC":
+            i += 1  # a rename or copy is followed by the path it came from
+        if name == rel:
+            mine = "untracked" if code == "??" else "changed"
+        elif code != "??":
+            others = True
+    if mine is None:
+        listed = git("ls-files", "--", rel)
+        mine = None if listed is None else "unchanged" if listed.strip() else "ignored"
+    return {"file": mine, "others": others}
 
 
 def _claim(path: Path, *, directory: bool = False) -> Path:

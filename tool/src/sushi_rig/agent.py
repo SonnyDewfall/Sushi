@@ -3193,8 +3193,14 @@ class Agent:
           live, a capture of another rig), with its reason.
         - 503/502/504 from the capture, as /live answers them; 504 too if the
           write is not done within `SAVE_TIMEOUT` (it may still finish).
-        - 500 with the save's answer beside the reason if a save-as wrote its
-          file but could not make it the running rig.
+        - 500, `ok: false` and `recorded: false`, with the save's answer
+          beside the reason, if a save-as wrote its file but could not make
+          it the running rig: nothing is logged, so the page's unsaved list
+          stays as it was, and the reason says the file is there.
+
+        A save is logged only once it has wholly happened, under the same
+        locks as its capture, so the log's `op: "save"` is always a rig whose
+        file holds what was playing then.
 
         Not run against a live Sushi: shown against the fake capture.
         """
@@ -3203,7 +3209,7 @@ class Agent:
         except AgentError as exc:
             raise web.HTTPBadRequest(reason=str(exc))
         self._refuse_while_busy()
-        state, source, target = await self._save_target(asked)
+        _, source, target = await self._save_target(asked)  # refused early, before any lock
         if target == source:
             answer = await self._save_held(request, asked, source, held=False)
             return web.json_response(answer)
@@ -3212,11 +3218,10 @@ class Agent:
             self.busy = "save"
             try:
                 answer = await self._save_held(request, asked, source, held=True)
-                status = await self._save_as_recorded(answer, state)
             finally:
                 self.busy = None
                 await self._midi_sync()  # the listener's plan names the rig, which is renamed
-        return web.json_response(answer, status=status)
+        return web.json_response(answer, status=200 if answer["ok"] else 500)
 
     async def _save_target(self, asked: str | None) -> tuple[dict[str, Any], Path, Path]:
         """`(state, source, target)`: the state file, the running rig's file and
@@ -3236,10 +3241,14 @@ class Agent:
         return state, source, target
 
     async def _save_held(self, request, asked: str | None, source: Path, *, held: bool) -> dict[str, Any]:
-        """Capture and write under the live lock and the amp's, and log the
-        save; `held` says the caller holds the lifecycle lock (a save-as), so
-        busy is not checked again. The state file is read again once the
-        locks are won: a switch or a restart may have come between."""
+        """Capture, write, (for a save-as) make the new file the running rig,
+        and log the save: all under the live lock and the amp's, so no change
+        to Sushi or the amp lands between the capture and the entry, and an
+        amp request never meets a state file that names the new rig while
+        the amp's record still belongs to the old one. `held` says the caller
+        holds the lifecycle lock (a save-as), so busy is not checked again.
+        The state file is read once more when the locks are won (a switch or
+        a restart may have come between), and that reading is the one used."""
         if not held:
             self._refuse_while_busy()
         async with self._connected(request) as controller:
@@ -3257,18 +3266,33 @@ class Agent:
                     out, library = await self._save_write(
                         request, target, source, captured, model, parameters)
                     created = out != source
-                    entry = self._record("save", {
-                        "file": self._save_shown(out), "rig": out.stem, "how": "new" if created else "updated",
-                        "library": library, "amp": amp_said["saved"],
-                    }, self._save_shown(source))
-        shown, was = self._save_shown(out), self._save_shown(source)
-        note = (f"{shown} is a new file, written from nothing: the comments stay in {was}" if created else
-                f"{shown} was updated in place, with its comments")
-        return {
-            "ok": True, "file": shown, "path": str(out), "rig": out.stem,
-            "how": "new" if created else "updated", "previous": was, "note": note + "; it is not committed",
-            "committed": False, "library": library, "amp": amp_said, "entry": entry,
-        }
+                    shown, was = self._save_shown(out), self._save_shown(source)
+                    note = (f"{shown} is a new file, written from nothing: the comments stay in {was}"
+                            if created else f"{shown} was updated in place, with its comments")
+                    answer = {
+                        "ok": True, "file": shown, "path": str(out), "rig": out.stem,
+                        "how": "new" if created else "updated", "previous": was,
+                        "note": note + "; it is not committed", "committed": False, "library": library,
+                        "amp": amp_said,
+                    }
+                    if created:
+                        failure = await self._save_as_running(state, out.stem)
+                        if failure is not None:
+                            reason = " ".join((
+                                f"{shown} was written with the sound that was playing, but the rig could not "
+                                f"be made to run as {out.stem} ({failure}): it still runs as {source.stem}, and "
+                                f"restart brings that back. Nothing is logged as saved, so the unsaved list is "
+                                f"as it was. The file stays, so saving as {out.stem} again is refused as taken: "
+                                f"start {out.stem} to play it, or delete it").split())
+                            print(f"sushi-rig agent: {reason}", file=sys.stderr, flush=True)
+                            self._remember(["save", out.stem], reason, kind="lifecycle")
+                            return {**answer, "ok": False, "reason": reason, "recorded": False}
+                        answer["recorded"] = True
+                    answer["entry"] = self._record("save", {
+                        "file": shown, "rig": out.stem, "how": answer["how"], "library": library,
+                        "amp": amp_said["saved"],
+                    }, was)
+        return answer
 
     async def _save_amp(self) -> tuple[str | None, dict[str, float] | None, dict[str, Any]]:
         """`(model, parameters, said)`: the amp as the agent last sent it, for
@@ -3291,18 +3315,23 @@ class Agent:
         self, request, target: Path, source: Path, captured: dict[str, Any],
         model: str | None, parameters: dict[str, float] | None,
     ) -> tuple[Path, dict[str, Any] | None]:
-        """`save_rig` and then `take.library_state`, off the loop, within
-        `SAVE_TIMEOUT`; refusals as `save_route` says. The thread cannot be
+        """`save_rig`, then `take.library_state` and the file's own git state
+        (`save.file_git_state`), off the loop, within `SAVE_TIMEOUT`; refusals as `save_route` says. The thread cannot be
         stopped past the deadline (see `LIVE_TIMEOUT`), so a 504 says the
         file may still be written."""
-        from .save import SaveError, save_rig
+        from .save import SaveError, file_git_state, save_rig
         from .take import library_state
 
         root = self._midi_root()
 
         def write() -> tuple[Path, dict[str, Any] | None]:
             out = save_rig(target.stem, source, amp_model=model, amp_parameters=parameters, state=captured)
-            return out, library_state(root)
+            library = library_state(root)
+            if library is not None:
+                # `dirty` is the whole checkout's; what the file itself is,
+                # and whether anything else is uncommitted, is git's to say.
+                library.update(file_git_state(root, out) or {"file": None, "others": None})
+            return out, library
 
         where = [request.method, request.path]
         try:
@@ -3319,37 +3348,26 @@ class Agent:
             self._remember(where, reason, kind="live")
             raise web.HTTPInternalServerError(reason=reason)
 
-    async def _save_as_recorded(self, answer: dict[str, Any], state: dict[str, Any]) -> int:
-        """After a save-as: make the new file the running rig, as a live switch
-        records the rig it switched to (`saved_as_state`), and answer the HTTP
-        status. The new file is compiled as `up --rig` would compile it and
-        written where `up` writes a run's config, so the next live switch
-        diffs from it and `restart` brings it back. If that fails, the file is
-        written and logged but the rig still runs under its old name: 500,
-        said, remembered."""
-        name = answer["rig"]
+    async def _save_as_running(self, state: dict[str, Any], name: str) -> str | None:
+        """After a save-as wrote rig `name`: make it the running rig, as a live
+        switch records the rig it switched to (`saved_as_state`), from
+        `state`, the state file as read under the locks; None when done, or
+        what failed. The new file is compiled as `up --rig` would compile it
+        and written where `up` writes a run's config, so the next live switch
+        diffs from it and `restart` brings it back. Called holding the amp's
+        lock, so the amp's record moves to the renamed run in the same step:
+        the run is renamed, not restarted, and what the agent sent Carla
+        carries over rather than being seeded again from the config."""
         try:
-            now = await asyncio.to_thread(self.switching.read_state) or state
-            compiled = await asyncio.to_thread(self.switching.compile, name, self._midi_root(), now.get("machine"))
+            compiled = await asyncio.to_thread(self.switching.compile, name, self._midi_root(), state.get("machine"))
             path = await asyncio.to_thread(self.switching.write_config, name, compiled)
-            after = saved_as_state(now, name, path)
+            after = saved_as_state(state, name, path)
             await asyncio.to_thread(self.switching.write_state, after)
-        except Exception as exc:  # noqa: BLE001 -- said, with the file that was written
-            reason = " ".join((
-                f"saved as {answer['file']}, but it could not be made the running rig "
-                f"({type(exc).__name__}: {exc}): the rig still runs as {answer['previous']}, and restart "
-                "brings that back").split())
-            print(f"sushi-rig agent: {reason}", file=sys.stderr, flush=True)
-            self._remember(["save", name], reason, kind="lifecycle")
-            answer.update(ok=False, reason=reason, recorded=False)
-            return 500
-        # The same Carla, with what the agent sent: the run is renamed, not
-        # restarted, so the amp's values carry over rather than being seeded
-        # again from the config as if `up` had replayed it.
-        if self._amp is not None and self._amp.run == amp_live.run_of(now):
+        except Exception as exc:  # noqa: BLE001 -- said by the caller, with the file that was written
+            return f"{type(exc).__name__}: {exc}"
+        if self._amp is not None and self._amp.run == amp_live.run_of(state):
             self._amp.run = amp_live.run_of(after)
-        answer["recorded"] = True
-        return 200
+        return None
 
     def _save_shown(self, path: Path) -> str:
         """A rig file as the player reads it: relative to the checkout."""

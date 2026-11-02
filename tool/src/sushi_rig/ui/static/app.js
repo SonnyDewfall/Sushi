@@ -891,15 +891,23 @@ function changeText(model, item) {
   return { where: `${item.track} · chain`, from: (item.from || []).join(", ") || "unknown", to: item.to.join(", ") };
 }
 
+// A time of today as the page shows one (the log's are to the second).
+const clock = (iso) => new Date(iso).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" });
+
 function renderChanges(el, model, unsaved, live) {
   const next = R.nextUndo(state.log);
   const rows = model ? unsaved.items.map((i) => ({ ...changeText(model, i), pedal: i.source === "midi" })) : [];
   const undoLabel = !state.log ? "Undo: the log could not be read"
     : !next ? "Nothing to undo" : next.barrier ? "Nothing to undo past the rig switch" : `Undo · ${R.describeEntry(next.entry)}`;
   const last = R.lastSave(state.log);
-  patch(el, JSON.stringify([rows, unsaved.partial, undoLabel, !!last]), () => [
-    h("h2", {}, rows.length === 1 ? "1 unsaved change" : `${rows.length} unsaved changes`),
-    h("p", { class: "sub" }, last ? "made through the agent since the last save" : "made through the agent since the rig came up"),
+  // What this page knows: the changes the agent saw. None seen is said as
+  // that, with since when, and not as "nothing unsaved" (see R.saveView).
+  const since = R.seenSince(state.health, state.log);
+  const seen = since ? `since ${clock(since)}` : "since the agent started";
+  patch(el, JSON.stringify([rows, unsaved.partial, undoLabel, !!last, seen]), () => [
+    h("h2", {}, rows.length === 0 ? "No changes seen" : rows.length === 1 ? "1 unsaved change" : `${rows.length} unsaved changes`),
+    h("p", { class: "sub" }, rows.length === 0 ? `by the agent ${seen}`
+      : last ? "made through the agent since the last save" : "made through the agent since the rig came up"),
     rows.map((r) => h("div", { class: "change" }, h("span", { class: "where" }, r.where, r.pedal ? h("span", { class: "badge" }, "pedal") : null),
       h("span", { class: "diff" }, h("s", {}, r.from), " to ", h("b", {}, r.to)))),
     unsaved.partial ? h("p", { class: "warn" }, "The agent's log was trimmed since the rig came up, so older changes may be missing here.") : null,
@@ -911,8 +919,8 @@ function renderChanges(el, model, unsaved, live) {
 // what is typed in the name, so a poll does not rebuild the field under the
 // fingers; the name's check is drawn from the input's own handler.
 function saveRegion(el, unsaved) {
-  const view = R.saveView(state.health, unsaved, state.saving);
-  const last = R.lastSave(state.log);
+  const view = R.saveView(state.health, unsaved, state.saving, state.log, clock);
+  const last = R.lastSaveText(R.lastSave(state.log), clock);
   const typing = document.activeElement && document.activeElement.name === "rig-name";
   const rebuilt = patch(el, JSON.stringify([view, state.saveAsOpen, state.saveResult, last]), () => {
     const result = state.saveResult;
@@ -928,8 +936,7 @@ function saveRegion(el, unsaved) {
         h("span", {}, result.ok ? result.text : result.reason),
         result.ok ? h("span", { class: "commit" }, result.commit) : null,
         h("button", { class: "dismiss", "aria-label": "Dismiss", onclick: () => { state.saveResult = null; render(); } }, "×")) : null,
-      last ? h("p", { class: "sub last-save" }, `Last saved ${new Date(last.at).toLocaleTimeString([], { hour: "2-digit", minute: "2-digit" })} to `,
-        h("code", {}, last.file), ", not committed.") : null,
+      last ? h("p", { class: "sub last-save" }, `Last saved ${last.time} to `, h("code", {}, last.file), `, ${last.then}.`) : null,
     ];
   });
   if (rebuilt && typing) {

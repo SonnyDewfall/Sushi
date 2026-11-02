@@ -392,8 +392,8 @@ def test_save_rig_takes_a_capture_already_made_and_does_not_capture_again(rigs, 
 
 
 @pytest.mark.parametrize("chain, said", [
-    (["board_send"], "the running board chain lacks eq, which riff.yaml has"),
-    (["eq", "comp", "board_send"], "the running board chain has comp, which riff.yaml does not"),
+    (["board_send"], r"the running rig lacks eq \(on board\), which riff has"),
+    (["eq", "comp", "board_send"], "the capture names comp, which riff does not have: .* or a plugin added live"),
 ])
 def test_a_chain_changed_live_is_refused_rather_than_saved_wrong(rigs, monkeypatch, chain, said):
     """A save writes values, bypass and order, not which plugins a chain
@@ -405,15 +405,16 @@ def test_a_chain_changed_live_is_refused_rather_than_saved_wrong(rigs, monkeypat
     assert (rigs / "riff.yaml").read_text() == RIG_OF_CHANNELS
 
 
-def test_structure_problems_ignores_the_compilers_processors_and_unnamed_tracks():
-    import yaml
-
-    from sushi_rig.save import structure_problems
-
-    raw = yaml.safe_load(RIG_OF_CHANNELS)
-    assert structure_problems(raw, {"tracks": {"board": ["board_send", "eq"], "master": ["master_return"]}}) == []
-    assert structure_problems(raw, {"processors": {}}) == [], "a capture with no tracks says nothing"
-    assert structure_problems(raw, {"tracks": {"master": ["master_return", "limiter"]}}) == [
-        "the running master chain has limiter, which the rig file does not: a save writes values, bypass "
-        "and order into the file, never which plugins a chain holds, so nothing was saved. Put the chain "
-        "back as the file has it (undo the add or remove), or edit the rig file and restart the rig"]
+def test_a_rig_whose_file_name_the_name_rule_refuses_saves_in_place(rigs):
+    """`Guitar.Vocal.yaml` compiles; saving it in place writes the file the
+    rig runs from, so its stem is not a name to check, and its own `name:`
+    stays. Only a name chosen for a new file is checked."""
+    odd = rigs / "Guitar.Vocal.yaml"
+    odd.write_text(RIG_OF_CHANNELS)
+    assert save_rig("Guitar.Vocal", odd) == odd
+    text = odd.read_text()
+    assert "Low: 0.6" in text and "name: riff" in text and "# keep" in text
+    with pytest.raises(SaveError, match="invalid config name"):
+        save_rig("Guitar.Two", odd)
+    with pytest.raises(SaveError, match="invalid config name"):
+        save_rig("../escape", odd)

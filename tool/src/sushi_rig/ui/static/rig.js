@@ -625,12 +625,27 @@ export function lastSave(logAnswer) {
   return null;
 }
 
-// What the Save buttons offer: Save is enabled while something is unsaved,
-// Save as… while a rig is up; neither while a command runs (the agent would
-// answer 409 busy) or this page's own save is in flight (`pending`). The
-// running rig's file is from /health (`rig.rig`, null for a v1 run, which
-// the agent refuses with how to save it).
-export function saveView(health, unsaved, pending) {
+// Since when the agent's log can say what changed: the newest of the last
+// save, the rig's start and the agent's own start (a change made before the
+// agent started is not in its log). An ISO time, or null.
+export function seenSince(health, logAnswer) {
+  const body = health && health.ok ? health.body : {};
+  const last = lastSave(logAnswer);
+  const times = [last && last.at, (body.rig || {}).started_at, (body.agent || {}).started_at]
+    .filter((t) => typeof t === "string" && !Number.isNaN(Date.parse(t)));
+  if (!times.length) return null;
+  return times.reduce((a, b) => (Date.parse(b) > Date.parse(a) ? b : a));
+}
+
+// What the Save buttons offer. Both are offered whenever a rig that can be
+// saved from here is up and nothing is running: the unsaved list is only
+// what the agent saw (not the panel's changes, nor pedals mapped in Sushi,
+// nor anything before the agent started, nor an amp change while GET /amp
+// failed), so an empty list is no proof the file holds what is playing. Not
+// offered, with why and how to save instead, for a v1 run (`rig.rig` null)
+// or one with its panel (any mode but "headless", as `rig.runs_panel`
+// reads it), both of which the agent refuses. `fmt` writes a time.
+export function saveView(health, unsaved, pending, logAnswer = null, fmt = (iso) => iso) {
   const agentUp = !!(health && health.ok);
   const rig = agentUp ? health.body.rig || {} : {};
   const busy = agentUp ? (health.body.agent || {}).busy || null : null;
@@ -638,37 +653,58 @@ export function saveView(health, unsaved, pending) {
   const count = unsaved && unsaved.items ? unsaved.items.length : 0;
   const idle = !pending && !busy;
   const file = rig.running && rig.rig ? rig.rig : null;
+  let blocked = null;
+  if (!running) blocked = "No rig is running to save.";
+  else if (!file) {
+    blocked = `${running} is a v1 config, not a rig of channels started with --rig, so it is not saved from here. `
+      + "Save it on the rig with: sushi-rig save <name> --rig <its rig.yaml>";
+  } else if (rig.mode !== "headless") {
+    blocked = "The rig runs with its panel, which owns the amp, so the agent does not know what the amp is at: "
+      + "save with the panel's SAVE button, or start the rig from here (headless) to save from here.";
+  }
+  const since = seenSince(health, logAnswer);
+  const off = !!blocked || !idle;
   return {
-    running, file,
-    save: { label: running ? `Save to ${running}` : "Save", disabled: !running || !idle || count === 0 },
-    saveAs: { label: "Save as…", disabled: !running || !idle },
-    note: !running ? "No rig is running to save."
+    running, file, blocked, since,
+    save: { label: running ? `Save to ${running}` : "Save", disabled: off },
+    saveAs: { label: "Save as…", disabled: off },
+    note: blocked ? blocked
       : pending ? (pending.name ? `Saving as ${pending.name}…` : `Saving ${running}…`)
         : busy ? `${busy} is running: saving waits for it.`
-          : count === 0 ? `Nothing unsaved: ${file || running} holds what is playing, as far as the agent saw.`
-            : `Save writes ${file || running} in place, keeping its comments. It is not committed: that is yours to do.`,
+          : count === 0 ? `No changes seen since ${since ? fmt(since) : "the agent started"}. The agent does not see the panel's `
+            + "changes, pedals mapped in Sushi, or anything before it started, so Save is still offered."
+            : `Save writes ${file} in place, keeping its comments. It is not committed: that is yours to do.`,
   };
 }
 
-// What the commit state of a save says (`library`, take.library_state:
-// `{commit, dirty}` or null). `dirty` is about tracked files only, so a new
-// file is said as untracked whatever it is.
-export function commitText(library, how) {
+// What git says of a save (`library`: take.library_state's `{commit,
+// dirty}` and save.file_git_state's `{file, others}`, or null). The file is
+// said from its own state; `dirty` is the whole checkout's, so it is not
+// read as the file's.
+export function commitText(library) {
   const tail = " sushi-rig does not commit: that is yours to do.";
   if (!library || !library.commit) {
     return "Not committed. Which commit it sits on is not known: git could not be read in the checkout." + tail;
   }
   const short = String(library.commit).slice(0, 7);
-  const dirty = library.dirty;
-  if (how === "new") {
-    return `Not committed: a new file git does not track yet, on commit ${short}, `
-      + (dirty === true ? "with other tracked files changed too." : dirty === false ? "with no tracked file changed."
-        : "and whether tracked files have changed could not be read.") + tail;
+  const others = library.others === true ? " Other tracked files have uncommitted changes too." : "";
+  switch (library.file) {
+    case "untracked": return `Not committed: a new file git does not track yet, on commit ${short}.${others}${tail}`;
+    case "changed": return `Not committed: changed on top of commit ${short}.${others}${tail}`;
+    case "unchanged": return `Nothing to commit: the file is as commit ${short} has it.${others}`;
+    case "ignored": return `Not committed: git ignores this file (on commit ${short}).${others}`;
+    default: return `Not committed, on commit ${short}: whether this file differs from it could not be read.${tail}`;
   }
-  if (dirty === false) return `Nothing to commit: the file is as commit ${short} has it.`;
-  return `Not committed: changed on top of commit ${short}`
-    + (dirty === true ? ", in a checkout with uncommitted changes (this file among them)." : "; whether anything else is uncommitted could not be read.")
-    + tail;
+}
+
+// The last save, for the line under the buttons, from its log entry: what
+// git said *when it was saved*, since a commit made since is not seen.
+export function lastSaveText(last, fmt = (iso) => iso) {
+  if (!last) return null;
+  const file = (last.library || {}).file;
+  const then = file === "unchanged" ? "as its commit had it when saved" : file === "ignored" ? "ignored by git"
+    : "not committed when saved";
+  return { time: fmt(last.at), file: last.file, then };
 }
 
 // What a save's answer says, for the page: `{ok: true, title, text, commit}`
@@ -676,7 +712,11 @@ export function commitText(library, how) {
 export function saveOutcome(name, answer) {
   const body = answer.body || {};
   if (!answer.ok) {
-    return { ok: false, title: name ? `Not saved as ${name}` : "Not saved", reason: answer.reason, code: answer.code || null };
+    // A save-as that wrote its file and could not make it the running rig
+    // (`recorded: false`): the file is there, so "not saved" would be untrue.
+    const written = body.recorded === false && body.file;
+    const title = written ? `Written, but not running: ${body.file}` : name ? `Not saved as ${name}` : "Not saved";
+    return { ok: false, title, reason: answer.reason, code: answer.code || null };
   }
   const amp = body.amp || {};
   const ampText = amp.saved ? ` The amp is saved as the agent last sent it (${modelName(amp.model)}): Carla cannot be read back.`
@@ -685,7 +725,7 @@ export function saveOutcome(name, answer) {
   const text = body.how === "new"
     ? `Wrote ${body.file}, a new rig, which is now the running rig. It starts without the comments of ${body.previous}, which keeps them.${ampText}`
     : `Wrote ${body.file} in place, keeping its comments.${ampText}`;
-  return { ok: true, title, text, commit: commitText(body.library, body.how), file: body.file };
+  return { ok: true, title, text, commit: commitText(body.library), file: body.file };
 }
 
 // ---------------------------------------------------------------- the lock

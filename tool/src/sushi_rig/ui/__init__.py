@@ -97,8 +97,11 @@ or by restart, and for a restart why.
 ## Save (S4)
 
 Below the unsaved changes in the rack, never on the stage screen. Save
-writes the running rig's own file (POST /rig/save) and is offered while
-anything is unsaved; Save as… asks for a name, checked before sending by the
+writes the running rig's own file (POST /rig/save) and is offered whenever
+a rig that can be saved from here is up, not only while the unsaved list
+has something: that list is what the agent saw, so with nothing seen it
+says "no changes seen since" when. A v1 run, or one with its panel, is not
+offered and is told how to save instead. Save as… asks for a name, checked before sending by the
 rule the agent saves by (`checkRigName`, save.NAME_PATTERN), and the new rig
 becomes the running one. The agent writes and never commits: the answer is
 shown with the file written, that it is not committed and the commit it

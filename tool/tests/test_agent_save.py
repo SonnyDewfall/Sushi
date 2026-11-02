@@ -74,6 +74,8 @@ class World:
         self.compiled: list = []
         self.written: list = []
         self.refuse_compile: str | None = None
+        self.reads = 0
+        self.on_write_state = None  # called with the state, in the writing thread, before it is kept
 
     def described(self):
         if not self.running:
@@ -93,11 +95,18 @@ class World:
         self.written.append(name)
         return f"/run/rigs/{name}.json"
 
+    def read_state(self):
+        self.reads += 1
+        return copy.deepcopy(self.state)
+
+    def write_state(self, state):
+        if self.on_write_state:
+            self.on_write_state(state)
+        self.state = copy.deepcopy(state)
+
     def switching(self):
-        return Switching(read_state=lambda: copy.deepcopy(self.state),
-                         read_config=lambda path: copy.deepcopy(AMP_CONFIG),
-                         write_state=lambda state: setattr(self, "state", copy.deepcopy(state)),
-                         compile=self.compile, write_config=self.write_config)
+        return Switching(read_state=self.read_state, read_config=lambda path: copy.deepcopy(AMP_CONFIG),
+                         write_state=self.write_state, compile=self.compile, write_config=self.write_config)
 
 
 @pytest.fixture
@@ -286,7 +295,7 @@ def test_the_file_is_written_never_committed_and_the_answer_says_what_it_sits_on
     assert status == 200 and saved_as["committed"] is False
     # A new file is untracked, which `library_state` does not count as dirty:
     # the page says "tracked files" for that reason.
-    assert saved_as["library"] == {"commit": head, "dirty": False}
+    assert saved_as["library"] == {"commit": head, "dirty": False, "file": "untracked", "others": False}
     assert git(root, "status", "--porcelain") == "?? config/rigs/board-two.yaml"
     assert git(root, "rev-parse", "HEAD") == head, "nothing was committed"
 
@@ -302,10 +311,40 @@ def test_a_save_into_a_tracked_file_says_the_checkout_is_dirty(root):
         ("POST", "/live/parameter", {"json": {"processor": "overdrive", "parameter": "Drive", "value": 0.4}}),
         ("POST", "/rig/save", {}),
     )
-    assert saved["library"] == {"commit": head, "dirty": True}, "the file itself is the change"
+    assert saved["library"] == {"commit": head, "dirty": True, "file": "changed", "others": False}, \
+        "the file itself is the change, and the only one"
     assert saved["entry"]["args"]["library"] == saved["library"]
     assert git(root, "rev-parse", "HEAD") == head, "nothing was committed"
     assert git(root, "status", "--porcelain") == "M config/rigs/electric_board.yaml"
+
+
+def test_the_files_own_git_state_is_told_apart_from_the_rest_of_the_checkout(root):
+    """`dirty` is the checkout's: the file is asked about by itself (review,
+    2026-11-02: "this file among them" was said whenever anything was dirty)."""
+    (root / "notes.txt").write_text("a\n")
+    git(root, "init", "-q")
+    git(root, "add", "config", "notes.txt")
+    git(root, "commit", "-q", "-m", "the rig")
+    (root / "notes.txt").write_text("b\n")
+    agent, _, _ = save_agent(root)
+    status, saved = call(agent, "POST", "/rig/save")  # the capture's values go into the file
+    assert status == 200
+    assert saved["library"]["dirty"] is True
+    assert (saved["library"]["file"], saved["library"]["others"]) == ("changed", True), "notes.txt is the other"
+    status, again = call(agent, "POST", "/rig/save")  # the same capture: the file as just written
+    git(root, "add", "config")
+    git(root, "commit", "-q", "-m", "saved")
+    status, clean = call(agent, "POST", "/rig/save")
+    assert (clean["library"]["file"], clean["library"]["others"], clean["library"]["dirty"]) == ("unchanged", True, True)
+    from sushi_rig.save import file_git_state
+
+    rigs = root / "config" / "rigs"
+    assert file_git_state(root, rigs / "electric_board.yaml")["others"] is True
+    (rigs / "new.yaml").write_text("x: 1\n")
+    assert file_git_state(root, rigs / "new.yaml") == {"file": "untracked", "others": True}
+    (root / ".gitignore").write_text("ignored.yaml\n")
+    (rigs / "ignored.yaml").write_text("x: 1\n")
+    assert file_git_state(root, rigs / "ignored.yaml")["file"] == "ignored"
 
 
 # --------------------------------------------------------------------------- #
@@ -382,14 +421,24 @@ def test_a_save_as_that_cannot_become_the_running_rig_says_so_and_keeps_the_file
     agent, world, _ = save_agent(root)
     world.refuse_compile = "the machine file is missing"
     before = copy.deepcopy(world.state)
-    status, answer = call(agent, "POST", "/rig/save", json={"name": "board-two"})
-    assert status == 500 and answer["ok"] is False and answer["recorded"] is False
-    assert "saved as config/rigs/board-two.yaml, but it could not be made the running rig" in answer["reason"]
-    assert "the machine file is missing" in answer["reason"]
+    (status, answer), (_, log), (_, health), (again, retry) = calls(
+        agent,
+        ("POST", "/rig/save", {"json": {"name": "board-two"}}),
+        ("GET", "/live/log", {}),
+        ("GET", "/health", {}),
+        ("POST", "/rig/save", {"json": {"name": "board-two"}}),
+    )
+    assert status == 500 and answer["ok"] is False and answer["recorded"] is False and "entry" not in answer
+    assert answer["reason"].startswith(
+        "config/rigs/board-two.yaml was written with the sound that was playing, but the rig could not be "
+        "made to run as board-two (RuntimeError: the machine file is missing): it still runs as electric_board")
+    assert "Nothing is logged as saved" in answer["reason"] and "refused as taken" in answer["reason"]
     assert (root / "config" / "rigs" / "board-two.yaml").is_file()
     assert world.state == before
-    _, health = call(agent, "GET", "/health")
-    assert "could not be made the running rig" in health["agent"]["last_error"]["message"]
+    # Not logged: the page's unsaved baseline is not reset by a save that did not happen.
+    assert [e["op"] for e in log["log"]] == []
+    assert "could not be made to run as board-two" in health["agent"]["last_error"]["message"]
+    assert (again, retry["code"]) == (409, "taken"), "as the reason said it would be"
 
 
 # --------------------------------------------------------------------------- #
@@ -437,7 +486,7 @@ def test_a_plugin_removed_live_is_refused_not_kept_in_the_file_silently(root):
     rig.chains["board"].remove("delay")
     status, answer = call(agent, "POST", "/rig/save")
     assert (status, answer["code"]) == (409, "not_saved")
-    assert "the running board chain lacks delay, which electric_board.yaml has" in answer["reason"]
+    assert "the running rig lacks delay (on board), which electric_board has" in answer["reason"]
     assert read(root) == RIG_FILE
 
 
@@ -448,8 +497,8 @@ def test_a_plugin_added_live_is_refused_with_why(root):
     rig.bypassed["chorus"] = False
     status, answer = call(agent, "POST", "/rig/save")
     assert (status, answer["code"]) == (409, "not_saved")
-    assert "has chorus, which electric_board.yaml does not" in answer["reason"]
-    assert "never which plugins a chain holds" in answer["reason"]
+    assert "names chorus, which electric_board does not have" in answer["reason"]
+    assert "or a plugin added live" in answer["reason"] and "never which plugins a chain holds" in answer["reason"]
     assert read(root) == RIG_FILE
 
 
@@ -532,3 +581,91 @@ def test_undo_after_a_save_takes_back_the_change_before_it(root):
     assert chain_entry(read(root), "overdrive")["parameters"]["Drive"] == 0.5, "the save is not undone"
     assert (status, nothing["code"]) == (409, "nothing_to_undo"), "and nothing older is left"
     assert [e["op"] for e in log["log"]] == ["parameter", "save", "undo"]
+
+
+def test_a_save_as_reads_the_state_file_once_under_its_locks_and_uses_that(root):
+    """One read to refuse early, one under the locks, used for recording the
+    new rig: no third read falling back to the first (review, 2026-11-02)."""
+    agent, world, _ = save_agent(root)
+    world.state["machine"] = "machines/early.yaml"
+    seen = []
+    original = world.compile
+
+    def compile(name, where, machine):
+        seen.append(machine)
+        return original(name, where, machine)
+
+    world.compile = compile
+    agent.switching = world.switching()
+    reads_before = world.reads
+    status, _ = call(agent, "POST", "/rig/save", json={"name": "board-two"})
+    assert status == 200
+    # _save_target before the locks and under them, plus the amp's own read
+    # of the run (`_amp_now`): nothing more.
+    assert world.reads - reads_before == 3, world.reads - reads_before
+    assert seen == ["machines/early.yaml"]
+
+
+def test_a_save_as_moves_the_amps_record_with_the_state_file_under_the_amp_lock(root):
+    agent, world, _ = save_agent(root)
+    held = []
+    world.on_write_state = lambda state: held.append(agent._amp_lock.locked())
+    answers = calls(
+        agent,
+        ("POST", "/amp/parameter", {"json": {"name": "Output Lvl", "value": 3.5}}),
+        ("POST", "/rig/save", {"json": {"name": "board-two"}}),
+    )
+    assert [a[0] for a in answers] == [200, 200]
+    assert held == [True], "the state file names the new rig only while the amp's lock is held"
+    from sushi_rig import amp_live
+
+    assert agent._amp.run == amp_live.run_of(world.state)
+
+
+def test_an_amp_write_queued_behind_a_save_as_lands_with_its_values_kept(root):
+    """An amp write that passed the busy check before the save-as began and
+    waits for the amp's lock: it lands before the capture (the lock is
+    first come, first served), is saved, and afterwards the agent's record
+    still holds every value as sent, not re-seeded from a config."""
+    agent, world, _ = save_agent(root)
+
+    async def go():
+        async with TestClient(TestServer(agent.app())) as client:
+            await client.post("/amp/parameter", json={"name": "Output Lvl", "value": 3.5})
+            await agent._amp_lock.acquire()  # an amp change in flight
+            try:
+                write = asyncio.ensure_future(client.post("/amp/parameter", json={"name": "Input Lvl", "value": 1.0}))
+                await asyncio.sleep(0.1)  # past the busy check, waiting for the amp's lock
+                save = asyncio.ensure_future(client.post("/rig/save", json={"name": "board-two"}))
+                await asyncio.sleep(0.1)  # the save-as holds the lifecycle and live locks, waiting too
+                late = await client.post("/amp/parameter", json={"name": "Input Lvl", "value": 2.0})
+                late = (late.status, (await late.json()).get("code"))
+            finally:
+                agent._amp_lock.release()
+            wrote, saved = await write, await save
+            amp = await (await client.get("/amp")).json()
+            log = await (await client.get("/live/log")).json()
+            return wrote.status, saved.status, late, amp, log
+
+    wrote, saved, late, amp, log = asyncio.run(go())
+    assert (wrote, saved) == (200, 200)
+    assert late == (409, "busy"), "one sent once the save-as began waits for nothing: it is refused"
+    assert [e["op"] for e in log["log"]] == ["amp", "amp", "save"]
+    values = {p["name"]: (p["value"], p["source"]) for p in amp["parameters"]}
+    assert values["Output Lvl"] == (3.5, "sent") and values["Input Lvl"] == (1.0, "sent")
+    assert yaml.safe_load(read(root, "board-two"))["amp"]["parameters"]["Input Lvl"] == 1.0
+
+
+def test_a_running_rig_whose_file_name_the_name_rule_refuses_saves_in_place(root):
+    rigs = root / "config" / "rigs"
+    (rigs / "Guitar.Vocal.yaml").write_text(RIG_FILE)
+    agent, _, rig = save_agent(root, World(root, rig="config/rigs/Guitar.Vocal.yaml"))
+    rig.info["overdrive"]["Drive"]["value"] = 0.3
+    status, saved = call(agent, "POST", "/rig/save")
+    assert status == 200, saved
+    assert (saved["file"], saved["how"]) == ("config/rigs/Guitar.Vocal.yaml", "updated")
+    text = read(root, "Guitar.Vocal")
+    assert "name: electric_board" in text, "its own name is kept"
+    assert chain_entry(text, "overdrive")["parameters"]["Drive"] == 0.3
+    status, answer = call(agent, "POST", "/rig/save", json={"name": "Guitar.Two"})
+    assert status == 400, "a name the player chose is checked"

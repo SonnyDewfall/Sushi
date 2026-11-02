@@ -700,20 +700,26 @@ no amp leaves the file's `amp` alone. `{"name": ...}` is "save as": a new
 taken`), written fresh, so without the source's comments, which then **is the
 running rig**: the state file names it as a live switch would, so `restart`
 brings it back, the next plain save writes there, and `/health` and `/rigs`
-say it. A plugin added or removed live is refused (`409 not_saved`): a save
-writes values, bypass and order, not which plugins a chain holds, and a
-plugin removed live used to stay in the file with nothing said (the panel's
-SAVE and `sushi-rig save` refuse it too now). Refused in panel mode (`409
-panel`: the panel's faders reach the amp through the listener, so the agent
-does not know what the amp is at), for a v1 run (`409 v1`: `sushi-rig save`
-saves a config), and while a lifecycle command runs (`409 busy`). **The file
-is written, never committed**: committing in your checkout is your call, and
-the answer gives the commit it sits on and whether tracked files are dirty
-(`take.library_state`; a new file is untracked, which git's dirty does not
-count). A save is `op: "save"` in `/live/log`, with the file and that commit
-state; undo passes over it to the change before, which leaves the rig unsaved
-again. **Not run against a live Sushi**: shown against a fake capture and real
-rig files.
+say it. If the new file cannot be made the running rig, the answer is a 500
+saying the file was written and the rig still runs under its old name, and
+nothing is logged as saved. A plugin added or removed live is refused (`409
+not_saved`, from `rigfile.fold_state`, which checks a capture of another rig
+first): a save writes values, bypass and order, not which plugins a chain
+holds, and a plugin removed live used to stay in the file with nothing said
+(the panel's SAVE and `sushi-rig save` refuse it too now). A save in place
+writes the file the rig runs from whatever it is called (`Guitar.Vocal.yaml`
+compiles, so it saves); only a name chosen for a new file is checked. Refused
+in panel mode (`409 panel`: the panel's faders reach the amp through the
+listener, so the agent does not know what the amp is at), for a v1 run (`409
+v1`: `sushi-rig save` saves a config), and while a lifecycle command runs
+(`409 busy`). **The file is written, never committed**: committing in your
+checkout is your call, and the answer gives the commit it sits on, what git
+says of the file itself (untracked, changed, unchanged) and whether other
+tracked files are changed (`take.library_state`, `save.file_git_state`). A
+save is `op: "save"` in `/live/log`, logged only once it has wholly happened,
+with the file and that state; undo passes over it to the change before, which
+leaves the rig unsaved again. **Not run against a live Sushi**: shown against
+a fake capture and real rig files.
 
 **Two modes, for two ways of using the rig.** The default gives you the Open
 Stage Control panel and the save listener behind it, which is what you want when
@@ -802,12 +808,15 @@ no Node and the UI has to run from a checkout. Two screens from the mockups:
   amp.
 - **Save (S4).** Below the unsaved changes in the rack: Save writes the
   running rig's own file of `config/rigs/` in place, keeping its comments, and
-  is enabled while anything is unsaved; Save as… asks for a name, checks it by
+  is offered whenever a rig that can be saved from here is up, since the
+  unsaved list is only what the agent saw (with none seen it says "no changes
+  seen since" when, not that nothing is unsaved); for a v1 run or one with its
+  panel both buttons are off and say how to save instead. Save as… asks for a name, checks it by
   the rule the agent saves by (lowercase letters, digits, `-` and `_`) before
   sending, and writes a new rig that becomes the running one. The answer says
   what was written, that it is **not committed** (the agent never commits) and
   the commit it sits on, or the agent's reason for refusing (another rig's
-  name, panel mode, a plugin added or removed live). The unsaved list then
+  name, a plugin added or removed live). The unsaved list then
   counts from that save: a change after it, or an undo past it, is unsaved
   again. Allowed while locked, since it changes neither the sound nor the
   structure. Not on the stage screen: saving is not a stage action.
