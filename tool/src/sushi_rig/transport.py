@@ -194,12 +194,15 @@ class TakeSession:
             reason = f"the capture engine did not start: {exc}"
             # It may have got part of the way — a thread running, some ports
             # connected — so it is told to stop before the recorder is.
+            account = None
             try:
-                self.engine.stop()
+                account = self.engine.stop()
             except Exception:  # noqa: BLE001 — the start failure is the news
                 pass
             summary = recorder.stop().summary()
             summary["error"] = summary["error"] or reason
+            if isinstance(account, dict):
+                summary["engine"] = account
             _finish(folder, summary)
             raise TransportError(f"cannot record {name}: {reason}") from exc
         self._folder, self._recorder = folder, recorder
@@ -240,7 +243,7 @@ class TakeSession:
 def _nothing_captured(error: str) -> dict[str, Any]:
     """A recorder's summary for a take that never got as far as a recorder."""
     return {"frames": 0, "lost_frames": 0, "dropouts": [], "unrecorded_episodes": 0,
-            "error": error}
+            "error": error, "silent_blocks": {}}
 
 
 def _finish(folder: Path, capture: dict[str, Any]):

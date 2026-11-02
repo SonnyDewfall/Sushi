@@ -15,7 +15,14 @@ from __future__ import annotations
 
 import pytest
 
-jack = pytest.importorskip("jack", reason="the capture extra: pip install -e 'tool[capture]'")
+# Not importorskip: that catches ImportError only, and `import jack` raises
+# OSError when libjack is missing, which would be a collection error that
+# fails the whole run. CI installs both the package and libjack, so there this
+# imports and the tests run; the skip is for a developer's machine.
+try:
+    import jack
+except (ImportError, OSError) as exc:
+    pytest.skip(f"needs the capture extra and libjack ({exc})", allow_module_level=True)
 
 from sushi_rig import capture  # noqa: E402
 

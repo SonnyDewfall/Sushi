@@ -221,3 +221,30 @@ def test_an_engine_cannot_be_built_for_a_nonsense_format():
 
 def test_a_column_knows_its_own_port_name():
     assert Column(3, "vocal.wav", 0, "x:y").port == "in_3"
+
+
+def test_a_machine_with_the_package_but_no_libjack_skips_the_jack_tests_not_errors():
+    """`import jack` raises OSError when libjack is absent, and
+    `pytest.importorskip` catches only ImportError: the module used to be a
+    collection error that failed the whole run on a developer's machine. Run
+    in a fresh interpreter whose `import jack` fails the way a missing libjack
+    does. In CI libjack is installed, so there the module imports and runs."""
+    code = (
+        "import builtins, sys, pytest\n"
+        "real = builtins.__import__\n"
+        "def refuse(name, *a, **k):\n"
+        "    if name == 'jack':\n"
+        "        raise OSError('JACK library not found')\n"
+        "    return real(name, *a, **k)\n"
+        "builtins.__import__ = refuse\n"
+        "sys.exit(pytest.main(['-q', '-p', 'no:cacheprovider', sys.argv[1]]))\n"
+    )
+    target = Path(__file__).with_name("test_capture_jack.py")
+    out = subprocess.run(
+        [sys.executable, "-c", code, str(target)], capture_output=True, text=True,
+        env={"PYTHONPATH": str(Path(capture.__file__).parents[1])}, cwd=str(target.parent),
+    )
+    # 5 is pytest's "no tests ran", which is what a module-level skip is; 2 is
+    # the collection error this guards against.
+    assert out.returncode == 5, out.stdout + out.stderr
+    assert "1 skipped" in out.stdout and "error" not in out.stdout.lower()

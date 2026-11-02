@@ -147,25 +147,50 @@ def test_a_block_too_long_for_the_buffer_is_counted_in_frames_and_not_pushed():
     assert (pump.blocks, pump.skipped_blocks, pump.skipped_frames) == (1, 2, 513)
 
 
-def test_an_exception_in_the_callback_is_held_not_raised_and_the_cycles_go_on():
+def test_an_exception_before_the_push_is_a_skipped_block_the_stems_lack():
     """JACK removes a client whose callback raises, which would end the capture
     without a word. So the first error is kept, the cycle counted as skipped,
     and the next cycle tried."""
+    bus = Bus(2)
+    real = bus.ports[1].get_array
+    cycles = []
+
+    def flaky():
+        cycles.append(1)
+        if len(cycles) == 2:
+            raise OSError("port buffer gone")
+        return real()
+
+    bus.ports[1].get_array = flaky
+    pump = BlockPump(bus.ports, lambda block: len(block), Q)
+    for _ in range(4):
+        bus.cycle(pump)
+    assert pump.blocks == 3 and pump.skipped_blocks == 1 and pump.skipped_frames == Q
+    assert pump.error == "OSError: port buffer gone"
+
+
+def test_an_exception_in_the_push_does_not_claim_frames_the_ring_may_hold():
+    """`Recorder.push` copies into the ring and then runs the silence watch. If
+    the watch raised, the ring has the block already; counting its frames as
+    skipped would tell the take they are missing from stems that have them, and
+    the recorder's own count would disagree. The error is reported; the frames
+    are not claimed either way."""
     bus = Bus(2)
     calls = []
 
     def push(block):
         calls.append(len(block))
         if len(calls) == 2:
-            raise OSError("ring on fire")
+            raise RuntimeError("watch failed after the ring kept it")
         return len(block)
 
     pump = BlockPump(bus.ports, push, Q)
     for _ in range(4):
         bus.cycle(pump)
-    assert calls == [Q] * 4
-    assert pump.blocks == 3 and pump.skipped_blocks == 1 and pump.skipped_frames == Q
-    assert pump.error == "OSError: ring on fire"
+    assert calls == [Q] * 4, "the cycles went on"
+    assert pump.blocks == 3 and pump.push_errors == 1
+    assert pump.skipped_blocks == 0 and pump.skipped_frames == 0
+    assert pump.error == "RuntimeError: watch failed after the ring kept it"
 
 
 def test_a_port_that_hands_back_the_wrong_length_is_an_error_not_a_broadcast():
@@ -200,7 +225,7 @@ def test_the_account_always_has_the_same_keys_so_clean_differs_from_absent():
     account = BlockPump(Bus(1).ports, lambda block: 0, Q).account(SR)
     assert set(account) == {
         "quantum", "blocks", "xruns", "quantum_changes", "off_quantum_blocks",
-        "skipped_blocks", "skipped_frames", "slowest_callback_us", "budget_us", "error",
+        "skipped_blocks", "skipped_frames", "push_errors", "slowest_callback_us", "budget_us", "error",
     }
     assert account["xruns"] == 0 and account["error"] == ""
 

@@ -1400,4 +1400,23 @@ the one named (true of Sushi's outputs in `patchbay.py`, an assumption for
 anything else), that the listener can run under `pw-jack`, and that a take's
 silent blocks line up with what is heard. The listener does not construct an
 engine yet, because the ports a take records follow from the machine file and
-the rig. *(2026-11-02)*
+the rig. Found by review the same day, and fixed: the engine read the graph's
+quantum with an activation and a half-second wait on every `start`, on what
+will be the listener's one OSC thread, so every RECORD would have stalled the
+panel; it is now read once per engine (`prepare`, to be called where a pause is
+harmless), and a quantum that changes later shows in the take's `engine`
+account instead of being refused up front. The link read-back ran the instant
+after `connect`, which under pipewire-jack may be before the client sees its
+own link; it now retries for up to half a second, and whether the read is
+synchronous there is still unverified. A `push` that raised after the ring had
+kept the block was counted as skipped frames, telling the take they were
+missing from stems that hold them; a raise in the push is now `push_errors`
+and claims no frames. A refused start no longer returns the previous take's
+account from `stop`; the account of an engine that failed to start is now kept
+under `capture.engine`, and a take that never got a recorder carries
+`silent_blocks: {}` like every other. The JACK test module skipped on a missing
+package but errored at collection on a missing libjack (`importorskip` catches
+only `ImportError`); it skips for both, and CI, which has both, still runs it.
+The flow of calls in `CaptureEngine` is now tested against a hand-written
+stand-in for JACK, which proves its own decisions (what it calls, how often,
+what it does when a read is empty) and nothing about JACK itself. *(2026-11-02)*

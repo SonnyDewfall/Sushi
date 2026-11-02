@@ -682,13 +682,13 @@ def check_take(take: Take) -> list[str]:
                 f"the recorder stopped early: {capture['error']} — the stems hold "
                 "what was written before it"
             )
-        lost = capture.get("lost_frames")
-        if type(lost) is int and lost > 0:
+        lost = _count(capture.get("lost_frames"))
+        if lost:
             dropouts = capture.get("dropouts") or []
             episodes = (len(dropouts) if isinstance(dropouts, list) else 0) + (
                 capture.get("unrecorded_episodes") or 0
             )
-            rate = meta.get("sample_rate") if type(meta.get("sample_rate")) is int else 0
+            rate = _count(meta.get("sample_rate"))
             problems.append(
                 f"the recorder lost audio {episodes} time(s)"
                 + (f", {1000.0 * lost / rate:.1f} ms in all" if rate else "")

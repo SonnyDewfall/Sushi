@@ -132,6 +132,32 @@ def test_the_engines_account_is_kept_in_the_take_beside_the_recorders(tmp_path):
     assert kept["lost_frames"] == 0, "an xrun is not a lost frame; the recorder's count is its own"
 
 
+def test_an_engine_that_failed_to_start_still_has_its_account_in_the_take(tmp_path):
+    class Refused(FakeEngine):
+        def start(self, stems, push):
+            raise OSError("no such port")
+
+        def stop(self):
+            return {"xruns": 0, "error": "", "blocks": 0}
+
+    session = TakeSession(plan(tmp_path), Refused())
+    with pytest.raises(TransportError, match="no such port"):
+        session.start("riff-idea")
+    kept = take.load_take(tmp_path / "riff-idea").metadata["capture"]
+    assert kept["engine"] == {"xruns": 0, "error": "", "blocks": 0}
+    assert kept["silent_blocks"] == {}, "present on every take the watch could have seen, or none says so"
+
+
+def test_a_take_that_never_got_a_recorder_still_carries_the_key(tmp_path):
+    def broken(*_args, **_kwargs):
+        raise OSError("read-only file system")
+
+    session = TakeSession(plan(tmp_path), FakeEngine(), recorder_factory=broken)
+    with pytest.raises(TransportError):
+        session.start("riff-idea")
+    assert take.load_take(tmp_path / "riff-idea").metadata["capture"]["silent_blocks"] == {}
+
+
 def test_an_engine_with_nothing_to_add_leaves_no_engine_key(tmp_path):
     session = TakeSession(plan(tmp_path), FakeEngine())
     session.start("riff-idea")
