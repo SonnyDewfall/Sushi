@@ -15,7 +15,9 @@ and the two things worth reading about a rig, served over HTTP on localhost.
     POST /live/parameter  {"processor", "parameter", "value"}   value is normalised, 0 to 1
     POST /live/bypass   {"processor", "bypassed"}
     POST /live/move     {"processor", "direction": "up" | "down"}
-    GET  /live/log      the changes made through /live, newest last (the last 500)
+    GET  /live/log      the changes made through /live, newest last (the last 500), and
+                        `first`, the index of the oldest one held
+    POST /live/undo     {} -- put back what the newest change not yet undone replaced
 
 ## A fixed command set, never a shell
 
@@ -71,8 +73,37 @@ agent's own install and not Sushi's doing. All but the `503` are remembered in
 `last_error` until a live change next works.
 
 Every change that succeeded is appended to the operation log, which is where
-undo will come from; there is no undo yet. It lives in this process and is
-lost when the agent stops.
+undo comes from. It lives in this process and is lost when the agent stops.
+
+## Undo reads the log and writes to it
+
+`POST /live/undo` takes the newest entry that is not an undo and has not been
+undone, and applies its `previous` through the same functions the routes use:
+`set_live_parameter`, `set_live_bypass`, and a move the opposite way. It is a
+change like the others (same busy check, same lock, same `LIVE_TIMEOUT`, same
+503/502/504/409), and is logged like one: `op: "undo"`, `undoes: <index>`, `args`
+what was applied and `previous` what that replaced, so a redo can be built from
+the entry alone.
+
+An entry's index is how many entries came before it since the agent started, not
+its place in the list: the list is trimmed at the front, and a position would
+change under the `undoes` that refer to it. `GET /live/log` says the index of the
+first entry it holds (`first`). An undo is always newer than what it undoes, so
+trimming can drop an entry and keep its undo but never the reverse, and one
+backward pass over the log finds the next entry to undo.
+
+Refused rather than guessed, each as 409 with the reason and nothing logged:
+an empty log, or one holding only undos ("nothing to undo"); an entry whose
+`previous` Sushi would not say (a bypass state it did not report); a processor
+the rig no longer has; and a move whose chain has changed since -- the processor
+must be exactly where the move left it, or the opposite move would shuffle
+whatever else was rearranged meanwhile. A refused entry is not skipped to reach an
+older one: that would undo something the caller did not ask about. A request with
+a body is 400, since the route takes none and a body that asked for more must
+not be answered as if understood.
+
+Out of scope: undoing an undo (a redo). The entries carry what it needs; it is
+not built. Also not verified against a live Sushi: it is shown against the fake.
 
 ## Local-first, so localhost first
 
@@ -370,17 +401,113 @@ def check_move(move: Move) -> None:
         )
 
 
-def log_entry(op: str, args: dict[str, Any], previous: Any, at: str) -> dict[str, Any]:
+def log_entry(
+    op: str, args: dict[str, Any], previous: Any, at: str, undoes: int | None = None,
+) -> dict[str, Any]:
     """One operation-log entry. `previous` is what the change replaced, or None
     where it is not known; it is always present so an undo reads one shape.
+
+    `undoes` is the index (see `pick_undo`) of the entry an undo put back, and
+    is a key of undo entries alone: the others keep their four.
     """
-    return {"at": at, "op": op, "args": args, "previous": previous}
+    entry = {"at": at, "op": op, "args": args, "previous": previous}
+    if undoes is not None:
+        entry["undoes"] = undoes
+    return entry
 
 
 def trim_log(log: list, limit: int = LOG_LIMIT) -> None:
     """Drop the oldest entries, in place, until `limit` remain."""
     if len(log) > limit:
         del log[: len(log) - limit]
+
+
+# --------------------------------------------------------------------------- #
+# Undo: the decisions, pure
+# --------------------------------------------------------------------------- #
+
+OPPOSITE = {"up": "down", "down": "up"}
+
+
+def undo_request(body: Any) -> None:
+    """`AgentError` unless the body is empty. The route undoes the newest
+    change and nothing else; a body naming an index or a processor would be
+    ignored, and a request ignored while looking understood is how the wrong
+    thing gets undone."""
+    if body is not None and body != {}:
+        raise AgentError(f"the body of an undo must be empty, not {body!r}: it undoes the newest change")
+
+
+def pick_undo(log: list[dict[str, Any]], first: int) -> tuple[int, dict[str, Any]] | None:
+    """`(index, entry)` of the newest entry that is not an undo and has not
+    been undone, or None. `first` is the index of `log[0]`.
+
+    An index counts every entry recorded since the agent started, so it is
+    stable as the log is trimmed at the front, which a position in the list is
+    not. An undo is recorded after what it undoes, so a single pass from the
+    newest end meets each undo before its target; and trimming, which drops the
+    oldest, can lose a target and keep its undo but never the reverse, so an
+    entry that is still here is never mistaken for one not yet undone.
+    """
+    undone: set[int] = set()
+    for position in range(len(log) - 1, -1, -1):
+        entry = log[position]
+        if entry["op"] == "undo":
+            undone.add(entry["undoes"])
+        elif first + position not in undone:
+            return first + position, entry
+    return None
+
+
+def undo_inverse(entry: dict[str, Any]) -> tuple[str, dict[str, Any]]:
+    """`(op, args)` that puts an entry back, in the arguments the route for
+    that op takes, or `AgentError` if it cannot be done without guessing.
+
+    A parameter goes back to its previous value and a bypass to its previous
+    state. A move goes back by the opposite step, which is exact because a move
+    is a step: the processor swapped places with its neighbour. Where `previous`
+    is None Sushi would not say what it was, so there is nothing to put back.
+    """
+    op, args, previous = entry["op"], entry["args"], entry["previous"]
+    if op not in ("parameter", "bypass", "move"):
+        raise AgentError(f"cannot undo an entry of op {op!r}")
+    if previous is None:
+        raise AgentError(
+            f"cannot undo the {op} of {args['processor']!r}: Sushi did not say what "
+            f"{args['processor']} was before it, so there is nothing to put back")
+    if op == "parameter":
+        return op, {"processor": args["processor"], "parameter": args["parameter"], "value": previous}
+    if op == "bypass":
+        return op, {"processor": args["processor"], "bypassed": previous}
+    return op, {"processor": args["processor"], "direction": OPPOSITE[args["direction"]]}
+
+
+def chain_after_move(chain: list[str], processor: str, direction: str) -> list[str] | None:
+    """The chain as a one-step move leaves it, or None if the processor is not
+    on it or already at that end (such a move is never logged). A step swaps the
+    processor with its neighbour, which is all the arithmetic undo needs."""
+    if processor not in chain:
+        return None
+    i = chain.index(processor)
+    j = i + DIRECTIONS[direction]
+    if not 0 <= j < len(chain):
+        return None
+    after = list(chain)
+    after[i], after[j] = after[j], after[i]
+    return after
+
+
+def check_undo_move(entry: dict[str, Any], current: list[str] | None) -> None:
+    """`AgentError` unless `current` -- the chain the processor is on now, None
+    if it is on none -- is exactly what the move left. Undoing a move whose chain
+    has changed since would move the processor one step in a chain the entry knows
+    nothing about, which is a different change from the one asked for."""
+    args = entry["args"]
+    expected = chain_after_move(entry["previous"], args["processor"], args["direction"])
+    if current != expected:
+        raise AgentError(
+            f"cannot undo the move of {args['processor']!r}: it is no longer where the move "
+            f"left it (the chain is now {current}, the move left {expected})")
 
 
 def sushi_unreachable(exc: BaseException) -> bool:
@@ -510,6 +637,7 @@ class Agent:
         self._lock = asyncio.Lock()  # lifecycle: one command at a time
         self._live_lock = asyncio.Lock()  # live: one change at a time; waits, not 409. Reads do not take it
         self.log: list[dict[str, Any]] = []  # operations made through /live, newest last
+        self._trimmed = 0  # entries dropped from the front, so log[i] has index _trimmed + i
         # Sushi calls run here (see LIVE_WORKERS), not in the loop's executor.
         self._executor = concurrent.futures.ThreadPoolExecutor(
             max_workers=LIVE_WORKERS, thread_name_prefix="sushi-live")
@@ -541,6 +669,7 @@ class Agent:
         app.router.add_post("/live/parameter", self.live_parameter)
         app.router.add_post("/live/bypass", self.live_bypass)
         app.router.add_post("/live/move", self.live_move)
+        app.router.add_post("/live/undo", self.live_undo)
         return app
 
     async def health(self, request):
@@ -834,10 +963,15 @@ class Agent:
                 self._refuse_while_busy()
                 yield controller
 
-    def _record(self, op: str, args: dict[str, Any], previous: Any) -> dict[str, Any]:
-        entry = log_entry(op, args, previous, datetime.now(timezone.utc).isoformat(timespec="seconds"))
+    def _record(
+        self, op: str, args: dict[str, Any], previous: Any, undoes: int | None = None,
+    ) -> dict[str, Any]:
+        entry = log_entry(
+            op, args, previous, datetime.now(timezone.utc).isoformat(timespec="seconds"), undoes)
         self.log.append(entry)
-        trim_log(self.log)
+        before = len(self.log)
+        trim_log(self.log, LOG_LIMIT)  # the module's value, read now, so a test can lower it
+        self._trimmed += before - len(self.log)
         if (self.last_error or {}).get("kind") == "live":
             self.last_error = None  # a change that worked supersedes a live failure
         return entry
@@ -861,7 +995,9 @@ class Agent:
         })
 
     async def live_log(self, request):
-        return web.json_response({"ok": True, "limit": LOG_LIMIT, "log": list(self.log)})
+        return web.json_response({
+            "ok": True, "limit": LOG_LIMIT, "first": self._trimmed, "log": list(self.log),
+        })
 
     async def live_parameter(self, request):
         """Set one parameter, by processor and parameter name.
@@ -937,6 +1073,68 @@ class Agent:
             entry = self._record(
                 "move", {"processor": processor, "direction": direction}, planned.chain)
         return web.json_response({"ok": True, "changed": True, "message": moved.message, **entry})
+
+    async def live_undo(self, request):
+        """Put back what the newest change not yet undone replaced (`pick_undo`),
+        through the same calls the routes make, and log the undo.
+
+        The target is chosen under the live lock, from the log as it is then:
+        two undos queued together undo two entries, not one twice. A target that
+        cannot be put back without guessing is 409 and nothing is applied or
+        logged (see `undo_inverse`, `check_undo_move`). Undoing an undo is not
+        supported: an undo is passed over, and a redo is for later. Not run
+        against a live Sushi.
+        """
+        try:
+            undo_request(await self._json_body(request))
+        except AgentError as exc:
+            raise web.HTTPBadRequest(reason=str(exc))
+        # Said without a connection: with nothing to undo, no rig need be up.
+        if pick_undo(self.log, self._trimmed) is None:
+            raise web.HTTPConflict(reason="nothing to undo")
+        async with self._connected_for_a_change(request) as controller:
+            picked = pick_undo(self.log, self._trimmed)  # the log may have changed while waiting
+            if picked is None:
+                raise web.HTTPConflict(reason="nothing to undo")
+            index, undone = picked
+            try:
+                op, args = undo_inverse(undone)
+                if op == "parameter":
+                    reading = await self._sushi(
+                        request, self.live.parameter, controller, args["processor"], args["parameter"],
+                        reading=True)
+                    current = check_parameter(reading, args["processor"], args["parameter"])
+                    state = {k: args[k] for k in ("processor", "parameter", "value")}
+                elif op == "bypass":
+                    reading = await self._sushi(
+                        request, self.live.bypass, controller, args["processor"], reading=True)
+                    current = check_bypass(reading, args["processor"])
+                    state = {k: args[k] for k in ("processor", "bypassed")}
+                else:
+                    planned = await self._sushi(
+                        request, self.live.plan_move, controller, args["processor"],
+                        DIRECTIONS[args["direction"]], reading=True)
+                    check_undo_move(undone, planned.chain)
+                    if planned.outcome != "planned":  # not reachable if the check passed; never sent blind
+                        raise AgentError(f"cannot undo the move of {args['processor']!r}: {planned.message}")
+                    current = planned.chain
+                    state = {"processor": args["processor"], "chain": undone["previous"]}
+            except AgentError as exc:
+                # The request was well formed; it is the rig that has moved on.
+                raise web.HTTPConflict(reason=str(exc))
+            if op == "parameter":
+                await self._sushi(
+                    request, self.live.set_parameter, controller, args["processor"],
+                    args["parameter"], args["value"], reading=False)
+            elif op == "bypass":
+                await self._sushi(
+                    request, self.live.set_bypass, controller, args["processor"],
+                    args["bypassed"], reading=False)
+            else:
+                await self._sushi(request, self.live.send_move, controller, planned, reading=False)
+            entry = self._record("undo", {"of": op, **args}, current, undoes=index)
+        # `state` is what was set and Sushi confirmed, not read back again.
+        return web.json_response({"ok": True, **entry, "undone": undone, "state": state})
 
     async def release_workers(self, app=None) -> None:
         """Stop handing Sushi calls to the pool. Calls still inside Sushi are
