@@ -2319,6 +2319,29 @@ orphaned, and `down` stopped the group by its id. Still NOT VERIFIED on the rig:
 the service and the agent-run `up` against real Sushi and PipeWire, as the
 entry above says. *(2026-11-02)*
 
+**An elkpy connection is closed for real (hotfix).** On the rig machine the
+agent died after the web UI had polled `/live` for a few minutes: `OSError:
+[Errno 24] Too many open files`, raised while elkpy read its own
+`api_version.proto`. Each poll connects and closes, and elkpy 1.3.0's
+`SushiController.close()` only asks its NotificationController's event loop to
+stop. It never waits for the loop's thread or closes the loop, and the
+sub-controllers refer back to the controller, a cycle only the garbage
+collector breaks. So every connection left its loop's descriptors and its
+pending gRPC channel open until a collection that, in a long-running process,
+came too late. Measured here with nothing listening and the collector off: 45
+descriptors left after 15 connections under elkpy's close, none under the
+fix. `live.close_controller` closes elkpy's way, waits briefly for the
+notification thread, cancels and finishes what is left on its loop, closes the
+loop and breaks the cycle; every close in `live.py` and the agent's
+`disconnect` now go through it. A thread that will not stop in time is left,
+with its loop, rather than closed from under it. It reads elkpy's private
+attributes, checked against 1.3.0 only: `test_live_close.py` measures the
+descriptors with real elkpy where it is installed (the container job), so a
+later elkpy that renames them fails there. Not yet run against a live Sushi;
+the check on the rig is the UI open for ten minutes on a running rig, with
+`ls /proc/$(pgrep -f "sushi-rig agent" | head -1)/fd | wc -l` read at the start
+and the end. *(2026-11-02)*
+
 **Web UI v0.1: what the first real session found (#111).** Sonny's first use of
 the UI on the rig laptop found four faults and asked for one feature. (1) **A
 down rig flooded the console**: the page asked `/live` every second whatever

@@ -999,7 +999,7 @@ class Live:
         m = live_module
         return cls(
             connect=functools.partial(m.connect, address),
-            disconnect=lambda c: c.close(),
+            disconnect=m.close_controller,  # not c.close(): see close_controller
             snapshot=lambda c: m.read_rig(address, c),
             parameter=lambda c, proc, name: m.read_live_parameter(proc, name, address, c),
             bypass=lambda c, proc: m.read_live_bypass(proc, address, c),

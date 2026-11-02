@@ -65,6 +65,58 @@ def _controller(address: str):
     return sc.SushiController(address)
 
 
+def close_controller(controller) -> None:
+    """Close an elkpy `SushiController` so it lets go of what it holds now,
+    not whenever the garbage collector next runs. Every close here goes
+    through this.
+
+    elkpy 1.3.0's own `close()` only asks its NotificationController's event
+    loop to stop: it never waits for that loop's thread or closes the loop, so
+    the loop's file descriptors (its selector and self-pipe, and the gRPC
+    channel its pending task holds) outlive the controller. The
+    sub-controllers also refer back to the controller, a cycle that only the
+    cyclic collector breaks. A process that connects once a second -- the
+    agent, under the web UI's poll of /live -- ran out of file descriptors
+    within minutes ("OSError: [Errno 24] Too many open files", on the rig
+    machine, 2026-11-02). Measured here: about three descriptors left per
+    connect-and-close with nothing listening, none with this.
+
+    So: elkpy's close, then wait (briefly) for the notification thread, cancel
+    and finish what is left on its loop, close the loop, and break the cycle.
+    A thread that will not stop in time is left, and its loop with it, rather
+    than closed from under it. Reads elkpy's private attributes: checked
+    against 1.3.0 only, and `test_live_close.py` says so.
+    """
+    import asyncio
+
+    controller.close()
+    notifications = getattr(controller, "notifications", None)
+    thread = getattr(notifications, "notification_thread", None)
+    loop = getattr(notifications, "loop", None)
+    if notifications is None or getattr(notifications, "_async", True) or thread is None or loop is None:
+        return
+    thread.join(timeout=CLOSE_TIMEOUT)
+    if thread.is_alive():
+        return
+    pending = [task for task in asyncio.all_tasks(loop) if not task.done()]
+    for task in pending:
+        task.cancel()
+    if pending:
+        loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+    loop.run_until_complete(loop.shutdown_asyncgens())
+    loop.close()
+    # elkpy's __del__ calls close() again, which would now find the loop
+    # closed and raise: leave it nothing to do.
+    notifications.tasks, notifications._async, notifications._parent = [], True, None
+    for sub in list(vars(controller).values()):
+        if sub is not notifications and hasattr(sub, "_parent") and hasattr(sub, "__dict__"):
+            sub.__dict__.clear()
+
+
+# How long `close_controller` waits for elkpy's notification thread to stop.
+CLOSE_TIMEOUT = 2.0
+
+
 def connect(address: str = DEFAULT_GRPC_ADDRESS):
     """A new controller, for a caller that shares one among several calls
     (the `controller=` parameters below) and closes it itself."""
@@ -233,7 +285,7 @@ def capture(address: str = DEFAULT_GRPC_ADDRESS, controller: Any = None) -> dict
                 processors[proc_name] = entry
     finally:
         if own:
-            controller.close()
+            close_controller(controller)
 
     return {"processors": processors, "tracks": track_order}
 
@@ -284,7 +336,7 @@ def get_live_parameter_info(
                 result[proc_name] = params
     finally:
         if own:
-            controller.close()
+            close_controller(controller)
 
     return result
 
@@ -321,7 +373,7 @@ def get_live_bypass_state(address: str = DEFAULT_GRPC_ADDRESS) -> dict[str, bool
                 if state is not None:
                     result[proc.name] = bool(state)
     finally:
-        controller.close()
+        close_controller(controller)
 
     return result
 
@@ -342,7 +394,7 @@ def _connection(address: str, controller: Any = None):
     try:
         yield controller
     finally:
-        controller.close()
+        close_controller(controller)
 
 
 def set_live_parameter(
@@ -791,7 +843,7 @@ def push(rig, address: str = DEFAULT_GRPC_ADDRESS) -> None:
                 _wait(response)
                 print(f"  + {plugin.name!r} ({plugin.uri or plugin.path})")
     finally:
-        controller.close()
+        close_controller(controller)
 
 
 # --------------------------------------------------------------------------- #
