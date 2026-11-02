@@ -11,6 +11,9 @@
 export const MASTER = "master";
 export const RETURN = "master_return";
 export const SEND_SUFFIX = "_send";
+// The compiler's copy to stereo after a mono plugin (stereo.py: COPY_SUFFIX),
+// a name nothing else may end in. Not shown: it goes with its plugin.
+export const STEREO_SUFFIX = "_to_stereo";
 
 // A parameter read back is "the same" within this, as the agent's undo
 // decides it (agent.PARAMETER_TOLERANCE): Sushi holds a float32.
@@ -25,6 +28,7 @@ export function roleOf(track, name, plugin) {
   if (plugin && "role" in plugin) return plugin.role || null;
   if (name === track + SEND_SUFFIX) return "send";
   if (track === MASTER && name === RETURN) return "return";
+  if (name.endsWith(STEREO_SUFFIX)) return "stereo";
   return null;
 }
 
@@ -179,7 +183,11 @@ export function primaryControls(panel) {
 // The rack: one entry per track in Sushi's order, each with its chain's
 // plugins as units and its send and return apart, since those are the
 // compiler's, not the player's (they cannot be moved, removed or bypassed
-// from here).
+// from here). A mono plugin's copy to stereo (role "stereo") is the
+// compiler's too and is not shown at all: the agent moves and removes it
+// with its plugin, so a unit's neighbours here are the neighbours a move
+// steps past. `chain` keeps Sushi's whole chain, copies included, because
+// the agent's log records chains that way.
 export function rackModel(live, plugins, profiles) {
   const info = (live && live.parameter_info) || {};
   const processors = (live && live.processors) || {};
@@ -190,6 +198,7 @@ export function rackModel(live, plugins, profiles) {
     for (const name of chain) {
       const plugin = plugins ? plugins[name] || null : null;
       const role = roleOf(track, name, plugin);
+      if (role === "stereo") continue;
       const uri = plugin ? plugin.uri || null : null;
       const profile = uri && profiles ? profiles[uri] || null : null;
       const unit = {

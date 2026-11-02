@@ -349,7 +349,7 @@ kind: rig
 schema_version: 1
 name: lead
 channels:
-- {name: lead, input: guitar-in, width: mono, chain: [{name: drive, uri: "urn:drive"}]}
+- {name: lead, input: guitar-in, width: mono, chain: [{name: drive, uri: "http://drobilla.net/plugins/mda/Overdrive"}]}
 master: {output: monitor-out, chain: []}
 midi:
   controller: mpd218

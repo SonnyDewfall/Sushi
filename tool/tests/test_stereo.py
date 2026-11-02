@@ -12,8 +12,9 @@ on both channels that `mono_to_stereo` gives a channel:
   (the candidate fix: a processor that puts what is on the track into both
   channels);
 - each committed rig as the compiler emits it, through the master, as the
-  null tests render it (`rigfile.heard`), and the same with mono_summing
-  inserted after every plugin lilv says has one audio output;
+  null tests render it (`rigfile.heard`), and the same with the compiler's
+  copies to stereo taken out, which is what the rig was before them;
+- each of those plugins as the compiler compiles it alone on a channel;
 - each v1 config, as `nulltest --all` renders it;
 - an empty track, and the compiler's send and return with an empty chain.
 
@@ -35,8 +36,19 @@ processor". Bypassed is no different, since a bypassed processor keeps its
 channel count (processor.cpp `bypass_process`). These renders are what tests
 that prediction.
 
-These assert only that each render came back usable: they are the
-measurement, not yet a guarantee.
+Measured in CI's container, 2026-11-02 (ba0f918): every one-output plugin
+leaves the right channel silent, as is and bypassed alike, and mono_summing
+after it puts it back; seven rigs had right at about -279 dBFS and four only
+what a later reverb or delay fed across, 5 to 18 dB down; with mono_summing
+after each one-output plugin every rig was within 0.3 dB. The compiler now
+inserts it (stereo.py).
+
+The guarantee: for this mono stimulus, every committed rig as compiled, and
+every plugin compiled alone, has left and right within `BALANCE_DB` and
+neither silent (`test_each_rig_through_the_master`,
+`test_each_plugin_compiled_alone_is_balanced`); and the committed table the
+compiler decides on is what lilv reads (`test_the_port_table_is_what_lilv_reads`).
+The other renders measure and assert only that they came back usable.
 """
 
 from __future__ import annotations
@@ -49,7 +61,7 @@ import pytest
 np = pytest.importorskip("numpy")
 
 import stereo_table  # noqa: E402
-from sushi_rig import rigfile  # noqa: E402
+from sushi_rig import rigfile, stereo  # noqa: E402
 from sushi_rig.analysis import channel_balance, check_finite  # noqa: E402
 from sushi_rig.paths import checkout_root  # noqa: E402
 from sushi_rig.render import Stimulus, channels_of, render_offline  # noqa: E402
@@ -66,6 +78,12 @@ V1_CONFIGS = sorted((ROOT / "config").glob("*.json"))
 STIMULUS = Stimulus(duration_s=1.0)
 
 MONO_SUMMING = "sushi.testing.mono_summing"
+
+# How far apart left and right may be for a mono source, as compiled. A
+# centred mono chain is exactly balanced; a stereo reverb or chorus after it
+# is not, by a little (measured: within 0.3 dB on every rig). A silent side
+# is -inf, and fails by any margin.
+BALANCE_DB = 1.0
 
 needs_sushi = pytest.mark.skipif(not SUSHI.exists(), reason="needs the Sushi binary")
 
@@ -163,31 +181,96 @@ def test_each_plugin_alone_on_a_stereo_track(uri, variant, tmp_path, request, li
             f"{uri.rsplit('/', 1)[-1]} [{variant}]", f"{ins}/{outs}", rendered)
 
 
-def _with_summing(view: dict, ports: dict) -> dict:
-    """`view` with mono_summing after every plugin lilv says has one output:
-    the candidate fix, built here to be measured, not yet the compiler's."""
+def _without_copies(view: dict) -> dict:
+    """`view` without the compiler's copies to stereo: the rig as it was
+    compiled before them, kept in the table as the before."""
     view = json.loads(json.dumps(view))
     for track in view["tracks"]:
-        plugins = []
-        for plugin in track["plugins"]:
-            plugins.append(plugin)
-            if plugin.get("uri") in ports and ports[plugin["uri"]][1] == 1:
-                plugins.append(_summing(plugin["name"]))
-        track["plugins"] = plugins
+        track["plugins"] = stereo.strip_copies(track["plugins"])
     return view
+
+
+def _balanced(what, balance):
+    assert balance.left_dbfs > float("-inf") and balance.right_dbfs > float("-inf"), \
+        f"{what}: a channel is silent (L {balance.left_dbfs}, R {balance.right_dbfs} dBFS)"
+    assert abs(balance.left_dbfs - balance.right_dbfs) <= BALANCE_DB, \
+        f"{what}: L {balance.left_dbfs:.2f} and R {balance.right_dbfs:.2f} dBFS, more than {BALANCE_DB} dB apart"
 
 
 @needs_sushi
 @pytest.mark.slow
-@pytest.mark.parametrize("variant", ("as compiled", "+ mono_summing after each 1-out plugin"))
+@pytest.mark.parametrize("variant", ("as compiled", "without the copies to stereo"))
 @pytest.mark.parametrize("rig", RIGS, ids=lambda p: p.stem)
-def test_each_rig_through_the_master(rig, variant, tmp_path, request, lilv_ports):
+def test_each_rig_through_the_master(rig, variant, tmp_path, request):
+    """As compiled, the guarantee: left and right within BALANCE_DB. Without
+    the copies, the measurement of what they fix, asserted on nothing."""
     config = rigfile.emit_rig(rigfile.load_rig(rig))
     for name, view in rigfile.heard(config):
         if variant != "as compiled":
-            view = _with_summing(view, lilv_ports)
-        _record(request, "each committed rig through the master (rigfile.heard)",
-                f"{name} [{variant}]", "", _render(tmp_path, name, view))
+            view = _without_copies(view)
+        balance = _record(request, "each committed rig through the master (rigfile.heard)",
+                          f"{name} [{variant}]", "", _render(tmp_path, name, view))
+        if variant == "as compiled":
+            _balanced(name, balance)
+
+
+@needs_sushi
+@pytest.mark.slow
+@pytest.mark.parametrize("uri", PLUGIN_URIS)
+def test_each_plugin_compiled_alone_is_balanced(uri, tmp_path, request, lilv_ports):
+    """Each plugin the rigs use, alone on a mono channel as the compiler
+    builds it (with its copy to stereo when it is mono), through the master."""
+    raw = {
+        "kind": "rig", "schema_version": 1, "name": "alone",
+        "channels": [{"name": "board", "input": "guitar-in", "width": "mono",
+                      "chain": [{"name": "plugin", "uri": uri}]}],
+        "master": {"output": "monitor-out", "chain": []},
+    }
+    ((_, view),) = rigfile.heard(rigfile.emit_rig(rigfile.parse_rig(raw)))
+    ins, outs = lilv_ports[uri]
+    what = f"{uri.rsplit('/', 1)[-1]} [compiled]"
+    _balanced(what, _record(request, "each plugin compiled alone on a mono channel, through the master",
+                            what, f"{ins}/{outs}", _render(tmp_path, "compiled", view)))
+
+
+@pytest.mark.slow
+def test_the_port_table_is_what_lilv_reads():
+    """plugin-ports.txt, which the compiler decides the copies on, against
+    lilv over plugins/ for every URI in the manifest. The neural amp is the
+    one exception, by name: no distro packages it, so this image cannot read
+    it, and it runs in Carla, never on a Sushi track (the compiler refuses it
+    there)."""
+    lilv = pytest.importorskip("lilv")
+    from sushi_rig.amp import NAM_URI
+    from sushi_rig.plugins import read_manifest
+
+    table = stereo.load_ports(ROOT)
+    manifest = read_manifest((ROOT / "plugin-manifest.txt").read_text())
+    assert NAM_URI not in table
+    assert sorted(set(table) - set(manifest)) == [], "a plugin the rig may not load"
+    assert sorted(set(manifest) - set(table) - {NAM_URI}) == [], "a plugin the compiler would refuse"
+    before = os.environ.get("LV2_PATH")
+    os.environ["LV2_PATH"] = str(ROOT / "plugins")
+    try:
+        world = lilv.World()
+        world.load_all()
+        lv2 = world.ns.lv2
+        wrong = []
+        for uri, ports in sorted(table.items()):
+            plugin = world.get_all_plugins().get_by_uri(world.new_uri(uri))
+            if plugin is None:
+                wrong.append(f"{uri}: lilv cannot find it under plugins/")
+                continue
+            found = (plugin.get_num_ports_of_class(lv2.AudioPort, lv2.InputPort),
+                     plugin.get_num_ports_of_class(lv2.AudioPort, lv2.OutputPort))
+            if found != (ports.inputs, ports.outputs):
+                wrong.append(f"{uri}: the table says {ports.inputs} in {ports.outputs} out, lilv {found}")
+    finally:
+        if before is None:
+            os.environ.pop("LV2_PATH", None)
+        else:
+            os.environ["LV2_PATH"] = before
+    assert wrong == []
 
 
 @needs_sushi

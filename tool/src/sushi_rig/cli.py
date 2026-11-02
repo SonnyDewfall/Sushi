@@ -435,7 +435,10 @@ def _nulltest(args: argparse.Namespace) -> int:
     """`nulltest`: has any config, or any channel of one, changed its sound.
 
     A config is rendered whole when Sushi's offline frontend can host it, and
-    one channel at a time when it cannot (`render.channels_of`).
+    one channel at a time when it cannot (`render.channels_of`). A rig of
+    channels (config/rigs/) is rendered through its master, one channel at a
+    time (`render.rig_channels`), with its reference under the channel's name;
+    a v1 config's is under that name and `.v1-mono` (`V1_REFERENCE_SUFFIX`).
     """
     import tempfile
 
@@ -444,14 +447,15 @@ def _nulltest(args: argparse.Namespace) -> int:
     from .nulltest import compare, from_dict, keep_wider, to_dict
     from .paths import checkout_root
     from .render import (
-        SOUND_DIR, RenderError, calibrate, channels_of, measure, offline_problem,
-        reference_path,
+        SOUND_DIR, V1_REFERENCE_SUFFIX, RenderError, calibrate, channels_of, measure,
+        offline_problem, reference_path, rig_channels, rigs_to_check,
     )
+    from .rigfile import RigFileError
     from .verify import configs_to_check
 
     root = checkout_root()
     if args.check_all:
-        targets = configs_to_check(root)
+        targets = configs_to_check(root) + rigs_to_check(root)
     elif args.config:
         targets = [args.config]
     else:
@@ -473,9 +477,13 @@ def _nulltest(args: argparse.Namespace) -> int:
 
     with tempfile.TemporaryDirectory(prefix="sushi-rig-nulltest-") as tmp:
         for target in targets:
+            is_rig = target.suffix in (".yaml", ".yml")
             try:
-                channels = channels_of(json.loads(target.read_text()), target)
-            except (ValueError, OSError, TypeError, AttributeError) as exc:
+                if is_rig:
+                    channels = rig_channels(target)
+                else:
+                    channels = channels_of(json.loads(target.read_text()), target)
+            except (RigFileError, ValueError, OSError, TypeError, AttributeError) as exc:
                 # TypeError and AttributeError too: a config that is a list, or
                 # whose tracks are null, must cost one line, not the whole run
                 # and the orphan check after it.
@@ -486,9 +494,10 @@ def _nulltest(args: argparse.Namespace) -> int:
 
             for channel in channels:
                 checked += 1
-                expected.add(channel.name)
-                work = Path(tmp) / channel.name
-                ref_file = reference_path(root, Path(f"{channel.name}.json"))
+                ref_name = channel.name if is_rig else channel.name + V1_REFERENCE_SUFFIX
+                expected.add(ref_name)
+                work = Path(tmp) / ref_name
+                ref_file = reference_path(root, Path(f"{ref_name}.json"))
                 if args.calibrate and args.missing and ref_file.exists():
                     # --missing calibrates only what has no reference yet, so
                     # adding a channel does not quietly re-baseline the others,

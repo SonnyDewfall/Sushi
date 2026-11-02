@@ -437,9 +437,45 @@ def render_offline(
 SOUND_DIR = "sound"
 
 
+# A v1 config's references carry this after the channel's name, and a rig of
+# channels' (config/rigs/) the name alone. Decided 2026-11-02, when the rig
+# compiler began putting a mono plugin's output on both channels (stereo.py)
+# and the v1 configs, which `up` without `--rig` still runs, did not: the two
+# stopped sounding alike, and a v1 config's render is, for every channel that
+# starts with a mono plugin, the left channel alone. So it is named for that.
+V1_REFERENCE_SUFFIX = ".v1-mono"
+
+
 def reference_path(root: Path, config: Path) -> Path:
     """The reference for `config`, whether it exists yet or not."""
     return root / "config" / SOUND_DIR / f"{config.stem}.yaml"
+
+
+def v1_reference_path(root: Path, config: Path) -> Path:
+    """The reference for a v1 config rendered whole, as `nulltest` names it."""
+    return reference_path(root, Path(f"{config.stem}{V1_REFERENCE_SUFFIX}.json"))
+
+
+def rig_channels(path: Path) -> list[Channel]:
+    """What the null test renders for a rig of channels: the master as the
+    monitors hear it, one channel at a time (`rigfile.heard`), compiled for
+    routing without the MIDI map, which no render can play. Raises
+    `rigfile.RigFileError` for a rig that does not compile."""
+    from .rigfile import compile_rig, emit_compiled, heard, load_rig
+
+    rig = load_rig(path)
+    spec, fixed = compile_rig(rig)
+    config = emit_compiled(rig, spec, fixed)
+    views = heard(config)
+    return [
+        Channel(name, path.name if len(views) == 1 else f"{path.name} [{name.split('.', 1)[1]}]", view, False)
+        for name, view in views
+    ]
+
+
+def rigs_to_check(root: Path) -> list[Path]:
+    """Every rig of channels: `config/rigs/*.yaml`."""
+    return sorted((root / "config" / "rigs").glob("*.yaml"))
 
 
 def measure(

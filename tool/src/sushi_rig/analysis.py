@@ -109,6 +109,13 @@ def rms_dbfs(signal) -> float:
     return _power_to_dbfs(float(np.mean(_frames(signal) ** 2)))
 
 
+def channel_rms_dbfs(signal) -> list[float]:
+    """Each channel's RMS in dBFS, in channel order. `-inf` for a silent one."""
+    np = require_numpy()
+    arr = _frames(signal)
+    return [_power_to_dbfs(float(np.mean(arr[:, c] ** 2))) for c in range(arr.shape[1])]
+
+
 @dataclass(frozen=True)
 class ChannelBalance:
     """Left against right in a stereo signal.

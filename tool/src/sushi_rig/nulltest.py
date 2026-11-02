@@ -48,6 +48,7 @@ from typing import Any, Sequence
 from ._numpy import require_numpy
 from .analysis import (
     DEFAULT_BAND_EDGES_HZ,
+    channel_rms_dbfs,
     BandEnergy,
     Finding,
     band_differences_db,
@@ -58,7 +59,9 @@ from .analysis import (
     rms_dbfs,
 )
 
-SCHEMA_VERSION = 1
+# 2 added each channel's RMS (`channel_rms_dbfs`), 2026-11-02. A schema-1
+# reference is still read, without them: its channels are not compared.
+SCHEMA_VERSION = 2
 
 # How many decimals a reference keeps. Four is a readability choice (see
 # `to_dict`), but it is also a measurement limit: a level written at 4 dp is
@@ -105,6 +108,12 @@ class Fingerprint:
     rms_dbfs: float
     bands: tuple[BandEnergy, ...]
     delay_samples: int | None
+    # Each channel's RMS, left first. The whole-render `rms_dbfs` is every
+    # channel together, so a render with its right channel silent was only
+    # 3 dB down, and that is how a rig playing out of the left monitor alone
+    # passed this check for its whole life (2026-11-02). None for a schema-1
+    # reference, which did not record them.
+    channel_rms_dbfs: tuple[float, ...] | None = None
 
 
 def fingerprint(
@@ -139,8 +148,12 @@ def fingerprint(
         # channels that are out of phase partially cancels, and a cancelled
         # reference makes the correlation peak meaningless -- which would read
         # as a latency change rather than as a measurement that could not be
-        # made. On this rig both halves of a centred channel are identical
-        # anyway, so there is nothing to gain by combining them.
+        # made. This comment used to add that both halves of a centred channel
+        # are identical on this rig anyway. They were not: every rig starting
+        # with a mono plugin had a silent right channel (2026-11-02, stereo.py),
+        # and nothing here could see it. The delay is still channel 0's; each
+        # channel's level is now its own (`channel_rms_dbfs`), so a channel
+        # lost or changed is a finding of its own.
         delay = int(
             estimate_delay(
                 np.asarray(stimulus_samples)[:, 0] if np.asarray(stimulus_samples).ndim > 1
@@ -158,6 +171,7 @@ def fingerprint(
         rms_dbfs=float(rms_dbfs(arr)),
         bands=tuple(band_energies(arr, sample_rate, edges_hz)),
         delay_samples=delay,
+        channel_rms_dbfs=tuple(channel_rms_dbfs(arr)),
     )
 
 
@@ -233,6 +247,29 @@ def compare(
                 f"{band.low_hz:.0f}–{band.high_hz:.0f} Hz {how}",
             ))
 
+    if reference.channel_rms_dbfs is not None and test.channel_rms_dbfs is not None:
+        if len(reference.channel_rms_dbfs) != len(test.channel_rms_dbfs):
+            findings.append(Finding(
+                "channels-differ",
+                f"reference has {len(reference.channel_rms_dbfs)} channels, this run "
+                f"{len(test.channel_rms_dbfs)}",
+            ))
+        else:
+            for index, (ref_v, test_v) in enumerate(zip(reference.channel_rms_dbfs, test.channel_rms_dbfs)):
+                which = CHANNEL_NAMES.get(index, f"channel {index}")
+                if ref_v == test_v:
+                    continue  # silent in both included: -inf minus -inf is not a number
+                if float("-inf") in (ref_v, test_v):
+                    findings.append(Finding(
+                        "channel-changed", f"the {which} channel is silent in one render and not the other",
+                    ))
+                elif abs(test_v - ref_v) > tolerance.level_db:
+                    findings.append(Finding(
+                        "channel-changed",
+                        f"the {which} channel's rms moved {test_v - ref_v:+.3f} dB (was {ref_v:.2f}, "
+                        f"now {test_v:.2f}; tolerance {tolerance.level_db} dB)",
+                    ))
+
     if reference.delay_samples is not None and test.delay_samples is not None:
         drift = test.delay_samples - reference.delay_samples
         if abs(drift) > tolerance.delay_samples:
@@ -243,6 +280,9 @@ def compare(
             ))
 
     return findings
+
+
+CHANNEL_NAMES = {0: "left", 1: "right"}
 
 
 def render_findings(rendered, sample_rate: int) -> list[Finding]:
@@ -283,6 +323,11 @@ def floor_between(a: Fingerprint, b: Fingerprint) -> Tolerance:
         delay = abs(b.delay_samples - a.delay_samples)
     observed_band = max(bands) if bands else 0.0
     observed_level = max(abs(b.peak_dbfs - a.peak_dbfs), abs(b.rms_dbfs - a.rms_dbfs))
+    if a.channel_rms_dbfs is not None and b.channel_rms_dbfs is not None:
+        observed_level = max([observed_level] + [
+            abs(y - x) for x, y in zip(a.channel_rms_dbfs, b.channel_rms_dbfs)
+            if float("-inf") not in (x, y)
+        ])
     note = "measured: the largest difference between two renders of this config"
     if max(observed_band, observed_level) < WRITTEN_RESOLUTION_DB:
         note = (
@@ -338,6 +383,8 @@ def to_dict(fp: Fingerprint, tolerance: Tolerance) -> dict[str, Any]:
         "measured": {
             "peak_dbfs": round(fp.peak_dbfs, WRITTEN_DECIMALS),
             "rms_dbfs": round(fp.rms_dbfs, WRITTEN_DECIMALS),
+            **({"channel_rms_dbfs": [round(v, WRITTEN_DECIMALS) for v in fp.channel_rms_dbfs]}
+               if fp.channel_rms_dbfs is not None else {}),
             "delay_samples": fp.delay_samples,
             "bands": [
                 {
@@ -365,7 +412,7 @@ def from_dict(raw: dict[str, Any]) -> tuple[Fingerprint, Tolerance]:
     half-understood reference cannot support it.
     """
     version = raw.get("schema_version")
-    if version not in (SCHEMA_VERSION,):
+    if version not in (1, SCHEMA_VERSION):
         raise ValueError(
             f"reference schema_version {version!r} is not supported "
             f"(this tool writes {SCHEMA_VERSION})"
@@ -383,6 +430,8 @@ def from_dict(raw: dict[str, Any]) -> tuple[Fingerprint, Tolerance]:
             for b in m["bands"]
         ),
         delay_samples=None if m.get("delay_samples") is None else int(m["delay_samples"]),
+        channel_rms_dbfs=(tuple(float(v) for v in m["channel_rms_dbfs"])
+                          if version >= 2 and m.get("channel_rms_dbfs") is not None else None),
     )
     t = raw["tolerance"]
     return fp, Tolerance(

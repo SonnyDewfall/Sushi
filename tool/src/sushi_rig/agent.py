@@ -297,6 +297,17 @@ by reading the chain back, not by Sushi's acknowledgement alone, and an edit
 whose read-back is not what was asked is 502 and is not logged, as a change
 Sushi did not confirm is not. Not run against a live Sushi: see `live.py`.
 
+A mono plugin's copy to stereo (`stereo.py`, `<plugin>_to_stereo`) is the
+compiler's too, and goes with its plugin: an add of a plugin with one output
+(the library's `audio`, from `plugin-ports.txt`) adds its copy straight after
+it in the same operation, and one the table does not list is refused (400);
+a remove takes the copy first, then the plugin; a move steps the pair as one
+past its neighbour, and past a neighbour and its copy as one, so nothing is
+ever placed between them; the copy alone is never moved, removed or
+bypassed, and `/live/plugins` gives it the role "stereo", which the page
+does not show. Each of these is two of Sushi's commands where one was, and
+none has been run against a live Sushi.
+
 ## The web UI (#31)
 
     GET  /              the UI's page; its files are under /ui/ (`sushi_rig/ui/static/`),
@@ -361,6 +372,7 @@ from . import live as live_module
 from . import midi_listener
 from . import top as top_module  # GET /rig/load (#111)
 from . import amp_live  # the amp: GET /amp, POST /amp/parameter and /amp/model
+from . import stereo  # the compiler's copy to stereo after a mono plugin
 from .live import DEFAULT_GRPC_ADDRESS, ElkpyMissing, LiveError, Move
 from .live import is_send, protected_processor
 from .rig import describe_rig
@@ -639,6 +651,12 @@ def check_bypass(reading: dict[str, Any], processor: str) -> bool | None:
     on_chains = _on_the_rig(chains, with_tracks=False)
     if processor not in on_chains:
         raise AgentError(f"the running rig has no processor {processor!r}: it has {on_chains}")
+    if stereo.is_copy(processor):
+        # Bypassed, it passes channel 0 alone and the right channel is silent
+        # again: bypass its plugin instead, which keeps the copy's work.
+        raise AgentError(
+            f"{processor!r} is {stereo.source_of(processor)!r}'s copy to stereo, the compiler's: "
+            f"bypass {stereo.source_of(processor)!r} instead")
     return reading.get("bypassed")
 
 
@@ -791,16 +809,12 @@ def undo_inverse(entry: dict[str, Any]) -> tuple[str, dict[str, Any]]:
 def chain_after_move(chain: list[str], processor: str, direction: str) -> list[str] | None:
     """The chain as a one-step move leaves it, or None if the processor is not
     on it or already at that end (such a move is never logged). A step swaps the
-    processor with its neighbour, which is all the arithmetic undo needs."""
+    processor with its neighbour, which is all the arithmetic undo needs. A
+    plugin and its copy to stereo are one unit, and swap with a neighbouring
+    unit (`stereo.step_units`), as `live.decide_move` moves them."""
     if processor not in chain:
         return None
-    i = chain.index(processor)
-    j = i + DIRECTIONS[direction]
-    if not 0 <= j < len(chain):
-        return None
-    after = list(chain)
-    after[i], after[j] = after[j], after[i]
-    return after
+    return stereo.step_units(chain, processor, DIRECTIONS[direction])
 
 
 def check_undo_move(entry: dict[str, Any], current: list[str] | None) -> None:
@@ -886,6 +900,9 @@ class AddRequest:
     name: str
     after: str | None
     named: bool
+    # The copy to stereo that goes in with it (`stereo.py`), for a plugin
+    # with one output: added in the same operation, straight after it.
+    copy: str | None = None
 
 
 def add_request(body: Any, library: dict[str, Any]) -> AddRequest:
@@ -918,10 +935,24 @@ def add_request(body: Any, library: dict[str, Any]) -> AddRequest:
             raise AgentError(
                 f"no processor name can be made from {entry['name']!r}: give it a 'name' "
                 f"matching {NAME_PATTERN.pattern}")
+    reserved = stereo.reserved_problem("processor", name)
+    if reserved:
+        raise AgentError(reserved)
     after = body.get("after")
     if after is not None and (not isinstance(after, str) or not after):
         raise AgentError(f"'after' must name a processor on the track, or be left out, not {after!r}")
-    return AddRequest(track, uri, name, after, named)
+    # Which plugins are mono is the compiler's table (plugin-ports.txt), read
+    # into the library: the same answer `up --rig` gives, so a plugin added
+    # live is what a restart of the saved rig would be.
+    audio = entry.get("audio")
+    if not isinstance(audio, dict):
+        raise AgentError(
+            f"{entry['name']} ({uri}) is not in {stereo.PORTS_FILE}, so whether it is mono is not known "
+            f"and it is not added: `sushi-rig probe {uri}` prints its audio ports for the table")
+    if audio.get("out") == 0:
+        raise AgentError(f"{entry['name']} has no audio output: on a track it would silence everything after it")
+    return AddRequest(track, uri, name, after, named,
+                      stereo.copy_name(name) if audio.get("out") == 1 else None)
 
 
 
@@ -948,6 +979,18 @@ class Addition:
     track_id: int
     before_id: int
     add_to_back: bool
+    # Its copy to stereo, added straight after it in the same operation
+    # (`AddRequest.copy`); in `expected` already.
+    copy: str | None = None
+
+
+def _unit_end(chain: list[str], name: str, uids: dict[str, Any]) -> int:
+    """The index just past `name`'s unit: past its copy to stereo when it
+    has one, so nothing is placed between a plugin and its copy."""
+    for unit in stereo.units(chain, uids):
+        if name in unit:
+            return chain.index(unit[-1]) + 1
+    return chain.index(name) + 1
 
 
 def check_add(reading: dict[str, Any], request: AddRequest) -> Addition:
@@ -976,6 +1019,8 @@ def check_add(reading: dict[str, Any], request: AddRequest) -> Addition:
     if holder is not None:
         what = "give a 'name'" if not request.named else "give another name"
         raise Conflict(f"{name!r} is already on the rig, on track {holder!r}: {what}")
+    if request.copy is not None and (request.copy in chains or _track_of(chains, request.copy) is not None):
+        raise Conflict(f"{request.copy!r}, the name of {name!r}'s copy to stereo, is already on the rig")
     chain = list(chains[track])
     sends = [index for index, held in enumerate(chain) if is_send(track, held, uids.get(held))]
     if after is not None:
@@ -985,15 +1030,16 @@ def check_add(reading: dict[str, Any], request: AddRequest) -> Addition:
             raise Conflict(
                 f"nothing goes after {after!r}: the send must stay last, since it is what "
                 "carries the channel to the master")
-        index = chain.index(after) + 1
+        index = _unit_end(chain, after, uids)
     else:
         index = sends[0] if sends else len(chain)
     before = chain[index] if index < len(chain) else None
+    added = [name] + ([request.copy] if request.copy else [])
     return Addition(
         track=track, name=name, uri=request.uri, after=after, chain=chain,
-        expected=chain[:index] + [name] + chain[index:],
+        expected=chain[:index] + added + chain[index:],
         track_id=ids[track], before_id=ids[before] if before is not None else 0,
-        add_to_back=before is None,
+        add_to_back=before is None, copy=request.copy,
     )
 
 
@@ -1015,6 +1061,10 @@ class Removal:
     plugin: dict[str, Any]
     processor_id: int
     track_id: int
+    # Its copy to stereo, removed with it, first (`stereo.py`): one left
+    # behind would follow whatever came before, folding a stereo plugin.
+    copy: str | None = None
+    copy_id: int | None = None
 
 
 def check_remove(reading: dict[str, Any], processor: str) -> Removal:
@@ -1045,11 +1095,14 @@ def check_remove(reading: dict[str, Any], processor: str) -> Removal:
             "URI or uid for it), so it is not removed: the log could not say how to "
             "put it back")
     chain = list(chains[track])
+    unit = next(u for u in stereo.units(chain, reading.get("uids") or {}) if u[0] == processor)
+    copy = unit[1] if len(unit) > 1 else None
     return Removal(
         processor=processor, track=track, chain=chain,
-        expected=[name for name in chain if name != processor],
+        expected=[name for name in chain if name not in unit],
         plugin={key: plugin.get(key) for key in ("uri", "uid", "type")},
         processor_id=ids[processor], track_id=ids[track],
+        copy=copy, copy_id=ids[copy] if copy else None,
     )
 
 
@@ -1134,11 +1187,33 @@ class Live:
             # -- the chain edits (#32) --
             walk=lambda c, uids=False: m.read_live_chains(address, c, uids=uids),
             removal=lambda c, proc: m.read_live_removal(proc, address, c),
-            add=lambda c, a: m.add_live_processor(
-                a.name, a.uri, a.track_id, a.before_id, a.add_to_back, address, c),
-            remove=lambda c, r: m.remove_live_processor(r.processor_id, r.track_id, address, c),
+            add=functools.partial(_add_with_copy, address),
+            remove=functools.partial(_remove_with_copy, address),
             plugins=lambda c: m.read_live_plugins(address, c),  # the web UI (#31)
         )
+
+
+def _add_with_copy(address: str, controller: Any, addition: "Addition") -> None:
+    """Add the plugin, then its copy to stereo in the same place, so the copy
+    lands straight after it: in front of the same processor, or at the back
+    after it. Two of Sushi's commands, each strict; the read-back that
+    follows confirms both or neither."""
+    m = live_module
+    m.add_live_processor(addition.name, addition.uri, addition.track_id, addition.before_id,
+                         addition.add_to_back, address, controller)
+    if addition.copy:
+        m.add_live_copy(addition.copy, addition.track_id, addition.before_id, addition.add_to_back,
+                        address, controller)
+
+
+def _remove_with_copy(address: str, controller: Any, removal: "Removal") -> None:
+    """Remove the copy to stereo first, then its plugin: the moment between
+    has the right channel silent, which is what the rig had before the copy
+    existed, rather than a lone copy folding whatever stereo came before."""
+    m = live_module
+    if removal.copy_id is not None:
+        m.remove_live_processor(removal.copy_id, removal.track_id, address, controller)
+    m.remove_live_processor(removal.processor_id, removal.track_id, address, controller)
 
 
 class Agent:
@@ -2240,7 +2315,9 @@ class Agent:
         for name, plugin in (found or {}).items():
             track = plugin.get("track") or ""
             role = None
-            if protected_processor(track, name, plugin.get("uid")):
+            if stereo.is_copy(name, plugin.get("uid")):
+                role = "stereo"  # the compiler's copy to stereo: the page does not show it
+            elif protected_processor(track, name, plugin.get("uid")):
                 role = "send" if is_send(track, name, plugin.get("uid")) else "return"
             processors[name] = {**plugin, "role": role}
         return web.json_response({"ok": True, "processors": processors})
@@ -2849,7 +2926,8 @@ class Agent:
                 raise Unconfirmed(f"the amp's {args['name']} was not set: {exc}") from exc
         elif step.op == "add":
             reading = await self._sushi(origin, self.live.walk, controller, True, reading=True)
-            addition = place_switch_add(reading, args["track"], args["name"], args["uri"], args["before"])
+            addition = place_switch_add(reading, args["track"], args["name"], args["uri"], args["before"],
+                                        args.get("copy"))
             await self._sushi(origin, self.live.add, controller, addition, reading=False)
             after = await self._sushi(origin, self.live.walk, controller, reading=False)
             confirm_chain((after or {}).get("chains") or {}, addition.track, addition.expected,
@@ -3862,6 +3940,7 @@ def switched_state(state: dict[str, Any], name: str, config: Any) -> dict[str, A
 
 def place_switch_add(
     reading: dict[str, Any], track: str, name: str, uri: str, before: str | None,
+    copy: str | None = None,
 ) -> Addition:
     """Where a switch's add goes: in front of `before`, or at the back, as
     `rigfile.diff` decided and Sushi's own API places a processor. `Conflict`
@@ -3892,12 +3971,15 @@ def place_switch_add(
     # ahead of it, a processor would get no channel's signal (found by review:
     # `before: "master_return"` was accepted).
     for held in chain[index:]:
-        if protected_processor(track, held, uids.get(held)) and not is_send(track, held, uids.get(held)):
+        if (protected_processor(track, held, uids.get(held)) and not is_send(track, held, uids.get(held))
+                and not stereo.is_copy(held, uids.get(held))):
             raise Conflict(f"{name!r} would go in front of {held!r}, the master's return, which stays first")
+    if copy is not None and (copy in chains or _track_of(chains, copy) is not None):
+        raise Conflict(f"{copy!r}, {name!r}'s copy to stereo, is already on the rig")
     return Addition(
         track=track, name=name, uri=uri, after=chain[index - 1] if index else None, chain=chain,
-        expected=chain[:index] + [name] + chain[index:], track_id=ids[track],
-        before_id=ids[before] if before is not None else 0, add_to_back=before is None,
+        expected=chain[:index] + [name] + ([copy] if copy else []) + chain[index:], track_id=ids[track],
+        before_id=ids[before] if before is not None else 0, add_to_back=before is None, copy=copy,
     )
 
 

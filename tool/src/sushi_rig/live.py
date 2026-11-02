@@ -33,6 +33,7 @@ import time
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable
 
+from . import stereo
 from .spec import PROBE_TRACK
 
 DEFAULT_GRPC_ADDRESS = "localhost:51051"
@@ -642,9 +643,12 @@ class Move:
     chains: dict[str, list[str]]
     # The ids `move_processor_on_track` takes, from the same walk the plan was
     # made on: (processor, track, before, add_to_back). Only a "planned" or
-    # "moved" move has them.
+    # "moved" move has them. `then` is the commands after it, in order, when
+    # a plugin and its copy to stereo move as one (`stereo.units`): the copy
+    # goes where its plugin went, or a neighbour's copy where its plugin did.
     command: tuple[int, int, int, bool] | None = field(default=None, repr=False, compare=False)
     why: str | None = field(default=None, compare=False)
+    then: tuple[tuple[int, int, int, bool], ...] = field(default=(), repr=False, compare=False)
 
     @property
     def message(self) -> str:
@@ -680,25 +684,46 @@ def decide_move(
     uid Sushi reports): a pedal moved behind its channel's send is not heard,
     and the send or return moved is the compiled routing broken (found by
     review; it was allowed).
+
+    The swap is of units (`stereo.units`): a mono plugin and the copy to
+    stereo after it move as one, and a neighbour with a copy is stepped past
+    whole, so no move separates a plugin from its copy or puts anything
+    between them. A copy asked to move by itself is protected, like a send.
+    Moving a unit of two is two of Sushi's commands, sent in order: for the
+    moment between them the right channel can be silent, or a stereo
+    plugin's image folded, for one block or so.
     """
     track = next((t for t, chain in chains.items() if processor in chain), None)
     if track is None:
         return Move("absent", processor, direction, None, chains)
     chain = chains[track]
-    target = plan_move(chain, processor, direction)
-    if target is None:
+    uids = uids or {}
+    grouped = stereo.units(chain, uids)
+    index = next(i for i, unit in enumerate(grouped) if processor in unit)
+    if grouped[index][0] != processor:
+        # A copy to stereo, asked to move by itself: it goes with its plugin.
+        return Move("protected", processor, direction, chain, chains,
+                    why=f"{protected_processor(track, processor, uids.get(processor))}, "
+                        "which stays where the compiler put it")
+    other = index + (-1 if direction < 0 else 1)
+    if not 0 <= other < len(grouped):
         return Move("unchanged", processor, direction, chain, chains)
-    neighbour = chain[chain.index(processor) + (-1 if direction < 0 else 1)]
-    for name in (processor, neighbour):
-        why = protected_processor(track, name, (uids or {}).get(name))
+    for name in (processor, grouped[other][0]):
+        why = protected_processor(track, name, uids.get(name))
         if why:
             return Move("protected", processor, direction, chain, chains,
                         why=f"{why}, which stays where the compiler put it")
-    before = ids[target["before"]] if target["before"] else 0
-    return Move(
-        "planned", processor, direction, chain, chains,
-        (ids[processor], ids[track], before, bool(target["add_to_back"])),
+    # Each of this unit, in order, in front of the neighbour's head (up), or
+    # in front of what follows the neighbour, or at the back (down): one swap.
+    if direction < 0:
+        ahead_of = grouped[other][0]
+    else:
+        ahead_of = grouped[other + 1][0] if other + 1 < len(grouped) else None
+    commands = tuple(
+        (ids[name], ids[track], ids[ahead_of] if ahead_of else 0, ahead_of is None)
+        for name in grouped[index]
     )
+    return Move("planned", processor, direction, chain, chains, commands[0], then=commands[1:])
 
 
 def plan_live_move(
@@ -736,13 +761,13 @@ def send_live_move(
     """
     if move.outcome != "planned" or move.command is None:
         raise ValueError(f"only a planned move can be sent, not {move.outcome!r}")
-    processor_id, track_id, before_id, add_to_back = move.command
     with _connection(address, controller) as c:
-        response = c.audio_graph.move_processor_on_track(
-            processor_id, track_id, track_id, before_id, add_to_back,
-        )
-        # Strict: "moved" is said only of a move Sushi confirmed.
-        _wait(response, strict=True)
+        for processor_id, track_id, before_id, add_to_back in (move.command, *move.then):
+            response = c.audio_graph.move_processor_on_track(
+                processor_id, track_id, track_id, before_id, add_to_back,
+            )
+            # Strict: "moved" is said only of a move Sushi confirmed.
+            _wait(response, strict=True)
     return replace(move, outcome="moved")
 
 
@@ -892,6 +917,10 @@ def protected_processor(track: str, processor: str, uid: str | None = None) -> s
         return f"{processor!r} is {track!r}'s send"
     if uid == RETURN_UID or (track == MASTER and processor == RETURN):
         return f"{processor!r} is the master's return"
+    if stereo.is_copy(processor, uid):
+        # The compiler's copy to stereo after a mono plugin (stereo.py): it
+        # goes, moves and is removed with its plugin, never on its own.
+        return f"{processor!r} is {stereo.source_of(processor)!r}'s copy to stereo, which goes with it"
     return None
 
 
@@ -1005,6 +1034,24 @@ def add_live_processor(
     with _connection(address, controller) as c:
         response = c.audio_graph.create_processor_on_track(
             name=name, uid="", path=uri, processor_type=info.PluginType.LV2,
+            track_id=track_id, before_processor=before_id, add_to_back=add_to_back,
+        )
+        _wait(response, strict=True)
+
+
+def add_live_copy(
+    name: str, track_id: int, before_id: int, add_to_back: bool,
+    address: str = DEFAULT_GRPC_ADDRESS, controller: Any = None,
+) -> None:
+    """Create the compiler's copy to stereo (`stereo.COPY_UID`, an internal
+    plugin) as processor `name`, placed as `add_live_processor` places one.
+    Strict, as it is. Not run against a live Sushi: the internal type and an
+    empty path are what `push` sends for the sends and returns."""
+    from elkpy import sushi_info_types as info
+
+    with _connection(address, controller) as c:
+        response = c.audio_graph.create_processor_on_track(
+            name=name, uid=stereo.COPY_UID, path="", processor_type=info.PluginType.INTERNAL,
             track_id=track_id, before_processor=before_id, add_to_back=add_to_back,
         )
         _wait(response, strict=True)

@@ -32,6 +32,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
 
+from .stereo import COPY_UID
 from .patchbay import GUITAR_ROLE, MONITOR_ROLE
 from .rigfile import (
     _CHANNEL_KEYS,
@@ -244,7 +245,11 @@ def differences(v1: dict[str, Any], compiled: dict[str, Any]) -> list[str]:
         if got is None:
             found.append(f"track {track['name']!r} is not in the rig")
             continue
-        plugins = [p for p in got["plugins"] if p["name"] != track["name"] + SEND_SUFFIX]
+        # Without the send and the compiler's copies to stereo (stereo.py),
+        # which the v1 config never had: known by uid, so a plugin of the
+        # player's is held to the config whatever it is called.
+        plugins = [p for p in got["plugins"] if p["name"] != track["name"] + SEND_SUFFIX
+                   and p.get("uid") != COPY_UID]
         if plugins != track["plugins"]:
             found.append(f"track {track['name']!r}: plugins {plugins!r}, was {track['plugins']!r}")
     # Both ways: a setting only the rig has is as much a different tone as one
