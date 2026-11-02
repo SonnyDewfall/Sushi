@@ -350,7 +350,8 @@ export function unsavedChanges(logAnswer, live, rig, amp = null) {
 
 // The entry an undo would take back, as the agent picks it (agent.pick_undo):
 // the newest that is neither an undo nor a skip and has not been undone or
-// skipped; a save is passed over, and a rig switch is a barrier. `{index,
+// skipped; a save and a take's start or stop are passed over, and a rig
+// switch is a barrier. `{index,
 // entry}`, `{barrier}` or null.
 export function nextUndo(logAnswer) {
   const log = (logAnswer && logAnswer.log) || [];
@@ -361,7 +362,7 @@ export function nextUndo(logAnswer) {
     if (e.op === "rig") return { barrier: e };
     if (e.op === "undo") handled.add(e.undoes);
     else if (e.op === "stale") handled.add(e.stale);
-    else if (e.op === "save") continue;
+    else if (e.op === "save" || e.op === "record") continue;
     else if (!handled.has(first + i)) return { index: first + i, entry: e };
   }
   return null;
@@ -378,6 +379,7 @@ export function describeEntry(entry) {
     case "amp": return `amp · ${a.name}`;
     case "amp_model": return `amp model ${modelName(a.model)}`;
     case "save": return `save to ${a.file}`;
+    case "record": return `${a.action === "stop" ? "stop" : "record"} ${a.name}`;
     default: return entry.op;
   }
 }
@@ -902,4 +904,142 @@ export class Sender {
   busy(key) {
     return this.state.has(key);
   }
+}
+
+// ---------------------------------------------------------------- recording (S7, S8)
+// The record bar asks the agent (GET /record), which asks the recorder, and
+// shows what it says: whether a take is running is the recorder's to decide,
+// never this page's, so a page reloaded mid-take, or a second page, shows the
+// take running (the reason #57 made RECORD and STOP two buttons, not a toggle).
+
+// Seconds as a clock: 0:07, 1:47, 1:02:03. Null for no time.
+export function clockText(seconds) {
+  if (!isNumber(seconds) || seconds < 0) return null;
+  const s = Math.floor(seconds);
+  const pad = (n) => String(n).padStart(2, "0");
+  if (s < 3600) return `${Math.floor(s / 60)}:${pad(s % 60)}`;
+  return `${Math.floor(s / 3600)}:${pad(Math.floor(s / 60) % 60)}:${pad(s % 60)}`;
+}
+
+// How long the running take has been going, now: what the recorder said
+// (`elapsed`, by its own clock) plus how long ago it said it, by this page's.
+// The page's clock only measures the gap between polls, so a phone whose
+// clock is wrong still shows the take's length right.
+export function elapsedNow(base, now) {
+  if (!base || !isNumber(base.elapsed)) return null;
+  return base.elapsed + Math.max(0, (now - base.at) / 1000);
+}
+
+export function recordCall(name) {
+  const n = typeof name === "string" ? name.trim() : "";
+  return { path: "/record/start", json: n ? { name: n } : {} };
+}
+
+export const STOP_CALL = { path: "/record/stop", json: {} };
+
+// Why a take name will not do, or null. Empty is fine: the agent names the
+// take from the time. The rule is a config's (take.check_name, NAME_PATTERN).
+export function checkTakeName(name) {
+  const n = typeof name === "string" ? name.trim() : "";
+  if (!n) return null;
+  if (!NAME_RE.test(n)) {
+    return "A take's name is lowercase letters, digits, '-' and '_', starting with a letter or digit, at most 64 characters.";
+  }
+  return null;
+}
+
+function stemsText(stems) {
+  const files = (stems || []).map((s) => s.file);
+  return files.length ? `${files.length} stem${files.length === 1 ? "" : "s"}: ${files.join(", ")}` : "";
+}
+
+// The record bar, from /health, GET /record's answer, the name typed, GET
+// /takes's answer and the start or stop in flight from this page. Record and
+// Stop are both always there; each is enabled when it would be acted on.
+// Neither is touched by the performance lock: recording is a stage action.
+export function recordBar(health, answer, typed, takes, pending) {
+  const agentUp = !!(health && health.ok);
+  const rig = agentUp ? health.body.rig || {} : {};
+  const busy = agentUp ? (health.body.agent || {}).busy || null : null;
+  const body = answer && answer.ok ? answer.body : null;
+  const off = (reason) => ({
+    state: "unavailable", title: "Recording is off", reason, name: null, stems: "",
+    record: { label: "Record", disabled: true }, stop: { label: "Stop", disabled: true }, note: null,
+  });
+  if (!agentUp) return off("The agent is not answering.");
+  if (!rig.running) return off("No rig is running to record.");
+  if (busy) return { ...off(`${busy} is running: recording waits for it.`), state: "busy", title: "Record" };
+  if (answer && !answer.ok) return off(`The recorder could not be asked: ${answer.reason}`);
+  if (!body) return { ...off("Asking the recorder…"), state: "unknown", title: "Record" };
+  if (body.state === "recording") {
+    return {
+      state: "recording", title: "Recording", reason: null, name: body.name, stems: stemsText(body.stems),
+      record: { label: "Record", disabled: true },
+      stop: { label: pending === "stop" || body.doing === "stopping" ? "Stopping…" : "Stop", disabled: pending === "stop" || body.doing === "stopping" },
+      note: body.said && body.said !== `recording ${body.name}` ? body.said : null,
+    };
+  }
+  if (body.state !== "idle") return off(body.reason || "The recorder did not say why.");
+  const name = typeof typed === "string" ? typed.trim() : "";
+  const problem = checkTakeName(name);
+  const listed = takes && takes.ok ? takes.body.takes || [] : [];
+  const replaces = name && !problem && listed.some((t) => t.name === name);
+  const starting = pending === "start" || body.doing === "starting";
+  return {
+    state: "idle", title: "Record", reason: null, name: null, stems: stemsText(body.stems),
+    record: { label: starting ? "Starting…" : "Record", disabled: !!problem || starting },
+    stop: { label: "Stop", disabled: true },
+    note: problem ? problem
+      : replaces ? `Will replace the earlier ${name}, which moves to _archive/${name}/.`
+        : name ? null : "No name: the take is named from the time it starts.",
+    bad: !!problem,
+  };
+}
+
+// What a start or a stop said, for the line under the buttons.
+export function recordOutcome(op, answer) {
+  const body = answer.body || {};
+  if (op === "start") {
+    if (!answer.ok) return { ok: false, title: "Not recording", reason: answer.reason, code: answer.code || null };
+    return { ok: true, title: `Recording ${body.name}`, text: body.replaced ? body.said : null };
+  }
+  if (!answer.ok && !body.name) return { ok: false, title: "Not stopped", reason: answer.reason, code: answer.code || null };
+  return { ok: answer.ok && !(body.problems || []).length, title: `Recorded ${body.name}`, text: takeVerdict(body) };
+}
+
+// A take's verdict in a line: `take check`'s first problem, or that it is
+// whole. Lost audio and a take cut off are among the problems, said as
+// `take check` says them, never smoothed into "fine".
+export function takeVerdict(take) {
+  const problems = take.problems || [];
+  const len = clockText(take.seconds);
+  const stems = (take.stems || []).length;
+  if (!problems.length) {
+    return `${len ? `${len} · ` : ""}Whole · ${stems} stem${stems === 1 ? "" : "s"} · nothing lost`;
+  }
+  const lost = isNumber(take.lost_ms) && take.lost_ms > 0 ? ` · ${take.lost_ms} ms of audio lost` : "";
+  return `${len ? `${len} · ` : ""}${problems.length === 1 ? "1 problem" : `${problems.length} problems`}${lost}: ${problems[0]}`;
+}
+
+// GET /takes as the rack lists it: each take's name, length and verdict,
+// the one being recorded said as that rather than as unfinished (it is,
+// until it stops).
+export function takeRows(answer, recording = null) {
+  if (!answer) return { dir: null, rows: [], problem: null, more: 0, archived: 0 };
+  if (!answer.ok) return { dir: null, rows: [], problem: `The takes could not be listed: ${answer.reason}`, more: 0, archived: 0 };
+  const body = answer.body;
+  const rows = (body.takes || []).map((t) => {
+    if (t.name === recording) return { name: t.name, len: "", note: "Recording now", tone: "live", title: t.folder };
+    if (t.take === false) return { name: t.name, len: "", note: `Not a take: ${(t.problems || [])[0] || "unreadable"}`, tone: "warn", title: t.folder };
+    const problems = t.problems || [];
+    return {
+      name: t.name, len: clockText(t.seconds) || "length unknown",
+      note: problems.length ? takeVerdict({ ...t, seconds: null }) : `Whole · ${(t.stems || []).length} stems · nothing lost`,
+      tone: problems.length ? "warn" : "ok", title: t.folder,
+    };
+  });
+  return {
+    dir: body.takes_dir, rows, more: body.more || 0, archived: body.archived || 0,
+    problem: body.exists === false ? "No takes yet: the folder is made by the first take." : null,
+  };
 }

@@ -48,6 +48,13 @@ def log_dir() -> Path:
     return runtime_dir() / "logs"
 
 
+def recorder_socket() -> Path:
+    """Where the recorder of a headless rig run listens (`recorder_process.py`),
+    a Unix socket beside the state file: the agent finds it there whichever
+    agent, or `up`, started the rig, since the rig outlives the agent."""
+    return runtime_dir() / "recorder.sock"
+
+
 def agent_path() -> Path:
     """Where a running agent says where it listens (#29), so the CLI finds an
     agent started with another `--port` or `--host` instead of acting

@@ -1,4 +1,5 @@
-"""The web UI, v0 (#31): the rack (S1), its Save (S4), and the stage screen (S5).
+"""The web UI, v0 (#31): the rack (S1), its Save (S4) and takes (S8), and the
+stage screen (S5) with its record bar (S7).
 
 Three layers, in this order. The Python decisions (`ui.panel_profile`) and the
 agent's UI routes, with no browser. Then `rig.js`'s decisions, imported into a
@@ -17,6 +18,7 @@ from __future__ import annotations
 import asyncio
 import copy
 import re
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 
 import pytest
@@ -1890,3 +1892,289 @@ def test_the_stage_has_no_save(browser, save_served):
     expect(page.page.locator(".save")).to_have_count(0)
     expect(page.page.get_by_role("button", name=re.compile("^Save"))).to_have_count(0)
     page.close()
+
+
+# --------------------------------------------------------------------------- #
+# Recording (S7, S8): the record bar on the stage, the takes in the rack
+# --------------------------------------------------------------------------- #
+
+def health_up(busy=None):
+    return {"ok": True, "body": {"rig": {"running": True, "config_name": "electric_board"}, "agent": {"busy": busy}}}
+
+
+STEMS = [{"file": "board.wav"}, {"file": "board-dry.wav"}, {"file": "master.wav"}]
+
+
+def test_seconds_are_said_as_a_clock(blank):
+    assert rigjs(blank, "return [0, 7.9, 107, 3723, -1, null].map(R.clockText);") == \
+        ["0:00", "0:07", "1:47", "1:02:03", None, None]
+    # What the recorder said, plus how long ago by this page's clock.
+    assert rigjs(blank, "return R.elapsedNow({elapsed: 10, at: 1000}, 3500);") == 12.5
+
+
+def test_the_record_bar_follows_what_the_recorder_says(blank):
+    views = rigjs(blank, """
+      const up = arg.up, recording = {ok: true, body: {state: "recording", name: "riff", elapsed: 3, stems: arg.stems,
+        said: "recording riff"}};
+      const idle = {ok: true, body: {state: "idle", stems: arg.stems}};
+      const takes = {ok: true, body: {takes: [{name: "riff"}]}};
+      return [
+        R.recordBar({ok: false, reason: "x"}, null, "", null, null),
+        R.recordBar({ok: true, body: {rig: {running: false}, agent: {}}}, null, "", null, null),
+        R.recordBar(arg.busy, idle, "", null, null),
+        R.recordBar(up, {ok: true, body: {state: "unavailable", reason: "the rig runs with its panel (test)"}}, "", null, null),
+        R.recordBar(up, idle, "", takes, null),
+        R.recordBar(up, idle, "Riff Idea", takes, null),
+        R.recordBar(up, idle, "riff", takes, null),
+        R.recordBar(up, recording, "", takes, null),
+        R.recordBar(up, recording, "", takes, "stop"),
+        R.recordBar(up, idle, "", takes, "start"),
+      ];
+    """, {"up": health_up(), "busy": health_up("restart"), "stems": STEMS})
+    off = [v for v in views[:4]]
+    assert [v["reason"] for v in off] == [
+        "The agent is not answering.", "No rig is running to record.", "restart is running: recording waits for it.",
+        "the rig runs with its panel (test)"]
+    assert all(v["record"]["disabled"] and v["stop"]["disabled"] for v in off), "nothing to press"
+    idle = views[4]
+    assert (idle["state"], idle["record"], idle["stop"]["disabled"]) == ("idle", {"label": "Record", "disabled": False}, True)
+    assert idle["note"] == "No name: the take is named from the time it starts."
+    assert idle["stems"] == "3 stems: board.wav, board-dry.wav, master.wav"
+    assert views[5]["record"]["disabled"] and views[5]["bad"] and "lowercase letters" in views[5]["note"]
+    assert views[6]["note"] == "Will replace the earlier riff, which moves to _archive/riff/."
+    rec = views[7]
+    assert (rec["state"], rec["title"], rec["name"]) == ("recording", "Recording", "riff")
+    assert rec["record"]["disabled"] and not rec["stop"]["disabled"], "two buttons, each what it says"
+    assert views[8]["stop"] == {"label": "Stopping…", "disabled": True}
+    assert views[9]["record"] == {"label": "Starting…", "disabled": True}
+
+
+def test_a_takes_verdict_is_take_checks_and_the_one_recording_is_said_as_that(blank):
+    rows = rigjs(blank, """
+      return R.takeRows({ok: true, body: {takes_dir: "/home/p/sushi-rig-takes", more: 2, archived: 1, exists: true, takes: [
+        {name: "riff", take: true, complete: true, seconds: 192.4, stems: ["a.wav", "b.wav"], lost_ms: 0, problems: []},
+        {name: "late", take: true, complete: true, seconds: 125, stems: ["a.wav"], lost_ms: 5.3,
+         problems: ["the recorder lost audio 1 time(s), 5.3 ms in all — the stems are still aligned"]},
+        {name: "cut", take: true, complete: false, seconds: 48, stems: ["a.wav"], lost_ms: 0,
+         problems: ["this take was never finished — the rig stopped mid-take", "x"]},
+        {name: "now", take: true, complete: false, seconds: 1, stems: [], problems: ["this take was never finished"]},
+        {name: "odd", take: false, problems: ["/t/odd is not a take: cannot read take.yaml"]},
+      ]}}, "now");
+    """)
+    assert rows["dir"] == "/home/p/sushi-rig-takes" and (rows["more"], rows["archived"]) == (2, 1)
+    by = {r["name"]: r for r in rows["rows"]}
+    assert (by["riff"]["len"], by["riff"]["note"], by["riff"]["tone"]) == ("3:12", "Whole · 2 stems · nothing lost", "ok")
+    assert by["late"]["note"] == ("1 problem · 5.3 ms of audio lost: the recorder lost audio 1 time(s), 5.3 ms in all "
+                                  "— the stems are still aligned")
+    assert by["cut"]["note"] == "2 problems: this take was never finished — the rig stopped mid-take"
+    assert by["cut"]["tone"] == "warn", "a cut-off take says so rather than looking fine"
+    assert (by["now"]["note"], by["now"]["tone"]) == ("Recording now", "live")
+    assert by["odd"]["note"] == "Not a take: /t/odd is not a take: cannot read take.yaml"
+
+
+def test_what_a_start_or_stop_said_is_shown_as_it_was_said(blank):
+    said = rigjs(blank, """
+      return [
+        R.recordOutcome("start", {ok: false, reason: "already recording riff: stop it first", code: "recording", body: {}}),
+        R.recordOutcome("start", {ok: true, body: {name: "riff", replaced: true, said: "recording riff — the earlier riff is in _archive/riff/"}}),
+        R.recordOutcome("stop", {ok: true, body: {name: "riff", seconds: 64, stems: [{}, {}], problems: []}}),
+        R.recordOutcome("stop", {ok: false, reason: "not recording", code: "not_recording", body: {}}),
+        R.recordCall("  riff "), R.recordCall(""), R.STOP_CALL,
+        R.describeEntry({op: "record", args: {action: "start", name: "riff"}}),
+        R.nextUndo({first: 0, log: [{op: "parameter", args: {}}, {op: "record", args: {action: "start"}}, {op: "record", args: {action: "stop"}}]}).index,
+      ];
+    """)
+    assert said[0] == {"ok": False, "title": "Not recording", "reason": "already recording riff: stop it first", "code": "recording"}
+    assert said[1] == {"ok": True, "title": "Recording riff", "text": "recording riff — the earlier riff is in _archive/riff/"}
+    assert said[2] == {"ok": True, "title": "Recorded riff", "text": "1:04 · Whole · 2 stems · nothing lost"}
+    assert said[3]["title"] == "Not stopped"
+    assert said[4:7] == [{"path": "/record/start", "json": {"name": "riff"}}, {"path": "/record/start", "json": {}},
+                         {"path": "/record/stop", "json": {}}]
+    assert said[7] == "record riff" and said[8] == 0, "undo passes over a take"
+
+
+@pytest.fixture
+def record_served():
+    with Served(record=True) as served:
+        yield served
+
+
+def stage_page(browser, served, clock=False):
+    page = Watched.__new__(Watched)
+    page.asked, page.console, page.errors = [], [], []
+    page.page = browser.new_page(viewport={"width": 390, "height": 844})
+    page.page.on("pageerror", lambda error: page.errors.append(str(error)))
+    if clock:
+        page.page.clock.install()
+    page.page.goto(served.url + "/#stage")
+    return page
+
+
+def test_record_and_stop_are_one_tap_each_and_work_locked(browser, record_served):
+    page = stage_page(browser, record_served)
+    p = page.page
+    expect(p.locator("button.lock")).to_have_text("Locked")
+    bar = p.locator(".record-bar")
+    expect(bar.locator("h2")).to_have_text("Record")
+    expect(bar.locator(".record-stems")).to_have_text(
+        "5 stems: board.wav, board-dry.wav, vocal.wav, vocal-dry.wav, master.wav")
+    expect(p.get_by_role("button", name="Stop", exact=True)).to_be_disabled()
+    p.get_by_label("Take name").fill("riff-idea")
+    p.get_by_role("button", name="Record", exact=True).click()
+    expect(bar).to_have_class(re.compile(r"\brecording\b"))
+    expect(bar.locator("h2")).to_have_text("Recording")
+    expect(bar.locator(".take-now .v")).to_have_text("riff-idea")
+    expect(p.get_by_role("button", name="Record", exact=True)).to_be_disabled()
+    # No confirm: one tap stops it.
+    p.get_by_role("button", name="Stop", exact=True).click()
+    result = bar.locator(".record-result")
+    expect(result).to_contain_text("Recorded riff-idea")
+    expect(result).to_contain_text("Whole · 5 stems · nothing lost")
+    expect(bar.locator("h2")).to_have_text("Record")
+    take = record_served.recorder.takes / "riff-idea"
+    assert __import__("sushi_rig.take", fromlist=["check_take"]).check_take(
+        __import__("sushi_rig.take", fromlist=["load_take"]).load_take(take)) == []
+    page.close()
+
+
+def test_the_elapsed_time_ticks_and_follows_the_recorders_clock(browser, record_served):
+    page = stage_page(browser, record_served, clock=True)
+    p = page.page
+    clock = record_served.recorder.clock
+    p.get_by_role("button", name="Record", exact=True).click()
+    elapsed = p.locator(".record-elapsed")
+    expect(elapsed).to_have_text("0:00")
+    for _ in range(5):  # the recorder's clock and the page's, a second at a time
+        clock.advance(1)
+        p.clock.run_for(1000)
+        p.wait_for_timeout(120)
+    expect(elapsed).to_have_text("0:05")
+    # The recorder's clock is the truth: a poll brings the page to it.
+    clock.advance(60)
+    p.clock.run_for(1000)
+    p.wait_for_timeout(150)
+    expect(elapsed).to_have_text("1:05")
+    # With no answer coming (the recorder slow, the network gone), the page
+    # counts on from the last one by its own clock.
+    held = []
+    p.route("**/record", lambda route: held.append(route))
+    for _ in range(3):
+        p.clock.run_for(1000)
+        p.wait_for_timeout(50)
+    expect(elapsed).to_have_text("1:08")
+    assert held, "the polls were held"
+    page.close()
+
+
+def test_a_page_opened_mid_take_shows_it_running(browser, record_served):
+    first = stage_page(browser, record_served)
+    first.page.get_by_role("button", name="Record", exact=True).click()
+    expect(first.page.locator(".record-bar h2")).to_have_text("Recording")
+    second = stage_page(browser, record_served)
+    expect(second.page.locator(".record-bar .take-now .v")).to_have_text(re.compile(r"^take-\d{8}-\d{6}$"))
+    expect(second.page.get_by_role("button", name="Record", exact=True)).to_be_disabled()
+    second.page.get_by_role("button", name="Stop", exact=True).click()
+    expect(first.page.locator(".record-bar h2")).to_have_text("Record", timeout=5000)
+    first.close()
+    second.close()
+
+
+def test_a_name_the_rule_refuses_is_said_before_sending_and_a_reused_one_warns(browser, record_served):
+    page = stage_page(browser, record_served)
+    p = page.page
+    name = p.get_by_label("Take name")
+    name.fill("Riff Idea")
+    expect(p.locator("#take-note")).to_have_class(re.compile(r"\bbad\b"))
+    expect(p.locator("#take-note")).to_contain_text("lowercase letters, digits")
+    expect(p.get_by_role("button", name="Record", exact=True)).to_be_disabled()
+    name.fill("riff")
+    p.get_by_role("button", name="Record", exact=True).click()
+    p.get_by_role("button", name="Stop", exact=True).click()
+    expect(p.locator(".record-result")).to_contain_text("Recorded riff")
+    p.get_by_label("Take name").fill("riff")
+    expect(p.locator("#take-note")).to_have_text("Will replace the earlier riff, which moves to _archive/riff/.")
+    p.get_by_role("button", name="Record", exact=True).click()
+    expect(p.locator(".record-result")).to_contain_text("the earlier riff is in _archive/riff/")
+    p.get_by_role("button", name="Stop", exact=True).click()
+    assert (record_served.recorder.takes / "_archive" / "riff").is_dir()
+    page.close()
+
+
+@pytest.mark.parametrize("change, said", [
+    (lambda s: s.save.state.update(mode="panel"), "whose record bar owns recording"),
+    (lambda s: s.save.state.update(rig=None), "is a v1 config, not a rig of channels"),
+    (lambda s: setattr(s.recorder.link, "down", "no recorder is listening (test)"), "the recorder is not answering"),
+])
+def test_why_recording_is_off_is_said_on_the_bar(browser, record_served, change, said):
+    change(record_served)
+    page = stage_page(browser, record_served)
+    bar = page.page.locator(".record-bar")
+    expect(bar.locator("h2")).to_have_text("Recording is off")
+    expect(bar.locator(".record-note")).to_contain_text(said)
+    expect(page.page.get_by_role("button", name="Record", exact=True)).to_be_disabled()
+    expect(page.page.get_by_role("button", name="Stop", exact=True)).to_be_disabled()
+    page.close()
+
+
+def test_a_take_the_agent_refuses_shows_its_reason(browser, record_served):
+    from ui_fake import Pushing
+
+    page = stage_page(browser, record_served)
+    p = page.page
+    Pushing.refuse = RuntimeError("no such port (test)")
+    p.get_by_role("button", name="Record", exact=True).click()
+    refused = p.locator(".record-result.refused")
+    expect(refused).to_contain_text("Not recording")
+    expect(refused).to_contain_text("the capture engine did not start: no such port (test)")
+    expect(p.locator(".record-bar h2")).to_have_text("Record")
+    page.close()
+
+
+def test_the_stage_with_the_record_bar_still_fits_a_phone(browser, record_served):
+    page = stage_page(browser, record_served)
+    p = page.page
+    p.get_by_role("button", name="Record", exact=True).click()
+    expect(p.locator(".record-bar h2")).to_have_text("Recording")
+    width = p.evaluate("() => [document.documentElement.scrollWidth, innerWidth]")
+    assert width[0] <= width[1]
+    sizes = p.evaluate("""() => [...document.querySelectorAll('.record-bar button')]
+      .map((e) => [e.textContent.trim(), e.getBoundingClientRect().width, e.getBoundingClientRect().height])""")
+    assert all(w >= 44 and hgt >= 44 for _, w, hgt in sizes), sizes
+    assert [s for s in sizes if s[0] in ("Record", "Stop")] and all(hgt >= 64 for t, _, hgt in sizes if t in ("Record", "Stop"))
+    p.get_by_role("button", name="Stop", exact=True).click()
+    page.close()
+
+
+def test_the_rack_lists_the_takes_with_each_ones_check(browser, record_served):
+    import json as json_module
+
+    from sushi_rig.take import DRY, Stem, start_take
+
+    stage = stage_page(browser, record_served)
+    stage.page.get_by_label("Take name").fill("riff-idea")
+    stage.page.get_by_role("button", name="Record", exact=True).click()
+    stage.page.get_by_role("button", name="Stop", exact=True).click()
+    expect(stage.page.locator(".record-result")).to_contain_text("Recorded riff-idea")
+    config = json_module.loads(Path(record_served.save.state["config"]).read_text())
+    start_take(record_served.recorder.takes, "cut-off", config, [Stem("board", DRY, "iface:capture_AUX0")],
+               sample_rate=48000, subtype="float32", quantum=256, config_source="test")
+    stage.page.get_by_label("Take name").fill("now-playing")
+    stage.page.get_by_role("button", name="Record", exact=True).click()
+    expect(stage.page.locator(".record-bar h2")).to_have_text("Recording")
+    rack = Page(browser, record_served.url + "/#rack")
+    p = rack.page
+    takes = p.locator("section.takes")
+    expect(takes.locator("h2")).to_have_text("TAKES")
+    expect(takes.locator("code")).to_have_text(str(record_served.recorder.takes.resolve()))
+    riff = takes.locator(".take", has_text="riff-idea")
+    expect(riff.locator(".note")).to_have_text("Whole · 5 stems · nothing lost")
+    expect(riff.locator(".len")).to_have_text("0:00")
+    cut = takes.locator(".take", has_text="cut-off")
+    expect(cut).to_have_class(re.compile(r"\bwarn\b"))
+    expect(cut.locator(".note")).to_contain_text("this take was never finished")
+    expect(takes.locator(".take", has_text="now-playing").locator(".note")).to_have_text("Recording now")
+    stage.page.get_by_role("button", name="Stop", exact=True).click()
+    expect(takes.locator(".take", has_text="now-playing").locator(".note")).to_have_text(
+        "Whole · 5 stems · nothing lost")
+    rack.close()
+    stage.close()

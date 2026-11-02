@@ -49,6 +49,19 @@ committed -- and the state file held in memory. Invented: the rig file (it
 is `UiRig`'s invention again), the state file, and what compiling the saved
 rig gives (a stand-in that records the name: the real compile needs a
 machine file this fixture does not have).
+
+Recording, `UiRecorder` (`Served(record=True)`, which brings `UiSave`'s
+checkout with it): the agent's real /record and /takes routes over the
+recorder's real `RecorderCore`, reached in this process (`CoreLink`, through
+`recorder_process.parse_request`, so a request the socket would refuse is
+refused here too), planning each take with `transport.record_session` from
+real files: `RIG_FILE`, the config `emit_compiled` makes of it (what `up
+--rig` would load), and a machine file (`MACHINE_FILE`). The takes are real
+folders, real stems and real take.yaml in a temporary folder. Invented: the
+machine file's port names, the engine (`Pushing`: forty blocks of a level per
+column, pushed at RECORD, so every take is 0.21 s however long it ran), and
+the clock the recorder times a take by (`FakeClock`, which a test moves), so
+the elapsed time is the test's to set. Nothing here is JACK or PipeWire.
 """
 
 from __future__ import annotations
@@ -401,7 +414,7 @@ class UiSave:
     follows. `compiled` records each rig compiled; `refuse_compile`, when
     set, is the reason the next compile fails. Headless, with no amp."""
 
-    def __init__(self, lifecycle: "UiLifecycle"):
+    def __init__(self, lifecycle: "UiLifecycle", record: bool = False):
         import subprocess
         import tempfile
 
@@ -430,6 +443,9 @@ class UiSave:
         }
         self.compiled: list = []
         self.refuse_compile: str | None = None
+        # Recording (`UiRecorder`): a machine file and the config `up --rig`
+        # compiles, at real paths the state file names, and a recorder.
+        self.recorder = UiRecorder(self.root, self.state) if record else None
 
     def write_state(self, state):
         self.state = copy.deepcopy(state)
@@ -454,6 +470,104 @@ class UiSave:
 
     def close(self):
         self._dir.cleanup()
+
+
+# The machine file `UiRecorder` plans takes against: a role per input
+# `RIG_FILE` plays from, one port each since both channels are mono. The port
+# names are invented.
+MACHINE_FILE = """\
+schema_version: 1
+roles:
+  guitar-in: ["iface:capture_AUX0"]
+  vocal-in: ["iface:capture_AUX1"]
+  monitor-out: ["iface:playback_FL", "iface:playback_FR"]
+"""
+
+
+class FakeClock:
+    """A monotonic clock a test moves (`advance`), for the recorder's elapsed."""
+
+    def __init__(self, now: float = 1000.0):
+        self.now = now
+
+    def __call__(self) -> float:
+        return self.now
+
+    def advance(self, seconds: float) -> None:
+        self.now += seconds
+
+
+class Pushing:
+    """A stand-in capture engine: at `start`, pushes `blocks` blocks whose
+    columns are the plan's, a different level on each, as the capture engine
+    would from PipeWire's ports, and then nothing. `refuse`, when set, is the
+    error the next start raises."""
+
+    refuse: "Exception | None" = None
+
+    def __init__(self, rate, quantum, blocks: int = 40):
+        self.quantum = quantum
+        self.blocks = blocks
+
+    def start(self, stems, push):
+        if Pushing.refuse is not None:
+            error, Pushing.refuse = Pushing.refuse, None
+            raise error
+        import numpy as np
+
+        columns = sum(n for _, n in stems)
+        block = np.tile(np.arange(1, columns + 1, dtype=np.float32) / 20, (self.quantum, 1))
+        for _ in range(self.blocks):
+            push(block)
+
+    def stop(self):
+        return None
+
+
+class CoreLink:
+    """The agent's link to a `RecorderCore` in this process: each request
+    goes through `recorder_process.parse_request` as the socket's would.
+    `down`, when set, is why no recorder answers (`RecorderDown`)."""
+
+    def __init__(self, core):
+        self.core = core
+        self.down: str | None = None
+        self.asked: list = []
+
+    def ask(self, request, timeout):
+        from sushi_rig.recorder_process import RecorderDown, parse_request
+
+        self.asked.append(request)
+        if self.down:
+            raise RecorderDown(self.down)
+        return self.core.handle(parse_request(json.dumps(request).encode()))
+
+
+class UiRecorder:
+    """The recorder a page reaches through the agent (module docstring):
+    writes a machine file and the compiled config into `root`, names both in
+    `state` (UiSave's state file, in memory), and makes takes in
+    `root/takes` through a real `RecorderCore` over `Pushing`."""
+
+    def __init__(self, root: Path, state: dict):
+        from sushi_rig.recorder_process import RecorderCore
+        from sushi_rig.rigfile import compile_rig, emit_compiled, load_rig
+
+        machines = root / "machines"
+        machines.mkdir(exist_ok=True)
+        (machines / "fake.yaml").write_text(MACHINE_FILE)
+        rig = load_rig(root / "config" / "rigs" / "electric_board.yaml")
+        compiled = emit_compiled(rig, *compile_rig(rig))
+        compiled.setdefault("_meta", {})["source"] = "config/rigs/electric_board.yaml"
+        run = root / "run"
+        run.mkdir(exist_ok=True)
+        (run / "electric_board.json").write_text(json.dumps(compiled, indent=2))
+        state.update(config=str(run / "electric_board.json"), machine=str(machines / "fake.yaml"))
+        state["children"] = {**state["children"], "recorder": 4245}
+        self.takes = root / "takes"
+        self.clock = FakeClock()
+        self.core = RecorderCore(engine=Pushing, clock=self.clock, say=lambda message: None)
+        self.link = CoreLink(self.core)
 
 
 class UiLifecycle:
@@ -522,9 +636,10 @@ class Served:
     given, answers for the state file instead of it."""
 
     def __init__(self, rig: UiRig | None = None, port: int = 0, describe=None, root: Path | None = None,
-                 lifecycle: UiLifecycle | None = None, amp: bool = False, save: bool = False):
-        if amp and save:
-            raise ValueError("the fake has an amp or a rig file to save, not both yet")
+                 lifecycle: UiLifecycle | None = None, amp: bool = False, save: bool = False,
+                 record: bool = False):
+        if amp and (save or record):
+            raise ValueError("the fake has an amp or a rig file to save (and record), not both yet")
         self.rig = rig or UiRig()
         self.lifecycle = lifecycle or UiLifecycle()
         # What GET /rig/load's pw-top prints; a test may change it.
@@ -532,7 +647,9 @@ class Served:
         # The amp (`UiAmp`), when asked for: the rig then has a Carla.
         self.amp = UiAmp(self.lifecycle) if amp else None
         # A rig file to save into (`UiSave`), when asked for.
-        self.save = UiSave(self.lifecycle) if save else None
+        self.save = UiSave(self.lifecycle, record=record) if save or record else None
+        # The recorder (`UiRecorder`), when asked for, beside the checkout.
+        self.recorder = self.save.recorder if self.save else None
         own = self.amp.describe if self.amp else self.save.describe if self.save else self.lifecycle.describe
         self.state = {"describe": describe or own}
         extra = {}
@@ -541,6 +658,8 @@ class Served:
         if self.save:
             extra = {"switching": self.save.switching()}
             root = root or self.save.root
+        if self.recorder:
+            extra.update(recorder=self.recorder.link, takes_dir=self.recorder.takes)
         # `root` is where the profiles are read from (tool/examples/profiles/ under it).
         self.agent = Agent(root=root or checkout_root(), live=self.rig, describe=lambda: self.state["describe"](),
                            library=lambda: {"plugins": [], "problems": []}, run=self.lifecycle.run,
@@ -595,6 +714,8 @@ class Served:
         self.agent._executor.shutdown(wait=True, cancel_futures=True)
         if self.amp:
             self.amp.close()
+        if self.recorder:
+            self.recorder.core.close()  # a take a test left running: its writer thread ends with it
         if self.save:
             self.save.close()
 
@@ -611,9 +732,10 @@ def main() -> int:
     parser.add_argument("--down", action="store_true", help="start with no rig up, to start one from the page")
     parser.add_argument("--amp", action="store_true", help="give the rig an amp, with invented models")
     parser.add_argument("--save", action="store_true", help="give the rig a rig file to save, in a temporary checkout")
+    parser.add_argument("--record", action="store_true", help="and a recorder, whose takes go in that checkout")
     args = parser.parse_args()
     with Served(port=args.port, lifecycle=UiLifecycle(up=None if args.down else "electric_board"), amp=args.amp,
-                save=args.save) as served:
+                save=args.save, record=args.record) as served:
         print(f"the web UI against a fake rig: {served.url}/  (Ctrl+C to stop)", flush=True)
         try:
             while True:

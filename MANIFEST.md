@@ -2598,3 +2598,85 @@ tests that build a real repository (`file_git_state`, the UI fake's checkout)
 errored there while the fast job, on a runner with git, passed. The code itself
 already said "no git state" without git rather than failing; the tests check
 the real thing, so the image now has what the rig machine always has. *(2026-11-02)*
+
+**Record from the web UI (S7, S8).** The panel's record bar is its listener's,
+and the listener runs only beside the panel; the page starts rigs headless, so
+until now a take could not be made from it. **A recorder process the rig owns**:
+`sushi-rig recorder` (`recorder_process.py`), planned by `plan_children` for a
+headless run of a rig of channels in the listener's place, started with the rig
+into its held group under `pw-jack` with the rig's quantum (the capture engine
+is a JACK client; the agent is not under `pw-jack` and must not be). Chosen over
+starting it at the first RECORD: as a child it is supervised for nothing (a
+crash is in `/health` under `agent.supervisor.crashed`, said on stderr, and not
+restarted), it stops with the rig (`down`'s SIGINT finishes a running take
+before it exits), and it opens no JACK client until a take. **Its channel is a
+Unix socket** beside the state file (`paths.recorder_socket()`, mode 0600, one
+JSON line each way), not its stdin: the rig outlives the agent, and a pipe would
+tie the recorder to the agent that started it, where a socket at a known path is
+found by the next agent too. A stale socket is replaced, a live one refused.
+Each request names the run's files from the state file as the agent reads it
+then, and the recorder plans the take at its RECORD with
+`transport.record_session`, the listener's own: the same ports (guitar_vocal's
+eight columns), the same refusals, a take carrying the config Sushi loaded for
+the rig running now (a live switch rewrites it, so it is read at RECORD, not at
+the recorder's start as the listener reads it), the rig file as it is at RECORD
+(#110) and the amp as the agent last sent it (`_take_amp`, #117's rule: no amp
+run is no `_amp`, a model the state file does not name keeps the compiled one).
+A status never waits behind a stop, and one engine is kept per rate and quantum
+so the graph's quantum is read on the first take only. **Agent routes**: `GET
+/record` (idle with the stems a take would record, recording with name, start,
+`elapsed` by the recorder's clock and stems, or unavailable with a code and
+why), `POST /record/start {name?}` (none is `transport.auto_name`; a name is
+`take.check_name`'s, 400 otherwise), `POST /record/stop` (answers `take check`'s
+problems), `GET /takes` (`take.list_takes`, off the loop: newest first, each
+with length, stems, finished or not, audio lost and `take check`'s verdict;
+past 50, counted; `_archive/` counted). Refused with a code: `busy`, `no_rig`,
+`panel` (the listener's record bar owns recording), `v1` (only a rig of channels
+gives each channel an output of its own), `recording`, `not_recording`,
+`no_recorder` (a run started before this, or a recorder that crashed, said as a
+crash), `unavailable` (the recorder's own reason: no JACK-Client, a machine
+file without a role...); a take tried that did not start is 502 with its folder
+saying why. Each start and stop is in the live log (`op: "record"`), and
+`pick_undo` and the page's `nextUndo` pass over them. **A stop, restart, rig
+switch (by request or Program Change) or model change while recording finishes
+the take first** (`Agent._finish_take`), its stop in the command's answer as
+`take` and in the log with `by`; finished rather than refused, because the
+command is the player's and a refused Program Change is a pedal that does
+nothing mid-set. A switch refused before it began (no rig, a rig that will not
+compile) leaves the take running. A recorder that cannot be asked is said, and
+the command goes on: `down` must always be possible. **UI**: a record bar on the
+stage screen, under the rig's state as the canvas's Record frame has it: a take
+name, a 64 px Record and Stop, and while recording the name and elapsed time in
+red, counted on by the page's clock between answers (`elapsedNow`) and brought
+back to the recorder's at each. Both buttons work with the lock on; Stop has no
+confirm. Whether a take runs is the agent's answer, so a page opened mid-take
+shows it. A name is checked before sending, and one already taken says the
+earlier take moves to `_archive/`. The rack lists the takes beside Save
+(`takeRows`), the one recording as "Recording now". **Tests**:
+`test_recorder_process.py` (the request; the core over real files with a
+stand-in engine; a real recorder process in its own group over its socket,
+whose take passes `sushi-rig take check`, which finishes a take on SIGINT,
+refuses a second recorder and replaces a dead one's socket; the planned child
+crashing is a crash in `describe` and is started once), `test_agent_record.py`
+(every route and refusal, the amp and rig file a take carries, finish-first for
+down, restart, switch and model change, undo over a take, `/takes`, and the
+agent with a real recorder process, whose take passes `take check`), and
+`test_ui.py` (rig.js's decisions; in Chromium against `Served(record=True)`:
+record and stop locked, the elapsed time ticking under Playwright's clock and
+counting on with the polls held, a second page seeing the take, a refused name
+and a reused one, why recording is off for the panel, a v1 run and a recorder
+not answering, the agent's refusal shown, the bar at phone width, the takes list
+with a whole take, a cut-off one and the one recording). Of the UX doc's S7 and
+S8, met: record and stop one tap each; a take without a name named from the
+time; recording over a name keeps the earlier take (said before and after);
+the UI shows recording and for how long; the list shows each take's length,
+whether it is complete and audio lost; the folder carries stems, config and rig
+file; a cut-off take says so. **Not met, or not built**: the canvas's meters
+(nothing measures levels), its free space and hours of takes left, its Open
+button, the take row's "offset carried" (offsets are not measured, #57), and
+"where it is" only as the takes folder and each take's folder in its title.
+**NOT RUN AGAINST A LIVE PIPEWIRE: no take has been captured through this
+path**, nor has `sushi-rig recorder` run under `pw-jack` on the rig. The first
+RECORD from the page on a `--rig --headless` run, and `sushi-rig take check` on
+what it wrote, is the test; how long a stop takes on the rig (the 20 s
+`STOP_TIMEOUT` is a guess) is for it to measure. *(2026-11-02)*

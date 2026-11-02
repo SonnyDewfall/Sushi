@@ -1,4 +1,5 @@
-"""The web UI (#31, v0.1 #111): the rack (S1), with Save (S4), and the stage screen (S5).
+"""The web UI (#31, v0.1 #111): the rack (S1), with Save (S4) and the takes (S8), and
+the stage screen (S5), with the record bar (S7).
 
 The agent serves the page at `/` and its files under `/ui/` (`/ui/` itself
 redirects to `/`), and the page reads and changes the rig through the
@@ -53,11 +54,16 @@ Decisions are pure and tested (principle 1), in two places:
                        sent to Carla, for the amp card and the stage's amp
     GET /amp/models    amp/models for the amp card's picker: once, and again after
                        a model change
+    GET /record        with /live, and only when /live is asked: whether a take is
+                       recording, its name and elapsed time, or why recording is off
+    GET /takes         every 10 s, and at once when a take starts or stops: the takes
+                       and `take check`'s verdict on each
 
 and sends POST /live/parameter, /live/bypass, /live/move and /live/undo as
 they happen, POST /amp/parameter from the amp's faders, POST /amp/model from
 its picker, POST /rig/up, /rig/down and /rig/switch from the rig picker, and
-POST /rig/save from the rack's Save and Save as…. A
+POST /rig/save from the rack's Save and Save as…, and POST /record/start and
+/record/stop from the record bar. A
 refusal's `reason` is shown on screen; nothing is reverted without saying
 why.
 
@@ -108,6 +114,31 @@ shown with the file written, that it is not committed and the commit it
 sits on, or the agent's reason for refusing. The unsaved list counts from
 the newest save in the log (`unsavedChanges`), so a change or an undo after
 it is unsaved again; undo passes over a save, as the agent's does.
+
+## Recording (S7, S8)
+
+The stage screen's record bar, under the rig's state, as the mockups' Record
+frame has it: a take name, a big Record and a big Stop, and while a take
+runs its name and elapsed time in red. Two buttons, each enabled when it
+would be acted on, and whether a take runs is GET /record's answer, never
+the page's: a page reloaded mid-take, or a second one, shows the take
+running (#57's reason for two buttons). Both work with the lock on, since
+recording is a stage action, and Stop takes no confirm, since stopping a
+take loses nothing. A name is checked before sending (`checkTakeName`, the
+rule take.check_name keeps); none is named from the time by the agent; a
+name already in the takes list says the earlier take will move to the
+archive. The elapsed time is the recorder's (`elapsed`, by its clock),
+counted on by this page's clock between answers (`elapsedNow`), so it keeps
+moving if a poll is slow and a phone with a wrong clock still shows the
+take's length. Why recording is off is said on the bar: no rig, the panel
+running (whose record bar owns it), a v1 run, the recorder missing or
+crashed, or the recorder's own reason.
+
+The rack lists the takes beside Save (`takeRows`): each one's name, length
+and `take check`'s verdict, a take with problems marked and its first problem
+said, one cut off saying so, and the one being recorded as "Recording now"
+rather than as unfinished. The mockup's meters and its Open button are not
+built: nothing measures levels yet, and a take is a folder on the rig.
 """
 
 from __future__ import annotations
