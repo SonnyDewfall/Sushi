@@ -400,6 +400,11 @@ curl localhost:8029/doctor           # `doctor` as data
 curl -X POST localhost:8029/rig/up -d '{"config_name": "guitar_vocal", "rig": true, "headless": true}'
 curl -X POST localhost:8029/rig/down
 curl -X POST localhost:8029/rig/restart
+curl localhost:8029/live             # the running rig's parameters, bypass and chains, with ranges
+curl -X POST localhost:8029/live/parameter -d '{"processor": "reverb", "parameter": "Mix", "value": 0.4}'
+curl -X POST localhost:8029/live/bypass -d '{"processor": "drive", "bypassed": true}'
+curl -X POST localhost:8029/live/move -d '{"processor": "drive", "direction": "up"}'
+curl localhost:8029/live/log         # what was changed through /live, newest last
 ```
 
 The first slice of the control plane every v2 feature needs: one process that
@@ -417,6 +422,17 @@ before anything runs — a config name is a name, not a path — and nothing fro
 request is passed through as text. It binds to localhost; `--host 0.0.0.0`
 opens it to the LAN, and until the local/remote permission split in #29 exists
 that is your call, not a default.
+
+**Live operations** (`/live`) read and change the rig that is running, by name,
+over gRPC. A parameter `value` is Sushi's normalised 0 to 1 for now; real units
+come with the profiles. A request is refused with `400` before anything changes
+if it is mistyped or out of range, or names a processor or parameter the running
+rig does not have (or a read-only one, or a track where a pedal is meant); `503`
+means no rig is up, `502` that Sushi went away or refused mid-change, with the
+reason. They are `409 busy` while a lifecycle command runs. Each change that
+worked is appended to an in-memory log of the last 500 (`/live/log`: `at`, `op`,
+`args`, and the `previous` value where it was known), which is where undo will
+come from; there is no undo yet.
 
 **Two modes, for two ways of using the rig.** The default gives you the Open
 Stage Control panel and the save listener behind it, which is what you want when

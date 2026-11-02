@@ -277,6 +277,47 @@ def get_live_bypass_state(address: str = DEFAULT_GRPC_ADDRESS) -> dict[str, bool
     return result
 
 
+def set_live_parameter(
+    processor: str, parameter: str, value: float, address: str = DEFAULT_GRPC_ADDRESS
+) -> None:
+    """Set one parameter of a running Sushi, by processor and parameter name,
+    to a *normalised* (0.0-1.0) value.
+
+    Names, not ids, as everywhere here: the ids are looked up in the same
+    connection that sets the value. An unknown name is Sushi's refusal
+    (elkpy raises `SushiNotFoundError`) and is left to propagate, because a
+    caller that wants it refused before this runs has `get_live_parameter_info`.
+
+    Unverified against a live Sushi when written: `get_processor_id` is used
+    by `push` and `get_parameter_id` / `set_parameter_value` are read from
+    elkpy 1.3.0's source, not run.
+    """
+    controller = _controller(address)
+    try:
+        proc_id = controller.audio_graph.get_processor_id(processor)
+        param_id = controller.parameters.get_parameter_id(proc_id, parameter)
+        _wait(controller.parameters.set_parameter_value(proc_id, param_id, float(value)))
+    finally:
+        controller.close()
+
+
+def set_live_bypass(
+    processor: str, bypassed: bool, address: str = DEFAULT_GRPC_ADDRESS
+) -> None:
+    """Bypass or un-bypass one processor of a running Sushi, by name.
+
+    Not for a track: a track's bypass cascades to every processor on it (see
+    `capture`), which is a different operation from switching one pedal.
+    Unverified against a live Sushi when written, as `set_live_parameter`.
+    """
+    controller = _controller(address)
+    try:
+        proc_id = controller.audio_graph.get_processor_id(processor)
+        _wait(controller.audio_graph.set_processor_bypass_state(proc_id, bool(bypassed)))
+    finally:
+        controller.close()
+
+
 # How long to wait after `/SESSION/OPEN` before re-selecting the tab. Long
 # enough for open-stage-control to rebuild its widget tree (measured well under
 # half a second for a seven-plugin panel), short enough not to be noticed.
