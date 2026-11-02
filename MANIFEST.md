@@ -1352,3 +1352,52 @@ folds a send gain moved live back into the file as dB to a thousandth, below
 anything audible and above a float32 capture's noise. This is what the
 expression pedal's blend will drive: one CC, two channels' levels, opposite
 directions (#34). *(2026-11-02)*
+
+**The capture engine is in the tool, with a check for silence that arrives as
+data.** #53's engine and #81's silent-block check, moved out of the spike into
+`capture.py`. A Python JACK callback is the engine, not a stopgap: the three
+rig runs of 31 Oct 2026 (`capture-*.json`) had 0 xruns and 0 lost frames at
+quantum 256 idle (p99.9 862 us of 5333), 256 under 16 busy processes (293 us),
+and 128 idle (889 us of 2667), and the callback was faster under load than
+idle. The module registers one input port per column of a take, refuses a
+graph not running at the rate and quantum the take was planned for, refuses a
+source port that is not in the graph (naming ports that are), links, then reads
+the links back and refuses any port fed by more than its one source, since a
+second link would be summed in. The spike's counter source is now a test
+fixture. The silent-block check is in the recorder, where every engine's blocks
+pass: a block of exact zeros on a column that carried signal in the block
+before is counted per column, and `take.yaml` carries it under
+`capture.silent_blocks` with the time of the first; `take check` names the stem
+and the port. That is the shape of the one thing the runs found: in the 256
+idle run three of six ports delivered 256 zeros at 207.6 s, in one of two
+identical 600 s runs, with every counter green; the read-back called it 257
+jumps and the results file showed it was silence in place. Cause not found.
+The check is evidence, not a verdict: a noise gate looks the same, and a port
+that never carried signal is not counted, since "went silent" needs a before
+(a port that cannot be linked is refused at start instead). It costs about 9 us
+a 256 by six block, measured on a development machine, not the rig. Two things
+the spike did silently are now counted: it skipped any block whose size was not
+the quantum, leaving the take short with nothing saying so (blocks of another
+size are now recorded and counted), and an exception in the callback would have
+made JACK drop the client and end the capture (it is now held and reported).
+Take format: `capture` gains `silent_blocks` (always present, `{}` when watched
+and clean, so a take from before the watch differs from a clean one) and
+`engine` (the engine's account: xruns, block size changes, skipped frames,
+slowest callback against its budget); both additive, so the schema version
+stays 1, and `Engine.stop` may return that account. JACK-Client is the
+`[capture]` extra, imported only inside `load_jack`, because `import jack` fails
+with `OSError` where libjack is absent and every pure part would then be
+untestable; `ci.yml` installs libjack and the extra, the container image
+already had libjack and now has the extra, and the pure tests run with neither
+numpy nor jack importable. The one JACK test checks that the names the engine
+calls exist in JACK-Client 0.5.7; the no-server path through `Client(...)` ran
+for real, nothing else did. Found while reading: the 1 Nov hear-v2 results do
+not mention the capture runs; they are in the 31 Oct file, and so are dated
+here. **Not run: the engine against a live PipeWire.** Untested are the order
+of activate and connect, the port names PipeWire gives the iD14 and Sushi
+through `pw-jack`, that a stereo stem's ports are the consecutive numbers from
+the one named (true of Sushi's outputs in `patchbay.py`, an assumption for
+anything else), that the listener can run under `pw-jack`, and that a take's
+silent blocks line up with what is heard. The listener does not construct an
+engine yet, because the ports a take records follow from the machine file and
+the rig. *(2026-11-02)*

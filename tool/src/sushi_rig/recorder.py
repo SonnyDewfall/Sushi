@@ -13,10 +13,11 @@ synthetic source, faster than real time and with the writer deliberately
 stalled, which a test can do and a rig machine cannot.
 
 Not here: the engine — whatever takes audio from PipeWire and calls `push`.
-That needs the rig machine, and it holds the biggest open question in Phase 2:
-whether a Python callback can keep up at a 256 quantum without xruns. If it
-cannot, the engine becomes a small native helper, and nothing in this module
-changes, because `push` is all the engine sees of it.
+That is `capture.py`. Whether a Python callback keeps up at a 256 quantum was
+the biggest open question in Phase 2 and the rig machine has answered it (see
+`capture.py`); had it not, the engine would have become a small native helper
+and nothing in this module would change, because `push` is all the engine sees
+of it.
 
 ## Every tap in one ring
 
@@ -27,6 +28,18 @@ describes. Lost frames are not replaced with silence: inserting it would need
 the audio thread and the writer to agree on positions while both run. So the
 take's absolute time shifts by what was lost, and the report says where and how
 much, for `take.yaml` to carry. A take with dropouts is a take that says so.
+
+## Silence that arrives as data
+
+The ring counts what it was too slow to keep; it cannot see audio that arrived
+as zeros. A dropped link does exactly that, and so did three of six ports for
+one 256-sample block, 207 s into a ten-minute run on the rig (31 Oct 2026), with
+the xrun count, the lost-frame count and the error all reading zero. So `push`
+also watches each column (`SilenceWatch`): a block of exact zeros on a column
+that carried signal in the block before is counted against that column, and
+`summary` names the columns. It lives here, not in the engine, because the
+recorder is the one place every engine's blocks pass through, a native helper
+included.
 
 ## Realtime safety, as far as Python allows
 
@@ -72,6 +85,97 @@ def ring_capacity(sample_rate: int, quantum: int, headroom_s: float = HEADROOM_S
         raise ValueError(f"headroom_s must be positive, got {headroom_s}")
     blocks = -(-int(sample_rate * headroom_s) // quantum)
     return max(2, blocks) * quantum
+
+
+def column_labels(stems: Sequence[tuple[Path, int]]) -> list[str]:
+    """What the report calls each column of a block: the stem's file name, and
+    for a stem of several channels the channel too (`guitar.wav[1]`).
+
+    The file name, not the port, because the recorder knows files and the
+    take's `stems` list says which port each came from. Zero-based, like the
+    columns and like the ports' own numbering.
+    """
+    labels = []
+    for path, channels in stems:
+        name = Path(path).name
+        if channels == 1:
+            labels.append(name)
+        else:
+            labels.extend(f"{name}[{channel}]" for channel in range(channels))
+    return labels
+
+
+class SilenceWatch:
+    """Counts, per column, blocks of exact zeros that follow a block with signal.
+
+    A dropped link, an unplugged cable and a client that left the graph all
+    reach the recorder the same way: the column goes to digital zero while its
+    neighbours carry on, with no xrun and nothing lost. Real converters never
+    produce exact zeros, so on a capture tap this is evidence of a break. On a
+    processed stem it can also be a noise gate or a muted chain doing its job,
+    which is why the count is reported and not acted on: the take says it
+    happened, and where, and the player decides.
+
+    Only the first block of a silence counts. A column that stays silent for a
+    minute is one event, not four thousand; it counts again only after it has
+    carried signal. A column that never carried signal is not counted at all,
+    because "went silent" needs a before; the engine refuses a port it cannot
+    link, which covers a link that never existed.
+
+    Called from the audio thread: the arrays are allocated up front and every
+    operation writes into one of them. The exceptions are the rare ones, a
+    block with a hit (a handful of indices) and one longer than any before it.
+    It costs about 9 us for a 256-frame, six-column block, measured on a
+    development machine and not the rig, against a callback that took 270 us at
+    the median there.
+    """
+
+    def __init__(self, labels: Sequence[str], sample_rate: int):
+        np = require_numpy()
+        if not labels:
+            raise ValueError("a silence watch needs at least one column")
+        if sample_rate <= 0:
+            raise ValueError(f"sample_rate must be positive, got {sample_rate}")
+        width = len(labels)
+        self.labels = tuple(labels)
+        self.sample_rate = sample_rate
+        self.counts = np.zeros(width, dtype=np.int64)
+        self._first_frame = np.full(width, -1, dtype=np.int64)
+        self._live = np.zeros(width, dtype=bool)
+        self._previous = np.zeros(width, dtype=bool)
+        self._hit = np.zeros(width, dtype=bool)
+        self._frames = 0
+
+    def observe(self, block) -> None:
+        """Look at one block, `(frames, columns)`. An empty block is ignored:
+        it carries no signal because it carries nothing."""
+        np = require_numpy()
+        if not len(block):
+            return
+        # any() over frames, written into `_live`: nonzero anywhere is signal.
+        # NaN counts as signal (it is not zero), which is right: it is not
+        # silence, and something else will notice it.
+        np.any(block, axis=0, out=self._live)
+        # previous and not live, in one step: True > False.
+        np.greater(self._previous, self._live, out=self._hit)
+        if self._hit.any():
+            np.add(self.counts, self._hit, out=self.counts)
+            for column in np.flatnonzero(self._hit):
+                if self._first_frame[column] < 0:
+                    self._first_frame[column] = self._frames
+        np.copyto(self._previous, self._live)
+        self._frames += len(block)
+
+    def report(self) -> dict[str, dict[str, Any]]:
+        """Only the columns that went silent, each with how often and how far
+        into the take (in frames offered, so a ring overflow before it counts)
+        it first did. Empty means none did; it does not mean unchecked."""
+        return {
+            label: {"count": int(count),
+                    "first_at_seconds": round(int(first) / self.sample_rate, 3)}
+            for label, count, first in zip(self.labels, self.counts, self._first_frame)
+            if count
+        }
 
 
 class Ring:
@@ -181,6 +285,8 @@ class Recording:
     gaps: list[tuple[float, int]] = field(default_factory=list)
     unrecorded_gaps: int = 0
     error: str = ""
+    # column label -> {"count", "first_at_seconds"}; see SilenceWatch
+    silent_blocks: dict[str, dict[str, Any]] = field(default_factory=dict)
 
     @property
     def seconds(self) -> float:
@@ -194,13 +300,16 @@ class Recording:
         """Everything about the capture `take.yaml` carries: not only the gaps
         that fitted in the table but the true total, the episodes that did not
         fit, and any error that ended the writer — so a take whose disk filled
-        is never marked complete and clean."""
+        is never marked complete and clean. `silent_blocks` is always present, so
+        a take that was watched and found clean (`{}`) differs from one made
+        before the watch existed (no key)."""
         return {
             "frames": self.frames,
             "lost_frames": self.dropped_frames,
             "dropouts": self.dropouts(),
             "unrecorded_episodes": self.unrecorded_gaps,
             "error": self.error,
+            "silent_blocks": {label: dict(info) for label, info in self.silent_blocks.items()},
         }
 
 
@@ -222,6 +331,7 @@ class Recorder:
         self.sync_every_s = sync_every_s
         self.ring = Ring(ring_capacity(sample_rate, quantum, headroom_s),
                          sum(channels for _, channels in self.stems))
+        self.silence = SilenceWatch(column_labels(self.stems), sample_rate)
         self._writers: list[WavWriter] = []
         self._thread: threading.Thread | None = None
         self._stopping = threading.Event()
@@ -246,8 +356,15 @@ class Recorder:
         self._thread.start()
 
     def push(self, block) -> int:
-        """What the audio thread calls, once a block. Never blocks, never allocates."""
-        return self.ring.push(block)
+        """What the audio thread calls, once a block. Never blocks, never allocates.
+
+        The ring goes first, so a block of the wrong width is refused before
+        the watch sees it. The watch looks at the block whether or not the ring
+        had room for it: a column's silence is a fact about the input.
+        """
+        kept = self.ring.push(block)
+        self.silence.observe(block)
+        return kept
 
     def _write(self, block) -> None:
         column = 0
@@ -325,4 +442,5 @@ class Recorder:
             gaps=[(at / self.sample_rate, frames) for at, frames in gaps],
             unrecorded_gaps=self.ring.unrecorded_gaps,
             error=self._error,
+            silent_blocks=self.silence.report(),
         )

@@ -113,6 +113,48 @@ def test_a_take_from_record_to_stop(tmp_path):
             assert np.allclose(data.samples[:, column], expected)
 
 
+def test_the_engines_account_is_kept_in_the_take_beside_the_recorders(tmp_path):
+    """The engine saw things the recorder cannot: it is a different witness, so
+    its numbers sit under their own key."""
+
+    class Reporting(FakeEngine):
+        def stop(self):
+            super().stop()
+            return {"xruns": 2, "skipped_frames": 0, "skipped_blocks": 0, "quantum_changes": 0, "error": ""}
+
+    transport = Transport(TakeSession(plan(tmp_path), Reporting()))
+    transport.on_name("riff-idea")
+    transport.on_record()
+    said = transport.on_stop()
+    assert said.startswith("recorded riff-idea: 0.5 s — 1 problem(s): the audio server reported 2 xrun(s)")
+    kept = take.load_take(tmp_path / "riff-idea").metadata["capture"]
+    assert kept["engine"]["xruns"] == 2
+    assert kept["lost_frames"] == 0, "an xrun is not a lost frame; the recorder's count is its own"
+
+
+def test_an_engine_with_nothing_to_add_leaves_no_engine_key(tmp_path):
+    session = TakeSession(plan(tmp_path), FakeEngine())
+    session.start("riff-idea")
+    session.stop()
+    assert "engine" not in take.load_take(tmp_path / "riff-idea").metadata["capture"]
+
+
+def test_a_column_that_goes_silent_mid_take_is_on_the_panel_and_in_the_file(tmp_path):
+    """The whole chain for #81: audio with a block of zeros on the second dry
+    tap, through the engine, the real recorder and the real take. Every counter
+    the recorder keeps reads zero; the take names the port anyway."""
+    audio = source(0.5)
+    audio[10 * Q:11 * Q, 5] = 0.0  # the vocal's dry tap, one block
+    transport = Transport(TakeSession(plan(tmp_path), FakeEngine(audio)))
+    transport.on_name("riff-idea")
+    transport.on_record()
+    said = transport.on_stop()
+    assert "vocal-dry.wav (captured from Audient iD14:capture_AUX1) went silent 1 time(s)" in said
+    kept = take.load_take(tmp_path / "riff-idea").metadata["capture"]
+    assert kept["lost_frames"] == 0 and kept["dropouts"] == [] and kept["error"] == ""
+    assert kept["silent_blocks"] == {"vocal-dry.wav": {"count": 1, "first_at_seconds": round(10 * Q / SR, 3)}}
+
+
 def test_a_take_from_a_v2_rig_carries_the_rig_and_the_library_through_the_transport(tmp_path):
     """The plan carries them; the session hands them on; the folder has them."""
     import dataclasses

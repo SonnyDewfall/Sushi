@@ -753,6 +753,59 @@ def test_a_recorder_that_died_is_never_a_clean_take(tmp_path):
     assert any("stopped early: OSError: No space left" in p for p in take.check_take(finished))
 
 
+def finished_with(tmp_path, capture):
+    record(start(tmp_path))
+    return take.finish_take(tmp_path / "riff-idea", {}, measured_by="t", capture=capture)
+
+
+def test_a_port_that_went_silent_is_named_with_where_it_came_from_and_when(tmp_path):
+    """#81: audio that arrived as zeros is not a lost frame, so the recorder's
+    own count is zero beside it. The take names the stem, the port and the time."""
+    silent = dict(CAPTURE, lost_frames=0, dropouts=[], silent_blocks={
+        "guitar-dry.wav": {"count": 2, "first_at_seconds": 207.6},
+        "guitar.wav[1]": {"count": 1, "first_at_seconds": 12.0},
+    })
+    problems = take.check_take(finished_with(tmp_path, silent))
+    assert len(problems) == 2
+    dry, processed = sorted(problems)
+    assert "guitar-dry.wav (captured from Audient iD14:capture_AUX0) went silent 2 time(s)" in dry
+    assert "first 207.6 s in" in dry
+    assert "guitar.wav[1] (captured from sushi:audio_output_0) went silent 1 time(s)" in processed
+    assert "nothing was counted as lost" in dry and "noise gate" in dry
+
+
+def test_a_take_watched_and_found_clean_has_no_problem(tmp_path):
+    clean = dict(CAPTURE, lost_frames=0, dropouts=[], silent_blocks={},
+                 engine={"xruns": 0, "skipped_frames": 0, "quantum_changes": 0, "error": ""})
+    assert take.check_take(finished_with(tmp_path, clean)) == []
+
+
+def test_what_the_engine_saw_is_a_problem_each(tmp_path):
+    seen = dict(CAPTURE, lost_frames=0, dropouts=[], engine={
+        "xruns": 3, "skipped_frames": 512, "skipped_blocks": 2, "quantum_changes": 1,
+        "error": "ValueError: could not broadcast",
+    })
+    problems = take.check_take(finished_with(tmp_path, seen))
+    assert any("capture engine failed: ValueError: could not broadcast" in p for p in problems)
+    assert any("3 xrun(s)" in p and "may be missing" in p for p in problems)
+    assert any("512 frame(s) in 2 block(s)" in p for p in problems)
+    assert any("block size changed 1 time(s)" in p and "(256)" in p for p in problems)
+
+
+@pytest.mark.parametrize("garbage", [
+    {"silent_blocks": ["not", "a", "mapping"]},
+    {"silent_blocks": {"guitar.wav": "lots", "vocal.wav": {"count": "many"}, "x": {"count": True}}},
+    {"silent_blocks": {"guitar.wav": {"count": 1, "first_at_seconds": "soon"}}},
+    {"engine": "none"},
+    {"engine": {"xruns": "lots", "skipped_frames": -4, "quantum_changes": None}},
+])
+def test_hand_edited_witness_fields_never_crash_the_check(tmp_path, garbage):
+    """take.yaml is meant to be corrected by hand; a mistake in it must be one
+    line in the list, or nothing, and never a traceback."""
+    capture = dict(CAPTURE, lost_frames=0, dropouts=[], **garbage)
+    take.check_take(finished_with(tmp_path, capture))
+
+
 def test_finishing_a_take_again_keeps_its_record_of_what_was_lost(tmp_path):
     """Correcting an offset by finishing again used to rewrite the loss as none."""
     record(start(tmp_path))

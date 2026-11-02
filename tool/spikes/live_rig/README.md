@@ -1,5 +1,7 @@
 # Laptop tests: what can be proven without the interface or a guitar
 
+> The capture engine in step 3 now lives in `tool/src/sushi_rig/capture.py`, with its three runs summarised in that module's docstring; `capture_engine.py` here is the spike it came from, kept as the record of those runs.
+
 Handover for a local Claude session on a Linux laptop, written 2026-10-31 by
 the cloud session working on SonnyDewfall/Sushi. Sonny has the laptop but not
 the Audient iD14 or a guitar. None of this needs either: PipeWire plays the

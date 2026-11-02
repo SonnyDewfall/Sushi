@@ -701,12 +701,31 @@ reloaded mid-take cannot show it stopped. A take without a name is called
 `take-<date>-<time>`; recording again under a name moves the earlier take to
 `_archive/`, and the status line says so.
 
-What is not here yet is the capture engine — the part that takes audio from
-PipeWire, which needs the rig machine (#53). Until it exists the record bar is
-off, and RECORD says there is no engine rather than doing nothing. To check its
-layout on the rig, with the rig up, write a panel with the bar over the one `up`
-made and reload it in open-stage-control; a reorder keeps the bar, because the
-listener keeps whatever the panel it replaces had:
+The capture engine (#53, `tool/src/sushi_rig/capture.py`) is the part that takes
+audio from PipeWire: a JACK client with one input port per column of a take,
+each linked to the port the take names, copying every block into the recorder.
+It is written and its decisions are tested, but **it has not been run against a
+live PipeWire**, and the listener does not construct one yet, so the record bar
+is still off and RECORD says there is no engine rather than doing nothing. A
+Python callback was measured on the rig to keep up at quantums of 128 and 256,
+under load, with room to spare (the numbers are in `capture.py`), so this is the
+engine and not a stopgap before a native helper. It needs the `[capture]` extra
+(`pip install -e ".[capture]"`, plus `libjack-jackd2-0`) and has to be started
+under `pw-jack`. A stereo stem is captured from the consecutive ports starting at
+the one `take.yaml` names (`sushi:audio_output_0` and `_1`); a stem whose port
+has no number to count from is refused rather than guessed at.
+
+A take also says if a port went silent. The recorder counts, per port, any block
+of exact zeros that follows a block with signal (#81): a dropped link looks
+exactly like that, with nothing lost and no xrun, and one was seen on the rig,
+256 samples of zeros on three of six ports. `take.yaml` lists them under
+`capture.silent_blocks` with the time of the first, and `take check` names each
+with the port it came from. A noise gate looks the same, so it is evidence, not a
+verdict. The engine's own `xruns`, block size changes and uncopyable blocks are
+under `capture.engine`. To check the record bar's layout on the rig, with the rig
+up, write a panel with the bar over the one `up` made and reload it in
+open-stage-control; a reorder keeps the bar, because the listener keeps whatever
+the panel it replaces had:
 
 ```bash
 sushi-rig panel config/guitar_vocal.json --record-bar -o /tmp/sushi-rig-panel.json
