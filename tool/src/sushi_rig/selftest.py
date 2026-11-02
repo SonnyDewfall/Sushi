@@ -64,10 +64,13 @@ it has to do, in order, so the decisions stay true when it exists:
 2. Create `point.track.to_spec()` in the running Sushi, with each copied
    processor's parameters, properties, program and bypass read off its
    `source` — the chain as it is playing.
-3. Make `probes.probe_links(point, stimulus)`, then read `pw-link -l` and
-   refuse the probe if `probes.crowded_inputs` names anything: a second link on
-   a Sushi input is read 64 frames per quantum, so a measurement taken through
-   one is wrong in a way no check below can see.
+3. Make `probes.probe_links(point, stimulus)`, link the probe track's
+   outputs to the capture, then read `pw-link -l` and refuse the probe if
+   `probes.crowded_ports` names anything. Both ends: a second link on a Sushi
+   input is read 64 frames per quantum, so a measurement taken through one is
+   wrong in a way no check below can see; and an output of the probe track
+   linked to anything but the capture plays the probe to the monitors or into a
+   take, which is the one thing the probe track exists to prevent.
 4. Capture, then remove the links made and the probe track, in a `finally`.
    Nothing the rig linked is ever unlinked, so nothing of the rig's needs
    putting back.

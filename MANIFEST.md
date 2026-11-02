@@ -1400,11 +1400,24 @@ empty the monitor path is not probed twice. The amp cannot be copied — a secon
 Carla would pass while the running one is dead, #49's own failure — so its
 probes still go into the amp the guitar plays into and carry `beside`; the "via
 amp" probe links `NAM:Output` into the probe track, the shape of link seen to
-survive qpwgraph on the rig. `crowded_inputs` is the live check the effect runs
-before playing: tested against the `pw-link -l` listing the spike captured. A
+survive qpwgraph on the rig. `crowded_ports` is the live check the effect runs
+before playing, on both ends of the probe track — an input with a second link,
+an output linked to anything but the selftest's own capture — tested against
+the `pw-link -l` listing the spike captured. A
 three-channel rig has no free output pair and its chains are listed as not
 probed. Untested, since no PipeWire or soundcard was available: creating and
 removing a track over gRPC in a running Sushi, whether a copied chain sounds as
 its source does, and whether Carla reads all of a doubly-linked `NAM:Input`.
 The effect itself is still unwritten; selftest.py lists what it owes the plan.
+A review the same day found five things, all fixed: the live check covered the
+probe track's inputs only, so an output left linked to the monitors would have
+played the probe to the player (now both ends); a probe track left by a killed
+run made SAVE refuse the capture as "a different rig", losing the save under
+the wrong cause (`live.capture` now leaves the track out with a warning naming
+it, and `selftest_probe` is a name no rig may take, so nothing real is ever
+dropped); the amp-to-monitors path vanished without a word when the master's
+chain was empty (now its own NOT CHECKED line); the "via amp" note blamed a lack
+of free ports when the guitar track had no inputs (the two causes are now told
+apart); and the probe track's routing re-parsed track entries beside
+`track_route` (`patchbay.track_entries` is now the one reading of them).
 *(2026-11-02)*

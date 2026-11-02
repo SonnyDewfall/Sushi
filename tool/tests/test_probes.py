@@ -17,7 +17,8 @@ from sushi_rig.probes import (
     PROBE_TRACK,
     ProbeError,
     ProbePoint,
-    crowded_inputs,
+    ProbeTrack,
+    crowded_ports,
     plan_probes,
     probe_links,
 )
@@ -546,7 +547,11 @@ def test_the_probe_track_is_a_track_the_rig_could_hold(name, spec):
     for point in plan_probes(spec, amp=True).points:
         if point.track is not None:
             beside = RigSpec(host=spec.host, tracks=list(spec.tracks) + [point.track.to_spec()])
-            assert beside.validate() == [], (name, point.name)
+            # Its name is the one thing a rig may not use, which is the point.
+            assert beside.validate() == [
+                f"track {PROBE_TRACK!r}: a name selftest gives its probe track, which "
+                "a capture leaves out; rename it"
+            ], (name, point.name)
 
 
 def test_the_copy_is_the_chain_without_its_send():
@@ -619,9 +624,10 @@ def test_three_channels_leave_no_room_and_say_so_rather_than_probe_beside(tmp_pa
     ])
     plan = plan_probes(spec, amp=True)
     assert [p.name for p in plan.points] == ["amp"]
-    assert sum("no Sushi output pair is free for selftest_probe — the rig uses 8 of "
-               "Sushi's 8 outputs" in n for n in plan.not_checked) == 3
-    assert any(n.startswith("guitar via amp: no probe track fits") for n in plan.not_checked)
+    assert sum(n.endswith("no Sushi output pair is free for selftest_probe — the rig uses 8 "
+                          "of Sushi's 8 outputs, so its chain is not probed")
+               for n in plan.not_checked) == 3
+    assert any(n.startswith("guitar via amp: no Sushi output pair is free") for n in plan.not_checked)
     assert not any(n.startswith(RUNNING) for n in plan.not_checked)
 
 
@@ -659,12 +665,12 @@ SPIKE = "sushi-rig-live-spike"
 
 def test_a_second_link_on_a_probed_input_is_named_from_a_real_listing():
     crowded = ProbePoint("vocal", ("sushi:audio_input_1",), "sushi:audio_output_4")
-    (problem,) = crowded_inputs(crowded, LIVE_LISTING, f"{SPIKE}:probe_A")
+    (problem,) = crowded_ports(crowded, LIVE_LISTING, f"{SPIKE}:probe_A")
     assert problem.startswith(
         f"vocal: sushi:audio_input_1 is fed by {SPIKE}:probe_B as well as the probe")
     assert "first 64 frames" in problem
     alone = ProbePoint("guitar", ("sushi:audio_input_0",), "sushi:audio_output_2")
-    assert crowded_inputs(alone, LIVE_LISTING, f"{SPIKE}:probe_A") == []
+    assert crowded_ports(alone, LIVE_LISTING, f"{SPIKE}:probe_A") == []
 
 
 def test_the_probes_own_links_and_the_amp_input_are_not_crowding():
@@ -682,7 +688,97 @@ def test_the_probes_own_links_and_the_amp_input_are_not_crowding():
     assert probe_links(point, "stim:out") == (
         ("stim:out", "NAM:Input"), ("NAM:Output", "sushi:audio_input_2"),
     )
-    assert crowded_inputs(point, listing, "stim:out") == []
+    assert crowded_ports(point, listing, "stim:out") == []
     stale = listing + "Audient iD14:capture_AUX1\n  |-> sushi:audio_input_2\n"
-    (problem,) = crowded_inputs(point, stale, "stim:out")
+    (problem,) = crowded_ports(point, stale, "stim:out")
     assert "fed by Audient iD14:capture_AUX1 as well as the probe" in problem
+
+
+def _track_on_bus(n: int) -> ProbeTrack:
+    return ProbeTrack(
+        name=PROBE_TRACK, copy_of=("guitar",), channels=2,
+        inputs=((("engine_channel", 2), ("track_channel", 0)),),
+        outputs=((("engine_bus", n), ("track_bus", 0)),),
+    )
+
+
+def test_a_probe_tracks_output_linked_anywhere_else_is_named_from_a_real_listing():
+    """The probe is inaudible only while nothing but the selftest listens to
+    its outputs. In the spike's listing outputs 0-5 go to the spike's own
+    client: the selftest's ports when the spike is the selftest, someone
+    else's — a monitor, a recorder — when it is not."""
+    point = ProbePoint("g (sushi:audio_output_0)", ("sushi:audio_input_2",),
+                       "sushi:audio_output_0", track=_track_on_bus(0))
+    assert crowded_ports(point, LIVE_LISTING, f"{SPIKE}:probe_A") == []
+    problems = crowded_ports(point, LIVE_LISTING, "selftest:stimulus")
+    assert [p.split(" is linked")[0] for p in problems] == [
+        "g (sushi:audio_output_0): sushi:audio_output_0",
+        "g (sushi:audio_output_0): sushi:audio_output_1",
+    ]
+    assert f"to {SPIKE}:master_l as well as the selftest" in problems[0]
+    assert "the player or a recorder would hear the probe" in problems[0]
+
+
+def test_both_halves_of_the_probe_track_are_checked_whichever_is_listened_to():
+    point = ProbePoint("g (sushi:audio_output_6)", ("sushi:audio_input_2",),
+                       "sushi:audio_output_6", track=_track_on_bus(3))
+    listing = (
+        "sushi:audio_output_6\n  |-> selftest:returned\n"
+        "sushi:audio_output_7\n  |-> Audient iD14:playback_FR\n"
+    )
+    (problem,) = crowded_ports(point, listing, "selftest:stimulus")
+    assert problem.startswith("g (sushi:audio_output_6): sushi:audio_output_7 is linked to "
+                              "Audient iD14:playback_FR")
+
+
+def test_the_amp_to_the_monitors_is_said_not_probed_when_it_would_repeat():
+    """With the master's chain empty, 'via amp and the master' would be 'via
+    amp' again. It is not measured twice, and the plan says so by name."""
+    from sushi_rig.rigfile import spec_of
+
+    plan = plan_probes(spec_of(RIGS / "guitar_vocal.yaml"), amp=True)
+    (note,) = [n for n in plan.not_checked if n.startswith("guitar via amp and the master")]
+    assert "the master's chain is empty" in note and "guitar via amp" in note
+    assert not any(n.startswith("guitar via amp and the master")
+                   for n in plan_probes(spec_of(RIGS / "guitar_vocal.yaml"), amp=False).not_checked)
+
+
+def test_a_guitar_with_no_inputs_is_not_blamed_on_a_lack_of_room(tmp_path):
+    spec = rig(tmp_path, """\
+        - name: g
+          channels: 2
+          inputs: []
+          outputs: [{engine_bus: 0, track_bus: 0}]
+        """)
+    spec.tracks[0].source = "guitar-in"  # what validate refuses, to reach the plan
+    notes = plan_probes(spec, amp=True).not_checked
+    (note,) = [n for n in notes if n.startswith("g via amp")]
+    assert "g has no inputs on Sushi" in note
+    assert "free" not in note
+
+
+def test_a_guitar_with_no_room_says_what_is_full(tmp_path):
+    spec = v2(tmp_path, [
+        {"name": n, "input": "guitar-in" if n == "guitar" else f"{n}-in", "width": "mono",
+         "chain": [{**EQ, "name": f"{n}_eq"}]}
+        for n in ("guitar", "vocal", "bass")
+    ])
+    notes = plan_probes(spec, amp=True).not_checked
+    (note,) = [n for n in notes if n.startswith("guitar via amp")]
+    assert note.startswith("guitar via amp: no Sushi output pair is free for selftest_probe")
+
+
+def test_the_probe_tracks_name_is_kept_from_every_rig(tmp_path):
+    """A capture leaves out a track by this name, so a rig must never have
+    one: its state would be dropped from every SAVE without a word."""
+    from sushi_rig.rigfile import RigFileError
+
+    with pytest.raises(RigFileError, match="'selftest_probe': a name selftest gives"):
+        v2(tmp_path, [{"name": PROBE_TRACK, "input": "guitar-in", "width": "mono", "chain": []}])
+    spec = rig(tmp_path, """\
+        - name: selftest_probe
+          channels: 2
+          inputs: [{engine_bus: 0, track_bus: 0}]
+          outputs: [{engine_bus: 0, track_bus: 0}]
+        """)
+    assert any("'selftest_probe': a name selftest gives" in p for p in spec.validate())

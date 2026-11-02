@@ -31,6 +31,12 @@ def looks_like_rig_file(raw: Any) -> bool:
 
 _VALID_TYPES = {"lv2", "vst2x", "vst3x", "internal"}
 
+# The track selftest plays its probes through (probes.py). Named here, beside
+# the schema, because `live.capture` leaves a track of this name out of every
+# capture — one left by a killed selftest is no part of any rig — and so no rig
+# may have one: its state would be dropped from every SAVE without a word.
+PROBE_TRACK = "selftest_probe"
+
 
 @dataclass
 class PluginSpec:
@@ -140,6 +146,11 @@ class RigSpec:
                     f"(already used as a {seen[track.name]})"
                 )
             seen[track.name] = "track"
+            if track.name == PROBE_TRACK:
+                problems.append(
+                    f"track {track.name!r}: a name selftest gives its probe track, "
+                    "which a capture leaves out; rename it"
+                )
 
             if track.multibus:
                 if track.buses is None:

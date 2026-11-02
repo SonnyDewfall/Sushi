@@ -899,6 +899,8 @@ amp cannot be copied, so its probes still go into the amp the guitar plays
 into, and say so (`beside guitar-in`): run those with the guitar quiet. A rig
 of three channels fills Sushi's eight outputs and leaves no room for the copy;
 its chains are listed as not probed rather than probed beside the instrument.
+A probe track left behind by a selftest that was killed is inaudible; SAVE
+leaves it out with a warning, and `sushi-rig restart` removes it.
 
 **If a URI is absent from `lv2ls`, Sushi cannot load it** regardless of what is
 on disk. That is the single most common failure in this project, and

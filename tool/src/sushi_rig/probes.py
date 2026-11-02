@@ -61,7 +61,14 @@ node permanently in the path the player hears, for the test's sake.
 A probe track needs nothing restored. Killed mid-probe, it leaves a track on
 inputs nothing feeds and outputs nothing hears; the next selftest is to
 remove it by name first (selftest.py lists what the effect owes), and the next
-`up` starts Sushi without it.
+`up` starts Sushi without it. Until then `live.capture` leaves it out and says
+so, so a SAVE made meanwhile is the rig's and is not refused as a capture of
+another; the name is kept from every rig (`spec.PROBE_TRACK`) for that reason.
+
+"Nothing feeds" and "nothing hears" are true of the rig's own links, and are
+checked live rather than assumed: `crowded_ports` reads `pw-link -l` and names
+anything else on either end, an input linked twice or an output linked to the
+monitors or a recorder by a stale patchbay or a killed run.
 
 **What the copy costs.** The probe measures a twin, built in the same Sushi at
 the same quantum with the running chain's settings — so a plugin that passes
@@ -135,7 +142,8 @@ for that path is a probe track carrying the channel's chain and then the
 master's, out of outputs moved from the master's own — the send and return
 between them are the part a copy cannot hold (above). With the master's chain
 empty, as in every committed rig, that track would be the channel's own probe
-again, so it is listed as not probed rather than measured twice; a channel with
+again, so it is listed as not probed rather than measured twice — and with the
+amp on, the amp to the monitors is listed by name too; a channel with
 no output of its own is probed this way all the same, since it is its only
 probe. The master is found by the compiler's names, not by any return: a
 compiled rig has exactly one, and with any other number the path to the
@@ -156,7 +164,7 @@ probe track, so a silent chain on one cannot hide behind the other.
   alone (the `NAM:Output -> sushi:audio_input_7` link above).
 - That PipeWire sums two links into one input at unity — and that Sushi then
   reads 64 frames of each quantum, which is why this module now never puts two
-  links on a Sushi input, and why `crowded_inputs` exists.
+  links on a Sushi input, and why `crowded_ports` exists.
 
 ## Not yet seen on the rig
 
@@ -175,7 +183,7 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from .amp import AMP_INPUT, AMP_OUTPUT
-from .patchbay import GUITAR_ROLE, SUSHI_NODE, Dest, bus, channel, track_route
+from .patchbay import GUITAR_ROLE, SUSHI_NODE, Dest, bus, channel, track_entries, track_route
 from .qpwgraph import listed_links
 from .rigfile import (
     MASTER,
@@ -185,14 +193,13 @@ from .rigfile import (
     SEND_SUFFIX,
     SEND_UID,
 )
-from .spec import PluginSpec, TrackSpec
+from .spec import PROBE_TRACK, PluginSpec, TrackSpec
 
-# The probe track's name, and what a copied processor's name gains. Sushi names
-# every track and processor in one namespace, so a copy cannot share its
-# source's name; a rig already holding either name is refused, not renamed
-# around, since a probe that deleted `<name>_probe` afterwards would delete
-# the player's.
-PROBE_TRACK = "selftest_probe"
+# What a copied processor's name gains; the probe track's own name is
+# spec.PROBE_TRACK, kept from every rig there. Sushi names every track and
+# processor in one namespace, so a copy cannot share its source's name; a rig
+# already holding either name is refused, not renamed around, since a probe
+# that deleted `<name>_probe` afterwards would delete the player's.
 PROBE_SUFFIX = "_probe"
 
 # Moved onto a copy, these would carry audio between tracks by name — see the
@@ -301,6 +308,9 @@ def plan_probes(rig: Any, *, amp: bool, sushi_node: str = SUSHI_NODE) -> ProbePl
     senders: list[tuple[Any, bool]] = []
     # The guitar's probe tracks, kept for the amp: (its own, through the master).
     twins: dict[str, list[ProbeTrack | None]] = {}
+    # Why a track has no probe track, for the amp's note: no room is one cause,
+    # a track with nothing to probe is another, and the fix differs.
+    unprobed: dict[str, str] = {}
     used = _used(rig)
     for track in rig.tracks:
         into, found = track_route(track, "inputs", track.source)
@@ -330,12 +340,14 @@ def plan_probes(rig: Any, *, amp: bool, sushi_node: str = SUSHI_NODE) -> ProbePl
             if not ((is_master and not inject) or (sends and inject and not captures)):
                 missing = "inputs" if not inject else "outputs"
                 not_checked.append(f"{track.name}: no {missing} on Sushi, so nothing to probe")
+            unprobed[track.name] = f"{track.name} has no {'inputs' if not inject else 'outputs'} on Sushi"
             continue
         routed[track.name] = (inject, captures)
         twin, why = _probe_track(track, track, (track,), used)
         twins.setdefault(track.name, [None, None])[0] = twin
         if twin is None:
             not_checked.append(f"{track.name}: {why}, so its chain is not probed")
+            unprobed[track.name] = why
             continue
         points += _through(twin, f"{track.name} through {sushi_node}", sushi_node)
 
@@ -356,6 +368,16 @@ def plan_probes(rig: Any, *, amp: bool, sushi_node: str = SUSHI_NODE) -> ProbePl
                     "the send and return between them are not probed (`verify` reads "
                     "each send's destination back)"
                 )
+                amped = [t.name for t, _, _ in guitar] if amp and len(guitar) == 1 else []
+                if amped and amped[0] in again and twins.get(amped[0], [None])[0] is not None:
+                    # Named on its own: the amp heard in the monitors is what the
+                    # amp is for, and a reader looking for it must find it said.
+                    not_checked.append(
+                        f"{amped[0]} via amp and the {master.name}: the {master.name}'s "
+                        f"chain is empty, so the amp to the monitors is \"{amped[0]} via "
+                        "amp\" again and is probed as that; the send and return into "
+                        f"the {master.name} are not probed"
+                    )
             for sender, own in senders:
                 if sender.name in again:
                     continue
@@ -365,6 +387,7 @@ def plan_probes(rig: Any, *, amp: bool, sushi_node: str = SUSHI_NODE) -> ProbePl
                     not_checked.append(
                         f"{sender.name} through the {master.name}: {why}, so it is not probed"
                     )
+                    unprobed.setdefault(sender.name, why)
                     continue
                 points += _through(twin, f"{sender.name} through the {master.name}", sushi_node)
 
@@ -393,9 +416,10 @@ def plan_probes(rig: Any, *, amp: bool, sushi_node: str = SUSHI_NODE) -> ProbePl
                 ))
                 own, through = twins.get(track.name, [None, None])
                 if own is None and through is None:
+                    cause = unprobed.get(track.name, f"{track.name} has no probe track")
                     not_checked.append(
-                        f"{track.name} via amp: no probe track fits beside the rig, so "
-                        "whether the amp's output reaches Sushi is not probed"
+                        f"{track.name} via amp: {cause}, so whether the amp's output "
+                        "reaches Sushi is not probed"
                     )
                 for twin, name in [(own, f"{track.name} via amp"),
                                    (through, f"{track.name} via amp and the {MASTER}")]:
@@ -432,23 +456,36 @@ def probe_links(point: ProbePoint, stimulus: str) -> tuple[tuple[str, str], ...]
     return tuple((stimulus, port) for port in point.inject) + point.links
 
 
-def crowded_inputs(
+def crowded_ports(
     point: ProbePoint, listing: str, stimulus: str, sushi_node: str = SUSHI_NODE
 ) -> list[str]:
-    """Each Sushi input `point` feeds that something else feeds too, from `pw-link -l`.
+    """Each Sushi port of `point` linked to something it should not be, from `pw-link -l`.
 
     Run on the live graph once the probe's links are made and before anything
-    is played, and a reason to refuse the probe if not empty: a second link on
-    a Sushi input is the 64-frame truncation the module docstring describes,
-    and whatever the other link carries is in the measurement. Nothing in the
-    rig links into a probe track's inputs, so a stale patchbay, a leftover link
-    from a killed run, or a probe track sitting where a channel was added since
-    is what this catches. `NAM:Input` is not a Sushi input and is not checked:
-    the guitar there is declared, in `beside`.
+    is played, and a reason to refuse the probe if not empty. Both ends of the
+    probe track are checked, because each end carries one half of the promise:
+
+    - **its inputs** must be fed by the probe alone. A second link on a Sushi
+      input is the 64-frame truncation the module docstring describes, and
+      whatever the other link carries is in the measurement. The probe's own
+      sources are exactly `probe_links`'s: another port of the same client is
+      a second link like any other, which the spike's own listing shows.
+    - **its outputs** — both halves, whichever one this point listens to — must
+      reach nothing but the selftest. Linked anywhere else, to the monitors or a
+      recorder, the player or a take hears the probe. The selftest captures in
+      the client that plays the stimulus (two channels of one stream,
+      selftest.py), so a sink on that client is ours.
+
+    Nothing the rig links touches a probe track's ports, so a stale patchbay, a
+    leftover link from a killed run, or a probe track sitting where a channel
+    was added since is what this catches. `NAM:Input` and `NAM:Output` are not
+    Sushi's and are not checked: the guitar on the amp is declared, in `beside`.
     """
     ours = {source for source, _ in probe_links(point, stimulus)}
+    client = stimulus.rsplit(":", 1)[0]
     sinks = [sink for _, sink in probe_links(point, stimulus)
              if sink.startswith(f"{sushi_node}:audio_input_")]
+    outputs = _twin_ports(point.track, "outputs", sushi_node) if point.track else ()
     links = listed_links(listing)
     found = []
     for sink in dict.fromkeys(sinks):
@@ -458,6 +495,15 @@ def crowded_inputs(
                 f"{point.name}: {sink} is fed by {', '.join(others)} as well as the probe. "
                 "Sushi reads only the first 64 frames of each quantum of an input with "
                 "two links, and the other source would be in the measurement; unlink it "
+                "or run `sushi-rig patchbay check`"
+            )
+    for port in outputs:
+        others = sorted(into for source, into in links
+                        if source == port and into.rsplit(":", 1)[0] != client)
+        if others:
+            found.append(
+                f"{point.name}: {port} is linked to {', '.join(others)} as well as the "
+                "selftest, so the player or a recorder would hear the probe; unlink it "
                 "or run `sushi-rig patchbay check`"
             )
     return found
@@ -510,10 +556,10 @@ def _moved(track: Any, label: str, used: set[int]) -> tuple | str:
     moves to the same new place, so the shape is kept. Returns why not, as
     text, when Sushi has no room.
     """
-    route, _ = track_route(track, label)
+    pairs, _ = track_entries(track, label)
     taken = set(used)
     moves: dict[Dest, Dest] = {}
-    for dest in route:
+    for dest in dict.fromkeys(dest for _, dest in pairs):
         new = _free(dest, taken)
         if new is None:
             return (
@@ -523,12 +569,9 @@ def _moved(track: Any, label: str, used: set[int]) -> tuple | str:
             )
         moves[dest] = new
         taken.update(new.channels())
-    entries = []
-    for entry in getattr(track, label):
-        key = "engine_bus" if "engine_bus" in entry else "engine_channel"
-        old = (bus if key == "engine_bus" else channel)(entry[key])
-        entries.append(tuple(sorted({**entry, key: moves[old].index}.items())))
-    return tuple(entries)
+    return tuple(
+        tuple(sorted({**entry, dest.key: moves[dest].index}.items())) for entry, dest in pairs
+    )
 
 
 def _probe_track(

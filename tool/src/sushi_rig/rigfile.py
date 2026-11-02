@@ -67,7 +67,7 @@ from pathlib import Path
 from typing import Any
 
 from .save import NAME_PATTERN
-from .spec import PluginSpec, RigSpec, TrackSpec, looks_like_rig_file  # noqa: F401 (re-exported)
+from .spec import PROBE_TRACK, PluginSpec, RigSpec, TrackSpec, looks_like_rig_file  # noqa: F401 (re-exported)
 
 KIND = "rig"
 SCHEMA_VERSION = 1
@@ -588,6 +588,11 @@ def check_rig(rig: Rig) -> list[str]:
             problems.append(
                 f"channel {channel.name!r}: a name the compiler gives the master track, "
                 "its return or a channel's send; rename it"
+            )
+        if channel.name == PROBE_TRACK:
+            problems.append(
+                f"channel {channel.name!r}: a name selftest gives its probe track, "
+                "which a capture leaves out; rename it"
             )
         if channel.name in seen:
             problems.append(f"channel {channel.name!r} appears twice")
