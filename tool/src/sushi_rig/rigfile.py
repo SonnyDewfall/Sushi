@@ -843,7 +843,23 @@ def compile_rig(
     return spec, fixed
 
 
-def merged_state(fixed: dict[str, Any], captured: dict[str, Any] | None) -> dict[str, Any]:
+def blended_channels(rig: Rig) -> frozenset[str]:
+    """The channels a blend drives. A blend moves their sends' gain with the
+    pedal, so a gain read off such a send is the pedal's position and not the
+    channel's level: neither `fold_state` nor `merged_state` may take it as
+    one. (Found by review, 2026-11-02: saved, the next blend is silent at
+    every position; emitted, the rig comes up with a channel silent until the
+    pedal first moves.)"""
+    return frozenset(
+        name for control in (rig.midi.controls if rig.midi else ())
+        if control.binding == "blend" for name in control.target
+    )
+
+
+def merged_state(
+    fixed: dict[str, Any], captured: dict[str, Any] | None,
+    blended: frozenset[str] | set[str] = frozenset(),
+) -> dict[str, Any]:
     """Captured state over the compiler's, except where the compiler's must hold.
 
     Captured properties are not merged at all. `live.capture` records them so
@@ -854,6 +870,10 @@ def merged_state(fixed: dict[str, Any], captured: dict[str, Any] | None) -> dict
     to nothing, and the channel is silent in the monitors while its stem
     looks healthy. The compiler's `agent` bindings are not state and are not
     merged; `emit_compiled` takes them from `fixed` itself.
+
+    `blended` names the channels a blend drives (`blended_channels`). The
+    captured `gain` of their sends is not merged: it is the pedal's position,
+    and the compiler's value, from the channel's `level`, holds.
     """
     captured = captured or {}
     merged = {key: value for key, value in captured.items() if key != "processors"}
@@ -864,6 +884,12 @@ def merged_state(fixed: dict[str, Any], captured: dict[str, Any] | None) -> dict
         if not isinstance(values, dict):
             continue
         entry = processors.setdefault(name, {})
+        if name.endswith(SEND_SUFFIX) and name.removesuffix(SEND_SUFFIX) in blended:
+            if isinstance(values.get("parameters"), dict):
+                kept = {k: v for k, v in values["parameters"].items() if k != "gain"}
+                values = {k: v for k, v in values.items() if k != "parameters"}
+                if kept:
+                    values["parameters"] = kept
         if values.get("program") is not None and not values.get("parameters"):
             # A captured program replaces the file's parameters, which are the
             # previous program's: `emit` drops a program written beside
@@ -967,10 +993,7 @@ def fold_state(raw: dict[str, Any], captured: dict[str, Any] | None) -> dict[str
                 }
         return folded
 
-    blended = {
-        name for control in (rig.midi.controls if rig.midi else ())
-        if control.binding == "blend" for name in control.target
-    }
+    blended = blended_channels(rig)
     out = copy.deepcopy(raw)
     for channel in out.get("channels") or []:
         if not isinstance(channel, dict):
@@ -1047,7 +1070,7 @@ def emit_compiled(
     (`prepare_rig` compiles once for the patchbay and the config)."""
     from .emit import emit
 
-    state = merged_state(fixed, captured)
+    state = merged_state(fixed, captured, blended_channels(rig))
     problems = [
         problem for channel in rig.channels
         for problem in _strip_problems(

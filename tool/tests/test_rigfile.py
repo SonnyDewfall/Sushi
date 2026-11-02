@@ -747,6 +747,28 @@ def test_a_parameter_target_with_an_empty_segment_is_refused(target):
         parse_rig(_midi_rig([{"control": "knob1", "parameter": target}]))
 
 
+def test_emit_does_not_write_a_blended_channels_captured_gain_into_the_config():
+    """The other write path to the same hazard `fold_state` closes: a
+    capture taken with the pedal at toe holds both sends at the pedal's
+    positions, and writing them into `initial_state` brings the rig up with
+    one channel silent until the pedal first moves. The compiler's value (the
+    channel's level) wins for a blended channel; an unblended channel's
+    captured gain is still the level it was moved to."""
+    raw = _midi_rig([{"control": "knob1", "blend": ["clean", "lead"]}])
+    raw["channels"].append({"name": "vox", "input": "guitar-in", "width": "mono", "chain": []})
+    captured = {"processors": {
+        "clean_send": {"parameters": {"gain": 0.0}},
+        "lead_send": {"parameters": {"gain": level_to_gain(-40.0)}},
+        "vox_send": {"parameters": {"gain": level_to_gain(-9.0)}},
+    }}
+    config = emit_rig(parse_rig(raw), captured=captured, controller=MPD218)
+    gains = {entry["processor"]: (entry.get("parameters") or {}).get("gain")
+             for entry in config["initial_state"] if entry["processor"].endswith("_send")}
+    assert gains["lead_send"] == round(level_to_gain(-6.0), 6), "the level in the file, not the pedal's position"
+    assert gains.get("clean_send") is None, "unity writes nothing; the capture's silence is not written either"
+    assert gains["vox_send"] == round(level_to_gain(-9.0), 6), "an unblended channel's capture still merges"
+
+
 def test_fold_state_does_not_save_a_blended_channels_gain_as_its_level():
     """A blend drives both sends' gain, so at save time the gain is the
     pedal's position, not the channel's level; folding it would make the

@@ -1399,5 +1399,9 @@ running rig used and not this host's default. `up` has no `--machine` flag, so
 today the two are the same file; the record is what keeps them so when it gains
 one. A state file from before this change has no `machine` and falls back to the
 default. Not run live: the recorded path is tested through the state file and
-`up`'s hand-off to the supervisor, not through a real supervisor.
-*(2026-11-02)*
+`up`'s hand-off to the supervisor, not through a real supervisor. The other write path to the blend hazard is closed too:
+`merged_state` ignores a captured `gain` on the send of a channel a blend
+drives, so `emit --state` with the pedal at toe no longer brings the rig up
+with a channel silent; the channel's `level` holds, and `fold_state` and
+`merged_state` share one `blended_channels` derivation. An unblended channel's
+captured gain still merges. *(2026-11-02)*
