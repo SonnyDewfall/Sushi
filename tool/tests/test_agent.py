@@ -3,9 +3,10 @@
 The routes are tested against fakes for everything that touches the world --
 the state file, the examination, the child process -- so these say what the
 agent *decides*: what runs for a request, what is refused before anything
-runs, what one failure does to the next request. One test runs the real CLI
-through the real runner, because a runner that only ever met a fake would be
-the mock agreeing with itself.
+runs, what one failure does to the next request. The runner the agent uses by
+default is its own supervisor, whose lifecycle is tested with real (if fake)
+child processes in test_supervisor.py, because a runner that only ever met a
+fake would be the mock agreeing with itself.
 """
 
 from __future__ import annotations
@@ -40,7 +41,6 @@ from sushi_rig.agent import (  # noqa: E402
     move_request,
     parameter_request,
     pick_undo,
-    run_cli,
     trim_log,
     undo_inverse,
     undo_request,
@@ -2001,27 +2001,25 @@ def test_nothing_to_undo_is_said_with_a_code_and_busy_wins_over_it():
     assert (status, body["code"], body["reason"]) == (409, "nothing_to_undo", "nothing to undo")
 
 # --------------------------------------------------------------------------- #
-# The runner, for real
+# The runner
 # --------------------------------------------------------------------------- #
 
-def test_the_runner_runs_the_real_cli(runtime):
-    """`status` with nothing recorded: the one command safe to run here."""
-    outcome = asyncio.run(run_cli(["status"]))
-    assert outcome.ok, outcome
-    assert "No rig is running." in outcome.stdout
+def test_the_agent_runs_the_lifecycle_itself_through_its_supervisor():
+    """No CLI child process any more (#29): a request's steps go to the
+    supervisor the agent holds the rig with, and /health reports it."""
+    agent = Agent(describe=lambda: dict(DOWN))
+    assert agent.run == agent.supervisor.run
+    _, health = call(agent, "GET", "/health")
+    assert health["agent"]["supervisor"] == {"holds": None, "crashed": [], "problems": [], "note": None}
 
 
-def test_a_command_that_hangs_is_killed_and_said_so():
-    sleeper = (sys.executable, "-c", "import time; time.sleep(30)")
-    outcome = asyncio.run(run_cli(["x"], timeout=0.3, program=sleeper))
-    assert not outcome.ok and outcome.abandoned
-    assert "did not finish within 0.3s" in outcome.stderr
-    assert "still running: read /rig" in outcome.stderr, "killed the CLI, not what it started"
-
-
-def test_the_cli_the_agent_runs_is_the_installation_it_was_started_from():
-    assert agent_module.CLI[0] == sys.executable
-    assert agent_module.CLI[1:] == ("-m", "sushi_rig.cli")
+def test_a_successful_command_carries_its_warnings_for_a_phone_to_read():
+    said = Outcome(True, 0, "Rig up: x (headless mode)\n",
+                   "warning: amp exited during startup (status 1)\nwarning: 2 link(s) were not made\n")
+    agent = Agent(describe=lambda: dict(UP), run=FakeRunner(said))
+    status, body = call(agent, "POST", "/rig/up", json={"config_name": "x", "headless": True})
+    assert status == 200
+    assert body["warnings"] == ["amp exited during startup (status 1)", "2 link(s) were not made"]
 
 
 # --------------------------------------------------------------------------- #
@@ -2536,3 +2534,33 @@ def test_an_add_never_goes_in_front_of_the_masters_return():
         ["master_return", "eq", "limiter"]
     assert place_switch_add(reading, "master", "eq", "urn:eq", None).expected == \
         ["master_return", "limiter", "eq"]
+
+
+# --------------------------------------------------------------------------- #
+# An amp model by path, from this machine only
+# --------------------------------------------------------------------------- #
+
+def test_an_amp_model_path_is_taken_from_this_machine_and_refused_from_elsewhere():
+    body = {"config_name": "x", "amp_model": "/home/p/models/M.nam"}
+    assert lifecycle_arguments("up", body, local=True) == ["up", "x", "--amp-model", "/home/p/models/M.nam"]
+    with pytest.raises(AgentError, match="a path is taken only from this machine"):
+        lifecycle_arguments("up", body)
+    for bad in ("amp/models/M.nam", "/x\n--headless"):
+        with pytest.raises(AgentError):
+            lifecycle_arguments("up", {"config_name": "x", "amp_model": bad}, local=True)
+
+
+@pytest.mark.parametrize("remote, local", [
+    ("127.0.0.1", True), ("127.0.1.1", True), ("::1", True), ("::ffff:127.0.0.1", True),
+    ("192.168.1.20", False), ("10.0.0.2", False), ("::ffff:192.168.1.2", False), (None, False), ("", False),
+])
+def test_only_a_loopback_peer_is_this_machine(remote, local):
+    assert agent_module.is_local(remote) is local
+
+
+def test_the_cli_on_this_machine_can_name_a_model_by_path():
+    runner = FakeRunner()
+    agent = Agent(describe=lambda: dict(UP), run=runner)
+    status, _ = call(agent, "POST", "/rig/up", json={"config_name": "x", "amp_model": "/m/M.nam"})
+    assert status == 200, "a TestClient is a loopback peer"
+    assert runner.calls == [["up", "x", "--amp-model", "/m/M.nam"]]

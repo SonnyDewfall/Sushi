@@ -2185,3 +2185,136 @@ beside the poll and retried. (8) A toggle control on a linear scale was never
 `parameter_info`, what Sushi normalises over, so they are no longer sent and
 the docstring says why. The package-data globs are checked against the UI's
 files by a test. Still not run against a live Sushi. *(2026-11-02)*
+
+**The agent is the supervisor, and can run as a user service (#29).** `POST
+/rig/up` no longer runs the CLI in a child process: the agent starts the
+children itself (`supervisor.py`) and holds their process group. It cannot fork
+a supervisor (a fork from its threaded loop is the deadlock the first slice
+avoided) or lead the group it signals, so it starts a group holder -- a Python
+that waits for a signal, with `process_group=0` -- and each child with
+`process_group=<holder>`, through `subprocess`'s fork-and-exec, which runs no
+Python in between. The holder is the state file's `supervisor_pid`, so the file
+has the forked supervisor's shape and `liveness`, `status`, `describe_rig` and
+`restart_arguments` read it unchanged (a test round-trips it through
+`status`). The children are `Popen`s rather than asyncio subprocesses, because
+asyncio's transport kills a still-running child when it is closed or collected:
+seen on 3.13 in this container, where a `sleep` started with
+`create_subprocess_exec` was killed when `asyncio.run` returned (on 3.11 it
+lived). A task on the loop polls them every 0.2 s; an exit no `down` caused is
+a crash, in `/health` under `agent.supervisor.crashed` (name, pid, status or
+signal, when, startup or running, log), on the agent's stderr, and as `CRASHED`
+in `status`. Nothing is restarted (principle 9). An exit is classified one tick
+after it is seen, holder first, so a group signalled from outside the agent
+(`down --direct`, a `kill`) reads as that stop and not as crashes. The rig
+outlives the agent: stopping it leaves the holder keeping the group, and the
+next agent stops or restarts it through the state file (`rig.down`) without
+watching it, which `/health` says in `agent.supervisor.note`. **What changed
+for the code:** `up` is split into `rig.prepare_launch` (the guards, the rig
+compile, the amp, `plan_children`, unchanged) and the fork, so both
+supervisors start the same `Launch`; `state_record`, `qpwgraph_problem`,
+`startup_exit_problem`, `panel_commands`, `up_summary` and `status_lines` are
+shared helpers; `down` takes the streams it speaks on; `start_qpwgraph` takes a
+`process_group`. `Agent._run_lifecycle` is unchanged: its runner is now
+`Supervisor.run`, which takes the same CLI arguments (`parse_lifecycle`, pinned
+as the inverse of `lifecycle_arguments`), so a Program Change switch and its
+fallback run as before. `run_cli` and `LIFECYCLE_TIMEOUT` are gone; `Outcome`
+lives in `supervisor.py` and is re-exported from `agent.py`. A successful
+answer carries `warnings`. **The CLI:** `up`, `down`, `restart` and `status`
+probe 127.0.0.1:8029 (`agent_client.py`, standard library, no proxy); an agent
+there is asked, nothing listening means today's behaviour, and either way one
+line on stderr says which. Something there that does not answer as the agent
+(no answer in 2 s, not JSON, not /health's shape), or an agent that vanishes
+between the probe and the request, is refused with nothing done; `--direct`
+acts without asking. **The service:** `systemd/sushi-rig-agent.service`, a
+template with `@CHECKOUT@`, and `sushi-rig agent install-service`, which fills
+it in, writes it to `~/.config/systemd/user/` (or `$XDG_CONFIG_HOME`), links it
+into `graphical-session.target.wants/` as `enable` would, refuses a checkout
+path systemd would read as more than a path or one with no venv, and prints
+`systemctl --user daemon-reload` and `start` without running systemctl.
+Fast suite 2164 -> 2224 passed. Tested with fake children (`test_supervisor.py`:
+real processes in a real group, standing in for the programs), the CLI's
+choice both ways (`test_agent_client.py`, including a real agent on a real
+socket), and the installer (`test_service.py`). Also run in this container: the
+real agent and the real CLI, with stand-in `pw-jack`, `fmit` and `qpwgraph`
+scripts on PATH (the `pw-jack` one holding port 51051 as Sushi's gRPC would):
+`up` through the CLI came up in 2 s with the state file in the old shape, a
+SIGSEGV to the tuner showed in `/health` and `status` and was not restarted,
+SIGTERM to the agent left the group playing under pid 1, and a second agent
+took it down through the state file in 1.4 s with nothing left; without the
+stand-ins, `up` failed on the missing `pw-jack` and tore down what it had
+started. **NOT VERIFIED: the service has not been installed on a real machine,
+and the agent-run `up` has not been run against real Sushi and PipeWire.**
+Guesses, each to check there: that `graphical-session.target` is reached on the
+rig machine's desktop and hands the agent `DISPLAY`/`WAYLAND_DISPLAY`, without
+which qpwgraph, fmit and open-stage-control cannot start; that the user
+manager's PATH finds `pw-jack`, `carla`, `fmit`, `qpwgraph` and
+`open-stage-control` (`curl localhost:8029/doctor` shows the service's view);
+that `KillMode=process` leaves the rig playing across `systemctl --user
+restart` (systemd may warn about processes left in the unit); that Sushi,
+started from a process in a background process group of the agent's session
+rather than a session of its own, behaves as it did from the forked
+supervisor; and the 60 s bound on `sushi-rig panel`, which the forked
+supervisor never had. **The check, on the rig:** `sushi-rig agent
+install-service`, the two printed commands, then `sushi-rig up --rig
+guitar_vocal` (it must say it asked the agent), play, `kill -SEGV` the tuner's
+pid and read `curl localhost:8029/health | jq .agent.supervisor`, `systemctl
+--user restart sushi-rig-agent.service` while playing (the sound must not
+stop), then `sushi-rig down`. Record the result here either way. *(2026-11-02)*
+
+**The agent's supervisor, answering review (#29).** Ten findings. (1) **A step
+had no overall bound** once `run_cli` went, so a hang in `prepare_launch`, the
+amp's preparation or the qpwgraph cleanup held the lifecycle lock, and every
+`/rig/*` and Program Change was `409 busy` until the agent restarted.
+`Supervisor.run` now gives each step `LIFECYCLE_TIMEOUT` (120 s, as before):
+past it the answer is `504`, saying what was still running (`agent.supervisor.doing`
+names it while it runs), what the step had started is stopped, and the stuck
+worker thread is left to finish, told it is abandoned so it starts nothing
+more. Tested with a preparation and a qpwgraph start that hang, and through
+the route (504, then `down` is not busy). (2) **The holder's death was taken for
+the group's stop**, after which every crash read as a stop and `/health` said
+"stopping" for a playing rig. Each child is now judged on its own; the holder
+dying is a problem of its own in `agent.supervisor.problems` (and `PROBLEM` in
+`status`). The cost: a group signalled from outside the agent shows its
+children's exits as crashes, by signal. (3) **A start's teardown that failed was
+forgotten**: the group is now kept held and said, by pid (from /proc), in the
+answer and in `problems`, and `down` stops it through `rig.down` with the
+agent's record, there being no state file. Tested with a teardown that fails
+and the `down` that then succeeds. The teardown also reaps any child of ours in
+the group (`waitpid(-pgid)`), since a start abandoned mid-step can have started
+one the watch did not know yet, whose zombie kept the group alive. (4) **A
+child that exited during a failed start was a crash** pointing at a restart
+with nothing to restart; it is now part of the failure's answer. (5) **The CLI
+saw only 127.0.0.1:8029**: the agent writes `agent.json` beside the state file
+at start (its address on loopback for a wildcard bind, and its pid) and removes
+it at stop if it is still its own; the CLI probes what it names while that pid
+lives, and the "acting directly" line says which address and where it came
+from. Run here: an agent on `--port 8131` was found and asked, and the file was
+gone after SIGTERM. (6) **`up --amp-model <path>` through the agent was 400.**
+`MODEL_NAME` exists so a LAN client cannot name a file on the machine; a
+loopback peer (`agent.is_local`) may now pass an absolute path, which the CLI
+makes from a relative one against the checkout, as `amp.prepare` resolves it.
+Not proof of who sent it -- a local process, a browser page posting to
+localhost, or a reverse proxy on this machine all look local -- which is why it
+allows only what the CLI here could do without the agent. (7) **One start
+routine**, `rig.start_children`, run by `_supervise` and, in a worker thread,
+by the agent with `spawn` and `start_qpwgraph` bound to the held group; the
+panel bound (`PANEL_TIMEOUT`, now in rig.py) and the amp replay guard are the
+same for both. (8) **`down` is `rig.down`** for the held rig too, given the state
+file when it names the held group and the agent's record otherwise (`state=`;
+the file is cleared only when it names the group stopped). The agent's
+escalation is therefore the CLI's again (SIGINT, SIGTERM, SIGKILL).
+`restart` shares `rig.restart`'s words (`NOTHING_TO_RESTART`, `NOT_RESTARTED`,
+`restart_heading`) and now reads the state file first: after a live switch
+(#112) the file names the rig switched to, and the agent's own record of what
+it started named the one before, so restart would have brought back the wrong
+rig. (9) **Not done:** carrying the request's options to `Supervisor.up` instead of
+argv. The steps `switch_steps` and `fallback_arguments` build (#112) are argv,
+`_lifecycle_steps` remembers them, and the answers carry them as `command`, so
+changing the step's type changes that branch's answer shape; `parse_lifecycle`
+stays, pinned as `lifecycle_arguments`' inverse. (10) **`_supervise(launch,
+ready_w)` and `state_record(launch, ...)`** take the `Launch`. Fast suite 2612
+-> 2639 passed. Run here with the stand-in scripts: a SIGKILL to the holder
+alone was reported as a problem with the rig still "up", `status` read it as
+orphaned, and `down` stopped the group by its id. Still NOT VERIFIED on the rig:
+the service and the agent-run `up` against real Sushi and PipeWire, as the
+entry above says. *(2026-11-02)*

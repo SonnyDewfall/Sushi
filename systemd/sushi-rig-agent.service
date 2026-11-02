@@ -1,0 +1,45 @@
+# The rig agent (#29) as a systemd user service, so the rig can be started
+# from a phone without a terminal open on the rig machine.
+#
+# Not installed by copying: `sushi-rig agent install-service` writes this file
+# to ~/.config/systemd/user/ with @CHECKOUT@ replaced by the checkout it runs
+# from, links it into graphical-session.target.wants/ (which is what
+# `systemctl --user enable` does), and prints the systemctl commands to run.
+#
+# NOT YET INSTALLED ON A REAL MACHINE. Each choice below is reasoned, not
+# observed; MANIFEST.md says what to check.
+
+[Unit]
+Description=sushi-rig agent: the rig's control plane on 127.0.0.1:8029 (#29)
+Documentation=file://@CHECKOUT@/README.md
+# The rig's children reach PipeWire as this user. Wants, not Requires: an
+# agent with no PipeWire still answers /health and /doctor, which say so.
+Wants=pipewire.service
+After=pipewire.service wireplumber.service graphical-session.target
+
+[Service]
+Type=simple
+WorkingDirectory=@CHECKOUT@
+ExecStart=@CHECKOUT@/tool/.venv/bin/sushi-rig agent
+# So the agent's own lines reach the journal as they are said, not when a
+# buffer fills.
+Environment=PYTHONUNBUFFERED=1
+# The rig outlives the agent: restarting or stopping the service must not cut
+# the sound. The default, control-group, would signal every process in the
+# unit, Sushi included and with SIGTERM rather than the SIGINT that lets it
+# release its JACK ports. With `process`, only the agent is stopped; the group
+# holder keeps the rig's process group, the state file still describes it,
+# and the next agent (or `sushi-rig down`) stops it as `down` always has.
+KillMode=process
+# The agent restarting is not the rig healing (principle 9): the agent
+# restarts no child, and a rig still playing is adopted, not restarted.
+Restart=on-failure
+RestartSec=2
+
+[Install]
+# Not default.target: the patchbay (qpwgraph), the tuner (fmit) and the panel
+# (open-stage-control) are desktop programs, and the children inherit the
+# agent's environment. Started at login rather than with the session, the
+# agent would hand them no DISPLAY or WAYLAND_DISPLAY, and qpwgraph would exit
+# silently, as it is already known to (#14).
+WantedBy=graphical-session.target
