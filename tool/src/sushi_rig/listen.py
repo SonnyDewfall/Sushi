@@ -260,10 +260,13 @@ def serve(
     receipt of an unauthenticated UDP message; widening it past localhost is
     a deliberate choice for the caller to make, never the default.
 
-    `session` records takes for the record bar. Without one the record bar's
-    messages are still answered, by `NoEngine`, which says why it cannot.
+    `session` records takes for the record bar (`transport.record_session`
+    builds it). Without one the record bar's messages are still answered, by
+    `NoEngine`, which says why it cannot. A `TakeSession` is given the amp as
+    this listener last sent it, for the take's config, by the rule SAVE uses.
     """
-    from .transport import Transport
+    from .amp import write_amp
+    from .transport import TakeSession, Transport
 
     try:
         from pythonosc.dispatcher import Dispatcher
@@ -280,6 +283,8 @@ def serve(
     # What we last sent the amp. Not what Carla holds — see amp.py.
     amp_state: dict[str, float] = dict(amp_parameters or {})
 
+    if isinstance(session, TakeSession) and session.amend_config is None:
+        session.amend_config = lambda config: write_amp(config, amp_model, amp_state)
     transport = Transport(session)
 
     def _report(message: str, status_address: str = STATUS_ADDRESS) -> None:

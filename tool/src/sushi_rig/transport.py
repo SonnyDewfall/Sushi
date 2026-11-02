@@ -18,27 +18,75 @@ with a message, not acted on.
 
 ## What is here, and what is not
 
-Here: the decisions (`Transport`, which is pure and tested on its own) and the
+Here: the decisions (`Transport`, which is pure and tested on its own), the
 effects (`TakeSession`, which composes `take.start_take`, `recorder.Recorder`
 and a capture engine into one take, and finishes it with what the recorder
-says it captured).
+says it captured), and which ports a take records (`rig_stems`, below), from
+which `record_session` builds the session the listener runs.
 
-Not here: the engine — whatever reads the rig's ports and calls `push`. That
-is `capture.CaptureEngine` (#53), written but not yet run against a live
-PipeWire, and not yet constructed by the listener, which needs the ports a take
-records (below). Until the listener has one it runs `NoEngine`, which refuses
-every take with a sentence saying so. That is deliberate: a record button that
-silently did nothing would be worse than none.
+The engine is `capture.CaptureEngine` (#53). When the listener cannot have one
+it runs `NoEngine`, which refuses every take with a sentence naming the reason.
+That is deliberate: a record button that silently did nothing would be worse
+than none, and a listener that would not start because recording cannot would
+take SAVE and the reorder buttons down with it.
 
-Also not here: which ports a take records, which follows from the machine file
-and the rig and arrives with per-channel outputs, and measuring the stems'
-offsets. Offsets are recorded as not measured, which `take.yaml` states in
-words; measuring a dry tap against what came out of an amp is a hypothesis to
-test on the rig, not a number to write in.
+## Which ports a take records
+
+For a rig of channels (`rigfile.py`), in the rig's order, each channel gives
+two stems, and the master one:
+
+    guitar.wav       the channel's stem: its track's own output, stereo
+    guitar-dry.wav   its dry tap: the machine file's port(s) for its input role
+    vocal.wav, vocal-dry.wav
+    master.wav       the master track's output: what reached the monitors
+
+So guitar_vocal is eight columns: `sushi:audio_output_2`/`_3` and
+`Audient iD14:capture_AUX0`, `_4`/`_5` and `capture_AUX1`, then `_0`/`_1`.
+
+Why these. A channel's stem is the output the compiler gives every channel
+(engine bus 1 + its index) and the patchbay links to nothing, so it is the
+channel alone, after its chain and before its level, which is the send's gain:
+neither stem holds the other, as #57 requires, and tapping it changes nothing
+anyone hears. The dry tap is the physical input, not Sushi's input, because
+with the amp running Sushi's input is the amp's output; the port is what went
+into the rig, which is what re-amping needs. The master is kept because only
+it has the mix and the master chain, the take as it was heard. The ports are
+named the way everything else names them: `patchbay.track_route` and
+`patchbay.sushi_ports` (shared with selftest's probes) for Sushi's, and
+`MachineSpec.role_ports` (the patchbay's reading) for the inputs. A stem of
+two ports must be two consecutively numbered ones, because that is all
+`capture.numbered_ports` can link; anything else is refused, not guessed.
+
+A rig.yaml of tracks (v1) gets no plan. Its outputs are whatever its routing
+says, and the routing that ships sums every track into the monitor bus
+(`take.py`, "No two stems from one port"), so there is no stem of one track to
+tap. `sushi-rig up --rig <name>` runs the rig of channels, which has them.
+
+The rate is the compiled config's `host_config.samplerate`; the quantum is
+`rig.QUANTUM`, the one `up` gives Sushi and the listener. The config a take
+carries is the one Sushi loaded, read when the listener starts, with the amp as
+the listener last set it (`TakeSession.amend_config`, the same rule SAVE uses).
+Parameters moved on Sushi since `up` are not in it: a take does not capture
+Sushi's state the way SAVE does.
+
+**NOT VERIFIED: no take has been recorded this way.** Nothing here has run
+against a live PipeWire; the tests plan ports and stand the engine in. Unknown
+until the rig machine says: whether the machine file's port names (written as
+qpwgraph shows them) are the names JACK clients see through `pw-jack`, whether
+eight columns keep up as the spike's six did, and whether tapping an output the
+patchbay leaves unlinked reads its signal. The first press of RECORD on a
+`--rig` run, and `sushi-rig take check` on what it wrote, is the test.
+
+Also not here: measuring the stems' offsets. They are recorded as not
+measured, which `take.yaml` states in words; measuring a dry tap against what
+came out of an amp is a hypothesis to test on the rig, not a number to write
+in.
 """
 
 from __future__ import annotations
 
+import copy
+import json
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
@@ -46,11 +94,16 @@ from typing import Any, Callable, Protocol, Sequence
 
 from .take import (
     ARCHIVE_DIR,
+    DRY,
+    PROCESSED,
     Stem,
     TakeError,
     check_name,
+    check_stems,
     check_take,
+    default_takes_dir,
     finish_take,
+    library_state,
     start_take,
 )
 
@@ -89,18 +142,26 @@ class Session(Protocol):
 
 
 class NoEngine:
-    """The session a listener runs until there is a capture engine."""
+    """The session a listener runs when it cannot record, saying why.
+
+    `reason` is the sentence's second half, the thing to fix; without one the
+    message is the generic `MESSAGE`.
+    """
 
     MESSAGE = (
         "recording is not available on this machine yet: there is no capture "
         "engine (#53)"
     )
 
+    def __init__(self, reason: str | None = None):
+        self.reason = reason
+        self.message = f"recording is not available: {reason}" if reason else self.MESSAGE
+
     def start(self, name: str) -> str:
-        raise TransportError(self.MESSAGE)
+        raise TransportError(self.message)
 
     def stop(self) -> str:
-        raise TransportError(self.MESSAGE)
+        raise TransportError(self.message)
 
 
 class Engine(Protocol):
@@ -149,11 +210,16 @@ class TakeSession:
 
     def __init__(self, plan: TakePlan, engine: Engine, *,
                  recorder_factory: Callable[..., Any] | None = None,
-                 clock: Callable[[], datetime] | None = None):
+                 clock: Callable[[], datetime] | None = None,
+                 amend_config: Callable[[dict[str, Any]], dict[str, Any]] | None = None):
         if recorder_factory is None:
             from .recorder import Recorder as recorder_factory
         self.plan = plan
         self.engine = engine
+        # Given a copy of `plan.config` at RECORD, returns the config the take
+        # carries. The listener sets it to write in the amp as it last sent it,
+        # which changes while the rig runs and the plan does not.
+        self.amend_config = amend_config
         self._recorder_factory = recorder_factory
         self._clock = clock
         self._folder: Path | None = None
@@ -165,8 +231,11 @@ class TakeSession:
         plan = self.plan
         replacing = (Path(plan.takes_dir) / name).exists()
         try:
+            config = plan.config
+            if self.amend_config is not None:
+                config = self.amend_config(copy.deepcopy(plan.config))
             paths = start_take(
-                plan.takes_dir, name, plan.config, [stem for stem, _ in plan.stems],
+                plan.takes_dir, name, config, [stem for stem, _ in plan.stems],
                 sample_rate=plan.sample_rate, subtype=SUBTYPE, quantum=plan.quantum,
                 config_source=plan.config_source,
                 now=self._clock() if self._clock else None,
@@ -257,6 +326,228 @@ def _finish(folder: Path, capture: dict[str, Any]):
             f"the take in {folder} was recorded but could not be marked finished: "
             f"{exc}. Its stems are intact; `sushi-rig take check {folder}` says more"
         ) from exc
+
+
+# --------------------------------------------------------------------------- #
+# Which ports a take records, and the session that records them
+# --------------------------------------------------------------------------- #
+
+class PlanError(Exception):
+    """A take that cannot be planned for this run. Carries every problem, for
+    `take.TakeError`'s reason; `NoEngine` shows them as its reason."""
+
+    def __init__(self, problems: Sequence[str]):
+        self.problems = list(problems)
+        super().__init__("; ".join(self.problems))
+
+
+def _consecutive(ports: Sequence[str]) -> str | None:
+    """Why `ports` cannot be one stem, or None. The capture engine links a stem
+    of n channels from the n consecutively numbered ports starting at its
+    first (`capture.numbered_ports`), so any other set would be linked wrong
+    and silently."""
+    from .capture import numbered_ports
+
+    expected = numbered_ports(ports[0], len(ports))
+    if isinstance(expected, str):
+        return expected
+    if list(ports) != expected:
+        return (
+            f"its ports {', '.join(ports)} are not consecutively numbered, and a "
+            f"stem of {len(ports)} channels is captured from {', '.join(expected)}"
+        )
+    return None
+
+
+def rig_stems(rig: Any, machine: Any) -> tuple[tuple[Stem, int], ...]:
+    """The stems a take of `rig` records on `machine`, each with its channel
+    count, in the order a block lays them out. See the module docstring for the
+    choice and why.
+
+    `rig` is a `rigfile.Rig`, `machine` a `MachineSpec` that has passed
+    `validate`. Pure. Raises `PlanError` with every problem: a plan with one
+    stem wrong is not recorded with the others.
+    """
+    from .capture import CaptureError, plan_columns
+    from .patchbay import SUSHI_NODE, sushi_ports, track_route
+    from .rigfile import MASTER, RigFileError, compile_rig
+
+    try:
+        # No controller: the routing is all a take needs, and it is the same
+        # with or without the MIDI map (`compile_rig`'s docstring).
+        spec, _ = compile_rig(rig)
+    except RigFileError as exc:
+        raise PlanError(exc.problems) from exc
+    tracks = {track.name: track for track in spec.tracks}
+    roles = machine.role_ports()
+    problems: list[str] = []
+    stems: list[tuple[Stem, int]] = []
+
+    def output(track_name: str) -> None:
+        route, broken = track_route(tracks[track_name], "outputs")
+        ports = sushi_ports(SUSHI_NODE, "output", route)
+        if broken or not ports:
+            problems.extend(broken or [f"track {track_name!r} has no output on Sushi to record"])
+            return
+        why = _consecutive(ports)
+        if why:
+            problems.append(f"{track_name}'s output cannot be recorded: {why}")
+            return
+        stems.append((Stem(track_name, PROCESSED, ports[0]), len(ports)))
+
+    for channel in rig.channels:
+        output(channel.name)
+        ports = roles.get(channel.input)
+        if not ports:
+            problems.append(
+                f"channel {channel.name!r} plays from {channel.input!r}, which the "
+                f"machine file gives no ports, so it has no dry tap"
+            )
+            continue
+        if len(ports) != channel.inputs_used:
+            problems.append(
+                f"channel {channel.name!r} is {channel.width} but {channel.input!r} "
+                f"has {len(ports)} port(s), so its dry tap is not one input"
+            )
+            continue
+        why = _consecutive(ports)
+        if why:
+            problems.append(f"{channel.name}'s dry tap cannot be recorded: {why}")
+            continue
+        stems.append((Stem(channel.name, DRY, ports[0]), len(ports)))
+    output(MASTER)
+
+    if not problems:
+        problems += check_stems([stem for stem, _ in stems])
+    if not problems:
+        try:
+            plan_columns(stems)
+        except CaptureError as exc:
+            problems += exc.problems
+    if problems:
+        raise PlanError(problems)
+    return tuple(stems)
+
+
+def _capture_engine(sample_rate: int, quantum: int) -> Engine:
+    """The real engine, or `CaptureUnavailable` if JACK-Client cannot load.
+
+    Loaded here, at the listener's start, so a machine without it says so
+    before anyone presses RECORD. `CaptureEngine.prepare` is not called: the
+    listener starts before Sushi, so the graph's quantum is not yet the one
+    Sushi will hold, and a read now could be wrong for every take. The first
+    `start` reads it on its own client instead, half a second paid once.
+    """
+    from .capture import CaptureEngine, load_jack
+
+    load_jack()
+    return CaptureEngine(sample_rate, quantum)
+
+
+def plan_for_run(rig_path: Path | None, config_path: Path | None, *,
+                 machine_file: Path | None = None, takes_dir: Path | None = None,
+                 root: Path | None = None, quantum: int | None = None) -> TakePlan:
+    """The plan for every take of this run, or `PlanError` saying why there is
+    none.
+
+    `rig_path` is the listener's `--rig`; `config_path` its `--panel-config`,
+    the config Sushi loaded (for a `--rig` run, the one `prepare_rig` compiled);
+    `machine_file` what that was compiled against, this host's file by default.
+    """
+    from .machine import MachineError, MachineSpec, machine_path
+    from .paths import checkout_root
+    from .rigfile import Rig, RigFileError, load_any
+
+    if rig_path is None:
+        raise PlanError([
+            "this run has no rig file (the listener was given no --rig), so there "
+            "is nothing to say which ports a take records"
+        ])
+    try:
+        rig = load_any(rig_path)
+    except RigFileError as exc:
+        raise PlanError([f"{rig_path}: {problem}" for problem in exc.problems]) from exc
+    except Exception as exc:  # noqa: BLE001 — unreadable, not YAML, not a rig
+        raise PlanError([f"{rig_path} could not be read: {exc}"]) from exc
+    if not isinstance(rig, Rig):
+        raise PlanError([
+            f"{rig_path} is a rig.yaml of tracks, and takes are planned only for a "
+            f"rig of channels, where each channel has an output of its own to record; "
+            f"run it with `sushi-rig up --rig <name>`"
+        ])
+    if config_path is None:
+        raise PlanError([
+            "the listener was given no --panel-config, so it does not know the "
+            "config Sushi loaded, which every take carries"
+        ])
+    try:
+        config = json.loads(Path(config_path).read_text())
+    except (OSError, ValueError) as exc:
+        raise PlanError([f"the config Sushi loaded, {config_path}, could not be read: {exc}"]) from exc
+    rate = (config.get("host_config") or {}).get("samplerate") if isinstance(config, dict) else None
+    if type(rate) is float and rate.is_integer():
+        rate = int(rate)
+    if type(rate) is not int or rate <= 0:
+        raise PlanError([f"{config_path} states no sample rate (host_config.samplerate is {rate!r})"])
+
+    root = root or checkout_root()
+    machine_file = machine_file or machine_path(root)
+    try:
+        machine = MachineSpec.load(machine_file)
+    except MachineError as exc:
+        raise PlanError([f"the machine file names the dry taps, and {exc}"]) from exc
+    problems = machine.validate()
+    if problems:
+        raise PlanError([f"{Path(machine_file).name}: {p}" for p in problems])
+    stems = rig_stems(rig, machine)
+
+    if quantum is None:
+        from .rig import QUANTUM as quantum
+    meta = config.get("_meta") if isinstance(config.get("_meta"), dict) else {}
+    source = meta.get("source")
+    return TakePlan(
+        takes_dir=Path(takes_dir) if takes_dir else default_takes_dir(),
+        config=config,
+        config_source=source if isinstance(source, str) and source else str(config_path),
+        stems=stems,
+        sample_rate=rate,
+        quantum=quantum,
+        # Read now, beside the config: `up` compiled the config from this file
+        # a moment ago, and a SAVE later rewrites it.
+        rig_text=Path(rig_path).read_text(),
+        library=library_state(root),
+    )
+
+
+def record_session(rig_path: Path | None, config_path: Path | None, *,
+                   machine_file: Path | None = None, takes_dir: Path | None = None,
+                   root: Path | None = None, quantum: int | None = None,
+                   engine: Callable[[int, int], Engine] | None = None) -> Session:
+    """The session the listener runs: a `TakeSession` when this run can be
+    recorded, otherwise a `NoEngine` whose message says exactly why not.
+
+    Never raises. The listener serves SAVE and the reorder buttons too, and
+    must not fail to start because recording cannot. `engine(sample_rate,
+    quantum)` makes the engine, `capture.CaptureEngine` by default, and raises
+    `capture.CaptureUnavailable` when JACK-Client is not there; the tests stand
+    it in.
+    """
+    from .capture import CaptureError
+
+    try:
+        plan = plan_for_run(rig_path, config_path, machine_file=machine_file,
+                            takes_dir=takes_dir, root=root, quantum=quantum)
+    except PlanError as exc:
+        return NoEngine(f"no take can be planned for this run: {exc}")
+    except Exception as exc:  # noqa: BLE001 — see the docstring
+        return NoEngine(f"no take can be planned for this run: unexpected error: {exc}")
+    try:
+        made = (engine or _capture_engine)(plan.sample_rate, plan.quantum)
+    except CaptureError as exc:
+        return NoEngine(str(exc))
+    except Exception as exc:  # noqa: BLE001 — see the docstring
+        return NoEngine(f"the capture engine could not be made: {exc}")
+    return TakeSession(plan, made)
 
 
 # --------------------------------------------------------------------------- #

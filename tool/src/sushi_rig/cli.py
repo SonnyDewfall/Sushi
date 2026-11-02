@@ -1063,6 +1063,15 @@ def _main(argv: list[str] | None = None) -> int:
         help="rig.yaml every save is built from. Without it SAVE is refused with a "
         "message, which is what `up` does for a config whose source it cannot find",
     )
+    p.add_argument(
+        "--machine", type=Path,
+        help="machine file the rig was compiled against, which names the inputs a "
+        "take taps dry [default: machines/<this hostname>.yaml]",
+    )
+    p.add_argument(
+        "--takes-dir", type=Path,
+        help="where the record bar's takes go [default: ~/sushi-rig-takes]",
+    )
     p.add_argument("--out-dir", type=Path, help=_OUT_DIR_HELP)
     p.add_argument("--archive-dir", type=Path, help=_ARCHIVE_DIR_HELP)
     p.add_argument("--address", default=DEFAULT_GRPC_ADDRESS, help="Sushi's gRPC address")
@@ -1350,7 +1359,19 @@ def _main(argv: list[str] | None = None) -> int:
             sys.exit(str(exc))
     elif args.command == "listen":
         from .listen import serve
+        from .transport import NoEngine, record_session
 
+        # Planned once, at the start: what a take records follows from the run,
+        # which does not change under a running listener. Said in its log
+        # either way, so a refusal is found before the first press.
+        session = record_session(
+            args.rig, args.panel_config, machine_file=args.machine, takes_dir=args.takes_dir,
+        )
+        if isinstance(session, NoEngine):
+            print(f"sushi-rig listen: RECORD is off — {session.message}", file=sys.stderr)
+        else:
+            stems = ", ".join(f"{stem.filename} from {stem.port}" for stem, _ in session.plan.stems)
+            print(f"sushi-rig listen: RECORD records {stems} into {session.plan.takes_dir}")
         serve(
             args.rig,
             *_config_dirs(args),
@@ -1364,6 +1385,7 @@ def _main(argv: list[str] | None = None) -> int:
             sushi_bin=_sushi_bin(args),
             amp_model=args.amp_model,
             amp_parameters=_amp_parameters(args.amp_parameter),
+            session=session,
         )
 
     return 0

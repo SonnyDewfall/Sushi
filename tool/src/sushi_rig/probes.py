@@ -183,7 +183,9 @@ from dataclasses import dataclass, replace
 from typing import Any
 
 from .amp import AMP_INPUT, AMP_OUTPUT
-from .patchbay import GUITAR_ROLE, SUSHI_NODE, Dest, bus, channel, track_entries, track_route
+from .patchbay import (
+    GUITAR_ROLE, SUSHI_NODE, Dest, bus, channel, sushi_ports, track_entries, track_route,
+)
 from .qpwgraph import listed_links
 from .rigfile import (
     MASTER,
@@ -289,9 +291,8 @@ class ProbePlan:
     not_checked: tuple[str, ...] = ()
 
 
-def _ports(sushi_node: str, direction: str, route) -> tuple[str, ...]:
-    channels = [c for dest in route for c in dest.channels()]
-    return tuple(f"{sushi_node}:audio_{direction}_{c}" for c in dict.fromkeys(channels))
+# One spelling of a Sushi port, shared with the take plan: see patchbay.sushi_ports.
+_ports = sushi_ports
 
 
 def plan_probes(rig: Any, *, amp: bool, sushi_node: str = SUSHI_NODE) -> ProbePlan:
