@@ -1227,7 +1227,9 @@ class Agent:
         from .doctor import run
         from .paths import checkout_root
 
-        return run(self.root or checkout_root())
+        # The crashes this agent saw, so a node of the rig's own that is
+        # absent is said as the crash it is, not as a rig that is down.
+        return run(self.root or checkout_root(), crashed=list(self.supervisor.crashed))
 
     # ----------------------------------------------------------------- routes
 

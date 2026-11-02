@@ -57,10 +57,29 @@ calls exist in the installed JACK-Client.
 
 Not run by anyone: **this module against a live PipeWire.** There was no
 PipeWire, JACK or soundcard where it was written. `CaptureEngine`'s calls into
-JACK, the order of activate and connect, the exact port names PipeWire gives
-the Audient iD14 and Sushi through `pw-jack`, and the claim below that a stereo
+JACK, the order of activate and connect, and the claim below that a stereo
 stem's ports are consecutive, are all unverified. The first run on the rig is
 the test, and its result goes in the MANIFEST either way.
+
+## Which port a column is linked from
+
+The first RECORD on the rig (2026-11-02) answered one of those questions and
+refused the take: `no port called 'Audient iD14:capture_AUX0' (for
+board-dry.wav) is in the graph`, listing `Audient iD14
+Multichannel:capture_AUX0` among the ports that were. The machine file names a
+port by its PipeWire alias, which is what the patchbay matches on and must keep
+matching on; a JACK client sees the same port as `<node description>:<port
+name>`. The two spellings differ for an ALSA device and coincide for Sushi's
+ports, so only the dry taps failed. One file cannot carry both, and two readers
+that each took one of them is the bug.
+
+So a take still names its ports as the machine file does (`Stem.port`, and
+`Column.source`), and `start` resolves them on the live graph through
+`patchbay.jack_port_names`, the patchbay's own reader of `pw-dump`
+(`patchbay.resolve_port`), into the JACK name each column is linked from
+(`Column.jack`). `doctor`'s record check calls the same function on the same
+plan (`resolve_sources`), so it fails exactly when this would refuse at that
+step. What is linked is in the take's account, `capture.engine.sources`.
 
 One client does everything, and its process callback is live from `activate`,
 so the pump is gated (`BlockPump`) until every link has been read back: the
@@ -160,16 +179,34 @@ class Column:
     index: int
     stem: str  # the stem's file name
     channel: int  # within the stem, from 0
-    source: str  # JACK port name, `<client>:<port>`
+    # The port as the take names it, `<client>:<port>`: the machine file's
+    # alias for a dry tap, Sushi's port for a processed stem.
+    source: str
     # What every message and take.yaml call the column: `recorder.column_labels`,
     # the bare file name for a mono stem and `file[channel]` otherwise.
     label: str
+    # The JACK name `source` resolved to on the live graph (`resolve_sources`),
+    # which is what is linked from. None until resolved.
+    jack: str | None = None
 
     @property
     def port(self) -> str:
         """The name of this engine's own input port for the column. Fixed by
         the column, so a port is the same one in every take."""
         return f"in_{self.index}"
+
+    @property
+    def linked_from(self) -> str:
+        """The port this column is linked from: its JACK name once resolved.
+        Before that (a test of the bookkeeping alone), the take's own name."""
+        return self.jack if self.jack is not None else self.source
+
+    def _named(self) -> str:
+        """The column's source for a message: both spellings when they differ,
+        since the one that was looked for is not the one the machine file has."""
+        if self.jack is None or self.jack == self.source:
+            return repr(self.source)
+        return f"{self.jack!r}, which is {self.source!r} as the machine file names it"
 
 
 _TRAILING_NUMBER = re.compile(r"^(.*?)(\d+)$")
@@ -242,16 +279,45 @@ def plan_columns(stems: Sequence[tuple[Stem, int]]) -> list[Column]:
     return columns
 
 
+def resolve_sources(columns: Sequence[Column], port_nodes: Any) -> tuple[list[Column], list[str]]:
+    """Each column with the JACK name its source resolves to, and every
+    column that does not resolve, named.
+
+    `port_nodes` is `patchbay.live_port_nodes` of the live graph. The take's
+    ports are the machine file's, by alias (the patchbay's spelling), and a
+    JACK client sees a device's port under another name (the module
+    docstring, "Which port a column is linked from"), so they go through
+    `patchbay.jack_port_names`, the patchbay's own reading. Pure; the engine
+    calls it at each start, and `doctor` on the same plan, so the two cannot
+    disagree about a graph.
+    """
+    from dataclasses import replace
+
+    from .patchbay import jack_port_names
+
+    names, why = jack_port_names(dict.fromkeys(c.source for c in columns), port_nodes)
+    problems = [
+        f"{c.label} cannot be captured from {c.source!r}: {why[c.source]}"
+        for c in columns if c.source in why
+    ]
+    return [replace(c, jack=names.get(c.source)) for c in columns], problems
+
+
 def missing_sources(columns: Sequence[Column], available: Iterable[str]) -> list[str]:
-    """Every source port that is not in the graph, named, with a few that are.
+    """Every source port that is not in the graph JACK shows, named, with a
+    few that are.
 
     Run before anything is linked, so a mistyped port or an unplugged interface
-    is one sentence naming it, not a half-linked client. The ports that do
-    exist are listed because the name PipeWire gives a device through JACK is
-    not the one its own tools print, and the fix is to copy the right one.
+    is one sentence naming it, not a half-linked client. Each column is looked
+    for by `linked_from`, the JACK name `resolve_sources` gave it. The ports
+    that do exist are listed because a JACK name derived from the dump that is
+    not among them means `patchbay.jack_client_name` has the naming wrong for
+    this device, and the list shows what it should have been. Not a reason to
+    copy that name into the machine file: the patchbay matches on the alias,
+    which is the name the machine file must keep.
     """
     present = set(available)
-    absent = [c for c in columns if c.source not in present]
+    absent = [c for c in columns if c.linked_from not in present]
     if not absent:
         return []
     shown = sorted(present)[:8]
@@ -261,7 +327,7 @@ def missing_sources(columns: Sequence[Column], available: Iterable[str]) -> list
         if present else "there are no output ports in the graph at all"
     )
     return [
-        f"no port called {c.source!r} (for {c.label}) is in the graph" for c in absent
+        f"no port called {c._named()} (for {c.label}) is in the graph JACK shows" for c in absent
     ] + [hint]
 
 
@@ -277,10 +343,10 @@ def check_links(columns: Sequence[Column], actual: Sequence[Sequence[str]],
     problems = []
     for column, linked in zip(columns, actual):
         linked = list(linked)
-        if linked != [column.source]:
+        if linked != [column.linked_from]:
             got = ", ".join(linked) if linked else "nothing"
             problems.append(
-                f"{client}:{column.port} should be fed by {column.source} alone "
+                f"{client}:{column.port} should be fed by {column.linked_from} alone "
                 f"(for {column.label}), but is fed by {got}"
             )
     if len(actual) != len(columns):
@@ -512,14 +578,21 @@ class CaptureEngine:
     account as `quantum_changes` and `off_quantum_blocks` instead.
 
     `stop` returns the engine's account (`BlockPump.account`) for the take to
-    keep. It deactivates the client, which guarantees no further callback, and
-    only then reads the counters, so they are final.
+    keep, with `sources`, the JACK port each column was linked from. It
+    deactivates the client, which guarantees no further callback, and only
+    then reads the counters, so they are final.
+
+    `read_dump` returns the live graph as `pw-dump` prints it,
+    `patchbay.read_pw_dump` by default; it is read at every start, since the
+    graph can change between takes (an interface replugged, a profile
+    switched), and the take's ports are resolved on it (`resolve_sources`).
 
     **Not run against a live PipeWire.** See the module docstring.
     """
 
     def __init__(self, sample_rate: int, quantum: int, *, client_name: str = CLIENT_NAME,
-                 settle_s: float = SETTLE_S, link_retry_s: float = LINK_RETRY_S):
+                 settle_s: float = SETTLE_S, link_retry_s: float = LINK_RETRY_S,
+                 read_dump: Callable[[], str] | None = None):
         if sample_rate <= 0 or quantum <= 0:
             raise ValueError(f"sample_rate and quantum must be positive, got {sample_rate} and {quantum}")
         self.sample_rate = sample_rate
@@ -527,6 +600,8 @@ class CaptureEngine:
         self.client_name = client_name
         self.settle_s = settle_s
         self.link_retry_s = link_retry_s
+        self._read_dump = read_dump
+        self._sources: dict[str, str] = {}
         self._granted: tuple[int, int] | None = None
         self._client = None
         self._pump: BlockPump | None = None
@@ -574,11 +649,14 @@ class CaptureEngine:
         # this one's.
         self._shutdown = ""
         self._account = {}
+        self._sources = {}
         columns = plan_columns(stems)
         jack = load_jack()
         client = self._open(jack, self.client_name)
         self._client = client
         try:
+            columns = self._resolve(columns)
+            self._sources = {column.label: column.linked_from for column in columns}
             ports = [client.inports.register(column.port) for column in columns]
             available = [p.name for p in client.get_ports(is_output=True, is_audio=True)]
             problems = missing_sources(columns, available)
@@ -601,7 +679,7 @@ class CaptureEngine:
                 self._granted = None
                 raise CaptureError(problems)
             for column, port in zip(columns, ports):
-                client.connect(column.source, port)
+                client.connect(column.linked_from, port)
             problems = settle_links(
                 lambda: [[p.name for p in client.get_all_connections(port)] for port in ports],
                 columns, client=client.name, wait_s=self.link_retry_s,
@@ -624,6 +702,24 @@ class CaptureEngine:
         """
         self._teardown()
         return dict(self._account) or None
+
+    def _resolve(self, columns: list[Column]) -> list[Column]:
+        """The columns with their JACK names, from the graph as it is now, or
+        `CaptureError` naming every column that does not resolve."""
+        from .patchbay import PatchbayError, live_port_nodes, read_pw_dump
+
+        try:
+            dump = (self._read_dump or read_pw_dump)()
+            port_nodes = live_port_nodes(dump)
+        except PatchbayError as exc:
+            raise CaptureError([
+                "the take's ports are named as the machine file names them and are found "
+                "in the live graph, which could not be read: " + "; ".join(exc.problems)
+            ]) from exc
+        resolved, problems = resolve_sources(columns, port_nodes)
+        if problems:
+            raise CaptureError(problems)
+        return resolved
 
     def _open(self, jack, name: str):
         """A client, or `CaptureError` saying there is no server to join."""
@@ -661,5 +757,6 @@ class CaptureEngine:
                     pass
         if pump is not None:
             self._account = pump.account(self.sample_rate)
+            self._account["sources"] = dict(self._sources)
             if self._shutdown and not self._account["error"]:
                 self._account["error"] = self._shutdown

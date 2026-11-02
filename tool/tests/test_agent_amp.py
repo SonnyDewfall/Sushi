@@ -821,3 +821,18 @@ def test_the_model_view_is_read_once_per_run_and_model_not_per_poll(root, monkey
     world.state["started_at"] = "2026-11-02T11:00:00+00:00"  # a restart: a new run
     call(agent, "GET", "/amp")
     assert made == ["amp/models/First.nam", "amp/models/Second.nam", "amp/models/Second.nam"]
+
+
+def test_a_model_is_named_by_its_file_and_its_own_name_is_declared(root):
+    """The NAM file's metadata name is not the model's name: on the rig the
+    rack called Neve 2.nam "Rupert Tape 1 Silk RED Tape rupert Tape 1"."""
+    nam(root / "amp" / "models" / "Neve 2.nam", "Rupert Tape 1 Silk RED Tape rupert Tape 1")
+    shelf = amp_live.ModelShelf()
+    view = amp_live.model_view("amp/models/Neve 2.nam", root, shelf)
+    assert view["name"] == "Neve 2" and view["declared"] == "Rupert Tape 1 Silk RED Tape rupert Tape 1"
+    assert view["description"].startswith("Rupert Tape 1 Silk RED Tape rupert Tape 1  ("), "what it declares, in full"
+    listed = {m["model"]: m for m in amp_live.library(root, shelf)}
+    assert listed["Neve 2.nam"]["name"] == "Neve 2"
+    assert listed["Neve 2.nam"]["declared"] == "Rupert Tape 1 Silk RED Tape rupert Tape 1"
+    assert listed["First.nam"]["declared"] is None, "a model calling itself by its file declares nothing more"
+    assert listed["Broken.nam"]["name"] == "Broken" and listed["Broken.nam"]["declared"] is None

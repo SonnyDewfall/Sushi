@@ -240,9 +240,16 @@ and both times it looked like a save bug rather than a load bug.
 
 ```bash
 sushi-rig verify config/electric-clean.json   # loads, names exist, and it applies
+sushi-rig verify config/rigs/electric-chorus-2.yaml  # a rig file: compiled as `up --rig` compiles it, then checked
 sushi-rig verify --all                        # every config, about six seconds each
 sushi-rig verify --quick                      # skip the check that starts Sushi
 ```
+
+Sushi loads a compiled config, never the YAML, so a rig file from `config/rigs/`
+is compiled first, for this machine and the way `up --rig <name>` compiles it,
+and that is what is checked; the compiled file's path is printed. A YAML file
+from anywhere else, or a file that is not JSON, is refused with a sentence
+saying what to pass, not a traceback.
 
 The deep check loads the config into a throwaway Sushi — `--dummy`, so no audio
 hardware, no JACK — and compares the running rig against the file, naming every
@@ -385,7 +392,10 @@ the pairs that were not: a channel whose source never reached it is silent
 while everything looks healthy, and that is said rather than discovered. SAVE works on a rig run: the panel's SAVE folds the
 live capture back into the rig file itself, in place and keeping its comments
 (a new name writes a new file), and never writes a compiled config into
-`config/`. A v1 run whose source is a rig of channels still has SAVE off, since
+`config/`. A value the save did not change keeps the form the file wrote it
+in, so `1.0` stays `1.0` and one knob turned is one line in `git diff` (the
+first save of a rig used to rewrite every whole-number float as an int, #117);
+a float the save changes to a whole number is still written as a float. A v1 run whose source is a rig of channels still has SAVE off, since
 saving the rig would leave the v1 config behind; it says to use `--rig`.
 
 `up` starts everything and hands the prompt back — the rig is detached, so it
@@ -754,11 +764,17 @@ refused, because the command is yours and made on purpose, and a refused
 Program Change would be a pedal doing nothing mid-set (an `up`, which refuses
 a running rig, leaves the take alone). The amp a take names is the one playing
 when it starts: a fader or model change asked for during a start waits for it.
-`GET /takes` lists the takes folder: each take's length, stems, whether it was
-finished, audio lost, and `take check`'s problems, a take checked again only
+`GET /takes` lists the takes folder: each take's length, stems, whether it is
+complete, audio lost, and `take check`'s problems, a take checked again only
 when a file in its folder changes; only the rack asks for it. **Not run against a live PipeWire: no take has
 been captured through this path**; shown against the recorder's real core and a
-real recorder process with the engine stood in.
+real recorder process with the engine stood in. The first RECORD on the rig
+(2026-11-02) was refused, every time: the machine file names the guitar's port
+by its PipeWire alias (`Audient iD14:capture_AUX0`, what the patchbay matches),
+and JACK calls it `Audient iD14 Multichannel:capture_AUX0`. The capture engine
+now resolves each port the take names through the patchbay's own reader of the
+graph and links the name JACK has; the machine file stays as it is, since the
+patchbay needs the alias.
 
 **Two modes, for two ways of using the rig.** The default gives you the Open
 Stage Control panel and the save listener behind it, which is what you want when
@@ -870,6 +886,18 @@ no Node and the UI has to run from a checkout. Two screens from the mockups:
   recorder's own reason). The rack lists the takes beside Save, each with its
   length and `take check`'s verdict: whole, or its first problem, a take cut
   off saying so.
+- **A child of the rig that exits** (the tuner, the amp, Sushi, qpwgraph, the
+  recorder) is on both screens, in the same box and colour as the agent's last
+  error, from `agent.supervisor.crashed`: which process, how it ended, what it
+  means for the sound ("the tuner (fmit) ... sound is unaffected; there is no
+  tuner"), and that restarting the rig brings it back, since nothing restarts it
+  on its own. The supervisor's own problems (a group that would not stop, its
+  holder lost) are shown the same way. A crash outlives its rig in the record,
+  and once that rig is down the box says so instead of telling you to restart.
+- **The amp is named by its file** on both screens and in the picker
+  (`Neve 2`), and the name the `.nam` gives itself is shown under it as what
+  the file calls itself, with the rest of its metadata under "What the model
+  declares". The two screens used to call one model by two names.
 
 It polls `/health` once a second, and `/live` only while a rig is up: a rig
 that is down is shown as a state, in grey, not as an error a second in the
@@ -1186,7 +1214,12 @@ sushi-rig take repair ~/sushi-rig-takes/riff-idea      # after the rig was kille
 
 The recorder writes float32, so a chain pushed past 0 dBFS is kept as it was
 rather than clipped, and it rewrites each stem's header after every block, so a
-take cut off by a crash is readable after `take repair`. If its writer ever
+take cut off by a crash is readable after `take repair`. `complete: true` in
+`take.yaml` means the take recorded what it was asked to: a take whose capture
+failed (the engine or the recorder did not start, or the writer stopped) is
+written `complete: false` beside the failure, and `take check` says "nothing was
+recorded" of one that holds no audio. A take written before 2026-11-02 could say
+`complete: true` of a failed capture; `take check` names that contradiction. If its writer ever
 falls behind, the stems lose the same frames together and stay aligned, and
 `take.yaml` lists where audio was lost.
 
@@ -1200,6 +1233,12 @@ reloaded mid-take cannot show it stopped. A take without a name is called
 The capture engine (#53, `tool/src/sushi_rig/capture.py`) is the part that takes
 audio from PipeWire: a JACK client with one input port per column of a take,
 each linked to the port the take names, copying every block into the recorder.
+A take names its ports as the machine file does, by PipeWire alias; at each
+RECORD the engine reads `pw-dump` and resolves them through
+`patchbay.jack_port_names`, the reader the patchbay wires through, into the
+names a JACK client sees (`Audient iD14 Multichannel:capture_AUX0` for the
+machine file's `Audient iD14:capture_AUX0`), and `take.yaml` records what was
+linked under `capture.engine.sources`.
 It is written and its decisions are tested, but **it has not been run against a
 live PipeWire**. The listener constructs one for a `--rig` run with its panel
 (#57), and `sushi-rig recorder` for a headless one, which is how the web UI
@@ -1344,6 +1383,18 @@ Three states, and the third is the point: a check that *could not run* is
 reported as `unchecked`, never as a pass. Most of these questions need PipeWire
 and a running rig, so on a bare machine `doctor` tells you what it could not
 look at rather than going quiet.
+
+With a rig of channels up, `record-ports` plans a take of it exactly as the
+recorder does, from the files the state file names, and resolves every port in
+the live graph the way the capture engine does, so doctor fails when RECORD
+would be refused at that step and says which stem and port; the line names the
+JACK name each machine-file port resolved to. (On 2026-11-02 doctor passed 11
+checks while every take was refused.) It cannot open a JACK client, which needs
+`pw-jack`, so a JACK name derived wrongly still passes here and is refused at
+RECORD with both spellings. A node of the rig's own that is absent with the rig
+up is said as what it is: the agent's crash record when an agent is running
+(the command asks it), else the state file's pid, else a child the rig was
+started without; not "the rig is down".
 
 It also checks there is room to record — at least an hour of a take of the
 largest rig in `config/`, two stems per channel — and that every `.nam` model

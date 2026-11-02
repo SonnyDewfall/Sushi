@@ -783,3 +783,78 @@ def test_a_list_of_scalars_grows_and_shrinks_with_the_comment_after_it_kept_once
     text = "m:\n  - 1\n  - 2\n  # after\nz: 0\n"
     assert yamlmerge.merged(text, {"m": [1], "z": 0}) == "m:\n  - 1\n  # after\nz: 0\n"
     assert yamlmerge.merged(text, {"m": [1, 2, 3], "z": 0}) == "m:\n  - 1\n  - 2\n  - 3\n  # after\nz: 0\n"
+
+
+# --------------------------------------------------------------------------- #
+# A one-knob save of a committed rig is a one-line diff (#117, the rig 2026-11-02)
+# --------------------------------------------------------------------------- #
+
+def _float32(value):
+    """What Sushi hands back for a value it holds: a float32, read as a double."""
+    import struct
+
+    return struct.unpack("f", struct.pack("f", float(value)))[0]
+
+
+def _capture_of(raw):
+    """A capture of `raw` running unchanged, as `live.capture` would read it:
+    every parameter a float32, every bypass a flag, every chain in its order."""
+    processors, tracks = {}, {}
+    channels = list(raw.get("channels") or [])
+    for track, chain in [(c["name"], c.get("chain") or []) for c in channels] + [("master", raw["master"].get("chain") or [])]:
+        names = [p["name"] for p in chain]
+        tracks[track] = (["master_return"] + names) if track == "master" else names + [f"{track}_send"]
+        for plugin in chain:
+            processors[plugin["name"]] = {
+                "bypassed": bool(plugin.get("bypassed", False)),
+                "parameters": {k: _float32(v) for k, v in (plugin.get("parameters") or {}).items()},
+            }
+    return {"processors": processors, "tracks": tracks}
+
+
+@pytest.mark.parametrize("rig", ["electric-chorus-2", "accustomed"])
+def test_one_knob_saved_into_a_committed_rig_changes_exactly_one_line(tmp_path, rig):
+    """On the rig, turning chorus Level 0.91 -> 0.85 and saving rewrote 16
+    lines: every whole-number float lost its `.0` (`1.0` -> `1`, which YAML
+    reads as an int). A value the save did not change keeps its written form."""
+    import difflib
+    import shutil
+
+    import yaml
+
+    from sushi_rig.save import save_rig
+
+    source = checkout_root() / "config" / "rigs" / f"{rig}.yaml"
+    path = tmp_path / "config" / "rigs" / source.name
+    path.parent.mkdir(parents=True)
+    shutil.copy(source, path)
+    before = path.read_text()
+    raw = yaml.safe_load(before)
+    state = _capture_of(raw)
+    knob = next(p for c in raw["channels"] for p in c.get("chain") or [] if p.get("parameters"))
+    name, value = next(iter(knob["parameters"].items()))
+    state["processors"][knob["name"]]["parameters"][name] = _float32(round(value + 0.06, 2) if value < 0.9 else value - 0.06)
+
+    save_rig(rig, path, state=state)
+    changed = [line for line in difflib.unified_diff(before.splitlines(), path.read_text().splitlines(), lineterm="", n=0)
+               if line[:1] in "+-" and not line.startswith(("+++", "---"))]
+    assert len(changed) == 2, "\n".join(changed)
+    assert [line[1:].strip().split(":")[0] for line in changed] == [name, name], changed
+
+    save_rig(rig, path, state=state)
+    assert len([1 for line in difflib.unified_diff(before.splitlines(), path.read_text().splitlines(), lineterm="", n=0)
+                if line[:1] in "+-" and not line.startswith(("+++", "---"))]) == 2, "and a second save adds nothing"
+
+
+def test_a_whole_number_float_a_save_changes_stays_a_float():
+    """0.5 moved to 1.0 is still a float in the file: the file's type is kept."""
+    from sushi_rig.rigfile import fold_state
+
+    raw = {"kind": "rig", "schema_version": 1, "name": "one",
+           "channels": [{"name": "board", "input": "guitar-in", "width": "mono",
+                         "chain": [{"name": "comp", "uri": "urn:comp", "parameters": {"Mix": 0.5, "Steps": 3, "On": 1.0}}]}],
+           "master": {"output": "monitor-out"}}
+    folded = fold_state(raw, {"processors": {"comp": {"parameters": {"Mix": 1.0, "Steps": 4.0, "On": 1.0000000001}}}})
+    params = folded["channels"][0]["chain"][0]["parameters"]
+    assert params == {"Mix": 1.0, "Steps": 4, "On": 1.0}
+    assert [type(params[k]) for k in ("Mix", "Steps", "On")] == [float, int, float]

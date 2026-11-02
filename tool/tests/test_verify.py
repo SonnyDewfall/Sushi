@@ -12,6 +12,10 @@ than as minimal cases.
 
 from __future__ import annotations
 
+from pathlib import Path
+
+import pytest
+
 from sushi_rig.verify import TOLERANCE, check_names, diff_state
 
 
@@ -421,3 +425,48 @@ def test_a_property_listed_but_unreadable_is_unchecked_not_absent():
             "tracks": {"guitar": ["guitar_send"]}}
     (problem,) = diff_state(_config_with_send(), live)
     assert "could not be read" in problem.detail and "is a property" in problem.detail
+
+
+# --- a rig file given to verify (the rig, 2026-11-02: a raw JSONDecodeError) --------------
+
+def test_a_rig_file_of_config_rigs_is_compiled_as_up_compiles_it_and_that_is_checked(tmp_path, monkeypatch):
+    import json
+
+    from sushi_rig import rig as rig_module, verify as verify_module
+    from sushi_rig.paths import checkout_root
+
+    machine = checkout_root() / "machines" / "sonny-dewfall-XPS-9320.yaml"
+    real = rig_module.compile_named_rig
+    monkeypatch.setattr(rig_module, "compile_named_rig", lambda name, root: real(name, root, machine))
+    checked = []
+
+    def fake_dump(config, *a, **k):
+        checked.append(json.loads(Path(config).read_text()))
+        return {}
+
+    monkeypatch.setattr(verify_module, "dump_plugins", fake_dump)
+    monkeypatch.setattr(verify_module, "check_names", lambda parsed, dump: [])
+    rig = checkout_root() / "config" / "rigs" / "electric-chorus-2.yaml"
+    assert verify_module.verify(rig, "sushi", quick=True) == []
+    expected = real("electric-chorus-2", checkout_root(), machine)
+    expected.pop("initial_state", None)  # the dump is taken without it (`_without_state`)
+    assert checked == [expected]
+
+
+def test_a_yaml_file_elsewhere_is_refused_with_what_to_pass(tmp_path):
+    from sushi_rig.verify import VerifyError, verify
+
+    path = tmp_path / "board.yaml"
+    path.write_text("kind: rig\n")
+    with pytest.raises(VerifyError, match=r"pass a rig of channels from config/rigs/ \(config/rigs/<name>.yaml"):
+        verify(path)
+
+
+def test_a_file_that_is_not_json_is_a_sentence_not_a_traceback(tmp_path, capsys):
+    from sushi_rig import cli
+
+    path = tmp_path / "board.json"
+    path.write_text("kind: rig\nname: board\n")
+    assert cli.main(["verify", str(path)]) == 1
+    err = capsys.readouterr().err
+    assert "board.json: CANNOT CHECK" in err and "is not a Sushi config: it is not JSON" in err

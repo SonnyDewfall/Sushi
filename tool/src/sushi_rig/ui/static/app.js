@@ -815,13 +815,14 @@ function ampRegion(el) {
     const chosen = state.ampChoice && view.picker.options.find((o) => o.model === state.ampChoice);
     const select = h("select", { "aria-label": "Amp model", disabled: !view.picker.canChange },
       h("option", { value: "" }, "Choose another model…"),
-      view.picker.options.map((o) => h("option", { value: o.model, disabled: !o.usable, title: o.why }, o.label)));
+      view.picker.options.map((o) => h("option", { value: o.model, disabled: !o.usable, title: o.why || (o.declared ? `It calls itself ${o.declared}` : null) }, o.label)));
     select.value = chosen ? chosen.model : "";
     select.addEventListener("change", () => { state.ampChoice = select.value || null; render(); });
     return [
       h("div", { class: "amp-head" },
         h("span", { class: "swatch", style: "background:#E07A73" }),
-        h("div", { class: "who" }, h("h2", {}, "AMP"), h("span", { class: "amp-model" }, view.model ? view.model.name : "no model"),
+        h("div", { class: "who" }, h("h2", {}, "AMP"), h("span", { class: "amp-model", title: view.model ? view.model.stored : null }, view.model ? view.model.name : "no model"),
+          view.model && view.model.declared ? h("span", { class: "amp-declared" }, `The file calls itself ${view.model.declared}`) : null,
           h("span", { class: "sub" }, view.known === "panel" ? view.note : "in Carla · values are what was last sent, not read back"))),
       view.model && view.model.problem ? h("p", { class: "missing" }, view.model.problem) : null,
       view.model && view.model.warning ? h("p", { class: "warn" }, view.model.warning) : null,

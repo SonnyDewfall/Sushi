@@ -633,3 +633,184 @@ def test_one_odd_config_does_not_take_the_doctor_down(tmp_path, body):
     (tmp_path / "config" / "tone.json").write_text(json.dumps({"tracks": [{}, {}, {}]}))
     assert doctor._largest_rig(tmp_path) == (3 * doctor.STEMS_PER_CHANNEL, "tone")
     assert doctor._models(tmp_path) == ()
+
+
+# --------------------------------------------------------------------------- #
+# The recorder's ports (2026-11-02: 11 checks passed while no take could start)
+# --------------------------------------------------------------------------- #
+
+GUITAR_VOCAL = ROOT / "config" / "rigs" / "guitar_vocal.yaml"
+THIS_MACHINE = ROOT / "machines" / "sonny-dewfall-XPS-9320.yaml"
+
+
+def planned_stems():
+    """guitar_vocal's take on this machine, planned as the recorder plans it."""
+    from sushi_rig.machine import MachineSpec
+    from sushi_rig.rigfile import compile_rig, emit_compiled, load_rig
+    from sushi_rig.transport import rig_stems
+
+    rig = load_rig(GUITAR_VOCAL)
+    return rig_stems(rig, MachineSpec.load(THIS_MACHINE), emit_compiled(rig, *compile_rig(rig)))
+
+
+def planned_columns():
+    from sushi_rig.capture import plan_columns
+
+    return plan_columns(planned_stems())
+
+
+def without_alias(alias: str) -> str:
+    """The capture with one port's `port.alias` renamed: a machine file whose
+    port is not the graph's. The one field changed is that alias."""
+    objects = json.loads(CAPTURED)
+    for o in objects:
+        props = o.get("info", {}).get("props", {})
+        if o.get("type") == "PipeWire:Interface:Port" and props.get("port.alias") == alias:
+            props["port.alias"] = alias + "-renamed"
+    return json.dumps(objects)
+
+
+def test_the_recorders_ports_resolve_in_the_captured_graph_and_say_their_jack_names():
+    from sushi_rig.patchbay import live_port_nodes
+
+    check = doctor.record_ports_check(planned_columns(), live_port_nodes(CAPTURED))
+    assert check.state == OK, check.message
+    assert "8 column(s)" in check.message
+    assert "Audient iD14:capture_AUX0 is Audient iD14 Multichannel:capture_AUX0" in check.message
+
+
+def test_a_dry_tap_whose_port_is_not_in_the_graph_is_a_fault_naming_it():
+    from sushi_rig.patchbay import live_port_nodes
+
+    check = doctor.record_ports_check(planned_columns(), live_port_nodes(without_alias("Audient iD14:capture_AUX0")))
+    assert check.state == FAULT
+    assert "guitar-dry.wav cannot be captured from 'Audient iD14:capture_AUX0'" in check.message
+    assert "port.alias" in check.remedy
+
+
+@pytest.mark.parametrize("dump", ["captured", "alias gone", "sushi gone"])
+def test_doctor_fails_exactly_when_the_engine_would_refuse_the_take(dump, monkeypatch):
+    """The same plan through the capture engine (JACK stood in by `jack_fake`,
+    listing the rig's own port names) and through doctor, on one graph."""
+    pytest.importorskip("numpy")
+    from sushi_rig import capture
+    from sushi_rig.patchbay import live_port_nodes
+    from jack_fake import FakeJack
+
+    graph = {"captured": CAPTURED, "alias gone": without_alias("Audient iD14:capture_AUX1"),
+             "sushi gone": without_alias("sushi:audio_output_0")}[dump]
+    FakeJack().install(monkeypatch)
+    stems = planned_stems()
+    columns = planned_columns()
+    engine = capture.CaptureEngine(48000, 256, settle_s=0.0, link_retry_s=0.0, read_dump=lambda: graph)
+    try:
+        engine.start(stems, lambda block: len(block))
+        refused = False
+        engine.stop()
+    except capture.CaptureError:
+        refused = True
+    assert (doctor.record_ports_check(columns, live_port_nodes(graph)).state == FAULT) is refused
+    assert refused is (dump != "captured")
+
+
+def running_rig(tmp_path, **state):
+    """A state file of guitar_vocal up on this machine, and `describe_rig`'s
+    answer for it, without a rig: the files the recorder plans from are real."""
+    from sushi_rig.rigfile import compile_rig, emit_compiled, load_rig
+
+    rig = load_rig(GUITAR_VOCAL)
+    config = tmp_path / "guitar_vocal.json"
+    config.write_text(json.dumps(emit_compiled(rig, *compile_rig(rig))))
+    recorded = {"config_name": "guitar_vocal", "config": str(config), "rig": str(GUITAR_VOCAL),
+                "machine": str(THIS_MACHINE), **state}
+    return recorded, {"running": True, "children": {}}
+
+
+def test_the_record_check_plans_the_running_rig_from_its_state_file(tmp_path):
+    from sushi_rig.patchbay import live_port_nodes
+
+    state, described = running_rig(tmp_path)
+    check = doctor.record_check(ROOT, live_port_nodes(CAPTURED), described, state)
+    assert check.state == OK and "Audient iD14 Multichannel:capture_AUX0" in check.message
+
+
+@pytest.mark.parametrize("case, state_change, said", [
+    ("down", None, "no rig is running"),
+    ("v1", {"rig": None}, "is a v1 config"),
+    ("no graph", {}, "the live graph could not be read"),
+])
+def test_the_record_check_is_unchecked_where_there_is_nothing_to_ask(tmp_path, case, state_change, said):
+    from sushi_rig.patchbay import live_port_nodes
+
+    state, described = running_rig(tmp_path)
+    if case == "down":
+        described = {"running": False}
+    else:
+        state.update(state_change)
+    port_nodes = None if case == "no graph" else live_port_nodes(CAPTURED)
+    check = doctor.record_check(ROOT, port_nodes, described, state)
+    assert check.state == UNCHECKED and said in check.message
+
+
+def test_a_run_the_recorder_cannot_plan_is_a_fault_in_its_words(tmp_path):
+    from sushi_rig.patchbay import live_port_nodes
+
+    state, described = running_rig(tmp_path, config=str(tmp_path / "gone.json"))
+    check = doctor.record_check(ROOT, live_port_nodes(CAPTURED), described, state)
+    assert check.state == FAULT and "gone.json, could not be read" in check.message
+
+
+def test_run_reports_the_recorders_ports(tmp_path, monkeypatch):
+    """The whole examination, with the graph and the rig stood in: the check
+    is there, between the patchbay and the machine around it."""
+    from sushi_rig import patchbay, rig as rig_module, state as state_module
+
+    state, described = running_rig(tmp_path)
+    monkeypatch.setattr(patchbay, "read_pw_dump", lambda *a, **k: without_alias("Audient iD14:capture_AUX0"))
+    monkeypatch.setattr(state_module, "read_state", lambda: state)
+    monkeypatch.setattr(rig_module, "describe_rig", lambda recorded=None: described)
+    checks = doctor.run(ROOT, machine_file=THIS_MACHINE)
+    record = next(c for c in checks if c.name == "record-ports")
+    assert record.state == FAULT and "guitar-dry.wav" in record.message
+
+
+# --------------------------------------------------------------------------- #
+# A node of the rig's own, absent while the rig is up (2026-11-02)
+# --------------------------------------------------------------------------- #
+
+FMIT_LINKS = {"PipeWire ALSA [fmit]/ALSA Capture [fmit]": ["a"]}
+
+
+def test_an_absent_tuner_with_the_rig_down_is_the_rig_being_down():
+    checks = doctor.patchbay_checks({}, FMIT_LINKS, file_name="rig.qpwgraph", links=20,
+                                    rig={"running": False})
+    assert "while the rig is down" in checks[0].message and "sushi-rig up" in checks[0].remedy
+
+
+def test_a_tuner_the_agent_saw_killed_is_said_as_a_crash_not_a_rig_that_is_down():
+    """What doctor said on the rig after `kill` of fmit: "while the rig is down
+    -> run `sushi-rig up`", of a rig that was up."""
+    crashed = [{"name": "fmit", "pid": 8302, "returncode": -15, "signal": "SIGTERM",
+                "at": "2026-11-02T21:08:22+00:00", "phase": "running"}]
+    checks = doctor.patchbay_checks({}, FMIT_LINKS, file_name="rig.qpwgraph", links=20,
+                                    rig={"running": True, "children": {"fmit": {"pid": 8302, "alive": False}}},
+                                    crashed=crashed)
+    check = checks[0]
+    assert check.state == UNCHECKED
+    assert "the rig is up" in check.message and "rig is down" not in check.message
+    assert "the tuner (fmit) was killed by SIGTERM at 2026-11-02T21:08:22+00:00" in check.message
+    assert "sushi-rig restart" in check.remedy and "sushi-rig up" not in check.remedy
+
+
+def test_without_an_agent_a_dead_child_is_read_from_the_state_files_pid():
+    checks = doctor.patchbay_checks({}, FMIT_LINKS, file_name="rig.qpwgraph", links=20,
+                                    rig={"running": True, "children": {"fmit": {"pid": 8302, "alive": False}}})
+    assert "the tuner (fmit) (pid 8302) is no longer running" in checks[0].message
+    assert "sushi-rig restart" in checks[0].remedy
+
+
+def test_a_rig_started_without_the_tuner_is_said_so_with_nothing_to_fix():
+    checks = doctor.patchbay_checks({}, FMIT_LINKS, file_name="rig.qpwgraph", links=20,
+                                    rig={"running": True, "children": {"sushi": {"pid": 9, "alive": True}}})
+    assert "the rig was started without the tuner (fmit)" in checks[0].message
+    assert "restart" not in checks[0].remedy

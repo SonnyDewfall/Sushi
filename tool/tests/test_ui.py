@@ -970,6 +970,62 @@ def test_the_stage_shows_the_agents_last_error(stage, served):
     expect(stage.locator(".problem.refused")).to_contain_text("Not changed: octave")
 
 
+# -- a child of the rig that exited (the rig, 2026-11-02) ---------------------------------
+#
+# After `kill` of the tuner, /health, `status` and the agent's terminal all said
+# so, and a text search of either screen found nothing: the page drew
+# `agent.last_error` and not `agent.supervisor.crashed`.
+
+FMIT_CRASH = {"name": "fmit", "pid": 8302, "returncode": -15, "signal": "SIGTERM",
+              "at": "2026-11-02T21:08:22+00:00", "phase": "running", "config_name": "electric-chorus-2",
+              "log": "/run/user/1000/sushi-rig/logs/fmit.log"}
+
+
+def test_a_crashed_child_is_named_with_what_it_means_and_what_to_do(blank):
+    up, down = rigjs(blank, "return [R.crashProblem(arg, true), R.crashProblem(arg, false)];", FMIT_CRASH)
+    assert up["title"] == "The tuner (fmit) exited"
+    assert up["reason"] == ("The tuner (fmit) was killed by SIGTERM in electric-chorus-2; sound is unaffected; "
+                            "there is no tuner. Restart the rig to bring it back: nothing restarts it on its own. "
+                            "Its log is /run/user/1000/sushi-rig/logs/fmit.log.")
+    assert up["at"] == FMIT_CRASH["at"]
+    assert "That rig has since stopped." in down["reason"] and "Restart" not in down["reason"]
+    amp = rigjs(blank, "return R.crashProblem(arg, true);", {**FMIT_CRASH, "name": "amp", "signal": None, "returncode": 1})
+    assert amp["title"] == "The amp (Carla) exited" and "exited with status 1" in amp["reason"]
+    assert "the guitar through the amp is silent" in amp["reason"]
+
+
+def test_crashes_and_the_supervisors_problems_come_before_the_last_error(blank):
+    health = {"ok": True, "body": {"rig": {"running": True}, "agent": {
+        "last_error": {"message": "record failed", "command": ["POST", "/record/start"], "at": "t"},
+        "supervisor": {"crashed": [FMIT_CRASH], "problems": [
+            {"kind": "holder_lost", "at": "t2", "message": "the group holder of x (pid 9) exited"}]}}}}
+    got = rigjs(blank, "return R.agentProblems(arg);", health)
+    assert [g["title"] for g in got] == ["The tuner (fmit) exited", "The rig's supervisor",
+                                         "Last error (POST /record/start)"]
+    assert got[1]["reason"] == "the group holder of x (pid 9) exited"
+
+
+@pytest.mark.parametrize("screen", ["stage", "rack"])
+def test_a_crashed_child_is_on_both_screens_as_loudly_as_the_last_error(browser, served, screen):
+    page = Page(browser, served.url + ("/" if screen == "stage" else "/#rack"),
+                **({"width": 390, "height": 844} if screen == "stage" else {}))
+    p = page.page
+    p.wait_for_selector(".card" if screen == "stage" else ".unit")
+    expect(p.locator(".problem")).to_have_count(0)
+    served.agent.supervisor.crashed.append(dict(FMIT_CRASH))
+    served.agent.supervisor.problems.append({"kind": "stuck", "at": "2026-11-02T21:09:00+00:00",
+                                             "message": "the rig's group would not stop: pids 1, 2 are left"})
+    crash = p.locator(".problem.agent", has_text="The tuner (fmit) exited")
+    expect(crash).to_contain_text("sound is unaffected")
+    expect(crash).to_contain_text("Restart the rig to bring it back")
+    expect(p.locator(".problem.agent", has_text="The rig's supervisor")).to_contain_text("would not stop")
+    # The same element, and so the same weight, the last error is given.
+    assert crash.evaluate("(e) => getComputedStyle(e).backgroundColor") == \
+        p.evaluate("() => { const e = document.createElement('div'); e.className = 'problem agent'; "
+                   "document.body.append(e); const c = getComputedStyle(e).backgroundColor; e.remove(); return c; }")
+    page.close()
+
+
 # -- what the page fetches, and when ----------------------------------------------------
 
 def gxts9_info():
@@ -1509,6 +1565,21 @@ def test_amp_values_are_in_their_own_units_and_one_never_sent_says_so(blank):
     assert shown == ["−3.0 dB", "0.0 dB", "0.0 dB", "1.00", "not sent", "Edge", "x", "none"]
 
 
+def test_a_model_is_titled_by_its_file_and_what_it_calls_itself_is_its_description(blank):
+    """On the rig the stage said "Neve 2" and the rack "Rupert Tape 1 Silk RED
+    Tape rupert Tape 1" of one model. The file's name is the title everywhere."""
+    amp = amp_answer(model={**amp_answer()["body"]["model"], "name": "Clean Room", "declared": "Twin Reverb Clean"})
+    models = {**MODELS, "body": {**MODELS["body"], "models": [
+        {**MODELS["body"]["models"][0], "name": "Clean Room", "declared": "Twin Reverb Clean"},
+        {**MODELS["body"]["models"][1], "declared": None}]}}
+    card, stage = rigjs(blank, "return [R.ampCard(arg.amp, arg.models), R.stageAmp(arg.amp)];",
+                        {"amp": amp, "models": models})
+    assert card["model"]["name"] == stage["name"] == "Clean Room"
+    assert card["model"]["declared"] == "Twin Reverb Clean"
+    assert [(o["label"], o["declared"]) for o in card["picker"]["options"]] == [
+        ("Clean Room (playing)", "Twin Reverb Clean"), ("Edge", None)]
+
+
 def test_the_stage_amp_is_the_model_and_the_output_level_only(blank):
     view = rigjs(blank, "return [R.stageAmp(arg), R.stageAmp(null)];", amp_answer())
     assert view[0]["name"] == "Clean Room" and view[0]["output"]["name"] == "Output Lvl"
@@ -1559,6 +1630,10 @@ def test_the_rack_shows_the_amp_with_its_model_faders_and_quality_not_on_one(bro
     expect(card.locator(".shown")).to_contain_text("Quality1.00")
     expect(card.locator("details.amp-about pre")).to_contain_text("matches the rig")
     expect(p.locator(".tile").last).to_have_text("AMPClean Room")
+    # One name on both screens, the file's; what the file calls itself is said
+    # beside it, not instead of it.
+    expect(card.locator(".amp-declared")).to_have_text("The file calls itself Invented Twin Clean Room Mic")
+    expect(card.locator("select option", has_text="Edge")).to_have_text("Edge")
     page.close()
 
 
