@@ -68,10 +68,11 @@ recorder is fed nothing before then, and the first take reads the graph's
 quantum on the client it captures with.
 
 Three things to know before that run. The process has to be started under
-`pw-jack`, or JACK-Client finds a libjack that talks to no server. Nothing in
-`listen` constructs a `CaptureEngine` yet: that needs the port names a take
-records, which follow from the machine file and the rig (see `transport.py`).
-And the JACK dependency is the `[capture]` extra; importing this module never
+`pw-jack`, or JACK-Client finds a libjack that talks to no server; `up` starts
+the listener that way. The listener constructs a `CaptureEngine` for a `--rig`
+run, with the ports `transport.rig_stems` plans from the rig and the machine
+file, and says why it has none otherwise (`transport.record_session`). And the
+JACK dependency is the `[capture]` extra; importing this module never
 imports it.
 
 ## JACK is imported late on purpose
