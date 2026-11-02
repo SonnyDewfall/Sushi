@@ -86,3 +86,19 @@ def test_up_passes_listen_explicit_values_so_the_new_defaults_do_not_touch_it(tm
     assert command[command.index("--out-dir") + 1] == "config"
     assert command[command.index("--archive-dir") + 1] == "config/archive"
     assert command[command.index("--sushi") + 1] == "./sushi"
+
+
+def test_a_missing_elkpy_ends_the_cli_with_its_message_as_it_always_did(monkeypatch, tmp_path):
+    """`live.py` raises it so the listener and the agent can outlive it; the
+    command line is where it becomes an exit."""
+    import pytest
+
+    from sushi_rig.live import ElkpyMissing
+
+    def missing(address):
+        raise ElkpyMissing("elkpy not found. Install it into the tool's venv")
+
+    monkeypatch.setattr("sushi_rig.live.capture", missing)
+    with pytest.raises(SystemExit) as caught:
+        cli.main(["capture", "-o", str(tmp_path / "state.json")])
+    assert caught.value.code == "elkpy not found. Install it into the tool's venv"
