@@ -258,6 +258,18 @@ def test_which_plugin_each_processor_is_comes_with_the_compilers_roles():
         "board_send": "send", "vocal_send": "send", "master_return": "return"}
 
 
+def test_a_mono_plugins_copy_to_stereo_has_the_role_stereo_by_its_uid():
+    """The page hides role "stereo" (rig.js rackModel); the agent gives it to
+    the compiler's copy, known by Sushi's uid whatever it is called."""
+    import json
+
+    rig = UiRig()
+    rig.chains["board"].insert(1, "renamed")
+    rig.classes["renamed"] = {"uri": None, "uid": "sushi.testing.mono_summing", "type": "internal"}
+    status, _, body = call(ui_agent(live=rig), "GET", "/live/plugins")
+    assert status == 200 and json.loads(body)["processors"]["renamed"]["role"] == "stereo"
+
+
 def test_a_live_that_cannot_say_which_plugin_is_501_not_an_empty_answer():
     import json
 
@@ -452,6 +464,24 @@ def test_the_rack_keeps_the_send_and_return_apart_by_role_or_by_name(blank, serv
                 ["master", [], None, "master_return"]]
     assert out[0] == expected and out[1] == expected
     assert out[2] == [{"channel": "board", "text": "0 dB"}, {"channel": "vocal", "text": "−6 dB"}]
+
+
+def test_the_rack_does_not_show_a_mono_plugins_copy_to_stereo_by_role_or_by_name(blank, served):
+    """The compiler's `<plugin>_to_stereo` (stereo.py) goes with its plugin,
+    so the rack does not offer it: the units are what a move steps past. The
+    track's `chain` is still Sushi's whole chain, as the agent logs it."""
+    live = copy.deepcopy(served.rig.snapshot(served.rig.connect()))
+    board = live["tracks"]["board"]
+    board.insert(board.index("overdrive") + 1, "overdrive_to_stereo")
+    plugins = copy.deepcopy(served.rig.plugins(None))
+    plugins["overdrive_to_stereo"] = {"track": "board", "uri": None, "uid": "sushi.testing.mono_summing",
+                                      "type": "internal", "role": "stereo"}
+    out = rigjs(blank, """
+      const shape = (m) => m.tracks.filter((t) => t.name === 'board').map((t) => [t.units.map((u) => u.name), t.chain]);
+      return [shape(R.rackModel(arg.live, arg.plugins, {})), shape(R.rackModel(arg.live, null, null))];""",
+                {"live": live, "plugins": plugins})
+    expected = [[["overdrive", "octave", "delay"], board]]
+    assert out == [expected, expected]
 
 
 # -- unsaved, and what undo would take ------------------------------------------

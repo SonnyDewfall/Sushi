@@ -90,7 +90,7 @@ def test_every_channel_ends_in_a_send_to_the_master_and_the_master_is_last():
 
 
 def test_the_master_chain_follows_the_return():
-    raw = rig_yaml(channel("guitar"), {"output": "monitor-out", "chain": [{"name": "ceiling", "uri": "urn:x"}]})
+    raw = rig_yaml(channel("guitar"), {"output": "monitor-out", "chain": [{"name": "ceiling", "uri": "http://drobilla.net/plugins/mda/Limiter"}]})
     assert [p["name"] for p in tracks(raw)["master"]["plugins"]] == ["master_return", "ceiling"]
 
 
@@ -143,7 +143,7 @@ def test_a_version_this_tool_does_not_read_is_refused():
 
 def test_names_the_compiler_owns_are_refused_by_name():
     found = problems(rig_yaml(
-        channel("master") + channel("guitar", chain=[{"name": "guitar_send", "uri": "urn:x"}])
+        channel("master") + channel("guitar", chain=[{"name": "guitar_send", "uri": "http://drobilla.net/plugins/mda/Limiter"}])
     ))
     assert any(p.startswith("channel 'master': a name the compiler gives") for p in found)
     assert any("plugin 'guitar_send' has a name the compiler gives" in p for p in found)
@@ -197,8 +197,8 @@ def test_a_capture_keeps_its_values_but_not_a_moved_send_or_return():
         },
     }
     raw = rig_yaml(
-        channel("guitar", chain=[{"name": "guitar_room", "uri": "urn:r"}, {"name": "guitar_delay", "uri": "urn:d"}]),
-        {"output": "monitor-out", "chain": [{"name": "ceiling", "uri": "urn:x"}]},
+        channel("guitar", chain=[{"name": "guitar_room", "uri": "urn:ardour:a-reverb"}, {"name": "guitar_delay", "uri": "http://drobilla.net/plugins/mda/Delay"}]),
+        {"output": "monitor-out", "chain": [{"name": "ceiling", "uri": "http://drobilla.net/plugins/mda/Limiter"}]},
     )
     config = emit_rig(parse_rig(raw), captured)
     by_name = {t["name"]: t for t in config["tracks"]}
@@ -213,7 +213,7 @@ def test_a_capture_keeps_its_values_but_not_a_moved_send_or_return():
 def test_a_plugin_added_after_a_capture_still_comes_before_the_send():
     """emit appends what a capture does not mention, which once put it after
     the send: heard in the stem, missing from the monitors."""
-    raw = rig_yaml(channel("guitar", chain=[{"name": "a", "uri": "urn:a"}, {"name": "b", "uri": "urn:b"}]))
+    raw = rig_yaml(channel("guitar", chain=[{"name": "a", "uri": "http://drobilla.net/plugins/mda/DeEss"}, {"name": "b", "uri": "http://drobilla.net/plugins/mda/Image"}]))
     for order in (["a", "guitar_send"], []):
         config = emit_rig(parse_rig(raw), {"tracks": {"guitar": order}})
         assert [p["name"] for p in config["tracks"][0]["plugins"]][-1] == "guitar_send", order
@@ -363,12 +363,12 @@ FOLD_RAW = {
     "channels": [{
         "name": "board", "input": "guitar-in", "width": "mono",
         "chain": [
-            {"name": "comp", "uri": "urn:comp", "parameters": {"Ratio": 0.3, "Thresh": 0.5}},
-            {"name": "drive", "uri": "urn:drive", "bypassed": True},
-            {"name": "verb", "uri": "urn:verb", "program": 2},
+            {"name": "comp", "uri": "http://drobilla.net/plugins/mda/Dynamics", "parameters": {"Ratio": 0.3, "Thresh": 0.5}},
+            {"name": "drive", "uri": "http://drobilla.net/plugins/mda/Overdrive", "bypassed": True},
+            {"name": "verb", "uri": "http://distrho.sf.net/plugins/MVerb", "program": 2},
         ],
     }],
-    "master": {"output": "monitor-out", "chain": [{"name": "lim", "uri": "urn:lim"}]},
+    "master": {"output": "monitor-out", "chain": [{"name": "lim", "uri": "http://drobilla.net/plugins/mda/Loudness"}]},
 }
 
 
@@ -385,10 +385,10 @@ def test_fold_state_writes_the_captured_order_and_values_into_the_chain():
     })
     chain = folded["channels"][0]["chain"]
     assert [p["name"] for p in chain] == ["drive", "comp", "verb"], "the panel's order is the file's"
-    assert chain[0] == {"name": "drive", "uri": "urn:drive", "bypassed": False}
+    assert chain[0] == {"name": "drive", "uri": "http://drobilla.net/plugins/mda/Overdrive", "bypassed": False}
     assert chain[1]["parameters"] == {"Ratio": 0.35, "Thresh": 0.5}, "captured over the file's, key by key"
     assert "bypassed" not in chain[1], "false is the default, and the file never said otherwise"
-    assert chain[2] == {"name": "verb", "uri": "urn:verb", "program": 2}, "untouched when the capture says nothing"
+    assert chain[2] == {"name": "verb", "uri": "http://distrho.sf.net/plugins/MVerb", "program": 2}, "untouched when the capture says nothing"
     assert folded["master"]["chain"][0]["parameters"] == {"Ceiling": 0.9}
     assert "strip" not in folded["channels"][0], "a strip moved live is not the file's"
     assert FOLD_RAW["channels"][0]["chain"][0]["parameters"] == {"Ratio": 0.3, "Thresh": 0.5}, "the input is not mutated"
@@ -396,7 +396,7 @@ def test_fold_state_writes_the_captured_order_and_values_into_the_chain():
 
 def test_fold_state_a_captured_program_drops_the_previous_programs_parameters():
     folded = fold_state(FOLD_RAW, {"processors": {"comp": {"program": 4}}})
-    assert folded["channels"][0]["chain"][0] == {"name": "comp", "uri": "urn:comp", "program": 4}
+    assert folded["channels"][0]["chain"][0] == {"name": "comp", "uri": "http://drobilla.net/plugins/mda/Dynamics", "program": 4}
 
 
 def test_fold_state_refuses_a_chain_that_lacks_one_of_the_files_plugins():
@@ -542,7 +542,7 @@ def test_a_level_saved_into_a_commented_file_lands_after_the_chain(tmp_path):
           width: mono
           chain:
           - name: drive   # on for the solos
-            uri: urn:drive
+            uri: http://drobilla.net/plugins/mda/Overdrive
         master:
           output: monitor-out
           chain: []
@@ -571,11 +571,11 @@ def _midi_rig(controls, level=-6.0, **extra):
         "kind": "rig", "schema_version": 1, "name": "two",
         "channels": [
             {"name": "clean", "input": "guitar-in", "width": "mono",
-             "chain": [{"name": "comp", "uri": "urn:comp"}]},
+             "chain": [{"name": "comp", "uri": "http://drobilla.net/plugins/mda/Dynamics"}]},
             {"name": "lead", "input": "guitar-in", "width": "mono", "level": level,
-             "chain": [{"name": "drive", "uri": "urn:drive"}, {"name": "hall", "uri": "urn:hall"}]},
+             "chain": [{"name": "drive", "uri": "http://drobilla.net/plugins/mda/Overdrive"}, {"name": "hall", "uri": "http://distrho.sf.net/plugins/MaGigaverb"}]},
         ],
-        "master": {"output": "monitor-out", "chain": [{"name": "lim", "uri": "urn:lim"}]},
+        "master": {"output": "monitor-out", "chain": [{"name": "lim", "uri": "http://drobilla.net/plugins/mda/Loudness"}]},
         "midi": {"controller": "mpd218", "controls": controls, **extra},
     }
 

@@ -23,7 +23,8 @@ aiohttp = pytest.importorskip("aiohttp")
 from aiohttp.test_utils import TestClient, TestServer  # noqa: E402
 
 from sushi_rig import agent as agent_module  # noqa: E402
-from sushi_rig.live import decide_move, plan_move  # noqa: E402
+from sushi_rig import stereo  # noqa: E402
+from sushi_rig.live import decide_move  # noqa: E402
 from sushi_rig.agent import (  # noqa: E402
     Agent,
     AgentError,
@@ -709,7 +710,8 @@ def test_the_opposite_step_always_puts_a_chain_back(chain, direction):
         if after is None:
             continue
         opposite = agent_module.OPPOSITE[direction]
-        assert plan_move(after, processor, agent_module.DIRECTIONS[opposite]) is not None
+        ids = {name: i for i, name in enumerate(["t", *after])}
+        assert decide_move({"t": after}, ids, processor, agent_module.DIRECTIONS[opposite]).outcome == "planned"
         assert chain_after_move(after, processor, opposite) == chain
 
 
@@ -2474,10 +2476,17 @@ class RigLive(FakeLive):
                            direction, self._uids())
 
     def send_move(self, connection, move):
+        # Each of Sushi's commands as `move_processor_on_track` takes it: a
+        # plugin and its copy to stereo are two (live.decide_move).
         self._enter("move", connection, move.processor, move.direction)
-        chain = self.chains[self._track_of(move.processor)]
-        i = chain.index(move.processor)
-        chain.insert(i + move.direction, chain.pop(i))
+        by_id = {i: n for n, i in self.ids.items()}
+        for processor_id, track_id, before_id, add_to_back in (move.command, *move.then):
+            chain = self.chains[by_id[track_id]]
+            chain.remove(by_id[processor_id])
+            if add_to_back:
+                chain.append(by_id[processor_id])
+            else:
+                chain.insert(chain.index(by_id[before_id]), by_id[processor_id])
         return replace(move, outcome="moved")
 
     def walk(self, connection, uids=False):
@@ -2495,24 +2504,31 @@ class RigLive(FakeLive):
         return reading
 
     def add(self, connection, addition):
+        # The plugin, then its copy to stereo in the same place, as the
+        # agent's `Live` sends them (`agent._add_with_copy`).
         self._enter("add", connection, addition.name, addition.track)
         by_id = {i: n for n, i in self.ids.items()}
         chain = self.chains[addition.track]
-        if addition.add_to_back:
-            chain.append(addition.name)
-        else:
-            chain.insert(chain.index(by_id[addition.before_id]), addition.name)
-        self.ids[addition.name] = max(self.ids.values()) + 1
-        self.plugins[addition.name] = {"uri": addition.uri, "uid": None, "type": "lv2"}
-        self.values[addition.name] = self._defaults(self.plugins[addition.name])
-        self.properties[addition.name] = {}
-        self.bypassed[addition.name] = False
+        added = [(addition.name, {"uri": addition.uri, "uid": None, "type": "lv2"})]
+        if addition.copy:
+            added.append((addition.copy, {"uri": None, "uid": stereo.COPY_UID, "type": "internal"}))
+        for name, plugin in added:
+            if addition.add_to_back:
+                chain.append(name)
+            else:
+                chain.insert(chain.index(by_id[addition.before_id]), name)
+            self.ids[name] = max(self.ids.values()) + 1
+            self.plugins[name] = plugin
+            self.values[name] = self._defaults(plugin)
+            self.properties[name] = {}
+            self.bypassed[name] = False
 
     def remove(self, connection, removal):
         self._enter("remove", connection, removal.processor)
-        self.chains[removal.track].remove(removal.processor)
-        for table in (self.plugins, self.values, self.properties, self.bypassed, self.ids):
-            table.pop(removal.processor, None)
+        for name in ([removal.copy] if removal.copy else []) + [removal.processor]:
+            self.chains[removal.track].remove(name)
+            for table in (self.plugins, self.values, self.properties, self.bypassed, self.ids):
+                table.pop(name, None)
 
     def writes(self):
         return [c for c in self.calls if c[0] in ("set_parameter", "set_bypass", "move", "add", "remove")]

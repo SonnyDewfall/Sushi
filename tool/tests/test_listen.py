@@ -3,6 +3,7 @@ wiring in `serve()`, which needs a real port and is exercised by the
 end-to-end verification instead (see the plan for issue #10)."""
 
 import textwrap
+from pathlib import Path
 
 import pytest
 
@@ -219,7 +220,7 @@ def test_a_rig_of_channels_is_saved_as_one_with_its_comments(tmp_path, monkeypat
           width: mono
           chain:
           - name: eq          # the one knob that matters
-            uri: urn:eq
+            uri: http://distrho.sf.net/plugins/3BandEQ
             parameters: {Low: 0.4}
         master:
           output: monitor-out
@@ -341,6 +342,8 @@ def test_a_saved_rig_with_a_midi_map_is_checked_with_its_controller(tmp_path, mo
           controls:
           - {control: knob1, blend: [clean, lead]}
         """))
+    # A checkout has the compiler's table of plugin ports (stereo.py).
+    (root / "plugin-ports.txt").write_text((Path(__file__).resolve().parents[2] / "plugin-ports.txt").read_text())
     monkeypatch.setattr("sushi_rig.paths.checkout_root", lambda: root)
     monkeypatch.setattr("sushi_rig.machine.machine_path", lambda r: root / "machines" / "box.yaml")
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))
@@ -389,6 +392,8 @@ def test_the_save_check_compiles_against_the_machine_file_the_running_rig_used(t
           controls:
           - {control: knob1, blend: [clean, lead]}
         """))
+    # A checkout has the compiler's table of plugin ports (stereo.py).
+    (tmp_path / "plugin-ports.txt").write_text((Path(__file__).resolve().parents[2] / "plugin-ports.txt").read_text())
     monkeypatch.setattr("sushi_rig.paths.checkout_root", lambda: tmp_path)
     monkeypatch.setattr("sushi_rig.machine.machine_path", lambda r: default)
     monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path / "run"))

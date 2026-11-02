@@ -1,0 +1,77 @@
+# Audio ports of every plugin in plugin-manifest.txt, as LV2 declares them:
+# inputs, outputs, URI. Read by the rig compiler (tool/src/sushi_rig/stereo.py).
+#
+# Why the compiler needs them: Sushi 1.3.0 gives a plugin on a track
+# min(its ports, the track's channels) of each, and clears every channel a
+# plugin did not write (track.cpp `_process_plugins`). So a plugin with one
+# output on a stereo track silences the right channel from there on, bypassed
+# or not; measured for every one-output plugin below (tests/test_stereo.py,
+# CI, 2026-11-02). After each such plugin the compiler inserts its copy to
+# stereo. Sushi reports no channel counts itself (neither --dump-plugins nor
+# gRPC's ProcessorInfo), so they are kept here.
+#
+# Written from lilv 0.24.22 over Ubuntu 24.04's packages, the ones CI's image
+# installs. CI checks every line against lilv over plugins/ (tests/test_stereo.py
+# `test_the_port_table_is_what_lilv_reads`), so a package update that changes a
+# plugin's ports fails the build rather than the right channel.
+#
+# Not here: the neural amp (http://github.com/mikeoliphant/neural-amp-modeler-lv2).
+# It runs in Carla, never on a Sushi track, no distro packages it, and CI's
+# image cannot read its ports; a rig that put it on a chain is refused by name.
+#
+# To add a plugin: `sushi-rig probe <uri>` prints "audio N in / M out"; add
+# "N M <uri>" here, beside its line in plugin-manifest.txt.
+1 1 http://breakfastquay.com/rdf/lv2-rubberband#mono
+1 1 http://breakfastquay.com/rdf/lv2-rubberband#r3mono
+2 2 http://breakfastquay.com/rdf/lv2-rubberband#r3stereo
+2 2 http://breakfastquay.com/rdf/lv2-rubberband#stereo
+2 2 http://distrho.sf.net/plugins/3BandEQ
+2 2 http://distrho.sf.net/plugins/MaGigaverb
+2 2 http://distrho.sf.net/plugins/MVerb
+2 2 http://drobilla.net/plugins/mda/Ambience
+2 2 http://drobilla.net/plugins/mda/Bandisto
+2 2 http://drobilla.net/plugins/mda/BeatBox
+2 2 http://drobilla.net/plugins/mda/Combo
+2 2 http://drobilla.net/plugins/mda/DeEss
+2 2 http://drobilla.net/plugins/mda/Degrade
+2 2 http://drobilla.net/plugins/mda/Delay
+2 2 http://drobilla.net/plugins/mda/Detune
+2 2 http://drobilla.net/plugins/mda/Dither
+2 2 http://drobilla.net/plugins/mda/DubDelay
+0 2 http://drobilla.net/plugins/mda/DX10
+2 2 http://drobilla.net/plugins/mda/Dynamics
+0 2 http://drobilla.net/plugins/mda/EPiano
+2 2 http://drobilla.net/plugins/mda/Image
+0 2 http://drobilla.net/plugins/mda/JX10
+2 2 http://drobilla.net/plugins/mda/Leslie
+2 2 http://drobilla.net/plugins/mda/Limiter
+2 2 http://drobilla.net/plugins/mda/Loudness
+2 2 http://drobilla.net/plugins/mda/MultiBand
+2 2 http://drobilla.net/plugins/mda/Overdrive
+0 2 http://drobilla.net/plugins/mda/Piano
+2 2 http://drobilla.net/plugins/mda/RePsycho
+2 2 http://drobilla.net/plugins/mda/RezFilter
+2 2 http://drobilla.net/plugins/mda/RingMod
+2 2 http://drobilla.net/plugins/mda/RoundPan
+2 2 http://drobilla.net/plugins/mda/Shepard
+2 2 http://drobilla.net/plugins/mda/Splitter
+2 2 http://drobilla.net/plugins/mda/Stereo
+2 2 http://drobilla.net/plugins/mda/SubSynth
+2 2 http://drobilla.net/plugins/mda/TalkBox
+2 2 http://drobilla.net/plugins/mda/TestTone
+2 2 http://drobilla.net/plugins/mda/ThruZero
+2 2 http://drobilla.net/plugins/mda/Tracker
+2 2 http://drobilla.net/plugins/mda/Transient
+2 2 http://drobilla.net/plugins/mda/VocInput
+2 2 http://drobilla.net/plugins/mda/Vocoder
+1 1 http://gareus.org/oss/lv2/darc#mono
+2 2 http://gareus.org/oss/lv2/darc#stereo
+2 2 http://guitarix.sourceforge.net/plugins/gx_chorus_stereo#_chorus_stereo
+1 1 http://guitarix.sourceforge.net/plugins/gx_compressor#_compressor
+1 1 http://guitarix.sourceforge.net/plugins/gx_detune_#_detune_
+2 2 http://guitarix.sourceforge.net/plugins/gx_echo_stereo#_echo_stereo
+1 1 http://guitarix.sourceforge.net/plugins/gx_oc_2_#_oc_2_
+1 1 http://guitarix.sourceforge.net/plugins/gxts9#ts9sim
+2 2 http://plugin.org.uk/swh-plugins/lcrDelay
+2 2 http://zynaddsubfx.sourceforge.net/fx#Chorus
+2 2 urn:ardour:a-reverb

@@ -1,31 +1,34 @@
-schema_version: 1
+schema_version: 2
 config: electric_board
 stimulus: log_sweep 20-20000Hz 5s -20dBFS 2ch
 sample_rate: 48000
 frames: 240000
 measured:
-  peak_dbfs: -12.1911
-  rms_dbfs: -29.5057
+  peak_dbfs: -10.7691
+  rms_dbfs: -25.601
+  channel_rms_dbfs:
+  - -25.559
+  - -25.6434
   delay_samples: 4163
   bands:
   - low_hz: 20.0
     high_hz: 80.0
-    level_dbfs: -40.0745
+    level_dbfs: -34.8527
   - low_hz: 80.0
     high_hz: 250.0
-    level_dbfs: -31.2484
+    level_dbfs: -26.9984
   - low_hz: 250.0
     high_hz: 800.0
-    level_dbfs: -31.4117
+    level_dbfs: -27.6397
   - low_hz: 800.0
     high_hz: 2500.0
-    level_dbfs: -39.0067
+    level_dbfs: -35.7098
   - low_hz: 2500.0
     high_hz: 8000.0
-    level_dbfs: -54.3626
+    level_dbfs: -51.1397
   - low_hz: 8000.0
     high_hz: 20000.0
-    level_dbfs: -85.7406
+    level_dbfs: -82.7561
 tolerance:
   band_db: 0.01
   level_db: 0.01

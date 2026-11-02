@@ -2720,6 +2720,165 @@ then put back). Also found running the suite twice as pid 1:
 socket, which another socket may hold (`EADDRINUSE`, once); it now tries
 another pair. Still **NOT RUN AGAINST A LIVE PIPEWIRE**. *(2026-11-02)*
 
+**A mono source reaches both monitors: the compiler's copy to stereo after a
+mono plugin.** Sonny on the rig: "I only get the left channel out." Measured
+before anything was changed, in CI's container (`tests/test_stereo.py`, run
+on ba0f918, PR #119), with a mono sweep fed equally to both channels as
+`mono_to_stereo` feeds a guitar. Each plugin the rigs use, alone on a stereo
+track at its defaults (L and R in dBFS; "silent" is digital silence; lilv's
+audio ins/outs):
+
+| plugin | lilv | as is | bypassed | + mono_summing |
+|---|---|---|---|---|
+| gx_compressor | 1/1 | -23.01 / silent | -23.01 / silent | -23.01 / -23.01 |
+| gxts9 | 1/1 | -29.03 / silent | -23.01 / silent | -29.03 / -29.03 |
+| gx_detune_ | 1/1 | -24.42 / silent | -23.01 / silent | -24.42 / -24.42 |
+| gx_oc_2_ | 1/1 | -15.37 / silent | -23.00 / silent | -15.37 / -15.37 |
+| 3BandEQ, DeEss, lcrDelay | 2/2 | -23.01 / -23.01 | -23.01 / -23.01 | -16.99 / -16.99 |
+| gx_chorus_stereo | 2/2 | -22.30 / -22.31 | -23.01 / -23.01 | -16.52 / -16.52 |
+| a-reverb | 2/2 | -25.85 / -25.85 | -23.01 / -23.01 | -19.91 / -19.91 |
+| MaGigaverb, MVerb, mda Delay, Dynamics, Limiter | 2/2 | balanced | balanced | 5 to 6 dB up, folded |
+
+And each committed rig through the master, as compiled at ba0f918 ("before")
+and with mono_summing after each one-output plugin ("after"; what the
+compiler now builds), L / R dBFS (correlation):
+
+| rig | before | after |
+|---|---|---|
+| accustomed | -17.17 / -279.07 | -17.17 / -17.19 (0.646) |
+| electric-chorus-2 | -16.11 / -279.07 | -16.11 / -16.13 (0.650) |
+| electric-chorus-hall | -16.11 / -279.07 | -16.11 / -16.13 (0.650) |
+| electric-chorus | -24.88 / -278.76 | -24.88 / -24.87 (0.979) |
+| electric-clean | -26.56 / -277.57 | -26.56 / -26.56 (0.957) |
+| electric-delay | -31.37 / -36.30 | -28.80 / -28.80 (0.873) |
+| electric-octave-up | -22.02 / -40.18 | -21.86 / -21.76 (0.632) |
+| electric-spacey-delay | -22.61 / -35.53 | -22.07 / -21.96 (0.648) |
+| electric_board | -26.89 / -37.48 | -26.07 / -26.35 (0.575) |
+| guitar_vocal.guitar | -31.23 / -278.88 | -31.23 / -31.28 (0.947) |
+| guitar_vocal.vocal | -18.49 / -18.55 (0.663) | the same |
+| hard-feelings | -16.11 / -279.07 | -16.11 / -16.13 (0.650) |
+
+The v1 configs measured exactly as the "before" column. An empty stereo track
+and the compiler's send and return with empty chains were -23.01 / -23.01,
+correlation 1.000: the send and return are not it. Sushi 1.3.0's source says
+why the plugins are (`audio_engine.cpp add_plugin_to_track`, `track.cpp
+_process_plugins`, `processor.cpp bypass_process`): a plugin on a track gets
+the lesser of its ports and the track's channels, the track then clears every
+channel the plugin did not write, and a bypassed plugin keeps its count. Every
+guitar chain starts with the mono compressor. The -279 dBFS is not digital
+silence, and what puts that little there was not looked into; the four rigs
+at 5 to 18 dB down are the ones whose later stereo reverb or delay feeds some
+of the left across.
+
+**The fix, in the compiler** (`stereo.py`, `rigfile.compile_rig`): after every
+LV2 plugin with one audio output, `<plugin>_to_stereo`, Sushi's internal
+`sushi.testing.mono_summing`, which writes the sum of its inputs to each
+output. Straight after a mono plugin the right has just been cleared, so the
+sum is the left exactly, on both. Chosen over (b), a mono track feeding the
+stereo part, because that needs a second track per channel, a send between
+them and the ceiling of eight outputs re-argued, for the same result; and
+over `stereo_mixer`, which needs pan and gain set and scales by 1/sqrt(2).
+Which plugins are mono is `plugin-ports.txt` (54 of the manifest's 55; not the
+amp, which runs in Carla and is refused on a chain), since Sushi reports no
+channel counts (`--dump-plugins` has none, nor gRPC's `ProcessorInfo`, whose
+fields are id, label, name and the parameter and program counts); CI checks it
+against lilv over `plugins/` (`test_the_port_table_is_what_lilv_reads`). A
+plugin the table lacks is refused by name with how to add it, at compile and
+at a live add. The copy is invisible to the rig file and SAVE (`fold_state`,
+`merged_state`), pinned after its plugin whatever a capture's order says
+(`pin_monitor_path`), planned with its plugin by the live switch (`diff`
+compares chains without the copies; an add step names the copy; a restart,
+`stereo`, if two rigs disagree on one), and known by uid or reserved suffix
+(`live.protected_processor`, `stereo.is_copy`): never moved, removed or
+bypassed alone; a move swaps units (`stereo.units`, `live.decide_move`, two
+commands where one was), a remove takes the copy first, a live add of a mono
+plugin adds its copy in the same operation (rather than refusing: a
+compressor added from the library is the common case), undo of a move checks
+the pair, `/live/plugins` says role "stereo" and the page and the OSC panel do
+not show it. Names ending `_to_stereo` are refused for plugins and channels;
+Sushi 1.3.0 keys processors by std::string with no length limit
+(processor_container.cpp), so uniqueness is the only constraint.
+
+**The guarantee**: `test_each_rig_through_the_master` asserts every committed
+rig as compiled has L and R within 1 dB and neither silent for the mono
+stimulus, and `test_each_plugin_compiled_alone_is_balanced` the same for each
+plugin compiled alone; the table still prints, now with each rig "as
+compiled" and "without the copies to stereo". **Null tests**: a fingerprint
+records each channel's RMS (`channel_rms_dbfs`, schema 2; schema 1 still
+read, its channels not compared), and a channel that went silent or moved is
+its own finding; the stale comment that "both halves of a centred channel are
+identical" is corrected. `nulltest --all` now checks the rigs of
+`config/rigs/` too, through the master, under `config/sound/<name>.yaml`;
+**the v1 configs' references are renamed `<name>.v1-mono.yaml`**, unchanged,
+because the v1 configs are not fixed: **`up` without `--rig` still plays the
+left channel only**; `up --rig`, the agent and the web UI are stereo. The
+rigs' references have to be calibrated afresh, in CI, since their sound
+changed on purpose (right channel present, and every stereo plugin after a
+mono one now fed both sides): the first run of this has none, fails nulltest
+and the parity test in `test_convert.py` for that reason, and its candidates
+are what to commit. nulltest now runs in CI whether or not the suite passed,
+so that can happen in one run. **Not heard on the rig**: all of the above is
+offline renders. **Not run against a live Sushi**: creating the copy live
+(`live.add_live_copy`, the internal type with an empty path, as `push` sends
+the sends), the two-command move and remove, and Sushi placing the second of
+two adds in front of the same processor. Known limits: on a stereo channel a
+mono plugin hears the left input only; a track bypassed whole would bypass
+the copy too (nothing here bypasses a track). *(2026-11-02)*
+
+**The copy to stereo: the rigs' references, and answering review.** The rigs'
+own references are committed from CI's candidates for fabbc12, where the suite
+failed only for their absence (11 "no reference" in `test_convert.py`), every
+guarantee test passed, and all 12 v1 rows sounded the same against the renamed
+`.v1-mono.yaml`. `config/sound/<rig>.yaml`, twelve, as calibrated, except
+`electric-octave-up.yaml` and `electric_board.yaml`, which calibrated at
+0.0001 dB and about 0.003 dB: both render non-deterministically in this
+container (30 Oct; a NaN render of electric-octave-up twice on 2 Nov), so
+they carry the v1 references' hand-set 0.01 dB band and level and the same
+note. Ten `.v1-mono.yaml` gain their per-channel levels (schema 2), checked
+against the candidates: every other measurement and every tolerance
+identical, the committed note kept. electric-octave-up's and electric_board's
+v1 candidates measured differently within their tolerance, so those two stay
+as they were, schema 1. To watch: `electric-delay.yaml` measures a delay of
+19440 samples where its v1 reference measures 0. Channel 0's strongest path
+is now the delay's echo, likely because the delay is fed on both sides; it is
+unverified, and the reference fails on delay alone if the dry signal and the
+echo ever swap places, as electric_board's note already warns for its own
+delay. A channel's level below -200 dBFS now counts as silent when comparing
+(`nulltest.SILENCE_FLOOR_DBFS`): the v1 right channel is float residue near
+-279 dBFS, which could move by decibels for nothing.
+
+Review of ba0f918..fabbc12, ten findings, each with a test
+(`test_stereo_compile.py` unless said). (1) **A pair left apart**: an add,
+remove or move of a mono plugin is two commands. If the second fails, the
+first is undone (plugin removed again, copy put back where it was, plugin
+moved back in front of its copy), and if that fails too, the error says what
+the chain holds. A copy with no plugin before it, the stray that leaves, may
+then be moved or removed. Each path is tested against a fake graph that fails
+the commands named. (2) `apply_to_chains` stored `step_units`' None and
+raised TypeError on the next step; it now raises ValueError naming the step.
+(3) `read_ports` took `str.isdigit`, which accepts "²" and "٣", and then a
+bare ValueError crashed every compile and GET /library. It now checks ASCII
+digits, raises PortsError with the line, and an unreadable file is a
+PortsError too. (4) The diff's `stereo` restart ran before replacements were
+dropped, and named a changed table for a running rig compiled before the
+copies existed. It now runs after them, and that case is `stereo_missing`,
+said as what it is. (5) A rig that did not compile exempted its v1 config's
+`.v1-mono` references from the orphan check; now only its own
+(`test_render.py`). (6) `compile_rig(routing_only=True)`, and
+`spec_of(routing_only=True)` for the patchbay and SAVE's source check, need
+no table and make no copies. SAVE's check leaves the copies out of the
+running config's names. The renders and the probes keep the copies, since
+Sushi loads their chains (render.rig_channels renders what `up --rig` loads,
+so it is not routing-only). Each docstring says which kind. (7) The refusal
+for moving a copy reads "... is 'comp''s copy to stereo, which moves with
+'comp': move that instead", and for removing one "... removed with 'ts':
+remove that instead". (8) `heard`'s docstring names the rig's own
+references. (9) `live.plan_move` is removed; its position tests now run
+against `decide_move`, and cli uses `render.v1_reference_path`. (10)
+`apply_to_chains` removes by `stereo.units`, as `check_remove` does. **Not run
+against a live Sushi**: every undo above, and `get_processor_id` for an added
+processor's id. *(2026-11-02)*
+
 **Record from the web UI: the live test's findings.** The first RECORD on the
 rig (`RESULTS-ui-2026-11-02.md` on `claude/ui-tests`) was refused every time:
 `cannot record ui-take-1: the capture engine did not start: no port called

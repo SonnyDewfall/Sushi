@@ -155,6 +155,7 @@ def rig_source_problem(config_path: Path, root: Path | None = None) -> str | Non
 
 def _rig_source(config_path: Path, root: Path | None) -> tuple[str | None, str | None]:
     from .rigfile import spec_of
+    from .stereo import is_copy
 
     root = Path(root) if root is not None else checkout_root()
     try:
@@ -163,9 +164,12 @@ def _rig_source(config_path: Path, root: Path | None) -> tuple[str | None, str |
         config = {}
     if not isinstance(config, dict):
         config = {}
+    # Without the compiler's copies to stereo (stereo.py): no rig source names
+    # them, and the spec below is compiled for routing only, without them.
     named = {t.get("name") for t in (config.get("tracks") or []) if isinstance(t, dict)} | {
         p.get("name") for t in (config.get("tracks") or []) if isinstance(t, dict)
         for p in (t.get("plugins") or []) if isinstance(p, dict)
+        and not is_copy(str(p.get("name", "")), p.get("uid"))
     }
     stem = Path(config_path).stem
     candidates = []
@@ -180,7 +184,7 @@ def _rig_source(config_path: Path, root: Path | None) -> tuple[str | None, str |
             tried.append(f"{candidate} does not exist")
             continue
         try:
-            spec = spec_of(path)
+            spec = spec_of(path, routing_only=True)
         except Exception as exc:  # noqa: BLE001 - a bad candidate is a reason, not a crash
             tried.append(f"{candidate} cannot be read as a rig ({exc})")
             continue
@@ -312,7 +316,8 @@ def _compile_named_rig_unguarded(
     except MachineError as exc:
         raise RigError(f"{path.name}: {exc}") from exc
     # Compiled once, with the map: the same spec wires the patchbay and
-    # becomes the config.
+    # becomes the config. The kind that Sushi loads, so with the copies to
+    # stereo (stereo.py), and refused for a plugin plugin-ports.txt lacks.
     try:
         spec, fixed = compile_rig(loaded, controller)
         compiled = emit_compiled(loaded, spec, fixed)

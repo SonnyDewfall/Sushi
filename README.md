@@ -303,7 +303,7 @@ then.
 │   ├── src/                      hand-authored v1 sources (electric_board,
 │   │                             electric_stereo, guitar_vocal)
 │   ├── rigs/                     every tone as a v2 rig: channels and a master
-│   ├── sound/                    nulltest references: what each config sounds like
+│   ├── sound/                    nulltest references: what each rig (`<name>.yaml`) and v1 config (`<name>.v1-mono.yaml`) sounds like
 │   ├── archive/                  auto-written version snapshots,
 │   │                             config/archive/<name>/vX.Y.json
 │   └── retired/                  hand-retired configs (incl. empty.json), kept
@@ -321,6 +321,7 @@ then.
 ├── systemd/                    the agent's user unit; `sushi-rig agent install-service` installs it
 ├── .github/workflows/          ci.yml (fast suite), rig-container.yml (everything)
 ├── plugin-manifest.txt         every LV2 URI this rig can load (see Plugins below)
+├── plugin-ports.txt            each of those plugins' audio ins and outs, for the compiler (see A mono plugin on a stereo channel)
 │
 ├── tool/                       ── TOOL: generates the configs above
 │   ├── pyproject.toml
@@ -1091,6 +1092,71 @@ is all the monitors hear. A rig has at most three channels, because the master
 and three stereo stems fill Sushi's eight outputs; more is refused with the
 arithmetic.
 
+#### A mono plugin on a stereo channel (2026-11-02)
+
+A guitar is one input, and reaches both monitors the same, as a DAW puts a
+mono source on a stereo track: the machine file's `mono_to_stereo` (or the
+compiler's mono input) feeds it to both halves of its channel, every channel
+is a stereo track, and the master goes out on both monitors. A plugin with
+one audio output used to undo that. Sushi 1.3.0 runs a plugin on a track
+with the lesser of its own ports and the track's channels, and then
+**clears every channel the plugin did not write** (its `track.cpp`), so from
+the first mono plugin on, the right channel is silent; bypassing the plugin
+changes nothing, since a bypassed plugin keeps its channel count. Every
+guitar chain here starts with the Guitarix compressor, which is mono, as are
+the Tube Screamer and both octavers. Measured in CI's container: seven of
+the eleven rigs had nothing on the right at all, and the other four only
+what a later reverb or delay fed across, 5 to 18 dB down. That is "I only get
+the left channel out."
+
+So **the compiler puts a mono plugin's output back on both channels.** After
+every plugin with one output it inserts `<plugin>_to_stereo`: Sushi's own
+internal `sushi.testing.mono_summing`, which writes the sum of its inputs to
+every output. Straight after a mono plugin the right channel has just been
+cleared, so the sum is the left channel, exactly, on both sides. It is never
+put after a stereo plugin, where it would fold the image to mono and add
+6 dB. Measured: with it, every rig's left and right are within 0.3 dB for a
+mono source, and CI holds them within 1 dB (`tests/test_stereo.py`).
+
+The copy is the compiler's, like the sends and the return: it is never in a
+rig file and never saved, the web UI does not show it, and it is never moved,
+removed or bypassed by itself. It goes with its plugin: a move steps the
+plugin and its copy as one past their neighbour (and past a neighbour and
+its copy as one), a remove takes both, a live add of a mono plugin adds its
+copy in the same operation, a rig switch adds and removes them with their
+plugins, and undo of a move knows the pair. A name ending in `_to_stereo` is
+refused for anything else.
+
+Sushi does not report a plugin's channel counts (neither `--dump-plugins` nor
+gRPC's processor info carries them), so the compiler reads them from
+`plugin-ports.txt`, committed beside the manifest and checked against lilv in
+CI. A plugin the table does not list is refused by name, with how to add it:
+guessing would be the silent right channel again, or a stereo plugin folded.
+
+What this does not do:
+
+- **The v1 configs still lose the right channel.** `config/*.json`, which
+  `sushi-rig up <name>` without `--rig` runs, are left as they were; their
+  null-test references are `config/sound/<name>.v1-mono.yaml`, named for
+  what they are. `up --rig`, the agent's switches and the web UI run rigs of
+  channels, and are stereo.
+- On a **stereo** channel a mono plugin hears the left input alone, and its
+  copy puts that on both sides. No committed rig has a stereo channel.
+- A plugin with no audio output would silence everything after it, and is
+  refused.
+- Moving, adding or removing a mono plugin is two of Sushi's commands; for
+  the moment between them the right channel can be silent, or a stereo
+  plugin's image folded. If the second fails, the first is undone; if that
+  fails too, the agent says what the chain holds, and a copy left with no
+  plugin before it may then be moved or removed, which is the repair.
+- The patchbay and SAVE's check of which rig file describes the running rig
+  compile for routing only, without the copies, and need no
+  `plugin-ports.txt`; everything whose chains Sushi loads (`up --rig`,
+  `emit`, the renders, the probes) has the copies and refuses a plugin the
+  table lacks.
+- **None of this has been heard on the rig.** It is offline renders in CI's
+  container; the iD14's two monitors are the test.
+
 The patchbay and selftest's probes read these files too:
 
 ```bash
@@ -1110,8 +1176,10 @@ sushi-rig convert config/x.json --input vocal=vocal-in:mono   # more than one tr
 A chain entry carries its settings (`bypassed`, `parameters`, ...), a channel
 its `strip` (gain, pan, mute), and the rig its `amp`. Until `up` runs these,
 each tone exists in both forms and CI holds them together: the same plugins and
-settings, and the same sound, rendered through the master against the
-reference the v1 config was calibrated to.
+settings. Not the same sound since 2026-11-02: a rig puts a mono plugin's
+output on both channels and the v1 config does not (see *A mono plugin on a
+stereo channel*), so each has a reference of its own, the rig's
+`config/sound/<name>.yaml` and the v1 config's `<name>.v1-mono.yaml`.
 
 Rig files keep their comments when the tool rewrites them: `write_rig` updates
 the file in place (comments, blank lines and key order stay), and `convert
@@ -1293,14 +1361,19 @@ workflows because no single runner has everything:
   `SKIPPED`. That is what makes the first workflow's skips safe.
 - The same job runs `nulltest --all`, so **a change in a config's sound fails
   the build**. References live in `config/sound/` and are calibrated in that
-  container. When the check fails, the job calibrates every config afresh and
+  container, for every v1 config (`<name>.v1-mono.yaml`) and every rig of
+  channels in `config/rigs/` (`<name>.yaml`, rendered through the master one
+  channel at a time). A reference records each channel's level as well as the
+  whole render's, so a channel lost is a finding of its own; a silent right
+  channel used to read as only 3 dB down. The check runs even when the suite
+  failed. When the check fails, the job calibrates every config afresh and
   attaches the result (`sound-reference-candidates`, and printed in the log).
   Commit those only if the change was meant; if it was not, they are the
   evidence and the fix is in the config. A config is rendered whole when Sushi's
   offline frontend can host it, which also checks how its channels mix. One it
   cannot — the offline frontend has one stereo bus, and `guitar_vocal`'s vocal
   is on the second — is checked one channel at a time, each with its own
-  reference (`config/sound/<config>.<channel>.yaml`). To add a reference
+  reference (`config/sound/<config>.<channel>.v1-mono.yaml`). To add a reference
   without re-baselining the rest, `nulltest <config> --calibrate --missing`.
 
 Only `-m slow` used to run in the container, so the lilv- and Sushi-guarded

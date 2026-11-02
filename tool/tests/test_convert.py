@@ -185,10 +185,16 @@ RIGS = sorted((ROOT / "config" / "rigs").glob("*.yaml"))
 @pytest.mark.skipif(not SUSHI.exists(), reason="needs the Sushi binary")
 @pytest.mark.slow
 @pytest.mark.parametrize("rig", RIGS, ids=lambda p: p.stem)
-def test_every_v2_rig_sounds_like_the_config_it_replaces(rig, tmp_path):
-    """#30's done-means: rendered through the master, each v2 rig matches the
-    fingerprint its v1 config was calibrated to, within that reference's own
-    tolerance."""
+def test_every_v2_rig_sounds_like_its_reference(rig, tmp_path):
+    """Rendered through the master, each v2 rig matches its own reference,
+    within that reference's own tolerance.
+
+    This was #30's done-means, each v2 rig against the reference its v1
+    config was calibrated to. Since 2026-11-02 the two do not sound alike:
+    the rig compiler puts a mono plugin's output on both channels (stereo.py)
+    and the v1 configs, left as they are, play the left channel alone. So a
+    v1 config's reference is `<name>.v1-mono.yaml` and a rig's `<name>.yaml`
+    (`render.V1_REFERENCE_SUFFIX`); `nulltest --all` checks both."""
     pytest.importorskip("numpy")
     from sushi_rig.nulltest import compare, from_dict
     from sushi_rig.render import measure

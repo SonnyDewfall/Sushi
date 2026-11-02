@@ -125,6 +125,7 @@ from .listen import (
     TAKE_NAME_ADDRESS,
 )
 from .save import NAME_PATTERN
+from .stereo import is_copy
 
 # A fader's value is always normalised 0-1; this is about the real-world
 # domain that 0-1 maps onto. Above this ratio, linear drag response
@@ -481,6 +482,9 @@ def build_osc_panel(
     # "not found in the live rig" warning below still fires for it.
     ordered = [name for name in live_info if name in parameter_info]
     ordered += [name for name in parameter_info if name not in ordered]
+    # The compiler's copies to stereo after mono plugins (stereo.py) have no
+    # parameters and are not the player's: no empty tab for each.
+    ordered = [name for name in ordered if not is_copy(name)]
 
     for processor in ordered:
         params = parameter_info[processor]
