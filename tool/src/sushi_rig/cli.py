@@ -276,13 +276,10 @@ def _controller_for(rig, machine_file: Path | None) -> dict | None:
     """The machine's description of the controller a rig's MIDI map names, or
     None when the rig has no map. A map whose controller this machine does
     not describe is an exit with the reason, never a config without it."""
-    from .machine import MachineError, controller_for, machine_path
-    from .paths import checkout_root
+    from .machine import MachineError, rig_controller
 
-    if rig.midi is None:
-        return None
     try:
-        return controller_for(rig.midi.controller, machine_file or machine_path(checkout_root()))
+        return rig_controller(rig, machine_file)
     except MachineError as exc:
         sys.exit(str(exc))
 

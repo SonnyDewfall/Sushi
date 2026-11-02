@@ -324,6 +324,64 @@ def test_a_controller_that_is_not_one_is_named(controllers, said):
     assert any(said in p for p in problems), problems
 
 
+def test_two_controls_that_send_the_same_number_are_refused_naming_both():
+    """A rig binding both would put two mappings on one pedal, each firing on
+    the same message, with nothing to say so."""
+    machine = _with_controllers({"x": {"controls": {"knob1": {"cc": 3}, "pedal": {"cc": 3}}}})
+    problems = machine.validate()
+    assert len(problems) == 1, problems
+    assert "controller 'x'" in problems[0]
+    assert "'knob1'" in problems[0] and "'pedal'" in problems[0] and "cc 3" in problems[0]
+    machine = _with_controllers({"x": {"controls": {"a": {"note": 36}, "b": {"note": 36}}}})
+    assert "note 36" in machine.validate()[0]
+
+
+def test_a_cc_and_a_note_of_one_number_are_different_messages_and_allowed():
+    machine = _with_controllers({"x": {"controls": {"knob": {"cc": 36}, "pad": {"note": 36}}}})
+    assert machine.validate() == []
+    # The same number on two controllers is two pedals, not a clash.
+    machine = _with_controllers({"x": {"controls": {"k": {"cc": 3}}}, "y": {"controls": {"k": {"cc": 3}}}})
+    assert machine.validate() == []
+
+
+def test_a_loaded_machine_answers_for_its_controller_and_refuses_one_it_lacks():
+    machine = _with_controllers({"x": {"controls": {"k": {"cc": 3}}}})
+    assert machine.controller_for("x")["controls"] == {"k": ("cc", 3)}
+    with pytest.raises(MachineError, match="controller 'y', which the machine file does not describe; its controllers: x"):
+        machine.controller_for("y")
+
+
+def test_a_loaded_machine_remembers_where_it_was_read_from_and_names_it(tmp_path):
+    path = tmp_path / "box.yaml"
+    path.write_text("schema_version: 1\ninterface: x\nroles:\n  r: {ports: ['A:in']}\n"
+                    "controllers:\n  x:\n    controls:\n      k: {cc: 3}\n")
+    machine = MachineSpec.load(path)
+    assert machine.source == path
+    with pytest.raises(MachineError, match="which box.yaml does not describe"):
+        machine.controller_for("y")
+
+
+def test_rig_controller_is_one_helper_for_every_caller(tmp_path):
+    from types import SimpleNamespace
+
+    from sushi_rig.machine import rig_controller
+
+    machine_file = tmp_path / "box.yaml"
+    machine_file.write_text(
+        "schema_version: 1\ninterface: x\nroles:\n  r: {ports: ['A:in']}\n"
+        "controllers:\n  x:\n    controls:\n      k: {cc: 3}\n"
+    )
+    mapped = SimpleNamespace(midi=SimpleNamespace(controller="x"))
+    assert rig_controller(SimpleNamespace(midi=None), machine_file) is None
+    assert rig_controller(mapped, machine_file)["controls"] == {"k": ("cc", 3)}
+    # An already-loaded machine is used as it is, whatever the file does next.
+    loaded = MachineSpec.load(machine_file)
+    machine_file.unlink()
+    assert rig_controller(mapped, loaded)["controls"] == {"k": ("cc", 3)}
+    with pytest.raises(MachineError, match="could not be read"):
+        rig_controller(mapped, machine_file)
+
+
 def test_the_rig_machines_file_describes_the_mpd218():
     from pathlib import Path
 
