@@ -1335,8 +1335,7 @@ would rewrite every parameter line on every save; `bypassed: false` is
 written only where the file said true; a name that already belongs to
 another rig file is refused rather than updated into this rig; a run without
 the amp leaves the file's amp alone; and the save check compiles into a
-scratch directory, not over the running rig's compiled config. One thing
-stays open: after a chain is reordered from the panel, `yamlmerge` matches
-the entries by position and a per-plugin comment stays at its line, so it
-can end up beside a different plugin. Being fixed in yamlmerge separately.
-*(2026-11-01)*
+scratch directory, not over the running rig's compiled config. The one thing
+that stayed open, a per-plugin comment staying at its line when a chain was
+reordered from the panel, is closed by the yamlmerge entry above: a
+reordered chain now moves each entry with its comments. *(2026-11-01)*
