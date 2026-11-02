@@ -24,7 +24,8 @@ aiohttp = pytest.importorskip("aiohttp")
 from aiohttp.test_utils import TestClient, TestServer  # noqa: E402
 
 from sushi_rig import agent as agent_module  # noqa: E402
-from sushi_rig.agent import Agent, AgentError, switch_steps  # noqa: E402
+from sushi_rig.agent import Agent, AgentError, Switching, switch_steps  # noqa: E402
+from sushi_rig.rig import RigError  # noqa: E402
 from sushi_rig.midi_listener import Off, Plan, PortError, World, parse_bindings  # noqa: E402
 from test_agent import UP, FakeLive, FakeRunner  # noqa: E402
 
@@ -101,6 +102,22 @@ class FakeWorld:
                      read_state=lambda: dict(self.state), rigs=lambda root: list(RIGS),
                      check_rig=self.check_rig)
 
+    def compile(self, name, root, machine):
+        """A switch compiles the next rig first (#93), and refuses one that
+        would not, as `check_rig` did for the switch before it."""
+        self.checked.append(name)
+        if name in self.bad_rigs:
+            raise RigError(self.bad_rigs[name])
+        return {"tracks": [], "_meta": {"name": name}}
+
+    def switching(self):
+        """The compiled configs here say nothing of their wiring, so every
+        switch is a restart, as it was before #93: these tests are about the
+        Program Change path, and test_agent.py's about switching live."""
+        return Switching(compile=self.compile, read_config=lambda path: {"tracks": []},
+                         write_config=lambda name, config: f"/run/rigs/{name}.json",
+                         read_state=lambda: dict(self.state), write_state=self.state.update)
+
 
 class Rig:
     """What `describe` says, settable as the runner brings rigs up and down."""
@@ -135,7 +152,7 @@ def midi_agent(world=None, described=RIG_UP, runner=None):
     fake = FakeLive()
     fake.info["main"]["mute"] = {"automatable": True, "value": 0.0,
                                  "min_domain_value": 0.0, "max_domain_value": 1.0}
-    agent = Agent(describe=rig, run=runner, live=fake, midi=world.world())
+    agent = Agent(describe=rig, run=runner, live=fake, midi=world.world(), switching=world.switching())
     return agent, fake, world, runner, rig
 
 
@@ -324,7 +341,46 @@ def test_a_program_change_switches_rigs_with_the_restart_the_agent_runs():
         assert agent._midi["rig"] == "lead", "and the new rig's listener came up with its up"
         (entry,) = await log(client)
         assert entry["op"] == "rig" and entry["source"] == "midi"
-        assert entry["args"] == {"rig": "lead", "program": 2} and entry["previous"] == "guitar_vocal"
+        # How it switched, and why not live (#93): the amp override is the
+        # state file's reason, and these fake configs say nothing of wiring.
+        assert entry["args"] == {"rig": "lead", "program": 2, "how": "restart",
+                                 "why": ["amp_override", "wiring_unknown"]}
+        assert entry["previous"] == "guitar_vocal"
+
+    served(agent, test)
+
+
+def test_a_program_change_switches_live_where_the_two_rigs_allow_it():
+    """The Program Change path is `POST /rig/switch`'s (#93): between two rigs
+    the live operations can turn one into the other, no restart, the rig read
+    back checked, the state file naming the next rig, and the pedals moved to
+    it. "lead" here compiles to electric-octave-up's config, and the rig up
+    is electric-delay's: the same pedals, other settings."""
+    from test_agent import RigLive, SwitchWorld, switch_config
+
+    world = FakeWorld()
+    switch_world = SwitchWorld("electric-delay")
+    switch_world.compile = lambda name, root, machine: switch_config({"lead": "electric-octave-up"}[name])
+    runner = FakeRunner()
+    fake = RigLive(switch_config("electric-delay"))
+    agent = Agent(describe=switch_world.described, run=runner, live=fake, midi=world.world(),
+                  switching=switch_world.switching())
+
+    async def test(client):
+        port = await started(agent, world, client)
+        port.send(0xC0, 2)  # "lead"
+        await until(lambda: switch_world.written_states)
+        await settle(agent)
+        assert runner.calls == [], "switched live, not restarted"
+        assert fake.writes(), "through the live operations"
+        assert switch_world.state["config_name"] == "lead"
+        assert port.closed.is_set(), "the old rig's listener stopped for the switch"
+        await until(lambda: len(world.ports) == 2 and agent._midi["state"] == "listening")
+        assert agent._midi["rig"] == "lead", "and the next rig's listener came up"
+        (entry,) = await log(client)
+        assert entry["op"] == "rig" and entry["source"] == "midi"
+        assert entry["args"]["how"] == "live" and entry["args"]["program"] == 2
+        assert entry["previous"] == "electric-delay"
 
     served(agent, test)
 

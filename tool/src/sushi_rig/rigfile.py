@@ -83,6 +83,8 @@ SEND_SUFFIX = "_send"
 # Where the compiled config carries the MIDI bindings Sushi cannot hold (bypass,
 # a note on a mute, Program Change rig switching), for the agent to serve.
 AGENT_BINDINGS = "_midi_agent"
+# Where the compiled config records each track's machine roles, for `diff`.
+WIRING = "_wiring"
 SEND_UID = "sushi.testing.send"
 RETURN_UID = "sushi.testing.return"
 MASTER_BUS = 0
@@ -1089,6 +1091,13 @@ def emit_compiled(
         # What the agent serves: Sushi ignores an underscored key, as it does
         # `_amp` and `_meta`, and `up` leaves nothing of the map unrecorded.
         config[AGENT_BINDINGS] = bindings
+    # Which machine roles each track is wired to (#93). Sushi never sees them
+    # (`TrackSpec.to_sushi` leaves them out) and only the patchbay does, so
+    # without this a live switch between two rigs that differ only in a
+    # channel's input could not tell, and would keep playing the old input
+    # through the next rig's chain. Underscored, so Sushi ignores it as it
+    # ignores `_amp`.
+    config[WIRING] = {track.name: {"source": track.source, "sink": track.sink} for track in spec.tracks}
     return config
 
 
@@ -1122,3 +1131,449 @@ def heard(config: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
         ]
         views.append((name if len(channels) == 1 else f"{name}.{track['name']}", view))
     return views
+
+
+# =========================================================================== #
+# Switching rigs live (#93): the difference between two compiled rigs
+# =========================================================================== #
+#
+# A switch between songs by restarting Sushi costs about five seconds of
+# silence. `diff` says how to get from the running rig to the next one through
+# the agent's live operations instead (`/live/remove`, `/live/add`,
+# `/live/move`, `/live/parameter`, `/live/bypass`), or why that cannot be done
+# and a restart is needed. It decides; the agent applies, verifies, and
+# restarts when told to or when anything goes wrong.
+#
+# The contract is that a live switch leaves the rig as `up` of the next rig
+# would: the same processors in the same order, each with the next rig's
+# settings. What the live operations cannot reach is a restart, named, never
+# an approximation.
+#
+# NOT RUN AGAINST A LIVE SUSHI, and not heard (2026-11-02). What the plan
+# relies on about Sushi 1.3.0 that has not been observed, each a guess:
+#
+# - A processor whose `initial_state` entry says nothing of `bypassed` loads
+#   un-bypassed. (`emit` has always written none for such a one.)
+# - A processor added live starts at the plugin's defaults, the same values
+#   a config load gives it, so a replaced processor is the restarted one.
+# - A processor deleted live frees its name at once, for an add straight
+#   after under the same name (a replacement).
+# - A cc_mapping is bound to the processor when the config loads, so one
+#   removed and added again is no longer driven by its pedal (`midi_target`).
+# - cc_mappings cannot be set live by anything this tool has run. elkpy
+#   1.3.0 has `MidiController.connect_cc_to_parameter` and `disconnect_cc`
+#   (the ConnectCCToParameter RPC), which look like a live way; they are
+#   unverified, so a difference in cc_mappings is a restart until they are.
+# - A track's strip is at `UNITY_STRIP` when the config sets none (a send's
+#   gain at 0 dB is read from send_plugin.cpp; the strip is not).
+#
+# The live calls the agent makes for each step carry their own unverified
+# list in live.py (placing an add, the session read, the read-back).
+
+# Below float32's resolution on 0..1 (about 6e-8) and the six decimals a rig
+# file holds, so a value read back from Sushi that only carries float32 noise
+# is not sent again, and any value a rig file can state differently is.
+SET_TOLERANCE = 5e-7
+
+# Why a switch needs a restart, by code: what the answer and the log carry.
+RESTART_REASONS = {
+    "unreadable": "a config is not a compiled rig this tool can compare",
+    "host": "the host config (sample rate, MIDI inputs) is read only when Sushi starts",
+    # elkpy's connect_cc_to_parameter may make this live; unverified, see above.
+    "midi": "Sushi's midi section (cc_mappings) is loaded only with the config",
+    "config_section": "a section of the config the live operations do not reach differs",
+    "amp": "the amp runs in Carla, which no live operation reaches",
+    "wiring": "a channel's input or the master's output is another role, which only the patchbay wires",
+    "wiring_unknown": "a config does not say which roles its tracks are wired to (compiled before #93)",
+    "track_added": "a track would be added: the live operations make no tracks",
+    "track_removed": "a track would be removed: the live operations remove no tracks",
+    "track_order": "the tracks are in another order, which Sushi takes only at load",
+    "track": "a track's channels, inputs or outputs differ, which Sushi takes only at load",
+    "protected": "a send or the master's return would have to be added, removed or replaced",
+    "plugin_type": "a plugin to add is not LV2, the only kind the live add makes",
+    "program": "a program would have to be set, and no live operation sets one",
+    "properties": "a property would have to be set, and no live operation sets one",
+    "parameter_default": "a parameter the next rig leaves at its default, whose default is not known",
+    "midi_target": "a processor a cc_mapping drives would be replaced, and the mapping is bound at load",
+    "drifted": "the running rig is no longer what its config says, so a plan made from it would be wrong",
+}
+
+# The settings of the compiler's own processors that the next rig may leave
+# unstated, and what Sushi has them at then: a track's strip at unity, and a
+# send's gain at 0 dB (send_plugin.cpp's default, as `compile_rig` relies on).
+_KNOWN_DEFAULTS = {"track": UNITY_STRIP, SEND_UID: {"gain": level_to_gain(0.0)}, RETURN_UID: {}}
+
+
+@dataclass(frozen=True)
+class SwitchStep:
+    """One live operation, in the words of the route that makes it: `args` is
+    that route's body (an add's `before` is the processor it goes in front of,
+    None for the back of the chain, which is Sushi's own way of placing one)."""
+
+    op: str
+    args: dict[str, Any]
+
+    def as_dict(self) -> dict[str, Any]:
+        return {"op": self.op, **self.args}
+
+
+@dataclass(frozen=True)
+class SwitchPlan:
+    """The steps that take the running rig to the next one, in order (see
+    `diff` for why that order)."""
+
+    steps: tuple[SwitchStep, ...]
+
+    def counts(self) -> dict[str, int]:
+        found: dict[str, int] = {}
+        for step in self.steps:
+            found[step.op] = found.get(step.op, 0) + 1
+        return found
+
+
+@dataclass(frozen=True)
+class RestartReason:
+    code: str  # a key of RESTART_REASONS
+    detail: str
+
+    def as_dict(self) -> dict[str, str]:
+        return {"code": self.code, "detail": self.detail}
+
+
+@dataclass(frozen=True)
+class NeedsRestart:
+    """Every reason the switch cannot be made live, not the first: a player
+    told "the amp differs" and then, after fixing that, "and a track" has been
+    told one at a time what could have been said at once."""
+
+    reasons: tuple[RestartReason, ...]
+
+    @property
+    def codes(self) -> list[str]:
+        return [reason.code for reason in self.reasons]
+
+
+def _identity(plugin: dict[str, Any]) -> tuple[Any, ...]:
+    """Which plugin a processor is: the same name over another plugin is a
+    different processor, and is replaced rather than retuned."""
+    return (plugin.get("type"), plugin.get("uri"), plugin.get("uid"), plugin.get("path"))
+
+
+def _close(a: Any, b: Any) -> bool:
+    numbers = all(isinstance(v, (int, float)) and not isinstance(v, bool) for v in (a, b))
+    return numbers and abs(a - b) <= SET_TOLERANCE
+
+
+def _cc_targets(midi: Any) -> set[str]:
+    """Every processor Sushi's midi section names, cc_mappings above all:
+    a mapping is bound to the processor when the config loads (a guess about
+    Sushi 1.3.0; its source was not read for it), so one that is removed and
+    added again live would no longer be driven by its pedal."""
+    names: set[str] = set()
+    for entries in (midi or {}).values() if isinstance(midi, dict) else ():
+        for entry in entries if isinstance(entries, list) else ():
+            if isinstance(entry, dict):
+                for key in ("plugin_name", "processor"):
+                    if isinstance(entry.get(key), str):
+                        names.add(entry[key])
+    return names
+
+
+def diff(
+    running: dict[str, Any], next_config: dict[str, Any], live: dict[str, Any] | None = None,
+) -> SwitchPlan | NeedsRestart:
+    """How to turn the running rig into the next one live, or why not. Pure.
+
+    `running` and `next_config` are compiled configs (`emit_compiled`'s). With
+    `live`, a reading of the running rig as `live.capture` gives it, the plan
+    is made against what the rig holds rather than what its config said: its
+    chains must still be the config's (or the plan would move and place by
+    positions that are not there: `drifted`), and a parameter or bypass is
+    compared with the value Sushi reports, so a knob turned during the last
+    song is put where the next rig says rather than left, which verification
+    would then refuse.
+
+    A processor survives the switch when the next rig has one of the same
+    name, on the same track, of the same plugin. Its parameters and bypass are
+    set where they differ. It is replaced (removed, then added fresh) where
+    the next rig leaves at the plugin's default something the running rig set
+    -- a parameter, a program, a property -- because a plugin's defaults are
+    known only to the plugin and a fresh one is the only way to them. Every
+    other processor is removed or added.
+
+    The order of the steps, and why it is safe:
+
+    1. **Bypass on**, for processors that stay and are off in the next rig: a
+       pedal the next rig does not use goes quiet before anything around it
+       changes, so it is never heard part-way between two settings.
+    2. **Removes.** Sushi's processor names are one namespace, tracks
+       included, so a replaced processor, or one moving to another track, can
+       be created only once the old one is gone; and every move after this is
+       through a shorter chain.
+    3. **Moves**, survivors only: each chain's survivors are put in the next
+       rig's order by single steps, each a swap of two neighbours that are
+       out of order, so the count is the fewest possible (the inversions). A
+       send is last and the master's return first in every compiled chain, so
+       neither is ever one of an out-of-order pair, and `decide_move` would
+       refuse to swap either anyway.
+    4. **Adds**, each chain from its end backwards, each in front of the
+       processor that follows it in the next rig: that one is a survivor, now
+       in order, or was added just before, so it is there; and on a channel
+       the send is always last, so nothing is ever added behind it. No
+       added processor needs a move.
+    5. **Each add is followed at once by bypassing what it added**, so a
+       fresh processor is not heard at the plugin's defaults while its
+       parameters are set; it comes in at step 7 if the next rig has it on.
+       Explicit either way, so nothing depends on whether Sushi creates a
+       processor bypassed or not.
+    6. **Parameters**, after the adds, since a parameter can be set only on a
+       processor that exists; every stated one for an added processor (fresh
+       ones are at the plugin's defaults), the ones that differ otherwise.
+    7. **Bypass off** last: a pedal comes in only once its parameters are the
+       next rig's.
+
+    What a restart is needed for is `RESTART_REASONS`; every reason found is
+    returned, not the first.
+
+    Not covered, and said rather than guessed at: a plugin's parameter
+    neither rig's file states keeps whatever the running rig has (a restart
+    would give the plugin's default, which only the plugin knows), which
+    only matters for one turned live -- the strips and the sends, whose
+    defaults are known, are put back to them; and a processor neither file
+    states a bypass for is taken to load un-bypassed, which is what `emit`
+    assumes in writing none (a guess about Sushi: see the list above this
+    section).
+    """
+    reasons: list[RestartReason] = []
+
+    def need(code: str, detail: str) -> None:
+        reasons.append(RestartReason(code, detail))
+
+    tracks_r, tracks_n = running.get("tracks"), next_config.get("tracks")
+    if not isinstance(tracks_r, list) or not isinstance(tracks_n, list):
+        return NeedsRestart((RestartReason("unreadable", "a config has no list of tracks"),))
+
+    # -- what Sushi takes only at load, and what the agent cannot reach -------
+    handled = {"tracks", "initial_state", "host_config", "midi", "_amp", WIRING,
+               "_meta", AGENT_BINDINGS}
+    if running.get("host_config") != next_config.get("host_config"):
+        need("host", f"host config {running.get('host_config')} is {next_config.get('host_config')} in the next rig")
+    if (running.get("midi") or {}) != (next_config.get("midi") or {}):
+        need("midi", "the cc_mappings (Sushi's midi section) differ, and Sushi loads them only with the config")
+    for key in sorted((set(running) | set(next_config)) - handled):
+        # `_meta` is provenance and `_midi_agent` is the agent's own listener,
+        # which follows the next rig on its own; anything else unknown is
+        # refused rather than assumed harmless.
+        if running.get(key) != next_config.get(key):
+            need("config_section", f"{key!r} differs")
+    if (running.get("_amp") or None) != (next_config.get("_amp") or None):
+        need("amp", "the amp differs (its model or its parameters), and it runs in Carla")
+    wiring_r, wiring_n = running.get(WIRING), next_config.get(WIRING)
+    if not isinstance(wiring_r, dict) or not isinstance(wiring_n, dict):
+        which = "the running rig's" if not isinstance(wiring_r, dict) else "the next rig's"
+        need("wiring_unknown", f"{which} config does not say which roles its tracks are wired to")
+    elif wiring_r != wiring_n:
+        changed = sorted(n for n in set(wiring_r) & set(wiring_n) if wiring_r[n] != wiring_n[n])
+        if changed:
+            need("wiring", f"{', '.join(changed)} {'is' if len(changed) == 1 else 'are'} wired to other roles")
+
+    # -- tracks ----------------------------------------------------------------
+    by_track_r = {t.get("name"): t for t in tracks_r if isinstance(t, dict)}
+    by_track_n = {t.get("name"): t for t in tracks_n if isinstance(t, dict)}
+    order_r = [t.get("name") for t in tracks_r if isinstance(t, dict)]
+    order_n = [t.get("name") for t in tracks_n if isinstance(t, dict)]
+    for name in order_n:
+        if name not in by_track_r:
+            need("track_added", f"track {name!r}")
+    for name in order_r:
+        if name not in by_track_n:
+            need("track_removed", f"track {name!r}")
+    common = [n for n in order_n if n in by_track_r]
+    if [n for n in order_r if n in by_track_n] != common:
+        need("track_order", f"{[n for n in order_r if n in by_track_n]} becomes {common}")
+    for name in common:
+        shape_r = {k: v for k, v in by_track_r[name].items() if k != "plugins"}
+        shape_n = {k: v for k, v in by_track_n[name].items() if k != "plugins"}
+        if shape_r != shape_n:
+            keys = sorted(k for k in set(shape_r) | set(shape_n) if shape_r.get(k) != shape_n.get(k))
+            need("track", f"track {name!r}: {', '.join(keys)} differ")
+
+    # -- the live reading, if there is one, must be the running config --------
+    if live is not None:
+        chains_live = live.get("tracks") or {}
+        chains_cfg = {n: [p.get("name") for p in t.get("plugins") or []] for n, t in by_track_r.items()}
+        if chains_live != chains_cfg:
+            off = sorted(n for n in set(chains_live) | set(chains_cfg)
+                         if chains_live.get(n) != chains_cfg.get(n))
+            need("drifted", "the chains of " + ", ".join(
+                f"{n!r} are {chains_live.get(n)}, the config says {chains_cfg.get(n)}" for n in off))
+
+    if reasons and any(r.code in ("track_added", "track_removed", "track_order", "drifted") for r in reasons):
+        # The processors below are compared track by track; with the tracks
+        # themselves different, what that would find is noise.
+        return NeedsRestart(tuple(reasons))
+
+    # -- processors --------------------------------------------------------------
+    from .live import protected_processor
+
+    def chains(tracks: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
+        return {n: [p for p in (t.get("plugins") or []) if isinstance(p, dict)] for n, t in tracks.items()}
+
+    chains_r, chains_n = chains(by_track_r), chains(by_track_n)
+    where_r = {p["name"]: (track, p) for track, ps in chains_r.items() for p in ps}
+    where_n = {p["name"]: (track, p) for track, ps in chains_n.items() for p in ps}
+    state_r = {e.get("processor"): e for e in running.get("initial_state") or [] if isinstance(e, dict)}
+    state_n = {e.get("processor"): e for e in next_config.get("initial_state") or [] if isinstance(e, dict)}
+    live_procs = (live or {}).get("processors") or {}
+
+    survivors = {
+        name for name, (track, plugin) in where_n.items()
+        if name in where_r and where_r[name][0] == track and _identity(where_r[name][1]) == _identity(plugin)
+    }
+
+    def defaults(name: str) -> dict[str, float] | None:
+        """What the compiler's own processors and the tracks are at when the
+        next rig states nothing; None for a plugin's, which are unknown."""
+        if name in by_track_n:
+            return _KNOWN_DEFAULTS["track"]
+        uid = where_n[name][1].get("uid") if name in where_n else None
+        return _KNOWN_DEFAULTS.get(uid)
+
+    # A survivor whose next state is not reachable by setting values is
+    # replaced; one that cannot be (the compiler's own) is a restart.
+    for name in sorted(survivors):
+        track, plugin = where_n[name]
+        was, will = state_r.get(name) or {}, state_n.get(name) or {}
+        protected = protected_processor(track, name, plugin.get("uid"))
+        if was.get("properties") != will.get("properties"):
+            if will.get("properties") or protected:
+                need("properties", f"{name!r}: {was.get('properties')} becomes {will.get('properties')}")
+                continue
+        if will.get("program") is not None and will.get("program") != was.get("program"):
+            need("program", f"{name!r}: program {will.get('program')}")
+            continue
+        dropped = sorted(set(was.get("parameters") or {}) - set(will.get("parameters") or {}))
+        known = defaults(name)
+        unknown = [p for p in dropped if known is None or p not in known]
+        reset_program = was.get("program") is not None and will.get("program") is None
+        reset_properties = bool(was.get("properties")) and not will.get("properties")
+        if unknown or reset_program or reset_properties:
+            if protected or plugin.get("type") != "lv2":
+                need("parameter_default", f"{name!r} leaves {', '.join(unknown) or 'its program'} at a default "
+                                          "that is not known, and it cannot be added fresh")
+                continue
+            survivors.discard(name)  # replaced: removed, and added fresh below
+
+    removed = [name for name in where_r if name not in survivors]
+    added = [name for name in where_n if name not in survivors]
+    for name in added:
+        track, plugin = where_n[name]
+        if protected_processor(track, name, plugin.get("uid")):
+            need("protected", f"{name!r} on {track!r} would have to be added")
+        elif plugin.get("type") != "lv2":
+            need("plugin_type", f"{name!r} is {plugin.get('type')}")
+        will = state_n.get(name) or {}
+        if will.get("program") is not None:
+            need("program", f"{name!r}, added, would need program {will['program']}")
+        if will.get("properties"):
+            need("properties", f"{name!r}, added, would need {sorted(will['properties'])}")
+    for name in removed:
+        track, plugin = where_r[name]
+        if protected_processor(track, name, plugin.get("uid")):
+            need("protected", f"{name!r} on {track!r} would have to be removed")
+    for name in sorted(_cc_targets(running.get("midi")) & set(removed)):
+        need("midi_target", f"{name!r} is driven by a cc_mapping and would be replaced")
+    if reasons:
+        return NeedsRestart(tuple(reasons))
+
+    # -- the steps, in the order the docstring gives ----------------------------
+    bypass_on: list[SwitchStep] = []
+    bypass_off: list[SwitchStep] = []
+    parameters: list[SwitchStep] = []
+    for name in where_n:
+        if name not in survivors:
+            continue
+        was, will = state_r.get(name) or {}, state_n.get(name) or {}
+        now = live_procs.get(name) or {}
+        current = now.get("bypassed") if live is not None else was.get("bypassed", False)
+        want = will.get("bypassed", False)
+        if current is None or bool(current) != want:
+            (bypass_on if want else bypass_off).append(SwitchStep("bypass", {"processor": name, "bypassed": want}))
+
+    def set_values(name: str, fresh: bool) -> None:
+        was = (state_r.get(name) or {}).get("parameters") or {}
+        will = (state_n.get(name) or {}).get("parameters") or {}
+        now = (live_procs.get(name) or {}).get("parameters") or {}
+        known = defaults(name) or {}
+        targets = dict(will)
+        if not fresh:
+            # The compiler's own processors and the strips go to their known
+            # default wherever the next rig states nothing: a send's gain a
+            # blend pedal moved, read live, comes back to unity as a restart
+            # would bring it. (A plugin's parameter the running rig set and
+            # the next leaves unstated cannot reach here: it was replaced.)
+            for parameter, default in known.items():
+                targets.setdefault(parameter, default)
+        for parameter, value in targets.items():
+            if not fresh:
+                current = now.get(parameter) if live is not None else was.get(parameter, known.get(parameter))
+                if _close(current, value):
+                    continue
+            parameters.append(SwitchStep("parameter", {"processor": name, "parameter": parameter, "value": value}))
+
+    for track in by_track_n:  # the strips, which are the tracks' own parameters
+        set_values(track, fresh=False)
+    for name in where_n:
+        set_values(name, fresh=name not in survivors)
+
+    removes = [SwitchStep("remove", {"processor": name}) for name in removed]
+    moves: list[SwitchStep] = []
+    adds: list[SwitchStep] = []  # each add, and the bypass that follows it
+    comes_in: list[SwitchStep] = []  # what was added and the next rig has on
+    for track in by_track_n:
+        current = [p["name"] for p in chains_r[track] if p["name"] in survivors]
+        target = [p["name"] for p in chains_n[track] if p["name"] in survivors]
+        for index, name in enumerate(target):
+            at = current.index(name)
+            while at > index:  # each step swaps one out-of-order pair
+                moves.append(SwitchStep("move", {"processor": name, "direction": "up"}))
+                current[at - 1], current[at] = current[at], current[at - 1]
+                at -= 1
+        chain = [p["name"] for p in chains_n[track]]
+        for index in range(len(chain) - 1, -1, -1):
+            name = chain[index]
+            if name in survivors:
+                continue
+            before = chain[index + 1] if index + 1 < len(chain) else None
+            adds.append(SwitchStep("add", {
+                "track": track, "name": name, "uri": where_n[name][1].get("uri"), "before": before}))
+            adds.append(SwitchStep("bypass", {"processor": name, "bypassed": True}))
+            if not (state_n.get(name) or {}).get("bypassed", False):
+                comes_in.append(SwitchStep("bypass", {"processor": name, "bypassed": False}))
+    return SwitchPlan(tuple(bypass_on + removes + moves + adds + parameters + comes_in + bypass_off))
+
+
+def apply_to_chains(chains: dict[str, list[str]], plan: SwitchPlan) -> dict[str, list[str]]:
+    """The chains as `plan`'s structural steps leave them, worked out without
+    Sushi, so a plan can be shown to reach the next rig's chains. (The agent
+    does not use it: each edit it makes is confirmed from its own read-back.)
+    A move is a swap with the neighbour, as `live.plan_move` makes it."""
+    out = {track: list(chain) for track, chain in chains.items()}
+    for step in plan.steps:
+        args = step.args
+        if step.op == "remove":
+            for chain in out.values():
+                if args["processor"] in chain:
+                    chain.remove(args["processor"])
+        elif step.op == "move":
+            chain = next(c for c in out.values() if args["processor"] in c)
+            i = chain.index(args["processor"])
+            j = i - 1 if args["direction"] == "up" else i + 1
+            chain[i], chain[j] = chain[j], chain[i]
+        elif step.op == "add":
+            chain = out[args["track"]]
+            if args["before"] is None:
+                chain.append(args["name"])
+            else:
+                chain.insert(chain.index(args["before"]), args["name"])
+    return out

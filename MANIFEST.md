@@ -1913,3 +1913,79 @@ returns the chains it confirmed, a 502 otherwise. (8) An unknown escape's
 `TurtleError` had no line; it has. (9) `plugins_described` scanned every triple
 three times per plugin; it indexes once per bundle. Every name and port count
 still agrees with lilv on the assembled `plugins/` (rerun). *(2026-11-02)*
+
+**Switching rigs live by diff (#93).** `POST /rig/switch {"config_name"}`, and
+the Program Change switch, which now takes the same path, turn the running rig
+into another rig of `config/rigs/` through the live operations instead of
+restarting Sushi, where the two allow it. `rigfile.diff(running, next, live=None)`
+is the decision, pure: two compiled configs in, a `SwitchPlan` of live steps
+out (each step's `args` the body of the route that makes it), or `NeedsRestart`
+with every reason by code (`rigfile.RESTART_REASONS`, and the agent's
+`SWITCH_RESTART_REASONS`). **The order, and why it is safe:** bypass on, for
+pedals the next rig has off, before anything else changes; removes, since
+Sushi's processor names are one namespace and a replacement, or a processor
+changing tracks, can be created only once the old one is gone; moves, of
+survivors only, by neighbour swaps that are each an out-of-order pair, so the
+fewest possible, and never of a send or return, which are last and first in
+every compiled chain; adds, each chain from its end, each in front of what
+follows it in the next rig, which by then is there, so nothing needs moving
+after and nothing goes behind a send, each bypassed as soon as it is added so
+it is not heard at the plugin's defaults; parameters, once every processor
+exists; bypass off last, so a pedal comes in with its settings. A survivor is
+a processor of the same name, track and plugin; one whose next state is not
+reachable by setting values (the next rig leaves at its default a parameter,
+program or property the running rig set) is **replaced**, since a fresh plugin
+is the only way to its defaults; the strips and sends, whose defaults are known,
+are set back to them instead. **Every restart reason:** `unreadable` (a config
+that is not a compiled rig); `host` (the host config); `midi` (Sushi's midi
+section, `cc_mappings` above all, loaded only with the config); `config_section`
+(any other section, unknown ones refused rather than assumed harmless);
+`amp` (Carla's, model or settings); `wiring` and `wiring_unknown` (a channel's
+input or the master's output on another role, which only the patchbay wires:
+compiled configs now carry `_wiring`, each track's roles, and one compiled
+before this has none, so the first switch from it restarts); `track_added`,
+`track_removed`, `track_order`, `track` (channels, inputs, outputs);
+`protected` (a send or return to add, remove or replace); `plugin_type` (an
+add that is not LV2, the only kind `/live/add` makes); `program` and
+`properties` (nothing live sets one); `parameter_default` (a parameter of the
+compiler's own whose default is not known); `midi_target` (a processor a
+cc_mapping drives would be replaced); `drifted` (the reading's chains are not
+the running config's); and from the agent `panel` (the panel and its SAVE
+listener were started for the rig being left: switched live, SAVE would write
+the next rig into the previous rig's file), `amp_override` (`--amp-model`
+belonged to the rig being left), `failed` (a step failed part-way) and
+`unverified` (the read-back is not the next rig). The route compiles the next
+rig with the run's machine file (`rig.compile_named_rig`, the first half of
+`prepare_rig`, now shared), refuses one that will not compile (409
+`rig_problem`, the running rig and its pedals untouched), and under the
+lifecycle lock (`busy: "switch"`, so live changes meanwhile are 409 busy) and
+the live lock reads the rig, plans again from the reading -- so a knob turned
+in the last song is put where the next rig says, and a chain changed by hand is
+`drifted` -- applies each step through the routes' own read-check-set (each
+chain edit confirmed by its read-back), and checks the reading afterwards with
+`verify.diff_state`. Only then are the compiled config and the state file
+written (`switched_state`: the same supervisor and options, the next rig's
+name, config and file, `switched_at`). Anything else restarts into the next
+rig by the MIDI switch's `down` and `up --rig`, with the previous rig brought
+back if that `up` fails (`_lifecycle_steps`, split out of `_run_lifecycle`
+unchanged). One `op: "rig"` entry is logged, with `how` and the plan's counts
+or the reasons, also for a restart that failed, since the rig was restarted;
+undo stops at it. The MIDI listener is stopped once a switch is decided on and
+follows the rig afterwards. Of the committed rigs, 26 of the 110 ordered pairs
+switch live; the others differ in the amp (most), or in tracks (guitar_vocal).
+Tests: `test_rig_diff.py` plays every pair's plan on a model of what a loaded
+config holds and requires exactly what loading the next rig gives, and the
+order above, or named reasons; `test_agent.py` drives the route against
+`RigLive`, the fake Sushi holding a whole rig, through live switches, a restart,
+a verification failure that restarts, a step failing part-way, drift, the
+refusals and undo. **Not run against a live Sushi, and not heard**; how long a
+live switch takes is not measured. Guesses about Sushi 1.3.0 the plan relies
+on, named in rigfile.py: a processor with no `bypassed` in `initial_state`
+loads un-bypassed; one added live starts at the same defaults a load gives it;
+a deleted processor's name is free at once; a cc_mapping is bound at load and
+lost with its processor; and a track's strip is at unity when unset. elkpy
+1.3.0's `MidiController.connect_cc_to_parameter` and `disconnect_cc` look like a
+live way to set cc_mappings and are unverified, so those differences still
+restart. Not covered, and said: a plugin's parameter that neither rig file
+states keeps what the running rig has, where a restart would give the plugin's
+default; it matters only for one turned live. *(2026-11-02)*

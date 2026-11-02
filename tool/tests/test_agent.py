@@ -2022,3 +2022,435 @@ def test_a_command_that_hangs_is_killed_and_said_so():
 def test_the_cli_the_agent_runs_is_the_installation_it_was_started_from():
     assert agent_module.CLI[0] == sys.executable
     assert agent_module.CLI[1:] == ("-m", "sushi_rig.cli")
+
+
+# --------------------------------------------------------------------------- #
+# Switching rigs live (#93): POST /rig/switch, against a fake Sushi that holds a rig
+# --------------------------------------------------------------------------- #
+#
+# `RigLive` is `FakeLive` holding a whole rig, loaded from a compiled config of
+# config/rigs/ as Sushi would load it, so a switch can be played end to end:
+# the reading, each step through the routes' own calls, the read-back. Its
+# plugins' parameters are every one any rig states for that plugin, starting
+# at 0.5 where the config states nothing: invented, since no Sushi was to hand,
+# and only ever compared with what the configs state.
+
+import copy as _copy  # noqa: E402
+from pathlib import Path as _Path  # noqa: E402
+
+from sushi_rig import rigfile as _rigfile  # noqa: E402
+from sushi_rig.agent import Switching, place_switch_add, state_blockers, switched_state  # noqa: E402
+from sushi_rig.rig import RigError  # noqa: E402
+from sushi_rig.verify import diff_state  # noqa: E402
+
+_ROOT = _Path(__file__).resolve().parents[2]
+_COMPILED = {path.stem: _rigfile.emit_rig(_rigfile.load_rig(path))
+             for path in sorted((_ROOT / "config" / "rigs").glob("*.yaml"))}
+# Every parameter any rig states for a plugin: what the fake gives that plugin.
+_PLUGIN_PARAMETERS: dict = {}
+for _config in _COMPILED.values():
+    _uris = {p["name"]: p.get("uri") for t in _config["tracks"] for p in t["plugins"]}
+    for _entry_ in _config.get("initial_state", []):
+        if _uris.get(_entry_["processor"]):
+            _PLUGIN_PARAMETERS.setdefault(_uris[_entry_["processor"]], set()).update(
+                _entry_.get("parameters") or {})
+
+
+def switch_config(name):
+    return _copy.deepcopy(_COMPILED[name])
+
+
+class RigLive(FakeLive):
+    """A Sushi holding the rig `config` loads, and answering every call the
+    live routes and a switch make from it."""
+
+    def __init__(self, config):
+        super().__init__()
+        self.tracks = [t["name"] for t in config["tracks"]]
+        self.chains = {t["name"]: [p["name"] for p in t["plugins"]] for t in config["tracks"]}
+        self.plugins = {p["name"]: {"uri": p.get("uri"), "uid": p.get("uid"), "type": p.get("type")}
+                        for t in config["tracks"] for p in t["plugins"]}
+        self.ids = {}
+        for name in self.tracks + list(self.plugins):
+            self.ids[name] = len(self.ids) + 1
+        self.values = {track: dict(_rigfile.UNITY_STRIP) for track in self.tracks}
+        for name, plugin in self.plugins.items():
+            self.values[name] = self._defaults(plugin)
+        self.properties = {name: ({"destination_name": "master_return"} if p["uid"] == _rigfile.SEND_UID else {})
+                           for name, p in self.plugins.items()}
+        self.bypassed = {name: False for name in self.plugins}
+        for entry in config.get("initial_state", []):
+            self.values[entry["processor"]].update(entry.get("parameters") or {})
+            if "bypassed" in entry:
+                self.bypassed[entry["processor"]] = entry["bypassed"]
+        self.ignore = None  # (processor, parameter) whose set is confirmed and not applied
+        self.drift = None  # called once, at the first reading, to change the rig under the agent
+
+    @staticmethod
+    def _defaults(plugin):
+        if plugin["uid"] == _rigfile.SEND_UID:
+            return {"gain": _rigfile.level_to_gain(0.0)}
+        return {name: 0.5 for name in sorted(_PLUGIN_PARAMETERS.get(plugin["uri"], ()))}
+
+    def _track_of(self, name):
+        return next((t for t, c in self.chains.items() if name in c), None)
+
+    def snapshot(self, connection):
+        self._enter("snapshot", connection)
+        if self.drift:
+            self.drift, drift = None, self.drift
+            drift(self)
+        return self.reading()
+
+    def reading(self):
+        """What a snapshot would read now, for a test to look at afterwards."""
+        processors = {t: {"parameters": dict(self.values[t]), "properties": {}} for t in self.tracks}
+        for name in self.plugins:
+            processors[name] = {"parameters": dict(self.values[name]), "bypassed": self.bypassed[name],
+                                "properties": dict(self.properties[name])}
+        return {"processors": processors, "tracks": {t: list(c) for t, c in self.chains.items()},
+                "parameter_info": {}}
+
+    def parameter(self, connection, processor, parameter):
+        self._enter("parameter", connection, processor, parameter)
+        values = self.values.get(processor)
+        return {"chains": {t: list(c) for t, c in self.chains.items()},
+                "parameters": None if values is None else {n: {"automatable": True} for n in values},
+                "value": None if values is None else values.get(parameter)}
+
+    def bypass(self, connection, processor):
+        self._enter("bypass", connection, processor)
+        return {"chains": {t: list(c) for t, c in self.chains.items()}, "bypassed": self.bypassed.get(processor)}
+
+    def set_parameter(self, connection, processor, parameter, value):
+        self._enter("set_parameter", connection, processor, parameter, value)
+        if self.ignore != (processor, parameter):
+            self.values[processor][parameter] = value
+
+    def set_bypass(self, connection, processor, bypassed):
+        self._enter("set_bypass", connection, processor, bypassed)
+        self.bypassed[processor] = bypassed
+
+    def _uids(self):
+        return {name: p["uid"] for name, p in self.plugins.items()}
+
+    def plan_move(self, connection, processor, direction):
+        self._enter("plan_move", connection, processor, direction)
+        return decide_move({t: list(c) for t, c in self.chains.items()}, dict(self.ids), processor,
+                           direction, self._uids())
+
+    def send_move(self, connection, move):
+        self._enter("move", connection, move.processor, move.direction)
+        chain = self.chains[self._track_of(move.processor)]
+        i = chain.index(move.processor)
+        chain.insert(i + move.direction, chain.pop(i))
+        return replace(move, outcome="moved")
+
+    def walk(self, connection, uids=False):
+        self._enter("walk", connection, uids)
+        reading = {"chains": {t: list(c) for t, c in self.chains.items()}, "ids": dict(self.ids)}
+        if uids:
+            reading["uids"] = self._uids()
+        return reading
+
+    def removal(self, connection, processor):
+        self._enter("removal", connection, processor)
+        reading = {"chains": {t: list(c) for t, c in self.chains.items()}, "ids": dict(self.ids),
+                   "uids": self._uids()}
+        reading["plugin"] = dict(self.plugins[processor]) if processor in self.plugins else None
+        return reading
+
+    def add(self, connection, addition):
+        self._enter("add", connection, addition.name, addition.track)
+        by_id = {i: n for n, i in self.ids.items()}
+        chain = self.chains[addition.track]
+        if addition.add_to_back:
+            chain.append(addition.name)
+        else:
+            chain.insert(chain.index(by_id[addition.before_id]), addition.name)
+        self.ids[addition.name] = max(self.ids.values()) + 1
+        self.plugins[addition.name] = {"uri": addition.uri, "uid": None, "type": "lv2"}
+        self.values[addition.name] = self._defaults(self.plugins[addition.name])
+        self.properties[addition.name] = {}
+        self.bypassed[addition.name] = False
+
+    def remove(self, connection, removal):
+        self._enter("remove", connection, removal.processor)
+        self.chains[removal.track].remove(removal.processor)
+        for table in (self.plugins, self.values, self.properties, self.bypassed, self.ids):
+            table.pop(removal.processor, None)
+
+    def writes(self):
+        return [c for c in self.calls if c[0] in ("set_parameter", "set_bypass", "move", "add", "remove")]
+
+
+HEADLESS = {"supervisor_pid": 4242, "pgid": 4242, "mode": "headless", "config_name": "electric-delay",
+            "config": "/run/rigs/electric-delay.json", "rig": "config/rigs/electric-delay.yaml",
+            "tuner_requested": True, "amp_requested": True, "amp_model_requested": None,
+            "machine": "/m/box.yaml", "children": {"sushi": 4243}}
+
+
+class SwitchWorld:
+    """The state file, the compiled configs and what was written, for a
+    switch: a dict of rig name to compiled config stands in for config/rigs."""
+
+    def __init__(self, running="electric-delay", state=None):
+        self.state = dict(state or HEADLESS, config_name=running, config=f"/run/rigs/{running}.json",
+                          rig=f"config/rigs/{running}.yaml")
+        self.configs = {f"/run/rigs/{running}.json": switch_config(running)}
+        self.written_configs: list = []
+        self.written_states: list = []
+        self.compiled: list = []
+        self.bad: dict = {}
+
+    def compile(self, name, root, machine):
+        self.compiled.append((name, machine))
+        if name in self.bad:
+            raise RigError(self.bad[name])
+        return switch_config(name)
+
+    def write_config(self, name, config):
+        path = f"/run/rigs/{name}.json"
+        self.written_configs.append(name)
+        self.configs[path] = config
+        return path
+
+    def write_state(self, state):
+        self.written_states.append(dict(state))
+        self.state = dict(state)
+
+    def switching(self):
+        return Switching(compile=self.compile, read_config=lambda path: _copy.deepcopy(self.configs[path]),
+                         write_config=self.write_config, read_state=lambda: dict(self.state),
+                         write_state=self.write_state)
+
+    def described(self):
+        return {"verdict": "running", "running": True, "config_name": self.state["config_name"],
+                "config": self.state["config"], "rig": self.state["rig"], "mode": self.state["mode"],
+                "message": f"{self.state['config_name']} ({self.state['mode']} mode), up 2m"}
+
+
+def switch_agent(running="electric-delay", state=None, runner=None):
+    world = SwitchWorld(running, state)
+    fake = RigLive(switch_config(running))
+    runner = runner or FakeRunner()
+    agent = Agent(describe=world.described, run=runner, live=fake, switching=world.switching())
+    return agent, fake, world, runner
+
+
+def test_a_switch_the_live_operations_can_make_is_made_live_and_verified():
+    """electric-delay to electric-octave-up: the same pedals, other settings.
+    No restart; the rig read back is the next rig's config; the state file and
+    the compiled config name it only afterwards; one log entry."""
+    agent, fake, world, runner = switch_agent("electric-delay")
+    status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-octave-up"})
+    assert status == 200, body
+    assert body["ok"] and body["how"] == "live" and body["rig"] == "electric-octave-up"
+    assert body["previous"] == "electric-delay"
+    assert runner.calls == [], "nothing was restarted"
+    assert diff_state(switch_config("electric-octave-up"), fake.reading()) == []
+    assert world.compiled == [("electric-octave-up", "/m/box.yaml")], "compiled against the run's machine"
+    assert world.written_configs == ["electric-octave-up"]
+    (state,) = world.written_states
+    assert (state["config_name"], state["rig"], state["config"]) == (
+        "electric-octave-up", "config/rigs/electric-octave-up.yaml", "/run/rigs/electric-octave-up.json")
+    assert state["pgid"] == 4242 and state["children"] == {"sushi": 4243}, "the same supervisor"
+    assert body["applied"] == len(body["plan"]) > 0
+    (entry,) = call(agent, "GET", "/live/log")[1]["log"]
+    assert entry["op"] == "rig" and entry["args"]["how"] == "live"
+    assert entry["args"]["rig"] == "electric-octave-up" and entry["previous"] == "electric-delay"
+    assert fake.one_connection_per_request_all_closed() and len(fake.opened) == 1
+
+
+def test_a_switch_that_removes_adds_and_moves_reaches_the_next_rigs_chains():
+    """electric-chorus to electric-delay: two removed, three added (the delay
+    a different plugin under the same name), two moved."""
+    agent, fake, world, runner = switch_agent("electric-chorus")
+    status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-delay"})
+    assert status == 200 and body["how"] == "live", body
+    expected = {t["name"]: [p["name"] for p in t["plugins"]] for t in switch_config("electric-delay")["tracks"]}
+    assert fake.chains == expected
+    assert fake.plugins["delay"]["uri"] == "http://plugin.org.uk/swh-plugins/lcrDelay"
+    ops = [c[0] for c in fake.writes()]
+    assert {"remove", "add", "move"} <= set(ops)
+    assert ops.index("add") > max(i for i, op in enumerate(ops) if op in ("remove", "move"))
+    assert diff_state(switch_config("electric-delay"), fake.reading()) == []
+    assert runner.calls == []
+
+
+def test_a_switch_the_live_operations_cannot_make_restarts_and_says_why():
+    """accustomed to electric-chorus-2: the amp's settings differ, and the amp
+    runs in Carla. A restart, the MIDI switch's: down, then up --rig with the
+    options restart would keep. Sushi is not touched; the state file is the
+    restart's to write."""
+    agent, fake, world, runner = switch_agent("accustomed")
+    status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-chorus-2"})
+    assert status == 200 and body["ok"] and body["how"] == "restart", body
+    assert [r["code"] for r in body["why"]] == ["amp"]
+    assert runner.calls == [["down"], ["up", "electric-chorus-2", "--rig", "--headless"]]
+    assert fake.calls == [] and fake.opened == []
+    assert world.written_states == [] and world.written_configs == []
+    (entry,) = call(agent, "GET", "/live/log")[1]["log"]
+    assert entry["op"] == "rig" and entry["args"] == {"rig": "electric-chorus-2", "how": "restart", "why": ["amp"]}
+
+
+def test_a_switch_whose_reading_back_is_not_the_next_rig_restarts_into_it():
+    """A value Sushi confirmed and did not apply: verification catches it, and
+    rather than leave a rig that is neither, the switch restarts into the next
+    one. The state file is not written by the switch."""
+    agent, fake, world, runner = switch_agent("electric-delay")
+    plan = _rigfile.diff(switch_config("electric-delay"), switch_config("electric-octave-up"))
+    step = next(s for s in plan.steps if s.op == "parameter")
+    processor, parameter = step.args["processor"], step.args["parameter"]
+    fake.ignore = (processor, parameter)
+    status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-octave-up"})
+    assert status == 200 and body["ok"] and body["how"] == "restart", body
+    (why,) = body["why"]
+    assert why["code"] == "unverified" and f"{processor}: {parameter} did not apply" in why["detail"]
+    assert any(f"{processor}: {parameter}" in problem for problem in body["verification"])
+    assert runner.calls == [["down"], ["up", "electric-octave-up", "--rig", "--headless"]]
+    assert world.written_states == [] and world.written_configs == []
+    (entry,) = call(agent, "GET", "/live/log")[1]["log"]
+    assert entry["args"]["how"] == "restart" and entry["args"]["why"] == ["unverified"]
+
+
+def test_a_switch_that_fails_part_way_restarts_into_the_next_rig():
+    agent, fake, world, runner = switch_agent("electric-chorus")
+    fake.fail, fake.fail_on = RuntimeError("Sushi said no"), "add"
+    status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-delay"})
+    assert status == 200 and body["how"] == "restart", body
+    (why,) = body["why"]
+    assert why["code"] == "failed" and "Sushi said no" in why["detail"]
+    assert f"after {body['applied']} of {len(body['plan'])} steps" in why["detail"]
+    assert runner.calls == [["down"], ["up", "electric-delay", "--rig", "--headless"]]
+    assert fake.one_connection_per_request_all_closed()
+
+
+def test_a_rig_changed_since_it_came_up_is_planned_from_the_reading_or_restarted():
+    """A knob turned during the last song is put right live; a chain changed
+    (a pedal added from the panel) is a restart, since the plan would place by
+    positions that are not there."""
+    agent, fake, world, runner = switch_agent("electric-delay")
+    fake.drift = lambda rig: rig.values["compressor"].update(RATIO=0.99)
+    status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-octave-up"})
+    assert status == 200 and body["how"] == "live", body
+    assert fake.values["compressor"]["RATIO"] != 0.99
+
+    agent, fake, world, runner = switch_agent("electric-delay")
+    fake.drift = lambda rig: rig.chains["board"].insert(0, "slap")
+    status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-octave-up"})
+    assert status == 200 and body["how"] == "restart", body
+    assert [r["code"] for r in body["why"]] == ["drifted"] and body["applied"] == 0
+    assert fake.writes() == [], "nothing applied to a rig the plan was not made for"
+
+
+def test_a_rig_run_with_its_panel_or_an_amp_override_restarts():
+    """The panel's SAVE listener was started for the running rig's file; the
+    amp override belonged to the rig being left. Both said, beside the rest."""
+    agent, fake, world, runner = switch_agent("electric-delay", dict(HEADLESS, mode="panel"))
+    status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-octave-up"})
+    assert body["how"] == "restart" and [r["code"] for r in body["why"]] == ["panel"], body
+    assert runner.calls[1] == ["up", "electric-octave-up", "--rig"]
+    assert [r.code for r in state_blockers(dict(HEADLESS, amp_model_requested="X.nam"))] == ["amp_override"]
+    assert state_blockers(dict(HEADLESS, amp_model_requested="X.nam", amp_requested=False)) == []
+
+
+def test_a_switch_to_a_rig_that_does_not_compile_is_refused_with_the_rig_left_playing():
+    agent, fake, world, runner = switch_agent()
+    world.bad["electric-octave-up"] = "electric-octave-up.yaml: chain entry 3 has no name"
+    status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-octave-up"})
+    assert status == 409 and body["code"] == "rig_problem" and "chain entry 3" in body["reason"]
+    assert runner.calls == [] and fake.calls == [] and call(agent, "GET", "/live/log")[1]["log"] == []
+    assert call(agent, "GET", "/health")[1]["agent"]["last_error"]["kind"] == "lifecycle"
+
+
+@pytest.mark.parametrize("body", [None, {}, {"config_name": "../x"}, {"config_name": 3}, ["electric-delay"]])
+def test_a_switch_request_names_a_rig_and_nothing_else(body):
+    agent, fake, world, runner = switch_agent()
+    status, answer = call(agent, "POST", "/rig/switch", **({} if body is None else {"json": body}))
+    assert status == 400, answer
+    assert runner.calls == [] and fake.calls == [] and world.compiled == []
+
+
+def test_a_switch_with_no_rig_up_is_refused():
+    agent, fake, world, runner = switch_agent()
+    agent.describe = lambda: dict(DOWN)
+    status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-octave-up"})
+    assert status == 409 and body["code"] == "no_rig"
+    assert runner.calls == [] and world.compiled == []
+
+
+def test_a_switch_is_busy_while_a_lifecycle_command_runs_and_live_changes_are_busy_during_one():
+    agent, fake, world, runner = switch_agent()
+
+    async def go():
+        async with TestClient(TestServer(agent.app())) as client:
+            await agent._lock.acquire()
+            agent.busy = "up"
+            try:
+                r = await client.post("/rig/switch", json={"config_name": "electric-octave-up"})
+                return r.status, await r.json()
+            finally:
+                agent.busy = None
+                agent._lock.release()
+
+    status, body = asyncio.run(go())
+    assert status == 409 and body["code"] == "busy" and world.compiled == []
+
+    agent, fake, world, runner = switch_agent()
+    seen = {}
+
+    def during(rig):  # at the first reading, a live change asks to come in
+        seen["busy"] = agent.busy
+
+    fake.drift = during
+    status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-octave-up"})
+    assert status == 200 and seen["busy"] == "switch"
+
+
+def test_undo_stops_at_a_live_switch():
+    agent, fake, world, runner = switch_agent("electric-delay")
+    agent.log.append(log_entry("bypass", {"processor": "eq", "bypassed": True}, False, "t"))
+    call(agent, "POST", "/rig/switch", json={"config_name": "electric-octave-up"})
+    status, body = call(agent, "POST", "/live/undo")
+    assert status == 409 and body["code"] == "nothing_to_undo" and "rig switch" in body["reason"]
+
+
+def test_a_switch_whose_restart_fails_brings_the_previous_rig_back_and_says_so():
+    class UpOfNextFails(FakeRunner):
+        async def __call__(self, args):
+            self.calls.append(list(args))
+            if args[:2] == ["up", "electric-chorus-2"]:
+                return Outcome(False, 1, "", "Sushi never came up")
+            return Outcome(True, 0, "", "")
+
+    runner = UpOfNextFails()
+    agent, fake, world, _ = switch_agent("accustomed", runner=runner)
+    status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-chorus-2"})
+    assert status == 409 and not body["ok"] and body["how"] == "restart"
+    assert runner.calls[-1] == ["up", "accustomed", "--rig", "--headless"]
+    assert "Sushi never came up" in body["reason"] and "accustomed was brought back" in body["reason"]
+    (entry,) = call(agent, "GET", "/live/log")[1]["log"]
+    assert entry["op"] == "rig" and entry["args"]["ok"] is False, "a barrier still: the rig was restarted"
+
+
+def test_the_state_after_a_live_switch_names_the_next_rig_and_keeps_the_rest():
+    after = switched_state(HEADLESS, "lead", "/run/rigs/lead.json")
+    assert (after["config_name"], after["rig"], after["config"]) == ("lead", "config/rigs/lead.yaml",
+                                                                   "/run/rigs/lead.json")
+    assert {k: v for k, v in after.items() if k not in ("config_name", "rig", "config", "switched_at")} == \
+        {k: v for k, v in HEADLESS.items() if k not in ("config_name", "rig", "config")}
+
+
+def test_an_add_goes_in_front_of_what_follows_it_and_never_behind_a_send():
+    reading = {"chains": {"board": ["comp", "board_send"]}, "ids": {"board": 1, "comp": 2, "board_send": 3},
+               "uids": {"board_send": _rigfile.SEND_UID}}
+    addition = place_switch_add(reading, "board", "eq", "urn:eq", "board_send")
+    assert (addition.expected, addition.before_id, addition.add_to_back) == (["comp", "eq", "board_send"], 3, False)
+    front = place_switch_add(reading, "board", "eq", "urn:eq", "comp")
+    assert front.expected == ["eq", "comp", "board_send"] and front.after is None
+    from sushi_rig.agent import Conflict
+    for track, name, before in [("board", "eq", None), ("nope", "eq", "comp"), ("board", "comp", "board_send"),
+                                ("board", "eq", "drive")]:
+        with pytest.raises(Conflict):
+            place_switch_add(reading, track, name, "urn:eq", before)
