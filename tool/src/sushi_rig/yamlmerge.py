@@ -21,10 +21,11 @@ It knows nothing about rigs. rigfile.write_rig is the rig-shaped caller.
 - A list of mappings that all have a `name` is matched by name, so removing one
   plugin from a chain does not hand its neighbours the wrong comments. An entry
   whose name changed but whose `uri` (or `path`, `uid`) did not is the same
-  plugin renamed, and is updated in place, comment and layout and all. Any
-  other list is matched by position, and so is one whose common names come in
-  a different order (comments stay where they were written, not with the
-  plugin that moved).
+  plugin renamed, and is updated in place, comment and layout and all. A
+  chain whose entries come in a different order is *moved*, not matched by
+  position: each entry takes its comments with it (`_Update.reorder`, below).
+  Any other list is matched by position, and its comments stay where they were
+  written.
 - A new list item is written in flow style (`- {name: x, uri: y}`) when the
   entry beside it is, and an empty mapping or list always is (`[]`).
 - The layout and fold width of the file (indent, where dashes sit, 100 columns
@@ -38,12 +39,22 @@ before them, so deleting that entry drops the comments that were written
 above the next one, and inserting after it leaves the next one's comments
 above the wrong entry. Both are repaired here (`_Update.remove`, `_Update.insert`): the text
 between two entries moves with the entry it sits above, and a comment is
-dropped only with the entry it was written above or beside. Two edges:
+dropped only with the entry it was written above or beside. The edges:
 
 - the comments above the *first* entry of a list stay with the list when that
   entry goes (they are usually about the list, as a chain's heading is);
 - a key inserted first in a mapping goes above the comment that was above the
   old first key, unless a blank line sets that comment apart;
+- when a named list is reordered, an entry moves with the comment lines above
+  it, whatever is inside it and its trailing comment. What stays with the
+  *position*: whatever follows the last entry,
+  and a heading at the top of the list that a blank line sets apart from the
+  first entry (a comment directly above the first entry, with no blank line,
+  is taken to be about it and moves with it, or goes with it if it is the one
+  removed; an insert at the front of a list, or a plain removal of its first
+  entry, does not know which entry the comment is about, so it leaves all of it
+  at the top). A blank line goes with the entry below it (the one that moved to the
+  top loses it, and the entry it displaced takes it); a new entry has none;
 - the first key of a mapping cannot be removed if comment lines sit below it,
   and the only entry of a list or mapping cannot be removed if comments follow
   it, because ruamel.yaml has nowhere to put them (it drops anything after an
@@ -63,6 +74,11 @@ dropped only with the entry it was written above or beside. Two edges:
   ruamel writes YAML 1.2, so strings PyYAML would misread are quoted, floats
   are written the PyYAML way, and `fresh` and `merged` both read their result
   back with PyYAML and compare it to `data` before returning it.
+- A reorder it cannot do without guessing: a list in which comments sit in a
+  slot of the list that it does not read. The error names the entry. (A comment
+  after a `|` or `>` scalar used to be refused too; ruamel.yaml keeps it in the
+  scalar's trailing-comment slot, but `_get_after` now knows that such a slot
+  holds only lines after the scalar.)
 - A file whose layout they cannot reproduce: if dumping the unchanged document
   does not give the file back exactly (a flow entry a person wrapped by hand,
   mixed indents), an update would re-lay-out lines nobody asked to touch, so
@@ -372,25 +388,51 @@ def _is_last_of_list(holder: Any, key: Any) -> bool:
     return not _is_map(holder) and key == len(holder) - 1
 
 
+def _is_block_scalar(value: Any) -> bool:
+    from ruamel.yaml.scalarstring import FoldedScalarString, LiteralScalarString
+
+    return isinstance(value, (LiteralScalarString, FoldedScalarString))
+
+
 def _get_after(container: Any, ident: Any) -> str:
+    """The comment text kept after `container[ident]`: its trailing comment, a newline, and the
+    lines after it (the comments above whatever follows). "" if there is none.
+
+    After a `|` or `>` scalar there is no trailing comment to speak of: ruamel.yaml keeps the
+    lines under it in the very slot it keeps an eol comment in, and the text it holds starts at
+    the first of them, so the eol is empty and all of it is "after"."""
     holder, key = _leaf(container, ident)
     slots = holder.ca.items.get(key)
     token = slots[_after_index(holder)] if slots else None
+    found = ""
     if token is not None and not isinstance(token, list):
-        return token.value
-    if _is_last_of_list(holder, key) and holder.ca.end:
-        # What follows a list's last entry, if it is not a scalar, is kept on
-        # the list, when that entry has no comment of its own to hold it. Each token starts at its column.
-        return "\n" + "".join(" " * t.column + t.value for t in holder.ca.end)
-    return ""
+        found = ("\n" + _lead_text([token])) if _is_block_scalar(holder[key]) else token.value
+    # What follows a list's last entry, if it is not a scalar, is kept on the list,
+    # when that entry has no comment of its own to hold it. The entry may end deeper
+    # (in an empty `{}`), so the list asked about is looked at as well as the leaf's.
+    for owner, owner_key in ((holder, key), (container, ident)):
+        if _is_last_of_list(owner, owner_key) and owner.ca.end:
+            end = "\n" + _lead_text(owner.ca.end)
+            return found + _split(end)[1] if found else end
+        if owner is container:
+            break
+    return found
 
 
 def _set_after(container: Any, ident: Any, value: str | None) -> None:
+    """Replace everything kept after `container[ident]` with `value` (None for nothing).
+
+    That is all of it: the entry's trailing comment, the lines after, and, when the
+    entry is a list's last and ends deeper than itself, the list's end comments
+    (`ca.end`), which are cleared here. A caller that means to keep any of that
+    reads it with `_get_after` first and includes it in `value`."""
     from ruamel.yaml.error import CommentMark
     from ruamel.yaml.tokens import CommentToken
 
     holder, key = _leaf(container, ident)
     index = _after_index(holder)
+    if holder is not container and _is_last_of_list(container, ident) and container.ca.end:
+        container.ca.end[:] = []  # all of it is `value`'s now, by the contract above
     if _is_last_of_list(holder, key) and _is_collection(holder[key]):
         # Mirror how ruamel.yaml reads it: a comment on the entry's own line
         # takes everything after it into one token; otherwise the lines after
@@ -400,6 +442,22 @@ def _set_after(container: Any, ident: Any, value: str | None) -> None:
         if not eol:
             value = None
     slots = holder.ca.items.get(key)
+    if value is not None and _is_block_scalar(holder[key]):
+        # Only lines after it: the token starts at the first of them, at its column.
+        eol, rest = _split(value)
+        # `_get_after` reports no eol after a block scalar, and every caller builds
+        # `value` from what it reported, so there is none to lose here. A raise
+        # rather than an assert: `python -O` strips asserts, and a comment
+        # silently dropped is the failure this module exists to prevent.
+        if eol:
+            raise MergeError(f"an eol comment {eol!r} after a block scalar has nowhere to go")
+        indent = len(rest) - len(rest.lstrip(" "))
+        value = rest[indent:] if rest.strip() else (rest or None)
+        if value is not None:
+            if slots is None:
+                slots = holder.ca.items[key] = [None, None, None, None]
+            slots[index] = CommentToken(value, CommentMark(indent if rest.strip() else 0))
+            return
     if value is None:
         if slots:
             slots[index] = None
@@ -444,6 +502,40 @@ def _tokens(text: str) -> list[Any]:
         else:
             tokens.append(CommentToken(line.strip() + "\n", CommentMark(len(line) - len(line.lstrip()))))
     return tokens
+
+
+def _slot_lead(seq: Any, i: int) -> str:
+    """The comment lines ruamel.yaml keeps on a list as the "before" comment of entry `i`.
+
+    It does so when what precedes the entry ends in an empty `{}` or `[]`, which
+    has no trailing slot of its own to hold them."""
+    slots = seq.ca.items.get(i)
+    return _lead_text(slots[1]) if slots and isinstance(slots[1], list) else ""
+
+
+def _gap(gaps: list[tuple[str, str]], pairs: list[int | None], j: int) -> str:
+    """The blank lines to open the text above entry `j` of the reordered list with.
+
+    A gap goes with the entry below it, so the blank line that set `c` apart is
+    still there when `c` goes first elsewhere. Nothing is above the first entry,
+    so what opens the old list stays at the top; the blank line the entry that
+    moves up brings with it goes to the one that moved from the top, which has
+    none of its own (and to nobody if there is no such entry). An entry new to
+    the list has none."""
+    if j == 0:
+        return gaps[0][0]
+    i = pairs[j]
+    if i is None:
+        return ""
+    if i > 0:
+        return gaps[i][0]
+    first = pairs[0]
+    return gaps[first][0] if first else ""
+
+
+def _lead_text(tokens: list[Any]) -> str:
+    """Comment tokens as the lines they were read from."""
+    return "".join(" " * t.column + t.value for t in tokens)
 
 
 def _token_comments(t: Any, found: list[str]) -> None:
@@ -491,11 +583,33 @@ def _subtract(whole: list[str], part: list[str]) -> list[str]:
     return list((Counter(whole) - Counter(part)).elements())
 
 
+def _unfold_lead(container: Any, parent: tuple[Any, Any] | None) -> None:
+    """Split what ruamel.yaml folds into one token when the key above a collection has a
+    comment of its own: `chain:  # the chain` then `  # about a` is read as the single
+    token '# the chain\\n  # about a\\n', on the key, with nothing "above the first entry".
+    The first line stays where it is (it is the key's); the rest becomes the lead, as
+    it would be had the key no comment. Does nothing otherwise, and only once."""
+    if parent is None or not _is_map(parent[0]) or not container.ca.comment:
+        return
+    eol = container.ca.comment[0]
+    if eol is None or isinstance(eol, list) or container.ca.comment[1]:
+        return
+    first, rest = _split(eol.value)
+    if not _has_comment(rest):
+        return
+    eol.value = first + "\n"  # the very token the key holds in its own slot
+    tokens = _tokens(rest)
+    container.ca.comment[1] = tokens
+    parent[0].ca.items.setdefault(parent[1], [None, None, None, None])[3] = tokens
+
+
 def _lead(container: Any, parent: tuple[Any, Any] | None) -> list[Any] | None:
     """The comment tokens written above a collection's first entry. For a list,
     for the top mapping, ruamel.yaml keeps them on the collection itself; for a
     mapping under a key, on that key (`parent` is the (container, key) holding
-    it); for a mapping that is a list item there is no such place."""
+    it); for a mapping that is a list item there is no such place. When the key
+    has a comment of its own they are folded into it, and are split off here."""
+    _unfold_lead(container, parent)
     if parent is None or not _is_map(container):
         return container.ca.comment[1] if container.ca.comment else None
     holder, key = parent
@@ -508,7 +622,15 @@ def _lead(container: Any, parent: tuple[Any, Any] | None) -> list[Any] | None:
 def _clear_lead(container: Any, parent: tuple[Any, Any] | None) -> None:
     if parent is None or not _is_map(container):
         if container.ca.comment:
+            shared = container.ca.comment[1]
             container.ca.comment[1] = None
+            # A list under a key has the very same tokens on that key as well, and
+            # that is the copy ruamel.yaml writes: left there, the comment would
+            # come back out after being cleared (or hide what is added in its place).
+            if parent is not None and _is_map(parent[0]):
+                slots = parent[0].ca.items.get(parent[1])
+                if slots and shared is not None and slots[3] is shared:
+                    slots[3] = None
     elif parent[0].ca.items.get(parent[1]):
         parent[0].ca.items[parent[1]][3] = None
 
@@ -534,6 +656,11 @@ def _add_lead(container: Any, parent: tuple[Any, Any] | None, text: str) -> bool
             container.ca.comment = [None, tokens]
         else:
             container.ca.comment[1] = tokens
+        if parent is not None and _is_map(parent[0]):
+            # As the parser leaves a list under a key: the same tokens on the key
+            # too. Once the key holds any comment slot of its own, ruamel.yaml
+            # writes what is there and not what the list holds.
+            parent[0].ca.items.setdefault(parent[1], [None, None, None, None])[3] = tokens
     elif _is_map(parent[0]):
         parent[0].ca.items.setdefault(parent[1], [None, None, None, None])[3] = tokens
     else:
@@ -608,6 +735,41 @@ def _names(items: Any) -> list[str] | None:
 
 def _renamed(old: Any, new: Any) -> bool:
     return any(k in old and k in new and old[k] == new[k] for k in IDENTITY_KEYS)
+
+
+def _pairing(old: list, new: list) -> list[int | None]:
+    """For each entry of `new`, the index in `old` of the entry it is, else None (a new one).
+
+    Same name, same entry, even when two plugins swap names and keep their uris:
+    a name is what the player sees and calls a plugin by, a swap of names between
+    two plugins is rare, and the comments follow the names. Of those left over, an old and a new entry are the
+    same plugin renamed when they share an identity key (`IDENTITY_KEYS`), but
+    only if that is the one candidate on both sides: two plugins on one uri,
+    both renamed, cannot be told apart, and guessing would hand one the other's
+    comments, so they are a removal and an insertion (comments dropped, and said
+    so by the count check, never misattached)."""
+    where = {item["name"]: i for i, item in enumerate(old)}
+    pairs: list[int | None] = [where.get(item["name"]) for item in new]
+    free_old = [i for i in range(len(old)) if i not in pairs]
+    free_new = [j for j, p in enumerate(pairs) if p is None]
+    for j in free_new:
+        mates = [i for i in free_old if _renamed(old[i], new[j])]
+        if len(mates) == 1 and sum(_renamed(old[mates[0]], new[k]) for k in free_new) == 1:
+            pairs[j] = mates[0]
+    return pairs
+
+
+def _split_gap(text: str) -> tuple[str, str]:
+    """(the blank lines the text between two entries opens with, the rest of it).
+
+    Blank lines separate entries and belong to the gap, not to the entry below
+    it, so when entries move the gaps keep theirs. The blank lines after a
+    comment belong to that comment (they set it apart) and stay with it."""
+    lines = text.splitlines(keepends=True)
+    blank = 0
+    while blank < len(lines) and not lines[blank].strip():
+        blank += 1
+    return "\n" * blank, "".join(lines[blank:])
 
 
 class _Update:
@@ -696,7 +858,7 @@ class _Update:
             lead = _lead(container, parent)
             own = _own_lead(lead) if lead else []
             if own:
-                rest = "".join(" " * t.column + t.value for t in own)
+                rest = _lead_text(own)
                 del lead[len(lead) - len(own):]
                 if not lead:
                     _clear_lead(container, parent)
@@ -708,6 +870,107 @@ class _Update:
             key = pos
         if rest:
             _set_after(container, key, _join("", rest))
+
+    def reorder(self, old: Any, new: list, pairs: list[int | None],
+                parent: tuple[Any, Any] | None = None) -> None:
+        """Put a name-matched list in the order of `new`, each entry keeping its comments.
+
+        What belongs to an entry: the comment lines above it, and whatever is
+        written inside it or beside it (its trailing comment). ruamel.yaml
+        stores the lines above an entry on the entry *before* it, so a plain
+        reorder would carry them to the wrong plugin; here they are taken off
+        first, and put back above the entry they were written above, wherever
+        it went. What stays with the *position*: a heading a blank line sets
+        apart at the top, and whatever follows the last entry (it belongs to
+        what comes after the list). A blank line between entries goes with the
+        entry below it, `_gap` says how.
+
+        An entry that is not in `new` goes with its comments, including the
+        ones directly above it when it was the first (a plain `remove` leaves
+        those at the top; here the entries are known, so they are about it);
+        only a heading a blank line sets apart stays. Entries new to the list
+        go where `new` puts them, with no comments. Refuses (`MergeError`) a list whose comments are kept
+        somewhere this cannot read them back from.
+
+        `pairs` is `_pairing(old, new)`: for each entry of `new`, the index of the
+        old entry it is, or None."""
+        kept = {i for i in pairs if i is not None}
+        n = len(old)
+
+        # What is written above each entry, and what follows the last. ruamel.yaml
+        # keeps it on the entry before, except after an empty `{}` or `[]`, where
+        # it is on the list, as that entry's "before" comment.
+        after = [_split(_get_after(old, i)) for i in range(n)]
+        for i in range(n):
+            self._refuse_unreadable(old, i)
+        before = [_slot_lead(old, i) for i in range(n)]
+        lead = _lead(old, parent)
+        own = _own_lead(lead) if lead else []
+        leads = [_lead_text(own)] + [after[i - 1][1] + before[i] for i in range(1, n)]
+        tail = after[-1][1]
+        if own:
+            del lead[len(lead) - len(own):]
+            if not lead:
+                _clear_lead(old, parent)
+        # Leave on each entry only what is its own, its trailing comment.
+        for i in range(n):
+            _set_after(old, i, _join(after[i][0], ""))
+        # An entry written in flow style keeps its trailing comment in the list's
+        # slot for it, not in itself; those slots go along with the entries.
+        slots = {i: [old.ca.items.pop(i)[0], None, None, None]
+                 for i in range(n) if i in old.ca.items and old.ca.items[i][0] is not None}
+        old.ca.items.clear()
+        for i in range(n):
+            if i not in kept:
+                self.gone += _all_comments(old[i]) + _comments(leads[i]) \
+                    + (_comments(after[i][0]) if i in slots else [])
+
+        for j, i in enumerate(pairs):
+            if i is not None:
+                self.item(old, i, new[j])
+        nodes = [old[i] for i in pairs if i is not None]
+        for i in reversed(range(n)):
+            del old[i]
+        for k, node in enumerate(nodes):
+            old.insert(k, node)
+        for j, i in enumerate(pairs):
+            if i is None:
+                old.insert(j, _build(new[j], _flow_near(old, j)))
+        for j, i in enumerate(pairs):
+            if i in slots:
+                old.ca.items[j] = slots[i]
+
+        # Put the text back: above each entry the blank lines its gap had and the
+        # comment lines it had; after the last, what followed the list.
+        gaps = [_split_gap(text) for text in leads]
+        above = [_gap(gaps, pairs, j) + (gaps[i][1] if i is not None else "")
+                 for j, i in enumerate(pairs)]
+        _add_lead(old, parent, above[0])
+        # The lines above entry j go on the list as its "before" comment, which
+        # ruamel.yaml writes whatever the entry before it ended in; on that entry
+        # they would be a trailing comment, and for a flow entry that is written
+        # wrongly when the list has a heading of its own.
+        for j in range(1, len(pairs)):
+            if above[j]:
+                old.ca.items.setdefault(j, [None, None, None, None])[1] = _tokens(above[j])
+        last = len(pairs) - 1
+        _set_after(old, last, _join(_split(_get_after(old, last))[0], tail))
+        # Read the tail back through ruamel's own storage: it is the one place the text
+        # goes through `_set_after`'s rules (a list's end, a block scalar's slot) rather
+        # than straight into tokens.
+        if _split(_get_after(old, last))[1] != tail:
+            raise MergeError("cannot reorder this list: what follows its last entry would not stay "
+                             "where it was put. Move or delete it, then retry")
+
+    @staticmethod
+    def _refuse_unreadable(old: Any, i: int) -> None:
+        """Refuse an entry whose comments sit in a slot of the list that `reorder` does not read."""
+        slots = old.ca.items.get(i)
+        if slots and (any(x is not None for x in slots[2:]) or (slots[0] is not None and _is_block(old[i]))
+                      or (slots[1] is not None and not isinstance(slots[1], list)) or (i == 0 and slots[1])):
+            raise MergeError(
+                f"cannot reorder this list: entry {i + 1} has comments in a place this tool does not know "
+                "how to move them from. Move the comments, then retry")
 
     def value(self, container: Any, ident: Any, new: Any, flow: bool) -> None:
         from ruamel.yaml.comments import CommentedMap, CommentedSeq
@@ -747,27 +1010,34 @@ class _Update:
 
         old_names, new_names = _names(old), _names(new)
         if old_names is not None and new_names is not None:
-            common = [n for n in old_names if n in new_names]
-            if common == [n for n in new_names if n in old_names]:
-                matcher = difflib.SequenceMatcher(None, old_names, new_names, autojunk=False)
-                # Last block first, so the indexes of the blocks before it hold.
-                for tag, i1, i2, j1, j2 in reversed(matcher.get_opcodes()):
-                    if tag == "equal":
-                        for k in range(i2 - i1):
-                            self.item(old, i1 + k, new[j1 + k])
-                    elif tag == "replace" and i2 - i1 == j2 - j1:
-                        for k in reversed(range(i2 - i1)):
-                            if _renamed(old[i1 + k], new[j1 + k]):
-                                self.item(old, i1 + k, new[j1 + k])
-                            else:
-                                self.remove(old, i1 + k, parent)
-                                self.add(old, i1 + k, new[j1 + k])
-                    else:
-                        for i in reversed(range(i1, i2)):
-                            self.remove(old, i, parent)
-                        for k, j in enumerate(range(j1, j2)):
-                            self.add(old, i1 + k, new[j])
+            pairs = _pairing(old, new)
+            kept = [i for i in pairs if i is not None]
+            in_place = pairs == list(range(len(old)))  # every entry the one at its own position
+            renamed = any(i is not None and old_names[i] != new[j]["name"] for j, i in enumerate(pairs))
+            # Out of order, or renamed beside an insertion or a removal: the diff below
+            # works on names alone and would take a rename for a removal and an insertion.
+            if kept != sorted(kept) or (renamed and not in_place):
+                self.reorder(old, new, pairs, parent)
                 return
+            matcher = difflib.SequenceMatcher(None, old_names, new_names, autojunk=False)
+            # Last block first, so the indexes of the blocks before it hold.
+            for tag, i1, i2, j1, j2 in reversed(matcher.get_opcodes()):
+                if tag == "equal":
+                    for k in range(i2 - i1):
+                        self.item(old, i1 + k, new[j1 + k])
+                elif tag == "replace" and i2 - i1 == j2 - j1:
+                    for k in reversed(range(i2 - i1)):
+                        if _renamed(old[i1 + k], new[j1 + k]):
+                            self.item(old, i1 + k, new[j1 + k])
+                        else:
+                            self.remove(old, i1 + k, parent)
+                            self.add(old, i1 + k, new[j1 + k])
+                else:
+                    for i in reversed(range(i1, i2)):
+                        self.remove(old, i, parent)
+                    for k, j in enumerate(range(j1, j2)):
+                        self.add(old, i1 + k, new[j])
+            return
         # By position: the comments stay where they were written.
         for i, item in enumerate(new):
             if i < len(old):

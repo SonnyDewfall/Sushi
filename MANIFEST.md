@@ -1296,6 +1296,24 @@ alias map is re-read on every poll so a node that registers late is not
 reported unmade for ever, and a `pw-link` that fails is unreadable, never
 "nothing is linked". *(2026-11-01)*
 
+**A reordered chain keeps each plugin's comments with it.** `yamlmerge` matched a
+chain by name only while its order held; once two plugins swapped it fell back
+to matching by position, so a comment stayed at its line and ended up beside
+the other plugin (`comp  # squash first` came out on drive, reproduced by a
+reviewer on 2026-11-01), which the player's SAVE would now do every time the
+panel reorders a chain. A reorder is now a move: each plugin takes the comment
+lines above it, what is inside it and its trailing comment, while a heading a
+blank line sets apart at the top, and what follows the last entry, stay at
+their positions. A plugin renamed in the same update
+(or beside an insertion or a removal) is still the same plugin when its
+`uri` is unique (a same name wins over a same uri). The comments directly above
+a first entry that goes with the reorder go with it. It refuses, naming the
+entry, a list whose comments sit in a slot it does not read. A comment after a
+`|` or `>` scalar is read correctly now (ruamel.yaml stores it as the scalar's
+trailing comment, which silently misattached it on remove and insert too), as is
+one under a key that has a comment of its own. A blank line goes with the entry
+below it. The comment count and the read-back still run after a move. *(2026-11-01)*
+
 **SAVE on a rig of channels writes the rig file, with its comments.** The
 other half of #30's last slice. `rigfile.fold_state` is the decision: the
 captured order of a track's processors becomes the chain's order, each
@@ -1319,8 +1337,7 @@ would rewrite every parameter line on every save; `bypassed: false` is
 written only where the file said true; a name that already belongs to
 another rig file is refused rather than updated into this rig; a run without
 the amp leaves the file's amp alone; and the save check compiles into a
-scratch directory, not over the running rig's compiled config. One thing
-stays open: after a chain is reordered from the panel, `yamlmerge` matches
-the entries by position and a per-plugin comment stays at its line, so it
-can end up beside a different plugin. Being fixed in yamlmerge separately.
-*(2026-11-01)*
+scratch directory, not over the running rig's compiled config. The one thing
+that stayed open, a per-plugin comment staying at its line when a chain was
+reordered from the panel, is closed by the yamlmerge entry above: a
+reordered chain now moves each entry with its comments. *(2026-11-01)*
