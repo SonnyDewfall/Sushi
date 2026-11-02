@@ -1586,9 +1586,9 @@ def apply_to_chains(chains: dict[str, list[str]], plan: SwitchPlan) -> dict[str,
 
 
 # How far a value read back may be from what the plan set and still count as
-# set: `verify.TOLERANCE`, the same margin `diff_state` gives the config's own
-# values, so the two checks after a switch agree on what "applied" means.
-APPLIED_TOLERANCE = 0.005
+# set: `verify.TOLERANCE` itself, the margin `diff_state` gives the config's
+# own values, so the two checks after a switch agree on what "applied" means.
+from .verify import TOLERANCE as APPLIED_TOLERANCE  # noqa: E402
 
 
 def unapplied(plan: SwitchPlan, reading: dict[str, Any]) -> list[str]:
