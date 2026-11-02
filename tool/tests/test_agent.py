@@ -59,6 +59,24 @@ class FakeRunner:
         return self.outcome
 
 
+@pytest.fixture(autouse=True)
+def _agents_release_their_pools(monkeypatch):
+    """Each Agent owns a pool of Sushi-call threads; left alive after a test
+    they make a later test that forks (the supervisor's) fork a threaded
+    process, which Python warns about."""
+    made = []
+    original = Agent.__init__
+
+    def recording(self, *args, **kwargs):
+        original(self, *args, **kwargs)
+        made.append(self)
+
+    monkeypatch.setattr(Agent, "__init__", recording)
+    yield
+    for agent in made:
+        agent._executor.shutdown(wait=True, cancel_futures=True)
+
+
 def call(agent, method, path, **kwargs):
     """One request against a served agent, as (status, json)."""
 
@@ -562,6 +580,8 @@ class FakeLive:
         self.fail_on = None  # ... or only from this one
         self.during = None  # called inside set_parameter
         self.hang_on = None  # a call to block in until `release` is set
+        self.hang_times = 1  # ... for this many calls, then it answers at once
+        self.thread_names = set()
         self.reached = threading.Event()  # set when the hanging call is in
         self.release = threading.Event()
 
@@ -574,15 +594,21 @@ class FakeLive:
             f"{name} was not given the request's open connection"
         self.calls.append((name, *args))
         self.threads.add(threading.get_ident())
+        self.thread_names.add(threading.current_thread().name)
         self._fail(name)
-        if name == self.hang_on:
-            self.hang_on = None  # the next request is not stuck too
+        self._hang(name)
+
+    def _hang(self, name):
+        if name == self.hang_on and self.hang_times > 0:
+            self.hang_times -= 1  # the next request is not stuck too
             self.reached.set()
             self.release.wait(10)
 
     def connect(self):
         self.threads.add(threading.get_ident())
+        self.thread_names.add(threading.current_thread().name)
         self._fail("connect")
+        self._hang("connect")
         connection = len(self.opened) + 1
         self.opened.append(connection)
         return connection
@@ -997,7 +1023,8 @@ def test_a_change_queued_behind_a_change_is_busy_if_a_lifecycle_command_started_
     status, body = asyncio.run(go())
     assert status == 409 and "busy: 'up' is still running" in body["reason"]
     assert [c[0] for c in fake.calls].count("parameter") == 1, "the queued change did not read Sushi"
-    assert len(fake.opened) == 1, "nor connect"
+    assert len(fake.opened) == 2, "it connected while it waited, before the lock"
+    assert fake.one_connection_per_request_all_closed(), "and closed what it opened"
     assert agent.last_error is None
 
 
@@ -1107,7 +1134,8 @@ def test_a_connection_that_will_not_close_is_said_not_swallowed(capsys):
     fake.disconnect = broken
     status, body = call(agent, "POST", "/live/bypass", json={"processor": "drive", "bypassed": False})
     assert status == 200, "the change was made; the answer says so"
-    assert "closing the connection to Sushi failed: OSError: socket already gone" in capsys.readouterr().err
+    assert "closing the connection to Sushi failed (POST /live/bypass): OSError: socket already gone" \
+        in capsys.readouterr().err
     last = agent.last_error
     assert last["kind"] == "live" and "socket already gone" in last["message"]
 
@@ -1139,19 +1167,203 @@ def test_a_call_to_sushi_that_never_returns_is_a_504_and_frees_the_lock(
                 # the next request is answered, on a connection of its own.
                 inside = not fake.release.is_set()
                 second = await asyncio.wait_for(client.get("/live"), 5)
-                return stuck, inside, second.status, await (await client.get("/live/log")).json()
+                log = await (await client.get("/live/log")).json()
+                closed_meanwhile = list(fake.closed)
+                return stuck, inside, second.status, log, closed_meanwhile
             finally:
                 fake.release.set()
+                # The late close is done on this loop: keep it until it has.
+                await asyncio.get_running_loop().run_in_executor(
+                    None, _until, lambda: sorted(fake.closed) == [1, 2])
 
-    (status, answer), inside, second, log = asyncio.run(go())
+    (status, answer), inside, second, log, closed_meanwhile = asyncio.run(go())
     assert status == 504
     assert "did not answer within 0.3s" in answer["reason"]
     assert ("may or may not have been applied" in answer["reason"]) is applied_unknown
     assert inside and second == 200
     assert log["log"] == [], "a change nobody saw confirmed is not logged"
     assert agent.last_error["kind"] == "live" and "did not answer" in agent.last_error["message"]
-    assert len(fake.opened) == 2 and fake.closed == [2], \
+    assert len(fake.opened) == 2 and closed_meanwhile == [2], \
         "the abandoned request's connection is not closed from under its stuck call"
+    assert _until(lambda: sorted(fake.closed) == [1, 2]), "but when the call returns, it is"
+
+
+def _until(condition, seconds=3.0):
+    """Poll for something a worker thread does after the request is answered."""
+    import time
+
+    end = time.monotonic() + seconds
+    while not condition() and time.monotonic() < end:
+        time.sleep(0.01)
+    return condition()
+
+
+def _timed_out(agent, fake, method, path, body, *, then=None, settled=None):
+    """One request that times out, the stuck call still inside Sushi; `then`
+    runs on the loop before the call is let go, and the loop is kept until the
+    call has returned and `settled` holds (the late close runs on it)."""
+
+    async def go():
+        async with TestClient(TestServer(agent.app())) as client:
+            try:
+                response = await client.request(method, path, json=body)
+                result = (response.status, await response.json())
+                if then:
+                    await then(client)
+                return result
+            finally:
+                fake.release.set()
+                await asyncio.get_running_loop().run_in_executor(
+                    None, _until, settled or (lambda: agent.stuck_live_calls == 0))
+                await asyncio.sleep(0.2)
+
+    return asyncio.run(go())
+
+
+@pytest.mark.parametrize("hangs_in", ["bypass", "set_bypass", "connect"])
+def test_a_connection_abandoned_after_a_504_is_closed_when_the_stuck_call_does_return(
+    monkeypatch, capsys, hangs_in
+):
+    """A slow call (not only a stuck-for-ever one) used to leak its controller,
+    notification thread and gRPC channels for the agent's life: nothing closed
+    the connection once the call came back. Where the call that timed out is the
+    connect itself, the connection it returns late is nobody's and is closed
+    too. What came back is said."""
+    monkeypatch.setattr(agent_module, "LIVE_TIMEOUT", 0.2)
+    agent, fake = live_agent()
+    fake.hang_on = hangs_in
+    status, _ = _timed_out(agent, fake, "POST", "/live/bypass", {"processor": "drive", "bypassed": False},
+                           settled=lambda: fake.closed == fake.opened != [])
+    assert status == 504
+    assert _until(lambda: len(fake.opened) == 1 and fake.closed == fake.opened), \
+        f"opened {fake.opened}, closed {fake.closed}"
+    said = []
+    assert _until(lambda: said.append(capsys.readouterr().err) or "returned after the 504" in "".join(said))
+    assert _until(lambda: agent.stuck_live_calls == 0)
+
+
+def test_a_late_return_is_said_in_health(monkeypatch):
+    monkeypatch.setattr(agent_module, "LIVE_TIMEOUT", 0.2)
+    agent, fake = live_agent()
+    fake.hang_on = "set_bypass"
+    seen = []
+
+    async def then(client):
+        fake.release.set()
+        assert await asyncio.get_running_loop().run_in_executor(
+            None, _until, lambda: fake.closed == fake.opened)
+        seen.append((await (await client.get("/health")).json())["agent"])
+
+    status, _ = _timed_out(agent, fake, "POST", "/live/bypass",
+                           {"processor": "drive", "bypassed": False}, then=then)
+    assert status == 504
+    last = seen[0]["last_error"]
+    assert "returned after the 504" in last["message"] or "returned after the 504" in str(last.get("also"))
+    assert seen[0]["stuck_live_calls"] == 0
+
+
+def test_a_timeout_error_from_the_call_itself_is_not_the_agents_timeout():
+    """`asyncio.TimeoutError` is the builtin on 3.11+, so a socket or gRPC
+    deadline raised inside the call looked like the agent's 20 s wall clock:
+    misreported as 504, and its connection treated as abandoned though the
+    thread had already returned."""
+    agent, fake = live_agent()
+    fake.fail, fake.fail_on = TimeoutError("deadline exceeded"), "set_bypass"
+    status, body = call(agent, "POST", "/live/bypass", json={"processor": "drive", "bypassed": False})
+    assert status == 502
+    assert body["reason"] == "TimeoutError: deadline exceeded"
+    assert fake.closed == [1], "closed at once: nothing is still inside it"
+    assert agent.stuck_live_calls == 0
+
+
+def test_a_close_that_fails_does_not_overwrite_the_failure_that_came_first(capsys):
+    agent, fake = live_agent()
+    fake.fail, fake.fail_on = ValueError("value refused"), "set_bypass"
+
+    def broken(connection):
+        raise OSError("socket already gone")
+
+    fake.disconnect = broken
+    assert call(agent, "POST", "/live/bypass", json={"processor": "drive", "bypassed": False})[0] == 502
+    last = agent.last_error
+    assert "value refused" in last["message"], "the reason /health should show"
+    assert any("socket already gone" in m for m in last["also"]), "and the close failure beside it"
+    assert "socket already gone" in capsys.readouterr().err
+
+
+def test_a_move_of_what_the_rig_lacks_names_what_it_has():
+    agent, fake = live_agent()
+    status, body = call(agent, "POST", "/live/move", json={"processor": "delay", "direction": "up"})
+    assert status == 400
+    assert "['comp', 'drive', 'reverb']" in body["reason"]
+
+
+def test_a_queued_change_connects_while_it_waits_so_the_lock_covers_only_read_and_set():
+    """Constructing a controller (a dozen sub-controllers, an RPC, a thread)
+    used to happen inside the lock, so every queued fader write paid it in
+    turn."""
+    agent, fake = live_agent()
+    entered, release = threading.Event(), threading.Event()
+    fake.during = lambda: (entered.set(), release.wait(5))
+
+    async def go():
+        loop = asyncio.get_running_loop()
+        async with TestClient(TestServer(agent.app())) as client:
+            first = asyncio.ensure_future(client.post(
+                "/live/parameter", json={"processor": "reverb", "parameter": "Mix", "value": 0.5}))
+            await loop.run_in_executor(None, entered.wait, 5)
+            second = asyncio.ensure_future(client.post(
+                "/live/parameter", json={"processor": "reverb", "parameter": "Mix", "value": 0.6}))
+            connected = await loop.run_in_executor(None, _until, lambda: len(fake.opened) == 2)
+            release.set()
+            statuses = [(await first).status, (await second).status]
+            return connected, statuses
+
+    connected, statuses = asyncio.run(go())
+    assert connected, "the second request connected while the first held the lock"
+    assert statuses == [200, 200]
+    assert [e["previous"] for e in agent.log] == [0.3, 0.5], "and previous is still what it replaced"
+    assert fake.one_connection_per_request_all_closed()
+
+
+def test_a_sushi_that_is_stuck_for_good_fills_a_bounded_pool_of_its_own_and_is_then_refused(monkeypatch):
+    """The default executor has min(32, cpus + 4) workers and /doctor shares
+    it: a stuck Sushi exhausted it after a handful of 504s, after which every
+    request queued for a worker and was reported as Sushi not answering though
+    its call never started. Now Sushi has its own, and a full one is a 503 that
+    says so."""
+    monkeypatch.setattr(agent_module, "LIVE_TIMEOUT", 0.2)
+    monkeypatch.setattr(agent_module, "LIVE_WORKERS", 2)
+    agent, fake = live_agent()
+    fake.hang_on, fake.hang_times = "bypass", 2
+    body = {"processor": "drive", "bypassed": False}
+
+    async def go():
+        async with TestClient(TestServer(agent.app())) as client:
+            try:
+                answers = []
+                for _ in range(3):
+                    response = await client.post("/live/bypass", json=body)
+                    answers.append((response.status, (await response.json())["reason"]))
+                health = (await (await client.get("/health")).json())["agent"]
+                doctor = await client.get("/doctor")
+                fake.release.set()
+                recovered = await loop_until(lambda: not agent._in_flight)
+                after = await client.post("/live/bypass", json=body)
+                return answers, health, doctor.status, recovered, after.status
+            finally:
+                fake.release.set()
+
+    async def loop_until(condition):
+        return await asyncio.get_running_loop().run_in_executor(None, _until, condition)
+
+    answers, health, doctor, recovered, after = asyncio.run(go())
+    assert [a[0] for a in answers] == [504, 504, 503]
+    assert "2 calls to Sushi" in answers[2][1] and "not answering" in answers[2][1]
+    assert health["stuck_live_calls"] == 2
+    assert doctor == 200, "/doctor does not share the pool"
+    assert recovered and after == 200, "and it recovers when the calls return"
+    assert fake.thread_names and all(n.startswith("sushi-live") for n in fake.thread_names)
 
 
 def test_a_connect_that_never_returns_is_a_504_too(monkeypatch):

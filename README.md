@@ -433,9 +433,12 @@ fader can send many changes a second. `503` means no rig is up; `502` that Sushi
 went away, refused, or did not confirm the change, with the reason, and nothing
 is logged for it; `500` that elkpy is not installed; `504` that Sushi did not
 answer within 20 seconds (`LIVE_TIMEOUT`), where the agent stops waiting and
-frees the next request, but the stuck call itself cannot be cancelled, and a
-change that timed out may or may not have been applied: read `/live` before
-trying again. They are `409 busy` while a lifecycle command runs. Changes are
+frees the next request, but the stuck call itself cannot be cancelled (its
+connection is closed when it does return), and a change that timed out may or
+may not have been applied: read `/live` before trying again. Calls to Sushi run
+in a pool of their own, eight at a time; if a Sushi that never answers has them
+all, a request is `503` with the count rather than queued, and
+`GET /health` shows `agent.stuck_live_calls`. They are `409 busy` while a lifecycle command runs. Changes are
 made one at a time so each `previous` is true; reading `/live` does not wait for
 them and they do not wait for it, so a panel can poll it. Each request makes one
 connection to Sushi and does its reading and changing on it. A move is decided

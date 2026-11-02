@@ -61,7 +61,10 @@ replaced; a read (`GET /live`) takes no part in that, since it cannot disturb a
 makes one connection to Sushi, does its reading and changing on it, and closes
 it. No call to Sushi may take longer than `LIVE_TIMEOUT`: past it the agent
 stops waiting, releases the lock and answers `504`, though it cannot stop the
-call (see the constant). A rig that is not up is `503`. Sushi going away, refusing, or not
+call (see the constant); the call's connection is closed if it returns. Sushi
+calls run in a pool of their own (`LIVE_WORKERS`), and when stuck calls fill it
+a request is `503`, not queued; `/health` counts them. A rig that is not up is
+`503`. Sushi going away, refusing, or not
 confirming a change in time is `502` with the reason, and then nothing is logged:
 the log holds changes Sushi confirmed. elkpy not being installed is `500`, the
 agent's own install and not Sushi's doing. All but the `503` are remembered in
@@ -82,6 +85,7 @@ operator's call to make, not a default.
 from __future__ import annotations
 
 import asyncio
+import concurrent.futures
 import contextlib
 import functools
 import math
@@ -119,12 +123,25 @@ LIFECYCLE_TIMEOUT = 120.0
 # four times that. A guess, not a measurement: no live Sushi was to hand.
 #
 # What the timeout does not do: stop the call. A thread in a blocking gRPC call
-# cannot be cancelled from Python, so the worker stays stuck in the executor
-# (and the connection it holds stays open: it is not closed from under it)
-# until Sushi answers or the process ends. The agent only stops waiting, and
-# lets the next request through. A Sushi that is stuck for good therefore leaks
-# one thread per request, each of which costs LIVE_TIMEOUT to find out.
+# cannot be cancelled from Python (there is no way to interrupt a thread inside
+# C code that holds no deadline, and `Future.cancel` only reaches a call that
+# has not started), so the worker stays stuck until Sushi answers or the process
+# ends: its thread cannot be reclaimed, only waited for. The agent stops
+# waiting and lets the next request through, and when the call does come back
+# (slowly, rather than never) closes the connection it was using; `/health`
+# reports how many calls are in that state (`stuck_live_calls`).
 LIVE_TIMEOUT = 20.0
+
+# How many calls to Sushi may be in flight at once, stuck ones included. Sushi
+# calls run in a pool of this size that is the agent's own, not the loop's
+# default executor: the default has min(32, cpus + 4) workers and is shared
+# with /doctor, so a Sushi that never answers used up every worker after a
+# handful of 504s, after which each request waited for a worker and was
+# reported as Sushi not answering though its call had not started. A request
+# makes its calls one after another, so this is also the number of requests
+# that can be in Sushi at once; past it a request is refused (503) rather than
+# queued, since a queue behind stuck threads would wait for ever.
+LIVE_WORKERS = 8
 
 # The CLI is run as this module, not as `sushi-rig` from PATH, so the agent
 # drives the installation it was started from.
@@ -347,7 +364,10 @@ def check_move(move: Move) -> None:
     says which, from `live.decide_move`, the one place that decides it.
     """
     if move.outcome == "absent":
-        raise AgentError(f"the running rig has no processor {move.processor!r} on any track")
+        raise AgentError(
+            f"the running rig has no processor {move.processor!r} on any track: it has "
+            f"{_on_the_rig(move.chains, with_tracks=False)}"
+        )
 
 
 def log_entry(op: str, args: dict[str, Any], previous: Any, at: str) -> dict[str, Any]:
@@ -490,6 +510,16 @@ class Agent:
         self._lock = asyncio.Lock()  # lifecycle: one command at a time
         self._live_lock = asyncio.Lock()  # live: one change at a time; waits, not 409. Reads do not take it
         self.log: list[dict[str, Any]] = []  # operations made through /live, newest last
+        # Sushi calls run here (see LIVE_WORKERS), not in the loop's executor.
+        self._executor = concurrent.futures.ThreadPoolExecutor(
+            max_workers=LIVE_WORKERS, thread_name_prefix="sushi-live")
+        self._in_flight: set = set()  # calls to Sushi that have not returned
+        self._abandoned: set = set()  # ... of which the agent has stopped waiting for these
+
+    @property
+    def stuck_live_calls(self) -> int:
+        """Calls to Sushi the agent gave up waiting for that have not returned."""
+        return len(self._abandoned)
 
     def _doctor(self) -> list:
         from .doctor import run
@@ -521,6 +551,7 @@ class Agent:
                 "started_at": self.started_at,
                 "uptime_seconds": round(self.clock() - self.started, 1),
                 "busy": self.busy,
+                "stuck_live_calls": self.stuck_live_calls,
                 "last_error": self.last_error,
             },
             "rig": self.describe(),
@@ -598,34 +629,69 @@ class Agent:
         if self._lock.locked():
             raise web.HTTPConflict(reason=f"busy: '{self.busy}' is still running")
 
+    def _submit(self, fn: Callable[..., Any], *args: Any) -> concurrent.futures.Future:
+        """Start one blocking call in the Sushi pool, or refuse (503) if the
+        pool is full of calls that have not returned."""
+        if len(self._in_flight) >= LIVE_WORKERS:
+            raise web.HTTPServiceUnavailable(reason=(
+                f"{len(self._in_flight)} calls to Sushi have not returned "
+                f"({self.stuck_live_calls} of them for longer than {LIVE_TIMEOUT:g}s): "
+                "Sushi is not answering, so no further call is made until some do"
+            ))
+        future = self._executor.submit(fn, *args)
+        self._in_flight.add(future)
+        # In the worker thread, as soon as the call returns; a set discard.
+        future.add_done_callback(lambda f: (self._in_flight.discard(f), self._abandoned.discard(f)))
+        return future
+
     async def _sushi(self, request, fn: Callable[..., Any], *args: Any, reading: bool) -> Any:
         """Run one blocking Sushi call off the loop, and say how it failed.
 
         - No answer within `LIVE_TIMEOUT` is 504, whatever was asked: the
           caller's lock is released, the stuck call is not stopped (see
           `LIVE_TIMEOUT`), and for a change it is not known whether it was
-          applied.
+          applied. The exception carries `pending`, the call's future, for
+          whoever holds the connection it is using.
+        - A pool full of such calls is 503 (see `LIVE_WORKERS`).
         - No Sushi to connect to is 503 when a request is only being read
           (nothing has changed), and 502 once a change is under way.
         - Sushi refusing, or not confirming (`LiveError`), or failing any other
-          way is 502, with the reason.
+          way is 502, with the reason. That includes a `TimeoutError` raised by
+          the call itself (a socket or gRPC deadline): on Python 3.11+ it is
+          the same class as `asyncio.TimeoutError`, so it is told from the
+          agent's own timeout by whether the call has returned.
         - elkpy not installed (`ElkpyMissing`) is not Sushi's doing: 500.
-        Everything but the 503 is remembered for /health until a live change
+        Everything but the 503s is remembered for /health until a live change
         next works.
         """
         where = [request.method, request.path]
+        future = self._submit(fn, *args)
         try:
-            return await asyncio.wait_for(
-                asyncio.get_running_loop().run_in_executor(None, fn, *args), LIVE_TIMEOUT,
-            )
-        except asyncio.TimeoutError:
-            reason = (
-                f"Sushi did not answer within {LIVE_TIMEOUT:g}s"
-                + ("" if reading else ", so the change may or may not have been applied")
-                + ": read /live before trying again"
-            )
-            self._remember(where, reason, kind="live")
-            raise web.HTTPGatewayTimeout(reason=reason)
+            try:
+                return await asyncio.wait_for(asyncio.wrap_future(future), LIVE_TIMEOUT)
+            except asyncio.TimeoutError:
+                if future.done() and not future.cancelled():
+                    # It returned (perhaps in this instant), so this is its own
+                    # result or its own error, not our deadline.
+                    return future.result()
+                reason = (
+                    f"Sushi did not answer within {LIVE_TIMEOUT:g}s"
+                    + ("" if reading else ", so the change may or may not have been applied")
+                    + ": read /live before trying again"
+                )
+                self._remember(where, reason, kind="live")
+                timeout = web.HTTPGatewayTimeout(reason=reason)
+                if not future.cancelled():  # a call still running, not one that never started
+                    self._abandoned.add(future)
+                    timeout.pending = future
+                raise timeout
+            except asyncio.CancelledError as exc:
+                if not future.done():  # the client went; the call did not
+                    self._abandoned.add(future)
+                    exc.pending = future
+                raise
+        except web.HTTPException:
+            raise
         except ElkpyMissing as exc:
             self._remember(where, str(exc), kind="live")
             raise web.HTTPInternalServerError(reason=str(exc))
@@ -648,33 +714,109 @@ class Agent:
         """One connection to Sushi for the whole of a request: opened here,
         closed when the request is done, however it ended.
 
-        Not closed after a timeout or a cancellation: a worker thread is still
-        inside a call on it, and closing a connection under a call is not ours
-        to do. It stays open until that call returns, and is leaked if it never
-        does (see `LIVE_TIMEOUT`).
+        After a timeout or a cancellation a worker thread is still inside a call
+        on the connection, and closing it from under the call is not ours to
+        do. It is closed when that call returns, if it ever does (see
+        `LIVE_TIMEOUT`); where it was the connect that timed out, the
+        connection the call returns late is closed the same way.
 
         A close that fails does not change the answer to the request -- what it
         was asked has been done -- but is not silent: it is printed and
-        remembered for /health.
+        remembered for /health, beside any failure the request had.
         """
-        controller = await self._sushi(request, self.live.connect, reading=True)
-        abandoned = False
+        try:
+            controller = await self._sushi(request, self.live.connect, reading=True)
+        except web.HTTPGatewayTimeout as exc:
+            self._close_when_it_returns(request, getattr(exc, "pending", None), None)
+            raise
+        pending = None
         try:
             yield controller
-        except (web.HTTPGatewayTimeout, asyncio.CancelledError):
-            abandoned = True
+        except (web.HTTPGatewayTimeout, asyncio.CancelledError) as exc:
+            pending = getattr(exc, "pending", None)
             raise
         finally:
-            if not abandoned:
-                try:
-                    await asyncio.wait_for(
-                        asyncio.get_running_loop().run_in_executor(None, self.live.disconnect, controller),
-                        LIVE_TIMEOUT,
-                    )
-                except Exception as exc:  # noqa: BLE001 -- said, not raised over the answer
-                    message = " ".join(f"closing the connection to Sushi failed: {type(exc).__name__}: {exc}".split())
-                    print(f"sushi-rig agent: {message}", file=sys.stderr, flush=True)
-                    self._remember([request.method, request.path], message, kind="live")
+            if pending is not None:
+                self._close_when_it_returns(request, pending, controller)
+            else:
+                await self._close(request, controller)
+
+    async def _close(self, request, controller) -> None:
+        try:
+            # Straight to the pool, not through `_submit`'s count: a close is
+            # short, and refusing one because the pool is full of the stuck
+            # calls it follows would leak the connection it was to release.
+            await asyncio.wait_for(
+                asyncio.wrap_future(self._executor.submit(self.live.disconnect, controller)),
+                LIVE_TIMEOUT)
+        except Exception as exc:  # noqa: BLE001 -- said, not raised over the answer
+            self._close_failed(request, exc)
+
+    def _close_failed(self, request, exc: BaseException) -> None:
+        message = " ".join(
+            f"closing the connection to Sushi failed ({request.method} {request.path}): "
+            f"{type(exc).__name__}: {exc}".split())
+        print(f"sushi-rig agent: {message}", file=sys.stderr, flush=True)
+        self._remember_too(request, message)
+
+    def _remember_too(self, request, message: str) -> None:
+        """Remember a live problem without displacing one already remembered:
+        /health keeps the reason the request failed, with this beside it."""
+        if self.last_error is None:
+            self._remember([request.method, request.path], message, kind="live")
+        else:
+            self.last_error.setdefault("also", []).append(message)
+
+    def _close_when_it_returns(self, request, pending, controller) -> None:
+        """The call that timed out (or was cancelled) is still running; when it
+        returns, close the connection it was using (`controller`, or what it
+        returned if it was the connect) and say how it came back."""
+        if pending is None:  # the call never started: nothing is inside the connection
+            if controller is not None:
+                task = asyncio.ensure_future(self._close(request, controller))
+                task.add_done_callback(lambda t: t.cancelled() or t.exception())
+            return
+        loop = asyncio.get_running_loop()
+        started = self.clock()
+
+        def returned_late() -> None:
+            error = pending.exception()
+            held = controller if controller is not None else (None if error else pending.result())
+            how = f"failed with {type(error).__name__}: {error}" if error else "returned normally"
+            message = (
+                f"the call behind {request.method} {request.path} returned after the 504, "
+                f"{self.clock() - started:.1f}s later, and {how}"
+                + ("; if it was a change, it was applied" if not error and controller is not None else "")
+            )
+            print(f"sushi-rig agent: {message}", file=sys.stderr, flush=True)
+            self._remember_too(request, message)
+            if held is not None:
+                task = asyncio.ensure_future(self._close(request, held))
+                task.add_done_callback(lambda t: t.cancelled() or t.exception())
+
+        def hand_to_loop(_future) -> None:  # in the worker thread
+            try:
+                loop.call_soon_threadsafe(returned_late)
+            except RuntimeError:  # the loop has gone with the agent
+                pass
+
+        pending.add_done_callback(hand_to_loop)
+
+    @contextlib.asynccontextmanager
+    async def _connected_for_a_change(self, request):
+        """A connection, then the live lock: the connection is made *outside*
+        the lock, so a queue of fader writes each constructs its controller (a
+        dozen sub-controllers, an RPC, a thread) while waiting rather than in
+        turn, and only the read-decide-set that `previous` depends on is
+        serialised. Busy is checked before connecting, so nothing connects to a
+        Sushi that is coming up or going down, and again when the lock is won,
+        since a lifecycle command may have started while this one waited.
+        """
+        self._refuse_while_busy()
+        async with self._connected(request) as controller:
+            async with self._live_lock:
+                self._refuse_while_busy()
+                yield controller
 
     def _record(self, op: str, args: dict[str, Any], previous: Any) -> dict[str, Any]:
         entry = log_entry(op, args, previous, datetime.now(timezone.utc).isoformat(timespec="seconds"))
@@ -718,20 +860,18 @@ class Agent:
             processor, parameter, value = parameter_request(await self._json_body(request))
         except AgentError as exc:
             raise web.HTTPBadRequest(reason=str(exc))
-        async with self._live_lock:
-            self._refuse_while_busy()
-            async with self._connected(request) as controller:
-                reading = await self._sushi(
-                    request, self.live.parameter, controller, processor, parameter, reading=True)
-                try:
-                    previous = check_parameter(reading, processor, parameter)
-                except AgentError as exc:
-                    raise web.HTTPBadRequest(reason=str(exc))
-                await self._sushi(
-                    request, self.live.set_parameter, controller, processor, parameter, value, reading=False)
-                entry = self._record(
-                    "parameter", {"processor": processor, "parameter": parameter, "value": value}, previous,
-                )
+        async with self._connected_for_a_change(request) as controller:
+            reading = await self._sushi(
+                request, self.live.parameter, controller, processor, parameter, reading=True)
+            try:
+                previous = check_parameter(reading, processor, parameter)
+            except AgentError as exc:
+                raise web.HTTPBadRequest(reason=str(exc))
+            await self._sushi(
+                request, self.live.set_parameter, controller, processor, parameter, value, reading=False)
+            entry = self._record(
+                "parameter", {"processor": processor, "parameter": parameter, "value": value}, previous,
+            )
         return web.json_response({"ok": True, **entry})
 
     async def live_bypass(self, request):
@@ -740,17 +880,15 @@ class Agent:
             processor, bypassed = bypass_request(await self._json_body(request))
         except AgentError as exc:
             raise web.HTTPBadRequest(reason=str(exc))
-        async with self._live_lock:
-            self._refuse_while_busy()
-            async with self._connected(request) as controller:
-                reading = await self._sushi(request, self.live.bypass, controller, processor, reading=True)
-                try:
-                    previous = check_bypass(reading, processor)
-                except AgentError as exc:
-                    raise web.HTTPBadRequest(reason=str(exc))
-                await self._sushi(
-                    request, self.live.set_bypass, controller, processor, bypassed, reading=False)
-                entry = self._record("bypass", {"processor": processor, "bypassed": bypassed}, previous)
+        async with self._connected_for_a_change(request) as controller:
+            reading = await self._sushi(request, self.live.bypass, controller, processor, reading=True)
+            try:
+                previous = check_bypass(reading, processor)
+            except AgentError as exc:
+                raise web.HTTPBadRequest(reason=str(exc))
+            await self._sushi(
+                request, self.live.set_bypass, controller, processor, bypassed, reading=False)
+            entry = self._record("bypass", {"processor": processor, "bypassed": bypassed}, previous)
         return web.json_response({"ok": True, **entry})
 
     async def live_move(self, request):
@@ -762,29 +900,32 @@ class Agent:
             processor, direction = move_request(await self._json_body(request))
         except AgentError as exc:
             raise web.HTTPBadRequest(reason=str(exc))
-        async with self._live_lock:
-            self._refuse_while_busy()
-            async with self._connected(request) as controller:
-                # One walk, one decision (`live.decide_move`), and the command
-                # sent is the one decided on: success is what Sushi confirmed,
-                # not a word in a status line, and a processor found already
-                # at that end only now is "unchanged", not a failure.
-                planned = await self._sushi(
-                    request, self.live.plan_move, controller, processor, DIRECTIONS[direction],
-                    reading=True)
-                try:
-                    check_move(planned)
-                except AgentError as exc:
-                    raise web.HTTPBadRequest(reason=str(exc))
-                if planned.outcome == "unchanged":
-                    return web.json_response({
-                        "ok": True, "changed": False, "chain": planned.chain,
-                        "message": planned.message,
-                    })
-                moved = await self._sushi(request, self.live.send_move, controller, planned, reading=False)
-                entry = self._record(
-                    "move", {"processor": processor, "direction": direction}, planned.chain)
+        async with self._connected_for_a_change(request) as controller:
+            # One walk, one decision (`live.decide_move`), and the command
+            # sent is the one decided on: success is what Sushi confirmed,
+            # not a word in a status line, and a processor found already
+            # at that end only now is "unchanged", not a failure.
+            planned = await self._sushi(
+                request, self.live.plan_move, controller, processor, DIRECTIONS[direction],
+                reading=True)
+            try:
+                check_move(planned)
+            except AgentError as exc:
+                raise web.HTTPBadRequest(reason=str(exc))
+            if planned.outcome == "unchanged":
+                return web.json_response({
+                    "ok": True, "changed": False, "chain": planned.chain,
+                    "message": planned.message,
+                })
+            moved = await self._sushi(request, self.live.send_move, controller, planned, reading=False)
+            entry = self._record(
+                "move", {"processor": processor, "direction": direction}, planned.chain)
         return web.json_response({"ok": True, "changed": True, "message": moved.message, **entry})
+
+    async def release_workers(self, app=None) -> None:
+        """Stop handing Sushi calls to the pool. Calls still inside Sushi are
+        not interrupted (they cannot be); the interpreter waits for them at exit."""
+        self._executor.shutdown(wait=False, cancel_futures=True)
 
     async def announce_stopping(self, app=None) -> None:
         """Say on stdout that the agent is stopping, and whether it was
@@ -831,6 +972,7 @@ def serve(host: str, port: int, root: Path | None = None) -> int:
     agent = Agent(root=root)
     app = agent.app()
     app.on_shutdown.append(agent.announce_stopping)
+    app.on_cleanup.append(agent.release_workers)
     print(f"sushi-rig agent {VERSION} on http://{host}:{port}  (Ctrl+C to stop)", flush=True)
     web.run_app(app, host=host, port=port, print=None, handle_signals=True)
     return 0

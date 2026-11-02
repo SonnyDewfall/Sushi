@@ -1390,10 +1390,9 @@ timeout. `Agent._sushi` now wraps the executor call in `asyncio.wait_for` with
 over a full read of the rig; not measured on a live Sushi); past it the lock is
 released and the answer is `504` with a reason, remembered in `last_error`, and,
 for a change, saying it may or may not have been applied. The stuck worker
-thread cannot be cancelled and stays in the executor, holding its connection
-open, until Sushi answers or the process ends; a Sushi that is stuck for good
-leaks a thread per request. That is stated beside the constant rather than
-hidden. (2) **Reads no longer take the lock.** `GET /live` held `_live_lock` for
+thread cannot be cancelled and stays in its pool until Sushi answers or the
+process ends; that is stated beside the constant rather than hidden, and see
+the third review below for what the agent does about it. (2) **Reads no longer take the lock.** `GET /live` held `_live_lock` for
 a full-rig read, so a polling panel starved fader writes; a read cannot disturb
 the `previous` the lock exists to keep true, so only changes take it, and a read
 keeps the busy check (409 during a lifecycle command). (3) **One connection per
@@ -1440,4 +1439,39 @@ timeout, the shared connection and the late-confirmed move are shown against
 fakes and a stand-in controller; the only thing run for real is elkpy against a
 closed port, which still gives `503` through the new connect-then-read path.
 Run a parameter, a bypass, a move and a read in a loop against `up`, and a
-Sushi paused with SIGSTOP, before relying on the 504. *(2026-11-02)*
+Sushi paused with SIGSTOP, before relying on the 504.
+
+*A third review of the same branch found six more, all in the connection and
+timeout code just described.* (a) **A connection abandoned after a 504 was never
+closed**, even when the stuck call later returned, so every merely slow request
+leaked a controller, its notification thread and its channels. The agent now
+keeps the call's future and, when it returns, closes the connection it was using
+(or, where the connect itself timed out, the one it returns late), and says how
+the call came back: stderr, and `last_error` (as `also` if another failure is
+already there). A call that returns late without error was a change that was
+applied; the message says so. (b) **`asyncio.TimeoutError` is the builtin
+`TimeoutError` on 3.11+**, so a socket or gRPC deadline raised inside the call
+was reported as the agent's 20 s timeout and its connection left "abandoned"
+though the thread had returned. Told apart now by whether the call's future has
+returned: its own error is a 502 with its type, and the connection is closed at
+once. (c) **A failing close overwrote `last_error`**, hiding the real reason
+for a 502 or 504 from `/health`; it is now added beside it (`also`) and only
+becomes `last_error` where there was none. (d) `check_move`'s refusal names what
+the rig has, like the other two, which gives `Move.chains` a reader. (e) **The
+connection is made before the live lock** in the three change routes, so queued
+fader writes construct their controllers while they wait and only read-and-set
+is serialised; busy is checked before connecting and again under the lock, and
+`previous` is unchanged. (f) **Sushi calls run in a pool of their own**
+(`LIVE_WORKERS`, 8), not the loop's default executor that `/doctor` shares, which
+a Sushi that never answered used up after a few 504s, after which requests
+queued for a worker and were blamed on Sushi though their call never started. A
+full pool is a 503 saying how many calls have not returned, and `/health` has
+`agent.stuck_live_calls`. Closing a connection goes to the pool without that
+count, since refusing it would leak what it was to release. The threads
+themselves cannot be reclaimed (a thread inside a gRPC call with no deadline
+cannot be interrupted from Python), and the interpreter waits for them at exit,
+as it did before. **Still not run against a live Sushi**: the late close, the
+pool and the 503 are shown against fakes, with a fake whose calls finish after
+the timeout; whether elkpy's `close()` is safe once a call that was running on
+it has returned is read from its source (it stops the notification loop and
+joins its thread), not run. *(2026-11-02)*
