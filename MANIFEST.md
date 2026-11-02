@@ -1698,4 +1698,64 @@ rig reaches, a v2 rig through `compile_rig` — and called by the plan for a spe
 given to it unvalidated, so `check_rig` no longer has its own copy; and a probe
 track's ports are worked out once when it is planned and carried on it, rather
 than rebuilt from its routing at every use. The listings are unchanged.
+
+**The agent's undo, `POST /live/undo` (#29).** The newest log entry that is not an
+undo and has not been undone is put back through the calls the routes use: a
+parameter to `previous`, a bypass to `previous`, a move by the opposite step. The
+undo is logged as `op: "undo"` with `undoes: <index>`, `args` (`of` the op, then
+what was applied) and `previous` (what it replaced), so a redo can be built from
+the entry alone; the answer carries that entry, the entry `undone` and the
+`state` set. **The index is a count of entries since the agent started**, not a
+position, because `trim_log` drops from the front and a position would change
+under the `undoes` pointing at it; the agent keeps how many it has dropped and
+`GET /live/log` reports `first`. Ordinary entries keep their four keys; only
+undos have `undoes`. A single pass from the newest end is enough because an undo
+is always newer than its target: trimming can lose a target and keep its undo, but
+never the reverse (tested with `LOG_LIMIT` lowered, which needed `_record` to read
+the module's value instead of `trim_log`'s default bound at definition). **Refused
+rather than guessed**, as 409 with a reason and nothing logged: nothing to undo
+(empty log or only undos; answered without connecting, so no rig need be up); a
+`previous` of None (Sushi would not say a bypass state); a processor the rig no
+longer has; and a move whose processor is not exactly where the move left it,
+checked by `chain_after_move` against the chain read now, since the panel's
+listener also moves processors and is not behind the agent's lock. A refused entry
+is not skipped to reach an older one. A body is 400. Same busy checks, lock,
+`LIVE_TIMEOUT` and 503/502/504 mapping as the other changes. **Not done:** undoing
+an undo. **Not run against a live Sushi:** the three undos are shown against the
+fake `Live`, so that `set_live_parameter` takes the value back, that moving the
+other way is exact on Sushi's real chain, and that the chain read for the check is
+still the chain at the moment of the send (it is read under the lock, but the
+listener is outside it) are unverified; try each against `up`.
+
+*A review of the same branch found six more.* (1) **The stack could wedge.** The
+newest entry being a move the panel's listener has since disturbed (it moves
+processors outside the agent's lock) was refused and never skipped, and the route
+took no body, so every older change was unreachable. The way out is
+`{"skip": true}`, not naming an entry (a named index would let a request undo
+out of order): it runs the same checks as an undo without sending, and if the
+newest entry is refused records an `op: "stale"` entry with `stale: <index>` and
+the reason, so the history stays honest and `pick_undo` passes over it; an entry
+that can be undone is refused with `not_stale`, so a skip cannot give up on a
+change that would have gone through. (2) **A parameter or bypass undo overwrote
+whatever had been set meanwhile**; `check_undo_state` now refuses unless the rig
+still has what the change set. The parameter comparison has a tolerance
+(`PARAMETER_TOLERANCE`, 1e-4) because Sushi holds a float32 and a value read
+back is not bit-equal to the one sent: a guess, not measured, and the first
+thing to check on a live Sushi (too tight and every parameter undo is `stale`).
+A value Sushi would not say is refused, not assumed equal. (3) **Undo no longer
+duplicates the routes**: `_apply_parameter`, `_apply_bypass` and `_apply_move`
+are the read-check-set of each, called by the route and by undo with an `expect`
+hook (undo's staleness check, run after the existing checks and before sending)
+and a `dry_run` (skip); `live_undo` dispatches on `op` once. (4) **Busy is
+checked before the "nothing to undo" fast path**, which had reported an empty log
+during a lifecycle command. (5) **Statuses and a `code`**: 409 `busy`,
+`nothing_to_undo` and `stale` are told apart by a `code` field beside `reason`
+(on the busy refusal of every live route too); a processor the rig lost is 400,
+as `check_parameter` and `check_bypass` are on the other routes, where it had
+been 409 here. (6) **The log limit is `Agent(log_limit=...)`** and not a module
+global re-read at call time (the tests now pass it to the constructor);
+`trim_log`'s default, dead since, is gone. The unreachable "not planned" branch
+after `check_undo_move` is removed, replaced by a test of the fact it leaned on:
+wherever a one-step move was possible, its opposite from the result is possible
+and restores the chain. Everything here is shown against the fake `Live` only.
 *(2026-11-02)*

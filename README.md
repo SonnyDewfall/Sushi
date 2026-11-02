@@ -405,6 +405,8 @@ curl -X POST localhost:8029/live/parameter -d '{"processor": "reverb", "paramete
 curl -X POST localhost:8029/live/bypass -d '{"processor": "drive", "bypassed": true}'
 curl -X POST localhost:8029/live/move -d '{"processor": "drive", "direction": "up"}'
 curl localhost:8029/live/log         # what was changed through /live, newest last
+curl -X POST localhost:8029/live/undo   # put back what the newest change not yet undone replaced
+curl -X POST localhost:8029/live/undo -d '{"skip": true}'   # give up on the newest one that cannot be
 ```
 
 The first slice of the control plane every v2 feature needs: one process that
@@ -446,8 +448,29 @@ once, from one look at the chains, and what is sent is what was decided: a
 processor already at that end of its chain is `changed: false`, even if it only
 got there since the request arrived. Each change that Sushi confirmed is appended to an
 in-memory log of the last 500 (`/live/log`: `at`, `op`, `args`, and the
-`previous` value where it was known), which is where undo will come from; there
-is no undo yet.
+`previous` value where it was known), which is where undo comes from.
+
+**Undo** (`POST /live/undo`, no body) puts back the newest change that is not an
+undo and has not been undone: a parameter to its previous value, a bypass to its
+previous state, a move by the opposite step, each through the same call the
+route makes, under the same lock and timeout and with the same `503`/`502`/`504`
+and `409 busy`. The answer is the undo's log entry (`op: "undo"`, `undoes`: the
+index of the entry it put back, `args` what it applied, `previous` what that
+replaced), the entry `undone`, and the `state` now. An index counts entries since
+the agent started, not places in the list, because the list is trimmed at the
+front; `/live/log` says the index of the first it holds (`first`). It refuses
+rather than guess, with nothing applied or logged, and a `409` carries a `code`
+beside its `reason`: `busy`; `nothing_to_undo` (an empty log or one of undos
+only, said without a Sushi to ask); `stale`, when the rig is not as the entry
+assumes — a move's processor is not exactly where the move left it, a parameter
+or bypass was changed since (so an undo never overwrites a hand on the panel),
+or Sushi never said what to put back. A processor the rig has lost is `400`, as
+on the other routes. A refused entry is not skipped for an older one, so the
+way past a stuck one is explicit: `{"skip": true}` checks the newest entry, and
+if it is refused marks it `op: "stale"` in the log (it is not removed) so the
+next undo goes on to the one before; an entry that can be undone is `409
+not_stale`. Any other body is `400`. Undoing an undo (redo) is not built. **Not run against a live Sushi**: shown
+against the fake only.
 
 **Two modes, for two ways of using the rig.** The default gives you the Open
 Stage Control panel and the save listener behind it, which is what you want when
