@@ -84,7 +84,19 @@ jobs:
       - name: Full suite
         run: |
           set -o pipefail
-          if ! docker run --rm sushi-rig-ci pytest -rs 2>&1 | tee suite.log; then
+          status=0
+          docker run --rm sushi-rig-ci pytest -rs 2>&1 | tee suite.log || status=$?
+          # A null-test render retried after gx_detune_'s known NaN passes, and
+          # says so at the end of the run, one `RETRIED-NAN:` line per retry
+          # (render.RETRIED_PREFIX, conftest); this puts it on the check run
+          # too, so a retry is seen every time it happens, not only when
+          # something fails. Anchored, so test source and tracebacks, which
+          # are indented or prefixed, cannot match.
+          retries="$(grep -c '^RETRIED-NAN: ' suite.log || true)"
+          if [ "$retries" -gt 0 ]; then
+            echo "::warning title=${retries} render(s) retried after a NaN::$(grep '^RETRIED-NAN: ' suite.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
+          fi
+          if [ "$status" != 0 ]; then
             echo "::error title=Full suite failed::$(tail -n 40 suite.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
             exit 1
           fi
@@ -136,7 +148,16 @@ jobs:
             dpkg-query -W -f="\${Package} \${Version}\n" guitarix-lv2 mda-lv2 \
                 dpf-plugins-lv2 x42-plugins zynaddsubfx-lv2 rubberband-lv2 swh-lv2 \
                 ardour-lv2-plugins libc6'
-          if ! docker run --rm -w /rig sushi-rig-ci sushi-rig nulltest --all --sushi ./sushi 2>&1 | tee nulltest.log; then
+          status=0
+          docker run --rm -w /rig sushi-rig-ci sushi-rig nulltest --all --sushi ./sushi 2>&1 \
+              | tee nulltest.log || status=$?
+          # nulltest's summary prints one `RETRIED-NAN:` line per retry, and
+          # only the summary does; the lines beside each channel are not counted.
+          retries="$(grep -c '^RETRIED-NAN: ' nulltest.log || true)"
+          if [ "$retries" -gt 0 ]; then
+            echo "::warning title=nulltest: ${retries} render(s) retried after a NaN::$(grep '^RETRIED-NAN: ' nulltest.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
+          fi
+          if [ "$status" != 0 ]; then
             # Neutral on purpose: this fails on a changed sound, a missing
             # reference, a config that cannot be rendered or checked, and one
             # that stopped being renderable. The log line says which.

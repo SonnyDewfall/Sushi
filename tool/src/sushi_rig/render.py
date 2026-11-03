@@ -337,26 +337,22 @@ def sushi_argv(
     ]
 
 
-def render_offline(
-    config: Path,
-    root: Path,
-    work: Path,
-    *,
-    stimulus: Stimulus | None = None,
-    sushi_bin: str = "./sushi",
-    sample_rate: int = 48000,
-    timeout: float = 120.0,
-) -> dict[str, Any]:
-    """Push `stimulus` through `config` and read back what came out.
+@dataclass(frozen=True)
+class PreparedStimulus:
+    """A stimulus already written to a file, for rendering many times
+    (`prepare_stimulus`): `render_offline` then neither regenerates nor
+    rewrites it."""
 
-    Returns the rendered samples, the stimulus that produced them and its
-    description, which is everything `nulltest.fingerprint` needs.
+    path: Path
+    samples: Any
+    stimulus: Stimulus
+    sample_rate: int
 
-    `LV2_PATH` comes from `verify.sushi_env`, for the reason recorded there: a
-    render that inherited the caller's path would pass on a machine whose shell
-    exports it and fail with "Failed to load tracks" on a clean one, which is the
-    bug that cost a CI cycle in #47.
-    """
+
+def prepare_stimulus(
+    work: Path, stimulus: Stimulus | None = None, sample_rate: int = 48000
+) -> PreparedStimulus:
+    """Generate `stimulus` and write it to `work/stimulus.wav`."""
     stimulus = stimulus or Stimulus()
     if stimulus.channels > OFFLINE_CHANNELS:
         # Not a limitation worth working around: Sushi reads AUDIO_CHUNK_SIZE
@@ -371,12 +367,42 @@ def render_offline(
         )
     work.mkdir(parents=True, exist_ok=True)
     in_wav = work / "stimulus.wav"
-    out_wav = work / "rendered.wav"
-
     fed = stimulus.render(sample_rate)
     # float32: the stimulus is below full scale, but a float file cannot clip on
     # write and this is not where a level problem should first appear.
     signals.write_wav(in_wav, fed, sample_rate, subtype="float32")
+    return PreparedStimulus(in_wav, fed, stimulus, sample_rate)
+
+
+def render_offline(
+    config: Path,
+    root: Path,
+    work: Path,
+    *,
+    stimulus: Stimulus | None = None,
+    sushi_bin: str = "./sushi",
+    sample_rate: int = 48000,
+    timeout: float = 120.0,
+    prepared: PreparedStimulus | None = None,
+) -> dict[str, Any]:
+    """Push `stimulus` through `config` and read back what came out.
+
+    Returns the rendered samples, the stimulus that produced them and its
+    description, which is everything `nulltest.fingerprint` needs. With
+    `prepared` (`prepare_stimulus`), that file is fed instead, and `stimulus`
+    and `sample_rate` are its own.
+
+    `LV2_PATH` comes from `verify.sushi_env`, for the reason recorded there: a
+    render that inherited the caller's path would pass on a machine whose shell
+    exports it and fail with "Failed to load tracks" on a clean one, which is the
+    bug that cost a CI cycle in #47.
+    """
+    if prepared is None:
+        prepared = prepare_stimulus(work, stimulus, sample_rate)
+    stimulus, sample_rate = prepared.stimulus, prepared.sample_rate
+    in_wav, fed = prepared.path, prepared.samples
+    work.mkdir(parents=True, exist_ok=True)
+    out_wav = work / "rendered.wav"
 
     try:
         result = subprocess.run(
@@ -480,6 +506,119 @@ def rigs_to_check(root: Path) -> list[Path]:
     return sorted((root / "config" / "rigs").glob("*.yaml"))
 
 
+# --- the one NaN this tolerates once: gx_detune_'s ---------------------------
+#
+# guitarix 0.46.0's gx_detune_ (src/LV2/gx_detune.lv2/detune.cc, smbPitchShift)
+# allocates `fpb` and `expect` with fftFrameSize/2 floats and reads index
+# fftFrameSize/2 of both, the Nyquist bin, in every hop: four bytes past the end
+# of each, which hold whatever the heap left there. Mostly that is 0; sometimes
+# it is half of a heap pointer or something like malloc's own bookkeeping,
+# different in every process. It is added into the Nyquist bin's running phase, and when it
+# is NaN, Inf or large enough to overflow that float, the bin's phase becomes
+# NaN, the inverse FFT spreads it over the frame, and the overlap-add keeps it:
+# the plugin's output is NaN from that hop to the end of the render. It only
+# reaches the output when the shift writes the Nyquist bin, which an octave up
+# does and an octave down or no shift does not. Found 2026-11-03: valgrind
+# reports both reads ("0 bytes after a block of size 1,024"), and a host that
+# runs the plugin alone rendered NaN about once in a hundred loads, and never in
+# 360 once those two arrays were padded (tool/spikes/gx_detune_nan/).
+#
+# A plugin bug the rig cannot fix without changing its sound, so a render of a
+# config that runs it may be retried once -- only when the NaN starts where this
+# bug starts it, and saying so every time (`measure`).
+DETUNE_URI = "http://guitarix.sourceforge.net/plugins/gx_detune_#_detune_"
+DETUNE_BUG = "tool/spikes/gx_detune_nan/README.md"
+
+# Where that NaN starts. At 48 kHz with 64-frame chunks and its default
+# quality, the pitch shifter works at a quarter of the rate in 512-sample FFT
+# frames with a hop of 64 samples: 256 frames here. Its first frame completes
+# in its 32nd chunk, frames 1984 to 2047, so every hop's output starts on a
+# frame that is 192 past a multiple of 256. Every NaN render recorded, in CI
+# (frames 15296, 57536, 202688) and on the bench (2240, 2496, 3520, 20416,
+# 39104, 45248, 112832), started there.
+DETUNE_HOP_FRAMES = 256
+DETUNE_HOP_PHASE = 192
+
+RETRIED = "retried after a NaN"
+# What starts every line that reports a retry and is counted: printed only by
+# the code that reports one (`report_retry`, `nulltest`'s summary, conftest's),
+# so a log can be grepped for `^RETRIED-NAN:` without matching test source or
+# a traceback, once per retry.
+RETRIED_PREFIX = "RETRIED-NAN:"
+
+
+def report_retry(note: str) -> None:
+    """Say a retry happened, for a caller that keeps no list of them: on
+    stderr every time, and as a warning too. A warning alone could be shown
+    once per call site, or not at all under `-W ignore`."""
+    import sys
+    import warnings
+
+    print(f"{RETRIED_PREFIX} {note}", file=sys.stderr)
+    warnings.warn(note, stacklevel=3)
+
+
+def runs_detune(config: Any) -> list[str]:
+    """The processors in `config` that are gx_detune_ and not bypassed."""
+    return [name for name, _ in _detunes(config)]
+
+
+def _detunes(config: Any) -> list[tuple[str, bool]]:
+    """(name, whether the compiler's copy to stereo follows it) for each
+    gx_detune_ in `config` that is not bypassed."""
+    from .stereo import copy_name
+
+    if not isinstance(config, dict):
+        return []
+    bypassed = {
+        e.get("processor") for e in (config.get("initial_state") or [])
+        if isinstance(e, dict) and e.get("bypassed") is True
+    }
+    found = []
+    for track in (config.get("tracks") or []):
+        if not isinstance(track, dict):
+            continue
+        names = [p.get("name") for p in (track.get("plugins") or []) if isinstance(p, dict)]
+        for plugin in (track.get("plugins") or []):
+            if (isinstance(plugin, dict) and plugin.get("uri") == DETUNE_URI
+                    and plugin.get("name") not in bypassed):
+                found.append((plugin.get("name"), copy_name(str(plugin.get("name"))) in names))
+    return found
+
+
+def detune_nan(config: Any, rendered, bad=None) -> str | None:
+    """Why this render's NaN is gx_detune_'s known one, or None if it is not.
+
+    The known one has a signature, and all of it is required: the config runs
+    the plugin unbypassed; the first non-finite sample is on the plugin's hop
+    grid; and from that frame to the end of the render, every sample of every
+    channel that carries the plugin's output is non-finite, since the NaN is
+    held in its overlap-add for good. The plugin is mono, so it writes channel
+    0; when the compiler's copy to stereo follows it, channel 1 too. A grid
+    frame alone is a chunk boundary, where a quarter of any plugin's blow-ups
+    would start, and a burst that recovers is not this bug.
+
+    `bad` is the render's non-finite mask, when the caller already has it.
+    """
+    from .analysis import first_non_finite, non_finite_mask
+
+    detunes = _detunes(config)
+    if not detunes:
+        return None
+    bad = non_finite_mask(rendered) if bad is None else bad
+    first = first_non_finite(bad)
+    if first is None or first[0] % DETUNE_HOP_FRAMES != DETUNE_HOP_PHASE:
+        return None
+    carriers = [0] + ([1] if any(copied for _, copied in detunes) and bad.shape[1] > 1 else [])
+    if not bad[first[0]:, carriers].all():
+        return None
+    return (
+        f"gx_detune_'s known NaN (in {', '.join(name for name, _ in detunes)}): its pitch "
+        f"shifter reads past the end of two of its arrays and, now and then, renders NaN "
+        f"from a hop on -- a plugin bug, guitarix 0.46.0, {DETUNE_BUG}"
+    )
+
+
 def measure(
     config: Path,
     root: Path,
@@ -487,6 +626,7 @@ def measure(
     *,
     stimulus: Stimulus | None = None,
     sushi_bin: str = "./sushi",
+    retried: list[str] | None = None,
 ) -> Any:
     """Render `config` and fingerprint the result.
 
@@ -496,7 +636,20 @@ def measure(
     the signals" -- a message about the measurement, naming nothing about the
     chain that produced it. `--calibrate` went the same way, so an unusable
     render could have been written into a reference.
+
+    One exception, and never a silent one: a NaN that is gx_detune_'s known bug
+    (`detune_nan`) is rendered once more, in a fresh Sushi, whose heap leaves
+    something else past those arrays. A retry that is finite is fingerprinted,
+    and a line saying `retried after a NaN` goes into `retried`, for the caller
+    to print; a caller that passed none has it printed on stderr and warned
+    (`report_retry`). A retry that is not finite fails as any NaN does, saying
+    so. Any other NaN fails at once.
+
+    The config is read as Sushi reads it, relative to `root` (Sushi runs
+    there), and a config that cannot be read is an error, not a missed retry.
     """
+    import json
+
     from .nulltest import fingerprint, render_findings
 
     out = render_offline(
@@ -504,10 +657,33 @@ def measure(
     )
     broken = render_findings(out["rendered"], out["sample_rate"])
     if broken:
-        raise RenderError(
-            f"{config.name} rendered unusable audio: "
-            + "; ".join(str(finding) for finding in broken)
+        what = "; ".join(str(finding) for finding in broken)
+        try:
+            parsed = json.loads((root / config).read_text())
+        except (OSError, ValueError) as exc:
+            raise RenderError(
+                f"{config.name} rendered unusable audio: {what}; and {root / config} could "
+                f"not be read to tell whether that is gx_detune_'s known NaN: {exc}"
+            ) from exc
+        known = detune_nan(parsed, out["rendered"])
+        if known is None:
+            raise RenderError(f"{config.name} rendered unusable audio: {what}")
+        out = render_offline(
+            config, root, work / "retry", stimulus=stimulus, sushi_bin=sushi_bin
         )
+        again = render_findings(out["rendered"], out["sample_rate"])
+        if again:
+            raise RenderError(
+                f"{config.name} rendered unusable audio twice: {what}; then "
+                + "; ".join(str(finding) for finding in again)
+                + f". The first looked like {known}; but twice running is not its "
+                "usual odds, so look at the chain before blaming the plugin"
+            )
+        note = f"{config.name}: {RETRIED} ({what}), {known}; the retry was finite"
+        if retried is None:
+            report_retry(note)
+        else:
+            retried.append(note)
     return fingerprint(
         out["rendered"],
         out["sample_rate"],
@@ -524,6 +700,7 @@ def calibrate(
     *,
     stimulus: Stimulus | None = None,
     sushi_bin: str = "./sushi",
+    retried: list[str] | None = None,
 ) -> tuple[Any, Any]:
     """Render `config` twice and measure how far apart two identical runs are.
 
@@ -538,6 +715,8 @@ def calibrate(
     """
     from .nulltest import floor_between
 
-    first = measure(config, root, work / "run-1", stimulus=stimulus, sushi_bin=sushi_bin)
-    second = measure(config, root, work / "run-2", stimulus=stimulus, sushi_bin=sushi_bin)
+    first = measure(config, root, work / "run-1", stimulus=stimulus, sushi_bin=sushi_bin,
+                    retried=retried)
+    second = measure(config, root, work / "run-2", stimulus=stimulus, sushi_bin=sushi_bin,
+                     retried=retried)
     return second, floor_between(first, second)

@@ -30,13 +30,49 @@ def runtime(tmp_path, monkeypatch):
     return tmp_path / "run" / "sushi-rig"
 
 
+# The marker of an investigation kept to be run again, not on every push
+# (test_render_spread.py). Deselected, not skipped: the container job fails on
+# any skip, and an opt-in measurement is not a missing dependency.
+SPREAD_ENV = "SUSHI_RIG_SPREAD"
+
+
+def pytest_collection_modifyitems(config, items):
+    """Leave the `spread` tests out unless `SUSHI_RIG_SPREAD=1`."""
+    import os
+
+    if os.environ.get(SPREAD_ENV) == "1":
+        return
+    left_out = [item for item in items if item.get_closest_marker("spread")]
+    if left_out:
+        config.hook.pytest_deselected(items=left_out)
+        items[:] = [item for item in items if not item.get_closest_marker("spread")]
+
+
 def pytest_terminal_summary(terminalreporter):
-    """Print the stereo renders' table (test_stereo.py), when any ran: the
-    CI container's log is the only place those numbers can be read."""
+    """Print the stereo renders' table (test_stereo.py) and the repeated
+    renders' (test_render_spread.py), when any ran: the CI container's log is
+    the only place those numbers can be read. Then every render the null tests
+    retried after a NaN, with a count, on every run that had one."""
+    import spread_table
     import stereo_table
 
-    found = terminalreporter.config.stash.get(stereo_table.ROWS, [])
+    stash = terminalreporter.config.stash
+    found = stash.get(stereo_table.ROWS, [])
     if found:
         terminalreporter.section(stereo_table.TITLE)
         for line in stereo_table.lines(found):
             terminalreporter.write_line(line)
+    spread = stash.get(spread_table.ROWS, [])
+    if spread:
+        terminalreporter.section(spread_table.TITLE)
+        for line in spread_table.lines(spread):
+            terminalreporter.write_line(line)
+    retried = stash.get(spread_table.RETRIES, [])
+    if retried:
+        from sushi_rig.render import RETRIED_PREFIX
+
+        # One prefixed line per retry, which the CI job counts (`^RETRIED-NAN:`).
+        terminalreporter.section(spread_table.RETRIES_TITLE)
+        for note in retried:
+            terminalreporter.write_line(f"{RETRIED_PREFIX} {note}")
+        terminalreporter.write_line(f"{len(retried)} render(s) retried after a NaN, each once")

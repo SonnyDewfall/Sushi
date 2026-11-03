@@ -410,6 +410,19 @@ terminal; `status` prints the paths. It refuses to start a second rig on top of
 a running one. With the agent running, `up`, `down`, `restart` and `status` go
 through it, and say so in one line; see the next section.
 
+#### Known issue: electric-octave-up can go silent mid-set
+
+Its octave up (gx_detune_ at +12) has a plugin bug: on one or two loads in a
+hundred it starts putting out NaN some seconds in, and keeps doing so until it
+is loaded again. What you hear is the rig going silent, or a burst of noise,
+with nothing reported as wrong. **Run `sushi-rig restart`** (or the agent's
+`/rig/restart`): a fresh load clears it, and it is unlikely to return in the
+same set. Bypassing the octave is not expected to help, since the NaN is held
+in the plugin's state and in the reverb after it; that, like the bug on the
+rig at all, has not been tried, only measured offline (MANIFEST, 2026-11-03;
+`tool/spikes/gx_detune_nan/`). electric_board runs the same plugin at no shift,
+which the bug cannot reach.
+
 ### The agent (v2, #29)
 
 ```bash
@@ -1448,6 +1461,25 @@ workflows because no single runner has everything:
   is on the second — is checked one channel at a time, each with its own
   reference (`config/sound/<config>.<channel>.v1-mono.yaml`). To add a reference
   without re-baselining the rest, `nulltest <config> --calibrate --missing`.
+- **Two configs do not render the same twice**: electric-octave-up and
+  electric_board, the only two that run gx_detune_ unbypassed. The plugin plans
+  its FFTs by timing them (`FFTW_MEASURE`), so each Sushi rounds a little
+  differently; inside those chains that is at most a few thousandths of a dB,
+  and their references carry a hand-set 0.01 dB tolerance for it. Every other
+  plugin of electric-octave-up's chain, rendered alone, came out bit for bit
+  the same (CI, 2026-11-03, 40 renders each: `tests/test_render_spread.py`,
+  whose table prints at the end of the run). An octave up, as electric-octave-up's is, also reads past the end of
+  two of the plugin's arrays, and one or two loads in a hundred render NaN
+  from some point on (`tool/spikes/gx_detune_nan/`). The null tests render
+  such a NaN once more, and only that NaN (a config running gx_detune_, starting on
+  its hop grid): any other NaN, or the same one twice, fails. A retry is never
+  quiet: `nulltest` prints "retried after a NaN" beside the channel and a
+  `RETRIED-NAN:` line per retry in a summary at the end, pytest prints the same
+  lines at the end of the run, and the job counts those lines and puts them on
+  the check run as a warning. The 520-render table that found all this is
+  opt-in (marker `spread`, deselected unless `SUSHI_RIG_SPREAD=1`); every run
+  has a five-render guard of the octave up instead. To print the table again:
+  `docker run --rm -e SUSHI_RIG_SPREAD=1 sushi-rig-ci pytest -rs -m spread`.
 
 Only `-m slow` used to run in the container, so the lilv- and Sushi-guarded
 tests ran in neither workflow and nothing said so. If a test genuinely cannot

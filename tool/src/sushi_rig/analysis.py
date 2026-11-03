@@ -173,16 +173,35 @@ class Finding:
         return f"{self.check}: {self.message}"
 
 
+def first_non_finite(bad) -> tuple[int, int] | None:
+    """The frame and channel of the first NaN or Inf, or None, given a
+    `(frames, channels)` mask of the samples that are not finite, which the
+    caller has already computed once (`~np.isfinite(...)`)."""
+    np = require_numpy()
+    found = np.flatnonzero(bad)
+    if found.size == 0:
+        return None
+    frame, channel = np.unravel_index(int(found[0]), bad.shape)
+    return int(frame), int(channel)
+
+
+def non_finite_mask(signal) -> "np.ndarray":
+    """`(frames, channels)`: True where a sample is NaN or Inf."""
+    np = require_numpy()
+    return ~np.isfinite(_frames(signal))
+
+
 def check_finite(signal) -> Finding | None:
     """NaN or Inf anywhere. A plugin that blows up usually shows here first."""
     np = require_numpy()
     arr = _frames(signal)
     bad = ~np.isfinite(arr)
-    if not bad.any():
+    first = first_non_finite(bad)
+    if first is None:
         return None
     nan = int(np.isnan(arr).sum())
     inf = int(bad.sum()) - nan
-    frame, channel = (int(i) for i in np.argwhere(bad)[0])
+    frame, channel = first
     return Finding(
         "non_finite",
         f"{nan} NaN and {inf} Inf samples; the first is at frame {frame}, channel {channel}",

@@ -185,7 +185,7 @@ RIGS = sorted((ROOT / "config" / "rigs").glob("*.yaml"))
 @pytest.mark.skipif(not SUSHI.exists(), reason="needs the Sushi binary")
 @pytest.mark.slow
 @pytest.mark.parametrize("rig", RIGS, ids=lambda p: p.stem)
-def test_every_v2_rig_sounds_like_its_reference(rig, tmp_path):
+def test_every_v2_rig_sounds_like_its_reference(rig, tmp_path, request):
     """Rendered through the master, each v2 rig matches its own reference,
     within that reference's own tolerance.
 
@@ -206,7 +206,12 @@ def test_every_v2_rig_sounds_like_its_reference(rig, tmp_path):
         source = tmp_path / f"{name}.json"
         source.write_text(json.dumps(view, indent=2))
         expected, tolerance = from_dict(yaml.safe_load(reference.read_text()))
-        found = compare(expected, measure(source, ROOT, tmp_path / name, sushi_bin=str(SUSHI)), tolerance)
+        # A render retried after gx_detune_'s known NaN is listed at the end of
+        # the run (conftest, spread_table.RETRIES), every time it happens.
+        import spread_table
+        retried = spread_table.retries(request.config)
+        found = compare(expected, measure(source, ROOT, tmp_path / name, sushi_bin=str(SUSHI),
+                                          retried=retried), tolerance)
         assert found == [], f"{name}: " + "; ".join(str(f) for f in found)
 
 
