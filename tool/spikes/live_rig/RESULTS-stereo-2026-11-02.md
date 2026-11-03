@@ -415,3 +415,156 @@ $ ss -ltnp | grep 8029
 
 No machine file or patchbay file was edited. The only file written is this
 one. The checkout is left on `claude/stereo-out`, as it was found.
+
+---
+
+# Addendum — chasing the interface, after the branch was cleared
+
+Everything above stands. This section is the hardware hunt that followed, kept
+because it rules things out that someone will otherwise try again.
+
+## It is attenuation, not loss
+
+The earlier conclusion — "nothing reaches the right speaker" — was **too
+strong**. After a USB replug, asked again:
+
+> **"Heard right but really quiet"**
+
+and again after raising levels:
+
+> **"Yes heard front left and then really quietly front right"**
+
+So the right output carries signal. It is perhaps 20-30 dB down, far enough
+to have been inaudible in the first tests. Every conclusion above about the
+*branch* is unaffected — Sushi's two outputs still measured 0.0 dB apart —
+but "lost" should read "heavily attenuated".
+
+## What was ruled out
+
+### The Pro Audio profile — did not help
+
+The iD14 has **no stereo profile**:
+
+```
+[0] off
+[1] output:analog-surround-40+input:multichannel-input   <- as found, and restored
+[2] output:analog-surround-40
+[3] pro-audio
+[4] input:multichannel-input
+```
+
+Switched to `pro-audio` (`wpctl set-profile 49 3`), which moves the device
+from ALSA's `surround40:1` plugin to `hw:1,0` with raw `AUX0..AUX3` ports and
+no surround remapping. Routing demonstrably worked — caught live during
+playback:
+
+```
+speaker-test:output_FL  ->  playback_AUX0
+speaker-test:output_FR  ->  playback_AUX1
+```
+
+Sonny heard **nothing at all** under it, at 0.15 and again at 0.35. So
+removing the surround remapping did not restore the right channel, and cost
+the left one as well. Reverted to profile 1.
+
+Worth knowing anyway: under `pro-audio` the ports are
+`playback_AUX0`/`AUX1`, not `playback_FL`/`FR`, so
+`machines/sonny-dewfall-XPS-9320.yaml` would need its `monitor-out` changed
+before the rig could wire up on that profile.
+
+### The ALSA mixer — no asymmetry, and raising it did not help
+
+```
+'Speaker'   FL 77 (-50dB)  FR 77 (-50dB)  RL 101 (-26dB)  RR 101 (-26dB)
+```
+
+Front sits 24 dB below Rear, which looked promising. Raising Front to 101 to
+match made everything louder and **left the imbalance exactly as it was**.
+Restored to as-found.
+
+`'Phase Inverter Control'` reads `[off]` on every channel, which is correct
+and is not a mute — it looked alarming in a bare `grep` for `[off]`.
+
+`'Analogue 4 Volume'` (four instances, all channels at 0) are the device's
+input-monitor mix levels, not the output path.
+
+### A USB replug — changed nothing
+
+WirePlumber restored the identical profile, the identical mixer levels and
+the identical sink volume across the re-enumeration.
+
+### No software layer has a left/right asymmetry
+
+This is the central negative result. WirePlumber's own saved state:
+
+```
+alsa_card.usb-Audient_Audient_iD14-00:output:analog-output-speaker=
+  {"channelMap":["FL", "FR", "RL", "RR"],
+   "channelVolumes":[0.002970, 0.002970, 0.046650, 0.046650],
+   "mute":false}
+```
+
+`FL` and `FR` hold the **same number**. So do the ALSA `Speaker` control's
+two front channels. So does the sink's single volume. Whatever is making the
+right side quiet is not a level anywhere in PipeWire, WirePlumber or ALSA.
+
+(Those two numbers also confirm the 24 dB front/rear gap in a second place:
+0.002970 against 0.046650.)
+
+## One real misconfiguration found, though it does not explain this
+
+The hardware declares a **fixed** channel map that PipeWire is not honouring:
+
+```
+$ amixer -c 1 cget numid=1
+numid=1,iface=PCM,name='Playback Channel Map'
+  : values=0,0,0,0
+  | chmap-fixed=FL,FR,FC,LFE
+
+$ cat /proc/asound/card1/stream0
+Playback:
+    Channels: 4
+    Channel map: FL FR FC LFE
+```
+
+The device says **`FL FR FC LFE`**. PipeWire presents it as
+`analog-surround-40` with `audio.position = [FL, FR, RL, RR]`. Channels 2 and
+3 are centre and LFE to the hardware and rear left/right to PipeWire.
+
+That mismatch is real and worth fixing — it is almost certainly why ALSA
+offers a surround profile for a two-output interface at all. But it cannot
+produce this symptom on its own, because `FL` and `FR` are channels 0 and 1
+under both maps.
+
+## Where this stands
+
+The right output of the iD14 produces sound, about 20-30 dB below the left,
+with every software control set identically for both. The interface is
+reported to work correctly on other laptops and on this laptop under Windows,
+and swapping the monitor cables moved nothing.
+
+That combination points at device state that Linux never sets and Windows
+does — the iD14 has an internal mixer which Audient's own software configures
+— rather than at a failed component or a PipeWire level. Untested, and the
+obvious next steps:
+
+- clear `~/.local/state/wireplumber/` for this device and let it re-negotiate
+  from scratch (it is currently restoring the surround profile and those
+  channel volumes faithfully across replugs)
+- headphones in the iD14's own jack, which is a different output stage
+- boot to Windows, confirm both sides, warm-boot back to Linux and see
+  whether the device carries a good state across
+
+## Nothing was left changed
+
+The ALSA `Speaker` control, the device profile and the sink volume were all
+returned to the values found at the start:
+
+```
+Front Left: 77 [-50.00dB]   Front Right: 77 [-50.00dB]
+Rear Left: 101 [-26.00dB]   Rear Right: 101 [-26.00dB]
+profile: output:analog-surround-40+input:multichannel-input
+sink volume: 0.14
+```
+
+No rig processes running, port 8029 free, no repo file edited but this one.
