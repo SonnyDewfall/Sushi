@@ -1406,9 +1406,13 @@ workflows because no single runner has everything:
   from some point on (`tool/spikes/gx_detune_nan/`). The null tests render
   such a NaN once more, and only that NaN (a config running gx_detune_, starting on
   its hop grid): any other NaN, or the same one twice, fails. A retry is never
-  quiet: `nulltest` prints "retried after a NaN" beside the channel and in a
-  summary at the end, pytest lists it at the end of the run, and the job puts
-  it on the check run as a warning.
+  quiet: `nulltest` prints "retried after a NaN" beside the channel and a
+  `RETRIED-NAN:` line per retry in a summary at the end, pytest prints the same
+  lines at the end of the run, and the job counts those lines and puts them on
+  the check run as a warning. The 520-render table that found all this is
+  opt-in (marker `spread`, deselected unless `SUSHI_RIG_SPREAD=1`); every run
+  has a five-render guard of the octave up instead. To print the table again:
+  `docker run --rm -e SUSHI_RIG_SPREAD=1 sushi-rig-ci pytest -rs -m spread`.
 
 Only `-m slow` used to run in the container, so the lilv- and Sushi-guarded
 tests ran in neither workflow and nothing said so. If a test genuinely cannot

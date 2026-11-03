@@ -117,6 +117,21 @@ def test_inf_is_found_and_counted_separately_from_nan():
     assert "1 NaN and 2 Inf" in finding.message
 
 
+def test_the_first_non_finite_sample_is_the_earliest_frame_then_the_lowest_channel():
+    """One lookup, shared by check_finite and render.detune_nan."""
+    x = signals.sine(SR, 0.1, 440, channels=2)
+    assert analysis.first_non_finite(analysis.non_finite_mask(x)) is None
+    x[40, 0] = np.nan
+    x[9, 1] = np.inf
+    x[9, 0] = 1.0
+    bad = analysis.non_finite_mask(x)
+    assert analysis.first_non_finite(bad) == (9, 1)
+    assert "the first is at frame 9, channel 1" in analysis.check_finite(x).message
+    mono = signals.sine(SR, 0.1, 440)
+    mono[17] = np.nan
+    assert analysis.first_non_finite(analysis.non_finite_mask(mono)) == (17, 0)
+
+
 def test_non_finite_is_reported_alone_because_the_other_numbers_would_be_garbage():
     x = signals.sine(SR, 0.1, 440)
     x[10, 0] = np.nan

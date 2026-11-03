@@ -464,8 +464,8 @@ def _nulltest(args: argparse.Namespace) -> int:
     from .nulltest import compare, from_dict, keep_wider, to_dict
     from .paths import checkout_root
     from .render import (
-        RETRIED, SOUND_DIR, RenderError, calibrate, channels_of, measure, offline_problem,
-        reference_path, rig_channels, rigs_to_check, v1_reference_path,
+        RETRIED, RETRIED_PREFIX, SOUND_DIR, RenderError, calibrate, channels_of, measure,
+        offline_problem, reference_path, rig_channels, rigs_to_check, v1_reference_path,
     )
     from .rigfile import RigFileError
     from .verify import configs_to_check
@@ -521,6 +521,9 @@ def _nulltest(args: argparse.Namespace) -> int:
                 ref_name = ref_file.stem
                 expected.add(ref_name)
                 work = Path(tmp) / ref_name
+                # Where this channel's retries start, so they are printed beside
+                # it whether it passes, differs or cannot be checked.
+                already = len(retried)
                 if args.calibrate and args.missing and ref_file.exists():
                     # --missing calibrates only what has no reference yet, so
                     # adding a channel does not quietly re-baseline the others,
@@ -563,7 +566,6 @@ def _nulltest(args: argparse.Namespace) -> int:
                         source = work / f"{channel.name}.json"
                         source.write_text(json.dumps(channel.config, indent=2) + "\n")
 
-                    already = len(retried)
                     if args.calibrate:
                         fp, measured = calibrate(source, root, work, sushi_bin=sushi,
                                                  retried=retried)
@@ -627,6 +629,8 @@ def _nulltest(args: argparse.Namespace) -> int:
                     # Everything a hand-edited reference can do, caught per
                     # channel so one bad file does not abandon the rest.
                     cannot_check(channel.label, exc)
+                    for note in retried[already:]:
+                        print(f"   {note}", file=sys.stderr)
                     continue
 
                 if differences:
@@ -673,9 +677,10 @@ def _nulltest(args: argparse.Namespace) -> int:
         # Every run, like the unrenderable list: a retry that passes is still a
         # NaN the rig's plugin produced, and reading as a clean pass would hide
         # how often that happens.
+        # One prefixed line per retry, here only: what the CI job counts.
         print(f"\n{len(retried)} render(s) {RETRIED}, each once:", file=sys.stderr)
         for note in retried:
-            print(f"  {note}", file=sys.stderr)
+            print(f"{RETRIED_PREFIX} {note}", file=sys.stderr)
     if failed:
         print(f"\n{failed} of {checked} check(s) could not be confirmed", file=sys.stderr)
     return 1 if failed else 0

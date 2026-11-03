@@ -3120,3 +3120,29 @@ octave up in CI here, 2 in 210 on the bench, about 1 to 2 in a hundred. If
 the octave-up goes silent mid-set, `sushi-rig restart` (README, the known
 issue). **Not tried on the rig**: what a NaN sounds like through PipeWire,
 and whether bypassing the octave would bring the sound back. *(2026-11-03)*
+
+**The NaN retry: answering review.** Ten findings, each with a test
+(`test_render.py` unless said). (1) A retry with no list to go into is printed
+on stderr every time, `RETRIED-NAN: ...`, as well as warned: a warning alone
+shows once per call site, and not at all under `-W ignore`. (2) A grid frame
+alone is not the bug's signature, since 192 mod 256 is also a chunk boundary:
+`detune_nan` now also requires every sample from the first bad frame to the
+end to be non-finite on each channel that carries the octave (the left, and
+the right too when the compiler's copy to stereo follows it). A 64-frame burst
+at frame 2240 fails without a retry, as does NaN on the left alone of a copied
+octave. (3, 4) The job counts `^RETRIED-NAN: ` lines, which only the
+reporting code prints and only once per retry (nulltest's summary, pytest's
+end of run), so tracebacks and the lines beside each channel are not counted;
+the annotation's title carries the count (`test_workflow_retries.py`). (5)
+`measure` reads the config against the rig root, where Sushi runs, and a
+config it cannot read is an error naming it, not a retry skipped. (6) A retry
+made before a channel failed is printed beside the failure. (7) The 520-render
+table is opt-in, marker `spread`, deselected (not skipped) unless
+`SUSHI_RIG_SPREAD=1`; every run renders gx_detune_ an octave up alone five
+times instead, with the same assertion, about a second. To print the table:
+`docker run --rm -e SUSHI_RIG_SPREAD=1 sushi-rig-ci pytest -rs -m spread`.
+(8) One lookup of the first non-finite sample, `analysis.first_non_finite`,
+for `check_finite` and `detune_nan`. (9) The spread test computes each
+render's mask once and writes its stimulus once per target
+(`render.prepare_stimulus`, `render_offline(prepared=...)`). (10) The
+bypassed-or-absent test now uses its parameter. *(2026-11-03)*
