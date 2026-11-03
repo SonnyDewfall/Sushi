@@ -160,6 +160,7 @@ def save_rig(
     amp_parameters: dict[str, float] | None = None,
     raw: dict[str, Any] | None = None,
     state: dict[str, Any] | None = None,
+    edits: dict[str, Any] | None = None,
 ) -> Path:
     """Capture the running Sushi's state and write it into a rig of channels,
     `<name>.yaml` beside `rig_path` (#30's last slice, the half SAVE is).
@@ -183,10 +184,13 @@ def save_rig(
     no change lands between the capture and the log entry that records the
     save. Without one, Sushi at `address` is captured here.
 
-    A chain whose plugins are not the file's -- one added or removed live --
-    is refused by `fold_state`: a save writes values, bypass and order, never
-    which plugins a chain holds, and a plugin removed live used to be kept in
-    the file with nothing said.
+    `edits` is the agent's account of the plugins it added and removed live
+    (`agent.live_edits`, #32), which lets `fold_state` write a chain's
+    plugins as they now run: an added one gets an entry, a removed one's
+    goes. Without it -- the CLI's `sushi-rig save` and the panel's SAVE,
+    which have no log -- a chain whose plugins are not the file's is
+    refused, as a capture of a different rig or an edit nothing here saw: a
+    plugin removed live used to be kept in the file with nothing said.
 
     Under the source's own name the file is the one the rig runs from, so
     the name is not checked against `NAME_PATTERN` and the file's own `name:`
@@ -226,7 +230,7 @@ def save_rig(
     for values in state.get("processors", {}).values():
         values.pop("properties", None)
     try:
-        folded = fold_state(raw, state)
+        folded = fold_state(raw, state, edits)
     except RigFileError as exc:
         raise SaveError("; ".join(exc.problems)) from exc
 

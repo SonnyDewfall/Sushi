@@ -1040,6 +1040,30 @@ def read_live_removal(
         }
 
 
+def read_live_values(
+    processor: str, address: str = DEFAULT_GRPC_ADDRESS, controller: Any = None,
+) -> dict[str, Any]:
+    """`{"parameters": {name: normalised value}, "bypassed": bool | None}`:
+    one processor's automatable parameters and its bypass, read the way
+    `capture` reads them (read-only parameters left out, a bypass Sushi will
+    not give None). What a remove records just before it removes, so an undo
+    can put the plugin back as it was, and what an add reads just after it
+    adds, the plugin's defaults, so a save writes only the values that differ
+    from them (#32). Its id is asked of Sushi by name (`get_processor_id`, as
+    `set_live_parameter` asks it); an unknown name is Sushi's refusal and
+    propagates. A program is not read: a plugin whose state is a program alone
+    comes back at its default one. Not run against a live Sushi."""
+    with _connection(address, controller) as c:
+        proc_id = c.audio_graph.get_processor_id(processor)
+        parameters = {
+            info.name: c.parameters.get_parameter_value(proc_id, info.id)
+            for info in c.parameters.get_processor_parameters(proc_id)
+            if getattr(info, "automatable", True)
+        }
+        state = _safe(c.audio_graph.get_processor_bypass_state, proc_id)
+        return {"parameters": parameters, "bypassed": None if state is None else bool(state)}
+
+
 def add_live_processor(
     name: str, uri: str, track_id: int, before_id: int, add_to_back: bool,
     address: str = DEFAULT_GRPC_ADDRESS, controller: Any = None,

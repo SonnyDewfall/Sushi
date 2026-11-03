@@ -24,6 +24,15 @@ shape of `test_agent.py`'s "Latency OUT" but is not captured; and that the
 session names an LV2 plugin's URI in `path`, which `live.read_live_plugins`
 assumes and nobody has seen.
 
+Adding and removing plugins (#32): `UiRig` takes the agent's add and remove
+as `agent.Live` sends them, a plugin and its copy to stereo together, and an
+added plugin starts at its captured defaults (`PORTS`: the overdrive, delay
+and octave; any other comes in with no parameters). `Served(library=
+fixture_library)` gives the agent a real library to add from, the
+repository's manifest and port table over the captured bundles. Invented:
+that a processor added live starts at its port defaults and un-bypassed,
+which is what the agent assumes of Sushi and nobody has seen.
+
 Start, stop and switch (#111), `UiLifecycle`: the agent's own routes, lock
 and busy, over a stand-in for what they run. Invented: the whole of what a
 lifecycle step does (it flips the rig up or down and records the call), and
@@ -83,6 +92,7 @@ from sushi_rig.library import IRI, Literal, parse_turtle
 from sushi_rig.live import LiveError, decide_move
 from sushi_rig.paths import checkout_root
 from sushi_rig.rigfile import LEVEL_RANGE, RETURN_UID, SEND_UID, level_to_gain
+from sushi_rig.stereo import COPY_UID
 from sushi_rig.supervisor import Outcome
 
 FIXTURES = Path(__file__).parent / "fixtures"
@@ -155,6 +165,26 @@ def strip(level_db: float = 0.0) -> dict[str, dict]:
 def send(level_db: float) -> dict[str, dict]:
     low, high = LEVEL_RANGE
     return {"gain": {"automatable": True, "value": level_to_gain(level_db), "min_domain_value": low, "max_domain_value": high}}
+
+
+# The plugins an add can put on the fake rig, by URI: their control ports, as
+# captured (see the module's docstring). Anything else comes in with none.
+PORTS = {
+    GXTS9: lambda: probe_ports(FIXTURES / "probe_gxts9.json"),
+    MDA_DELAY: lambda: ttl_ports(FIXTURES / "lv2" / "mda.lv2" / "Delay.ttl", MDA_DELAY),
+    RUBBERBAND: lambda: ttl_ports(FIXTURES / "lv2" / "rubberband.lv2" / "lv2-rubberband.ttl", RUBBERBAND),
+}
+
+
+def fixture_library():
+    """The library the agent builds, over the repository's manifest and port
+    table and the captured bundles in `fixtures/lv2` (`library.read_library`
+    with that as its plugins folder), so an add from the page or a test can
+    name a real URI: the delay and octave are read from their bundles, the
+    rest fall back to their URI as on a machine without plugins/."""
+    from sushi_rig.library import read_library
+
+    return read_library(checkout_root(), plugins_dir=FIXTURES / "lv2")
 
 
 class UiRig:
@@ -279,8 +309,47 @@ class UiRig:
             return {name: {"track": track, **self.classes[name]}
                     for track, chain in self.chains.items() for name in chain}
 
+    # -- the chain edits (#32): an add puts the plugin in at its defaults, as
+    # the captured ports give them; a remove takes it out, copy and all.
+    def removal(self, connection, processor):
+        with self.lock:
+            on_a_chain = any(processor in chain for chain in self.chains.values())
+            return {"chains": copy.deepcopy(self.chains), "ids": self._ids(), "uids": self._uids(),
+                    "plugin": copy.deepcopy(self.classes.get(processor)) if on_a_chain else None}
+
+    def add(self, connection, addition):
+        with self.lock:
+            self.calls.append(("add", addition.name, addition.uri, addition.track))
+            self._refused(addition.name)
+            ids = {i: name for name, i in self._ids().items()}
+            chain = self.chains[addition.track]
+            at = len(chain) if addition.add_to_back else chain.index(ids[addition.before_id])
+            ports = PORTS.get(addition.uri)
+            added = [(addition.name, info_of(ports()) if ports else {},
+                      {"uri": addition.uri, "uid": None, "type": "lv2"})]
+            if addition.copy:
+                added.append((addition.copy, {}, {"uri": None, "uid": COPY_UID, "type": "internal"}))
+            for offset, (name, info, plugin) in enumerate(added):
+                chain.insert(at + offset, name)
+                self.info[name], self.bypassed[name], self.classes[name] = info, False, plugin
+
+    def remove(self, connection, removal):
+        with self.lock:
+            self.calls.append(("remove", removal.processor))
+            self._refused(removal.processor)
+            for name in ([removal.copy] if removal.copy else []) + [removal.processor]:
+                self.chains[removal.track].remove(name)
+                for held in (self.info, self.bypassed, self.classes):
+                    held.pop(name, None)
+
+    def values(self, connection, processor):
+        with self.lock:
+            params = self.info[processor]
+            return {"parameters": {n: p["value"] for n, p in params.items() if p["automatable"]},
+                    "bypassed": self.bypassed.get(processor)}
+
     def writes(self):
-        return [c for c in self.calls if c[0] in ("set_parameter", "set_bypass", "move")]
+        return [c for c in self.calls if c[0] in ("set_parameter", "set_bypass", "move", "add", "remove")]
 
 
 def describe_up(started: datetime, name: str = "electric_board", amp_model: str | None = None,
@@ -641,7 +710,7 @@ class Served:
 
     def __init__(self, rig: UiRig | None = None, port: int = 0, describe=None, root: Path | None = None,
                  lifecycle: UiLifecycle | None = None, amp: bool = False, save: bool = False,
-                 record: bool = False):
+                 record: bool = False, library=None):
         if amp and (save or record):
             raise ValueError("the fake has an amp or a rig file to save (and record), not both yet")
         self.rig = rig or UiRig()
@@ -666,7 +735,7 @@ class Served:
             extra.update(recorder=self.recorder.link, takes_dir=self.recorder.takes)
         # `root` is where the profiles are read from (tool/examples/profiles/ under it).
         self.agent = Agent(root=root or checkout_root(), live=self.rig, describe=lambda: self.state["describe"](),
-                           library=lambda: {"plugins": [], "problems": []}, run=self.lifecycle.run,
+                           library=library or (lambda: {"plugins": [], "problems": []}), run=self.lifecycle.run,
                            # No pedals: the MIDI listener follows a rig after every
                            # lifecycle command, and this rig has no compiled config.
                            midi=midi_listener.World(plan=lambda described, root: midi_listener.Off("the fake rig has no pedals")),

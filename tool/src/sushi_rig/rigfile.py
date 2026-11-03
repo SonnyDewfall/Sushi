@@ -1019,7 +1019,40 @@ def _folded(written: Any, captured: Any) -> Any:
     return value
 
 
-def fold_state(raw: dict[str, Any], captured: dict[str, Any] | None) -> dict[str, Any]:
+def added_entry(name: str, uri: Any, values: Any, defaults: dict[str, Any] | None) -> dict[str, Any]:
+    """The rig-file entry for a plugin added live (#32), as the rig files
+    write a plugin: its `name` and `uri`, `bypassed: true` only if it is, and
+    `parameters` only for the values that differ from the plugin's
+    `defaults` (what the agent read just after adding it), rounded as `emit`
+    rounds. With no defaults known every captured value is written: which of
+    them are defaults is the plugin's to know, and writing a default is
+    harmless where leaving out a changed value is not. A captured program is
+    written where the capture has one (a plugin with no automatable
+    parameters), as `merged_state` keeps one."""
+    values = values if isinstance(values, dict) else {}
+    entry: dict[str, Any] = {"name": name, "uri": uri}
+    if values.get("bypassed"):
+        entry["bypassed"] = True
+    if values.get("program") is not None:
+        entry["program"] = values["program"]
+    captured = values.get("parameters") if isinstance(values.get("parameters"), dict) else {}
+    known = defaults if isinstance(defaults, dict) else None
+    differ = {k: _rounded(v) for k, v in captured.items() if known is None or _differs(v, known, k)}
+    if differ:
+        entry["parameters"] = differ
+    return entry
+
+
+def _differs(value: Any, defaults: dict[str, Any], name: str) -> bool:
+    """Whether a captured value is not the plugin's default, as the file
+    would hold both (`_rounded`): two reads of one float32 are the same, and
+    six decimals is what a rig file can tell apart."""
+    return name not in defaults or _rounded(value) != _rounded(defaults[name])
+
+
+def fold_state(
+    raw: dict[str, Any], captured: dict[str, Any] | None, edits: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """The rig file's document with a live capture folded into it: what SAVE
     writes for a rig of channels (#30's last slice).
 
@@ -1038,55 +1071,113 @@ def fold_state(raw: dict[str, Any], captured: dict[str, Any] | None) -> dict[str
     gain is folded, as the channel's `level` in dB (#18): that is where a
     channel's level in the mix lives.
 
-    A capture naming a processor the rig does not have is refused, as `emit`
-    refuses it: that is a capture of a different rig, or a plugin added live.
-    So is a chain the capture names that lacks one of the file's plugins: one
-    removed live, which folding would otherwise have kept in the file.
+    Which plugins a chain holds (#32). `edits` is `agent.live_edits`: the
+    plugins the agent added (`added`, with the track, URI and defaults) and
+    removed (`removed`, with the track) since the rig came up. It is how a
+    plugin added live is told from a capture of a different rig: a processor
+    the capture names that the file does not have is written only when the
+    log says it was added to the track the capture has it on, and a plugin of
+    the file a captured chain lacks is dropped only when the log says it was
+    removed from that track. The log explains a capture; it never changes
+    one: what is written is what the capture holds. A plugin added live gets
+    an entry at its captured place (`added_entry`), with no comments; a
+    removed one's entry goes, with the comments written above, inside and
+    beside it (yamlmerge's rule for an entry that moves, `_Update.remove`).
+    A name the log says was removed and added again is the file's own entry
+    when the URI is the file's (an undone remove), and a new entry in its
+    place when it is not.
+
+    A capture naming a processor that is neither the file's nor explained by
+    `edits` is refused, as `emit` refuses it: a capture of a different rig.
+    So is a chain lacking one of the file's plugins with no remove of it in
+    `edits`. Without `edits` (the CLI's `sushi-rig save`, the panel's SAVE:
+    no log), any plugin added or removed live is refused that way.
     """
     rig = parse_rig(copy.deepcopy(raw))  # refuse what load_rig would refuse
     captured = captured or {}
     processors = captured.get("processors") or {}
     orders = captured.get("tracks") or {}
-    known = {p.name for ch in rig.channels for p in ch.chain} | {p.name for p in rig.master.chain}
-    known |= {ch.name for ch in rig.channels} | {MASTER}
+    edits = edits or {}
+    added = edits.get("added") or {}
+    removed = edits.get("removed") or {}
+    files = {p.name: (ch.name, p) for ch in rig.channels for p in ch.chain}
+    files |= {p.name: (MASTER, p) for p in rig.master.chain}
+    known = set(files) | {ch.name for ch in rig.channels} | {MASTER}
     internal = {ch.name + SEND_SUFFIX for ch in rig.channels} | {RETURN}
     named = set(processors) | {n for order in orders.values() for n in (order or [])}
+
+    def captured_on(name: str) -> str | None:
+        return next((t for t, order in orders.items() if isinstance(order, list) and name in order), None)
+
+    def was_added(name: str) -> bool:
+        said = added.get(name)
+        return isinstance(said, dict) and bool(said.get("uri")) and captured_on(name) == said.get("track")
+
+    # Added live, as the log says: a name the file lacks; or one the file has,
+    # where the log added it again on another track (removed from one channel
+    # and added to the next: by name alone it would be the file's entry, which
+    # its own track drops as removed, and it would vanish from the save,
+    # review of #32), or with another plugin under it. What the file holds is
+    # keyed on (track, name), not the name alone.
+    new = {n for n in named - known if was_added(n)}
+    new |= {n for n in set(files) & named
+            if was_added(n) and (files[n][0], files[n][1].uri) != (captured_on(n), added[n]["uri"])}
     # The copies to stereo after the mono plugins (`stereo.py`): the
     # compiler's, never the file's, and known by their plugin's name.
-    internal |= {n for n in named if stereo.is_copy(n) and stereo.source_of(n) in known}
-    unknown = sorted(named - known - internal)
+    internal |= {n for n in named if stereo.is_copy(n) and stereo.source_of(n) in known | new}
+    unknown = sorted(named - known - internal - new)
     if unknown:
         # Checked first: a capture of another rig (a switch that raced the
         # save) is the larger fault, and must not be told as a chain edit.
+        why = ("that is a capture of a different rig: the agent's log does not say it was added live"
+               if edits else
+               "that is a capture of a different rig, or a plugin added live, which only the agent's save "
+               "(POST /rig/save, the web UI's Save) can write, from its log of what it added; this save "
+               "has no log, and without one it writes values, bypass and order, never which plugins a "
+               "chain holds")
         raise RigFileError([
-            f"the capture names {', '.join(unknown)}, which {rig.name} does not have: that is a capture "
-            "of a different rig, or a plugin added live, which a save cannot write (it writes values, "
-            "bypass and order, never which plugins a chain holds), so nothing was saved"
+            f"the capture names {', '.join(unknown)}, which {rig.name} does not have: {why}, so nothing "
+            "was saved"
         ])
     # A plugin of the file that a chain the capture names does not hold was
     # removed live (#32's POST /live/remove). Folding used to keep it in its
-    # place, so the saved file still had it with nothing said; it is refused,
-    # as an added one is above. A track the capture does not name says
-    # nothing, and the compiler's own processors (`internal`) are not the
-    # file's to list. Found by review, 2026-11-02.
-    lacking = []
+    # place, so the saved file still had it with nothing said; it is dropped
+    # only where the log says so, and refused otherwise. A track the capture
+    # does not name says nothing, and the compiler's own processors
+    # (`internal`) are not the file's to list. Found by review, 2026-11-02.
+    lacking, gone = [], set()
     for track, entries in [(ch.name, ch.chain) for ch in rig.channels] + [(MASTER, rig.master.chain)]:
         order = orders.get(track)
         if isinstance(order, list):
-            lacking += [f"{p.name} (on {track})" for p in entries if p.name not in order]
+            for p in entries:
+                if p.name in order:
+                    continue
+                if removed.get(p.name) == track:
+                    gone.add(p.name)
+                else:
+                    lacking.append(f"{p.name} (on {track})")
     if lacking:
+        how = ("and the agent's log does not say it was removed" if edits else
+               "and this save has no log of what was removed live (only the agent's save, POST /rig/save "
+               "or the web UI's Save, has one)")
         raise RigFileError([
-            f"the running rig lacks {', '.join(lacking)}, which {rig.name} has: a plugin removed live "
-            "cannot be saved (a save writes values, bypass and order, never which plugins a chain "
-            "holds), so nothing was saved. Undo the remove, or edit the rig file and restart the rig"
+            f"the running rig lacks {', '.join(lacking)}, which {rig.name} has, {how}: a save writes which "
+            "plugins a chain holds only from that log, so nothing was saved. Undo the remove, or edit the "
+            "rig file and restart the rig"
         ])
 
     def fold_chain(entries: list[dict[str, Any]], track: str) -> list[dict[str, Any]]:
-        by_name = {e["name"]: e for e in entries}
+        by_name = {e["name"]: e for e in entries if e["name"] not in gone}
+        for name in new:
+            if captured_on(name) == track:
+                by_name[name] = added_entry(name, added[name]["uri"], processors.get(name),
+                                            added[name].get("defaults"))
         order = [n for n in (orders.get(track) or []) if n in by_name]
-        rest = [e["name"] for e in entries if e["name"] not in order]
+        rest = [e["name"] for e in entries if e["name"] in by_name and e["name"] not in order]
         folded = [by_name[n] for n in order + rest]
         for entry in folded:
+            if entry["name"] in new:
+                continue  # written from the capture already, by `added_entry`
             values = processors.get(entry["name"]) or {}
             if not isinstance(values, dict):
                 continue
@@ -1109,19 +1200,34 @@ def fold_state(raw: dict[str, Any], captured: dict[str, Any] | None) -> dict[str
                 # rewrite every parameter line on every save and show a value
                 # that did not change as changed.
                 written = entry.get("parameters") or {}
-                entry["parameters"] = {
-                    **written,
-                    **{k: _folded(written.get(k), v) for k, v in values["parameters"].items()},
-                }
+                captured_values = values["parameters"]
+                defaults = _defaults_of(entry)
+                if defaults is not None:
+                    # A plugin added live and saved since: still only what the
+                    # file states or what differs from its defaults, so the
+                    # next save does not write every default the first left out.
+                    captured_values = {k: v for k, v in captured_values.items()
+                                       if k in written or _differs(v, defaults, k)}
+                merged = {**written, **{k: _folded(written.get(k), v) for k, v in captured_values.items()}}
+                if merged or "parameters" in entry:
+                    entry["parameters"] = merged
         return folded
+
+    def _defaults_of(entry: dict[str, Any]) -> dict[str, Any] | None:
+        """The defaults the agent read for this entry's plugin when it added
+        it, if the log has them and it is the same plugin (its URI)."""
+        said = added.get(entry["name"])
+        if isinstance(said, dict) and said.get("uri") == entry.get("uri") and isinstance(said.get("defaults"), dict):
+            return said["defaults"]
+        return None
 
     blended = blended_channels(rig)
     out = copy.deepcopy(raw)
     for channel in out.get("channels") or []:
         if not isinstance(channel, dict):
             continue
-        if channel.get("chain"):
-            channel["chain"] = fold_chain(channel["chain"], channel["name"])
+        if channel.get("chain") or any(captured_on(n) == channel.get("name") for n in new):
+            channel["chain"] = fold_chain(channel.get("chain") or [], channel["name"])
         # The send's gain moved live is the channel's level (#18). Written
         # when it differs from what the file says, as a level in dB. Not for
         # a channel a blend drives: there the gain is the pedal's position,
@@ -1137,8 +1243,8 @@ def fold_state(raw: dict[str, Any], captured: dict[str, Any] | None) -> dict[str
             if level != current:
                 channel["level"] = level
     master = out.get("master")
-    if isinstance(master, dict) and master.get("chain"):
-        master["chain"] = fold_chain(master["chain"], MASTER)
+    if isinstance(master, dict) and (master.get("chain") or any(captured_on(n) == MASTER for n in new)):
+        master["chain"] = fold_chain(master.get("chain") or [], MASTER)
     return out
 
 
@@ -1281,7 +1387,10 @@ def heard(config: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
 # - A processor whose `initial_state` entry says nothing of `bypassed` loads
 #   un-bypassed. (`emit` has always written none for such a one.)
 # - A processor added live starts at the plugin's defaults, the same values
-#   a config load gives it, so a replaced processor is the restarted one.
+#   a config load gives it, so a replaced processor is the restarted one;
+#   and so the values the agent reads straight after a live add are the
+#   defaults a save compares with (`added_entry`, #32), and it starts
+#   un-bypassed.
 # - A processor deleted live frees its name at once, for an add straight
 #   after under the same name (a replacement).
 # - A cc_mapping is bound to the processor when the config loads, so one

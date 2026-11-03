@@ -399,8 +399,12 @@ def test_1_a_list_whose_key_has_a_comment_is_written_back_as_it_was_when_nothing
     text = "chain:  # the chain\n  # about a\n  - name: a\n  - name: b\n"
     assert merged(text, yaml.safe_load(text)) == text
     assert merged(text, {"chain": [{"name": "a"}, {"name": "b"}, {"name": "c"}]}) == text + "  - name: c\n"
-    # Removing the first entry leaves what was above it as the list's, as it always has.
-    assert merged(text, {"chain": [{"name": "b"}]}) == "chain:  # the chain\n  # about a\n  - name: b\n"
+    # Removing the first entry takes the comment directly above it, as a reorder does
+    # (#32: the same save drops the same comments whether or not a plugin moved) ...
+    assert merged(text, {"chain": [{"name": "b"}]}) == "chain:  # the chain\n  - name: b\n"
+    # ... and leaves a heading a blank line sets apart.
+    headed = "chain:  # the chain\n  # heading\n\n  # about a\n  - name: a\n  - name: b\n"
+    assert merged(headed, {"chain": [{"name": "b"}]}) == "chain:  # the chain\n  # heading\n\n  - name: b\n"
 
 
 def test_2_a_comment_after_a_list_whose_last_entry_ends_in_an_empty_mapping_is_not_lost():
@@ -542,3 +546,21 @@ def test_every_committed_rig_with_its_chains_reordered_keeps_each_plugins_commen
         assert _above_and_beside(out) == _above_and_beside(text), path.name
         assert merged(out, data) == out, path.name
     assert moved, "no committed rig has a chain of two or more plugins, so this proved nothing"
+
+
+@pytest.mark.parametrize("new, how", [
+    ([{"name": "b"}, {"name": "c"}], "a plain removal"),
+    ([{"name": "c"}, {"name": "b"}], "a removal in a reorder"),
+    ([{"name": "b2"}, {"name": "c"}], "a removal beside a rename"),
+])
+def test_the_comment_above_the_first_channel_stays_when_that_channel_goes_whatever_the_path(new, how):
+    """Review of #32: the rule that a removed first entry takes the comment
+    above it is a chain's (`_is_chain`), not every list matched by name. The
+    channels' first comment is the list's, and stays at the top."""
+    text = "channels:\n  # the channels\n  - name: a\n    x: 1\n  - name: b\n  - name: c\n"
+    out = merged(text, {"channels": new})
+    assert out.startswith("channels:\n  # the channels\n  - name: "), (how, out)
+    assert yaml.safe_load(out) == {"channels": new}
+    # A chain under the same text is a chain: there the comment goes with `a`.
+    chain = text.replace("channels:", "chain:")
+    assert "# the channels" not in merged(chain, {"chain": new}), how
