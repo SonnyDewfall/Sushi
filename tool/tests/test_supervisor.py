@@ -40,10 +40,6 @@ from sushi_rig.supervisor import (
     Outcome, Supervisor, World, crash_message, exit_record, parse_lifecycle,
 )
 
-pytestmark = pytest.mark.skipif(
-    sys.version_info < (3, 11), reason="the agent's supervisor needs subprocess's process_group",
-)
-
 SLEEPER = [sys.executable, "-c", "import time; time.sleep(60)"]
 QUICK_STEPS = ((signal.SIGINT, 1.0), (signal.SIGKILL, 1.0))
 

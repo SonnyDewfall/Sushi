@@ -246,12 +246,12 @@ def plugins_on(lv2_path: str) -> dict[str, Path]:
     """Every plugin URI visible with `LV2_PATH=lv2_path`, mapped to its bundle."""
     # Private to probe, but it is the one place that turns a missing python3-lilv
     # into an actionable message, and duplicating that would let them drift.
-    from .probe import _world
+    from .probe import _each, _world
 
     with _lv2_path(lv2_path):
         world = _world()
     found: dict[str, Path] = {}
-    for plugin in world.get_all_plugins():
+    for plugin in _each(world.get_all_plugins()):
         bundle = str(plugin.get_bundle_uri()).replace("file://", "").rstrip("/")
         found[str(plugin.get_uri())] = Path(bundle)
     return found

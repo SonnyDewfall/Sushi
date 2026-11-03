@@ -229,7 +229,8 @@ def test_the_ui_files_are_in_the_package_data_a_wheel_carries():
     (A wheel built from this tree was checked to hold them, 2026-11-02.)"""
     import fnmatch
 
-    tomllib = pytest.importorskip("tomllib")
+    import tomllib
+
     config = tomllib.loads((checkout_root() / "tool" / "pyproject.toml").read_text(encoding="utf-8"))
     globs = config["tool"]["setuptools"]["package-data"]["sushi_rig"]
     package = UI_DIR.parent.parent
