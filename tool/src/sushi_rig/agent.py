@@ -906,8 +906,10 @@ def place_undo_remove(entry: dict[str, Any], reading: dict[str, Any]) -> "Additi
 
     `reading` is the add's: `live.read_live_chains(uids=True)`. Its place is
     after the unit that came before it in the chain the remove found (its
-    `previous.chain`), with its copy to stereo after it if it had one, or
-    first on the track if it was first. That predecessor is looked for on
+    `previous.units`, that chain as the remove grouped it with Sushi's uids;
+    `previous.chain` grouped by name for an entry without them), with its
+    copy to stereo after it if it had one, or first on the track if it was
+    first. That predecessor is looked for on
     the track as it is now; if it has gone, or the track has, or the name or
     its copy's is taken, the undo is refused rather than put somewhere else:
     another place is a different chain from the one undone. What follows the
@@ -923,7 +925,11 @@ def place_undo_remove(entry: dict[str, Any], reading: dict[str, Any]) -> "Additi
             f"cannot undo the remove of {name!r}: it was not an LV2 plugin (uid {previous.get('uid')!r}), "
             "and only an LV2 plugin is put back")
     before = list(previous.get("chain") or [])
-    grouped = stereo.units(before)
+    # As the remove grouped it, with Sushi's uids (`units`); from names alone
+    # only for an entry that does not say.
+    recorded = previous.get("units")
+    grouped = ([list(u) for u in recorded] if isinstance(recorded, list) and recorded
+               else stereo.units(before))
     index = next((i for i, unit in enumerate(grouped) if unit[0] == name), None)
     if index is None:
         raise StaleUndo(f"cannot undo the remove of {name!r}: the chain it recorded does not hold it")
@@ -1169,6 +1175,10 @@ class Removal:
     copy: str | None = None
     copy_id: int | None = None
     copy_before_id: int | None = None
+    # The chain before, as units (`stereo.units` with the session's uids):
+    # logged, so an undo groups it as the remove did rather than again from
+    # names alone (review of #32).
+    units: tuple[tuple[str, ...], ...] = ()
 
 
 def check_remove(reading: dict[str, Any], processor: str) -> Removal:
@@ -1206,7 +1216,8 @@ def check_remove(reading: dict[str, Any], processor: str) -> Removal:
             "URI or uid for it), so it is not removed: the log could not say how to "
             "put it back")
     chain = list(chains[track])
-    unit = next(u for u in stereo.units(chain, reading.get("uids") or {}) if u[0] == processor)
+    grouped = stereo.units(chain, reading.get("uids") or {})
+    unit = next(u for u in grouped if u[0] == processor)
     copy = unit[1] if len(unit) > 1 else None
     after = chain.index(unit[-1]) + 1
     return Removal(
@@ -1216,7 +1227,44 @@ def check_remove(reading: dict[str, Any], processor: str) -> Removal:
         processor_id=ids[processor], track_id=ids[track],
         copy=copy, copy_id=ids[copy] if copy else None,
         copy_before_id=ids[chain[after]] if copy and after < len(chain) else None,
+        units=tuple(tuple(u) for u in grouped),
     )
+
+
+# Where a request keeps the call it stopped waiting for when it answers a
+# timeout as something other than the 504 (`_keep_pending`), so `_connected`
+# still closes the connection only once that call returns.
+# A typed key where aiohttp has them (3.11 on), so it does not warn; the
+# agent extra allows 3.9, where a string key is what there is.
+KEPT_PENDING: Any = (web.RequestKey("sushi_rig.agent.pending", object)
+                     if web is not None and hasattr(web, "RequestKey") else "sushi_rig.agent.pending")
+
+
+def _keep_pending(request: Any, exc: BaseException) -> None:
+    """Keep a timed-out call's future on the request (the first one: one
+    connection, closed when it returns), for an `except` that handles a 504
+    and answers otherwise."""
+    pending = getattr(exc, "pending", None)
+    if pending is None:
+        return
+    try:
+        request.setdefault(KEPT_PENDING, pending)
+    except (AttributeError, TypeError):  # not an aiohttp request (a pedal's origin)
+        pass
+
+
+def _kept_pending(request: Any) -> Any:
+    try:
+        return request.get(KEPT_PENDING)
+    except (AttributeError, TypeError):
+        return None
+
+
+# What a call to Sushi that failed part-way through a sequence of them is
+# answered as (`Agent._sushi`): refused or failed (502), not answering in
+# time (504), or a pool of calls that never returned (503). The steps after
+# an add catch all three, since each leaves the plugin on the rig.
+SUSHI_FAILED = (502, 503, 504)
 
 
 def removed_record(removal: Removal, values: dict[str, Any]) -> dict[str, Any]:
@@ -1225,7 +1273,8 @@ def removed_record(removal: Removal, values: dict[str, Any]) -> dict[str, Any]:
     session), its `copy` to stereo (or None), and how it was set
     (`parameters`, `bypassed`, read just before the remove): what an undo
     needs to put it back as it was."""
-    return {"track": removal.track, "chain": list(removal.chain), **removal.plugin, "copy": removal.copy,
+    return {"track": removal.track, "chain": list(removal.chain), "units": [list(u) for u in removal.units],
+            **removal.plugin, "copy": removal.copy,
             "parameters": dict(values.get("parameters") or {}), "bypassed": values.get("bypassed")}
 
 
@@ -1828,6 +1877,8 @@ class Agent:
             pending = getattr(exc, "pending", None)
             raise
         finally:
+            if pending is None:
+                pending = _kept_pending(request)  # a timeout answered as something else
             if pending is not None:
                 self._close_when_it_returns(request, pending, controller)
             else:
@@ -2095,45 +2146,63 @@ class Agent:
         return previous, {"processor": removal.processor, "track": removal.track, "chain": removal.expected}
 
     async def _undo_remove(self, request, controller, undone, args, dry_run):
-        addition = await self._apply_add(
-            request, controller, lambda reading: place_undo_remove(undone, reading), dry_run=dry_run)
-        args["after"] = addition.after
-        if not dry_run:
-            await self._restore_values(request, controller, addition, args["parameters"], args["bypassed"])
-        return list(addition.chain), {"track": addition.track, "chain": addition.expected}
+        # Put back bypassed, set, then given the bypass it had: a plugin put
+        # back is never heard at its defaults while its values arrive one by
+        # one (a drive or a gain at its default can be a loud jump, review of
+        # #32). Sushi creates a processor un-bypassed and takes no bypass with
+        # the add, so it is bypassed by the very next command; the moment
+        # between is one command long (and, for a mono plugin, its copy's add).
+        sent: list["Addition"] = []
 
-    async def _restore_values(
-        self, request, controller, addition: "Addition", parameters: dict[str, float], bypassed: bool | None,
-    ) -> None:
-        """Set a plugin put back by an undo to the values and bypass its remove
-        recorded, each through the call the parameter and bypass routes make.
-        If Sushi refuses one, the plugin (and its copy) is removed again, so
-        an undo never leaves a plugin half set; if that fails too, the 502
-        says what the rig holds. Every value is sent, not only those that
-        differ from the defaults: which those are is the plugin's to know.
-        Each set is confirmed by Sushi's acknowledgement, not read back."""
-        what = f"put {addition.name!r} back on {addition.track!r}"
+        async def bypass_first(addition: "Addition") -> None:
+            sent.append(addition)
+            await self._sushi(request, self.live.set_bypass, controller, addition.name, True, reading=False)
+
         try:
-            for parameter, value in parameters.items():
+            addition = await self._apply_add(
+                request, controller, lambda reading: place_undo_remove(undone, reading), dry_run=dry_run,
+                after_send=None if dry_run else bypass_first)
+            args["after"] = addition.after
+            if dry_run:
+                return list(addition.chain), {"track": addition.track, "chain": addition.expected}
+            for parameter, value in args["parameters"].items():
                 await self._sushi(request, self.live.set_parameter, controller, addition.name, parameter,
                                   float(value), reading=False)
-            if isinstance(bypassed, bool):
-                await self._sushi(request, self.live.set_bypass, controller, addition.name, bypassed,
-                                  reading=False)
-        except web.HTTPBadGateway as exc:
-            try:
-                reading = await self._sushi(request, self.live.removal, controller, addition.name, reading=False)
-                await self._sushi(request, self.live.remove, controller, check_remove(reading, addition.name),
-                                  reading=False)
-            except (web.HTTPBadGateway, AgentError) as again:
-                said = getattr(again, "reason", None) or str(again)
-                self._unconfirmed(request, (
-                    f"{what} but could not set its values ({exc.reason}), and removing it again failed "
-                    f"too ({said}): {addition.name!r} is on {addition.track!r} with some of its values "
-                    f"at the plugin's defaults, and the log does not have it. Remove it, or restart the rig"))
+            # A bypass the remove could not read comes back on: what a
+            # processor made live is, and what silence would hide.
+            bypassed = args["bypassed"] if isinstance(args["bypassed"], bool) else False
+            await self._sushi(request, self.live.set_bypass, controller, addition.name, bypassed, reading=False)
+        except web.HTTPException as exc:
+            if not sent or exc.status not in SUSHI_FAILED:
+                raise
+            await self._take_back(request, controller, sent[0], exc)
+        return list(addition.chain), {"track": addition.track, "chain": addition.expected}
+
+    async def _take_back(self, request, controller, addition: "Addition", exc: "web.HTTPException") -> None:
+        """A plugin an undo put back whose bypass, read-back or values then
+        failed -- refused (502), not answered in time (504) or a pool of
+        stuck calls (503) -- is removed again, so an undo never leaves a plugin
+        half set and unlogged; 502 either way, saying what the track holds. A
+        call still running keeps the connection open until it returns
+        (`_keep_pending`)."""
+        _keep_pending(request, exc)
+        what = f"put {addition.name!r} back on {addition.track!r}"
+        try:
+            reading = await self._sushi(request, self.live.removal, controller, addition.name, reading=False)
+            await self._sushi(request, self.live.remove, controller, check_remove(reading, addition.name),
+                              reading=False)
+        except (web.HTTPException, AgentError) as again:
+            if isinstance(again, web.HTTPException):
+                _keep_pending(request, again)
+            said = getattr(again, "reason", None) or str(again)
             self._unconfirmed(request, (
-                f"{what} but could not set its values ({exc.reason}), so it was removed again: "
-                "nothing was put back"))
+                f"{what} but could not set it as it was ({exc.reason}), and removing it again failed "
+                f"too ({said}): {addition.name!r} is on {addition.track!r}, perhaps bypassed and with some "
+                f"of its values at the plugin's defaults, and the log does not have it. Remove it, or "
+                f"restart the rig"))
+        self._unconfirmed(request, (
+            f"{what} but could not set it as it was ({exc.reason}), so it was removed again: "
+            f"nothing was put back, and {addition.track!r} is as it was"))
 
     async def live_undo(self, request):
         """Put back what the newest change not yet undone replaced (`pick_undo`),
@@ -2155,14 +2224,17 @@ class Agent:
         - 400, no code: what the other routes answer for the same refusal, such
           as a processor the rig no longer has.
         - 502: what the add and remove routes answer 502 (a read-back that is
-          not what was sent), and an undo of a remove whose values Sushi would
-          not set, after which the plugin is removed again.
+          not what was sent), and an undo of a remove whose bypass, read-back
+          or values Sushi refused, failed or did not answer in time, after
+          which the plugin is removed again (`_take_back`).
 
         An add is undone by removing what it added, its copy to stereo with
         it, through the remove route's own path (`_apply_remove`); a remove by
         adding the plugin back after the same predecessor, through the add
-        route's (`_apply_add`, placed by `place_undo_remove`), and then setting
-        every parameter value and the bypass the remove recorded. The undo's
+        route's (`_apply_add`, placed by `place_undo_remove`), bypassed by the
+        next command, then set to every parameter value the remove recorded,
+        and only then given the bypass it had, so it is not heard at its
+        defaults. The undo's
         entry is shaped as the route's whose path it took (`args` what was
         applied, `previous` what that replaced: for an add's undo the removed
         plugin's record, for a remove's the chain before), with `of` the op it
@@ -2375,8 +2447,9 @@ class Agent:
         Its parameter values and bypass are read just before the remove;
         confirmed from a walk afterwards. Logged as op "remove" with `previous`
         `{"track", "chain", "uri", "uid", "type", "copy", "parameters",
-        "bypassed"}`: where it was, what it was and how it was set, which is
-        what an undo puts back.
+        "bypassed", "units"}`: where it was, what it was and how it was set,
+        and the chain as the remove grouped it, which is what an undo puts
+        back.
         """
         try:
             processor = remove_request(await self._json_body(request))
@@ -2403,15 +2476,20 @@ class Agent:
 
     async def _apply_add(
         self, request, controller, decide: Callable[[dict[str, Any]], "Addition"], *, dry_run: bool = False,
+        after_send: Callable[["Addition"], Awaitable[None]] | None = None,
     ) -> "Addition":
         """Walk the chains with the uids, decide the add (`decide`, which
         raises for what the rig cannot take), send it, and confirm it from a
-        second walk (502 if it does not read back as decided)."""
+        second walk (502 if it does not read back as decided). `after_send`
+        runs straight after the add is sent, before the read-back: an undo
+        bypasses the plugin there, so it is not heard at its defaults."""
         reading = await self._sushi(request, self.live.walk, controller, True, reading=True)
         addition = decide(reading)
         if dry_run:
             return addition
         await self._sushi(request, self.live.add, controller, addition, reading=False)
+        if after_send is not None:
+            await after_send(addition)
         after = await self._sushi(request, self.live.walk, controller, reading=False)
         what = f"added {addition.name!r} to {addition.track!r}"
         self._confirm(request, after, addition.track, addition.expected, what)
@@ -2421,13 +2499,19 @@ class Agent:
         """`(defaults, note)`: the added plugin's parameter values, read just
         after the add confirmed it, which are the plugin's defaults (a
         processor added live starts at them: rigfile.py's list of what is
-        assumed of Sushi). Sushi refusing or failing that read does not undo
-        the add, which is on the rig and confirmed: the defaults are None and
-        `note` says so. A read that does not answer in time is the 504 every
-        call is, and then nothing is logged, as for any read-back."""
+        assumed of Sushi). Sushi refusing, failing or not answering that read
+        in time does not undo the add, which is on the rig and confirmed: the
+        defaults are None and `note` says so, and a call still running keeps
+        the connection open until it returns (`_keep_pending`)."""
         try:
             values = await self._sushi(request, self.live.values, controller, addition.name, reading=False)
-        except web.HTTPBadGateway as exc:
+        except web.HTTPException as exc:
+            # Refused, failed, or not answered in time: the add is on the rig
+            # and confirmed either way, so it is logged; an unlogged plugin
+            # would be one undo and a save know nothing of (review, #32).
+            if exc.status not in SUSHI_FAILED:
+                raise
+            _keep_pending(request, exc)
             return None, (f"its parameters could not be read after it was added ({exc.reason}), so a "
                           "save will write every value it has, not only those that differ from its defaults")
         parameters = values.get("parameters") if isinstance(values, dict) else None
@@ -3754,6 +3838,9 @@ class Agent:
                     answer["entry"] = self._record("save", {
                         "file": shown, "rig": out.stem, "how": answer["how"], "library": library,
                         "amp": amp_said["saved"],
+                        # What the next save starts from (`live_edits`): the
+                        # plugins added live this one wrote, with their defaults.
+                        "added": edits["added"],
                     }, was)
         return answer
 
@@ -4358,17 +4445,17 @@ def save_request(body: Any) -> str | None:
         raise AgentError(str(exc)) from exc
 
 
-def _seconds(stamp: Any) -> float | None:
-    """An ISO time as whole seconds since the epoch, or None: the log's `at`
-    is to the second and a state file's `started_at` finer, so they are
-    compared in seconds, as the page compares them (rig.js `unsavedChanges`)."""
+def _log_time(stamp: Any) -> str | None:
+    """An ISO time as the log writes its `at` (UTC, to the second:
+    `_record`), or None. Log times in that one form compare as strings, so
+    `since` is put into it once and no entry's time is parsed."""
     try:
         when = datetime.fromisoformat(str(stamp))
     except ValueError:
         return None
     if when.tzinfo is None:
         when = when.replace(tzinfo=timezone.utc)
-    return float(int(when.timestamp()))
+    return when.astimezone(timezone.utc).replace(microsecond=0).isoformat()
 
 
 def live_edits(log: list[dict[str, Any]], since: Any = None) -> dict[str, Any]:
@@ -4378,31 +4465,48 @@ def live_edits(log: list[dict[str, Any]], since: Any = None) -> dict[str, Any]:
 
         {"added": {name: {"track", "uri", "defaults"}}, "removed": {name: track}}
 
-    Read from the newest rig switch on (before it was another rig) and from
-    `since`, the run's start (the state file's `started_at`: a restart
-    reloaded the file, so what came before it is not on the rig), oldest
-    first, so each name ends as its last edit left it. An add is `added`,
-    with the defaults it read; a remove takes the name out of `added` and
-    puts it in `removed`; an undo counts as what it applied (an add's undo is
-    a remove, a remove's an add, with the defaults of an earlier add of that
-    plugin under that name, if the log has one). A name can be in both: taken
-    out of the file and added again, which `fold_state` tells by the URI.
+    Read from the newest save or rig switch on, and from `since`, the run's
+    start (the state file's `started_at`: a restart reloaded the file, so
+    what came before it is not on the rig): one walk back from the newest
+    entry, stopping at the first of the three, so a save under the live lock
+    costs the entries since the last save, not the whole log, and no time but
+    `since` is parsed (review of #32). Before a switch was another rig; before
+    a save is in the file, except what the next save needs of it, which the
+    save's entry carries (`args.added`, the plugins added live it wrote, with
+    their defaults) and this starts from.
+
+    Then oldest first, so each name ends as its last edit left it. An add is
+    `added`, with the defaults it read; a remove takes the name out of
+    `added` and puts it in `removed`; an undo counts as what it applied (an
+    add's undo is a remove, a remove's an add, with the defaults of an
+    earlier add of that plugin under that name, if those are known). A name
+    can be in both: taken out of the file and added again, which `fold_state`
+    tells by its track and URI.
 
     This only says what the agent saw. `fold_state` takes it as the
     explanation of a capture that differs from the file, never as a change
     to make: a plugin the capture does not hold is not written whatever the
     log says, and one it holds that is neither the file's nor here is
     refused as a capture of a different rig."""
-    start = next((i + 1 for i in range(len(log) - 1, -1, -1) if log[i].get("op") == "rig"), 0)
-    cut = _seconds(since) if since is not None else None
-    added: dict[str, dict[str, Any]] = {}
+    cut = _log_time(since) if since is not None else None
+    start, seed = len(log), {}
+    while start > 0:
+        entry = log[start - 1]
+        at = entry.get("at")
+        if cut is not None and isinstance(at, str) and at < cut:
+            break
+        if entry.get("op") == "rig":
+            break
+        if entry.get("op") == "save":
+            seed = (entry.get("args") or {}).get("added") or {}
+            break
+        start -= 1
+    added: dict[str, dict[str, Any]] = {
+        name: dict(said) for name, said in seed.items() if isinstance(said, dict)}
     removed: dict[str, str] = {}
-    defaults: dict[tuple[str, str], Any] = {}
+    defaults: dict[tuple[str, str], Any] = {(name, said.get("uri")): said.get("defaults")
+                                             for name, said in added.items()}
     for entry in log[start:]:
-        if cut is not None:
-            at = _seconds(entry.get("at"))
-            if at is not None and at < cut:
-                continue
         op, args, previous = entry.get("op"), entry.get("args") or {}, entry.get("previous")
         if op == "undo":
             op = {"add": "remove", "remove": "add"}.get(args.get("of"))  # what it applied

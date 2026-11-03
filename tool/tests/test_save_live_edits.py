@@ -296,3 +296,31 @@ def test_a_remove_undone_is_the_files_own_entry_again_and_a_replacement_is_a_new
     save_rig("accustomed", path, state=state, edits=replaced)
     chain = yaml.safe_load(path.read_text())["channels"][0]["chain"]
     assert chain[4] == {"name": "eq", "uri": LIMITER}
+
+
+def test_a_plugin_removed_from_one_channel_and_added_to_another_by_its_name_is_saved_on_the_new_one(tmp_path):
+    """Review of #32: the same name and URI, removed from the guitar and added
+    to the vocal. Known by name alone it was the file's entry, which the
+    guitar dropped as removed, and the vocal never got: gone from the file,
+    and the save said it worked. What the file holds is keyed on its track."""
+    path = copied(tmp_path, "guitar_vocal")
+    raw = yaml.safe_load(path.read_text())
+    lcr = "http://plugin.org.uk/swh-plugins/lcrDelay"
+    state = {"processors": {}, "tracks": {"master": ["master_return"]}}
+    for channel in raw["channels"]:
+        names = [p["name"] for p in channel["chain"]]
+        state["tracks"][channel["name"]] = names + [channel["name"] + "_send"]
+        state["processors"].update({n: {"bypassed": False, "parameters": {}} for n in names})
+    state["tracks"]["guitar"].remove("guitar_delay")
+    vocal = state["tracks"]["vocal"]
+    vocal.insert(vocal.index("vocal_limiter"), "guitar_delay")
+    state["processors"]["guitar_delay"] = {"bypassed": False, "parameters": {"Feedback": _float32(0.25)}}
+    edits = {"added": {"guitar_delay": {"track": "vocal", "uri": lcr, "defaults": {"Feedback": 0.5}}},
+             "removed": {"guitar_delay": "guitar"}}
+
+    save_rig("guitar_vocal", path, state=state, edits=edits)
+    saved = yaml.safe_load(path.read_text())
+    guitar, vocal_chain = (c["chain"] for c in saved["channels"])
+    assert "guitar_delay" not in [p["name"] for p in guitar]
+    assert {"name": "guitar_delay", "uri": lcr, "parameters": {"Feedback": 0.25}} in vocal_chain
+    assert [p["name"] for p in vocal_chain][-2:] == ["guitar_delay", "vocal_limiter"]

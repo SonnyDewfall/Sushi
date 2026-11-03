@@ -609,10 +609,11 @@ is `502` and not logged. The log entry for an add has the chain before
 (`previous`) and in `args` the name used, its `copy` to stereo (or null), the
 `chain` it left, and `defaults`: the plugin's parameter values read straight
 after the add, which are what a save compares with. Defaults Sushi will not
-give leave the add standing, `null`, with a `note` saying a save will write
-every value. A remove's entry has the chain before, the plugin's URI, uid and
-type from Sushi's saved session, its `copy`, and its `parameters` and
-`bypassed`, read just before the remove (a remove whose values cannot be read
+give, or do not give in time, leave the add standing and logged, `null`,
+with a `note` saying a save will write every value. A remove's entry has the chain before, the plugin's URI, uid and
+type from Sushi's saved session, its `copy`, the chain before as `units`
+(each plugin with its copy, grouped as the remove grouped it, with Sushi's
+uids), and its `parameters` and `bypassed`, read just before the remove (a remove whose values cannot be read
 is `502` and removes nothing).
 
 **Undoing an add or a remove** (#32). An add is undone by removing what it
@@ -621,14 +622,20 @@ values, remove, read back), and only while the track is exactly the `chain`
 the add left: anything else on it since is a chain the entry knows nothing
 about, so that is `409 stale`. A remove is undone by adding the plugin back
 through the add's own path, after the unit it followed in the chain before
-(first on the track if it was first), with its copy if it had one, and then
-setting every parameter value and the bypass it recorded. If that place is
+as the remove grouped it (first on the track if it was first), with its copy
+if it had one. It is bypassed by the very next command, so it is not heard at
+the plugin's defaults while its values arrive; then every parameter value it
+recorded is set, and then the bypass it had (on, if the remove could not
+read it). The add's own command takes no bypass, so the moment between the
+add and the bypass is one command long. If that place is
 gone — the predecessor is no longer on the track, the track is gone, the
 name or its copy's is taken — it is `409 stale` with the reason, and it is
 not put anywhere else. What follows the predecessor now is not checked: it
-goes straight after it. If Sushi refuses a value, the plugin is removed again
-and the answer is `502` saying nothing was put back (and, if that fails too,
-what the track holds). Only an LV2 plugin is put back: a stray copy to stereo
+goes straight after it. If Sushi refuses, fails or does not answer in time
+anything after the add (the bypass, the read-back, a value), the plugin is
+removed again and the answer is `502` saying nothing was put back and the
+track is as it was (and, if that fails too, what the track holds); a call
+still running keeps the connection open until it returns. Only an LV2 plugin is put back: a stray copy to stereo
 removed as a repair is not recreated. Each undo is logged in the shape of
 what it applied, an add's undo as a remove and a remove's as an add, with
 `of` naming the op it undid; undoing an undo is still not built. A program
@@ -752,13 +759,18 @@ say it. If the new file cannot be made the running rig, the answer is a 500
 saying the file was written and the rig still runs under its old name, and
 nothing is logged as saved. **Plugins added and removed live are saved** (#32): the agent hands
 `save_rig` its log's account of them (`agent.live_edits`: what was added, to
-which track, with its URI and defaults, and what was removed, since the rig
-came up and since the last rig switch, each name as its last edit left it,
-an undo counted as what it applied). `rigfile.fold_state` then writes the
+which track, with its URI and defaults, and what was removed, since the
+newest save, rig switch or the rig's start, whichever is latest, each name
+as its last edit left it, an undo counted as what it applied). It is found
+by walking the log back from its newest entry to that point, under the live
+lock, so a save costs the entries since the last one; a save's entry carries
+the plugins added live it wrote, with their defaults (`args.added`), which
+the next save starts from. `rigfile.fold_state` then writes the
 chains as they run: a removed plugin's entry goes, with the comment lines
 above, inside and beside it (yamlmerge's rule for an entry that moves: the
 comment directly above a chain's first entry is that entry's unless a blank
-line sets it apart as a heading); an added one gets an entry at its captured
+line sets it apart as a heading; this is a chain's rule only, and the comment
+above a rig file's first channel stays); an added one gets an entry at its captured
 place, written as the rig files write a plugin — `name`, `uri`,
 `bypassed: true` only if it is, and `parameters` only for the values that
 differ from its defaults — and keeps to that on later saves; a move keeps
@@ -766,9 +778,11 @@ working as it did. The compiler's sends, return and copies to stereo never
 appear. The log only explains a capture, it never changes one: a processor
 the capture names that is neither the file's nor added to that track by the
 log, or a plugin of the file missing from its chain with no remove of it in
-the log, is still `409 not_saved`, as a capture of a different rig. A name
-removed and added back with the file's URI (an undone remove) is the file's
-own entry, comments and all; with another URI, a new entry in its place. The
+the log, is still `409 not_saved`, as a capture of a different rig. What the
+file holds is known by track and name: a name removed and added back on the
+same track with the file's URI (an undone remove) is the file's own entry,
+comments and all; with another URI, a new entry in its place; on another
+track (removed from one channel, added to the next), an entry on that one. The
 panel's SAVE and `sushi-rig save` have no log, so they refuse any plugin added
 or removed live, saying only the agent's save can write it. Tested on copies
 of committed rigs: an add, a remove and a move saved into
@@ -895,7 +909,7 @@ no Node and the UI has to run from a checkout. Two screens from the mockups:
   sent at once and marked unsaved, with what it was; the side panel lists what
   changed since the rig came up and undoes the newest change. A plugin added
   or removed (from `/live/add` and `/live/remove`: there is no library screen
-  yet) is listed as "added X to <track>" or "removed X", its copy to stereo
+  yet) is listed as "added X to <track>" or "removed X from <track>", its copy to stereo
   never; a reorder among the plugins that stayed is the chain's change. Undo
   takes either back with no special case, since the agent logs an undo in the
   shape of what it applied.

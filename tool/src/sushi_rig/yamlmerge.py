@@ -42,10 +42,12 @@ between two entries moves with the entry it sits above, and a comment is
 dropped only with the entry it was written above or beside. The edges:
 
 - the comments above the *first* item of a list stay with the list when that
-  item goes (they are usually about the list), except in a list matched by
-  name, a chain, where an entry that goes takes the comment directly above
-  it as an entry that moves does (below), and only a heading a blank line
-  sets apart stays;
+  item goes (they are usually about the list), except in a chain (a list
+  matched by name under a `chain` key, `_is_chain`), where a plugin that goes
+  takes the comment directly above it as an entry that moves does (below),
+  and only a heading a blank line sets apart stays. A rig file's `channels`
+  is not a chain: the comment above its first channel stays, however the
+  channel goes;
 - a key inserted first in a mapping goes above the comment that was above the
   old first key, unless a blank line sets that comment apart;
 - when a named list is reordered, an entry moves with the comment lines above
@@ -53,8 +55,8 @@ dropped only with the entry it was written above or beside. The edges:
   *position*: whatever follows the last entry,
   and a heading at the top of the list that a blank line sets apart from the
   first entry (a comment directly above the first entry, with no blank line,
-  is taken to be about it and moves with it, or goes with it if it is the one
-  removed, in a reorder or not; an insert at the front of a list does not
+  is taken to be about it and moves with it, or, in a chain, goes with it if
+  it is the one removed, in a reorder or not; an insert at the front of a list does not
   know which entry the comment is about, so it leaves all of it at the top). A blank line goes with the entry below it (the one that moved to the
   top loses it, and the entry it displaced takes it); a new entry has none;
 - the first key of a mapping cannot be removed if comment lines sit below it,
@@ -761,6 +763,19 @@ def _pairing(old: list, new: list) -> list[int | None]:
     return pairs
 
 
+# The key a rig file keeps a chain of plugins under: the one list whose
+# first entry's comment is taken to be about that entry when it goes (#32).
+CHAIN_KEY = "chain"
+
+
+def _is_chain(container: Any, parent: tuple[Any, Any] | None) -> bool:
+    """Whether `container` is a chain: a list matched by name, held under a
+    `chain` key. Any other list keeps the comments above its first item when
+    that item goes, as its heading (a rig file's `channels` is one)."""
+    return (parent is not None and _is_map(parent[0]) and parent[1] == CHAIN_KEY
+            and _names(container) is not None)
+
+
 def _split_gap(text: str) -> tuple[str, str]:
     """(the blank lines the text between two entries opens with, the rest of it).
 
@@ -804,15 +819,16 @@ class _Update:
                                  "comments follow it: ruamel.yaml would drop them. Move or delete "
                                  "the comments, then retry")
         else:
-            # Above a mapping's first key, and above the first entry of a list
-            # matched by name (a chain), the comments are about that entry, so
+            # Above a mapping's first key, and above the first plugin of a
+            # chain (a named list under a `chain` key, `_is_chain`; not the
+            # channels, whose heading is the file's), the comments are about that entry, so
             # they go with it, unless a blank line sets them apart as a
             # heading: the rule `reorder` applies to an entry that moves or
             # goes, so a plugin removed by a save takes the same comments
             # whether or not another plugin of its chain moved (#32). Above
             # the first item of any other list they stay: they are usually
             # its heading.
-            if _is_map(container) or _names(container) is not None:
+            if _is_map(container) or _is_chain(container, parent):
                 self._drop_lead(container, parent, own_only=True)
             if _has_comment(rest) and not _add_lead(container, parent, rest):
                 raise MergeError(
@@ -892,10 +908,11 @@ class _Update:
         what comes after the list). A blank line between entries goes with the
         entry below it, `_gap` says how.
 
-        An entry that is not in `new` goes with its comments, including the
-        ones directly above it when it was the first (as a plain `remove` of
-        a named list's first entry does); only a heading a blank line sets
-        apart stays. Entries new to the list
+        An entry that is not in `new` goes with its comments, including, in
+        a chain, the ones directly above it when it was the first (as a
+        plain `remove` of a chain's first entry does); only a heading a blank
+        line sets apart stays, and outside a chain all of what was above the
+        first stays at the top. Entries new to the list
         go where `new` puts them, with no comments. Refuses (`MergeError`) a list whose comments are kept
         somewhere this cannot read them back from.
 
@@ -927,9 +944,12 @@ class _Update:
         slots = {i: [old.ca.items.pop(i)[0], None, None, None]
                  for i in range(n) if i in old.ca.items and old.ca.items[i][0] is not None}
         old.ca.items.clear()
+        # Outside a chain, what is above a first item that goes is the list's
+        # heading, and stays at the top, as a plain `remove` leaves it.
+        keep_head = n > 0 and 0 not in kept and not _is_chain(old, parent)
         for i in range(n):
             if i not in kept:
-                self.gone += _all_comments(old[i]) + _comments(leads[i]) \
+                self.gone += _all_comments(old[i]) + ([] if i == 0 and keep_head else _comments(leads[i])) \
                     + (_comments(after[i][0]) if i in slots else [])
 
         for j, i in enumerate(pairs):
@@ -952,6 +972,8 @@ class _Update:
         gaps = [_split_gap(text) for text in leads]
         above = [_gap(gaps, pairs, j) + (gaps[i][1] if i is not None else "")
                  for j, i in enumerate(pairs)]
+        if keep_head and above:
+            above[0] = gaps[0][0] + gaps[0][1] + above[0][len(gaps[0][0]):]
         _add_lead(old, parent, above[0])
         # The lines above entry j go on the list as its "before" comment, which
         # ruamel.yaml writes whatever the entry before it ended in; on that entry

@@ -1113,10 +1113,15 @@ def fold_state(
         said = added.get(name)
         return isinstance(said, dict) and bool(said.get("uri")) and captured_on(name) == said.get("track")
 
-    # Added live, as the log says: a name the file lacks, or one whose plugin
-    # is not the file's any more (removed, and another added under its name).
+    # Added live, as the log says: a name the file lacks; or one the file has,
+    # where the log added it again on another track (removed from one channel
+    # and added to the next: by name alone it would be the file's entry, which
+    # its own track drops as removed, and it would vanish from the save,
+    # review of #32), or with another plugin under it. What the file holds is
+    # keyed on (track, name), not the name alone.
     new = {n for n in named - known if was_added(n)}
-    new |= {n for n in set(files) & named if was_added(n) and added[n]["uri"] != files[n][1].uri}
+    new |= {n for n in set(files) & named
+            if was_added(n) and (files[n][0], files[n][1].uri) != (captured_on(n), added[n]["uri"])}
     # The copies to stereo after the mono plugins (`stereo.py`): the
     # compiler's, never the file's, and known by their plugin's name.
     internal |= {n for n in named if stereo.is_copy(n) and stereo.source_of(n) in known | new}

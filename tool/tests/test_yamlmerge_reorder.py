@@ -546,3 +546,21 @@ def test_every_committed_rig_with_its_chains_reordered_keeps_each_plugins_commen
         assert _above_and_beside(out) == _above_and_beside(text), path.name
         assert merged(out, data) == out, path.name
     assert moved, "no committed rig has a chain of two or more plugins, so this proved nothing"
+
+
+@pytest.mark.parametrize("new, how", [
+    ([{"name": "b"}, {"name": "c"}], "a plain removal"),
+    ([{"name": "c"}, {"name": "b"}], "a removal in a reorder"),
+    ([{"name": "b2"}, {"name": "c"}], "a removal beside a rename"),
+])
+def test_the_comment_above_the_first_channel_stays_when_that_channel_goes_whatever_the_path(new, how):
+    """Review of #32: the rule that a removed first entry takes the comment
+    above it is a chain's (`_is_chain`), not every list matched by name. The
+    channels' first comment is the list's, and stays at the top."""
+    text = "channels:\n  # the channels\n  - name: a\n    x: 1\n  - name: b\n  - name: c\n"
+    out = merged(text, {"channels": new})
+    assert out.startswith("channels:\n  # the channels\n  - name: "), (how, out)
+    assert yaml.safe_load(out) == {"channels": new}
+    # A chain under the same text is a chain: there the comment goes with `a`.
+    chain = text.replace("channels:", "chain:")
+    assert "# the channels" not in merged(chain, {"chain": new}), how

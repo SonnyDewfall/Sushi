@@ -987,7 +987,7 @@ function changeText(model, item) {
   }
   // A plugin added or removed is said as that, with no before and after.
   if (item.kind === "added") return { where: `added ${item.processor} to ${item.track}` };
-  if (item.kind === "removed") return { where: `removed ${item.processor}` };
+  if (item.kind === "removed") return { where: `removed ${item.processor} from ${item.track}` };
   const shown = (chain) => chain.filter((n) => !n.endsWith(R.STEREO_SUFFIX)).join(", ");
   return { where: `${item.track} · chain`, from: shown(item.from || []) || "unknown", to: shown(item.to) };
 }

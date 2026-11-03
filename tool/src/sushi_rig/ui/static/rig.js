@@ -367,13 +367,17 @@ export function unsavedChanges(logAnswer, live, rig, amp = null) {
 
 // What differs between a track's chain at its baseline and now, as the
 // player made it: each plugin there now that was not ("added X to <track>"),
-// each that was there and is not ("removed X"), and, when the plugins in
+// each that was there and is not ("removed X from <track>"), and, when the plugins in
 // both are in another order, the chain itself. A copy to stereo comes and
 // goes with its plugin and is not a change of its own; nor are the send and
 // return, which never come or go. Netted like the rest: added and removed
 // again is nothing.
 function chainChanges(item, now) {
-  const from = Array.isArray(item.from) ? item.from : [];
+  // A baseline the log does not have (a move Sushi did not say the chain of)
+  // says nothing of what came or went: one row, the chain from "unknown",
+  // never every plugin on the track as added (review of #32).
+  if (!Array.isArray(item.from)) return sameChain(now, item.from) ? [] : [{ ...item, to: [...now] }];
+  const from = item.from;
   const was = new Set(from), is = new Set(now);
   const own = (n) => !n.endsWith(STEREO_SUFFIX);
   const base = { track: item.track, source: item.source };
@@ -382,7 +386,7 @@ function chainChanges(item, now) {
     ...from.filter((n) => own(n) && !is.has(n)).map((n) => ({ kind: "removed", processor: n, ...base })),
   ];
   const kept = (chain) => chain.filter((n) => own(n) && was.has(n) && is.has(n));
-  if (!Array.isArray(item.from) || !sameChain(kept(from), kept(now))) {
+  if (!sameChain(kept(from), kept(now))) {
     out.push({ kind: "chain", track: item.track, from: item.from, to: [...now], source: item.source });
   }
   return out;

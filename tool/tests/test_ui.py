@@ -608,6 +608,16 @@ def test_a_copy_to_stereo_is_not_a_change_and_a_move_beside_an_add_is_said_too(b
     assert unsaved(blank, log, board(BOARD))["items"] == []
 
 
+def test_a_chain_whose_baseline_the_log_lacks_is_one_row_not_every_plugin_added(blank):
+    """Review of #32: a move logged with no chain before it (`previous`
+    null) gave an empty baseline, and every plugin on the track was listed
+    as added. With no baseline the change is the chain, from unknown."""
+    moved = ["octave", "overdrive", "delay", "board_send"]
+    log = [entry("move", {"processor": "octave", "direction": "up"}, None)]
+    assert unsaved(blank, log, board(moved))["items"] == [
+        {"kind": "chain", "track": "board", "from": None, "to": moved, "source": None}]
+
+
 def test_a_remove_undone_after_a_save_is_unsaved_as_an_add(blank):
     """The save wrote the rig without the delay; undo passes over it and puts
     the delay back, which the file does not have."""
@@ -1029,7 +1039,7 @@ def test_a_removed_plugin_is_unsaved_as_removed_and_its_undo_brings_it_back_as_i
     post(served, "/live/remove", {"processor": "octave"})
     changes = p.locator("aside.changes")
     # Its bypass is no change of its own while it is gone: the remove says it.
-    expect(changes.locator(".change")).to_have_text(["removed octave"])
+    expect(changes.locator(".change")).to_have_text(["removed octave from board"])
     expect(p.locator("#t-board .unit button.name")).to_have_text(["overdrive", "delay"])
     changes.get_by_role("button", name="Undo · remove octave").click()
     until(lambda: served.rig.chains["board"] == ["overdrive", "octave", "delay", "board_send"])
@@ -1065,7 +1075,7 @@ def test_a_save_after_an_add_and_a_remove_writes_them_and_nothing_is_unsaved(bro
         p = page.page
         post(served, "/live/add", {"track": "board", "uri": "http://drobilla.net/plugins/mda/Delay", "name": "slap"})
         post(served, "/live/remove", {"processor": "octave"})
-        expect(p.locator("aside.changes .change")).to_have_text(["added slap to board", "removed octave"])
+        expect(p.locator("aside.changes .change")).to_have_text(["added slap to board", "removed octave from board"])
         p.get_by_role("button", name="Save to electric_board").click()
         expect(p.locator(".save-result.ok")).to_contain_text("Saved electric_board")
         expect(p.locator("aside.changes h2")).to_have_text("No changes seen")

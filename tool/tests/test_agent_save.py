@@ -275,7 +275,8 @@ def test_a_save_is_in_the_log_with_its_file_and_git_state(root):
     (entry,) = log["log"]
     assert entry["op"] == "save" and entry == saved["entry"]
     assert entry["args"] == {"file": "config/rigs/electric_board.yaml", "rig": "electric_board",
-                             "how": "updated", "library": None, "amp": True}
+                             "how": "updated", "library": None, "amp": True, "added": {}}, \
+        "and the plugins added live it wrote, which the next save starts from (none here)"
     assert entry["previous"] == "config/rigs/electric_board.yaml"
 
 
@@ -725,3 +726,20 @@ def test_undo_past_a_save_of_an_add_takes_it_out_and_the_next_save_writes_that(r
 
 def chain_of(text):
     return yaml.safe_load(text)["channels"][0]["chain"]
+
+
+def test_a_plugin_moved_to_another_channel_by_a_remove_and_an_add_is_saved_there(root):
+    """Review of #32, through the routes: the board's delay removed and added
+    again, by the same name and URI, to the vocal."""
+    agent, world, rig = save_agent(root)
+    answers = calls(
+        agent,
+        ("POST", "/live/remove", {"json": {"processor": "delay"}}),
+        ("POST", "/live/add", {"json": {"track": "vocal", "uri": MDA_DELAY, "name": "delay"}}),
+        ("POST", "/rig/save", {}),
+    )
+    assert [status for status, _ in answers] == [200] * 3, answers
+    board, vocal = (c["chain"] for c in yaml.safe_load(read(root))["channels"])
+    assert [e["name"] for e in board] == ["overdrive", "octave"]
+    assert [e["name"] for e in vocal] == ["vocal_delay", "delay"]
+    assert vocal[1] == {"name": "delay", "uri": MDA_DELAY}, "at its defaults: its name and URI"

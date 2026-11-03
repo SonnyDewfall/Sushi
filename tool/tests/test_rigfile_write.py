@@ -867,3 +867,10 @@ def test_a_whole_number_float_a_save_changes_stays_a_float():
     params = folded["channels"][0]["chain"][0]["parameters"]
     assert params == {"Mix": 1.0, "Steps": 4, "On": 1.0}
     assert [type(params[k]) for k in ("Mix", "Steps", "On")] == [float, int, float]
+
+
+def test_the_comment_above_the_first_channel_stays_when_that_channel_goes(tmp_path):
+    """Review of #32: only a chain's first plugin takes the comment above it."""
+    after = written(tmp_path, TEXT, lambda rig: rig["channels"].pop(0))
+    assert "channels:\n  # The guitar, played from the front input.\n" in after
+    assert [c["name"] for c in yaml.safe_load(after)["channels"]] == ["vocal"]
