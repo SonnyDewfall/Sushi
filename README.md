@@ -301,7 +301,8 @@ then.
 │   ├── electric_board.json       current rig (what `sushi-rig up` launches)
 │   ├── *.json                    the other tones, one config each
 │   ├── src/                      hand-authored v1 sources (electric_board,
-│   │                             electric_stereo, guitar_vocal)
+│   │                             electric_stereo, guitar_vocal; the built
+│   │                             electric_stereo.json is in retired/)
 │   ├── rigs/                     every tone as a v2 rig: channels and a master
 │   ├── sound/                    nulltest references: what each rig (`<name>.yaml`) and v1 config (`<name>.v1-mono.yaml`) sounds like
 │   ├── archive/                  auto-written version snapshots,
@@ -311,11 +312,13 @@ then.
 ├── Patchbay/                   qpwgraph sessions
 │   ├── rig.qpwgraph              routing loaded at startup; generated from
 │   │                             config/src/guitar_vocal.yaml, held by a test
-│   ├── Default.qpwgraph
-│   └── Test_1.qpwgraph
+│   ├── Default.qpwgraph          hand-made in qpwgraph on the rig, kept as a
+│   │                             sample; nothing in the tool reads it
+│   └── Test_1.qpwgraph           the same: a hand-made session, not read
 ├── machines/                   the only files that name physical ports,
 │   ├── example.yaml              one per machine, as <hostname>.yaml
 │   └── sonny-dewfall-XPS-9320.yaml
+├── docs/ui/                    screenshots the README shows (rack.png, stage.png)
 ├── amp/models/                 the neural amp's .nam captures
 ├── ci/                         Dockerfile for the container the full suite runs in
 ├── systemd/                    the agent's user unit; `sushi-rig agent install-service` installs it
@@ -325,7 +328,7 @@ then.
 │
 ├── tool/                       ── TOOL: generates the configs above
 │   ├── pyproject.toml
-│   ├── src/sushi_rig/            44 modules and __init__, one job each:
+│   ├── src/sushi_rig/            45 modules and __init__, one job each:
 │   │                             spec, rigfile, convert, emit, dump, probe, probes,
 │   │                             profile, plugins, library, live, panel, listen,
 │   │                             save, state, procs, rig, supervisor, qpwgraph,
@@ -333,13 +336,15 @@ then.
 │   │                             verify, render, nulltest, signals, analysis,
 │   │                             selftest, take, transport, recorder,
 │   │                             recorder_process, capture, midi_listener, agent,
-│   │                             agent_client, service, yamlmerge, paths, _numpy, cli
+│   │                             agent_client, service, yamlmerge, paths, _numpy, stereo, cli
 │   ├── tests/                    fast suite; fixtures/ holds captured artefacts
 │   ├── examples/
 │   │   ├── rig.example.yaml       annotated rig spec (real plugins)
 │   │   ├── dump.example.json      real --dump-plugins output, test fixture
 │   │   └── profiles/gxts9.yaml    a component profile
-│   └── spikes/virtual_ui/        the headless-plugin-GUI experiment (#28), with findings
+│   └── spikes/                   experiments, kept with their findings: virtual_ui/
+│                                 (headless plugin GUI, #28) and live_rig/ (the
+│                                 capture engine and live paths on the rig)
 │
 ├── IMPLEMENTATION_BRIEF.md     the original brief, kept as history (see below)
 ├── MANIFEST.md                 what is being worked on and what is next
@@ -475,8 +480,7 @@ child that exits during a start that fails is part of that failure's answer,
 not a crash, since there is no rig to restart.
 
 **No lifecycle step holds the agent for ever.** `up`, `down` and `restart` are
-each given two minutes (`LIFECYCLE_TIMEOUT`, as when the agent ran them as the
-CLI): past it the answer is `504`, saying what was still running (compiling the
+each given two minutes (`supervisor.LIFECYCLE_TIMEOUT`): past it the answer is `504`, saying what was still running (compiling the
 rig, clearing a stale qpwgraph, waiting for Sushi...), and what the step had
 started is stopped. The stuck part runs in a thread that cannot be interrupted;
 it is left to finish and nothing it does afterwards is kept. `agent.supervisor.doing`
@@ -529,7 +533,7 @@ against real Sushi and PipeWire**: see MANIFEST.md for the check.
 
 Needs `pip install -e tool[agent]` (aiohttp), and `tool[agent,midi]`
 (alsa-midi, and libasound) for the pedals; starting a rig through the agent
-needs Python 3.11 or later. One lifecycle command at a
+needs Python 3.11 or later, which is also the package's floor (`requires-python`). One lifecycle command at a
 time: a second request while one runs gets `409 busy`, because `up` and `down`
 racing is a second rig on top of a running one. `up` must be told which
 config (`config_name` is required, so a stray empty POST starts nothing). Every argument is checked

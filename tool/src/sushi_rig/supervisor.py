@@ -558,15 +558,10 @@ class Supervisor:
         `rig.prepare_launch`, which refuses a second rig (the agent's own
         included, through the state file it wrote) before anything starts."""
         warnings: list[str] = []
-        if sys.version_info < (3, 11):
-            # `process_group` arrived in 3.11; without it a child cannot be put
-            # into the holder's group except by running Python between fork and
-            # exec, which is the deadlock this module exists to avoid.
-            return Outcome(False, 1, "", (
-                "the agent can start a rig only on Python 3.11 or later (it needs "
-                f"subprocess's process_group); this is {sys.version.split()[0]}. "
-                "'sushi-rig up --direct' starts one without the agent."
-            ))
+        # Python 3.11 is the package's floor because of `process_group`: without
+        # it a child cannot be put into the holder's group except by running
+        # Python between fork and exec, which is the deadlock this module exists
+        # to avoid.
         self.doing = "preparing the rig (rig.prepare_launch: compiling it, reading the graph, the amp, the plan)"
         try:
             launch = await asyncio.to_thread(
