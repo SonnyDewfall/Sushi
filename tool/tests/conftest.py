@@ -31,12 +31,27 @@ def runtime(tmp_path, monkeypatch):
 
 
 def pytest_terminal_summary(terminalreporter):
-    """Print the stereo renders' table (test_stereo.py), when any ran: the
-    CI container's log is the only place those numbers can be read."""
+    """Print the stereo renders' table (test_stereo.py) and the repeated
+    renders' (test_render_spread.py), when any ran: the CI container's log is
+    the only place those numbers can be read. Then every render the null tests
+    retried after a NaN, with a count, on every run that had one."""
+    import spread_table
     import stereo_table
 
-    found = terminalreporter.config.stash.get(stereo_table.ROWS, [])
+    stash = terminalreporter.config.stash
+    found = stash.get(stereo_table.ROWS, [])
     if found:
         terminalreporter.section(stereo_table.TITLE)
         for line in stereo_table.lines(found):
             terminalreporter.write_line(line)
+    spread = stash.get(spread_table.ROWS, [])
+    if spread:
+        terminalreporter.section(spread_table.TITLE)
+        for line in spread_table.lines(spread):
+            terminalreporter.write_line(line)
+    retried = stash.get(spread_table.RETRIES, [])
+    if retried:
+        terminalreporter.section(spread_table.RETRIES_TITLE)
+        for note in retried:
+            terminalreporter.write_line(note)
+        terminalreporter.write_line(f"{len(retried)} render(s) retried after a NaN, each once")

@@ -10,6 +10,7 @@ checked is the argv and environment this module really builds.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -441,6 +442,136 @@ def test_a_render_that_is_not_finite_is_refused_before_it_is_fingerprinted(
             Path("config/x.json"), tmp_path, tmp_path / "work",
             stimulus=Stimulus(duration_s=0.2),
         )
+
+
+# --- gx_detune_'s NaN, retried once and said -------------------------------
+#
+# The plugin reads past two of its arrays and, on some loads, renders NaN from
+# one of its hops on (render.DETUNE_URI's comment, tool/spikes/gx_detune_nan/).
+# `measure` renders such a NaN once more and says so; anything else fails.
+
+ON_THE_GRID = render.DETUNE_HOP_PHASE + 10 * render.DETUNE_HOP_FRAMES
+
+
+def _detune_config(tmp_path, *, bypassed=False) -> Path:
+    config = tmp_path / "config" / "electric-octave-up.json"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text(json.dumps({
+        "tracks": [{"name": "board", "plugins": [
+            {"name": "comp", "type": "lv2", "uri": "urn:comp"},
+            {"name": "octave_up", "type": "lv2", "uri": render.DETUNE_URI},
+        ]}],
+        "initial_state": [{"processor": "octave_up", "bypassed": bypassed}],
+    }))
+    return config
+
+
+def _sushi_that_breaks(monkeypatch, *, times: int, frame: int = ON_THE_GRID) -> list:
+    """A Sushi whose first `times` renders are NaN from `frame` on."""
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        fed = signals.read_wav(Path(argv[argv.index("-i") + 1]))
+        samples = fed.samples.copy()
+        if len(calls) <= times:
+            samples[frame:] = np.nan
+        signals.write_wav(Path(argv[argv.index("-O") + 1]), samples, fed.sample_rate, subtype="float32")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(render.subprocess, "run", run)
+    return calls
+
+
+def test_gx_detunes_nan_is_rendered_once_more_and_said(tmp_path, monkeypatch):
+    config = _detune_config(tmp_path)
+    calls = _sushi_that_breaks(monkeypatch, times=1)
+    retried = []
+    fp = render.measure(config, tmp_path, tmp_path / "work", stimulus=Stimulus(duration_s=0.2),
+                        retried=retried)
+    assert len(calls) == 2
+    assert fp.frames == 9600
+    (note,) = retried
+    assert note.startswith("electric-octave-up.json: retried after a NaN (non_finite: ")
+    assert "gx_detune_'s known NaN (in octave_up)" in note and render.DETUNE_BUG in note
+
+
+def test_gx_detunes_nan_twice_fails_and_says_what_it_looked_like(tmp_path, monkeypatch):
+    config = _detune_config(tmp_path)
+    calls = _sushi_that_breaks(monkeypatch, times=2)
+    retried = []
+    with pytest.raises(RenderError, match="unusable audio twice") as caught:
+        render.measure(config, tmp_path, tmp_path / "work", stimulus=Stimulus(duration_s=0.2),
+                       retried=retried)
+    assert len(calls) == 2 and retried == []
+    assert "gx_detune_'s known NaN" in str(caught.value)
+    assert "look at the chain" in str(caught.value)
+
+
+def test_a_nan_off_gx_detunes_hop_grid_is_not_retried(tmp_path, monkeypatch):
+    """The bug starts its NaN on one of the plugin's hops; one that starts
+    anywhere else is something else, and fails at once."""
+    config = _detune_config(tmp_path)
+    calls = _sushi_that_breaks(monkeypatch, times=1, frame=ON_THE_GRID + 64)
+    with pytest.raises(RenderError, match="unusable audio: non_finite"):
+        render.measure(config, tmp_path, tmp_path / "work", stimulus=Stimulus(duration_s=0.2),
+                       retried=[])
+    assert len(calls) == 1
+
+
+@pytest.mark.parametrize("bypassed", (True, None))
+def test_a_nan_from_a_chain_without_gx_detune_is_not_retried(tmp_path, monkeypatch, bypassed):
+    """Bypassed, the plugin does not run; absent, it cannot be the cause."""
+    config = _detune_config(tmp_path, bypassed=True)
+    if bypassed is None:
+        config.write_text(json.dumps({"tracks": [{"name": "board", "plugins": []}]}))
+    calls = _sushi_that_breaks(monkeypatch, times=1)
+    with pytest.raises(RenderError, match="unusable audio: non_finite"):
+        render.measure(config, tmp_path, tmp_path / "work", stimulus=Stimulus(duration_s=0.2),
+                       retried=[])
+    assert len(calls) == 1
+
+
+def test_a_retry_with_nowhere_to_go_is_a_warning(tmp_path, monkeypatch):
+    """Never silent: a caller that passed no list still hears of it."""
+    config = _detune_config(tmp_path)
+    _sushi_that_breaks(monkeypatch, times=1)
+    with pytest.warns(UserWarning, match="retried after a NaN"):
+        render.measure(config, tmp_path, tmp_path / "work", stimulus=Stimulus(duration_s=0.2))
+
+
+def test_nulltest_says_retried_beside_the_channel_and_at_the_end(tmp_path, monkeypatch, capsys):
+    from sushi_rig import cli, paths
+
+    monkeypatch.setattr(paths, "checkout_root", lambda: tmp_path)
+    config = _detune_config(tmp_path)
+    _sushi_that_breaks(monkeypatch, times=0)
+    assert cli.main(["nulltest", str(config), "--calibrate"]) == 0
+    capsys.readouterr()
+
+    _sushi_that_breaks(monkeypatch, times=1)
+    assert cli.main(["nulltest", str(config)]) == 0
+    out, err = capsys.readouterr()
+    assert "electric-octave-up.json: sounds the same\n   electric-octave-up.json: retried after a NaN" in out
+    assert "1 render(s) retried after a NaN, each once:" in err
+
+
+def test_a_calibration_that_retried_says_so(tmp_path, monkeypatch, capsys):
+    from sushi_rig import cli, paths
+
+    monkeypatch.setattr(paths, "checkout_root", lambda: tmp_path)
+    config = _detune_config(tmp_path)
+    _sushi_that_breaks(monkeypatch, times=1)
+    assert cli.main(["nulltest", str(config), "--calibrate"]) == 0
+    out, err = capsys.readouterr()
+    assert "calibrated" in out and "retried after a NaN" in out
+    assert "1 render(s) retried after a NaN" in err
+
+
+def test_the_hop_grid_is_where_every_recorded_nan_started():
+    """The frames CI and the bench host recorded (render.DETUNE_HOP_PHASE)."""
+    for frame in (15296, 57536, 202688, 2240, 2496, 3520, 20416, 39104, 45248, 112832):
+        assert frame % render.DETUNE_HOP_FRAMES == render.DETUNE_HOP_PHASE
 
 
 # --- what Sushi's offline frontend can host --------------------------------

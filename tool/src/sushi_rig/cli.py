@@ -464,7 +464,7 @@ def _nulltest(args: argparse.Namespace) -> int:
     from .nulltest import compare, from_dict, keep_wider, to_dict
     from .paths import checkout_root
     from .render import (
-        SOUND_DIR, RenderError, calibrate, channels_of, measure, offline_problem,
+        RETRIED, SOUND_DIR, RenderError, calibrate, channels_of, measure, offline_problem,
         reference_path, rig_channels, rigs_to_check, v1_reference_path,
     )
     from .rigfile import RigFileError
@@ -482,6 +482,9 @@ def _nulltest(args: argparse.Namespace) -> int:
     failed = 0
     checked = 0
     unrenderable: list[str] = []
+    # Every render retried after gx_detune_'s known NaN (`render.measure`),
+    # printed beside its channel and again at the end, every time.
+    retried: list[str] = []
     expected: set[str] = set()
     # (stem, is_rig) of each target that could not be expanded into channels:
     # its own references are kept out of the orphan check, and only its own.
@@ -560,8 +563,10 @@ def _nulltest(args: argparse.Namespace) -> int:
                         source = work / f"{channel.name}.json"
                         source.write_text(json.dumps(channel.config, indent=2) + "\n")
 
+                    already = len(retried)
                     if args.calibrate:
-                        fp, measured = calibrate(source, root, work, sushi_bin=sushi)
+                        fp, measured = calibrate(source, root, work, sushi_bin=sushi,
+                                                 retried=retried)
                         committed = None
                         if ref_file.exists():
                             try:
@@ -589,6 +594,8 @@ def _nulltest(args: argparse.Namespace) -> int:
                             f"delay {tolerance.delay_samples} samples "
                             f"-> {ref_file.relative_to(root)}"
                         )
+                        for note in retried[already:]:
+                            print(f"   {note}")
                         continue
 
                     if not ref_file.exists():
@@ -611,7 +618,9 @@ def _nulltest(args: argparse.Namespace) -> int:
 
                     reference, tolerance = from_dict(yaml.safe_load(ref_file.read_text()))
                     differences = compare(
-                        reference, measure(source, root, work, sushi_bin=sushi), tolerance
+                        reference,
+                        measure(source, root, work, sushi_bin=sushi, retried=retried),
+                        tolerance,
                     )
                 except (RenderError, ValueError, OSError, KeyError, TypeError,
                         AttributeError, yaml.YAMLError) as exc:
@@ -627,6 +636,8 @@ def _nulltest(args: argparse.Namespace) -> int:
                         print(f"   {difference}")
                 else:
                     print(f"{channel.label}: sounds the same")
+                for note in retried[already:]:
+                    print(f"   {note}")
 
     if args.check_all:
         # A reference nothing produces any more — a config renamed, a track
@@ -658,6 +669,13 @@ def _nulltest(args: argparse.Namespace) -> int:
             f"sound is not protected: {', '.join(unrenderable)}",
             file=sys.stderr,
         )
+    if retried:
+        # Every run, like the unrenderable list: a retry that passes is still a
+        # NaN the rig's plugin produced, and reading as a clean pass would hide
+        # how often that happens.
+        print(f"\n{len(retried)} render(s) {RETRIED}, each once:", file=sys.stderr)
+        for note in retried:
+            print(f"  {note}", file=sys.stderr)
     if failed:
         print(f"\n{failed} of {checked} check(s) could not be confirmed", file=sys.stderr)
     return 1 if failed else 0

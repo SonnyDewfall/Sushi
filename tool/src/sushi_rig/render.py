@@ -480,6 +480,85 @@ def rigs_to_check(root: Path) -> list[Path]:
     return sorted((root / "config" / "rigs").glob("*.yaml"))
 
 
+# --- the one NaN this tolerates once: gx_detune_'s ---------------------------
+#
+# guitarix 0.46.0's gx_detune_ (src/LV2/gx_detune.lv2/detune.cc, smbPitchShift)
+# allocates `fpb` and `expect` with fftFrameSize/2 floats and reads index
+# fftFrameSize/2 of both, the Nyquist bin, in every hop: four bytes past the end
+# of each, which hold whatever the heap left there. Mostly that is 0; sometimes
+# it is half of a heap pointer or of malloc's free-list key, both different in
+# every process. It is added into the Nyquist bin's running phase, and when it
+# is NaN, Inf or large enough to overflow that float, the bin's phase becomes
+# NaN, the inverse FFT spreads it over the frame, and the overlap-add keeps it:
+# the plugin's output is NaN from that hop to the end of the render. It only
+# reaches the output when the shift writes the Nyquist bin, which an octave up
+# does and an octave down or no shift does not. Found 2026-11-03: valgrind
+# reports both reads ("0 bytes after a block of size 1,024"), and a host that
+# runs the plugin alone rendered NaN about once in a hundred loads, and never in
+# 360 once those two arrays were padded (tool/spikes/gx_detune_nan/).
+#
+# A plugin bug the rig cannot fix without changing its sound, so a render of a
+# config that runs it may be retried once -- only when the NaN starts where this
+# bug starts it, and saying so every time (`measure`).
+DETUNE_URI = "http://guitarix.sourceforge.net/plugins/gx_detune_#_detune_"
+DETUNE_BUG = "tool/spikes/gx_detune_nan/"
+
+# Where that NaN starts. At 48 kHz with 64-frame chunks and its default
+# quality, the pitch shifter works at a quarter of the rate in 512-sample FFT
+# frames with a hop of 64 samples: 256 frames here. Its first frame completes
+# in its 32nd chunk, frames 1984 to 2047, so every hop's output starts on a
+# frame that is 192 past a multiple of 256. Every NaN render recorded, in CI
+# (frames 15296, 57536, 202688) and on the bench (2240, 2496, 3520, 20416,
+# 39104, 45248, 112832), started there.
+DETUNE_HOP_FRAMES = 256
+DETUNE_HOP_PHASE = 192
+
+RETRIED = "retried after a NaN"
+
+
+def runs_detune(config: Any) -> list[str]:
+    """The processors in `config` that are gx_detune_ and not bypassed."""
+    if not isinstance(config, dict):
+        return []
+    bypassed = {
+        e.get("processor") for e in (config.get("initial_state") or [])
+        if isinstance(e, dict) and e.get("bypassed") is True
+    }
+    return [
+        p.get("name")
+        for t in (config.get("tracks") or []) if isinstance(t, dict)
+        for p in (t.get("plugins") or [])
+        if isinstance(p, dict) and p.get("uri") == DETUNE_URI and p.get("name") not in bypassed
+    ]
+
+
+def first_non_finite(rendered) -> tuple[int, int] | None:
+    """The frame and channel of the first NaN or Inf sample, or None."""
+    from ._numpy import require_numpy
+
+    np = require_numpy()
+    arr = np.asarray(rendered)
+    arr = arr.reshape(-1, 1) if arr.ndim == 1 else arr
+    bad = np.argwhere(~np.isfinite(arr))
+    return None if len(bad) == 0 else (int(bad[0][0]), int(bad[0][1]))
+
+
+def detune_nan(config: Any, rendered) -> str | None:
+    """Why this render's NaN is gx_detune_'s known one, or None if it is not:
+    the config runs the plugin and the NaN starts on its hop grid."""
+    first = first_non_finite(rendered)
+    names = runs_detune(config)
+    if first is None or not names:
+        return None
+    if first[0] % DETUNE_HOP_FRAMES != DETUNE_HOP_PHASE:
+        return None
+    return (
+        f"gx_detune_'s known NaN (in {', '.join(names)}): its pitch shifter reads "
+        f"past the end of two of its arrays and, now and then, renders NaN from a "
+        f"hop on -- a plugin bug, guitarix 0.46.0, {DETUNE_BUG}"
+    )
+
+
 def measure(
     config: Path,
     root: Path,
@@ -487,6 +566,7 @@ def measure(
     *,
     stimulus: Stimulus | None = None,
     sushi_bin: str = "./sushi",
+    retried: list[str] | None = None,
 ) -> Any:
     """Render `config` and fingerprint the result.
 
@@ -496,7 +576,18 @@ def measure(
     the signals" -- a message about the measurement, naming nothing about the
     chain that produced it. `--calibrate` went the same way, so an unusable
     render could have been written into a reference.
+
+    One exception, and never a silent one: a NaN that is gx_detune_'s known bug
+    (`detune_nan`) is rendered once more, in a fresh Sushi, whose heap leaves
+    something else past those arrays. A retry that is finite is fingerprinted,
+    and a line saying `retried after a NaN` goes into `retried` -- or, when the
+    caller passed none, out as a warning, so it can never go unreported. A
+    retry that is not finite fails as any NaN does, saying so. Any other NaN
+    fails at once.
     """
+    import json
+    import warnings
+
     from .nulltest import fingerprint, render_findings
 
     out = render_offline(
@@ -504,10 +595,30 @@ def measure(
     )
     broken = render_findings(out["rendered"], out["sample_rate"])
     if broken:
-        raise RenderError(
-            f"{config.name} rendered unusable audio: "
-            + "; ".join(str(finding) for finding in broken)
+        what = "; ".join(str(finding) for finding in broken)
+        try:
+            parsed = json.loads(config.read_text())
+        except (OSError, ValueError):
+            parsed = None
+        known = detune_nan(parsed, out["rendered"])
+        if known is None:
+            raise RenderError(f"{config.name} rendered unusable audio: {what}")
+        out = render_offline(
+            config, root, work / "retry", stimulus=stimulus, sushi_bin=sushi_bin
         )
+        again = render_findings(out["rendered"], out["sample_rate"])
+        if again:
+            raise RenderError(
+                f"{config.name} rendered unusable audio twice: {what}; then "
+                + "; ".join(str(finding) for finding in again)
+                + f". The first looked like {known}; but twice running is not its "
+                "usual odds, so look at the chain before blaming the plugin"
+            )
+        note = f"{config.name}: {RETRIED} ({what}), {known}; the retry was finite"
+        if retried is None:
+            warnings.warn(note, stacklevel=2)
+        else:
+            retried.append(note)
     return fingerprint(
         out["rendered"],
         out["sample_rate"],
@@ -524,6 +635,7 @@ def calibrate(
     *,
     stimulus: Stimulus | None = None,
     sushi_bin: str = "./sushi",
+    retried: list[str] | None = None,
 ) -> tuple[Any, Any]:
     """Render `config` twice and measure how far apart two identical runs are.
 
@@ -538,6 +650,8 @@ def calibrate(
     """
     from .nulltest import floor_between
 
-    first = measure(config, root, work / "run-1", stimulus=stimulus, sushi_bin=sushi_bin)
-    second = measure(config, root, work / "run-2", stimulus=stimulus, sushi_bin=sushi_bin)
+    first = measure(config, root, work / "run-1", stimulus=stimulus, sushi_bin=sushi_bin,
+                    retried=retried)
+    second = measure(config, root, work / "run-2", stimulus=stimulus, sushi_bin=sushi_bin,
+                     retried=retried)
     return second, floor_between(first, second)
