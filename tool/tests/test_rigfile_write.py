@@ -13,7 +13,8 @@ while writing yamlmerge.py) and what is a choice:
   before them, so a naive delete drops the *next* entry's comments;
 - observed: ruamel loses a comment line directly above a flow-style `- {...}`
   entry that has its own trailing comment, even with no change at all;
-- chosen: the comment above a list's first entry stays when that entry goes.
+- chosen: the comment directly above a chain's first entry goes with it, as
+  it moves with it in a reorder (#32); a heading a blank line sets apart stays.
 """
 
 from __future__ import annotations
@@ -167,10 +168,18 @@ def test_the_first_plugin_can_go_and_a_new_one_can_come_last(rig_path):
     after = rig_path.read_text()
     assert [p["name"] for p in yaml.safe_load(after)["channels"][0]["chain"]] == \
         ["drive", "eq", "verb", "limiter"]
-    # comp's comments on its parameters went with comp; everyone else's stayed. So did
-    # the one above the chain's first entry: it is as likely to be about the chain.
-    gone = {"# dB; do not go lower", "# The ratio is deliberately gentle."}
+    # comp's comments went with comp: the ones on its parameters, and the one directly
+    # above it, as a reorder takes it (#32); everyone else's stayed.
+    gone = {"# dB; do not go lower", "# The ratio is deliberately gentle.", "# Keep the squash light."}
     assert [c for c in comments(TEXT) if c not in gone] == comments(after)
+    assert "    chain:\n      # Dirt, off for the clean tone.\n      - name: drive\n" in after
+
+
+def test_a_first_plugin_removed_leaves_a_heading_a_blank_line_sets_apart(tmp_path):
+    text = TEXT.replace("      # Keep the squash light.\n", "      # The guitar's chain.\n\n      # Keep the squash light.\n")
+    after = written(tmp_path, text, lambda rig: rig["channels"][0]["chain"].pop(0))
+    assert "    chain:\n      # The guitar's chain.\n\n      # Dirt, off for the clean tone.\n      - name: drive\n" in after
+    assert "# Keep the squash light." not in after
 
 
 def test_a_key_added_to_a_plugin_and_one_removed_keep_the_comments(rig_path):

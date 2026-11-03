@@ -399,8 +399,12 @@ def test_1_a_list_whose_key_has_a_comment_is_written_back_as_it_was_when_nothing
     text = "chain:  # the chain\n  # about a\n  - name: a\n  - name: b\n"
     assert merged(text, yaml.safe_load(text)) == text
     assert merged(text, {"chain": [{"name": "a"}, {"name": "b"}, {"name": "c"}]}) == text + "  - name: c\n"
-    # Removing the first entry leaves what was above it as the list's, as it always has.
-    assert merged(text, {"chain": [{"name": "b"}]}) == "chain:  # the chain\n  # about a\n  - name: b\n"
+    # Removing the first entry takes the comment directly above it, as a reorder does
+    # (#32: the same save drops the same comments whether or not a plugin moved) ...
+    assert merged(text, {"chain": [{"name": "b"}]}) == "chain:  # the chain\n  - name: b\n"
+    # ... and leaves a heading a blank line sets apart.
+    headed = "chain:  # the chain\n  # heading\n\n  # about a\n  - name: a\n  - name: b\n"
+    assert merged(headed, {"chain": [{"name": "b"}]}) == "chain:  # the chain\n  # heading\n\n  - name: b\n"
 
 
 def test_2_a_comment_after_a_list_whose_last_entry_ends_in_an_empty_mapping_is_not_lost():

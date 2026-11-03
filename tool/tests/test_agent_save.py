@@ -481,24 +481,28 @@ def test_a_bad_body_is_400_and_touches_nothing(root, body):
     assert status == 400 and rig.calls == [] and read(root) == RIG_FILE
 
 
-def test_a_plugin_removed_live_is_refused_not_kept_in_the_file_silently(root):
+def test_a_plugin_removed_behind_the_agents_back_is_refused_not_kept_in_the_file_silently(root):
     agent, _, rig = save_agent(root)
     rig.chains["board"].remove("delay")
     status, answer = call(agent, "POST", "/rig/save")
     assert (status, answer["code"]) == (409, "not_saved")
-    assert "the running rig lacks delay (on board), which electric_board has" in answer["reason"]
+    assert ("the running rig lacks delay (on board), which electric_board has, and the agent's log does not "
+            "say it was removed") in answer["reason"]
     assert read(root) == RIG_FILE
 
 
-def test_a_plugin_added_live_is_refused_with_why(root):
+def test_a_plugin_the_agent_did_not_add_is_refused_as_a_capture_of_another_rig(root):
+    """Put on the rig behind the agent's back (the panel, a script): nothing
+    in the log explains it, so the capture is not this rig's as the agent
+    knows it."""
     agent, _, rig = save_agent(root)
     rig.chains["board"].insert(3, "chorus")
     rig.info["chorus"] = {}
     rig.bypassed["chorus"] = False
     status, answer = call(agent, "POST", "/rig/save")
     assert (status, answer["code"]) == (409, "not_saved")
-    assert "names chorus, which electric_board does not have" in answer["reason"]
-    assert "or a plugin added live" in answer["reason"] and "never which plugins a chain holds" in answer["reason"]
+    assert ("names chorus, which electric_board does not have: that is a capture of a different rig: "
+            "the agent's log does not say it was added live") in answer["reason"]
     assert read(root) == RIG_FILE
 
 

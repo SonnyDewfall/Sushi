@@ -68,6 +68,23 @@ CLASSES = {
 }
 
 
+# What each plugin's parameters are at when it is added: invented, one or two
+# per plugin, normalised. A processor of the rig starts away from them.
+DEFAULTS = {
+    "http://guitarix.sourceforge.net/plugins/gx_compressor#_compressor": {"RATIO": 0.5, "KNEE": 0.5},
+    GXTS9: {"Drive": 0.5, "Level": 0.5},
+    DELAY: {"Delay": 0.5, "Feedback": 0.32, "FX Mix": 0.37},
+    "http://drobilla.net/plugins/mda/Limiter": {"Thresh": 0.6},
+}
+VALUES = {
+    "comp": {"parameters": {"RATIO": 0.2, "KNEE": 0.5}, "bypassed": False},
+    "drive": {"parameters": {"Drive": 0.62, "Level": 0.4}, "bypassed": True},
+    "limiter": {"parameters": {"Thresh": 0.8}, "bypassed": False},
+    "guitar_send": {"parameters": {"gain": 0.8333}, "bypassed": False},
+    "master_return": {"parameters": {}, "bypassed": False},
+}
+
+
 def reading():
     return {"chains": copy.deepcopy(CHAINS), "ids": dict(IDS),
             "uids": {name: c["uid"] for name, c in CLASSES.items()}}
@@ -292,12 +309,15 @@ class EditingLive:
         self.misplace = False
         self.keep = False
         self.walk_without_chains = False  # a read-back with no "chains" key
+        self.values_of = copy.deepcopy(VALUES)
+        self.added_bypassed = False  # what a processor added live starts as
 
     def _enter(self, name, connection, *args):
         assert connection in self.opened and connection not in self.closed, \
             f"{name} was not given the request's open connection"
         self.calls.append((name, *args))
-        if self.fail is not None and self.fail_on in (None, name):
+        failing = self.fail_on if isinstance(self.fail_on, (set, frozenset)) else {self.fail_on}
+        if self.fail is not None and (self.fail_on is None or name in failing):
             raise self.fail
 
     def connect(self):
@@ -357,15 +377,31 @@ class EditingLive:
                 chain.insert(chain.index(before), name)
             self.ids[name] = max(self.ids.values()) + 1
             self.classes[name] = plugin
+            self.values_of[name] = {"parameters": dict(DEFAULTS.get(plugin["uri"], {})),
+                                    "bypassed": self.added_bypassed}
 
     def remove(self, connection, removal):
         self._enter("remove", connection, removal.processor, removal.processor_id, removal.track_id)
         if not self.keep:
             for name in ([removal.copy] if removal.copy else []) + [removal.processor]:
                 self.chains[removal.track].remove(name)
+                self.values_of.pop(name, None)
+
+    def values(self, connection, processor):
+        """As `live.read_live_values`: one processor's parameters and bypass."""
+        self._enter("values", connection, processor)
+        return copy.deepcopy(self.values_of[processor])
+
+    def set_parameter(self, connection, processor, parameter, value):
+        self._enter("set_parameter", connection, processor, parameter, value)
+        self.values_of[processor]["parameters"][parameter] = value
+
+    def set_bypass(self, connection, processor, bypassed):
+        self._enter("set_bypass", connection, processor, bypassed)
+        self.values_of[processor]["bypassed"] = bypassed
 
     def writes(self):
-        return [c for c in self.calls if c[0] in ("add", "remove", "move")]
+        return [c for c in self.calls if c[0] in ("add", "remove", "move", "set_parameter", "set_bypass")]
 
 
 def edit_agent(**kwargs):
@@ -451,10 +487,15 @@ def test_an_add_goes_in_before_the_send_and_is_logged_with_the_chain_before():
     assert body["chain"] == ["comp", "drive", "ts", "guitar_send"]
     assert body["message"] == "added ts to guitar"
     assert (body["op"], body["previous"]) == ("add", ["comp", "drive", "guitar_send"])
-    assert body["args"] == {"track": "guitar", "uri": DELAY, "name": "ts", "after": None}
+    assert body["args"] == {
+        "track": "guitar", "uri": DELAY, "name": "ts", "after": None, "copy": None,
+        "chain": ["comp", "drive", "ts", "guitar_send"],
+        "defaults": DEFAULTS[DELAY],
+    }, "the chain it left, for undo, and the values it started at, for a save"
     assert [c[:1] + c[-1:] for c in fake.calls if c[0] == "walk"] == [("walk", True), ("walk", False)], \
         "read with the uids (to know the send), change, read back"
-    assert [c[0] for c in fake.calls] == ["walk", "add", "walk"]
+    assert [c[0] for c in fake.calls] == ["walk", "add", "walk", "values"], "its defaults read once it is confirmed"
+    assert "note" not in body
     assert [(e["op"], e["previous"]) for e in log(agent)] == [("add", ["comp", "drive", "guitar_send"])]
     assert set(log(agent)[0]) == {"at", "op", "args", "previous"}
 
@@ -532,9 +573,11 @@ def test_a_remove_is_logged_with_the_chain_before_and_the_plugin_to_put_back():
     assert body["op"] == "remove" and body["args"] == {"processor": "drive"}
     assert body["previous"] == {
         "track": "guitar", "chain": ["comp", "drive", "guitar_send"],
-        "uri": GXTS9, "uid": None, "type": "lv2",
-    }
-    assert [c[0] for c in fake.calls] == ["removal", "remove", "walk"]
+        "uri": GXTS9, "uid": None, "type": "lv2", "copy": None,
+        "parameters": {"Drive": 0.62, "Level": 0.4}, "bypassed": True,
+    }, "where it was, what it was and how it was set: what an undo puts back"
+    assert [c[0] for c in fake.calls] == ["removal", "values", "remove", "walk"], \
+        "its values read just before it goes"
     assert [e["op"] for e in log(agent)] == ["remove"]
 
 
@@ -835,3 +878,321 @@ def test_a_read_back_with_no_chains_is_a_bad_gateway_not_a_crash():
     assert log(agent) == []
     status, body = call(agent, "POST", "/live/add", json={"track": "guitar", "uri": GXTS9})
     assert status == 502 and "read-back had no chains" in body["reason"]
+
+
+# --------------------------------------------------------------------------- #
+# Undo of an add and of a remove (#32): the decisions
+# --------------------------------------------------------------------------- #
+
+def _add_entry(name="ts", track="guitar", after_chain=("comp", "drive", "ts", "guitar_send")):
+    return {"op": "add", "args": {"track": track, "uri": DELAY, "name": name, "after": None, "copy": None,
+                                  "chain": list(after_chain), "defaults": {}},
+            "previous": [n for n in after_chain if n != name]}
+
+
+def _remove_entry(processor, chain, copy=None, uri=GXTS9, track="guitar", **plugin):
+    return {"op": "remove", "args": {"processor": processor},
+            "previous": {"track": track, "chain": list(chain), "uri": uri, "uid": None, "type": "lv2",
+                         "copy": copy, "parameters": {"Drive": 0.7}, "bypassed": False, **plugin}}
+
+
+def test_an_adds_undo_is_a_remove_of_the_name_it_used_and_a_removes_an_add_of_what_it_recorded():
+    from sushi_rig.agent import undo_inverse
+
+    assert undo_inverse(_add_entry()) == ("remove", {"processor": "ts"})
+    op, args = undo_inverse(_remove_entry("drive", ["comp", "drive", "guitar_send"]))
+    assert (op, args) == ("add", {"track": "guitar", "uri": GXTS9, "name": "drive",
+                                  "parameters": {"Drive": 0.7}, "bypassed": False})
+    from sushi_rig.agent import StaleUndo
+
+    old = _remove_entry("drive", ["comp", "drive", "guitar_send"])
+    del old["previous"]["parameters"]
+    with pytest.raises(StaleUndo, match="did not record its values"):
+        undo_inverse(old)
+
+
+def test_an_add_is_undone_only_where_it_left_the_plugin():
+    from sushi_rig.agent import StaleUndo, check_undo_add
+
+    entry = _add_entry()
+    check_undo_add(entry, {"guitar": ["comp", "drive", "ts", "guitar_send"]})
+    with pytest.raises(StaleUndo, match="no longer where the add left it"):
+        check_undo_add(entry, {"guitar": ["comp", "ts", "drive", "guitar_send"]})
+    with pytest.raises(StaleUndo, match="no longer where the add left it"):
+        check_undo_add(entry, {"guitar": ["comp", "drive", "guitar_send"], "master": ["ts"]})
+
+
+def test_a_removed_plugin_goes_back_after_the_unit_it_followed():
+    from sushi_rig.agent import place_undo_remove
+
+    # After the drive's copy, since the drive and its copy are one unit; in
+    # front of whatever follows the drive now, not of what followed then.
+    chains = {"guitar": ["comp", "drive", "drive_to_stereo", "eq", "guitar_send"], "master": ["master_return"]}
+    ids = {name: i for i, name in enumerate(["guitar", "master", *chains["guitar"], *chains["master"]], 1)}
+    now = {"chains": chains, "ids": ids, "uids": {"drive_to_stereo": COPY_UID, "guitar_send": "sushi.testing.send"}}
+    entry = _remove_entry("verb", ["comp", "drive", "drive_to_stereo", "verb", "verb_to_stereo", "guitar_send"],
+                          copy="verb_to_stereo", uri=DELAY)
+    addition = place_undo_remove(entry, now)
+    assert (addition.after, addition.copy) == ("drive", "verb_to_stereo")
+    assert addition.expected == ["comp", "drive", "drive_to_stereo", "verb", "verb_to_stereo", "eq", "guitar_send"]
+    assert (addition.before_id, addition.add_to_back) == (ids["eq"], False)
+    # First on the track: first again, in front of what is first now.
+    first = place_undo_remove(_remove_entry("gate", ["gate", "comp", "guitar_send"], uri=DELAY), now)
+    assert first.expected[:2] == ["gate", "comp"] and first.before_id == ids["comp"] and first.after is None
+
+
+@pytest.mark.parametrize("change, why", [
+    (lambda c: c["guitar"].remove("comp"), "went after 'comp', which is no longer on 'guitar'"),
+    (lambda c: c.pop("guitar"), "no track 'guitar'"),
+    (lambda c: c["master"].append("drive"), "'drive' is already on the rig"),
+    (lambda c: c["master"].append("drive_to_stereo"), "'drive_to_stereo', the name of 'drive''s copy"),
+])
+def test_a_removed_plugin_whose_place_is_gone_is_stale_and_not_put_elsewhere(change, why):
+    from sushi_rig.agent import StaleUndo, place_undo_remove
+
+    now = reading()
+    now["chains"]["guitar"].remove("drive")  # as the remove left it
+    change(now["chains"])
+    entry = _remove_entry("drive", ["comp", "drive", "drive_to_stereo", "guitar_send"], copy="drive_to_stereo")
+    with pytest.raises(StaleUndo, match=why.replace("(", r"\(")):
+        place_undo_remove(entry, now)
+
+
+def test_only_an_lv2_plugin_is_put_back():
+    """A stray copy to stereo, removed as a repair, is not recreated."""
+    from sushi_rig.agent import StaleUndo, place_undo_remove
+
+    stray = _remove_entry("drive_to_stereo", ["comp", "drive_to_stereo", "guitar_send"], uri=None,
+                          uid=COPY_UID, type="internal")
+    with pytest.raises(StaleUndo, match="not an LV2 plugin"):
+        place_undo_remove(stray, reading())
+
+
+# --------------------------------------------------------------------------- #
+# Undo of an add and of a remove, through the routes
+# --------------------------------------------------------------------------- #
+
+def undo(agent, **body):
+    return call(agent, "POST", "/live/undo", json=body or None)
+
+
+def test_an_add_is_undone_by_removing_it_through_the_removes_own_path():
+    agent, fake = edit_agent()
+    call(agent, "POST", "/live/add", json={"track": "guitar", "uri": DELAY, "name": "ts"})
+    fake.values_of["ts"]["parameters"]["Feedback"] = 0.6  # turned since, on the panel
+    fake.calls.clear()
+    status, body = undo(agent)
+    assert status == 200, body
+    assert fake.chains["guitar"] == CHAINS["guitar"]
+    assert [c[0] for c in fake.calls] == ["removal", "values", "remove", "walk"], \
+        "the remove's own path: read, its values, remove, read back"
+    assert (body["op"], body["undoes"], body["args"]) == ("undo", 0, {"of": "add", "processor": "ts"})
+    assert body["previous"] == {
+        "track": "guitar", "chain": ["comp", "drive", "ts", "guitar_send"], "uri": DELAY, "uid": None,
+        "type": "lv2", "copy": None, "parameters": {**DEFAULTS[DELAY], "Feedback": 0.6}, "bypassed": False,
+    }, "shaped as a remove's: what that replaced"
+    assert body["state"] == {"processor": "ts", "track": "guitar", "chain": CHAINS["guitar"]}
+    assert body["undone"]["op"] == "add"
+    assert [e["op"] for e in log(agent)] == ["add", "undo"]
+    status, body = undo(agent)
+    assert (status, body["code"]) == (409, "nothing_to_undo"), "an undo is not undone"
+
+
+def test_a_mono_add_is_undone_with_its_copy():
+    agent, fake = edit_agent()
+    status, added = call(agent, "POST", "/live/add", json={"track": "guitar", "uri": GXTS9, "name": "ts9"})
+    assert status == 200 and added["args"]["copy"] == "ts9_to_stereo"
+    assert added["args"]["chain"] == ["comp", "drive", "ts9", "ts9_to_stereo", "guitar_send"]
+    status, body = undo(agent)
+    assert status == 200, body
+    assert fake.chains["guitar"] == CHAINS["guitar"]
+    assert body["previous"]["copy"] == "ts9_to_stereo"
+    assert ("remove", "ts9", fake.ids["ts9"], 1) in fake.calls
+
+
+def test_an_add_whose_track_changed_since_is_stale_and_can_be_skipped():
+    agent, fake = edit_agent()
+    call(agent, "POST", "/live/add", json={"track": "guitar", "uri": DELAY, "name": "ts"})
+    fake.chains["guitar"] = ["comp", "ts", "drive", "guitar_send"]  # moved on the panel, unlogged
+    fake.calls.clear()
+    status, body = undo(agent)
+    assert (status, body["code"]) == (409, "stale")
+    assert "no longer where the add left it" in body["reason"] and '{"skip": true}' in body["reason"]
+    assert fake.writes() == [] and [e["op"] for e in log(agent)] == ["add"]
+    status, body = undo(agent, skip=True)
+    assert status == 200 and body["op"] == "stale" and body["args"]["of"] == "add"
+    assert fake.writes() == []
+
+
+def test_an_add_whose_undo_sushi_refuses_is_a_bad_gateway_and_stays_in_the_log():
+    agent, fake = edit_agent()
+    call(agent, "POST", "/live/add", json={"track": "guitar", "uri": DELAY, "name": "ts"})
+    fake.fail, fake.fail_on = LiveError("Sushi reported an error completing the command"), "remove"
+    status, body = undo(agent)
+    assert status == 502 and "Sushi reported an error" in body["reason"]
+    assert [e["op"] for e in log(agent)] == ["add"]
+    fake.fail = None
+    assert undo(agent)[0] == 200, "the add is still the one to undo"
+
+
+def test_a_remove_is_undone_by_adding_it_back_where_it_was_with_its_values_and_bypass():
+    agent, fake = edit_agent()
+    call(agent, "POST", "/live/remove", json={"processor": "drive"})
+    fake.calls.clear()
+    status, body = undo(agent)
+    assert status == 200, body
+    assert fake.chains["guitar"] == CHAINS["guitar"]
+    assert fake.values_of["drive"] == VALUES["drive"], "Drive 0.62, Level 0.4, bypassed: as it was"
+    assert [c[0] for c in fake.calls] == ["walk", "add", "walk", "set_parameter", "set_parameter", "set_bypass"], \
+        "the add's own path, then every value and the bypass"
+    assert fake.writes()[0] == ("add", "drive", GXTS9, 1, IDS["guitar_send"], False), "after comp, as before"
+    assert body["args"] == {"of": "remove", "track": "guitar", "uri": GXTS9, "name": "drive", "after": "comp",
+                            "parameters": {"Drive": 0.62, "Level": 0.4}, "bypassed": True}
+    assert body["previous"] == ["comp", "guitar_send"], "shaped as an add's: the chain before"
+    assert body["state"] == {"track": "guitar", "chain": CHAINS["guitar"]}
+    assert [e["op"] for e in log(agent)] == ["remove", "undo"]
+
+
+def test_a_first_plugin_removed_goes_back_first():
+    agent, fake = edit_agent()
+    call(agent, "POST", "/live/remove", json={"processor": "comp"})
+    status, body = undo(agent)
+    assert status == 200, body
+    assert fake.chains["guitar"] == CHAINS["guitar"]
+    assert ("add", "comp", CLASSES["comp"]["uri"], 1, IDS["drive"], False) in fake.calls
+    assert body["args"]["after"] is None
+
+
+def test_a_mono_plugin_removed_comes_back_with_its_copy_after_the_same_predecessor():
+    agent, fake = edit_agent()
+    call(agent, "POST", "/live/add", json={"track": "guitar", "uri": GXTS9, "name": "ts9", "after": "comp"})
+    fake.values_of["ts9"]["parameters"]["Drive"] = 0.9
+    fake.chains["guitar"].remove("drive")  # gone meanwhile, on the panel: what follows is not the place
+    status, removed = call(agent, "POST", "/live/remove", json={"processor": "ts9"})
+    assert status == 200 and removed["previous"]["copy"] == "ts9_to_stereo"
+    assert fake.chains["guitar"] == ["comp", "guitar_send"]
+    status, body = undo(agent)
+    assert status == 200, body
+    assert fake.chains["guitar"] == ["comp", "ts9", "ts9_to_stereo", "guitar_send"]
+    assert fake.values_of["ts9"]["parameters"]["Drive"] == 0.9
+    assert fake.classes["ts9_to_stereo"]["uid"] == COPY_UID
+
+
+def test_a_remove_whose_predecessor_has_gone_is_stale_and_nothing_is_added():
+    agent, fake = edit_agent()
+    call(agent, "POST", "/live/remove", json={"processor": "drive"})
+    fake.chains["guitar"].remove("comp")
+    fake.calls.clear()
+    status, body = undo(agent)
+    assert (status, body["code"]) == (409, "stale")
+    assert "went after 'comp', which is no longer on 'guitar'" in body["reason"]
+    assert fake.writes() == []
+    status, body = undo(agent, skip=True)
+    assert status == 200 and body["op"] == "stale" and fake.writes() == []
+
+
+def test_a_put_back_plugin_whose_values_sushi_refuses_is_removed_again():
+    agent, fake = edit_agent()
+    call(agent, "POST", "/live/remove", json={"processor": "drive"})
+    fake.fail, fake.fail_on = LiveError("Sushi would not set Drive"), "set_parameter"
+    status, body = undo(agent)
+    assert status == 502
+    assert "could not set its values (Sushi would not set Drive), so it was removed again" in body["reason"]
+    assert fake.chains["guitar"] == ["comp", "guitar_send"], "nothing was put back"
+    assert [e["op"] for e in log(agent)] == ["remove"]
+    error = call(agent, "GET", "/health")[1]["agent"]["last_error"]
+    assert error["kind"] == "live" and "removed again" in error["message"]
+
+
+def test_a_put_back_plugin_that_cannot_be_set_or_removed_again_says_what_the_rig_holds():
+    agent, fake = edit_agent()
+    call(agent, "POST", "/live/remove", json={"processor": "drive"})
+    fake.fail, fake.fail_on = LiveError("Sushi said no"), {"set_parameter", "remove"}
+    status, body = undo(agent)
+    assert status == 502
+    assert "removing it again failed too (Sushi said no)" in body["reason"]
+    assert "'drive' is on 'guitar' with some of its values at the plugin's defaults" in body["reason"]
+    assert [e["op"] for e in log(agent)] == ["remove"]
+
+
+def test_a_put_back_mono_plugin_whose_copy_sushi_refuses_is_a_bad_gateway():
+    """The add's own command, copy and all (`_add_with_copy` rolls the
+    plugin back itself, test_stereo_compile.py); here, the undo says so and
+    logs nothing."""
+    agent, fake = edit_agent()
+    call(agent, "POST", "/live/add", json={"track": "guitar", "uri": GXTS9, "name": "ts9"})
+    call(agent, "POST", "/live/remove", json={"processor": "ts9"})
+    fake.fail = LiveError("added 'ts9' but not its copy to stereo 'ts9_to_stereo' (x), so 'ts9' was removed "
+                          "again: nothing was added")
+    fake.fail_on = "add"
+    status, body = undo(agent)
+    assert status == 502 and "nothing was added" in body["reason"]
+    assert [e["op"] for e in log(agent)] == ["add", "remove"]
+
+
+def test_defaults_sushi_will_not_give_leave_the_add_standing_and_say_a_save_writes_every_value():
+    agent, fake = edit_agent()
+    fake.fail, fake.fail_on = LiveError("no values"), "values"
+    status, body = call(agent, "POST", "/live/add", json={"track": "guitar", "uri": DELAY, "name": "ts"})
+    assert status == 200
+    assert body["args"]["defaults"] is None and "a save will write every value" in body["note"]
+    assert [e["op"] for e in log(agent)] == ["add"]
+
+
+def test_a_remove_whose_values_cannot_be_read_removes_nothing():
+    agent, fake = edit_agent()
+    fake.fail, fake.fail_on = LiveError("no values"), "values"
+    status, body = call(agent, "POST", "/live/remove", json={"processor": "drive"})
+    assert status == 502 and body["reason"] == "no values"
+    assert fake.writes() == [] and log(agent) == []
+
+
+def test_undo_works_back_through_adds_and_removes_to_the_rig_as_it_was():
+    agent, fake = edit_agent()
+    for path, body in (("/live/add", {"track": "guitar", "uri": GXTS9, "name": "ts9"}),
+                       ("/live/remove", {"processor": "drive"}),
+                       ("/live/add", {"track": "master", "uri": DELAY, "after": "master_return"}),
+                       ("/live/remove", {"processor": "limiter"})):
+        assert call(agent, "POST", path, json=body)[0] == 200
+    for _ in range(4):
+        status, body = undo(agent)
+        assert status == 200, body
+    assert fake.chains == CHAINS
+    assert fake.values_of["drive"] == VALUES["drive"] and fake.values_of["limiter"] == VALUES["limiter"]
+    assert undo(agent)[1]["code"] == "nothing_to_undo"
+
+
+# --------------------------------------------------------------------------- #
+# What a save is told of the adds and removes (`live_edits`)
+# --------------------------------------------------------------------------- #
+
+def test_the_log_says_which_plugins_were_added_and_removed_as_their_last_edit_left_them():
+    from sushi_rig.agent import live_edits
+
+    agent, fake = edit_agent()
+    for path, body in (("/live/add", {"track": "guitar", "uri": DELAY, "name": "ts"}),
+                       ("/live/remove", {"processor": "drive"}),
+                       ("/live/add", {"track": "master", "uri": DELAY, "name": "echo"}),
+                       ("/live/remove", {"processor": "echo"}),   # added and removed: nothing
+                       ("/live/remove", {"processor": "limiter"})):
+        assert call(agent, "POST", path, json=body)[0] == 200
+    assert undo(agent)[0] == 200  # the limiter is back
+    edits = live_edits(agent.log)
+    assert edits["added"] == {
+        "ts": {"track": "guitar", "uri": DELAY, "defaults": DEFAULTS[DELAY]},
+        "limiter": {"track": "master", "uri": "http://drobilla.net/plugins/mda/Limiter", "defaults": None},
+    }, "a plugin put back by an undo is the file's again when its URI is (fold_state)"
+    assert edits["removed"] == {"drive": "guitar", "echo": "master", "limiter": "master"}
+
+
+def test_the_log_before_a_rig_switch_or_the_runs_start_says_nothing_of_this_rig():
+    from sushi_rig.agent import live_edits
+
+    add = {"at": "2026-11-03T10:00:05+00:00", "op": "add", "previous": [],
+           "args": {"track": "guitar", "uri": DELAY, "name": "ts", "defaults": {}}}
+    switch = {"at": "2026-11-03T10:00:06+00:00", "op": "rig", "args": {"rig": "b"}, "previous": "a"}
+    assert live_edits([add])["added"].keys() == {"ts"}
+    assert live_edits([add, switch]) == {"added": {}, "removed": {}}
+    assert live_edits([add], since="2026-11-03T10:00:06.5+00:00")["added"] == {}
+    assert live_edits([add], since="2026-11-03T10:00:05.9+00:00")["added"].keys() == {"ts"}, \
+        "compared to the second, as the log's own time is"

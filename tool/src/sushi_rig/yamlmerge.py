@@ -41,8 +41,11 @@ above the wrong entry. Both are repaired here (`_Update.remove`, `_Update.insert
 between two entries moves with the entry it sits above, and a comment is
 dropped only with the entry it was written above or beside. The edges:
 
-- the comments above the *first* entry of a list stay with the list when that
-  entry goes (they are usually about the list, as a chain's heading is);
+- the comments above the *first* item of a list stay with the list when that
+  item goes (they are usually about the list), except in a list matched by
+  name, a chain, where an entry that goes takes the comment directly above
+  it as an entry that moves does (below), and only a heading a blank line
+  sets apart stays;
 - a key inserted first in a mapping goes above the comment that was above the
   old first key, unless a blank line sets that comment apart;
 - when a named list is reordered, an entry moves with the comment lines above
@@ -51,9 +54,8 @@ dropped only with the entry it was written above or beside. The edges:
   and a heading at the top of the list that a blank line sets apart from the
   first entry (a comment directly above the first entry, with no blank line,
   is taken to be about it and moves with it, or goes with it if it is the one
-  removed; an insert at the front of a list, or a plain removal of its first
-  entry, does not know which entry the comment is about, so it leaves all of it
-  at the top). A blank line goes with the entry below it (the one that moved to the
+  removed, in a reorder or not; an insert at the front of a list does not
+  know which entry the comment is about, so it leaves all of it at the top). A blank line goes with the entry below it (the one that moved to the
   top loses it, and the entry it displaced takes it); a new entry has none;
 - the first key of a mapping cannot be removed if comment lines sit below it,
   and the only entry of a list or mapping cannot be removed if comments follow
@@ -802,10 +804,15 @@ class _Update:
                                  "comments follow it: ruamel.yaml would drop them. Move or delete "
                                  "the comments, then retry")
         else:
-            # The comments above a list's first entry stay: they are usually its
-            # heading. Above a mapping's first key they are about that key, so
-            # they go with it, unless a blank line sets them apart as a heading.
-            if _is_map(container):
+            # Above a mapping's first key, and above the first entry of a list
+            # matched by name (a chain), the comments are about that entry, so
+            # they go with it, unless a blank line sets them apart as a
+            # heading: the rule `reorder` applies to an entry that moves or
+            # goes, so a plugin removed by a save takes the same comments
+            # whether or not another plugin of its chain moved (#32). Above
+            # the first item of any other list they stay: they are usually
+            # its heading.
+            if _is_map(container) or _names(container) is not None:
                 self._drop_lead(container, parent, own_only=True)
             if _has_comment(rest) and not _add_lead(container, parent, rest):
                 raise MergeError(
@@ -886,9 +893,9 @@ class _Update:
         entry below it, `_gap` says how.
 
         An entry that is not in `new` goes with its comments, including the
-        ones directly above it when it was the first (a plain `remove` leaves
-        those at the top; here the entries are known, so they are about it);
-        only a heading a blank line sets apart stays. Entries new to the list
+        ones directly above it when it was the first (as a plain `remove` of
+        a named list's first entry does); only a heading a blank line sets
+        apart stays. Entries new to the list
         go where `new` puts them, with no comments. Refuses (`MergeError`) a list whose comments are kept
         somewhere this cannot read them back from.
 
