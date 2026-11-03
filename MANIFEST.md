@@ -3011,3 +3011,19 @@ dated 2026-11-02 account of the bug and v1 configs; no TypeScript or Vite
 Earlier entries above still say `run_cli` and `LIFECYCLE_TIMEOUT` are gone and
 mention 3.10; they are history and were left. Not run: anything beyond the
 test suite.
+
+**Hygiene pass, addition: lilv collections on Python 3.13** *(2026-11-03)*.
+`lilv.Collection.__iter__` returns an `Iter` with `__next__` and no
+`__iter__`; on Python 3.13 a comprehension or `sorted()` over it raised
+`TypeError: 'Iter' object is not iterable`, which failed 9 `test_probe` tests
+here once python3-lilv 0.24.22 was installed (CI's fast jobs have no lilv, and
+its container runs 3.12, so it never saw it). `probe._each(collection)` now
+walks a collection with `next()` on `iter(collection)` and never needs the
+iterator to be iterable; every walk of a lilv collection in `probe.py`
+(`_unit_symbol`, `_port_scale_points`, `describe`'s `get_value` reads, `probe`,
+`parameter_units`) and `plugins.plugins_on` goes through it, and the loop in
+`test_library` uses it. `test_stereo` only calls `get_by_uri`, so it needed
+nothing. `tests/test_lilv_each.py` pins it with fakes shaped like lilv's, with
+no lilv installed. Checked: `test_probe.py` on python3.13 with the real lilv,
+22 passed, 6 skipped. **The rig's Python 3.14 is unverified**: not run there,
+and whether its lilv has the same `Iter` depends on its version.

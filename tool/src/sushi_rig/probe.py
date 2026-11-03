@@ -67,6 +67,28 @@ _LV2_MICRO = "http://lv2plug.in/ns/lv2core#microVersion"
 _UNITS_NS = "http://lv2plug.in/ns/extensions/units#"
 
 
+def _each(collection):
+    """The items of a lilv collection (or of nothing, for None), walked with
+    `next()` on what `iter(collection)` returns.
+
+    lilv's `Collection.__iter__` returns an `Iter` that defines `__next__` and
+    no `__iter__`. A `for` statement tolerates that, but on Python 3.13 a
+    comprehension, `list()` or `sorted()` over it raises "'Iter' object is not
+    iterable" (found running test_probe on 3.13 with python3-lilv 0.24.22). So
+    every walk of a lilv collection goes through here, and nothing here needs
+    the iterator to be iterable itself.
+    """
+    if collection is None:
+        return
+    iterator = iter(collection)
+    while True:
+        try:
+            item = next(iterator)
+        except StopIteration:
+            return
+        yield item
+
+
 def _world():
     try:
         import lilv
@@ -112,7 +134,7 @@ def _unit_symbol(world, port) -> str | None:
     """
     symbol_pred = world.new_uri(_UNITS_NS + "symbol")
     symbol = None
-    for node in port.get_value(world.new_uri(_UNITS_NS + "unit")) or []:
+    for node in _each(port.get_value(world.new_uri(_UNITS_NS + "unit"))):
         resolved = world.get(node, symbol_pred, None)
         if resolved is not None:
             symbol = str(resolved)
@@ -124,7 +146,7 @@ def _port_scale_points(port) -> list[dict[str, Any]]:
     return scale_points_from(
         [
             (str(point.get_value()), str(point.get_label()))
-            for point in port.get_scale_points()
+            for point in _each(port.get_scale_points())
             if point.get_value() is not None and point.get_label() is not None
         ]
     )
@@ -233,9 +255,9 @@ def describe(plugin, world) -> dict[str, Any]:
         # gap in its metadata, not an error worth aborting a whole scan for.
         plugin_class = None
 
-    patch_writables = [str(n) for n in plugin.get_value(world.new_uri(_PATCH_WRITABLE))]
+    patch_writables = [str(n) for n in _each(plugin.get_value(world.new_uri(_PATCH_WRITABLE)))]
     extension_data = [
-        str(n) for n in plugin.get_value(world.new_uri(str(lv2.extensionData)))
+        str(n) for n in _each(plugin.get_value(world.new_uri(str(lv2.extensionData))))
     ]
     state_interface = _STATE_INTERFACE in extension_data
 
@@ -257,8 +279,8 @@ def describe(plugin, world) -> dict[str, Any]:
     # Same purpose as the per-port units and scale points: the profile validator
     # checks a restated version against this. Absent stays absent, never guessed.
     version = version_from_literals(
-        [str(n) for n in plugin.get_value(world.new_uri(_LV2_MINOR))],
-        [str(n) for n in plugin.get_value(world.new_uri(_LV2_MICRO))],
+        [str(n) for n in _each(plugin.get_value(world.new_uri(_LV2_MINOR)))],
+        [str(n) for n in _each(plugin.get_value(world.new_uri(_LV2_MICRO)))],
     )
     if version is not None:
         described["version"] = version
@@ -281,7 +303,7 @@ def probe(uri: str | None = None) -> list[dict[str, Any]]:
         return [describe(plugin, world)]
 
     return sorted(
-        (describe(p, world) for p in plugins),
+        (describe(p, world) for p in _each(plugins)),
         key=lambda d: d["uri"],
     )
 
@@ -318,7 +340,7 @@ def parameter_units(uri: str) -> dict[str, str]:
         return {}
 
     world = _world()
-    matches = [p for p in world.get_all_plugins() if str(p.get_uri()) == uri]
+    matches = [p for p in _each(world.get_all_plugins()) if str(p.get_uri()) == uri]
     if not matches:
         return {}
     plugin = matches[0]
