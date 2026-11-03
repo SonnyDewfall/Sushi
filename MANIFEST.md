@@ -2986,3 +2986,96 @@ refuses every take (saying so, with every port listed) and this fix comes back.
 Then RECORD on the stage screen, `sushi-rig take check` on what it wrote, and
 `sushi-rig doctor` with the rig up (`record-ports`). None of it has run on the
 rig. *(2026-11-02)*
+
+### 🟡 electric-octave-up's NaN flake is a plugin bug, in gx_detune_ (2026-11-03)
+
+CI's container job failed three times on 2 Nov with `electric-octave-up.json
+rendered unusable audio: non_finite: ...`, NaN from frame 15296, 57536 and
+202688, and passed each time it was re-run. All 193 rig-container logs were
+read: those three are the only NaN renders, all electric-octave-up.
+
+**Measured in CI** (`tool/tests/test_render_spread.py`, 997dd73, draft PR
+#122): forty renders of each, with the null tests' sweep. Spreads are max −
+min over the finite renders, dB; `dist` counts renders that differ bit for
+bit.
+
+| what | NaN | dist | rms | peak | 250–800 | 800–2500 | 2.5–8k | first NaN (mod 256) |
+|---|---|---|---|---|---|---|---|---|
+| electric-octave-up (rig) | 0 | 3 | 0.00003 | 0.00050 | 0.00001 | 0.00001 | 0.00030 | |
+| electric-octave-up.json (v1) | 1 | 12 | 0.00002 | 0.00173 | 0.00001 | 0.00002 | 0.00011 | 12992 (192) |
+| electric_board (rig) | 0 | 3 | 0.00011 | 0.00103 | 0.00030 | 0.00043 | 0.00412 | |
+| gx_compressor alone | 0 | 1 | 0 | 0 | 0 | 0 | 0 | |
+| 3BandEQ alone | 0 | 1 | 0 | 0 | 0 | 0 | 0 | |
+| gxts9 alone | 0 | 1 | 0 | 0 | 0 | 0 | 0 | |
+| gx_detune_ [octave_down] alone | 0 | 7 | 0.06920 | 0.31975 | 0.12829 | 0.09810 | 0 | |
+| gx_detune_ [octave_up] alone | 1 | 28 | 0.00001 | 0.06433 | 0 | 0 | 0.00013 | 12736 (192) |
+| gx_chorus_stereo alone | 0 | 1 | 0 | 0 | 0 | 0 | 0 | |
+| lcrDelay alone | 0 | 1 | 0 | 0 | 0 | 0 | 0 | |
+| a-reverb alone | 0 | 1 | 0 | 0 | 0 | 0 | 0 | |
+| MaGigaverb alone | 0 | 1 | 0 | 0 | 0 | 0 | 0 | |
+| rig, octave_up DETUNE 0.99995 | 0 | 6 | 0.00004 | 0.00051 | 0.00002 | 0.00002 | 0.00048 | |
+
+Each plugin alone is the rig's own settings, unbypassed, compiled on a mono
+channel. Every finite render of the three configs was within its reference
+(0 of 40, 0 of 39, 0 of 40 outside); the candidate setting was outside in 40
+of 40 (rms −0.151 dB, peak +0.468 dB, 20–80 Hz +0.083 dB). Threads, read from
+/proc during one render: 15 seen, and all the CPU (0.16 s) on one `sushi.bin`
+thread.
+
+**The cause.** guitarix 0.46.0's gx_detune_ (`detune.cc`, `smbPitchShift`)
+allocates `fpb` and `expect` with `fftFrameSize2` floats and reads index
+`fftFrameSize2` of both in every hop, one past the end. Whatever the heap left
+there is added into the Nyquist bin's running phase; when it is NaN, Inf or
+large enough to overflow, the phase is NaN, the inverse FFT spreads it, the
+overlap-add keeps it, and the output is NaN to the end. Only a shift of 2 or
+more writes that bin: electric-octave-up's octave up does; the octave down,
+and electric_board's two detunes at no shift, do not. The non-determinism is
+mostly the plugin's `FFTW_MEASURE` plans, chosen by timing; the stray value
+changes the bits too. Only electric-octave-up and electric_board run the
+plugin unbypassed, which is the "not explained" of 30 Oct above: every other
+config carrying it has it bypassed. The other suspects do not hold: every
+other plugin of the chain, both reverbs included, renders the same 40 times
+in 40; Sushi's offline frontend renders on one thread (its source:
+`_run_blocking` on the calling thread, before the event dispatcher that runs
+LV2 workers is started; and /proc above); denormals are flushed by Sushi and
+by guitarix both. Every NaN recorded, in CI then and now and on the bench,
+started 192 frames past a multiple of 256: a hop boundary of the pitch
+shifter.
+
+valgrind 3.22, the plugin alone: `Invalid read of size 4 ... 0 bytes after a
+block of size 1,024 alloc'd`, four times, two in each of the two blocks. A
+bench host running the plugin alone as Sushi does (`tool/spikes/gx_detune_nan/`,
+Ubuntu 24.04, the same packages):
+
+| | renders | NaN | distinct |
+|---|---|---|---|
+| as it is | 210 | 2 | most |
+| `fpb`, `expect` padded with 0 | 360 | 0 | many |
+| `FFTW_ESTIMATE` forced | 140 | 6 | many |
+| padded with 0 and `FFTW_ESTIMATE` | 140 | 0 | 1 |
+| padded with NaN / 1e37 / 1e36 | 3 each | 3 each, from frame 2240 / 11200 / 92352 | |
+
+**Containment, (c).** No setting removes the cause within the tolerance: the
+one that keeps the Nyquist bin unwritten, DETUNE a tenth of a cent flat, is
+the candidate above, 0.15 dB off. No render-side fix is legitimate either:
+padding the heap or forcing `FFTW_ESTIMATE` would make the renders something
+the rig is not. So `render.measure` renders a NaN once more, only when the
+config runs gx_detune_ unbypassed and the NaN starts on its hop grid
+(`render.detune_nan`); any other NaN fails at once, and a second fails
+saying what the first looked like. It says "retried after a NaN" every time:
+beside the channel and in a summary at the end of `nulltest`, at the end of
+the pytest run (the parity test, `spread_table.RETRIES`), as a warning to a
+caller with nowhere to put it, and as a warning annotation on the check run.
+The test above stays, asserting that every NaN is that one. **No config is
+changed**: the retune is Sonny's decision. The spike folder's README holds
+the reproduction, the evidence and the fix to suggest upstream (`new
+float[fftFrameSize2 + 1]` for both; `FFTW_ESTIMATE` or wisdom; three smaller
+valgrind faults); **not filed**. The CI time added is about 70 s (the suite
+step went from 3m05s to 4m10s; the renders are 0.07 to 0.25 s each).
+
+**On the rig**: the same bug is there. Each load of electric-octave-up risks
+a NaN from some seconds in until it is loaded again: 2 in 120 renders of an
+octave up in CI here, 2 in 210 on the bench, about 1 to 2 in a hundred. If
+the octave-up goes silent mid-set, `sushi-rig restart` (README, the known
+issue). **Not tried on the rig**: what a NaN sounds like through PipeWire,
+and whether bypassing the octave would bring the sound back. *(2026-11-03)*

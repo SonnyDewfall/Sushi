@@ -486,8 +486,8 @@ def rigs_to_check(root: Path) -> list[Path]:
 # allocates `fpb` and `expect` with fftFrameSize/2 floats and reads index
 # fftFrameSize/2 of both, the Nyquist bin, in every hop: four bytes past the end
 # of each, which hold whatever the heap left there. Mostly that is 0; sometimes
-# it is half of a heap pointer or of malloc's free-list key, both different in
-# every process. It is added into the Nyquist bin's running phase, and when it
+# it is half of a heap pointer or something like malloc's own bookkeeping,
+# different in every process. It is added into the Nyquist bin's running phase, and when it
 # is NaN, Inf or large enough to overflow that float, the bin's phase becomes
 # NaN, the inverse FFT spreads it over the frame, and the overlap-add keeps it:
 # the plugin's output is NaN from that hop to the end of the render. It only
@@ -501,7 +501,7 @@ def rigs_to_check(root: Path) -> list[Path]:
 # config that runs it may be retried once -- only when the NaN starts where this
 # bug starts it, and saying so every time (`measure`).
 DETUNE_URI = "http://guitarix.sourceforge.net/plugins/gx_detune_#_detune_"
-DETUNE_BUG = "tool/spikes/gx_detune_nan/"
+DETUNE_BUG = "tool/spikes/gx_detune_nan/README.md"
 
 # Where that NaN starts. At 48 kHz with 64-frame chunks and its default
 # quality, the pitch shifter works at a quarter of the rate in 512-sample FFT
