@@ -2986,3 +2986,45 @@ refuses every take (saying so, with every port listed) and this fix comes back.
 Then RECORD on the stage screen, `sushi-rig take check` on what it wrote, and
 `sushi-rig doctor` with the rig up (`record-ports`). None of it has run on the
 rig. *(2026-11-02)*
+
+**Live chain edits: undo an add or a remove, and save them (#32).** The rest of
+the milestone's agent side: add a plugin from the library, undo, save.
+(1) **Undo of an add** removes what it added, its copy to stereo with it,
+through the remove route's own path (`Agent._apply_remove`, shared now), and
+is `409 stale` unless the track is exactly the `chain` the add left, which
+the add's entry now records with its `copy` and `defaults` (the plugin's
+values read straight after the add, `live.read_live_values`). (2) **Undo of a
+remove** adds the plugin back through the add route's path (`_apply_add`),
+after the unit it followed in the chain before or first if it was first
+(`place_undo_remove`), with its copy, then sets every value and the bypass
+the remove now records (read just before it; a remove whose values cannot be
+read removes nothing). A predecessor or track gone, or a name taken, is
+`stale` with the reason, never another place; a value Sushi refuses removes
+the plugin again (`502`, nothing put back). Each undo is logged shaped as
+what it applied, `of` naming the op undone. (3) **Save** writes the chains as
+they run: the agent passes its log's adds and removes since the rig came up
+and the last switch (`agent.live_edits`) to `save_rig` and
+`rigfile.fold_state`, which writes an added plugin as `name`, `uri`,
+`bypassed: true` if so and only the values off its defaults
+(`added_entry`, and so on later saves), drops a removed one's entry with its
+comments, and still refuses what the log does not explain as a capture of a
+different rig; the CLI and the panel's SAVE, with no log, refuse as before,
+saying so. **How "added live" is told from "a different rig": the log.** A
+processor the file lacks is written only if the log added it to the track
+the capture has it on; a file plugin a captured chain lacks is dropped only
+if the log removed it from that track; the log never changes a capture, only
+explains it. A name removed and added back with the file's URI is the file's
+entry. (4) yamlmerge: removing a chain's **first** entry now takes the
+comment directly above it, as a reorder always did (a heading a blank line
+sets apart stays), so the same save drops the same comments whether or not a
+plugin moved; `test_the_first_plugin_can_go...` and review finding 1's test
+say so now. (5) **UI**: unsaved lists "added X to <track>" and "removed X"
+(copies never), read by entry shape so an undo needs no special case; tested
+in Chromium against `ui_fake` (`UiRig` takes adds and removes;
+`Served(library=fixture_library)`). Save diffs tested on copies of
+`accustomed.yaml` (exactly the three edits, with and without comments
+written in), `guitar_vocal.yaml` (flow entries) and `electric-clean.yaml`
+(an empty master). **NOT RUN against a live Sushi**: `read_live_values`, that
+a processor added live starts at its defaults and un-bypassed, the values set
+on a put-back plugin (acknowledged, not read back), and every undo and save
+path here, shown against the fakes only. *(2026-11-03)*

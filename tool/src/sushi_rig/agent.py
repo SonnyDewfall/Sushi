@@ -104,7 +104,9 @@ undo comes from. It lives in this process and is lost when the agent stops.
 
 `POST /live/undo` takes the newest entry that is not an undo and has not been
 undone, and applies its `previous` through the same functions the routes use:
-`set_live_parameter`, `set_live_bypass`, and a move the opposite way. It is a
+`set_live_parameter`, `set_live_bypass`, a move the opposite way, and for a
+chain edit (#32) the other edit: an add is undone by the remove route's path,
+a remove by the add route's, with the values the remove recorded set after. It is a
 change like the others (same busy check, same lock, same `LIVE_TIMEOUT`, same
 503/502/504/409), and is logged like one: `op: "undo"`, `undoes: <index>`, `args`
 what was applied and `previous` what that replaced, so a redo can be built from
@@ -220,7 +222,14 @@ The file is written and NOT committed: committing in the player's checkout
 is the player's call. The answer and the log entry (`op: "save"`, with the
 file and `library`, the commit and dirty state from `take.library_state`)
 say what it sits on. Undo passes over a save to the change before it, and
-the page's unsaved list counts from the newest save. Not run against a live
+the page's unsaved list counts from the newest save.
+
+Plugins added and removed live are saved too (#32): the save hands
+`save_rig` the log's adds and removes since the rig came up (`live_edits`),
+and `rigfile.fold_state` writes an added plugin's entry and drops a removed
+one's. That is how a plugin added live is told from a capture of another
+rig: the log explains the difference, and what it does not explain is
+refused as before. Not run against a live
 Sushi: shown against a fake capture and real rig files.
 
 ## Recording from the web UI (S7)
@@ -295,7 +304,13 @@ send or return, or past one, is refused too: one rule (`live.protected_processor
 knows them, by the uid Sushi's session reports and by the compiler's names. Each is confirmed
 by reading the chain back, not by Sushi's acknowledgement alone, and an edit
 whose read-back is not what was asked is 502 and is not logged, as a change
-Sushi did not confirm is not. Not run against a live Sushi: see `live.py`.
+Sushi did not confirm is not. An add reads the plugin's values straight
+after it (its defaults, for a save) and a remove reads them just before (for
+its undo), with `live.read_live_values`. Both are undone through each
+other's path (`_apply_add`, `_apply_remove`): an add's undo is refused as
+stale unless its track is as the add left it, and a remove's goes back after
+the same predecessor or is refused, never put elsewhere (`place_undo_remove`).
+Not run against a live Sushi: see `live.py`.
 
 A mono plugin's copy to stereo (`stereo.py`, `<plugin>_to_stereo`) is the
 compiler's too, and goes with its plugin: an add of a plugin with one output
@@ -3625,8 +3640,15 @@ class Agent:
           panel has its own SAVE; `v1`: a config not started with `--rig`,
           which the CLI's `sushi-rig save` saves; `taken`: the name is
           another rig's file; `changed`: the running rig changed while this
-          waited; `not_saved`: `save_rig` refused (a plugin added or removed
-          live, a capture of another rig), with its reason.
+          waited; `not_saved`: `save_rig` refused (a capture naming a
+          plugin the file lacks and the log did not add, or lacking one the
+          log did not remove: another rig's, as far as anything here
+          knows), with its reason.
+
+        The plugins the agent added and removed since the rig came up are
+        handed to the save (`live_edits`, read under the live lock with the
+        capture), so the file is written with the chains the rig now runs
+        (#32): `rigfile.fold_state` says how.
         - 503/502/504 from the capture, as /live answers them; 504 too if the
           write is not done within `SAVE_TIMEOUT` (it may still finish).
         - 500, `ok: false` and `recorded: false`, with the save's answer

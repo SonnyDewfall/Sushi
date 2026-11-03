@@ -760,6 +760,38 @@ def test_the_plugin_to_put_back_is_read_from_the_saved_session():
     assert len(asked) == 2, "nothing to remove, so the session is not read"
 
 
+def test_a_processors_values_are_read_as_elkpy_names_its_calls():
+    """`read_live_values`, each call bound to elkpy 1.3.0's own signature. The
+    parameter infos are stand-ins with ParameterInfo's `id`, `name` and
+    `automatable`; what Sushi answers is not known from here."""
+    graph_module = pytest.importorskip("elkpy.audiographcontroller")
+    parameters_module = pytest.importorskip("elkpy.parametercontroller")
+    from types import SimpleNamespace as NS
+
+    from sushi_rig.live import read_live_values
+
+    ids = {"drive": 3}
+    get_id, id_calls = _bound_to("get_processor_id", graph_module.AudioGraphController)
+    get_bypass, bypass_calls = _bound_to("get_processor_bypass_state", graph_module.AudioGraphController)
+    get_infos, info_calls = _bound_to("get_processor_parameters", parameters_module.ParameterController)
+    get_value, value_calls = _bound_to("get_parameter_value", parameters_module.ParameterController)
+    values = {0: 0.62, 1: 0.4}
+    infos = [NS(id=0, name="Drive", automatable=True), NS(id=1, name="Level", automatable=True),
+             NS(id=2, name="Latency OUT", automatable=False)]
+    controller = NS(
+        audio_graph=NS(get_processor_id=lambda name: (get_id(name), ids[name])[1],
+                       get_processor_bypass_state=lambda pid: (get_bypass(pid), True)[1]),
+        parameters=NS(get_processor_parameters=lambda pid: (get_infos(pid), infos)[1],
+                      get_parameter_value=lambda pid, par: (get_value(pid, par), values[par])[1]),
+    )
+    assert read_live_values("drive", controller=controller) == {
+        "parameters": {"Drive": 0.62, "Level": 0.4}, "bypassed": True}, "a read-only one is left out"
+    assert [c["processor_name"] for c in id_calls] == ["drive"]
+    assert [c["processor_identifier"] for c in info_calls] == [3]
+    assert [c["processor_identifier"] for c in bypass_calls] == [3]
+    assert [(c["processor_identifier"], c["parameter_identifier"]) for c in value_calls] == [(3, 0), (3, 1)]
+
+
 # --------------------------------------------------------------------------- #
 # One rule for the send and the return: add, remove and move (found by review)
 # --------------------------------------------------------------------------- #

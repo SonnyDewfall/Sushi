@@ -546,12 +546,77 @@ def test_a_reordered_chain_is_unsaved_until_it_is_put_back(blank, served):
 
 def test_a_move_of_a_processor_since_removed_keeps_the_chain_it_started_from(blank):
     """[a, b, c]; c moved up, then removed. The move's own `previous` is the
-    baseline, not the chain the remove found."""
+    baseline, not the chain the remove found: against it, c was removed and
+    nothing else moved."""
     live = {"tracks": {"board": ["a", "b"]}, "processors": {}, "parameter_info": {}}
     log = [entry("move", {"processor": "c", "direction": "up"}, ["a", "b", "c"]),
            entry("remove", {"processor": "c"}, {"track": "board", "chain": ["a", "c", "b"], "uri": None, "uid": None, "type": "lv2"}, 11)]
     assert unsaved(blank, log, live)["items"] == [
-        {"kind": "chain", "track": "board", "from": ["a", "b", "c"], "to": ["a", "b"], "source": None}]
+        {"kind": "removed", "processor": "c", "track": "board", "source": None}]
+
+
+BOARD = ["overdrive", "octave", "delay", "board_send"]
+
+
+def add_entry(name, chain_after, s=10, previous=BOARD):
+    return entry("add", {"track": "board", "uri": "urn:x", "name": name, "after": None, "copy": None,
+                         "chain": chain_after, "defaults": {}}, list(previous), s)
+
+
+def remove_entry(name, chain_before, s=10):
+    return entry("remove", {"processor": name}, {"track": "board", "chain": list(chain_before), "uri": "urn:x",
+                                                 "uid": None, "type": "lv2", "copy": None, "parameters": {},
+                                                 "bypassed": False}, s)
+
+
+def board(chain):
+    return {"tracks": {"board": list(chain), "master": ["master_return"]}, "processors": {}, "parameter_info": {}}
+
+
+def test_a_plugin_added_or_removed_is_unsaved_as_that_and_its_undo_nets_it_out(blank):
+    added = ["overdrive", "slap", "octave", "delay", "board_send"]
+    log = [add_entry("slap", added)]
+    assert unsaved(blank, log, board(added))["items"] == [
+        {"kind": "added", "processor": "slap", "track": "board", "source": None}]
+    # Its undo is logged shaped as the remove it applied, and read as one.
+    undone = log + [entry("undo", {"of": "add", "processor": "slap"},
+                          {"track": "board", "chain": added, "uri": "urn:x", "uid": None, "type": "lv2",
+                           "copy": None, "parameters": {}, "bypassed": False}, 11, undoes=0)]
+    assert unsaved(blank, undone, board(BOARD))["items"] == []
+    gone = ["overdrive", "octave", "board_send"]
+    log = [remove_entry("delay", BOARD)]
+    assert unsaved(blank, log, board(gone))["items"] == [
+        {"kind": "removed", "processor": "delay", "track": "board", "source": None}]
+    # A remove's undo is shaped as the add it applied.
+    undone = log + [entry("undo", {"of": "remove", "track": "board", "uri": "urn:x", "name": "delay",
+                                   "after": "octave", "parameters": {}, "bypassed": False}, gone, 11, undoes=0)]
+    assert unsaved(blank, undone, board(BOARD))["items"] == []
+
+
+def test_a_copy_to_stereo_is_not_a_change_and_a_move_beside_an_add_is_said_too(blank):
+    mono = ["overdrive", "octave", "delay", "ts9", "ts9_to_stereo", "board_send"]
+    assert unsaved(blank, [add_entry("ts9", mono)], board(mono))["items"] == [
+        {"kind": "added", "processor": "ts9", "track": "board", "source": None}]
+    moved = ["octave", "overdrive", "delay", "ts9", "ts9_to_stereo", "board_send"]
+    log = [add_entry("ts9", mono), entry("move", {"processor": "octave", "direction": "up"}, mono, 11)]
+    assert unsaved(blank, log, board(moved))["items"] == [
+        {"kind": "added", "processor": "ts9", "track": "board", "source": None},
+        {"kind": "chain", "track": "board", "from": BOARD, "to": moved, "source": None}]
+    # Added and removed again: nothing.
+    log = [add_entry("ts9", mono), remove_entry("ts9", mono, 11)]
+    assert unsaved(blank, log, board(BOARD))["items"] == []
+
+
+def test_a_remove_undone_after_a_save_is_unsaved_as_an_add(blank):
+    """The save wrote the rig without the delay; undo passes over it and puts
+    the delay back, which the file does not have."""
+    gone = ["overdrive", "octave", "board_send"]
+    saved = entry("save", {"file": "config/rigs/electric_board.yaml", "how": "updated"}, "config/rigs/electric_board.yaml", 11)
+    log = [remove_entry("delay", BOARD), saved,
+           entry("undo", {"of": "remove", "track": "board", "uri": "urn:x", "name": "delay", "after": "octave",
+                          "parameters": {}, "bypassed": False}, gone, 12, undoes=0)]
+    assert unsaved(blank, log, board(BOARD))["items"] == [
+        {"kind": "added", "processor": "delay", "track": "board", "source": None}]
 
 
 @pytest.mark.parametrize("log, first", [
@@ -911,6 +976,105 @@ def test_reordering_is_refused_while_locked_and_works_once_unlocked_deliberately
     expect(rack.locator("#t-board .unit button.name")).to_have_text(["overdrive", "delay", "octave"])
     expect(rack.locator("aside.changes .change")).to_have_text(
         "board · chainoverdrive, octave, delay, board_send to overdrive, delay, octave, board_send")
+
+
+# -- a plugin added or removed from outside the page (#32: the library screen to come) --
+
+def post(served, path, body):
+    """A request the way a library screen would make it, from outside the page."""
+    import json
+    import urllib.request
+
+    request = urllib.request.Request(served.url + path, data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(request, timeout=10) as response:
+        return json.loads(response.read())
+
+
+@pytest.fixture
+def edits_served():
+    from ui_fake import fixture_library
+
+    with Served(library=fixture_library) as served:
+        yield served
+
+
+def test_an_added_plugin_is_unsaved_as_added_and_one_tap_undoes_it(browser, edits_served):
+    served = edits_served
+    page = Page(browser, served.url + "/#rack")
+    p = page.page
+    p.wait_for_selector(".unit")
+    answer = post(served, "/live/add", {"track": "board", "uri": "http://drobilla.net/plugins/mda/Delay",
+                                        "name": "slap", "after": "overdrive"})
+    assert answer["ok"] and answer["chain"] == ["overdrive", "slap", "octave", "delay", "board_send"]
+    changes = p.locator("aside.changes")
+    expect(changes.locator(".change")).to_have_text("added slap to board")
+    expect(p.locator("#t-board .unit button.name")).to_have_text(["overdrive", "slap", "octave", "delay"])
+    undo = changes.get_by_role("button", name="Undo · add slap")
+    undo.click()
+    until(lambda: served.rig.chains["board"] == ["overdrive", "octave", "delay", "board_send"])
+    expect(changes.locator("h2")).to_have_text("No changes seen")
+    expect(p.locator(".notice")).to_contain_text("Undone: add slap")
+    expect(p.locator("#t-board .unit button.name")).to_have_text(["overdrive", "octave", "delay"])
+    page.close()
+
+
+def test_a_removed_plugin_is_unsaved_as_removed_and_its_undo_brings_it_back_as_it_was(browser, edits_served):
+    served = edits_served
+    page = Page(browser, served.url + "/#rack")
+    p = page.page
+    p.wait_for_selector(".unit")
+    post(served, "/live/bypass", {"processor": "octave", "bypassed": False})
+    post(served, "/live/remove", {"processor": "octave"})
+    changes = p.locator("aside.changes")
+    # Its bypass is no change of its own while it is gone: the remove says it.
+    expect(changes.locator(".change")).to_have_text(["removed octave"])
+    expect(p.locator("#t-board .unit button.name")).to_have_text(["overdrive", "delay"])
+    changes.get_by_role("button", name="Undo · remove octave").click()
+    until(lambda: served.rig.chains["board"] == ["overdrive", "octave", "delay", "board_send"])
+    expect(p.locator(".notice")).to_contain_text("Undone: remove octave")
+    # Back with its values (Octaves at -1, not its default 0) and the bypass it had.
+    expect(slider(p, "octave Octaves")).to_have_attribute("aria-valuetext", "−1.00")
+    expect(p.get_by_role("button", name="Bypass octave")).to_be_visible()
+    expect(changes.locator(".change")).to_have_text("board · octavebypassed to on")
+    page.close()
+
+
+def test_a_mono_plugin_added_is_one_card_and_one_change_and_its_copy_is_not_shown(browser, edits_served):
+    served = edits_served
+    page = Page(browser, served.url + "/#rack")
+    p = page.page
+    p.wait_for_selector(".unit")
+    post(served, "/live/add", {"track": "vocal", "uri": "http://guitarix.sourceforge.net/plugins/gxts9#ts9sim",
+                               "name": "grit"})
+    assert served.rig.chains["vocal"] == ["vocal_delay", "grit", "grit_to_stereo", "vocal_send"]
+    expect(p.locator("aside.changes .change")).to_have_text("added grit to vocal")
+    expect(p.locator("#t-vocal .unit button.name")).to_have_text(["vocal_delay", "grit"])
+    p.locator("aside.changes button.undo").click()
+    until(lambda: served.rig.chains["vocal"] == ["vocal_delay", "vocal_send"])
+    expect(p.locator("aside.changes h2")).to_have_text("No changes seen")
+    page.close()
+
+
+def test_a_save_after_an_add_and_a_remove_writes_them_and_nothing_is_unsaved(browser):
+    from ui_fake import fixture_library
+
+    with Served(save=True, library=fixture_library) as served:
+        page = save_rack(browser, served)
+        p = page.page
+        post(served, "/live/add", {"track": "board", "uri": "http://drobilla.net/plugins/mda/Delay", "name": "slap"})
+        post(served, "/live/remove", {"processor": "octave"})
+        expect(p.locator("aside.changes .change")).to_have_text(["added slap to board", "removed octave"])
+        p.get_by_role("button", name="Save to electric_board").click()
+        expect(p.locator(".save-result.ok")).to_contain_text("Saved electric_board")
+        expect(p.locator("aside.changes h2")).to_have_text("No changes seen")
+        chain = rig_file(served)["channels"][0]["chain"]
+        assert [e["name"] for e in chain] == ["overdrive", "delay", "slap"]
+        assert chain[2] == {"name": "slap", "uri": "http://drobilla.net/plugins/mda/Delay"}, \
+            "at its defaults: its name and URI"
+        text = (served.save.root / "config" / "rigs" / "electric_board.yaml").read_text()
+        assert "# the drive: a comment the save keeps" in text
+        page.close()
 
 
 def test_a_rig_that_is_down_looks_down(browser):

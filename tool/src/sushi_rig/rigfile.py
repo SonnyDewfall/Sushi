@@ -1382,7 +1382,10 @@ def heard(config: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
 # - A processor whose `initial_state` entry says nothing of `bypassed` loads
 #   un-bypassed. (`emit` has always written none for such a one.)
 # - A processor added live starts at the plugin's defaults, the same values
-#   a config load gives it, so a replaced processor is the restarted one.
+#   a config load gives it, so a replaced processor is the restarted one;
+#   and so the values the agent reads straight after a live add are the
+#   defaults a save compares with (`added_entry`, #32), and it starts
+#   un-bypassed.
 # - A processor deleted live frees its name at once, for an add straight
 #   after under the same name (a replacement).
 # - A cc_mapping is bound to the processor when the config loads, so one

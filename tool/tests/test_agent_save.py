@@ -33,7 +33,7 @@ from sushi_rig.agent import Agent, Switching, pick_undo, save_refusal, save_requ
 from sushi_rig.agent import AgentError, saved_as_state  # noqa: E402
 
 from carla_fake import FakeCarla  # noqa: E402
-from ui_fake import RIG_FILE, UiRig  # noqa: E402
+from ui_fake import MDA_DELAY, RIG_FILE, UiRig, fixture_library  # noqa: E402
 
 
 @pytest.fixture(autouse=True)
@@ -121,7 +121,7 @@ def save_agent(root, world=None, rig=None):
     world = world or World(root)
     rig = rig or UiRig()
     agent = Agent(root=root, describe=world.described, switching=world.switching(), live=rig,
-                  carla=FakeCarla().carla(), run=_never,
+                  carla=FakeCarla().carla(), run=_never, library=fixture_library,
                   # No pedals: a save-as has the listener follow the renamed rig.
                   midi=midi_listener.World(plan=lambda described, root: midi_listener.Off("no pedals here")))
     return agent, world, rig
@@ -673,3 +673,55 @@ def test_a_running_rig_whose_file_name_the_name_rule_refuses_saves_in_place(root
     assert chain_entry(text, "overdrive")["parameters"]["Drive"] == 0.3
     status, answer = call(agent, "POST", "/rig/save", json={"name": "Guitar.Two"})
     assert status == 400, "a name the player chose is checked"
+
+
+# --------------------------------------------------------------------------- #
+# A save after plugins were added and removed live (#32)
+# --------------------------------------------------------------------------- #
+
+def test_an_add_a_remove_and_a_move_through_the_agent_are_saved_as_exactly_those_edits(root):
+    """Through the routes, so the log the save reads is the one the edits
+    wrote: a second delay added after the overdrive with one value off its
+    default, the octave removed, the first delay moved up past the new one."""
+    agent, world, rig = save_agent(root)
+    answers = calls(
+        agent,
+        ("POST", "/live/add", {"json": {"track": "board", "uri": MDA_DELAY, "name": "slap", "after": "overdrive"}}),
+        ("POST", "/live/parameter", {"json": {"processor": "slap", "parameter": "FX Mix", "value": 0.5}}),
+        ("POST", "/live/remove", {"json": {"processor": "octave"}}),
+        ("POST", "/live/move", {"json": {"processor": "delay", "direction": "up"}}),
+        ("POST", "/rig/save", {}),
+    )
+    assert [status for status, _ in answers] == [200] * 5, answers
+    assert rig.chains["board"] == ["overdrive", "delay", "slap", "board_send"]
+    text = read(root)
+    chain = chain_of(text)
+    assert [e["name"] for e in chain] == ["overdrive", "delay", "slap"]
+    # New, so only what differs from the defaults it was read at after the
+    # add: the one value turned. (The file's own plugins get every captured
+    # value, since RIG_FILE states none: a save's ordinary fold.)
+    assert chain[2] == {"name": "slap", "uri": MDA_DELAY, "parameters": {"FX Mix": 0.5}}
+    assert "octave" not in text and "_to_stereo" not in text and "_send" not in text
+    assert "  - name: overdrive   # the drive: a comment the save keeps\n" in text
+    assert yaml.safe_load(text)["channels"][1] == yaml.safe_load(RIG_FILE)["channels"][1] | {
+        "chain": [chain_entry(text, "vocal_delay")]}, "the vocal is as it was"
+    status, again = call(agent, "POST", "/rig/save")
+    assert status == 200 and read(root) == text, "saved twice, the same file"
+
+
+def test_undo_past_a_save_of_an_add_takes_it_out_and_the_next_save_writes_that(root):
+    agent, world, rig = save_agent(root)
+    answers = calls(
+        agent,
+        ("POST", "/live/add", {"json": {"track": "board", "uri": MDA_DELAY, "name": "slap"}}),
+        ("POST", "/rig/save", {}),
+        ("POST", "/live/undo", {}),
+        ("POST", "/rig/save", {}),
+    )
+    assert [status for status, _ in answers] == [200] * 4, answers
+    assert answers[2][1]["undone"]["op"] == "add"
+    assert [e["name"] for e in chain_of(read(root))] == ["overdrive", "octave", "delay"]
+
+
+def chain_of(text):
+    return yaml.safe_load(text)["channels"][0]["chain"]

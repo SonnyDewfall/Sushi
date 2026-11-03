@@ -985,7 +985,11 @@ function changeText(model, item) {
     const word = (b) => (b === null || b === undefined ? "unknown" : b ? "bypassed" : "on");
     return { where: `${findControl(model, item.processor).track || "?"} · ${item.processor}`, from: word(item.from), to: word(item.to) };
   }
-  return { where: `${item.track} · chain`, from: (item.from || []).join(", ") || "unknown", to: item.to.join(", ") };
+  // A plugin added or removed is said as that, with no before and after.
+  if (item.kind === "added") return { where: `added ${item.processor} to ${item.track}` };
+  if (item.kind === "removed") return { where: `removed ${item.processor}` };
+  const shown = (chain) => chain.filter((n) => !n.endsWith(R.STEREO_SUFFIX)).join(", ");
+  return { where: `${item.track} · chain`, from: shown(item.from || []) || "unknown", to: shown(item.to) };
 }
 
 // A time of today as the page shows one (the log's are to the second).
@@ -1006,7 +1010,7 @@ function renderChanges(el, model, unsaved, live) {
     h("p", { class: "sub" }, rows.length === 0 ? `by the agent ${seen}`
       : last ? "made through the agent since the last save" : "made through the agent since the rig came up"),
     rows.map((r) => h("div", { class: "change" }, h("span", { class: "where" }, r.where, r.pedal ? h("span", { class: "badge" }, "pedal") : null),
-      h("span", { class: "diff" }, h("s", {}, r.from), " to ", h("b", {}, r.to)))),
+      r.from === undefined ? null : h("span", { class: "diff" }, h("s", {}, r.from), " to ", h("b", {}, r.to)))),
     unsaved.partial ? h("p", { class: "warn" }, "The agent's log was trimmed since the rig came up, so older changes may be missing here.") : null,
     h("button", { class: "undo", disabled: !next || !!next.barrier, onclick: () => undo(false) }, undoLabel),
   ]);
