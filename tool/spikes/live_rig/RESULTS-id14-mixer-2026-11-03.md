@@ -81,15 +81,108 @@ So after every connect:
   events, so the knob moves the pointer. Unbind with
   `echo -n '3-1.2.1:1.4' | sudo tee /sys/bus/usb/drivers/usbhid/unbind`; nothing we use needs it.
 
+## Every routing combination tried
+
+Rows 1-2 are the main outputs, 5-6 the headphones. Results by ear, except where noted.
+
+| rows | source | result |
+|---|---|---|
+| 1, 2 | Main Mix | **silence** -- carries no computer audio at all |
+| 1, 2 | **DAW Mix** | **stereo, working.** This is the fix for the monitors |
+| 5, 6 | Main Mix | headphones left only |
+| 5, 6 | DAW Mix | headphones left only |
+
+So the monitors are solved and the headphone output is not. Both headphone attempts gave
+the left side alone, with the right carrying nothing. **Not the headphones** -- two
+different pairs behave the same, and the right driver is fine on another source.
+
+Untried on rows 5-6: `Alt Spkr`, `Cue A`, `Cue B`. Picking among them is guesswork,
+which is why the Windows capture below is the better next move than three more passes.
+
+What the pattern suggests: `DAW Mix` taps the computer's channels directly, which is why
+it works on the main pair and why nothing in the device attenuates it. `Main Mix` is the
+device's own bus, which Audient's software populates and Linux does not -- empty on the
+main rows, half-fed on the headphone rows.
+
+### A measurement that could not work
+
+The loopback was a **mono jack in a stereo headphone socket**, so it carried the tip
+alone and could only ever see the left side. Four "still mono" readings were taken
+through it before that was noticed; none of them was evidence about stereo, since a
+perfectly working stereo output would have measured identically. The loop is still valid
+for **level** on one channel, which is what the control sweeps below rest on. Testing
+stereo needs an insert lead splitting tip and ring to two inputs, or ears.
+
+## The control protocol, as far as it is known
+
+These are UAC2 class requests on the AudioControl interface, not vendor opcodes:
+`bmRequestType` 0x21/0xA1, `bRequest` 0x01 (SET_CUR) or 0x81 (GET_CUR),
+`wValue` = (selector << 8) | channel, `wIndex` = (entity << 8) | interface.
+`idctl.c` alongside this file sends them without a GUI, so a change can sit inside a
+measurement loop; `bursts.py` names which output arrived by the pitch that came back.
+
+**Entity 0x36 is the master section, and it both reads and writes.** Every write below
+was confirmed by reading the value back. Channel number is ignored — 0, 1 and 2 all
+return the same value.
+
+| selector | bytes | at rest | what MixiD calls it |
+|---|---|---|---|
+| 0x00 | 1 | 00 | Mono |
+| 0x01 | 1 | 00 | — |
+| 0x03 | 1 | 00 | Phase |
+| 0x04 | 1 | 00 | Speaker Mute |
+| 0x05 | 1 | 00 | Dim |
+| **0x06** | **2** | **f1 ff** | — |
+| 0x07 | 1 | 00 | Talkback |
+| 0x08 | 1 | 00 | — |
+| 0x0c | 1 | 00 | Alt |
+| 0x12 | 2 | 00 00 | *speaker volume* |
+| 0x15 | 1 | 00 | — |
+
+**MixiD writes volume to the wrong selector.** It uses 0x12, which reads zero and
+refuses writes. Selector **0x06** holds `0xfff1`, and under MixiD's own encoding
+(`-32768 + 32767 * volume`) that is 99.95% — the shape and resting value of a monitor
+volume at maximum. Not yet confirmed to affect audio.
+
+No other entity answers a read at all: 0x0a, 0x0b, 0x0c, 0x28, 0x32, 0x33, 0x37 and
+0x3c were all scanned across selectors 0x00-0x20 and returned nothing. So the vendor
+extension units are the whole control surface, and 0x36 is the only one that talks.
+
+**Getting a write in without losing the card is the unsolved part.** Three routes, all
+closed:
+
+- **The DFU interface** gives empty reads and timeouts. These are *interface-targeted*
+  class requests, so the recipient has to be the AudioControl interface; the DFU
+  interface is not it. MixiD's `052e166` is simply wrong for this device, and an earlier
+  retraction of that conclusion in this file was itself wrong.
+- **Not claiming the interface** gives `LIBUSB_ERROR_IO`: the kernel owns interface 0
+  and will not pass userspace control transfers to it.
+- **Claiming interface 0** works, but detaches `snd-usb-audio`, and the card keeps its
+  shell while losing every PCM device — `/proc/asound/card1/` holds only `id`, `usbbus`,
+  `usbid`, `usbmixer`. A plain reattach does not rebuild them and nor did
+  `libusb_reset_device`; it takes a replug, which resets the routing. MixiD survives the
+  same trick, so the difference is probably that it claims **once** per session while
+  `idctl` claims per invocation. A batch mode that claims once is the obvious next try.
+
 ## Still open
 
-- **`Alt Spkr`, `Cue A` and `Cue B` are untried.** One of them may carry the computer's output
-  *and* sit under the monitor knob, which would be better than DAW Mix. `Main Mix` was the
-  likeliest and it was silent, so this is not a promising line.
+- **The headphone output has no working source yet.** `Alt Spkr`, `Cue A` and `Cue B` remain
+  untried on rows 5-6; `Main Mix` and `DAW Mix` both give the left side alone.
+- **No level control was found anywhere.** Both ALSA feature-unit controls are inert in the
+  default routing *and* with DAW Mix active — measured, eight conditions each time, flat to
+  0.1 dB. Entity 0x36 selector 0x06 is still the best candidate but writing it needs interface
+  0, which costs the card. PipeWire's own volume works and is all there is for now.
 - **Outputs 3 and 4** (`engine_bus 1`) are untested — nothing was patched to them.
 - **Whether a reboot behaves differently from a replug.** Expected to be the same or worse.
 - MixiD logs the routing grid's row but not the column, so the terminal does not record which
   source was selected. It also cannot read device state back, so the grid reflects nothing.
+- **The Windows capture would settle most of this.** Everything above is inference from a
+  device that answers in single bytes; Audient's own panel knows the real selectors. Wireshark
+  with USBPcap on the iD14, then one control at a time with a pause between each -- monitor
+  volume, mono on and off, headphone volume, each routing selection -- and note the order. Each
+  control is a 9-byte control transfer, so the log maps straight onto the table above and tells
+  us which selector carries volume, which carries stereo, and how the panel sets things at
+  launch. An hour of Windows time is worth more than another day of probing here.
 
 ## Patches to MixiD
 
