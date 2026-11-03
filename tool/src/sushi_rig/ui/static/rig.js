@@ -253,6 +253,13 @@ export function channelLevels(model, live) {
 // ---------------------------------------------------------------- unsaved
 
 const sameChain = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((x, i) => x === b[i]);
+// A remove's shape: the processor in `args`, and in `previous` the track and
+// the chain it was taken from. An undo of an add is one too (the agent logs
+// an undo shaped as what it applied), so nothing here asks which it was.
+const removeShaped = (e) => {
+  const p = e.previous;
+  return !!(p && !Array.isArray(p) && typeof p.track === "string" && Array.isArray(p.chain));
+};
 // Which track a logged move was on. The log does not say, so: a later
 // remove of the processor says where it was; else where it is now; else the
 // track that still holds another processor of the chain the move started
@@ -260,9 +267,7 @@ const sameChain = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length ===
 function moveTrack(log, i, processor, previous, live) {
   for (let j = i + 1; j < log.length; j++) {
     const later = log[j];
-    if (later.op === "remove" && (later.args || {}).processor === processor && later.previous && later.previous.track) {
-      return later.previous.track;
-    }
+    if (removeShaped(later) && (later.args || {}).processor === processor) return later.previous.track;
   }
   const now = trackOf(live, processor);
   if (now) return now;
@@ -321,9 +326,12 @@ export function unsavedChanges(logAnswer, live, rig, amp = null) {
       // name has to be found, and the processor may be gone since.
       const t = moveTrack(log, i, a.processor, e.previous, live);
       if (t) note(`c\u0000${t}`, "chain", { track: t }, e.previous, e);
-    } else if (op === "add") note(`c\u0000${a.track}`, "chain", { track: a.track }, e.previous, e);
-    else if (op === "remove" && e.previous && e.previous.track) note(`c\u0000${e.previous.track}`, "chain", { track: e.previous.track }, e.previous.chain, e);
-    else if (op === "amp") note(`a\u0000${a.name}`, "amp", { name: a.name }, e.previous, e);
+    } else if (op === "add" || op === "remove") {
+      // By shape, not by op: an add's undo is a remove and a remove's an add,
+      // each logged in the shape of what it applied.
+      if (removeShaped(e)) note(`c\u0000${e.previous.track}`, "chain", { track: e.previous.track }, e.previous.chain, e);
+      else if (Array.isArray(e.previous) && typeof a.track === "string") note(`c\u0000${a.track}`, "chain", { track: a.track }, e.previous, e);
+    } else if (op === "amp") note(`a\u0000${a.name}`, "amp", { name: a.name }, e.previous, e);
     else if (op === "amp_model") note("m", "amp_model", {}, e.previous, e);
   }
   const items = [];
@@ -346,7 +354,7 @@ export function unsavedChanges(logAnswer, live, rig, amp = null) {
       if (now !== null && now !== item.from) items.push({ ...item, to: now });
     } else {
       const now = live && live.tracks ? live.tracks[item.track] : undefined;
-      if (now && !sameChain(now, item.from)) items.push({ ...item, to: [...now] });
+      if (now) items.push(...chainChanges(item, now));
     }
   }
   // Trimmed (`first` > 0) with no rig switch kept and the oldest entry kept
@@ -355,6 +363,33 @@ export function unsavedChanges(logAnswer, live, rig, amp = null) {
   const partial = first > 0 && start === 0 && log.length > 0
     && (Number.isNaN(since) || Number.isNaN(oldest) || oldest >= since);
   return { items, partial };
+}
+
+// What differs between a track's chain at its baseline and now, as the
+// player made it: each plugin there now that was not ("added X to <track>"),
+// each that was there and is not ("removed X from <track>"), and, when the plugins in
+// both are in another order, the chain itself. A copy to stereo comes and
+// goes with its plugin and is not a change of its own; nor are the send and
+// return, which never come or go. Netted like the rest: added and removed
+// again is nothing.
+function chainChanges(item, now) {
+  // A baseline the log does not have (a move Sushi did not say the chain of)
+  // says nothing of what came or went: one row, the chain from "unknown",
+  // never every plugin on the track as added (review of #32).
+  if (!Array.isArray(item.from)) return sameChain(now, item.from) ? [] : [{ ...item, to: [...now] }];
+  const from = item.from;
+  const was = new Set(from), is = new Set(now);
+  const own = (n) => !n.endsWith(STEREO_SUFFIX);
+  const base = { track: item.track, source: item.source };
+  const out = [
+    ...now.filter((n) => own(n) && !was.has(n)).map((n) => ({ kind: "added", processor: n, ...base })),
+    ...from.filter((n) => own(n) && !is.has(n)).map((n) => ({ kind: "removed", processor: n, ...base })),
+  ];
+  const kept = (chain) => chain.filter((n) => own(n) && was.has(n) && is.has(n));
+  if (!sameChain(kept(from), kept(now))) {
+    out.push({ kind: "chain", track: item.track, from: item.from, to: [...now], source: item.source });
+  }
+  return out;
 }
 
 // The entry an undo would take back, as the agent picks it (agent.pick_undo):
