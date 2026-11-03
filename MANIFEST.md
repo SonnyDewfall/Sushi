@@ -2986,3 +2986,44 @@ refuses every take (saying so, with every port listed) and this fix comes back.
 Then RECORD on the stage screen, `sushi-rig take check` on what it wrote, and
 `sushi-rig doctor` with the rig up (`record-ports`). None of it has run on the
 rig. *(2026-11-02)*
+
+**Hygiene pass: facts the later work made untrue** *(2026-11-03)*. No new
+behaviour. (1) `requires-python` is `>=3.11`, as the agent's supervisor,
+CI (3.11 and 3.13) and the rig (3.14) already were; the runtime 3.10 refusal in
+`Supervisor.up` is gone (its reason, `process_group`, stays as a comment), the
+three `skipif(version_info < (3, 11))` marks in test_supervisor,
+test_agent_record and test_recorder_process are dropped, and test_ui imports
+`tomllib` outright. The recorder_process comment and test that called 3.10 "the
+floor" now say what 3.11 does (it never keeps a daemon thread). (2) README's
+file tree: `Patchbay/Default.qpwgraph` and `Test_1.qpwgraph` are hand-made
+qpwgraph sessions added in #67 and read by nothing in `tool/src` (only
+`rig.qpwgraph` is), and are described so; `electric_stereo` stays listed under
+`config/src/` because that source is tracked, with a note that its built
+config is in `retired/`; `stereo` was missing from the module list (45
+modules, not 44); `docs/ui/` and `spikes/live_rig/` were missing from the tree.
+(3) README's "`LIFECYCLE_TIMEOUT`, as when the agent ran them as the CLI" is now
+`supervisor.LIFECYCLE_TIMEOUT` (the constant exists in `supervisor.py`; the
+earlier entry's "gone" meant gone from `cli`). Checked and found already true,
+so unchanged: nothing says undo is missing; "the listener constructs one" is
+correct (#57); no README or docstring says a rig plays left only except as the
+dated 2026-11-02 account of the bug and v1 configs; no TypeScript or Vite
+(README and `ui/__init__.py` say plain files, no build step); no `run_cli`.
+Earlier entries above still say `run_cli` and `LIFECYCLE_TIMEOUT` are gone and
+mention 3.10; they are history and were left. Not run: anything beyond the
+test suite.
+
+**Hygiene pass, addition: lilv collections on Python 3.13** *(2026-11-03)*.
+`lilv.Collection.__iter__` returns an `Iter` with `__next__` and no
+`__iter__`; on Python 3.13 a comprehension or `sorted()` over it raised
+`TypeError: 'Iter' object is not iterable`, which failed 9 `test_probe` tests
+here once python3-lilv 0.24.22 was installed (CI's fast jobs have no lilv, and
+its container runs 3.12, so it never saw it). `probe._each(collection)` now
+walks a collection with `next()` on `iter(collection)` and never needs the
+iterator to be iterable; every walk of a lilv collection in `probe.py`
+(`_unit_symbol`, `_port_scale_points`, `describe`'s `get_value` reads, `probe`,
+`parameter_units`) and `plugins.plugins_on` goes through it, and the loop in
+`test_library` uses it. `test_stereo` only calls `get_by_uri`, so it needed
+nothing. `tests/test_lilv_each.py` pins it with fakes shaped like lilv's, with
+no lilv installed. Checked: `test_probe.py` on python3.13 with the real lilv,
+22 passed, 6 skipped. **The rig's Python 3.14 is unverified**: not run there,
+and whether its lilv has the same `Iter` depends on its version.

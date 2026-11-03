@@ -287,12 +287,11 @@ def test_the_reader_agrees_with_lilv_on_every_bundle_in_plugins():
     with _lv2_path(str(plugins_dir)):
         world = lilv.World()
         world.load_all()
-    # A for statement, not a comprehension: lilv's collection iterator has a
-    # __next__ and no __iter__, and on Python 3.13 a comprehension over it
-    # raises "'Iter' object is not iterable" where a loop does not (found
-    # running this test).
+    # lilv's collection iterator has a __next__ and no __iter__ (probe._each).
+    from sushi_rig.probe import _each
+
     truth = {}
-    for plugin in world.get_all_plugins():
+    for plugin in _each(world.get_all_plugins()):
         truth[str(plugin.get_uri())] = (str(plugin.get_name()), plugin.get_num_ports())
     found, _ = scan_plugins(plugins_dir)
     ours = {u: (m["name"], m["ports"]) for u, m in found.items()}

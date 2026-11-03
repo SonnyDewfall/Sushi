@@ -43,8 +43,6 @@ from test_record_session import MACHINE, TWO_CHANNELS, config_of, write  # noqa:
 from ui_fake import FakeClock, Pushing  # noqa: E402
 from sushi_rig.rigfile import load_rig  # noqa: E402
 
-# The processes are started with subprocess's process_group, which is 3.11's.
-pytestmark = pytest.mark.skipif(sys.version_info < (3, 11), reason="process_group needs Python 3.11")
 
 SRC = checkout_root() / "tool" / "src"
 TESTS = Path(__file__).parent
@@ -653,8 +651,8 @@ def test_a_connect_refused_with_eagain_is_busy(monkeypatch, socket_dir):
 
 def test_the_server_keeps_no_record_of_requests_served(duo, socket_dir):
     """A recorder polled every second for hours: each request's thread is a
-    daemon one the server does not keep (Python 3.10 kept every one when
-    joined on close)."""
+    daemon one the server does not keep (a non-daemon one is held in a list to
+    be joined on close)."""
     import threading
 
     server = recorder_process.bind(socket_dir / "recorder.sock", core())
