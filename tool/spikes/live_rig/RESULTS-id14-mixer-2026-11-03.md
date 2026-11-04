@@ -4,6 +4,13 @@ Rig laptop `sonny-dewfall-XPS-9320`, 2026-11-03. Follows
 [RESULTS-stereo-2026-11-02.md](RESULTS-stereo-2026-11-02.md), which cleared the repo and ended
 with the interface itself as the only remaining suspect.
 
+> **Partly superseded, 2026-11-04.** A USB capture of Audient's own panel on Windows settled the
+> protocol — see [RESULTS-id14-windows-2026-11-04.md](RESULTS-id14-windows-2026-11-04.md). Three
+> conclusions below were wrong and are marked inline: the identity of the volume selector, what
+> `0x06` is, and the level encoding. The headphone rows were wrong too — **the headphones are
+> routing channels 2 and 3, which MixiD labels "Channel 3" and "Channel 4"**, not rows 5–6. The
+> method and the eliminations in this file still stand.
+
 ## What was wrong
 
 **Three of the Audient iD14's four outputs were passing nothing.** Output 1 worked. Outputs 2, 3
@@ -139,10 +146,16 @@ return the same value.
 | 0x12 | 2 | 00 00 | *speaker volume* |
 | 0x15 | 1 | 00 | — |
 
-**MixiD writes volume to the wrong selector.** It uses 0x12, which reads zero and
+~~**MixiD writes volume to the wrong selector.** It uses 0x12, which reads zero and
 refuses writes. Selector **0x06** holds `0xfff1`, and under MixiD's own encoding
 (`-32768 + 32767 * volume`) that is 99.95% — the shape and resting value of a monitor
-volume at maximum. Not yet confirmed to affect audio.
+volume at maximum.~~
+
+> **Wrong, corrected 2026-11-04.** 0x12 *is* the main volume selector. The `00 00` read back is
+> a real value — **0 dB** — not a dead control. 0x06 is the **dim level**, and its `0xfff1` is
+> −0.06 dB. Both misreadings came from applying MixiD's linear encoding to what is actually
+> standard UAC2 **signed 8.8 fixed-point dB**: `0x0000` = 0 dB, `0xc400` = −60 dB, `0x8000` =
+> −128 dB (silence). MixiD's `float_to_u16` does not match the device either.
 
 No other entity answers a read at all: 0x0a, 0x0b, 0x0c, 0x28, 0x32, 0x33, 0x37 and
 0x3c were all scanned across selectors 0x00-0x20 and returned nothing. So the vendor
@@ -166,12 +179,14 @@ closed:
 
 ## Still open
 
-- **The headphone output has no working source yet.** `Alt Spkr`, `Cue A` and `Cue B` remain
-  untried on rows 5-6; `Main Mix` and `DAW Mix` both give the left side alone.
-- **No level control was found anywhere.** Both ALSA feature-unit controls are inert in the
-  default routing *and* with DAW Mix active — measured, eight conditions each time, flat to
-  0.1 dB. Entity 0x36 selector 0x06 is still the best candidate but writing it needs interface
-  0, which costs the card. PipeWire's own volume works and is all there is for now.
+- ~~**The headphone output has no working source yet.** `Alt Spkr`, `Cue A` and `Cue B` remain
+  untried on rows 5-6.~~ **Answered 2026-11-04:** rows 5–6 address routing channels 4 and 5,
+  which do not exist on this unit — the headphones are channels **2 and 3**, MixiD's rows 3 and 4.
+  `Alt Spkr` and `Cue B` are not real sources on an iD14 at all; it has three.
+- ~~**No level control was found anywhere.**~~ **Explained 2026-11-04:** the monitor knob is dead
+  because `DAW Mix` (DAW Thru) bypasses the monitor section by design, and that was the only
+  routing we had working. Main Mix should restore it, but Main Mix is fed from the mixer matrix,
+  which MixiD cannot write. The measurement that both ALSA controls are flat still stands.
 - **Outputs 3 and 4** (`engine_bus 1`) are untested — nothing was patched to them.
 - **Whether a reboot behaves differently from a replug.** Expected to be the same or worse.
 - MixiD logs the routing grid's row but not the column, so the terminal does not record which
