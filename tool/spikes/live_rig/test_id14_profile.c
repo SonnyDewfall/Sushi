@@ -242,6 +242,13 @@ static void test_parse(void)
     CHECK(id14_parse_value("0x10000", 2, b) == -1, "0x10000 does not fit in 2 bytes");
     CHECK(id14_parse_value("0xffffffffffffffff", 8, b) == 0 && b[7] == 0xff, "8 bytes of ff");
     CHECK(id14_parse_value("-1", 2, b) == -1, "negative values are refused");
+    CHECK(id14_parse_value(" -1", 8, b) == -1, "' -1' is refused: strtoull would skip the space and wrap it");
+    CHECK(id14_parse_value(" 5", 1, b) == -1, "leading whitespace is refused");
+    CHECK(id14_parse_value("+5", 1, b) == -1, "a leading '+' is refused");
+    CHECK(id14_parse_long(" 5", 0, 9, &v) == -1, "leading whitespace is refused by parse_long");
+    CHECK(id14_parse_long("+5", 0, 9, &v) == -1, "a leading '+' is refused by parse_long");
+    CHECK(id14_parse_long("-5", 0, 9, &v) == -1, "'-5' is refused for an unsigned range");
+    CHECK(id14_parse_long("-5", -9, 9, &v) == 0 && v == -5, "'-5' is accepted for a signed range");
     CHECK(id14_parse_value("12abc", 2, b) == -1, "trailing garbage is refused");
     CHECK(id14_parse_value("1", 9, b) == -1, "len 9 is beyond ID14_MAX_LEN");
     CHECK(id14_parse_value("1", 0, b) == -1, "len 0 is refused");

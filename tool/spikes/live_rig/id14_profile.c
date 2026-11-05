@@ -1,6 +1,7 @@
 /* id14_profile -- see id14_profile.h. No libusb in this file, on purpose. */
 #include "id14_profile.h"
 
+#include <ctype.h>
 #include <errno.h>
 #include <stdio.h>
 #include <stdlib.h>
@@ -174,9 +175,19 @@ void id14_format_write(const struct id14_write *w, char *buf, size_t n)
              w->entity, w->selector, w->channel, bytes, w->what);
 }
 
+/* strtol and strtoull skip leading whitespace and accept a sign, so " -1"
+ * would get past a check of the first character alone. The argument must
+ * start with a digit (or, for a signed range, '-' and a digit). */
+static int starts_numeric(const char *s, int allow_minus)
+{
+    if (allow_minus && *s == '-')
+        s++;
+    return isdigit((unsigned char)*s);
+}
+
 int id14_parse_long(const char *s, long lo, long hi, long *out)
 {
-    if (!s || !*s)
+    if (!s || !starts_numeric(s, lo < 0))
         return -1;
     char *end;
     errno = 0;
@@ -189,7 +200,7 @@ int id14_parse_long(const char *s, long lo, long hi, long *out)
 
 int id14_parse_value(const char *s, int len, uint8_t out[ID14_MAX_LEN])
 {
-    if (!s || !*s || *s == '-' || *s == '+' || len < 1 || len > ID14_MAX_LEN)
+    if (!s || !starts_numeric(s, 0) || len < 1 || len > ID14_MAX_LEN)
         return -1;
     char *end;
     errno = 0;
