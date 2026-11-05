@@ -13,11 +13,11 @@ been tried on the device.
 
 | File | What |
 |---|---|
-| `idctl.c` | `idctl apply [daw\|mainmix]` claims interface 0 **once**, sends every write, and tears down **once**. Each write prints its entity, selector, channel and bytes, then `ok` or the libusb error. The first failure stops the remaining writes, and the teardown still runs. SIGINT, SIGTERM, SIGHUP and SIGQUIT finish the teardown. `--dry-run` opens nothing. `idctl route` now means this device's three real sources. |
+| `idctl.c` | `idctl apply [daw\|mainmix]` claims interface 0 **once**, sends every write, and tears down **once**. Each write prints its entity, selector, channel and bytes, then `ok` or the libusb error. The first failure stops the remaining writes, and the teardown still runs. SIGINT, SIGTERM, SIGHUP and SIGQUIT finish the teardown: exit 128 + signal if writes were left unsent, but 0 if the signal came after every write had succeeded. A failed claim hands interface 0 back to snd-usb-audio if it was left without a driver. Numbers are parsed strictly (any C base, nothing else in the argument), and anything malformed is refused with exit 2 before the device is touched. `--dry-run` opens nothing. `idctl route` now means this device's three real sources. |
 | `id14_profile.c/.h` | What gets written, as plain C with no libusb |
 | `test_id14_profile.c`, `test_idctl_cli.sh`, `test_id14_route_on_connect.sh` | The tests. `idctl-apply-*.expected` are the exact dry-run listings |
 | `idctl.mk` | `make -f idctl.mk check` builds and runs all of them |
-| `85-id14-route.rules`, `id14-route@.service`, `id14-route-on-connect.sh` | Runs `idctl apply daw` on every connect |
+| `85-id14-route.rules`, `id14-route@.service`, `id14-route-on-connect.sh` | Runs `idctl apply daw` on every connect. Only `daw`: the script refuses any other profile |
 
 **The profiles:**
 
@@ -36,6 +36,19 @@ been tried on the device.
   Within the matrix, everything is silenced before anything is raised.
 
 **Source `0x03` is never sent.** It is dead on this unit. The tests fail if any route sends it.
+
+**If the claim fails** (for example `LIBUSB_ERROR_BUSY` because MixiD is connected), idctl prints
+`claim failed: …` and then one of these, and exits 1 without writing anything:
+
+- `after the failed claim: snd-usb-audio is still bound to interface 0`: the card was never
+  touched. This is the normal case.
+- `after the failed claim: interface 0 had no kernel driver; reattach <result>`: libusb detached
+  the driver and then failed the claim, so idctl handed the interface back. `LIBUSB_SUCCESS`
+  means the card is back. `LIBUSB_ERROR_BUSY` means another program holds the interface: libusb
+  reports "no kernel driver" when MixiD has it too. The attach takes nothing from MixiD.
+
+On connect, the same case appears in the journal as idctl's lines, followed by
+`idctl apply daw failed (exit 1) and the card was never detached`.
 
 ## Rules for this session
 
@@ -63,7 +76,7 @@ sudo apt install libusb-1.0-0-dev     # if not already installed
 make -f idctl.mk check
 ```
 
-Expect `784 checks, 0 failures`, then 19 `ok` lines and no `FAIL`. Record the output. The build
+Expect `814 checks, 0 failures`, then 42 `ok` lines and no `FAIL`. Record the output. The build
 uses `-Wall -Wextra -Werror`, so a warning on this compiler stops the build. If that happens,
 record the warning.
 
@@ -170,14 +183,29 @@ systemctl status id14-route@<dev>.service --no-pager
 journalctl -b -u 'id14-route@*' --no-pager -o short-precise | tail -30
 ```
 
-Expect `iD14 connected at …`, then `card … has PCMs [pcm0c pcm0p] after 0s`, then idctl's lines,
-then `routing applied: daw; card … back with PCMs […]`. The status should be
+Expect these lines, in order:
+
+1. `iD14 connected at … (003/0NN)`
+2. `card … has PCMs [pcm0c pcm0p] after 0s`
+3. `before the claim: nodes [pcmC1D0c:<inode> pcmC1D0p:<inode>]`
+4. idctl's lines
+5. `card rebuilt: PCMs [pcm0c pcm0p], new nodes […]`, with inodes that differ from line 3
+6. `routing applied: daw; card … back with PCMs […]` The status should be
 `inactive (dead)` with `status=0/SUCCESS`. Failures are logged at error priority, which shows red
 in `journalctl`.
 
-**Then the replug test, three times.** Wait **at least 20 s** between replugs. The unit refuses a
-second run within 15 s of the last one for the same device. That guard is against a retrigger
-loop, and the journal says so if it fires. For each replug:
+**Then the replug test, three times.** There is no need to wait between replugs. Every
+connection gets a new USB device number (the `003/0NN` in the first line). The loop guard refuses
+only a second run for the **same** connection within 15 s, so it cannot block a real replug. If it
+does fire, the journal says `refusing: already ran …s ago for this same connection`. Report that
+if it ever happens without a manual `systemctl start`. As a backstop, the unit refuses a sixth
+start within two minutes. If that ever trips during testing, clear it with
+`sudo systemctl reset-failed 'id14-route@*'` and note it.
+
+**Also try one fast replug:** unplug and plug back within about a second. That is the cable-dropout
+case, and it must still route.
+
+For each replug:
 
 ```bash
 # unplug, wait 5 s, plug in, wait 15 s
@@ -217,11 +245,23 @@ logged in yet, so PipeWire cannot be in the way.
   `84-audient.rules`. Leave that rule in place: it is what lets idctl and MixiD run by hand.
 - **Logging.** Everything goes to the journal, each line prefixed with the device
   (`3-1.2.1: …`), and the instance name carries it too.
+- **Only `daw`.** `ID14_PROFILE` set to anything else is refused with exit 2. `mainmix` is
+  untested on the device and is for trying by hand with the monitors down. The unit's
+  `TimeoutStartSec=90` is also sized for `daw`'s 4 writes, not `mainmix`'s 64.
 - **Never loop.** The unit has no restart, and a failure stops it there. The rule matches the
   usb_device, not the sound card: idctl's teardown makes the card rebuild its PCMs, so a rule on
-  the sound card would fire on every apply. There is also the 15 s guard.
-- **After the teardown,** the script waits up to 15 s for the same PCM entries to come back. If
-  they do not, it fails and logs the rebind command with this device's path.
+  the sound card would fire on every apply. Two more checks back that up:
+  - the script refuses a second run for the same connection (same bus and device number) within
+    15 s;
+  - the unit refuses a sixth start within 120 s. This catches a loop that re-enumerated the
+    device every time, which the script's check would let through.
+- **After the teardown,** the script does not trust a listing, because the PCMs from before the
+  claim look exactly like rebuilt ones. Before the claim it records the inode of each
+  `/dev/snd/pcmC<N>D…` node. It then waits up to 15 s for the same PCMs to be listed with all-new
+  nodes. A PCM taken down and rebuilt gets a new device node. There are three outcomes:
+  - all-new nodes: success;
+  - the old nodes still there: `the PCMs never went away`, exit 4, a failure of its own;
+  - anything else: `the card did not come back`, exit 3, with the rebind command for this device.
 
 **Known gap: suspend.** If the laptop suspends and the iD14 loses power, the routing may reset with
 no new connect event, so nothing re-applies it. This is untested. If it happens after a resume, run
@@ -341,7 +381,16 @@ edit anything else to make it pass. If a script needs fixing, record the fix and
   So input 13 may be talkback rather than DAW 4. `mainmix` silences it either way.
 - That Main Mix master channels 1 and 2 at `00 00` is unity. The panel wrote that value at launch.
 - The settle time, the 3 s PipeWire allowance, and the attach line's `LIBUSB_ERROR_BUSY`.
-- That idctl's reset does not re-add the USB device. If it does, the 15 s guard stops the loop.
+- That idctl's reset does not re-add the USB device. If it does without re-enumerating, the
+  script's guard refuses the second run. If it re-enumerates, the unit's start limit stops it
+  after five runs.
+- The card-return check rests on two assumptions:
+  - when `/proc/asound/cardN` loses its `pcm*` entries, the `/dev/snd/pcmC<N>D…` nodes go too;
+  - devtmpfs gives a re-created node a new inode number.
+
+  If the first is wrong, every connect fails with exit 4, `the PCMs never went away`, even
+  though the routing was written. If that happens, report it, and do not loosen the check to
+  make it pass.
 
 ### The claim and teardown, checked against MixiD
 
@@ -363,4 +412,8 @@ The calls match. There are three differences, none in the calls themselves:
 3. The time between claim and teardown, described above.
 
 The sequence is kept exactly as it was. idctl now only prints the return code of each teardown
-call.
+call. The one addition is on the failure path: after a failed claim it hands interface 0 back if
+the claim left it without a driver (see **If the claim fails**). MixiD does not do this.
+
+To check this, the cloud session shallow-cloned Sonny's MixiD fork (github.com/SonnyDewfall/mixid)
+and read `driver.h`. Nothing in this repository comes from that clone except this comparison.

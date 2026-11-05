@@ -1,7 +1,9 @@
 /* id14_profile -- see id14_profile.h. No libusb in this file, on purpose. */
 #include "id14_profile.h"
 
+#include <errno.h>
 #include <stdio.h>
+#include <stdlib.h>
 #include <string.h>
 
 /* [output][position]: Main Mix, Cue Mix, DAW. Audient's panel offers exactly
@@ -170,4 +172,43 @@ void id14_format_write(const struct id14_write *w, char *buf, size_t n)
         pos += snprintf(bytes + pos, sizeof bytes - pos, i ? " %02x" : "%02x", w->data[i]);
     snprintf(buf, n, "entity 0x%02x selector 0x%02x channel 0x%02x  bytes %-5s  %s",
              w->entity, w->selector, w->channel, bytes, w->what);
+}
+
+int id14_parse_long(const char *s, long lo, long hi, long *out)
+{
+    if (!s || !*s)
+        return -1;
+    char *end;
+    errno = 0;
+    long v = strtol(s, &end, 0);
+    if (errno || *end || v < lo || v > hi)
+        return -1;
+    *out = v;
+    return 0;
+}
+
+int id14_parse_value(const char *s, int len, uint8_t out[ID14_MAX_LEN])
+{
+    if (!s || !*s || *s == '-' || *s == '+' || len < 1 || len > ID14_MAX_LEN)
+        return -1;
+    char *end;
+    errno = 0;
+    unsigned long long v = strtoull(s, &end, 0);
+    if (errno || *end)
+        return -1;
+    if (len < 8 && (v >> (8 * len)))
+        return -1;          /* does not fit in len bytes */
+    memset(out, 0, ID14_MAX_LEN);
+    for (int i = 0; i < len; i++)
+        out[i] = (v >> (8 * i)) & 0xff;
+    return 0;
+}
+
+int id14_exit_status(int n, int done, int failed, int sig)
+{
+    if (failed)
+        return 1;
+    if (done < n)
+        return sig ? 128 + sig : 1;
+    return 0;
 }

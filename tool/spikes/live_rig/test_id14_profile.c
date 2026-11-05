@@ -218,6 +218,46 @@ static void test_format(void)
     CHECK(!strcmp(line, want), "format:\n  got  '%s'\n  want '%s'", line, want);
 }
 
+static void test_parse(void)
+{
+    long v = -99;
+    /* Accepted: any C base, the whole string. */
+    CHECK(id14_parse_long("2", 0, 3, &v) == 0 && v == 2, "'2' -> %ld", v);
+    CHECK(id14_parse_long("0x2D", 0, 255, &v) == 0 && v == 0x2D, "'0x2D' -> %ld", v);
+    CHECK(id14_parse_long("010", 0, 255, &v) == 0 && v == 8, "'010' is octal 8, got %ld", v);
+    /* Refused, with v untouched. */
+    static const char *bad[] = {"HP_L", "", "2x", "2 ", " x", "0x", "4", "-1", "99999999999999999999"};
+    for (unsigned i = 0; i < sizeof bad / sizeof *bad; i++) {
+        v = -99;
+        CHECK(id14_parse_long(bad[i], 0, 3, &v) == -1 && v == -99, "'%s' must be refused for 0-3", bad[i]);
+    }
+    CHECK(id14_parse_long(NULL, 0, 3, &v) == -1, "NULL must be refused");
+
+    uint8_t b[ID14_MAX_LEN];
+    CHECK(id14_parse_value("0xac44", 4, b) == 0 && b[0] == 0x44 && b[1] == 0xac && b[2] == 0 && b[3] == 0,
+          "0xac44 in 4 bytes -> %02x %02x %02x %02x", b[0], b[1], b[2], b[3]);
+    CHECK(id14_parse_value("0x8000", 2, b) == 0 && b[0] == 0x00 && b[1] == 0x80, "0x8000 in 2 bytes");
+    CHECK(id14_parse_value("255", 1, b) == 0 && b[0] == 0xff, "255 in 1 byte");
+    CHECK(id14_parse_value("256", 1, b) == -1, "256 does not fit in 1 byte");
+    CHECK(id14_parse_value("0x10000", 2, b) == -1, "0x10000 does not fit in 2 bytes");
+    CHECK(id14_parse_value("0xffffffffffffffff", 8, b) == 0 && b[7] == 0xff, "8 bytes of ff");
+    CHECK(id14_parse_value("-1", 2, b) == -1, "negative values are refused");
+    CHECK(id14_parse_value("12abc", 2, b) == -1, "trailing garbage is refused");
+    CHECK(id14_parse_value("1", 9, b) == -1, "len 9 is beyond ID14_MAX_LEN");
+    CHECK(id14_parse_value("1", 0, b) == -1, "len 0 is refused");
+}
+
+static void test_exit_status(void)
+{
+    CHECK(id14_exit_status(4, 4, 0, 0) == 0, "all ok");
+    CHECK(id14_exit_status(4, 4, 0, 15) == 0, "signal after the last ok write is success");
+    CHECK(id14_exit_status(64, 6, 0, 15) == 143, "signal mid-run is 128+15");
+    CHECK(id14_exit_status(64, 2, 0, 2) == 130, "SIGINT mid-run is 128+2");
+    CHECK(id14_exit_status(4, 2, 1, 0) == 1, "a failed write is 1");
+    CHECK(id14_exit_status(4, 2, 1, 15) == 1, "a failed write is 1 even with a signal");
+    CHECK(id14_exit_status(4, 4, 1, 0) == 1, "a failed last write is 1");
+}
+
 int main(void)
 {
     test_db_encoding();
@@ -227,6 +267,8 @@ int main(void)
     test_mainmix();
     test_profile_errors();
     test_format();
+    test_parse();
+    test_exit_status();
     printf("%d checks, %d failures\n", checks, failures);
     return failures != 0;
 }

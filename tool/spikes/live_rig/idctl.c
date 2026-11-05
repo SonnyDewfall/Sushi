@@ -9,8 +9,11 @@
  *   idctl [--dry-run] [--gap-ms N] apply [daw|mainmix]   claim once, every write, tear down once
  *   idctl [--dry-run] route <output 0-3> <position 0-2>  0 Main Mix, 1 Cue Mix, 2 DAW
  *   idctl [--dry-run] set <entity> <sel> <ch> <len 1-8> <value>
- *   idctl get <entity> <sel> <ch> <len>
+ *   idctl get <entity> <sel> <ch> <len 1-64>
  *   idctl scan                                           GET_CUR across entities and selectors
+ *
+ * Numbers take any C base (10, 0x0a, 012) and must be nothing but the number;
+ * anything else is refused with exit 2 before the device is touched.
  *
  * Every invocation that opens the device claims interface 0 once and tears down
  * once. --dry-run prints the writes without opening anything. Each write prints
@@ -18,8 +21,9 @@
  * first failure stops the remaining writes (so a half-applied profile stops
  * where it is, rather than carrying on into a louder state), the teardown still
  * runs, and the exit status is 1. SIGINT, SIGTERM, SIGHUP and SIGQUIT stop the
- * writes and finish the teardown, exit 128 + signal. SIGKILL cannot be caught:
- * that one costs the sound card until a rebind or a replug.
+ * writes and finish the teardown: exit 128 + signal if writes were left unsent,
+ * 0 if the signal came after the last write had already succeeded. SIGKILL
+ * cannot be caught: that one costs the sound card until a rebind or a replug.
  */
 #include <libusb.h>
 #include <signal.h>
@@ -33,6 +37,7 @@
 #define VID 0x2708
 #define PID 0x0002
 #define TIMEOUT 1000
+#define MAX_GAP_MS 60000
 
 /* Which interface carries the requests. These are interface-targeted class
  * requests, so the recipient has to be the AudioControl interface, 0: the spare
@@ -84,30 +89,78 @@ static void print_device(void)
     printf("\n");
 }
 
+/* An environment override, parsed strictly. Returns 0 (absent or ok) or -1. */
+static int env_int(const char *name, long lo, long hi, int *out)
+{
+    const char *s = getenv(name);
+    long v;
+    if (!s)
+        return 0;
+    if (id14_parse_long(s, lo, hi, &v) < 0) {
+        fprintf(stderr, "%s=%s: want a number %ld-%ld\n", name, s, lo, hi);
+        return -1;
+    }
+    *out = (int)v;
+    return 0;
+}
+
+/* After a failed claim, or a refusal after the open: there is no claimed
+ * interface to release, but the card must not be left without its driver.
+ * With auto-detach on, libusb can detach snd-usb-audio and then fail the claim
+ * (its fallback on kernels without USBDEVFS_DISCONNECT_CLAIM does exactly
+ * that). So if interface 0 has no kernel driver now, hand it back; then close
+ * and exit, as the normal teardown does. libusb reports "no kernel driver"
+ * also when another program (MixiD) holds the interface through usbfs; the
+ * attach then fails with LIBUSB_ERROR_BUSY and takes nothing from it. */
+static void abandon_device(int claim_attempted)
+{
+    if (claim_attempted && iface == 0) {
+        int active = libusb_kernel_driver_active(dev, 0);
+        if (active == 1) {
+            printf("after the failed claim: snd-usb-audio is still bound to interface 0\n");
+        } else if (active == 0) {
+            int r = libusb_attach_kernel_driver(dev, 0);
+            printf("after the failed claim: interface 0 had no kernel driver; reattach %s\n",
+                   libusb_error_name(r));
+        } else {
+            printf("after the failed claim: cannot check interface 0's driver: %s\n",
+                   libusb_error_name(active));
+        }
+    }
+    libusb_close(dev);
+    libusb_exit(NULL);
+}
+
 /* The claim. The sequence (auto-detach, claim) is MixiD's driver_init on
- * rig/id14-mki-interface0, and is kept exactly as it was. */
+ * rig/id14-mki-interface0, and is kept exactly as it was. Every failure after
+ * libusb_init cleans up before returning. */
 static int open_device(void)
 {
     if (libusb_init(NULL) != LIBUSB_SUCCESS)
         return fprintf(stderr, "libusb_init failed\n"), -1;
     dev = libusb_open_device_with_vid_pid(NULL, VID, PID);
-    if (!dev)
-        return fprintf(stderr, "no %04x:%04x, or no permission (udev rule?)\n", VID, PID), -1;
+    if (!dev) {
+        fprintf(stderr, "no %04x:%04x, or no permission (udev rule?)\n", VID, PID);
+        libusb_exit(NULL);
+        return -1;
+    }
     print_device();
     /* Taking interface 0 detaches snd-usb-audio, so the card leaves ALSA until we
      * release it. Reattached in close_device, which is why this never daemonises. */
-    const char *env = getenv("IDCTL_IFACE");
-    if (env)
-        iface = atoi(env);
-    if (getenv("IDCTL_CLAIM"))
-        do_claim = atoi(getenv("IDCTL_CLAIM"));
+    if (env_int("IDCTL_IFACE", 0, 255, &iface) < 0 || env_int("IDCTL_CLAIM", 0, 1, &do_claim) < 0) {
+        abandon_device(0);
+        return -1;
+    }
     if (!do_claim)
         return 0;
     if (iface == 0 && libusb_set_auto_detach_kernel_driver(dev, 1) < 0)
         fprintf(stderr, "warning: auto-detach unavailable\n");
     int err = libusb_claim_interface(dev, iface);
-    if (err < 0)
-        return fprintf(stderr, "claim failed: %s\n", libusb_error_name(err)), -1;
+    if (err < 0) {
+        fprintf(stderr, "claim failed: %s\n", libusb_error_name(err));
+        abandon_device(1);
+        return -1;
+    }
     printf("claimed interface %d\n", iface);
     return 0;
 }
@@ -148,10 +201,13 @@ static void gap(int ms)
     nanosleep(&ts, NULL);   /* a signal cuts it short, which is what we want */
 }
 
-static int interrupted(void)
+static void report_signal(int all_sent)
 {
-    printf("interrupted by signal %d (%s)\n", (int)stop_sig, strsignal(stop_sig));
-    return 128 + stop_sig;
+    if (all_sent)
+        printf("signal %d (%s) arrived after the last write; every write was ok\n",
+               (int)stop_sig, strsignal(stop_sig));
+    else
+        printf("interrupted by signal %d (%s)\n", (int)stop_sig, strsignal(stop_sig));
 }
 
 /* Claim once, send every write in order, tear down once. */
@@ -160,10 +216,13 @@ static int run_writes(const struct id14_write *w, int n, int dry, int gap_ms)
     char line[160];
     int failed = 0, done = 0;
 
-    if (dry)
+    if (dry) {
         printf("dry run: %d write(s), device not opened\n", n);
-    else if (open_device() < 0)
+        /* For test_idctl_cli.sh, which signals only after seeing this. */
+        fprintf(stderr, "idctl: signal handlers installed\n");
+    } else if (open_device() < 0) {
         return 1;
+    }
 
     for (int i = 0; i < n && !stop_sig; i++) {
         if (i && gap_ms > 0) {
@@ -193,15 +252,15 @@ static int run_writes(const struct id14_write *w, int n, int dry, int gap_ms)
     }
     if (done < n)
         printf("skipped the remaining %d write(s): %s\n", n - done,
-               stop_sig ? "signal" : "the write above failed");
+               failed ? "the write above failed" : "signal");
 
     if (!dry)
         close_device();
     if (stop_sig)
-        return interrupted();
+        report_signal(done == n && !failed);
     if (failed)
         printf("FAILED\n");
-    return failed;
+    return id14_exit_status(n, done, failed, stop_sig);
 }
 
 static int usage(const char *argv0)
@@ -209,36 +268,58 @@ static int usage(const char *argv0)
     fprintf(stderr,
         "usage: %s [--dry-run] [--gap-ms N] apply [daw|mainmix]\n"
         "       %s [--dry-run] route <output 0-3> <position 0-2>   (0 Main Mix, 1 Cue Mix, 2 DAW)\n"
-        "       %s [--dry-run] set <entity> <sel> <ch> <len 1-8> <value>\n"
-        "       %s get <entity> <sel> <ch> <len>\n"
-        "       %s scan\n", argv0, argv0, argv0, argv0, argv0);
+        "       %s [--dry-run] set <entity> <sel> <ch> <len 1-%d> <value>\n"
+        "       %s get <entity> <sel> <ch> <len 1-64>\n"
+        "       %s scan\n", argv0, argv0, argv0, ID14_MAX_LEN, argv0, argv0);
     return 2;
 }
+
+/* A command-line number, or exit 2 naming it. */
+#define ARG(var, str, lo, hi, what) do {                                        \
+        long v_;                                                                \
+        if (id14_parse_long((str), (lo), (hi), &v_) < 0) {                      \
+            fprintf(stderr, "%s: '%s' is not a number %ld-%ld\n", (what), (str),\
+                    (long)(lo), (long)(hi));                                    \
+            return 2;                                                           \
+        }                                                                       \
+        (var) = (int)v_;                                                        \
+    } while (0)
 
 int main(int argc, char **argv)
 {
     setvbuf(stdout, NULL, _IOLBF, 0);   /* line by line into the journal, not at exit */
 
     /* Options may come anywhere; strip them, keep the rest in order. */
-    int dry = 0, gap_ms = 0, ac = 0;
+    int dry = 0, gap_ms = 0, gap_given = 0, ac = 0;
     char *av[16];
     for (int i = 0; i < argc; i++) {
-        if (i && !strcmp(argv[i], "--dry-run"))
+        if (i && !strcmp(argv[i], "--dry-run")) {
             dry = 1;
-        else if (i && !strcmp(argv[i], "--gap-ms") && i + 1 < argc)
-            gap_ms = atoi(argv[++i]);
-        else if (ac < (int)(sizeof av / sizeof *av))
+        } else if (i && !strcmp(argv[i], "--gap-ms")) {
+            if (i + 1 >= argc) {
+                fprintf(stderr, "--gap-ms needs a number of milliseconds, 0-%d\n", MAX_GAP_MS);
+                return 2;
+            }
+            ARG(gap_ms, argv[i + 1], 0, MAX_GAP_MS, "--gap-ms");
+            gap_given = 1;
+            i++;
+        } else if (ac < (int)(sizeof av / sizeof *av)) {
             av[ac++] = argv[i];
-        else
+        } else {
             return usage(argv[0]);
+        }
     }
     if (ac < 2)
         return usage(argv[0]);
+    const char *cmd = av[1];
+    if (gap_given && strcmp(cmd, "apply")) {
+        fprintf(stderr, "--gap-ms is for apply only\n");
+        return 2;
+    }
 
     install_handlers();
 
     static struct id14_write w[ID14_MAX_WRITES];
-    const char *cmd = av[1];
 
     if (!strcmp(cmd, "apply") && ac <= 3) {
         const char *name = ac == 3 ? av[2] : "daw";
@@ -251,26 +332,27 @@ int main(int argc, char **argv)
         return run_writes(w, n, dry, gap_ms);
     }
     if (!strcmp(cmd, "route") && ac == 4) {
-        if (id14_route_write(atoi(av[2]), atoi(av[3]), &w[0]) < 0) {
-            fprintf(stderr, "output 0-3 (Main L, Main R, HP L, HP R), position 0-2 (Main Mix, Cue Mix, DAW)\n");
-            return 2;
-        }
+        int out, pos;
+        ARG(out, av[2], 0, ID14_ROUTE_OUTPUTS - 1, "output (0 Main L, 1 Main R, 2 HP L, 3 HP R)");
+        ARG(pos, av[3], 0, 2, "position (0 Main Mix, 1 Cue Mix, 2 DAW)");
+        id14_route_write(out, pos, &w[0]);
         return run_writes(w, 1, dry, 0);
     }
     if (!strcmp(cmd, "set") && ac == 7) {
-        int len = atoi(av[5]);
-        if (len < 1 || len > ID14_MAX_LEN) {
-            fprintf(stderr, "len 1-%d\n", ID14_MAX_LEN);
+        int e, s, c, len;
+        ARG(e, av[2], 0, 255, "entity");
+        ARG(s, av[3], 0, 255, "selector");
+        ARG(c, av[4], 0, 255, "channel");
+        ARG(len, av[5], 1, ID14_MAX_LEN, "len");
+        memset(&w[0], 0, sizeof w[0]);
+        if (id14_parse_value(av[6], len, w[0].data) < 0) {
+            fprintf(stderr, "value: '%s' is not a non-negative number that fits in %d byte(s)\n", av[6], len);
             return 2;
         }
-        unsigned long long v = strtoull(av[6], NULL, 0);
-        memset(&w[0], 0, sizeof w[0]);
-        w[0].entity = (uint8_t)strtol(av[2], NULL, 0);
-        w[0].selector = (uint8_t)strtol(av[3], NULL, 0);
-        w[0].channel = (uint8_t)strtol(av[4], NULL, 0);
+        w[0].entity = (uint8_t)e;
+        w[0].selector = (uint8_t)s;
+        w[0].channel = (uint8_t)c;
         w[0].len = (uint8_t)len;
-        for (int i = 0; i < len; i++)
-            w[0].data[i] = (v >> (8 * i)) & 0xff;
         snprintf(w[0].what, sizeof w[0].what, "set");
         return run_writes(w, 1, dry, 0);
     }
@@ -284,13 +366,14 @@ int main(int argc, char **argv)
     unsigned char buf[64] = {0};
 
     if (!strcmp(cmd, "get") && ac == 6) {
-        int len = atoi(av[5]);
-        if (len < 1 || len > (int)sizeof buf)
-            return fprintf(stderr, "len 1-%d\n", (int)sizeof buf), 2;
+        int e, s, c, len;
+        ARG(e, av[2], 0, 255, "entity");
+        ARG(s, av[3], 0, 255, "selector");
+        ARG(c, av[4], 0, 255, "channel");
+        ARG(len, av[5], 1, (int)sizeof buf, "len");
         if (open_device() < 0)
             return 1;
-        int err = xfer(0, strtol(av[2], NULL, 0), strtol(av[3], NULL, 0),
-                       atoi(av[4]), len, buf);
+        int err = xfer(0, e, s, c, len, buf);
         if (err < 0) {
             printf("get: %s\n", libusb_error_name(err));
             rc = 1;
@@ -300,7 +383,12 @@ int main(int argc, char **argv)
                 printf(" %02x", buf[i]);
             printf("\n");
         }
-    } else if (!strcmp(cmd, "scan") && ac == 2) {
+        close_device();
+        if (stop_sig)
+            report_signal(1);   /* the one read was already done */
+        return rc;
+    }
+    if (!strcmp(cmd, "scan") && ac == 2) {
         if (open_device() < 0)
             return 1;
         /* Which (entity, selector) pairs answer a read at all. Read-only. */
@@ -316,11 +404,14 @@ int main(int argc, char **argv)
                         printf("\n");
                     }
                 }
-        printf(stop_sig ? "scan stopped\n" : "scan done\n");
-    } else {
-        return usage(argv[0]);
+        int stopped = stop_sig;
+        printf(stopped ? "scan stopped\n" : "scan done\n");
+        close_device();
+        if (stopped) {
+            report_signal(0);
+            return 128 + stopped;
+        }
+        return 0;
     }
-
-    close_device();
-    return stop_sig ? interrupted() : rc;
+    return usage(argv[0]);
 }

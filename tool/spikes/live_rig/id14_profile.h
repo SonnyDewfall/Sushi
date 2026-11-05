@@ -69,7 +69,7 @@ struct id14_write {
     uint8_t selector;
     uint8_t channel;
     uint8_t len;        /* 1 to ID14_MAX_LEN; the profiles use 1 and 2 */
-    uint8_t data[8];    /* little-endian */
+    uint8_t data[ID14_MAX_LEN];    /* little-endian */
     char what[48];      /* human description, for the listing */
 };
 
@@ -99,5 +99,21 @@ int id14_route_write(int output, int position, struct id14_write *w);
 
 /* The byte that position means on that output, or -1 if out of range. */
 int id14_route_source(int output, int position);
+
+/* Strict number parsing for the command line: base 0 (so 10, 0x0a and 012 all
+ * work), the whole string must be the number, and it must lie in [lo, hi].
+ * Returns 0, or -1 with *out untouched. */
+int id14_parse_long(const char *s, long lo, long hi, long *out);
+
+/* A value for "idctl set": a non-negative number, strict as above, that fits in
+ * len bytes (1 to ID14_MAX_LEN), stored little-endian in out. Returns 0 or -1. */
+int id14_parse_value(const char *s, int len, uint8_t out[ID14_MAX_LEN]);
+
+/* idctl's exit status after a run of n writes, of which done were attempted:
+ *   1        a write failed (whether or not a signal also arrived)
+ *   128+sig  a signal stopped the run before every write was sent
+ *   0        every write was ok -- even if a signal arrived after the last one,
+ *            because the device then holds the whole profile */
+int id14_exit_status(int n, int done, int failed, int sig);
 
 #endif
