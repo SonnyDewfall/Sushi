@@ -1,0 +1,6 @@
+profile daw
+dry run: 4 write(s), device not opened
+ 1/4  entity 0x33 selector 0x06 channel 0x00  bytes 00     route Main L <- DAW 1
+ 2/4  entity 0x33 selector 0x06 channel 0x01  bytes 01     route Main R <- DAW 2
+ 3/4  entity 0x33 selector 0x06 channel 0x02  bytes 00     route HP L <- DAW 1
+ 4/4  entity 0x33 selector 0x06 channel 0x03  bytes 01     route HP R <- DAW 2

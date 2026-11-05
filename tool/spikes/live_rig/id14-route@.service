@@ -1,0 +1,35 @@
+# Applies the Audient iD14 MKI's routing once, when it connects. %i is the USB
+# device's sysfs name, e.g. 3-1.2.1. Started by 85-id14-route.rules through
+# SYSTEMD_WANTS; not meant to be enabled. Install:
+# /etc/systemd/system/id14-route@.service. See ID14-AUTO-ROUTING-2026-11-04.md.
+#
+# A system unit rather than a user one: it needs no login session (the rig can
+# boot with the iD14 attached and nobody logged in), and as root it needs no
+# udev permission rule. A unit rather than udev RUN+=: RUN programs must be
+# short, and udev handles a device's child events (its interfaces, its sound
+# card) after the parent's, so a RUN that waited for the card would be waiting
+# on events queued behind it.
+[Unit]
+Description=Audient iD14 routing on connect (%i)
+# No BindsTo= on the device: if the iD14 is pulled mid-run, the writes fail
+# with LIBUSB_ERROR_NO_DEVICE and idctl tears down by itself. A stop job
+# would only add a SIGTERM to the same outcome.
+
+[Service]
+Type=oneshot
+ExecStart=/usr/local/libexec/id14-route-on-connect %i
+# Fail once, loudly, never loop: no restart. This is already the default for
+# oneshot; it is written out so nobody adds one.
+Restart=no
+# Settle (up to 30 s), PipeWire grace (3 s), the writes (4; each bounded at 1 s),
+# the card-return wait (up to 15 s).
+TimeoutStartSec=90
+# On a timeout or a stop, SIGTERM goes to every process in the unit, so idctl
+# gets it directly and finishes its teardown, which takes well under a
+# second. SIGKILL follows only after TimeoutStopSec, and would cost the card.
+# Not KillMode=mixed: that would SIGKILL idctl without a SIGTERM first.
+KillMode=control-group
+TimeoutStopSec=30
+SyslogIdentifier=id14-route
+# Overrides go in `systemctl edit id14-route@.service`, e.g.
+# Environment=ID14_SETTLE_EXTRA=5

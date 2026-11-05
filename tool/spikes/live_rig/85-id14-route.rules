@@ -1,0 +1,28 @@
+# Apply the Audient iD14 MKI's routing every time it connects.
+#
+# The iD14's routing resets on every USB disconnect, and nothing on Linux sets
+# it, so without this the outputs come up wrong after each replug. This rule
+# only hands the device to id14-route@<device>.service, which waits for
+# snd-usb-audio and PipeWire, then runs `idctl apply daw` once.
+# Install: /etc/udev/rules.d/85-id14-route.rules. See ID14-AUTO-ROUTING-2026-11-04.md.
+#
+# It matches the usb_device, never the sound card. idctl's teardown resets the
+# device, which makes snd-usb-audio rebuild the card's PCMs: a rule on the
+# sound subsystem would fire again after every apply. systemd acts on
+# SYSTEMD_WANTS only when the device unit first becomes active, so later
+# "change" and "bind" events do not start it again. The tag goes on every event
+# but remove, because systemd takes a device whose latest event drops the tag
+# as gone, and its next tagged event as a fresh arrival.
+#
+# The service runs as root, so it does not depend on 84-audient.rules (the
+# plugdev rule), which is still what lets idctl and MixiD run by hand.
+SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_device", ACTION!="remove", ATTR{idVendor}=="2708", ATTR{idProduct}=="0002", TAG+="systemd", ENV{SYSTEMD_WANTS}+="id14-route@%k.service"
+
+# Optional, off: stop the iD14's knob moving the mouse pointer.
+# The iD14 has a HID interface (interface 4, e.g. 3-1.2.1:1.4) that registers
+# as a mouse, so turning the knob moves the pointer. Nothing the rig uses
+# needs it. Unbinding usbhid from that one interface removes the mouse and
+# leaves audio alone. It probably also removes Audient's ScrollControl (the
+# knob as a scroll wheel), which goes through the same interface.
+# Untested. Uncomment to use; undo with a replug after commenting it out again.
+#SUBSYSTEM=="usb", ENV{DEVTYPE}=="usb_interface", ACTION=="bind", DRIVER=="usbhid", ATTRS{idVendor}=="2708", ATTRS{idProduct}=="0002", ATTR{bInterfaceNumber}=="04", RUN+="/bin/sh -c 'echo -n %k > /sys/bus/usb/drivers/usbhid/unbind'"

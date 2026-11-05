@@ -1,0 +1,66 @@
+profile mainmix
+dry run: 64 write(s), device not opened
+ 1/64  entity 0x3c selector 0x01 channel 0x00  bytes 00 80  matrix Mic 1 -> Main L -128 dB
+ 2/64  entity 0x3c selector 0x01 channel 0x01  bytes 00 80  matrix Mic 1 -> Main R -128 dB
+ 3/64  entity 0x3c selector 0x01 channel 0x02  bytes 00 80  matrix Mic 1 -> Cue L -128 dB
+ 4/64  entity 0x3c selector 0x01 channel 0x03  bytes 00 80  matrix Mic 1 -> Cue R -128 dB
+ 5/64  entity 0x3c selector 0x01 channel 0x04  bytes 00 80  matrix Mic 2 -> Main L -128 dB
+ 6/64  entity 0x3c selector 0x01 channel 0x05  bytes 00 80  matrix Mic 2 -> Main R -128 dB
+ 7/64  entity 0x3c selector 0x01 channel 0x06  bytes 00 80  matrix Mic 2 -> Cue L -128 dB
+ 8/64  entity 0x3c selector 0x01 channel 0x07  bytes 00 80  matrix Mic 2 -> Cue R -128 dB
+ 9/64  entity 0x3c selector 0x01 channel 0x08  bytes 00 80  matrix Digi 1 -> Main L -128 dB
+10/64  entity 0x3c selector 0x01 channel 0x09  bytes 00 80  matrix Digi 1 -> Main R -128 dB
+11/64  entity 0x3c selector 0x01 channel 0x0a  bytes 00 80  matrix Digi 1 -> Cue L -128 dB
+12/64  entity 0x3c selector 0x01 channel 0x0b  bytes 00 80  matrix Digi 1 -> Cue R -128 dB
+13/64  entity 0x3c selector 0x01 channel 0x0c  bytes 00 80  matrix Digi 2 -> Main L -128 dB
+14/64  entity 0x3c selector 0x01 channel 0x0d  bytes 00 80  matrix Digi 2 -> Main R -128 dB
+15/64  entity 0x3c selector 0x01 channel 0x0e  bytes 00 80  matrix Digi 2 -> Cue L -128 dB
+16/64  entity 0x3c selector 0x01 channel 0x0f  bytes 00 80  matrix Digi 2 -> Cue R -128 dB
+17/64  entity 0x3c selector 0x01 channel 0x10  bytes 00 80  matrix Digi 3 -> Main L -128 dB
+18/64  entity 0x3c selector 0x01 channel 0x11  bytes 00 80  matrix Digi 3 -> Main R -128 dB
+19/64  entity 0x3c selector 0x01 channel 0x12  bytes 00 80  matrix Digi 3 -> Cue L -128 dB
+20/64  entity 0x3c selector 0x01 channel 0x13  bytes 00 80  matrix Digi 3 -> Cue R -128 dB
+21/64  entity 0x3c selector 0x01 channel 0x14  bytes 00 80  matrix Digi 4 -> Main L -128 dB
+22/64  entity 0x3c selector 0x01 channel 0x15  bytes 00 80  matrix Digi 4 -> Main R -128 dB
+23/64  entity 0x3c selector 0x01 channel 0x16  bytes 00 80  matrix Digi 4 -> Cue L -128 dB
+24/64  entity 0x3c selector 0x01 channel 0x17  bytes 00 80  matrix Digi 4 -> Cue R -128 dB
+25/64  entity 0x3c selector 0x01 channel 0x18  bytes 00 80  matrix Digi 5 -> Main L -128 dB
+26/64  entity 0x3c selector 0x01 channel 0x19  bytes 00 80  matrix Digi 5 -> Main R -128 dB
+27/64  entity 0x3c selector 0x01 channel 0x1a  bytes 00 80  matrix Digi 5 -> Cue L -128 dB
+28/64  entity 0x3c selector 0x01 channel 0x1b  bytes 00 80  matrix Digi 5 -> Cue R -128 dB
+29/64  entity 0x3c selector 0x01 channel 0x1c  bytes 00 80  matrix Digi 6 -> Main L -128 dB
+30/64  entity 0x3c selector 0x01 channel 0x1d  bytes 00 80  matrix Digi 6 -> Main R -128 dB
+31/64  entity 0x3c selector 0x01 channel 0x1e  bytes 00 80  matrix Digi 6 -> Cue L -128 dB
+32/64  entity 0x3c selector 0x01 channel 0x1f  bytes 00 80  matrix Digi 6 -> Cue R -128 dB
+33/64  entity 0x3c selector 0x01 channel 0x20  bytes 00 80  matrix Digi 7 -> Main L -128 dB
+34/64  entity 0x3c selector 0x01 channel 0x21  bytes 00 80  matrix Digi 7 -> Main R -128 dB
+35/64  entity 0x3c selector 0x01 channel 0x22  bytes 00 80  matrix Digi 7 -> Cue L -128 dB
+36/64  entity 0x3c selector 0x01 channel 0x23  bytes 00 80  matrix Digi 7 -> Cue R -128 dB
+37/64  entity 0x3c selector 0x01 channel 0x24  bytes 00 80  matrix Digi 8 -> Main L -128 dB
+38/64  entity 0x3c selector 0x01 channel 0x25  bytes 00 80  matrix Digi 8 -> Main R -128 dB
+39/64  entity 0x3c selector 0x01 channel 0x26  bytes 00 80  matrix Digi 8 -> Cue L -128 dB
+40/64  entity 0x3c selector 0x01 channel 0x27  bytes 00 80  matrix Digi 8 -> Cue R -128 dB
+41/64  entity 0x3c selector 0x01 channel 0x28  bytes 00 80  matrix DAW 1 -> Main L -128 dB
+42/64  entity 0x3c selector 0x01 channel 0x29  bytes 00 80  matrix DAW 1 -> Main R -128 dB
+43/64  entity 0x3c selector 0x01 channel 0x2a  bytes 00 80  matrix DAW 1 -> Cue L -128 dB
+44/64  entity 0x3c selector 0x01 channel 0x2b  bytes 00 80  matrix DAW 1 -> Cue R -128 dB
+45/64  entity 0x3c selector 0x01 channel 0x2c  bytes 00 80  matrix DAW 2 -> Main L -128 dB
+46/64  entity 0x3c selector 0x01 channel 0x2d  bytes 00 80  matrix DAW 2 -> Main R -128 dB
+47/64  entity 0x3c selector 0x01 channel 0x2e  bytes 00 80  matrix DAW 2 -> Cue L -128 dB
+48/64  entity 0x3c selector 0x01 channel 0x2f  bytes 00 80  matrix DAW 2 -> Cue R -128 dB
+49/64  entity 0x3c selector 0x01 channel 0x30  bytes 00 80  matrix DAW 3 -> Main L -128 dB
+50/64  entity 0x3c selector 0x01 channel 0x31  bytes 00 80  matrix DAW 3 -> Main R -128 dB
+51/64  entity 0x3c selector 0x01 channel 0x32  bytes 00 80  matrix DAW 3 -> Cue L -128 dB
+52/64  entity 0x3c selector 0x01 channel 0x33  bytes 00 80  matrix DAW 3 -> Cue R -128 dB
+53/64  entity 0x3c selector 0x01 channel 0x34  bytes 00 80  matrix DAW 4 -> Main L -128 dB
+54/64  entity 0x3c selector 0x01 channel 0x35  bytes 00 80  matrix DAW 4 -> Main R -128 dB
+55/64  entity 0x3c selector 0x01 channel 0x36  bytes 00 80  matrix DAW 4 -> Cue L -128 dB
+56/64  entity 0x3c selector 0x01 channel 0x37  bytes 00 80  matrix DAW 4 -> Cue R -128 dB
+57/64  entity 0x0c selector 0x02 channel 0x01  bytes 00 00  Main Mix master ch1 0 dB
+58/64  entity 0x0c selector 0x02 channel 0x02  bytes 00 00  Main Mix master ch2 0 dB
+59/64  entity 0x3c selector 0x01 channel 0x28  bytes 00 00  matrix DAW 1 -> Main L 0 dB
+60/64  entity 0x3c selector 0x01 channel 0x2d  bytes 00 00  matrix DAW 2 -> Main R 0 dB
+61/64  entity 0x33 selector 0x06 channel 0x02  bytes 00     route HP L <- DAW 1
+62/64  entity 0x33 selector 0x06 channel 0x03  bytes 01     route HP R <- DAW 2
+63/64  entity 0x33 selector 0x06 channel 0x00  bytes 14     route Main L <- Main Mix
+64/64  entity 0x33 selector 0x06 channel 0x01  bytes 15     route Main R <- Main Mix
