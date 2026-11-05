@@ -76,7 +76,7 @@ sudo apt install libusb-1.0-0-dev     # if not already installed
 make -f idctl.mk check
 ```
 
-Expect `814 checks, 0 failures`, then 42 `ok` lines and no `FAIL`. Record the output. The build
+Expect `821 checks, 0 failures`, then 42 `ok` lines and no `FAIL`. Record the output. The build
 uses `-Wall -Wextra -Werror`, so a warning on this compiler stops the build. If that happens,
 record the warning.
 
