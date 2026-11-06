@@ -13,9 +13,12 @@
 # - a send at the end of each chain into the master, and the master track last,
 #   which is what makes the send cost no delay (test_send_return.py).
 #
-# Not yet what `up` runs: config/guitar_vocal.json is still built from the v1
-# file. This becomes it once the patchbay is generated from it and it has been
-# heard.
+# `sushi-rig up --rig guitar_vocal`, the agent and the web UI run this file:
+# it is compiled at every start, with the patchbay generated from it and the
+# machine file. Plain `sushi-rig up guitar_vocal` still runs the v1
+# config/guitar_vocal.json, built from config/src/guitar_vocal.yaml, which
+# plays the left channel only (#119). The vocal chain is at the plugins'
+# defaults and has not yet been heard with a mic.
 
 kind: rig
 schema_version: 1
