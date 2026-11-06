@@ -1170,6 +1170,7 @@ def prepare_launch(
     amp_model: str | None = None,
     rig: bool = False,
     warn: Callable[[str], None] | None = None,
+    machine: str | None = None,
 ) -> Launch:
     """Everything `up` does before it starts a process: refuse a second rig,
     compile a rig of channels, prepare the amp, plan the children.
@@ -1242,7 +1243,8 @@ def prepare_launch(
 
     if rig:
         # After the running-rig and port guards, so a refusal compiles nothing.
-        prepared_rig = prepare_rig(config_name, root, runtime_dir(), tuner=tuner)
+        prepared_rig = prepare_rig(config_name, root, runtime_dir(), tuner=tuner,
+                                   machine_file=Path(machine) if machine else None)
         config = prepared_rig["config"]
         rig_patchbay = prepared_rig["patchbay"]
         rig_source = prepared_rig["source"]
@@ -1306,6 +1308,7 @@ def up(
     amp: bool = True,
     amp_model: str | None = None,
     rig: bool = False,
+    machine: str | None = None,
 ) -> int:
     """Start the rig and return to the prompt.
 
@@ -1320,9 +1323,14 @@ def up(
     the default while a v1 config of the same name exists: the monitor path was
     heard to be the same on 2026-11-01, but a two-channel rig has not been, and
     what `up` starts by default changes only once it has.
+
+    `machine` is the machine file a rig of channels is compiled and wired
+    against, this host's (`machine_path`) unless given: `restart` and a
+    switch pass the one the run was started against, from the state file.
     """
     launch = prepare_launch(
         config_name, headless=headless, tuner=tuner, amp=amp, amp_model=amp_model, rig=rig,
+        machine=machine,
     )
     pid, ready_r = _fork_supervisor(lambda ready_w: _supervise(launch, ready_w=ready_w))
     outcome = ""
@@ -1519,12 +1527,19 @@ def restart_arguments(state: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     children = state.get("children") or {}
     tuner = state.get("tuner_requested")
     amp = state.get("amp_requested")
+    rig = isinstance(state.get("rig"), str) and bool(state.get("rig"))
+    machine = state.get("machine")
     return state.get("config_name", DEFAULT_CONFIG_NAME), {
         "headless": not runs_panel(state),
         "tuner": tuner if isinstance(tuner, bool) else "fmit" in children,
         "amp": amp if isinstance(amp, bool) else "amp" in children,
         "amp_model": state.get("amp_model_requested") or None,
-        "rig": isinstance(state.get("rig"), str) and bool(state.get("rig")),
+        "rig": rig,
+        # The machine file the run was compiled and wired against, so the
+        # restart is the same rig on the same roles. Before 2026-11-06 it was
+        # dropped and `up` read this host's file, which a draft checked
+        # against the run's (the web UI's rig files) need not match.
+        "machine": machine if rig and isinstance(machine, str) and machine else None,
     }
 
 

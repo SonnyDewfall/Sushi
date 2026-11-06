@@ -623,13 +623,15 @@ const VERBS = { start: "Starting", stop: "Stopping", switch: "Switching to", res
 // The request for a lifecycle gesture. A start is a rig of channels
 // (config/rigs/, `rig: true`) and headless: the page replaces the OSC panel,
 // and a rig run with its panel cannot be switched live (#93).
-export function lifecycleCall(op, name) {
+export function lifecycleCall(op, name, { discard = false } = {}) {
   if (op === "start") return { path: "/rig/up", json: { config_name: name, rig: true, headless: true } };
   if (op === "stop") return { path: "/rig/down", json: {} };
   if (op === "switch") return { path: "/rig/switch", json: { config_name: name } };
   // Offered after an edit of the running rig's file (the rig files below):
   // the agent's restart brings the rig back from its file, as it was run.
-  if (op === "restart") return { path: "/rig/restart", json: {} };
+  // It refuses one that would drop unsaved changes (409 `unsaved`) unless
+  // told `discard`, which the page sends only from a second, explicit tap.
+  if (op === "restart") return { path: "/rig/restart", json: discard ? { discard: true } : {} };
   throw new Error(`unknown lifecycle gesture ${op}`);
 }
 
@@ -1321,6 +1323,12 @@ export function rigFileOutcome(op, what, answer) {
     if (copied.length) text += ` Chains copied: ${copied.join(", ")}.`;
     offer = { op: body.offer === "switch" ? "switch" : "start", name: body.rig,
       label: body.offer === "switch" ? `Switch to ${body.rig}` : `Start ${body.rig}` };
+    // A new file can move every later rig's Program Change number: said,
+    // with the rigs that moved, before and after.
+    if (body.programs && body.programs.moved && body.programs.moved.length) {
+      return { ok: true, title: titles[0], text, commit: commitText(body.library), offer, file: body.file,
+        programs: { note: body.programs.note, rows: body.programs.moved.map((m) => ({ rig: m.rig, from: m.from, to: m.to })) } };
+    }
   } else {
     text = `Wrote ${body.file} in place, keeping its comments.`;
     if (body.running) {

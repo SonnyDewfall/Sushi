@@ -685,7 +685,7 @@ def test_the_state_after_a_model_change_is_what_restart_brings_back(tmp_path):
     assert after["children"] == {"sushi": 1, "amp": 7} and state["children"]["amp"] == 2, "a copy"
     assert (after["amp_model"], after["amp_model_requested"]) == ("amp/models/B.nam", "B.nam")
     assert restart_arguments(after) == ("board", {"headless": True, "tuner": False, "amp": True,
-                                                  "amp_model": "B.nam", "rig": True})
+                                                  "amp_model": "B.nam", "rig": True, "machine": None})
 
 
 def test_a_planned_child_is_started_with_its_own_environment_and_log(tmp_path):

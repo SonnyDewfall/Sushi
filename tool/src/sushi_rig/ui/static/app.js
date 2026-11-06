@@ -79,7 +79,7 @@ const state = {
   roles: null, rolesAt: 0, rolesFor: null,  // GET /machine/roles; read again when the run changes
   rigChannels: {},           // GET /rigs/<rig>/channels, by rig: "start from", and the running rig's inputs
   newRig: { name: "", channels: [], touched: false, pending: false, result: null, addRefused: null },
-  wiring: { for: null, editing: null, change: null, adding: null, pending: false, result: null, restartConfirm: false },
+  wiring: freshWiring(),     // the rack's channel edits: see freshWiring
   open: new Set(),           // units opened, by name
   failures: [],              // this page's refused changes, newest first
   failed: new Map(),         // control key -> the reason its last change was refused
@@ -253,7 +253,18 @@ async function refreshRunningChannels() {
   if (!rig.running || !rig.rig) return false;
   const run = JSON.stringify([rig.config_name, rig.started_at ?? null, rig.rig]);
   const changed = run !== state.wiring.for;
-  if (changed) state.wiring = { ...freshWiring(), for: run };
+  if (changed) {
+    // The forms were opened against the run before, so they close; a write
+    // in flight, and what the last one said, are kept, since they are about
+    // the file and not the run (review, 2026-11-06: a poll landing mid-write
+    // replaced the object the write's answer went to, and it was never shown).
+    const was = state.wiring;
+    const sameRig = was.for !== null && JSON.parse(was.for)[0] === rig.config_name;
+    // A result shown is kept without its restart offer, which was for the
+    // run before: the run has started again since, from the file.
+    const result = sameRig && was.result ? { ...was.result, offer: null } : null;
+    state.wiring = { ...freshWiring(), for: run, pending: was.pending, result };
+  }
   return refreshRigChannels(rig.config_name, changed);
 }
 
@@ -266,6 +277,9 @@ function filesReady({ sources = true } = {}) {
   return !!state.roles && !!rigs && rigs.every((name) => name in state.rigChannels);
 }
 
+// The rack's channel edits, as they start and as a new run resets them:
+// which channel's input is being changed (and to what), the Add channel
+// draft, the write in flight, what the last one said, and the restart confirm.
 function freshWiring() {
   return { for: null, editing: null, change: null, adding: null, pending: false, result: null, restartConfirm: false };
 }
@@ -744,13 +758,13 @@ function tickElapsed() {
 // page or another, the picker offers nothing (the agent would answer 409
 // busy) and says what is running. The answer's reason is shown on failure,
 // and a switch says how it was made and why.
-async function lifecycle(op, name) {
-  if (state.pending) return;
+async function lifecycle(op, name, opts = {}) {
+  if (state.pending) return false;
   clearTimeout(state.confirmTimer);
   state.confirming = false;
   state.pending = { op, name };
   render();
-  const call = R.lifecycleCall(op, name);
+  const call = R.lifecycleCall(op, name, opts);
   let answer;
   try {
     answer = await request("POST", call.path, call.json);
@@ -764,7 +778,11 @@ async function lifecycle(op, name) {
     // starting it again is one tap.
     state.chosen = op === "stop" ? name : null;
   } else {
-    fail(said.title, { reason: said.reason, code: answer.code });
+    // A restart that would drop unsaved changes is refused by the agent;
+    // dropping them is a second, deliberate tap, never the default.
+    const discard = op === "restart" && answer.code === "unsaved"
+      ? { label: "Restart anyway, dropping them", run: () => lifecycle("restart", name, { discard: true }) } : null;
+    fail(said.title, { reason: said.reason, code: answer.code }, discard);
   }
   render();
   kick();
@@ -1396,6 +1414,10 @@ function rigFileResult(result, dismiss, play) {
     h("strong", {}, result.title),
     h("span", { class: "said" }, result.ok ? result.text : result.reason),
     result.hint ? h("pre", { class: "machine-hint" }, result.hint) : null,
+    result.programs ? h("div", { class: "programs-moved", role: "note" },
+      h("span", { class: "warn" }, result.programs.note),
+      h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "Rig"), h("th", {}, "Program before"), h("th", {}, "after"))),
+        h("tbody", {}, result.programs.rows.map((r) => h("tr", {}, h("td", {}, r.rig), h("td", {}, String(r.from)), h("td", {}, String(r.to))))))) : null,
     result.ok ? h("span", { class: "commit" }, result.commit) : null,
     result.ok && result.offer ? h("button", { class: "rig-act primary offer", disabled: !!state.pending,
       onclick: () => play(result.offer) }, result.offer.label) : null,
@@ -1629,17 +1651,18 @@ function drawAddCheck(el, view) {
 }
 
 async function rigFileWrite(call, op, what, rig) {
-  const w = state.wiring;
-  if (w.pending) return null;
-  w.pending = true;
+  if (state.wiring.pending) return null;
+  state.wiring.pending = true;
   render();
   let answer;
   try {
     answer = await request("POST", call.path, call.json);
   } finally {
-    w.pending = false;
+    // `state.wiring`, read now: a refresh may have replaced the object this
+    // write began on, and the answer belongs on the one that is drawn.
+    state.wiring.pending = false;
   }
-  w.result = R.rigFileOutcome(op, what, answer);
+  state.wiring.result = R.rigFileOutcome(op, what, answer);
   render();
   if (answer.ok) refreshRigChannels(rig, true).then(render);
   return answer;
@@ -1658,11 +1681,10 @@ async function changeInput(rig, channel, change) {
 }
 
 async function restartForEdit() {
-  const w = state.wiring;
   const rig = state.health && state.health.ok ? state.health.body.rig || {} : {};
-  w.restartConfirm = false;
+  state.wiring.restartConfirm = false;
   const ok = await lifecycle("restart", rig.config_name);
-  if (ok) w.result = null;
+  if (ok) state.wiring.result = null;
   render();
 }
 

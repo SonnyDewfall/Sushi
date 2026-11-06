@@ -165,12 +165,26 @@ def test_the_steps_the_agent_plans_are_read_back_as_they_were_meant(body, comman
         assert options == {
             "config_name": body["config_name"], "rig": body.get("rig", False),
             "headless": body.get("headless", False), "tuner": body.get("tuner", True),
-            "amp": body.get("amp", True), "amp_model": body.get("amp_model"),
+            "amp": body.get("amp", True), "amp_model": body.get("amp_model"), "machine": None,
         }
     elif command == "down":
         assert options == {"force": bool((body or {}).get("force"))}
     else:
         assert options == {}
+
+
+def test_a_machine_file_the_agent_carries_is_read_back_as_up_s_machine():
+    """A switch by restart passes the run's machine file (`switch_steps`),
+    which only the agent supplies, never a request; it reaches `up` intact."""
+    agent = pytest.importorskip("sushi_rig.agent")
+    args = agent.lifecycle_arguments("up", {"config_name": "x", "rig": True}, machine="/m/stage.yaml")
+    assert args == ["up", "x", "--rig", "--machine", "/m/stage.yaml"]
+    assert parse_lifecycle(args) == ("up", {"config_name": "x", "rig": True, "headless": False, "tuner": True,
+                                            "amp": True, "amp_model": None, "machine": "/m/stage.yaml"})
+    with pytest.raises(agent.AgentError, match="an absolute path"):
+        agent.lifecycle_arguments("up", {"config_name": "x"}, machine="m/stage.yaml")
+    assert "--machine" not in agent.lifecycle_arguments("up", {"config_name": "x", "machine": "/etc/x"}), \
+        "a request's body never names one"
 
 
 @pytest.mark.parametrize("args", [
@@ -248,7 +262,7 @@ def test_the_state_file_the_agent_writes_round_trips_through_status(world, capsy
     assert f"  group      {recorded['pgid']}" in printed
     assert "(DEAD)" not in printed
     assert rig.restart_arguments(recorded) == ("t", {
-        "headless": True, "tuner": False, "amp": False, "amp_model": None, "rig": False})
+        "headless": True, "tuner": False, "amp": False, "amp_model": None, "rig": False, "machine": None})
 
 
 def test_panel_mode_generates_the_panel_and_holds_open_stage_control_too(world):

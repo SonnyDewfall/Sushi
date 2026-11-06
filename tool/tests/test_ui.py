@@ -2851,3 +2851,74 @@ def test_the_stage_has_no_new_rig_and_no_channel_edits(browser, files_served):
     expect(p.locator("section.wiring")).to_have_count(0)
     expect(p.get_by_role("button", name="Add channel")).to_have_count(0)
     page.close()
+
+
+# -- review, 2026-11-06 -------------------------------------------------------
+
+def test_after_an_edit_a_knob_turned_makes_the_offered_restart_refuse_until_told(browser, files_served):
+    """(1) The restart an edit offers reloads the file, so a knob turned after
+    the edit would be lost by it: the agent refuses, the page says why in
+    place, and dropping the change is a second, explicit tap."""
+    page = Watched(browser, files_served, "/#rack")
+    p = page.page
+    wiring = inputs_region(p)
+    wiring.get_by_role("button", name="Add channel").click()
+    p.get_by_role("button", name="Add keys").click()
+    result = wiring.locator(".rigfile-result.ok")
+    expect(result).to_contain_text("Added keys to electric_board")
+    turn_drive_down(p, 1)
+    until(lambda: abs(files_served.rig.info["overdrive"]["Drive"]["value"] - 0.61) < 1e-9)
+    result.get_by_role("button", name="Restart electric_board to play it").click()
+    wiring.get_by_role("group", name="Confirm the restart").get_by_role("button", name="Restart now").click()
+    refused = p.locator(".problem.refused")
+    expect(refused).to_contain_text("Not restarted: electric_board")
+    expect(refused).to_contain_text("electric_board has 1 change made through the agent and not saved")
+    expect(refused).to_contain_text("Save first")
+    assert ["restart"] not in files_served.lifecycle.calls
+    refused.get_by_role("button", name="Restart anyway, dropping them").click()
+    expect(p.locator(".notice")).to_contain_text("Restarted electric_board from its file.")
+    assert files_served.lifecycle.calls[-1] == ["restart"]
+    page.close()
+
+
+def test_a_new_rig_that_moves_program_numbers_says_so_with_the_table(browser, files_served):
+    """(6) A rig sorting before electric_board moves it from program 0 to 1."""
+    page = new_rig_page(browser, files_served)
+    p = page.page
+    p.get_by_label("Rig name").fill("aa-board")
+    p.get_by_role("button", name="Create aa-board").click()
+    moved = p.locator(".rigfile-result.ok .programs-moved")
+    expect(moved).to_contain_text("Program Change numbers follow config/rigs by file name, so aa-board (program 0) "
+                                  "moves 1 rig up one: program 0, which was electric_board, is now aa-board.")
+    expect(moved.locator("tbody tr")).to_have_text(["electric_board01"])
+    page.close()
+
+
+def test_an_edits_answer_is_shown_even_when_a_poll_lands_while_it_is_written(browser, files_served, monkeypatch):
+    """(7) A poll that saw the run change replaced the rack's edit state while
+    a write was in flight, and the write's answer went to an object nothing
+    drew. The write is held a moment here, and the run changes meanwhile."""
+    import time
+
+    import sushi_rig.rigfile as rigfile
+
+    real, started = rigfile.write_rig, []
+
+    def slow(*args, **kwargs):
+        started.append(time.monotonic())
+        time.sleep(2.5)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(rigfile, "write_rig", slow)
+    page = Watched(browser, files_served, "/#rack")
+    p = page.page
+    wiring = inputs_region(p)
+    wiring.get_by_role("button", name="Change vocal's input").click()
+    p.get_by_label("vocal input").select_option("keys-in")
+    p.get_by_role("button", name="Apply to vocal").click()
+    until(lambda: started)
+    # The run starts again elsewhere while the file is written: a new start time.
+    files_served.lifecycle.started = files_served.lifecycle.started + timedelta(minutes=1)
+    expect(wiring.locator(".rigfile-result.ok")).to_contain_text("Changed vocal's input", timeout=8000)
+    expect(wiring.locator(".wiring-row", has_text="vocal")).to_contain_text("keys-in · mono")
+    page.close()

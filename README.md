@@ -435,7 +435,8 @@ curl localhost:8029/rigs             # the rigs of config/rigs/ a start or switc
 curl localhost:8029/rig/load         # one pw-top sample of the rig's nodes: load, xruns, the block budget
 curl -X POST localhost:8029/rig/up -d '{"config_name": "guitar_vocal", "rig": true, "headless": true}'
 curl -X POST localhost:8029/rig/down
-curl -X POST localhost:8029/rig/restart
+curl -X POST localhost:8029/rig/restart                             # refused (409 unsaved) if it would drop changes no save has written
+curl -X POST localhost:8029/rig/restart -d '{"discard": true}'      # ... so this drops them, as `sushi-rig restart --discard` does
 curl -X POST localhost:8029/rig/switch -d '{"config_name": "electric-octave-up"}'   # live where it can be (#93)
 curl localhost:8029/live             # the running rig's parameters, bypass and chains, with ranges
 curl -X POST localhost:8029/live/parameter -d '{"processor": "reverb", "parameter": "Mix", "value": 0.4}'
@@ -869,7 +870,35 @@ be edited whatever is playing. A write is refused while a lifecycle command
 runs (`409 busy`, as every route is), and holds the lifecycle lock itself
 and, for the running rig, the live lock, so no restart, switch or live change
 lands between the check and the write. **Never committed**: the answer gives the commit and
-what git says of the file, as a save's does. Remote callers are treated as
+what git says of the file, as a save's does, read once the lifecycle lock is
+let go and within the write's deadline: a git that does not answer leaves
+`library: null` with `library_note` saying so, never a rig stuck busy. A new
+rig whose name sorts before others **moves their Program Change numbers**
+(program *n* is the *n*th file by name): the answer then has `programs`,
+which rigs moved from which number to which, and the page shows the table,
+since a pedal preset set for one rig would select another. The order rule
+itself is unchanged.
+
+**The machine file goes with the run.** A draft is checked against the
+machine file the running rig was started against (the state file's
+`machine`), and since 2026-11-06 the restart and the switch that play it
+are started against it too: `restart` passes it to `up` (`up --machine`,
+which the CLI takes with `--direct` only, since the agent takes no path from
+a request), and every switch by restart carries it (`switch_steps`), where
+before each dropped it and wired against this host's file
+(`machines/<hostname>.yaml`), which need not be the file the rig was checked
+or compiled against.
+
+**A restart refuses to drop unsaved work.** Every `POST /rig/restart` (the
+page's restart after an edit, the picker's, the CLI's `sushi-rig restart`
+through the agent) reloads the rig's file, so it is refused, `409 unsaved`
+naming the newest change, while the agent saw changes since the last save;
+`{"discard": true}` (`sushi-rig restart --discard`, or the page's second
+tap, "Restart anyway, dropping them") restarts anyway. Not refused when
+there is nothing to keep or no way to know: Sushi's process is gone (the
+work went with it, and recovery must not wait on a Save), or the rig runs
+with its panel, whose changes the agent cannot see. A stop and a switch to
+another rig still drop unsaved work, as they always have. Remote callers are treated as
 `POST /rig/save` treats them, no differently: a write needs no loopback peer,
 since Save writes the same files without one; the agent binds to localhost,
 and `--host 0.0.0.0` stays your call. **Not run against a live Sushi**: the
@@ -927,8 +956,11 @@ just runs the rig.
 **Recovery is the answer to failure, not self-healing** (principle 9). `restart`
 stops the rig and brings back the same one — same config, same mode, and the same
 `--no-amp` / `--no-tuner` choices, read from the state file rather than from you,
-since after a crash you may not remember them. Measured end to end at around five
-seconds.
+since after a crash you may not remember them, and for a rig of channels the
+machine file it was started against. Measured end to end at around five
+seconds. Through the agent, a restart that would drop changes it saw and no
+save has written is refused; `restart --discard` says to drop them. With
+Sushi gone it is never refused: there is nothing left to keep.
 
 `top` answers the question that predicts trouble: how close to the block deadline
 each component is running. It is not total CPU — 100% means a node used its whole
@@ -1040,7 +1072,11 @@ no Node and the UI has to run from a checkout. Two screens from the mockups:
   plays it, which takes a confirm since the sound stops for a few seconds. The
   edits are not behind the page's lock (they write a file, and the restart is
   a separate tap); with unsaved changes the rack says Save comes first, and
-  the agent refuses until then. Nothing of this is on the stage screen.
+  the agent refuses until then. A change made after the edit makes the
+  offered restart refuse too, with the reason in place and "Restart anyway,
+  dropping them" as a second tap. A new rig that moves other rigs' Program
+  Change numbers says so under Create, with a table of before and after.
+  Nothing of this is on the stage screen.
 - **Record (S7, S8).** A record bar on the stage screen, as the canvas's Record
   frame has it: a take name, a big Record and a big Stop, and while a take
   runs its name and elapsed time in red. Both work locked (recording is a stage

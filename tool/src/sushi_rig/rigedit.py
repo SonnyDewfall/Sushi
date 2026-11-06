@@ -228,33 +228,23 @@ def ceiling() -> dict[str, Any]:
     return {"channels": count, "why": None}
 
 
-def _feeds_problem(machine: Any, role: str, width: str) -> str | None:
-    """Why `role` cannot feed a channel of `width`, in the patchbay's words,
-    or None: a one-channel rig compiled for its routing alone, and only its
-    channel wired, so the answer is about the input and nothing else."""
+def _probe(machine: Any, role: str, width: str = "mono", *, feeds: bool) -> str | None:
+    """Why `role` cannot feed a channel of `width` (`feeds`), or cannot take
+    the master's mix (not `feeds`), in the patchbay's words; None when it
+    can. A one-channel rig on that role, compiled for its routing alone, and
+    only the side asked about wired, so the answer is about that and nothing
+    else."""
     from .patchbay import PatchbayError, generate_patchbay, routes_from_rig
     from .rigfile import RigFileError, compile_rig
 
     rig = Rig(_PROBE, (Channel(_PROBE + "-ch", role, width),), Master(role))
     try:
         spec, _ = compile_rig(rig, routing_only=True)
-        feeds, _ = routes_from_rig(spec)
-        generate_patchbay(machine.role_ports(), feeds, {}, mono_to_stereo=machine.mono_roles())
-    except (RigFileError, PatchbayError) as exc:
-        return "; ".join(exc.problems)
-    return None
-
-
-def _takes_master_problem(machine: Any, role: str) -> str | None:
-    """Why `role` cannot take the master's output, in the patchbay's words."""
-    from .patchbay import PatchbayError, generate_patchbay, routes_from_rig
-    from .rigfile import RigFileError, compile_rig
-
-    rig = Rig(_PROBE, (Channel(_PROBE + "-ch", role, "mono"),), Master(role))
-    try:
-        spec, _ = compile_rig(rig, routing_only=True)
-        _, sinks = routes_from_rig(spec)
-        generate_patchbay(machine.role_ports(), {}, sinks)
+        sources, sinks = routes_from_rig(spec)
+        if feeds:
+            generate_patchbay(machine.role_ports(), sources, {}, mono_to_stereo=machine.mono_roles())
+        else:
+            generate_patchbay(machine.role_ports(), {}, sinks)
     except (RigFileError, PatchbayError) as exc:
         return "; ".join(exc.problems)
     return None
@@ -276,9 +266,9 @@ def role_options(machine: Any, wiring: dict[str, Any] | None = None) -> list[dic
     for role, ports in machine.role_ports().items():
         widths = {}
         for width in ("mono", "stereo"):
-            why = _feeds_problem(machine, role, width)
+            why = _probe(machine, role, width, feeds=True)
             widths[width] = {"ok": why is None, "why": why}
-        why = _takes_master_problem(machine, role)
+        why = _probe(machine, role, feeds=False)
         used = sorted(track for track, wired in (wiring or {}).items()
                       if isinstance(wired, dict) and role in (wired.get("source"), wired.get("sink")))
         roles.append({"name": role, "ports": list(ports), "mono_to_stereo": role in mono,
@@ -287,29 +277,47 @@ def role_options(machine: Any, wiring: dict[str, Any] | None = None) -> list[dic
     return roles
 
 
-def machine_hint(machine: Any, raw: dict[str, Any], machine_name: str) -> str | None:
+def machine_hint(machine: Any, raw: Any, machine_name: str) -> str | None:
     """What to add to the machine file for the roles `raw` names that it
-    lacks, or None: the lines, with placeholders for the ports, which only
-    the player can know. Words only: whether the rig is refused is the
-    patchbay's to say, and this is shown beside that refusal."""
+    lacks, or None: one line per role, with placeholders for the ports,
+    which only the player can know. Words only: whether the rig is refused is
+    the patchbay's to say, and this is shown beside that refusal.
+
+    One line per role, whatever uses it, since the machine file is a mapping
+    and a role written twice keeps only the last (review, 2026-11-06: a role
+    used mono and stereo got two lines with one key). The line satisfies every
+    use the patchbay would check: a mono channel needs one port, a stereo one
+    two ports or one declared `mono_to_stereo`, the master two; so one port
+    with `mono_to_stereo` for any mono use, two for stereo or the master
+    alone. A role asked to be both a mono input and the master's pair cannot
+    be one role, and is said so rather than written.
+
+    `raw` is read as a hand-written file may be, not as a parsed rig: a
+    `master: monitor-out` or a channel that is not a mapping is passed over,
+    and the compiler's own refusal says what is wrong with it."""
     known = set(machine.role_ports())
-    missing = []
-    for entry in raw.get("channels") or []:
-        if isinstance(entry, dict) and isinstance(entry.get("input"), str) and entry["input"] not in known:
-            missing.append((entry["input"], entry.get("width")))
-    output = (raw.get("master") or {}).get("output")
-    if isinstance(output, str) and output not in known:
-        missing.append((output, "output"))
-    if not missing:
+    uses: dict[str, set[str]] = {}
+    channels = raw.get("channels") if isinstance(raw, dict) else None
+    for entry in channels if isinstance(channels, list) else []:
+        role = entry.get("input") if isinstance(entry, dict) else None
+        if isinstance(role, str) and role and role not in known:
+            uses.setdefault(role, set()).add(entry.get("width") if entry.get("width") in ("mono", "stereo") else "mono")
+    master = raw.get("master") if isinstance(raw, dict) else None
+    output = master.get("output") if isinstance(master, dict) else None
+    if isinstance(output, str) and output and output not in known:
+        uses.setdefault(output, set()).add("output")
+    if not uses:
         return None
     lines = []
-    for role, width in dict.fromkeys(missing):
-        if width == "output":
+    for role, used in uses.items():
+        if "output" in used and "mono" in used:
+            lines.append(f"  # {role}: used as a mono input and as the master's output, which no one role can be: "
+                         "give the channel another role")
+        elif "output" in used:
             lines.append(f'  {role}: ["<device>:playback_FL", "<device>:playback_FR"]   # left, then right')
-        elif width == "stereo":
-            lines.append(f'  {role}: ["<device>:capture_AUX0", "<device>:capture_AUX1"]   # left, then right')
-        else:
+        elif "mono" in used:
             lines.append(f'  {role}: {{ports: ["<device>:capture_AUX0"], mono_to_stereo: true}}')
-    names = ", ".join(dict.fromkeys(role for role, _ in missing))
-    return (f"{machine_name} has no role {names}. sushi-rig does not edit the machine file: add, under "
-            "roles:, with the ports `pw-link -io` lists for it,\n" + "\n".join(lines))
+        else:
+            lines.append(f'  {role}: ["<device>:capture_AUX0", "<device>:capture_AUX1"]   # left, then right')
+    return (f"{machine_name} has no role {', '.join(uses)}. sushi-rig does not edit the machine file: add, under "
+            "roles:, with the ports `pw-link -o` (inputs) and `pw-link -i` (outputs) list,\n" + "\n".join(lines))

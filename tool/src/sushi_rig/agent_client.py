@@ -188,7 +188,9 @@ def lifecycle_request(command: str, args: Any) -> tuple[str, dict[str, Any]]:
     if command == "down":
         return "/rig/down", {"force": args.force}
     if command == "restart":
-        return "/rig/restart", {}
+        # Refused by the agent when it saw changes since the last save, which
+        # the restart would drop; `--discard` is saying to drop them.
+        return "/rig/restart", {"discard": True} if getattr(args, "discard", False) else {}
     raise ValueError(f"not a lifecycle command: {command!r}")
 
 

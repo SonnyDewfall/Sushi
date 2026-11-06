@@ -12,7 +12,7 @@ and the two things worth reading about a rig, served over HTTP on localhost.
     GET  /doctor        `doctor`'s checks, as data
     POST /rig/up        {"config_name" (required), "rig", "headless", "tuner", "amp", "amp_model"}
     POST /rig/down      {"force"}
-    POST /rig/restart   {}
+    POST /rig/restart   {"discard"?} -- refused (409 unsaved) if it would drop changes no save wrote
     POST /rig/switch    {"config_name" (required)} -- to a rig of config/rigs, live where it can be (#93)
     GET  /live          the running rig's parameters, bypass and chains, with each parameter's range
     POST /live/parameter  {"processor", "parameter", "value"}   value is normalised, 0 to 1
@@ -260,7 +260,13 @@ An edit of the running rig's own file takes effect at a restart, and the
 answer says so with `rigfile.diff`'s reasons, as a switch gives them, and
 offers it. It is refused while the agent saw changes since the last save
 (`unsaved`): the restart that plays the edit reloads the file and would drop
-them, so Save comes first. With the panel running (`panel`) the agent cannot
+them, so Save comes first. The restart itself refuses the same way
+(`restart_refusal`, unless `{"discard": true}`), for a change made after the
+edit and for every other restart; and it, like every switch by restart
+(`switch_steps`), is started against the run's machine file, the one the
+draft was checked against. A new rig that moves other rigs' Program Change
+numbers says so (`programs_moved`). What git says of a written file is read
+after the lifecycle lock is let go, within the write's deadline. With the panel running (`panel`) the agent cannot
 see the panel's changes at all, so it refuses too. Each write takes the
 lifecycle lock (`busy`), and the live lock for the running rig, so neither a
 restart nor a live change comes between the check and the write. A remote
@@ -529,11 +535,22 @@ def is_local(remote: str | None) -> bool:
     return remote == "::1" or remote.startswith("127.") or remote.startswith("::ffff:127.")
 
 
-def lifecycle_arguments(command: str, body: dict[str, Any] | None, *, local: bool = False) -> list[str]:
+def lifecycle_arguments(
+    command: str, body: dict[str, Any] | None, *, local: bool = False, machine: str | None = None,
+) -> list[str]:
     """The CLI arguments for one lifecycle request, or `AgentError`.
 
     Pure, and the whole of the request's influence on what runs: anything not
     read here is ignored.
+
+    `machine` is never from a request: it is the machine file a run was
+    started against, from the state file, which a switch's `up --rig`
+    carries (`switch_steps`) so the next rig is wired on the same roles it
+    was compiled against. An absolute path on one line, or `AgentError`.
+
+    `discard` is a restart's: `{"discard": true}` lets it drop unsaved live
+    work, which it otherwise refuses (`restart_refusal`). It changes no
+    argument, since the refusal is the agent's, made before anything runs.
     """
     if body is None:
         body = {}
@@ -587,9 +604,14 @@ def lifecycle_arguments(command: str, body: dict[str, Any] | None, *, local: boo
                     + ("" if local else " (a path is taken only from this machine)")
                 )
             args += ["--amp-model", model]
+        if machine is not None:
+            if not isinstance(machine, str) or not machine.startswith("/") or any(c in machine for c in "\n\r\0"):
+                raise AgentError(f"invalid machine file {machine!r}: an absolute path, on one line")
+            args += ["--machine", machine]
         return args
     if command == "down":
         return ["down", "--force"] if flag("force", False) else ["down"]
+    flag("discard", False)  # checked for its type; read by the route
     return ["restart"]
 
 
@@ -1620,7 +1642,14 @@ class Agent:
         except AgentError as exc:
             raise web.HTTPBadRequest(reason=str(exc))
 
-        outcome, args, take = await self._run_lifecycle(command, [args], origin=request)
+        # A restart reloads the rig's file, so live work no save has written
+        # is dropped by it: refused (409 `unsaved`) unless the body says
+        # `{"discard": true}`. Checked under the lifecycle lock, once no live
+        # change is in flight (`_run_lifecycle`'s `guard`).
+        guard = None
+        if command == "restart" and not (isinstance(body, dict) and body.get("discard") is True):
+            guard = self._restart_guard
+        outcome, args, take = await self._run_lifecycle(command, [args], origin=request, guard=guard)
         answer: dict[str, Any] = {
             "ok": outcome.ok,
             "command": args,
@@ -1649,7 +1678,7 @@ class Agent:
 
     async def _run_lifecycle(
         self, command: str, steps: list[list[str]], fallback: list[str] | None = None, *,
-        origin: Any = None,
+        origin: Any = None, guard: "Callable[[], Awaitable[tuple[str, str] | None]] | None" = None,
     ) -> tuple[Outcome, list[str], dict[str, Any] | None]:
         """Run lifecycle commands in order under the lifecycle lock, stopping
         at the first that fails: one for a route, `down` then `up` for a rig
@@ -1670,11 +1699,23 @@ class Agent:
         A take recording from the web UI is finished first for a `down` or
         `restart` (`_finish_take`), and its stop answered as the third value,
         None when none ran.
+
+        `guard`, when given, is asked once the lock is held and `busy` set (so
+        no live change can start) and any live change already in flight has
+        landed (the live lock, taken and let go): a `(reason, code)` it
+        answers is a 409 with nothing run, the take and the listener left as
+        they were. A restart's check for unsaved work (`restart_refusal`).
         """
         self._refuse_while_busy()
         async with self._lock:
             self.busy = command
             try:
+                if guard is not None:
+                    async with self._live_lock:
+                        pass
+                    refusal = await guard()
+                    if refusal is not None:
+                        raise _conflict(*refusal)
                 # Only a command that takes the rig down: `up` refuses a rig
                 # that is running, so finishing a take for it would end the
                 # take for nothing. A `down` or `restart` with no rig up has
@@ -3925,18 +3966,29 @@ class Agent:
                 library.update(file_git_state(root, out) or {"file": None, "others": None})
             return out, library
 
-        where = [request.method, request.path]
         try:
-            return await asyncio.wait_for(asyncio.to_thread(write), SAVE_TIMEOUT)
+            return await self._write_off_loop(request, target, write, again="saving again")
         except SaveError as exc:
             raise _conflict(" ".join(f"not saved: {exc}".split()), "not_saved")
+
+    async def _write_off_loop(self, request, path: Path, work: Callable[[], Any], *, again: str) -> Any:
+        """`work()`, which writes rig file `path`, off the loop within
+        `SAVE_TIMEOUT`: the one shape of a save's write and the rig files
+        routes' (`_rigfile_thread`). The thread cannot be stopped past the
+        deadline (see `LIVE_TIMEOUT`), so the 504 says the file may still be
+        written; an OSError is a 500 naming the file; both are remembered
+        for /health. Anything else `work` raises is the caller's to answer.
+        `again` is what not to do before looking ("saving again")."""
+        where = [request.method, request.path]
+        try:
+            return await asyncio.wait_for(asyncio.to_thread(work), SAVE_TIMEOUT)
         except asyncio.TimeoutError:
-            reason = (f"writing {self._save_shown(target)} did not finish within {SAVE_TIMEOUT:g}s, and may "
-                      "still: look at the file before saving again")
+            reason = (f"writing {self._save_shown(path)} did not finish within {SAVE_TIMEOUT:g}s, and may "
+                      f"still: look at the file before {again}")
             self._remember(where, reason, kind="live")
             raise web.HTTPGatewayTimeout(reason=reason)
         except OSError as exc:
-            reason = " ".join(f"writing {self._save_shown(target)} failed: {type(exc).__name__}: {exc}".split())
+            reason = " ".join(f"writing {self._save_shown(path)} failed: {type(exc).__name__}: {exc}".split())
             self._remember(where, reason, kind="live")
             raise web.HTTPInternalServerError(reason=reason)
 
@@ -4124,7 +4176,8 @@ class Agent:
 
         200 with `file`, `rig`, `how: "new"`, `committed: false`, `library`
         (the commit and what git says of the file, as a save's), and `offer`:
-        `start` with no rig up, `switch` with one."""
+        `start` with no rig up, `switch` with one; and `programs` when the new
+        file moves other rigs' Program Change numbers (`programs_moved`)."""
         from . import rigedit
 
         try:
@@ -4136,7 +4189,7 @@ class Agent:
         answer["takes_effect"] = "start"
         answer["note"] = (f"{answer['file']} is a new rig, not running and not committed: "
                           f"{'switch to' if answer['offer'] == 'switch' else 'start'} it to play it")
-        return web.json_response(self._rigfile_answer(answer))
+        return web.json_response(await self._rigfile_answer(answer))
 
     async def add_channel_route(self, request):
         """`POST /rigs/{name}/channels/add {"name", "input", "width",
@@ -4162,7 +4215,7 @@ class Agent:
                 "width": change["width"], "from": source}
 
         answer = await self._rigfile_locked(request, lambda run: self._write_edit(request, run, path, edit))
-        return web.json_response(self._rigfile_answer(answer))
+        return web.json_response(await self._rigfile_answer(answer))
 
     async def channel_input_route(self, request):
         """`POST /rigs/{name}/channels/{channel}/input {"input"?, "width"?}`:
@@ -4187,7 +4240,7 @@ class Agent:
                             "was": {"input": before.get("input"), "width": before.get("width")}, **change}
 
         answer = await self._rigfile_locked(request, lambda run: self._write_edit(request, run, path, edit))
-        return web.json_response(self._rigfile_answer(answer))
+        return web.json_response(await self._rigfile_answer(answer))
 
     async def _rigfile_locked(self, request, write: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]):
         """Run `write(run)` under the lifecycle lock, `busy: "rig file
@@ -4210,9 +4263,12 @@ class Agent:
         answer["run"] = run
         return answer
 
-    def _rigfile_answer(self, answer: dict[str, Any]) -> dict[str, Any]:
-        """The answer without what was only for the route (`run`)."""
-        return {k: v for k, v in answer.items() if k != "run"}
+    async def _rigfile_answer(self, answer: dict[str, Any]) -> dict[str, Any]:
+        """The answer, with what git says of the file read now, outside the
+        lifecycle lock (`_rigfile_git_after`), and without what was only for
+        the route (`run`, `path`)."""
+        await self._rigfile_git_after(answer, answer["path"])
+        return {k: v for k, v in answer.items() if k not in ("run", "path")}
 
     def _rigfile_copy(self, change: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
         """`(copied, said)` for a channel's `from`: its chain and level from
@@ -4251,7 +4307,7 @@ class Agent:
         refusal: the compiler's reason, and the lines to add to the machine
         file when a role is missing (`rigedit.machine_hint`)."""
         from . import rigedit
-        from .machine import MachineError, MachineSpec
+        from .machine import MachineSpec
         from .rig import compile_rig_draft
 
         try:
@@ -4261,7 +4317,7 @@ class Agent:
             try:
                 machine = MachineSpec.load(run["machine"])
                 hint = rigedit.machine_hint(machine, raw, self._save_shown(run["machine"]))
-            except MachineError:
+            except Exception:  # noqa: BLE001 -- advice, never a reason to lose the refusal it is beside
                 hint = None
             if hint:
                 extra["machine_hint"] = hint
@@ -4278,22 +4334,24 @@ class Agent:
             library.update(file_git_state(root, path) or {"file": None, "others": None})
         return library
 
-    async def _rigfile_thread(self, request, path: Path, work: Callable[[], Any]) -> Any:
-        """`work()` off the loop within `SAVE_TIMEOUT`, as a save's write is:
-        a 504 says the file may still be written (the thread cannot be
-        stopped), and an OSError is a 500 naming the file."""
-        where = [request.method, request.path]
+    async def _rigfile_git_after(self, answer: dict[str, Any], path: Path) -> dict[str, Any]:
+        """`answer` with `library`, what git says of the file: read once the
+        lifecycle lock is let go, and within `SAVE_TIMEOUT`, since git is
+        nothing a lifecycle command should wait on (review, 2026-11-06: a
+        hung git under the lock left every lifecycle route answering busy).
+        Past the deadline it is `null`, which the page says as not known,
+        with `library_note` saying why; the file is written either way."""
         try:
-            return await asyncio.wait_for(asyncio.to_thread(work), SAVE_TIMEOUT)
+            answer["library"] = await asyncio.wait_for(asyncio.to_thread(self._rigfile_git, path), SAVE_TIMEOUT)
         except asyncio.TimeoutError:
-            reason = (f"writing {self._save_shown(path)} did not finish within {SAVE_TIMEOUT:g}s, and may "
-                      "still: look at the file before trying again")
-            self._remember(where, reason, kind="live")
-            raise web.HTTPGatewayTimeout(reason=reason)
-        except OSError as exc:
-            reason = " ".join(f"writing {self._save_shown(path)} failed: {type(exc).__name__}: {exc}".split())
-            self._remember(where, reason, kind="live")
-            raise web.HTTPInternalServerError(reason=reason)
+            answer["library"] = None
+            answer["library_note"] = (f"git did not answer within {SAVE_TIMEOUT:g}s, so what it says of "
+                                      f"{self._save_shown(path)} is not known; the file is written")
+        return answer
+
+    async def _rigfile_thread(self, request, path: Path, work: Callable[[], Any]) -> Any:
+        """`work()` off the loop, as a save's write is (`_write_off_loop`)."""
+        return await self._write_off_loop(request, path, work, again="trying again")
 
     async def _write_new_rig(self, request, run: dict[str, Any], name: str, channels: list[dict[str, Any]]):
         """The new rig's file, compiled before it is written (`new_rig_route`)."""
@@ -4313,6 +4371,7 @@ class Agent:
             if path.exists():
                 raise RigFileRefused(f"a rig called {name} already exists ({self._save_shown(path)}): "
                                      "choose another name, or add channels to that one", "taken")
+            programs_before = midi_listener.program_order(root)
             entries, sources, said = [], [], {}
             for change in channels:
                 copied, source = self._rigfile_copy(change)
@@ -4337,15 +4396,15 @@ class Agent:
             except BaseException:
                 path.unlink(missing_ok=True)
                 raise
-            return {"sources": sources}
+            return {"sources": sources,
+                    "programs": programs_moved(programs_before, midi_listener.program_order(root), name)}
 
         try:
             done = await self._rigfile_thread(request, path, work)
         except RigFileError as exc:
             raise RigFileRefused("nothing was written: " + "; ".join(exc.problems), "rig_problem") from exc
-        library = await asyncio.to_thread(self._rigfile_git, path)
         return {"ok": True, "rig": name, "file": self._save_shown(path), "how": "new", "committed": False,
-                "library": library, "running": False,
+                "running": False, "path": path, **({"programs": done["programs"]} if done["programs"] else {}),
                 "channels": [{"name": c["name"], "input": c["input"], "width": c["width"], "from": source}
                              for c, source in zip(channels, done["sources"])]}
 
@@ -4381,9 +4440,8 @@ class Agent:
                 done = await self._rigfile_thread(request, path, work)
         else:
             done = await self._rigfile_thread(request, path, work)
-        library = await asyncio.to_thread(self._rigfile_git, path)
         answer = {"ok": True, "rig": path.stem, "file": self._save_shown(path), "how": "updated",
-                  "committed": False, "library": library, "change": done["change"], "running": running}
+                  "committed": False, "change": done["change"], "running": running, "path": path}
         shown = answer["file"]
         if not running:
             answer.update(takes_effect="next start", offer=None,
@@ -4403,6 +4461,13 @@ class Agent:
                 f"agent saw no unsaved change since {since or 'it started'}; a change it cannot see (the "
                 "panel, or before the agent started) is not in the file").split()))
         return answer
+
+    async def _restart_guard(self) -> tuple[str, str] | None:
+        """`restart_refusal` for the run as it is now, for `/rig/restart`
+        (`lifecycle`): the restart the rig files routes offer after an edit,
+        the picker's and the CLI's alike, all of which reload the file."""
+        state = await asyncio.to_thread(self.switching.read_state) or {}
+        return restart_refusal(state, self.describe(), self.log)
 
     async def _rigfile_restart_why(self, run: dict[str, Any], compiled: dict[str, Any]) -> list[dict[str, str]]:
         """Why the running rig needs a restart to become the edited file: what
@@ -4734,13 +4799,27 @@ def switch_steps(state: dict[str, Any], rig: str) -> list[list[str]]:
     (`rig.restart_arguments`), so a switch keeps how the rig is being run.
     Not the amp model override: that was chosen for the rig being left, and
     the next one's own `_amp` says its model. `AgentError` for a rig name that
-    is not one. Pure."""
+    is not one. Pure.
+
+    The machine file the run was started against goes with it (`--machine`),
+    as `Switching.compile` already compiled the next rig against it: until
+    2026-11-06 every switch by restart dropped it, and `up` wired the next
+    rig against this host's file instead, which need not be the one it was
+    checked against."""
     _, options = restart_arguments(state)
+    machine = options.get("machine") or state.get("machine")
     up = lifecycle_arguments("up", {
         "config_name": rig, "rig": True,
         "headless": options["headless"], "tuner": options["tuner"], "amp": options["amp"],
-    })
+    }, machine=_absolute_machine(machine))
     return [["down"], up]
+
+
+def _absolute_machine(machine: Any) -> str | None:
+    """The state file's machine file as `up --machine` takes it, or None."""
+    if not isinstance(machine, str) or not machine:
+        return None
+    return machine if machine.startswith("/") else str(Path(machine).resolve())
 
 
 
@@ -4952,6 +5031,28 @@ def _log_time(stamp: Any) -> str | None:
     return when.astimezone(timezone.utc).replace(microsecond=0).isoformat()
 
 
+def since_baseline(log: list[dict[str, Any]], since: Any = None) -> tuple[int, dict[str, Any] | None]:
+    """`(start, stop)`: where in the log the running rig's own history begins
+    -- after the newest save or rig switch, and after `since`, the run's
+    start (the state file's `started_at`: a restart reloaded the file) --
+    and the save or switch entry that ended the walk, None if none did.
+    One walk back from the newest entry, so a caller under the live lock pays
+    for the entries since the last save, not the whole log, and no time but
+    `since` is parsed (review of #32). The one walk `live_edits` and
+    `unsaved_entries` share. Pure."""
+    cut = _log_time(since) if since is not None else None
+    start = len(log)
+    while start > 0:
+        entry = log[start - 1]
+        at = entry.get("at")
+        if cut is not None and isinstance(at, str) and at < cut:
+            return start, None
+        if entry.get("op") in ("rig", "save"):
+            return start, entry
+        start -= 1
+    return start, None
+
+
 def live_edits(log: list[dict[str, Any]], since: Any = None) -> dict[str, Any]:
     """Which plugins the log says were added to and removed from the running
     rig: what `rigfile.fold_state` needs to write a chain's plugins, and not
@@ -4961,10 +5062,8 @@ def live_edits(log: list[dict[str, Any]], since: Any = None) -> dict[str, Any]:
 
     Read from the newest save or rig switch on, and from `since`, the run's
     start (the state file's `started_at`: a restart reloaded the file, so
-    what came before it is not on the rig): one walk back from the newest
-    entry, stopping at the first of the three, so a save under the live lock
-    costs the entries since the last save, not the whole log, and no time but
-    `since` is parsed (review of #32). Before a switch was another rig; before
+    what came before it is not on the rig), by `since_baseline`, the one walk
+    this shares with `unsaved_entries`. Before a switch was another rig; before
     a save is in the file, except what the next save needs of it, which the
     save's entry carries (`args.added`, the plugins added live it wrote, with
     their defaults) and this starts from.
@@ -4982,19 +5081,8 @@ def live_edits(log: list[dict[str, Any]], since: Any = None) -> dict[str, Any]:
     to make: a plugin the capture does not hold is not written whatever the
     log says, and one it holds that is neither the file's nor here is
     refused as a capture of a different rig."""
-    cut = _log_time(since) if since is not None else None
-    start, seed = len(log), {}
-    while start > 0:
-        entry = log[start - 1]
-        at = entry.get("at")
-        if cut is not None and isinstance(at, str) and at < cut:
-            break
-        if entry.get("op") == "rig":
-            break
-        if entry.get("op") == "save":
-            seed = (entry.get("args") or {}).get("added") or {}
-            break
-        start -= 1
+    start, stop = since_baseline(log, since)
+    seed = ((stop.get("args") or {}).get("added") or {}) if stop is not None and stop.get("op") == "save" else {}
     added: dict[str, dict[str, Any]] = {
         name: dict(said) for name, said in seed.items() if isinstance(said, dict)}
     removed: dict[str, str] = {}
@@ -5166,26 +5254,16 @@ def unsaved_entries(log: list[dict[str, Any]], since: Any = None) -> list[dict[s
     """The log's changes to the running rig that no save has written: every
     entry after the newest save or rig switch, and after `since` (the run's
     start: a restart reloaded the file), that is not a save, a switch, a
-    take or a skip's marker. Pure over the log, walked back from its newest
-    entry as `live_edits` walks it.
+    take or a skip's marker. Pure over the log, through `since_baseline`, the
+    walk `live_edits` takes.
 
     Counted, not netted out: a knob turned and turned back is two entries,
     though the rig is as the file has it. That errs on the side of keeping
     work: the refusal it causes is answered by a Save, which writes what is
     playing, and nothing is lost by it. And only what the agent saw: the
     panel's changes and anything before the agent started are not here."""
-    cut = _log_time(since) if since is not None else None
-    found = []
-    for entry in reversed(log):
-        at = entry.get("at")
-        if cut is not None and isinstance(at, str) and at < cut:
-            break
-        if entry.get("op") in ("save", "rig"):
-            break
-        if entry.get("op") in _NOT_LIVE_CHANGES:
-            continue
-        found.append(entry)
-    return list(reversed(found))
+    start, _ = since_baseline(log, since)
+    return [entry for entry in log[start:] if entry.get("op") not in _NOT_LIVE_CHANGES]
 
 
 def rigfile_refusal(state: dict[str, Any], log: list[dict[str, Any]]) -> tuple[str, str] | None:
@@ -5222,6 +5300,74 @@ def rigfile_refusal(state: dict[str, Any], log: list[dict[str, Any]]) -> tuple[s
                 "and that restart would drop them: Save first (it writes what is playing into the file), "
                 "then make the edit", "unsaved")
     return None
+
+
+def restart_refusal(
+    state: dict[str, Any], described: dict[str, Any], log: list[dict[str, Any]],
+) -> tuple[str, str] | None:
+    """`(reason, "unsaved")` when a restart would drop live work the agent saw
+    and no save has written, or None. Pure over the state file,
+    `describe_rig`'s answer and the log.
+
+    A restart reloads the rig's file, so what was turned since the last save
+    is gone after it, with nothing said: the hole the web UI's restart offer
+    after an edit opened (review, 2026-11-06), and the picker's and the CLI's
+    plain restart had all along. `{"discard": true}` (`sushi-rig restart
+    --discard`) says to drop it.
+
+    Not refused, because there is nothing to keep or no way to know: no rig
+    up (the restart says so itself); Sushi gone (`describe_rig` says its
+    process is not alive), where the work went with it and a restart is the
+    recovery principle 9 asks for, which must not wait on a Save that cannot
+    capture anything; and a rig run with its panel, whose changes the agent
+    cannot see, so refusing would refuse every panel run's restart for
+    nothing it knows of. Counted, not netted out, as `unsaved_entries` says."""
+    from .rig import runs_panel
+
+    if not described.get("running"):
+        return None
+    sushi = (described.get("children") or {}).get("sushi")
+    if isinstance(sushi, dict) and sushi.get("alive") is False:
+        return None
+    if runs_panel(state):
+        return None
+    unsaved = unsaved_entries(log, since=state.get("started_at"))
+    if not unsaved:
+        return None
+    name = state.get("config_name") or described.get("config_name") or "the rig"
+    newest = unsaved[-1]
+    count = f"{len(unsaved)} change{'s' if len(unsaved) != 1 else ''}"
+    return (f"{name} has {count} made through the agent and not saved (the newest: "
+            f"{describe_change(newest)}, at {newest.get('at')}), and a restart reloads its file without "
+            "them: Save first, or restart with discard (sushi-rig restart --discard, or "
+            '{"discard": true}) to drop them', "unsaved")
+
+
+def programs_moved(before: list[str], after: list[str], made: str) -> dict[str, Any] | None:
+    """What a new rig file does to the Program Change numbers, or None when
+    nothing moves: `{"moved": [{"rig", "from", "to"}], "before", "after",
+    "note"}`, the tables as `midi_listener.programs_table` gives them. Pure.
+
+    Program n is the nth file of config/rigs by file name
+    (`midi_listener.program_order`), so a new file sorting before others
+    moves each of them up one, and a pedal preset set for one rig then
+    selects another, with nothing said (review, 2026-11-06). Said whenever a
+    number moves, for every rig, not only those whose map switches by
+    Program Change: which presets a player has set is not in any file. The
+    rule itself is not changed here."""
+    moved = [{"rig": rig, "from": n, "to": after.index(rig)}
+             for n, rig in enumerate(before) if rig in after and after.index(rig) != n]
+    if not moved:
+        return None
+    first = moved[0]
+    return {
+        "moved": moved,
+        "before": midi_listener.programs_table(before), "after": midi_listener.programs_table(after),
+        "note": (f"Program Change numbers follow config/rigs by file name, so {made} (program "
+                 f"{after.index(made)}) moves {len(moved)} rig{'s' if len(moved) != 1 else ''} up one: program "
+                 f"{first['from']}, which was {first['rig']}, is now {after[first['from']]}. A pedal preset set for "
+                 "a number now selects the rig listed against it after"),
+    }
 
 
 def describe_change(entry: dict[str, Any]) -> str:

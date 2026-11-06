@@ -413,3 +413,8 @@ a.rig-act { display: inline-flex; align-items: center; justify-content: center; 
 @media (max-width: 640px) {
   .new-rig { padding: 14px 16px 24px; }
 }
+.programs-moved { display: flex; flex-direction: column; gap: 6px; margin: 4px 0; }
+.programs-moved table { border-collapse: collapse; font-size: 12px; }
+.programs-moved th, .programs-moved td { text-align: left; padding: 2px 12px 2px 0; }
+.programs-moved th { color: var(--muted); font-weight: 500; }
+.programs-moved td { font-family: var(--mono); }

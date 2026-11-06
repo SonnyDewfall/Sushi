@@ -3271,3 +3271,37 @@ file); browser tests against `ui_fake` (`UiSave` now has a machine file and a
 running config that is the real compile, and a restart that brings a new
 channel up as an empty track). **NOT RUN AGAINST A LIVE SUSHI, and no rig made
 this way has been started on the rig.** *(2026-11-06)*
+
+**The New rig screen: answering review.** Ten findings, each with a test
+(`test_agent_rigfiles.py` and `test_ui.py` unless said). (1) **The offered
+restart could lose live work**: a knob turned after an edit was dropped by
+the restart the edit offered. `POST /rig/restart` itself now refuses (409
+`unsaved`, naming the newest change) while the agent saw changes no save has
+written, unless `{"discard": true}`: the page's restart after an edit, the
+picker's and the CLI's alike. The page shows the refusal with "Restart
+anyway, dropping them" as a second tap; the CLI gains `restart --discard`
+(`test_agent_client.py`). Not refused with Sushi's process gone (the work
+went with it, and recovery must not wait) or with the panel running (the
+agent cannot see it). Stop and a switch still drop unsaved work, as before.
+(2) **Restart and switch dropped the run's machine file**: drafts were
+checked against the state file's `machine`, but `restart` and **every switch
+by restart** (`switch_steps`) ran `up --rig`, which read this host's file.
+`restart_arguments` now carries `machine`, `up` and `prepare_launch` take it
+(`up --machine`, CLI `--direct` only, since the agent takes no path from a
+request), and `switch_steps` passes it (`test_agent.py`'s switch tests now
+expect it; `test_rig.py`, `test_supervisor.py`). (3) `machine_hint` gives one
+line per role, satisfying every use; pasted into the machine file it
+validates and the rig compiles. (4) What git says of a written file is read
+after the lifecycle lock is let go, within `SAVE_TIMEOUT`; past it the answer
+says git is not known. (5) A hand-written `master: monitor-out` is the
+compiler's refusal, not a 500: `machine_hint` reads the file defensively,
+and a failure in it never replaces the refusal. (6) A new rig that moves
+Program Change numbers says which rigs moved, before and after, in the answer
+(`programs`) and on the page; the order rule is unchanged. (7) A poll that saw
+the run change no longer loses an edit's answer: the write in flight and the
+last result are kept across the reset (the browser test fails on the old
+code). (8) Save and the rig files share one off-loop write
+(`_write_off_loop`). (9) One probe (`rigedit._probe`). (10) One walk back to
+the newest save, switch or run start (`since_baseline`) for `live_edits` and
+`unsaved_entries`; `freshWiring` is the page's one literal. **Still not run
+against a live Sushi.** *(2026-11-06)*

@@ -32,7 +32,11 @@ pytest.importorskip("aiohttp")
 from aiohttp.test_utils import TestClient, TestServer  # noqa: E402
 
 from sushi_rig import midi_listener, rigedit  # noqa: E402
+from sushi_rig import agent as agent_module  # noqa: E402
 from sushi_rig.agent import Agent, Switching, rigfile_refusal, unsaved_entries  # noqa: E402
+from sushi_rig.agent import live_edits, restart_refusal, since_baseline, switch_steps  # noqa: E402
+from sushi_rig.machine import MachineSpec  # noqa: E402
+from sushi_rig.supervisor import Outcome  # noqa: E402
 from sushi_rig.paths import checkout_root  # noqa: E402
 from sushi_rig.rig import RigError, compile_named_rig, compile_rig_draft  # noqa: E402
 
@@ -99,6 +103,7 @@ class World:
     def __init__(self, root, rig="guitar_vocal", mode="headless"):
         self.root = root
         self.rig = rig
+        self.children = {"sushi": {"pid": 11, "alive": True}}
         self.state = {}
         if rig is not None:
             self.state = {
@@ -113,7 +118,7 @@ class World:
         if self.rig is None:
             return {"verdict": "absent", "running": False, "message": "No rig is running."}
         return {"verdict": "running", "running": True, "config_name": self.rig, "mode": self.state["mode"],
-                "rig": self.state["rig"], "config": self.state["config"], "children": {},
+                "rig": self.state["rig"], "config": self.state["config"], "children": self.children,
                 "message": f"{self.rig} (headless mode), up 2m"}
 
     def switching(self):
@@ -128,9 +133,9 @@ async def _never(args):
     raise AssertionError(f"no lifecycle command is run by a rig file edit: {args}")
 
 
-def rig_agent(root, world=None):
+def rig_agent(root, world=None, run=None):
     world = world if world is not None else World(root)
-    agent = Agent(root=root, describe=world.described, switching=world.switching(), run=_never,
+    agent = Agent(root=root, describe=world.described, switching=world.switching(), run=run or _never,
                   live=_NoSushi(), library=lambda: {"plugins": [], "problems": []},
                   midi=midi_listener.World(plan=lambda described, root: midi_listener.Off("no pedals here")))
     return agent, world
@@ -684,3 +689,189 @@ def test_a_save_after_an_edit_keeps_the_channel_the_running_rig_does_not_have_ye
     folded = fold_state(rigedit.with_channel(raw, keys), capture)
     assert folded["channels"][2] == keys
     assert folded["channels"][0]["chain"][0]["parameters"] == {"Drive": 0.5}, "and the live change is saved"
+
+
+# --------------------------------------------------------------------------- #
+# Review, 2026-11-06
+# --------------------------------------------------------------------------- #
+
+class Runner:
+    """The lifecycle runner, recording each command and saying it worked."""
+
+    def __init__(self):
+        self.calls = []
+
+    async def __call__(self, args):
+        self.calls.append(list(args))
+        return Outcome(True, 0, "", "")
+
+
+def test_a_restart_that_would_drop_unsaved_work_is_refused_unless_told_to_discard_it(root):
+    """(1) The restart an edit offers reloads the file: knobs turned since the
+    last save are lost by it. /rig/restart refuses (409 `unsaved`, naming the
+    newest) with nothing run, as the edit does, unless `{"discard": true}`."""
+    runner = Runner()
+    agent, _ = rig_agent(root, run=runner)
+    status, _ = call(agent, "POST", "/rigs/guitar_vocal/channels/add", json=mono("keys", "vocal-in"))
+    assert status == 200
+    agent.log.append(logged("parameter", {"processor": "guitar_overdrive", "parameter": "Drive", "value": 0.4},
+                            at="2026-11-06T10:30:00+00:00"))
+    status, answer = call(agent, "POST", "/rig/restart")
+    assert (status, answer["code"]) == (409, "unsaved"), answer
+    assert "guitar_vocal has 1 change made through the agent and not saved (the newest: guitar_overdrive " \
+           "Drive" in answer["reason"]
+    assert "sushi-rig restart --discard" in answer["reason"]
+    assert runner.calls == [] and agent.busy is None
+    status, answer = call(agent, "POST", "/rig/restart", json={"discard": True})
+    assert status == 200 and runner.calls == [["restart"]], answer
+    status, answer = call(agent, "POST", "/rig/restart", json={"discard": "yes"})
+    assert status == 400 and "'discard' must be true or false" in answer["reason"]
+
+
+def test_a_restart_with_nothing_unsaved_or_nothing_to_keep_is_not_refused(root):
+    runner = Runner()
+    world = World(root)
+    agent, _ = rig_agent(root, world, run=runner)
+    assert call(agent, "POST", "/rig/restart")[0] == 200, "nothing unsaved"
+    agent.log.append(logged("bypass", {"processor": "guitar_eq"}))
+    world.children = {"sushi": {"pid": 11, "alive": False}}
+    assert call(agent, "POST", "/rig/restart")[0] == 200, "Sushi is gone, and the work with it: recovery goes ahead"
+    world.children = {"sushi": {"pid": 11, "alive": True}}
+    world.state["mode"] = "panel"
+    assert call(agent, "POST", "/rig/restart")[0] == 200, "the panel's changes cannot be seen: not refused for them"
+    assert runner.calls == [["restart"]] * 3
+
+
+def test_restart_refusal_is_pure_over_the_state_the_answer_and_the_log():
+    state = {"config_name": "board", "rig": "config/rigs/board.yaml", "mode": "headless",
+             "started_at": "2026-11-06T10:00:00+00:00"}
+    up = {"running": True, "children": {"sushi": {"alive": True}}}
+    change = [logged("amp", {"name": "Output Lvl"})]
+    assert restart_refusal(state, up, change)[1] == "unsaved"
+    assert restart_refusal(state, up, change + [logged("save", {}, at="2026-11-06T10:06:00+00:00")]) is None
+    assert restart_refusal(state, {"running": False}, change) is None
+    assert restart_refusal(state, {**up, "children": {}}, change)[1] == "unsaved", "unknown is not dead"
+
+
+def test_a_switch_by_restart_carries_the_runs_machine_file(root):
+    """(2) The new rig was checked against the run's machine file, and a
+    switch compiled it against that file too, but its restart's `up` dropped
+    it and wired against this host's. It is carried now, for every switch."""
+    state = World(root).state
+    steps = switch_steps(state, "two-guitars")
+    assert steps == [["down"], ["up", "two-guitars", "--rig", "--headless", "--no-tuner", "--no-amp",
+                                "--machine", state["machine"]]]
+    v1 = {"config_name": "x", "mode": "headless", "children": {"sushi": 1}}
+    assert "--machine" not in switch_steps(v1, "two-guitars")[1]
+
+
+def test_the_machine_hint_is_one_line_per_role_and_pasted_in_the_rig_compiles(root):
+    """(3) A role used mono and stereo got two lines with one key, of which
+    YAML keeps the last. One line per role, satisfying every use: pasted
+    into the machine file, it validates and the rig compiles."""
+    raw = rigedit.new_rig("keys", [rigedit.channel_entry(mono("left", "keys-in")),
+                                   rigedit.channel_entry(stereo("right", "keys-in")),
+                                   rigedit.channel_entry(stereo("pads", "pads-in"))], "mains-out")
+    machine = MachineSpec.load(machine_file(root))
+    hint = rigedit.machine_hint(machine, raw, "machines/x.yaml")
+    lines = hint.split("\n")[1:]
+    assert [line.split(":")[0].strip() for line in lines] == ["keys-in", "pads-in", "mains-out"]
+    text = machine_file(root).read_text().replace("roles:\n", "roles:\n" + "\n".join(lines) + "\n", 1)
+    machine_file(root).write_text(text)
+    assert MachineSpec.load(machine_file(root)).validate() == []
+    compile_rig_draft(raw, root, machine_file(root))
+
+
+def test_a_role_asked_to_be_a_mono_input_and_the_master_is_said_not_written(root):
+    raw = rigedit.new_rig("odd", [rigedit.channel_entry(mono("a", "both"))], "both")
+    hint = rigedit.machine_hint(MachineSpec.load(machine_file(root)), raw, "m.yaml")
+    assert "# both: used as a mono input and as the master's output, which no one role can be" in hint
+
+
+@pytest.mark.parametrize("master", ["monitor-out", None, ["monitor-out"]])
+def test_a_malformed_master_is_the_compilers_refusal_not_a_500(root, master):
+    """(5) machine_hint read `raw['master']` as a mapping, so a hand-written
+    `master: monitor-out` was an AttributeError and a 500."""
+    path = root / "config" / "rigs" / "accustomed.yaml"
+    raw = yaml.safe_load(path.read_text())
+    raw["master"] = master
+    path.write_text(yaml.safe_dump(raw))
+    agent, _ = rig_agent(root, World(root, rig=None))
+    status, answer = call(agent, "POST", "/rigs/accustomed/channels/add", json=mono("keys", "keys-in"))
+    assert (status, answer["code"]) == (409, "rig_problem"), answer
+    assert "master must say where the mix goes" in answer["reason"]
+    assert "keys-in" in answer["machine_hint"], "the advice is still given beside it"
+    assert rigedit.machine_hint(MachineSpec.load(machine_file(root)), {"channels": "x", "master": 3}, "m") is None
+
+
+def test_git_is_read_after_the_lifecycle_lock_is_let_go(root, monkeypatch):
+    """(4) A hung git under the lifecycle lock left every lifecycle route busy."""
+    import sushi_rig.take as take
+
+    agent, _ = rig_agent(root, World(root, rig=None))
+    held = []
+    real = take.library_state
+    monkeypatch.setattr(take, "library_state", lambda r: held.append(agent._lock.locked()) or real(r))
+    for path, body in [("/rigs/new", {"name": "solo", "channels": [mono("a")]}),
+                       ("/rigs/accustomed/channels/add", mono("keys", "vocal-in"))]:
+        status, answer = call(agent, "POST", path, json=body)
+        assert status == 200 and answer["library"]["file"] in ("untracked", "changed"), answer
+    assert held == [False, False]
+
+
+def test_a_git_that_does_not_answer_in_time_leaves_the_write_said_and_git_not_known(root, monkeypatch):
+    import threading
+
+    agent, _ = rig_agent(root, World(root, rig=None))
+    release = threading.Event()
+    monkeypatch.setattr(agent_module, "SAVE_TIMEOUT", 1.0)
+    monkeypatch.setattr(Agent, "_rigfile_git", lambda self, path: release.wait(5) and None)
+    try:
+        status, answer = call(agent, "POST", "/rigs/new", json={"name": "solo", "channels": [mono("a")]})
+    finally:
+        release.set()
+    assert status == 200 and answer["library"] is None
+    assert answer["library_note"] == ("git did not answer within 1s, so what it says of config/rigs/solo.yaml is "
+                                      "not known; the file is written")
+    assert (root / "config" / "rigs" / "solo.yaml").is_file() and not agent._lock.locked()
+
+
+def test_a_new_rig_that_moves_program_change_numbers_says_which_and_how(root):
+    """(6) Program n is the nth rig file by name, so a new file sorting first
+    moves every rig after it, and a pedal preset selects another rig."""
+    agent, _ = rig_agent(root, World(root, rig=None))
+    status, answer = call(agent, "POST", "/rigs/new", json={"name": "zz-last", "channels": [mono("a")]})
+    assert status == 200 and "programs" not in answer, "nothing moved"
+    status, answer = call(agent, "POST", "/rigs/new", json={"name": "aa-first", "channels": [mono("a")]})
+    programs = answer["programs"]
+    assert programs["moved"] == [{"rig": "accustomed", "from": 0, "to": 1},
+                                 {"rig": "electric-chorus-2", "from": 1, "to": 2},
+                                 {"rig": "guitar_vocal", "from": 2, "to": 3},
+                                 {"rig": "zz-last", "from": 3, "to": 4}]
+    assert programs["after"][0] == {"program": 0, "rig": "aa-first"}
+    assert programs["note"].startswith("Program Change numbers follow config/rigs by file name, so aa-first "
+                                       "(program 0) moves 4 rigs up one: program 0, which was accustomed, is "
+                                       "now aa-first.")
+
+
+def test_live_edits_and_unsaved_entries_start_where_one_walk_says(root):
+    """(10) One walk back to the newest save, switch or run start."""
+    log = [logged("add", {"name": "a", "track": "t", "uri": "u"}, at="2026-11-06T09:00:00+00:00"),
+           logged("save", {"added": {"a": {"track": "t", "uri": "u", "defaults": None}}},
+                  at="2026-11-06T10:01:00+00:00"),
+           logged("parameter", {"processor": "a"}, at="2026-11-06T10:02:00+00:00")]
+    assert since_baseline(log) == (2, log[1])
+    assert since_baseline(log, since="2026-11-06T10:01:30+00:00") == (2, None), \
+        "a save before the run's start is another run's: cut by time first, as live_edits always was"
+    assert since_baseline(log[:1], since="2026-11-06T10:00:00+00:00") == (1, None)
+    assert [e["op"] for e in unsaved_entries(log)] == ["parameter"]
+    assert live_edits(log)["added"] == {"a": {"track": "t", "uri": "u", "defaults": None}}, "seeded from the save"
+
+
+def test_one_probe_answers_for_both_sides_of_a_role(root):
+    """(9) The feeds and the master's sink, from one probe."""
+    machine = MachineSpec.load(machine_file(root))
+    assert rigedit._probe(machine, "pair-in", "stereo", feeds=True) is None
+    assert "2 port(s) but this track routes it to 1" in rigedit._probe(machine, "pair-in", "mono", feeds=True)
+    assert rigedit._probe(machine, "monitor-out", feeds=False) is None
+    assert "takes bus 0, a stereo pair, which needs 2" in rigedit._probe(machine, "solo-in", feeds=False)
