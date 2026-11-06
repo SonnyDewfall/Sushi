@@ -126,7 +126,8 @@ def test_with_no_agent_running_each_command_acts_directly_and_says_so(direct, mo
     assert cli._main(["restart"]) == 0
     assert cli._main(["status"]) == 0
     assert direct == [
-        ("up", "guitar_vocal", {"headless": True, "tuner": True, "amp": False, "amp_model": None, "rig": False}),
+        ("up", "guitar_vocal", {"headless": True, "tuner": True, "amp": False, "amp_model": None, "rig": False,
+                                "machine": None}),
         ("down", True), ("restart",), ("status",),
     ]
     said = capsys.readouterr().err.splitlines()
@@ -377,3 +378,23 @@ def test_up_with_an_amp_model_path_goes_through_the_agent(monkeypatch, direct):
         asked.append(body) or (200, {"ok": True, "output": "", "warnings": []})))
     assert cli._main(["up", "x", "--amp-model", "../elsewhere/M.nam"]) == 0
     assert asked[0]["amp_model"] == str(checkout_root() / "../elsewhere/M.nam")
+
+
+def test_restart_discard_asks_the_agent_to_drop_unsaved_work_and_nothing_else_does():
+    """The agent refuses a restart that would drop live work it saw and no
+    save has written (409 `unsaved`); `--discard` is saying to drop it."""
+    assert agent_client.lifecycle_request("restart", namespace(discard=True)) == ("/rig/restart", {"discard": True})
+    assert agent_client.lifecycle_request("restart", namespace(discard=False)) == ("/rig/restart", {})
+
+
+def test_up_takes_a_machine_file_directly_and_never_through_the_agent(direct, monkeypatch, tmp_path):
+    """The agent takes no path from a request, so `--machine` is refused
+    unless `--direct`, with nothing done; directly, it reaches `up` absolute."""
+    monkeypatch.setattr(agent_client, "probe", lambda *a, **k: pytest.fail("asked the agent"))
+    with pytest.raises(SystemExit) as refused:
+        cli._main(["up", "board", "--rig", "--machine", str(tmp_path / "m.yaml")])
+    assert "--machine is taken with --direct only" in str(refused.value.code) and direct == []
+    monkeypatch.chdir(tmp_path)
+    assert cli._main(["up", "board", "--rig", "--machine", "m.yaml", "--direct"]) == 0
+    assert direct == [("up", "board", {"headless": False, "tuner": True, "amp": True, "amp_model": None,
+                                       "rig": True, "machine": str(tmp_path / "m.yaml")})]

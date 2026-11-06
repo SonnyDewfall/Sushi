@@ -810,7 +810,7 @@ def test_restart_brings_back_the_same_rig():
     })
     assert name == "electric-chorus-2"
     assert options == {
-        "headless": False, "tuner": True, "amp": True, "amp_model": None, "rig": False,
+        "headless": False, "tuner": True, "amp": True, "amp_model": None, "rig": False, "machine": None,
     }
 
 
@@ -825,8 +825,22 @@ def test_restart_preserves_the_choices_the_rig_was_started_with():
         "children": {"sushi": 1},
     })
     assert options == {
-        "headless": True, "tuner": False, "amp": False, "amp_model": None, "rig": False,
+        "headless": True, "tuner": False, "amp": False, "amp_model": None, "rig": False, "machine": None,
     }
+
+
+def test_restart_brings_a_rig_of_channels_back_on_the_machine_file_it_was_started_against():
+    """The state file records the machine file a rig of channels was compiled
+    against; until 2026-11-06 restart dropped it and `up` read this host's,
+    which a draft the web UI checked against the run's need not match."""
+    from sushi_rig.rig import restart_arguments
+
+    _, options = restart_arguments({"config_name": "board", "mode": "headless", "rig": "config/rigs/board.yaml",
+                                    "machine": "/m/stage.yaml", "children": {"sushi": 1}})
+    assert options["rig"] is True and options["machine"] == "/m/stage.yaml"
+    _, v1 = restart_arguments({"config_name": "board", "mode": "headless", "machine": "/m/stage.yaml",
+                               "children": {"sushi": 1}})
+    assert v1["machine"] is None, "a v1 config is not compiled against one"
 
 
 def test_restart_carries_the_amp_model_override():
@@ -1338,7 +1352,7 @@ def test_restart_hands_up_what_the_state_says_was_asked_for(runtime, monkeypatch
     assert rig.restart() == 0
     assert calls == [("electric_board", {
         "headless": True, "tuner": True, "amp": True,
-        "amp_model": "amp/models/Other.nam", "rig": False,
+        "amp_model": "amp/models/Other.nam", "rig": False, "machine": None,
     })]
 
 

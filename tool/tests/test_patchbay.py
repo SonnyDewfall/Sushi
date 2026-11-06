@@ -370,8 +370,12 @@ def test_a_two_port_role_pairs_across_a_tracks_two_channel_entries():
 def test_a_one_port_role_on_two_channel_entries_needs_the_declaration():
     feeds = {"guitar-in": [(channel(0), channel(1))]}
     assert len(_pairs(_gen(ROLES, feeds))) == 2
-    with pytest.raises(PatchbayError, match="counts must match"):
+    with pytest.raises(PatchbayError, match="counts must match") as refused:
         _gen(ROLES, feeds, mono_to_stereo=())
+    # And it says what to declare, as the bus form does: the web UI's new
+    # rig shows this to a player choosing stereo on a one-port input.
+    assert "declare it in the machine file: guitar-in: {ports: [" in str(refused.value)
+    assert "mono_to_stereo: true}. Otherwise make the channel mono" in str(refused.value)
 
 
 def test_the_same_role_on_two_tracks_is_fan_out_not_a_stereo_pair():

@@ -3216,3 +3216,92 @@ for `check_finite` and `detune_nan`. (9) The spread test computes each
 render's mask once and writes its stimulus once per target
 (`render.prepare_stimulus`, `render_offline(prepared=...)`). (10) The
 bypassed-or-absent test now uses its parameter. *(2026-11-03)*
+
+**The New rig screen: a rig of channels made, and a channel added or moved,
+from the web UI.** Phase 2's "a 'new rig' flow that asks how many channels,
+mono or stereo for each, and which input each listens on, and refuses past the
+8-channel ceiling with the reason". On the agent: `GET /machine/roles` (each
+role's ports, `mono_to_stereo`, the widths it can feed and whether it can take
+the master, each as the patchbay answers, which of the running rig's tracks use
+it, and the ceiling as the compiler refuses a fourth channel), `GET
+/rigs/<rig>/channels`, `POST /rigs/new` (a new `config/rigs/<name>.yaml`,
+master on `monitor-out`, chains empty unless `from: {rig, channel}` copies a
+channel's chain and `level:`), `POST /rigs/<rig>/channels/add` and `POST
+/rigs/<rig>/channels/<channel>/input` (in place through `write_rig`; on copies
+of guitar_vocal, electric-chorus-2 and accustomed an add changes exactly the
+channel's four lines and an input change exactly its one or two). **Every
+check is the compiler's**: `rig.compile_rig_draft` parses, compiles and wires
+a draft offline exactly as `up --rig` does, against the run's machine file,
+and is pinned to give what `compile_named_rig` gives for each committed rig.
+Found on the way: **`compile_named_rig` alone does not know the roles**. A
+channel on a role the machine file lacks, or stereo on a one-port role without
+`mono_to_stereo`, compiles cleanly and is refused only by the patchbay at
+`up`; so the draft is wired too, and the patchbay's channel-form refusal of
+stereo on one port now says what to declare, as its bus form did. Refusals are
+409 with those words and a code (`rig_problem`, `name`, `taken`, `no_source`,
+`no_channel`); a missing role comes with the lines to add (`machine_hint`), and
+**the machine file is never written**. Two channels may share an input.
+Choices: **an edit of the running rig's file is refused while the agent saw
+unsaved changes** (`unsaved`) or the panel runs (`panel`), since the edit plays
+only after a restart from the file, which would drop them; Save still works
+after an edit (a capture says nothing of a track the rig lacks, so the file
+keeps the new channel: the brief's "Save refuses a capture whose channels
+differ" is not what `fold_state` does for an added channel), so a refusal costs
+one Save and a warning would have lost the work at the restart offered beside
+it. **Remote callers** as `/rig/save`: no loopback check, since Save writes the
+same files without one. **`from` reads the source file as it stands**, not
+git's commit of it (a saved, uncommitted tone is the one heard), and says what
+git says of it; worth having for the new-rig flow (a vocal channel started
+from guitar_vocal's), limited by Sushi's one namespace for processors: two
+channels copied from one chain are refused by the compiler for their
+duplicate names, and nothing renames them. Direction (input or output) is read
+from a role's name, since the machine file does not say. Writes take the
+lifecycle lock (`busy`) and, for the running rig, the live lock; never
+committed, the answer giving the commit and the file's git state. On the page:
+"New rig…" under the rack's picker opens `#new-rig` (name; per channel a name,
+an input picker showing each role's port, mono or stereo with stereo offered
+only where the role can give it and the patchbay's reason where not, "start
+from"; Add channel up to three, then the compiler's arithmetic; Create, then
+Start or Switch to it), and the rack's INPUTS lists the running rig's file's
+channels with Change input and Add channel, each offering the restart (with a
+confirm: the sound stops). Nothing on the stage. Tested: every route against
+real rig files in tmp and the real compiler (each refusal, a shared input, the
+ceiling, stereo on one port, busy, unsaved, panel, the run's own machine
+file); browser tests against `ui_fake` (`UiSave` now has a machine file and a
+running config that is the real compile, and a restart that brings a new
+channel up as an empty track). **NOT RUN AGAINST A LIVE SUSHI, and no rig made
+this way has been started on the rig.** *(2026-11-06)*
+
+**The New rig screen: answering review.** Ten findings, each with a test
+(`test_agent_rigfiles.py` and `test_ui.py` unless said). (1) **The offered
+restart could lose live work**: a knob turned after an edit was dropped by
+the restart the edit offered. `POST /rig/restart` itself now refuses (409
+`unsaved`, naming the newest change) while the agent saw changes no save has
+written, unless `{"discard": true}`: the page's restart after an edit, the
+picker's and the CLI's alike. The page shows the refusal with "Restart
+anyway, dropping them" as a second tap; the CLI gains `restart --discard`
+(`test_agent_client.py`). Not refused with Sushi's process gone (the work
+went with it, and recovery must not wait) or with the panel running (the
+agent cannot see it). Stop and a switch still drop unsaved work, as before.
+(2) **Restart and switch dropped the run's machine file**: drafts were
+checked against the state file's `machine`, but `restart` and **every switch
+by restart** (`switch_steps`) ran `up --rig`, which read this host's file.
+`restart_arguments` now carries `machine`, `up` and `prepare_launch` take it
+(`up --machine`, CLI `--direct` only, since the agent takes no path from a
+request), and `switch_steps` passes it (`test_agent.py`'s switch tests now
+expect it; `test_rig.py`, `test_supervisor.py`). (3) `machine_hint` gives one
+line per role, satisfying every use; pasted into the machine file it
+validates and the rig compiles. (4) What git says of a written file is read
+after the lifecycle lock is let go, within `SAVE_TIMEOUT`; past it the answer
+says git is not known. (5) A hand-written `master: monitor-out` is the
+compiler's refusal, not a 500: `machine_hint` reads the file defensively,
+and a failure in it never replaces the refusal. (6) A new rig that moves
+Program Change numbers says which rigs moved, before and after, in the answer
+(`programs`) and on the page; the order rule is unchanged. (7) A poll that saw
+the run change no longer loses an edit's answer: the write in flight and the
+last result are kept across the reset (the browser test fails on the old
+code). (8) Save and the rig files share one off-loop write
+(`_write_off_loop`). (9) One probe (`rigedit._probe`). (10) One walk back to
+the newest save, switch or run start (`since_baseline`) for `live_edits` and
+`unsaved_entries`; `freshWiring` is the page's one literal. **Still not run
+against a live Sushi.** *(2026-11-06)*

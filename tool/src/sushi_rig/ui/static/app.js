@@ -75,6 +75,11 @@ const state = {
   takeName: "",              // what is typed in the record bar's name
   recordPending: null,       // "start" or "stop", from this page, in flight
   recordResult: null,        // what the last start or stop from this page said (R.recordOutcome)
+  // The New rig screen and the rack's channel edits (the rig files):
+  roles: null, rolesAt: 0, rolesFor: null,  // GET /machine/roles; read again when the run changes
+  rigChannels: {},           // GET /rigs/<rig>/channels, by rig: "start from", and the running rig's inputs
+  newRig: { name: "", channels: [], touched: false, pending: false, result: null, addRefused: null },
+  wiring: freshWiring(),     // the rack's channel edits: see freshWiring
   open: new Set(),           // units opened, by name
   failures: [],              // this page's refused changes, newest first
   failed: new Map(),         // control key -> the reason its last change was refused
@@ -207,6 +212,78 @@ async function refreshAmpModels(force = false) {
   return true;
 }
 
+// The machine file's roles (GET /machine/roles), for the New rig screen and
+// the rack's channel edits: kept once it answers, and read again when the
+// run changes (which tracks use each role is the running rig's), after a
+// write, and after RETRY_MS while it fails.
+async function refreshRoles(force = false) {
+  const rig = state.health && state.health.ok ? state.health.body.rig || {} : {};
+  const run = JSON.stringify([rig.running ? rig.config_name : null, rig.started_at ?? null]);
+  if (run !== state.rolesFor) force = true;
+  if (!force && state.roles && state.roles.ok) return false;
+  if (!force && state.rolesAt && Date.now() - state.rolesAt < RETRY_MS) return false;
+  state.rolesFor = run;
+  state.rolesAt = Date.now();
+  state.roles = await request("GET", "/machine/roles");
+  return true;
+}
+
+// One rig file's channels (GET /rigs/<rig>/channels), kept by rig; asked
+// again after RETRY_MS while it fails, and at once (`force`) after a write.
+async function refreshRigChannels(name, force = false) {
+  const had = state.rigChannels[name];
+  if (!force && had && (had.ok || Date.now() - had.at < RETRY_MS)) return false;
+  const answer = await request("GET", `/rigs/${encodeURIComponent(name)}/channels`);
+  state.rigChannels[name] = { ...answer, at: Date.now() };
+  return true;
+}
+
+// Every rig's channels, for "start from".
+async function refreshAllRigChannels(force = false) {
+  const rigs = state.rigs && state.rigs.ok ? state.rigs.body.rigs : [];
+  const fetched = await Promise.all(rigs.map((name) => refreshRigChannels(name, force)));
+  return fetched.some(Boolean);
+}
+
+// The running rig's own file, for the rack's inputs: read again when the run
+// changes (a restart after an edit, a switch), which also closes the forms,
+// since they were opened against the run before.
+async function refreshRunningChannels() {
+  const rig = state.health && state.health.ok ? state.health.body.rig || {} : {};
+  if (!rig.running || !rig.rig) return false;
+  const run = JSON.stringify([rig.config_name, rig.started_at ?? null, rig.rig]);
+  const changed = run !== state.wiring.for;
+  if (changed) {
+    // The forms were opened against the run before, so they close; a write
+    // in flight, and what the last one said, are kept, since they are about
+    // the file and not the run (review, 2026-11-06: a poll landing mid-write
+    // replaced the object the write's answer went to, and it was never shown).
+    const was = state.wiring;
+    const sameRig = was.for !== null && JSON.parse(was.for)[0] === rig.config_name;
+    // A result shown is kept without its restart offer, which was for the
+    // run before: the run has started again since, from the file.
+    const result = sameRig && was.result ? { ...was.result, offer: null } : null;
+    state.wiring = { ...freshWiring(), for: run, pending: was.pending, result };
+  }
+  return refreshRigChannels(rig.config_name, changed);
+}
+
+// Whether what the forms are built from has all arrived: the roles, the
+// rigs, and every rig's channels ("start from"). The forms are drawn once it
+// has, so they are not rebuilt under a finger as each answer comes in.
+function filesReady({ sources = true } = {}) {
+  if (!sources) return !!state.roles;
+  const rigs = state.rigs && state.rigs.ok ? state.rigs.body.rigs : null;
+  return !!state.roles && !!rigs && rigs.every((name) => name in state.rigChannels);
+}
+
+// The rack's channel edits, as they start and as a new run resets them:
+// which channel's input is being changed (and to what), the Add channel
+// draft, the write in flight, what the last one said, and the restart confirm.
+function freshWiring() {
+  return { for: null, editing: null, change: null, adding: null, pending: false, result: null, restartConfirm: false };
+}
+
 async function poll() {
   if (state.polling) return;
   state.polling = true;
@@ -239,6 +316,16 @@ async function poll() {
     inBackground("rigs", refreshRigs);
     if (amp && amp.ok) inBackground("amp models", refreshAmpModels);
     if (state.screen === "rack") inBackground("takes", refreshTakes);
+    if (state.screen === "newrig") {
+      inBackground("roles", refreshRoles);
+      inBackground("rig channels", refreshAllRigChannels);
+    }
+    if (state.screen === "rack" && health.ok && (health.body.rig || {}).running && (health.body.rig || {}).rig) {
+      inBackground("roles", refreshRoles);
+      inBackground("running channels", refreshRunningChannels);
+      // Every rig's channels only while Add channel is open: "start from".
+      if (state.wiring.adding) inBackground("rig channels", refreshAllRigChannels);
+    }
   } finally {
     state.polling = false;
     state.timer = setTimeout(poll, POLL_MS);
@@ -671,13 +758,13 @@ function tickElapsed() {
 // page or another, the picker offers nothing (the agent would answer 409
 // busy) and says what is running. The answer's reason is shown on failure,
 // and a switch says how it was made and why.
-async function lifecycle(op, name) {
-  if (state.pending) return;
+async function lifecycle(op, name, opts = {}) {
+  if (state.pending) return false;
   clearTimeout(state.confirmTimer);
   state.confirming = false;
   state.pending = { op, name };
   render();
-  const call = R.lifecycleCall(op, name);
+  const call = R.lifecycleCall(op, name, opts);
   let answer;
   try {
     answer = await request("POST", call.path, call.json);
@@ -691,11 +778,16 @@ async function lifecycle(op, name) {
     // starting it again is one tap.
     state.chosen = op === "stop" ? name : null;
   } else {
-    fail(said.title, { reason: said.reason, code: answer.code });
+    // A restart that would drop unsaved changes is refused by the agent;
+    // dropping them is a second, deliberate tap, never the default.
+    const discard = op === "restart" && answer.code === "unsaved"
+      ? { label: "Restart anyway, dropping them", run: () => lifecycle("restart", name, { discard: true }) } : null;
+    fail(said.title, { reason: said.reason, code: answer.code }, discard);
   }
   render();
   kick();
   refreshRigs(true).then(render);
+  return said.ok;
 }
 
 // A model change restarts the amp, so it takes a confirm that says the
@@ -731,13 +823,13 @@ function armStop() {
 // The picker: config/rigs/ as a list, the running rig marked, one chosen, and
 // what can be done with it (`R.rigPicker`). The rack's left column, as the
 // mockups' S1 has it; on the stage, below the cards and only while unlocked.
-function rigsRegion(el) {
+function rigsRegion(el, { newRig = false } = {}) {
   const rig = state.health && state.health.ok ? state.health.body.rig || {} : {};
   const running = rig.running ? rig.config_name : null;
   const view = R.rigPicker(state.health, state.rigs, state.chosen ?? running, state.pending);
   const stop = view.actions.find((a) => a.op === "stop" && !a.disabled);
   const confirming = state.confirming && !!stop;
-  patch(el, JSON.stringify([view, confirming]), () => [
+  patch(el, JSON.stringify([view, confirming, newRig]), () => [
     h("h2", {}, "RIGS"),
     view.problem ? h("p", { class: "rig-problem" }, view.problem) : null,
     view.rows.length ? h("div", { class: "rig-list", role: "group", "aria-label": "Rigs in config/rigs" },
@@ -755,6 +847,9 @@ function rigsRegion(el) {
         class: `rig-act${a.primary ? " primary" : ""}`, disabled: a.disabled,
         onclick: () => (a.op === "stop" ? armStop() : lifecycle(a.op, a.name)),
       }, a.label))),
+    // The New rig screen, from the rack's picker only: making a rig is not a
+    // stage action, so the stage's picker does not offer it.
+    newRig ? h("a", { class: "rig-act new-rig", href: "#new-rig" }, "New rig…") : null,
   ]);
 }
 
@@ -865,6 +960,7 @@ function rackFrame() {
     tiles: h("span", { class: "tile-row" }),
     rigs: h("section", { class: "rigs", "aria-label": "Rigs" }),
     channels: h("div", { class: "channel-list" }),
+    wiring: h("section", { class: "wiring", "aria-label": "Inputs of the running rig's file" }),
     amp: h("section", { class: "amp-card", "aria-label": "Amp" }),
     rack: h("main", { class: "rack" }),
     changes: h("div", { class: "changes-list" }),
@@ -873,7 +969,7 @@ function rackFrame() {
   };
   // The amp first: it is in front of Sushi, between the guitar and the board.
   const frame = h("div", { class: "screen rack-screen" }, regions.header, regions.problems,
-    h("div", { class: "rack-body" }, h("nav", { class: "channels", "aria-label": "Rigs and channels" }, regions.rigs, regions.channels),
+    h("div", { class: "rack-body" }, h("nav", { class: "channels", "aria-label": "Rigs and channels" }, regions.rigs, regions.wiring, regions.channels),
       h("div", { class: "rack-main" }, regions.amp, regions.rack),
       h("div", { class: "side" }, h("aside", { class: "changes", "aria-label": "Unsaved changes" }, regions.changes, regions.save),
         regions.takes)));
@@ -949,7 +1045,8 @@ function renderRack(regions, model, unsaved, status) {
       track.send ? h("div", { class: "send" }, h("span", { class: "k" }, "SEND TO MASTER"), control(track.send, track.send.panel.groups[0].controls[0], "small")) : null));
   });
   ampRegion(regions.amp);
-  rigsRegion(regions.rigs);
+  rigsRegion(regions.rigs, { newRig: true });
+  wiringRegion(regions.wiring, unsaved);
   patch(regions.channels, model ? JSON.stringify(model.tracks.map((t) => [t.name, t.units.length])) : "none", () => [
     h("h2", {}, "CHANNELS"),
     model ? model.tracks.map((t) => h("a", { class: "channel", href: `#t-${t.name}` }, h("span", { class: "n" }, t.name),
@@ -1226,10 +1323,376 @@ function renderStage(regions, model, status) {
   else rigsRegion(regions.rigs);
 }
 
+// ---------------------------------------------------------------- rig files
+// The New rig screen (#new-rig, from the rack's picker) and, on the rack, the
+// running rig's inputs: "Add channel" and a channel's input change. Each
+// writes a file of config/rigs through the agent, which compiles it first and
+// refuses with the compiler's reason, shown in place; what the page checks
+// before sending is a hint from the agent's own answers (R.newRigView).
+// Nothing here is on the stage screen.
+
+// A text field whose typing updates `state` and redraws the checks in place
+// (`draw`), never through a rebuild, so a poll cannot take the field from
+// under the fingers; a rebuild for another reason puts the focus back.
+function textField(label, name, value, onInput, placeholder = null) {
+  const input = h("input", { name, type: "text", autocomplete: "off", spellcheck: "false", autocapitalize: "none",
+    placeholder, "aria-label": label });
+  input.value = value;
+  input.addEventListener("input", () => onInput(input.value));
+  return h("label", { class: "text-field" }, h("span", {}, label), input);
+}
+
+function focusedName(el) {
+  const active = document.activeElement;
+  return active && el.contains(active) && active.name ? active.name : null;
+}
+
+function refocus(el, name) {
+  if (!name) return;
+  const input = el.querySelector(`[name="${name}"]`);
+  if (!input) return;
+  input.focus();
+  if (input.setSelectionRange && input.type === "text") input.setSelectionRange(input.value.length, input.value.length);
+}
+
+function inputPicker(choices, value, onChange, label) {
+  const select = h("select", { "aria-label": label },
+    h("option", { value: "" }, choices.loading ? "Reading the machine file…" : "Choose an input…"),
+    choices.inputs.map((r) => h("option", { value: r.name, title: r.usedBy.length ? `used by ${r.usedBy.join(", ")} now` : null }, r.label)));
+  select.value = value || "";
+  select.addEventListener("change", () => onChange(select.value));
+  return h("label", { class: "selector" }, h("span", { class: "label" }, "Input"), select);
+}
+
+// Mono or stereo, stereo offered only where the role allows it: a choice the
+// role cannot give is there but disabled, with the patchbay's reason under it.
+function widthPicker(widths, value, onChange, label) {
+  const select = h("select", { "aria-label": label },
+    widths.map((w) => h("option", { value: w.width, disabled: !w.ok, title: w.why }, w.width)));
+  select.value = value;
+  select.addEventListener("change", () => onChange(select.value));
+  const refused = widths.filter((w) => !w.ok && w.why && !w.why.startsWith("Choose"));
+  // The reason on a line of its own, after the pickers it explains.
+  return [h("label", { class: "selector" }, h("span", { class: "label" }, "Width"), select),
+    refused.map((w) => h("p", { class: "sub width-why" }, `${w.width} is not offered: ${w.why}`))];
+}
+
+// The width's picker and its reasons, with the start-from picker between,
+// so the pickers sit on one row and the reasons go under them.
+function pickersThenReasons([width, reasons], source) {
+  return [width, source, reasons];
+}
+
+function sourcePicker(sources, from, onChange, label) {
+  const select = h("select", { "aria-label": label },
+    h("option", { value: "" }, "Nothing: an empty chain"),
+    sources.map((g) => h("optgroup", { label: g.problem ? `${g.rig} (could not be read)` : g.rig },
+      g.options.map((o) => h("option", { value: o.value }, o.label)))));
+  select.value = from ? `${from.rig}\u0000${from.channel}` : "";
+  select.addEventListener("change", () => {
+    const [rig, channel] = select.value ? select.value.split("\u0000") : [];
+    onChange(rig ? { rig, channel } : null);
+  });
+  return h("label", { class: "selector" }, h("span", { class: "label" }, "Start from"), select);
+}
+
+// A width the role cannot give is replaced by one it can, when the input
+// changes: the choice follows the agent's answer, never the other way.
+function fitWidth(choices, draft) {
+  const widths = R.widthOptions(choices, draft.input);
+  if (!widths.find((w) => w.width === draft.width && w.ok)) {
+    const ok = widths.find((w) => w.ok);
+    if (ok) draft.width = ok.width;
+  }
+}
+
+// What a write said, in place: the agent's reason (and the lines to add to
+// the machine file, when it gave them), or the file, what git says of it and
+// the gesture that plays it.
+function rigFileResult(result, dismiss, play) {
+  return h("div", { class: `save-result rigfile-result ${result.ok ? "ok" : "refused"}`, role: result.ok ? "status" : "alert" },
+    h("strong", {}, result.title),
+    h("span", { class: "said" }, result.ok ? result.text : result.reason),
+    result.hint ? h("pre", { class: "machine-hint" }, result.hint) : null,
+    result.programs ? h("div", { class: "programs-moved", role: "note" },
+      h("span", { class: "warn" }, result.programs.note),
+      h("table", {}, h("thead", {}, h("tr", {}, h("th", {}, "Rig"), h("th", {}, "Program before"), h("th", {}, "after"))),
+        h("tbody", {}, result.programs.rows.map((r) => h("tr", {}, h("td", {}, r.rig), h("td", {}, String(r.from)), h("td", {}, String(r.to))))))) : null,
+    result.ok ? h("span", { class: "commit" }, result.commit) : null,
+    result.ok && result.offer ? h("button", { class: "rig-act primary offer", disabled: !!state.pending,
+      onclick: () => play(result.offer) }, result.offer.label) : null,
+    h("button", { class: "dismiss", "aria-label": "Dismiss", onclick: dismiss }, "×"));
+}
+
+function newRigFrame() {
+  const regions = {
+    header: h("header", { class: "bar" }),
+    problems: h("div", { class: "problems", "aria-live": "polite" }),
+    form: h("main", { class: "new-rig" }),
+  };
+  const frame = h("div", { class: "screen rack-screen new-rig-screen" }, regions.header, regions.problems, regions.form);
+  return { frame, regions };
+}
+
+function renderNewRig(regions, status) {
+  patch(regions.header, JSON.stringify([status]), () => [
+    h("svg", { width: 28, height: 28, viewBox: "0 0 28 28", "aria-hidden": "true", class: "mark" }, h("path", { d: "M5 18a9 9 0 0 1 18 0" }), h("path", { d: "M10 18a4 4 0 0 1 8 0" })),
+    h("h1", { class: "rig-name" }, "New rig"), statusLine(status),
+    h("span", { class: "spacer" }), h("a", { class: "go", href: "#rack" }, "Back to the rack"),
+  ]);
+  problemsRegion(regions.problems);
+  const nr = state.newRig;
+  const choices = R.roleChoices(state.roles);
+  // One channel to start from, once the roles are known, unless the player
+  // has been at the form (a form emptied on purpose stays empty).
+  if (!nr.touched && nr.channels.length === 0 && choices.inputs.length) nr.channels.push(R.newChannel(choices, []));
+  if (!filesReady()) {
+    patch(regions.form, "reading", () => h("p", { class: "empty" }, "Reading the machine file's roles and the rigs' channels…"));
+    return;
+  }
+  newRigRegion(regions.form);
+}
+
+function newRigView() {
+  const nr = state.newRig;
+  return R.newRigView(nr, state.roles, state.rigs, state.health, nr.pending);
+}
+
+function newRigRegion(el) {
+  const nr = state.newRig;
+  const view = newRigView();
+  const sources = R.sourceChoices(state.rigs, state.rigChannels);
+  const focus = focusedName(el);
+  // Keyed without what is typed: the names' checks are drawn by `drawNewRigChecks`.
+  const key = JSON.stringify([nr.channels.map((c) => [c.input, c.width, c.from]), view.choices, view.channels.map((c) => c.widths),
+    sources, view.countText, nr.addRefused, nr.result, nr.pending, view.blocked, !!state.pending]);
+  const rebuilt = patch(el, key, () => [
+    h("form", { class: "new-rig-form", onsubmit: (event) => { event.preventDefault(); createRig(); } },
+      h("p", { class: "sub" }, "A rig of channels, written to ", h("code", {}, "config/rigs/<name>.yaml"),
+        `: each channel plays from an input of ${view.choices.machine || "the machine file"}, and their sends mix into a master on `,
+        h("code", {}, view.choices.output || "monitor-out"), ". Chains start empty unless a channel starts from another rig's. ",
+        "The agent compiles the rig before it writes it, and says why if it will not."),
+      view.choices.problem ? h("p", { class: "rig-problem" }, view.choices.problem) : null,
+      textField("Rig name", "new-rig-name", nr.name, (v) => { nr.name = v; drawNewRigChecks(el); }, "e.g. two-guitars"),
+      h("p", { class: "save-check", "data-check": "new-rig-name" }),
+      h("div", { class: "draft-head" }, h("h2", {}, "CHANNELS"), h("span", { class: "sub" }, view.countText)),
+      nr.channels.map((c, i) => channelDraft(el, c, i, view, sources)),
+      h("div", { class: "save-acts" },
+        h("button", { type: "button", class: "save-act add-channel", onclick: addDraftChannel }, "Add channel"),
+        h("button", { type: "submit", class: "save-act primary create" }, view.create.label)),
+      nr.addRefused ? h("p", { class: "save-check bad add-refused", role: "alert" }, nr.addRefused) : null,
+      view.blocked ? h("p", { class: "sub" }, view.blocked) : null),
+    nr.result ? rigFileResult(nr.result, () => { nr.result = null; render(); }, playNewRig) : null,
+  ]);
+  if (rebuilt) refocus(el, focus);
+  drawNewRigChecks(el);
+}
+
+function channelDraft(el, c, i, view, sources) {
+  const nr = state.newRig;
+  const touch = () => { nr.touched = true; nr.addRefused = null; };
+  return h("fieldset", { class: "channel-draft" },
+    h("legend", {}, `Channel ${i + 1}`),
+    textField(`Channel ${i + 1} name`, `ch-name-${i}`, c.name, (v) => { c.name = v; touch(); drawNewRigChecks(el); }, "e.g. guitar"),
+    inputPicker(view.choices, c.input, (v) => { c.input = v; fitWidth(view.choices, c); touch(); render(); }, `Channel ${i + 1} input`),
+    ...pickersThenReasons(widthPicker(view.channels[i].widths, c.width, (v) => { c.width = v; touch(); render(); }, `Channel ${i + 1} width`),
+      sourcePicker(sources, c.from, (from) => { c.from = from; touch(); render(); }, `Channel ${i + 1} starts from`)),
+    h("p", { class: "save-check", "data-check": `ch-name-${i}` }),
+    nr.channels.length > 1 ? h("button", { type: "button", class: "save-act remove",
+      onclick: () => { nr.channels.splice(i, 1); touch(); render(); } }, `Remove channel ${i + 1}`) : null);
+}
+
+// The checks under the fields and Create's state, from what is typed now.
+function drawNewRigChecks(el) {
+  const nr = state.newRig;
+  const view = newRigView();
+  const set = (name, text, bad) => {
+    const p = el.querySelector(`[data-check="${name}"]`);
+    if (p) { p.textContent = text || ""; p.classList.toggle("bad", !!bad); }
+  };
+  set("new-rig-name", nr.name ? view.nameProblem || `Writes config/rigs/${nr.name}.yaml.` : "", !!(nr.name && view.nameProblem));
+  view.channels.forEach((c, i) => set(`ch-name-${i}`, c.problem, !!c.problem));
+  const create = el.querySelector("button.create");
+  if (create) { create.disabled = view.create.disabled; create.textContent = view.create.label; }
+}
+
+function addDraftChannel() {
+  const nr = state.newRig;
+  const view = newRigView();
+  nr.touched = true;
+  // At the ceiling, the button refuses with the compiler's own reason.
+  if (view.add.refused) { nr.addRefused = view.add.refused; render(); return; }
+  nr.addRefused = null;
+  nr.channels.push(R.newChannel(view.choices, nr.channels));
+  render();
+}
+
+async function createRig() {
+  const nr = state.newRig;
+  if (nr.pending || newRigView().create.disabled) return;
+  const name = nr.name;
+  const call = R.newRigCall(name, nr.channels);
+  nr.pending = true;
+  render();
+  let answer;
+  try {
+    answer = await request("POST", call.path, call.json);
+  } finally {
+    nr.pending = false;
+  }
+  nr.result = R.rigFileOutcome("new", name, answer);
+  if (answer.ok) Object.assign(nr, { name: "", channels: [], touched: false, addRefused: null });
+  render();
+  if (answer.ok) {
+    await refreshRigs(true);
+    refreshRigChannels(name, true).then(render);
+    render();
+  }
+}
+
+// Start or switch to the rig just made, then show it on the rack.
+async function playNewRig(offer) {
+  const ok = await lifecycle(offer.op, offer.name);
+  if (ok) {
+    state.newRig.result = null;
+    if (state.screen === "newrig") location.hash = "#rack";
+  }
+}
+
+// The rack's inputs for the running rig's file: each channel's input and
+// width as the file has them, a per-channel change, and Add channel. An edit
+// writes the file; the rig keeps playing as it was until the restart offered.
+function wiringRegion(el, unsaved) {
+  const w = state.wiring;
+  const rig = state.health && state.health.ok ? state.health.body.rig || {} : {};
+  const view = R.wiringView(state.health, rig.running ? state.rigChannels[rig.config_name] || null : null, unsaved);
+  if (!view) { patch(el, "none", () => []); return; }
+  if (!filesReady({ sources: false }) || !state.rigChannels[view.rig]) {
+    patch(el, "reading", () => [h("h2", {}, "INPUTS"), h("p", { class: "sub" }, "Reading the machine file's roles and the rig files…")]);
+    return;
+  }
+  const choices = R.roleChoices(state.roles);
+  const sources = w.adding && filesReady() ? R.sourceChoices(state.rigs, state.rigChannels) : null;
+  const busy = state.health && state.health.ok ? (state.health.body.agent || {}).busy || null : null;
+  const focus = focusedName(el);
+  const key = JSON.stringify([view, choices, w.editing, w.change, w.adding && [w.adding.input, w.adding.width, w.adding.from],
+    sources, w.pending, w.result, w.restartConfirm, busy, !!state.pending]);
+  const rebuilt = patch(el, key, () => [
+    h("h2", {}, "INPUTS"),
+    view.file ? h("p", { class: "sub" }, h("code", {}, view.file), " — an edit writes the file; the rig plays it after a restart") : null,
+    view.problem ? h("p", { class: "rig-problem" }, view.problem) : null,
+    choices.problem ? h("p", { class: "rig-problem" }, choices.problem) : null,
+    view.channels.map((c) => wiringRow(view, c, choices)),
+    w.adding && !sources ? h("p", { class: "sub" }, "Reading the rigs' channels, to start from…")
+      : w.adding ? addChannelForm(el, view, choices, sources)
+      : h("button", { class: "save-act add-channel", disabled: !!w.pending,
+        onclick: () => { w.adding = R.newChannel(choices, view.channels); w.result = null; render(); inBackground("rig channels", refreshAllRigChannels); } }, "Add channel"),
+    view.unsaved ? h("p", { class: "warn" }, view.unsaved) : null,
+    w.result ? rigFileResult(w.result, () => { w.result = null; render(); }, () => { w.restartConfirm = true; render(); }) : null,
+    w.restartConfirm ? h("div", { class: "confirm", role: "group", "aria-label": "Confirm the restart" },
+      h("p", {}, `Restart ${view.rig}? The sound stops for a few seconds while it comes back from its file.`),
+      h("button", { class: "rig-act danger", disabled: !!state.pending || !!busy, onclick: restartForEdit }, "Restart now"),
+      h("button", { class: "rig-act", onclick: () => { w.restartConfirm = false; render(); } }, "Not now")) : null,
+  ]);
+  if (rebuilt) refocus(el, focus);
+  drawAddCheck(el, view);
+}
+
+function wiringRow(view, c, choices) {
+  const w = state.wiring;
+  const editing = w.editing === c.name;
+  const row = h("div", { class: `wiring-row${editing ? " editing" : ""}`, "data-channel": c.name },
+    h("span", { class: "n" }, c.name), h("span", { class: "s" }, `${c.input} · ${c.width}`));
+  if (!editing) {
+    row.append(h("button", { class: "rig-act small", disabled: !!w.pending, "aria-label": `Change ${c.name}'s input`,
+      onclick: () => { w.editing = c.name; w.change = { input: c.input, width: c.width }; w.result = null; render(); } }, "Change input"));
+    return row;
+  }
+  const change = {};
+  if (w.change.input !== c.input) change.input = w.change.input;
+  if (w.change.width !== c.width) change.width = w.change.width;
+  row.append(
+    inputPicker(choices, w.change.input, (v) => { w.change.input = v; fitWidth(choices, w.change); render(); }, `${c.name} input`),
+    ...widthPicker(R.widthOptions(choices, w.change.input), w.change.width, (v) => { w.change.width = v; render(); }, `${c.name} width`).flat(),
+    h("div", { class: "save-acts" },
+      h("button", { class: "save-act primary", disabled: !!w.pending || !Object.keys(change).length,
+        onclick: () => changeInput(view.rig, c.name, change) }, `Apply to ${c.name}`),
+      h("button", { class: "save-act", onclick: () => { w.editing = null; render(); } }, "Cancel")));
+  return row;
+}
+
+function addChannelForm(el, view, choices, sources) {
+  const w = state.wiring;
+  const draft = w.adding;
+  return h("form", { class: "add-channel-form", onsubmit: (event) => { event.preventDefault(); addChannel(view.rig, el, view); } },
+    h("h3", {}, `Add a channel to ${view.rig}`),
+    textField("New channel name", "add-channel-name", draft.name, (v) => { draft.name = v; drawAddCheck(el, view); }, "e.g. keys"),
+    h("p", { class: "save-check", "data-check": "add-channel-name" }),
+    inputPicker(choices, draft.input, (v) => { draft.input = v; fitWidth(choices, draft); render(); }, "New channel input"),
+    ...pickersThenReasons(widthPicker(R.widthOptions(choices, draft.input), draft.width, (v) => { draft.width = v; render(); }, "New channel width"),
+      sourcePicker(sources, draft.from, (from) => { draft.from = from; render(); }, "New channel starts from")),
+    h("div", { class: "save-acts" },
+      h("button", { type: "submit", class: "save-act primary add" }, "Add"),
+      h("button", { type: "button", class: "save-act", onclick: () => { w.adding = null; render(); } }, "Cancel")));
+}
+
+function drawAddCheck(el, view) {
+  const draft = state.wiring.adding;
+  const p = el.querySelector('[data-check="add-channel-name"]');
+  const add = el.querySelector("button.add");
+  if (!draft || !p) return;
+  const problem = draft.name ? R.checkChannelName(draft.name, view.channels.map((c) => c.name)) : null;
+  p.textContent = problem || "";
+  p.classList.toggle("bad", !!problem);
+  if (add) {
+    add.disabled = !!state.wiring.pending || !draft.name || !!problem || !draft.input;
+    add.textContent = draft.name && !problem ? `Add ${draft.name}` : "Add";
+  }
+}
+
+async function rigFileWrite(call, op, what, rig) {
+  if (state.wiring.pending) return null;
+  state.wiring.pending = true;
+  render();
+  let answer;
+  try {
+    answer = await request("POST", call.path, call.json);
+  } finally {
+    // `state.wiring`, read now: a refresh may have replaced the object this
+    // write began on, and the answer belongs on the one that is drawn.
+    state.wiring.pending = false;
+  }
+  state.wiring.result = R.rigFileOutcome(op, what, answer);
+  render();
+  if (answer.ok) refreshRigChannels(rig, true).then(render);
+  return answer;
+}
+
+async function addChannel(rig, el, view) {
+  const draft = state.wiring.adding;
+  if (!draft || R.checkChannelName(draft.name, view.channels.map((c) => c.name)) || !draft.input) return;
+  const answer = await rigFileWrite(R.addChannelCall(rig, draft), "add", `${draft.name} to ${rig}`, rig);
+  if (answer && answer.ok) { state.wiring.adding = null; render(); }
+}
+
+async function changeInput(rig, channel, change) {
+  const answer = await rigFileWrite(R.inputCall(rig, channel, change), "input", `${channel}'s input`, rig);
+  if (answer && answer.ok) { state.wiring.editing = null; render(); }
+}
+
+async function restartForEdit() {
+  const rig = state.health && state.health.ok ? state.health.body.rig || {} : {};
+  state.wiring.restartConfirm = false;
+  const ok = await lifecycle("restart", rig.config_name);
+  if (ok) state.wiring.result = null;
+  render();
+}
+
 // ---------------------------------------------------------------- render
 
 function currentScreen() {
   if (location.hash === "#stage") return "stage";
+  if (location.hash === "#new-rig") return "newrig";
   if (location.hash === "" && matchMedia("(max-width: 640px)").matches) return "stage";
   return "rack";
 }
@@ -1239,13 +1702,17 @@ function render() {
   try {
     const screen = currentScreen();
     if (state.screen !== screen) {
-      const built = screen === "stage" ? stageFrame() : rackFrame();
+      const built = screen === "stage" ? stageFrame() : screen === "newrig" ? newRigFrame() : rackFrame();
       app.replaceChildren(built.frame);
       state.screen = screen;
       state.regions = built.regions;
       state.updaters = [];
       state.ampUpdaters = [];
       if (screen === "rack") refreshTakes(true).then((fetched) => { if (fetched) render(); });
+      if (screen === "newrig") {
+        inBackground("roles", refreshRoles);
+        inBackground("rig channels", () => refreshAllRigChannels(true));
+      }
     }
     const live = liveBody();
     const model = live ? R.rackModel(live, state.plugins, state.profiles) : null;
@@ -1255,6 +1722,7 @@ function render() {
     const status = R.rigStatus(state.health, state.live);
     document.title = `${status.title} · sushi-rig`;
     if (screen === "stage") renderStage(state.regions, model, status);
+    else if (screen === "newrig") renderNewRig(state.regions, status);
     else renderRack(state.regions, model, unsaved, status);
     if (live) {
       const keyed = new Map();

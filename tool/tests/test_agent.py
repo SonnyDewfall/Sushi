@@ -2648,7 +2648,7 @@ def test_a_switch_the_live_operations_cannot_make_restarts_and_says_why():
     status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-delay"})
     assert status == 200 and body["ok"] and body["how"] == "restart", body
     assert [r["code"] for r in body["why"]] == ["amp"]
-    assert runner.calls == [["down"], ["up", "electric-delay", "--rig", "--headless"]]
+    assert runner.calls == [["down"], ["up", "electric-delay", "--rig", "--headless", "--machine", "/m/box.yaml"]]
     assert fake.calls == [] and fake.opened == []
     assert world.written_states == [] and world.written_configs == []
     assert world.carla.sent == []
@@ -2683,7 +2683,7 @@ def test_a_switch_whose_carla_does_not_answer_restarts_into_the_next_rig():
     assert status == 200 and body["how"] == "restart", body
     assert [r["code"] for r in body["why"]] == ["failed"]
     assert "Carla is not answering" in body["why"][0]["detail"]
-    assert runner.calls == [["down"], ["up", "electric-chorus-2", "--rig", "--headless"]]
+    assert runner.calls == [["down"], ["up", "electric-chorus-2", "--rig", "--headless", "--machine", "/m/box.yaml"]]
     assert world.carla.sent == []
 
 
@@ -2750,7 +2750,7 @@ def test_a_switch_whose_reading_back_is_not_the_next_rig_restarts_into_it():
     (why,) = body["why"]
     assert why["code"] == "unverified" and f"{processor}: {parameter} did not apply" in why["detail"]
     assert any(f"{processor}: {parameter}" in problem for problem in body["verification"])
-    assert runner.calls == [["down"], ["up", "electric-octave-up", "--rig", "--headless"]]
+    assert runner.calls == [["down"], ["up", "electric-octave-up", "--rig", "--headless", "--machine", "/m/box.yaml"]]
     assert world.written_states == [] and world.written_configs == []
     (entry,) = call(agent, "GET", "/live/log")[1]["log"]
     assert entry["args"]["how"] == "restart" and entry["args"]["why"] == ["unverified"]
@@ -2764,7 +2764,7 @@ def test_a_switch_that_fails_part_way_restarts_into_the_next_rig():
     (why,) = body["why"]
     assert why["code"] == "failed" and "Sushi said no" in why["detail"]
     assert f"after {body['applied']} of {len(body['plan'])} steps" in why["detail"]
-    assert runner.calls == [["down"], ["up", "electric-delay", "--rig", "--headless"]]
+    assert runner.calls == [["down"], ["up", "electric-delay", "--rig", "--headless", "--machine", "/m/box.yaml"]]
     assert fake.one_connection_per_request_all_closed()
 
 
@@ -2792,7 +2792,7 @@ def test_a_rig_run_with_its_panel_or_an_amp_override_restarts():
     agent, fake, world, runner = switch_agent("electric-delay", dict(HEADLESS, mode="panel"))
     status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-octave-up"})
     assert body["how"] == "restart" and [r["code"] for r in body["why"]] == ["panel"], body
-    assert runner.calls[1] == ["up", "electric-octave-up", "--rig"]
+    assert runner.calls[1] == ["up", "electric-octave-up", "--rig", "--machine", "/m/box.yaml"]
     assert [r.code for r in state_blockers(dict(HEADLESS, amp_model_requested="X.nam"))] == ["amp_override"]
     assert state_blockers(dict(HEADLESS, amp_model_requested="X.nam", amp_requested=False)) == []
 
@@ -2871,7 +2871,7 @@ def test_a_switch_whose_restart_fails_brings_the_previous_rig_back_and_says_so()
     agent, fake, world, _ = switch_agent("electric_board", runner=runner, state=NO_AMP)
     status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-chorus-2"})
     assert status == 409 and not body["ok"] and body["how"] == "restart"
-    assert runner.calls[-1] == ["up", "electric_board", "--rig", "--headless"]
+    assert runner.calls[-1] == ["up", "electric_board", "--rig", "--headless", "--machine", "/m/box.yaml"]
     assert "Sushi never came up" in body["reason"] and "electric_board was brought back" in body["reason"]
     (entry,) = call(agent, "GET", "/live/log")[1]["log"]
     assert entry["op"] == "rig" and entry["args"]["ok"] is False, "a barrier still: the rig was restarted"
@@ -2934,7 +2934,7 @@ def test_a_set_sushi_acknowledged_and_did_not_apply_is_caught_even_where_the_con
     (why,) = body["why"]
     assert why["code"] == "unverified" and f"{ignored[0]}: " in why["detail"]
     assert any(p.startswith(f"{ignored[0]}: ") and "reads back" in p for p in body["verification"])
-    assert runner.calls == [["down"], ["up", "electric-octave-up", "--rig", "--headless"]]
+    assert runner.calls == [["down"], ["up", "electric-octave-up", "--rig", "--headless", "--machine", "/m/box.yaml"]]
     assert world.written_states == []
 
 

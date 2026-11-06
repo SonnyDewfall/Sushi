@@ -370,3 +370,51 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 .take .note { font-size: 12px; color: var(--muted); line-height: 1.45; overflow-wrap: anywhere; }
 .take.warn .note { color: var(--accent-soft); }
 .take.live .note { color: var(--recording-soft); }
+
+/* ---------------------------------------------------------------- rig files (the New rig screen) */
+/* The New rig screen (#new-rig) and the rack's inputs: forms in the Save
+   form's style, a channel per fieldset, and the agent's answer in place. */
+a.rig-act { display: inline-flex; align-items: center; justify-content: center; color: var(--text); text-decoration: none; }
+.rig-act.small { min-height: 44px; flex: 0 0 auto; font-size: 13px; }
+.new-rig { padding: 18px 20px 32px; max-width: 760px; display: flex; flex-direction: column; gap: 14px; }
+.new-rig-form { display: flex; flex-direction: column; gap: 10px; }
+.new-rig .sub, .wiring .sub { margin: 0; font-size: 13px; color: var(--muted); line-height: 1.5; }
+.text-field { display: flex; flex-direction: column; gap: 6px; font-size: 12px; color: var(--muted); }
+.text-field input { min-height: 44px; padding: 0 12px; border-radius: 10px; background: var(--card); border: 1px solid var(--edge); color: var(--text); font-family: var(--mono); font-size: 15px; }
+.draft-head { display: flex; align-items: baseline; gap: 12px; margin-top: 6px; }
+.draft-head h2 { font-family: var(--display); font-size: 14px; font-weight: 500; letter-spacing: .1em; color: var(--muted); }
+.channel-draft { display: flex; flex-wrap: wrap; align-items: flex-start; gap: 10px 14px; margin: 0; padding: 12px 14px; border-radius: 12px; background: var(--card); border: 1px solid var(--edge); }
+.channel-draft legend { padding: 0 6px; font-family: var(--display); font-size: 14px; color: var(--muted); }
+.channel-draft .text-field { flex: 1 1 180px; }
+.channel-draft .save-check { flex: 1 0 100%; }
+.channel-draft .remove { flex: 0 0 auto; }
+.width-why { flex: 1 0 100%; margin: 0; font-size: 12px !important; overflow-wrap: anywhere; }
+.selector select { color: var(--text); max-width: 100%; }
+.machine-hint { margin: 4px 0; padding: 8px 10px; border-radius: 8px; background: var(--ground); color: var(--text); font-family: var(--mono); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; }
+.rigfile-result .offer { align-self: flex-start; margin-top: 4px; }
+
+.wiring { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; }
+.wiring:empty { display: none; }
+.wiring h2 { font-family: var(--display); font-size: 14px; font-weight: 500; letter-spacing: .1em; color: var(--muted); }
+.wiring-row { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; padding: 8px 10px; border-radius: 10px; border: 1px solid var(--edge); }
+.wiring-row .n { font-size: 15px; font-weight: 600; }
+.wiring-row .s { flex: 1; font-family: var(--mono); font-size: 12px; color: var(--muted); }
+.wiring-row.editing { flex-direction: column; align-items: stretch; border-color: var(--accent); }
+.add-channel-form { display: flex; flex-direction: column; gap: 8px; padding: 10px; border-radius: 10px; border: 1px solid var(--accent); }
+.add-channel-form h3 { font-size: 13px; color: var(--muted); font-weight: 500; }
+/* A select is as wide as its longest option (a role's ports), which pushed
+   the rack's left column, and a phone's page, wider than they are: each
+   picker takes the width it is given instead. */
+.channels { min-width: 0; }
+.rigs a.new-rig { flex: none; }
+.channel-draft .selector, .wiring .selector, .add-channel-form .selector { flex: 1 1 200px; min-width: 0; max-width: 100%; }
+.channel-draft .selector select, .wiring .selector select, .add-channel-form .selector select { width: 100%; min-width: 0; }
+.wiring code { overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+  .new-rig { padding: 14px 16px 24px; }
+}
+.programs-moved { display: flex; flex-direction: column; gap: 6px; margin: 4px 0; }
+.programs-moved table { border-collapse: collapse; font-size: 12px; }
+.programs-moved th, .programs-moved td { text-align: left; padding: 2px 12px 2px 0; }
+.programs-moved th { color: var(--muted); font-weight: 500; }
+.programs-moved td { font-family: var(--mono); }

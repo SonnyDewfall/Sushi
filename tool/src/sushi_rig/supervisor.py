@@ -153,7 +153,7 @@ def parse_lifecycle(args: Sequence[str]) -> tuple[str, dict[str, Any]]:
             raise ValueError("'up' needs a config name first")
         options: dict[str, Any] = {
             "config_name": rest[0], "rig": False, "headless": False,
-            "tuner": True, "amp": True, "amp_model": None,
+            "tuner": True, "amp": True, "amp_model": None, "machine": None,
         }
         flags = {
             "--rig": ("rig", True), "--headless": ("headless", True),
@@ -165,8 +165,8 @@ def parse_lifecycle(args: Sequence[str]) -> tuple[str, dict[str, Any]]:
                 key, value = flags[rest[i]]
                 options[key] = value
                 i += 1
-            elif rest[i] == "--amp-model" and i + 1 < len(rest):
-                options["amp_model"] = rest[i + 1]
+            elif rest[i] in ("--amp-model", "--machine") and i + 1 < len(rest):
+                options[rest[i][2:].replace("-", "_")] = rest[i + 1]
                 i += 2
             else:
                 raise ValueError(f"'up' does not take {rest[i]!r}")
@@ -553,6 +553,7 @@ class Supervisor:
     async def up(
         self, config_name: str, *, rig: bool = False, headless: bool = False,
         tuner: bool = True, amp: bool = True, amp_model: str | None = None,
+        machine: str | None = None,
     ) -> Outcome:
         """Start a rig and hold it. Refused, compiled and planned by
         `rig.prepare_launch`, which refuses a second rig (the agent's own
@@ -567,6 +568,7 @@ class Supervisor:
             launch = await asyncio.to_thread(
                 self.world.prepare, config_name, headless=headless, tuner=tuner, amp=amp,
                 amp_model=amp_model, rig=rig, warn=warnings.append,
+                **({"machine": machine} if machine else {}),
             )
         except Exception as exc:
             if not _plain(exc):

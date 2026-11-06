@@ -435,7 +435,8 @@ curl localhost:8029/rigs             # the rigs of config/rigs/ a start or switc
 curl localhost:8029/rig/load         # one pw-top sample of the rig's nodes: load, xruns, the block budget
 curl -X POST localhost:8029/rig/up -d '{"config_name": "guitar_vocal", "rig": true, "headless": true}'
 curl -X POST localhost:8029/rig/down
-curl -X POST localhost:8029/rig/restart
+curl -X POST localhost:8029/rig/restart                             # refused (409 unsaved) if it would drop changes no save has written
+curl -X POST localhost:8029/rig/restart -d '{"discard": true}'      # ... so this drops them, as `sushi-rig restart --discard` does
 curl -X POST localhost:8029/rig/switch -d '{"config_name": "electric-octave-up"}'   # live where it can be (#93)
 curl localhost:8029/live             # the running rig's parameters, bypass and chains, with ranges
 curl -X POST localhost:8029/live/parameter -d '{"processor": "reverb", "parameter": "Mix", "value": 0.4}'
@@ -454,6 +455,11 @@ curl localhost:8029/record           # recording, idle, or why recording is off 
 curl -X POST localhost:8029/record/start -d '{"name": "riff-idea"}'   # a take; no name is take-<date>-<time>
 curl -X POST localhost:8029/record/stop                              # finish it: take check's verdict in the answer
 curl localhost:8029/takes            # the takes, newest first, each with take check's verdict
+curl localhost:8029/machine/roles    # the machine file's roles: ports, the widths each can feed, who uses each
+curl localhost:8029/rigs/guitar_vocal/channels                      # a rig file's channels, as the file has them
+curl -X POST localhost:8029/rigs/new -d '{"name": "two-guitars", "channels": [{"name": "clean", "input": "guitar-in", "width": "mono"}, {"name": "dirty", "input": "guitar-in", "width": "stereo", "from": {"rig": "electric_board", "channel": "board"}}]}'
+curl -X POST localhost:8029/rigs/guitar_vocal/channels/add -d '{"name": "keys", "input": "vocal-in", "width": "stereo"}'
+curl -X POST localhost:8029/rigs/guitar_vocal/channels/vocal/input -d '{"input": "guitar-in"}'   # or "width", or both
 
 curl localhost:8029/health | jq .agent.midi   # the pedals: listening, or why not, and what was last heard
 ```
@@ -814,6 +820,91 @@ with the file and that state; undo passes over it to the change before, which
 leaves the rig unsaved again. **Not run against a live Sushi**: shown against
 a fake capture and real rig files.
 
+**New rigs and channel edits** (the New rig screen). `POST /rigs/new` writes
+a new `config/rigs/<name>.yaml`: the channels asked for, each a name, an input
+role and `mono` or `stereo`, and a master on `monitor-out` (as `convert`
+writes every rig's), with empty chains, unless a channel says `from: {rig,
+channel}`, which copies that channel's chain and `level:` from that rig's
+file as it stands now (not as git last committed it: a tone saved and not yet
+committed is the one you hear; the answer says what git says of that file).
+`POST /rigs/<rig>/channels/add` adds a channel to the end of a rig file, and
+`POST /rigs/<rig>/channels/<channel>/input` sets a channel's input, its
+width, or both. Both edit the file in place with `write_rig`, keeping its
+comments: tested on copies of the committed rigs, an add changes exactly the
+channel's four lines and an input change exactly its line (two with the
+width). **The compiler decides, not the agent and not the page**: every
+draft goes through `rig.compile_rig_draft`, which parses, compiles and wires
+it offline exactly as `up --rig` does, against the run's machine file (the
+one the running rig was compiled against, or this host's with no rig of
+channels up), and nothing is written unless it passes. A refusal is `409`
+with the compiler's or the patchbay's own words and a `code`: `rig_problem`
+(more than three channels, with the arithmetic; a channel name used twice or
+not a name; a width the role cannot give; a role the machine file lacks),
+`name` (the naming rule, `save.validate_name`), `taken`, `no_source` (a
+`from` naming no rig or channel), `no_channel`. The wiring is the part that
+knows the roles: a stereo channel on a one-port role without
+`mono_to_stereo`, a mono one on a pair and an unknown role are refused by
+`patchbay_for`, which compiling alone does not call, so `compile_named_rig`
+on its own would accept a rig `up` then refuses. **The machine file is never
+written**: a role you need and do not have is said with the lines to add
+under `roles:` (`machine_hint`), and you add them. Two channels may share an
+input (one port fanned to two engine inputs). `GET /machine/roles` gives the
+page each role's ports, `mono_to_stereo`, the widths it can feed and whether
+it can take the master (each the patchbay's answer, with its reason), which
+of the running rig's tracks use it, and the ceiling as the compiler refuses
+a fourth channel. Which roles are inputs and which outputs is read from
+their names (`-in`, `-out`), since the machine file does not say.
+
+**An edit of the running rig's own file** takes effect when the rig
+restarts from it: the answer says so, with `rigfile.diff`'s reasons as a
+switch gives them (`track_added`, `wiring`, `track`), and the page offers the
+restart. It is **refused while the rig holds changes the agent saw and no
+save has written** (`409 unsaved`, naming the newest): the restart that plays
+the edit reloads the file and would drop them. Save, then edit. (Save
+itself would still work after an edit: a capture says nothing of a track the
+rig does not have yet, so the file keeps the new channel. It is the restart
+that would lose the work.) Counted, not netted out, so a knob turned and turned back still asks
+for a Save, which loses nothing. With the panel running it is refused too
+(`panel`): the agent cannot see the panel's changes. Another rig's file can
+be edited whatever is playing. A write is refused while a lifecycle command
+runs (`409 busy`, as every route is), and holds the lifecycle lock itself
+and, for the running rig, the live lock, so no restart, switch or live change
+lands between the check and the write. **Never committed**: the answer gives the commit and
+what git says of the file, as a save's does, read once the lifecycle lock is
+let go and within the write's deadline: a git that does not answer leaves
+`library: null` with `library_note` saying so, never a rig stuck busy. A new
+rig whose name sorts before others **moves their Program Change numbers**
+(program *n* is the *n*th file by name): the answer then has `programs`,
+which rigs moved from which number to which, and the page shows the table,
+since a pedal preset set for one rig would select another. The order rule
+itself is unchanged.
+
+**The machine file goes with the run.** A draft is checked against the
+machine file the running rig was started against (the state file's
+`machine`), and since 2026-11-06 the restart and the switch that play it
+are started against it too: `restart` passes it to `up` (`up --machine`,
+which the CLI takes with `--direct` only, since the agent takes no path from
+a request), and every switch by restart carries it (`switch_steps`), where
+before each dropped it and wired against this host's file
+(`machines/<hostname>.yaml`), which need not be the file the rig was checked
+or compiled against.
+
+**A restart refuses to drop unsaved work.** Every `POST /rig/restart` (the
+page's restart after an edit, the picker's, the CLI's `sushi-rig restart`
+through the agent) reloads the rig's file, so it is refused, `409 unsaved`
+naming the newest change, while the agent saw changes since the last save;
+`{"discard": true}` (`sushi-rig restart --discard`, or the page's second
+tap, "Restart anyway, dropping them") restarts anyway. Not refused when
+there is nothing to keep or no way to know: Sushi's process is gone (the
+work went with it, and recovery must not wait on a Save), or the rig runs
+with its panel, whose changes the agent cannot see. A stop and a switch to
+another rig still drop unsaved work, as they always have. Remote callers are treated as
+`POST /rig/save` treats them, no differently: a write needs no loopback peer,
+since Save writes the same files without one; the agent binds to localhost,
+and `--host 0.0.0.0` stays your call. **Not run against a live Sushi**: the
+rigs these write are shown to compile and wire as `up --rig` would, and no
+rig made this way has been started on the rig.
+
 **Recording from the web UI** (S7). The panel's record bar belongs to its
 listener, and a headless rig has none, so `up --rig --headless` (what the page
 starts, and `--direct` too) starts **`sushi-rig recorder`** in the listener's
@@ -865,8 +956,11 @@ just runs the rig.
 **Recovery is the answer to failure, not self-healing** (principle 9). `restart`
 stops the rig and brings back the same one — same config, same mode, and the same
 `--no-amp` / `--no-tuner` choices, read from the state file rather than from you,
-since after a crash you may not remember them. Measured end to end at around five
-seconds.
+since after a crash you may not remember them, and for a rig of channels the
+machine file it was started against. Measured end to end at around five
+seconds. Through the agent, a restart that would drop changes it saw and no
+save has written is refused; `restart --discard` says to drop them. With
+Sushi gone it is never refused: there is nothing left to keep.
 
 `top` answers the question that predicts trouble: how close to the block deadline
 each component is running. It is not total CPU — 100% means a node used its whole
@@ -961,6 +1055,28 @@ no Node and the UI has to run from a checkout. Two screens from the mockups:
   counts from that save: a change after it, or an undo past it, is unsaved
   again. Allowed while locked, since it changes neither the sound nor the
   structure. Not on the stage screen: saving is not a stage action.
+- **New rig, and a channel's input.** "New rig…" under the rack's rig picker
+  opens the New rig screen (`#new-rig`): a name, then a channel per row, each
+  with a name, an input picked from the machine file's roles (each shown with
+  its port), mono or stereo, and optionally a channel of another rig to start
+  from. Stereo is offered only where the role can give it: otherwise the
+  option is there but off, with the patchbay's reason under it (one port
+  needs `mono_to_stereo`). "Add channel" adds rows up to three, and past that
+  refuses with the compiler's own arithmetic; the agent's reasons for those
+  hints come from `GET /machine/roles`, which asked the compiler. Create
+  writes the file and offers to start it (or switch to it, with a rig up);
+  the agent's refusal is shown in place, with the lines to add to the machine
+  file when a role is missing. On the rack, INPUTS lists the running rig's
+  channels as its file has them, each with "Change input", and "Add channel":
+  each writes the file, says what git says of it, and offers the restart that
+  plays it, which takes a confirm since the sound stops for a few seconds. The
+  edits are not behind the page's lock (they write a file, and the restart is
+  a separate tap); with unsaved changes the rack says Save comes first, and
+  the agent refuses until then. A change made after the edit makes the
+  offered restart refuse too, with the reason in place and "Restart anyway,
+  dropping them" as a second tap. A new rig that moves other rigs' Program
+  Change numbers says so under Create, with a table of before and after.
+  Nothing of this is on the stage screen.
 - **Record (S7, S8).** A record bar on the stage screen, as the canvas's Record
   frame has it: a take name, a big Record and a big Stop, and while a take
   runs its name and elapsed time in red. Both work locked (recording is a stage
@@ -1020,7 +1136,9 @@ for the agent's add and remove.
 To try it without a rig: `cd tool && PYTHONPATH=src:tests python tests/ui_fake.py`
 serves the UI against that fake on port 8029 (`--down` to start with no rig up,
 `--amp` to give it an amp, with invented models and a stand-in Carla, `--save`
-to give it a rig file to save into, in a temporary checkout, `--record` to give
+to give it a rig file to save into, in a temporary checkout with a machine
+file (which is also what the New rig screen and the rack's channel edits
+write into), `--record` to give
 that checkout a recorder, whose takes are real folders made by a stand-in engine).
 `/ui/` and `/ui` redirect to the page.
 
@@ -1176,6 +1294,13 @@ master track — last, on output bus 0, with its own chain for the limiter — t
 is all the monitors hear. A rig has at most three channels, because the master
 and three stereo stems fill Sushi's eight outputs; more is refused with the
 arithmetic.
+
+A rig of channels can be made, and a channel added or moved to another
+input, from the web UI's New rig screen and the rack (*The agent*: new rigs
+and channel edits). Those write these files, in place and keeping their
+comments, and only once the rig compiles and wires against the machine file
+as `up --rig` would compile and wire it; the machine file itself is never
+written, and a role it lacks is said with what to add.
 
 #### A mono plugin on a stereo channel (2026-11-02)
 

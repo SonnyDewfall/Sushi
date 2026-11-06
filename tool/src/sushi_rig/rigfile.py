@@ -205,7 +205,7 @@ _HEADER = (
 )
 
 
-def write_rig(path: Path, rig: dict, *, source: str | None = None) -> None:
+def write_rig(path: Path, rig: dict, *, source: str | None = None, header: str | None = None) -> None:
     """Write `rig` (the dict `parse_rig` reads) to `path`, keeping what a person wrote.
 
     A file already there is updated in place to hold `rig` — changed values set,
@@ -214,7 +214,9 @@ def write_rig(path: Path, rig: dict, *, source: str | None = None) -> None:
     so an unchanged rig is an unchanged file (yamlmerge.py has the rules, and
     what it will not do). A file not there is written from nothing, in block
     style with keys in `rig`'s order, under the header saying where it came
-    from if `source` is given.
+    from if `source` is given, or under `header` (comment lines, as written)
+    for a rig made some other way: the web UI's new rig says there what made
+    it and where each channel's chain came from, so the file explains itself.
 
     Nothing is written, and `RigFileError` is raised, when `rig` is not one
     `parse_rig` accepts, when the file there is not YAML or not a mapping or
@@ -233,7 +235,7 @@ def write_rig(path: Path, rig: dict, *, source: str | None = None) -> None:
         if existing.strip():
             text = yamlmerge.merged(existing, rig)
         else:
-            text = yamlmerge.fresh(rig, _HEADER.format(source=source) if source else "")
+            text = yamlmerge.fresh(rig, _HEADER.format(source=source) if source else header or "")
     except yamlmerge.MergeError as exc:
         raise RigFileError([f"{path}: {exc}"]) from exc
     path.parent.mkdir(parents=True, exist_ok=True)

@@ -618,15 +618,20 @@ export function loadTiles(answer, up, xruns) {
 
 // ---------------------------------------------------------------- start, stop, switch
 
-const VERBS = { start: "Starting", stop: "Stopping", switch: "Switching to" };
+const VERBS = { start: "Starting", stop: "Stopping", switch: "Switching to", restart: "Restarting" };
 
 // The request for a lifecycle gesture. A start is a rig of channels
 // (config/rigs/, `rig: true`) and headless: the page replaces the OSC panel,
 // and a rig run with its panel cannot be switched live (#93).
-export function lifecycleCall(op, name) {
+export function lifecycleCall(op, name, { discard = false } = {}) {
   if (op === "start") return { path: "/rig/up", json: { config_name: name, rig: true, headless: true } };
   if (op === "stop") return { path: "/rig/down", json: {} };
   if (op === "switch") return { path: "/rig/switch", json: { config_name: name } };
+  // Offered after an edit of the running rig's file (the rig files below):
+  // the agent's restart brings the rig back from its file, as it was run.
+  // It refuses one that would drop unsaved changes (409 `unsaved`) unless
+  // told `discard`, which the page sends only from a second, explicit tap.
+  if (op === "restart") return { path: "/rig/restart", json: discard ? { discard: true } : {} };
   throw new Error(`unknown lifecycle gesture ${op}`);
 }
 
@@ -679,6 +684,10 @@ export function lifecycleOutcome(op, name, answer) {
   if (op === "start") {
     return answer.ok ? { ok: true, title: `Started ${name}`, text: `Started ${name}, headless.${warnings}` }
       : { ok: false, title: `Not started: ${name}`, reason: answer.reason };
+  }
+  if (op === "restart") {
+    return answer.ok ? { ok: true, title: `Restarted ${name}`, text: `Restarted ${name} from its file.${warnings}` }
+      : { ok: false, title: `Not restarted: ${name}`, reason: answer.reason };
   }
   return answer.ok ? { ok: true, title: "Stopped", text: `Stopped ${name || "the rig"}.` }
     : { ok: false, title: `Not stopped: ${name || "the rig"}`, reason: answer.reason };
@@ -1155,4 +1164,199 @@ export class Latest {
     this.applied = ticket;
     return true;
   }
+}
+
+// ---------------------------------------------------------------- rig files (the New rig screen)
+// GET /machine/roles, GET /rigs/<rig>/channels, POST /rigs/new, and
+// POST /rigs/<rig>/channels/add and /channels/<channel>/input. Every rule
+// about what a rig may be is the agent's compiler's (rig.compile_rig_draft):
+// what the page says before sending is a hint, drawn from the agent's own
+// answers -- the ceiling and each role's widths come from /machine/roles,
+// which asked the compiler and the patchbay -- and the agent's refusal,
+// shown in place, is the answer.
+
+// The machine file's input roles for the pickers: every role not named as an
+// output (the agent reads direction from the name, since the machine file
+// does not say), each labelled with its ports.
+export function roleChoices(answer) {
+  if (!answer) return { inputs: [], problem: null, loading: true, ceiling: null, output: null, machine: null };
+  if (!answer.ok) {
+    return { inputs: [], problem: `The machine file's roles could not be read: ${answer.reason}`, loading: false,
+      ceiling: null, output: null, machine: null };
+  }
+  const body = answer.body;
+  const inputs = (body.roles || []).filter((r) => r.direction !== "output").map((r) => ({
+    name: r.name, label: `${r.name} · ${r.ports.join(" + ")}`, ports: r.ports,
+    monoToStereo: !!r.mono_to_stereo, widths: r.widths, usedBy: r.used_by || [],
+  }));
+  return {
+    inputs, loading: false, ceiling: body.ceiling || null, output: body.output || null, machine: body.machine || null,
+    problem: inputs.length ? null : `${body.machine} has no input roles: add one under roles: (sushi-rig does not edit it).`,
+  };
+}
+
+// Mono and stereo for a role: each offered where the role allows it, with
+// the patchbay's reason where not (a stereo channel on one port needs
+// mono_to_stereo; one port into a mono channel, two into a stereo one).
+export function widthOptions(choices, role) {
+  const found = (choices.inputs || []).find((r) => r.name === role);
+  return ["mono", "stereo"].map((width) => {
+    if (!found) return { width, ok: false, why: "Choose an input first." };
+    const said = found.widths[width] || {};
+    return { width, ok: !!said.ok, why: said.ok ? null : said.why || "The agent did not say." };
+  });
+}
+
+// A channel's name from its role, as the committed rigs name theirs
+// (guitar-in plays the guitar channel), unique among `taken`.
+export function suggestName(role, taken = []) {
+  const base = String(role || "").replace(/-in$/, "").toLowerCase().replace(/[^a-z0-9_-]+/g, "-").replace(/^[-_]+/, "") || "channel";
+  if (!taken.includes(base)) return base;
+  for (let n = 2; ; n++) if (!taken.includes(`${base}-${n}`)) return `${base}-${n}`;
+}
+
+// A fresh channel for the form: the first input no channel uses yet (or the
+// first), mono where it can be, named from its role.
+export function newChannel(choices, channels = []) {
+  const inputs = choices.inputs || [];
+  const used = channels.map((c) => c.input);
+  const role = (inputs.find((r) => !used.includes(r.name)) || inputs[0] || {}).name || "";
+  const widths = widthOptions(choices, role);
+  const width = (widths.find((w) => w.ok) || widths[0]).width;
+  return { name: role ? suggestName(role, channels.map((c) => c.name)) : "", input: role, width, from: null };
+}
+
+// Why a channel's name will not do, as a hint (the agent's compiler decides):
+// the naming rule a channel shares with a rig's, and a name used twice.
+export function checkChannelName(name, others = []) {
+  const n = typeof name === "string" ? name : "";
+  if (!n) return "Name the channel: it is the track's name and its stem's file name in a take.";
+  if (!NAME_RE.test(n)) return "A channel's name is lowercase letters, digits, '-' and '_', starting with a letter or digit.";
+  if (others.includes(n)) return `Another channel is called ${n}.`;
+  return null;
+}
+
+// What the New rig form offers: whether another channel can be added (and
+// the compiler's reason when not), each channel's hint, and Create.
+export function newRigView(draft, rolesAnswer, rigsAnswer, health, pending) {
+  const choices = roleChoices(rolesAnswer);
+  const agentUp = !!(health && health.ok);
+  const busy = agentUp ? (health.body.agent || {}).busy || null : null;
+  const rigs = rigsAnswer && rigsAnswer.ok ? rigsAnswer.body.rigs : [];
+  const max = choices.ceiling ? choices.ceiling.channels : null;
+  const count = draft.channels.length;
+  let nameProblem = checkRigName(draft.name);
+  if (!nameProblem && rigs.includes(draft.name)) nameProblem = `${draft.name} is already a rig in config/rigs/: choose another name.`;
+  const channels = draft.channels.map((c, i) => {
+    const others = draft.channels.filter((_, j) => j !== i).map((o) => o.name);
+    const widths = widthOptions(choices, c.input);
+    const width = widths.find((w) => w.width === c.width);
+    const problem = checkChannelName(c.name, others) || (!c.input ? "Choose its input." : null)
+      || (width && !width.ok ? `${c.width} on ${c.input}: ${width.why}` : null);
+    return { problem, widths };
+  });
+  const blocked = !agentUp ? "The agent is not answering." : busy ? `${busy} is running: creating waits for it.` : null;
+  return {
+    choices, channels, nameProblem, blocked,
+    count, max,
+    countText: max === null ? `${count} channel${count === 1 ? "" : "s"}` : `${count} of at most ${max}`,
+    add: max !== null && count >= max ? { refused: `No more channels: ${choices.ceiling.why}.` } : { refused: null },
+    create: {
+      disabled: !!pending || !!blocked || !!nameProblem || count === 0 || channels.some((c) => c.problem),
+      label: pending ? "Creating…" : draft.name && !nameProblem ? `Create ${draft.name}` : "Create",
+    },
+  };
+}
+
+// "Start from": every channel of every rig of config/rigs, as GET
+// /rigs/<rig>/channels gave them (`byRig`: rig -> that answer).
+export function sourceChoices(rigsAnswer, byRig) {
+  const rigs = rigsAnswer && rigsAnswer.ok ? rigsAnswer.body.rigs : [];
+  return rigs.map((rig) => {
+    const answer = byRig[rig];
+    const channels = answer && answer.ok ? answer.body.channels : [];
+    return {
+      rig, problem: answer && !answer.ok ? answer.reason : null,
+      options: channels.map((c) => ({
+        rig, channel: c.name, value: `${rig}\u0000${c.name}`,
+        label: `${rig} · ${c.name} (${c.plugins.length} plugin${c.plugins.length === 1 ? "" : "s"})`,
+      })),
+    };
+  });
+}
+
+function channelJson(c) {
+  const out = { name: c.name, input: c.input, width: c.width };
+  if (c.from) out.from = { rig: c.from.rig, channel: c.from.channel };
+  return out;
+}
+
+export function newRigCall(name, channels) {
+  return { path: "/rigs/new", json: { name, channels: channels.map(channelJson) } };
+}
+
+export function addChannelCall(rig, channel) {
+  return { path: `/rigs/${encodeURIComponent(rig)}/channels/add`, json: channelJson(channel) };
+}
+
+export function inputCall(rig, channel, change) {
+  return { path: `/rigs/${encodeURIComponent(rig)}/channels/${encodeURIComponent(channel)}/input`, json: change };
+}
+
+// What a rig-file answer says: `{ok: true, title, text, commit, offer}` or
+// `{ok: false, title, reason, hint}`, the agent's reason as it gave it and,
+// for a role the machine file lacks, the lines it says to add. `offer` is
+// the lifecycle gesture that plays the change: start or switch to a new
+// rig, restart the running one after an edit of its file.
+export function rigFileOutcome(op, what, answer) {
+  const body = answer.body || {};
+  const titles = {
+    new: [`Made ${what}`, `Not made: ${what}`],
+    add: [`Added ${what}`, `Not added: ${what}`],
+    input: [`Changed ${what}`, `Not changed: ${what}`],
+  }[op];
+  if (!answer.ok) return { ok: false, title: titles[1], reason: answer.reason, hint: body.machine_hint || null, code: answer.code || null };
+  let text, offer = null;
+  if (op === "new") {
+    text = `Wrote ${body.file}, a new rig with ${(body.channels || []).length} channel${(body.channels || []).length === 1 ? "" : "s"}.`;
+    const copied = (body.channels || []).filter((c) => c.from).map((c) => `${c.name} from ${c.from.rig} · ${c.from.channel}`);
+    if (copied.length) text += ` Chains copied: ${copied.join(", ")}.`;
+    offer = { op: body.offer === "switch" ? "switch" : "start", name: body.rig,
+      label: body.offer === "switch" ? `Switch to ${body.rig}` : `Start ${body.rig}` };
+    // A new file can move every later rig's Program Change number: said,
+    // with the rigs that moved, before and after.
+    if (body.programs && body.programs.moved && body.programs.moved.length) {
+      return { ok: true, title: titles[0], text, commit: commitText(body.library), offer, file: body.file,
+        programs: { note: body.programs.note, rows: body.programs.moved.map((m) => ({ rig: m.rig, from: m.from, to: m.to })) } };
+    }
+  } else {
+    text = `Wrote ${body.file} in place, keeping its comments.`;
+    if (body.running) {
+      const why = (body.why || []).map((r) => r.detail).join("; ");
+      text += ` ${body.rig} keeps playing as it was until it restarts${why ? ` (${why})` : ""}.`;
+      offer = { op: "restart", name: body.rig, label: `Restart ${body.rig} to play it` };
+    } else {
+      text += ` ${body.rig} is not the running rig: it plays as edited when it is next started or switched to.`;
+    }
+  }
+  return { ok: true, title: titles[0], text, commit: commitText(body.library), offer, file: body.file };
+}
+
+// What the rack offers for the running rig's file: its channels as the file
+// has them (GET /rigs/<rig>/channels), with each one's input and width.
+// Only for a rig of channels; a v1 run has no rig file to edit.
+export function wiringView(health, channelsAnswer, unsaved) {
+  const rig = health && health.ok ? health.body.rig || {} : {};
+  if (!rig.running || !rig.rig) return null;
+  const name = rig.config_name;
+  const count = unsaved && unsaved.items ? unsaved.items.length : 0;
+  return {
+    rig: name,
+    problem: channelsAnswer && !channelsAnswer.ok ? `${name}'s channels could not be read: ${channelsAnswer.reason}` : null,
+    channels: channelsAnswer && channelsAnswer.ok ? channelsAnswer.body.channels : [],
+    file: channelsAnswer && channelsAnswer.ok ? channelsAnswer.body.file : null,
+    // A hint: the agent refuses an edit of the running rig's file while it
+    // saw unsaved work, since the restart that plays the edit would drop it.
+    unsaved: count ? `${count} unsaved change${count === 1 ? "" : "s"} on ${name}: save first, since the restart that plays an edit reloads the file.` : null,
+  };
 }

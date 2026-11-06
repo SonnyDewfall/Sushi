@@ -908,6 +908,12 @@ def _main(argv: list[str] | None = None) -> int:
         "amp/models/ or a path. For auditioning without editing the config; "
         "a save then records whichever was actually used",
     )
+    p.add_argument(
+        "--machine", type=Path,
+        help="with --rig, the machine file to compile and wire against [default: "
+        "machines/<this hostname>.yaml]; with --direct only, since the agent takes no path from "
+        "a request (its restart and switch carry the one the run started with)",
+    )
     p.add_argument("--direct", action="store_true", help=_DIRECT_HELP)
 
     p = sub.add_parser("down", help="stop a running rig and verify it stopped")
@@ -1128,6 +1134,11 @@ def _main(argv: list[str] | None = None) -> int:
     p = sub.add_parser(
         "restart",
         help="stop the running rig and bring the same one back — same config, same mode, same amp and tuner choices",
+    )
+    p.add_argument(
+        "--discard", action="store_true",
+        help="restart even though the agent saw changes since the last save, dropping them "
+        "(without it, the agent refuses a restart that would lose them)",
     )
     p.add_argument("--direct", action="store_true", help=_DIRECT_HELP)
 
@@ -1450,6 +1461,9 @@ def _main(argv: list[str] | None = None) -> int:
         # The agent holds the rig when it is running (#29), so ask it first;
         # with nothing listening, act as the CLI always has. Either way one
         # line on stderr says which.
+        if args.command == "up" and args.machine is not None and not args.direct:
+            sys.exit("sushi-rig: --machine is taken with --direct only: the agent takes no path from a "
+                     "request. Nothing was done.")
         if args.direct:
             print("sushi-rig: --direct, so acting without asking the agent", file=sys.stderr)
         else:
@@ -1476,6 +1490,7 @@ def _main(argv: list[str] | None = None) -> int:
                     args.config_name, headless=args.headless,
                     tuner=args.tuner, amp=args.amp,
                     amp_model=args.amp_model, rig=args.rig,
+                    machine=str(args.machine.resolve()) if args.machine is not None else None,
                 )
             if args.command == "down":
                 return down(args.force)
