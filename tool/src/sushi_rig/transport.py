@@ -624,13 +624,20 @@ def _live_jack_names() -> dict[str, list[str]]:
     source a take records is something that produces audio, and the filter is
     what keeps `Audient iD14:playback_FL` from answering for a dry tap.
     """
+    import sys
+
     from .patchbay import PatchbayError, jack_port_names, read_pw_dump
 
     try:
         return jack_port_names(read_pw_dump(), "out")
-    except PatchbayError:
-        return {}
-    except Exception:  # noqa: BLE001 — a plan is made with no map; see above
+    except Exception as exc:  # noqa: BLE001 — a plan is made with no map; see above
+        # Said, not swallowed: without the map a take falls back to the
+        # engine's alias match, which the rig has not yet shown to work, and
+        # a refusal then would otherwise give no hint that this step failed.
+        kind = "" if isinstance(exc, PatchbayError) else f"{type(exc).__name__}: "
+        print(f"sushi-rig: could not read the graph to name ports as JACK sees them "
+              f"({kind}{exc}); the take's ports stay as the machine file writes them",
+              file=sys.stderr, flush=True)
         return {}
 
 

@@ -276,7 +276,7 @@ def test_the_live_graph_is_read_for_every_take_planned(duo, tmp_path, monkeypatc
     assert [s.port for s, _ in second.stems if s.tap == DRY][0] == "profile-2:capture_AUX0"
 
 
-def test_a_graph_that_cannot_be_read_still_plans_a_take(monkeypatch):
+def test_a_graph_that_cannot_be_read_still_plans_a_take(monkeypatch, capsys):
     """`pw-dump` missing or hung must not be the reason RECORD does nothing:
     the ports stay as they were written, exactly as before the graph was read,
     and the engine says if they are not there."""
@@ -287,12 +287,15 @@ def test_a_graph_that_cannot_be_read_still_plans_a_take(monkeypatch):
 
     monkeypatch.setattr(patchbay, "read_pw_dump", no_dump)
     assert live_jack_names() == {}
+    said = capsys.readouterr().err
+    assert "could not read the graph" in said and "pw-dump is not installed" in said, said
 
     def exploded(*a, **kw):
         raise RuntimeError("boom")
 
     monkeypatch.setattr(patchbay, "read_pw_dump", exploded)
     assert live_jack_names() == {}
+    assert "RuntimeError: boom" in capsys.readouterr().err
 
     # And it really is the reader, not a stand-in: a graph it can read answers.
     monkeypatch.setattr(patchbay, "read_pw_dump", lambda *a, **kw: CAPTURED)
