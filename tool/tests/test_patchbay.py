@@ -36,6 +36,7 @@ from sushi_rig.patchbay import (
     bus,
     channel,
     generate_patchbay,
+    jack_port_names,
     live_node_names,
     live_port_nodes,
     parse_patchbay,
@@ -436,11 +437,17 @@ def _node(id_, **props):
     return {"id": id_, "type": "PipeWire:Interface:Node", "info": {"props": props}}
 
 
-def _port(id_, node_id, alias, direction=None):
+def _port(id_, node_id, alias, direction=None, port_name=None):
     # `direction` was added when generation began checking it. As with the rest
     # of this fixture, "in"/"out" is pw-dump's documented `port.direction`, not
     # something captured here.
-    props = {"node.id": node_id, "port.alias": alias}
+    #
+    # `port.name` is in every real dump, and the alias is the node's nick
+    # joined to it, so it defaults to the alias's own second half: a port here
+    # carries it the way the capture does, which is what the `pw-link` and
+    # JACK namings are composed from.
+    props = {"node.id": node_id, "port.alias": alias,
+             "port.name": port_name or alias.partition(":")[2]}
     if direction:
         props["port.direction"] = direction
     return {"id": id_, "type": "PipeWire:Interface:Port", "info": {"props": props}}
@@ -523,6 +530,65 @@ def test_the_port_alias_prefix_is_shared_across_profiles_and_so_cannot_name_a_no
         and "Audient" in str(obj["info"]["props"].get("node.description"))
     }
     assert nicks == {"Audient iD14"}
+
+
+def test_a_jack_client_names_an_alsa_port_by_the_nodes_description():
+    """Established by the capture, and by the rig: the name the machine file
+    gives a port is not the name the capture engine can connect it by. The
+    first live run of the record button (2026-11-06) refused every take over
+    exactly this, and a JACK client registered on the rig listed
+    `Audient iD14 Multichannel:capture_AUX0` while the alias is
+    `Audient iD14:capture_AUX0`."""
+    names = jack_port_names(CAPTURED, "out")
+    assert names["Audient iD14:capture_AUX0"] == ["Audient iD14 Multichannel:capture_AUX0"]
+    assert names["Audient iD14:capture_AUX1"] == ["Audient iD14 Multichannel:capture_AUX1"]
+
+
+def test_a_client_whose_description_is_its_name_keeps_the_alias_it_had():
+    """Sushi's description, nick and `node.name` are all `sushi`, so all three
+    namings agree — which is why nothing noticed the ALSA device's three
+    differing until a take needed a physical port."""
+    assert jack_port_names(CAPTURED, "out")["sushi:audio_output_0"] == ["sushi:audio_output_0"]
+
+
+def test_a_playback_port_does_not_answer_for_a_capture_source():
+    """The direction filter, from the node's side. A dry tap is captured from
+    an `out`; the same device's `playback_FL` is an `in` and must not be
+    offered for one."""
+    assert not jack_port_names(CAPTURED, "out").get("Audient iD14:playback_FL")
+    assert jack_port_names(CAPTURED, "in")["Audient iD14:playback_FL"] == [
+        "Audient iD14 Analog Surround 4.0:playback_FL"
+    ]
+
+
+def test_the_jack_name_is_never_composed_from_the_nick():
+    """`node.nick` is the one name that cannot identify a node, so it is not
+    in the fallback chain: a node carrying only a nick has no JACK name rather
+    than a name that would point at any profile of the device."""
+    dump = json.dumps([
+        _node(1, **{"node.nick": "Audient iD14", "node.name": "alsa_input.real"}),
+        _node(2, **{"node.nick": "Audient iD14"}),
+        _port(10, 1, "Audient iD14:capture_AUX0", "out"),
+        _port(11, 2, "Audient iD14:capture_AUX1", "out"),
+    ])
+    names = jack_port_names(dump, "out")
+    assert names["Audient iD14:capture_AUX0"] == ["alsa_input.real:capture_AUX0"]
+    assert names["Audient iD14:capture_AUX1"] == []
+
+
+def test_an_alias_two_live_profiles_answer_to_has_two_jack_names():
+    """The same reason `live_port_names` returns a list: an alias names the
+    socket, not the profile. Both profiles live is what `transport.jack_port`
+    refuses rather than guesses at."""
+    dump = json.dumps([
+        _node(1, **{"node.description": "Audient iD14 Pro"}),
+        _node(2, **{"node.description": "Audient iD14 Multichannel"}),
+        _port(10, 1, "Audient iD14:capture_AUX0", "out"),
+        _port(11, 2, "Audient iD14:capture_AUX0", "out"),
+    ])
+    assert jack_port_names(dump, "out")["Audient iD14:capture_AUX0"] == [
+        "Audient iD14 Pro:capture_AUX0", "Audient iD14 Multichannel:capture_AUX0",
+    ]
 
 
 def test_the_slashed_form_is_application_name_joined_to_node_description():

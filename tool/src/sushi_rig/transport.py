@@ -82,6 +82,29 @@ one signal, and two stems of it would be one signal under two names. The rig
 in the take says which channels to re-amp it through, and `take check`
 accepts a dry stem named for one of that rig's inputs.
 
+## One socket, three names
+
+A port is named three ways, and a take must use the third. The machine file and
+the saved patchbay name it by its `port.alias`
+(`Audient iD14:capture_AUX0`), which is what qpwgraph shows; `pw-link -l` names
+it `<node.name>:<port.name>`; and a JACK client through `pw-jack` -- which the
+capture engine is -- names it `<node.description>:<port.name>`,
+`Audient iD14 Multichannel:capture_AUX0`. For an ALSA device those are three
+different strings, because the alias carries the node's *nick*, which every
+profile of the device shares. For Sushi they are all `sushi`.
+
+So the plan resolves every port through `jack_port` before it checks anything,
+with the map `patchbay.jack_port_names` reads off a live `pw-dump`
+(`_live_jack_names`). `take.yaml` then records the name the column was really
+linked from, and the panel's stem list shows it.
+
+This is the defect the record button's first live run found, on 2026-11-06: the
+machine file's alias is no port to the engine, so `capture.missing_sources`
+refused every take over its dry tap, and three takes were written as headers
+with nothing in them. It had been written down as unknown since 2026-11-02 --
+"whether the machine file's port names (as qpwgraph shows them) are what a JACK
+client sees through `pw-jack`". They are not.
+
 A rig.yaml of tracks (v1) gets no plan. Its outputs are whatever its routing
 says, and the routing that ships sums every track into the monitor bus
 (`take.py`, "No two stems from one port"), so there is no stem of one track to
@@ -122,7 +145,7 @@ import json
 from dataclasses import dataclass
 from datetime import datetime
 from pathlib import Path
-from typing import Any, Callable, Protocol, Sequence
+from typing import Any, Callable, Mapping, Protocol, Sequence
 
 from .take import (
     ARCHIVE_DIR,
@@ -397,6 +420,46 @@ class PlanError(Exception):
         super().__init__("; ".join(self.problems))
 
 
+def jack_port(port: str, jack_names: Mapping[str, Sequence[str]] | None) -> tuple[str, str | None]:
+    """The name a JACK client connects `port` by, and why that cannot be said.
+
+    `jack_names` is `patchbay.jack_port_names(dump, "out")`: port alias -> the
+    name(s) a JACK client sees it under. A machine file names a port by its
+    alias, which is what qpwgraph shows and what the saved patchbay keys links
+    by; the capture engine is a JACK client, and through `pw-jack` an ALSA
+    device's port carries the node's *description* instead -- so the alias
+    `Audient iD14:capture_AUX0` is no port at all to the engine, while
+    `Audient iD14 Multichannel:capture_AUX0` is the same socket. That is the
+    defect this exists to fix: the record button's first live run (2026-11-06)
+    refused every take over its dry tap, and recorded three takes of headers.
+    Sushi's own ports come back unchanged, since its description, nick and
+    `node.name` are all `sushi`.
+
+    Pure, and forgiving by design. A port that is not in `jack_names` is
+    returned as it came, with no problem: either it is not in the graph, and
+    the engine's own `capture.missing_sources` says so in a sentence naming
+    what *is* there, or the graph was read before the client registered --
+    which is the normal case for Sushi, since `up` starts the listener first.
+    Only ambiguity is refused here, because only it cannot be left to the
+    engine: two names means two live nodes answering to one alias (two
+    profiles of a device, or two of the same interface), and linking a take's
+    column from either would be a guess at which socket the player meant.
+    """
+    if jack_names is None:
+        return port, None
+    names = list(jack_names.get(port) or [])
+    if len(names) == 1:
+        return names[0], None
+    if names:
+        return port, (
+            f"{port} is a live port of {len(names)} nodes at once "
+            f"({', '.join(names)}), so which of them a take records cannot be told; "
+            f"the alias names the socket and not the profile, so leave one profile "
+            f"of the device live, or name the node in the machine file"
+        )
+    return port, None
+
+
 def _consecutive(ports: Sequence[str]) -> str | None:
     """Why `ports` cannot be one stem, or None. The capture engine links a stem
     of n channels from the n consecutively numbered ports starting at its
@@ -415,7 +478,8 @@ def _consecutive(ports: Sequence[str]) -> str | None:
     return None
 
 
-def rig_stems(rig: Any, machine: Any, config: dict[str, Any]) -> tuple[tuple[Stem, int], ...]:
+def rig_stems(rig: Any, machine: Any, config: dict[str, Any],
+              jack_names: Mapping[str, Sequence[str]] | None = None) -> tuple[tuple[Stem, int], ...]:
     """The stems a take of `rig` records on `machine`, each with its channel
     count, in the order a block lays them out. See the module docstring for the
     choice and why.
@@ -427,6 +491,13 @@ def rig_stems(rig: Any, machine: Any, config: dict[str, Any]) -> tuple[tuple[Ste
     the ports are the ones running even if the rig file has changed since
     `up`. Pure. Raises `PlanError` with every problem: a plan with one stem
     wrong is not recorded with the others.
+
+    `jack_names` resolves every port to the name the capture engine connects
+    it by (`jack_port`), before the checks below, so that each one -- the
+    consecutive numbering, two stems on one port -- is made on the names that
+    will actually be linked and not on the aliases they were written as.
+    Without it the ports stay as the machine file and the config name them,
+    which is what every test of this plan asserts.
 
     Channels that share an input role (a blend of two chains on one guitar)
     share one dry tap, recorded once and named for the role, since it is one
@@ -447,6 +518,17 @@ def rig_stems(rig: Any, machine: Any, config: dict[str, Any]) -> tuple[tuple[Ste
     problems: list[str] = []
     stems: list[tuple[Stem, int]] = []
 
+    def linked(ports: Sequence[str]) -> list[str]:
+        """`ports` as the capture engine will name them, gathering any reason
+        one of them cannot be named."""
+        resolved = []
+        for port in ports:
+            name, why = jack_port(port, jack_names)
+            if why:
+                problems.append(why)
+            resolved.append(name)
+        return resolved
+
     def output(track_name: str) -> None:
         track = tracks.get(track_name)
         if track is None:
@@ -460,6 +542,7 @@ def rig_stems(rig: Any, machine: Any, config: dict[str, Any]) -> tuple[tuple[Ste
         if broken or not ports:
             problems.extend(broken or [f"track {track_name!r} has no output on Sushi to record"])
             return
+        ports = linked(ports)
         why = _consecutive(ports)
         if why:
             problems.append(f"{track_name}'s output cannot be recorded: {why}")
@@ -492,6 +575,7 @@ def rig_stems(rig: Any, machine: Any, config: dict[str, Any]) -> tuple[tuple[Ste
             )
         if wrong:
             continue
+        ports = linked(ports)
         why = _consecutive(ports)
         if why:
             problems.append(f"{label}'s dry tap cannot be recorded: {why}")
@@ -526,6 +610,37 @@ def _capture_engine(sample_rate: int, quantum: int) -> Engine:
     return CaptureEngine(sample_rate, quantum)
 
 
+def _live_jack_names() -> dict[str, list[str]]:
+    """Port alias -> the name a JACK client sees it under, for every live
+    capture port; `{}` when the graph cannot be read.
+
+    Empty on failure rather than raising, because a plan is worth making
+    either way: with no map every port stays as it was written, which is what
+    the engine was given before this existed, and its own check still names
+    what is in the graph. A `pw-dump` that is missing or hung must not be the
+    reason RECORD does nothing.
+
+    Capture ports only (`"out"`, the direction from the node's side): every
+    source a take records is something that produces audio, and the filter is
+    what keeps `Audient iD14:playback_FL` from answering for a dry tap.
+    """
+    import sys
+
+    from .patchbay import PatchbayError, jack_port_names, read_pw_dump
+
+    try:
+        return jack_port_names(read_pw_dump(), "out")
+    except Exception as exc:  # noqa: BLE001 — a plan is made with no map; see above
+        # Said, not swallowed: without the map a take falls back to the
+        # engine's alias match, which the rig has not yet shown to work, and
+        # a refusal then would otherwise give no hint that this step failed.
+        kind = "" if isinstance(exc, PatchbayError) else f"{type(exc).__name__}: "
+        print(f"sushi-rig: could not read the graph to name ports as JACK sees them "
+              f"({kind}{exc}); the take's ports stay as the machine file writes them",
+              file=sys.stderr, flush=True)
+        return {}
+
+
 def plan_for_run(rig_path: Path | None, config_path: Path | None, *,
                  machine_file: Path | None = None, takes_dir: Path | None = None,
                  root: Path | None = None, quantum: int | None = None) -> TakePlan:
@@ -535,6 +650,11 @@ def plan_for_run(rig_path: Path | None, config_path: Path | None, *,
     `rig_path` is the listener's `--rig`; `config_path` its `--panel-config`,
     the config Sushi loaded (for a `--rig` run, the one `prepare_rig` compiled);
     `machine_file` what that was compiled against, this host's file by default.
+
+    Reads the live graph once (`_live_jack_names`) to name the ports the way
+    the capture engine does. Called at every RECORD, so a device that came
+    back under another profile is resolved afresh for the next take rather
+    than held from the listener's start.
     """
     from .machine import MachineError, MachineSpec, machine_path
     from .paths import checkout_root
@@ -590,7 +710,7 @@ def plan_for_run(rig_path: Path | None, config_path: Path | None, *,
     problems = machine.validate()
     if problems:
         raise PlanError([f"{Path(machine_file).name}: {p}" for p in problems])
-    stems = rig_stems(rig, machine, config)
+    stems = rig_stems(rig, machine, config, _live_jack_names())
 
     if quantum is None:
         from .rig import QUANTUM as quantum
