@@ -663,3 +663,24 @@ def test_a_request_is_checked_for_its_shape_only_and_values_are_the_compilers():
 
 def test_a_role_is_an_input_or_an_output_by_its_name_or_either():
     assert [rigedit.direction_of(r) for r in ("guitar-in", "monitor-out", "aux")] == ["input", "output", "either"]
+
+
+def test_a_save_after_an_edit_keeps_the_channel_the_running_rig_does_not_have_yet():
+    """Why an edit of the running rig waits for a save, and why that is about
+    the restart and not the file: a capture says nothing of a track the rig
+    does not have, so the save that follows an edit keeps the new channel,
+    copied chain and all. It is the restart the edit offers that would drop
+    unsaved work."""
+    from sushi_rig.rigfile import fold_state
+
+    from ui_fake import MDA_DELAY, RIG_FILE
+
+    raw = yaml.safe_load(RIG_FILE)
+    capture = {"processors": {"overdrive": {"bypassed": False, "parameters": {"Drive": 0.5}}},
+               "tracks": {"board": ["overdrive", "octave", "delay", "board_send"],
+                          "vocal": ["vocal_delay", "vocal_send"], "master": ["master_return"]}}
+    keys = {"name": "keys", "input": "keys-in", "width": "stereo",
+            "chain": [{"name": "keys_delay", "uri": MDA_DELAY, "parameters": {"Feedback": 0.2}}]}
+    folded = fold_state(rigedit.with_channel(raw, keys), capture)
+    assert folded["channels"][2] == keys
+    assert folded["channels"][0]["chain"][0]["parameters"] == {"Drive": 0.5}, "and the live change is saved"

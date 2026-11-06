@@ -71,6 +71,17 @@ machine file's port names, the engine (`Pushing`: forty blocks of a level per
 column, pushed at RECORD, so every take is 0.21 s however long it ran), and
 the clock the recorder times a take by (`FakeClock`, which a test moves), so
 the elapsed time is the test's to set. Nothing here is JACK or PipeWire.
+
+The New rig screen and the rack's channel edits (`Served(save=True)` again):
+the agent's real rig files routes over `UiSave`'s checkout, which has a
+machine file (`MACHINE_FILE`, invented ports) that the state file names, as
+`up --rig` records the one it compiled against, and a running config that is
+the real compile of `RIG_FILE` (`compile_rig_draft`, what `up --rig` would
+load), which a live switch and an edit's restart reasons diff against.
+Invented: what a restart does (`UiLifecycle`: a new start time, the running
+config compiled again from the file, and a channel the file gained since
+coming up as an empty track with its send on `UiRig`, which is how the
+compiler builds one; plugins a copied chain brings are not put on it).
 """
 
 from __future__ import annotations
@@ -342,6 +353,17 @@ class UiRig:
                 for held in (self.info, self.bypassed, self.classes):
                     held.pop(name, None)
 
+    def add_track(self, name):
+        """A channel the rig file gained, as a restart brings it up: a track
+        with only its send, in front of the master, as the compiler builds one."""
+        with self.lock:
+            send_name = f"{name}_send"
+            tracks = list(self.chains.items())
+            self.chains = dict(tracks[:-1] + [(name, [send_name])] + tracks[-1:])
+            self.info[name], self.info[send_name] = strip(), send(0.0)
+            self.bypassed[send_name] = False
+            self.classes[send_name] = {"uri": None, "uid": SEND_UID, "type": "internal"}
+
     def values(self, connection, processor):
         with self.lock:
             params = self.info[processor]
@@ -488,6 +510,7 @@ class UiSave:
     set, is the reason the next compile fails. Headless, with no amp."""
 
     def __init__(self, lifecycle: "UiLifecycle", record: bool = False):
+        import socket
         import subprocess
         import tempfile
 
@@ -516,9 +539,40 @@ class UiSave:
         }
         self.compiled: list = []
         self.refuse_compile: str | None = None
+        # The machine file the run was compiled against, as the state file
+        # records it, and the running config: the real compile of the file.
+        machines = self.root / "machines"
+        machines.mkdir(exist_ok=True)
+        self.machine = machines / f"{socket.gethostname()}.yaml"
+        self.machine.write_text(MACHINE_FILE)
+        self.state["machine"] = str(self.machine)
+        self.rig: "UiRig | None" = None  # `Served` hands over its rig, for a restart to add tracks to
+        self.config = self.compile_running()
+        lifecycle.on_restart = self.restarted
         # Recording (`UiRecorder`): a machine file and the config `up --rig`
         # compiles, at real paths the state file names, and a recorder.
         self.recorder = UiRecorder(self.root, self.state) if record else None
+
+    def compile_running(self):
+        """The running rig's config, as `up --rig` compiles its file now."""
+        import yaml
+
+        from sushi_rig.rig import compile_rig_draft
+
+        path = self.root / self.state["rig"]
+        return compile_rig_draft(yaml.safe_load(path.read_text()), self.root, Path(self.state["machine"]))
+
+    def restarted(self):
+        """A restart: the run starts again from its file (module docstring)."""
+        import yaml
+
+        self.state["started_at"] = self.lifecycle.started.isoformat()
+        self.config = self.compile_running()
+        raw = yaml.safe_load((self.root / self.state["rig"]).read_text())
+        if self.rig is not None:
+            for channel in raw["channels"]:
+                if channel["name"] not in self.rig.chains:
+                    self.rig.add_track(channel["name"])
 
     def write_state(self, state):
         self.state = copy.deepcopy(state)
@@ -533,7 +587,7 @@ class UiSave:
     def switching(self) -> Switching:
         return Switching(read_state=lambda: copy.deepcopy(self.state), write_state=self.write_state,
                          compile=self.compile, write_config=lambda name, compiled: f"/fake/rigs/{name}.json",
-                         read_config=lambda path: {"tracks": []})
+                         read_config=lambda path: copy.deepcopy(self.config))
 
     def describe(self):
         if self.lifecycle.rig is None:
@@ -545,14 +599,19 @@ class UiSave:
         self._dir.cleanup()
 
 
-# The machine file `UiRecorder` plans takes against: a role per input
-# `RIG_FILE` plays from, one port each since both channels are mono. The port
-# names are invented.
+# The machine file the fake run was compiled against, and `UiRecorder` plans
+# takes against: a role per input `RIG_FILE` plays from, one port each since
+# both channels are mono, and for the New rig screen a third input that may
+# feed a stereo channel (`mono_to_stereo`) and a pair. The port names are
+# invented; guitar-in, with one port and no `mono_to_stereo`, is the role a
+# stereo channel is refused on.
 MACHINE_FILE = """\
 schema_version: 1
 roles:
   guitar-in: ["iface:capture_AUX0"]
   vocal-in: ["iface:capture_AUX1"]
+  keys-in: {ports: ["iface:capture_AUX2"], mono_to_stereo: true}
+  pair-in: ["iface:capture_AUX4", "iface:capture_AUX5"]
   monitor-out: ["iface:playback_FL", "iface:playback_FR"]
 """
 
@@ -661,6 +720,7 @@ class UiLifecycle:
         self.delay = 0.0
         self.calls: list = []
         self.agent: Agent | None = None
+        self.on_restart = None  # `UiSave.restarted`, when there is a rig file
 
     def describe(self):
         if self.rig is None:
@@ -682,6 +742,13 @@ class UiLifecycle:
                 return Outcome(False, 1, "", "error: no rig is running\n")
             self.rig = None
             return Outcome(True, 0, "down\n", "")
+        if args[0] == "restart":
+            if self.rig is None:
+                return Outcome(False, 1, "", "error: no rig to restart\n")
+            self.started = datetime.now(timezone.utc).replace(microsecond=0)
+            if self.on_restart:
+                self.on_restart()
+            return Outcome(True, 0, f"{self.rig} restarted (headless mode)\n", "")
         return Outcome(False, 2, "", f"error: the fake does not know {args[0]!r}\n")
 
     async def switch_held(self, origin, name, program, mark):
@@ -721,6 +788,8 @@ class Served:
         self.amp = UiAmp(self.lifecycle) if amp else None
         # A rig file to save into (`UiSave`), when asked for.
         self.save = UiSave(self.lifecycle, record=record) if save or record else None
+        if self.save:
+            self.save.rig = self.rig
         # The recorder (`UiRecorder`), when asked for, beside the checkout.
         self.recorder = self.save.recorder if self.save else None
         own = self.amp.describe if self.amp else self.save.describe if self.save else self.lifecycle.describe

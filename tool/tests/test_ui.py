@@ -2539,3 +2539,315 @@ def test_an_older_takes_answer_never_replaces_a_newer_one(browser, record_served
     expect(p.locator("section.takes")).not_to_contain_text("stale-take")
     stage.close()
     page.close()
+
+
+# --------------------------------------------------------------------------- #
+# Rig files: the New rig screen, and the rack's Add channel and input change
+# --------------------------------------------------------------------------- #
+
+def roles_answer(**over):
+    """GET /machine/roles as the agent answers it for ui_fake's MACHINE_FILE."""
+    def role(name, ports, m2s=False, direction="input", mono=True, stereo=False, why=None):
+        return {"name": name, "ports": ports, "mono_to_stereo": m2s, "direction": direction, "used_by": [],
+                "widths": {"mono": {"ok": mono, "why": None if mono else "two ports"},
+                           "stereo": {"ok": stereo, "why": None if stereo else why}},
+                "master": {"ok": direction == "output", "why": None}}
+    body = {"ok": True, "machine": "machines/fake.yaml", "output": "monitor-out",
+            "ceiling": {"channels": 3, "why": "4 channels need 10 outputs, so a rig has at most 3 channels"},
+            "roles": [role("guitar-in", ["iface:capture_AUX0"], why="declare it: mono_to_stereo: true"),
+                      role("keys-in", ["iface:capture_AUX2"], m2s=True, stereo=True),
+                      role("monitor-out", ["iface:playback_FL", "iface:playback_FR"], direction="output",
+                           mono=False, stereo=True)], **over}
+    return {"ok": True, "status": 200, "body": body}
+
+
+def test_the_new_rig_form_hints_only_from_the_agents_own_answers(blank):
+    said = rigjs(blank, """
+      const roles = arg;
+      const choices = R.roleChoices(roles);
+      const health = {ok: true, body: {agent: {busy: null}, rig: {running: true}}};
+      const rigs = {ok: true, body: {rigs: ['electric_board']}};
+      const draft = (channels, name = 'two') => ({name, channels});
+      const g = R.newChannel(choices, []);
+      const k = R.newChannel(choices, [g]);
+      const three = [g, k, R.newChannel(choices, [g, k])];
+      return {
+        inputs: choices.inputs.map((r) => r.label),
+        widths: R.widthOptions(choices, 'guitar-in'),
+        g, k, third: three[2],
+        names: [R.suggestName('guitar-in', ['guitar', 'guitar-2']), R.suggestName('Odd Role', [])],
+        ceiling: R.newRigView(draft(three), roles, rigs, health, false).add,
+        below: R.newRigView(draft([g]), roles, rigs, health, false),
+        taken: R.newRigView(draft([g], 'electric_board'), roles, rigs, health, false).nameProblem,
+        stereoOnGuitar: R.newRigView(draft([{...g, width: 'stereo'}]), roles, rigs, health, false).channels[0].problem,
+        twice: R.newRigView(draft([g, {...k, name: 'guitar'}]), roles, rigs, health, false).channels[1].problem,
+        busy: R.newRigView(draft([g]), roles, rigs, {ok: true, body: {agent: {busy: 'up'}, rig: {}}}, false).create,
+        call: R.newRigCall('two', [{...g, from: {rig: 'electric_board', channel: 'board', extra: 1}}]),
+        restart: R.lifecycleCall('restart', 'electric_board'),
+        failed: R.roleChoices({ok: false, reason: '409 machine'}).problem,
+      };
+    """, roles_answer())
+    assert said["inputs"] == ["guitar-in · iface:capture_AUX0", "keys-in · iface:capture_AUX2"], "no output role"
+    assert said["widths"] == [{"width": "mono", "ok": True, "why": None},
+                              {"width": "stereo", "ok": False, "why": "declare it: mono_to_stereo: true"}]
+    assert said["g"] == {"name": "guitar", "input": "guitar-in", "width": "mono", "from": None}
+    assert said["k"] == {"name": "keys", "input": "keys-in", "width": "mono", "from": None}
+    assert said["third"]["name"] == "guitar-2", "the inputs ran out, so the first again, named apart"
+    assert said["names"] == ["guitar-3", "odd-role"]
+    assert said["ceiling"] == {"refused": "No more channels: 4 channels need 10 outputs, so a rig has at most 3 channels."}
+    assert said["below"]["add"] == {"refused": None} and said["below"]["countText"] == "1 of at most 3"
+    assert said["below"]["create"] == {"disabled": False, "label": "Create two"}
+    assert said["taken"] == "electric_board is already a rig in config/rigs/: choose another name."
+    assert said["stereoOnGuitar"] == "stereo on guitar-in: declare it: mono_to_stereo: true"
+    assert said["twice"] == "Another channel is called guitar."
+    assert said["busy"]["disabled"] is True
+    assert said["call"] == {"path": "/rigs/new", "json": {"name": "two", "channels": [
+        {"name": "guitar", "input": "guitar-in", "width": "mono", "from": {"rig": "electric_board", "channel": "board"}}]}}
+    assert said["restart"] == {"path": "/rig/restart", "json": {}}
+    assert said["failed"] == "The machine file's roles could not be read: 409 machine"
+
+
+def test_what_a_rig_file_answer_says_and_the_gesture_it_offers(blank):
+    said = rigjs(blank, """
+      const lib = {commit: 'abcdef1234', dirty: true, file: 'changed', others: false};
+      const ok = (body) => ({ok: true, status: 200, body: {ok: true, library: lib, ...body}});
+      return [
+        R.rigFileOutcome('new', 'two', ok({rig: 'two', file: 'config/rigs/two.yaml', offer: 'switch',
+          library: {...lib, file: 'untracked'},
+          channels: [{name: 'a', from: {rig: 'x', channel: 'board'}}, {name: 'b', from: null}]})),
+        R.rigFileOutcome('new', 'two', ok({rig: 'two', file: 'config/rigs/two.yaml', offer: 'start', channels: []})).offer,
+        R.rigFileOutcome('add', 'keys to board', ok({rig: 'board', file: 'config/rigs/board.yaml', running: true,
+          offer: 'restart', why: [{code: 'track_added', detail: "track 'keys'"}]})),
+        R.rigFileOutcome('input', "vocal's input", ok({rig: 'hall', file: 'config/rigs/hall.yaml', running: false})),
+        R.rigFileOutcome('new', 'keys', {ok: false, status: 409, code: 'rig_problem', reason: 'nothing was written: no role',
+          body: {machine_hint: 'add\\n  keys-in: [...]'}}),
+      ];
+    """)
+    made, start, added, changed, refused = said
+    assert made["title"] == "Made two" and made["offer"] == {"op": "switch", "name": "two", "label": "Switch to two"}
+    assert made["text"] == "Wrote config/rigs/two.yaml, a new rig with 2 channels. Chains copied: a from x · board."
+    assert made["commit"].startswith("Not committed: a new file git does not track yet, on commit abcdef1")
+    assert start == {"op": "start", "name": "two", "label": "Start two"}
+    assert added["text"] == ("Wrote config/rigs/board.yaml in place, keeping its comments. board keeps playing as "
+                             "it was until it restarts (track 'keys').")
+    assert added["offer"] == {"op": "restart", "name": "board", "label": "Restart board to play it"}
+    assert changed["offer"] is None and "it plays as edited when it is next started or switched to" in changed["text"]
+    assert refused == {"ok": False, "title": "Not made: keys", "reason": "nothing was written: no role",
+                       "hint": "add\n  keys-in: [...]", "code": "rig_problem"}
+
+
+@pytest.fixture
+def files_served():
+    with Served(save=True) as served:
+        yield served
+
+
+def new_rig_page(browser, served):
+    page = Watched(browser, served, "/#rack")
+    page.page.wait_for_selector(".unit")
+    page.page.get_by_role("link", name="New rig…").click()
+    expect(page.page.locator("h1.rig-name")).to_have_text("New rig")
+    expect(page.page.get_by_label("Channel 1 input")).to_have_value("guitar-in")
+    return page
+
+
+def test_a_new_rig_is_made_from_the_pickers_screen_and_offered_to_switch_to(browser, files_served):
+    page = new_rig_page(browser, files_served)
+    p = page.page
+    # The input picker shows each role's port, and no output role.
+    options = p.get_by_label("Channel 1 input").locator("option")
+    expect(options).to_have_text(["Choose an input…", "guitar-in · iface:capture_AUX0", "vocal-in · iface:capture_AUX1",
+                                  "keys-in · iface:capture_AUX2", "pair-in · iface:capture_AUX4 + iface:capture_AUX5"])
+    expect(p.get_by_label("Channel 1 name")).to_have_value("guitar")
+    p.get_by_label("Rig name").fill("two-guitars")
+    expect(p.locator('[data-check="new-rig-name"]')).to_have_text("Writes config/rigs/two-guitars.yaml.")
+    p.get_by_role("button", name="Add channel").click()
+    expect(p.get_by_label("Channel 2 input")).to_have_value("vocal-in")
+    # Two channels on one input: allowed, the agent's answer.
+    p.get_by_label("Channel 2 input").select_option("guitar-in")
+    p.get_by_label("Channel 2 name").fill("dirty")
+    expect(p.locator("span.sub", has_text="of at most")).to_have_text("2 of at most 3")
+    p.get_by_role("button", name="Create two-guitars").click()
+    result = p.locator(".rigfile-result.ok")
+    expect(result).to_contain_text("Made two-guitars")
+    expect(result).to_contain_text("Wrote config/rigs/two-guitars.yaml, a new rig with 2 channels.")
+    expect(result.locator(".commit")).to_have_text(
+        f"Not committed: a new file git does not track yet, on commit {files_served.save.commit[:7]}. "
+        "sushi-rig does not commit: that is yours to do.")
+    doc = rig_file(files_served, "two-guitars")
+    assert [(c["name"], c["input"], c["width"]) for c in doc["channels"]] == [
+        ("guitar", "guitar-in", "mono"), ("dirty", "guitar-in", "mono")]
+    assert doc["master"] == {"output": "monitor-out", "chain": []}
+    # The form is fresh again, and the picker lists the new rig.
+    expect(p.get_by_label("Rig name")).to_have_value("")
+    result.get_by_role("button", name="Switch to two-guitars").click()
+    expect(p.locator(".notice")).to_contain_text("Switched to two-guitars live")
+    assert ["switch", "two-guitars"] in files_served.lifecycle.calls
+    expect(p.locator(".rack-body")).to_be_visible()  # back on the rack
+    page.close()
+
+
+def test_stereo_is_offered_only_where_the_role_allows_it(browser, files_served):
+    page = new_rig_page(browser, files_served)
+    p = page.page
+    width = p.get_by_label("Channel 1 width")
+    expect(width.locator("option[value=stereo]")).to_have_attribute("disabled", "")
+    expect(p.locator(".channel-draft .width-why")).to_contain_text(
+        "stereo is not offered: role 'guitar-in' has 1 port(s) but this track routes it to 2 engine channel(s)")
+    expect(p.locator(".channel-draft .width-why")).to_contain_text("mono_to_stereo: true")
+    p.get_by_label("Channel 1 input").select_option("keys-in")
+    expect(width.locator("option[value=stereo]")).not_to_have_attribute("disabled", "")
+    width.select_option("stereo")
+    # A pair gives stereo only, and the width follows the agent's answer.
+    p.get_by_label("Channel 1 input").select_option("pair-in")
+    expect(width).to_have_value("stereo")
+    expect(width.locator("option[value=mono]")).to_have_attribute("disabled", "")
+    page.close()
+
+
+def test_add_channel_refuses_past_the_ceiling_with_the_compilers_reason(browser, files_served):
+    page = new_rig_page(browser, files_served)
+    p = page.page
+    add = p.get_by_role("button", name="Add channel")
+    add.click()
+    add.click()
+    expect(p.locator(".channel-draft")).to_have_count(3)
+    add.click()
+    expect(p.locator(".channel-draft")).to_have_count(3)
+    expect(p.locator(".add-refused")).to_have_text(
+        "No more channels: 4 channels need 10 outputs — 2 for the master and 2 for each channel's stem — "
+        "and Sushi has 8, so a rig has at most 3 channels.")
+    p.get_by_role("button", name="Remove channel 3").click()
+    expect(p.locator(".add-refused")).to_have_count(0)
+    page.close()
+
+
+def test_the_agents_refusals_of_a_new_rig_are_shown_in_place(browser, files_served):
+    rigs = files_served.save.root / "config" / "rigs"
+    page = new_rig_page(browser, files_served)
+    p = page.page
+    # A name the page cannot know is taken: made behind its back.
+    p.get_by_label("Rig name").fill("hall")
+    (rigs / "hall.yaml").write_text("# made elsewhere\n")
+    p.get_by_role("button", name="Create hall").click()
+    refused = p.locator(".rigfile-result.refused")
+    expect(refused).to_contain_text("Not made: hall")
+    expect(refused).to_contain_text("a rig called hall already exists (config/rigs/hall.yaml)")
+    assert (rigs / "hall.yaml").read_text() == "# made elsewhere\n"
+    # Two channels started from one chain: the compiler refuses the names twice.
+    p.get_by_label("Rig name").fill("copies")
+    p.get_by_role("button", name="Add channel").click()
+    for n in (1, 2):
+        p.get_by_label(f"Channel {n} starts from").select_option(label="electric_board · board (3 plugins)")
+    p.get_by_role("button", name="Create copies").click()
+    expect(refused).to_contain_text("Not made: copies")
+    expect(refused).to_contain_text("duplicate name 'overdrive'")
+    assert not (rigs / "copies.yaml").exists()
+    # A role gone from the machine file since the page read it: said with
+    # the lines to add, which the agent never writes itself.
+    machine = files_served.save.machine
+    before = machine.read_text().replace('  keys-in: {ports: ["iface:capture_AUX2"], mono_to_stereo: true}\n', "")
+    machine.write_text(before)
+    p.get_by_label("Channel 2 starts from").select_option("")
+    p.get_by_label("Channel 1 starts from").select_option("")
+    p.get_by_label("Channel 2 input").select_option("keys-in")
+    p.get_by_role("button", name="Create copies").click()
+    expect(refused).to_contain_text("role 'keys-in' feeds a track but the machine file does not define it")
+    expect(refused.locator(".machine-hint")).to_contain_text("has no role keys-in. sushi-rig does not edit the machine file")
+    assert machine.read_text() == before
+    page.close()
+
+
+def inputs_region(p):
+    return p.locator("section.wiring")
+
+
+def test_a_channel_is_added_to_the_running_rig_and_a_restart_is_offered(browser, files_served):
+    page = Watched(browser, files_served, "/#rack")
+    p = page.page
+    wiring = inputs_region(p)
+    expect(wiring.locator(".wiring-row")).to_have_text([re.compile(r"^boardguitar-in · mono"), re.compile(r"^vocalvocal-in · mono")])
+    before = (files_served.save.root / "config" / "rigs" / "electric_board.yaml").read_text()
+    wiring.get_by_role("button", name="Add channel").click()
+    expect(p.get_by_label("New channel name")).to_have_value("keys")
+    p.get_by_label("New channel width").select_option("stereo")
+    p.get_by_role("button", name="Add keys").click()
+    result = wiring.locator(".rigfile-result.ok")
+    expect(result).to_contain_text("Added keys to electric_board")
+    expect(result).to_contain_text("electric_board keeps playing as it was until it restarts (track 'keys').")
+    expect(result.locator(".commit")).to_contain_text("Not committed: changed on top of commit")
+    after = (files_served.save.root / "config" / "rigs" / "electric_board.yaml").read_text()
+    import difflib
+
+    assert [line for line in difflib.unified_diff(before.splitlines(), after.splitlines(), lineterm="", n=0)
+            if line[:1] in "+-" and not line.startswith(("+++", "---"))] == [
+        "+- name: keys", "+  input: keys-in", "+  width: stereo", "+  chain: []"], "only the channel's own lines"
+    expect(wiring.locator(".wiring-row")).to_have_count(3)
+    expect(p.locator("section.track")).to_have_count(3), "still playing as it was"
+    result.get_by_role("button", name="Restart electric_board to play it").click()
+    confirm = wiring.get_by_role("group", name="Confirm the restart")
+    expect(confirm).to_contain_text("The sound stops for a few seconds")
+    confirm.get_by_role("button", name="Restart now").click()
+    expect(p.locator(".notice")).to_contain_text("Restarted electric_board from its file.")
+    assert ["restart"] in files_served.lifecycle.calls
+    expect(p.locator("section.track h2")).to_have_text(["board", "vocal", "keys", "master"])
+    page.close()
+
+
+def test_a_channels_input_is_changed_from_the_rack(browser, files_served):
+    page = Watched(browser, files_served, "/#rack")
+    p = page.page
+    wiring = inputs_region(p)
+    wiring.get_by_role("button", name="Change vocal's input").click()
+    width = p.get_by_label("vocal width")
+    expect(width.locator("option[value=stereo]")).to_have_attribute("disabled", "")  # one port, no mono_to_stereo
+    p.get_by_label("vocal input").select_option("keys-in")
+    width.select_option("stereo")
+    p.get_by_role("button", name="Apply to vocal").click()
+    result = wiring.locator(".rigfile-result.ok")
+    expect(result).to_contain_text("Changed vocal's input")
+    expect(result).to_contain_text("keeps playing as it was until it restarts")
+    expect(result.get_by_role("button", name="Restart electric_board to play it")).to_be_visible()
+    expect(wiring.locator(".wiring-row", has_text="vocal")).to_contain_text("keys-in · stereo")
+    assert rig_file(files_served)["channels"][1] == {
+        "name": "vocal", "input": "keys-in", "width": "stereo", "level": -6.0,
+        "chain": [{"name": "vocal_delay", "uri": "http://drobilla.net/plugins/mda/Delay"}]}
+    page.close()
+
+
+def test_an_edit_of_the_running_rig_with_unsaved_work_is_refused_in_place(browser, files_served):
+    page = Watched(browser, files_served, "/#rack")
+    p = page.page
+    turn_drive_down(p, 1)
+    wiring = inputs_region(p)
+    expect(wiring.locator(".warn")).to_contain_text("1 unsaved change on electric_board: save first")
+    wiring.get_by_role("button", name="Change board's input").click()
+    p.get_by_label("board input").select_option("keys-in")
+    p.get_by_role("button", name="Apply to board").click()
+    refused = wiring.locator(".rigfile-result.refused")
+    expect(refused).to_contain_text("Not changed: board's input")
+    expect(refused).to_contain_text("electric_board is running with 1 change made through the agent and not saved")
+    expect(refused).to_contain_text("Save first")
+    assert rig_file(files_served)["channels"][0]["input"] == "guitar-in"
+    # Saved, the same change goes through.
+    p.get_by_role("button", name="Save to electric_board").click()
+    expect(p.locator(".save-result.ok")).to_contain_text("Saved electric_board")
+    p.get_by_role("button", name="Apply to board").click()
+    expect(wiring.locator(".rigfile-result.ok")).to_contain_text("Changed board's input")
+    assert rig_file(files_served)["channels"][0]["input"] == "keys-in"
+    page.close()
+
+
+def test_the_stage_has_no_new_rig_and_no_channel_edits(browser, files_served):
+    page = Watched(browser, files_served, "/#stage", width=390, height=844)
+    p = page.page
+    p.wait_for_selector(".card")
+    lock = p.locator("button.lock")
+    lock.click()
+    lock.click()
+    expect(lock).to_have_text("Lock off · editing")
+    expect(p.locator(".stage-rigs .rig").first).to_be_visible()
+    expect(p.get_by_role("link", name="New rig…")).to_have_count(0)
+    expect(p.locator("section.wiring")).to_have_count(0)
+    expect(p.get_by_role("button", name="Add channel")).to_have_count(0)
+    page.close()

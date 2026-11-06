@@ -32,6 +32,11 @@ and the two things worth reading about a rig, served over HTTP on localhost.
     POST /record/start  {"name"?} -- a take of the running rig (S7); no name is take-<date>-<time>
     POST /record/stop   {} -- finish it; the answer says `take check`'s verdict
     GET  /takes         the takes, newest first: name, when, length, stems, `take check`'s verdict
+    GET  /machine/roles the machine file's roles: ports, widths each can feed, which tracks use each
+    GET  /rigs/{name}/channels   a rig file's channels: name, input, width, level, plugins
+    POST /rigs/new      {"name", "channels": [{"name", "input", "width", "from"?}]} -- a new rig file
+    POST /rigs/{name}/channels/add              {"name", "input", "width", "from"?}
+    POST /rigs/{name}/channels/{channel}/input  {"input"?, "width"?} -- each written, never committed
 
 ## A fixed command set, never a shell
 
@@ -231,6 +236,37 @@ one's. That is how a plugin added live is told from a capture of another
 rig: the log explains the difference, and what it does not explain is
 refused as before. Not run against a live
 Sushi: shown against a fake capture and real rig files.
+
+## New rigs and channel edits (the New rig screen)
+
+A rig file is made or edited from the page, never from a hand on YAML: `POST
+/rigs/new` writes a new `config/rigs/<name>.yaml` (its master on
+`patchbay.MONITOR_ROLE`, its chains empty unless a channel's `from` copies
+another rig's channel), `POST /rigs/{name}/channels/add` adds a channel and
+`.../{channel}/input` changes a channel's input or width, both in place
+through `rigfile.write_rig`, so a comment stays and only the changed lines
+change. Nothing about what a rig may be is decided here or in the page:
+each draft goes through `rig.compile_rig_draft`, the parse, compile and
+offline wiring `up --rig` runs, against the run's machine file (the state
+file's, or this host's with no rig of channels up), and a refusal is 409
+with its words. The wiring matters: a role the machine file lacks and a
+stereo channel on one port without `mono_to_stereo` are the patchbay's
+refusals, which compiling alone does not make. The machine file is never
+written; a missing role comes back with the lines to add (`machine_hint`).
+`GET /machine/roles` gives the pickers what the patchbay says each role can
+feed and the ceiling as the compiler refuses one more channel.
+
+An edit of the running rig's own file takes effect at a restart, and the
+answer says so with `rigfile.diff`'s reasons, as a switch gives them, and
+offers it. It is refused while the agent saw changes since the last save
+(`unsaved`): the restart that plays the edit reloads the file and would drop
+them, so Save comes first. With the panel running (`panel`) the agent cannot
+see the panel's changes at all, so it refuses too. Each write takes the
+lifecycle lock (`busy`), and the live lock for the running rig, so neither a
+restart nor a live change comes between the check and the write. A remote
+caller is treated as `/rig/save` treats one: no differently. Shown against
+real rig files and the real compiler; not run against a live Sushi, and no
+rig made here has been started on the rig.
 
 ## Recording from the web UI (S7)
 
@@ -5159,11 +5195,13 @@ def rigfile_refusal(state: dict[str, Any], log: list[dict[str, Any]]) -> tuple[s
     An edit of the file the rig runs from takes effect only at a restart,
     which loads the file: so unsaved live work (knobs, bypasses, plugins
     added or moved through the agent since the last save) would be dropped
-    by the very restart the edit offers, and one edit, a channel started
-    from another rig's, also leaves a Save refused until then (the file names
-    plugins the running rig lacks). Refused until it is saved, rather than
-    written with a warning: a refusal costs one tap on Save, and the warning
-    would be read once and the work lost at the restart. `unsaved`, naming
+    by the very restart the edit offers. Save itself would still work after
+    the edit -- a capture says nothing of a track the rig does not have yet,
+    so `fold_state` keeps the new channel, copied chain and all
+    (test_agent_rigfiles.py) -- so this is about the restart, not the file.
+    Refused until it is saved, rather than written with a warning: a refusal
+    costs one tap on Save, and a warning would be read once and the work
+    lost at the restart the same answer offers. `unsaved`, naming
     the newest change. With the panel running (`panel`), the agent cannot
     see the panel's changes at all, so whether there is work to lose cannot
     be known here."""
