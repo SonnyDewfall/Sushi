@@ -306,8 +306,14 @@ class RecorderCore:
     def _available(self, run: Run) -> dict[str, Any]:
         """What a status says of `run`: the plan `record_session` would make,
         or its refusal in the same words, from `plan_for_run` alone. Reads
-        the run's files, once per change of them; makes no session and no
-        engine, so a status costs a stat of three files and changes nothing."""
+        the run's files and the live graph, once per change of the files;
+        makes no session and no engine, so a status costs a stat of three
+        files and changes nothing.
+
+        The ports it shows are the ones that read of the graph resolved
+        (`transport.jack_port`), so a device that comes back under another
+        profile is named as it was until the files change. A take is not: its
+        own plan reads the graph again at RECORD."""
         from .transport import NoEngine, PlanError, plan_for_run
 
         if self.engine_problem:

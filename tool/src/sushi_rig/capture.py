@@ -55,12 +55,42 @@ bookkeeping (`BlockPump`, driven by stand-in ports carrying a counter), the
 silence check, the checks on what JACK reports, and that the names this module
 calls exist in the installed JACK-Client.
 
-Not run by anyone: **this module against a live PipeWire.** There was no
-PipeWire, JACK or soundcard where it was written. `CaptureEngine`'s calls into
-JACK, the order of activate and connect, the exact port names PipeWire gives
-the Audient iD14 and Sushi through `pw-jack`, and the claim below that a stereo
-stem's ports are consecutive, are all unverified. The first run on the rig is
-the test, and its result goes in the MANIFEST either way.
+Run on the rig, 2026-11-06, and what it settled. This module was written with
+no PipeWire, JACK or soundcard anywhere, and its first live run was a take that
+failed: `missing_sources` refused it over the dry tap. So `load_jack`,
+registering the client under `pw-jack` and `get_ports` all work on the rig, and
+the port names are now known rather than assumed. **Sushi's are what was
+planned** -- `sushi:audio_output_0` to `_7`, exactly as `patchbay.sushi_ports`
+names them. **The interface's are not.** The machine file names the guitar's
+port by its alias, `Audient iD14:capture_AUX0`, which is what qpwgraph shows
+and what the saved patchbay keys links by; to a JACK client the same socket is
+`Audient iD14 Multichannel:capture_AUX0`, the node's description. `transport`
+resolves every port through `patchbay.jack_port_names` before planning a take
+(`transport.jack_port`), so what arrives here is a name this graph has.
+
+**A take that captures audio: run on the rig, 2026-11-06 20:38.**
+`take-20261106-203817`, electric-chorus-2, five columns (a stereo channel stem,
+its mono dry tap, the stereo master), 1178368 frames -- 24.6 s at 48 kHz --
+and `take check` passes. The accounting is clean on both witnesses: 0 lost
+frames, no dropouts, no unrecorded episodes, `silent_blocks` watched and empty;
+and from the engine, 4603 blocks at quantum 256 with 0 xruns, no quantum
+change, nothing off-quantum, nothing skipped, no push errors. So the activate/
+connect order works, the link read-back settles under pipewire-jack (94 gated
+cycles before the pump opened), and the dry tap captured from
+`Audient iD14 Multichannel:capture_AUX0` -- the resolved name, the thing the
+run of two hours earlier died on.
+
+**One number to watch: the slowest callback was 10174 us against a 5333 us
+budget**, 1.9x over, with no xrun and nothing lost. That is the reason this
+module reports `slowest_callback_us` at all: the spike's worst over three runs
+was 1344 us, and a 600 s run of it once showed a single 5774 us block the same
+way. Unexplained, as that one was. Not a dropout here, but it is the margin
+that would become one under load, and a second data point now exists.
+
+Still not verified: **eight columns.** This take ran five; guitar_vocal is
+eight, and the spike's evidence for the callback is six. And a stereo *dry
+tap* -- whether a device's `capture_AUX2`/`_3` are consecutive as
+`numbered_ports` assumes -- is untested, since this take's dry tap was mono.
 
 One client does everything, and its process callback is live from `activate`,
 so the pump is gated (`BlockPump`) until every link has been read back: the

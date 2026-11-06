@@ -25,9 +25,13 @@ from sushi_rig.transport import (
     PlanError,
     TakeSession,
     Transport,
+    jack_port,
     record_session,
     rig_stems,
 )
+# Bound at import, before `no_live_graph` rebinds the module's own attribute:
+# the one test that means to run the real reader needs the real one.
+from sushi_rig.transport import _live_jack_names as live_jack_names
 
 ROOT = checkout_root()
 GUITAR_VOCAL = ROOT / "config" / "rigs" / "guitar_vocal.yaml"
@@ -69,6 +73,20 @@ def stems_of(rig_path, machine) -> tuple:
     rig = load_rig(rig_path)
     machine = machine if isinstance(machine, MachineSpec) else MachineSpec.load(machine)
     return rig_stems(rig, machine, config_of(rig))
+
+
+# The real `pw-dump` from the rig, the same capture test_patchbay.py asserts
+# against: the one evidence here of what a JACK client calls the rig's ports.
+CAPTURED = (Path(__file__).parent / "fixtures" / "pw-dump-rig.json").read_text()
+
+
+@pytest.fixture(autouse=True)
+def no_live_graph(monkeypatch):
+    """No test here reads the live graph. A plan resolves its ports through
+    `pw-dump` (`transport._live_jack_names`), which on a machine with a rig up
+    would make every assertion below depend on what is plugged into it; the
+    tests that mean to resolve pass a map themselves."""
+    monkeypatch.setattr(transport, "_live_jack_names", lambda: {})
 
 
 def write(path: Path, text: str) -> Path:
@@ -148,6 +166,139 @@ def test_no_stem_is_tapped_from_a_port_the_patchbay_links_to_the_monitors():
     heard = {c.source for c in columns if c.source in linked_out and c.source.startswith("sushi:")}
     assert heard == {"sushi:audio_output_0", "sushi:audio_output_1"}
     assert {c.stem for c in columns if c.source in heard} == {"master.wav"}
+
+
+# --------------------------------------------------------------------------- #
+# The name the engine connects by (one socket, three names)
+# --------------------------------------------------------------------------- #
+
+def test_a_dry_tap_is_recorded_from_the_name_a_jack_client_sees():
+    """The defect of 2026-11-06. The machine file names the guitar's port
+    `Audient iD14:capture_AUX0`, which is no port at all to the capture
+    engine; resolved through the live graph it is the socket the engine can
+    connect. Sushi's ports are the same string either way."""
+    from sushi_rig.patchbay import jack_port_names
+
+    rig = load_rig(GUITAR_VOCAL)
+    machine = MachineSpec.load(THIS_MACHINE)
+    stems = rig_stems(rig, machine, config_of(rig), jack_port_names(CAPTURED, "out"))
+    assert [(s.filename, s.port) for s, _ in stems] == [
+        ("guitar.wav", "sushi:audio_output_2"),
+        ("guitar-dry.wav", "Audient iD14 Multichannel:capture_AUX0"),
+        ("vocal.wav", "sushi:audio_output_4"),
+        ("vocal-dry.wav", "Audient iD14 Multichannel:capture_AUX1"),
+        ("master.wav", "sushi:audio_output_0"),
+    ]
+    # And it is the resolved name the engine is told to link from.
+    assert "Audient iD14 Multichannel:capture_AUX0" in {c.source for c in plan_columns(stems)}
+
+
+def test_a_stereo_role_resolves_every_port_it_is_captured_from(tmp_path):
+    """Both halves, not the first with the second guessed from it: the stem's
+    second channel is linked from the port next to the resolved one, so the
+    numbering is checked after resolution."""
+    machine = write(tmp_path / "m.yaml", textwrap.dedent("""        schema_version: 1
+        roles:
+          keys-in: ["Audient iD14:capture_AUX2", "Audient iD14:capture_AUX3"]
+          monitor-out: ["Audient iD14:playback_FL", "Audient iD14:playback_FR"]
+        """))
+    rig_path = write(tmp_path / "stereo.yaml", textwrap.dedent("""        kind: rig
+        schema_version: 1
+        name: stereo
+        channels:
+          - name: keys
+            input: keys-in
+            width: stereo
+        master:
+          output: monitor-out
+        """))
+    from sushi_rig.patchbay import jack_port_names
+
+    rig = load_rig(rig_path)
+    stems = rig_stems(rig, MachineSpec.load(machine), config_of(rig),
+                      jack_port_names(CAPTURED, "out"))
+    dry = next(s for s, _ in stems if s.tap == DRY)
+    assert dry.port == "Audient iD14 Multichannel:capture_AUX2"
+    assert [c.source for c in plan_columns(stems) if c.stem == "keys-dry.wav"] == [
+        "Audient iD14 Multichannel:capture_AUX2", "Audient iD14 Multichannel:capture_AUX3",
+    ]
+
+
+def test_a_port_the_graph_does_not_have_is_left_for_the_engine_to_name():
+    """`up` starts the listener before Sushi, so a plan made then sees no
+    `sushi:` port. Leaving it as written is what lets the next RECORD resolve
+    it; refusing the plan here would say recording is unavailable for a rig
+    that is simply still starting, and the engine's own check names what is in
+    the graph anyway."""
+    assert jack_port("sushi:audio_output_0", {}) == ("sushi:audio_output_0", None)
+    assert jack_port("iface:capture_AUX0", {"other:port": ["x:port"]}) == ("iface:capture_AUX0", None)
+    # No map at all: every port as it was written, which is what the plan did
+    # before the graph was read.
+    assert jack_port("Audient iD14:capture_AUX0", None) == ("Audient iD14:capture_AUX0", None)
+
+
+def test_an_alias_two_live_nodes_answer_to_is_refused_not_guessed():
+    """Two profiles of one device live at once, or two of the same interface:
+    the alias names the socket and not the node, so either would be a guess at
+    which one the player plugged into."""
+    port, why = jack_port("Audient iD14:capture_AUX0", {
+        "Audient iD14:capture_AUX0": [
+            "Audient iD14 Pro:capture_AUX0", "Audient iD14 Multichannel:capture_AUX0",
+        ],
+    })
+    assert port == "Audient iD14:capture_AUX0"
+    assert "2 nodes at once" in why and "Audient iD14 Multichannel:capture_AUX0" in why
+
+
+def test_an_ambiguous_port_refuses_the_whole_plan():
+    rig = load_rig(GUITAR_VOCAL)
+    machine = MachineSpec.load(THIS_MACHINE)
+    with pytest.raises(PlanError) as raised:
+        rig_stems(rig, machine, config_of(rig), {
+            "Audient iD14:capture_AUX0": ["a:capture_AUX0", "b:capture_AUX0"],
+        })
+    assert any("live port of 2 nodes" in p for p in raised.value.problems)
+
+
+def test_the_live_graph_is_read_for_every_take_planned(duo, tmp_path, monkeypatch):
+    """A device that came back under another profile is resolved afresh at the
+    next RECORD, not held from the listener's start."""
+    reads = []
+
+    def read():
+        reads.append(1)
+        return {"iface:capture_AUX0": [f"profile-{len(reads)}:capture_AUX0"]}
+
+    monkeypatch.setattr(transport, "_live_jack_names", read)
+    first = session_for(duo, tmp_path).plan
+    second = session_for(duo, tmp_path).plan
+    assert [s.port for s, _ in first.stems if s.tap == DRY][0] == "profile-1:capture_AUX0"
+    assert [s.port for s, _ in second.stems if s.tap == DRY][0] == "profile-2:capture_AUX0"
+
+
+def test_a_graph_that_cannot_be_read_still_plans_a_take(monkeypatch):
+    """`pw-dump` missing or hung must not be the reason RECORD does nothing:
+    the ports stay as they were written, exactly as before the graph was read,
+    and the engine says if they are not there."""
+    from sushi_rig import patchbay
+
+    def no_dump(*a, **kw):
+        raise patchbay.PatchbayError(["pw-dump is not installed"])
+
+    monkeypatch.setattr(patchbay, "read_pw_dump", no_dump)
+    assert live_jack_names() == {}
+
+    def exploded(*a, **kw):
+        raise RuntimeError("boom")
+
+    monkeypatch.setattr(patchbay, "read_pw_dump", exploded)
+    assert live_jack_names() == {}
+
+    # And it really is the reader, not a stand-in: a graph it can read answers.
+    monkeypatch.setattr(patchbay, "read_pw_dump", lambda *a, **kw: CAPTURED)
+    assert live_jack_names()["Audient iD14:capture_AUX0"] == [
+        "Audient iD14 Multichannel:capture_AUX0"
+    ]
 
 
 def test_a_channel_whose_input_role_is_not_in_the_machine_file_is_refused(duo, tmp_path):

@@ -2719,3 +2719,63 @@ then put back). Also found running the suite twice as pid 1:
 `carla_fake.OscCarla` binds TCP on the port number the system gave its UDP
 socket, which another socket may hold (`EADDRINUSE`, once); it now tries
 another pair. Still **NOT RUN AGAINST A LIVE PIPEWIRE**. *(2026-11-02)*
+
+**The record button's first live run: one socket, three names, and the record
+path used the wrong one.** The thing written down as unknown on 2026-11-02 —
+"whether the machine file's port names (as qpwgraph shows them) are what a JACK
+client sees through `pw-jack`" — is answered, and the answer is no. Three takes
+were refused on the rig, each with `the capture engine did not start: no port
+called 'Audient iD14:capture_AUX0' (for board-dry.wav) is in the graph`, and
+each left a folder of 58-byte stems: headers, no audio. `ui-take-1` of
+2026-11-02 holds the same, so no take has ever captured a sample. **A port is
+named three ways.** `port.alias` (`Audient iD14:capture_AUX0`) is what qpwgraph
+shows and what the machine file and the saved patchbay use; `pw-link -l` prints
+`<node.name>:<port.name>`
+(`alsa_input.usb-Audient_Audient_iD14-00.multichannel-input:capture_AUX0`); and
+a JACK client through `pw-jack` sees `<node.description>:<port.name>`
+(`Audient iD14 Multichannel:capture_AUX0`). For an ALSA device all three
+differ, because the alias carries the node's *nick*, which every profile of the
+device shares — the same fact `patchbay.py` already records as the reason an
+alias cannot identify a node. For Sushi all three are `sushi`, which is why
+nothing caught this until a take needed a physical port: the processed stems
+and the master would have recorded. Verified on the rig by registering a JACK
+client of our own and listing its ports, and against
+`tests/fixtures/pw-dump-rig.json`, which gives the same mapping. **The fix.**
+`patchbay.jack_port_names(dump, "out")` is the third naming, beside
+`live_port_names`' second, from the one reader of the dump's ports; it is
+composed from `node.description` falling back to `node.name` and never the
+nick. `transport.jack_port` resolves each of a plan's ports through it, and
+`rig_stems` does so *before* its checks, so the consecutive numbering and the
+two-stems-on-one-port check are made on the names that will be linked.
+`plan_for_run` reads the graph at every RECORD (`_live_jack_names`), so a device
+back under another profile is resolved afresh. Forgiving by design: a port the
+graph does not have is left as written — `up` starts the listener before Sushi,
+so a plan made then sees no `sushi:` port, and the engine's own check names what
+is there — and a `pw-dump` that is missing or hung gives an empty map rather
+than stopping a take. Only ambiguity is refused, an alias two live nodes answer
+to, because either would be a guess at which socket the player plugged into.
+`take.yaml` now records the name the column was really linked from. Twelve tests
+(`test_patchbay.py`, `test_record_session.py`), and the suite's constructed
+ports now carry the `port.name` every real dump has. **Still not verified: a
+take that captures audio.** Nothing has been linked yet, so the engine's
+activate/connect order, the link read-back and eight columns on the rig remain
+untested; see `capture.py`. Found while troubleshooting a failed record on the
+rig, not by review. *(2026-11-06)*
+
+**The first take that captured audio.** `take-20261106-203817` on the rig, two
+hours after the three that were refused: electric-chorus-2, five columns,
+1178368 frames (24.6 s at 48 kHz), `take check` ok, and the dry tap recorded
+from `Audient iD14 Multichannel:capture_AUX0` — so the resolution above is
+proven end to end, by a take and not by a plan. Clean on both witnesses: 0 lost
+frames, no dropouts, no unrecorded episodes, `silent_blocks` watched and empty,
+and 4603 blocks at quantum 256 with 0 xruns, no quantum change, nothing
+off-quantum or skipped, no push errors. **The one thing worth watching: the
+slowest callback was 10174 us against a 5333 us budget**, 1.9× over, with no
+xrun and nothing lost — against the spike's worst of 1344 us over three runs.
+Unexplained, like the single 5774 us block the spike saw once; it is the margin
+that would become a dropout under load, and it is now a second data point
+rather than a story about one. `capture.py` carries both. **Still not verified:
+eight columns** (this was five; guitar_vocal is eight and the spike's callback
+evidence is six), and a **stereo dry tap** — whether a device's
+`capture_AUX2`/`_3` are consecutive as `numbered_ports` assumes, which this
+take's mono tap did not exercise. *(2026-11-06)*
