@@ -398,6 +398,17 @@ def _pair_source(
             pairs += [(d.index, p) for d, p in zip(channels, ports)]
         elif len(ports) == 1 and mono:
             pairs += [(d.index, ports[0]) for d in channels]
+        elif len(ports) == 1:
+            # A v2 rig's stereo channel on a one-port role: the bus form's
+            # advice above, which the channel form lacked, so the web UI's new
+            # rig said "the counts must match" and not what to add (2026-11-06).
+            return (
+                f"role {role!r} has 1 port but this track routes it to {len(channels)} engine "
+                f"channels ({', '.join(str(d.index) for d in channels)}); each channel takes one "
+                "port, so the counts must match. If its one port should feed both halves of a "
+                f"stereo channel, declare it in the machine file: {role}: {{ports: "
+                f"[{ports[0]!r}], mono_to_stereo: true}}. Otherwise make the channel mono"
+            )
         else:
             return (
                 f"role {role!r} has {len(ports)} port(s) but this track routes it "

@@ -288,8 +288,7 @@ def _compile_named_rig(
 def _compile_named_rig_unguarded(
     name: str, root: Path, path: Path, machine_file: Path | None,
 ) -> tuple[Path, Path, Any, Any, dict[str, Any]]:
-    from .machine import MachineError, MachineSpec, machine_path, rig_controller
-    from .rigfile import RigFileError, compile_rig, emit_compiled, load_rig
+    from .rigfile import RigFileError, load_rig
 
     if not path.is_file():
         raise RigError(f"no such rig: {path}")
@@ -297,6 +296,25 @@ def _compile_named_rig_unguarded(
         loaded = load_rig(path)
     except RigFileError as exc:
         raise RigError(f"{path.name}:\n  " + "\n  ".join(exc.problems)) from exc
+    machine_file, machine, spec, compiled = _compile_loaded(loaded, path.name, root, machine_file)
+    # The provenance `emit` writes, so `resolve_rig_yaml` knows which file this
+    # run came from and `save` (when it can write a v2 rig) saves there.
+    meta = compiled.setdefault("_meta", {})
+    if isinstance(meta, dict):
+        meta["source"] = f"config/rigs/{name}.yaml"
+    return path, machine_file, machine, spec, compiled
+
+
+def _compile_loaded(
+    loaded: Any, label: str, root: Path, machine_file: Path | None,
+) -> tuple[Path, Any, Any, dict[str, Any]]:
+    """`(machine file, machine, spec, compiled config)` for a rig already
+    parsed, or `RigError`: the half of `_compile_named_rig` after the file is
+    read, shared with `compile_rig_draft` so a rig not yet written is compiled
+    exactly as `up --rig` will compile it once it is. `label` names it in a
+    refusal."""
+    from .machine import MachineError, MachineSpec, machine_path, rig_controller
+    from .rigfile import RigFileError, compile_rig, emit_compiled
 
     machine_file = machine_file or machine_path(root)
     try:
@@ -314,7 +332,7 @@ def _compile_named_rig_unguarded(
     try:
         controller = rig_controller(loaded, machine)
     except MachineError as exc:
-        raise RigError(f"{path.name}: {exc}") from exc
+        raise RigError(f"{label}: {exc}") from exc
     # Compiled once, with the map: the same spec wires the patchbay and
     # becomes the config. The kind that Sushi loads, so with the copies to
     # stereo (stereo.py), and refused for a plugin plugin-ports.txt lacks.
@@ -322,13 +340,54 @@ def _compile_named_rig_unguarded(
         spec, fixed = compile_rig(loaded, controller)
         compiled = emit_compiled(loaded, spec, fixed)
     except RigFileError as exc:
-        raise RigError(f"{path.name}:\n  " + "\n  ".join(exc.problems)) from exc
-    # The provenance `emit` writes, so `resolve_rig_yaml` knows which file this
-    # run came from and `save` (when it can write a v2 rig) saves there.
+        raise RigError(f"{label}:\n  " + "\n  ".join(exc.problems)) from exc
+    return Path(machine_file), machine, spec, compiled
+
+
+def compile_rig_draft(raw: Any, root: Path, machine_file: Path | None = None) -> dict[str, Any]:
+    """The config a rig file holding `raw` would run as, or `RigError` with
+    every reason it would not come up: for the web UI's new rig and channel
+    edits, which must refuse before they write (agent.py's rig files block).
+
+    The same steps as `up --rig` takes on a file, in the same words, and
+    nothing of its own: parsed as `load_rig` parses (names, the channel
+    ceiling, widths), compiled against the machine file as
+    `_compile_named_rig` compiles (the copies to stereo, the MIDI map), and
+    wired as `prepare_rig` wires, through `patchbay_for`. The wiring is what
+    knows the roles: a channel on a role the machine file lacks, a stereo
+    channel on a one-port role without `mono_to_stereo`, a mono one on a
+    two-port role, and a master whose role is not a pair are all the
+    patchbay's refusals, not the compiler's, so compiling alone would accept
+    a rig `up` then refuses. Wired offline (`dump=None`): whether each port
+    is in the live graph is a question for the start, not for the file, and
+    the tuner's tap, a warning at the start, is left out.
+
+    Every failure is a `RigError`, as `_compile_named_rig` makes it, so a
+    caller has one thing to catch."""
+    import copy
+
+    from .patchbay import PatchbayError, patchbay_for
+    from .rigfile import RigFileError, parse_rig
+
+    label = f"{raw.get('name')}.yaml" if isinstance(raw, dict) and isinstance(raw.get("name"), str) else "the rig"
+    try:
+        try:
+            loaded = parse_rig(copy.deepcopy(raw))
+        except RigFileError as exc:
+            raise RigError(f"{label}:\n  " + "\n  ".join(exc.problems)) from exc
+        machine_file, machine, spec, compiled = _compile_loaded(loaded, label, root, machine_file)
+        try:
+            patchbay_for(spec, machine, None, tuner=False, rig_name=label, machine_name=machine_file.name)
+        except PatchbayError as exc:
+            raise RigError(f"{label} cannot be wired on this machine:\n  " + "\n  ".join(exc.problems)) from exc
+    except RigError:
+        raise
+    except Exception as exc:  # noqa: BLE001 -- said, with its type, as a refusal
+        raise RigError(f"{label}: {type(exc).__name__}: {exc}") from exc
     meta = compiled.setdefault("_meta", {})
-    if isinstance(meta, dict):
-        meta["source"] = f"config/rigs/{name}.yaml"
-    return path, machine_file, machine, spec, compiled
+    if isinstance(meta, dict) and isinstance(raw.get("name"), str):
+        meta["source"] = f"config/rigs/{raw['name']}.yaml"
+    return compiled
 
 
 def compile_named_rig(name: str, root: Path, machine_file: Path | None = None) -> dict[str, Any]:
