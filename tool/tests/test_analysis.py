@@ -117,6 +117,21 @@ def test_inf_is_found_and_counted_separately_from_nan():
     assert "1 NaN and 2 Inf" in finding.message
 
 
+def test_the_first_non_finite_sample_is_the_earliest_frame_then_the_lowest_channel():
+    """One lookup, shared by check_finite and render.detune_nan."""
+    x = signals.sine(SR, 0.1, 440, channels=2)
+    assert analysis.first_non_finite(analysis.non_finite_mask(x)) is None
+    x[40, 0] = np.nan
+    x[9, 1] = np.inf
+    x[9, 0] = 1.0
+    bad = analysis.non_finite_mask(x)
+    assert analysis.first_non_finite(bad) == (9, 1)
+    assert "the first is at frame 9, channel 1" in analysis.check_finite(x).message
+    mono = signals.sine(SR, 0.1, 440)
+    mono[17] = np.nan
+    assert analysis.first_non_finite(analysis.non_finite_mask(mono)) == (17, 0)
+
+
 def test_non_finite_is_reported_alone_because_the_other_numbers_would_be_garbage():
     x = signals.sine(SR, 0.1, 440)
     x[10, 0] = np.nan
@@ -587,3 +602,37 @@ def test_the_mono_error_still_blames_the_reference_first():
 def test_half_the_reference_is_enough_to_search():
     ref = signals.pink_noise(SR, 1.0)
     assert analysis.estimate_delay(ref, ref[:24000]).lag_samples == 0
+
+
+# --------------------------------------------------------------------------- #
+# Left against right (the mono-to-stereo question)
+# --------------------------------------------------------------------------- #
+
+def test_a_centred_mono_signal_is_balanced_and_fully_correlated():
+    centred = signals.log_sweep(SR, 0.5, level_dbfs=-20.0, channels=2)
+    found = analysis.channel_balance(centred)
+    assert found.left_dbfs == pytest.approx(found.right_dbfs, abs=1e-9)
+    assert found.correlation == pytest.approx(1.0, abs=1e-9)
+
+
+def test_a_silent_right_channel_has_no_level_and_no_correlation():
+    left_only = signals.log_sweep(SR, 0.5, level_dbfs=-20.0, channels=2)
+    left_only[:, 1] = 0.0
+    found = analysis.channel_balance(left_only)
+    assert found.right_dbfs == float("-inf")
+    assert found.correlation is None
+    # The whole-signal RMS this replaces for the question: only 3 dB down.
+    assert analysis.rms_dbfs(left_only) == pytest.approx(found.left_dbfs - 10 * math.log10(2), abs=1e-9)
+
+
+def test_an_inverted_right_channel_correlates_at_minus_one():
+    inverted = signals.log_sweep(SR, 0.5, level_dbfs=-20.0, channels=2)
+    inverted[:, 1] *= -0.5
+    found = analysis.channel_balance(inverted)
+    assert found.correlation == pytest.approx(-1.0, abs=1e-9)
+    assert found.left_dbfs - found.right_dbfs == pytest.approx(20 * math.log10(2), abs=1e-9)
+
+
+def test_channel_balance_refuses_anything_but_stereo():
+    with pytest.raises(ValueError, match="stereo"):
+        analysis.channel_balance(signals.sine(SR, 0.1, 440.0, channels=1))

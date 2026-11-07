@@ -19,6 +19,7 @@ the UI never means editing a bus number.
     master:
       output: monitor-out       # a role in the machine file
       chain: []                 # where #29's limiter goes
+      level: -3.0               # optional, dB: the master track's own gain
 
 A rig compiles to a `RigSpec`, so everything downstream — `emit`, `verify`, the
 patchbay, the null tests — keeps working on what it already understands. This
@@ -41,6 +42,12 @@ module adds no second path to Sushi.
 - **A mono input feeds both halves of its channel** from one engine channel.
   Today the patchbay duplicates the physical port into two engine channels to
   do the same; doing it inside Sushi spends one input instead of two.
+- **A mono plugin's output is put back on both halves.** Sushi runs a plugin
+  with one output on channel 0 alone and clears channel 1 after it, so every
+  guitar chain, which starts with a mono compressor, came out of the left
+  monitor only (2026-11-02). After each such plugin the compiler inserts
+  `<plugin>_to_stereo`, Sushi's own `mono_summing`: see `stereo.py`, and
+  `plugin-ports.txt` for where the compiler reads which plugins are mono.
 
 ## The ceiling
 
@@ -66,6 +73,7 @@ from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
 
+from . import stereo
 from .save import NAME_PATTERN
 from .spec import PluginSpec, RigSpec, TrackSpec, looks_like_rig_file  # noqa: F401 (re-exported)
 
@@ -95,7 +103,7 @@ _MIDI_KEYS = ("controller", "port", "programs", "controls")
 _CONTROL_KEYS = ("control", "blend", "parameter", "mute", "bypass", "range")
 _BINDINGS = ("blend", "parameter", "mute", "bypass")
 _CHANNEL_KEYS = ("name", "input", "width", "strip", "chain", "level")
-_MASTER_KEYS = ("output", "chain")
+_MASTER_KEYS = ("output", "chain", "level")
 _PLUGIN_KEYS = ("name", "uri", "path", "uid", "type")
 # A component's settings, as `emit` writes them into `initial_state`.
 _SETTING_KEYS = ("bypassed", "program", "parameters", "properties")
@@ -130,6 +138,15 @@ class Channel:
 class Master:
     output: str
     chain: tuple[PluginSpec, ...] = ()
+    # The master's level, in dB: the master track's own gain, the master
+    # volume of the web UI (2026-11-06). Unlike a channel's strip, which
+    # would change that channel's stem and not the mix, the master's acts
+    # after the mix: on what the monitors hear and on a take's master.wav
+    # (transport.py: "what reached the monitors"), never on a channel's
+    # stem. On the -120 to +24 dB range a track's gain has, as a send's does
+    # (`LEVEL_RANGE`; `UNITY_STRIP` relies on the same). 0 is unity, and
+    # unity is written nowhere.
+    level: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -198,7 +215,7 @@ _HEADER = (
 )
 
 
-def write_rig(path: Path, rig: dict, *, source: str | None = None) -> None:
+def write_rig(path: Path, rig: dict, *, source: str | None = None, header: str | None = None) -> None:
     """Write `rig` (the dict `parse_rig` reads) to `path`, keeping what a person wrote.
 
     A file already there is updated in place to hold `rig` — changed values set,
@@ -207,7 +224,9 @@ def write_rig(path: Path, rig: dict, *, source: str | None = None) -> None:
     so an unchanged rig is an unchanged file (yamlmerge.py has the rules, and
     what it will not do). A file not there is written from nothing, in block
     style with keys in `rig`'s order, under the header saying where it came
-    from if `source` is given.
+    from if `source` is given, or under `header` (comment lines, as written)
+    for a rig made some other way: the web UI's new rig says there what made
+    it and where each channel's chain came from, so the file explains itself.
 
     Nothing is written, and `RigFileError` is raised, when `rig` is not one
     `parse_rig` accepts, when the file there is not YAML or not a mapping or
@@ -226,7 +245,7 @@ def write_rig(path: Path, rig: dict, *, source: str | None = None) -> None:
         if existing.strip():
             text = yamlmerge.merged(existing, rig)
         else:
-            text = yamlmerge.fresh(rig, _HEADER.format(source=source) if source else "")
+            text = yamlmerge.fresh(rig, _HEADER.format(source=source) if source else header or "")
     except yamlmerge.MergeError as exc:
         raise RigFileError([f"{path}: {exc}"]) from exc
     path.parent.mkdir(parents=True, exist_ok=True)
@@ -254,13 +273,20 @@ def load_any(path: Path) -> "Rig | RigSpec":
     return RigSpec.from_dict(raw, path)
 
 
-def spec_of(path: Path) -> RigSpec:
+def spec_of(path: Path, *, routing_only: bool = False) -> RigSpec:
     """The tracks either kind of rig file runs as: compiled from channels and a
-    master, or read as written. For the tools that read routing — the patchbay
-    and the probes. Anything that writes a config goes through `emit_rig`
-    instead, because the sends need state this does not carry."""
+    master, or read as written. For the tools that read the spec rather than
+    write a config -- the patchbay, SAVE's source check and the probes.
+    Anything that writes a config goes through `emit_rig` instead, because the
+    sends need state this does not carry.
+
+    `routing_only` is for a caller that reads tracks, roles and names and
+    never puts the chains in front of Sushi (the patchbay, SAVE's source
+    check): it compiles without the copies to stereo, so it needs no
+    `plugin-ports.txt` and refuses no plugin for missing from it. The probes
+    build tracks Sushi loads from these chains, so they take the default."""
     rig = load_any(path)
-    return compile_rig(rig)[0] if isinstance(rig, Rig) else rig
+    return compile_rig(rig, routing_only=routing_only)[0] if isinstance(rig, Rig) else rig
 
 
 def _unknown(where: str, entry: dict, known: tuple[str, ...]) -> list[str]:
@@ -457,6 +483,25 @@ def _parse_midi(raw: Any, problems: list[str]) -> MidiMap | None:
     return MidiMap(controller, tuple(controls), port, programs)
 
 
+def _level(where: str, entry: dict, problems: list[str], what: str) -> float:
+    """An entry's `level:` in dB, 0.0 when it has none: a channel's (its
+    send's gain) and the master's (its track's gain) are read by this one
+    rule, so the two cannot drift apart."""
+    if "level" not in entry:
+        return 0.0
+    value = entry["level"]
+    low, high = LEVEL_RANGE
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        problems.append(f"{where}: level must be a number in dB (got {value!r})")
+    elif not low <= value <= high:
+        problems.append(f"{where}: level {value} dB is outside {what} {low:g} to {high:g}")
+    else:
+        # To a thousandth, the precision SAVE writes back, so a file
+        # holding more is not rewritten on a save that changed nothing.
+        return round(float(value), 3) + 0.0
+    return 0.0
+
+
 def parse_rig(raw: Any) -> Rig:
     """A `Rig` from a parsed YAML document, or `RigFileError` naming every problem."""
     if not isinstance(raw, dict):
@@ -507,18 +552,7 @@ def parse_rig(raw: Any) -> Rig:
                 f"{where}: width must be one of {', '.join(WIDTHS)} (got {entry.get('width')!r})"
             )
         chain = _chain(where, entry.get("chain"), problems, settings)
-        level = 0.0
-        if "level" in entry:
-            value = entry["level"]
-            low, high = LEVEL_RANGE
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                problems.append(f"{where}: level must be a number in dB (got {value!r})")
-            elif not low <= value <= high:
-                problems.append(f"{where}: level {value} dB is outside the send's {low:g} to {high:g}")
-            else:
-                # To a thousandth, the precision SAVE writes back, so a file
-                # holding more is not rewritten on a save that changed nothing.
-                level = round(float(value), 3) + 0.0
+        level = _level(where, entry, problems, "the send's")
         if "strip" in entry and isinstance(entry.get("name"), str):
             # The track's own gain, pan and mute, normalised as Sushi stores them.
             strip = _settings(f"{where}: strip", {"parameters": entry["strip"]}, problems)
@@ -554,7 +588,8 @@ def parse_rig(raw: Any) -> Rig:
         if not isinstance(master_raw.get("output"), str) or not master_raw["output"].strip():
             problems.append("master: output must name a role in the machine file")
         master = Master(str(master_raw.get("output")),
-                        _chain("master", master_raw.get("chain"), problems, settings))
+                        _chain("master", master_raw.get("chain"), problems, settings),
+                        _level("master", master_raw, problems, "the master track's gain's"))
 
     if problems:
         raise RigFileError(problems)
@@ -603,6 +638,7 @@ def check_rig(rig: Rig) -> list[str]:
         if channel.name in seen:
             problems.append(f"channel {channel.name!r} appears twice")
         seen.add(channel.name)
+        problems += [p for p in [stereo.reserved_problem("channel", channel.name)] if p]
 
     for owner, chain in [(f"channel {c.name!r}", c.chain) for c in rig.channels] + [
         ("master", rig.master.chain)
@@ -613,6 +649,7 @@ def check_rig(rig: Rig) -> list[str]:
                     f"{owner}: plugin {plugin.name!r} has a name the compiler gives its "
                     "own send, return or master track; rename it"
                 )
+            problems += [f"{owner}: {p}" for p in [stereo.reserved_problem("plugin", plugin.name)] if p]
 
     if any(not _is_width(c.width) for c in rig.channels):
         return problems
@@ -765,8 +802,31 @@ def compile_midi(rig: Rig, controller: dict[str, Any]) -> tuple[dict[str, Any], 
     return section, agent
 
 
+def _stereo_chain(where: str, chain: tuple[PluginSpec, ...], ports: dict[str, Any],
+                  problems: list[str]) -> list[PluginSpec]:
+    """`chain` with the compiler's copy to stereo after every LV2 plugin that
+    has one output (`stereo.py`), and a problem for every LV2 plugin whose
+    ports the table does not give. A plugin of another type (an internal one
+    named by `uid`) is left as written: Sushi's internal plugins take a
+    track's channels as they come."""
+    from .amp import PLUGIN_URIS as AMP_URIS
+
+    out: list[PluginSpec] = []
+    for plugin in chain:
+        out.append(plugin)
+        if (plugin.type or "lv2") != "lv2":
+            continue
+        problem = stereo.plugin_problem(plugin.name, plugin.uri, ports, frozenset(AMP_URIS.values()))
+        if problem:
+            problems.append(f"{where}: {problem}")
+        elif stereo.needs_copy(plugin.uri, ports):
+            out.append(PluginSpec(name=stereo.copy_name(plugin.name), uid=stereo.COPY_UID, type="internal"))
+    return out
+
+
 def compile_rig(
-    rig: Rig, controller: dict[str, Any] | None = None
+    rig: Rig, controller: dict[str, Any] | None = None, ports: dict[str, Any] | None = None,
+    *, routing_only: bool = False,
 ) -> tuple[RigSpec, dict[str, Any]]:
     """The `RigSpec` that runs `rig`, and the state its sends need.
 
@@ -782,8 +842,35 @@ def compile_rig(
     left out, which is right for reading the rig's routing and wrong for
     running it: `emit_rig` refuses that, since a rig quietly running without
     its pedals is the silent failure principle 8 forbids.
+
+    `ports` is each plugin's audio ports by URI (`stereo.load_ports`), the
+    committed `plugin-ports.txt` unless given: a plugin with one output gets
+    its copy to stereo after it, and one the table does not list is refused
+    by name. That is for every caller whose chains Sushi will load (`emit`,
+    `up --rig`, the renders, the probes). `routing_only` is for a caller that
+    reads only tracks and roles and never loads the chains (the patchbay,
+    SAVE's source check, `spec_of(routing_only=True)`): the chains are
+    compiled as written, without the copies, and need no table.
     """
     problems = check_rig(rig)
+    if problems:
+        raise RigFileError(problems)
+    if routing_only:
+        ports = None
+    elif ports is None:
+        from .paths import checkout_root
+
+        try:
+            ports = stereo.load_ports(checkout_root())
+        except stereo.PortsError as exc:
+            raise RigFileError(exc.problems) from exc
+    problems = []
+    if routing_only:
+        chains = {c.name: list(c.chain) for c in rig.channels}
+        master_chain = list(rig.master.chain)
+    else:
+        chains = {c.name: _stereo_chain(f"channel {c.name!r}", c.chain, ports, problems) for c in rig.channels}
+        master_chain = _stereo_chain("master", rig.master.chain, ports, problems)
     if problems:
         raise RigFileError(problems)
     # Without a controller the spec is still right for routing (the patchbay,
@@ -808,7 +895,7 @@ def compile_rig(
             channels=2,
             inputs=_inputs(next_input, channel.width),
             outputs=[{"engine_bus": MASTER_BUS + 1 + index, "track_bus": 0}],
-            plugins=list(channel.chain) + [PluginSpec(name=send, uid=SEND_UID, type="internal")],
+            plugins=chains[channel.name] + [PluginSpec(name=send, uid=SEND_UID, type="internal")],
             source=channel.input,
         ))
         processors[send] = {"properties": {"destination_name": RETURN}}
@@ -817,13 +904,18 @@ def compile_rig(
             # and every existing rig compiles exactly as before.
             processors[send]["parameters"] = {"gain": level_to_gain(channel.level)}  # emit rounds
         next_input += channel.inputs_used
+    if rig.master.level != 0.0:
+        # The master's level is its track's own gain, set as a channel's
+        # strip would be (keyed by the track's name); unity writes nothing,
+        # so every rig without a master level compiles exactly as before.
+        processors[MASTER] = {"parameters": {"gain": level_to_gain(rig.master.level)}}  # emit rounds
     # Last, always: see the module docstring.
     tracks.append(TrackSpec(
         name=MASTER,
         channels=2,
         inputs=[],
         outputs=[{"engine_bus": MASTER_BUS, "track_bus": 0}],
-        plugins=[PluginSpec(name=RETURN, uid=RETURN_UID, type="internal")] + list(rig.master.chain),
+        plugins=[PluginSpec(name=RETURN, uid=RETURN_UID, type="internal")] + master_chain,
         sink=rig.master.output,
     ))
     spec = RigSpec(
@@ -858,6 +950,17 @@ def blended_channels(rig: Rig) -> frozenset[str]:
     )
 
 
+def blend_controls(rig: Rig) -> dict[str, str]:
+    """Which control of the MIDI map drives each blended channel's send
+    gain, by channel (`blended_channels` names the same channels): for the
+    web UI's channel volume, which says "driven by <control>" there and does
+    not fight the pedal. Pure."""
+    return {
+        name: control.control for control in (rig.midi.controls if rig.midi else ())
+        if control.binding == "blend" for name in control.target
+    }
+
+
 def merged_state(
     fixed: dict[str, Any], captured: dict[str, Any] | None,
     blended: frozenset[str] | set[str] = frozenset(),
@@ -883,7 +986,9 @@ def merged_state(
     # same relation a capture has to a v1 rig.yaml's.
     processors = copy.deepcopy(fixed["processors"])
     for name, values in (captured.get("processors") or {}).items():
-        if not isinstance(values, dict):
+        if not isinstance(values, dict) or stereo.is_copy(name):
+            # A copy to stereo is the compiler's, with nothing to set: a
+            # captured bypass of one is never written into the config.
             continue
         entry = processors.setdefault(name, {})
         if name.endswith(SEND_SUFFIX) and name.removesuffix(SEND_SUFFIX) in blended:
@@ -925,7 +1030,66 @@ def _rounded(value: Any) -> Any:
     return int(rounded) if rounded == int(rounded) and value == int(value) else rounded
 
 
-def fold_state(raw: dict[str, Any], captured: dict[str, Any] | None) -> dict[str, Any]:
+def _is_number(value: Any) -> bool:
+    return isinstance(value, (int, float)) and not isinstance(value, bool)
+
+
+def _folded(written: Any, captured: Any) -> Any:
+    """The value a save writes for a parameter the file holds as `written`
+    and the capture read as `captured`.
+
+    Rounded as `emit` rounds (`_rounded`), and then, where the file had a
+    number: the file's own value when the two are the same number, so `1.0`
+    stays `1.0` and is not rewritten as `1`; and a float when the file had a
+    float. `_rounded` writes a whole number as an int, and in YAML `1` is an
+    int where `1.0` was a float, so the first save of a rig rewrote every
+    whole-number float, sixteen lines for one knob on the rig (#117,
+    2026-11-02): equal values, a different file, and the player's change lost
+    among them in `git diff`. A value the file did not have is written as
+    `_rounded` gives it."""
+    value = _rounded(captured)
+    if _is_number(written) and _is_number(value):
+        if value == written:
+            return written
+        if isinstance(written, float) and isinstance(value, int):
+            return float(value)
+    return value
+
+
+def added_entry(name: str, uri: Any, values: Any, defaults: dict[str, Any] | None) -> dict[str, Any]:
+    """The rig-file entry for a plugin added live (#32), as the rig files
+    write a plugin: its `name` and `uri`, `bypassed: true` only if it is, and
+    `parameters` only for the values that differ from the plugin's
+    `defaults` (what the agent read just after adding it), rounded as `emit`
+    rounds. With no defaults known every captured value is written: which of
+    them are defaults is the plugin's to know, and writing a default is
+    harmless where leaving out a changed value is not. A captured program is
+    written where the capture has one (a plugin with no automatable
+    parameters), as `merged_state` keeps one."""
+    values = values if isinstance(values, dict) else {}
+    entry: dict[str, Any] = {"name": name, "uri": uri}
+    if values.get("bypassed"):
+        entry["bypassed"] = True
+    if values.get("program") is not None:
+        entry["program"] = values["program"]
+    captured = values.get("parameters") if isinstance(values.get("parameters"), dict) else {}
+    known = defaults if isinstance(defaults, dict) else None
+    differ = {k: _rounded(v) for k, v in captured.items() if known is None or _differs(v, known, k)}
+    if differ:
+        entry["parameters"] = differ
+    return entry
+
+
+def _differs(value: Any, defaults: dict[str, Any], name: str) -> bool:
+    """Whether a captured value is not the plugin's default, as the file
+    would hold both (`_rounded`): two reads of one float32 are the same, and
+    six decimals is what a rig file can tell apart."""
+    return name not in defaults or _rounded(value) != _rounded(defaults[name])
+
+
+def fold_state(
+    raw: dict[str, Any], captured: dict[str, Any] | None, edits: dict[str, Any] | None = None,
+) -> dict[str, Any]:
     """The rig file's document with a live capture folded into it: what SAVE
     writes for a rig of channels (#30's last slice).
 
@@ -942,54 +1106,117 @@ def fold_state(raw: dict[str, Any], captured: dict[str, Any] | None) -> dict[str
     because a strip moved live changes the stem and not the mix, and the
     sends' destinations and the return, which are the compiler's. A send's
     gain is folded, as the channel's `level` in dB (#18): that is where a
-    channel's level in the mix lives.
+    channel's level in the mix lives. So is the master track's gain, as the
+    master's `level` (the web UI's master volume): it acts after the mix,
+    on no channel's stem.
 
-    A capture naming a processor the rig does not have is refused, as `emit`
-    refuses it: that is a capture of a different rig, or a plugin added live.
-    So is a chain the capture names that lacks one of the file's plugins: one
-    removed live, which folding would otherwise have kept in the file.
+    Which plugins a chain holds (#32). `edits` is `agent.live_edits`: the
+    plugins the agent added (`added`, with the track, URI and defaults) and
+    removed (`removed`, with the track) since the rig came up. It is how a
+    plugin added live is told from a capture of a different rig: a processor
+    the capture names that the file does not have is written only when the
+    log says it was added to the track the capture has it on, and a plugin of
+    the file a captured chain lacks is dropped only when the log says it was
+    removed from that track. The log explains a capture; it never changes
+    one: what is written is what the capture holds. A plugin added live gets
+    an entry at its captured place (`added_entry`), with no comments; a
+    removed one's entry goes, with the comments written above, inside and
+    beside it (yamlmerge's rule for an entry that moves, `_Update.remove`).
+    A name the log says was removed and added again is the file's own entry
+    when the URI is the file's (an undone remove), and a new entry in its
+    place when it is not.
+
+    A capture naming a processor that is neither the file's nor explained by
+    `edits` is refused, as `emit` refuses it: a capture of a different rig.
+    So is a chain lacking one of the file's plugins with no remove of it in
+    `edits`. Without `edits` (the CLI's `sushi-rig save`, the panel's SAVE:
+    no log), any plugin added or removed live is refused that way.
     """
     rig = parse_rig(copy.deepcopy(raw))  # refuse what load_rig would refuse
     captured = captured or {}
     processors = captured.get("processors") or {}
     orders = captured.get("tracks") or {}
-    known = {p.name for ch in rig.channels for p in ch.chain} | {p.name for p in rig.master.chain}
-    known |= {ch.name for ch in rig.channels} | {MASTER}
+    edits = edits or {}
+    added = edits.get("added") or {}
+    removed = edits.get("removed") or {}
+    files = {p.name: (ch.name, p) for ch in rig.channels for p in ch.chain}
+    files |= {p.name: (MASTER, p) for p in rig.master.chain}
+    known = set(files) | {ch.name for ch in rig.channels} | {MASTER}
     internal = {ch.name + SEND_SUFFIX for ch in rig.channels} | {RETURN}
     named = set(processors) | {n for order in orders.values() for n in (order or [])}
-    unknown = sorted(named - known - internal)
+
+    def captured_on(name: str) -> str | None:
+        return next((t for t, order in orders.items() if isinstance(order, list) and name in order), None)
+
+    def was_added(name: str) -> bool:
+        said = added.get(name)
+        return isinstance(said, dict) and bool(said.get("uri")) and captured_on(name) == said.get("track")
+
+    # Added live, as the log says: a name the file lacks; or one the file has,
+    # where the log added it again on another track (removed from one channel
+    # and added to the next: by name alone it would be the file's entry, which
+    # its own track drops as removed, and it would vanish from the save,
+    # review of #32), or with another plugin under it. What the file holds is
+    # keyed on (track, name), not the name alone.
+    new = {n for n in named - known if was_added(n)}
+    new |= {n for n in set(files) & named
+            if was_added(n) and (files[n][0], files[n][1].uri) != (captured_on(n), added[n]["uri"])}
+    # The copies to stereo after the mono plugins (`stereo.py`): the
+    # compiler's, never the file's, and known by their plugin's name.
+    internal |= {n for n in named if stereo.is_copy(n) and stereo.source_of(n) in known | new}
+    unknown = sorted(named - known - internal - new)
     if unknown:
         # Checked first: a capture of another rig (a switch that raced the
         # save) is the larger fault, and must not be told as a chain edit.
+        why = ("that is a capture of a different rig: the agent's log does not say it was added live"
+               if edits else
+               "that is a capture of a different rig, or a plugin added live, which only the agent's save "
+               "(POST /rig/save, the web UI's Save) can write, from its log of what it added; this save "
+               "has no log, and without one it writes values, bypass and order, never which plugins a "
+               "chain holds")
         raise RigFileError([
-            f"the capture names {', '.join(unknown)}, which {rig.name} does not have: that is a capture "
-            "of a different rig, or a plugin added live, which a save cannot write (it writes values, "
-            "bypass and order, never which plugins a chain holds), so nothing was saved"
+            f"the capture names {', '.join(unknown)}, which {rig.name} does not have: {why}, so nothing "
+            "was saved"
         ])
     # A plugin of the file that a chain the capture names does not hold was
     # removed live (#32's POST /live/remove). Folding used to keep it in its
-    # place, so the saved file still had it with nothing said; it is refused,
-    # as an added one is above. A track the capture does not name says
-    # nothing, and the compiler's own processors (`internal`) are not the
-    # file's to list. Found by review, 2026-11-02.
-    lacking = []
+    # place, so the saved file still had it with nothing said; it is dropped
+    # only where the log says so, and refused otherwise. A track the capture
+    # does not name says nothing, and the compiler's own processors
+    # (`internal`) are not the file's to list. Found by review, 2026-11-02.
+    lacking, gone = [], set()
     for track, entries in [(ch.name, ch.chain) for ch in rig.channels] + [(MASTER, rig.master.chain)]:
         order = orders.get(track)
         if isinstance(order, list):
-            lacking += [f"{p.name} (on {track})" for p in entries if p.name not in order]
+            for p in entries:
+                if p.name in order:
+                    continue
+                if removed.get(p.name) == track:
+                    gone.add(p.name)
+                else:
+                    lacking.append(f"{p.name} (on {track})")
     if lacking:
+        how = ("and the agent's log does not say it was removed" if edits else
+               "and this save has no log of what was removed live (only the agent's save, POST /rig/save "
+               "or the web UI's Save, has one)")
         raise RigFileError([
-            f"the running rig lacks {', '.join(lacking)}, which {rig.name} has: a plugin removed live "
-            "cannot be saved (a save writes values, bypass and order, never which plugins a chain "
-            "holds), so nothing was saved. Undo the remove, or edit the rig file and restart the rig"
+            f"the running rig lacks {', '.join(lacking)}, which {rig.name} has, {how}: a save writes which "
+            "plugins a chain holds only from that log, so nothing was saved. Undo the remove, or edit the "
+            "rig file and restart the rig"
         ])
 
     def fold_chain(entries: list[dict[str, Any]], track: str) -> list[dict[str, Any]]:
-        by_name = {e["name"]: e for e in entries}
+        by_name = {e["name"]: e for e in entries if e["name"] not in gone}
+        for name in new:
+            if captured_on(name) == track:
+                by_name[name] = added_entry(name, added[name]["uri"], processors.get(name),
+                                            added[name].get("defaults"))
         order = [n for n in (orders.get(track) or []) if n in by_name]
-        rest = [e["name"] for e in entries if e["name"] not in order]
+        rest = [e["name"] for e in entries if e["name"] in by_name and e["name"] not in order]
         folded = [by_name[n] for n in order + rest]
         for entry in folded:
+            if entry["name"] in new:
+                continue  # written from the capture already, by `added_entry`
             values = processors.get(entry["name"]) or {}
             if not isinstance(values, dict):
                 continue
@@ -1011,19 +1238,35 @@ def fold_state(raw: dict[str, Any], captured: dict[str, Any] | None) -> dict[str
                 # noise (0.35 reads back as 0.3500000238418579) that would
                 # rewrite every parameter line on every save and show a value
                 # that did not change as changed.
-                entry["parameters"] = {
-                    **(entry.get("parameters") or {}),
-                    **{k: _rounded(v) for k, v in values["parameters"].items()},
-                }
+                written = entry.get("parameters") or {}
+                captured_values = values["parameters"]
+                defaults = _defaults_of(entry)
+                if defaults is not None:
+                    # A plugin added live and saved since: still only what the
+                    # file states or what differs from its defaults, so the
+                    # next save does not write every default the first left out.
+                    captured_values = {k: v for k, v in captured_values.items()
+                                       if k in written or _differs(v, defaults, k)}
+                merged = {**written, **{k: _folded(written.get(k), v) for k, v in captured_values.items()}}
+                if merged or "parameters" in entry:
+                    entry["parameters"] = merged
         return folded
+
+    def _defaults_of(entry: dict[str, Any]) -> dict[str, Any] | None:
+        """The defaults the agent read for this entry's plugin when it added
+        it, if the log has them and it is the same plugin (its URI)."""
+        said = added.get(entry["name"])
+        if isinstance(said, dict) and said.get("uri") == entry.get("uri") and isinstance(said.get("defaults"), dict):
+            return said["defaults"]
+        return None
 
     blended = blended_channels(rig)
     out = copy.deepcopy(raw)
     for channel in out.get("channels") or []:
         if not isinstance(channel, dict):
             continue
-        if channel.get("chain"):
-            channel["chain"] = fold_chain(channel["chain"], channel["name"])
+        if channel.get("chain") or any(captured_on(n) == channel.get("name") for n in new):
+            channel["chain"] = fold_chain(channel.get("chain") or [], channel["name"])
         # The send's gain moved live is the channel's level (#18). Written
         # when it differs from what the file says, as a level in dB. Not for
         # a channel a blend drives: there the gain is the pedal's position,
@@ -1039,8 +1282,21 @@ def fold_state(raw: dict[str, Any], captured: dict[str, Any] | None) -> dict[str
             if level != current:
                 channel["level"] = level
     master = out.get("master")
-    if isinstance(master, dict) and master.get("chain"):
-        master["chain"] = fold_chain(master["chain"], MASTER)
+    if isinstance(master, dict) and (master.get("chain") or any(captured_on(n) == MASTER for n in new)):
+        master["chain"] = fold_chain(master.get("chain") or [], MASTER)
+    if isinstance(master, dict):
+        # The master track's gain, moved live (the web UI's master volume),
+        # is the master's `level` in dB, folded as a send's gain is a
+        # channel's: written when it differs from what the file says, so a
+        # rig whose master was never moved keeps a file with no level. Its
+        # pan and mute stay unfolded, as a channel's strip does: nothing
+        # here moves them, and a file has no key for them.
+        strip = processors.get(MASTER) or {}
+        gain = (strip.get("parameters") or {}).get("gain") if isinstance(strip, dict) else None
+        if isinstance(gain, (int, float)) and not isinstance(gain, bool):
+            level = gain_to_level(gain)
+            if level != master.get("level", 0.0):
+                master["level"] = level
     return out
 
 
@@ -1056,7 +1312,10 @@ def pin_monitor_path(config: dict[str, Any]) -> dict[str, Any]:
     emitted config, after every reordering, so nothing can come after it.
     """
     for track in config["tracks"]:
-        plugins = track["plugins"]
+        # Each copy to stereo straight after its plugin (`stereo.pin_copies`),
+        # for the same reason: a capture's order or emit's appending can put
+        # it anywhere, and anywhere else is a silent right channel.
+        plugins = track["plugins"] = stereo.pin_copies(track["plugins"])
         if track["name"] == MASTER:
             track["plugins"] = (
                 [p for p in plugins if p["name"] == RETURN] + [p for p in plugins if p["name"] != RETURN]
@@ -1132,8 +1391,11 @@ def heard(config: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
     (test_send_return.py). One config for a one-channel rig, named after it; one
     per channel otherwise, named `<rig>.<channel>`. Each is `render._alone`'s
     cut of that channel — the names and the cut `render.channels_of` gives a v1
-    config — with the master put back, so a v2 rig is checked against the
-    reference its v1 config was calibrated to.
+    config — with the master put back. The names are the rig's own references,
+    `config/sound/<name>.yaml` (`render.rig_channels`, `nulltest --all`); it
+    used to be checked against its v1 config's, until the compiler's copies to
+    stereo (stereo.py, 2026-11-02) made the two sound different, and the v1
+    config's are `<name>.v1-mono.yaml` now.
     """
     from .render import _alone
 
@@ -1177,7 +1439,10 @@ def heard(config: dict[str, Any]) -> list[tuple[str, dict[str, Any]]]:
 # - A processor whose `initial_state` entry says nothing of `bypassed` loads
 #   un-bypassed. (`emit` has always written none for such a one.)
 # - A processor added live starts at the plugin's defaults, the same values
-#   a config load gives it, so a replaced processor is the restarted one.
+#   a config load gives it, so a replaced processor is the restarted one;
+#   and so the values the agent reads straight after a live add are the
+#   defaults a save compares with (`added_entry`, #32), and it starts
+#   un-bypassed.
 # - A processor deleted live frees its name at once, for an add straight
 #   after under the same name (a replacement).
 # - A cc_mapping is bound to the processor when the config loads, so one
@@ -1227,6 +1492,8 @@ RESTART_REASONS = {
     "parameter_default": "a parameter the next rig leaves at its default, whose default is not known",
     "midi_target": "a processor a cc_mapping drives would be replaced, and the mapping is bound at load",
     "drifted": "the running rig is no longer what its config says, so a plan made from it would be wrong",
+    "stereo": "a plugin has a copy to stereo in one rig and not the other (plugin-ports.txt changed between them)",
+    "stereo_missing": "the running rig was compiled before the copies to stereo existed, so a restart adds them",
 }
 
 # The settings of the compiler's own processors that the next rig may leave
@@ -1544,10 +1811,20 @@ def diff(
     # -- processors --------------------------------------------------------------
     from .live import protected_processor
 
+    # The copies to stereo (`stereo.py`) are planned with their plugins, not
+    # as processors: each chain is compared without them, an add says which
+    # copy goes in with its plugin, and the agent's remove and move take a
+    # plugin's copy with it. So the plan below never names a copy.
     def chains(tracks: dict[str, Any]) -> dict[str, list[dict[str, Any]]]:
-        return {n: [p for p in (t.get("plugins") or []) if isinstance(p, dict)] for n, t in tracks.items()}
+        return {n: stereo.strip_copies([p for p in (t.get("plugins") or []) if isinstance(p, dict)])
+                for n, t in tracks.items()}
+
+    def copied(tracks: dict[str, Any]) -> set[str]:
+        return {stereo.source_of(p["name"]) for t in tracks.values() for p in (t.get("plugins") or [])
+                if isinstance(p, dict) and stereo.is_copy(str(p.get("name", "")), p.get("uid"))}
 
     chains_r, chains_n = chains(by_track_r), chains(by_track_n)
+    copied_r, copied_n = copied(by_track_r), copied(by_track_n)
     where_r = {p["name"]: (track, p) for track, ps in chains_r.items() for p in ps}
     where_n = {p["name"]: (track, p) for track, ps in chains_n.items() for p in ps}
     state_r = {e.get("processor"): e for e in running.get("initial_state") or [] if isinstance(e, dict)}
@@ -1598,6 +1875,21 @@ def diff(
                 continue
             survivors.discard(name)  # replaced: removed, and added fresh below
 
+    # Checked on the survivors left once the replacements are dropped: a
+    # replaced plugin is removed with its copy and added with its own.
+    if copied_n and not copied_r:
+        # The running rig has no copies at all: compiled before 2026-11-02,
+        # when the compiler began making them, so its mono plugins play the
+        # left channel only. Not a table that changed: a restart compiles them.
+        need("stereo_missing", "the running rig was compiled without copies to stereo, so its mono "
+                               f"plugins ({', '.join(sorted(copied_n & survivors)) or 'all of them'}) play "
+                               "the left channel only; a restart puts the copies in")
+    else:
+        for name in sorted(survivors):
+            if (name in copied_r) != (name in copied_n):
+                # The same plugin, so the same ports: only a changed
+                # plugin-ports.txt between the two compiles does this.
+                need("stereo", f"{name!r} has a copy to stereo in one rig and not the other")
     removed = [name for name in where_r if name not in survivors]
     added = [name for name in where_n if name not in survivors]
     for name in added:
@@ -1679,8 +1971,10 @@ def diff(
             if name in survivors:
                 continue
             before = chain[index + 1] if index + 1 < len(chain) else None
-            adds.append(SwitchStep("add", {
-                "track": track, "name": name, "uri": where_n[name][1].get("uri"), "before": before}))
+            add = {"track": track, "name": name, "uri": where_n[name][1].get("uri"), "before": before}
+            if name in copied_n:
+                add["copy"] = stereo.copy_name(name)  # added with it, in the same operation
+            adds.append(SwitchStep("add", add))
             adds.append(SwitchStep("bypass", {"processor": name, "bypassed": True}))
             if not (state_n.get(name) or {}).get("bypassed", False):
                 comes_in.append(SwitchStep("bypass", {"processor": name, "bypassed": False}))
@@ -1691,25 +1985,33 @@ def apply_to_chains(chains: dict[str, list[str]], plan: SwitchPlan) -> dict[str,
     """The chains as `plan`'s structural steps leave them, worked out without
     Sushi, so a plan can be shown to reach the next rig's chains. (The agent
     does not use it: each edit it makes is confirmed from its own read-back.)
-    A move is a swap with the neighbour, as `live.plan_move` makes it."""
+    A move is a swap with the neighbour, as `live.decide_move` makes it, and
+    a plugin's copy to stereo goes with it: moved, removed and added with it."""
     out = {track: list(chain) for track, chain in chains.items()}
     for step in plan.steps:
         args = step.args
         if step.op == "remove":
-            for chain in out.values():
-                if args["processor"] in chain:
-                    chain.remove(args["processor"])
+            # The processor's unit, as `agent.check_remove` takes it: with its
+            # copy to stereo only when that directly follows it.
+            for track, chain in out.items():
+                unit = next((u for u in stereo.units(chain) if u[0] == args["processor"]), None)
+                if unit is not None:
+                    out[track] = [name for name in chain if name not in unit]
         elif step.op == "move":
-            chain = next(c for c in out.values() if args["processor"] in c)
-            i = chain.index(args["processor"])
-            j = i - 1 if args["direction"] == "up" else i + 1
-            chain[i], chain[j] = chain[j], chain[i]
+            track = next((t for t, c in out.items() if args["processor"] in c), None)
+            moved = None if track is None else stereo.step_units(
+                out[track], args["processor"], -1 if args["direction"] == "up" else 1)
+            if moved is None:
+                # Not stored: a None chain made the next step's TypeError the
+                # report (found by review).
+                raise ValueError(f"{step.as_dict()} cannot be applied: {args['processor']!r} is not the head "
+                                 f"of a unit on any chain, or is already at that end ({out.get(track)})")
+            out[track] = moved
         elif step.op == "add":
             chain = out[args["track"]]
-            if args["before"] is None:
-                chain.append(args["name"])
-            else:
-                chain.insert(chain.index(args["before"]), args["name"])
+            names = [args["name"]] + ([args["copy"]] if args.get("copy") else [])
+            at = len(chain) if args["before"] is None else chain.index(args["before"])
+            chain[at:at] = names
     return out
 
 

@@ -229,7 +229,8 @@ def test_the_ui_files_are_in_the_package_data_a_wheel_carries():
     (A wheel built from this tree was checked to hold them, 2026-11-02.)"""
     import fnmatch
 
-    tomllib = pytest.importorskip("tomllib")
+    import tomllib
+
     config = tomllib.loads((checkout_root() / "tool" / "pyproject.toml").read_text(encoding="utf-8"))
     globs = config["tool"]["setuptools"]["package-data"]["sushi_rig"]
     package = UI_DIR.parent.parent
@@ -253,9 +254,22 @@ def test_which_plugin_each_processor_is_comes_with_the_compilers_roles():
     status, _, body = call(ui_agent(live=UiRig()), "GET", "/live/plugins")
     processors = json.loads(body)["processors"]
     assert status == 200
-    assert processors["overdrive"] == {"track": "board", "uri": GXTS9, "uid": None, "type": "lv2", "role": None}
+    assert processors["overdrive"] == {"track": "board", "uri": GXTS9, "uid": None, "type": "lv2", "role": None,
+                                       "width": "mono"}  # 1 1 in plugin-ports.txt
     assert {n: p["role"] for n, p in processors.items() if p["role"]} == {
         "board_send": "send", "vocal_send": "send", "master_return": "return"}
+
+
+def test_a_mono_plugins_copy_to_stereo_has_the_role_stereo_by_its_uid():
+    """The page hides role "stereo" (rig.js rackModel); the agent gives it to
+    the compiler's copy, known by Sushi's uid whatever it is called."""
+    import json
+
+    rig = UiRig()
+    rig.chains["board"].insert(1, "renamed")
+    rig.classes["renamed"] = {"uri": None, "uid": "sushi.testing.mono_summing", "type": "internal"}
+    status, _, body = call(ui_agent(live=rig), "GET", "/live/plugins")
+    assert status == 200 and json.loads(body)["processors"]["renamed"]["role"] == "stereo"
 
 
 def test_a_live_that_cannot_say_which_plugin_is_501_not_an_empty_answer():
@@ -454,6 +468,24 @@ def test_the_rack_keeps_the_send_and_return_apart_by_role_or_by_name(blank, serv
     assert out[2] == [{"channel": "board", "text": "0 dB"}, {"channel": "vocal", "text": "−6 dB"}]
 
 
+def test_the_rack_does_not_show_a_mono_plugins_copy_to_stereo_by_role_or_by_name(blank, served):
+    """The compiler's `<plugin>_to_stereo` (stereo.py) goes with its plugin,
+    so the rack does not offer it: the units are what a move steps past. The
+    track's `chain` is still Sushi's whole chain, as the agent logs it."""
+    live = copy.deepcopy(served.rig.snapshot(served.rig.connect()))
+    board = live["tracks"]["board"]
+    board.insert(board.index("overdrive") + 1, "overdrive_to_stereo")
+    plugins = copy.deepcopy(served.rig.plugins(None))
+    plugins["overdrive_to_stereo"] = {"track": "board", "uri": None, "uid": "sushi.testing.mono_summing",
+                                      "type": "internal", "role": "stereo"}
+    out = rigjs(blank, """
+      const shape = (m) => m.tracks.filter((t) => t.name === 'board').map((t) => [t.units.map((u) => u.name), t.chain]);
+      return [shape(R.rackModel(arg.live, arg.plugins, {})), shape(R.rackModel(arg.live, null, null))];""",
+                {"live": live, "plugins": plugins})
+    expected = [[["overdrive", "octave", "delay"], board]]
+    assert out == [expected, expected]
+
+
 # -- unsaved, and what undo would take ------------------------------------------
 
 STARTED = datetime(2026, 11, 2, 12, 0, 0, 500000, tzinfo=timezone.utc)
@@ -516,12 +548,87 @@ def test_a_reordered_chain_is_unsaved_until_it_is_put_back(blank, served):
 
 def test_a_move_of_a_processor_since_removed_keeps_the_chain_it_started_from(blank):
     """[a, b, c]; c moved up, then removed. The move's own `previous` is the
-    baseline, not the chain the remove found."""
+    baseline, not the chain the remove found: against it, c was removed and
+    nothing else moved."""
     live = {"tracks": {"board": ["a", "b"]}, "processors": {}, "parameter_info": {}}
     log = [entry("move", {"processor": "c", "direction": "up"}, ["a", "b", "c"]),
            entry("remove", {"processor": "c"}, {"track": "board", "chain": ["a", "c", "b"], "uri": None, "uid": None, "type": "lv2"}, 11)]
     assert unsaved(blank, log, live)["items"] == [
-        {"kind": "chain", "track": "board", "from": ["a", "b", "c"], "to": ["a", "b"], "source": None}]
+        {"kind": "removed", "processor": "c", "track": "board", "source": None}]
+
+
+BOARD = ["overdrive", "octave", "delay", "board_send"]
+
+
+def add_entry(name, chain_after, s=10, previous=BOARD):
+    return entry("add", {"track": "board", "uri": "urn:x", "name": name, "after": None, "copy": None,
+                         "chain": chain_after, "defaults": {}}, list(previous), s)
+
+
+def remove_entry(name, chain_before, s=10):
+    return entry("remove", {"processor": name}, {"track": "board", "chain": list(chain_before), "uri": "urn:x",
+                                                 "uid": None, "type": "lv2", "copy": None, "parameters": {},
+                                                 "bypassed": False}, s)
+
+
+def board(chain):
+    return {"tracks": {"board": list(chain), "master": ["master_return"]}, "processors": {}, "parameter_info": {}}
+
+
+def test_a_plugin_added_or_removed_is_unsaved_as_that_and_its_undo_nets_it_out(blank):
+    added = ["overdrive", "slap", "octave", "delay", "board_send"]
+    log = [add_entry("slap", added)]
+    assert unsaved(blank, log, board(added))["items"] == [
+        {"kind": "added", "processor": "slap", "track": "board", "source": None}]
+    # Its undo is logged shaped as the remove it applied, and read as one.
+    undone = log + [entry("undo", {"of": "add", "processor": "slap"},
+                          {"track": "board", "chain": added, "uri": "urn:x", "uid": None, "type": "lv2",
+                           "copy": None, "parameters": {}, "bypassed": False}, 11, undoes=0)]
+    assert unsaved(blank, undone, board(BOARD))["items"] == []
+    gone = ["overdrive", "octave", "board_send"]
+    log = [remove_entry("delay", BOARD)]
+    assert unsaved(blank, log, board(gone))["items"] == [
+        {"kind": "removed", "processor": "delay", "track": "board", "source": None}]
+    # A remove's undo is shaped as the add it applied.
+    undone = log + [entry("undo", {"of": "remove", "track": "board", "uri": "urn:x", "name": "delay",
+                                   "after": "octave", "parameters": {}, "bypassed": False}, gone, 11, undoes=0)]
+    assert unsaved(blank, undone, board(BOARD))["items"] == []
+
+
+def test_a_copy_to_stereo_is_not_a_change_and_a_move_beside_an_add_is_said_too(blank):
+    mono = ["overdrive", "octave", "delay", "ts9", "ts9_to_stereo", "board_send"]
+    assert unsaved(blank, [add_entry("ts9", mono)], board(mono))["items"] == [
+        {"kind": "added", "processor": "ts9", "track": "board", "source": None}]
+    moved = ["octave", "overdrive", "delay", "ts9", "ts9_to_stereo", "board_send"]
+    log = [add_entry("ts9", mono), entry("move", {"processor": "octave", "direction": "up"}, mono, 11)]
+    assert unsaved(blank, log, board(moved))["items"] == [
+        {"kind": "added", "processor": "ts9", "track": "board", "source": None},
+        {"kind": "chain", "track": "board", "from": BOARD, "to": moved, "source": None}]
+    # Added and removed again: nothing.
+    log = [add_entry("ts9", mono), remove_entry("ts9", mono, 11)]
+    assert unsaved(blank, log, board(BOARD))["items"] == []
+
+
+def test_a_chain_whose_baseline_the_log_lacks_is_one_row_not_every_plugin_added(blank):
+    """Review of #32: a move logged with no chain before it (`previous`
+    null) gave an empty baseline, and every plugin on the track was listed
+    as added. With no baseline the change is the chain, from unknown."""
+    moved = ["octave", "overdrive", "delay", "board_send"]
+    log = [entry("move", {"processor": "octave", "direction": "up"}, None)]
+    assert unsaved(blank, log, board(moved))["items"] == [
+        {"kind": "chain", "track": "board", "from": None, "to": moved, "source": None}]
+
+
+def test_a_remove_undone_after_a_save_is_unsaved_as_an_add(blank):
+    """The save wrote the rig without the delay; undo passes over it and puts
+    the delay back, which the file does not have."""
+    gone = ["overdrive", "octave", "board_send"]
+    saved = entry("save", {"file": "config/rigs/electric_board.yaml", "how": "updated"}, "config/rigs/electric_board.yaml", 11)
+    log = [remove_entry("delay", BOARD), saved,
+           entry("undo", {"of": "remove", "track": "board", "uri": "urn:x", "name": "delay", "after": "octave",
+                          "parameters": {}, "bypassed": False}, gone, 12, undoes=0)]
+    assert unsaved(blank, log, board(BOARD))["items"] == [
+        {"kind": "added", "processor": "delay", "track": "board", "source": None}]
 
 
 @pytest.mark.parametrize("log, first", [
@@ -606,7 +713,13 @@ def test_save_is_offered_whenever_a_rig_saveable_from_here_is_up(blank):
     assert "not committed" in v["note"]
     v = view(up, items=0)
     assert not v["save"]["disabled"] and not v["saveAs"]["disabled"], "nothing seen is not nothing to save"
-    assert v["note"].startswith("No changes seen since 2026-11-02T10:00:00+00:00. The agent does not see")
+    assert v["note"] == "Save writes config/rigs/electric_board.yaml in place, keeping its comments. It is not committed: that is yours to do.", \
+        "one note whatever the count: the column does not reflow as values change"
+    assert (v["dot"]["count"], v["dot"]["text"]) == (0, "")
+    assert v["dot"]["title"].startswith("No unsaved changes seen since 2026-11-02T10:00:00+00:00. The agent does not see")
+    v = view(up, items=3)
+    assert (v["dot"]["count"], v["dot"]["text"], v["dot"]["spoken"]) == (3, "3", ", 3 unsaved changes")
+    assert v["dot"]["title"].startswith("3 unsaved changes made through the agent since") and not v["revert"]["disabled"]
     assert view(up, items=0, agent_started="2026-11-02T11:00:00+00:00")["since"] == "2026-11-02T11:00:00+00:00", \
         "an agent started after the rig saw nothing before it"
     log = {"log": [entry("save", {"file": "x"}, None, 30)], "first": 0}
@@ -793,6 +906,16 @@ def until(predicate, timeout=5.0):
     raise AssertionError("not within %ss" % timeout)
 
 
+def unsaved_count(page, count):
+    """The one sign of unsaved work since 2026-11-06: the count on Save,
+    empty (and hidden) at none. The itemised list that was beside it, and
+    each knob's "was", are gone; what counts as unsaved is rig.js's
+    `unsavedChanges`, pinned by the pure tests above."""
+    dot = page.locator(".save-dot")
+    expect(dot).to_have_text(str(count) if count else "")
+    expect(dot).to_have_class(re.compile(r"\bhas\b") if count else re.compile(r"^save-dot$"))
+
+
 def test_the_rack_shows_every_chain_as_a_row_of_cards_with_the_profiles_controls(rack):
     tracks = rack.locator("section.track")
     expect(tracks).to_have_count(3)
@@ -808,8 +931,11 @@ def test_the_rack_shows_every_chain_as_a_row_of_cards_with_the_profiles_controls
     expect(rack.locator('.unit[data-unit="delay"]')).to_contain_text("no profile: every parameter")
     expect(rack.locator('.unit[data-unit="delay"]').get_by_role("slider")).to_have_count(6)
     expect(slider(rack, "octave latency")).to_have_attribute("aria-readonly", "true")
-    # The send is the channel's level, in dB.
-    expect(slider(rack, "vocal_send Level")).to_have_attribute("aria-valuetext", "−6 dB")
+    # The send is the channel's volume, at the top of its row, in dB; no
+    # second control for it at the row's end (2026-11-06).
+    expect(rack.locator("nav.channels").get_by_role("textbox", name="vocal volume value")).to_have_value("−6.0 dB")
+    expect(rack.get_by_role("slider", name="vocal_send Level")).to_have_count(0)
+    expect(rack.locator(".send")).to_have_count(0)
 
 
 def test_a_turned_knob_is_heard_at_once_and_marked_unsaved(rack, served):
@@ -819,11 +945,10 @@ def test_a_turned_knob_is_heard_at_once_and_marked_unsaved(rack, served):
         rack.keyboard.press("ArrowDown")
     expect(drive).to_have_attribute("aria-valuetext", "0.52")
     until(lambda: abs(served.rig.info["overdrive"]["Drive"]["value"] - 0.52) < 1e-9)
-    expect(drive).to_have_class(re.compile(r"\bunsaved\b"))
-    expect(drive).to_contain_text("was 0.62")
-    changes = rack.locator("aside.changes")
-    expect(changes.locator("h2")).to_have_text("1 unsaved change")
-    expect(changes.locator(".change")).to_have_text("board · overdrive · Drive0.62 to 0.52")
+    # Unsaved is the count on Save, and nothing beside the knob says "was".
+    unsaved_count(rack, 1)
+    expect(rack.locator('.knob[data-control$="Drive"]')).not_to_contain_text("was")
+    expect(rack.locator("aside.changes .change")).to_have_count(0)
 
 
 def test_a_knob_turns_by_dragging_with_a_pointer(rack, served):
@@ -831,7 +956,7 @@ def test_a_knob_turns_by_dragging_with_a_pointer(rack, served):
     x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
     rack.mouse.move(x, y)
     rack.mouse.down()
-    rack.mouse.move(x, y - 50, steps=5)  # a quarter of a full sweep, upwards
+    rack.mouse.move(x, y - 80, steps=8)  # a quarter of a full sweep (320 px), upwards
     rack.mouse.up()
     expect(slider(rack, "overdrive Drive")).to_have_attribute("aria-valuetext", "0.87")
     until(lambda: abs(served.rig.info["overdrive"]["Drive"]["value"] - 0.87) < 1e-6)
@@ -845,7 +970,7 @@ def test_a_refused_change_shows_the_agents_reason_and_the_rigs_value(rack, serve
     alert = rack.locator(".problem.refused")
     expect(alert).to_contain_text("Not changed: delay · Feedback")
     expect(alert).to_contain_text("Sushi would not set Feedback (test)")
-    expect(feedback).to_contain_text("refused: Sushi would not set Feedback (test)")
+    expect(rack.locator('.unit[data-unit="delay"] .knob[data-control$="Feedback"] .note')).to_have_text("refused: Sushi would not set Feedback (test)")
     # Back to the rig's value, with the reason beside it: not a silent revert.
     expect(feedback).to_have_attribute("aria-valuetext", "0.35")
     # The agent remembered it too, and says so in the same glance.
@@ -858,11 +983,11 @@ def test_bypass_and_undo_are_one_tap_each(rack, served):
     expect(rack.get_by_role("button", name="Turn on overdrive")).to_be_visible()
     until(lambda: served.rig.bypassed["overdrive"] is True)
     changes = rack.locator("aside.changes")
-    expect(changes.locator(".change")).to_have_text("board · overdriveon to bypassed")
+    unsaved_count(rack, 1)
     undo = changes.get_by_role("button", name="Undo · bypass overdrive")
     undo.click()
     until(lambda: served.rig.bypassed["overdrive"] is False)
-    expect(changes.locator("h2")).to_have_text("No changes seen")
+    unsaved_count(rack, 0)
     expect(rack.locator(".notice")).to_contain_text("Undone: bypass overdrive")
 
 
@@ -879,8 +1004,106 @@ def test_reordering_is_refused_while_locked_and_works_once_unlocked_deliberately
     rack.get_by_role("button", name="Move delay up", exact=True).click()
     until(lambda: served.rig.chains["board"] == ["overdrive", "delay", "octave", "board_send"])
     expect(rack.locator("#t-board .unit button.name")).to_have_text(["overdrive", "delay", "octave"])
-    expect(rack.locator("aside.changes .change")).to_have_text(
-        "board · chainoverdrive, octave, delay, board_send to overdrive, delay, octave, board_send")
+    unsaved_count(rack, 1)
+
+
+# -- a plugin added or removed from outside the page (#32: the library screen to come) --
+
+def post(served, path, body):
+    """A request the way a library screen would make it, from outside the page."""
+    import json
+    import urllib.request
+
+    request = urllib.request.Request(served.url + path, data=json.dumps(body).encode(),
+                                     headers={"Content-Type": "application/json"}, method="POST")
+    with urllib.request.urlopen(request, timeout=10) as response:
+        return json.loads(response.read())
+
+
+@pytest.fixture
+def edits_served():
+    from ui_fake import fixture_library
+
+    with Served(library=fixture_library) as served:
+        yield served
+
+
+def test_an_added_plugin_is_unsaved_as_added_and_one_tap_undoes_it(browser, edits_served):
+    served = edits_served
+    page = Page(browser, served.url + "/#rack")
+    p = page.page
+    p.wait_for_selector(".unit")
+    answer = post(served, "/live/add", {"track": "board", "uri": "http://drobilla.net/plugins/mda/Delay",
+                                        "name": "slap", "after": "overdrive"})
+    assert answer["ok"] and answer["chain"] == ["overdrive", "slap", "octave", "delay", "board_send"]
+    changes = p.locator("aside.changes")
+    unsaved_count(p, 1)
+    expect(p.locator("#t-board .unit button.name")).to_have_text(["overdrive", "slap", "octave", "delay"])
+    undo = changes.get_by_role("button", name="Undo · add slap")
+    undo.click()
+    until(lambda: served.rig.chains["board"] == ["overdrive", "octave", "delay", "board_send"])
+    unsaved_count(p, 0)
+    expect(p.locator(".notice")).to_contain_text("Undone: add slap")
+    expect(p.locator("#t-board .unit button.name")).to_have_text(["overdrive", "octave", "delay"])
+    page.close()
+
+
+def test_a_removed_plugin_is_unsaved_as_removed_and_its_undo_brings_it_back_as_it_was(browser, edits_served):
+    served = edits_served
+    page = Page(browser, served.url + "/#rack")
+    p = page.page
+    p.wait_for_selector(".unit")
+    post(served, "/live/bypass", {"processor": "octave", "bypassed": False})
+    post(served, "/live/remove", {"processor": "octave"})
+    changes = p.locator("aside.changes")
+    # Its bypass is no change of its own while it is gone: the remove says it.
+    unsaved_count(p, 1)
+    expect(p.locator("#t-board .unit button.name")).to_have_text(["overdrive", "delay"])
+    changes.get_by_role("button", name="Undo · remove octave").click()
+    until(lambda: served.rig.chains["board"] == ["overdrive", "octave", "delay", "board_send"])
+    expect(p.locator(".notice")).to_contain_text("Undone: remove octave")
+    # Back with its values (Octaves at -1, not its default 0) and the bypass it had.
+    expect(slider(p, "octave Octaves")).to_have_attribute("aria-valuetext", "−1.00")
+    expect(p.get_by_role("button", name="Bypass octave")).to_be_visible()
+    unsaved_count(p, 1)  # the bypass, back with it
+    page.close()
+
+
+def test_a_mono_plugin_added_is_one_card_and_one_change_and_its_copy_is_not_shown(browser, edits_served):
+    served = edits_served
+    page = Page(browser, served.url + "/#rack")
+    p = page.page
+    p.wait_for_selector(".unit")
+    post(served, "/live/add", {"track": "vocal", "uri": "http://guitarix.sourceforge.net/plugins/gxts9#ts9sim",
+                               "name": "grit"})
+    assert served.rig.chains["vocal"] == ["vocal_delay", "grit", "grit_to_stereo", "vocal_send"]
+    unsaved_count(p, 1)
+    expect(p.locator("#t-vocal .unit button.name")).to_have_text(["vocal_delay", "grit"])
+    p.locator("aside.changes button.undo").click()
+    until(lambda: served.rig.chains["vocal"] == ["vocal_delay", "vocal_send"])
+    unsaved_count(p, 0)
+    page.close()
+
+
+def test_a_save_after_an_add_and_a_remove_writes_them_and_nothing_is_unsaved(browser):
+    from ui_fake import fixture_library
+
+    with Served(save=True, library=fixture_library) as served:
+        page = save_rack(browser, served)
+        p = page.page
+        post(served, "/live/add", {"track": "board", "uri": "http://drobilla.net/plugins/mda/Delay", "name": "slap"})
+        post(served, "/live/remove", {"processor": "octave"})
+        unsaved_count(p, 2)
+        p.get_by_role("button", name="Save to electric_board").click()
+        expect(p.locator(".save-result.ok")).to_contain_text("Saved electric_board")
+        unsaved_count(p, 0)
+        chain = rig_file(served)["channels"][0]["chain"]
+        assert [e["name"] for e in chain] == ["overdrive", "delay", "slap"]
+        assert chain[2] == {"name": "slap", "uri": "http://drobilla.net/plugins/mda/Delay"}, \
+            "at its defaults: its name and URI"
+        text = (served.save.root / "config" / "rigs" / "electric_board.yaml").read_text()
+        assert "# the drive: a comment the save keeps" in text
+        page.close()
 
 
 def test_a_rig_that_is_down_looks_down(browser):
@@ -929,7 +1152,9 @@ def test_one_glance_says_which_rig_whether_it_is_up_and_what_is_not_measured(sta
     # before the page looked, so none since.
     expect(stage.locator(".tile")).to_have_text(["LOAD26%of 21.3 ms", "XRUNS0since opened", "AMPnone"])
     expect(stage.locator(".detail-line")).to_have_attribute("title", re.compile(r"^Nothing measures the rig's sound yet"))
-    expect(stage.locator(".level")).to_have_text(["board0 dB", "vocal−6 dB"])
+    expect(stage.locator(".level .n")).to_have_text(["board", "vocal"])
+    expect(stage.get_by_role("textbox", name="board volume value")).to_have_value("0.0 dB")
+    expect(stage.get_by_role("textbox", name="vocal volume value")).to_have_value("−6.0 dB")
     expect(stage.locator(".card .name")).to_have_text(["overdrive", "octave", "delay", "vocal_delay"])
     expect(stage.locator('.card[data-unit="overdrive"] .vals')).to_have_text("Drive 0.62 · Level −3.0 · Tone 480")
     expect(stage.locator(".problem")).to_have_count(0)
@@ -958,9 +1183,9 @@ def test_on_stage_one_tap_bypasses_and_one_opens_the_knobs_lock_on(stage, served
     stage.locator('.card[data-unit="overdrive"] button.open-card').click()
     tone = slider(stage, "overdrive Tone")
     tone.focus()
-    stage.keyboard.press("PageUp")
-    until(lambda: abs(served.rig.info["overdrive"]["Tone"]["value"] - (0.4222222222 + 0.1)) < 1e-6)
-    expect(tone).to_have_attribute("aria-valuetext", "570")
+    stage.keyboard.press("PageUp")  # ten steps of 5 Hz, 1 % of its 900 Hz rounded to a round number
+    until(lambda: abs(served.rig.info["overdrive"]["Tone"]["value"] - (530 - 100) / 900) < 1e-6)
+    expect(tone).to_have_attribute("aria-valuetext", "530")
 
 
 def test_the_stage_shows_the_agents_last_error(stage, served):
@@ -968,6 +1193,81 @@ def test_the_stage_shows_the_agents_last_error(stage, served):
     stage.get_by_role("button", name="Turn on octave").click()
     expect(stage.locator(".problem.agent")).to_contain_text("Sushi did not confirm the bypass (test)")
     expect(stage.locator(".problem.refused")).to_contain_text("Not changed: octave")
+
+
+# -- a child of the rig that exited (the rig, 2026-11-02) ---------------------------------
+#
+# After `kill` of the tuner, /health, `status` and the agent's terminal all said
+# so, and a text search of either screen found nothing: the page drew
+# `agent.last_error` and not `agent.supervisor.crashed`.
+
+def fmit_crash(started_at="2026-11-02T20:30:00+00:00", pgid=8301):
+    """The supervisor's own record of the tuner killed on the rig."""
+    from sushi_rig.supervisor import exit_record
+
+    return exit_record("fmit", 8302, -15, at="2026-11-02T21:08:22+00:00", phase="running",
+                       config_name="electric-chorus-2", log=Path("/run/user/1000/sushi-rig/logs/fmit.log"),
+                       pgid=pgid, started_at=started_at)
+
+
+RUNNING = {"running": True, "pgid": 8301, "started_at": "2026-11-02T20:30:00+00:00"}
+
+
+def test_a_crashed_child_is_named_with_what_it_means_and_what_to_do(blank):
+    up, earlier = rigjs(blank, "return [R.crashProblem(arg.c, arg.rig), R.crashProblem(arg.c, {...arg.rig, started_at: 'x'})];",
+                        {"c": fmit_crash(), "rig": RUNNING})
+    assert up["title"] == "The tuner (fmit) exited"
+    assert up["reason"] == ("The tuner (fmit) was killed by SIGTERM in electric-chorus-2; sound is unaffected; "
+                            "there is no tuner. Restart the rig to bring it back: nothing restarts it on its own. "
+                            "Its log is /run/user/1000/sushi-rig/logs/fmit.log.")
+    assert up["at"] == "2026-11-02T21:08:22+00:00" and "kind" not in up
+    assert earlier["kind"] == "page" and earlier["title"] == "The tuner (fmit) exited in an earlier run"
+    assert "Restart" not in earlier["reason"] and "no longer the one up" in earlier["reason"]
+
+
+def test_what_a_child_is_comes_from_the_agent_not_a_copy_in_the_page(blank):
+    """The labels are the supervisor's (`CHILD_ROLES`), carried in each crash
+    record; a name the page has never heard of is said as the agent says it."""
+    record = {**fmit_crash(), "name": "newchild", "label": "the new child", "means": "it means this"}
+    got = rigjs(blank, "return R.crashProblem(arg.c, arg.rig);", {"c": record, "rig": RUNNING})
+    assert got["title"] == "The new child exited" and "; it means this." in got["reason"]
+    source = (UI_DIR / "rig.js").read_text()
+    assert "sound is unaffected" not in source and "the tuner (fmit)" not in source.lower()
+
+
+def test_crashes_and_the_supervisors_problems_come_before_the_last_error_and_earlier_runs_last(blank):
+    health = {"ok": True, "body": {"rig": RUNNING, "agent": {
+        "last_error": {"message": "record failed", "command": ["POST", "/record/start"], "at": "t"},
+        "supervisor": {"crashed": [fmit_crash(pgid=7001), fmit_crash()], "problems": [
+            {"kind": "holder_lost", "at": "t2", "message": "the group holder of x (pid 9) exited"}]}}}}
+    got = rigjs(blank, "return R.agentProblems(arg);", health)
+    assert [g["title"] for g in got] == ["The tuner (fmit) exited", "The rig's supervisor",
+                                         "Last error (POST /record/start)", "The tuner (fmit) exited in an earlier run"]
+    assert got[1]["reason"] == "the group holder of x (pid 9) exited"
+
+
+@pytest.mark.parametrize("screen", ["stage", "rack"])
+def test_a_crashed_child_is_on_both_screens_as_loudly_as_the_last_error(browser, served, screen):
+    page = Page(browser, served.url + ("/" if screen == "stage" else "/#rack"),
+                **({"width": 390, "height": 844} if screen == "stage" else {}))
+    p = page.page
+    p.wait_for_selector(".card" if screen == "stage" else ".unit")
+    expect(p.locator(".problem")).to_have_count(0)
+    up = served.state["describe"]()
+    served.agent.supervisor.crashed.append(fmit_crash(pgid=up["pgid"], started_at=up["started_at"]))
+    served.agent.supervisor.crashed.append(fmit_crash(pgid=999, started_at=up["started_at"]))
+    served.agent.supervisor.problems.append({"kind": "stuck", "at": "2026-11-02T21:09:00+00:00",
+                                             "message": "the rig's group would not stop: pids 1, 2 are left"})
+    crash = p.locator(".problem.agent", has_text="The tuner (fmit) exited")
+    expect(crash).to_contain_text("sound is unaffected")
+    expect(crash).to_contain_text("Restart the rig to bring it back")
+    expect(p.locator(".problem.agent", has_text="The rig's supervisor")).to_contain_text("would not stop")
+    expect(p.locator(".problem.page", has_text="in an earlier run")).to_have_count(1)
+    # The same element, and so the same weight, the last error is given.
+    assert crash.evaluate("(e) => getComputedStyle(e).backgroundColor") == \
+        p.evaluate("() => { const e = document.createElement('div'); e.className = 'problem agent'; "
+                   "document.body.append(e); const c = getComputedStyle(e).backgroundColor; e.remove(); return c; }")
+    page.close()
 
 
 # -- what the page fetches, and when ----------------------------------------------------
@@ -1509,6 +1809,21 @@ def test_amp_values_are_in_their_own_units_and_one_never_sent_says_so(blank):
     assert shown == ["−3.0 dB", "0.0 dB", "0.0 dB", "1.00", "not sent", "Edge", "x", "none"]
 
 
+def test_a_model_is_titled_by_its_file_and_what_it_calls_itself_is_its_description(blank):
+    """On the rig the stage said "Neve 2" and the rack "Rupert Tape 1 Silk RED
+    Tape rupert Tape 1" of one model. The file's name is the title everywhere."""
+    amp = amp_answer(model={**amp_answer()["body"]["model"], "name": "Clean Room", "declared": "Twin Reverb Clean"})
+    models = {**MODELS, "body": {**MODELS["body"], "models": [
+        {**MODELS["body"]["models"][0], "name": "Clean Room", "declared": "Twin Reverb Clean"},
+        {**MODELS["body"]["models"][1], "declared": None}]}}
+    card, stage = rigjs(blank, "return [R.ampCard(arg.amp, arg.models), R.stageAmp(arg.amp)];",
+                        {"amp": amp, "models": models})
+    assert card["model"]["name"] == stage["name"] == "Clean Room"
+    assert card["model"]["declared"] == "Twin Reverb Clean"
+    assert [(o["label"], o["declared"]) for o in card["picker"]["options"]] == [
+        ("Clean Room (playing)", "Twin Reverb Clean"), ("Edge", None)]
+
+
 def test_the_stage_amp_is_the_model_and_the_output_level_only(blank):
     view = rigjs(blank, "return [R.stageAmp(arg), R.stageAmp(null)];", amp_answer())
     assert view[0]["name"] == "Clean Room" and view[0]["output"]["name"] == "Output Lvl"
@@ -1559,6 +1874,10 @@ def test_the_rack_shows_the_amp_with_its_model_faders_and_quality_not_on_one(bro
     expect(card.locator(".shown")).to_contain_text("Quality1.00")
     expect(card.locator("details.amp-about pre")).to_contain_text("matches the rig")
     expect(p.locator(".tile").last).to_have_text("AMPClean Room")
+    # One name on both screens, the file's; what the file calls itself is said
+    # beside it, not instead of it.
+    expect(card.locator(".amp-declared")).to_have_text("The file calls itself Invented Twin Clean Room Mic")
+    expect(card.locator("select option", has_text="Edge")).to_have_text("Edge")
     page.close()
 
 
@@ -1567,17 +1886,18 @@ def test_an_amp_fader_is_sent_to_carla_marked_unsaved_and_undone(browser, amp_se
     p = page.page
     output = p.get_by_role("slider", name="amp Output Lvl")
     output.focus()
-    p.keyboard.press("ArrowRight")  # one step: a tenth of a dB, one change logged
-    until(lambda: abs(amp_served.amp.carla.values().get("Output Lvl", 0) - -2.9) < 1e-6)
-    expect(output).to_have_attribute("aria-valuetext", "−2.9 dB")
-    expect(p.locator(".amp-card .fader.unsaved")).to_contain_text("was −3.0 dB")
-    expect(p.locator("aside.changes .change")).to_have_text("amp · Output Lvl−3.0 dB to −2.9 dB")
+    p.keyboard.press("ArrowRight")  # one step: 0.2 dB, 1 % of its 40 dB rounded, one change logged
+    until(lambda: abs(amp_served.amp.carla.values().get("Output Lvl", 0) - -2.8) < 1e-6)
+    expect(output).to_have_attribute("aria-valuetext", "−2.8 dB")
+    expect(p.get_by_role("textbox", name="amp Output Lvl value")).to_have_value("−2.8 dB")
+    expect(p.locator(".amp-card")).not_to_contain_text("was −3.0")
+    unsaved_count(p, 1)
     undo = p.locator("button.undo")
     expect(undo).to_have_text("Undo · amp · Output Lvl")
     undo.click()
     until(lambda: amp_served.amp.carla.values()["Output Lvl"] == -3.0)
     expect(output).to_have_attribute("aria-valuetext", "−3.0 dB")
-    expect(p.locator("aside.changes h2")).to_have_text("No changes seen")
+    unsaved_count(p, 0)
     page.close()
 
 
@@ -1618,7 +1938,7 @@ def test_the_model_is_changed_only_unlocked_and_after_a_confirm_that_warns_of_th
     assert restart["values"] == {"Input Lvl": 0.0, "Output Lvl": -3.0, "Quality": 1.0}
     expect(p.locator(".notice")).to_contain_text("the amp now plays Edge.nam. The sound stopped")
     expect(p.locator(".amp-card .amp-model")).to_have_text("Edge")
-    expect(p.locator("aside.changes .change")).to_have_text("amp · modelClean Room to Edge")
+    unsaved_count(p, 1)
     page.close()
 
 
@@ -1667,7 +1987,7 @@ def test_on_stage_the_amp_is_its_model_and_output_level_and_only_unlocked(browse
     assert height >= 44, "a thumb's target"
     output.focus()
     p.keyboard.press("ArrowLeft")
-    until(lambda: abs(amp_served.amp.carla.values().get("Output Lvl", 0) - -3.1) < 1e-6)
+    until(lambda: abs(amp_served.amp.carla.values().get("Output Lvl", 0) - -3.2) < 1e-6)
     width = p.evaluate("() => [document.documentElement.scrollWidth, innerWidth]")
     assert width[0] <= width[1], "it fits a phone"
     lock.click()
@@ -1763,10 +2083,11 @@ def test_save_writes_the_running_rigs_file_in_place_and_says_it_is_not_committed
     save = p.get_by_role("button", name="Save to electric_board")
     # Offered with nothing seen: the agent does not see every change.
     expect(save).to_be_enabled()
-    expect(p.locator("aside.changes h2")).to_have_text("No changes seen")
-    expect(p.locator(".save-note")).to_contain_text("No changes seen since")
+    unsaved_count(p, 0)
+    expect(save).to_have_attribute("title", re.compile(r"^No unsaved changes seen since"))
     turn_drive_down(p)
-    expect(p.locator("aside.changes h2")).to_have_text("1 unsaved change")
+    unsaved_count(p, 1)  # ten steps of one knob are one change: netted, as rig.js's unsavedChanges nets them
+    expect(save).to_have_attribute("title", re.compile(r"^1 unsaved change made through the agent since"))
     save.click()
     result = p.locator(".save-result.ok")
     expect(result).to_contain_text("Saved electric_board")
@@ -1778,9 +2099,8 @@ def test_save_writes_the_running_rigs_file_in_place_and_says_it_is_not_committed
     text = (save_served.save.root / "config" / "rigs" / "electric_board.yaml").read_text()
     assert "# the drive: a comment the save keeps" in text
     # The save is the baseline: nothing seen since it.
-    expect(p.locator("aside.changes h2")).to_have_text("No changes seen")
+    unsaved_count(p, 0)
     expect(p.locator(".last-save")).to_contain_text("config/rigs/electric_board.yaml, not committed when saved.")
-    expect(slider(p, "overdrive Drive")).not_to_have_class(re.compile(r"\bunsaved\b"))
     page.close()
 
 
@@ -1790,21 +2110,19 @@ def test_after_a_save_a_change_is_unsaved_again_and_so_is_an_undo(browser, save_
     turn_drive_down(p, 1)  # one step, one entry: 0.62 to 0.61
     until(lambda: abs(save_served.rig.info["overdrive"]["Drive"]["value"] - 0.61) < 1e-9)
     p.get_by_role("button", name="Save to electric_board").click()
-    expect(p.locator("aside.changes h2")).to_have_text("No changes seen")
+    unsaved_count(p, 0)
     # A change after the save.
     p.get_by_role("button", name="Bypass overdrive").click()
-    expect(p.locator("aside.changes h2")).to_have_text("1 unsaved change")
-    expect(p.locator("aside.changes .change")).to_have_text("board · overdriveon to bypassed")
+    unsaved_count(p, 1)
     # Undo it, then undo again: past the save, to the knob, which the file has.
     undo = p.locator("button.undo")
     expect(undo).to_have_text("Undo · bypass overdrive")
     undo.click()
-    expect(p.locator("aside.changes h2")).to_have_text("No changes seen")
+    unsaved_count(p, 0)
     expect(undo).to_have_text("Undo · overdrive · Drive")
     undo.click()
     until(lambda: abs(save_served.rig.info["overdrive"]["Drive"]["value"] - 0.62) < 1e-9)
-    expect(p.locator("aside.changes h2")).to_have_text("1 unsaved change")
-    expect(p.locator("aside.changes .change")).to_have_text("board · overdrive · Drive0.61 to 0.62")
+    unsaved_count(p, 1)
     assert abs(drive_of(rig_file(save_served)) - 0.61) < 1e-6, "the save is not undone"
     page.close()
 
@@ -2239,4 +2557,388 @@ def test_an_older_takes_answer_never_replaces_a_newer_one(browser, record_served
     expect(p.locator("section.takes .take .n")).to_have_text(re.compile(r"^take-"))
     expect(p.locator("section.takes")).not_to_contain_text("stale-take")
     stage.close()
+    page.close()
+
+
+# --------------------------------------------------------------------------- #
+# Rig files: the New rig screen, and the rack's Add channel and input change
+# --------------------------------------------------------------------------- #
+
+def roles_answer(**over):
+    """GET /machine/roles as the agent answers it for ui_fake's MACHINE_FILE."""
+    def role(name, ports, m2s=False, direction="input", mono=True, stereo=False, why=None):
+        return {"name": name, "ports": ports, "mono_to_stereo": m2s, "direction": direction, "used_by": [],
+                "widths": {"mono": {"ok": mono, "why": None if mono else "two ports"},
+                           "stereo": {"ok": stereo, "why": None if stereo else why}},
+                "master": {"ok": direction == "output", "why": None}}
+    body = {"ok": True, "machine": "machines/fake.yaml", "output": "monitor-out",
+            "ceiling": {"channels": 3, "why": "4 channels need 10 outputs, so a rig has at most 3 channels"},
+            "roles": [role("guitar-in", ["iface:capture_AUX0"], why="declare it: mono_to_stereo: true"),
+                      role("keys-in", ["iface:capture_AUX2"], m2s=True, stereo=True),
+                      role("monitor-out", ["iface:playback_FL", "iface:playback_FR"], direction="output",
+                           mono=False, stereo=True)], **over}
+    return {"ok": True, "status": 200, "body": body}
+
+
+def test_the_new_rig_form_hints_only_from_the_agents_own_answers(blank):
+    said = rigjs(blank, """
+      const roles = arg;
+      const choices = R.roleChoices(roles);
+      const health = {ok: true, body: {agent: {busy: null}, rig: {running: true}}};
+      const rigs = {ok: true, body: {rigs: ['electric_board']}};
+      const draft = (channels, name = 'two') => ({name, channels});
+      const g = R.newChannel(choices, []);
+      const k = R.newChannel(choices, [g]);
+      const three = [g, k, R.newChannel(choices, [g, k])];
+      return {
+        inputs: choices.inputs.map((r) => r.label),
+        widths: R.widthOptions(choices, 'guitar-in'),
+        g, k, third: three[2],
+        names: [R.suggestName('guitar-in', ['guitar', 'guitar-2']), R.suggestName('Odd Role', [])],
+        ceiling: R.newRigView(draft(three), roles, rigs, health, false).add,
+        below: R.newRigView(draft([g]), roles, rigs, health, false),
+        taken: R.newRigView(draft([g], 'electric_board'), roles, rigs, health, false).nameProblem,
+        stereoOnGuitar: R.newRigView(draft([{...g, width: 'stereo'}]), roles, rigs, health, false).channels[0].problem,
+        twice: R.newRigView(draft([g, {...k, name: 'guitar'}]), roles, rigs, health, false).channels[1].problem,
+        busy: R.newRigView(draft([g]), roles, rigs, {ok: true, body: {agent: {busy: 'up'}, rig: {}}}, false).create,
+        call: R.newRigCall('two', [{...g, from: {rig: 'electric_board', channel: 'board', extra: 1}}]),
+        restart: R.lifecycleCall('restart', 'electric_board'),
+        failed: R.roleChoices({ok: false, reason: '409 machine'}).problem,
+      };
+    """, roles_answer())
+    assert said["inputs"] == ["guitar-in · iface:capture_AUX0", "keys-in · iface:capture_AUX2"], "no output role"
+    assert said["widths"] == [{"width": "mono", "ok": True, "why": None},
+                              {"width": "stereo", "ok": False, "why": "declare it: mono_to_stereo: true"}]
+    assert said["g"] == {"name": "guitar", "input": "guitar-in", "width": "mono", "from": None}
+    assert said["k"] == {"name": "keys", "input": "keys-in", "width": "mono", "from": None}
+    assert said["third"]["name"] == "guitar-2", "the inputs ran out, so the first again, named apart"
+    assert said["names"] == ["guitar-3", "odd-role"]
+    assert said["ceiling"] == {"refused": "No more channels: 4 channels need 10 outputs, so a rig has at most 3 channels."}
+    assert said["below"]["add"] == {"refused": None} and said["below"]["countText"] == "1 of at most 3"
+    assert said["below"]["create"] == {"disabled": False, "label": "Create two"}
+    assert said["taken"] == "electric_board is already a rig in config/rigs/: choose another name."
+    assert said["stereoOnGuitar"] == "stereo on guitar-in: declare it: mono_to_stereo: true"
+    assert said["twice"] == "Another channel is called guitar."
+    assert said["busy"]["disabled"] is True
+    assert said["call"] == {"path": "/rigs/new", "json": {"name": "two", "channels": [
+        {"name": "guitar", "input": "guitar-in", "width": "mono", "from": {"rig": "electric_board", "channel": "board"}}]}}
+    assert said["restart"] == {"path": "/rig/restart", "json": {}}
+    assert said["failed"] == "The machine file's roles could not be read: 409 machine"
+
+
+def test_what_a_rig_file_answer_says_and_the_gesture_it_offers(blank):
+    said = rigjs(blank, """
+      const lib = {commit: 'abcdef1234', dirty: true, file: 'changed', others: false};
+      const ok = (body) => ({ok: true, status: 200, body: {ok: true, library: lib, ...body}});
+      return [
+        R.rigFileOutcome('new', 'two', ok({rig: 'two', file: 'config/rigs/two.yaml', offer: 'switch',
+          library: {...lib, file: 'untracked'},
+          channels: [{name: 'a', from: {rig: 'x', channel: 'board'}}, {name: 'b', from: null}]})),
+        R.rigFileOutcome('new', 'two', ok({rig: 'two', file: 'config/rigs/two.yaml', offer: 'start', channels: []})).offer,
+        R.rigFileOutcome('add', 'keys to board', ok({rig: 'board', file: 'config/rigs/board.yaml', running: true,
+          offer: 'restart', why: [{code: 'track_added', detail: "track 'keys'"}]})),
+        R.rigFileOutcome('input', "vocal's input", ok({rig: 'hall', file: 'config/rigs/hall.yaml', running: false})),
+        R.rigFileOutcome('new', 'keys', {ok: false, status: 409, code: 'rig_problem', reason: 'nothing was written: no role',
+          body: {machine_hint: 'add\\n  keys-in: [...]'}}),
+      ];
+    """)
+    made, start, added, changed, refused = said
+    assert made["title"] == "Made two" and made["offer"] == {"op": "switch", "name": "two", "label": "Switch to two"}
+    assert made["text"] == "Wrote config/rigs/two.yaml, a new rig with 2 channels. Chains copied: a from x · board."
+    assert made["commit"].startswith("Not committed: a new file git does not track yet, on commit abcdef1")
+    assert start == {"op": "start", "name": "two", "label": "Start two"}
+    assert added["text"] == ("Wrote config/rigs/board.yaml in place, keeping its comments. board keeps playing as "
+                             "it was until it restarts (track 'keys').")
+    assert added["offer"] == {"op": "restart", "name": "board", "label": "Restart board to play it"}
+    assert changed["offer"] is None and "it plays as edited when it is next started or switched to" in changed["text"]
+    assert refused == {"ok": False, "title": "Not made: keys", "reason": "nothing was written: no role",
+                       "hint": "add\n  keys-in: [...]", "code": "rig_problem"}
+
+
+@pytest.fixture
+def files_served():
+    with Served(save=True) as served:
+        yield served
+
+
+def new_rig_page(browser, served):
+    page = Watched(browser, served, "/#rack")
+    page.page.wait_for_selector(".unit")
+    page.page.get_by_role("link", name="New rig…").click()
+    expect(page.page.locator("h1.rig-name")).to_have_text("New rig")
+    expect(page.page.get_by_label("Channel 1 input")).to_have_value("guitar-in")
+    return page
+
+
+def test_a_new_rig_is_made_from_the_pickers_screen_and_offered_to_switch_to(browser, files_served):
+    page = new_rig_page(browser, files_served)
+    p = page.page
+    # The input picker shows each role's port, and no output role.
+    options = p.get_by_label("Channel 1 input").locator("option")
+    expect(options).to_have_text(["Choose an input…", "guitar-in · iface:capture_AUX0", "vocal-in · iface:capture_AUX1",
+                                  "keys-in · iface:capture_AUX2", "pair-in · iface:capture_AUX4 + iface:capture_AUX5"])
+    expect(p.get_by_label("Channel 1 name")).to_have_value("guitar")
+    p.get_by_label("Rig name").fill("two-guitars")
+    expect(p.locator('[data-check="new-rig-name"]')).to_have_text("Writes config/rigs/two-guitars.yaml.")
+    p.get_by_role("button", name="Add channel").click()
+    expect(p.get_by_label("Channel 2 input")).to_have_value("vocal-in")
+    # Two channels on one input: allowed, the agent's answer.
+    p.get_by_label("Channel 2 input").select_option("guitar-in")
+    p.get_by_label("Channel 2 name").fill("dirty")
+    expect(p.locator("span.sub", has_text="of at most")).to_have_text("2 of at most 3")
+    p.get_by_role("button", name="Create two-guitars").click()
+    result = p.locator(".rigfile-result.ok")
+    expect(result).to_contain_text("Made two-guitars")
+    expect(result).to_contain_text("Wrote config/rigs/two-guitars.yaml, a new rig with 2 channels.")
+    expect(result.locator(".commit")).to_have_text(
+        f"Not committed: a new file git does not track yet, on commit {files_served.save.commit[:7]}. "
+        "sushi-rig does not commit: that is yours to do.")
+    doc = rig_file(files_served, "two-guitars")
+    assert [(c["name"], c["input"], c["width"]) for c in doc["channels"]] == [
+        ("guitar", "guitar-in", "mono"), ("dirty", "guitar-in", "mono")]
+    assert doc["master"] == {"output": "monitor-out", "chain": []}
+    # The form is fresh again, and the picker lists the new rig.
+    expect(p.get_by_label("Rig name")).to_have_value("")
+    result.get_by_role("button", name="Switch to two-guitars").click()
+    expect(p.locator(".notice")).to_contain_text("Switched to two-guitars live")
+    assert ["switch", "two-guitars"] in files_served.lifecycle.calls
+    expect(p.locator(".rack-body")).to_be_visible()  # back on the rack
+    page.close()
+
+
+def test_stereo_is_offered_only_where_the_role_allows_it(browser, files_served):
+    page = new_rig_page(browser, files_served)
+    p = page.page
+    width = p.get_by_label("Channel 1 width")
+    expect(width.locator("option[value=stereo]")).to_have_attribute("disabled", "")
+    expect(p.locator(".channel-draft .width-why")).to_contain_text(
+        "stereo is not offered: role 'guitar-in' has 1 port(s) but this track routes it to 2 engine channel(s)")
+    expect(p.locator(".channel-draft .width-why")).to_contain_text("mono_to_stereo: true")
+    p.get_by_label("Channel 1 input").select_option("keys-in")
+    expect(width.locator("option[value=stereo]")).not_to_have_attribute("disabled", "")
+    width.select_option("stereo")
+    # A pair gives stereo only, and the width follows the agent's answer.
+    p.get_by_label("Channel 1 input").select_option("pair-in")
+    expect(width).to_have_value("stereo")
+    expect(width.locator("option[value=mono]")).to_have_attribute("disabled", "")
+    page.close()
+
+
+def test_add_channel_refuses_past_the_ceiling_with_the_compilers_reason(browser, files_served):
+    page = new_rig_page(browser, files_served)
+    p = page.page
+    add = p.get_by_role("button", name="Add channel")
+    add.click()
+    add.click()
+    expect(p.locator(".channel-draft")).to_have_count(3)
+    add.click()
+    expect(p.locator(".channel-draft")).to_have_count(3)
+    expect(p.locator(".add-refused")).to_have_text(
+        "No more channels: 4 channels need 10 outputs — 2 for the master and 2 for each channel's stem — "
+        "and Sushi has 8, so a rig has at most 3 channels.")
+    p.get_by_role("button", name="Remove channel 3").click()
+    expect(p.locator(".add-refused")).to_have_count(0)
+    page.close()
+
+
+def test_the_agents_refusals_of_a_new_rig_are_shown_in_place(browser, files_served):
+    rigs = files_served.save.root / "config" / "rigs"
+    page = new_rig_page(browser, files_served)
+    p = page.page
+    # A name the page cannot know is taken: made behind its back.
+    p.get_by_label("Rig name").fill("hall")
+    (rigs / "hall.yaml").write_text("# made elsewhere\n")
+    p.get_by_role("button", name="Create hall").click()
+    refused = p.locator(".rigfile-result.refused")
+    expect(refused).to_contain_text("Not made: hall")
+    expect(refused).to_contain_text("a rig called hall already exists (config/rigs/hall.yaml)")
+    assert (rigs / "hall.yaml").read_text() == "# made elsewhere\n"
+    # Two channels started from one chain: the compiler refuses the names twice.
+    p.get_by_label("Rig name").fill("copies")
+    p.get_by_role("button", name="Add channel").click()
+    for n in (1, 2):
+        p.get_by_label(f"Channel {n} starts from").select_option(label="electric_board · board (3 plugins)")
+    p.get_by_role("button", name="Create copies").click()
+    expect(refused).to_contain_text("Not made: copies")
+    expect(refused).to_contain_text("duplicate name 'overdrive'")
+    assert not (rigs / "copies.yaml").exists()
+    # A role gone from the machine file since the page read it: said with
+    # the lines to add, which the agent never writes itself.
+    machine = files_served.save.machine
+    before = machine.read_text().replace('  keys-in: {ports: ["iface:capture_AUX2"], mono_to_stereo: true}\n', "")
+    machine.write_text(before)
+    p.get_by_label("Channel 2 starts from").select_option("")
+    p.get_by_label("Channel 1 starts from").select_option("")
+    p.get_by_label("Channel 2 input").select_option("keys-in")
+    p.get_by_role("button", name="Create copies").click()
+    expect(refused).to_contain_text("role 'keys-in' feeds a track but the machine file does not define it")
+    expect(refused.locator(".machine-hint")).to_contain_text("has no role keys-in. sushi-rig does not edit the machine file")
+    assert machine.read_text() == before
+    page.close()
+
+
+def inputs_region(p):
+    return p.locator("section.wiring")
+
+
+def test_a_channel_is_added_to_the_running_rig_and_a_restart_is_offered(browser, files_served):
+    page = Watched(browser, files_served, "/#rack")
+    p = page.page
+    wiring = inputs_region(p)
+    expect(wiring.locator(".strip .strip-name")).to_have_text(["board", "vocal", "master"])
+    expect(wiring.locator(".wiring-row")).to_have_text([re.compile(r"^guitar-in · mono"), re.compile(r"^vocal-in · mono")])
+    before = (files_served.save.root / "config" / "rigs" / "electric_board.yaml").read_text()
+    wiring.get_by_role("button", name="Add channel").click()
+    expect(p.get_by_label("New channel name")).to_have_value("keys")
+    p.get_by_label("New channel width").select_option("stereo")
+    p.get_by_role("button", name="Add keys").click()
+    result = wiring.locator(".rigfile-result.ok")
+    expect(result).to_contain_text("Added keys to electric_board")
+    expect(result).to_contain_text("electric_board keeps playing as it was until it restarts (track 'keys').")
+    expect(result.locator(".commit")).to_contain_text("Not committed: changed on top of commit")
+    after = (files_served.save.root / "config" / "rigs" / "electric_board.yaml").read_text()
+    import difflib
+
+    assert [line for line in difflib.unified_diff(before.splitlines(), after.splitlines(), lineterm="", n=0)
+            if line[:1] in "+-" and not line.startswith(("+++", "---"))] == [
+        "+- name: keys", "+  input: keys-in", "+  width: stereo", "+  chain: []"], "only the channel's own lines"
+    expect(wiring.locator(".wiring-row")).to_have_count(3)
+    expect(p.locator("section.track")).to_have_count(3), "still playing as it was"
+    result.get_by_role("button", name="Restart electric_board to play it").click()
+    confirm = wiring.get_by_role("group", name="Confirm the restart")
+    expect(confirm).to_contain_text("The sound stops for a few seconds")
+    confirm.get_by_role("button", name="Restart now").click()
+    expect(p.locator(".notice")).to_contain_text("Restarted electric_board from its file.")
+    assert ["restart"] in files_served.lifecycle.calls
+    expect(p.locator("section.track h2")).to_have_text(["board", "vocal", "keys", "master"])
+    page.close()
+
+
+def test_a_channels_input_is_changed_from_the_rack(browser, files_served):
+    page = Watched(browser, files_served, "/#rack")
+    p = page.page
+    wiring = inputs_region(p)
+    wiring.get_by_role("button", name="Change vocal's input").click()
+    width = p.get_by_label("vocal width")
+    expect(width.locator("option[value=stereo]")).to_have_attribute("disabled", "")  # one port, no mono_to_stereo
+    p.get_by_label("vocal input").select_option("keys-in")
+    width.select_option("stereo")
+    p.get_by_role("button", name="Apply to vocal").click()
+    result = wiring.locator(".rigfile-result.ok")
+    expect(result).to_contain_text("Changed vocal's input")
+    expect(result).to_contain_text("keeps playing as it was until it restarts")
+    expect(result.get_by_role("button", name="Restart electric_board to play it")).to_be_visible()
+    expect(wiring.locator('.wiring-row[data-channel="vocal"]')).to_contain_text("keys-in · stereo")
+    assert rig_file(files_served)["channels"][1] == {
+        "name": "vocal", "input": "keys-in", "width": "stereo", "level": -6.0,
+        "chain": [{"name": "vocal_delay", "uri": "http://drobilla.net/plugins/mda/Delay"}]}
+    page.close()
+
+
+def test_an_edit_of_the_running_rig_with_unsaved_work_is_refused_in_place(browser, files_served):
+    page = Watched(browser, files_served, "/#rack")
+    p = page.page
+    turn_drive_down(p, 1)
+    wiring = inputs_region(p)
+    expect(wiring.locator(".warn")).to_contain_text("with unsaved changes on electric_board, save first")
+    wiring.get_by_role("button", name="Change board's input").click()
+    p.get_by_label("board input").select_option("keys-in")
+    p.get_by_role("button", name="Apply to board").click()
+    refused = wiring.locator(".rigfile-result.refused")
+    expect(refused).to_contain_text("Not changed: board's input")
+    expect(refused).to_contain_text("electric_board is running with 1 change made through the agent and not saved")
+    expect(refused).to_contain_text("Save first")
+    assert rig_file(files_served)["channels"][0]["input"] == "guitar-in"
+    # Saved, the same change goes through.
+    p.get_by_role("button", name="Save to electric_board").click()
+    expect(p.locator(".save-result.ok")).to_contain_text("Saved electric_board")
+    p.get_by_role("button", name="Apply to board").click()
+    expect(wiring.locator(".rigfile-result.ok")).to_contain_text("Changed board's input")
+    assert rig_file(files_served)["channels"][0]["input"] == "keys-in"
+    page.close()
+
+
+def test_the_stage_has_no_new_rig_and_no_channel_edits(browser, files_served):
+    page = Watched(browser, files_served, "/#stage", width=390, height=844)
+    p = page.page
+    p.wait_for_selector(".card")
+    lock = p.locator("button.lock")
+    lock.click()
+    lock.click()
+    expect(lock).to_have_text("Lock off · editing")
+    expect(p.locator(".stage-rigs .rig").first).to_be_visible()
+    expect(p.get_by_role("link", name="New rig…")).to_have_count(0)
+    expect(p.locator("section.wiring")).to_have_count(0)
+    expect(p.get_by_role("button", name="Add channel")).to_have_count(0)
+    page.close()
+
+
+# -- review, 2026-11-06 -------------------------------------------------------
+
+def test_after_an_edit_a_knob_turned_makes_the_offered_restart_refuse_until_told(browser, files_served):
+    """(1) The restart an edit offers reloads the file, so a knob turned after
+    the edit would be lost by it: the agent refuses, the page says why in
+    place, and dropping the change is a second, explicit tap."""
+    page = Watched(browser, files_served, "/#rack")
+    p = page.page
+    wiring = inputs_region(p)
+    wiring.get_by_role("button", name="Add channel").click()
+    p.get_by_role("button", name="Add keys").click()
+    result = wiring.locator(".rigfile-result.ok")
+    expect(result).to_contain_text("Added keys to electric_board")
+    turn_drive_down(p, 1)
+    until(lambda: abs(files_served.rig.info["overdrive"]["Drive"]["value"] - 0.61) < 1e-9)
+    result.get_by_role("button", name="Restart electric_board to play it").click()
+    wiring.get_by_role("group", name="Confirm the restart").get_by_role("button", name="Restart now").click()
+    refused = p.locator(".problem.refused")
+    expect(refused).to_contain_text("Not restarted: electric_board")
+    expect(refused).to_contain_text("electric_board has 1 change made through the agent and not saved")
+    expect(refused).to_contain_text("Save first")
+    assert ["restart"] not in files_served.lifecycle.calls
+    refused.get_by_role("button", name="Restart anyway, dropping them").click()
+    expect(p.locator(".notice")).to_contain_text("Restarted electric_board from its file.")
+    assert files_served.lifecycle.calls[-1] == ["restart"]
+    page.close()
+
+
+def test_a_new_rig_that_moves_program_numbers_says_so_with_the_table(browser, files_served):
+    """(6) A rig sorting before electric_board moves it from program 0 to 1."""
+    page = new_rig_page(browser, files_served)
+    p = page.page
+    p.get_by_label("Rig name").fill("aa-board")
+    p.get_by_role("button", name="Create aa-board").click()
+    moved = p.locator(".rigfile-result.ok .programs-moved")
+    expect(moved).to_contain_text("Program Change numbers follow config/rigs by file name, so aa-board (program 0) "
+                                  "moves 1 rig up one: program 0, which was electric_board, is now aa-board.")
+    expect(moved.locator("tbody tr")).to_have_text(["electric_board01"])
+    page.close()
+
+
+def test_an_edits_answer_is_shown_even_when_a_poll_lands_while_it_is_written(browser, files_served, monkeypatch):
+    """(7) A poll that saw the run change replaced the rack's edit state while
+    a write was in flight, and the write's answer went to an object nothing
+    drew. The write is held a moment here, and the run changes meanwhile."""
+    import time
+
+    import sushi_rig.rigfile as rigfile
+
+    real, started = rigfile.write_rig, []
+
+    def slow(*args, **kwargs):
+        started.append(time.monotonic())
+        time.sleep(2.5)
+        return real(*args, **kwargs)
+
+    monkeypatch.setattr(rigfile, "write_rig", slow)
+    page = Watched(browser, files_served, "/#rack")
+    p = page.page
+    wiring = inputs_region(p)
+    wiring.get_by_role("button", name="Change vocal's input").click()
+    p.get_by_label("vocal input").select_option("keys-in")
+    p.get_by_role("button", name="Apply to vocal").click()
+    until(lambda: started)
+    # The run starts again elsewhere while the file is written: a new start time.
+    files_served.lifecycle.started = files_served.lifecycle.started + timedelta(minutes=1)
+    expect(wiring.locator(".rigfile-result.ok")).to_contain_text("Changed vocal's input", timeout=8000)
+    expect(wiring.locator('.wiring-row[data-channel="vocal"]')).to_contain_text("keys-in · mono")
     page.close()

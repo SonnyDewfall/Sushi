@@ -33,6 +33,7 @@ import time
 from dataclasses import dataclass, field, replace
 from typing import Any, Callable
 
+from . import stereo
 from .spec import PROBE_TRACK
 
 DEFAULT_GRPC_ADDRESS = "localhost:51051"
@@ -130,6 +131,32 @@ def _safe(fn, *args):
         return None
 
 
+# The processors already warned about for having no parameters, by track and
+# name, for the life of this process. See `_no_parameters`.
+_SAID_NO_PARAMETERS: set[tuple[str, str]] = set()
+
+
+def _no_parameters(track: str, processor: str) -> None:
+    """Say, once, that a processor returned no parameters, unless it is one
+    that has none by design.
+
+    `capture` runs under the web UI's poll, about once a second, and the
+    warning it gave every time for the master's return (`master_return`, a
+    send/return pair has nothing to set) filled the agent's terminal on the
+    rig on 2026-11-02 and buried the two lines that mattered, a crashed tuner
+    and a refused take. The compiler's own send and return
+    (`protected_processor`) are expected to have none and are not mentioned.
+    Anything else is said once per processor per process: a plugin with no
+    parameters is worth knowing about, not worth repeating. An internal
+    processor the compiler did not put there cannot be told by name here
+    (the capture reads no session), so it falls to the once-only rule."""
+    if protected_processor(track, processor) is not None or (track, processor) in _SAID_NO_PARAMETERS:
+        return
+    _SAID_NO_PARAMETERS.add((track, processor))
+    print(f"warning: {processor!r} on {track!r} returned no parameters "
+          "(said once; it is not repeated while this process runs)", file=sys.stderr)
+
+
 def capture(address: str = DEFAULT_GRPC_ADDRESS, controller: Any = None) -> dict[str, Any]:
     """Read the full normalised parameter state of a running Sushi.
 
@@ -184,7 +211,7 @@ def capture(address: str = DEFAULT_GRPC_ADDRESS, controller: Any = None) -> dict
             for proc_id, proc_name, is_track in targets:
                 param_infos = controller.parameters.get_processor_parameters(proc_id)
                 if not param_infos:
-                    print(f"warning: {proc_name!r} returned no parameters", file=sys.stderr)
+                    _no_parameters(track.name, proc_name)
 
                 params: dict[str, float] = {}
                 for param in param_infos:
@@ -584,39 +611,6 @@ def refresh_panel(
         (schedule or _start_timer)(tab_delay, _reselect)
 
 
-def plan_move(chain: list[str], processor: str, direction: int) -> dict[str, Any] | None:
-    """Where `processor` should land to move one step through `chain`.
-
-    Pure, so the position maths is testable without a running Sushi — it is
-    fiddly enough to be worth pinning, and getting it wrong silently rearranges
-    someone's signal chain.
-
-    Returns `None` when the move is a no-op (already at that end, or the
-    processor isn't on the track), otherwise the `move_processor_on_track`
-    arguments that achieve it: `{"before": <processor name or None>,
-    "add_to_back": bool}`.
-
-    Sushi's API expresses position as "before this processor" or "at the back",
-    so moving *later* past the final element has to become `add_to_back`
-    rather than "before" anything.
-    """
-    if processor not in chain:
-        return None
-    index = chain.index(processor)
-
-    if direction < 0:
-        if index == 0:
-            return None
-        return {"before": chain[index - 1], "add_to_back": False}
-
-    if index >= len(chain) - 1:
-        return None
-    if index + 1 == len(chain) - 1:
-        # The neighbour is last, so "after it" is the end of the chain.
-        return {"before": None, "add_to_back": True}
-    return {"before": chain[index + 2], "add_to_back": False}
-
-
 @dataclass(frozen=True)
 class Move:
     """What a request to move a processor found and did, as data, so no caller
@@ -642,9 +636,17 @@ class Move:
     chains: dict[str, list[str]]
     # The ids `move_processor_on_track` takes, from the same walk the plan was
     # made on: (processor, track, before, add_to_back). Only a "planned" or
-    # "moved" move has them.
+    # "moved" move has them. `then` is the commands after it, in order, when
+    # a plugin and its copy to stereo move as one (`stereo.units`): the copy
+    # goes where its plugin went, or a neighbour's copy where its plugin did.
     command: tuple[int, int, int, bool] | None = field(default=None, repr=False, compare=False)
     why: str | None = field(default=None, compare=False)
+    then: tuple[tuple[int, int, int, bool], ...] = field(default=(), repr=False, compare=False)
+    # With `then`: the command that puts the plugin back in front of its copy
+    # if the copy's own command fails, so the two are never left apart, and
+    # the names, for saying what state the chain is in if that fails too.
+    back: tuple[int, int, int, bool] | None = field(default=None, repr=False, compare=False)
+    unit: tuple[str, ...] = field(default=(), repr=False, compare=False)
 
     @property
     def message(self) -> str:
@@ -680,25 +682,52 @@ def decide_move(
     uid Sushi reports): a pedal moved behind its channel's send is not heard,
     and the send or return moved is the compiled routing broken (found by
     review; it was allowed).
+
+    The swap is of units (`stereo.units`): a mono plugin and the copy to
+    stereo after it move as one, and a neighbour with a copy is stepped past
+    whole, so no move separates a plugin from its copy or puts anything
+    between them. A copy asked to move by itself is protected, like a send.
+    Moving a unit of two is two of Sushi's commands, sent in order: for the
+    moment between them the right channel can be silent, or a stereo
+    plugin's image folded, for one block or so.
     """
     track = next((t for t, chain in chains.items() if processor in chain), None)
     if track is None:
         return Move("absent", processor, direction, None, chains)
     chain = chains[track]
-    target = plan_move(chain, processor, direction)
-    if target is None:
+    uids = uids or {}
+    grouped = stereo.units(chain, uids)
+    index = next(i for i, unit in enumerate(grouped) if processor in unit)
+    if grouped[index][0] != processor:
+        # A copy to stereo, asked to move by itself: it goes with its plugin.
+        return Move("protected", processor, direction, chain, chains,
+                    why=f"{protected_processor(track, processor, uids.get(processor))}, which moves "
+                        f"with {stereo.source_of(processor)!r}: move that instead")
+    other = index + (-1 if direction < 0 else 1)
+    if not 0 <= other < len(grouped):
         return Move("unchanged", processor, direction, chain, chains)
-    neighbour = chain[chain.index(processor) + (-1 if direction < 0 else 1)]
-    for name in (processor, neighbour):
-        why = protected_processor(track, name, (uids or {}).get(name))
-        if why:
+    for name in (processor, grouped[other][0]):
+        why = protected_processor(track, name, uids.get(name))
+        # A copy heading a unit is a stray: one with no plugin before it,
+        # left by a two-command edit that failed half way and could not be
+        # undone. Moving it is part of the repair, so it is allowed.
+        if why and not stereo.is_copy(name, uids.get(name)):
             return Move("protected", processor, direction, chain, chains,
                         why=f"{why}, which stays where the compiler put it")
-    before = ids[target["before"]] if target["before"] else 0
-    return Move(
-        "planned", processor, direction, chain, chains,
-        (ids[processor], ids[track], before, bool(target["add_to_back"])),
+    # Each of this unit, in order, in front of the neighbour's head (up), or
+    # in front of what follows the neighbour, or at the back (down): one swap.
+    if direction < 0:
+        ahead_of = grouped[other][0]
+    else:
+        ahead_of = grouped[other + 1][0] if other + 1 < len(grouped) else None
+    unit = grouped[index]
+    commands = tuple(
+        (ids[name], ids[track], ids[ahead_of] if ahead_of else 0, ahead_of is None)
+        for name in unit
     )
+    back = (ids[unit[0]], ids[track], ids[unit[1]], False) if len(unit) > 1 else None
+    return Move("planned", processor, direction, chain, chains, commands[0], then=commands[1:],
+                back=back, unit=tuple(unit))
 
 
 def plan_live_move(
@@ -736,13 +765,33 @@ def send_live_move(
     """
     if move.outcome != "planned" or move.command is None:
         raise ValueError(f"only a planned move can be sent, not {move.outcome!r}")
-    processor_id, track_id, before_id, add_to_back = move.command
-    with _connection(address, controller) as c:
+    def send(c, command) -> None:
+        processor_id, track_id, before_id, add_to_back = command
         response = c.audio_graph.move_processor_on_track(
             processor_id, track_id, track_id, before_id, add_to_back,
         )
         # Strict: "moved" is said only of a move Sushi confirmed.
         _wait(response, strict=True)
+
+    with _connection(address, controller) as c:
+        send(c, move.command)
+        for command in move.then:
+            try:
+                send(c, command)
+            except Exception as exc:  # noqa: BLE001 -- put the plugin back, then say so
+                head, copy = move.unit[0], move.unit[-1]
+                try:
+                    send(c, move.back)
+                except Exception as again:  # noqa: BLE001
+                    raise LiveError(
+                        f"moved {head!r} but not its copy to stereo {copy!r} ({exc}), and putting "
+                        f"{head!r} back in front of it failed too ({again}): the two are apart, so the "
+                        f"right channel is silent after {head!r} and {copy!r} folds what comes before it. "
+                        f"A copy with no plugin before it can be moved or removed: move or remove "
+                        f"{copy!r}, or restart the rig") from again
+                raise LiveError(
+                    f"moved {head!r} but not its copy to stereo {copy!r} ({exc}), so {head!r} was put "
+                    "back in front of it: nothing moved") from exc
     return replace(move, outcome="moved")
 
 
@@ -892,6 +941,10 @@ def protected_processor(track: str, processor: str, uid: str | None = None) -> s
         return f"{processor!r} is {track!r}'s send"
     if uid == RETURN_UID or (track == MASTER and processor == RETURN):
         return f"{processor!r} is the master's return"
+    if stereo.is_copy(processor, uid):
+        # The compiler's copy to stereo after a mono plugin (stereo.py): it
+        # goes, moves and is removed with its plugin, never on its own.
+        return f"{processor!r} is {stereo.source_of(processor)!r}'s copy to stereo"
     return None
 
 
@@ -987,6 +1040,30 @@ def read_live_removal(
         }
 
 
+def read_live_values(
+    processor: str, address: str = DEFAULT_GRPC_ADDRESS, controller: Any = None,
+) -> dict[str, Any]:
+    """`{"parameters": {name: normalised value}, "bypassed": bool | None}`:
+    one processor's automatable parameters and its bypass, read the way
+    `capture` reads them (read-only parameters left out, a bypass Sushi will
+    not give None). What a remove records just before it removes, so an undo
+    can put the plugin back as it was, and what an add reads just after it
+    adds, the plugin's defaults, so a save writes only the values that differ
+    from them (#32). Its id is asked of Sushi by name (`get_processor_id`, as
+    `set_live_parameter` asks it); an unknown name is Sushi's refusal and
+    propagates. A program is not read: a plugin whose state is a program alone
+    comes back at its default one. Not run against a live Sushi."""
+    with _connection(address, controller) as c:
+        proc_id = c.audio_graph.get_processor_id(processor)
+        parameters = {
+            info.name: c.parameters.get_parameter_value(proc_id, info.id)
+            for info in c.parameters.get_processor_parameters(proc_id)
+            if getattr(info, "automatable", True)
+        }
+        state = _safe(c.audio_graph.get_processor_bypass_state, proc_id)
+        return {"parameters": parameters, "bypassed": None if state is None else bool(state)}
+
+
 def add_live_processor(
     name: str, uri: str, track_id: int, before_id: int, add_to_back: bool,
     address: str = DEFAULT_GRPC_ADDRESS, controller: Any = None,
@@ -1008,6 +1085,35 @@ def add_live_processor(
             track_id=track_id, before_processor=before_id, add_to_back=add_to_back,
         )
         _wait(response, strict=True)
+
+
+def add_live_copy(
+    name: str, track_id: int, before_id: int, add_to_back: bool,
+    address: str = DEFAULT_GRPC_ADDRESS, controller: Any = None,
+) -> None:
+    """Create the compiler's copy to stereo (`stereo.COPY_UID`, an internal
+    plugin) as processor `name`, placed as `add_live_processor` places one.
+    Strict, as it is. Not run against a live Sushi: the internal type and an
+    empty path are what `push` sends for the sends and returns."""
+    from elkpy import sushi_info_types as info
+
+    with _connection(address, controller) as c:
+        response = c.audio_graph.create_processor_on_track(
+            name=name, uid=stereo.COPY_UID, path="", processor_type=info.PluginType.INTERNAL,
+            track_id=track_id, before_processor=before_id, add_to_back=add_to_back,
+        )
+        _wait(response, strict=True)
+
+
+def remove_live_processor_named(
+    name: str, track_id: int, address: str = DEFAULT_GRPC_ADDRESS, controller: Any = None,
+) -> None:
+    """Delete processor `name` from the track with `track_id`, its id asked
+    of Sushi first (`get_processor_id`, as `push` asks a track's): for undoing
+    an add, whose new processor's id no reading holds yet. Strict."""
+    with _connection(address, controller) as c:
+        processor_id = c.audio_graph.get_processor_id(name)
+        _wait(c.audio_graph.delete_processor_from_track(processor_id, track_id), strict=True)
 
 
 def remove_live_processor(

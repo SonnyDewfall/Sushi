@@ -77,6 +77,15 @@ that still describes itself, says plainly that it was cut off, and points at
 what was captured — principle 9 applied to a recording. Metadata is replaced
 atomically, so a kill *during* that write cannot leave a half-written file.
 
+`complete` means the take recorded what it was asked to, not only that its
+folder was finished: a take whose capture failed (`capture.error`, which is
+the recorder's own failure, or a capture engine or recorder that did not start) is
+finished with `complete: false` and the failure beside it. Until 2026-11-02 it
+was finished `complete: true`, and the rig's first take from the web UI said so
+beside `frames: 0` and an engine that never started; anything filtering takes
+on the flag would have kept it as a good one. `check_take` reports that
+contradiction in a take written before then (`Take.failed`).
+
 What is not here: capturing audio (#53, `recorder.py`, streams into the paths
 `start_take` returns), measuring the offset (the caller passes it in, with what
 measured it), and the record button, which is `transport.py` (#57).
@@ -162,7 +171,9 @@ class Stem:
     `tap` is `processed` (what you heard) or `dry` (what went in). `port` is the
     PipeWire port it was captured from, recorded because it is the one thing
     that says what is actually in the file — two stems meant to be different
-    and captured from one port are visibly the same signal here.
+    and captured from one port are visibly the same signal here. It is named as
+    the machine file names it, by alias (`Audient iD14:capture_AUX0`); the JACK
+    name it was linked from on the day is in `capture.engine.sources`.
 
     `latency_samples` is how much later this stem's audio is than the dry
     taps', which are the moment the sound entered the rig. Dry stems are 0;
@@ -440,6 +451,19 @@ def take_metadata(
     a take from before they existed and a take that had nothing to say look
     the same, on purpose: neither names a rig.
     """
+    failure = capture_failure(capture)
+    if complete:
+        note = alignment_note(stems, sample_rate)
+    elif failure:
+        note = (
+            "This take failed, so no offsets were measured: " + failure + ". "
+            "The stems hold whatever was captured before it, which may be nothing."
+        )
+    else:
+        note = (
+            "This take was cut off before it finished, so no offsets were "
+            "measured. The stems hold everything captured up to then."
+        )
     return {
         "schema_version": SCHEMA_VERSION,
         "name": name,
@@ -447,11 +471,7 @@ def take_metadata(
         "recorded_at": recorded_at.astimezone(timezone.utc).isoformat(timespec="seconds"),
         **({"capture": dict(capture)} if capture is not None else {}),
         "alignment": {
-            "note": (
-                alignment_note(stems, sample_rate) if complete else
-                "This take was cut off before it finished, so no offsets were "
-                "measured. The stems hold everything captured up to then."
-            ),
+            "note": note,
             "measured_by": measured_by,
         },
         "sample_rate": sample_rate,
@@ -488,7 +508,52 @@ class Take:
 
     @property
     def complete(self) -> bool:
+        """What take.yaml says. A take written before 2026-11-02 can say
+        `true` of a capture that failed; `failed` says whether it did."""
         return self.metadata.get("complete") is True
+
+    @property
+    def failed(self) -> str | None:
+        """The capture's own failure, or None: what makes a finished take not
+        complete (`capture_failure`)."""
+        return capture_failure(self.metadata.get("capture"))
+
+
+def capture_failure(capture: Any) -> str | None:
+    """Why a take's capture failed, or None: the recorder's summary's `error`.
+
+    It is set when the recorder's writer stopped, and when the capture engine
+    or the recorder did not start (`transport.TakeSession`). Not an engine
+    that would not stop (`stop_error`): the recorder holds every block pushed,
+    and the take is whole. Not the engine's own `error`
+    (`capture.engine.error`) either: that is the first exception of a process
+    callback that carried on, a block lost and counted, and the take around it
+    is still a take. `check_take` reports both on their own."""
+    if isinstance(capture, dict) and isinstance(capture.get("error"), str) and capture["error"]:
+        if capture["error"].startswith(OLD_STOP_ERROR):
+            return None  # an old take's stop failure: see `stop_failure`
+        return capture["error"]
+    return None
+
+
+# What `transport.TakeSession.stop` wrote into `capture.error` before
+# 2026-11-02, when an engine would not stop, for a take whose stems are whole.
+# It is now `capture.stop_error`; an old take is read the same way.
+OLD_STOP_ERROR = "the capture engine did not stop cleanly"
+
+
+def stop_failure(capture: Any) -> str | None:
+    """An engine that would not stop: `capture.stop_error`, or the same
+    sentence in an old take's `capture.error`. Not a failed capture: the
+    recorder holds every block pushed."""
+    if not isinstance(capture, dict):
+        return None
+    stop, error = capture.get("stop_error"), capture.get("error")
+    if isinstance(stop, str) and stop:
+        return stop
+    if isinstance(error, str) and error.startswith(OLD_STOP_ERROR):
+        return error
+    return None
 
 
 def _check_rig_file(folder: Path, rig: Any) -> list[str]:
@@ -706,7 +771,8 @@ def check_take(take: Take) -> list[str]:
     """
     problems = []
     meta = take.metadata
-    if not take.complete:
+    failed = take.failed
+    if not take.complete and not failed:
         problems.append(
             "this take was never finished — the rig stopped mid-take, so its stems "
             "hold whatever was captured up to then and no offsets were measured. "
@@ -714,10 +780,25 @@ def check_take(take: Take) -> list[str]:
         )
     capture = meta.get("capture")
     if isinstance(capture, dict):
-        if capture.get("error"):
+        if failed and capture.get("frames") == 0:
+            problems.append(f"nothing was recorded: {failed} — the stems hold no audio")
+        elif failed:
             problems.append(
-                f"the recorder stopped early: {capture['error']} — the stems hold "
+                f"the recorder stopped early: {failed} — the stems hold "
                 "what was written before it"
+            )
+        stopped = stop_failure(capture)
+        if stopped:
+            problems.append(
+                f"{stopped} — the stems hold every block it pushed, but what "
+                "it saw of the take (xruns, blocks it could not copy) is not in take.yaml"
+            )
+        if failed and take.complete:
+            # The writer before 2026-11-02 finished a failed take as complete.
+            problems.append(
+                "take.yaml says complete: true beside a capture that failed, which this "
+                "tool wrote before 2026-11-02; the take is not complete, and anything that "
+                "trusts the flag would keep it as a good one"
             )
         lost = _count(capture.get("lost_frames"))
         if lost:
@@ -1004,7 +1085,9 @@ def finish_take(
     measured_by: str,
     capture: dict[str, Any] | None = None,
 ) -> Take:
-    """Record each stem's measured offset and mark the take complete.
+    """Record each stem's measured offset and mark the take finished: complete,
+    unless its capture failed (`capture_failure`), when `complete: false` is
+    written beside the failure.
 
     `latencies` maps a stem's file name to its offset; a stem missing from it
     keeps what it had. Dry stems are the reference and need no entry.
@@ -1034,15 +1117,19 @@ def finish_take(
     problems = check_stems(stems)
     if problems:
         raise TakeError(problems)
+    # Kept when not given: finishing a take again to correct an offset used to
+    # rewrite its record of what was lost as nothing at all.
+    capture = capture if capture is not None else meta.get("capture")
     _write_metadata(Path(folder), take_metadata(
         meta["name"], stems,
         sample_rate=meta["sample_rate"], subtype=meta["subtype"],
         quantum=meta.get("quantum"), recorded_at=recorded_at,
-        config_source=str(meta.get("config_source", "")), complete=True,
+        config_source=str(meta.get("config_source", "")),
+        # Finished, but not complete when the capture failed: see the module
+        # docstring, "Two phases".
+        complete=capture_failure(capture) is None,
         measured_by=measured_by,
-        # Kept when not given: finishing a take again to correct an offset
-        # used to rewrite its record of what was lost as nothing at all.
-        capture=capture if capture is not None else meta.get("capture"),
+        capture=capture,
         # Kept always: the rig and the library are what was true at the start.
         rig=meta.get("rig"),
         library=meta.get("library"),
@@ -1091,7 +1178,7 @@ def take_summary(folder: Path) -> dict[str, Any]:
     capture = meta.get("capture") if isinstance(meta.get("capture"), dict) else {}
     lost = _count(capture.get("lost_frames"))
     return {
-        **shown, "take": True, "complete": take.complete,
+        **shown, "take": True, "complete": take.complete and take.failed is None,
         "recorded_at": meta.get("recorded_at") if isinstance(meta.get("recorded_at"), str) else None,
         "seconds": round(frames / rate, 3) if frames is not None and rate else None,
         "stems": [stem.filename for stem in take.stems],

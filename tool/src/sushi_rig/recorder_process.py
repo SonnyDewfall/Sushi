@@ -560,8 +560,8 @@ class _Server(socketserver.ThreadingMixIn, socketserver.UnixStreamServer):
     # A status must not wait behind a stop draining the writer, so each
     # connection gets a thread; the core serialises start and stop itself.
     # Daemon threads, not joined on close: with `block_on_close` the server
-    # keeps every request's thread in a list it never trims (Python 3.10, the
-    # floor), and a recorder polled every second would grow without bound. A
+    # keeps every non-daemon request thread in a list to join on close (3.11
+    # and later trim it as they go, but a daemon one is never kept at all). A
     # stop in flight when the process ends is still finished, since
     # `RecorderCore.close` waits for the core's lock, which that stop holds.
     daemon_threads = True

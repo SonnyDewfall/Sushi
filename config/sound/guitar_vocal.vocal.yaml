@@ -1,4 +1,4 @@
-schema_version: 1
+schema_version: 2
 config: guitar_vocal.vocal
 stimulus: log_sweep 20-20000Hz 5s -20dBFS 2ch
 sample_rate: 48000
@@ -6,6 +6,9 @@ frames: 240000
 measured:
   peak_dbfs: -7.2595
   rms_dbfs: -18.4235
+  channel_rms_dbfs:
+  - -18.3982
+  - -18.4489
   delay_samples: 0
   bands:
   - low_hz: 20.0

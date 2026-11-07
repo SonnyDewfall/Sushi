@@ -24,7 +24,7 @@ from pathlib import Path
 
 import pytest
 
-from sushi_rig import rigfile
+from sushi_rig import rigfile, stereo
 from sushi_rig.amp import PARAMETER_INDEX
 from sushi_rig.live import protected_processor
 from sushi_rig.rigfile import (
@@ -55,7 +55,9 @@ class Model:
     processor is, the parameters set on it (absent: the plugin's default) and
     its bypass. `play` applies a plan step by step and fails the test on any
     step the agent would be refused: a processor that is not there, a name
-    taken, a send or return moved, an add behind a send."""
+    taken, a send or return moved, an add behind a send. A plugin's copy to
+    stereo goes with it, as the agent's remove, add and move take it
+    (`agent.check_remove`, `place_switch_add`, `live.decide_move`)."""
 
     def __init__(self, config):
         self.tracks = {t["name"] for t in config["tracks"]}
@@ -79,32 +81,46 @@ class Model:
                 track = self._track(args["processor"])
                 assert track is not None, f"remove of {args['processor']!r}, which is not there"
                 assert not protected_processor(track, args["processor"], self.uids.get(args["processor"]))
-                self.chains[track].remove(args["processor"])
-                for table in (self.plugins, self.values, self.bypassed, self.uids):
-                    table.pop(args["processor"], None)
+                gone = [args["processor"]]
+                chain = self.chains[track]
+                at = chain.index(args["processor"])
+                if at + 1 < len(chain) and chain[at + 1] == stereo.copy_name(args["processor"]):
+                    gone.append(chain[at + 1])
+                for name in gone:
+                    chain.remove(name)
+                    for table in (self.plugins, self.values, self.bypassed, self.uids):
+                        table.pop(name, None)
             elif step.op == "add":
                 name, track, before = args["name"], args["track"], args["before"]
                 assert name not in self.plugins and name not in self.tracks, f"{name!r} is taken"
                 chain = self.chains[track]
+                names = [name] + ([args["copy"]] if args.get("copy") else [])
                 if before is None:
                     assert not any(protected_processor(track, n, self.uids.get(n)) and n.endswith("_send")
                                    for n in chain), f"{name!r} added behind the send"
-                    chain.append(name)
+                    at = len(chain)
                 else:
                     assert before in chain, f"{name!r} goes in front of {before!r}, which is not there"
-                    chain.insert(chain.index(before), name)
+                    at = chain.index(before)
+                chain[at:at] = names
                 self.plugins[name] = ("lv2", args["uri"], None, None)
                 self.values[name] = {}  # a fresh plugin, at its defaults
                 self.bypassed[name] = False
+                if args.get("copy"):
+                    copy_ = args["copy"]
+                    self.plugins[copy_] = ("internal", None, stereo.COPY_UID, None)
+                    self.uids[copy_], self.values[copy_], self.bypassed[copy_] = stereo.COPY_UID, {}, False
             elif step.op == "move":
                 track = self._track(args["processor"])
                 chain = self.chains[track]
-                i = chain.index(args["processor"])
+                units = stereo.units(chain, self.uids)
+                i = next(k for k, unit in enumerate(units) if unit[0] == args["processor"])
                 j = i - 1 if args["direction"] == "up" else i + 1
-                assert 0 <= j < len(chain), f"move of {args['processor']!r} past the end"
-                for name in (chain[i], chain[j]):
+                assert 0 <= j < len(units), f"move of {args['processor']!r} past the end"
+                for name in (units[i][0], units[j][0]):
                     assert not protected_processor(track, name, self.uids.get(name)), f"{name!r} moved"
-                chain[i], chain[j] = chain[j], chain[i]
+                self.chains[track] = stereo.step_units(chain, args["processor"],
+                                                       -1 if args["direction"] == "up" else 1, self.uids)
             elif step.op == "parameter":
                 assert args["processor"] in self.values, f"parameter of {args['processor']!r}, not there"
                 self.values[args["processor"]][args["parameter"]] = args["value"]
@@ -234,11 +250,13 @@ def test_how_many_of_the_committed_pairs_switch_live():
 
 def test_moves_are_the_fewest_steps_that_put_the_survivors_in_order():
     """electric-delay to electric-chorus moves two survivors; the count is
-    the inversions between the two orders, and none is a send."""
+    the inversions between the two orders, and none is a send. A plugin and
+    its copy to stereo are one survivor: they move as one."""
     plan = diff(compiled("electric-delay"), compiled("electric-chorus"))
     moves = [s for s in plan.steps if s.op == "move"]
     board, chorus = Model(compiled("electric-delay")), Model(compiled("electric-chorus"))
-    kept = [n for n in board.chains["board"] if chorus.plugins.get(n) == board.plugins[n]]
+    kept = [n for n in board.chains["board"] if chorus.plugins.get(n) == board.plugins[n]
+            and not stereo.is_copy(n, board.uids.get(n))]
     target = [n for n in chorus.chains["board"] if n in kept]
     assert kept != target and len(moves) == inversions(kept, target) == 2
     assert all(not s.args["processor"].endswith("_send") for s in moves)
@@ -249,9 +267,13 @@ def test_a_reversed_chain_takes_every_inversion_and_nothing_more():
     after = copy.deepcopy(before)
     board = next(t for t in after["tracks"] if t["name"] == "board")
     pedals, send = board["plugins"][:-1], board["plugins"][-1]
-    board["plugins"] = list(reversed(pedals)) + [send]
+    # Reversed as units: a plugin keeps its copy to stereo straight after it.
+    by_name = {p["name"]: p for p in pedals}
+    units = stereo.units([p["name"] for p in pedals])
+    assert any(len(unit) == 2 for unit in units), "not vacuous: some pedals are mono"
+    board["plugins"] = [by_name[n] for unit in reversed(units) for n in unit] + [send]
     plan = diff(before, after)
-    assert [s.op for s in plan.steps] == ["move"] * (len(pedals) * (len(pedals) - 1) // 2)
+    assert [s.op for s in plan.steps] == ["move"] * (len(units) * (len(units) - 1) // 2)
     assert Model(before).play(plan).held() == Model(after).held()
 
 
@@ -544,13 +566,19 @@ def test_a_bypass_sushi_would_not_report_is_set_rather_than_assumed():
 
 def test_steps_name_only_what_the_routes_take():
     """Each step's args are its route's body, so the agent applies them
-    through the same calls, and an add's is Sushi's own placing."""
+    through the same calls, and an add's is Sushi's own placing, with the
+    copy to stereo that goes in with a mono plugin where it has one."""
     bodies = {"remove": {"processor"}, "move": {"processor", "direction"}, "bypass": {"processor", "bypassed"},
               "parameter": {"processor", "parameter", "value"}, "add": {"track", "name", "uri", "before"},
               "amp": {"name", "value"}}
     for running, upcoming in (("electric-chorus", "electric-delay"), ("accustomed", "electric-chorus-2")):
         plan = diff(compiled(running), compiled(upcoming))
-        assert plan.steps and all(set(s.args) == bodies[s.op] for s in plan.steps)
+        assert plan.steps and all(set(s.args) - ({"copy"} if s.op == "add" else set()) == bodies[s.op]
+                                  for s in plan.steps)
+    adds = [s for a, b in PAIRS for s in getattr(diff(compiled(a), compiled(b)), "steps", ()) if s.op == "add"]
+    with_copy = [s for s in adds if "copy" in s.args]
+    assert with_copy, "not vacuous: some pair adds a mono plugin"
+    assert all(s.args["copy"] == stereo.copy_name(s.args["name"]) for s in with_copy)
 
 
 # --------------------------------------------------------------------------- #

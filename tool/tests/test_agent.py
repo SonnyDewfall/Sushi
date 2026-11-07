@@ -23,7 +23,8 @@ aiohttp = pytest.importorskip("aiohttp")
 from aiohttp.test_utils import TestClient, TestServer  # noqa: E402
 
 from sushi_rig import agent as agent_module  # noqa: E402
-from sushi_rig.live import decide_move, plan_move  # noqa: E402
+from sushi_rig import stereo  # noqa: E402
+from sushi_rig.live import decide_move  # noqa: E402
 from sushi_rig.agent import (  # noqa: E402
     Agent,
     AgentError,
@@ -709,7 +710,8 @@ def test_the_opposite_step_always_puts_a_chain_back(chain, direction):
         if after is None:
             continue
         opposite = agent_module.OPPOSITE[direction]
-        assert plan_move(after, processor, agent_module.DIRECTIONS[opposite]) is not None
+        ids = {name: i for i, name in enumerate(["t", *after])}
+        assert decide_move({"t": after}, ids, processor, agent_module.DIRECTIONS[opposite]).outcome == "planned"
         assert chain_after_move(after, processor, opposite) == chain
 
 
@@ -2474,10 +2476,17 @@ class RigLive(FakeLive):
                            direction, self._uids())
 
     def send_move(self, connection, move):
+        # Each of Sushi's commands as `move_processor_on_track` takes it: a
+        # plugin and its copy to stereo are two (live.decide_move).
         self._enter("move", connection, move.processor, move.direction)
-        chain = self.chains[self._track_of(move.processor)]
-        i = chain.index(move.processor)
-        chain.insert(i + move.direction, chain.pop(i))
+        by_id = {i: n for n, i in self.ids.items()}
+        for processor_id, track_id, before_id, add_to_back in (move.command, *move.then):
+            chain = self.chains[by_id[track_id]]
+            chain.remove(by_id[processor_id])
+            if add_to_back:
+                chain.append(by_id[processor_id])
+            else:
+                chain.insert(chain.index(by_id[before_id]), by_id[processor_id])
         return replace(move, outcome="moved")
 
     def walk(self, connection, uids=False):
@@ -2495,24 +2504,31 @@ class RigLive(FakeLive):
         return reading
 
     def add(self, connection, addition):
+        # The plugin, then its copy to stereo in the same place, as the
+        # agent's `Live` sends them (`agent._add_with_copy`).
         self._enter("add", connection, addition.name, addition.track)
         by_id = {i: n for n, i in self.ids.items()}
         chain = self.chains[addition.track]
-        if addition.add_to_back:
-            chain.append(addition.name)
-        else:
-            chain.insert(chain.index(by_id[addition.before_id]), addition.name)
-        self.ids[addition.name] = max(self.ids.values()) + 1
-        self.plugins[addition.name] = {"uri": addition.uri, "uid": None, "type": "lv2"}
-        self.values[addition.name] = self._defaults(self.plugins[addition.name])
-        self.properties[addition.name] = {}
-        self.bypassed[addition.name] = False
+        added = [(addition.name, {"uri": addition.uri, "uid": None, "type": "lv2"})]
+        if addition.copy:
+            added.append((addition.copy, {"uri": None, "uid": stereo.COPY_UID, "type": "internal"}))
+        for name, plugin in added:
+            if addition.add_to_back:
+                chain.append(name)
+            else:
+                chain.insert(chain.index(by_id[addition.before_id]), name)
+            self.ids[name] = max(self.ids.values()) + 1
+            self.plugins[name] = plugin
+            self.values[name] = self._defaults(plugin)
+            self.properties[name] = {}
+            self.bypassed[name] = False
 
     def remove(self, connection, removal):
         self._enter("remove", connection, removal.processor)
-        self.chains[removal.track].remove(removal.processor)
-        for table in (self.plugins, self.values, self.properties, self.bypassed, self.ids):
-            table.pop(removal.processor, None)
+        for name in ([removal.copy] if removal.copy else []) + [removal.processor]:
+            self.chains[removal.track].remove(name)
+            for table in (self.plugins, self.values, self.properties, self.bypassed, self.ids):
+                table.pop(name, None)
 
     def writes(self):
         return [c for c in self.calls if c[0] in ("set_parameter", "set_bypass", "move", "add", "remove")]
@@ -2632,7 +2648,7 @@ def test_a_switch_the_live_operations_cannot_make_restarts_and_says_why():
     status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-delay"})
     assert status == 200 and body["ok"] and body["how"] == "restart", body
     assert [r["code"] for r in body["why"]] == ["amp"]
-    assert runner.calls == [["down"], ["up", "electric-delay", "--rig", "--headless"]]
+    assert runner.calls == [["down"], ["up", "electric-delay", "--rig", "--headless", "--machine", "/m/box.yaml"]]
     assert fake.calls == [] and fake.opened == []
     assert world.written_states == [] and world.written_configs == []
     assert world.carla.sent == []
@@ -2667,7 +2683,7 @@ def test_a_switch_whose_carla_does_not_answer_restarts_into_the_next_rig():
     assert status == 200 and body["how"] == "restart", body
     assert [r["code"] for r in body["why"]] == ["failed"]
     assert "Carla is not answering" in body["why"][0]["detail"]
-    assert runner.calls == [["down"], ["up", "electric-chorus-2", "--rig", "--headless"]]
+    assert runner.calls == [["down"], ["up", "electric-chorus-2", "--rig", "--headless", "--machine", "/m/box.yaml"]]
     assert world.carla.sent == []
 
 
@@ -2734,7 +2750,7 @@ def test_a_switch_whose_reading_back_is_not_the_next_rig_restarts_into_it():
     (why,) = body["why"]
     assert why["code"] == "unverified" and f"{processor}: {parameter} did not apply" in why["detail"]
     assert any(f"{processor}: {parameter}" in problem for problem in body["verification"])
-    assert runner.calls == [["down"], ["up", "electric-octave-up", "--rig", "--headless"]]
+    assert runner.calls == [["down"], ["up", "electric-octave-up", "--rig", "--headless", "--machine", "/m/box.yaml"]]
     assert world.written_states == [] and world.written_configs == []
     (entry,) = call(agent, "GET", "/live/log")[1]["log"]
     assert entry["args"]["how"] == "restart" and entry["args"]["why"] == ["unverified"]
@@ -2748,7 +2764,7 @@ def test_a_switch_that_fails_part_way_restarts_into_the_next_rig():
     (why,) = body["why"]
     assert why["code"] == "failed" and "Sushi said no" in why["detail"]
     assert f"after {body['applied']} of {len(body['plan'])} steps" in why["detail"]
-    assert runner.calls == [["down"], ["up", "electric-delay", "--rig", "--headless"]]
+    assert runner.calls == [["down"], ["up", "electric-delay", "--rig", "--headless", "--machine", "/m/box.yaml"]]
     assert fake.one_connection_per_request_all_closed()
 
 
@@ -2776,7 +2792,7 @@ def test_a_rig_run_with_its_panel_or_an_amp_override_restarts():
     agent, fake, world, runner = switch_agent("electric-delay", dict(HEADLESS, mode="panel"))
     status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-octave-up"})
     assert body["how"] == "restart" and [r["code"] for r in body["why"]] == ["panel"], body
-    assert runner.calls[1] == ["up", "electric-octave-up", "--rig"]
+    assert runner.calls[1] == ["up", "electric-octave-up", "--rig", "--machine", "/m/box.yaml"]
     assert [r.code for r in state_blockers(dict(HEADLESS, amp_model_requested="X.nam"))] == ["amp_override"]
     assert state_blockers(dict(HEADLESS, amp_model_requested="X.nam", amp_requested=False)) == []
 
@@ -2855,7 +2871,7 @@ def test_a_switch_whose_restart_fails_brings_the_previous_rig_back_and_says_so()
     agent, fake, world, _ = switch_agent("electric_board", runner=runner, state=NO_AMP)
     status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-chorus-2"})
     assert status == 409 and not body["ok"] and body["how"] == "restart"
-    assert runner.calls[-1] == ["up", "electric_board", "--rig", "--headless"]
+    assert runner.calls[-1] == ["up", "electric_board", "--rig", "--headless", "--machine", "/m/box.yaml"]
     assert "Sushi never came up" in body["reason"] and "electric_board was brought back" in body["reason"]
     (entry,) = call(agent, "GET", "/live/log")[1]["log"]
     assert entry["op"] == "rig" and entry["args"]["ok"] is False, "a barrier still: the rig was restarted"
@@ -2918,7 +2934,7 @@ def test_a_set_sushi_acknowledged_and_did_not_apply_is_caught_even_where_the_con
     (why,) = body["why"]
     assert why["code"] == "unverified" and f"{ignored[0]}: " in why["detail"]
     assert any(p.startswith(f"{ignored[0]}: ") and "reads back" in p for p in body["verification"])
-    assert runner.calls == [["down"], ["up", "electric-octave-up", "--rig", "--headless"]]
+    assert runner.calls == [["down"], ["up", "electric-octave-up", "--rig", "--headless", "--machine", "/m/box.yaml"]]
     assert world.written_states == []
 
 

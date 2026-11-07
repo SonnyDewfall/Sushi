@@ -270,10 +270,27 @@ class ModelShelf:
         return self.cache[key]
 
 
+def declared_name(described: dict[str, Any], path: Path) -> str | None:
+    """The name a `.nam` gives itself in its metadata, when it gives one that
+    is not its file's: shown as a description, never as the model's name.
+
+    A model is named by its file everywhere (`name`): the file is what the rig
+    and POST /amp/model name, and what the stage shows. On the rig on
+    2026-11-02 the stage said "Neve 2" and the rack "Rupert Tape 1 Silk RED
+    Tape rupert Tape 1" of the same model, the second read from inside the
+    file, and a player glancing between the screens could not tell they were
+    one. A model's metadata says what was modelled, which is worth reading
+    beside the name, not instead of it."""
+    declared = described.get("declared")
+    return declared if isinstance(declared, str) and declared and declared != path.stem else None
+
+
 def library(root: Path, shelf: ModelShelf, current: str | None = None) -> list[dict[str, Any]]:
     """Every model in amp/models, for the picker: by file name (what POST
-    /amp/model takes), what it declares, whether it can be played (`usable`,
-    and `why` not), and whether it is the one playing. Sorted by name."""
+    /amp/model takes, and `name`, the stem, what the screens show), what it
+    declares (`declared`, `declared_name`), whether it can be played
+    (`usable`, and `why` not), and whether it is the one playing. Sorted by
+    name."""
     folder = model_library(root)
     playing = None
     if current:
@@ -284,13 +301,15 @@ def library(root: Path, shelf: ModelShelf, current: str | None = None) -> list[d
     entries = []
     for path in sorted(folder.glob("*.nam")) if folder.is_dir() else []:
         described = shelf.read(path)
-        entry: dict[str, Any] = {"model": path.name, "playing": playing is not None and path.resolve() == playing}
+        entry: dict[str, Any] = {"model": path.name, "playing": playing is not None and path.resolve() == playing,
+                                 "name": path.stem}
         if "error" in described:
-            entry.update(usable=False, why=described["error"], name=path.stem, sample_rate=None)
+            entry.update(usable=False, why=described["error"], sample_rate=None, declared=None)
         else:
             refused = rate_problem(described)
             entry.update(
-                name=described["name"], sample_rate=described["sample_rate"], usable=refused is None,
+                declared=declared_name(described, path),
+                sample_rate=described["sample_rate"], usable=refused is None,
                 why=refused, warning=rate_warning(described), architecture=described["architecture"],
                 tiers=len(described["tiers"]), gear=" / ".join(
                     x for x in (described.get("gear_make"), described.get("gear_type")) if x) or None,
@@ -368,12 +387,14 @@ def same_model(a: str | None, b: str | None, root: Path) -> bool:
 # --------------------------------------------------------------------------- #
 
 def model_view(model: str | None, root: Path, shelf: ModelShelf) -> dict[str, Any] | None:
-    """The model a GET /amp names: as stored, its path, its name and what it
-    declares (`summarise_model`'s text as `description`), or why it cannot
-    be read (`problem`)."""
+    """The model a GET /amp names: as stored, its path, its name (the file's
+    stem, `declared_name` for why), the name it gives itself (`declared`) and
+    what it declares (`summarise_model`'s text as `description`), or why it
+    cannot be read (`problem`)."""
     if not model:
         return None
-    view: dict[str, Any] = {"stored": model, "name": Path(model).stem, "path": None, "description": None}
+    view: dict[str, Any] = {"stored": model, "name": Path(model).stem, "path": None, "description": None,
+                            "declared": None}
     try:
         path = resolve_model(model, root)
     except AmpError as exc:
@@ -383,7 +404,7 @@ def model_view(model: str | None, root: Path, shelf: ModelShelf) -> dict[str, An
     if "error" in described:
         return {**view, "problem": described["error"]}
     return {
-        **view, "name": described["name"], "description": summarise_model(described),
+        **view, "declared": declared_name(described, path), "description": summarise_model(described),
         "sample_rate": described["sample_rate"], "tiers": len(described["tiers"]),
         "problem": rate_problem(described), "warning": rate_warning(described),
     }

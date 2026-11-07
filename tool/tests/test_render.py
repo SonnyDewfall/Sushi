@@ -10,6 +10,7 @@ checked is the argv and environment this module really builds.
 
 from __future__ import annotations
 
+import json
 from pathlib import Path
 from types import SimpleNamespace
 
@@ -417,7 +418,7 @@ def test_a_reference_that_cannot_be_read_is_reported_not_raised(
     matter of time. A traceback would also abandon the remaining configs under
     `--all`, turning one bad file into no check at all."""
     cli, config = _rig(tmp_path, monkeypatch)
-    reference = render.reference_path(tmp_path, config)
+    reference = render.v1_reference_path(tmp_path, config)
     reference.parent.mkdir(parents=True, exist_ok=True)
     reference.write_text(written)
 
@@ -441,6 +442,248 @@ def test_a_render_that_is_not_finite_is_refused_before_it_is_fingerprinted(
             Path("config/x.json"), tmp_path, tmp_path / "work",
             stimulus=Stimulus(duration_s=0.2),
         )
+
+
+# --- gx_detune_'s NaN, retried once and said -------------------------------
+#
+# The plugin reads past two of its arrays and, on some loads, renders NaN from
+# one of its hops on (render.DETUNE_URI's comment, tool/spikes/gx_detune_nan/).
+# `measure` renders such a NaN once more and says so; anything else fails.
+
+ON_THE_GRID = render.DETUNE_HOP_PHASE + 10 * render.DETUNE_HOP_FRAMES
+
+
+def _detune_config(tmp_path, *, bypassed=False, copied=False) -> Path:
+    """A config running gx_detune_ as octave_up; `copied`, with the compiler's
+    copy to stereo after it, as a rig of channels has."""
+    plugins = [
+        {"name": "comp", "type": "lv2", "uri": "urn:comp"},
+        {"name": "octave_up", "type": "lv2", "uri": render.DETUNE_URI},
+    ]
+    if copied:
+        plugins.append({"name": "octave_up_to_stereo", "type": "internal",
+                        "uid": "sushi.testing.mono_summing"})
+    config = tmp_path / "config" / "electric-octave-up.json"
+    config.parent.mkdir(parents=True, exist_ok=True)
+    config.write_text(json.dumps({
+        "tracks": [{"name": "board", "plugins": plugins}],
+        "initial_state": [{"processor": "octave_up", "bypassed": bypassed}],
+    }))
+    return config
+
+
+def _sushi_that_breaks(monkeypatch, *, times: int = 0, broken=None, frame: int = ON_THE_GRID,
+                       until: int | None = None, channels=None) -> list:
+    """A Sushi whose first `times` renders (or the renders numbered in
+    `broken`, from 1) are NaN from `frame` to `until` (the end when None), on
+    `channels` (all when None)."""
+    calls = []
+
+    def run(argv, **kwargs):
+        calls.append(argv)
+        fed = signals.read_wav(Path(argv[argv.index("-i") + 1]))
+        samples = fed.samples.copy()
+        if (len(calls) in broken) if broken is not None else len(calls) <= times:
+            samples[frame:until, slice(None) if channels is None else channels] = np.nan
+        signals.write_wav(Path(argv[argv.index("-O") + 1]), samples, fed.sample_rate, subtype="float32")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(render.subprocess, "run", run)
+    return calls
+
+
+def _measure(config, tmp_path, **kwargs):
+    return render.measure(config, tmp_path, tmp_path / "work", stimulus=Stimulus(duration_s=0.2),
+                          **kwargs)
+
+
+def test_gx_detunes_nan_is_rendered_once_more_and_said(tmp_path, monkeypatch):
+    config = _detune_config(tmp_path)
+    calls = _sushi_that_breaks(monkeypatch, times=1)
+    retried = []
+    fp = _measure(config, tmp_path, retried=retried)
+    assert len(calls) == 2
+    assert fp.frames == 9600
+    (note,) = retried
+    assert note.startswith("electric-octave-up.json: retried after a NaN (non_finite: ")
+    assert "gx_detune_'s known NaN (in octave_up)" in note and render.DETUNE_BUG in note
+
+
+def test_gx_detunes_nan_twice_fails_and_says_what_it_looked_like(tmp_path, monkeypatch):
+    config = _detune_config(tmp_path)
+    calls = _sushi_that_breaks(monkeypatch, times=2)
+    retried = []
+    with pytest.raises(RenderError, match="unusable audio twice") as caught:
+        _measure(config, tmp_path, retried=retried)
+    assert len(calls) == 2 and retried == []
+    assert "gx_detune_'s known NaN" in str(caught.value)
+    assert "look at the chain" in str(caught.value)
+
+
+def test_a_nan_off_gx_detunes_hop_grid_is_not_retried(tmp_path, monkeypatch):
+    """The bug starts its NaN on one of the plugin's hops; one that starts
+    anywhere else is something else, and fails at once."""
+    config = _detune_config(tmp_path)
+    calls = _sushi_that_breaks(monkeypatch, times=1, frame=ON_THE_GRID + 64)
+    with pytest.raises(RenderError, match="unusable audio: non_finite"):
+        _measure(config, tmp_path, retried=[])
+    assert len(calls) == 1
+
+
+def test_a_burst_on_the_hop_grid_that_recovers_is_not_retried(tmp_path, monkeypatch):
+    """Frame 2240 is on the grid, and a 64-frame chunk boundary, where a
+    quarter of any plugin's blow-ups would start. gx_detune_'s NaN is kept by
+    its overlap-add to the end of the render; a burst that recovers is not it."""
+    config = _detune_config(tmp_path)
+    calls = _sushi_that_breaks(monkeypatch, times=1, frame=2240, until=2240 + 64)
+    with pytest.raises(RenderError, match="unusable audio: non_finite"):
+        _measure(config, tmp_path, retried=[])
+    assert len(calls) == 1
+
+
+def test_a_nan_on_one_channel_of_a_copied_octave_is_not_retried(tmp_path, monkeypatch):
+    """Copied to stereo, the octave's output is on both channels, and so is
+    its NaN; NaN on the left alone came from somewhere else."""
+    config = _detune_config(tmp_path, copied=True)
+    calls = _sushi_that_breaks(monkeypatch, times=1, channels=0)
+    with pytest.raises(RenderError, match="unusable audio: non_finite"):
+        _measure(config, tmp_path, retried=[])
+    assert len(calls) == 1
+
+
+def test_a_nan_on_both_channels_of_a_copied_octave_is_retried(tmp_path, monkeypatch):
+    config = _detune_config(tmp_path, copied=True)
+    calls = _sushi_that_breaks(monkeypatch, times=1)
+    retried = []
+    _measure(config, tmp_path, retried=retried)
+    assert len(calls) == 2 and len(retried) == 1
+
+
+def test_an_uncopied_octave_needs_its_nan_on_the_left_only(tmp_path, monkeypatch):
+    """A v1 config's octave writes the left alone; the right takes the NaN
+    later, through the reverb, or never."""
+    config = _detune_config(tmp_path)
+    calls = _sushi_that_breaks(monkeypatch, times=1, channels=0)
+    retried = []
+    _measure(config, tmp_path, retried=retried)
+    assert len(calls) == 2 and len(retried) == 1
+
+
+@pytest.mark.parametrize("bypassed", (True, None))
+def test_a_nan_from_a_chain_without_gx_detune_is_not_retried(tmp_path, monkeypatch, bypassed):
+    """Bypassed, the plugin does not run; absent (None), it cannot be the cause."""
+    config = _detune_config(tmp_path, bypassed=bool(bypassed))
+    if bypassed is None:
+        config.write_text(json.dumps({"tracks": [{"name": "board", "plugins": []}]}))
+    calls = _sushi_that_breaks(monkeypatch, times=1)
+    with pytest.raises(RenderError, match="unusable audio: non_finite"):
+        _measure(config, tmp_path, retried=[])
+    assert len(calls) == 1
+
+
+def test_a_retry_with_nowhere_to_go_is_printed_and_warned(tmp_path, monkeypatch, capsys):
+    """Never silent: a caller that passed no list still hears of it, on stderr
+    every time, and as a warning, which alone could be shown once or not at
+    all."""
+    config = _detune_config(tmp_path)
+    for _ in range(2):
+        _sushi_that_breaks(monkeypatch, times=1)
+        with pytest.warns(UserWarning, match="retried after a NaN"):
+            _measure(config, tmp_path)
+    err = capsys.readouterr().err
+    assert err.count(f"{render.RETRIED_PREFIX} electric-octave-up.json: retried after a NaN") == 2
+
+
+def test_a_retry_is_printed_even_when_warnings_are_ignored(tmp_path, monkeypatch, capsys):
+    import warnings
+
+    config = _detune_config(tmp_path)
+    _sushi_that_breaks(monkeypatch, times=1)
+    with warnings.catch_warnings():
+        warnings.simplefilter("ignore")
+        _measure(config, tmp_path)
+    assert f"{render.RETRIED_PREFIX} electric-octave-up.json: retried after a NaN" in capsys.readouterr().err
+
+
+def test_a_relative_config_is_read_from_the_root_as_sushi_reads_it(tmp_path, monkeypatch):
+    """Sushi runs with cwd=root, so `config/x.json` is the root's. Read
+    against Python's cwd instead, the config was not found, and the retry was
+    skipped without a word."""
+    _detune_config(tmp_path)
+    elsewhere = tmp_path / "elsewhere"
+    elsewhere.mkdir()
+    monkeypatch.chdir(elsewhere)
+    calls = _sushi_that_breaks(monkeypatch, times=1)
+    retried = []
+    _measure(Path("config/electric-octave-up.json"), tmp_path, retried=retried)
+    assert len(calls) == 2 and len(retried) == 1
+
+
+def test_a_config_that_cannot_be_read_after_a_nan_says_so(tmp_path, monkeypatch):
+    config = _detune_config(tmp_path)
+    _sushi_that_breaks(monkeypatch, times=1)
+    real_run = render.subprocess.run
+
+    def run_then_remove(argv, **kwargs):
+        result = real_run(argv, **kwargs)
+        config.unlink()
+        return result
+
+    monkeypatch.setattr(render.subprocess, "run", run_then_remove)
+    with pytest.raises(RenderError, match="could not be read to tell whether that is gx_detune_'s known NaN"):
+        _measure(config, tmp_path, retried=[])
+
+
+def _nulltest(tmp_path, monkeypatch, *args):
+    from sushi_rig import cli, paths
+
+    monkeypatch.setattr(paths, "checkout_root", lambda: tmp_path)
+    return cli.main(["nulltest", *args])
+
+
+def test_nulltest_says_retried_beside_the_channel_and_counts_it_once(tmp_path, monkeypatch, capsys):
+    config = _detune_config(tmp_path)
+    _sushi_that_breaks(monkeypatch, times=0)
+    assert _nulltest(tmp_path, monkeypatch, str(config), "--calibrate") == 0
+    capsys.readouterr()
+
+    _sushi_that_breaks(monkeypatch, times=1)
+    assert _nulltest(tmp_path, monkeypatch, str(config)) == 0
+    out, err = capsys.readouterr()
+    assert "electric-octave-up.json: sounds the same\n   electric-octave-up.json: retried after a NaN" in out
+    assert "1 render(s) retried after a NaN, each once:" in err
+    # What the CI job counts: one line per retry, the summary's alone.
+    counted = [line for line in (out + err).splitlines() if line.startswith(render.RETRIED_PREFIX + " ")]
+    assert len(counted) == 1
+
+
+def test_a_calibration_that_retried_says_so(tmp_path, monkeypatch, capsys):
+    config = _detune_config(tmp_path)
+    _sushi_that_breaks(monkeypatch, times=1)
+    assert _nulltest(tmp_path, monkeypatch, str(config), "--calibrate") == 0
+    out, err = capsys.readouterr()
+    assert "calibrated" in out and "retried after a NaN" in out
+    assert "1 render(s) retried after a NaN" in err
+
+
+def test_a_retry_before_a_channel_fails_is_printed_beside_the_failure(tmp_path, monkeypatch, capsys):
+    """Calibrating renders twice: the first NaN and then finite, the second NaN
+    twice. The channel cannot be checked, and the retry it did make is said
+    beside it, not only in the summary."""
+    config = _detune_config(tmp_path)
+    _sushi_that_breaks(monkeypatch, broken={1, 3, 4})
+    assert _nulltest(tmp_path, monkeypatch, str(config), "--calibrate") == 1
+    err = capsys.readouterr().err
+    assert ("electric-octave-up.json: CANNOT CHECK — RenderError: electric-octave-up.json rendered "
+            "unusable audio twice") in err
+    beside = err.split("CANNOT CHECK", 1)[1].split("\n\n", 1)[0]
+    assert "\n   electric-octave-up.json: retried after a NaN" in beside
+
+
+def test_the_hop_grid_is_where_every_recorded_nan_started():
+    """The frames CI and the bench host recorded (render.DETUNE_HOP_PHASE)."""
+    for frame in (15296, 57536, 202688, 2240, 2496, 3520, 12736, 12992, 20416, 39104, 45248, 112832):
+        assert frame % render.DETUNE_HOP_FRAMES == render.DETUNE_HOP_PHASE
 
 
 # --- what Sushi's offline frontend can host --------------------------------
@@ -538,7 +781,7 @@ def test_calibrating_an_unrenderable_config_writes_no_reference(tmp_path, monkey
     cli, config = _rig(tmp_path, monkeypatch)
     config.write_text(json.dumps(WIDE))
     assert cli.main(["nulltest", str(config), "--calibrate"]) == 0
-    assert not render.reference_path(tmp_path, config).exists()
+    assert not render.v1_reference_path(tmp_path, config).exists()
     assert "NOT RENDERABLE OFFLINE" in capsys.readouterr().err
 
 
@@ -555,7 +798,7 @@ def test_a_config_that_had_a_reference_and_became_unrenderable_fails(
     assert cli.main(["nulltest", str(config)]) == 1
     err = capsys.readouterr().err
     assert "NO LONGER RENDERABLE" in err
-    assert "delete config/sound/electric-clean.yaml" in err, "say how to resolve it"
+    assert "delete config/sound/electric-clean.v1-mono.yaml" in err, "say how to resolve it"
 
 
 def test_recalibrating_a_config_that_became_unrenderable_fails_rather_than_lying(
@@ -583,7 +826,7 @@ def test_a_recalibration_keeps_a_tolerance_that_was_set_wider_by_hand(
 
     cli, config = _rig(tmp_path, monkeypatch)
     assert cli.main(["nulltest", str(config), "--calibrate"]) == 0
-    ref = render.reference_path(tmp_path, config)
+    ref = render.v1_reference_path(tmp_path, config)
     fp, _ = from_dict(yaml.safe_load(ref.read_text()))
     ref.write_text(yaml.dump(to_dict(fp, Tolerance(0.01, 0.01, 0, "set by hand")),
                              sort_keys=False))
@@ -718,7 +961,7 @@ def test_a_multi_track_config_gets_a_reference_per_channel(tmp_path, monkeypatch
     assert cli.main(["nulltest", str(config), "--calibrate"]) == 0
     sound = tmp_path / "config" / "sound"
     assert sorted(p.name for p in sound.iterdir()) == [
-        "electric-clean.guitar.yaml", "electric-clean.vocal.yaml"
+        "electric-clean.guitar.v1-mono.yaml", "electric-clean.vocal.v1-mono.yaml"
     ]
     assert cli.main(["nulltest", str(config)]) == 0
     out = capsys.readouterr().out
@@ -731,7 +974,7 @@ def test_a_reference_nothing_produces_any_more_fails_the_full_run(tmp_path, monk
     cli, config = _rig(tmp_path, monkeypatch)
     assert cli.main(["nulltest", "--all", "--calibrate"]) == 0
     stale = tmp_path / "config" / "sound" / "renamed-away.yaml"
-    stale.write_text((tmp_path / "config" / "sound" / "electric-clean.yaml").read_text())
+    stale.write_text((tmp_path / "config" / "sound" / "electric-clean.v1-mono.yaml").read_text())
     assert cli.main(["nulltest", "--all"]) == 1
     assert "renamed-away.yaml: ORPHANED REFERENCE" in capsys.readouterr().err
 
@@ -798,8 +1041,8 @@ def test_calibrating_only_what_is_missing_leaves_the_rest_alone(tmp_path, monkey
     cli, config = _rig(tmp_path, monkeypatch)
     config.write_text(json.dumps(TWO_TRACKS))
     assert cli.main(["nulltest", str(config), "--calibrate"]) == 0
-    guitar_ref = tmp_path / "config" / "sound" / "electric-clean.guitar.yaml"
-    vocal_ref = tmp_path / "config" / "sound" / "electric-clean.vocal.yaml"
+    guitar_ref = tmp_path / "config" / "sound" / "electric-clean.guitar.v1-mono.yaml"
+    vocal_ref = tmp_path / "config" / "sound" / "electric-clean.vocal.v1-mono.yaml"
     before = guitar_ref.read_text()
     vocal_ref.unlink()
 
@@ -841,6 +1084,48 @@ def test_orphans_count_as_checks_so_the_summary_adds_up(tmp_path, monkeypatch, c
     assert cli.main(["nulltest", "--all", "--calibrate"]) == 0
     sound = tmp_path / "config" / "sound"
     for name in ("a", "b", "c"):
-        (sound / f"{name}.yaml").write_text((sound / "electric-clean.yaml").read_text())
+        (sound / f"{name}.yaml").write_text((sound / "electric-clean.v1-mono.yaml").read_text())
     assert cli.main(["nulltest", "--all"]) == 1
     assert "3 of 4 check(s) could not be confirmed" in capsys.readouterr().err
+
+
+# --- rigs of channels, and the v1 configs' own references (2026-11-02) --------
+
+def _channels_rig(root):
+    (root / "plugin-ports.txt").write_text((Path(__file__).resolve().parents[2] / "plugin-ports.txt").read_text())
+    rigs = root / "config" / "rigs"
+    rigs.mkdir(parents=True, exist_ok=True)
+    (rigs / "electric-clean.yaml").write_text(
+        "kind: rig\nschema_version: 1\nname: electric-clean\n"
+        "channels:\n- {name: board, input: guitar-in, width: mono, chain: []}\n"
+        "master: {output: monitor-out, chain: []}\n")
+    return rigs / "electric-clean.yaml"
+
+
+def test_a_rig_and_its_v1_config_have_a_reference_each(tmp_path, monkeypatch, capsys):
+    cli, _ = _rig(tmp_path, monkeypatch)
+    _channels_rig(tmp_path)
+    assert cli.main(["nulltest", "--all", "--calibrate"]) == 0
+    assert sorted(p.name for p in (tmp_path / "config" / "sound").iterdir()) == [
+        "electric-clean.v1-mono.yaml", "electric-clean.yaml"]
+    assert cli.main(["nulltest", "--all"]) == 0
+    out = capsys.readouterr().out
+    assert "electric-clean.json: sounds the same" in out and "electric-clean.yaml: sounds the same" in out
+
+
+def test_a_rig_that_does_not_compile_exempts_only_its_own_references_from_the_orphan_check(
+    tmp_path, monkeypatch, capsys
+):
+    """Found by review: its stem used to exempt the v1 config's `.v1-mono`
+    references too, so a v1 config removed beside a broken rig left an orphan
+    nobody was told of."""
+    cli, config = _rig(tmp_path, monkeypatch)
+    rig = _channels_rig(tmp_path)
+    assert cli.main(["nulltest", "--all", "--calibrate"]) == 0
+    rig.write_text("kind: rig\nschema_version: 1\nname: electric-clean\nchannels: nope\n")
+    config.unlink()
+    assert cli.main(["nulltest", "--all"]) == 1
+    err = capsys.readouterr().err
+    assert "electric-clean.yaml: CANNOT CHECK" in err
+    assert "electric-clean.v1-mono.yaml: ORPHANED REFERENCE" in err
+    assert "sound/electric-clean.yaml: ORPHANED" not in err, "the broken rig's own reference is not an orphan"

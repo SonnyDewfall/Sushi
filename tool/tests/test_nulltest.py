@@ -301,3 +301,69 @@ def test_each_field_takes_the_wider_of_the_two():
                       Tolerance(0.01, 0.01, 0, "set by hand"))
     assert (kept.band_db, kept.level_db) == (0.01, 0.05)
     assert kept.note == "set by hand", "a field of it is still the judgement in force"
+
+
+# --- each channel's level (2026-11-02) ----------------------------------------
+#
+# The whole-render RMS is every channel together, so a rig whose right
+# channel was silent read only 3 dB down and passed for its whole life.
+
+
+def _stereo(right_gain=1.0):
+    both = signals.log_sweep(SR, 1.0, level_dbfs=-20.0, channels=2)
+    both[:, 1] *= right_gain
+    return both
+
+
+def test_a_fingerprint_records_each_channels_rms():
+    fp = _fp(_stereo())
+    assert len(fp.channel_rms_dbfs) == 2
+    assert fp.channel_rms_dbfs[0] == pytest.approx(fp.channel_rms_dbfs[1], abs=1e-9)
+
+
+def test_a_silent_right_channel_is_a_finding_of_its_own():
+    tolerance = Tolerance(1.0, 4.0, 0, "wide enough that the whole-render rms passes")
+    found = compare(_fp(_stereo()), _fp(_stereo(0.0)), tolerance)
+    assert [f.message for f in found if f.check == "channel-changed"] == [
+        "the right channel is silent in one render and not the other"]
+    assert not any(f.check == "rms-changed" for f in found), "the 3 dB the old check saw, inside 4"
+
+
+def test_a_channel_that_moved_says_which_and_by_how_much():
+    found = compare(_fp(_stereo()), _fp(_stereo(0.5)), Tolerance(10.0, 1.0, 0, ""))
+    assert any(f.check == "channel-changed" and "right channel's rms moved -6.0" in f.message for f in found)
+
+
+def test_a_reference_silent_on_the_right_round_trips_and_matches_itself():
+    import yaml
+
+    fp = _fp(_stereo(0.0))
+    raw = yaml.safe_load(yaml.dump(to_dict(fp, Tolerance(0.001, 0.001, 0, "measured"))))
+    back, tolerance = from_dict(raw)
+    assert back.channel_rms_dbfs[1] == float("-inf")
+    assert compare(back, fp, tolerance) == []
+
+
+def test_a_schema_1_reference_is_read_and_its_channels_are_not_compared():
+    raw = to_dict(_fp(_stereo()), PROVISIONAL)
+    raw["schema_version"] = 1
+    del raw["measured"]["channel_rms_dbfs"]
+    back, _ = from_dict(raw)
+    assert back.channel_rms_dbfs is None
+    assert not any(f.check == "channel-changed"
+                   for f in compare(back, _fp(_stereo(0.0)), Tolerance(1.0, 4.0, 0, "")))
+
+
+def test_the_floor_between_two_runs_counts_each_channel():
+    floor = floor_between(_fp(_stereo()), _fp(_stereo(0.9)))
+    assert floor.level_db == pytest.approx(-20 * np.log10(0.9), abs=1e-3)
+
+
+def test_a_channel_below_the_silence_floor_is_silent_however_its_residue_moves():
+    """The v1 configs' right channel is float residue near -279 dBFS: a move
+    of decibels down there is not a change in sound."""
+    tolerance = Tolerance(0.001, 0.001, 0, "measured")
+    reference = _fp(_stereo(1e-14))
+    assert compare(reference, _fp(_stereo(1e-13)), tolerance) == []
+    assert [f.check for f in compare(reference, _fp(_stereo(1.0)), tolerance)
+            if f.check == "channel-changed"] == ["channel-changed"]

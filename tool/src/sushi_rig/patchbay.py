@@ -398,6 +398,17 @@ def _pair_source(
             pairs += [(d.index, p) for d, p in zip(channels, ports)]
         elif len(ports) == 1 and mono:
             pairs += [(d.index, ports[0]) for d in channels]
+        elif len(ports) == 1:
+            # A v2 rig's stereo channel on a one-port role: the bus form's
+            # advice above, which the channel form lacked, so the web UI's new
+            # rig said "the counts must match" and not what to add (2026-11-06).
+            return (
+                f"role {role!r} has 1 port(s) but this track routes it to {len(channels)} engine "
+                f"channel(s) ({', '.join(str(d.index) for d in channels)}); each channel takes one "
+                "port, so the counts must match. If its one port should feed both halves of a "
+                f"stereo channel, declare it in the machine file: {role}: {{ports: "
+                f"[{ports[0]!r}], mono_to_stereo: true}}. Otherwise make the channel mono"
+            )
         else:
             return (
                 f"role {role!r} has {len(ports)} port(s) but this track routes it "
@@ -678,7 +689,9 @@ def live_port_nodes(dump: str) -> dict[str, list[LivePort]]:
     A list because nothing makes an alias unique: `Audient iD14:capture_AUX0` is
     the same under every ALSA profile of the device, so two profiles live at once
     would both answer to it. The one reader of ports in the dump: everything
-    that needs a port's node or its `pw-link` name derives from this.
+    that needs a port's node or its `pw-link` name derives from this. The
+    recorder does not read the dump: it finds a take's ports among the ports
+    its own JACK client lists, by name or alias (`capture.match_sources`).
     """
     objects = _objects(dump)
     nodes = {o.get("id"): _props(o) for o in objects if o.get("type") == _NODE}
@@ -698,6 +711,41 @@ def live_port_nodes(dump: str) -> dict[str, list[LivePort]]:
             if port not in found.setdefault(alias, []):
                 found[alias].append(port)
     return found
+
+
+def resolve_port(port: str, direction: str, port_nodes: Mapping[str, list[LivePort]]) -> LivePort | str:
+    """The one live port a machine-file port names, or why there is none.
+
+    `port` is written as the machine file writes it, which is the port's
+    alias; `direction` is "out" for a port read from (a capture, or Sushi's
+    output) and "in" for one written to. One port's half of `resolve_nodes`,
+    so each refusal is one sentence the caller can say whose port it was.
+
+    Without the direction check, a playback port named as a source resolves
+    cleanly and the link asked for can never be made, which looks exactly
+    like a working file.
+    """
+    found = port_nodes.get(port, [])
+    if not found:
+        return (
+            f"no live port with alias {port!r} — is the interface connected, and "
+            "is this its current name?"
+        )
+    right = [p for p in found if p.direction == direction]
+    if not right:
+        use = "source (capture)" if direction == "out" else "sink (playback)"
+        seen = ", ".join(sorted({repr(p.direction) for p in found}))
+        return (
+            f"port {port!r} is used as a {use} and so must have direction "
+            f"{direction!r}, but the live graph says {seen}"
+        )
+    if len(right) > 1:
+        owners = ", ".join(repr(p.node) for p in right)
+        return (
+            f"port {port!r} exists on more than one node ({owners}); cannot tell "
+            "which one is meant"
+        )
+    return right[0]
 
 
 def jack_port_names(dump: str, direction: str | None = None) -> dict[str, list[str]]:
@@ -769,31 +817,12 @@ def resolve_nodes(
             problems.append(f"role {role!r} is used as both a source and a sink")
         wanted[role] = "in"
     for role in sorted(set(wanted) & set(roles)):
-        expected = wanted[role]
-        use = "source (capture)" if expected == "out" else "sink (playback)"
         for port in roles[role]:
-            found = port_nodes.get(port, [])
-            if not found:
-                problems.append(
-                    f"role {role!r}: no live port with alias {port!r} — is the "
-                    "interface connected, and is this its current name?"
-                )
-                continue
-            right = [p for p in found if p.direction == expected]
-            if not right:
-                seen = ", ".join(sorted({repr(p.direction) for p in found}))
-                problems.append(
-                    f"role {role!r}: port {port!r} is used as a {use} and so must "
-                    f"have direction {expected!r}, but the live graph says {seen}"
-                )
-            elif len(right) > 1:
-                owners = ", ".join(repr(p.node) for p in right)
-                problems.append(
-                    f"role {role!r}: port {port!r} exists on more than one node "
-                    f"({owners}); cannot tell which one the patchbay should name"
-                )
+            found = resolve_port(port, wanted[role], port_nodes)
+            if isinstance(found, str):
+                problems.append(f"role {role!r}: {found}")
             else:
-                resolved[port] = right[0].node
+                resolved[port] = found.node
     return resolved, problems
 
 

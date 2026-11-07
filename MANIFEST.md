@@ -2720,6 +2720,592 @@ then put back). Also found running the suite twice as pid 1:
 socket, which another socket may hold (`EADDRINUSE`, once); it now tries
 another pair. Still **NOT RUN AGAINST A LIVE PIPEWIRE**. *(2026-11-02)*
 
+**A mono source reaches both monitors: the compiler's copy to stereo after a
+mono plugin.** Sonny on the rig: "I only get the left channel out." Measured
+before anything was changed, in CI's container (`tests/test_stereo.py`, run
+on ba0f918, PR #119), with a mono sweep fed equally to both channels as
+`mono_to_stereo` feeds a guitar. Each plugin the rigs use, alone on a stereo
+track at its defaults (L and R in dBFS; "silent" is digital silence; lilv's
+audio ins/outs):
+
+| plugin | lilv | as is | bypassed | + mono_summing |
+|---|---|---|---|---|
+| gx_compressor | 1/1 | -23.01 / silent | -23.01 / silent | -23.01 / -23.01 |
+| gxts9 | 1/1 | -29.03 / silent | -23.01 / silent | -29.03 / -29.03 |
+| gx_detune_ | 1/1 | -24.42 / silent | -23.01 / silent | -24.42 / -24.42 |
+| gx_oc_2_ | 1/1 | -15.37 / silent | -23.00 / silent | -15.37 / -15.37 |
+| 3BandEQ, DeEss, lcrDelay | 2/2 | -23.01 / -23.01 | -23.01 / -23.01 | -16.99 / -16.99 |
+| gx_chorus_stereo | 2/2 | -22.30 / -22.31 | -23.01 / -23.01 | -16.52 / -16.52 |
+| a-reverb | 2/2 | -25.85 / -25.85 | -23.01 / -23.01 | -19.91 / -19.91 |
+| MaGigaverb, MVerb, mda Delay, Dynamics, Limiter | 2/2 | balanced | balanced | 5 to 6 dB up, folded |
+
+And each committed rig through the master, as compiled at ba0f918 ("before")
+and with mono_summing after each one-output plugin ("after"; what the
+compiler now builds), L / R dBFS (correlation):
+
+| rig | before | after |
+|---|---|---|
+| accustomed | -17.17 / -279.07 | -17.17 / -17.19 (0.646) |
+| electric-chorus-2 | -16.11 / -279.07 | -16.11 / -16.13 (0.650) |
+| electric-chorus-hall | -16.11 / -279.07 | -16.11 / -16.13 (0.650) |
+| electric-chorus | -24.88 / -278.76 | -24.88 / -24.87 (0.979) |
+| electric-clean | -26.56 / -277.57 | -26.56 / -26.56 (0.957) |
+| electric-delay | -31.37 / -36.30 | -28.80 / -28.80 (0.873) |
+| electric-octave-up | -22.02 / -40.18 | -21.86 / -21.76 (0.632) |
+| electric-spacey-delay | -22.61 / -35.53 | -22.07 / -21.96 (0.648) |
+| electric_board | -26.89 / -37.48 | -26.07 / -26.35 (0.575) |
+| guitar_vocal.guitar | -31.23 / -278.88 | -31.23 / -31.28 (0.947) |
+| guitar_vocal.vocal | -18.49 / -18.55 (0.663) | the same |
+| hard-feelings | -16.11 / -279.07 | -16.11 / -16.13 (0.650) |
+
+The v1 configs measured exactly as the "before" column. An empty stereo track
+and the compiler's send and return with empty chains were -23.01 / -23.01,
+correlation 1.000: the send and return are not it. Sushi 1.3.0's source says
+why the plugins are (`audio_engine.cpp add_plugin_to_track`, `track.cpp
+_process_plugins`, `processor.cpp bypass_process`): a plugin on a track gets
+the lesser of its ports and the track's channels, the track then clears every
+channel the plugin did not write, and a bypassed plugin keeps its count. Every
+guitar chain starts with the mono compressor. The -279 dBFS is not digital
+silence, and what puts that little there was not looked into; the four rigs
+at 5 to 18 dB down are the ones whose later stereo reverb or delay feeds some
+of the left across.
+
+**The fix, in the compiler** (`stereo.py`, `rigfile.compile_rig`): after every
+LV2 plugin with one audio output, `<plugin>_to_stereo`, Sushi's internal
+`sushi.testing.mono_summing`, which writes the sum of its inputs to each
+output. Straight after a mono plugin the right has just been cleared, so the
+sum is the left exactly, on both. Chosen over (b), a mono track feeding the
+stereo part, because that needs a second track per channel, a send between
+them and the ceiling of eight outputs re-argued, for the same result; and
+over `stereo_mixer`, which needs pan and gain set and scales by 1/sqrt(2).
+Which plugins are mono is `plugin-ports.txt` (54 of the manifest's 55; not the
+amp, which runs in Carla and is refused on a chain), since Sushi reports no
+channel counts (`--dump-plugins` has none, nor gRPC's `ProcessorInfo`, whose
+fields are id, label, name and the parameter and program counts); CI checks it
+against lilv over `plugins/` (`test_the_port_table_is_what_lilv_reads`). A
+plugin the table lacks is refused by name with how to add it, at compile and
+at a live add. The copy is invisible to the rig file and SAVE (`fold_state`,
+`merged_state`), pinned after its plugin whatever a capture's order says
+(`pin_monitor_path`), planned with its plugin by the live switch (`diff`
+compares chains without the copies; an add step names the copy; a restart,
+`stereo`, if two rigs disagree on one), and known by uid or reserved suffix
+(`live.protected_processor`, `stereo.is_copy`): never moved, removed or
+bypassed alone; a move swaps units (`stereo.units`, `live.decide_move`, two
+commands where one was), a remove takes the copy first, a live add of a mono
+plugin adds its copy in the same operation (rather than refusing: a
+compressor added from the library is the common case), undo of a move checks
+the pair, `/live/plugins` says role "stereo" and the page and the OSC panel do
+not show it. Names ending `_to_stereo` are refused for plugins and channels;
+Sushi 1.3.0 keys processors by std::string with no length limit
+(processor_container.cpp), so uniqueness is the only constraint.
+
+**The guarantee**: `test_each_rig_through_the_master` asserts every committed
+rig as compiled has L and R within 1 dB and neither silent for the mono
+stimulus, and `test_each_plugin_compiled_alone_is_balanced` the same for each
+plugin compiled alone; the table still prints, now with each rig "as
+compiled" and "without the copies to stereo". **Null tests**: a fingerprint
+records each channel's RMS (`channel_rms_dbfs`, schema 2; schema 1 still
+read, its channels not compared), and a channel that went silent or moved is
+its own finding; the stale comment that "both halves of a centred channel are
+identical" is corrected. `nulltest --all` now checks the rigs of
+`config/rigs/` too, through the master, under `config/sound/<name>.yaml`;
+**the v1 configs' references are renamed `<name>.v1-mono.yaml`**, unchanged,
+because the v1 configs are not fixed: **`up` without `--rig` still plays the
+left channel only**; `up --rig`, the agent and the web UI are stereo. The
+rigs' references have to be calibrated afresh, in CI, since their sound
+changed on purpose (right channel present, and every stereo plugin after a
+mono one now fed both sides): the first run of this has none, fails nulltest
+and the parity test in `test_convert.py` for that reason, and its candidates
+are what to commit. nulltest now runs in CI whether or not the suite passed,
+so that can happen in one run. **Not heard on the rig**: all of the above is
+offline renders. **Not run against a live Sushi**: creating the copy live
+(`live.add_live_copy`, the internal type with an empty path, as `push` sends
+the sends), the two-command move and remove, and Sushi placing the second of
+two adds in front of the same processor. Known limits: on a stereo channel a
+mono plugin hears the left input only; a track bypassed whole would bypass
+the copy too (nothing here bypasses a track). *(2026-11-02)*
+
+**The copy to stereo: the rigs' references, and answering review.** The rigs'
+own references are committed from CI's candidates for fabbc12, where the suite
+failed only for their absence (11 "no reference" in `test_convert.py`), every
+guarantee test passed, and all 12 v1 rows sounded the same against the renamed
+`.v1-mono.yaml`. `config/sound/<rig>.yaml`, twelve, as calibrated, except
+`electric-octave-up.yaml` and `electric_board.yaml`, which calibrated at
+0.0001 dB and about 0.003 dB: both render non-deterministically in this
+container (30 Oct; a NaN render of electric-octave-up twice on 2 Nov), so
+they carry the v1 references' hand-set 0.01 dB band and level and the same
+note. Ten `.v1-mono.yaml` gain their per-channel levels (schema 2), checked
+against the candidates: every other measurement and every tolerance
+identical, the committed note kept. electric-octave-up's and electric_board's
+v1 candidates measured differently within their tolerance, so those two stay
+as they were, schema 1. To watch: `electric-delay.yaml` measures a delay of
+19440 samples where its v1 reference measures 0. Channel 0's strongest path
+is now the delay's echo, likely because the delay is fed on both sides; it is
+unverified, and the reference fails on delay alone if the dry signal and the
+echo ever swap places, as electric_board's note already warns for its own
+delay. A channel's level below -200 dBFS now counts as silent when comparing
+(`nulltest.SILENCE_FLOOR_DBFS`): the v1 right channel is float residue near
+-279 dBFS, which could move by decibels for nothing.
+
+Review of ba0f918..fabbc12, ten findings, each with a test
+(`test_stereo_compile.py` unless said). (1) **A pair left apart**: an add,
+remove or move of a mono plugin is two commands. If the second fails, the
+first is undone (plugin removed again, copy put back where it was, plugin
+moved back in front of its copy), and if that fails too, the error says what
+the chain holds. A copy with no plugin before it, the stray that leaves, may
+then be moved or removed. Each path is tested against a fake graph that fails
+the commands named. (2) `apply_to_chains` stored `step_units`' None and
+raised TypeError on the next step; it now raises ValueError naming the step.
+(3) `read_ports` took `str.isdigit`, which accepts "²" and "٣", and then a
+bare ValueError crashed every compile and GET /library. It now checks ASCII
+digits, raises PortsError with the line, and an unreadable file is a
+PortsError too. (4) The diff's `stereo` restart ran before replacements were
+dropped, and named a changed table for a running rig compiled before the
+copies existed. It now runs after them, and that case is `stereo_missing`,
+said as what it is. (5) A rig that did not compile exempted its v1 config's
+`.v1-mono` references from the orphan check; now only its own
+(`test_render.py`). (6) `compile_rig(routing_only=True)`, and
+`spec_of(routing_only=True)` for the patchbay and SAVE's source check, need
+no table and make no copies. SAVE's check leaves the copies out of the
+running config's names. The renders and the probes keep the copies, since
+Sushi loads their chains (render.rig_channels renders what `up --rig` loads,
+so it is not routing-only). Each docstring says which kind. (7) The refusal
+for moving a copy reads "... is 'comp''s copy to stereo, which moves with
+'comp': move that instead", and for removing one "... removed with 'ts':
+remove that instead". (8) `heard`'s docstring names the rig's own
+references. (9) `live.plan_move` is removed; its position tests now run
+against `decide_move`, and cli uses `render.v1_reference_path`. (10)
+`apply_to_chains` removes by `stereo.units`, as `check_remove` does. **Not run
+against a live Sushi**: every undo above, and `get_processor_id` for an added
+processor's id. *(2026-11-02)*
+
+**Record from the web UI: the live test's findings.** The first RECORD on the
+rig (`RESULTS-ui-2026-11-02.md` on `claude/ui-tests`) was refused every time:
+`cannot record ui-take-1: the capture engine did not start: no port called
+'Audient iD14:capture_AUX0' (for board-dry.wav) is in the graph; output ports
+in the graph include: ... Audient iD14 Multichannel:capture_AUX0, ...`. **Two
+port readers disagreed.** The machine file names a port by its PipeWire alias,
+which the patchbay matches (`live_port_nodes`) and must keep matching, so the
+file is unchanged; `capture.missing_sources` looked that alias up among JACK's
+names, which for an ALSA device are `<node.description>:<port.name>`. Sushi's
+ports, whose alias and JACK name coincide, were found, so only the dry taps
+failed. Now a take still names its ports as the machine file does, and at each
+RECORD `CaptureEngine.start` reads `pw-dump` and resolves them through
+`patchbay.jack_port_names` (`resolve_port`, shared with `resolve_nodes`, then
+`LivePort.jack`, from `jack_client_name`: description, nick or `node.name`,
+prefixed by a differing `application.name`, as pipewire-jack names a client,
+read from its source and not run), checks those names against JACK's list, and
+links them; what was linked is `capture.engine.sources` in take.yaml. A JACK
+name more than one node would carry is refused rather than guessed. The places
+that turn a machine-file port into a JACK port were the capture engine alone
+(`rig_stems` plans by alias, the listener and `sushi-rig recorder` build the
+engine with `record_session`, and the amp's `guitar_port`, the patchbay, the
+tuner tap, `rig.wait_for_links` and the probes name aliases, `pw-link` names
+or Sushi's and NAM's own ports, never a JACK name); `doctor` is the second
+caller now. The fakes listed the alias as a JACK name and satisfied both
+spellings: `tests/jack_fake.py` pairs the real `pw-dump` capture with the JACK
+names the rig's refusal listed, and the whole-take test in
+`test_record_session.py` runs guitar_vocal through the real engine on them,
+checking the dry stem holds the guitar's port. Eight more: (1) **doctor's
+`record-ports`** plans the running rig's take as the recorder does and
+resolves it by the same call, so it fails when RECORD would at that step, and
+names each JACK name; a test runs one plan through both on three graphs. (2)
+**A failed take is `complete: false`**: `finish_take` writes it so beside a
+capture error (an engine or recorder that did not start, a writer that
+stopped); an engine that would not stop is `stop_error`, the take whole;
+`take check` says "nothing was recorded" of a take with no frames and names
+`complete: true` beside a failure in an old take, and the takes list does not
+call one whole. (3) **`'master_return' returned no parameters`** about once a
+second: the compiler's send and return are not mentioned, anything else once
+per processor per process. (4) **A crashed child is on both screens**, in the
+last error's box, naming it and what it means ("the tuner (fmit) was killed by
+SIGTERM ...; sound is unaffected; there is no tuner. Restart the rig to bring
+it back"), and so are the supervisor's problems (`rig.js` `crashProblem`;
+Chromium, both screens). (5) **A one-knob save is one line** (#117):
+`fold_state` keeps the file's own value when the capture's is the same number,
+and a float stays a float, tested by saving one knob into a copy of
+electric-chorus-2 and accustomed. (6) **Doctor's unchecked patchbay item** with
+the rig up says which process is absent and why (the agent's crash record,
+which the command asks a running agent for; the state file's pid; or a child
+not started), with `sushi-rig restart` and not `up`. (7) **`verify
+<rig>.yaml`** compiles a rig file of `config/rigs/` as `up --rig` does
+(`rig.compile_named_rig`) and checks that, chosen over refusing since the
+compiled file lives under the runtime directory; any other YAML, or a file
+that is not JSON, is a sentence saying what to pass. (8) **The amp is named by
+its file** everywhere (`amp_live` `name` is the stem, the metadata name is
+`declared`, shown as what the file calls itself); the UI fake's models now
+call themselves something other than their files, as the rig's do. **NOT RUN
+ON THE RIG**: RECORD on the stage screen and `sushi-rig take check` on what it
+writes is the test, and whether `jack_client_name` names every device as
+pipewire-jack does past the two spellings observed, whether a take's eight
+columns keep up, and doctor's agent query and wording with a real crash, are
+all for it to say. *(2026-11-02)*
+
+**Record from the web UI: answering review of the port fix.** Nine findings.
+(7, the main one) **Ports are found through JACK's own aliases, not a
+prediction of JACK's names.** The rig's refusal came from comparing the machine
+file's names with JACK's port names alone; pipewire-jack gives every port
+aliases, and its own port lookup matches them. The engine now matches each
+column's machine-file name against the name and aliases of each port its own
+client lists (`capture.jack_ports`, `match_sources`), at RECORD; a name no port
+carries, or more than one does, is refused with every port and its aliases
+listed (the rig's refusal cut the list at eight). Gone with it:
+`patchbay.jack_client_name`, `jack_port_names`, `LivePort.jack` and the
+per-RECORD `pw-dump` subprocess, which also settles (1) the uniqueness rule
+that refused a port whenever two nodes shared a description, though
+pipewire-jack renames only duplicates of different clients (the iD14's
+pro-audio profile, whose sink and source share "Audient iD14 Pro", would have
+refused every take), and (8) the latency and stall a pw-dump added to a take's
+start. `patchbay.resolve_port` stays, as one port's half of `resolve_nodes`.
+doctor's `record-ports` lists JACK's ports in a child under `pw-jack`
+(`capture.list_jack_ports`, running `python -m sushi_rig.capture`, which lists
+with `jack_ports`) and matches with `match_sources`; where no client can be
+opened it is "needs JACK", unchecked. `tests/jack_fake.py` lists ports whose
+name is `Audient iD14 Multichannel:capture_AUX0` and whose aliases include
+`Audient iD14:capture_AUX0`; **that alias list is a guess until seen on the
+rig.** (2) An unexpected error planning a take in `record_check` is that
+check's fault, not the end of doctor. (3) and (4) A crash record carries its
+run (`pgid`, `started_at`, stamped by the supervisor) and is the running rig's
+only when they match the state file (`supervisor.same_run`; `sameRun` in
+rig.js): doctor no longer blames an earlier rig's crash on this one, and the
+page shows an earlier run's crash last, muted, with nothing to restart. (5) An
+old take's "the capture engine did not stop cleanly" in `capture.error` is read
+as a stop failure (`take.stop_failure`), whole and complete, as `stop_error` is
+now. (6) `verify` refuses a `.yml` rig file, since `compile_named_rig` loads
+only `<name>.yaml`. (9) What each child is and what its exit means is
+`supervisor.CHILD_ROLES`, carried in every exit record as `label` and `means`;
+doctor words an absent child with `child_label` and `how_it_ended`, which
+`crash_message` uses too, and rig.js shows the record's own words and keeps no
+copy. **Rig check, before anything else is trusted**: with the rig up, run
+
+    pw-jack jack_lsp -A | grep -A3 capture_AUX0
+
+and paste the output here. If `Audient iD14:capture_AUX0` is not among the
+aliases printed under `Audient iD14 Multichannel:capture_AUX0`, the engine
+refuses every take (saying so, with every port listed) and this fix comes back.
+Then RECORD on the stage screen, `sushi-rig take check` on what it wrote, and
+`sushi-rig doctor` with the rig up (`record-ports`). None of it has run on the
+rig. *(2026-11-02)*
+
+**Hygiene pass: facts the later work made untrue** *(2026-11-03)*. No new
+behaviour. (1) `requires-python` is `>=3.11`, as the agent's supervisor,
+CI (3.11 and 3.13) and the rig (3.14) already were; the runtime 3.10 refusal in
+`Supervisor.up` is gone (its reason, `process_group`, stays as a comment), the
+three `skipif(version_info < (3, 11))` marks in test_supervisor,
+test_agent_record and test_recorder_process are dropped, and test_ui imports
+`tomllib` outright. The recorder_process comment and test that called 3.10 "the
+floor" now say what 3.11 does (it never keeps a daemon thread). (2) README's
+file tree: `Patchbay/Default.qpwgraph` and `Test_1.qpwgraph` are hand-made
+qpwgraph sessions added in #67 and read by nothing in `tool/src` (only
+`rig.qpwgraph` is), and are described so; `electric_stereo` stays listed under
+`config/src/` because that source is tracked, with a note that its built
+config is in `retired/`; `stereo` was missing from the module list (45
+modules, not 44); `docs/ui/` and `spikes/live_rig/` were missing from the tree.
+(3) README's "`LIFECYCLE_TIMEOUT`, as when the agent ran them as the CLI" is now
+`supervisor.LIFECYCLE_TIMEOUT` (the constant exists in `supervisor.py`; the
+earlier entry's "gone" meant gone from `cli`). Checked and found already true,
+so unchanged: nothing says undo is missing; "the listener constructs one" is
+correct (#57); no README or docstring says a rig plays left only except as the
+dated 2026-11-02 account of the bug and v1 configs; no TypeScript or Vite
+(README and `ui/__init__.py` say plain files, no build step); no `run_cli`.
+Earlier entries above still say `run_cli` and `LIFECYCLE_TIMEOUT` are gone and
+mention 3.10; they are history and were left. Not run: anything beyond the
+test suite.
+
+**Hygiene pass, addition: lilv collections on Python 3.13** *(2026-11-03)*.
+`lilv.Collection.__iter__` returns an `Iter` with `__next__` and no
+`__iter__`; on Python 3.13 a comprehension or `sorted()` over it raised
+`TypeError: 'Iter' object is not iterable`, which failed 9 `test_probe` tests
+here once python3-lilv 0.24.22 was installed (CI's fast jobs have no lilv, and
+its container runs 3.12, so it never saw it). `probe._each(collection)` now
+walks a collection with `next()` on `iter(collection)` and never needs the
+iterator to be iterable; every walk of a lilv collection in `probe.py`
+(`_unit_symbol`, `_port_scale_points`, `describe`'s `get_value` reads, `probe`,
+`parameter_units`) and `plugins.plugins_on` goes through it, and the loop in
+`test_library` uses it. `test_stereo` only calls `get_by_uri`, so it needed
+nothing. `tests/test_lilv_each.py` pins it with fakes shaped like lilv's, with
+no lilv installed. Checked: `test_probe.py` on python3.13 with the real lilv,
+22 passed, 6 skipped. **The rig's Python 3.14 is unverified**: not run there,
+and whether its lilv has the same `Iter` depends on its version.
+
+**Live chain edits: undo an add or a remove, and save them (#32).** The rest of
+the milestone's agent side: add a plugin from the library, undo, save.
+(1) **Undo of an add** removes what it added, its copy to stereo with it,
+through the remove route's own path (`Agent._apply_remove`, shared now), and
+is `409 stale` unless the track is exactly the `chain` the add left, which
+the add's entry now records with its `copy` and `defaults` (the plugin's
+values read straight after the add, `live.read_live_values`). (2) **Undo of a
+remove** adds the plugin back through the add route's path (`_apply_add`),
+after the unit it followed in the chain before or first if it was first
+(`place_undo_remove`), with its copy, then sets every value and the bypass
+the remove now records (read just before it; a remove whose values cannot be
+read removes nothing). A predecessor or track gone, or a name taken, is
+`stale` with the reason, never another place; a value Sushi refuses removes
+the plugin again (`502`, nothing put back). Each undo is logged shaped as
+what it applied, `of` naming the op undone. (3) **Save** writes the chains as
+they run: the agent passes its log's adds and removes since the rig came up
+and the last switch (`agent.live_edits`) to `save_rig` and
+`rigfile.fold_state`, which writes an added plugin as `name`, `uri`,
+`bypassed: true` if so and only the values off its defaults
+(`added_entry`, and so on later saves), drops a removed one's entry with its
+comments, and still refuses what the log does not explain as a capture of a
+different rig; the CLI and the panel's SAVE, with no log, refuse as before,
+saying so. **How "added live" is told from "a different rig": the log.** A
+processor the file lacks is written only if the log added it to the track
+the capture has it on; a file plugin a captured chain lacks is dropped only
+if the log removed it from that track; the log never changes a capture, only
+explains it. A name removed and added back with the file's URI is the file's
+entry. (4) yamlmerge: removing a chain's **first** entry now takes the
+comment directly above it, as a reorder always did (a heading a blank line
+sets apart stays), so the same save drops the same comments whether or not a
+plugin moved; `test_the_first_plugin_can_go...` and review finding 1's test
+say so now. (5) **UI**: unsaved lists "added X to <track>" and "removed X"
+(copies never), read by entry shape so an undo needs no special case; tested
+in Chromium against `ui_fake` (`UiRig` takes adds and removes;
+`Served(library=fixture_library)`). Save diffs tested on copies of
+`accustomed.yaml` (exactly the three edits, with and without comments
+written in), `guitar_vocal.yaml` (flow entries) and `electric-clean.yaml`
+(an empty master). **NOT RUN against a live Sushi**: `read_live_values`, that
+a processor added live starts at its defaults and un-bypassed, the values set
+on a put-back plugin (acknowledged, not read back), and every undo and save
+path here, shown against the fakes only. *(2026-11-03)*
+
+**Live chain edits: answering review.** Nine findings, each with a test.
+(1) A plugin removed from one channel and added to another under the same
+name and URI vanished from the save, which said it worked: `fold_state` now
+keys what the file holds on (track, name), so it is a new entry on its new
+channel. (2) A chain whose baseline the log lacks (a move logged with no
+chain) is one "unknown → chain" row again, not every plugin "added". (3) A
+timeout or a full pool (504, 503) while a removed plugin is put back runs
+the same take-back as a refusal (`Agent._take_back`): removed again, `502`
+saying what the track holds; the stuck call keeps the connection open until
+it returns (`_keep_pending`). (4) A plugin put back is bypassed by the very
+next command after its add, set, then given the bypass it had (on if
+unknown), so it is not heard at its defaults; the add itself takes no
+bypass, so the gap is one command. (5) A defaults read after an add that
+times out logs the add with `defaults: null` and a note, instead of leaving
+an unlogged plugin. (6) The yamlmerge rule that a removed first entry takes
+the comment above it is a chain's only (`_is_chain`: a named list under a
+`chain` key), in a plain removal and a reorder; the comment above a rig
+file's first channel stays. (7) A remove logs its chain as `units`, grouped
+with Sushi's uids as `check_remove` grouped it, and its undo uses that; today
+`stereo.units` pairs a copy by its name either way, so the record and a
+regrouping agree, and the test pins that the record is what is read. (8)
+"removed X from <track>". (9) `live_edits` walks the log back from the
+newest entry to the newest save, switch or the run's start, comparing log
+times as strings with `since` parsed once; a save's entry carries the
+plugins added live it wrote (`args.added`, with defaults), which the next
+save starts from, so a second save still writes only values off defaults.
+**NOT RUN against a live Sushi**, as before. *(2026-11-03)*
+
+### 🟡 electric-octave-up's NaN flake is a plugin bug, in gx_detune_ (2026-11-03)
+
+CI's container job failed three times on 2 Nov with `electric-octave-up.json
+rendered unusable audio: non_finite: ...`, NaN from frame 15296, 57536 and
+202688, and passed each time it was re-run. All 193 rig-container logs were
+read: those three are the only NaN renders, all electric-octave-up.
+
+**Measured in CI** (`tool/tests/test_render_spread.py`, 997dd73, draft PR
+#122): forty renders of each, with the null tests' sweep. Spreads are max −
+min over the finite renders, dB; `dist` counts renders that differ bit for
+bit.
+
+| what | NaN | dist | rms | peak | 250–800 | 800–2500 | 2.5–8k | first NaN (mod 256) |
+|---|---|---|---|---|---|---|---|---|
+| electric-octave-up (rig) | 0 | 3 | 0.00003 | 0.00050 | 0.00001 | 0.00001 | 0.00030 | |
+| electric-octave-up.json (v1) | 1 | 12 | 0.00002 | 0.00173 | 0.00001 | 0.00002 | 0.00011 | 12992 (192) |
+| electric_board (rig) | 0 | 3 | 0.00011 | 0.00103 | 0.00030 | 0.00043 | 0.00412 | |
+| gx_compressor alone | 0 | 1 | 0 | 0 | 0 | 0 | 0 | |
+| 3BandEQ alone | 0 | 1 | 0 | 0 | 0 | 0 | 0 | |
+| gxts9 alone | 0 | 1 | 0 | 0 | 0 | 0 | 0 | |
+| gx_detune_ [octave_down] alone | 0 | 7 | 0.06920 | 0.31975 | 0.12829 | 0.09810 | 0 | |
+| gx_detune_ [octave_up] alone | 1 | 28 | 0.00001 | 0.06433 | 0 | 0 | 0.00013 | 12736 (192) |
+| gx_chorus_stereo alone | 0 | 1 | 0 | 0 | 0 | 0 | 0 | |
+| lcrDelay alone | 0 | 1 | 0 | 0 | 0 | 0 | 0 | |
+| a-reverb alone | 0 | 1 | 0 | 0 | 0 | 0 | 0 | |
+| MaGigaverb alone | 0 | 1 | 0 | 0 | 0 | 0 | 0 | |
+| rig, octave_up DETUNE 0.99995 | 0 | 6 | 0.00004 | 0.00051 | 0.00002 | 0.00002 | 0.00048 | |
+
+Each plugin alone is the rig's own settings, unbypassed, compiled on a mono
+channel. Every finite render of the three configs was within its reference
+(0 of 40, 0 of 39, 0 of 40 outside); the candidate setting was outside in 40
+of 40 (rms −0.151 dB, peak +0.468 dB, 20–80 Hz +0.083 dB). Threads, read from
+/proc during one render: 15 seen, and all the CPU (0.16 s) on one `sushi.bin`
+thread.
+
+**The cause.** guitarix 0.46.0's gx_detune_ (`detune.cc`, `smbPitchShift`)
+allocates `fpb` and `expect` with `fftFrameSize2` floats and reads index
+`fftFrameSize2` of both in every hop, one past the end. Whatever the heap left
+there is added into the Nyquist bin's running phase; when it is NaN, Inf or
+large enough to overflow, the phase is NaN, the inverse FFT spreads it, the
+overlap-add keeps it, and the output is NaN to the end. Only a shift of 2 or
+more writes that bin: electric-octave-up's octave up does; the octave down,
+and electric_board's two detunes at no shift, do not. The non-determinism is
+mostly the plugin's `FFTW_MEASURE` plans, chosen by timing; the stray value
+changes the bits too. Only electric-octave-up and electric_board run the
+plugin unbypassed, which is the "not explained" of 30 Oct above: every other
+config carrying it has it bypassed. The other suspects do not hold: every
+other plugin of the chain, both reverbs included, renders the same 40 times
+in 40; Sushi's offline frontend renders on one thread (its source:
+`_run_blocking` on the calling thread, before the event dispatcher that runs
+LV2 workers is started; and /proc above); denormals are flushed by Sushi and
+by guitarix both. Every NaN recorded, in CI then and now and on the bench,
+started 192 frames past a multiple of 256: a hop boundary of the pitch
+shifter.
+
+valgrind 3.22, the plugin alone: `Invalid read of size 4 ... 0 bytes after a
+block of size 1,024 alloc'd`, four times, two in each of the two blocks. A
+bench host running the plugin alone as Sushi does (`tool/spikes/gx_detune_nan/`,
+Ubuntu 24.04, the same packages):
+
+| | renders | NaN | distinct |
+|---|---|---|---|
+| as it is | 210 | 2 | most |
+| `fpb`, `expect` padded with 0 | 360 | 0 | many |
+| `FFTW_ESTIMATE` forced | 140 | 6 | many |
+| padded with 0 and `FFTW_ESTIMATE` | 140 | 0 | 1 |
+| padded with NaN / 1e37 / 1e36 | 3 each | 3 each, from frame 2240 / 11200 / 92352 | |
+
+**Containment, (c).** No setting removes the cause within the tolerance: the
+one that keeps the Nyquist bin unwritten, DETUNE a tenth of a cent flat, is
+the candidate above, 0.15 dB off. No render-side fix is legitimate either:
+padding the heap or forcing `FFTW_ESTIMATE` would make the renders something
+the rig is not. So `render.measure` renders a NaN once more, only when the
+config runs gx_detune_ unbypassed and the NaN starts on its hop grid
+(`render.detune_nan`); any other NaN fails at once, and a second fails
+saying what the first looked like. It says "retried after a NaN" every time:
+beside the channel and in a summary at the end of `nulltest`, at the end of
+the pytest run (the parity test, `spread_table.RETRIES`), as a warning to a
+caller with nowhere to put it, and as a warning annotation on the check run.
+The test above stays, asserting that every NaN is that one. **No config is
+changed**: the retune is Sonny's decision. The spike folder's README holds
+the reproduction, the evidence and the fix to suggest upstream (`new
+float[fftFrameSize2 + 1]` for both; `FFTW_ESTIMATE` or wisdom; three smaller
+valgrind faults); **not filed**. The CI time added is about 70 s (the suite
+step went from 3m05s to 4m10s; the renders are 0.07 to 0.25 s each).
+
+**On the rig**: the same bug is there. Each load of electric-octave-up risks
+a NaN from some seconds in until it is loaded again: 2 in 120 renders of an
+octave up in CI here, 2 in 210 on the bench, about 1 to 2 in a hundred. If
+the octave-up goes silent mid-set, `sushi-rig restart` (README, the known
+issue). **Not tried on the rig**: what a NaN sounds like through PipeWire,
+and whether bypassing the octave would bring the sound back. *(2026-11-03)*
+
+**The NaN retry: answering review.** Ten findings, each with a test
+(`test_render.py` unless said). (1) A retry with no list to go into is printed
+on stderr every time, `RETRIED-NAN: ...`, as well as warned: a warning alone
+shows once per call site, and not at all under `-W ignore`. (2) A grid frame
+alone is not the bug's signature, since 192 mod 256 is also a chunk boundary:
+`detune_nan` now also requires every sample from the first bad frame to the
+end to be non-finite on each channel that carries the octave (the left, and
+the right too when the compiler's copy to stereo follows it). A 64-frame burst
+at frame 2240 fails without a retry, as does NaN on the left alone of a copied
+octave. (3, 4) The job counts `^RETRIED-NAN: ` lines, which only the
+reporting code prints and only once per retry (nulltest's summary, pytest's
+end of run), so tracebacks and the lines beside each channel are not counted;
+the annotation's title carries the count (`test_workflow_retries.py`). (5)
+`measure` reads the config against the rig root, where Sushi runs, and a
+config it cannot read is an error naming it, not a retry skipped. (6) A retry
+made before a channel failed is printed beside the failure. (7) The 520-render
+table is opt-in, marker `spread`, deselected (not skipped) unless
+`SUSHI_RIG_SPREAD=1`; every run renders gx_detune_ an octave up alone five
+times instead, with the same assertion, about a second. To print the table:
+`docker run --rm -e SUSHI_RIG_SPREAD=1 sushi-rig-ci pytest -rs -m spread`.
+(8) One lookup of the first non-finite sample, `analysis.first_non_finite`,
+for `check_finite` and `detune_nan`. (9) The spread test computes each
+render's mask once and writes its stimulus once per target
+(`render.prepare_stimulus`, `render_offline(prepared=...)`). (10) The
+bypassed-or-absent test now uses its parameter. *(2026-11-03)*
+
+**The New rig screen: a rig of channels made, and a channel added or moved,
+from the web UI.** Phase 2's "a 'new rig' flow that asks how many channels,
+mono or stereo for each, and which input each listens on, and refuses past the
+8-channel ceiling with the reason". On the agent: `GET /machine/roles` (each
+role's ports, `mono_to_stereo`, the widths it can feed and whether it can take
+the master, each as the patchbay answers, which of the running rig's tracks use
+it, and the ceiling as the compiler refuses a fourth channel), `GET
+/rigs/<rig>/channels`, `POST /rigs/new` (a new `config/rigs/<name>.yaml`,
+master on `monitor-out`, chains empty unless `from: {rig, channel}` copies a
+channel's chain and `level:`), `POST /rigs/<rig>/channels/add` and `POST
+/rigs/<rig>/channels/<channel>/input` (in place through `write_rig`; on copies
+of guitar_vocal, electric-chorus-2 and accustomed an add changes exactly the
+channel's four lines and an input change exactly its one or two). **Every
+check is the compiler's**: `rig.compile_rig_draft` parses, compiles and wires
+a draft offline exactly as `up --rig` does, against the run's machine file,
+and is pinned to give what `compile_named_rig` gives for each committed rig.
+Found on the way: **`compile_named_rig` alone does not know the roles**. A
+channel on a role the machine file lacks, or stereo on a one-port role without
+`mono_to_stereo`, compiles cleanly and is refused only by the patchbay at
+`up`; so the draft is wired too, and the patchbay's channel-form refusal of
+stereo on one port now says what to declare, as its bus form did. Refusals are
+409 with those words and a code (`rig_problem`, `name`, `taken`, `no_source`,
+`no_channel`); a missing role comes with the lines to add (`machine_hint`), and
+**the machine file is never written**. Two channels may share an input.
+Choices: **an edit of the running rig's file is refused while the agent saw
+unsaved changes** (`unsaved`) or the panel runs (`panel`), since the edit plays
+only after a restart from the file, which would drop them; Save still works
+after an edit (a capture says nothing of a track the rig lacks, so the file
+keeps the new channel: the brief's "Save refuses a capture whose channels
+differ" is not what `fold_state` does for an added channel), so a refusal costs
+one Save and a warning would have lost the work at the restart offered beside
+it. **Remote callers** as `/rig/save`: no loopback check, since Save writes the
+same files without one. **`from` reads the source file as it stands**, not
+git's commit of it (a saved, uncommitted tone is the one heard), and says what
+git says of it; worth having for the new-rig flow (a vocal channel started
+from guitar_vocal's), limited by Sushi's one namespace for processors: two
+channels copied from one chain are refused by the compiler for their
+duplicate names, and nothing renames them. Direction (input or output) is read
+from a role's name, since the machine file does not say. Writes take the
+lifecycle lock (`busy`) and, for the running rig, the live lock; never
+committed, the answer giving the commit and the file's git state. On the page:
+"New rig…" under the rack's picker opens `#new-rig` (name; per channel a name,
+an input picker showing each role's port, mono or stereo with stereo offered
+only where the role can give it and the patchbay's reason where not, "start
+from"; Add channel up to three, then the compiler's arithmetic; Create, then
+Start or Switch to it), and the rack's INPUTS lists the running rig's file's
+channels with Change input and Add channel, each offering the restart (with a
+confirm: the sound stops). Nothing on the stage. Tested: every route against
+real rig files in tmp and the real compiler (each refusal, a shared input, the
+ceiling, stereo on one port, busy, unsaved, panel, the run's own machine
+file); browser tests against `ui_fake` (`UiSave` now has a machine file and a
+running config that is the real compile, and a restart that brings a new
+channel up as an empty track). **NOT RUN AGAINST A LIVE SUSHI, and no rig made
+this way has been started on the rig.** *(2026-11-06)*
+
+**The New rig screen: answering review.** Ten findings, each with a test
+(`test_agent_rigfiles.py` and `test_ui.py` unless said). (1) **The offered
+restart could lose live work**: a knob turned after an edit was dropped by
+the restart the edit offered. `POST /rig/restart` itself now refuses (409
+`unsaved`, naming the newest change) while the agent saw changes no save has
+written, unless `{"discard": true}`: the page's restart after an edit, the
+picker's and the CLI's alike. The page shows the refusal with "Restart
+anyway, dropping them" as a second tap; the CLI gains `restart --discard`
+(`test_agent_client.py`). Not refused with Sushi's process gone (the work
+went with it, and recovery must not wait) or with the panel running (the
+agent cannot see it). Stop and a switch still drop unsaved work, as before.
+(2) **Restart and switch dropped the run's machine file**: drafts were
+checked against the state file's `machine`, but `restart` and **every switch
+by restart** (`switch_steps`) ran `up --rig`, which read this host's file.
+`restart_arguments` now carries `machine`, `up` and `prepare_launch` take it
+(`up --machine`, CLI `--direct` only, since the agent takes no path from a
+request), and `switch_steps` passes it (`test_agent.py`'s switch tests now
+expect it; `test_rig.py`, `test_supervisor.py`). (3) `machine_hint` gives one
+line per role, satisfying every use; pasted into the machine file it
+validates and the rig compiles. (4) What git says of a written file is read
+after the lifecycle lock is let go, within `SAVE_TIMEOUT`; past it the answer
+says git is not known. (5) A hand-written `master: monitor-out` is the
+compiler's refusal, not a 500: `machine_hint` reads the file defensively,
+and a failure in it never replaces the refusal. (6) A new rig that moves
+Program Change numbers says which rigs moved, before and after, in the answer
+(`programs`) and on the page; the order rule is unchanged. (7) A poll that saw
+the run change no longer loses an edit's answer: the write in flight and the
+last result are kept across the reset (the browser test fails on the old
+code). (8) Save and the rig files share one off-loop write
+(`_write_off_loop`). (9) One probe (`rigedit._probe`). (10) One walk back to
+the newest save, switch or run start (`since_baseline`) for `live_edits` and
+`unsaved_entries`; `freshWiring` is the page's one literal. **Still not run
+against a live Sushi.** *(2026-11-06)*
+
 **The record button's first live run: one socket, three names, and the record
 path used the wrong one.** The thing written down as unknown on 2026-11-02 —
 "whether the machine file's port names (as qpwgraph shows them) are what a JACK
@@ -2779,3 +3365,107 @@ eight columns** (this was five; guitar_vocal is eight and the spike's callback
 evidence is six), and a **stereo dry tap** — whether a device's
 `capture_AUX2`/`_3` are consecutive as `numbered_ports` assumes, which this
 take's mono tap did not exercise. *(2026-11-06)*
+
+**Knobs that can be set, volume, Revert, and the rack as a mixing desk.**
+Sonny's requests after using the web UI on the rig, and five more from him
+on the way (A to E below). **History:** the per-knob "was …" labels and the
+itemised unsaved list are gone, since they came and went as values changed;
+the one sign of unsaved work is a count on Save in a box that is always
+there, and nothing comes, goes or moves as values change (a browser test
+compares every element's box before and after four changes). Undo stays.
+**Revert to a previous save:** every save from here (POST /rig/save, save-as
+too) keeps a snapshot of the file as written, with time, rig and the commit
+it sat on, in `<checkout>/.sushi-rig/saves/<rig>/` (`saves.py`), gitignored
+and ignoring itself, the newest 50 per rig; the file's own commits are listed
+beside them (`git log`, off the loop, with a timeout). `GET
+/rigs/<name>/saves`; `POST /rigs/<name>/revert {"save", "discard"?}` writes
+the point back byte for byte (a plain write: `write_rig` keeps the current
+file's comments, not the snapshot's), compiled first, and plays it on the
+running rig through the live switch (#112), live where it can be; 409
+`unsaved` with live work unless `discard`. The page's "Revert…" lists them
+with how long ago, and its confirm names what is lost. **Master volume:** in
+both headers, on the master track's gain through POST /live/parameter
+(logged, undone), saved as the new `master: level:` (rigfile.py: compiled to
+that gain as a channel's level is to its send's; unity writes nothing, and
+every committed rig compiles byte for byte as before), a live step of a
+switch; −∞ then −60 to +6 dB, −∞ being the gain's −120 dB floor; usable
+while locked, no confirm. **Knobs:** a vertical drag of 320 px for the whole
+travel with the pointer captured, shift or a second finger a tenth; the wheel
+a notch at a time (about 1 % of the range, rounded to 1, 2 or 5 × 10ⁿ),
+preventing page scroll only over the control; arrows, PageUp/Down ×10,
+Home/End; the value a text field (click selects, Enter or blur commits,
+Escape cancels, lenient, clamped, exact; nonsense refused in place; a focused
+field is never overwritten by a poll); whole display units sticky (caught
+within 0.15, held to 0.35 on a drag; a scroll snaps without holding; a 0–1
+parameter with no unit held to hundredths; fine never snaps). The amp's
+faders and every volume take typed values and the wheel. All decisions are
+pure in rig.js and tested. **(A)** The rack's inputs always say why they
+cannot be edited (no rig; a v1 run) and New rig… is offered whatever runs.
+**(B)** The page and `/ui/*` are served `Cache-Control: no-cache`, so a
+browser revalidates against the ETag and never runs a stale app.js. **(C)**
+Each channel's volume (its send's gain, `level:`) is the same fader as the
+master's, on the rack and the stage, locked or not, replacing the small
+"send to master" knob; a channel a MIDI blend drives says "driven by
+<control>" and cannot be set from the page (the pedal would undo it, and a
+save does not write it; `rigfile.blend_controls`, on `GET
+/rigs/<rig>/channels`). **(D)** The rack is a mixing desk: channel strips on
+the left (name, a quiet input line with Change input and Add channel, the
+volume large), the chains and amp in the middle, the files (rigs, New rig,
+start/stop/switch, Undo, Save, Revert, takes) on the right, the master in the
+header; at phone width they stack in that order. **(E)** The compiler's
+copies to stereo are recognised by uid, reserved suffix or role before any
+role `/live/plugins` gives, and shown nowhere; the plugin before one has a
+small "mono" badge, amber with "after <stereo plugin>: this collapses its
+stereo width" where it follows one, from plugin-ports.txt via `width` on
+`/live/plugins`. Tests: `test_agent_revert.py` (real rig files, git, the real
+compile and the real live switch over `RigLive`: save, change, save, revert
+to the first, and file and rig match the first save), `test_rigfile_master.py`,
+`test_ui_knobs.py` (pure and browser), `test_ui.py` updated. **NOT RUN AGAINST
+A LIVE SUSHI:** the master track's gain (range read from parameter_info,
+recorded from 1.3.0's source), a revert's live switch into the rig already
+up, a blend's fader against a real pedal, and the knobs' feel on the rig's
+touch screen. *(2026-11-07)*
+
+**Knobs, volume and Revert: answering review.** Seven findings and three
+smaller ones, each with a test (`test_ui_knobs.py` and `test_agent_revert.py`
+unless said). (1) A value field committed its stale text on blur when the
+value had moved under it (the wheel, a pedal, another page): only typed text
+is committed now; untouched, the field shows the value again. (2) The
+channel strips were one region keyed on the agent's busy state, an edit's
+answer and the forms, so a save from another device ended a fader drag: the
+column is now three parts patched apart, each strip's input line on its own,
+the faders rebuilt only when the channels change and kept while a command
+runs; the faders have names for `refocus`. (3) The wheel was taken over a
+knob's label and text, and over a fader that could not be set, so scrolling a
+rack stopped at the first knob and turned it: it is taken only over the dial
+or fader, only when settable, and only after the pointer has rested 300 ms
+since it arrived and since the page last scrolled, or with the focus
+(`R.takesWheel`). (4) Volume steps outside −60..+6 moved against their
+direction (+10 dB up gave +6): they now step toward the range or not at all,
+and only −∞ sits on the −∞ notch. (5) A slow scroll could not leave a whole
+number on a small range: a notch is stateless and always moves, landing on a
+whole number only when it crosses one. (6) A slow git hid the whole Revert
+list: the snapshots are read apart from git, and git's timeout is said in
+`git_note`. (7) A save on a clock behind the last could be pruned as it was
+kept: snapshots carry a write sequence, pruning goes by it, and never takes
+the new one. (a) Any error from the switch after a revert's write answers
+`written: true` and the reason. (b) The unsaved diff knows a copy by
+`isCopy`, uid included. (c) A master strip leads to the master's chain. *(2026-11-07)*
+
+**Knobs, volume and Revert: the re-review, and CI at phone width.** (1) A
+notch or key press stuck on a float32 read-back (7 reads back 6.9999998, and
+a floor put the next step on 7 again): `stepped` now works in whole steps,
+taking a value within a thousandth of a step of a grid line as on it, and
+`scrolled` reads the whole number it starts from the same way; a test feeds
+twenty notches each way through `Math.fround` on four controls and every one
+moves. (2) The strips' key no longer holds the master's plugin count (drawn
+in place), so a change to the master chain rebuilds nothing; a rebuild that
+must happen gives back the focus and any typed text, still to commit. (3) A
+removed copy known only by its uid is known from the log's own record (an
+add's `copy`, a remove's `previous.copy`). CI: at 390 px the rack was 439 px
+wide on CI's Chromium. The cause found here: the desk's `.channels` rule came
+after the phone rule and won, leaving the strips a 260 px column beside the
+chains; the phone rule is restated after it, the header's master shrinks at
+phone width, and paths in problems and code wrap. The phone test now also
+checks each column is the phone's width and nothing is wider, with the
+page's fonts and a wider fallback. *(2026-11-07)*

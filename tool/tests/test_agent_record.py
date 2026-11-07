@@ -522,7 +522,6 @@ def test_lost_audio_is_in_the_summary_and_the_verdict(root):
 # The agent and a real recorder process, over its socket
 # --------------------------------------------------------------------------- #
 
-@pytest.mark.skipif(sys.version_info < (3, 11), reason="process_group needs Python 3.11")
 def test_a_take_through_the_agent_and_a_real_recorder_passes_take_check(root, tmp_path):
     import os
     import subprocess

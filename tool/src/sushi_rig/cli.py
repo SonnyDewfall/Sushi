@@ -239,7 +239,8 @@ def _patchbay(args: argparse.Namespace) -> int:
     from .rigfile import RigFileError, spec_of
 
     try:
-        rig = spec_of(args.rig)
+        # Routing only: the patchbay wires ports and never loads the chains.
+        rig = spec_of(args.rig, routing_only=True)
         machine_file = args.machine or machine_path(root)
         machine = MachineSpec.load(machine_file)
     except RigFileError as exc:
@@ -431,11 +432,30 @@ def _take(args: argparse.Namespace) -> int:
     return 1 if problems else 0
 
 
+def _references_of(ref_stem: str, stem: str, is_rig: bool) -> bool:
+    """Whether a reference named `ref_stem` is one the target `stem` would
+    produce: a rig's `<stem>` or `<stem>.<channel>`, a v1 config's the same
+    with `.v1-mono` after it. A rig that cannot compile must not exempt its v1
+    config's references from the orphan check, nor the reverse (review)."""
+    from .render import V1_REFERENCE_SUFFIX
+
+    if ref_stem.endswith(V1_REFERENCE_SUFFIX):
+        if is_rig:
+            return False
+        ref_stem = ref_stem[: -len(V1_REFERENCE_SUFFIX)]
+    elif not is_rig:
+        return False
+    return ref_stem == stem or ref_stem.startswith(f"{stem}.")
+
+
 def _nulltest(args: argparse.Namespace) -> int:
     """`nulltest`: has any config, or any channel of one, changed its sound.
 
     A config is rendered whole when Sushi's offline frontend can host it, and
-    one channel at a time when it cannot (`render.channels_of`).
+    one channel at a time when it cannot (`render.channels_of`). A rig of
+    channels (config/rigs/) is rendered through its master, one channel at a
+    time (`render.rig_channels`), with its reference under the channel's name;
+    a v1 config's is under that name and `.v1-mono` (`V1_REFERENCE_SUFFIX`).
     """
     import tempfile
 
@@ -444,14 +464,15 @@ def _nulltest(args: argparse.Namespace) -> int:
     from .nulltest import compare, from_dict, keep_wider, to_dict
     from .paths import checkout_root
     from .render import (
-        SOUND_DIR, RenderError, calibrate, channels_of, measure, offline_problem,
-        reference_path,
+        RETRIED, RETRIED_PREFIX, SOUND_DIR, RenderError, calibrate, channels_of, measure,
+        offline_problem, reference_path, rig_channels, rigs_to_check, v1_reference_path,
     )
+    from .rigfile import RigFileError
     from .verify import configs_to_check
 
     root = checkout_root()
     if args.check_all:
-        targets = configs_to_check(root)
+        targets = configs_to_check(root) + rigs_to_check(root)
     elif args.config:
         targets = [args.config]
     else:
@@ -461,8 +482,13 @@ def _nulltest(args: argparse.Namespace) -> int:
     failed = 0
     checked = 0
     unrenderable: list[str] = []
+    # Every render retried after gx_detune_'s known NaN (`render.measure`),
+    # printed beside its channel and again at the end, every time.
+    retried: list[str] = []
     expected: set[str] = set()
-    unexpanded: list[str] = []
+    # (stem, is_rig) of each target that could not be expanded into channels:
+    # its own references are kept out of the orphan check, and only its own.
+    unexpanded: list[tuple[str, bool]] = []
 
     def cannot_check(label: str, exc: Exception) -> None:
         nonlocal failed
@@ -473,22 +499,31 @@ def _nulltest(args: argparse.Namespace) -> int:
 
     with tempfile.TemporaryDirectory(prefix="sushi-rig-nulltest-") as tmp:
         for target in targets:
+            is_rig = target.suffix in (".yaml", ".yml")
             try:
-                channels = channels_of(json.loads(target.read_text()), target)
-            except (ValueError, OSError, TypeError, AttributeError) as exc:
+                if is_rig:
+                    channels = rig_channels(target)
+                else:
+                    channels = channels_of(json.loads(target.read_text()), target)
+            except (RigFileError, ValueError, OSError, TypeError, AttributeError) as exc:
                 # TypeError and AttributeError too: a config that is a list, or
                 # whose tracks are null, must cost one line, not the whole run
                 # and the orphan check after it.
-                unexpanded.append(target.stem)
+                unexpanded.append((target.stem, is_rig))
                 checked += 1
                 cannot_check(target.name, exc)
                 continue
 
             for channel in channels:
                 checked += 1
-                expected.add(channel.name)
-                work = Path(tmp) / channel.name
-                ref_file = reference_path(root, Path(f"{channel.name}.json"))
+                ref_file = (reference_path(root, Path(f"{channel.name}.json")) if is_rig
+                            else v1_reference_path(root, Path(f"{channel.name}.json")))
+                ref_name = ref_file.stem
+                expected.add(ref_name)
+                work = Path(tmp) / ref_name
+                # Where this channel's retries start, so they are printed beside
+                # it whether it passes, differs or cannot be checked.
+                already = len(retried)
                 if args.calibrate and args.missing and ref_file.exists():
                     # --missing calibrates only what has no reference yet, so
                     # adding a channel does not quietly re-baseline the others,
@@ -532,7 +567,8 @@ def _nulltest(args: argparse.Namespace) -> int:
                         source.write_text(json.dumps(channel.config, indent=2) + "\n")
 
                     if args.calibrate:
-                        fp, measured = calibrate(source, root, work, sushi_bin=sushi)
+                        fp, measured = calibrate(source, root, work, sushi_bin=sushi,
+                                                 retried=retried)
                         committed = None
                         if ref_file.exists():
                             try:
@@ -560,6 +596,8 @@ def _nulltest(args: argparse.Namespace) -> int:
                             f"delay {tolerance.delay_samples} samples "
                             f"-> {ref_file.relative_to(root)}"
                         )
+                        for note in retried[already:]:
+                            print(f"   {note}")
                         continue
 
                     if not ref_file.exists():
@@ -582,13 +620,17 @@ def _nulltest(args: argparse.Namespace) -> int:
 
                     reference, tolerance = from_dict(yaml.safe_load(ref_file.read_text()))
                     differences = compare(
-                        reference, measure(source, root, work, sushi_bin=sushi), tolerance
+                        reference,
+                        measure(source, root, work, sushi_bin=sushi, retried=retried),
+                        tolerance,
                     )
                 except (RenderError, ValueError, OSError, KeyError, TypeError,
                         AttributeError, yaml.YAMLError) as exc:
                     # Everything a hand-edited reference can do, caught per
                     # channel so one bad file does not abandon the rest.
                     cannot_check(channel.label, exc)
+                    for note in retried[already:]:
+                        print(f"   {note}", file=sys.stderr)
                     continue
 
                 if differences:
@@ -598,6 +640,8 @@ def _nulltest(args: argparse.Namespace) -> int:
                         print(f"   {difference}")
                 else:
                     print(f"{channel.label}: sounds the same")
+                for note in retried[already:]:
+                    print(f"   {note}")
 
     if args.check_all:
         # A reference nothing produces any more — a config renamed, a track
@@ -608,7 +652,7 @@ def _nulltest(args: argparse.Namespace) -> int:
         sound = root / "config" / SOUND_DIR
         for ref in sorted(sound.glob("*.yaml")) if sound.is_dir() else []:
             if ref.stem in expected or any(
-                ref.stem == stem or ref.stem.startswith(f"{stem}.") for stem in unexpanded
+                _references_of(ref.stem, stem, is_rig) for stem, is_rig in unexpanded
             ):
                 continue
             print(
@@ -629,9 +673,34 @@ def _nulltest(args: argparse.Namespace) -> int:
             f"sound is not protected: {', '.join(unrenderable)}",
             file=sys.stderr,
         )
+    if retried:
+        # Every run, like the unrenderable list: a retry that passes is still a
+        # NaN the rig's plugin produced, and reading as a clean pass would hide
+        # how often that happens.
+        # One prefixed line per retry, here only: what the CI job counts.
+        print(f"\n{len(retried)} render(s) {RETRIED}, each once:", file=sys.stderr)
+        for note in retried:
+            print(f"{RETRIED_PREFIX} {note}", file=sys.stderr)
     if failed:
         print(f"\n{failed} of {checked} check(s) could not be confirmed", file=sys.stderr)
     return 1 if failed else 0
+
+
+def _agent_crashes() -> list[dict] | None:
+    """The rig's children a running agent saw exit (`agent.supervisor.crashed`),
+    or None when no agent answers. Only the agent that started a rig can read
+    its children's exits; doctor uses them to say that an absent node of the
+    rig's is a crash rather than a rig that is down. Asked briefly, and never
+    a reason for doctor to fail: without it, doctor reads the state file."""
+    from .agent_client import Absent, Unusable, find_agent, probe
+
+    try:
+        health = probe(find_agent()[0])
+    except (Absent, Unusable):
+        return None
+    supervisor = (health.get("agent") or {}).get("supervisor")
+    crashed = supervisor.get("crashed") if isinstance(supervisor, dict) else None
+    return crashed if isinstance(crashed, list) else None
 
 
 def _doctor(args: argparse.Namespace) -> int:
@@ -639,7 +708,8 @@ def _doctor(args: argparse.Namespace) -> int:
     from .doctor import faults, run, unchecked
     from .paths import checkout_root
 
-    checks = run(checkout_root(), machine_file=args.machine, patchbay_file=args.patchbay)
+    checks = run(checkout_root(), machine_file=args.machine, patchbay_file=args.patchbay,
+                 crashed=_agent_crashes())
     for check in checks:
         print(check)
     broken, skipped = faults(checks), unchecked(checks)
@@ -837,6 +907,12 @@ def _main(argv: list[str] | None = None) -> int:
         help="use this model instead of the one in the config — a filename in "
         "amp/models/ or a path. For auditioning without editing the config; "
         "a save then records whichever was actually used",
+    )
+    p.add_argument(
+        "--machine", type=Path,
+        help="with --rig, the machine file to compile and wire against [default: "
+        "machines/<this hostname>.yaml]; with --direct only, since the agent takes no path from "
+        "a request (its restart and switch carry the one the run started with)",
     )
     p.add_argument("--direct", action="store_true", help=_DIRECT_HELP)
 
@@ -1058,6 +1134,11 @@ def _main(argv: list[str] | None = None) -> int:
     p = sub.add_parser(
         "restart",
         help="stop the running rig and bring the same one back — same config, same mode, same amp and tuner choices",
+    )
+    p.add_argument(
+        "--discard", action="store_true",
+        help="restart even though the agent saw changes since the last save, dropping them "
+        "(without it, the agent refuses a restart that would lose them)",
     )
     p.add_argument("--direct", action="store_true", help=_DIRECT_HELP)
 
@@ -1380,6 +1461,9 @@ def _main(argv: list[str] | None = None) -> int:
         # The agent holds the rig when it is running (#29), so ask it first;
         # with nothing listening, act as the CLI always has. Either way one
         # line on stderr says which.
+        if args.command == "up" and args.machine is not None and not args.direct:
+            sys.exit("sushi-rig: --machine is taken with --direct only: the agent takes no path from a "
+                     "request. Nothing was done.")
         if args.direct:
             print("sushi-rig: --direct, so acting without asking the agent", file=sys.stderr)
         else:
@@ -1406,6 +1490,7 @@ def _main(argv: list[str] | None = None) -> int:
                     args.config_name, headless=args.headless,
                     tuner=args.tuner, amp=args.amp,
                     amp_model=args.amp_model, rig=args.rig,
+                    machine=str(args.machine.resolve()) if args.machine is not None else None,
                 )
             if args.command == "down":
                 return down(args.force)

@@ -12,7 +12,7 @@ and the two things worth reading about a rig, served over HTTP on localhost.
     GET  /doctor        `doctor`'s checks, as data
     POST /rig/up        {"config_name" (required), "rig", "headless", "tuner", "amp", "amp_model"}
     POST /rig/down      {"force"}
-    POST /rig/restart   {}
+    POST /rig/restart   {"discard"?} -- refused (409 unsaved) if it would drop changes no save wrote
     POST /rig/switch    {"config_name" (required)} -- to a rig of config/rigs, live where it can be (#93)
     GET  /live          the running rig's parameters, bypass and chains, with each parameter's range
     POST /live/parameter  {"processor", "parameter", "value"}   value is normalised, 0 to 1
@@ -32,6 +32,11 @@ and the two things worth reading about a rig, served over HTTP on localhost.
     POST /record/start  {"name"?} -- a take of the running rig (S7); no name is take-<date>-<time>
     POST /record/stop   {} -- finish it; the answer says `take check`'s verdict
     GET  /takes         the takes, newest first: name, when, length, stems, `take check`'s verdict
+    GET  /machine/roles the machine file's roles: ports, widths each can feed, which tracks use each
+    GET  /rigs/{name}/channels   a rig file's channels: name, input, width, level, plugins
+    POST /rigs/new      {"name", "channels": [{"name", "input", "width", "from"?}]} -- a new rig file
+    POST /rigs/{name}/channels/add              {"name", "input", "width", "from"?}
+    POST /rigs/{name}/channels/{channel}/input  {"input"?, "width"?} -- each written, never committed
 
 ## A fixed command set, never a shell
 
@@ -104,7 +109,9 @@ undo comes from. It lives in this process and is lost when the agent stops.
 
 `POST /live/undo` takes the newest entry that is not an undo and has not been
 undone, and applies its `previous` through the same functions the routes use:
-`set_live_parameter`, `set_live_bypass`, and a move the opposite way. It is a
+`set_live_parameter`, `set_live_bypass`, a move the opposite way, and for a
+chain edit (#32) the other edit: an add is undone by the remove route's path,
+a remove by the add route's, with the values the remove recorded set after. It is a
 change like the others (same busy check, same lock, same `LIVE_TIMEOUT`, same
 503/502/504/409), and is logged like one: `op: "undo"`, `undoes: <index>`, `args`
 what was applied and `previous` what that replaced, so a redo can be built from
@@ -220,8 +227,52 @@ The file is written and NOT committed: committing in the player's checkout
 is the player's call. The answer and the log entry (`op: "save"`, with the
 file and `library`, the commit and dirty state from `take.library_state`)
 say what it sits on. Undo passes over a save to the change before it, and
-the page's unsaved list counts from the newest save. Not run against a live
+the page's unsaved list counts from the newest save.
+
+Plugins added and removed live are saved too (#32): the save hands
+`save_rig` the log's adds and removes since the rig came up (`live_edits`),
+and `rigfile.fold_state` writes an added plugin's entry and drops a removed
+one's. That is how a plugin added live is told from a capture of another
+rig: the log explains the difference, and what it does not explain is
+refused as before. Not run against a live
 Sushi: shown against a fake capture and real rig files.
+
+## New rigs and channel edits (the New rig screen)
+
+A rig file is made or edited from the page, never from a hand on YAML: `POST
+/rigs/new` writes a new `config/rigs/<name>.yaml` (its master on
+`patchbay.MONITOR_ROLE`, its chains empty unless a channel's `from` copies
+another rig's channel), `POST /rigs/{name}/channels/add` adds a channel and
+`.../{channel}/input` changes a channel's input or width, both in place
+through `rigfile.write_rig`, so a comment stays and only the changed lines
+change. Nothing about what a rig may be is decided here or in the page:
+each draft goes through `rig.compile_rig_draft`, the parse, compile and
+offline wiring `up --rig` runs, against the run's machine file (the state
+file's, or this host's with no rig of channels up), and a refusal is 409
+with its words. The wiring matters: a role the machine file lacks and a
+stereo channel on one port without `mono_to_stereo` are the patchbay's
+refusals, which compiling alone does not make. The machine file is never
+written; a missing role comes back with the lines to add (`machine_hint`).
+`GET /machine/roles` gives the pickers what the patchbay says each role can
+feed and the ceiling as the compiler refuses one more channel.
+
+An edit of the running rig's own file takes effect at a restart, and the
+answer says so with `rigfile.diff`'s reasons, as a switch gives them, and
+offers it. It is refused while the agent saw changes since the last save
+(`unsaved`): the restart that plays the edit reloads the file and would drop
+them, so Save comes first. The restart itself refuses the same way
+(`restart_refusal`, unless `{"discard": true}`), for a change made after the
+edit and for every other restart; and it, like every switch by restart
+(`switch_steps`), is started against the run's machine file, the one the
+draft was checked against. A new rig that moves other rigs' Program Change
+numbers says so (`programs_moved`). What git says of a written file is read
+after the lifecycle lock is let go, within the write's deadline. With the panel running (`panel`) the agent cannot
+see the panel's changes at all, so it refuses too. Each write takes the
+lifecycle lock (`busy`), and the live lock for the running rig, so neither a
+restart nor a live change comes between the check and the write. A remote
+caller is treated as `/rig/save` treats one: no differently. Shown against
+real rig files and the real compiler; not run against a live Sushi, and no
+rig made here has been started on the rig.
 
 ## Recording from the web UI (S7)
 
@@ -295,7 +346,24 @@ send or return, or past one, is refused too: one rule (`live.protected_processor
 knows them, by the uid Sushi's session reports and by the compiler's names. Each is confirmed
 by reading the chain back, not by Sushi's acknowledgement alone, and an edit
 whose read-back is not what was asked is 502 and is not logged, as a change
-Sushi did not confirm is not. Not run against a live Sushi: see `live.py`.
+Sushi did not confirm is not. An add reads the plugin's values straight
+after it (its defaults, for a save) and a remove reads them just before (for
+its undo), with `live.read_live_values`. Both are undone through each
+other's path (`_apply_add`, `_apply_remove`): an add's undo is refused as
+stale unless its track is as the add left it, and a remove's goes back after
+the same predecessor or is refused, never put elsewhere (`place_undo_remove`).
+Not run against a live Sushi: see `live.py`.
+
+A mono plugin's copy to stereo (`stereo.py`, `<plugin>_to_stereo`) is the
+compiler's too, and goes with its plugin: an add of a plugin with one output
+(the library's `audio`, from `plugin-ports.txt`) adds its copy straight after
+it in the same operation, and one the table does not list is refused (400);
+a remove takes the copy first, then the plugin; a move steps the pair as one
+past its neighbour, and past a neighbour and its copy as one, so nothing is
+ever placed between them; the copy alone is never moved, removed or
+bypassed, and `/live/plugins` gives it the role "stereo", which the page
+does not show. Each of these is two of Sushi's commands where one was, and
+none has been run against a live Sushi.
 
 ## The web UI (#31)
 
@@ -345,6 +413,7 @@ from __future__ import annotations
 import asyncio
 import concurrent.futures
 import contextlib
+import dataclasses
 import functools
 import math
 import re
@@ -361,6 +430,7 @@ from . import live as live_module
 from . import midi_listener
 from . import top as top_module  # GET /rig/load (#111)
 from . import amp_live  # the amp: GET /amp, POST /amp/parameter and /amp/model
+from . import stereo  # the compiler's copy to stereo after a mono plugin
 from .live import DEFAULT_GRPC_ADDRESS, ElkpyMissing, LiveError, Move
 from .live import is_send, protected_processor
 from .rig import describe_rig
@@ -442,7 +512,7 @@ LOAD_SHARED = 1.5
 LOG_LIMIT = 500
 
 # "up" the chain is earlier in it, as the panel's move buttons are: the
-# direction `live.plan_move` takes is negative for earlier, positive for later.
+# direction `live.decide_move` takes is negative for earlier, positive for later.
 DIRECTIONS = {"up": -1, "down": 1}
 
 
@@ -465,11 +535,22 @@ def is_local(remote: str | None) -> bool:
     return remote == "::1" or remote.startswith("127.") or remote.startswith("::ffff:127.")
 
 
-def lifecycle_arguments(command: str, body: dict[str, Any] | None, *, local: bool = False) -> list[str]:
+def lifecycle_arguments(
+    command: str, body: dict[str, Any] | None, *, local: bool = False, machine: str | None = None,
+) -> list[str]:
     """The CLI arguments for one lifecycle request, or `AgentError`.
 
     Pure, and the whole of the request's influence on what runs: anything not
     read here is ignored.
+
+    `machine` is never from a request: it is the machine file a run was
+    started against, from the state file, which a switch's `up --rig`
+    carries (`switch_steps`) so the next rig is wired on the same roles it
+    was compiled against. An absolute path on one line, or `AgentError`.
+
+    `discard` is a restart's: `{"discard": true}` lets it drop unsaved live
+    work, which it otherwise refuses (`restart_refusal`). It changes no
+    argument, since the refusal is the agent's, made before anything runs.
     """
     if body is None:
         body = {}
@@ -523,9 +604,14 @@ def lifecycle_arguments(command: str, body: dict[str, Any] | None, *, local: boo
                     + ("" if local else " (a path is taken only from this machine)")
                 )
             args += ["--amp-model", model]
+        if machine is not None:
+            if not isinstance(machine, str) or not machine.startswith("/") or any(c in machine for c in "\n\r\0"):
+                raise AgentError(f"invalid machine file {machine!r}: an absolute path, on one line")
+            args += ["--machine", machine]
         return args
     if command == "down":
         return ["down", "--force"] if flag("force", False) else ["down"]
+    flag("discard", False)  # checked for its type; read by the route
     return ["restart"]
 
 
@@ -639,6 +725,12 @@ def check_bypass(reading: dict[str, Any], processor: str) -> bool | None:
     on_chains = _on_the_rig(chains, with_tracks=False)
     if processor not in on_chains:
         raise AgentError(f"the running rig has no processor {processor!r}: it has {on_chains}")
+    if stereo.is_copy(processor):
+        # Bypassed, it passes channel 0 alone and the right channel is silent
+        # again: bypass its plugin instead, which keeps the copy's work.
+        raise AgentError(
+            f"{processor!r} is {stereo.source_of(processor)!r}'s copy to stereo, the compiler's: "
+            f"bypass {stereo.source_of(processor)!r} instead")
     return reading.get("bypassed")
 
 
@@ -773,10 +865,26 @@ def undo_inverse(entry: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     state. A move goes back by the opposite step, which is exact because a move
     is a step: the processor swapped places with its neighbour. Where `previous`
     is None Sushi would not say what it was, so there is nothing to put back.
+
+    An add is undone by a remove of what it added, by the name it used; a
+    remove by an add of the plugin it recorded, at its old place and with its
+    values (`place_undo_remove` decides where, from the rig as it is then).
+    The op returned is the route's whose path the undo takes, so an add's
+    undo is `remove`; the undo's log entry names the op it undid (`of`).
     """
     op, args, previous = entry["op"], entry["args"], entry["previous"]
-    if op not in ("parameter", "bypass", "move"):
+    if op not in ("parameter", "bypass", "move", "add", "remove"):
         raise AgentError(f"cannot undo an entry of op {op!r}")
+    if op == "add":
+        return "remove", {"processor": args["name"]}
+    if op == "remove":
+        if not isinstance(previous, dict) or "parameters" not in previous:
+            raise StaleUndo(
+                f"cannot undo the remove of {args['processor']!r}: the log did not record its "
+                "values, so it would come back at the plugin's defaults")
+        return "add", {"track": previous.get("track"), "uri": previous.get("uri"),
+                       "name": args["processor"], "parameters": dict(previous["parameters"] or {}),
+                       "bypassed": previous.get("bypassed")}
     if previous is None:
         raise StaleUndo(
             f"cannot undo the {op} of {args['processor']!r}: Sushi did not say what "
@@ -791,16 +899,12 @@ def undo_inverse(entry: dict[str, Any]) -> tuple[str, dict[str, Any]]:
 def chain_after_move(chain: list[str], processor: str, direction: str) -> list[str] | None:
     """The chain as a one-step move leaves it, or None if the processor is not
     on it or already at that end (such a move is never logged). A step swaps the
-    processor with its neighbour, which is all the arithmetic undo needs."""
+    processor with its neighbour, which is all the arithmetic undo needs. A
+    plugin and its copy to stereo are one unit, and swap with a neighbouring
+    unit (`stereo.step_units`), as `live.decide_move` moves them."""
     if processor not in chain:
         return None
-    i = chain.index(processor)
-    j = i + DIRECTIONS[direction]
-    if not 0 <= j < len(chain):
-        return None
-    after = list(chain)
-    after[i], after[j] = after[j], after[i]
-    return after
+    return stereo.step_units(chain, processor, DIRECTIONS[direction])
 
 
 def check_undo_move(entry: dict[str, Any], current: list[str] | None) -> None:
@@ -834,6 +938,81 @@ def check_undo_state(entry: dict[str, Any], current: Any) -> None:
         raise StaleUndo(
             f"cannot undo the {entry['op']} of {args['processor']!r}: it is no longer as the "
             f"change left it (it is now {current!r}, the change left {left!r})")
+
+
+def check_undo_add(entry: dict[str, Any], chains: dict[str, list[str]]) -> None:
+    """`StaleUndo` unless the track an add went on is exactly as the add left
+    it (`args.chain`, its read-back), as a move's undo requires of a move:
+    removing the plugin from a chain that has changed since would be an edit
+    of a chain the entry knows nothing about. Its copy to stereo is in that
+    chain, so a copy gone astray is a chain that changed."""
+    args = entry["args"]
+    left = args.get("chain")
+    if not isinstance(left, list):
+        raise StaleUndo(
+            f"cannot undo the add of {args.get('name')!r}: the log did not record where it left it")
+    current = chains.get(args["track"])
+    if current != left:
+        raise StaleUndo(
+            f"cannot undo the add of {args['name']!r}: it is no longer where the add left it "
+            f"(track {args['track']!r} is now {current}, the add left {left})")
+
+
+def place_undo_remove(entry: dict[str, Any], reading: dict[str, Any]) -> "Addition":
+    """Where the plugin a remove took out goes back, as an `Addition` the add
+    route's own command sends, or `StaleUndo` saying why its place is gone.
+
+    `reading` is the add's: `live.read_live_chains(uids=True)`. Its place is
+    after the unit that came before it in the chain the remove found (its
+    `previous.units`, that chain as the remove grouped it with Sushi's uids;
+    `previous.chain` grouped by name for an entry without them), with its
+    copy to stereo after it if it had one, or first on the track if it was
+    first. That predecessor is looked for on
+    the track as it is now; if it has gone, or the track has, or the name or
+    its copy's is taken, the undo is refused rather than put somewhere else:
+    another place is a different chain from the one undone. What follows the
+    predecessor now is not checked: the plugin goes straight after it, as it
+    was. Only an LV2 plugin can be put back, since that is all an add makes
+    (a stray copy to stereo, removed as a repair, is not put back).
+    """
+    args, previous = entry["args"], entry["previous"] or {}
+    name, track = args["processor"], previous.get("track")
+    uri = previous.get("uri")
+    if not uri or previous.get("type") not in (None, "lv2"):
+        raise StaleUndo(
+            f"cannot undo the remove of {name!r}: it was not an LV2 plugin (uid {previous.get('uid')!r}), "
+            "and only an LV2 plugin is put back")
+    before = list(previous.get("chain") or [])
+    # As the remove grouped it, with Sushi's uids (`units`); from names alone
+    # only for an entry that does not say.
+    recorded = previous.get("units")
+    grouped = ([list(u) for u in recorded] if isinstance(recorded, list) and recorded
+               else stereo.units(before))
+    index = next((i for i, unit in enumerate(grouped) if unit[0] == name), None)
+    if index is None:
+        raise StaleUndo(f"cannot undo the remove of {name!r}: the chain it recorded does not hold it")
+    copy_name = previous.get("copy") or (grouped[index][1] if len(grouped[index]) > 1 else None)
+    after = grouped[index - 1][0] if index > 0 else None
+    chains, ids = reading.get("chains", {}), reading.get("ids", {})
+    if track not in chains:
+        raise StaleUndo(f"cannot undo the remove of {name!r}: the rig has no track {track!r} now")
+    chain = list(chains[track])
+    if after is not None and after not in chain:
+        raise StaleUndo(
+            f"cannot undo the remove of {name!r}: it went after {after!r}, which is no longer on "
+            f"{track!r} (it is now {chain}), and it is not put anywhere else")
+    asked = AddRequest(track, uri, name, after, True, copy_name)
+    try:
+        addition = check_add(reading, asked)
+    except Conflict as exc:
+        raise StaleUndo(f"cannot undo the remove of {name!r}: {exc}") from exc
+    if after is None:
+        # First on the track, as it was: in front of whatever is first now.
+        added = [name] + ([copy_name] if copy_name else [])
+        addition = dataclasses.replace(
+            addition, expected=added + chain,
+            before_id=ids[chain[0]] if chain else 0, add_to_back=not chain)
+    return addition
 
 
 def _conflict(reason: str, code: str):
@@ -886,6 +1065,9 @@ class AddRequest:
     name: str
     after: str | None
     named: bool
+    # The copy to stereo that goes in with it (`stereo.py`), for a plugin
+    # with one output: added in the same operation, straight after it.
+    copy: str | None = None
 
 
 def add_request(body: Any, library: dict[str, Any]) -> AddRequest:
@@ -918,10 +1100,24 @@ def add_request(body: Any, library: dict[str, Any]) -> AddRequest:
             raise AgentError(
                 f"no processor name can be made from {entry['name']!r}: give it a 'name' "
                 f"matching {NAME_PATTERN.pattern}")
+    reserved = stereo.reserved_problem("processor", name)
+    if reserved:
+        raise AgentError(reserved)
     after = body.get("after")
     if after is not None and (not isinstance(after, str) or not after):
         raise AgentError(f"'after' must name a processor on the track, or be left out, not {after!r}")
-    return AddRequest(track, uri, name, after, named)
+    # Which plugins are mono is the compiler's table (plugin-ports.txt), read
+    # into the library: the same answer `up --rig` gives, so a plugin added
+    # live is what a restart of the saved rig would be.
+    audio = entry.get("audio")
+    if not isinstance(audio, dict):
+        raise AgentError(
+            f"{entry['name']} ({uri}) is not in {stereo.PORTS_FILE}, so whether it is mono is not known "
+            f"and it is not added: `sushi-rig probe {uri}` prints its audio ports for the table")
+    if audio.get("out") == 0:
+        raise AgentError(f"{entry['name']} has no audio output: on a track it would silence everything after it")
+    return AddRequest(track, uri, name, after, named,
+                      stereo.copy_name(name) if audio.get("out") == 1 else None)
 
 
 
@@ -948,6 +1144,18 @@ class Addition:
     track_id: int
     before_id: int
     add_to_back: bool
+    # Its copy to stereo, added straight after it in the same operation
+    # (`AddRequest.copy`); in `expected` already.
+    copy: str | None = None
+
+
+def _unit_end(chain: list[str], name: str, uids: dict[str, Any]) -> int:
+    """The index just past `name`'s unit: past its copy to stereo when it
+    has one, so nothing is placed between a plugin and its copy."""
+    for unit in stereo.units(chain, uids):
+        if name in unit:
+            return chain.index(unit[-1]) + 1
+    return chain.index(name) + 1
 
 
 def check_add(reading: dict[str, Any], request: AddRequest) -> Addition:
@@ -976,6 +1184,8 @@ def check_add(reading: dict[str, Any], request: AddRequest) -> Addition:
     if holder is not None:
         what = "give a 'name'" if not request.named else "give another name"
         raise Conflict(f"{name!r} is already on the rig, on track {holder!r}: {what}")
+    if request.copy is not None and (request.copy in chains or _track_of(chains, request.copy) is not None):
+        raise Conflict(f"{request.copy!r}, the name of {name!r}'s copy to stereo, is already on the rig")
     chain = list(chains[track])
     sends = [index for index, held in enumerate(chain) if is_send(track, held, uids.get(held))]
     if after is not None:
@@ -985,15 +1195,16 @@ def check_add(reading: dict[str, Any], request: AddRequest) -> Addition:
             raise Conflict(
                 f"nothing goes after {after!r}: the send must stay last, since it is what "
                 "carries the channel to the master")
-        index = chain.index(after) + 1
+        index = _unit_end(chain, after, uids)
     else:
         index = sends[0] if sends else len(chain)
     before = chain[index] if index < len(chain) else None
+    added = [name] + ([request.copy] if request.copy else [])
     return Addition(
         track=track, name=name, uri=request.uri, after=after, chain=chain,
-        expected=chain[:index] + [name] + chain[index:],
+        expected=chain[:index] + added + chain[index:],
         track_id=ids[track], before_id=ids[before] if before is not None else 0,
-        add_to_back=before is None,
+        add_to_back=before is None, copy=request.copy,
     )
 
 
@@ -1015,6 +1226,17 @@ class Removal:
     plugin: dict[str, Any]
     processor_id: int
     track_id: int
+    # Its copy to stereo, removed with it, first (`stereo.py`): one left
+    # behind would follow whatever came before, folding a stereo plugin.
+    # `copy_before_id` is what followed the copy (None: the back), where it
+    # goes back if the plugin's own remove fails.
+    copy: str | None = None
+    copy_id: int | None = None
+    copy_before_id: int | None = None
+    # The chain before, as units (`stereo.units` with the session's uids):
+    # logged, so an undo groups it as the remove did rather than again from
+    # names alone (review of #32).
+    units: tuple[tuple[str, ...], ...] = ()
 
 
 def check_remove(reading: dict[str, Any], processor: str) -> Removal:
@@ -1037,7 +1259,14 @@ def check_remove(reading: dict[str, Any], processor: str) -> Removal:
     plugin = reading.get("plugin")
     uid = (plugin or {}).get("uid") or (reading.get("uids") or {}).get(processor)
     protected = protected_processor(track, processor, uid)
-    if protected:
+    if protected and stereo.is_copy(processor, uid):
+        unit = next(u for u in stereo.units(list(chains[track]), reading.get("uids") or {}) if processor in u)
+        if unit[0] != processor:
+            raise Conflict(f"{protected}, removed with {stereo.source_of(processor)!r}: remove that instead")
+        # A copy with no plugin before it: a stray, left by a two-command edit
+        # that failed half way and could not be undone. Removing it is the
+        # repair, so it is allowed (review, 2026-11-02).
+    elif protected:
         raise Conflict(f"{protected}: the compiler's, and never removed")
     if not plugin or not (plugin.get("uri") or plugin.get("uid")):
         raise Unconfirmed(
@@ -1045,12 +1274,66 @@ def check_remove(reading: dict[str, Any], processor: str) -> Removal:
             "URI or uid for it), so it is not removed: the log could not say how to "
             "put it back")
     chain = list(chains[track])
+    grouped = stereo.units(chain, reading.get("uids") or {})
+    unit = next(u for u in grouped if u[0] == processor)
+    copy = unit[1] if len(unit) > 1 else None
+    after = chain.index(unit[-1]) + 1
     return Removal(
         processor=processor, track=track, chain=chain,
-        expected=[name for name in chain if name != processor],
+        expected=[name for name in chain if name not in unit],
         plugin={key: plugin.get(key) for key in ("uri", "uid", "type")},
         processor_id=ids[processor], track_id=ids[track],
+        copy=copy, copy_id=ids[copy] if copy else None,
+        copy_before_id=ids[chain[after]] if copy and after < len(chain) else None,
+        units=tuple(tuple(u) for u in grouped),
     )
+
+
+# Where a request keeps the call it stopped waiting for when it answers a
+# timeout as something other than the 504 (`_keep_pending`), so `_connected`
+# still closes the connection only once that call returns.
+# A typed key where aiohttp has them (3.11 on), so it does not warn; the
+# agent extra allows 3.9, where a string key is what there is.
+KEPT_PENDING: Any = (web.RequestKey("sushi_rig.agent.pending", object)
+                     if web is not None and hasattr(web, "RequestKey") else "sushi_rig.agent.pending")
+
+
+def _keep_pending(request: Any, exc: BaseException) -> None:
+    """Keep a timed-out call's future on the request (the first one: one
+    connection, closed when it returns), for an `except` that handles a 504
+    and answers otherwise."""
+    pending = getattr(exc, "pending", None)
+    if pending is None:
+        return
+    try:
+        request.setdefault(KEPT_PENDING, pending)
+    except (AttributeError, TypeError):  # not an aiohttp request (a pedal's origin)
+        pass
+
+
+def _kept_pending(request: Any) -> Any:
+    try:
+        return request.get(KEPT_PENDING)
+    except (AttributeError, TypeError):
+        return None
+
+
+# What a call to Sushi that failed part-way through a sequence of them is
+# answered as (`Agent._sushi`): refused or failed (502), not answering in
+# time (504), or a pool of calls that never returned (503). The steps after
+# an add catch all three, since each leaves the plugin on the rig.
+SUSHI_FAILED = (502, 503, 504)
+
+
+def removed_record(removal: Removal, values: dict[str, Any]) -> dict[str, Any]:
+    """A remove's `previous`: where the processor was (`track`, the `chain`
+    before), which plugin it was (`uri`, `uid`, `type`, from Sushi's
+    session), its `copy` to stereo (or None), and how it was set
+    (`parameters`, `bypassed`, read just before the remove): what an undo
+    needs to put it back as it was."""
+    return {"track": removal.track, "chain": list(removal.chain), "units": [list(u) for u in removal.units],
+            **removal.plugin, "copy": removal.copy,
+            "parameters": dict(values.get("parameters") or {}), "bypassed": values.get("bypassed")}
 
 
 def confirm_chain(chains: dict[str, list[str]], track: str, expected: list[str], what: str) -> None:
@@ -1114,6 +1397,9 @@ class Live:
     removal: Callable[[Any, str], dict[str, Any]]  # (processor) -> the walk plus its "plugin"
     add: Callable[[Any, Addition], None]  # sends a decided add
     remove: Callable[[Any, Removal], None]  # sends a decided remove
+    # (processor) -> {"parameters", "bypassed"}: read before a remove, for its
+    # undo, and after an add, the plugin's defaults, for a save
+    values: Callable[[Any, str], dict[str, Any]]
     # -- the web UI (#31): which plugin each processor is; None where it cannot say --
     plugins: Callable[[Any], dict[str, Any]] | None = None
 
@@ -1134,11 +1420,68 @@ class Live:
             # -- the chain edits (#32) --
             walk=lambda c, uids=False: m.read_live_chains(address, c, uids=uids),
             removal=lambda c, proc: m.read_live_removal(proc, address, c),
-            add=lambda c, a: m.add_live_processor(
-                a.name, a.uri, a.track_id, a.before_id, a.add_to_back, address, c),
-            remove=lambda c, r: m.remove_live_processor(r.processor_id, r.track_id, address, c),
+            add=functools.partial(_add_with_copy, address),
+            remove=functools.partial(_remove_with_copy, address),
+            values=lambda c, proc: m.read_live_values(proc, address, c),
             plugins=lambda c: m.read_live_plugins(address, c),  # the web UI (#31)
         )
+
+
+def _add_with_copy(address: str, controller: Any, addition: "Addition") -> None:
+    """Add the plugin, then its copy to stereo in the same place, so the copy
+    lands straight after it: in front of the same processor, or at the back
+    after it. Two of Sushi's commands, each strict; the read-back that
+    follows confirms both or neither. If the copy cannot be added, the plugin
+    is removed again, so a plugin is never left without its copy; if that
+    fails too, the error says what the chain holds (review, 2026-11-02)."""
+    m = live_module
+    m.add_live_processor(addition.name, addition.uri, addition.track_id, addition.before_id,
+                         addition.add_to_back, address, controller)
+    if not addition.copy:
+        return
+    try:
+        m.add_live_copy(addition.copy, addition.track_id, addition.before_id, addition.add_to_back,
+                        address, controller)
+    except Exception as exc:  # noqa: BLE001 -- undone, then said
+        try:
+            m.remove_live_processor_named(addition.name, addition.track_id, address, controller)
+        except Exception as again:  # noqa: BLE001
+            raise LiveError(
+                f"added {addition.name!r} but not its copy to stereo {addition.copy!r} ({exc}), and "
+                f"removing {addition.name!r} again failed too ({again}): {addition.name!r} is on "
+                f"{addition.track!r} without its copy, so the right channel is silent after it. "
+                f"Remove {addition.name!r}, or restart the rig") from again
+        raise LiveError(
+            f"added {addition.name!r} but not its copy to stereo {addition.copy!r} ({exc}), so "
+            f"{addition.name!r} was removed again: nothing was added") from exc
+
+
+def _remove_with_copy(address: str, controller: Any, removal: "Removal") -> None:
+    """Remove the copy to stereo first, then its plugin: the moment between
+    has the right channel silent, which is what the rig had before the copy
+    existed, rather than a lone copy folding whatever stereo came before. If
+    the plugin cannot then be removed, the copy is put back where it was;
+    if that fails too, the error says what the chain holds."""
+    m = live_module
+    if removal.copy_id is None:
+        m.remove_live_processor(removal.processor_id, removal.track_id, address, controller)
+        return
+    m.remove_live_processor(removal.copy_id, removal.track_id, address, controller)
+    try:
+        m.remove_live_processor(removal.processor_id, removal.track_id, address, controller)
+    except Exception as exc:  # noqa: BLE001 -- undone, then said
+        try:
+            m.add_live_copy(removal.copy, removal.track_id, removal.copy_before_id or 0,
+                            removal.copy_before_id is None, address, controller)
+        except Exception as again:  # noqa: BLE001
+            raise LiveError(
+                f"removed {removal.processor!r}'s copy to stereo {removal.copy!r} but not "
+                f"{removal.processor!r} ({exc}), and putting the copy back failed too ({again}): "
+                f"{removal.processor!r} is on {removal.track!r} without its copy, so the right channel "
+                f"is silent after it. Remove {removal.processor!r} again, or restart the rig") from again
+        raise LiveError(
+            f"removed {removal.processor!r}'s copy to stereo {removal.copy!r} but not "
+            f"{removal.processor!r} ({exc}), so the copy was put back: nothing was removed") from exc
 
 
 class Agent:
@@ -1227,7 +1570,9 @@ class Agent:
         from .doctor import run
         from .paths import checkout_root
 
-        return run(self.root or checkout_root())
+        # The crashes this agent saw, so a node of the rig's own that is
+        # absent is said as the crash it is, not as a rig that is down.
+        return run(self.root or checkout_root(), crashed=list(self.supervisor.crashed))
 
     # ----------------------------------------------------------------- routes
 
@@ -1250,6 +1595,8 @@ class Agent:
         self._amp_routes(app)  # the amp: see its block
         self._save_routes(app)  # saving the running rig (S4): see its block
         self._record_routes(app)  # recording from the web UI (S7): see its block
+        self._rigfile_routes(app)  # the New rig screen's rig files: see its block
+        self._revert_routes(app)  # revert to a previous save: see its block
         return app
 
     async def health(self, request):
@@ -1296,7 +1643,14 @@ class Agent:
         except AgentError as exc:
             raise web.HTTPBadRequest(reason=str(exc))
 
-        outcome, args, take = await self._run_lifecycle(command, [args], origin=request)
+        # A restart reloads the rig's file, so live work no save has written
+        # is dropped by it: refused (409 `unsaved`) unless the body says
+        # `{"discard": true}`. Checked under the lifecycle lock, once no live
+        # change is in flight (`_run_lifecycle`'s `guard`).
+        guard = None
+        if command == "restart" and not (isinstance(body, dict) and body.get("discard") is True):
+            guard = self._restart_guard
+        outcome, args, take = await self._run_lifecycle(command, [args], origin=request, guard=guard)
         answer: dict[str, Any] = {
             "ok": outcome.ok,
             "command": args,
@@ -1325,7 +1679,7 @@ class Agent:
 
     async def _run_lifecycle(
         self, command: str, steps: list[list[str]], fallback: list[str] | None = None, *,
-        origin: Any = None,
+        origin: Any = None, guard: "Callable[[], Awaitable[tuple[str, str] | None]] | None" = None,
     ) -> tuple[Outcome, list[str], dict[str, Any] | None]:
         """Run lifecycle commands in order under the lifecycle lock, stopping
         at the first that fails: one for a route, `down` then `up` for a rig
@@ -1346,11 +1700,23 @@ class Agent:
         A take recording from the web UI is finished first for a `down` or
         `restart` (`_finish_take`), and its stop answered as the third value,
         None when none ran.
+
+        `guard`, when given, is asked once the lock is held and `busy` set (so
+        no live change can start) and any live change already in flight has
+        landed (the live lock, taken and let go): a `(reason, code)` it
+        answers is a 409 with nothing run, the take and the listener left as
+        they were. A restart's check for unsaved work (`restart_refusal`).
         """
         self._refuse_while_busy()
         async with self._lock:
             self.busy = command
             try:
+                if guard is not None:
+                    async with self._live_lock:
+                        pass
+                    refusal = await guard()
+                    if refusal is not None:
+                        raise _conflict(*refusal)
                 # Only a command that takes the rig down: `up` refuses a rig
                 # that is running, so finishing a take for it would end the
                 # take for nothing. A `down` or `restart` with no rig up has
@@ -1590,6 +1956,8 @@ class Agent:
             pending = getattr(exc, "pending", None)
             raise
         finally:
+            if pending is None:
+                pending = _kept_pending(request)  # a timeout answered as something else
             if pending is not None:
                 self._close_when_it_returns(request, pending, controller)
             else:
@@ -1847,6 +2215,74 @@ class Agent:
             expect=lambda chain: check_undo_move(undone, chain), dry_run=dry_run)
         return planned.chain, {"processor": args["processor"], "chain": undone["previous"]}
 
+    async def _undo_add(self, request, controller, undone, args, dry_run):
+        # The add's own read-back is the chain it left; anything else on that
+        # track since is a chain the entry knows nothing about.
+        removal, values = await self._apply_remove(
+            request, controller, args["processor"],
+            expect=lambda chains: check_undo_add(undone, chains), dry_run=dry_run)
+        previous = None if dry_run else removed_record(removal, values)
+        return previous, {"processor": removal.processor, "track": removal.track, "chain": removal.expected}
+
+    async def _undo_remove(self, request, controller, undone, args, dry_run):
+        # Put back bypassed, set, then given the bypass it had: a plugin put
+        # back is never heard at its defaults while its values arrive one by
+        # one (a drive or a gain at its default can be a loud jump, review of
+        # #32). Sushi creates a processor un-bypassed and takes no bypass with
+        # the add, so it is bypassed by the very next command; the moment
+        # between is one command long (and, for a mono plugin, its copy's add).
+        sent: list["Addition"] = []
+
+        async def bypass_first(addition: "Addition") -> None:
+            sent.append(addition)
+            await self._sushi(request, self.live.set_bypass, controller, addition.name, True, reading=False)
+
+        try:
+            addition = await self._apply_add(
+                request, controller, lambda reading: place_undo_remove(undone, reading), dry_run=dry_run,
+                after_send=None if dry_run else bypass_first)
+            args["after"] = addition.after
+            if dry_run:
+                return list(addition.chain), {"track": addition.track, "chain": addition.expected}
+            for parameter, value in args["parameters"].items():
+                await self._sushi(request, self.live.set_parameter, controller, addition.name, parameter,
+                                  float(value), reading=False)
+            # A bypass the remove could not read comes back on: what a
+            # processor made live is, and what silence would hide.
+            bypassed = args["bypassed"] if isinstance(args["bypassed"], bool) else False
+            await self._sushi(request, self.live.set_bypass, controller, addition.name, bypassed, reading=False)
+        except web.HTTPException as exc:
+            if not sent or exc.status not in SUSHI_FAILED:
+                raise
+            await self._take_back(request, controller, sent[0], exc)
+        return list(addition.chain), {"track": addition.track, "chain": addition.expected}
+
+    async def _take_back(self, request, controller, addition: "Addition", exc: "web.HTTPException") -> None:
+        """A plugin an undo put back whose bypass, read-back or values then
+        failed -- refused (502), not answered in time (504) or a pool of
+        stuck calls (503) -- is removed again, so an undo never leaves a plugin
+        half set and unlogged; 502 either way, saying what the track holds. A
+        call still running keeps the connection open until it returns
+        (`_keep_pending`)."""
+        _keep_pending(request, exc)
+        what = f"put {addition.name!r} back on {addition.track!r}"
+        try:
+            reading = await self._sushi(request, self.live.removal, controller, addition.name, reading=False)
+            await self._sushi(request, self.live.remove, controller, check_remove(reading, addition.name),
+                              reading=False)
+        except (web.HTTPException, AgentError) as again:
+            if isinstance(again, web.HTTPException):
+                _keep_pending(request, again)
+            said = getattr(again, "reason", None) or str(again)
+            self._unconfirmed(request, (
+                f"{what} but could not set it as it was ({exc.reason}), and removing it again failed "
+                f"too ({said}): {addition.name!r} is on {addition.track!r}, perhaps bypassed and with some "
+                f"of its values at the plugin's defaults, and the log does not have it. Remove it, or "
+                f"restart the rig"))
+        self._unconfirmed(request, (
+            f"{what} but could not set it as it was ({exc.reason}), so it was removed again: "
+            f"nothing was put back, and {addition.track!r} is as it was"))
+
     async def live_undo(self, request):
         """Put back what the newest change not yet undone replaced (`pick_undo`),
         through the same read-check-set the routes make, and log the undo.
@@ -1859,11 +2295,29 @@ class Agent:
           conflict with the log's state rather than a missing resource, so 409
           and not 404; said without a connection, since no rig need be up.
         - 409 `stale`: the rig is no longer as the entry assumes (a move's
-          processor is elsewhere, a parameter or bypass was changed meanwhile),
-          or Sushi never said what to put back. Nothing is applied or logged,
-          and the entry is not skipped to reach an older one.
+          processor is elsewhere, a parameter or bypass was changed meanwhile,
+          the track an add went on is not as the add left it, the plugin a
+          remove took out has lost its place), or Sushi never said what to put
+          back. Nothing is applied or logged, and the entry is not skipped to
+          reach an older one.
         - 400, no code: what the other routes answer for the same refusal, such
           as a processor the rig no longer has.
+        - 502: what the add and remove routes answer 502 (a read-back that is
+          not what was sent), and an undo of a remove whose bypass, read-back
+          or values Sushi refused, failed or did not answer in time, after
+          which the plugin is removed again (`_take_back`).
+
+        An add is undone by removing what it added, its copy to stereo with
+        it, through the remove route's own path (`_apply_remove`); a remove by
+        adding the plugin back after the same predecessor, through the add
+        route's (`_apply_add`, placed by `place_undo_remove`), bypassed by the
+        next command, then set to every parameter value the remove recorded,
+        and only then given the bypass it had, so it is not heard at its
+        defaults. The undo's
+        entry is shaped as the route's whose path it took (`args` what was
+        applied, `previous` what that replaced: for an add's undo the removed
+        plugin's record, for a remove's the chain before), with `of` the op it
+        undid.
 
         The target is chosen under the live lock, from the log as it is then:
         two undos queued together undo two entries, not one twice.
@@ -1909,17 +2363,19 @@ class Agent:
                 raise _conflict("the newest change became one of the amp's while this undo waited: "
                                 "undo again", "changed")
             try:
-                op, args = undo_inverse(undone)
+                _, args = undo_inverse(undone)
                 previous, state = await {
                     "parameter": self._undo_parameter, "bypass": self._undo_bypass,
-                    "move": self._undo_move,
-                }[op](request, controller, undone, args, skip)
+                    "move": self._undo_move, "add": self._undo_add, "remove": self._undo_remove,
+                }[undone["op"]](request, controller, undone, args, skip)
             except AgentError as exc:
                 if not skip:
                     hint = (f"{exc}; to give up on this entry and go on to the one before it, "
                             'send {"skip": true}')
                     if isinstance(exc, StaleUndo):
                         raise _conflict(hint, "stale")
+                    if isinstance(exc, Unconfirmed):
+                        self._unconfirmed(request, hint)
                     raise web.HTTPBadRequest(reason=hint)
                 entry = self._record("stale", {"of": undone["op"], "reason": str(exc)}, None, stale=index)
                 return web.json_response({"ok": True, **entry, "skipped": undone})
@@ -1927,7 +2383,7 @@ class Agent:
                 raise _conflict(
                     "the newest change can be undone as it stands: undo it, "
                     "a skip is only for one that cannot be", "not_stale")
-            entry = self._record("undo", {"of": op, **args}, previous, undoes=index)
+            entry = self._record("undo", {"of": undone["op"], **args}, previous, undoes=index)
         # `state` is what was set and Sushi confirmed, not read back again.
         return web.json_response({"ok": True, **entry, "undone": undone, "state": state})
 
@@ -1976,6 +2432,10 @@ class Agent:
             body = {"ok": False, "status": exc.status, "reason": exc.reason}
             if getattr(exc, "agent_code", None):
                 body["code"] = exc.agent_code
+            # What a reason cannot carry: an HTTP reason is one line, and a
+            # refusal's advice may be several (the rig files block's
+            # `machine_hint`, lines of YAML to add to the machine file).
+            body.update(getattr(exc, "agent_extra", None) or {})
             return web.json_response(body, status=exc.status)
         except Exception as exc:  # noqa: BLE001 -- said, remembered, not swallowed
             reason = f"{type(exc).__name__}: {exc}"
@@ -2027,9 +2487,14 @@ class Agent:
         contacted for a bad shape, a URI not in the manifest or one Sushi cannot
         host; refused (409) from a walk of the chains for a track the rig lacks,
         a name it already has or an `after` not on the track. Sent as decided,
-        then confirmed from a second walk. Logged as op "add" with the name
-        actually used in `args` (an undo removes it by that) and `previous` the
-        track's chain before.
+        then confirmed from a second walk. Logged as op "add" with `previous`
+        the track's chain before, and in `args` what was done: the name
+        actually used (an undo removes it by that), its `copy` to stereo (or
+        null), the `chain` it left (an undo checks the plugin is still there)
+        and `defaults`, the plugin's parameter values read straight after it
+        was added, which a save compares with so it writes only the values
+        that differ. Defaults Sushi would not give are null, and said in the
+        answer's `note`: the add stands, and a save then writes every value.
         """
         body = await self._json_body(request)
         library = await self._library_now()
@@ -2038,23 +2503,23 @@ class Agent:
         except AgentError as exc:
             raise web.HTTPBadRequest(reason=str(exc))
         async with self._connected_for_a_change(request) as controller:
-            reading = await self._sushi(request, self.live.walk, controller, True, reading=True)
             try:
-                addition = check_add(reading, asked)
+                addition = await self._apply_add(request, controller, lambda reading: check_add(reading, asked))
             except Conflict as exc:
                 raise web.HTTPConflict(reason=str(exc))
-            await self._sushi(request, self.live.add, controller, addition, reading=False)
-            after = await self._sushi(request, self.live.walk, controller, reading=False)
-            what = f"added {addition.name!r} to {addition.track!r}"
-            self._confirm(request, after, addition.track, addition.expected, what)
+            defaults, note = await self._read_defaults(request, controller, addition)
             entry = self._record("add", {
                 "track": addition.track, "uri": addition.uri, "name": addition.name,
-                "after": addition.after,
+                "after": addition.after, "copy": addition.copy, "chain": list(addition.expected),
+                "defaults": defaults,
             }, list(addition.chain))
-        return web.json_response({
+        answer = {
             "ok": True, **entry, "chain": addition.expected,
             "message": f"added {addition.name} to {addition.track}",
-        })
+        }
+        if note:
+            answer["note"] = note
+        return web.json_response(answer)
 
     async def live_remove(self, request):
         """Remove one processor from the running rig, by name.
@@ -2062,37 +2527,110 @@ class Agent:
         Body `{"processor"}`. Refused (409) for a track, a channel's send, the
         master's return, or a processor the rig lacks; 502 if Sushi will not
         say which plugin it is, since the log must be able to put it back.
-        Confirmed from a walk afterwards. Logged as op "remove" with `previous`
-        `{"track", "chain", "uri", "uid", "type"}`: where it was and what it
-        was, which is what an undo re-adds. Its parameter values are not
-        recorded, so a re-add would come back at the plugin's defaults.
+        Its parameter values and bypass are read just before the remove;
+        confirmed from a walk afterwards. Logged as op "remove" with `previous`
+        `{"track", "chain", "uri", "uid", "type", "copy", "parameters",
+        "bypassed", "units"}`: where it was, what it was and how it was set,
+        and the chain as the remove grouped it, which is what an undo puts
+        back.
         """
         try:
             processor = remove_request(await self._json_body(request))
         except AgentError as exc:
             raise web.HTTPBadRequest(reason=str(exc))
         async with self._connected_for_a_change(request) as controller:
-            reading = await self._sushi(request, self.live.removal, controller, processor, reading=True)
             try:
-                removal = check_remove(reading, processor)
+                removal, values = await self._apply_remove(request, controller, processor)
             except Conflict as exc:
                 raise web.HTTPConflict(reason=str(exc))
             except Unconfirmed as exc:
-                self._remember([request.method, request.path], str(exc), kind="live")
-                raise web.HTTPBadGateway(reason=str(exc))
-            await self._sushi(request, self.live.remove, controller, removal, reading=False)
-            after = await self._sushi(request, self.live.walk, controller, reading=False)
-            what = f"removed {removal.processor!r} from {removal.track!r}"
-            chains = self._confirm(request, after, removal.track, removal.expected, what)
-            if _track_of(chains, removal.processor) is not None:
-                self._unconfirmed(request, f"Sushi confirmed it {what}, but it is still on the rig")
-            entry = self._record("remove", {"processor": removal.processor}, {
-                "track": removal.track, "chain": list(removal.chain), **removal.plugin,
-            })
+                self._unconfirmed(request, str(exc))
+            entry = self._record("remove", {"processor": removal.processor}, removed_record(removal, values))
         return web.json_response({
             "ok": True, **entry, "chain": removal.expected,
             "message": f"removed {removal.processor} from {removal.track}",
         })
+
+    # The read-decide-send-confirm of an add and a remove, shared by their
+    # routes and by undo, as `_apply_parameter` and the others are: an undo
+    # of a remove is an add and an undo of an add a remove, checked by the
+    # very code the routes run. `decide` (an add's) and `expect` (a remove's)
+    # may raise; `dry_run` stops before anything is sent.
+
+    async def _apply_add(
+        self, request, controller, decide: Callable[[dict[str, Any]], "Addition"], *, dry_run: bool = False,
+        after_send: Callable[["Addition"], Awaitable[None]] | None = None,
+    ) -> "Addition":
+        """Walk the chains with the uids, decide the add (`decide`, which
+        raises for what the rig cannot take), send it, and confirm it from a
+        second walk (502 if it does not read back as decided). `after_send`
+        runs straight after the add is sent, before the read-back: an undo
+        bypasses the plugin there, so it is not heard at its defaults."""
+        reading = await self._sushi(request, self.live.walk, controller, True, reading=True)
+        addition = decide(reading)
+        if dry_run:
+            return addition
+        await self._sushi(request, self.live.add, controller, addition, reading=False)
+        if after_send is not None:
+            await after_send(addition)
+        after = await self._sushi(request, self.live.walk, controller, reading=False)
+        what = f"added {addition.name!r} to {addition.track!r}"
+        self._confirm(request, after, addition.track, addition.expected, what)
+        return addition
+
+    async def _read_defaults(self, request, controller, addition: "Addition") -> tuple[dict | None, str | None]:
+        """`(defaults, note)`: the added plugin's parameter values, read just
+        after the add confirmed it, which are the plugin's defaults (a
+        processor added live starts at them: rigfile.py's list of what is
+        assumed of Sushi). Sushi refusing, failing or not answering that read
+        in time does not undo the add, which is on the rig and confirmed: the
+        defaults are None and `note` says so, and a call still running keeps
+        the connection open until it returns (`_keep_pending`)."""
+        try:
+            values = await self._sushi(request, self.live.values, controller, addition.name, reading=False)
+        except web.HTTPException as exc:
+            # Refused, failed, or not answered in time: the add is on the rig
+            # and confirmed either way, so it is logged; an unlogged plugin
+            # would be one undo and a save know nothing of (review, #32).
+            if exc.status not in SUSHI_FAILED:
+                raise
+            _keep_pending(request, exc)
+            return None, (f"its parameters could not be read after it was added ({exc.reason}), so a "
+                          "save will write every value it has, not only those that differ from its defaults")
+        parameters = values.get("parameters") if isinstance(values, dict) else None
+        if not isinstance(parameters, dict):
+            return None, ("Sushi gave no parameters for it after it was added, so a save will write every "
+                          "value it has, not only those that differ from its defaults")
+        return dict(parameters), None
+
+    async def _apply_remove(
+        self, request, controller, processor: str, *,
+        expect: Callable[[dict[str, list[str]]], None] | None = None, dry_run: bool = False,
+    ) -> tuple["Removal", dict[str, Any] | None]:
+        """`(removal, values)`: read what removing `processor` is (with Sushi's
+        session), let `expect` see the chains first (an undo refuses a rig that
+        moved on before anything else is said), decide (`check_remove`, which
+        raises `Conflict` or `Unconfirmed`), read the processor's values and
+        bypass, send the remove and confirm it from a walk. `values` is None
+        on a dry run, which sends and reads nothing more."""
+        reading = await self._sushi(request, self.live.removal, controller, processor, reading=True)
+        if expect:
+            expect(reading.get("chains") or {} if isinstance(reading, dict) else {})
+        removal = check_remove(reading, processor)
+        if dry_run:
+            return removal, None
+        values = await self._sushi(request, self.live.values, controller, processor, reading=True)
+        if not isinstance(values, dict) or not isinstance(values.get("parameters"), dict):
+            self._unconfirmed(
+                request, f"Sushi gave no parameters for {processor!r}, so it is not removed: the log could "
+                "not say how to put it back")
+        await self._sushi(request, self.live.remove, controller, removal, reading=False)
+        after = await self._sushi(request, self.live.walk, controller, reading=False)
+        what = f"removed {removal.processor!r} from {removal.track!r}"
+        chains = self._confirm(request, after, removal.track, removal.expected, what)
+        if _track_of(chains, removal.processor) is not None:
+            self._unconfirmed(request, f"Sushi confirmed it {what}, but it is still on the rig")
+        return removal, {"parameters": dict(values["parameters"]), "bypassed": values.get("bypassed")}
 
     def _confirm(
         self, request, reading: Any, track: str, expected: list[str], what: str,
@@ -2143,6 +2681,7 @@ class Agent:
         app.router.add_get("/live/plugins", self.live_plugins)
         app.router.add_get("/rigs", self.rigs_route)
         app.router.add_get("/rig/load", self.rig_load)
+        app.on_response_prepare.append(_ui_cache_control)
 
     async def ui_redirect(self, request):
         """/ui and /ui/ are where the page's files are, not a page: send the
@@ -2236,14 +2775,26 @@ class Agent:
         self._refuse_while_busy()
         async with self._connected(request) as controller:
             found = await self._sushi(request, plugins, controller, reading=True)
+        # Each LV2 plugin's width, from the compiler's own table
+        # (plugin-ports.txt, #119), so the page can mark a mono plugin and
+        # warn where one follows a stereo one, without a file of its own.
+        try:
+            from .paths import checkout_root
+
+            ports = await asyncio.to_thread(stereo.load_ports, checkout_root())
+            ports_note = None
+        except stereo.PortsError as exc:
+            ports, ports_note = {}, "; ".join(exc.problems)
         processors = {}
         for name, plugin in (found or {}).items():
             track = plugin.get("track") or ""
             role = None
-            if protected_processor(track, name, plugin.get("uid")):
+            if stereo.is_copy(name, plugin.get("uid")):
+                role = "stereo"  # the compiler's copy to stereo: the page does not show it
+            elif protected_processor(track, name, plugin.get("uid")):
                 role = "send" if is_send(track, name, plugin.get("uid")) else "return"
-            processors[name] = {**plugin, "role": role}
-        return web.json_response({"ok": True, "processors": processors})
+            processors[name] = {**plugin, "role": role, "width": plugin_width(plugin, ports)}
+        return web.json_response({"ok": True, "processors": processors, "ports_note": ports_note})
 
     # ======================================================================= #
     # (end of the web UI's routes)
@@ -2849,7 +3400,8 @@ class Agent:
                 raise Unconfirmed(f"the amp's {args['name']} was not set: {exc}") from exc
         elif step.op == "add":
             reading = await self._sushi(origin, self.live.walk, controller, True, reading=True)
-            addition = place_switch_add(reading, args["track"], args["name"], args["uri"], args["before"])
+            addition = place_switch_add(reading, args["track"], args["name"], args["uri"], args["before"],
+                                        args.get("copy"))
             await self._sushi(origin, self.live.add, controller, addition, reading=False)
             after = await self._sushi(origin, self.live.walk, controller, reading=False)
             confirm_chain((after or {}).get("chains") or {}, addition.track, addition.expected,
@@ -3266,8 +3818,15 @@ class Agent:
           panel has its own SAVE; `v1`: a config not started with `--rig`,
           which the CLI's `sushi-rig save` saves; `taken`: the name is
           another rig's file; `changed`: the running rig changed while this
-          waited; `not_saved`: `save_rig` refused (a plugin added or removed
-          live, a capture of another rig), with its reason.
+          waited; `not_saved`: `save_rig` refused (a capture naming a
+          plugin the file lacks and the log did not add, or lacking one the
+          log did not remove: another rig's, as far as anything here
+          knows), with its reason.
+
+        The plugins the agent added and removed since the rig came up are
+        handed to the save (`live_edits`, read under the live lock with the
+        capture), so the file is written with the chains the rig now runs
+        (#32): `rigfile.fold_state` says how.
         - 503/502/504 from the capture, as /live answers them; 504 too if the
           write is not done within `SAVE_TIMEOUT` (it may still finish).
         - 500, `ok: false` and `recorded: false`, with the save's answer
@@ -3340,8 +3899,13 @@ class Agent:
                 async with self._amp_lock:
                     model, parameters, amp_said = await self._save_amp()
                     captured = await self._sushi(request, self.live.snapshot, controller, reading=True)
-                    out, library = await self._save_write(
-                        request, target, source, captured, model, parameters)
+                    # The adds and removes the agent made since the rig came
+                    # up, so the file is written with the plugins it now
+                    # runs (#32): read here, under the live lock, so no edit
+                    # lands between it and the capture.
+                    edits = live_edits(self.log, since=state.get("started_at"))
+                    out, library, written = await self._save_write(
+                        request, target, source, captured, model, parameters, edits)
                     created = out != source
                     shown, was = self._save_shown(out), self._save_shown(source)
                     note = (f"{shown} is a new file, written from nothing: the comments stay in {was}"
@@ -3368,8 +3932,36 @@ class Agent:
                     answer["entry"] = self._record("save", {
                         "file": shown, "rig": out.stem, "how": answer["how"], "library": library,
                         "amp": amp_said["saved"],
+                        # What the next save starts from (`live_edits`): the
+                        # plugins added live this one wrote, with their defaults.
+                        "added": edits["added"],
                     }, was)
+                    # Kept only now that the save has wholly happened, so a
+                    # revert point is always a save that was logged.
+                    answer["snapshot"] = await self._keep_snapshot(
+                        request, out.stem, written,
+                        {"file": shown, "how": answer["how"], "library": library,
+                         **({"saved_as": was} if created else {})})
         return answer
+
+    async def _keep_snapshot(self, request, rig: str, data: bytes, said: dict[str, Any]) -> dict[str, Any]:
+        """Keep a save's bytes as a revert point (saves.py), off the loop.
+        The save has happened whatever this does, so a snapshot that cannot
+        be kept is said in the answer and in /health, loudly, and never
+        turns the save into a failure: `{"kept": true, "id"}` or `{"kept":
+        false, "why"}`."""
+        from . import saves
+
+        try:
+            meta = await asyncio.wait_for(
+                asyncio.to_thread(saves.keep, self._midi_root(), rig, data, said), SAVE_TIMEOUT)
+        except Exception as exc:  # noqa: BLE001 -- said, the save stands
+            why = " ".join(f"the save was written, but its snapshot for Revert could not be kept: "
+                           f"{type(exc).__name__}: {exc}".split())
+            print(f"sushi-rig agent: {why}", file=sys.stderr, flush=True)
+            self._remember([request.method, request.path], why, kind="live")
+            return {"kept": False, "why": why}
+        return {"kept": True, "id": meta["id"], "at": meta["at"], "keep": saves.KEEP}
 
     async def _save_amp(self) -> tuple[str | None, dict[str, float] | None, dict[str, Any]]:
         """`(model, parameters, said)`: the amp as the agent last sent it, for
@@ -3390,38 +3982,52 @@ class Agent:
 
     async def _save_write(
         self, request, target: Path, source: Path, captured: dict[str, Any],
-        model: str | None, parameters: dict[str, float] | None,
-    ) -> tuple[Path, dict[str, Any] | None]:
+        model: str | None, parameters: dict[str, float] | None, edits: dict[str, Any] | None = None,
+    ) -> tuple[Path, dict[str, Any] | None, bytes]:
         """`save_rig`, then `take.library_state` and the file's own git state
         (`save.file_git_state`), off the loop, within `SAVE_TIMEOUT`; refusals as `save_route` says. The thread cannot be
         stopped past the deadline (see `LIVE_TIMEOUT`), so a 504 says the
-        file may still be written."""
+        file may still be written. Also the bytes written, read back at once
+        in the same thread, for the save's snapshot (saves.py)."""
         from .save import SaveError, file_git_state, save_rig
         from .take import library_state
 
         root = self._midi_root()
 
-        def write() -> tuple[Path, dict[str, Any] | None]:
-            out = save_rig(target.stem, source, amp_model=model, amp_parameters=parameters, state=captured)
+        def write() -> tuple[Path, dict[str, Any] | None, bytes]:
+            out = save_rig(target.stem, source, amp_model=model, amp_parameters=parameters, state=captured,
+                           edits=edits)
+            written = out.read_bytes()
             library = library_state(root)
             if library is not None:
                 # `dirty` is the whole checkout's; what the file itself is,
                 # and whether anything else is uncommitted, is git's to say.
                 library.update(file_git_state(root, out) or {"file": None, "others": None})
-            return out, library
+            return out, library, written
 
-        where = [request.method, request.path]
         try:
-            return await asyncio.wait_for(asyncio.to_thread(write), SAVE_TIMEOUT)
+            return await self._write_off_loop(request, target, write, again="saving again")
         except SaveError as exc:
             raise _conflict(" ".join(f"not saved: {exc}".split()), "not_saved")
+
+    async def _write_off_loop(self, request, path: Path, work: Callable[[], Any], *, again: str) -> Any:
+        """`work()`, which writes rig file `path`, off the loop within
+        `SAVE_TIMEOUT`: the one shape of a save's write and the rig files
+        routes' (`_rigfile_thread`). The thread cannot be stopped past the
+        deadline (see `LIVE_TIMEOUT`), so the 504 says the file may still be
+        written; an OSError is a 500 naming the file; both are remembered
+        for /health. Anything else `work` raises is the caller's to answer.
+        `again` is what not to do before looking ("saving again")."""
+        where = [request.method, request.path]
+        try:
+            return await asyncio.wait_for(asyncio.to_thread(work), SAVE_TIMEOUT)
         except asyncio.TimeoutError:
-            reason = (f"writing {self._save_shown(target)} did not finish within {SAVE_TIMEOUT:g}s, and may "
-                      "still: look at the file before saving again")
+            reason = (f"writing {self._save_shown(path)} did not finish within {SAVE_TIMEOUT:g}s, and may "
+                      f"still: look at the file before {again}")
             self._remember(where, reason, kind="live")
             raise web.HTTPGatewayTimeout(reason=reason)
         except OSError as exc:
-            reason = " ".join(f"writing {self._save_shown(target)} failed: {type(exc).__name__}: {exc}".split())
+            reason = " ".join(f"writing {self._save_shown(path)} failed: {type(exc).__name__}: {exc}".split())
             self._remember(where, reason, kind="live")
             raise web.HTTPInternalServerError(reason=reason)
 
@@ -3455,6 +4061,704 @@ class Agent:
 
     # ======================================================================= #
     # (end of saving the running rig)
+    # ======================================================================= #
+
+    # ======================================================================= #
+    # Rig files (the New rig screen): GET /machine/roles, GET /rigs/{name}/channels,
+    # POST /rigs/new, POST /rigs/{name}/channels/add,
+    # POST /rigs/{name}/channels/{channel}/input
+    # ======================================================================= #
+    #
+    # Kept in one block, as save's is. Outside it the agent calls in at `app`
+    # (`_rigfile_routes`) and `_json_errors` (`agent_extra`, for a refusal's
+    # advice on lines of its own). The decisions are rigedit.py's and the
+    # pure functions under "Rig files" at the end of this module; every rule
+    # about what a rig may be is the compiler's, asked through
+    # `rig.compile_rig_draft` with the run's machine file.
+    #
+    # Each write takes the lifecycle lock (`busy: "rig file edit"`), so a
+    # restart, switch or save-as cannot come between the reading of the state
+    # file (which rig runs, on which machine file) and the write, and two
+    # writes to one file cannot interleave; an edit of the running rig's own
+    # file takes the live lock too, so no change lands between the check for
+    # unsaved work and the write. The order is the agent's one: lifecycle,
+    # then live.
+    #
+    # Remote callers are treated as `/rig/save` treats them: not at all
+    # differently. A write needs no loopback peer, because Save, which writes
+    # the same files, needs none, and `is_local` is used only to allow what
+    # the CLI on this machine could do anyway. The agent binds to localhost;
+    # `--host 0.0.0.0` is the operator's call (#29's permission split).
+
+    def _rigfile_routes(self, app) -> None:
+        app.router.add_get("/machine/roles", self.machine_roles_route)
+        app.router.add_post("/rigs/new", self.new_rig_route)
+        app.router.add_get("/rigs/{name}/channels", self.rig_channels_route)
+        app.router.add_post("/rigs/{name}/channels/add", self.add_channel_route)
+        app.router.add_post("/rigs/{name}/channels/{channel}/input", self.channel_input_route)
+
+    async def _rigfile_run(self) -> dict[str, Any]:
+        """What the rig files routes need of the run, read now: `described`,
+        the state file, the running rig's file (None unless a rig of channels
+        is up) and the run's machine file -- the one the running rig was
+        compiled against (the state file's `machine`), or this machine's
+        when no rig of channels is up."""
+        from .machine import machine_path
+
+        described = self.describe()
+        state = await asyncio.to_thread(self.switching.read_state) or {}
+        root = self._midi_root()
+        running = None
+        if described.get("running") and isinstance(state.get("rig"), str) and state["rig"]:
+            running = rig_file_of(state, root)
+        machine = state.get("machine") if running is not None else None
+        machine_file = Path(machine) if isinstance(machine, str) and machine else machine_path(root)
+        if not machine_file.is_absolute():
+            machine_file = root / machine_file
+        return {"described": described, "state": state, "running": running, "machine": machine_file}
+
+    def _rigfile_path(self, name: str) -> Path:
+        """config/rigs/<name>.yaml for a rig `/rigs` lists, or 404: a name in
+        the URL is looked up among the files, never made a path."""
+        root = self._midi_root()
+        if name not in midi_listener.program_order(root):
+            raise web.HTTPNotFound(reason=f"there is no rig called {name!r} in config/rigs/")
+        return root / "config" / "rigs" / f"{name}.yaml"
+
+    async def machine_roles_route(self, request):
+        """`GET /machine/roles`: the machine file's roles, for the New rig
+        screen's pickers (`rigedit.role_options`: ports, `mono_to_stereo`,
+        the widths each can feed and whether it can take the master, as the
+        patchbay answers), which tracks of the running rig use each (from the
+        running config's `_wiring`), the role a new rig's master goes to,
+        and the channel ceiling with the compiler's reason. Read only: the
+        machine file is never written here. 409 `machine` when it cannot be
+        read or does not validate, with why."""
+        from . import rigedit
+        from .machine import MachineError, MachineSpec
+        from .patchbay import MONITOR_ROLE
+
+        run = await self._rigfile_run()
+        machine_file = run["machine"]
+
+        def read() -> dict[str, Any]:
+            try:
+                machine = MachineSpec.load(machine_file)
+            except MachineError as exc:
+                raise RigFileRefused(str(exc), "machine") from exc
+            problems = machine.validate()
+            if problems:
+                raise RigFileRefused(f"{machine_file.name}: " + "; ".join(problems), "machine")
+            wiring, why = None, None
+            if run["running"] is not None:
+                try:
+                    wiring = self.switching.read_config(run["described"].get("config")).get(rigfile.WIRING)
+                except Exception as exc:  # noqa: BLE001 -- said, not raised: the roles are still worth listing
+                    why = f"the running rig's compiled config could not be read: {type(exc).__name__}: {exc}"
+            return {"roles": rigedit.role_options(machine, wiring if isinstance(wiring, dict) else None),
+                    "wiring_note": why}
+
+        try:
+            found = await asyncio.to_thread(read)
+        except RigFileRefused as exc:
+            raise _conflict(" ".join(str(exc).split()), exc.code)
+        running = run["running"]
+        return web.json_response({
+            "ok": True, "machine": self._save_shown(machine_file), **found,
+            "output": MONITOR_ROLE, "ceiling": rigedit.ceiling(),
+            "running": None if running is None else {"rig": running.stem, "file": self._save_shown(running)},
+            "note": ("which roles are inputs and which outputs is read from their names (-in, -out): the "
+                     "machine file does not say. Whether a channel can use a role is the compiler's answer, "
+                     "given when the rig is written"),
+        })
+
+    async def rig_channels_route(self, request):
+        """`GET /rigs/{name}/channels`: a rig file's channels as the file has
+        them (`rigedit.channels_of`), for "start from" and for the rack's
+        input change, which edits the file and not the running rig."""
+        from . import rigedit
+
+        path = self._rigfile_path(request.match_info["name"])
+
+        def read() -> Any:
+            import yaml
+
+            return yaml.safe_load(path.read_text())
+
+        try:
+            raw = await asyncio.to_thread(read)
+        except Exception as exc:  # noqa: BLE001 -- a file that will not read is said, as a switch says it
+            raise _conflict(" ".join(f"{path.name} could not be read: {type(exc).__name__}: {exc}".split()),
+                            "rig_problem")
+        run = await self._rigfile_run()
+        # The channels a MIDI blend drives, and by which control (#34): their
+        # volume follows the pedal, so the page shows it and does not set it.
+        try:
+            blended = rigfile.blend_controls(rigfile.parse_rig(raw))
+            blended_note = None
+        except Exception as exc:  # noqa: BLE001 -- the channels are still worth listing
+            blended = {}
+            blended_note = " ".join(f"{path.name} does not parse ({type(exc).__name__}: {exc}), so which "
+                                    "channels a blend drives is not known".split())
+        return web.json_response({
+            "ok": True, "rig": path.stem, "file": self._save_shown(path),
+            "running": run["running"] is not None and run["running"].resolve() == path.resolve(),
+            "channels": rigedit.channels_of(raw), "blended": blended, "blended_note": blended_note,
+        })
+
+    async def new_rig_route(self, request):
+        """`POST /rigs/new {"name", "channels": [{"name", "input", "width",
+        "from"?}]}`: write a new `config/rigs/<name>.yaml`, its master on
+        `patchbay.MONITOR_ROLE` (as `convert` writes every rig's), its chains
+        empty unless a channel's `from: {"rig", "channel"}` copies one.
+
+        Compiled and wired with the run's machine file before anything is
+        written (`rig.compile_rig_draft`), and refused with the compiler's
+        reason (409), nothing written: `name` (the naming rule,
+        `save.validate_name`), `taken` (a rig of that name exists),
+        `no_source` (a `from` that names no rig or channel), `rig_problem`
+        (the compiler's or the patchbay's own words: the ceiling, a duplicate
+        or invalid channel name, a width or a role the machine cannot give;
+        with `machine_hint`, the lines to add to the machine file, when a
+        role is missing). 400 for a body of the wrong shape.
+
+        200 with `file`, `rig`, `how: "new"`, `committed: false`, `library`
+        (the commit and what git says of the file, as a save's), and `offer`:
+        `start` with no rig up, `switch` with one; and `programs` when the new
+        file moves other rigs' Program Change numbers (`programs_moved`)."""
+        from . import rigedit
+
+        try:
+            name, channels = rigedit.new_rig_request(await self._json_body(request))
+        except rigedit.EditRequestError as exc:
+            raise web.HTTPBadRequest(reason=str(exc))
+        answer = await self._rigfile_locked(request, lambda run: self._write_new_rig(request, run, name, channels))
+        answer["offer"] = "switch" if answer["run"]["described"].get("running") else "start"
+        answer["takes_effect"] = "start"
+        answer["note"] = (f"{answer['file']} is a new rig, not running and not committed: "
+                          f"{'switch to' if answer['offer'] == 'switch' else 'start'} it to play it")
+        return web.json_response(await self._rigfile_answer(answer))
+
+    async def add_channel_route(self, request):
+        """`POST /rigs/{name}/channels/add {"name", "input", "width",
+        "from"?}`: add a channel to the end of an existing rig file, in
+        place, keeping its comments (`rigfile.write_rig`), so the file
+        changes by the channel's own lines and nothing else. Refused as
+        `/rigs/new` refuses, nothing written; and for the running rig, as
+        `_rigfile_refusal` says (`unsaved`, `panel`). For the running rig the
+        answer says it takes effect at the next restart, and why
+        (`rigfile.diff`'s reasons, as a switch gives them), and offers it."""
+        from . import rigedit
+
+        try:
+            change = rigedit.channel_request(await self._json_body(request))
+        except rigedit.EditRequestError as exc:
+            raise web.HTTPBadRequest(reason=str(exc))
+        path = self._rigfile_path(request.match_info["name"])
+
+        def edit(raw: dict[str, Any], run: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+            copied, source = self._rigfile_copy(change)
+            return rigedit.with_channel(raw, rigedit.channel_entry(change, copied)), {
+                "op": "add_channel", "channel": change["name"], "input": change["input"],
+                "width": change["width"], "from": source}
+
+        answer = await self._rigfile_locked(request, lambda run: self._write_edit(request, run, path, edit))
+        return web.json_response(await self._rigfile_answer(answer))
+
+    async def channel_input_route(self, request):
+        """`POST /rigs/{name}/channels/{channel}/input {"input"?, "width"?}`:
+        set a channel's input role, its width, or both, in place, keeping the
+        file's comments. Refused and answered as `add_channel_route` is."""
+        from . import rigedit
+
+        try:
+            change = rigedit.input_request(await self._json_body(request))
+        except rigedit.EditRequestError as exc:
+            raise web.HTTPBadRequest(reason=str(exc))
+        path = self._rigfile_path(request.match_info["name"])
+        channel = request.match_info["channel"]
+
+        def edit(raw: dict[str, Any], run: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+            try:
+                edited = rigedit.with_input(raw, channel, change)
+            except LookupError as exc:
+                raise RigFileRefused(str(exc), "no_channel") from exc
+            before = next(e for e in raw["channels"] if isinstance(e, dict) and e.get("name") == channel)
+            return edited, {"op": "input", "channel": channel,
+                            "was": {"input": before.get("input"), "width": before.get("width")}, **change}
+
+        answer = await self._rigfile_locked(request, lambda run: self._write_edit(request, run, path, edit))
+        return web.json_response(await self._rigfile_answer(answer))
+
+    async def _rigfile_locked(self, request, write: Callable[[dict[str, Any]], Awaitable[dict[str, Any]]]):
+        """Run `write(run)` under the lifecycle lock, `busy: "rig file
+        edit"`, with the run read once the lock is won; a `RigFileRefused`
+        is its 409."""
+        self._refuse_while_busy()
+        async with self._lock:
+            self.busy = "rig file edit"
+            try:
+                run = await self._rigfile_run()
+                try:
+                    answer = await write(run)
+                except RigFileRefused as exc:
+                    error = _conflict(" ".join(str(exc).split()), exc.code)
+                    if exc.extra:
+                        error.agent_extra = exc.extra
+                    raise error
+            finally:
+                self.busy = None
+        answer["run"] = run
+        return answer
+
+    async def _rigfile_answer(self, answer: dict[str, Any]) -> dict[str, Any]:
+        """The answer, with what git says of the file read now, outside the
+        lifecycle lock (`_rigfile_git_after`), and without what was only for
+        the route (`run`, `path`)."""
+        await self._rigfile_git_after(answer, answer["path"])
+        return {k: v for k, v in answer.items() if k not in ("run", "path")}
+
+    def _rigfile_copy(self, change: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+        """`(copied, said)` for a channel's `from`: its chain and level from
+        that rig of config/rigs as the file is now, and where it came from,
+        or `(None, None)`. Read from the file as it stands, not from git's
+        commit of it: a tone saved and not yet committed is the one the
+        player hears, and copying an older one would be the silent kind of
+        wrong. What git says of that file is in the answer (`from`)."""
+        from . import rigedit
+        from .save import file_git_state
+
+        source = change.get("from")
+        if not source:
+            return None, None
+        root = self._midi_root()
+        if source["rig"] not in midi_listener.program_order(root):
+            raise RigFileRefused(f"there is no rig called {source['rig']!r} in config/rigs/ to start "
+                                 f"{change['name']} from", "no_source")
+        path = root / "config" / "rigs" / f"{source['rig']}.yaml"
+        import yaml
+
+        try:
+            raw = yaml.safe_load(path.read_text())
+            copied = rigedit.source_channel(raw, source["rig"], source["channel"])
+        except LookupError as exc:
+            raise RigFileRefused(f"{change['name']} cannot start from it: {exc}", "no_source") from exc
+        except Exception as exc:  # noqa: BLE001 -- a source that will not read is said
+            raise RigFileRefused(f"{path.name} could not be read to start {change['name']} from: "
+                                 f"{type(exc).__name__}: {exc}", "no_source") from exc
+        state = file_git_state(root, path) or {}
+        return copied, {"rig": source["rig"], "channel": source["channel"], "file": self._save_shown(path),
+                        "plugins": len(copied["chain"]), "git": state.get("file")}
+
+    def _rigfile_compile(self, raw: dict[str, Any], run: dict[str, Any]) -> dict[str, Any]:
+        """`rig.compile_rig_draft` against the run's machine file, or the
+        refusal: the compiler's reason, and the lines to add to the machine
+        file when a role is missing (`rigedit.machine_hint`)."""
+        from . import rigedit
+        from .machine import MachineSpec
+        from .rig import compile_rig_draft
+
+        try:
+            return compile_rig_draft(raw, self._midi_root(), run["machine"])
+        except RigError as exc:
+            extra = {}
+            try:
+                machine = MachineSpec.load(run["machine"])
+                hint = rigedit.machine_hint(machine, raw, self._save_shown(run["machine"]))
+            except Exception:  # noqa: BLE001 -- advice, never a reason to lose the refusal it is beside
+                hint = None
+            if hint:
+                extra["machine_hint"] = hint
+            raise RigFileRefused(f"nothing was written: {exc}", "rig_problem", extra) from exc
+
+    def _rigfile_git(self, path: Path) -> dict[str, Any] | None:
+        """What git says of the file written, as a save says it."""
+        from .save import file_git_state
+        from .take import library_state
+
+        root = self._midi_root()
+        library = library_state(root)
+        if library is not None:
+            library.update(file_git_state(root, path) or {"file": None, "others": None})
+        return library
+
+    async def _rigfile_git_after(self, answer: dict[str, Any], path: Path) -> dict[str, Any]:
+        """`answer` with `library`, what git says of the file: read once the
+        lifecycle lock is let go, and within `SAVE_TIMEOUT`, since git is
+        nothing a lifecycle command should wait on (review, 2026-11-06: a
+        hung git under the lock left every lifecycle route answering busy).
+        Past the deadline it is `null`, which the page says as not known,
+        with `library_note` saying why; the file is written either way."""
+        try:
+            answer["library"] = await asyncio.wait_for(asyncio.to_thread(self._rigfile_git, path), SAVE_TIMEOUT)
+        except asyncio.TimeoutError:
+            answer["library"] = None
+            answer["library_note"] = (f"git did not answer within {SAVE_TIMEOUT:g}s, so what it says of "
+                                      f"{self._save_shown(path)} is not known; the file is written")
+        return answer
+
+    async def _rigfile_thread(self, request, path: Path, work: Callable[[], Any]) -> Any:
+        """`work()` off the loop, as a save's write is (`_write_off_loop`)."""
+        return await self._write_off_loop(request, path, work, again="trying again")
+
+    async def _write_new_rig(self, request, run: dict[str, Any], name: str, channels: list[dict[str, Any]]):
+        """The new rig's file, compiled before it is written (`new_rig_route`)."""
+        from . import rigedit
+        from .patchbay import MONITOR_ROLE
+        from .rigfile import RigFileError, write_rig
+        from .save import SaveError, validate_name
+
+        root = self._midi_root()
+        try:
+            validate_name(name)
+        except SaveError as exc:
+            raise RigFileRefused(str(exc), "name") from exc
+        path = root / "config" / "rigs" / f"{name}.yaml"
+
+        def work() -> dict[str, Any]:
+            if path.exists():
+                raise RigFileRefused(f"a rig called {name} already exists ({self._save_shown(path)}): "
+                                     "choose another name, or add channels to that one", "taken")
+            programs_before = midi_listener.program_order(root)
+            entries, sources, said = [], [], {}
+            for change in channels:
+                copied, source = self._rigfile_copy(change)
+                entries.append(rigedit.channel_entry(change, copied))
+                sources.append(source)
+                if source:
+                    said[change["name"]] = f"{source['file']}'s {source['channel']}"
+            raw = rigedit.new_rig(name, entries, MONITOR_ROLE)
+            self._rigfile_compile(raw, run)
+            path.parent.mkdir(parents=True, exist_ok=True)
+            try:
+                # Claimed first, so a file of that name made since the check
+                # above is never overwritten: `write_rig` then fills the
+                # empty file it finds as it would write a new one.
+                path.open("x").close()
+            except FileExistsError as exc:
+                raise RigFileRefused(f"a rig called {name} was made while this was being checked: "
+                                     "choose another name", "taken") from exc
+            try:
+                when = datetime.now(timezone.utc).date().isoformat()
+                write_rig(path, raw, header=rigedit.new_rig_header(when, said))
+            except BaseException:
+                path.unlink(missing_ok=True)
+                raise
+            return {"sources": sources,
+                    "programs": programs_moved(programs_before, midi_listener.program_order(root), name)}
+
+        try:
+            done = await self._rigfile_thread(request, path, work)
+        except RigFileError as exc:
+            raise RigFileRefused("nothing was written: " + "; ".join(exc.problems), "rig_problem") from exc
+        return {"ok": True, "rig": name, "file": self._save_shown(path), "how": "new", "committed": False,
+                "running": False, "path": path, **({"programs": done["programs"]} if done["programs"] else {}),
+                "channels": [{"name": c["name"], "input": c["input"], "width": c["width"], "from": source}
+                             for c, source in zip(channels, done["sources"])]}
+
+    async def _write_edit(self, request, run: dict[str, Any], path: Path, edit) -> dict[str, Any]:
+        """An edit of rig file `path` (`edit(raw, run)` gives the file's
+        contents after it and what changed), compiled before it is written,
+        written in place with `write_rig`, and for the running rig's file,
+        refused while the rig holds work the edit would strand
+        (`rigfile_refusal`), under the live lock so none lands meanwhile."""
+        import yaml
+
+        from .rigfile import RigFileError, write_rig
+
+        running = run["running"] is not None and run["running"].resolve() == path.resolve()
+
+        def work() -> dict[str, Any]:
+            raw = yaml.safe_load(path.read_text())
+            if not isinstance(raw, dict):
+                raise RigFileRefused(f"{path.name} is not a rig file", "rig_problem")
+            edited, change = edit(raw, run)
+            compiled = self._rigfile_compile(edited, run)
+            try:
+                write_rig(path, edited)
+            except RigFileError as exc:
+                raise RigFileRefused("nothing was written: " + "; ".join(exc.problems), "rig_problem") from exc
+            return {"change": change, "compiled": compiled}
+
+        if running:
+            async with self._live_lock:
+                refusal = rigfile_refusal(run["state"], self.log)
+                if refusal is not None:
+                    raise RigFileRefused(*refusal)
+                done = await self._rigfile_thread(request, path, work)
+        else:
+            done = await self._rigfile_thread(request, path, work)
+        answer = {"ok": True, "rig": path.stem, "file": self._save_shown(path), "how": "updated",
+                  "committed": False, "change": done["change"], "running": running, "path": path}
+        shown = answer["file"]
+        if not running:
+            answer.update(takes_effect="next start", offer=None,
+                          note=(f"{shown} was updated in place, with its comments; it is not committed. It is "
+                                "not the running rig: it plays as edited the next time it is started or "
+                                "switched to"))
+            return answer
+        why = await self._rigfile_restart_why(run, done["compiled"])
+        since = run["state"].get("started_at")
+        answer.update(
+            takes_effect="restart", offer="restart", why=why,
+            note=" ".join((
+                f"{shown} was updated in place, with its comments; it is not committed. {path.stem} is the "
+                "running rig, and it keeps playing as it was: the change takes effect when it restarts "
+                f"({'; '.join(r['code'] + ': ' + r['detail'] for r in why) or 'a restart reloads the file'}). "
+                "A restart stops the sound for a few seconds and brings the rig back from its file. The "
+                f"agent saw no unsaved change since {since or 'it started'}; a change it cannot see (the "
+                "panel, or before the agent started) is not in the file").split()))
+        return answer
+
+    async def _restart_guard(self) -> tuple[str, str] | None:
+        """`restart_refusal` for the run as it is now, for `/rig/restart`
+        (`lifecycle`): the restart the rig files routes offer after an edit,
+        the picker's and the CLI's alike, all of which reload the file."""
+        state = await asyncio.to_thread(self.switching.read_state) or {}
+        return restart_refusal(state, self.describe(), self.log)
+
+    async def _rigfile_restart_why(self, run: dict[str, Any], compiled: dict[str, Any]) -> list[dict[str, str]]:
+        """Why the running rig needs a restart to become the edited file: what
+        `rigfile.diff` says of the running config against the file's, as a
+        switch's answer says it. An edit that diff could make live is still
+        a restart here, since no live switch goes to the rig already up."""
+        described, state = run["described"], run["state"]
+        try:
+            running = await asyncio.to_thread(self.switching.read_config, described.get("config"))
+            decided = rigfile.diff(running, compiled, root=self._amp_root(),
+                                   amp_off=state.get("amp_requested") is False)
+        except Exception as exc:  # noqa: BLE001 -- unreadable is a reason, said
+            return [{"code": "unreadable",
+                     "detail": f"the running rig's compiled config could not be read: {type(exc).__name__}: {exc}"}]
+        if isinstance(decided, rigfile.NeedsRestart):
+            return [reason.as_dict() for reason in decided.reasons]
+        return []
+
+    # ======================================================================= #
+    # (end of the rig files)
+    # ======================================================================= #
+
+    # ======================================================================= #
+    # Revert to a previous save (2026-11-06): GET /rigs/{name}/saves,
+    # POST /rigs/{name}/revert
+    # ======================================================================= #
+    #
+    # Kept in one block, as the rig files' is. Outside it the agent calls in
+    # at `app` (`_revert_routes`) and `_save_held` (`_keep_snapshot`, which
+    # keeps each save's bytes). What a revert point is, where it is kept and
+    # for how long is saves.py's; whether a revert must wait is
+    # `revert_refusal`'s, below with the rig files' pure decisions.
+    #
+    # A revert takes the lifecycle lock (`busy: "revert"`) for all of it: the
+    # write and, for the running rig, the live switch into the reverted file
+    # (`_switch_held`, the body of POST /rig/switch, #112), so nothing can
+    # come between the file being written and the rig being made to play
+    # it. The check for unsaved work and the write are under the live lock
+    # too, as an edit of the running rig's file is (`_write_edit`).
+
+    def _revert_routes(self, app) -> None:
+        app.router.add_get("/rigs/{name}/saves", self.saves_route)
+        app.router.add_post("/rigs/{name}/revert", self.revert_route)
+
+    async def saves_route(self, request):
+        """`GET /rigs/{name}/saves`: rig `name`'s revert points, newest first
+        (`points`): every snapshot a save from here kept (`kind: "save"`,
+        the newest `saves.KEEP`) and every commit that changed its file
+        (`kind: "commit"`, from `git log`, read-only, with a timeout). Also
+        whether the file as it is now is kept by one of them (`current`), so
+        the page's confirm can say whether a revert loses it, whether it is
+        the running rig, and what could not be read (`problems`,
+        `git_note`), each said rather than dropped. 504 if git does not
+        answer within `SAVE_TIMEOUT`."""
+        from . import saves
+        from .save import file_git_state
+
+        name = request.match_info["name"]
+        path = self._rigfile_path(name)
+        root = self._midi_root()
+
+        # The snapshots need no git, so they are read apart from it: a slow
+        # git leaves the saves listed and the commits out, said in
+        # `git_note`, rather than a 504 with nothing (review, 2026-11-07).
+        def local() -> dict[str, Any]:
+            kept, problems = saves.snapshots(root, name)
+            current = path.read_bytes() if path.exists() else None
+            same = saves.kept_as(current, kept, lambda sid: saves.snapshot_bytes(root, name, sid))
+            return {"saves": kept, "problems": problems, "kept_as": same}
+
+        def from_git() -> dict[str, Any]:
+            committed, note = saves.commits(root, path)
+            git = file_git_state(root, path) if note is None else None
+            return {"commits": committed, "git_note": note, "git": (git or {}).get("file")}
+
+        found = await asyncio.to_thread(local)
+        try:
+            found.update(await asyncio.wait_for(asyncio.to_thread(from_git), SAVE_TIMEOUT))
+        except asyncio.TimeoutError:
+            found.update(commits=[], git=None, git_note=(
+                f"git did not answer within {SAVE_TIMEOUT:g}s, so the file's commits are left out; the saves are all here"))
+        found["current"] = {"kept_as": found.pop("kept_as"), "git": found.pop("git")}
+        run = await self._rigfile_run()
+        return web.json_response({
+            "ok": True, "rig": name, "file": self._save_shown(path),
+            "running": run["running"] is not None and run["running"].resolve() == path.resolve(),
+            "points": saves.merged(found["saves"], found["commits"]),
+            "saves": len(found["saves"]), "commits": len(found["commits"]),
+            "keep": saves.KEEP, "kept_in": (saves.SAVES_DIR / name).as_posix(),
+            "current": found["current"], "git_note": found["git_note"], "problems": found["problems"],
+        })
+
+    async def revert_route(self, request):
+        """`POST /rigs/{name}/revert {"save": <id>, "discard"?: true}`: write
+        revert point `save` (a snapshot's id, or `commit:<sha>`, as `GET
+        /rigs/{name}/saves` lists them) back over rig `name`'s file, and, if
+        that is the running rig, make the rig play it.
+
+        The file is written with a plain, whole-file write of the point's
+        bytes (`saves.restore`), not `rigfile.write_rig`: `write_rig` merges a
+        document into the file that is there, keeping *that* file's comments
+        and layout, so it cannot give back the snapshot's own; a revert is
+        the earlier file, byte for byte. It is compiled first, against the
+        run's machine file, and refused with the compiler's reason, nothing
+        written, if it will not compile now (`rig_problem`: a plugin gone
+        from the manifest since, a role gone from the machine file).
+
+        For the running rig: refused while it holds live work no save has
+        written (409 `unsaved`, as an edit of its file is, #125), since the
+        revert replaces what is playing, unless `{"discard": true}`. Then
+        the live switch into the reverted file (`_switch_held`, #112): live
+        where `rigfile.diff` says it can be (values, bypasses, a plugin added,
+        removed or moved), by restart where it must be (a channel or the amp
+        differs), the answer saying which and why, as a switch's does; its
+        `op: "rig"` entry in the log is the new baseline, so nothing is
+        unsaved after it and undo stops there.
+
+        200 with `file`, `point` (what was written), `running`, `library`
+        (what git says of the file now) and, for the running rig, the
+        switch's `how`, `why` and `seconds`. 404 for a point that is not
+        there; 400 for a body of the wrong shape; 409 `busy`, `unsaved`,
+        `panel`, `rig_problem`; 409 `not_switched` (or 504 if a command was
+        abandoned) when the file was written and the rig could not be made to
+        play it, `written: true` and the reason saying so.
+
+        Not run against a live Sushi: shown against the fakes of the tests.
+        """
+        from . import saves
+
+        try:
+            point, discard = revert_request(await self._json_body(request))
+        except AgentError as exc:
+            raise web.HTTPBadRequest(reason=str(exc))
+        name = request.match_info["name"]
+        path = self._rigfile_path(name)
+        root = self._midi_root()
+        self._refuse_while_busy()
+        answer: dict[str, Any]
+        running = False
+        async with self._lock:
+            self.busy = "revert"
+            try:
+                run = await self._rigfile_run()
+                running = run["running"] is not None and run["running"].resolve() == path.resolve()
+                try:
+                    data, said = await asyncio.wait_for(
+                        asyncio.to_thread(self._revert_point, root, name, path, point), SAVE_TIMEOUT)
+                except saves.SaveNotFound as exc:
+                    raise web.HTTPNotFound(reason=str(exc))
+                except asyncio.TimeoutError:
+                    raise web.HTTPGatewayTimeout(reason=f"{point} was not read within {SAVE_TIMEOUT:g}s")
+                try:
+                    await self._rigfile_thread(request, path, lambda: self._revert_compile(data, run))
+                    if running:
+                        async with self._live_lock:
+                            refusal = revert_refusal(run["state"], self.log)
+                            if refusal is not None and not discard:
+                                raise RigFileRefused(*refusal)
+                            await self._rigfile_thread(request, path, lambda: saves.restore(path, data))
+                    else:
+                        await self._rigfile_thread(request, path, lambda: saves.restore(path, data))
+                except RigFileRefused as exc:
+                    error = _conflict(" ".join(str(exc).split()), exc.code)
+                    if exc.extra:
+                        error.agent_extra = exc.extra
+                    raise error
+                shown = self._save_shown(path)
+                answer = {"ok": True, "rig": name, "file": shown, "point": said, "running": running,
+                          "written": True, "discarded": bool(discard and running)}
+                if not running:
+                    answer["note"] = (f"{shown} is {said['what']} again; {name} is not the running rig, so it "
+                                      "plays as reverted when it is next started or switched to")
+                else:
+                    answer.update(await self._revert_switch(request, name, said))
+            finally:
+                self.busy = None
+                if running:
+                    await self._midi_sync()  # the switch stopped the listener; it follows the rig now
+        await self._rigfile_git_after(answer, path)
+        if answer["ok"]:
+            return web.json_response(answer)
+        return web.json_response(answer, status=504 if answer.get("abandoned") else 409)
+
+    def _revert_point(self, root: Path, name: str, path: Path, point: str) -> tuple[bytes, dict[str, Any]]:
+        """The bytes of revert point `point` and what it is, for the answer."""
+        from . import saves
+
+        match = saves.COMMIT_PATTERN.match(point)
+        if match:
+            sha = match.group(1)
+            data = saves.commit_bytes(root, path, sha)
+            return data, {"id": point, "kind": "commit", "sha": sha, "what": f"as commit {sha[:7]} has it"}
+        data = saves.snapshot_bytes(root, name, point)
+        kept, _ = saves.snapshots(root, name)
+        meta = next((p for p in kept if p["id"] == point), {"id": point})
+        return data, {"id": point, "kind": "save", "at": meta.get("at"),
+                      "what": f"as the save of {meta.get('at') or point} wrote it"}
+
+    def _revert_compile(self, data: bytes, run: dict[str, Any]) -> dict[str, Any]:
+        """The point compiled as `up --rig` would compile it, or the refusal."""
+        import yaml
+
+        try:
+            raw = yaml.safe_load(data.decode("utf-8"))
+        except (UnicodeDecodeError, yaml.YAMLError) as exc:
+            raise RigFileRefused(" ".join(f"nothing was written: it is not YAML: {exc}".split()),
+                                 "rig_problem") from exc
+        if not isinstance(raw, dict):
+            raise RigFileRefused("nothing was written: it is not a rig file", "rig_problem")
+        return self._rigfile_compile(raw, run)
+
+    async def _revert_switch(self, request, name: str, said: dict[str, Any]) -> dict[str, Any]:
+        """The running rig into its reverted file, by the live switch, held
+        under the lifecycle lock the caller holds. What it says, as a
+        switch's answer does, and `ok: false` with `code: "not_switched"`
+        when the rig was not made to play the file that is now written."""
+        def mark(entry: dict[str, Any]) -> None:
+            entry["args"]["revert"] = said["id"]
+
+        try:
+            switched = await self._switch_held(request, name, None, mark)
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 -- the file is written whatever went wrong: said, with `written`
+            # A refusal (`SwitchRefused`) or anything else the switch raised:
+            # the file is reverted either way, and the answer must say so
+            # rather than be a bare 500 (review, 2026-11-07).
+            why = str(exc) if isinstance(exc, SwitchRefused) else f"{type(exc).__name__}: {exc}"
+            reason = " ".join((f"{name}'s file was reverted ({said['what']}), but the rig was not switched to it: "
+                               f"{why}. It keeps playing as it was, unless the switch got part-way; restart it to play "
+                               "the reverted file").split())
+            self._remember(["revert", name], reason, kind="lifecycle")
+            return {"ok": False, "code": "not_switched", "reason": reason, "written": True}
+        out = {k: switched.get(k) for k in ("how", "why", "seconds", "plan", "applied", "counts", "entry",
+                                            "state", "take", "abandoned", "half_switched") if k in switched}
+        if not switched.get("ok"):
+            reason = (f"{name}'s file was reverted ({said['what']}), but the rig did not come up playing it: "
+                      f"{switched.get('reason')}")
+            return {**out, "ok": False, "code": "not_switched", "reason": " ".join(reason.split())}
+        return out
+
+    # ======================================================================= #
+    # (end of revert to a previous save)
     # ======================================================================= #
 
     # ======================================================================= #
@@ -3759,6 +5063,31 @@ class _MidiOrigin:
     path: str
 
 
+# The web UI's files are asked again, against their ETag, on every load: with
+# no Cache-Control a browser may keep the app.js it had before the agent was
+# updated and run that against the new agent (2026-11-06, on the rig). An
+# unchanged file is a 304, so this costs one round trip a file.
+UI_CACHE_CONTROL = "no-cache"
+
+
+async def _ui_cache_control(request, response) -> None:
+    """`Cache-Control: no-cache` on the page (`/`) and its files (`/ui/...`),
+    set as each response is prepared, so the static route's own answers,
+    304s included, carry it too."""
+    if request.path == "/" or request.path.startswith("/ui/"):
+        response.headers["Cache-Control"] = UI_CACHE_CONTROL
+
+
+def plugin_width(plugin: dict[str, Any], ports: dict[str, Any]) -> str | None:
+    """"mono" or "stereo" for an LV2 plugin the ports table lists, by its
+    outputs (one is mono, as `stereo.py` decides where a copy goes); None
+    for anything else, which the page says nothing about. Pure."""
+    said = ports.get(plugin.get("uri")) if plugin.get("type") in (None, "lv2") else None
+    if said is None:
+        return None
+    return "mono" if said.outputs == 1 else "stereo" if said.outputs >= 2 else None
+
+
 def switch_steps(state: dict[str, Any], rig: str) -> list[list[str]]:
     """The lifecycle commands that switch the running rig (`state`, the state
     file) to rig `rig` of config/rigs: `down`, then `up --rig` with the
@@ -3766,13 +5095,27 @@ def switch_steps(state: dict[str, Any], rig: str) -> list[list[str]]:
     (`rig.restart_arguments`), so a switch keeps how the rig is being run.
     Not the amp model override: that was chosen for the rig being left, and
     the next one's own `_amp` says its model. `AgentError` for a rig name that
-    is not one. Pure."""
+    is not one. Pure.
+
+    The machine file the run was started against goes with it (`--machine`),
+    as `Switching.compile` already compiled the next rig against it: until
+    2026-11-06 every switch by restart dropped it, and `up` wired the next
+    rig against this host's file instead, which need not be the one it was
+    checked against."""
     _, options = restart_arguments(state)
+    machine = options.get("machine") or state.get("machine")
     up = lifecycle_arguments("up", {
         "config_name": rig, "rig": True,
         "headless": options["headless"], "tuner": options["tuner"], "amp": options["amp"],
-    })
+    }, machine=_absolute_machine(machine))
     return [["down"], up]
+
+
+def _absolute_machine(machine: Any) -> str | None:
+    """The state file's machine file as `up --machine` takes it, or None."""
+    if not isinstance(machine, str) or not machine:
+        return None
+    return machine if machine.startswith("/") else str(Path(machine).resolve())
 
 
 
@@ -3862,6 +5205,7 @@ def switched_state(state: dict[str, Any], name: str, config: Any) -> dict[str, A
 
 def place_switch_add(
     reading: dict[str, Any], track: str, name: str, uri: str, before: str | None,
+    copy: str | None = None,
 ) -> Addition:
     """Where a switch's add goes: in front of `before`, or at the back, as
     `rigfile.diff` decided and Sushi's own API places a processor. `Conflict`
@@ -3892,12 +5236,15 @@ def place_switch_add(
     # ahead of it, a processor would get no channel's signal (found by review:
     # `before: "master_return"` was accepted).
     for held in chain[index:]:
-        if protected_processor(track, held, uids.get(held)) and not is_send(track, held, uids.get(held)):
+        if (protected_processor(track, held, uids.get(held)) and not is_send(track, held, uids.get(held))
+                and not stereo.is_copy(held, uids.get(held))):
             raise Conflict(f"{name!r} would go in front of {held!r}, the master's return, which stays first")
+    if copy is not None and (copy in chains or _track_of(chains, copy) is not None):
+        raise Conflict(f"{copy!r}, {name!r}'s copy to stereo, is already on the rig")
     return Addition(
         track=track, name=name, uri=uri, after=chain[index - 1] if index else None, chain=chain,
-        expected=chain[:index] + [name] + chain[index:], track_id=ids[track],
-        before_id=ids[before] if before is not None else 0, add_to_back=before is None,
+        expected=chain[:index] + [name] + ([copy] if copy else []) + chain[index:], track_id=ids[track],
+        before_id=ids[before] if before is not None else 0, add_to_back=before is None, copy=copy,
     )
 
 
@@ -3965,6 +5312,95 @@ def save_request(body: Any) -> str | None:
         return validate_name(name)
     except SaveError as exc:
         raise AgentError(str(exc)) from exc
+
+
+def _log_time(stamp: Any) -> str | None:
+    """An ISO time as the log writes its `at` (UTC, to the second:
+    `_record`), or None. Log times in that one form compare as strings, so
+    `since` is put into it once and no entry's time is parsed."""
+    try:
+        when = datetime.fromisoformat(str(stamp))
+    except ValueError:
+        return None
+    if when.tzinfo is None:
+        when = when.replace(tzinfo=timezone.utc)
+    return when.astimezone(timezone.utc).replace(microsecond=0).isoformat()
+
+
+def since_baseline(log: list[dict[str, Any]], since: Any = None) -> tuple[int, dict[str, Any] | None]:
+    """`(start, stop)`: where in the log the running rig's own history begins
+    -- after the newest save or rig switch, and after `since`, the run's
+    start (the state file's `started_at`: a restart reloaded the file) --
+    and the save or switch entry that ended the walk, None if none did.
+    One walk back from the newest entry, so a caller under the live lock pays
+    for the entries since the last save, not the whole log, and no time but
+    `since` is parsed (review of #32). The one walk `live_edits` and
+    `unsaved_entries` share. Pure."""
+    cut = _log_time(since) if since is not None else None
+    start = len(log)
+    while start > 0:
+        entry = log[start - 1]
+        at = entry.get("at")
+        if cut is not None and isinstance(at, str) and at < cut:
+            return start, None
+        if entry.get("op") in ("rig", "save"):
+            return start, entry
+        start -= 1
+    return start, None
+
+
+def live_edits(log: list[dict[str, Any]], since: Any = None) -> dict[str, Any]:
+    """Which plugins the log says were added to and removed from the running
+    rig: what `rigfile.fold_state` needs to write a chain's plugins, and not
+    only their values, into its rig file. Pure over the log.
+
+        {"added": {name: {"track", "uri", "defaults"}}, "removed": {name: track}}
+
+    Read from the newest save or rig switch on, and from `since`, the run's
+    start (the state file's `started_at`: a restart reloaded the file, so
+    what came before it is not on the rig), by `since_baseline`, the one walk
+    this shares with `unsaved_entries`. Before a switch was another rig; before
+    a save is in the file, except what the next save needs of it, which the
+    save's entry carries (`args.added`, the plugins added live it wrote, with
+    their defaults) and this starts from.
+
+    Then oldest first, so each name ends as its last edit left it. An add is
+    `added`, with the defaults it read; a remove takes the name out of
+    `added` and puts it in `removed`; an undo counts as what it applied (an
+    add's undo is a remove, a remove's an add, with the defaults of an
+    earlier add of that plugin under that name, if those are known). A name
+    can be in both: taken out of the file and added again, which `fold_state`
+    tells by its track and URI.
+
+    This only says what the agent saw. `fold_state` takes it as the
+    explanation of a capture that differs from the file, never as a change
+    to make: a plugin the capture does not hold is not written whatever the
+    log says, and one it holds that is neither the file's nor here is
+    refused as a capture of a different rig."""
+    start, stop = since_baseline(log, since)
+    seed = ((stop.get("args") or {}).get("added") or {}) if stop is not None and stop.get("op") == "save" else {}
+    added: dict[str, dict[str, Any]] = {
+        name: dict(said) for name, said in seed.items() if isinstance(said, dict)}
+    removed: dict[str, str] = {}
+    defaults: dict[tuple[str, str], Any] = {(name, said.get("uri")): said.get("defaults")
+                                             for name, said in added.items()}
+    for entry in log[start:]:
+        op, args, previous = entry.get("op"), entry.get("args") or {}, entry.get("previous")
+        if op == "undo":
+            op = {"add": "remove", "remove": "add"}.get(args.get("of"))  # what it applied
+            if op == "add" and isinstance(args.get("name"), str):
+                key = (args["name"], args.get("uri"))
+                added[args["name"]] = {"track": args.get("track"), "uri": args.get("uri"),
+                                       "defaults": defaults.get(key)}
+                continue
+        if op == "add" and isinstance(args.get("name"), str):
+            defaults[(args["name"], args.get("uri"))] = args.get("defaults")
+            added[args["name"]] = {"track": args.get("track"), "uri": args.get("uri"),
+                                   "defaults": args.get("defaults")}
+        elif op == "remove" and isinstance(args.get("processor"), str) and isinstance(previous, dict):
+            added.pop(args["processor"], None)
+            removed[args["processor"]] = previous.get("track")
+    return {"added": added, "removed": removed}
 
 
 def save_refusal(state: dict[str, Any], described: dict[str, Any]) -> tuple[str, str] | None:
@@ -4088,6 +5524,211 @@ def recorder_run(state: dict[str, Any], root: Path, takes_dir: Path) -> dict[str
         "machine": absolute(state.get("machine")),
         "takes_dir": str(Path(takes_dir).resolve()),
     }
+
+
+# =========================================================================== #
+# Rig files (the New rig screen): the decisions, pure
+# =========================================================================== #
+
+class RigFileRefused(AgentError):
+    """A rig file the agent will not write (409), with its `code`, and
+    `extra` for the answer beside the reason (`machine_hint`)."""
+
+    def __init__(self, reason: str, code: str, extra: dict[str, Any] | None = None):
+        super().__init__(reason)
+        self.code = code
+        self.extra = extra or {}
+
+
+# Log entries that did not change the running rig: a save (the file has
+# what came before it), a rig switch (what came before was another rig's), a
+# take's start or stop, and a skip's marker.
+_NOT_LIVE_CHANGES = ("save", "rig", "record", "stale")
+
+
+def unsaved_entries(log: list[dict[str, Any]], since: Any = None) -> list[dict[str, Any]]:
+    """The log's changes to the running rig that no save has written: every
+    entry after the newest save or rig switch, and after `since` (the run's
+    start: a restart reloaded the file), that is not a save, a switch, a
+    take or a skip's marker. Pure over the log, through `since_baseline`, the
+    walk `live_edits` takes.
+
+    Counted, not netted out: a knob turned and turned back is two entries,
+    though the rig is as the file has it. That errs on the side of keeping
+    work: the refusal it causes is answered by a Save, which writes what is
+    playing, and nothing is lost by it. And only what the agent saw: the
+    panel's changes and anything before the agent started are not here."""
+    start, _ = since_baseline(log, since)
+    return [entry for entry in log[start:] if entry.get("op") not in _NOT_LIVE_CHANGES]
+
+
+def rigfile_refusal(state: dict[str, Any], log: list[dict[str, Any]]) -> tuple[str, str] | None:
+    """`(reason, code)` when an edit of the running rig's own file must wait,
+    or None. Pure over the state file and the log.
+
+    An edit of the file the rig runs from takes effect only at a restart,
+    which loads the file: so unsaved live work (knobs, bypasses, plugins
+    added or moved through the agent since the last save) would be dropped
+    by the very restart the edit offers. Save itself would still work after
+    the edit -- a capture says nothing of a track the rig does not have yet,
+    so `fold_state` keeps the new channel, copied chain and all
+    (test_agent_rigfiles.py) -- so this is about the restart, not the file.
+    Refused until it is saved, rather than written with a warning: a refusal
+    costs one tap on Save, and a warning would be read once and the work
+    lost at the restart the same answer offers. `unsaved`, naming
+    the newest change. With the panel running (`panel`), the agent cannot
+    see the panel's changes at all, so whether there is work to lose cannot
+    be known here."""
+    from .rig import runs_panel
+
+    name = Path(str(state.get("rig") or "the rig")).stem
+    if runs_panel(state):
+        return (f"{name} runs with its panel, whose changes the agent cannot see, so it cannot tell whether "
+                "the rig holds unsaved work that a restart into the edited file would drop: save from the "
+                "panel's SAVE and stop the rig, or run it headless, then edit it", "panel")
+    unsaved = unsaved_entries(log, since=state.get("started_at"))
+    if unsaved:
+        newest = unsaved[-1]
+        what = describe_change(newest)
+        count = f"{len(unsaved)} change{'s' if len(unsaved) != 1 else ''}"
+        return (f"{name} is running with {count} made through the agent and not saved (the newest: {what}, "
+                f"at {newest.get('at')}). The edit takes effect only when the rig restarts from its file, "
+                "and that restart would drop them: Save first (it writes what is playing into the file), "
+                "then make the edit", "unsaved")
+    return None
+
+
+def restart_refusal(
+    state: dict[str, Any], described: dict[str, Any], log: list[dict[str, Any]],
+) -> tuple[str, str] | None:
+    """`(reason, "unsaved")` when a restart would drop live work the agent saw
+    and no save has written, or None. Pure over the state file,
+    `describe_rig`'s answer and the log.
+
+    A restart reloads the rig's file, so what was turned since the last save
+    is gone after it, with nothing said: the hole the web UI's restart offer
+    after an edit opened (review, 2026-11-06), and the picker's and the CLI's
+    plain restart had all along. `{"discard": true}` (`sushi-rig restart
+    --discard`) says to drop it.
+
+    Not refused, because there is nothing to keep or no way to know: no rig
+    up (the restart says so itself); Sushi gone (`describe_rig` says its
+    process is not alive), where the work went with it and a restart is the
+    recovery principle 9 asks for, which must not wait on a Save that cannot
+    capture anything; and a rig run with its panel, whose changes the agent
+    cannot see, so refusing would refuse every panel run's restart for
+    nothing it knows of. Counted, not netted out, as `unsaved_entries` says."""
+    from .rig import runs_panel
+
+    if not described.get("running"):
+        return None
+    sushi = (described.get("children") or {}).get("sushi")
+    if isinstance(sushi, dict) and sushi.get("alive") is False:
+        return None
+    if runs_panel(state):
+        return None
+    unsaved = unsaved_entries(log, since=state.get("started_at"))
+    if not unsaved:
+        return None
+    name = state.get("config_name") or described.get("config_name") or "the rig"
+    newest = unsaved[-1]
+    count = f"{len(unsaved)} change{'s' if len(unsaved) != 1 else ''}"
+    return (f"{name} has {count} made through the agent and not saved (the newest: "
+            f"{describe_change(newest)}, at {newest.get('at')}), and a restart reloads its file without "
+            "them: Save first, or restart with discard (sushi-rig restart --discard, or "
+            '{"discard": true}) to drop them', "unsaved")
+
+
+def revert_request(body: Any) -> tuple[str, bool]:
+    """`(point, discard)` from a revert's body, or `AgentError` (400): `save`,
+    a snapshot's id or `commit:<sha>` as `GET /rigs/{name}/saves` lists
+    them (checked by shape here, looked up by the route), and `discard`,
+    true or absent. Anything beside them is refused, as a save's body is."""
+    from . import saves
+
+    if not isinstance(body, dict) or not set(body) <= {"save", "discard"}:
+        raise AgentError(f'the body of a revert is {{"save": "<id>"}}, with "discard": true to drop unsaved '
+                         f"work, not {body!r}")
+    point = body.get("save")
+    if not isinstance(point, str) or not (saves.ID_PATTERN.match(point) or saves.COMMIT_PATTERN.match(point)):
+        raise AgentError(f"'save' must be a revert point's id, as GET /rigs/<name>/saves lists them, not {point!r}")
+    discard = body.get("discard", False)
+    if not isinstance(discard, bool):
+        raise AgentError(f"'discard' must be true or false, not {discard!r}")
+    return point, discard
+
+
+def revert_refusal(state: dict[str, Any], log: list[dict[str, Any]]) -> tuple[str, str] | None:
+    """`(reason, code)` when a revert of the running rig must wait, or None.
+    Pure over the state file and the log. The rule an edit of its file has
+    (`rigfile_refusal`): a revert replaces what is playing with the file, so
+    unsaved live work would be lost by it (`unsaved`), and with the panel
+    running the agent cannot see the panel's (`panel`). Worded for a revert,
+    and answered with `{"discard": true}` rather than a restart."""
+    from .rig import runs_panel
+
+    name = Path(str(state.get("rig") or "the rig")).stem
+    if runs_panel(state):
+        return (f"{name} runs with its panel, whose changes the agent cannot see, so it cannot tell whether "
+                "a revert would drop unsaved work: save from the panel's SAVE first, or revert with discard "
+                '({"discard": true}) to drop whatever it holds', "panel")
+    unsaved = unsaved_entries(log, since=state.get("started_at"))
+    if not unsaved:
+        return None
+    newest = unsaved[-1]
+    count = f"{len(unsaved)} change{'s' if len(unsaved) != 1 else ''}"
+    return (f"{name} is running with {count} made through the agent and not saved (the newest: "
+            f"{describe_change(newest)}, at {newest.get('at')}), and a revert replaces what is playing with "
+            'the file: Save first, or revert with discard ({"discard": true}) to drop them', "unsaved")
+
+
+def programs_moved(before: list[str], after: list[str], made: str) -> dict[str, Any] | None:
+    """What a new rig file does to the Program Change numbers, or None when
+    nothing moves: `{"moved": [{"rig", "from", "to"}], "before", "after",
+    "note"}`, the tables as `midi_listener.programs_table` gives them. Pure.
+
+    Program n is the nth file of config/rigs by file name
+    (`midi_listener.program_order`), so a new file sorting before others
+    moves each of them up one, and a pedal preset set for one rig then
+    selects another, with nothing said (review, 2026-11-06). Said whenever a
+    number moves, for every rig, not only those whose map switches by
+    Program Change: which presets a player has set is not in any file. The
+    rule itself is not changed here."""
+    moved = [{"rig": rig, "from": n, "to": after.index(rig)}
+             for n, rig in enumerate(before) if rig in after and after.index(rig) != n]
+    if not moved:
+        return None
+    first = moved[0]
+    return {
+        "moved": moved,
+        "before": midi_listener.programs_table(before), "after": midi_listener.programs_table(after),
+        "note": (f"Program Change numbers follow config/rigs by file name, so {made} (program "
+                 f"{after.index(made)}) moves {len(moved)} rig{'s' if len(moved) != 1 else ''} up one: program "
+                 f"{first['from']}, which was {first['rig']}, is now {after[first['from']]}. A pedal preset set for "
+                 "a number now selects the rig listed against it after"),
+    }
+
+
+def describe_change(entry: dict[str, Any]) -> str:
+    """One log entry in a few words, for a refusal that names it."""
+    op, args = entry.get("op"), entry.get("args") or {}
+    if op == "parameter":
+        return f"{args.get('processor')} {args.get('parameter')}"
+    if op == "bypass":
+        return f"bypass {args.get('processor')}"
+    if op == "move":
+        return f"{args.get('processor')} moved {args.get('direction')}"
+    if op == "add":
+        return f"{args.get('name')} added to {args.get('track')}"
+    if op == "remove":
+        return f"{args.get('processor')} removed"
+    if op == "amp":
+        return f"amp {args.get('name')}"
+    if op == "amp_model":
+        return "the amp's model"
+    if op == "undo":
+        return "an undo"
+    return str(op)
 
 
 def serve(host: str, port: int, root: Path | None = None) -> int:

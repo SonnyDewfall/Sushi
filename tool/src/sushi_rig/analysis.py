@@ -109,6 +109,52 @@ def rms_dbfs(signal) -> float:
     return _power_to_dbfs(float(np.mean(_frames(signal) ** 2)))
 
 
+def channel_rms_dbfs(signal) -> list[float]:
+    """Each channel's RMS in dBFS, in channel order. `-inf` for a silent one."""
+    np = require_numpy()
+    arr = _frames(signal)
+    return [_power_to_dbfs(float(np.mean(arr[:, c] ** 2))) for c in range(arr.shape[1])]
+
+
+@dataclass(frozen=True)
+class ChannelBalance:
+    """Left against right in a stereo signal.
+
+    `correlation` is Pearson's at zero lag: 1.0 for two identical channels,
+    -1.0 for one the other's inverse, near 0 for unrelated ones. None when
+    either channel is constant (digital silence, usually), where it is
+    undefined: a silent right channel is the case this exists to report, and
+    a number in its place would read as a measurement.
+    """
+
+    left_dbfs: float
+    right_dbfs: float
+    correlation: float | None
+
+
+def channel_balance(signal) -> ChannelBalance:
+    """Each channel's RMS and the correlation between them, for a stereo signal.
+
+    Written for the mono-to-stereo question (a guitar on one input reaching
+    both monitors): `rms_dbfs` measures every channel together, so a render
+    with its right channel silent comes out only 3 dB down and passes as a
+    sound. Refuses anything but two channels rather than picking two.
+    """
+    np = require_numpy()
+    arr = _frames(signal)
+    if arr.shape[1] != 2:
+        raise ValueError(f"channel_balance needs a stereo signal, got {arr.shape[1]} channels")
+    left, right = arr[:, 0], arr[:, 1]
+    correlation = None
+    if np.std(left) > 0.0 and np.std(right) > 0.0:
+        correlation = float(np.corrcoef(left, right)[0, 1])
+    return ChannelBalance(
+        left_dbfs=_power_to_dbfs(float(np.mean(left ** 2))),
+        right_dbfs=_power_to_dbfs(float(np.mean(right ** 2))),
+        correlation=correlation,
+    )
+
+
 # --------------------------------------------------------------------------- #
 # Safety checks
 # --------------------------------------------------------------------------- #
@@ -127,16 +173,35 @@ class Finding:
         return f"{self.check}: {self.message}"
 
 
+def first_non_finite(bad) -> tuple[int, int] | None:
+    """The frame and channel of the first NaN or Inf, or None, given a
+    `(frames, channels)` mask of the samples that are not finite, which the
+    caller has already computed once (`~np.isfinite(...)`)."""
+    np = require_numpy()
+    found = np.flatnonzero(bad)
+    if found.size == 0:
+        return None
+    frame, channel = np.unravel_index(int(found[0]), bad.shape)
+    return int(frame), int(channel)
+
+
+def non_finite_mask(signal) -> "np.ndarray":
+    """`(frames, channels)`: True where a sample is NaN or Inf."""
+    np = require_numpy()
+    return ~np.isfinite(_frames(signal))
+
+
 def check_finite(signal) -> Finding | None:
     """NaN or Inf anywhere. A plugin that blows up usually shows here first."""
     np = require_numpy()
     arr = _frames(signal)
     bad = ~np.isfinite(arr)
-    if not bad.any():
+    first = first_non_finite(bad)
+    if first is None:
         return None
     nan = int(np.isnan(arr).sum())
     inf = int(bad.sum()) - nan
-    frame, channel = (int(i) for i in np.argwhere(bad)[0])
+    frame, channel = first
     return Finding(
         "non_finite",
         f"{nan} NaN and {inf} Inf samples; the first is at frame {frame}, channel {channel}",

@@ -13,7 +13,8 @@ while writing yamlmerge.py) and what is a choice:
   before them, so a naive delete drops the *next* entry's comments;
 - observed: ruamel loses a comment line directly above a flow-style `- {...}`
   entry that has its own trailing comment, even with no change at all;
-- chosen: the comment above a list's first entry stays when that entry goes.
+- chosen: the comment directly above a chain's first entry goes with it, as
+  it moves with it in a reorder (#32); a heading a blank line sets apart stays.
 """
 
 from __future__ import annotations
@@ -167,10 +168,18 @@ def test_the_first_plugin_can_go_and_a_new_one_can_come_last(rig_path):
     after = rig_path.read_text()
     assert [p["name"] for p in yaml.safe_load(after)["channels"][0]["chain"]] == \
         ["drive", "eq", "verb", "limiter"]
-    # comp's comments on its parameters went with comp; everyone else's stayed. So did
-    # the one above the chain's first entry: it is as likely to be about the chain.
-    gone = {"# dB; do not go lower", "# The ratio is deliberately gentle."}
+    # comp's comments went with comp: the ones on its parameters, and the one directly
+    # above it, as a reorder takes it (#32); everyone else's stayed.
+    gone = {"# dB; do not go lower", "# The ratio is deliberately gentle.", "# Keep the squash light."}
     assert [c for c in comments(TEXT) if c not in gone] == comments(after)
+    assert "    chain:\n      # Dirt, off for the clean tone.\n      - name: drive\n" in after
+
+
+def test_a_first_plugin_removed_leaves_a_heading_a_blank_line_sets_apart(tmp_path):
+    text = TEXT.replace("      # Keep the squash light.\n", "      # The guitar's chain.\n\n      # Keep the squash light.\n")
+    after = written(tmp_path, text, lambda rig: rig["channels"][0]["chain"].pop(0))
+    assert "    chain:\n      # The guitar's chain.\n\n      # Dirt, off for the clean tone.\n      - name: drive\n" in after
+    assert "# Keep the squash light." not in after
 
 
 def test_a_key_added_to_a_plugin_and_one_removed_keep_the_comments(rig_path):
@@ -783,3 +792,85 @@ def test_a_list_of_scalars_grows_and_shrinks_with_the_comment_after_it_kept_once
     text = "m:\n  - 1\n  - 2\n  # after\nz: 0\n"
     assert yamlmerge.merged(text, {"m": [1], "z": 0}) == "m:\n  - 1\n  # after\nz: 0\n"
     assert yamlmerge.merged(text, {"m": [1, 2, 3], "z": 0}) == "m:\n  - 1\n  - 2\n  - 3\n  # after\nz: 0\n"
+
+
+# --------------------------------------------------------------------------- #
+# A one-knob save of a committed rig is a one-line diff (#117, the rig 2026-11-02)
+# --------------------------------------------------------------------------- #
+
+def _float32(value):
+    """What Sushi hands back for a value it holds: a float32, read as a double."""
+    import struct
+
+    return struct.unpack("f", struct.pack("f", float(value)))[0]
+
+
+def _capture_of(raw):
+    """A capture of `raw` running unchanged, as `live.capture` would read it:
+    every parameter a float32, every bypass a flag, every chain in its order."""
+    processors, tracks = {}, {}
+    channels = list(raw.get("channels") or [])
+    for track, chain in [(c["name"], c.get("chain") or []) for c in channels] + [("master", raw["master"].get("chain") or [])]:
+        names = [p["name"] for p in chain]
+        tracks[track] = (["master_return"] + names) if track == "master" else names + [f"{track}_send"]
+        for plugin in chain:
+            processors[plugin["name"]] = {
+                "bypassed": bool(plugin.get("bypassed", False)),
+                "parameters": {k: _float32(v) for k, v in (plugin.get("parameters") or {}).items()},
+            }
+    return {"processors": processors, "tracks": tracks}
+
+
+@pytest.mark.parametrize("rig", ["electric-chorus-2", "accustomed"])
+def test_one_knob_saved_into_a_committed_rig_changes_exactly_one_line(tmp_path, rig):
+    """On the rig, turning chorus Level 0.91 -> 0.85 and saving rewrote 16
+    lines: every whole-number float lost its `.0` (`1.0` -> `1`, which YAML
+    reads as an int). A value the save did not change keeps its written form."""
+    import difflib
+    import shutil
+
+    import yaml
+
+    from sushi_rig.save import save_rig
+
+    source = checkout_root() / "config" / "rigs" / f"{rig}.yaml"
+    path = tmp_path / "config" / "rigs" / source.name
+    path.parent.mkdir(parents=True)
+    shutil.copy(source, path)
+    before = path.read_text()
+    raw = yaml.safe_load(before)
+    state = _capture_of(raw)
+    knob = next(p for c in raw["channels"] for p in c.get("chain") or [] if p.get("parameters"))
+    name, value = next(iter(knob["parameters"].items()))
+    state["processors"][knob["name"]]["parameters"][name] = _float32(round(value + 0.06, 2) if value < 0.9 else value - 0.06)
+
+    save_rig(rig, path, state=state)
+    changed = [line for line in difflib.unified_diff(before.splitlines(), path.read_text().splitlines(), lineterm="", n=0)
+               if line[:1] in "+-" and not line.startswith(("+++", "---"))]
+    assert len(changed) == 2, "\n".join(changed)
+    assert [line[1:].strip().split(":")[0] for line in changed] == [name, name], changed
+
+    save_rig(rig, path, state=state)
+    assert len([1 for line in difflib.unified_diff(before.splitlines(), path.read_text().splitlines(), lineterm="", n=0)
+                if line[:1] in "+-" and not line.startswith(("+++", "---"))]) == 2, "and a second save adds nothing"
+
+
+def test_a_whole_number_float_a_save_changes_stays_a_float():
+    """0.5 moved to 1.0 is still a float in the file: the file's type is kept."""
+    from sushi_rig.rigfile import fold_state
+
+    raw = {"kind": "rig", "schema_version": 1, "name": "one",
+           "channels": [{"name": "board", "input": "guitar-in", "width": "mono",
+                         "chain": [{"name": "comp", "uri": "urn:comp", "parameters": {"Mix": 0.5, "Steps": 3, "On": 1.0}}]}],
+           "master": {"output": "monitor-out"}}
+    folded = fold_state(raw, {"processors": {"comp": {"parameters": {"Mix": 1.0, "Steps": 4.0, "On": 1.0000000001}}}})
+    params = folded["channels"][0]["chain"][0]["parameters"]
+    assert params == {"Mix": 1.0, "Steps": 4, "On": 1.0}
+    assert [type(params[k]) for k in ("Mix", "Steps", "On")] == [float, int, float]
+
+
+def test_the_comment_above_the_first_channel_stays_when_that_channel_goes(tmp_path):
+    """Review of #32: only a chain's first plugin takes the comment above it."""
+    after = written(tmp_path, TEXT, lambda rig: rig["channels"].pop(0))
+    assert "channels:\n  # The guitar, played from the front input.\n" in after
+    assert [c["name"] for c in yaml.safe_load(after)["channels"]] == ["vocal"]

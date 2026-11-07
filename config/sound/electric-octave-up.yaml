@@ -1,31 +1,34 @@
-schema_version: 1
+schema_version: 2
 config: electric-octave-up
 stimulus: log_sweep 20-20000Hz 5s -20dBFS 2ch
 sample_rate: 48000
 frames: 240000
 measured:
-  peak_dbfs: -8.1229
-  rms_dbfs: -24.8798
+  peak_dbfs: -7.7541
+  rms_dbfs: -21.7659
+  channel_rms_dbfs:
+  - -21.7758
+  - -21.756
   delay_samples: 0
   bands:
   - low_hz: 20.0
     high_hz: 80.0
-    level_dbfs: -43.0678
+    level_dbfs: -39.4848
   - low_hz: 80.0
     high_hz: 250.0
-    level_dbfs: -32.4629
+    level_dbfs: -29.1562
   - low_hz: 250.0
     high_hz: 800.0
-    level_dbfs: -26.457
+    level_dbfs: -23.4731
   - low_hz: 800.0
     high_hz: 2500.0
-    level_dbfs: -27.4509
+    level_dbfs: -24.2984
   - low_hz: 2500.0
     high_hz: 8000.0
-    level_dbfs: -36.6174
+    level_dbfs: -33.5401
   - low_hz: 8000.0
     high_hz: 20000.0
-    level_dbfs: -59.2264
+    level_dbfs: -56.0624
 tolerance:
   band_db: 0.01
   level_db: 0.01

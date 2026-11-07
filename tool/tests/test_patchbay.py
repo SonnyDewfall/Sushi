@@ -371,8 +371,12 @@ def test_a_two_port_role_pairs_across_a_tracks_two_channel_entries():
 def test_a_one_port_role_on_two_channel_entries_needs_the_declaration():
     feeds = {"guitar-in": [(channel(0), channel(1))]}
     assert len(_pairs(_gen(ROLES, feeds))) == 2
-    with pytest.raises(PatchbayError, match="counts must match"):
+    with pytest.raises(PatchbayError, match="counts must match") as refused:
         _gen(ROLES, feeds, mono_to_stereo=())
+    # And it says what to declare, as the bus form does: the web UI's new
+    # rig shows this to a player choosing stereo on a one-port input.
+    assert "declare it in the machine file: guitar-in: {ports: [" in str(refused.value)
+    assert "mono_to_stereo: true}. Otherwise make the channel mono" in str(refused.value)
 
 
 def test_the_same_role_on_two_tracks_is_fan_out_not_a_stereo_pair():
@@ -1298,3 +1302,15 @@ def test_generate_names_the_file_for_a_bad_rig_and_a_yaml_error(tmp_path):
     with pytest.raises(SystemExit) as caught:
         cli.main(["patchbay", "generate", str(broken), "--machine", str(THIS_MACHINE), "--offline"])
     assert str(caught.value.code).startswith(f"{broken}: ")
+
+
+# --------------------------------------------------------------------------- #
+# One port's resolution, shared by every role
+# --------------------------------------------------------------------------- #
+
+def test_one_port_resolves_to_its_node_or_says_why_not():
+    port_nodes = live_port_nodes(CAPTURED)
+    found = patchbay.resolve_port("Audient iD14:capture_AUX0", "out", port_nodes)
+    assert found.node == "Audient iD14 Multichannel"
+    assert "no live port with alias" in patchbay.resolve_port("Audient iD14:capture_AUX42", "out", port_nodes)
+    assert "must have direction 'out'" in patchbay.resolve_port("sushi:audio_input_0", "out", port_nodes)

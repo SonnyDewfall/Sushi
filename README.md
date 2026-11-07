@@ -240,9 +240,16 @@ and both times it looked like a save bug rather than a load bug.
 
 ```bash
 sushi-rig verify config/electric-clean.json   # loads, names exist, and it applies
+sushi-rig verify config/rigs/electric-chorus-2.yaml  # a rig file: compiled as `up --rig` compiles it, then checked
 sushi-rig verify --all                        # every config, about six seconds each
 sushi-rig verify --quick                      # skip the check that starts Sushi
 ```
+
+Sushi loads a compiled config, never the YAML, so a rig file from `config/rigs/`
+is compiled first, for this machine and the way `up --rig <name>` compiles it,
+and that is what is checked; the compiled file's path is printed. A YAML file
+from anywhere else, or a file that is not JSON, is refused with a sentence
+saying what to pass, not a traceback.
 
 The deep check loads the config into a throwaway Sushi — `--dummy`, so no audio
 hardware, no JACK — and compares the running rig against the file, naming every
@@ -294,9 +301,10 @@ then.
 │   ├── electric_board.json       current rig (what `sushi-rig up` launches)
 │   ├── *.json                    the other tones, one config each
 │   ├── src/                      hand-authored v1 sources (electric_board,
-│   │                             electric_stereo, guitar_vocal)
+│   │                             electric_stereo, guitar_vocal; the built
+│   │                             electric_stereo.json is in retired/)
 │   ├── rigs/                     every tone as a v2 rig: channels and a master
-│   ├── sound/                    nulltest references: what each config sounds like
+│   ├── sound/                    nulltest references: what each rig (`<name>.yaml`) and v1 config (`<name>.v1-mono.yaml`) sounds like
 │   ├── archive/                  auto-written version snapshots,
 │   │                             config/archive/<name>/vX.Y.json
 │   └── retired/                  hand-retired configs (incl. empty.json), kept
@@ -304,20 +312,23 @@ then.
 ├── Patchbay/                   qpwgraph sessions
 │   ├── rig.qpwgraph              routing loaded at startup; generated from
 │   │                             config/src/guitar_vocal.yaml, held by a test
-│   ├── Default.qpwgraph
-│   └── Test_1.qpwgraph
+│   ├── Default.qpwgraph          hand-made in qpwgraph on the rig, kept as a
+│   │                             sample; nothing in the tool reads it
+│   └── Test_1.qpwgraph           the same: a hand-made session, not read
 ├── machines/                   the only files that name physical ports,
 │   ├── example.yaml              one per machine, as <hostname>.yaml
 │   └── sonny-dewfall-XPS-9320.yaml
+├── docs/ui/                    screenshots the README shows (rack.png, stage.png)
 ├── amp/models/                 the neural amp's .nam captures
 ├── ci/                         Dockerfile for the container the full suite runs in
 ├── systemd/                    the agent's user unit; `sushi-rig agent install-service` installs it
 ├── .github/workflows/          ci.yml (fast suite), rig-container.yml (everything)
 ├── plugin-manifest.txt         every LV2 URI this rig can load (see Plugins below)
+├── plugin-ports.txt            each of those plugins' audio ins and outs, for the compiler (see A mono plugin on a stereo channel)
 │
 ├── tool/                       ── TOOL: generates the configs above
 │   ├── pyproject.toml
-│   ├── src/sushi_rig/            44 modules and __init__, one job each:
+│   ├── src/sushi_rig/            45 modules and __init__, one job each:
 │   │                             spec, rigfile, convert, emit, dump, probe, probes,
 │   │                             profile, plugins, library, live, panel, listen,
 │   │                             save, state, procs, rig, supervisor, qpwgraph,
@@ -325,13 +336,15 @@ then.
 │   │                             verify, render, nulltest, signals, analysis,
 │   │                             selftest, take, transport, recorder,
 │   │                             recorder_process, capture, midi_listener, agent,
-│   │                             agent_client, service, yamlmerge, paths, _numpy, cli
+│   │                             agent_client, service, yamlmerge, paths, _numpy, stereo, cli
 │   ├── tests/                    fast suite; fixtures/ holds captured artefacts
 │   ├── examples/
 │   │   ├── rig.example.yaml       annotated rig spec (real plugins)
 │   │   ├── dump.example.json      real --dump-plugins output, test fixture
 │   │   └── profiles/gxts9.yaml    a component profile
-│   └── spikes/virtual_ui/        the headless-plugin-GUI experiment (#28), with findings
+│   └── spikes/                   experiments, kept with their findings: virtual_ui/
+│                                 (headless plugin GUI, #28) and live_rig/ (the
+│                                 capture engine and live paths on the rig)
 │
 ├── IMPLEMENTATION_BRIEF.md     the original brief, kept as history (see below)
 ├── MANIFEST.md                 what is being worked on and what is next
@@ -385,7 +398,10 @@ the pairs that were not: a channel whose source never reached it is silent
 while everything looks healthy, and that is said rather than discovered. SAVE works on a rig run: the panel's SAVE folds the
 live capture back into the rig file itself, in place and keeping its comments
 (a new name writes a new file), and never writes a compiled config into
-`config/`. A v1 run whose source is a rig of channels still has SAVE off, since
+`config/`. A value the save did not change keeps the form the file wrote it
+in, so `1.0` stays `1.0` and one knob turned is one line in `git diff` (the
+first save of a rig used to rewrite every whole-number float as an int, #117);
+a float the save changes to a whole number is still written as a float. A v1 run whose source is a rig of channels still has SAVE off, since
 saving the rig would leave the v1 config behind; it says to use `--rig`.
 
 `up` starts everything and hands the prompt back — the rig is detached, so it
@@ -393,6 +409,19 @@ survives closing the terminal. Child output goes to log files rather than your
 terminal; `status` prints the paths. It refuses to start a second rig on top of
 a running one. With the agent running, `up`, `down`, `restart` and `status` go
 through it, and say so in one line; see the next section.
+
+#### Known issue: electric-octave-up can go silent mid-set
+
+Its octave up (gx_detune_ at +12) has a plugin bug: on one or two loads in a
+hundred it starts putting out NaN some seconds in, and keeps doing so until it
+is loaded again. What you hear is the rig going silent, or a burst of noise,
+with nothing reported as wrong. **Run `sushi-rig restart`** (or the agent's
+`/rig/restart`): a fresh load clears it, and it is unlikely to return in the
+same set. Bypassing the octave is not expected to help, since the NaN is held
+in the plugin's state and in the reverb after it; that, like the bug on the
+rig at all, has not been tried, only measured offline (MANIFEST, 2026-11-03;
+`tool/spikes/gx_detune_nan/`). electric_board runs the same plugin at no shift,
+which the bug cannot reach.
 
 ### The agent (v2, #29)
 
@@ -406,7 +435,8 @@ curl localhost:8029/rigs             # the rigs of config/rigs/ a start or switc
 curl localhost:8029/rig/load         # one pw-top sample of the rig's nodes: load, xruns, the block budget
 curl -X POST localhost:8029/rig/up -d '{"config_name": "guitar_vocal", "rig": true, "headless": true}'
 curl -X POST localhost:8029/rig/down
-curl -X POST localhost:8029/rig/restart
+curl -X POST localhost:8029/rig/restart                             # refused (409 unsaved) if it would drop changes no save has written
+curl -X POST localhost:8029/rig/restart -d '{"discard": true}'      # ... so this drops them, as `sushi-rig restart --discard` does
 curl -X POST localhost:8029/rig/switch -d '{"config_name": "electric-octave-up"}'   # live where it can be (#93)
 curl localhost:8029/live             # the running rig's parameters, bypass and chains, with ranges
 curl -X POST localhost:8029/live/parameter -d '{"processor": "reverb", "parameter": "Mix", "value": 0.4}'
@@ -425,6 +455,11 @@ curl localhost:8029/record           # recording, idle, or why recording is off 
 curl -X POST localhost:8029/record/start -d '{"name": "riff-idea"}'   # a take; no name is take-<date>-<time>
 curl -X POST localhost:8029/record/stop                              # finish it: take check's verdict in the answer
 curl localhost:8029/takes            # the takes, newest first, each with take check's verdict
+curl localhost:8029/machine/roles    # the machine file's roles: ports, the widths each can feed, who uses each
+curl localhost:8029/rigs/guitar_vocal/channels                      # a rig file's channels, as the file has them
+curl -X POST localhost:8029/rigs/new -d '{"name": "two-guitars", "channels": [{"name": "clean", "input": "guitar-in", "width": "mono"}, {"name": "dirty", "input": "guitar-in", "width": "stereo", "from": {"rig": "electric_board", "channel": "board"}}]}'
+curl -X POST localhost:8029/rigs/guitar_vocal/channels/add -d '{"name": "keys", "input": "vocal-in", "width": "stereo"}'
+curl -X POST localhost:8029/rigs/guitar_vocal/channels/vocal/input -d '{"input": "guitar-in"}'   # or "width", or both
 
 curl localhost:8029/health | jq .agent.midi   # the pedals: listening, or why not, and what was last heard
 ```
@@ -451,8 +486,7 @@ child that exits during a start that fails is part of that failure's answer,
 not a crash, since there is no rig to restart.
 
 **No lifecycle step holds the agent for ever.** `up`, `down` and `restart` are
-each given two minutes (`LIFECYCLE_TIMEOUT`, as when the agent ran them as the
-CLI): past it the answer is `504`, saying what was still running (compiling the
+each given two minutes (`supervisor.LIFECYCLE_TIMEOUT`): past it the answer is `504`, saying what was still running (compiling the
 rig, clearing a stale qpwgraph, waiting for Sushi...), and what the step had
 started is stopped. The stuck part runs in a thread that cannot be interrupted;
 it is left to finish and nothing it does afterwards is kept. `agent.supervisor.doing`
@@ -505,7 +539,7 @@ against real Sushi and PipeWire**: see MANIFEST.md for the check.
 
 Needs `pip install -e tool[agent]` (aiohttp), and `tool[agent,midi]`
 (alsa-midi, and libasound) for the pedals; starting a rig through the agent
-needs Python 3.11 or later. One lifecycle command at a
+needs Python 3.11 or later, which is also the package's floor (`requires-python`). One lifecycle command at a
 time: a second request while one runs gets `409 busy`, because `up` and `down`
 racing is a second rig on top of a running one. `up` must be told which
 config (`config_name` is required, so a stray empty POST starts nothing). Every argument is checked
@@ -543,8 +577,9 @@ in-memory log of the last 500 (`/live/log`: `at`, `op`, `args`, and the
 
 **Undo** (`POST /live/undo`, no body) puts back the newest change that is not an
 undo and has not been undone: a parameter to its previous value, a bypass to its
-previous state, a move by the opposite step, each through the same call the
-route makes, under the same lock and timeout and with the same `503`/`502`/`504`
+previous state, a move by the opposite step, an add by removing what it added
+and a remove by adding the plugin back (both under *The library and chain
+edits* below), each through the same call the route makes, under the same lock and timeout and with the same `503`/`502`/`504`
 and `409 busy`. The answer is the undo's log entry (`op: "undo"`, `undoes`: the
 index of the entry it put back, `args` what it applied, `previous` what that
 replaced), the entry `undone`, and the `state` now. An index counts entries since
@@ -555,7 +590,8 @@ beside its `reason`: `busy`; `nothing_to_undo` (an empty log or one of undos
 only, said without a Sushi to ask); `stale`, when the rig is not as the entry
 assumes — a move's processor is not exactly where the move left it, a parameter
 or bypass was changed since (so an undo never overwrites a hand on the panel),
-or Sushi never said what to put back. A processor the rig has lost is `400`, as
+the track an add went on is not as the add left it, the place a removed plugin
+came from is gone, or Sushi never said what to put back. A processor the rig has lost is `400`, as
 on the other routes. A refused entry is not skipped for an older one, so the
 way past a stuck one is explicit: `{"skip": true}` checks the newest entry, and
 if it is refused marks it `op: "stale"` in the log (it is not removed) so the
@@ -588,10 +624,44 @@ pedal past one. A bad request is `400` with Sushi untouched; a name the rig alre
 has, a track it lacks, an `after` not on that track, or a remove of a send,
 the master's return, a track or something not there, is `409`. Both edits are
 confirmed by reading the chain back, and one that does not read back as asked
-is `502` and not logged. The log entry for an add has the name used and the
-chain before; for a remove, the chain before and the plugin's URI, uid and
-type, from Sushi's saved session, so an undo can put it back (at its defaults:
-parameter values are not recorded). **Not yet run against a live Sushi.**
+is `502` and not logged. The log entry for an add has the chain before
+(`previous`) and in `args` the name used, its `copy` to stereo (or null), the
+`chain` it left, and `defaults`: the plugin's parameter values read straight
+after the add, which are what a save compares with. Defaults Sushi will not
+give, or do not give in time, leave the add standing and logged, `null`,
+with a `note` saying a save will write every value. A remove's entry has the chain before, the plugin's URI, uid and
+type from Sushi's saved session, its `copy`, the chain before as `units`
+(each plugin with its copy, grouped as the remove grouped it, with Sushi's
+uids), and its `parameters` and `bypassed`, read just before the remove (a remove whose values cannot be read
+is `502` and removes nothing).
+
+**Undoing an add or a remove** (#32). An add is undone by removing what it
+added, its copy to stereo with it, through the remove's own path (read,
+values, remove, read back), and only while the track is exactly the `chain`
+the add left: anything else on it since is a chain the entry knows nothing
+about, so that is `409 stale`. A remove is undone by adding the plugin back
+through the add's own path, after the unit it followed in the chain before
+as the remove grouped it (first on the track if it was first), with its copy
+if it had one. It is bypassed by the very next command, so it is not heard at
+the plugin's defaults while its values arrive; then every parameter value it
+recorded is set, and then the bypass it had (on, if the remove could not
+read it). The add's own command takes no bypass, so the moment between the
+add and the bypass is one command long. If that place is
+gone — the predecessor is no longer on the track, the track is gone, the
+name or its copy's is taken — it is `409 stale` with the reason, and it is
+not put anywhere else. What follows the predecessor now is not checked: it
+goes straight after it. If Sushi refuses, fails or does not answer in time
+anything after the add (the bypass, the read-back, a value), the plugin is
+removed again and the answer is `502` saying nothing was put back and the
+track is as it was (and, if that fails too, what the track holds); a call
+still running keeps the connection open until it returns. Only an LV2 plugin is put back: a stray copy to stereo
+removed as a repair is not recreated. Each undo is logged in the shape of
+what it applied, an add's undo as a remove and a remove's as an add, with
+`of` naming the op it undid; undoing an undo is still not built. A program
+is not recorded, so a plugin whose state is a program alone comes back at its
+default one. **Not yet run against a live Sushi**: that a processor added live
+starts at the plugin's defaults and un-bypassed, and the values read and set
+around an add and a remove, are shown against the fakes only.
 **Pedals** (#34, #93). What a rig's MIDI map asks of the agent — a bypass, a
 pad on a mute, Program Change rig switching; Sushi does the sweeps, blends
 and CC mutes itself — the agent serves while the rig is up, by opening the
@@ -706,11 +776,36 @@ running rig**: the state file names it as a live switch would, so `restart`
 brings it back, the next plain save writes there, and `/health` and `/rigs`
 say it. If the new file cannot be made the running rig, the answer is a 500
 saying the file was written and the rig still runs under its old name, and
-nothing is logged as saved. A plugin added or removed live is refused (`409
-not_saved`, from `rigfile.fold_state`, which checks a capture of another rig
-first): a save writes values, bypass and order, not which plugins a chain
-holds, and a plugin removed live used to stay in the file with nothing said
-(the panel's SAVE and `sushi-rig save` refuse it too now). A save in place
+nothing is logged as saved. **Plugins added and removed live are saved** (#32): the agent hands
+`save_rig` its log's account of them (`agent.live_edits`: what was added, to
+which track, with its URI and defaults, and what was removed, since the
+newest save, rig switch or the rig's start, whichever is latest, each name
+as its last edit left it, an undo counted as what it applied). It is found
+by walking the log back from its newest entry to that point, under the live
+lock, so a save costs the entries since the last one; a save's entry carries
+the plugins added live it wrote, with their defaults (`args.added`), which
+the next save starts from. `rigfile.fold_state` then writes the
+chains as they run: a removed plugin's entry goes, with the comment lines
+above, inside and beside it (yamlmerge's rule for an entry that moves: the
+comment directly above a chain's first entry is that entry's unless a blank
+line sets it apart as a heading; this is a chain's rule only, and the comment
+above a rig file's first channel stays); an added one gets an entry at its captured
+place, written as the rig files write a plugin — `name`, `uri`,
+`bypassed: true` only if it is, and `parameters` only for the values that
+differ from its defaults — and keeps to that on later saves; a move keeps
+working as it did. The compiler's sends, return and copies to stereo never
+appear. The log only explains a capture, it never changes one: a processor
+the capture names that is neither the file's nor added to that track by the
+log, or a plugin of the file missing from its chain with no remove of it in
+the log, is still `409 not_saved`, as a capture of a different rig. What the
+file holds is known by track and name: a name removed and added back on the
+same track with the file's URI (an undone remove) is the file's own entry,
+comments and all; with another URI, a new entry in its place; on another
+track (removed from one channel, added to the next), an entry on that one. The
+panel's SAVE and `sushi-rig save` have no log, so they refuse any plugin added
+or removed live, saying only the agent's save can write it. Tested on copies
+of committed rigs: an add, a remove and a move saved into
+`config/rigs/accustomed.yaml` change exactly those entries. A save in place
 writes the file the rig runs from whatever it is called (`Guitar.Vocal.yaml`
 compiles, so it saves); only a name chosen for a new file is checked. Refused
 in panel mode (`409 panel`: the panel's faders reach the amp through the
@@ -724,6 +819,91 @@ save is `op: "save"` in `/live/log`, logged only once it has wholly happened,
 with the file and that state; undo passes over it to the change before, which
 leaves the rig unsaved again. **Not run against a live Sushi**: shown against
 a fake capture and real rig files.
+
+**New rigs and channel edits** (the New rig screen). `POST /rigs/new` writes
+a new `config/rigs/<name>.yaml`: the channels asked for, each a name, an input
+role and `mono` or `stereo`, and a master on `monitor-out` (as `convert`
+writes every rig's), with empty chains, unless a channel says `from: {rig,
+channel}`, which copies that channel's chain and `level:` from that rig's
+file as it stands now (not as git last committed it: a tone saved and not yet
+committed is the one you hear; the answer says what git says of that file).
+`POST /rigs/<rig>/channels/add` adds a channel to the end of a rig file, and
+`POST /rigs/<rig>/channels/<channel>/input` sets a channel's input, its
+width, or both. Both edit the file in place with `write_rig`, keeping its
+comments: tested on copies of the committed rigs, an add changes exactly the
+channel's four lines and an input change exactly its line (two with the
+width). **The compiler decides, not the agent and not the page**: every
+draft goes through `rig.compile_rig_draft`, which parses, compiles and wires
+it offline exactly as `up --rig` does, against the run's machine file (the
+one the running rig was compiled against, or this host's with no rig of
+channels up), and nothing is written unless it passes. A refusal is `409`
+with the compiler's or the patchbay's own words and a `code`: `rig_problem`
+(more than three channels, with the arithmetic; a channel name used twice or
+not a name; a width the role cannot give; a role the machine file lacks),
+`name` (the naming rule, `save.validate_name`), `taken`, `no_source` (a
+`from` naming no rig or channel), `no_channel`. The wiring is the part that
+knows the roles: a stereo channel on a one-port role without
+`mono_to_stereo`, a mono one on a pair and an unknown role are refused by
+`patchbay_for`, which compiling alone does not call, so `compile_named_rig`
+on its own would accept a rig `up` then refuses. **The machine file is never
+written**: a role you need and do not have is said with the lines to add
+under `roles:` (`machine_hint`), and you add them. Two channels may share an
+input (one port fanned to two engine inputs). `GET /machine/roles` gives the
+page each role's ports, `mono_to_stereo`, the widths it can feed and whether
+it can take the master (each the patchbay's answer, with its reason), which
+of the running rig's tracks use it, and the ceiling as the compiler refuses
+a fourth channel. Which roles are inputs and which outputs is read from
+their names (`-in`, `-out`), since the machine file does not say.
+
+**An edit of the running rig's own file** takes effect when the rig
+restarts from it: the answer says so, with `rigfile.diff`'s reasons as a
+switch gives them (`track_added`, `wiring`, `track`), and the page offers the
+restart. It is **refused while the rig holds changes the agent saw and no
+save has written** (`409 unsaved`, naming the newest): the restart that plays
+the edit reloads the file and would drop them. Save, then edit. (Save
+itself would still work after an edit: a capture says nothing of a track the
+rig does not have yet, so the file keeps the new channel. It is the restart
+that would lose the work.) Counted, not netted out, so a knob turned and turned back still asks
+for a Save, which loses nothing. With the panel running it is refused too
+(`panel`): the agent cannot see the panel's changes. Another rig's file can
+be edited whatever is playing. A write is refused while a lifecycle command
+runs (`409 busy`, as every route is), and holds the lifecycle lock itself
+and, for the running rig, the live lock, so no restart, switch or live change
+lands between the check and the write. **Never committed**: the answer gives the commit and
+what git says of the file, as a save's does, read once the lifecycle lock is
+let go and within the write's deadline: a git that does not answer leaves
+`library: null` with `library_note` saying so, never a rig stuck busy. A new
+rig whose name sorts before others **moves their Program Change numbers**
+(program *n* is the *n*th file by name): the answer then has `programs`,
+which rigs moved from which number to which, and the page shows the table,
+since a pedal preset set for one rig would select another. The order rule
+itself is unchanged.
+
+**The machine file goes with the run.** A draft is checked against the
+machine file the running rig was started against (the state file's
+`machine`), and since 2026-11-06 the restart and the switch that play it
+are started against it too: `restart` passes it to `up` (`up --machine`,
+which the CLI takes with `--direct` only, since the agent takes no path from
+a request), and every switch by restart carries it (`switch_steps`), where
+before each dropped it and wired against this host's file
+(`machines/<hostname>.yaml`), which need not be the file the rig was checked
+or compiled against.
+
+**A restart refuses to drop unsaved work.** Every `POST /rig/restart` (the
+page's restart after an edit, the picker's, the CLI's `sushi-rig restart`
+through the agent) reloads the rig's file, so it is refused, `409 unsaved`
+naming the newest change, while the agent saw changes since the last save;
+`{"discard": true}` (`sushi-rig restart --discard`, or the page's second
+tap, "Restart anyway, dropping them") restarts anyway. Not refused when
+there is nothing to keep or no way to know: Sushi's process is gone (the
+work went with it, and recovery must not wait on a Save), or the rig runs
+with its panel, whose changes the agent cannot see. A stop and a switch to
+another rig still drop unsaved work, as they always have. Remote callers are treated as
+`POST /rig/save` treats them, no differently: a write needs no loopback peer,
+since Save writes the same files without one; the agent binds to localhost,
+and `--host 0.0.0.0` stays your call. **Not run against a live Sushi**: the
+rigs these write are shown to compile and wire as `up --rig` would, and no
+rig made this way has been started on the rig.
 
 **Recording from the web UI** (S7). The panel's record bar belongs to its
 listener, and a headless rig has none, so `up --rig --headless` (what the page
@@ -754,11 +934,18 @@ refused, because the command is yours and made on purpose, and a refused
 Program Change would be a pedal doing nothing mid-set (an `up`, which refuses
 a running rig, leaves the take alone). The amp a take names is the one playing
 when it starts: a fader or model change asked for during a start waits for it.
-`GET /takes` lists the takes folder: each take's length, stems, whether it was
-finished, audio lost, and `take check`'s problems, a take checked again only
+`GET /takes` lists the takes folder: each take's length, stems, whether it is
+complete, audio lost, and `take check`'s problems, a take checked again only
 when a file in its folder changes; only the rack asks for it. **Not run against a live PipeWire: no take has
 been captured through this path**; shown against the recorder's real core and a
-real recorder process with the engine stood in.
+real recorder process with the engine stood in. The first RECORD on the rig
+(2026-11-02) was refused, every time: the machine file names the guitar's port
+by its PipeWire alias (`Audient iD14:capture_AUX0`, what the patchbay matches),
+and JACK calls it `Audient iD14 Multichannel:capture_AUX0`. The capture engine
+now finds each port the take names among the ports its own JACK client lists, by
+name or by JACK alias, and links the port it finds; the machine file stays as it
+is, since the patchbay needs the alias. That pipewire-jack lists the PipeWire
+alias among a port's JACK aliases is expected and not yet seen on the rig.
 
 **Two modes, for two ways of using the rig.** The default gives you the Open
 Stage Control panel and the save listener behind it, which is what you want when
@@ -769,8 +956,11 @@ just runs the rig.
 **Recovery is the answer to failure, not self-healing** (principle 9). `restart`
 stops the rig and brings back the same one — same config, same mode, and the same
 `--no-amp` / `--no-tuner` choices, read from the state file rather than from you,
-since after a crash you may not remember them. Measured end to end at around five
-seconds.
+since after a crash you may not remember them, and for a rig of channels the
+machine file it was started against. Measured end to end at around five
+seconds. Through the agent, a restart that would drop changes it saw and no
+save has written is refused; `restart --discard` says to drop them. With
+Sushi gone it is never refused: there is nothing left to keep.
 
 `top` answers the question that predicts trouble: how close to the block deadline
 each component is running. It is not total CPU — 100% means a node used its whole
@@ -811,20 +1001,88 @@ sushi-rig agent                      # then open http://127.0.0.1:8029/ (the rac
                                      # or http://127.0.0.1:8029/#stage (the stage screen; the default on a phone)
 ```
 
-![The rack: the rigs of config/rigs on the left with the running one marked and another chosen to switch to, two channels and a master, the overdrive open with its profile's groups, one knob turned and listed as unsaved, load and xruns from pw-top](docs/ui/rack.png)
+![The rack as a mixing desk: the master volume in the header; on the left a strip per channel with its input and a volume fader; the chains in the middle, the overdrive open with its profile's groups and each knob's value as a text field; on the right the rigs of config/rigs, Undo, Save with a count of the unsaved changes, Save as, Revert, and the takes](docs/ui/rack.png)
 
-<img src="docs/ui/stage.png" alt="The stage screen at phone width: the rig's name and state, load and xruns from pw-top, each channel's level, one card per plugin with a big bypass switch, and the lock, with start, stop and switch hidden while it is on" width="300">
+<img src="docs/ui/stage.png" alt="The stage screen at phone width: the rig's name and state, the master volume, load and xruns from pw-top, each channel's volume as a fader, one card per plugin with a big bypass switch, and the lock, with start, stop and switch hidden while it is on" width="300">
 
 The agent serves the UI at `/`, from `tool/src/sushi_rig/ui/static/`: plain HTML, CSS
 and JavaScript with no build step and no framework, because the rig machine has
 no Node and the UI has to run from a checkout. Two screens from the mockups:
 
-- **The rack (S1).** Every channel as a row of plugin cards, each with its
-  knobs: the profile's controls in its groups and labels for a plugin that has
-  one (`tool/examples/profiles/`), every parameter in a plain list for one that
-  does not. Values are in the plugin's own range, never 0 to 1. A turned knob is
-  sent at once and marked unsaved, with what it was; the side panel lists what
-  changed since the rig came up and undoes the newest change.
+- **The rack (S1), laid out as a mixing desk (2026-11-06).** Three columns,
+  because that is how a desk is read: a **strip per channel on the left** (its
+  name, a small, quiet input line, and its volume as the large part, then a
+  strip for the master, which leads to its chain), **the
+  chains and the amp in the middle**, the widest part, and **the files on the
+  right**: the rig picker, New rig…, Start, Stop and Switch, Undo, Save,
+  Save as…, Revert…, and the takes. The **master volume is in the header**,
+  not in a column. At phone width the columns stack in that order, strips
+  first, since volume is what a hand reaches for. Every chain is a row of
+  plugin cards, each with its knobs: the profile's controls in its groups and
+  labels for a plugin that has one (`tool/examples/profiles/`), every
+  parameter in a plain list for one that does not. Values are in the plugin's
+  own range, never 0 to 1. A turned knob is sent at once. **Nothing comes,
+  goes or moves as values change** (the player's first request: "was 0.5 dB"
+  labels that popped in and out). Each knob's text, label and note have a
+  size of their own whatever they hold, and the one sign of unsaved work is a
+  count on the Save button, in a box that is always there; the itemised list
+  of changes and the per-knob "was" are gone. Undo stays, above Save: it is an
+  action, not a view of history. A browser test compares every element's box
+  before and after four changes.
+- **Knobs that can be set (2026-11-06).** A knob is dragged **vertically, 320
+  px for its whole travel** (it was 200 px, either way), with the pointer
+  captured, so leaving the knob mid-drag does not drop it; **shift, or a
+  second finger, is a tenth of the speed**. **The wheel and a trackpad** step
+  it a notch at a time, but only over the dial or fader itself (never its
+  label or text), only when it can be set, and only when meant: the pointer
+  has rested on it 300 ms since it arrived and since the page last scrolled,
+  or it has the focus. Otherwise the wheel scrolls the page, so a scroll down
+  a rack of knobs passes over them rather than stopping at one and turning
+  it. A step is about 1 % of the range, rounded to 1, 2 or 5
+  times a power of ten so steps land on values one would type (a send's 144
+  dB in 1 dB steps, the overdrive's 24 dB Level in 0.2, a 0-to-1 Drive in
+  0.01, a 900 Hz Tone in 5 Hz; an integer one at a time; a log scale 1 % of
+  its travel); the profiles have no step of their own to give. The keys do
+  the same: arrows a step, PageUp and PageDown ten, Home and End the ends.
+  **The value under each knob is a text field** in the knob's units: a click
+  selects it, Enter or leaving commits, Escape puts it back; it is read with
+  or without the unit, a typographic minus, a comma, "-inf"; clamped to the
+  range; exact, never snapped; and nonsense is refused in place (red, its
+  reason in the title) and not sent. A poll never writes into a field that
+  has the focus, and only what was typed is ever committed: a field left
+  untouched while the value moved under it shows the value again. **Whole
+  numbers are sticky**: within 0.15 of a whole number in the units shown
+  (dB, %, plain numbers), a drag lands on it and holds it until 0.35 away; a
+  scroll notch always moves the value the way it was turned, and lands on a
+  whole number it crosses; a normalised 0-to-1 parameter with no unit is held
+  to hundredths instead. Fine control does not snap: it is for the
+  values between. The amp's faders and every volume take a typed value and
+  the wheel the same way. The decisions are rig.js's (`dragPosition`,
+  `sticky`, `stepped`, `scrolled`, `wheelNotches`, `parseTyped`), each
+  tested on its own.
+- **Volume (2026-11-06): the master's and each channel's.** One fader for
+  both, in dB: **−∞, then −60 to +6 dB**, a range safe to reach for in the
+  dark, where −∞ is the gain's own floor (−120 dB on the −120 to +24 range a
+  track's gain and a send's have, below hearing) rather than a mute
+  parameter, so one parameter is the volume, one undo puts it back and one
+  line of the file holds it. Each takes a drag (sticky to whole dB), the wheel
+  (0.5 dB a notch, a tenth with shift), the keys (Home is −∞) and a typed
+  value ("-6", "−6 dB", "mute", "-inf"). **The master's** is in both screens'
+  headers, on the master track's own gain, through the same POST
+  /live/parameter as a knob: it is in the log, Undo takes it back, Save writes
+  it as `master: level: <dB>` (new, compiled to that gain as a channel's
+  `level:` is to its send's; unity writes nothing, so every committed rig
+  compiles exactly as before, checked byte for byte), and a live switch sets
+  it as a step, never a restart. **A channel's** is its send's gain, its
+  `level:` (#101), at the top of its strip on the rack and in the stage's
+  levels; it replaces the small "send to master" knob that ended each row, so
+  there is one control per channel. Both are **usable while locked**, with no
+  confirm: volume is a performance control. **A channel a MIDI blend drives**
+  says "driven by <control>" on its fader and cannot be set from here: the
+  pedal's next move would undo it, and a save does not write a blended
+  channel's gain as its level (`fold_state`), so a move would be neither kept
+  nor heard for long. Which channels are blended comes from `GET
+  /rigs/<rig>/channels`'s `blended`.
 - **The stage screen (S5).** One glance: the rig, up or down, load and xruns,
   each channel's level, and the last error. One tap: a 56 px bypass per plugin,
   or a card opened for its knobs. Locked by default; unlocking takes two taps.
@@ -845,20 +1103,92 @@ no Node and the UI has to run from a checkout. Two screens from the mockups:
   output level, and only while the lock is off, as the rig picker is. With
   the panel running, the faders and picker are off and say the panel owns the
   amp.
-- **Save (S4).** Below the unsaved changes in the rack: Save writes the
+- **Save (S4).** In the files column, under Undo: Save writes the
   running rig's own file of `config/rigs/` in place, keeping its comments, and
   is offered whenever a rig that can be saved from here is up, since the
-  unsaved list is only what the agent saw (with none seen it says "no changes
-  seen since" when, not that nothing is unsaved); for a v1 run or one with its
-  panel both buttons are off and say how to save instead. Save as… asks for a name, checks it by
+  count on it is only what the agent saw (its title says since when, and
+  that a count of none is not proof the file holds what is playing); for a
+  v1 run or one with its panel both buttons are off and say how to save
+  instead. Save as… asks for a name, checks it by
   the rule the agent saves by (lowercase letters, digits, `-` and `_`) before
   sending, and writes a new rig that becomes the running one. The answer says
   what was written, that it is **not committed** (the agent never commits) and
   the commit it sits on, or the agent's reason for refusing (another rig's
-  name, a plugin added or removed live). The unsaved list then
-  counts from that save: a change after it, or an undo past it, is unsaved
+  name, a plugin on the rig the agent did not add, or one gone that it did
+  not remove). The count then
+  starts from that save: a change after it, or an undo past it, is unsaved
   again. Allowed while locked, since it changes neither the sound nor the
   structure. Not on the stage screen: saving is not a stage action.
+- **The compiler's copies to stereo, and "mono" (2026-11-06).** A copy to
+  stereo (`<plugin>_to_stereo`, stereo.py) is the compiler's, and is shown
+  nowhere: not as a card on either screen, nor among bypasses, unsaved
+  changes or undo. The page knows one by whatever says so first, its uid,
+  the reserved suffix no other name may carry, or a role of "stereo", before
+  any role `/live/plugins` gives (on the rig, copies were drawn as plugins;
+  a browser test makes `/live/plugins` give one a null role and finds it
+  nowhere). The plugin a copy follows carries a small **mono** badge, its
+  title "mono: processes the left side and its output is copied to both";
+  where it follows a stereo plugin on the same chain, with nothing mono
+  between, the badge is amber and says "after <that plugin>: this collapses
+  its stereo width", since Sushi gives a mono plugin channel 0 alone (#119).
+  Each plugin's width comes from plugin-ports.txt, the compiler's own table,
+  as `width` on `/live/plugins`.
+- **Revert to a previous save (2026-11-06).** The only view of history the
+  rack has, beside Save. **Every save from here keeps a snapshot** of the file
+  exactly as it was written, with when, the rig, and the commit it sat on, in
+  `<checkout>/.sushi-rig/saves/<rig>/`: with the checkout, because a snapshot
+  is a version of one of its files (the runtime dir is tmpfs and forgets them
+  at logout, and the user's state dir would need keying by checkout and would
+  outlive one deleted). The directory ignores itself (a `.gitignore` of `*`
+  inside, beside the line in the repository's own), so `git status` stays
+  clean in any checkout. **The 50 written last per rig are kept**, pruned by
+  the order they were written, never by the clock (the rig's can run behind),
+  and never the one just written; the commits are there for anything older.
+  A git that does not answer leaves the saves listed and says why the
+  commits are not. "Revert…" lists the saves by time and how long
+  ago, the one the file is now marked, then **the file's own commits** (`git
+  log`, read-only, off the agent's loop, with a timeout). Choosing one opens a
+  confirm that **names what is lost**: the unsaved changes playing now, and
+  the file as it stands, unless a save or its commit keeps it. The agent
+  writes the point back **byte for byte** (a plain write, not `write_rig`,
+  which merges into the file that is there and so keeps *its* comments, not
+  the snapshot's), compiling it first and refusing with the compiler's reason
+  if it no longer compiles. **The running rig is switched to it through the
+  live switch** (#112): live where it can be (values, bypasses, plugins added,
+  removed or moved), by restart where it must be, and the result says which
+  and why. With unsaved live work the agent refuses (409 `unsaved`, as an edit
+  of the file does), and the page's confirm offers "Revert, dropping N unsaved
+  changes"; a refusal for work the page had not counted offers the same as a
+  second tap. The revert's entry in the log is the new baseline: nothing is
+  unsaved after it, and Undo stops there. `GET /rigs/<name>/saves` and `POST
+  /rigs/<name>/revert {"save", "discard"?}` are the agent's routes.
+- **New rig, and a channel's input.** "New rig…" under the rack's rig picker
+  opens the New rig screen (`#new-rig`): a name, then a channel per row, each
+  with a name, an input picked from the machine file's roles (each shown with
+  its port), mono or stereo, and optionally a channel of another rig to start
+  from. Stereo is offered only where the role can give it: otherwise the
+  option is there but off, with the patchbay's reason under it (one port
+  needs `mono_to_stereo`). "Add channel" adds rows up to three, and past that
+  refuses with the compiler's own arithmetic; the agent's reasons for those
+  hints come from `GET /machine/roles`, which asked the compiler. Create
+  writes the file and offers to start it (or switch to it, with a rig up);
+  the agent's refusal is shown in place, with the lines to add to the machine
+  file when a role is missing. On the rack, each channel's strip shows its input as the running
+  rig's file has it, with "Change input", and "Add channel" is under the
+  strips. With no rig of channels up, the column still says CHANNELS AND
+  INPUTS and why nothing can be edited there, and what to do instead (start
+  a rig of channels from the picker, or New rig…, which the picker offers
+  whatever is running): on the rig, a v1 run drew nothing at all, and
+  nothing said why a vocal channel could not be added. Each edit
+  writes the file, says what git says of it, and offers the restart that
+  plays it, which takes a confirm since the sound stops for a few seconds. The
+  edits are not behind the page's lock (they write a file, and the restart is
+  a separate tap); with unsaved changes the rack says Save comes first, and
+  the agent refuses until then. A change made after the edit makes the
+  offered restart refuse too, with the reason in place and "Restart anyway,
+  dropping them" as a second tap. A new rig that moves other rigs' Program
+  Change numbers says so under Create, with a table of before and after.
+  Nothing of this is on the stage screen.
 - **Record (S7, S8).** A record bar on the stage screen, as the canvas's Record
   frame has it: a take name, a big Record and a big Stop, and while a take
   runs its name and elapsed time in red. Both work locked (recording is a stage
@@ -870,6 +1200,18 @@ no Node and the UI has to run from a checkout. Two screens from the mockups:
   recorder's own reason). The rack lists the takes beside Save, each with its
   length and `take check`'s verdict: whole, or its first problem, a take cut
   off saying so.
+- **A child of the rig that exits** (the tuner, the amp, Sushi, qpwgraph, the
+  recorder) is on both screens, in the same box and colour as the agent's last
+  error, from `agent.supervisor.crashed`: which process, how it ended, what it
+  means for the sound ("the tuner (fmit) ... sound is unaffected; there is no
+  tuner"), and that restarting the rig brings it back, since nothing restarts it
+  on its own. The supervisor's own problems (a group that would not stop, its
+  holder lost) are shown the same way. A crash outlives its rig in the record,
+  and once that rig is down the box says so instead of telling you to restart.
+- **The amp is named by its file** on both screens and in the picker
+  (`Neve 2`), and the name the `.nam` gives itself is shown under it as what
+  the file calls itself, with the rest of its metadata under "What the model
+  declares". The two screens used to call one model by two names.
 
 It polls `/health` once a second, and `/live` only while a rig is up: a rig
 that is down is shown as a state, in grey, not as an error a second in the
@@ -890,8 +1232,9 @@ the lock is the page's own, since the agent has no performance lock yet (#29);
 "unsaved" counts only changes made through the agent since the rig came up or
 was last saved through it, so a change from the OSC panel, or a `sushi-rig
 save` since, is not reflected; changes go over HTTP, not a WebSocket. Of the
-canvas's Save, the commit (with its message), history with revert, "throw all
-away" and the rig file shown on screen are not built. Of its Record, the
+canvas's Save, the commit (with its message), "throw all away" and the rig
+file shown on screen are not built; of its history, Revert is the whole of
+it, by the player's choice (2026-11-06). Of its Record, the
 meters (nothing measures levels yet), the free space and hours of takes left,
 and opening a take are not built. Library, Broken and Pedals from the canvas
 are not built. v0.1 answers a session on the real rig
@@ -906,9 +1249,21 @@ for the agent's add and remove.
 To try it without a rig: `cd tool && PYTHONPATH=src:tests python tests/ui_fake.py`
 serves the UI against that fake on port 8029 (`--down` to start with no rig up,
 `--amp` to give it an amp, with invented models and a stand-in Carla, `--save`
-to give it a rig file to save into, in a temporary checkout, `--record` to give
+to give it a rig file to save into, in a temporary checkout with a machine
+file (which is also what the New rig screen and the rack's channel edits
+write into), `--record` to give
 that checkout a recorder, whose takes are real folders made by a stand-in engine).
-`/ui/` and `/ui` redirect to the page.
+`/ui/` and `/ui` redirect to the page. The page and its files are served
+with `Cache-Control: no-cache`, so a browser asks again on every load (an
+unchanged file is a 304 against its ETag): without it, a browser kept the
+app.js it had before the agent was updated and ran it against the new one.
+
+Not run against a live Sushi (2026-11-06): the master volume on the master
+track's `gain` (its range is read from Sushi's parameter_info, and rigfile.py
+records it as -120 to +24 dB from 1.3.0's source, unobserved), a channel's
+volume (the send's gain, already saved and switched by #101 and #112), a
+revert's live switch into the rig already up, and the knobs' feel on the rig's
+touch screen.
 
 ### Ports by role, not by device name
 
@@ -1063,6 +1418,78 @@ is all the monitors hear. A rig has at most three channels, because the master
 and three stereo stems fill Sushi's eight outputs; more is refused with the
 arithmetic.
 
+A rig of channels can be made, and a channel added or moved to another
+input, from the web UI's New rig screen and the rack (*The agent*: new rigs
+and channel edits). Those write these files, in place and keeping their
+comments, and only once the rig compiles and wires against the machine file
+as `up --rig` would compile and wire it; the machine file itself is never
+written, and a role it lacks is said with what to add.
+
+#### A mono plugin on a stereo channel (2026-11-02)
+
+A guitar is one input, and reaches both monitors the same, as a DAW puts a
+mono source on a stereo track: the machine file's `mono_to_stereo` (or the
+compiler's mono input) feeds it to both halves of its channel, every channel
+is a stereo track, and the master goes out on both monitors. A plugin with
+one audio output used to undo that. Sushi 1.3.0 runs a plugin on a track
+with the lesser of its own ports and the track's channels, and then
+**clears every channel the plugin did not write** (its `track.cpp`), so from
+the first mono plugin on, the right channel is silent; bypassing the plugin
+changes nothing, since a bypassed plugin keeps its channel count. Every
+guitar chain here starts with the Guitarix compressor, which is mono, as are
+the Tube Screamer and both octavers. Measured in CI's container: seven of
+the eleven rigs had nothing on the right at all, and the other four only
+what a later reverb or delay fed across, 5 to 18 dB down. That is "I only get
+the left channel out."
+
+So **the compiler puts a mono plugin's output back on both channels.** After
+every plugin with one output it inserts `<plugin>_to_stereo`: Sushi's own
+internal `sushi.testing.mono_summing`, which writes the sum of its inputs to
+every output. Straight after a mono plugin the right channel has just been
+cleared, so the sum is the left channel, exactly, on both sides. It is never
+put after a stereo plugin, where it would fold the image to mono and add
+6 dB. Measured: with it, every rig's left and right are within 0.3 dB for a
+mono source, and CI holds them within 1 dB (`tests/test_stereo.py`).
+
+The copy is the compiler's, like the sends and the return: it is never in a
+rig file and never saved, the web UI does not show it, and it is never moved,
+removed or bypassed by itself. It goes with its plugin: a move steps the
+plugin and its copy as one past their neighbour (and past a neighbour and
+its copy as one), a remove takes both, a live add of a mono plugin adds its
+copy in the same operation, a rig switch adds and removes them with their
+plugins, and undo of a move knows the pair. A name ending in `_to_stereo` is
+refused for anything else.
+
+Sushi does not report a plugin's channel counts (neither `--dump-plugins` nor
+gRPC's processor info carries them), so the compiler reads them from
+`plugin-ports.txt`, committed beside the manifest and checked against lilv in
+CI. A plugin the table does not list is refused by name, with how to add it:
+guessing would be the silent right channel again, or a stereo plugin folded.
+
+What this does not do:
+
+- **The v1 configs still lose the right channel.** `config/*.json`, which
+  `sushi-rig up <name>` without `--rig` runs, are left as they were; their
+  null-test references are `config/sound/<name>.v1-mono.yaml`, named for
+  what they are. `up --rig`, the agent's switches and the web UI run rigs of
+  channels, and are stereo.
+- On a **stereo** channel a mono plugin hears the left input alone, and its
+  copy puts that on both sides. No committed rig has a stereo channel.
+- A plugin with no audio output would silence everything after it, and is
+  refused.
+- Moving, adding or removing a mono plugin is two of Sushi's commands; for
+  the moment between them the right channel can be silent, or a stereo
+  plugin's image folded. If the second fails, the first is undone; if that
+  fails too, the agent says what the chain holds, and a copy left with no
+  plugin before it may then be moved or removed, which is the repair.
+- The patchbay and SAVE's check of which rig file describes the running rig
+  compile for routing only, without the copies, and need no
+  `plugin-ports.txt`; everything whose chains Sushi loads (`up --rig`,
+  `emit`, the renders, the probes) has the copies and refuses a plugin the
+  table lacks.
+- **None of this has been heard on the rig.** It is offline renders in CI's
+  container; the iD14's two monitors are the test.
+
 The patchbay and selftest's probes read these files too:
 
 ```bash
@@ -1082,8 +1509,10 @@ sushi-rig convert config/x.json --input vocal=vocal-in:mono   # more than one tr
 A chain entry carries its settings (`bypassed`, `parameters`, ...), a channel
 its `strip` (gain, pan, mute), and the rig its `amp`. Until `up` runs these,
 each tone exists in both forms and CI holds them together: the same plugins and
-settings, and the same sound, rendered through the master against the
-reference the v1 config was calibrated to.
+settings. Not the same sound since 2026-11-02: a rig puts a mono plugin's
+output on both channels and the v1 config does not (see *A mono plugin on a
+stereo channel*), so each has a reference of its own, the rig's
+`config/sound/<name>.yaml` and the v1 config's `<name>.v1-mono.yaml`.
 
 Rig files keep their comments when the tool rewrites them: `write_rig` updates
 the file in place (comments, blank lines and key order stay), and `convert
@@ -1186,7 +1615,12 @@ sushi-rig take repair ~/sushi-rig-takes/riff-idea      # after the rig was kille
 
 The recorder writes float32, so a chain pushed past 0 dBFS is kept as it was
 rather than clipped, and it rewrites each stem's header after every block, so a
-take cut off by a crash is readable after `take repair`. If its writer ever
+take cut off by a crash is readable after `take repair`. `complete: true` in
+`take.yaml` means the take recorded what it was asked to: a take whose capture
+failed (the engine or the recorder did not start, or the writer stopped) is
+written `complete: false` beside the failure, and `take check` says "nothing was
+recorded" of one that holds no audio. A take written before 2026-11-02 could say
+`complete: true` of a failed capture; `take check` names that contradiction. If its writer ever
 falls behind, the stems lose the same frames together and stay aligned, and
 `take.yaml` lists where audio was lost.
 
@@ -1200,6 +1634,13 @@ reloaded mid-take cannot show it stopped. A take without a name is called
 The capture engine (#53, `tool/src/sushi_rig/capture.py`) is the part that takes
 audio from PipeWire: a JACK client with one input port per column of a take,
 each linked to the port the take names, copying every block into the recorder.
+A take names its ports as the machine file does, by PipeWire alias; at each
+RECORD the engine matches each against the JACK ports its client lists, by
+name or alias (`capture.match_sources`), so `Audient iD14:capture_AUX0` is found
+as `Audient iD14 Multichannel:capture_AUX0`, which is expected to carry it as an
+alias (`pw-jack jack_lsp -A` shows them). A name no port carries, or more than
+one does, is refused with every port and its aliases listed, and `take.yaml`
+records what was linked under `capture.engine.sources`.
 It is written and its decisions are tested, but **it has not been run against a
 live PipeWire**. The listener constructs one for a `--rig` run with its panel
 (#57), and `sushi-rig recorder` for a headless one, which is how the web UI
@@ -1254,15 +1695,39 @@ workflows because no single runner has everything:
   `SKIPPED`. That is what makes the first workflow's skips safe.
 - The same job runs `nulltest --all`, so **a change in a config's sound fails
   the build**. References live in `config/sound/` and are calibrated in that
-  container. When the check fails, the job calibrates every config afresh and
+  container, for every v1 config (`<name>.v1-mono.yaml`) and every rig of
+  channels in `config/rigs/` (`<name>.yaml`, rendered through the master one
+  channel at a time). A reference records each channel's level as well as the
+  whole render's, so a channel lost is a finding of its own; a silent right
+  channel used to read as only 3 dB down. The check runs even when the suite
+  failed. When the check fails, the job calibrates every config afresh and
   attaches the result (`sound-reference-candidates`, and printed in the log).
   Commit those only if the change was meant; if it was not, they are the
   evidence and the fix is in the config. A config is rendered whole when Sushi's
   offline frontend can host it, which also checks how its channels mix. One it
   cannot — the offline frontend has one stereo bus, and `guitar_vocal`'s vocal
   is on the second — is checked one channel at a time, each with its own
-  reference (`config/sound/<config>.<channel>.yaml`). To add a reference
+  reference (`config/sound/<config>.<channel>.v1-mono.yaml`). To add a reference
   without re-baselining the rest, `nulltest <config> --calibrate --missing`.
+- **Two configs do not render the same twice**: electric-octave-up and
+  electric_board, the only two that run gx_detune_ unbypassed. The plugin plans
+  its FFTs by timing them (`FFTW_MEASURE`), so each Sushi rounds a little
+  differently; inside those chains that is at most a few thousandths of a dB,
+  and their references carry a hand-set 0.01 dB tolerance for it. Every other
+  plugin of electric-octave-up's chain, rendered alone, came out bit for bit
+  the same (CI, 2026-11-03, 40 renders each: `tests/test_render_spread.py`,
+  whose table prints at the end of the run). An octave up, as electric-octave-up's is, also reads past the end of
+  two of the plugin's arrays, and one or two loads in a hundred render NaN
+  from some point on (`tool/spikes/gx_detune_nan/`). The null tests render
+  such a NaN once more, and only that NaN (a config running gx_detune_, starting on
+  its hop grid): any other NaN, or the same one twice, fails. A retry is never
+  quiet: `nulltest` prints "retried after a NaN" beside the channel and a
+  `RETRIED-NAN:` line per retry in a summary at the end, pytest prints the same
+  lines at the end of the run, and the job counts those lines and puts them on
+  the check run as a warning. The 520-render table that found all this is
+  opt-in (marker `spread`, deselected unless `SUSHI_RIG_SPREAD=1`); every run
+  has a five-render guard of the octave up instead. To print the table again:
+  `docker run --rm -e SUSHI_RIG_SPREAD=1 sushi-rig-ci pytest -rs -m spread`.
 
 Only `-m slow` used to run in the container, so the lilv- and Sushi-guarded
 tests ran in neither workflow and nothing said so. If a test genuinely cannot
@@ -1344,6 +1809,18 @@ Three states, and the third is the point: a check that *could not run* is
 reported as `unchecked`, never as a pass. Most of these questions need PipeWire
 and a running rig, so on a bare machine `doctor` tells you what it could not
 look at rather than going quiet.
+
+With a rig of channels up, `record-ports` plans a take of it exactly as the
+recorder does, from the files the state file names, lists JACK's ports in a
+client under `pw-jack` (doctor itself is not under it) and matches them the
+way the capture engine does, so doctor fails when RECORD would be refused at
+that step and says which stem and port; the line names the JACK port each
+machine-file port was found as. Where no JACK client can be opened it says
+"needs JACK", unchecked, never green. (On 2026-11-02 doctor passed 11 checks
+while every take was refused.) A node of the rig's own that is absent with the rig
+up is said as what it is: the agent's crash record when an agent is running
+(the command asks it), else the state file's pid, else a child the rig was
+started without; not "the rig is down".
 
 It also checks there is room to record — at least an hour of a take of the
 largest rig in `config/`, two stems per channel — and that every `.nam` model

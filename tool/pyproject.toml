@@ -2,7 +2,7 @@
 name = "sushi-rig"
 version = "0.1.0"
 description = "Author an LV2 rig live in Sushi, then capture it back as a config file."
-requires-python = ">=3.10"
+requires-python = ">=3.11"
 dependencies = [
     "pyyaml>=6.0",
     "ruamel.yaml>=0.19,<0.20",  # round-trip writes, so comments survive (rigfile.write_rig); yamlmerge.py relies on 0.19's comment layout
@@ -46,7 +46,10 @@ sushi_rig = ["ui/static/*.html", "ui/static/*.css", "ui/static/*.js"]
 testpaths = ["tests"]
 # The deep config checks each start a real Sushi and take about six seconds.
 # Run the fast suite with:  pytest -m "not slow"
-markers = ["slow: starts a real Sushi and takes seconds, not milliseconds"]
+markers = [
+    "slow: starts a real Sushi and takes seconds, not milliseconds",
+    "spread: the 520-render investigation of 2026-11-03 (test_render_spread.py); deselected unless SUSHI_RIG_SPREAD=1",
+]
 # A misspelt marker (`@pytest.mark.slwo`) is otherwise a warning on a test that
 # then runs in the fast suite, or is excluded from the slow one, unnoticed.
 addopts = "--strict-markers"

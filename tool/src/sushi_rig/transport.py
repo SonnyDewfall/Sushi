@@ -67,6 +67,15 @@ and `MachineSpec.role_ports` (the patchbay's reading) for the inputs. A stem of
 two ports must be two consecutively numbered ones, because that is all
 `capture.numbered_ports` can link; anything else is refused, not guessed.
 
+The plan names those ports as the machine file does, by PipeWire alias
+(`Audient iD14:capture_AUX0`), and takes carry them so. It is not what a JACK
+client links from: through `pw-jack` the same port is `Audient iD14
+Multichannel:capture_AUX0`, and an engine that looked the alias up among JACK's
+names alone refused every take on the rig (2026-11-02, the MANIFEST). The
+engine finds each port at each RECORD among the ports its client lists, by name
+or by JACK alias (`capture.match_sources`), because JACK is only there to ask
+at RECORD: the listener plans before Sushi has started.
+
 Channels that play from one input (a blend of two chains on one guitar) share
 one dry tap, recorded once and named for the role, `guitar-in-dry.wav`: it is
 one signal, and two stems of it would be one signal under two names. The rig
@@ -113,12 +122,15 @@ does. The rig file and the library's commit are read at each RECORD, since a
 SAVE rewrites the one and a commit moves the other while the listener runs.
 
 **NOT VERIFIED: no take has been recorded this way.** Nothing here has run
-against a live PipeWire; the tests plan ports and stand the engine in. Unknown
-until the rig machine says: whether the machine file's port names (written as
-qpwgraph shows them) are the names JACK clients see through `pw-jack`, whether
-eight columns keep up as the spike's six did, and whether tapping an output the
-patchbay leaves unlinked reads its signal. The first press of RECORD on a
-`--rig` run, and `sushi-rig take check` on what it wrote, is the test.
+against a live PipeWire past the refusal above; the tests plan ports and stand
+the engine in. Answered by the rig: the machine file's port names (written as
+qpwgraph shows them) are *not* the names JACK clients see through `pw-jack`,
+which is why they are matched by alias. Unknown until the rig machine says:
+whether pipewire-jack's aliases carry the machine file's names (`pw-jack
+jack_lsp -A`, the MANIFEST's rig check), whether eight columns keep up as the spike's
+six did, and whether tapping an output the patchbay leaves unlinked reads its
+signal. The first press of RECORD on a `--rig` run, and `sushi-rig take
+check` on what it wrote, is the test.
 
 Also not here: measuring the stems' offsets. They are recorded as not
 measured, which `take.yaml` states in words; measuring a dry tap against what
@@ -359,8 +371,11 @@ class TakeSession:
             engine_error = f"the capture engine did not stop cleanly: {exc}"
         recording = recorder.stop()
         summary = recording.summary()
-        if engine_error and not summary["error"]:
-            summary["error"] = engine_error
+        if engine_error:
+            # Not `error`, which says the capture failed and the take is not
+            # complete (`take.capture_failure`): the recorder has every block
+            # the engine pushed, and what is missing is the engine's account.
+            summary["stop_error"] = engine_error
         if isinstance(account, dict):
             # Kept apart from the recorder's own numbers: they are different
             # witnesses, and an xrun the engine saw is not a frame the ring lost.
@@ -609,13 +624,20 @@ def _live_jack_names() -> dict[str, list[str]]:
     source a take records is something that produces audio, and the filter is
     what keeps `Audient iD14:playback_FL` from answering for a dry tap.
     """
+    import sys
+
     from .patchbay import PatchbayError, jack_port_names, read_pw_dump
 
     try:
         return jack_port_names(read_pw_dump(), "out")
-    except PatchbayError:
-        return {}
-    except Exception:  # noqa: BLE001 — a plan is made with no map; see above
+    except Exception as exc:  # noqa: BLE001 — a plan is made with no map; see above
+        # Said, not swallowed: without the map a take falls back to the
+        # engine's alias match, which the rig has not yet shown to work, and
+        # a refusal then would otherwise give no hint that this step failed.
+        kind = "" if isinstance(exc, PatchbayError) else f"{type(exc).__name__}: "
+        print(f"sushi-rig: could not read the graph to name ports as JACK sees them "
+              f"({kind}{exc}); the take's ports stay as the machine file writes them",
+              file=sys.stderr, flush=True)
         return {}
 
 
