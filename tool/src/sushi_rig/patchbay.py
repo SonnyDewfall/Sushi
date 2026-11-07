@@ -586,6 +586,22 @@ def _display_name(props: dict) -> str | None:
     return None
 
 
+def _jack_node_name(props: dict) -> str | None:
+    """The client name a JACK client sees this node under through `pw-jack`.
+
+    `node.description`, falling back to `node.name`. Deliberately *not*
+    `_display_name`'s chain: `node.nick` is the one name that cannot identify a
+    node, since every ALSA profile of a device shares it, and putting it in a
+    JACK name is the defect `jack_port_names` exists to fix. Settled against
+    the rig on 2026-11-06, where a JACK client saw `Audient iD14 Multichannel`
+    (the description) and `sushi` (description and `node.name` alike).
+    """
+    for key in ("node.description", "node.name"):
+        if props.get(key):
+            return props[key]
+    return None
+
+
 def nodes_by_id(dump: str) -> dict[int, dict]:
     """Every live node's properties, keyed by its PipeWire object id.
 
@@ -660,6 +676,10 @@ class LivePort:
     # which differs from the alias for an ALSA device. None when the dump
     # lacks either half.
     name: str | None = None
+    # `<node.description>:<port.name>`, the form a JACK client sees the port
+    # under through `pw-jack` -- a third name for the same socket, and the one
+    # the capture engine connects by. None when the dump lacks either half.
+    jack_name: str | None = None
 
 
 def live_port_nodes(dump: str) -> dict[str, list[LivePort]]:
@@ -685,7 +705,9 @@ def live_port_nodes(dump: str) -> dict[str, list[LivePort]]:
         if alias and owner:
             node_name, port_name = node.get("node.name"), props.get("port.name")
             name = f"{node_name}:{port_name}" if node_name and port_name else None
-            port = LivePort(owner, props.get("port.direction"), name)
+            client = _jack_node_name(node)
+            jack_name = f"{client}:{port_name}" if client and port_name else None
+            port = LivePort(owner, props.get("port.direction"), name, jack_name)
             if port not in found.setdefault(alias, []):
                 found[alias].append(port)
     return found
@@ -724,6 +746,34 @@ def resolve_port(port: str, direction: str, port_nodes: Mapping[str, list[LivePo
             "which one is meant"
         )
     return right[0]
+
+
+def jack_port_names(dump: str, direction: str | None = None) -> dict[str, list[str]]:
+    """Port alias -> the names a JACK client sees that port under, those with
+    `port.direction` `direction` when one is given.
+
+    The third naming of one socket, and the reason the record button failed on
+    its first live run (2026-11-06): the machine file names a port by its alias,
+    which is what qpwgraph shows and what the saved patchbay keys links by, and
+    `Audient iD14:capture_AUX0` is no port at all to a JACK client. Through
+    `pw-jack` the same socket is `Audient iD14 Multichannel:capture_AUX0` --
+    the node's *description*, where the alias carries its nick. For a client
+    like Sushi, whose description and `node.name` are both `sushi`, all three
+    names are the same string, which is why this went unnoticed until a take
+    needed a physical port.
+
+    `direction` is the port's own, so a capture source is `"out"`: the node
+    produces the audio. Filtering by it is what keeps a playback port of the
+    same device out of the answer for a dry tap.
+
+    A list for `live_port_names`' reason: an alias names the socket, not the
+    profile, so two profiles of one device live at once both answer to it.
+    """
+    return {
+        alias: [p.jack_name for p in ports
+                if p.jack_name and (direction is None or p.direction == direction)]
+        for alias, ports in live_port_nodes(dump).items()
+    }
 
 
 def live_port_names(dump: str) -> dict[str, list[str]]:
