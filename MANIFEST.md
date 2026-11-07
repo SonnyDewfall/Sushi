@@ -3365,3 +3365,107 @@ eight columns** (this was five; guitar_vocal is eight and the spike's callback
 evidence is six), and a **stereo dry tap** — whether a device's
 `capture_AUX2`/`_3` are consecutive as `numbered_ports` assumes, which this
 take's mono tap did not exercise. *(2026-11-06)*
+
+**Knobs that can be set, volume, Revert, and the rack as a mixing desk.**
+Sonny's requests after using the web UI on the rig, and five more from him
+on the way (A to E below). **History:** the per-knob "was …" labels and the
+itemised unsaved list are gone, since they came and went as values changed;
+the one sign of unsaved work is a count on Save in a box that is always
+there, and nothing comes, goes or moves as values change (a browser test
+compares every element's box before and after four changes). Undo stays.
+**Revert to a previous save:** every save from here (POST /rig/save, save-as
+too) keeps a snapshot of the file as written, with time, rig and the commit
+it sat on, in `<checkout>/.sushi-rig/saves/<rig>/` (`saves.py`), gitignored
+and ignoring itself, the newest 50 per rig; the file's own commits are listed
+beside them (`git log`, off the loop, with a timeout). `GET
+/rigs/<name>/saves`; `POST /rigs/<name>/revert {"save", "discard"?}` writes
+the point back byte for byte (a plain write: `write_rig` keeps the current
+file's comments, not the snapshot's), compiled first, and plays it on the
+running rig through the live switch (#112), live where it can be; 409
+`unsaved` with live work unless `discard`. The page's "Revert…" lists them
+with how long ago, and its confirm names what is lost. **Master volume:** in
+both headers, on the master track's gain through POST /live/parameter
+(logged, undone), saved as the new `master: level:` (rigfile.py: compiled to
+that gain as a channel's level is to its send's; unity writes nothing, and
+every committed rig compiles byte for byte as before), a live step of a
+switch; −∞ then −60 to +6 dB, −∞ being the gain's −120 dB floor; usable
+while locked, no confirm. **Knobs:** a vertical drag of 320 px for the whole
+travel with the pointer captured, shift or a second finger a tenth; the wheel
+a notch at a time (about 1 % of the range, rounded to 1, 2 or 5 × 10ⁿ),
+preventing page scroll only over the control; arrows, PageUp/Down ×10,
+Home/End; the value a text field (click selects, Enter or blur commits,
+Escape cancels, lenient, clamped, exact; nonsense refused in place; a focused
+field is never overwritten by a poll); whole display units sticky (caught
+within 0.15, held to 0.35 on a drag; a scroll snaps without holding; a 0–1
+parameter with no unit held to hundredths; fine never snaps). The amp's
+faders and every volume take typed values and the wheel. All decisions are
+pure in rig.js and tested. **(A)** The rack's inputs always say why they
+cannot be edited (no rig; a v1 run) and New rig… is offered whatever runs.
+**(B)** The page and `/ui/*` are served `Cache-Control: no-cache`, so a
+browser revalidates against the ETag and never runs a stale app.js. **(C)**
+Each channel's volume (its send's gain, `level:`) is the same fader as the
+master's, on the rack and the stage, locked or not, replacing the small
+"send to master" knob; a channel a MIDI blend drives says "driven by
+<control>" and cannot be set from the page (the pedal would undo it, and a
+save does not write it; `rigfile.blend_controls`, on `GET
+/rigs/<rig>/channels`). **(D)** The rack is a mixing desk: channel strips on
+the left (name, a quiet input line with Change input and Add channel, the
+volume large), the chains and amp in the middle, the files (rigs, New rig,
+start/stop/switch, Undo, Save, Revert, takes) on the right, the master in the
+header; at phone width they stack in that order. **(E)** The compiler's
+copies to stereo are recognised by uid, reserved suffix or role before any
+role `/live/plugins` gives, and shown nowhere; the plugin before one has a
+small "mono" badge, amber with "after <stereo plugin>: this collapses its
+stereo width" where it follows one, from plugin-ports.txt via `width` on
+`/live/plugins`. Tests: `test_agent_revert.py` (real rig files, git, the real
+compile and the real live switch over `RigLive`: save, change, save, revert
+to the first, and file and rig match the first save), `test_rigfile_master.py`,
+`test_ui_knobs.py` (pure and browser), `test_ui.py` updated. **NOT RUN AGAINST
+A LIVE SUSHI:** the master track's gain (range read from parameter_info,
+recorded from 1.3.0's source), a revert's live switch into the rig already
+up, a blend's fader against a real pedal, and the knobs' feel on the rig's
+touch screen. *(2026-11-07)*
+
+**Knobs, volume and Revert: answering review.** Seven findings and three
+smaller ones, each with a test (`test_ui_knobs.py` and `test_agent_revert.py`
+unless said). (1) A value field committed its stale text on blur when the
+value had moved under it (the wheel, a pedal, another page): only typed text
+is committed now; untouched, the field shows the value again. (2) The
+channel strips were one region keyed on the agent's busy state, an edit's
+answer and the forms, so a save from another device ended a fader drag: the
+column is now three parts patched apart, each strip's input line on its own,
+the faders rebuilt only when the channels change and kept while a command
+runs; the faders have names for `refocus`. (3) The wheel was taken over a
+knob's label and text, and over a fader that could not be set, so scrolling a
+rack stopped at the first knob and turned it: it is taken only over the dial
+or fader, only when settable, and only after the pointer has rested 300 ms
+since it arrived and since the page last scrolled, or with the focus
+(`R.takesWheel`). (4) Volume steps outside −60..+6 moved against their
+direction (+10 dB up gave +6): they now step toward the range or not at all,
+and only −∞ sits on the −∞ notch. (5) A slow scroll could not leave a whole
+number on a small range: a notch is stateless and always moves, landing on a
+whole number only when it crosses one. (6) A slow git hid the whole Revert
+list: the snapshots are read apart from git, and git's timeout is said in
+`git_note`. (7) A save on a clock behind the last could be pruned as it was
+kept: snapshots carry a write sequence, pruning goes by it, and never takes
+the new one. (a) Any error from the switch after a revert's write answers
+`written: true` and the reason. (b) The unsaved diff knows a copy by
+`isCopy`, uid included. (c) A master strip leads to the master's chain. *(2026-11-07)*
+
+**Knobs, volume and Revert: the re-review, and CI at phone width.** (1) A
+notch or key press stuck on a float32 read-back (7 reads back 6.9999998, and
+a floor put the next step on 7 again): `stepped` now works in whole steps,
+taking a value within a thousandth of a step of a grid line as on it, and
+`scrolled` reads the whole number it starts from the same way; a test feeds
+twenty notches each way through `Math.fround` on four controls and every one
+moves. (2) The strips' key no longer holds the master's plugin count (drawn
+in place), so a change to the master chain rebuilds nothing; a rebuild that
+must happen gives back the focus and any typed text, still to commit. (3) A
+removed copy known only by its uid is known from the log's own record (an
+add's `copy`, a remove's `previous.copy`). CI: at 390 px the rack was 439 px
+wide on CI's Chromium. The cause found here: the desk's `.channels` rule came
+after the phone rule and won, leaving the strips a 260 px column beside the
+chains; the phone rule is restated after it, the header's master shrinks at
+phone width, and paths in problems and code wrap. The phone test now also
+checks each column is the phone's width and nothing is wider, with the
+page's fonts and a wider fallback. *(2026-11-07)*

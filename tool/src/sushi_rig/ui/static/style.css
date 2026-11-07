@@ -119,27 +119,42 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 }
 .act { padding: 0 12px; color: var(--accent-soft); border-color: var(--accent); }
 
-/* Knobs: an arc of 270 degrees, the value in real units beside it. */
+/* Knobs: an arc of 270 degrees, the value in real units beside it as a text
+   field (2026-11-06). Everything in a knob has a size of its own, whatever
+   it holds: the value field a fixed width, the label and the note one line
+   each, the note always there (empty or not), so a value, a refusal or a
+   note changing moves nothing on the page. */
 .knobs { display: flex; flex-wrap: wrap; align-items: center; gap: 12px 18px; }
-.knob {
-  display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 2px 6px 2px 2px; border-radius: 10px;
-  touch-action: none; user-select: none; cursor: ns-resize; outline-offset: 2px;
-}
-.knob:focus-visible { outline: 2px solid var(--accent); }
+.knob { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 2px 6px 2px 2px; border-radius: 10px; }
+.knob .dial { display: inline-flex; touch-action: none; user-select: none; cursor: ns-resize; border-radius: 50%; outline-offset: 2px; }
+.knob .dial:focus-visible { outline: 2px solid var(--accent); }
 .knob .track { fill: none; stroke: var(--well); stroke-linecap: round; }
 .knob .arc { fill: none; stroke: var(--accent); stroke-linecap: round; }
-.knob .text { display: flex; flex-direction: column; min-width: 4.5em; }
-.knob .value { font-family: var(--mono); font-size: 12px; }
+.knob .text { display: flex; flex-direction: column; width: 84px; min-width: 0; }
+.knob .label, .knob .note { white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .knob .label { font-size: 11px; color: var(--muted); }
-.knob .note { font-size: 11px; color: var(--muted); max-width: 16em; }
-.knob .note:empty { display: none; }
-.knob.k-big .value { font-size: 15px; font-weight: 600; }
+.knob .note { font-size: 11px; line-height: 1.3; color: var(--muted); min-height: 1.3em; }
+.knob.k-big .text { width: 112px; }
+.knob.k-big .value-field { font-size: 15px; font-weight: 600; }
 .knob.k-big .label { font-family: var(--display); font-size: 14px; letter-spacing: .06em; }
-.knob.unsaved .arc { stroke: var(--accent-soft); }
-.knob.unsaved .value { color: var(--accent-soft); }
 .knob.failed .note { color: var(--refused); }
-.knob.inert { cursor: default; opacity: .7; }
+.knob.failed .value-field { border-color: var(--refused); }
+.knob.inert { opacity: .7; }
+.knob.inert .dial { cursor: default; }
 .knob.inert .arc { stroke: var(--muted); }
+
+/* A value as text: a knob's, a fader's, a level's, the master's. A fixed
+   width in the mono face, so its text changing never moves its neighbours. */
+.value-field {
+  width: 100%; min-width: 0; box-sizing: border-box; padding: 1px 4px; margin: 0; border-radius: 6px;
+  border: 1px solid transparent; background: transparent; color: var(--text);
+  font-family: var(--mono); font-size: 12px; font-variant-numeric: tabular-nums;
+}
+.value-field:hover { border-color: var(--edge); }
+.value-field:focus { outline: none; border-color: var(--accent); background: var(--ground); }
+.value-field.bad { border-color: var(--refused); color: var(--refused); }
+.value-field[readonly] { cursor: default; }
+.value-field[readonly]:hover { border-color: transparent; }
 
 .switch {
   min-height: 44px; display: inline-flex; flex-direction: column; justify-content: center; padding: 4px 14px;
@@ -148,7 +163,6 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 .switch .label { font-size: 11px; color: var(--muted); }
 .switch .value { font-family: var(--mono); font-size: 13px; }
 .switch[aria-pressed="true"] { border-color: var(--accent); }
-.switch.unsaved .value { color: var(--accent-soft); }
 .selector { display: inline-flex; flex-direction: column; gap: 2px; }
 .selector .label { font-size: 11px; color: var(--muted); }
 .selector select { min-height: 44px; border-radius: 10px; background: var(--card); border: 1px solid var(--edge); padding: 0 10px; }
@@ -214,12 +228,11 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 .group h3 { font-family: var(--display); font-size: 13px; font-weight: 500; letter-spacing: .08em; color: var(--muted); margin-bottom: 6px; }
 .missing { margin: 0; font-size: 13px; color: var(--refused); }
 
-.send { display: flex; flex-wrap: wrap; align-items: center; gap: 12px; padding: 6px 12px 6px 34px; border-radius: 12px; background: #12191B; border: 1px solid #1F3A3F; }
 
 /* The right column: the unsaved changes and Save, then the takes (S8). */
 .side { flex: 0 1 320px; border-left: 1px solid var(--line); background: var(--panel); padding: 18px 16px; display: flex; flex-direction: column; gap: 12px; }
 .changes { display: flex; flex-direction: column; gap: 12px; }
-.changes h2 { font-family: var(--display); font-size: 24px; }
+.changes h2 { font-family: var(--display); font-size: 14px; font-weight: 500; letter-spacing: .1em; color: var(--muted); }
 .changes .sub { margin: 0; font-size: 12px; color: var(--muted); line-height: 1.5; }
 .change { display: flex; flex-direction: column; gap: 2px; padding: 8px 10px; border-radius: 8px; background: #1A1B20; }
 .change .where { font-size: 13px; color: var(--muted); display: flex; gap: 8px; align-items: center; }
@@ -228,7 +241,9 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 .change b { color: var(--accent-soft); font-weight: 500; }
 .badge { font-family: var(--mono); font-size: 11px; color: #9CCBFA; background: #16283A; border-radius: 6px; padding: 2px 6px; }
 .warn { margin: 0; font-size: 13px; color: var(--accent-soft); }
-.undo { min-height: 44px; padding: 0 14px; border-radius: 22px; background: transparent; border: 1px solid var(--edge); cursor: pointer; text-align: left; }
+/* One line whatever it names, so a change does not make it wrap. */
+.undo { width: 100%; min-height: 44px; padding: 0 14px; border-radius: 22px; background: transparent; border: 1px solid var(--edge); cursor: pointer; text-align: left;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .undo:disabled { color: var(--muted); cursor: default; }
 
 /* The amp (Carla's, in front of the board): its model, its faders, and the
@@ -248,13 +263,13 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 .amp-about summary { cursor: pointer; font-size: 13px; color: var(--muted); min-height: 32px; display: flex; align-items: center; }
 .amp-about pre { margin: 6px 0 0; font-family: var(--mono); font-size: 12px; white-space: pre-wrap; overflow-wrap: anywhere; color: var(--muted); }
 .faders { display: flex; flex-wrap: wrap; gap: 10px 18px; }
-.fader { flex: 1 1 220px; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 4px 10px; min-height: 48px; }
+.fader { flex: 1 1 220px; display: grid; grid-template-columns: auto 1fr 6.5em; align-items: center; gap: 4px 10px; min-height: 48px; }
 .fader .label, .shown .label { font-size: 13px; color: var(--muted); }
 .fader input[type=range] { width: 100%; min-height: 32px; accent-color: var(--accent); }
 .fader .value, .shown .value { font-family: var(--mono); font-size: 13px; min-width: 64px; text-align: right; }
 .fader .note, .shown .note { grid-column: 1 / -1; font-size: 11px; color: var(--muted); }
-.fader .note:empty { display: none; }
-.fader.unsaved .value { color: var(--accent-soft); }
+.fader .note { min-height: 1.35em; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.fader .value-field { font-size: 13px; text-align: right; }
 .fader.failed .note { color: var(--refused); }
 .shown { flex: 1 1 220px; display: grid; grid-template-columns: auto 1fr auto; align-items: center; gap: 4px 10px; min-height: 48px; }
 .amp-picker { display: flex; flex-direction: column; gap: 8px; }
@@ -276,9 +291,8 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 .stage-screen .problems { padding: 12px 16px 0; }
 .levels { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 16px 0; }
 .levels:empty { display: none; }
-.level { display: inline-flex; gap: 8px; align-items: baseline; padding: 6px 10px; border-radius: 10px; background: var(--card); }
+.level { display: inline-flex; gap: 6px; align-items: center; min-height: 44px; padding: 2px 6px 2px 10px; border-radius: 10px; background: var(--card); }
 .level .n { font-size: 13px; }
-.level .v { font-family: var(--mono); font-size: 13px; }
 .stage-amp { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; margin: 12px 16px 0; padding: 8px 12px; border-radius: 12px; background: var(--card); border: 1px solid var(--edge); }
 .stage-amp:empty { display: none; }
 .stage-amp .fader { flex: 1 0 100%; }
@@ -293,7 +307,9 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 .card .swatch { width: 5px; margin: 12px 0 12px 10px; }
 .card .open-card { flex: 1; min-width: 0; gap: 3px; min-height: 64px; }
 .card .name { font-family: var(--display); font-size: 20px; font-weight: 600; line-height: 1.05; }
-.card .vals { font-family: var(--mono); font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+/* One line, cut short: the values change, and a line that wrapped as they
+   did moved every card under it. */
+.card .vals { font-family: var(--mono); font-size: 12px; color: var(--muted); white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
 .card.bypassed { opacity: .55; }
 .card.open { border-color: var(--accent); }
 .card .detail { flex: 1 0 100%; padding: 0 0 12px 27px; }
@@ -418,3 +434,86 @@ a.rig-act { display: inline-flex; align-items: center; justify-content: center; 
 .programs-moved th, .programs-moved td { text-align: left; padding: 2px 12px 2px 0; }
 .programs-moved th { color: var(--muted); font-weight: 500; }
 .programs-moved td { font-family: var(--mono); }
+
+/* ---------------------------------------------------------------- volume (2026-11-06) */
+/* The master's on both headers, after the rig's name and before what changes
+   width; each channel's at the top of its row and in the stage's levels.
+   Fixed widths throughout, so a value changing moves nothing. */
+.status-slot, .lock-slot { display: contents; }
+.volume { display: inline-flex; align-items: center; gap: 8px; min-height: 44px; padding: 0 6px 0 12px; border-radius: 22px; background: var(--card); border: 1px solid var(--edge); }
+.volume .k { font-size: 12px; color: var(--muted); letter-spacing: .08em; }
+.volume input[type=range] { width: 160px; min-height: 32px; accent-color: var(--accent); }
+.volume .value-field { width: 6em; font-size: 13px; text-align: right; }
+.volume .driven { font-size: 11px; color: var(--accent-soft); white-space: nowrap; }
+.volume .driven:empty { display: none; }
+.volume.is-driven input[type=range] { opacity: .6; }
+.volume.failed { border-color: var(--refused); }
+.volume-stage { display: flex; flex: 1; min-width: 0; }
+.volume-stage input[type=range] { flex: 1; width: auto; min-width: 0; }
+.track-head .volume { margin-left: 8px; }
+.levels .level { flex: 1 1 100%; padding-left: 10px; }
+.levels .level .n { width: 4.5em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.levels .level .volume { border: none; background: transparent; padding: 0; }
+
+/* The count of unsaved changes on Save: a box of fixed width, always there. */
+.save-main { display: inline-flex; align-items: center; justify-content: center; gap: 8px; }
+.save-dot { display: inline-block; min-width: 1.6em; height: 1.6em; line-height: 1.6em; border-radius: .8em; font-family: var(--mono); font-size: 11px; text-align: center; visibility: hidden; }
+.save-dot.has { visibility: visible; background: #1A1206; color: var(--accent-soft); }
+.save-act:disabled .save-dot.has { background: var(--well); color: var(--muted); }
+.spoken { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; }
+
+/* Revert to a previous save: the points, newest first, and the confirm. */
+.revert { display: flex; flex-direction: column; gap: 8px; padding: 10px; border-radius: 10px; border: 1px solid var(--accent); }
+.revert h3 { font-size: 13px; color: var(--muted); font-weight: 500; }
+.revert-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 4px; max-height: 320px; overflow-y: auto; }
+.revert-point { width: 100%; min-height: 48px; display: flex; flex-direction: column; justify-content: center; gap: 2px; padding: 4px 10px; border-radius: 10px; border: 1px solid var(--edge); background: transparent; cursor: pointer; text-align: left; }
+.revert-point.chosen { background: var(--accent-ground); border-color: var(--accent); }
+.revert-point .n { font-size: 14px; display: flex; gap: 8px; align-items: baseline; }
+.revert-point .s { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.revert-point .tag { font-family: var(--mono); font-size: 11px; color: var(--accent-soft); }
+.revert-confirm .lost { flex: 1 0 100%; margin: 0; padding-left: 18px; font-size: 13px; color: var(--text); line-height: 1.5; }
+.revert .sub, .inputs-why { margin: 0; font-size: 12px; color: var(--muted); line-height: 1.5; }
+
+/* ---------------------------------------------------------------- the rack as a mixing desk (2026-11-06) */
+/* Left, the channel strips: name, a quiet input line, the volume large.
+   Right, the files: the rig picker, undo, save and revert, the takes. */
+.channels { flex: 0 1 260px; }
+/* At phone width each column is the page's width, stacked (strips, chains,
+   files): restated here, after the rule above, which otherwise won over the
+   earlier phone rule and left the strips a 260 px column beside the chains,
+   pushing the page wider than the phone on CI's fonts (2026-11-07). */
+@media (max-width: 640px) {
+  .channels, .rack-main, .side { flex: 1 1 100%; min-width: 0; }
+}
+.rig-problem, .problem span, .inputs-why, .takes code, .strips code, .files code { overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+  /* The header's master takes the bar's width and its fader shrinks, so no
+     font makes the bar wider than the phone. */
+  .volume-rack { flex: 1 1 100%; min-width: 0; }
+  .volume-rack input[type=range] { flex: 1 1 auto; width: auto; min-width: 60px; }
+  .knob .text { min-width: 0; }
+}
+.files { gap: 14px; }
+.files .agent { margin-top: auto; font-size: 12px; color: var(--muted); line-height: 1.5; }
+.strips h2 { font-family: var(--display); font-size: 14px; font-weight: 500; letter-spacing: .1em; color: var(--muted); }
+.strip { display: flex; flex-direction: column; gap: 6px; padding: 10px 10px 12px; border-radius: 12px; background: var(--card); border: 1px solid var(--edge); }
+.strip-name { font-family: var(--display); font-size: 18px; font-weight: 600; color: var(--text); text-decoration: none; }
+.strip .wiring-row { padding: 0; border: none; gap: 6px; }
+.strip .wiring-row .s { font-size: 11px; }
+.strip .wiring-row .rig-act.small { min-height: 36px; padding: 0 10px; font-size: 12px; opacity: .8; }
+.strip .wiring-row.editing { padding: 8px; border: 1px solid var(--accent); }
+.strip-input { font-size: 11px !important; }
+.volume-strip { display: grid; grid-template-columns: 1fr 6em; grid-template-areas: "k field" "fader fader" "driven driven";
+  align-items: center; gap: 4px 8px; padding: 8px 10px; border-radius: 12px; }
+.volume-strip .k { grid-area: k; }
+.volume-strip .value-field { grid-area: field; font-size: 15px; font-weight: 600; }
+.volume-strip input[type=range] { grid-area: fader; width: 100%; min-height: 44px; }
+.volume-strip .driven { grid-area: driven; }
+
+/* A plugin the compiler copies to stereo after: "mono", small, in its name's
+   line; amber where it follows a stereo plugin and collapses its width. */
+.name-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.mono-badge { flex: none; font-family: var(--mono); font-size: 10px; font-weight: 400; letter-spacing: 0; line-height: 1; padding: 2px 5px;
+  border-radius: 5px; border: 1px solid var(--edge); color: var(--muted); vertical-align: middle; cursor: help; }
+.mono-badge.warn { border-color: var(--accent); color: var(--accent-soft); }
+.card .name .mono-badge { margin-left: 8px; }

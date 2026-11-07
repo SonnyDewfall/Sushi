@@ -19,6 +19,7 @@ the UI never means editing a bus number.
     master:
       output: monitor-out       # a role in the machine file
       chain: []                 # where #29's limiter goes
+      level: -3.0               # optional, dB: the master track's own gain
 
 A rig compiles to a `RigSpec`, so everything downstream — `emit`, `verify`, the
 patchbay, the null tests — keeps working on what it already understands. This
@@ -102,7 +103,7 @@ _MIDI_KEYS = ("controller", "port", "programs", "controls")
 _CONTROL_KEYS = ("control", "blend", "parameter", "mute", "bypass", "range")
 _BINDINGS = ("blend", "parameter", "mute", "bypass")
 _CHANNEL_KEYS = ("name", "input", "width", "strip", "chain", "level")
-_MASTER_KEYS = ("output", "chain")
+_MASTER_KEYS = ("output", "chain", "level")
 _PLUGIN_KEYS = ("name", "uri", "path", "uid", "type")
 # A component's settings, as `emit` writes them into `initial_state`.
 _SETTING_KEYS = ("bypassed", "program", "parameters", "properties")
@@ -137,6 +138,15 @@ class Channel:
 class Master:
     output: str
     chain: tuple[PluginSpec, ...] = ()
+    # The master's level, in dB: the master track's own gain, the master
+    # volume of the web UI (2026-11-06). Unlike a channel's strip, which
+    # would change that channel's stem and not the mix, the master's acts
+    # after the mix: on what the monitors hear and on a take's master.wav
+    # (transport.py: "what reached the monitors"), never on a channel's
+    # stem. On the -120 to +24 dB range a track's gain has, as a send's does
+    # (`LEVEL_RANGE`; `UNITY_STRIP` relies on the same). 0 is unity, and
+    # unity is written nowhere.
+    level: float = 0.0
 
 
 @dataclass(frozen=True)
@@ -473,6 +483,25 @@ def _parse_midi(raw: Any, problems: list[str]) -> MidiMap | None:
     return MidiMap(controller, tuple(controls), port, programs)
 
 
+def _level(where: str, entry: dict, problems: list[str], what: str) -> float:
+    """An entry's `level:` in dB, 0.0 when it has none: a channel's (its
+    send's gain) and the master's (its track's gain) are read by this one
+    rule, so the two cannot drift apart."""
+    if "level" not in entry:
+        return 0.0
+    value = entry["level"]
+    low, high = LEVEL_RANGE
+    if isinstance(value, bool) or not isinstance(value, (int, float)):
+        problems.append(f"{where}: level must be a number in dB (got {value!r})")
+    elif not low <= value <= high:
+        problems.append(f"{where}: level {value} dB is outside {what} {low:g} to {high:g}")
+    else:
+        # To a thousandth, the precision SAVE writes back, so a file
+        # holding more is not rewritten on a save that changed nothing.
+        return round(float(value), 3) + 0.0
+    return 0.0
+
+
 def parse_rig(raw: Any) -> Rig:
     """A `Rig` from a parsed YAML document, or `RigFileError` naming every problem."""
     if not isinstance(raw, dict):
@@ -523,18 +552,7 @@ def parse_rig(raw: Any) -> Rig:
                 f"{where}: width must be one of {', '.join(WIDTHS)} (got {entry.get('width')!r})"
             )
         chain = _chain(where, entry.get("chain"), problems, settings)
-        level = 0.0
-        if "level" in entry:
-            value = entry["level"]
-            low, high = LEVEL_RANGE
-            if isinstance(value, bool) or not isinstance(value, (int, float)):
-                problems.append(f"{where}: level must be a number in dB (got {value!r})")
-            elif not low <= value <= high:
-                problems.append(f"{where}: level {value} dB is outside the send's {low:g} to {high:g}")
-            else:
-                # To a thousandth, the precision SAVE writes back, so a file
-                # holding more is not rewritten on a save that changed nothing.
-                level = round(float(value), 3) + 0.0
+        level = _level(where, entry, problems, "the send's")
         if "strip" in entry and isinstance(entry.get("name"), str):
             # The track's own gain, pan and mute, normalised as Sushi stores them.
             strip = _settings(f"{where}: strip", {"parameters": entry["strip"]}, problems)
@@ -570,7 +588,8 @@ def parse_rig(raw: Any) -> Rig:
         if not isinstance(master_raw.get("output"), str) or not master_raw["output"].strip():
             problems.append("master: output must name a role in the machine file")
         master = Master(str(master_raw.get("output")),
-                        _chain("master", master_raw.get("chain"), problems, settings))
+                        _chain("master", master_raw.get("chain"), problems, settings),
+                        _level("master", master_raw, problems, "the master track's gain's"))
 
     if problems:
         raise RigFileError(problems)
@@ -885,6 +904,11 @@ def compile_rig(
             # and every existing rig compiles exactly as before.
             processors[send]["parameters"] = {"gain": level_to_gain(channel.level)}  # emit rounds
         next_input += channel.inputs_used
+    if rig.master.level != 0.0:
+        # The master's level is its track's own gain, set as a channel's
+        # strip would be (keyed by the track's name); unity writes nothing,
+        # so every rig without a master level compiles exactly as before.
+        processors[MASTER] = {"parameters": {"gain": level_to_gain(rig.master.level)}}  # emit rounds
     # Last, always: see the module docstring.
     tracks.append(TrackSpec(
         name=MASTER,
@@ -924,6 +948,17 @@ def blended_channels(rig: Rig) -> frozenset[str]:
         name for control in (rig.midi.controls if rig.midi else ())
         if control.binding == "blend" for name in control.target
     )
+
+
+def blend_controls(rig: Rig) -> dict[str, str]:
+    """Which control of the MIDI map drives each blended channel's send
+    gain, by channel (`blended_channels` names the same channels): for the
+    web UI's channel volume, which says "driven by <control>" there and does
+    not fight the pedal. Pure."""
+    return {
+        name: control.control for control in (rig.midi.controls if rig.midi else ())
+        if control.binding == "blend" for name in control.target
+    }
 
 
 def merged_state(
@@ -1071,7 +1106,9 @@ def fold_state(
     because a strip moved live changes the stem and not the mix, and the
     sends' destinations and the return, which are the compiler's. A send's
     gain is folded, as the channel's `level` in dB (#18): that is where a
-    channel's level in the mix lives.
+    channel's level in the mix lives. So is the master track's gain, as the
+    master's `level` (the web UI's master volume): it acts after the mix,
+    on no channel's stem.
 
     Which plugins a chain holds (#32). `edits` is `agent.live_edits`: the
     plugins the agent added (`added`, with the track, URI and defaults) and
@@ -1247,6 +1284,19 @@ def fold_state(
     master = out.get("master")
     if isinstance(master, dict) and (master.get("chain") or any(captured_on(n) == MASTER for n in new)):
         master["chain"] = fold_chain(master.get("chain") or [], MASTER)
+    if isinstance(master, dict):
+        # The master track's gain, moved live (the web UI's master volume),
+        # is the master's `level` in dB, folded as a send's gain is a
+        # channel's: written when it differs from what the file says, so a
+        # rig whose master was never moved keeps a file with no level. Its
+        # pan and mute stay unfolded, as a channel's strip does: nothing
+        # here moves them, and a file has no key for them.
+        strip = processors.get(MASTER) or {}
+        gain = (strip.get("parameters") or {}).get("gain") if isinstance(strip, dict) else None
+        if isinstance(gain, (int, float)) and not isinstance(gain, bool):
+            level = gain_to_level(gain)
+            if level != master.get("level", 0.0):
+                master["level"] = level
     return out
 
 
