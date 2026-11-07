@@ -561,12 +561,25 @@ def test_the_rack_is_a_mixing_desk_strips_left_chains_middle_files_right(browser
     page.close()
 
 
-def test_at_phone_width_the_desk_stacks_strips_then_chains_then_files(browser, served):
+@pytest.mark.parametrize("font", ["", "* { font-family: 'DejaVu Sans', 'Liberation Sans', sans-serif !important; letter-spacing: .08em; }"],
+                         ids=["page fonts", "a wider fallback font"])
+def test_at_phone_width_the_desk_stacks_strips_then_chains_then_files(browser, served, font):
+    """Each column is the phone's width, one under another; and nothing is
+    wider than the phone, with the page's fonts or a wider fallback (CI's
+    Chromium found the page 439 px wide at 390: the strips' column rule
+    had overridden the phone's, leaving it 260 px beside the chains)."""
     page = Page(browser, served.url + "/#rack", width=390, height=844)
     p = page.page
     p.wait_for_selector(".strip .volume")
+    if font:
+        p.add_style_tag(content=font)
     tops = [p.locator(sel).bounding_box()["y"] for sel in ("nav.channels", ".rack-main", ".files")]
     assert tops == sorted(tops)
+    boxes = [p.locator(sel).bounding_box() for sel in ("nav.channels", ".rack-main", ".files")]
+    assert all(b["width"] >= 390 - 1 for b in boxes), [b["width"] for b in boxes]
+    assert boxes[0]["y"] + boxes[0]["height"] <= boxes[1]["y"] + 1 and boxes[1]["y"] + boxes[1]["height"] <= boxes[2]["y"] + 1
+    wide = p.evaluate("() => [...document.querySelectorAll('#app *')].filter((e) => e.getBoundingClientRect().right > innerWidth + 0.5).map((e) => e.className)")
+    assert wide == [], wide
     width = p.evaluate("() => [document.documentElement.scrollWidth, innerWidth]")
     assert width[0] <= width[1]
     page.close()
@@ -925,3 +938,89 @@ def test_a_copy_known_only_by_its_uid_is_no_chain_change(blank):
       return [R.unsavedChanges(log, live, null, null, plugins).items, R.unsavedChanges(log, live, null, null, null).items.map((i) => i.kind)];""")
     assert out[0] == [], "a copy by its uid is the compiler's: no change"
     assert out[1] == ["added"], "known by nothing, it is a plugin, as before"
+
+
+# --------------------------------------------------------------------------- #
+# Re-review (2026-11-07)
+# --------------------------------------------------------------------------- #
+
+def test_every_notch_and_key_moves_through_a_float32_read_back(blank):
+    """Sushi holds values as float32: 7 reads back as 6.9999998. Each notch
+    and each key press, fed back through Math.fround as a poll would, moves
+    one step the way it was turned, twenty times up and twenty down, on a
+    0-10 control at 7, 9 and 3 and a 0-24 dB Level at 7."""
+    out = rigjs(blank, """
+      const mk = (min, max, e) => R.makeControl('x', {automatable: true, value: 0, min_domain_value: min, max_domain_value: max}, e);
+      const cases = [[mk(0, 10, null), 7], [mk(0, 10, null), 9], [mk(0, 10, null), 3], [mk(0, 24, {unit: 'dB'}), 7]];
+      const report = [];
+      for (const [c, start] of cases) for (const dir of [1, -1]) for (const f of [R.scrolled, R.stepped]) {
+        let v = Math.fround(R.fromDisplay(c, start));
+        const seen = [];
+        for (let i = 0; i < 20; i++) {
+          const before = R.displayOf(c, v);
+          const atEnd = dir > 0 ? before >= c.max - 1e-4 : before <= c.min + 1e-4;
+          const next = Math.fround(f(c, v, dir));
+          const moved = dir * (R.displayOf(c, next) - before);
+          seen.push(atEnd ? 'end' : moved > 1e-4 ? 'moved' : 'STUCK at ' + before);
+          v = next;
+        }
+        report.push([start, c.max, dir, f.name, seen.filter((x) => x.startsWith('STUCK'))]);
+      }
+      return report;""")
+    stuck = [r for r in out if r[4]]
+    assert stuck == [], stuck
+    assert len(out) == 16
+
+
+def test_a_half_typed_volume_survives_a_master_chain_change(browser):
+    from ui_fake import MDA_DELAY, fixture_library
+
+    with Served(library=fixture_library) as served:
+        page = rack_page(browser, served)
+        p = page.page
+        master = p.locator("nav.channels .strip-master")
+        expect(master).to_contain_text("0 plugins on its chain")
+        field = p.locator("nav.channels").get_by_role("textbox", name="vocal volume value")
+        field.click()
+        p.keyboard.type("-12")
+        handle = field.element_handle()
+        answer = post(served, "/live/add", {"track": "master", "uri": MDA_DELAY, "name": "bus_delay"})
+        assert answer["ok"], answer
+        expect(master).to_contain_text("1 plugin on its chain")  # drawn in place
+        assert handle.evaluate("(e) => e.isConnected && document.activeElement === e"), "not rebuilt"
+        expect(field).to_have_value("-12")
+        p.keyboard.press("Enter")
+        until(lambda: abs(served.rig.info["vocal_send"]["gain"]["value"] - 108 / 144) < 1e-6)
+        page.close()
+
+
+def test_a_half_typed_volume_is_given_back_when_the_strips_must_be_rebuilt(browser):
+    """A channel more on the rig (here a track the fake gains, as a restart
+    into an edited file brings one) is a strip more, a rebuild: the field
+    being typed in gets its focus and its text back, still to commit."""
+    with Served() as served:
+        page = rack_page(browser, served)
+        p = page.page
+        field = p.locator("nav.channels").get_by_role("textbox", name="vocal volume value")
+        field.click()
+        p.keyboard.type("-9")
+        before = field.element_handle()
+        served.rig.add_track("keys")
+        expect(p.locator('nav.channels .strip[data-channel="keys"]')).to_be_visible()
+        assert before.evaluate("(e) => !e.isConnected"), "the strips were rebuilt"
+        field = p.locator("nav.channels").get_by_role("textbox", name="vocal volume value")
+        expect(field).to_have_value("-9")
+        expect(field).to_be_focused()
+        p.locator("body").click(position={"x": 5, "y": 5})  # leaving commits what was typed
+        until(lambda: abs(served.rig.info["vocal_send"]["gain"]["value"] - 111 / 144) < 1e-6)
+        page.close()
+
+
+def test_a_removed_copy_known_only_by_its_uid_is_not_listed_as_removed(blank):
+    """Removed, it has left /live/plugins; the remove's own record names it."""
+    out = rigjs(blank, """
+      const log = {log: [{op: 'remove', args: {processor: 'comp'}, at: '2026-11-07T10:00:00Z',
+        previous: {track: 'board', chain: ['comp', 'odd', 'board_send'], copy: 'odd', uid: null}}], first: 0};
+      const live = {tracks: {board: ['board_send']}, processors: {}, parameter_info: {}};
+      return R.unsavedChanges(log, live, null, null, {}).items.map((i) => [i.kind, i.processor]);""")
+    assert out == [["removed", "comp"]]

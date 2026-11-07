@@ -464,14 +464,14 @@ function valueField(aria, commit, name = null) {
   // blur committed the stale text and undid the scroll).
   let dirty = false;
   const clearBad = () => { input.classList.remove("bad"); input.removeAttribute("aria-invalid"); input.title = ""; };
-  const refresh = () => { clearBad(); input.value = shown; dirty = false; };
-  input.addEventListener("focus", () => { selecting = true; dirty = false; input.select(); });
-  input.addEventListener("input", () => { dirty = true; });
+  const refresh = () => { clearBad(); input.value = shown; dirty = false; delete input.dataset.typed; };
+  input.addEventListener("focus", () => { selecting = true; dirty = false; delete input.dataset.typed; input.select(); });
+  input.addEventListener("input", () => { dirty = true; input.dataset.typed = "1"; });
   // A click's mouseup would put the caret where it landed, undoing the select.
   input.addEventListener("mouseup", (event) => { if (selecting) { event.preventDefault(); selecting = false; } });
   input.addEventListener("pointerdown", (event) => event.stopPropagation());
   const done = (said) => {
-    if (said.ok) { clearBad(); shown = said.text; input.value = said.text; dirty = false; return true; }
+    if (said.ok) { clearBad(); shown = said.text; input.value = said.text; dirty = false; delete input.dataset.typed; return true; }
     input.classList.add("bad");
     input.setAttribute("aria-invalid", "true");
     input.title = said.why;
@@ -1733,6 +1733,27 @@ function focusedName(el) {
   return active && el.contains(active) && active.name ? active.name : null;
 }
 
+// What is being typed in a named field of `el`, to give back after `el` is
+// rebuilt (`giveBack`): its name, its text, and whether it was typed (a
+// field the player left untouched gets the value as it is now instead).
+function typedIn(el) {
+  const active = document.activeElement;
+  if (!active || !el.contains(active) || !active.name) return null;
+  return { name: active.name, value: active.value, typed: active.dataset.typed === "1" };
+}
+
+function giveBack(el, typing) {
+  if (!typing) return;
+  const input = el.querySelector(`[name="${typing.name}"]`);
+  if (!input) return;
+  input.focus();
+  if (typing.typed && input.value !== typing.value) {
+    input.value = typing.value;
+    input.dispatchEvent(new Event("input"));  // typed: its field commits it when it is left
+  }
+  if (input.setSelectionRange && input.type === "text") input.setSelectionRange(input.value.length, input.value.length);
+}
+
 function refocus(el, name) {
   if (!name) return;
   const input = el.querySelector(`[name="${name}"]`);
@@ -2003,8 +2024,13 @@ function stripsRegion(el, model, unsaved) {
     ready && choices.problem ? h("p", { class: "rig-problem" }, choices.problem) : null,
   ]);
 
-  patch(parts.list, JSON.stringify([live.map((t) => [t.name, t.send.name, t.send.panel]), extra.map((c) => c.name),
-    master ? master.units.length : null]), () => {
+  // Keyed by the channels alone: the master's plugin count is drawn in place
+  // below, so a plugin added to the master chain from another page does not
+  // rebuild every strip (review, 2026-11-07). A rebuild that must happen (a
+  // channel come or gone) gives the focus, and any text typed, back.
+  const typing = typedIn(parts.list);
+  const listRebuilt = patch(parts.list, JSON.stringify([live.map((t) => [t.name, t.send.name, t.send.panel]), extra.map((c) => c.name),
+    !!master]), () => {
     state.stripUpdaters = [];
     parts.slots = new Map();
     const strip = (name, volume) => {
@@ -2018,10 +2044,15 @@ function stripsRegion(el, model, unsaved) {
       extra.map((c) => strip(c.name, h("p", { class: "sub" }, "Added to the file: restart the rig to play it, and its volume comes with it."))),
       master ? h("section", { class: "strip strip-master", "data-channel": R.MASTER, "aria-label": "master" },
         h("a", { class: "strip-name", href: `#t-${R.MASTER}` }, R.MASTER),
-        h("p", { class: "sub" }, `The mix: ${master.units.length} plugin${master.units.length === 1 ? "" : "s"} on its chain. `
-          + "Its volume is the master's, in the header.")) : null,
+        h("p", { class: "sub master-says" })) : null,
     ];
   });
+  if (listRebuilt) giveBack(parts.list, typing);
+  const says = parts.list.querySelector(".master-says");
+  if (says && master) {
+    says.textContent = `The mix: ${master.units.length} plugin${master.units.length === 1 ? "" : "s"} on its chain. `
+      + "Its volume is the master's, in the header.";
+  }
 
   // Each strip's input line, on its own key.
   for (const [name, slot] of parts.slots) {

@@ -3451,3 +3451,21 @@ kept: snapshots carry a write sequence, pruning goes by it, and never takes
 the new one. (a) Any error from the switch after a revert's write answers
 `written: true` and the reason. (b) The unsaved diff knows a copy by
 `isCopy`, uid included. (c) A master strip leads to the master's chain. *(2026-11-07)*
+
+**Knobs, volume and Revert: the re-review, and CI at phone width.** (1) A
+notch or key press stuck on a float32 read-back (7 reads back 6.9999998, and
+a floor put the next step on 7 again): `stepped` now works in whole steps,
+taking a value within a thousandth of a step of a grid line as on it, and
+`scrolled` reads the whole number it starts from the same way; a test feeds
+twenty notches each way through `Math.fround` on four controls and every one
+moves. (2) The strips' key no longer holds the master's plugin count (drawn
+in place), so a change to the master chain rebuilds nothing; a rebuild that
+must happen gives back the focus and any typed text, still to commit. (3) A
+removed copy known only by its uid is known from the log's own record (an
+add's `copy`, a remove's `previous.copy`). CI: at 390 px the rack was 439 px
+wide on CI's Chromium. The cause found here: the desk's `.channels` rule came
+after the phone rule and won, leaving the strips a 260 px column beside the
+chains; the phone rule is restated after it, the header's master shrinks at
+phone width, and paths in problems and code wrap. The phone test now also
+checks each column is the phone's width and nothing is wider, with the
+page's fonts and a wider fallback. *(2026-11-07)*

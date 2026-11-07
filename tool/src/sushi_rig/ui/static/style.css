@@ -478,6 +478,21 @@ a.rig-act { display: inline-flex; align-items: center; justify-content: center; 
 /* Left, the channel strips: name, a quiet input line, the volume large.
    Right, the files: the rig picker, undo, save and revert, the takes. */
 .channels { flex: 0 1 260px; }
+/* At phone width each column is the page's width, stacked (strips, chains,
+   files): restated here, after the rule above, which otherwise won over the
+   earlier phone rule and left the strips a 260 px column beside the chains,
+   pushing the page wider than the phone on CI's fonts (2026-11-07). */
+@media (max-width: 640px) {
+  .channels, .rack-main, .side { flex: 1 1 100%; min-width: 0; }
+}
+.rig-problem, .problem span, .inputs-why, .takes code, .strips code, .files code { overflow-wrap: anywhere; }
+@media (max-width: 640px) {
+  /* The header's master takes the bar's width and its fader shrinks, so no
+     font makes the bar wider than the phone. */
+  .volume-rack { flex: 1 1 100%; min-width: 0; }
+  .volume-rack input[type=range] { flex: 1 1 auto; width: auto; min-width: 60px; }
+  .knob .text { min-width: 0; }
+}
 .files { gap: 14px; }
 .files .agent { margin-top: auto; font-size: 12px; color: var(--muted); line-height: 1.5; }
 .strips h2 { font-family: var(--display); font-size: 14px; font-weight: 500; letter-spacing: .1em; color: var(--muted); }

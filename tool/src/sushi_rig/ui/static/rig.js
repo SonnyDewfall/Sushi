@@ -275,6 +275,17 @@ export function niceStep(ctrl) {
 
 const tidy = (x, size) => Number((Math.round(x / size) * size).toFixed(10));
 
+// `x` put on the grid of `size` when it is within a thousandth of a step of
+// a line: Sushi holds a value as a float32, so 7 reads back as 6.9999998,
+// and a step taken from that by floor or ceil landed on 7 again (review,
+// 2026-11-07: a slow wheel or the arrow keys stuck there for good). A
+// thousandth of a step is far above float32's error on any range here
+// (about 1e-5 of a unit on a send's 144 dB) and far below a step.
+export function onGrid(x, size) {
+  const k = Math.round(x / size);
+  return Math.abs(x / size - k) <= 1e-3 ? tidy(k * size, size) : x;
+}
+
 // The value `steps` steps from `v` (negative is down), a tenth of a step
 // each when `fine` (never less than one whole step of an integer). A linear
 // control steps from the step grid (`niceStep`): a value typed off it moves
@@ -289,9 +300,13 @@ export function stepped(ctrl, v, steps, fine = false) {
     return valueAt(ctrl, positionOf(ctrl, start) + steps * size);
   }
   const size = step / (fine ? FINE_DIVISOR : 1);
-  const d = displayOf(ctrl, start);
-  const base = steps > 0 ? Math.floor(d / size + 1e-9) * size : Math.ceil(d / size - 1e-9) * size;
-  return normalisedOf(ctrl, clampTo(tidy(base + steps * size, size), ctrl.min, ctrl.max));
+  // In whole steps, never by dividing a grid value back (7.1 / 0.1 is
+  // 70.999..., whose floor is a step short): on the grid within a
+  // thousandth of a step (`onGrid`'s tolerance), else the grid line behind.
+  const q = displayOf(ctrl, start) / size;
+  const k = Math.round(q);
+  const index = Math.abs(q - k) <= 1e-3 ? k : steps > 0 ? Math.floor(q) : Math.ceil(q);
+  return normalisedOf(ctrl, clampTo(tidy((index + steps) * size, size), ctrl.min, ctrl.max));
 }
 
 // A scroll's notches: `stepped`, then, if that step crossed or reached a
@@ -301,15 +316,17 @@ export function stepped(ctrl, v, steps, fine = false) {
 // it passes. Stateless: a notch starts from the value as it is, so no pause
 // and no float32 read-back can make a notch undo itself (review,
 // 2026-11-07: a slow scroll at 4.0 in 0.05 steps snapped back to 4.0 every
-// time). `fine` is for the values between, and never snaps.
+// time; and both the step and the whole number it starts from are read
+// through `onGrid`, so a float32 read-back of a whole number is that whole
+// number). `fine` is for the values between, and never snaps.
 export function scrolled(ctrl, v, notches, fine = false) {
   const start = isNumber(v) ? v : 0;
   const raw = stepped(ctrl, start, notches, fine);
   if (fine || snapGrid(ctrl) !== 1) return raw;
-  const d0 = displayOf(ctrl, start), d1 = displayOf(ctrl, raw);
+  const d0 = onGrid(displayOf(ctrl, start), 1), d1 = displayOf(ctrl, raw);
   if (!Number.isFinite(d0) || !Number.isFinite(d1) || d0 === d1) return raw;
   const up = d1 > d0;
-  const whole = up ? Math.floor(d0 + 1e-9) + 1 : Math.ceil(d0 - 1e-9) - 1;
+  const whole = up ? Math.floor(d0) + 1 : Math.ceil(d0) - 1;
   const crossed = up ? whole <= d1 + 1e-9 : whole >= d1 - 1e-9;
   return crossed ? fromDisplay(ctrl, whole) : raw;
 }
@@ -552,6 +569,14 @@ export function unsavedChanges(logAnswer, live, rig, amp = null, plugins = null)
   // The log's `at` is to the second, the rig's start finer: compare seconds.
   const since = rig && rig.started_at ? Math.floor(Date.parse(rig.started_at) / 1000) * 1000 : NaN;
   const keys = new Map();
+  // Every name the log says is a copy to stereo (an add's `copy`, a
+  // remove's `previous.copy`): a copy known only by its uid has left
+  // /live/plugins once removed, and must not be listed as removed then.
+  const copies = new Set();
+  for (const e of log) {
+    if (e.args && typeof e.args.copy === "string") copies.add(e.args.copy);
+    if (e.previous && !Array.isArray(e.previous) && typeof e.previous.copy === "string") copies.add(e.previous.copy);
+  }
   const note = (key, kind, fields, previous, entry) => {
     if (!keys.has(key)) keys.set(key, { kind, ...fields, from: previous });
     keys.get(key).source = entry.source || null;
@@ -597,7 +622,7 @@ export function unsavedChanges(logAnswer, live, rig, amp = null, plugins = null)
       if (now !== null && now !== item.from) items.push({ ...item, to: now });
     } else {
       const now = live && live.tracks ? live.tracks[item.track] : undefined;
-      if (now) items.push(...chainChanges(item, now, plugins));
+      if (now) items.push(...chainChanges(item, now, plugins, copies));
     }
   }
   // Trimmed (`first` > 0) with no rig switch kept and the oldest entry kept
@@ -615,7 +640,7 @@ export function unsavedChanges(logAnswer, live, rig, amp = null, plugins = null)
 // goes with its plugin and is not a change of its own; nor are the send and
 // return, which never come or go. Netted like the rest: added and removed
 // again is nothing.
-function chainChanges(item, now, plugins = null) {
+function chainChanges(item, now, plugins = null, copies = new Set()) {
   // A baseline the log does not have (a move Sushi did not say the chain of)
   // says nothing of what came or went: one row, the chain from "unknown",
   // never every plugin on the track as added (review of #32).
@@ -623,7 +648,7 @@ function chainChanges(item, now, plugins = null) {
   const from = item.from;
   const was = new Set(from), is = new Set(now);
   // A copy by `isCopy`, as everywhere: its uid where /live/plugins said it.
-  const own = (n) => !isCopy(n, plugins ? plugins[n] : null);
+  const own = (n) => !copies.has(n) && !isCopy(n, plugins ? plugins[n] : null);
   const base = { track: item.track, source: item.source };
   const out = [
     ...now.filter((n) => own(n) && !was.has(n)).map((n) => ({ kind: "added", processor: n, ...base })),
