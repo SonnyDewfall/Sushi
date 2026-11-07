@@ -56,3 +56,7 @@ squashfs-root/
 
 # Stray audio captures from latency/signal measurements.
 *.wav
+
+# sushi-rig's own state beside the checkout: the snapshots each save keeps for
+# Revert (tool/src/sushi_rig/saves.py). The directory also ignores itself.
+.sushi-rig/

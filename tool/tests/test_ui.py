@@ -254,7 +254,8 @@ def test_which_plugin_each_processor_is_comes_with_the_compilers_roles():
     status, _, body = call(ui_agent(live=UiRig()), "GET", "/live/plugins")
     processors = json.loads(body)["processors"]
     assert status == 200
-    assert processors["overdrive"] == {"track": "board", "uri": GXTS9, "uid": None, "type": "lv2", "role": None}
+    assert processors["overdrive"] == {"track": "board", "uri": GXTS9, "uid": None, "type": "lv2", "role": None,
+                                       "width": "mono"}  # 1 1 in plugin-ports.txt
     assert {n: p["role"] for n, p in processors.items() if p["role"]} == {
         "board_send": "send", "vocal_send": "send", "master_return": "return"}
 
@@ -712,7 +713,13 @@ def test_save_is_offered_whenever_a_rig_saveable_from_here_is_up(blank):
     assert "not committed" in v["note"]
     v = view(up, items=0)
     assert not v["save"]["disabled"] and not v["saveAs"]["disabled"], "nothing seen is not nothing to save"
-    assert v["note"].startswith("No changes seen since 2026-11-02T10:00:00+00:00. The agent does not see")
+    assert v["note"] == "Save writes config/rigs/electric_board.yaml in place, keeping its comments. It is not committed: that is yours to do.", \
+        "one note whatever the count: the column does not reflow as values change"
+    assert (v["dot"]["count"], v["dot"]["text"]) == (0, "")
+    assert v["dot"]["title"].startswith("No unsaved changes seen since 2026-11-02T10:00:00+00:00. The agent does not see")
+    v = view(up, items=3)
+    assert (v["dot"]["count"], v["dot"]["text"], v["dot"]["spoken"]) == (3, "3", ", 3 unsaved changes")
+    assert v["dot"]["title"].startswith("3 unsaved changes made through the agent since") and not v["revert"]["disabled"]
     assert view(up, items=0, agent_started="2026-11-02T11:00:00+00:00")["since"] == "2026-11-02T11:00:00+00:00", \
         "an agent started after the rig saw nothing before it"
     log = {"log": [entry("save", {"file": "x"}, None, 30)], "first": 0}
@@ -899,6 +906,16 @@ def until(predicate, timeout=5.0):
     raise AssertionError("not within %ss" % timeout)
 
 
+def unsaved_count(page, count):
+    """The one sign of unsaved work since 2026-11-06: the count on Save,
+    empty (and hidden) at none. The itemised list that was beside it, and
+    each knob's "was", are gone; what counts as unsaved is rig.js's
+    `unsavedChanges`, pinned by the pure tests above."""
+    dot = page.locator(".save-dot")
+    expect(dot).to_have_text(str(count) if count else "")
+    expect(dot).to_have_class(re.compile(r"\bhas\b") if count else re.compile(r"^save-dot$"))
+
+
 def test_the_rack_shows_every_chain_as_a_row_of_cards_with_the_profiles_controls(rack):
     tracks = rack.locator("section.track")
     expect(tracks).to_have_count(3)
@@ -914,8 +931,11 @@ def test_the_rack_shows_every_chain_as_a_row_of_cards_with_the_profiles_controls
     expect(rack.locator('.unit[data-unit="delay"]')).to_contain_text("no profile: every parameter")
     expect(rack.locator('.unit[data-unit="delay"]').get_by_role("slider")).to_have_count(6)
     expect(slider(rack, "octave latency")).to_have_attribute("aria-readonly", "true")
-    # The send is the channel's level, in dB.
-    expect(slider(rack, "vocal_send Level")).to_have_attribute("aria-valuetext", "−6 dB")
+    # The send is the channel's volume, at the top of its row, in dB; no
+    # second control for it at the row's end (2026-11-06).
+    expect(rack.locator("nav.channels").get_by_role("textbox", name="vocal volume value")).to_have_value("−6.0 dB")
+    expect(rack.get_by_role("slider", name="vocal_send Level")).to_have_count(0)
+    expect(rack.locator(".send")).to_have_count(0)
 
 
 def test_a_turned_knob_is_heard_at_once_and_marked_unsaved(rack, served):
@@ -925,11 +945,10 @@ def test_a_turned_knob_is_heard_at_once_and_marked_unsaved(rack, served):
         rack.keyboard.press("ArrowDown")
     expect(drive).to_have_attribute("aria-valuetext", "0.52")
     until(lambda: abs(served.rig.info["overdrive"]["Drive"]["value"] - 0.52) < 1e-9)
-    expect(drive).to_have_class(re.compile(r"\bunsaved\b"))
-    expect(drive).to_contain_text("was 0.62")
-    changes = rack.locator("aside.changes")
-    expect(changes.locator("h2")).to_have_text("1 unsaved change")
-    expect(changes.locator(".change")).to_have_text("board · overdrive · Drive0.62 to 0.52")
+    # Unsaved is the count on Save, and nothing beside the knob says "was".
+    unsaved_count(rack, 1)
+    expect(rack.locator('.knob[data-control$="Drive"]')).not_to_contain_text("was")
+    expect(rack.locator("aside.changes .change")).to_have_count(0)
 
 
 def test_a_knob_turns_by_dragging_with_a_pointer(rack, served):
@@ -937,7 +956,7 @@ def test_a_knob_turns_by_dragging_with_a_pointer(rack, served):
     x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
     rack.mouse.move(x, y)
     rack.mouse.down()
-    rack.mouse.move(x, y - 50, steps=5)  # a quarter of a full sweep, upwards
+    rack.mouse.move(x, y - 80, steps=8)  # a quarter of a full sweep (320 px), upwards
     rack.mouse.up()
     expect(slider(rack, "overdrive Drive")).to_have_attribute("aria-valuetext", "0.87")
     until(lambda: abs(served.rig.info["overdrive"]["Drive"]["value"] - 0.87) < 1e-6)
@@ -951,7 +970,7 @@ def test_a_refused_change_shows_the_agents_reason_and_the_rigs_value(rack, serve
     alert = rack.locator(".problem.refused")
     expect(alert).to_contain_text("Not changed: delay · Feedback")
     expect(alert).to_contain_text("Sushi would not set Feedback (test)")
-    expect(feedback).to_contain_text("refused: Sushi would not set Feedback (test)")
+    expect(rack.locator('.unit[data-unit="delay"] .knob[data-control$="Feedback"] .note')).to_have_text("refused: Sushi would not set Feedback (test)")
     # Back to the rig's value, with the reason beside it: not a silent revert.
     expect(feedback).to_have_attribute("aria-valuetext", "0.35")
     # The agent remembered it too, and says so in the same glance.
@@ -964,11 +983,11 @@ def test_bypass_and_undo_are_one_tap_each(rack, served):
     expect(rack.get_by_role("button", name="Turn on overdrive")).to_be_visible()
     until(lambda: served.rig.bypassed["overdrive"] is True)
     changes = rack.locator("aside.changes")
-    expect(changes.locator(".change")).to_have_text("board · overdriveon to bypassed")
+    unsaved_count(rack, 1)
     undo = changes.get_by_role("button", name="Undo · bypass overdrive")
     undo.click()
     until(lambda: served.rig.bypassed["overdrive"] is False)
-    expect(changes.locator("h2")).to_have_text("No changes seen")
+    unsaved_count(rack, 0)
     expect(rack.locator(".notice")).to_contain_text("Undone: bypass overdrive")
 
 
@@ -985,8 +1004,7 @@ def test_reordering_is_refused_while_locked_and_works_once_unlocked_deliberately
     rack.get_by_role("button", name="Move delay up", exact=True).click()
     until(lambda: served.rig.chains["board"] == ["overdrive", "delay", "octave", "board_send"])
     expect(rack.locator("#t-board .unit button.name")).to_have_text(["overdrive", "delay", "octave"])
-    expect(rack.locator("aside.changes .change")).to_have_text(
-        "board · chainoverdrive, octave, delay, board_send to overdrive, delay, octave, board_send")
+    unsaved_count(rack, 1)
 
 
 # -- a plugin added or removed from outside the page (#32: the library screen to come) --
@@ -1019,12 +1037,12 @@ def test_an_added_plugin_is_unsaved_as_added_and_one_tap_undoes_it(browser, edit
                                         "name": "slap", "after": "overdrive"})
     assert answer["ok"] and answer["chain"] == ["overdrive", "slap", "octave", "delay", "board_send"]
     changes = p.locator("aside.changes")
-    expect(changes.locator(".change")).to_have_text("added slap to board")
+    unsaved_count(p, 1)
     expect(p.locator("#t-board .unit button.name")).to_have_text(["overdrive", "slap", "octave", "delay"])
     undo = changes.get_by_role("button", name="Undo · add slap")
     undo.click()
     until(lambda: served.rig.chains["board"] == ["overdrive", "octave", "delay", "board_send"])
-    expect(changes.locator("h2")).to_have_text("No changes seen")
+    unsaved_count(p, 0)
     expect(p.locator(".notice")).to_contain_text("Undone: add slap")
     expect(p.locator("#t-board .unit button.name")).to_have_text(["overdrive", "octave", "delay"])
     page.close()
@@ -1039,7 +1057,7 @@ def test_a_removed_plugin_is_unsaved_as_removed_and_its_undo_brings_it_back_as_i
     post(served, "/live/remove", {"processor": "octave"})
     changes = p.locator("aside.changes")
     # Its bypass is no change of its own while it is gone: the remove says it.
-    expect(changes.locator(".change")).to_have_text(["removed octave from board"])
+    unsaved_count(p, 1)
     expect(p.locator("#t-board .unit button.name")).to_have_text(["overdrive", "delay"])
     changes.get_by_role("button", name="Undo · remove octave").click()
     until(lambda: served.rig.chains["board"] == ["overdrive", "octave", "delay", "board_send"])
@@ -1047,7 +1065,7 @@ def test_a_removed_plugin_is_unsaved_as_removed_and_its_undo_brings_it_back_as_i
     # Back with its values (Octaves at -1, not its default 0) and the bypass it had.
     expect(slider(p, "octave Octaves")).to_have_attribute("aria-valuetext", "−1.00")
     expect(p.get_by_role("button", name="Bypass octave")).to_be_visible()
-    expect(changes.locator(".change")).to_have_text("board · octavebypassed to on")
+    unsaved_count(p, 1)  # the bypass, back with it
     page.close()
 
 
@@ -1059,11 +1077,11 @@ def test_a_mono_plugin_added_is_one_card_and_one_change_and_its_copy_is_not_show
     post(served, "/live/add", {"track": "vocal", "uri": "http://guitarix.sourceforge.net/plugins/gxts9#ts9sim",
                                "name": "grit"})
     assert served.rig.chains["vocal"] == ["vocal_delay", "grit", "grit_to_stereo", "vocal_send"]
-    expect(p.locator("aside.changes .change")).to_have_text("added grit to vocal")
+    unsaved_count(p, 1)
     expect(p.locator("#t-vocal .unit button.name")).to_have_text(["vocal_delay", "grit"])
     p.locator("aside.changes button.undo").click()
     until(lambda: served.rig.chains["vocal"] == ["vocal_delay", "vocal_send"])
-    expect(p.locator("aside.changes h2")).to_have_text("No changes seen")
+    unsaved_count(p, 0)
     page.close()
 
 
@@ -1075,10 +1093,10 @@ def test_a_save_after_an_add_and_a_remove_writes_them_and_nothing_is_unsaved(bro
         p = page.page
         post(served, "/live/add", {"track": "board", "uri": "http://drobilla.net/plugins/mda/Delay", "name": "slap"})
         post(served, "/live/remove", {"processor": "octave"})
-        expect(p.locator("aside.changes .change")).to_have_text(["added slap to board", "removed octave from board"])
+        unsaved_count(p, 2)
         p.get_by_role("button", name="Save to electric_board").click()
         expect(p.locator(".save-result.ok")).to_contain_text("Saved electric_board")
-        expect(p.locator("aside.changes h2")).to_have_text("No changes seen")
+        unsaved_count(p, 0)
         chain = rig_file(served)["channels"][0]["chain"]
         assert [e["name"] for e in chain] == ["overdrive", "delay", "slap"]
         assert chain[2] == {"name": "slap", "uri": "http://drobilla.net/plugins/mda/Delay"}, \
@@ -1134,7 +1152,9 @@ def test_one_glance_says_which_rig_whether_it_is_up_and_what_is_not_measured(sta
     # before the page looked, so none since.
     expect(stage.locator(".tile")).to_have_text(["LOAD26%of 21.3 ms", "XRUNS0since opened", "AMPnone"])
     expect(stage.locator(".detail-line")).to_have_attribute("title", re.compile(r"^Nothing measures the rig's sound yet"))
-    expect(stage.locator(".level")).to_have_text(["board0 dB", "vocal−6 dB"])
+    expect(stage.locator(".level .n")).to_have_text(["board", "vocal"])
+    expect(stage.get_by_role("textbox", name="board volume value")).to_have_value("0.0 dB")
+    expect(stage.get_by_role("textbox", name="vocal volume value")).to_have_value("−6.0 dB")
     expect(stage.locator(".card .name")).to_have_text(["overdrive", "octave", "delay", "vocal_delay"])
     expect(stage.locator('.card[data-unit="overdrive"] .vals')).to_have_text("Drive 0.62 · Level −3.0 · Tone 480")
     expect(stage.locator(".problem")).to_have_count(0)
@@ -1163,9 +1183,9 @@ def test_on_stage_one_tap_bypasses_and_one_opens_the_knobs_lock_on(stage, served
     stage.locator('.card[data-unit="overdrive"] button.open-card').click()
     tone = slider(stage, "overdrive Tone")
     tone.focus()
-    stage.keyboard.press("PageUp")
-    until(lambda: abs(served.rig.info["overdrive"]["Tone"]["value"] - (0.4222222222 + 0.1)) < 1e-6)
-    expect(tone).to_have_attribute("aria-valuetext", "570")
+    stage.keyboard.press("PageUp")  # ten steps of 5 Hz, 1 % of its 900 Hz rounded to a round number
+    until(lambda: abs(served.rig.info["overdrive"]["Tone"]["value"] - (530 - 100) / 900) < 1e-6)
+    expect(tone).to_have_attribute("aria-valuetext", "530")
 
 
 def test_the_stage_shows_the_agents_last_error(stage, served):
@@ -1866,17 +1886,18 @@ def test_an_amp_fader_is_sent_to_carla_marked_unsaved_and_undone(browser, amp_se
     p = page.page
     output = p.get_by_role("slider", name="amp Output Lvl")
     output.focus()
-    p.keyboard.press("ArrowRight")  # one step: a tenth of a dB, one change logged
-    until(lambda: abs(amp_served.amp.carla.values().get("Output Lvl", 0) - -2.9) < 1e-6)
-    expect(output).to_have_attribute("aria-valuetext", "−2.9 dB")
-    expect(p.locator(".amp-card .fader.unsaved")).to_contain_text("was −3.0 dB")
-    expect(p.locator("aside.changes .change")).to_have_text("amp · Output Lvl−3.0 dB to −2.9 dB")
+    p.keyboard.press("ArrowRight")  # one step: 0.2 dB, 1 % of its 40 dB rounded, one change logged
+    until(lambda: abs(amp_served.amp.carla.values().get("Output Lvl", 0) - -2.8) < 1e-6)
+    expect(output).to_have_attribute("aria-valuetext", "−2.8 dB")
+    expect(p.get_by_role("textbox", name="amp Output Lvl value")).to_have_value("−2.8 dB")
+    expect(p.locator(".amp-card")).not_to_contain_text("was −3.0")
+    unsaved_count(p, 1)
     undo = p.locator("button.undo")
     expect(undo).to_have_text("Undo · amp · Output Lvl")
     undo.click()
     until(lambda: amp_served.amp.carla.values()["Output Lvl"] == -3.0)
     expect(output).to_have_attribute("aria-valuetext", "−3.0 dB")
-    expect(p.locator("aside.changes h2")).to_have_text("No changes seen")
+    unsaved_count(p, 0)
     page.close()
 
 
@@ -1917,7 +1938,7 @@ def test_the_model_is_changed_only_unlocked_and_after_a_confirm_that_warns_of_th
     assert restart["values"] == {"Input Lvl": 0.0, "Output Lvl": -3.0, "Quality": 1.0}
     expect(p.locator(".notice")).to_contain_text("the amp now plays Edge.nam. The sound stopped")
     expect(p.locator(".amp-card .amp-model")).to_have_text("Edge")
-    expect(p.locator("aside.changes .change")).to_have_text("amp · modelClean Room to Edge")
+    unsaved_count(p, 1)
     page.close()
 
 
@@ -1966,7 +1987,7 @@ def test_on_stage_the_amp_is_its_model_and_output_level_and_only_unlocked(browse
     assert height >= 44, "a thumb's target"
     output.focus()
     p.keyboard.press("ArrowLeft")
-    until(lambda: abs(amp_served.amp.carla.values().get("Output Lvl", 0) - -3.1) < 1e-6)
+    until(lambda: abs(amp_served.amp.carla.values().get("Output Lvl", 0) - -3.2) < 1e-6)
     width = p.evaluate("() => [document.documentElement.scrollWidth, innerWidth]")
     assert width[0] <= width[1], "it fits a phone"
     lock.click()
@@ -2062,10 +2083,11 @@ def test_save_writes_the_running_rigs_file_in_place_and_says_it_is_not_committed
     save = p.get_by_role("button", name="Save to electric_board")
     # Offered with nothing seen: the agent does not see every change.
     expect(save).to_be_enabled()
-    expect(p.locator("aside.changes h2")).to_have_text("No changes seen")
-    expect(p.locator(".save-note")).to_contain_text("No changes seen since")
+    unsaved_count(p, 0)
+    expect(save).to_have_attribute("title", re.compile(r"^No unsaved changes seen since"))
     turn_drive_down(p)
-    expect(p.locator("aside.changes h2")).to_have_text("1 unsaved change")
+    unsaved_count(p, 1)  # ten steps of one knob are one change: netted, as rig.js's unsavedChanges nets them
+    expect(save).to_have_attribute("title", re.compile(r"^1 unsaved change made through the agent since"))
     save.click()
     result = p.locator(".save-result.ok")
     expect(result).to_contain_text("Saved electric_board")
@@ -2077,9 +2099,8 @@ def test_save_writes_the_running_rigs_file_in_place_and_says_it_is_not_committed
     text = (save_served.save.root / "config" / "rigs" / "electric_board.yaml").read_text()
     assert "# the drive: a comment the save keeps" in text
     # The save is the baseline: nothing seen since it.
-    expect(p.locator("aside.changes h2")).to_have_text("No changes seen")
+    unsaved_count(p, 0)
     expect(p.locator(".last-save")).to_contain_text("config/rigs/electric_board.yaml, not committed when saved.")
-    expect(slider(p, "overdrive Drive")).not_to_have_class(re.compile(r"\bunsaved\b"))
     page.close()
 
 
@@ -2089,21 +2110,19 @@ def test_after_a_save_a_change_is_unsaved_again_and_so_is_an_undo(browser, save_
     turn_drive_down(p, 1)  # one step, one entry: 0.62 to 0.61
     until(lambda: abs(save_served.rig.info["overdrive"]["Drive"]["value"] - 0.61) < 1e-9)
     p.get_by_role("button", name="Save to electric_board").click()
-    expect(p.locator("aside.changes h2")).to_have_text("No changes seen")
+    unsaved_count(p, 0)
     # A change after the save.
     p.get_by_role("button", name="Bypass overdrive").click()
-    expect(p.locator("aside.changes h2")).to_have_text("1 unsaved change")
-    expect(p.locator("aside.changes .change")).to_have_text("board · overdriveon to bypassed")
+    unsaved_count(p, 1)
     # Undo it, then undo again: past the save, to the knob, which the file has.
     undo = p.locator("button.undo")
     expect(undo).to_have_text("Undo · bypass overdrive")
     undo.click()
-    expect(p.locator("aside.changes h2")).to_have_text("No changes seen")
+    unsaved_count(p, 0)
     expect(undo).to_have_text("Undo · overdrive · Drive")
     undo.click()
     until(lambda: abs(save_served.rig.info["overdrive"]["Drive"]["value"] - 0.62) < 1e-9)
-    expect(p.locator("aside.changes h2")).to_have_text("1 unsaved change")
-    expect(p.locator("aside.changes .change")).to_have_text("board · overdrive · Drive0.61 to 0.62")
+    unsaved_count(p, 1)
     assert abs(drive_of(rig_file(save_served)) - 0.61) < 1e-6, "the save is not undone"
     page.close()
 
@@ -2766,7 +2785,8 @@ def test_a_channel_is_added_to_the_running_rig_and_a_restart_is_offered(browser,
     page = Watched(browser, files_served, "/#rack")
     p = page.page
     wiring = inputs_region(p)
-    expect(wiring.locator(".wiring-row")).to_have_text([re.compile(r"^boardguitar-in · mono"), re.compile(r"^vocalvocal-in · mono")])
+    expect(wiring.locator(".strip .strip-name")).to_have_text(["board", "vocal"])
+    expect(wiring.locator(".wiring-row")).to_have_text([re.compile(r"^guitar-in · mono"), re.compile(r"^vocal-in · mono")])
     before = (files_served.save.root / "config" / "rigs" / "electric_board.yaml").read_text()
     wiring.get_by_role("button", name="Add channel").click()
     expect(p.get_by_label("New channel name")).to_have_value("keys")
@@ -2808,7 +2828,7 @@ def test_a_channels_input_is_changed_from_the_rack(browser, files_served):
     expect(result).to_contain_text("Changed vocal's input")
     expect(result).to_contain_text("keeps playing as it was until it restarts")
     expect(result.get_by_role("button", name="Restart electric_board to play it")).to_be_visible()
-    expect(wiring.locator(".wiring-row", has_text="vocal")).to_contain_text("keys-in · stereo")
+    expect(wiring.locator('.wiring-row[data-channel="vocal"]')).to_contain_text("keys-in · stereo")
     assert rig_file(files_served)["channels"][1] == {
         "name": "vocal", "input": "keys-in", "width": "stereo", "level": -6.0,
         "chain": [{"name": "vocal_delay", "uri": "http://drobilla.net/plugins/mda/Delay"}]}
@@ -2820,7 +2840,7 @@ def test_an_edit_of_the_running_rig_with_unsaved_work_is_refused_in_place(browse
     p = page.page
     turn_drive_down(p, 1)
     wiring = inputs_region(p)
-    expect(wiring.locator(".warn")).to_contain_text("1 unsaved change on electric_board: save first")
+    expect(wiring.locator(".warn")).to_contain_text("with unsaved changes on electric_board, save first")
     wiring.get_by_role("button", name="Change board's input").click()
     p.get_by_label("board input").select_option("keys-in")
     p.get_by_role("button", name="Apply to board").click()
@@ -2920,5 +2940,5 @@ def test_an_edits_answer_is_shown_even_when_a_poll_lands_while_it_is_written(bro
     # The run starts again elsewhere while the file is written: a new start time.
     files_served.lifecycle.started = files_served.lifecycle.started + timedelta(minutes=1)
     expect(wiring.locator(".rigfile-result.ok")).to_contain_text("Changed vocal's input", timeout=8000)
-    expect(wiring.locator(".wiring-row", has_text="vocal")).to_contain_text("keys-in · mono")
+    expect(wiring.locator('.wiring-row[data-channel="vocal"]')).to_contain_text("keys-in · mono")
     page.close()

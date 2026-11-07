@@ -1596,6 +1596,7 @@ class Agent:
         self._save_routes(app)  # saving the running rig (S4): see its block
         self._record_routes(app)  # recording from the web UI (S7): see its block
         self._rigfile_routes(app)  # the New rig screen's rig files: see its block
+        self._revert_routes(app)  # revert to a previous save: see its block
         return app
 
     async def health(self, request):
@@ -2680,6 +2681,7 @@ class Agent:
         app.router.add_get("/live/plugins", self.live_plugins)
         app.router.add_get("/rigs", self.rigs_route)
         app.router.add_get("/rig/load", self.rig_load)
+        app.on_response_prepare.append(_ui_cache_control)
 
     async def ui_redirect(self, request):
         """/ui and /ui/ are where the page's files are, not a page: send the
@@ -2773,6 +2775,16 @@ class Agent:
         self._refuse_while_busy()
         async with self._connected(request) as controller:
             found = await self._sushi(request, plugins, controller, reading=True)
+        # Each LV2 plugin's width, from the compiler's own table
+        # (plugin-ports.txt, #119), so the page can mark a mono plugin and
+        # warn where one follows a stereo one, without a file of its own.
+        try:
+            from .paths import checkout_root
+
+            ports = await asyncio.to_thread(stereo.load_ports, checkout_root())
+            ports_note = None
+        except stereo.PortsError as exc:
+            ports, ports_note = {}, "; ".join(exc.problems)
         processors = {}
         for name, plugin in (found or {}).items():
             track = plugin.get("track") or ""
@@ -2781,8 +2793,8 @@ class Agent:
                 role = "stereo"  # the compiler's copy to stereo: the page does not show it
             elif protected_processor(track, name, plugin.get("uid")):
                 role = "send" if is_send(track, name, plugin.get("uid")) else "return"
-            processors[name] = {**plugin, "role": role}
-        return web.json_response({"ok": True, "processors": processors})
+            processors[name] = {**plugin, "role": role, "width": plugin_width(plugin, ports)}
+        return web.json_response({"ok": True, "processors": processors, "ports_note": ports_note})
 
     # ======================================================================= #
     # (end of the web UI's routes)
@@ -3892,7 +3904,7 @@ class Agent:
                     # runs (#32): read here, under the live lock, so no edit
                     # lands between it and the capture.
                     edits = live_edits(self.log, since=state.get("started_at"))
-                    out, library = await self._save_write(
+                    out, library, written = await self._save_write(
                         request, target, source, captured, model, parameters, edits)
                     created = out != source
                     shown, was = self._save_shown(out), self._save_shown(source)
@@ -3924,7 +3936,32 @@ class Agent:
                         # plugins added live this one wrote, with their defaults.
                         "added": edits["added"],
                     }, was)
+                    # Kept only now that the save has wholly happened, so a
+                    # revert point is always a save that was logged.
+                    answer["snapshot"] = await self._keep_snapshot(
+                        request, out.stem, written,
+                        {"file": shown, "how": answer["how"], "library": library,
+                         **({"saved_as": was} if created else {})})
         return answer
+
+    async def _keep_snapshot(self, request, rig: str, data: bytes, said: dict[str, Any]) -> dict[str, Any]:
+        """Keep a save's bytes as a revert point (saves.py), off the loop.
+        The save has happened whatever this does, so a snapshot that cannot
+        be kept is said in the answer and in /health, loudly, and never
+        turns the save into a failure: `{"kept": true, "id"}` or `{"kept":
+        false, "why"}`."""
+        from . import saves
+
+        try:
+            meta = await asyncio.wait_for(
+                asyncio.to_thread(saves.keep, self._midi_root(), rig, data, said), SAVE_TIMEOUT)
+        except Exception as exc:  # noqa: BLE001 -- said, the save stands
+            why = " ".join(f"the save was written, but its snapshot for Revert could not be kept: "
+                           f"{type(exc).__name__}: {exc}".split())
+            print(f"sushi-rig agent: {why}", file=sys.stderr, flush=True)
+            self._remember([request.method, request.path], why, kind="live")
+            return {"kept": False, "why": why}
+        return {"kept": True, "id": meta["id"], "at": meta["at"], "keep": saves.KEEP}
 
     async def _save_amp(self) -> tuple[str | None, dict[str, float] | None, dict[str, Any]]:
         """`(model, parameters, said)`: the amp as the agent last sent it, for
@@ -3946,25 +3983,27 @@ class Agent:
     async def _save_write(
         self, request, target: Path, source: Path, captured: dict[str, Any],
         model: str | None, parameters: dict[str, float] | None, edits: dict[str, Any] | None = None,
-    ) -> tuple[Path, dict[str, Any] | None]:
+    ) -> tuple[Path, dict[str, Any] | None, bytes]:
         """`save_rig`, then `take.library_state` and the file's own git state
         (`save.file_git_state`), off the loop, within `SAVE_TIMEOUT`; refusals as `save_route` says. The thread cannot be
         stopped past the deadline (see `LIVE_TIMEOUT`), so a 504 says the
-        file may still be written."""
+        file may still be written. Also the bytes written, read back at once
+        in the same thread, for the save's snapshot (saves.py)."""
         from .save import SaveError, file_git_state, save_rig
         from .take import library_state
 
         root = self._midi_root()
 
-        def write() -> tuple[Path, dict[str, Any] | None]:
+        def write() -> tuple[Path, dict[str, Any] | None, bytes]:
             out = save_rig(target.stem, source, amp_model=model, amp_parameters=parameters, state=captured,
                            edits=edits)
+            written = out.read_bytes()
             library = library_state(root)
             if library is not None:
                 # `dirty` is the whole checkout's; what the file itself is,
                 # and whether anything else is uncommitted, is git's to say.
                 library.update(file_git_state(root, out) or {"file": None, "others": None})
-            return out, library
+            return out, library, written
 
         try:
             return await self._write_off_loop(request, target, write, again="saving again")
@@ -4152,10 +4191,19 @@ class Agent:
             raise _conflict(" ".join(f"{path.name} could not be read: {type(exc).__name__}: {exc}".split()),
                             "rig_problem")
         run = await self._rigfile_run()
+        # The channels a MIDI blend drives, and by which control (#34): their
+        # volume follows the pedal, so the page shows it and does not set it.
+        try:
+            blended = rigfile.blend_controls(rigfile.parse_rig(raw))
+            blended_note = None
+        except Exception as exc:  # noqa: BLE001 -- the channels are still worth listing
+            blended = {}
+            blended_note = " ".join(f"{path.name} does not parse ({type(exc).__name__}: {exc}), so which "
+                                    "channels a blend drives is not known".split())
         return web.json_response({
             "ok": True, "rig": path.stem, "file": self._save_shown(path),
             "running": run["running"] is not None and run["running"].resolve() == path.resolve(),
-            "channels": rigedit.channels_of(raw),
+            "channels": rigedit.channels_of(raw), "blended": blended, "blended_note": blended_note,
         })
 
     async def new_rig_route(self, request):
@@ -4491,6 +4539,215 @@ class Agent:
     # ======================================================================= #
 
     # ======================================================================= #
+    # Revert to a previous save (2026-11-06): GET /rigs/{name}/saves,
+    # POST /rigs/{name}/revert
+    # ======================================================================= #
+    #
+    # Kept in one block, as the rig files' is. Outside it the agent calls in
+    # at `app` (`_revert_routes`) and `_save_held` (`_keep_snapshot`, which
+    # keeps each save's bytes). What a revert point is, where it is kept and
+    # for how long is saves.py's; whether a revert must wait is
+    # `revert_refusal`'s, below with the rig files' pure decisions.
+    #
+    # A revert takes the lifecycle lock (`busy: "revert"`) for all of it: the
+    # write and, for the running rig, the live switch into the reverted file
+    # (`_switch_held`, the body of POST /rig/switch, #112), so nothing can
+    # come between the file being written and the rig being made to play
+    # it. The check for unsaved work and the write are under the live lock
+    # too, as an edit of the running rig's file is (`_write_edit`).
+
+    def _revert_routes(self, app) -> None:
+        app.router.add_get("/rigs/{name}/saves", self.saves_route)
+        app.router.add_post("/rigs/{name}/revert", self.revert_route)
+
+    async def saves_route(self, request):
+        """`GET /rigs/{name}/saves`: rig `name`'s revert points, newest first
+        (`points`): every snapshot a save from here kept (`kind: "save"`,
+        the newest `saves.KEEP`) and every commit that changed its file
+        (`kind: "commit"`, from `git log`, read-only, with a timeout). Also
+        whether the file as it is now is kept by one of them (`current`), so
+        the page's confirm can say whether a revert loses it, whether it is
+        the running rig, and what could not be read (`problems`,
+        `git_note`), each said rather than dropped. 504 if git does not
+        answer within `SAVE_TIMEOUT`."""
+        from . import saves
+        from .save import file_git_state
+
+        name = request.match_info["name"]
+        path = self._rigfile_path(name)
+        root = self._midi_root()
+
+        def read() -> dict[str, Any]:
+            kept, problems = saves.snapshots(root, name)
+            committed, note = saves.commits(root, path)
+            current = path.read_bytes() if path.exists() else None
+            same = saves.kept_as(current, kept, lambda sid: saves.snapshot_bytes(root, name, sid))
+            git = file_git_state(root, path) if note is None else None
+            return {"saves": kept, "commits": committed, "git_note": note, "problems": problems,
+                    "current": {"kept_as": same, "git": (git or {}).get("file")}}
+
+        try:
+            found = await asyncio.wait_for(asyncio.to_thread(read), SAVE_TIMEOUT)
+        except asyncio.TimeoutError:
+            raise web.HTTPGatewayTimeout(reason=(
+                f"the revert points of {name} were not read within {SAVE_TIMEOUT:g}s: git did not answer"))
+        run = await self._rigfile_run()
+        return web.json_response({
+            "ok": True, "rig": name, "file": self._save_shown(path),
+            "running": run["running"] is not None and run["running"].resolve() == path.resolve(),
+            "points": saves.merged(found["saves"], found["commits"]),
+            "saves": len(found["saves"]), "commits": len(found["commits"]),
+            "keep": saves.KEEP, "kept_in": (saves.SAVES_DIR / name).as_posix(),
+            "current": found["current"], "git_note": found["git_note"], "problems": found["problems"],
+        })
+
+    async def revert_route(self, request):
+        """`POST /rigs/{name}/revert {"save": <id>, "discard"?: true}`: write
+        revert point `save` (a snapshot's id, or `commit:<sha>`, as `GET
+        /rigs/{name}/saves` lists them) back over rig `name`'s file, and, if
+        that is the running rig, make the rig play it.
+
+        The file is written with a plain, whole-file write of the point's
+        bytes (`saves.restore`), not `rigfile.write_rig`: `write_rig` merges a
+        document into the file that is there, keeping *that* file's comments
+        and layout, so it cannot give back the snapshot's own; a revert is
+        the earlier file, byte for byte. It is compiled first, against the
+        run's machine file, and refused with the compiler's reason, nothing
+        written, if it will not compile now (`rig_problem`: a plugin gone
+        from the manifest since, a role gone from the machine file).
+
+        For the running rig: refused while it holds live work no save has
+        written (409 `unsaved`, as an edit of its file is, #125), since the
+        revert replaces what is playing, unless `{"discard": true}`. Then
+        the live switch into the reverted file (`_switch_held`, #112): live
+        where `rigfile.diff` says it can be (values, bypasses, a plugin added,
+        removed or moved), by restart where it must be (a channel or the amp
+        differs), the answer saying which and why, as a switch's does; its
+        `op: "rig"` entry in the log is the new baseline, so nothing is
+        unsaved after it and undo stops there.
+
+        200 with `file`, `point` (what was written), `running`, `library`
+        (what git says of the file now) and, for the running rig, the
+        switch's `how`, `why` and `seconds`. 404 for a point that is not
+        there; 400 for a body of the wrong shape; 409 `busy`, `unsaved`,
+        `panel`, `rig_problem`; 409 `not_switched` (or 504 if a command was
+        abandoned) when the file was written and the rig could not be made to
+        play it, `written: true` and the reason saying so.
+
+        Not run against a live Sushi: shown against the fakes of the tests.
+        """
+        from . import saves
+
+        try:
+            point, discard = revert_request(await self._json_body(request))
+        except AgentError as exc:
+            raise web.HTTPBadRequest(reason=str(exc))
+        name = request.match_info["name"]
+        path = self._rigfile_path(name)
+        root = self._midi_root()
+        self._refuse_while_busy()
+        answer: dict[str, Any]
+        running = False
+        async with self._lock:
+            self.busy = "revert"
+            try:
+                run = await self._rigfile_run()
+                running = run["running"] is not None and run["running"].resolve() == path.resolve()
+                try:
+                    data, said = await asyncio.wait_for(
+                        asyncio.to_thread(self._revert_point, root, name, path, point), SAVE_TIMEOUT)
+                except saves.SaveNotFound as exc:
+                    raise web.HTTPNotFound(reason=str(exc))
+                except asyncio.TimeoutError:
+                    raise web.HTTPGatewayTimeout(reason=f"{point} was not read within {SAVE_TIMEOUT:g}s")
+                try:
+                    await self._rigfile_thread(request, path, lambda: self._revert_compile(data, run))
+                    if running:
+                        async with self._live_lock:
+                            refusal = revert_refusal(run["state"], self.log)
+                            if refusal is not None and not discard:
+                                raise RigFileRefused(*refusal)
+                            await self._rigfile_thread(request, path, lambda: saves.restore(path, data))
+                    else:
+                        await self._rigfile_thread(request, path, lambda: saves.restore(path, data))
+                except RigFileRefused as exc:
+                    error = _conflict(" ".join(str(exc).split()), exc.code)
+                    if exc.extra:
+                        error.agent_extra = exc.extra
+                    raise error
+                shown = self._save_shown(path)
+                answer = {"ok": True, "rig": name, "file": shown, "point": said, "running": running,
+                          "written": True, "discarded": bool(discard and running)}
+                if not running:
+                    answer["note"] = (f"{shown} is {said['what']} again; {name} is not the running rig, so it "
+                                      "plays as reverted when it is next started or switched to")
+                else:
+                    answer.update(await self._revert_switch(request, name, said))
+            finally:
+                self.busy = None
+                if running:
+                    await self._midi_sync()  # the switch stopped the listener; it follows the rig now
+        await self._rigfile_git_after(answer, path)
+        if answer["ok"]:
+            return web.json_response(answer)
+        return web.json_response(answer, status=504 if answer.get("abandoned") else 409)
+
+    def _revert_point(self, root: Path, name: str, path: Path, point: str) -> tuple[bytes, dict[str, Any]]:
+        """The bytes of revert point `point` and what it is, for the answer."""
+        from . import saves
+
+        match = saves.COMMIT_PATTERN.match(point)
+        if match:
+            sha = match.group(1)
+            data = saves.commit_bytes(root, path, sha)
+            return data, {"id": point, "kind": "commit", "sha": sha, "what": f"as commit {sha[:7]} has it"}
+        data = saves.snapshot_bytes(root, name, point)
+        kept, _ = saves.snapshots(root, name)
+        meta = next((p for p in kept if p["id"] == point), {"id": point})
+        return data, {"id": point, "kind": "save", "at": meta.get("at"),
+                      "what": f"as the save of {meta.get('at') or point} wrote it"}
+
+    def _revert_compile(self, data: bytes, run: dict[str, Any]) -> dict[str, Any]:
+        """The point compiled as `up --rig` would compile it, or the refusal."""
+        import yaml
+
+        try:
+            raw = yaml.safe_load(data.decode("utf-8"))
+        except (UnicodeDecodeError, yaml.YAMLError) as exc:
+            raise RigFileRefused(" ".join(f"nothing was written: it is not YAML: {exc}".split()),
+                                 "rig_problem") from exc
+        if not isinstance(raw, dict):
+            raise RigFileRefused("nothing was written: it is not a rig file", "rig_problem")
+        return self._rigfile_compile(raw, run)
+
+    async def _revert_switch(self, request, name: str, said: dict[str, Any]) -> dict[str, Any]:
+        """The running rig into its reverted file, by the live switch, held
+        under the lifecycle lock the caller holds. What it says, as a
+        switch's answer does, and `ok: false` with `code: "not_switched"`
+        when the rig was not made to play the file that is now written."""
+        def mark(entry: dict[str, Any]) -> None:
+            entry["args"]["revert"] = said["id"]
+
+        try:
+            switched = await self._switch_held(request, name, None, mark)
+        except SwitchRefused as exc:
+            reason = (f"{name}'s file was reverted ({said['what']}), but the rig was not switched to it: {exc}. "
+                      "It keeps playing as it was; restart it to play the reverted file")
+            self._remember(["revert", name], reason, kind="lifecycle")
+            return {"ok": False, "code": "not_switched", "reason": " ".join(reason.split())}
+        out = {k: switched.get(k) for k in ("how", "why", "seconds", "plan", "applied", "counts", "entry",
+                                            "state", "take", "abandoned", "half_switched") if k in switched}
+        if not switched.get("ok"):
+            reason = (f"{name}'s file was reverted ({said['what']}), but the rig did not come up playing it: "
+                      f"{switched.get('reason')}")
+            return {**out, "ok": False, "code": "not_switched", "reason": " ".join(reason.split())}
+        return out
+
+    # ======================================================================= #
+    # (end of revert to a previous save)
+    # ======================================================================= #
+
+    # ======================================================================= #
     # Recording from the web UI (S7): GET /record, POST /record/start|stop,
     # GET /takes
     # ======================================================================= #
@@ -4790,6 +5047,31 @@ class _MidiOrigin:
 
     method: str
     path: str
+
+
+# The web UI's files are asked again, against their ETag, on every load: with
+# no Cache-Control a browser may keep the app.js it had before the agent was
+# updated and run that against the new agent (2026-11-06, on the rig). An
+# unchanged file is a 304, so this costs one round trip a file.
+UI_CACHE_CONTROL = "no-cache"
+
+
+async def _ui_cache_control(request, response) -> None:
+    """`Cache-Control: no-cache` on the page (`/`) and its files (`/ui/...`),
+    set as each response is prepared, so the static route's own answers,
+    304s included, carry it too."""
+    if request.path == "/" or request.path.startswith("/ui/"):
+        response.headers["Cache-Control"] = UI_CACHE_CONTROL
+
+
+def plugin_width(plugin: dict[str, Any], ports: dict[str, Any]) -> str | None:
+    """"mono" or "stereo" for an LV2 plugin the ports table lists, by its
+    outputs (one is mono, as `stereo.py` decides where a copy goes); None
+    for anything else, which the page says nothing about. Pure."""
+    said = ports.get(plugin.get("uri")) if plugin.get("type") in (None, "lv2") else None
+    if said is None:
+        return None
+    return "mono" if said.outputs == 1 else "stereo" if said.outputs >= 2 else None
 
 
 def switch_steps(state: dict[str, Any], rig: str) -> list[list[str]]:
@@ -5341,6 +5623,49 @@ def restart_refusal(
             f"{describe_change(newest)}, at {newest.get('at')}), and a restart reloads its file without "
             "them: Save first, or restart with discard (sushi-rig restart --discard, or "
             '{"discard": true}) to drop them', "unsaved")
+
+
+def revert_request(body: Any) -> tuple[str, bool]:
+    """`(point, discard)` from a revert's body, or `AgentError` (400): `save`,
+    a snapshot's id or `commit:<sha>` as `GET /rigs/{name}/saves` lists
+    them (checked by shape here, looked up by the route), and `discard`,
+    true or absent. Anything beside them is refused, as a save's body is."""
+    from . import saves
+
+    if not isinstance(body, dict) or not set(body) <= {"save", "discard"}:
+        raise AgentError(f'the body of a revert is {{"save": "<id>"}}, with "discard": true to drop unsaved '
+                         f"work, not {body!r}")
+    point = body.get("save")
+    if not isinstance(point, str) or not (saves.ID_PATTERN.match(point) or saves.COMMIT_PATTERN.match(point)):
+        raise AgentError(f"'save' must be a revert point's id, as GET /rigs/<name>/saves lists them, not {point!r}")
+    discard = body.get("discard", False)
+    if not isinstance(discard, bool):
+        raise AgentError(f"'discard' must be true or false, not {discard!r}")
+    return point, discard
+
+
+def revert_refusal(state: dict[str, Any], log: list[dict[str, Any]]) -> tuple[str, str] | None:
+    """`(reason, code)` when a revert of the running rig must wait, or None.
+    Pure over the state file and the log. The rule an edit of its file has
+    (`rigfile_refusal`): a revert replaces what is playing with the file, so
+    unsaved live work would be lost by it (`unsaved`), and with the panel
+    running the agent cannot see the panel's (`panel`). Worded for a revert,
+    and answered with `{"discard": true}` rather than a restart."""
+    from .rig import runs_panel
+
+    name = Path(str(state.get("rig") or "the rig")).stem
+    if runs_panel(state):
+        return (f"{name} runs with its panel, whose changes the agent cannot see, so it cannot tell whether "
+                "a revert would drop unsaved work: save from the panel's SAVE first, or revert with discard "
+                '({"discard": true}) to drop whatever it holds', "panel")
+    unsaved = unsaved_entries(log, since=state.get("started_at"))
+    if not unsaved:
+        return None
+    newest = unsaved[-1]
+    count = f"{len(unsaved)} change{'s' if len(unsaved) != 1 else ''}"
+    return (f"{name} is running with {count} made through the agent and not saved (the newest: "
+            f"{describe_change(newest)}, at {newest.get('at')}), and a revert replaces what is playing with "
+            'the file: Save first, or revert with discard ({"discard": true}) to drop them', "unsaved")
 
 
 def programs_moved(before: list[str], after: list[str], made: str) -> dict[str, Any] | None:

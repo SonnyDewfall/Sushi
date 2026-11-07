@@ -3305,3 +3305,63 @@ code). (8) Save and the rig files share one off-loop write
 the newest save, switch or run start (`since_baseline`) for `live_edits` and
 `unsaved_entries`; `freshWiring` is the page's one literal. **Still not run
 against a live Sushi.** *(2026-11-06)*
+
+**Knobs that can be set, volume, Revert, and the rack as a mixing desk.**
+Sonny's requests after using the web UI on the rig, and five more from him
+on the way (A to E below). **History:** the per-knob "was …" labels and the
+itemised unsaved list are gone, since they came and went as values changed;
+the one sign of unsaved work is a count on Save in a box that is always
+there, and nothing comes, goes or moves as values change (a browser test
+compares every element's box before and after four changes). Undo stays.
+**Revert to a previous save:** every save from here (POST /rig/save, save-as
+too) keeps a snapshot of the file as written, with time, rig and the commit
+it sat on, in `<checkout>/.sushi-rig/saves/<rig>/` (`saves.py`), gitignored
+and ignoring itself, the newest 50 per rig; the file's own commits are listed
+beside them (`git log`, off the loop, with a timeout). `GET
+/rigs/<name>/saves`; `POST /rigs/<name>/revert {"save", "discard"?}` writes
+the point back byte for byte (a plain write: `write_rig` keeps the current
+file's comments, not the snapshot's), compiled first, and plays it on the
+running rig through the live switch (#112), live where it can be; 409
+`unsaved` with live work unless `discard`. The page's "Revert…" lists them
+with how long ago, and its confirm names what is lost. **Master volume:** in
+both headers, on the master track's gain through POST /live/parameter
+(logged, undone), saved as the new `master: level:` (rigfile.py: compiled to
+that gain as a channel's level is to its send's; unity writes nothing, and
+every committed rig compiles byte for byte as before), a live step of a
+switch; −∞ then −60 to +6 dB, −∞ being the gain's −120 dB floor; usable
+while locked, no confirm. **Knobs:** a vertical drag of 320 px for the whole
+travel with the pointer captured, shift or a second finger a tenth; the wheel
+a notch at a time (about 1 % of the range, rounded to 1, 2 or 5 × 10ⁿ),
+preventing page scroll only over the control; arrows, PageUp/Down ×10,
+Home/End; the value a text field (click selects, Enter or blur commits,
+Escape cancels, lenient, clamped, exact; nonsense refused in place; a focused
+field is never overwritten by a poll); whole display units sticky (caught
+within 0.15, held to 0.35 on a drag; a scroll snaps without holding; a 0–1
+parameter with no unit held to hundredths; fine never snaps). The amp's
+faders and every volume take typed values and the wheel. All decisions are
+pure in rig.js and tested. **(A)** The rack's inputs always say why they
+cannot be edited (no rig; a v1 run) and New rig… is offered whatever runs.
+**(B)** The page and `/ui/*` are served `Cache-Control: no-cache`, so a
+browser revalidates against the ETag and never runs a stale app.js. **(C)**
+Each channel's volume (its send's gain, `level:`) is the same fader as the
+master's, on the rack and the stage, locked or not, replacing the small
+"send to master" knob; a channel a MIDI blend drives says "driven by
+<control>" and cannot be set from the page (the pedal would undo it, and a
+save does not write it; `rigfile.blend_controls`, on `GET
+/rigs/<rig>/channels`). **(D)** The rack is a mixing desk: channel strips on
+the left (name, a quiet input line with Change input and Add channel, the
+volume large), the chains and amp in the middle, the files (rigs, New rig,
+start/stop/switch, Undo, Save, Revert, takes) on the right, the master in the
+header; at phone width they stack in that order. **(E)** The compiler's
+copies to stereo are recognised by uid, reserved suffix or role before any
+role `/live/plugins` gives, and shown nowhere; the plugin before one has a
+small "mono" badge, amber with "after <stereo plugin>: this collapses its
+stereo width" where it follows one, from plugin-ports.txt via `width` on
+`/live/plugins`. Tests: `test_agent_revert.py` (real rig files, git, the real
+compile and the real live switch over `RigLive`: save, change, save, revert
+to the first, and file and rig match the first save), `test_rigfile_master.py`,
+`test_ui_knobs.py` (pure and browser), `test_ui.py` updated. **NOT RUN AGAINST
+A LIVE SUSHI:** the master track's gain (range read from parameter_info,
+recorded from 1.3.0's source), a revert's live switch into the rig already
+up, a blend's fader against a real pedal, and the knobs' feel on the rig's
+touch screen. *(2026-11-07)*
