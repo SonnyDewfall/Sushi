@@ -294,20 +294,38 @@ export function stepped(ctrl, v, steps, fine = false) {
   return normalisedOf(ctrl, clampTo(tidy(base + steps * size, size), ctrl.min, ctrl.max));
 }
 
-// A scroll: notch after notch of `stepped`, but from where the scroll has
-// got to rather than the value shown, so a whole number within SNAP_BAND
-// holds the value for the notches it takes to pass it, without holding it
-// for good. `gesture` is what the last notch returned (null to begin); the
-// answer is `{gesture, v}`. Not held past the band, as a drag is (HOLD_BAND):
-// a wheel moves in notches, and notches that did nothing read as a broken
-// wheel. Steps of a tenth of a unit or coarser land on whole numbers by
-// themselves; and `fine` is for the values between, so neither snaps.
-export function scrolled(ctrl, gesture, v, notches, fine = false) {
-  const step = niceStep(ctrl);
-  const from = gesture ? gesture.raw : (isNumber(v) ? v : 0);
-  const raw = stepped(ctrl, from, notches, fine);
-  if (fine || (step !== null && step >= 0.1)) return { gesture: { raw }, v: raw };
-  return { gesture: { raw }, v: sticky(ctrl, raw, null).v };
+// A scroll's notches: `stepped`, then, if that step crossed or reached a
+// whole number in the units shown, the value lands on that whole number
+// (the first one in the scroll's direction). So a notch always moves the
+// value the way it was turned, and a scroll still stops on whole numbers
+// it passes. Stateless: a notch starts from the value as it is, so no pause
+// and no float32 read-back can make a notch undo itself (review,
+// 2026-11-07: a slow scroll at 4.0 in 0.05 steps snapped back to 4.0 every
+// time). `fine` is for the values between, and never snaps.
+export function scrolled(ctrl, v, notches, fine = false) {
+  const start = isNumber(v) ? v : 0;
+  const raw = stepped(ctrl, start, notches, fine);
+  if (fine || snapGrid(ctrl) !== 1) return raw;
+  const d0 = displayOf(ctrl, start), d1 = displayOf(ctrl, raw);
+  if (!Number.isFinite(d0) || !Number.isFinite(d1) || d0 === d1) return raw;
+  const up = d1 > d0;
+  const whole = up ? Math.floor(d0 + 1e-9) + 1 : Math.ceil(d0 - 1e-9) - 1;
+  const crossed = up ? whole <= d1 + 1e-9 : whole >= d1 - 1e-9;
+  return crossed ? fromDisplay(ctrl, whole) : raw;
+}
+
+// Whether a wheel event over a control is the control's (and so turns it)
+// or the page's (and so scrolls it). Only a settable control's dial or
+// fader takes it, and only when meant: it has the focus, or the pointer has
+// rested on it WHEEL_REST_MS since it arrived and since the page last
+// scrolled. Without the rest, a scroll down a rack of knobs stopped dead at
+// the first knob under the pointer and turned it (review, 2026-11-07). Pure.
+export const WHEEL_REST_MS = 300;
+export function takesWheel({ settable, focused, now, enteredAt, scrolledAt }) {
+  if (!settable) return false;
+  if (focused) return true;
+  if (!isNumber(enteredAt)) return false;
+  return now - Math.max(enteredAt, isNumber(scrolledAt) ? scrolledAt : -Infinity) >= WHEEL_REST_MS;
 }
 
 // Whole notches from a wheel event, with what is left over for the next:
@@ -526,7 +544,7 @@ const trackOf = (live, processor) => {
 // The amp's changes (op "amp" and "amp_model") are compared with `amp`, GET
 // /amp's answer: what the agent last sent Carla, which is all there is to
 // compare with (amp_live.py). Without one they are left out, not guessed.
-export function unsavedChanges(logAnswer, live, rig, amp = null) {
+export function unsavedChanges(logAnswer, live, rig, amp = null, plugins = null) {
   const log = (logAnswer && logAnswer.log) || [];
   const first = (logAnswer && logAnswer.first) || 0;
   let start = 0;
@@ -579,7 +597,7 @@ export function unsavedChanges(logAnswer, live, rig, amp = null) {
       if (now !== null && now !== item.from) items.push({ ...item, to: now });
     } else {
       const now = live && live.tracks ? live.tracks[item.track] : undefined;
-      if (now) items.push(...chainChanges(item, now));
+      if (now) items.push(...chainChanges(item, now, plugins));
     }
   }
   // Trimmed (`first` > 0) with no rig switch kept and the oldest entry kept
@@ -597,14 +615,15 @@ export function unsavedChanges(logAnswer, live, rig, amp = null) {
 // goes with its plugin and is not a change of its own; nor are the send and
 // return, which never come or go. Netted like the rest: added and removed
 // again is nothing.
-function chainChanges(item, now) {
+function chainChanges(item, now, plugins = null) {
   // A baseline the log does not have (a move Sushi did not say the chain of)
   // says nothing of what came or went: one row, the chain from "unknown",
   // never every plugin on the track as added (review of #32).
   if (!Array.isArray(item.from)) return sameChain(now, item.from) ? [] : [{ ...item, to: [...now] }];
   const from = item.from;
   const was = new Set(from), is = new Set(now);
-  const own = (n) => !n.endsWith(STEREO_SUFFIX);
+  // A copy by `isCopy`, as everywhere: its uid where /live/plugins said it.
+  const own = (n) => !isCopy(n, plugins ? plugins[n] : null);
   const base = { track: item.track, source: item.source };
   const out = [
     ...now.filter((n) => own(n) && !was.has(n)).map((n) => ({ kind: "added", processor: n, ...base })),
@@ -1256,10 +1275,11 @@ export function volumeText(db) {
 }
 
 // The fader's position for a dB value, and back: one notch below the range
-// is -∞; a value outside the range (a file may hold -80) sits at its end.
+// is -∞, and only -∞; a value outside the range (a file may hold -80 or +10)
+// sits at that end of it, its text saying what it is.
 export function volumeSlider(db) {
-  if (db === null || db === -Infinity || db < VOLUME_MIN_DB) return VOLUME_OFF_SLIDER;
-  return Math.min(VOLUME_MAX_DB, db);
+  if (db === null || db === undefined || db === -Infinity) return VOLUME_OFF_SLIDER;
+  return clampTo(db, VOLUME_MIN_DB, VOLUME_MAX_DB);
 }
 
 export function volumeOfSlider(x) {
@@ -1275,13 +1295,20 @@ export function volumeSticky(db, held = null) {
   return { db, held: null };
 }
 
-// The master `steps` notches from `db`, sticky as a drag is: up from -∞ is
-// -60, and down from -60 is -∞. `{db, held}`.
+// A volume `steps` notches from `db`, never against the direction turned
+// (review, 2026-11-07: +10 dB a notch up was clamped to +6, -80 a notch up
+// went to -∞). Inside -60 .. +6 it moves by VOLUME_STEP_DB, sticky to whole
+// dB, and down from -60 is -∞, up from -∞ is -60. Outside the range (a file
+// may hold +10 or -80) it steps toward the range, and away from it not at
+// all, except down below -60, which is -∞. `{db, held}`.
 export function volumeStepped(db, steps, fine = false, held = null) {
-  if (db === -Infinity || db === null) {
+  if (db === -Infinity || db === null || db === undefined) {
     return steps > 0 ? { db: VOLUME_MIN_DB, held: null } : { db: -Infinity, held: null };
   }
-  const next = db + steps * VOLUME_STEP_DB / (fine ? FINE_DIVISOR : 1);
+  const size = VOLUME_STEP_DB / (fine ? FINE_DIVISOR : 1);
+  const next = db + steps * size;
+  if (db > VOLUME_MAX_DB) return { db: steps > 0 ? db : next, held: null };
+  if (db < VOLUME_MIN_DB) return steps > 0 ? { db: next, held: null } : { db: -Infinity, held: null };
   if (next < VOLUME_MIN_DB - 1e-9) return { db: -Infinity, held: null };
   const kept = clampTo(next, VOLUME_MIN_DB, VOLUME_MAX_DB);
   return fine ? { db: kept, held: null } : volumeSticky(kept, held);  // fine is for the values between

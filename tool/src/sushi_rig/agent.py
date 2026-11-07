@@ -4577,20 +4577,27 @@ class Agent:
         path = self._rigfile_path(name)
         root = self._midi_root()
 
-        def read() -> dict[str, Any]:
+        # The snapshots need no git, so they are read apart from it: a slow
+        # git leaves the saves listed and the commits out, said in
+        # `git_note`, rather than a 504 with nothing (review, 2026-11-07).
+        def local() -> dict[str, Any]:
             kept, problems = saves.snapshots(root, name)
-            committed, note = saves.commits(root, path)
             current = path.read_bytes() if path.exists() else None
             same = saves.kept_as(current, kept, lambda sid: saves.snapshot_bytes(root, name, sid))
-            git = file_git_state(root, path) if note is None else None
-            return {"saves": kept, "commits": committed, "git_note": note, "problems": problems,
-                    "current": {"kept_as": same, "git": (git or {}).get("file")}}
+            return {"saves": kept, "problems": problems, "kept_as": same}
 
+        def from_git() -> dict[str, Any]:
+            committed, note = saves.commits(root, path)
+            git = file_git_state(root, path) if note is None else None
+            return {"commits": committed, "git_note": note, "git": (git or {}).get("file")}
+
+        found = await asyncio.to_thread(local)
         try:
-            found = await asyncio.wait_for(asyncio.to_thread(read), SAVE_TIMEOUT)
+            found.update(await asyncio.wait_for(asyncio.to_thread(from_git), SAVE_TIMEOUT))
         except asyncio.TimeoutError:
-            raise web.HTTPGatewayTimeout(reason=(
-                f"the revert points of {name} were not read within {SAVE_TIMEOUT:g}s: git did not answer"))
+            found.update(commits=[], git=None, git_note=(
+                f"git did not answer within {SAVE_TIMEOUT:g}s, so the file's commits are left out; the saves are all here"))
+        found["current"] = {"kept_as": found.pop("kept_as"), "git": found.pop("git")}
         run = await self._rigfile_run()
         return web.json_response({
             "ok": True, "rig": name, "file": self._save_shown(path),
@@ -4730,11 +4737,18 @@ class Agent:
 
         try:
             switched = await self._switch_held(request, name, None, mark)
-        except SwitchRefused as exc:
-            reason = (f"{name}'s file was reverted ({said['what']}), but the rig was not switched to it: {exc}. "
-                      "It keeps playing as it was; restart it to play the reverted file")
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 -- the file is written whatever went wrong: said, with `written`
+            # A refusal (`SwitchRefused`) or anything else the switch raised:
+            # the file is reverted either way, and the answer must say so
+            # rather than be a bare 500 (review, 2026-11-07).
+            why = str(exc) if isinstance(exc, SwitchRefused) else f"{type(exc).__name__}: {exc}"
+            reason = " ".join((f"{name}'s file was reverted ({said['what']}), but the rig was not switched to it: "
+                               f"{why}. It keeps playing as it was, unless the switch got part-way; restart it to play "
+                               "the reverted file").split())
             self._remember(["revert", name], reason, kind="lifecycle")
-            return {"ok": False, "code": "not_switched", "reason": " ".join(reason.split())}
+            return {"ok": False, "code": "not_switched", "reason": reason, "written": True}
         out = {k: switched.get(k) for k in ("how", "why", "seconds", "plan", "applied", "counts", "entry",
                                             "state", "take", "abandoned", "half_switched") if k in switched}
         if not switched.get("ok"):

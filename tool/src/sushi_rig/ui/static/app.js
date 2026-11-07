@@ -450,20 +450,28 @@ function liveBody() { return state.live && state.live.ok ? state.live.body : nul
 // refused in place, nothing sent. `show(text)` is the poll's: it never
 // writes into a field that has the focus, so a value being typed is not
 // pulled from under the fingers once a second.
-function valueField(aria, commit) {
+function valueField(aria, commit, name = null) {
   const input = h("input", {
-    type: "text", class: "value-field", "aria-label": aria, autocomplete: "off", spellcheck: "false",
+    type: "text", class: "value-field", name, "aria-label": aria, autocomplete: "off", spellcheck: "false",
     autocapitalize: "none", inputmode: "decimal", enterkeyhint: "done",
   });
   let shown = "";
   let selecting = false;
+  // Whether the player has typed since the field took the focus. Only typed
+  // text is ever committed: a field left untouched while the value moved
+  // under it (the wheel, a pedal, another page) shows the value again on
+  // blur or Enter, and never sends the text it had (review, 2026-11-07: a
+  // blur committed the stale text and undid the scroll).
+  let dirty = false;
   const clearBad = () => { input.classList.remove("bad"); input.removeAttribute("aria-invalid"); input.title = ""; };
-  input.addEventListener("focus", () => { selecting = true; input.select(); });
+  const refresh = () => { clearBad(); input.value = shown; dirty = false; };
+  input.addEventListener("focus", () => { selecting = true; dirty = false; input.select(); });
+  input.addEventListener("input", () => { dirty = true; });
   // A click's mouseup would put the caret where it landed, undoing the select.
   input.addEventListener("mouseup", (event) => { if (selecting) { event.preventDefault(); selecting = false; } });
   input.addEventListener("pointerdown", (event) => event.stopPropagation());
   const done = (said) => {
-    if (said.ok) { clearBad(); shown = said.text; input.value = said.text; return true; }
+    if (said.ok) { clearBad(); shown = said.text; input.value = said.text; dirty = false; return true; }
     input.classList.add("bad");
     input.setAttribute("aria-invalid", "true");
     input.title = said.why;
@@ -473,20 +481,20 @@ function valueField(aria, commit) {
     event.stopPropagation();  // a knob's arrow keys are the dial's, not the field's
     if (event.key === "Enter") {
       event.preventDefault();
-      done(commit(input.value));
+      if (dirty) done(commit(input.value));
+      else refresh();
       input.select();
     } else if (event.key === "Escape") {
       event.preventDefault();
-      clearBad();
-      input.value = shown;
+      refresh();
       input.blur();
     }
   });
   input.addEventListener("blur", () => {
     selecting = false;
-    if (input.value === shown) { clearBad(); return; }
-    // Leaving commits what is there; what cannot be read is put back.
-    if (!done(commit(input.value))) { clearBad(); input.value = shown; }
+    // Leaving commits what was typed; what cannot be read, or nothing typed,
+    // is the value as it is now.
+    if (!dirty || !done(commit(input.value))) refresh();
   });
   return {
     input,
@@ -503,14 +511,23 @@ function valueField(aria, commit) {
 
 // The gestures that set a value, the same on a knob's dial, a fader and a
 // level: a vertical drag with the pointer captured (`R.dragPosition`, fine
-// with shift or a second finger), the wheel (`R.scrolled`, preventing the
-// page's scroll only while over the control), and the keys (`R.stepped`).
-// `get()` is the value now (normalised), `set(v)` sends it.
-const WHEEL_IDLE_MS = 600;  // a pause this long ends a scroll: the next starts from the value shown
-function bindGestures(target, wheelTarget, ctrl, get, set, { drag: draggable = true, field = null } = {}) {
+// with shift or a second finger), the wheel (`R.scrolled`), and the keys
+// (`R.stepped`). `get()` is the value now (normalised), `set(v)` sends it.
+// The wheel is taken only over `target` itself (the dial, the fader), only
+// when `settable()`, and only when meant (`R.takesWheel`): otherwise it is
+// the page's, and scrolls it.
+function bindGestures(target, ctrl, get, set, { drag: draggable = true, field = null, settable = () => true } = {}) {
   const release = (event) => { if (field && event.target !== field.input) field.release(); };
   for (const type of ["pointerdown", "keydown"]) target.addEventListener(type, release);
-  wheelTarget.addEventListener("wheel", release);
+  let wheelRest = 0;
+  wheelControl(target, settable, (event) => {
+    release(event);
+    const { notches, rest } = R.wheelNotches(wheelRest, event.deltaY, event.deltaMode);
+    wheelRest = rest;
+    if (!notches) return;
+    const v = R.scrolled(ctrl, get(), notches, event.shiftKey);
+    if (v !== get()) set(v);
+  });
   let drag = null;
   if (draggable) {
     target.addEventListener("pointerdown", (event) => {
@@ -546,20 +563,6 @@ function bindGestures(target, wheelTarget, ctrl, get, set, { drag: draggable = t
     target.addEventListener("pointerup", end);
     target.addEventListener("pointercancel", end);
   }
-  let wheel = { rest: 0, gesture: null, at: 0, last: null };
-  wheelTarget.addEventListener("wheel", (event) => {
-    event.preventDefault();  // over the control only: the page scrolls everywhere else
-    const now = Date.now();
-    if (now - wheel.at > WHEEL_IDLE_MS || get() !== wheel.last) wheel = { rest: 0, gesture: null, at: now, last: null };
-    wheel.at = now;
-    const { notches, rest } = R.wheelNotches(wheel.rest, event.deltaY, event.deltaMode);
-    wheel.rest = rest;
-    if (!notches) return;
-    const moved = R.scrolled(ctrl, wheel.gesture, get(), notches, event.shiftKey);
-    wheel.gesture = moved.gesture;
-    wheel.last = moved.v;
-    if (moved.v !== get()) set(moved.v);
-  }, { passive: false });
   target.addEventListener("keydown", (event) => {
     const steps = { ArrowUp: 1, ArrowRight: 1, ArrowDown: -1, ArrowLeft: -1, PageUp: 10, PageDown: -10 };
     let v;
@@ -570,6 +573,28 @@ function bindGestures(target, wheelTarget, ctrl, get, set, { drag: draggable = t
     event.preventDefault();
     set(v);
   });
+}
+
+// When the page last scrolled, for `R.takesWheel`: a wheel that is scrolling
+// the page carries on scrolling it over a control the pointer passes.
+let pageScrolledAt = -Infinity;
+window.addEventListener("scroll", () => { pageScrolledAt = Date.now(); }, { capture: true, passive: true });
+
+// The wheel over `el`, given to `turn(event)` when `R.takesWheel` says it is
+// the control's, and left to the page (no preventDefault) when not.
+function wheelControl(el, settable, turn) {
+  let enteredAt = null;
+  el.addEventListener("pointerenter", () => { enteredAt = Date.now(); });
+  el.addEventListener("pointerleave", () => { enteredAt = null; });
+  el.addEventListener("wheel", (event) => {
+    const now = Date.now();
+    if (enteredAt === null) enteredAt = now;  // arrived under a still pointer: the rest starts now
+    if (!R.takesWheel({ settable: settable(), focused: document.activeElement === el, now, enteredAt, scrolledAt: pageScrolledAt })) {
+      return;
+    }
+    event.preventDefault();
+    turn(event);
+  }, { passive: false });
 }
 
 // A typed value for a control, for `valueField`: parsed, clamped, sent.
@@ -626,7 +651,7 @@ function knob(unit, ctrl, size) {
     note.title = note.textContent;
     el.classList.toggle("failed", !!failed);
   };
-  if (!inert) bindGestures(dial, el, ctrl, () => current, set, { field });
+  if (!inert) bindGestures(dial, ctrl, () => current, set, { field });
   state.updaters.push((ctx) => draw(sender.displayed(key, R.valueOf(ctx.live, unit.name, ctrl.name), ctx.seq)));
   return el;
 }
@@ -1036,7 +1061,7 @@ function ampFader(f) {
   input.addEventListener("change", () => { held = null; });
   const el = h("label", { class: "fader" }, h("span", { class: "label" }, f.label), input, field.input, note);
   const norm = () => (current === null ? null : R.normalisedOf(ctrl, current));
-  if (!f.disabled) bindGestures(input, el, ctrl, norm, set, { drag: false, field });
+  if (!f.disabled) bindGestures(input, ctrl, norm, set, { drag: false, field });
   state.ampUpdaters.push((ctx) => {
     const body = state.amp && state.amp.ok ? state.amp.body : null;
     draw(sender.displayed(key, R.ampValueOf(body, f.name), ctx.seq));
@@ -1114,6 +1139,7 @@ function volumeFader({ where, processor, label, aria, control, updaters, blended
   const key = `p\u0000${processor}\u0000gain`;
   const input = h("input", {
     type: "range", min: R.VOLUME_OFF_SLIDER, max: R.VOLUME_MAX_DB, step: 0.1, "aria-label": aria,
+    name: `volume-${processor}`,  // so a region rebuilt around it can give the focus back (`refocus`)
   });
   let ctrl = control(null);
   let current = null;  // normalised, as Sushi has it
@@ -1137,7 +1163,7 @@ function volumeFader({ where, processor, label, aria, control, updaters, blended
     if (!said.ok) return said;
     set(said.db);
     return { ok: true, text: R.volumeText(said.db) };
-  });
+  }, `volume-${processor}-value`);
   const note = h("span", { class: "driven" });
   const el = h("div", { class: `volume volume-${where}`, role: "group", "aria-label": aria, "data-control": key },
     h("span", { class: "k" }, label), input, field.input, note);
@@ -1162,16 +1188,15 @@ function volumeFader({ where, processor, label, aria, control, updaters, blended
     set(snapped.db);
   });
   input.addEventListener("change", () => { held = null; });
-  let wheel = { rest: 0 };
+  let wheelRest = 0;
   for (const type of ["pointerdown", "keydown"]) input.addEventListener(type, () => field.release());
-  el.addEventListener("wheel", (event) => {
-    event.preventDefault();  // over the fader only
-    if (event.target !== field.input) field.release();
-    if (!settable()) return;
-    const { notches, rest } = R.wheelNotches(wheel.rest, event.deltaY, event.deltaMode);
-    wheel.rest = rest;
+  // The fader itself takes the wheel, when settable and meant (`wheelControl`).
+  wheelControl(input, settable, (event) => {
+    field.release();
+    const { notches, rest } = R.wheelNotches(wheelRest, event.deltaY, event.deltaMode);
+    wheelRest = rest;
     if (notches) set(R.volumeStepped(dbNow(), notches, event.shiftKey).db);
-  }, { passive: false });
+  });
   input.addEventListener("keydown", (event) => {
     const steps = { ArrowUp: 1, ArrowRight: 1, ArrowDown: -1, ArrowLeft: -1, PageUp: 10, PageDown: -10 };
     if (event.key in steps) set(R.volumeStepped(dbNow(), steps[event.key], event.shiftKey).db);
@@ -1924,9 +1949,20 @@ async function playNewRig(offer) {
 // has them (2026-11-06, the layout agreed with the player). Each strip is
 // the channel's name, a small, quiet input line (its role and width as the
 // running rig's file has them, and "Change input" behind a tap), and its
-// volume as the large part (`channelVolume`, the send's gain). Add channel
-// is at the bottom. An input edit writes the file; the rig keeps playing as
-// it was until the restart offered, which takes a confirm.
+// volume as the large part (`channelVolume`, the send's gain). Then a strip
+// for the master, whose name leads to its chain (its volume is the
+// header's), and Add channel at the bottom. An input edit writes the file;
+// the rig keeps playing as it was until the restart offered, which takes a
+// confirm.
+//
+// Three parts, each patched on its own key, so nothing that is not a
+// strip's own rebuilds it: the head (the file, and why nothing can be
+// edited when nothing can), the strips (keyed by the channels alone), and
+// the foot (Add channel, an edit's answer, the restart confirm). Each
+// strip's input line is patched on its own too. A volume fader is rebuilt
+// only when the channels change, so a save from another page, a lifecycle
+// command or an edit's answer never ends a drag or takes the focus (review,
+// 2026-11-07: one key for the whole column did both).
 //
 // The strips are the live rig's channels, so their volumes are there even
 // while the file is still being read; a channel the file has gained since
@@ -1934,66 +1970,94 @@ async function playNewRig(offer) {
 // With no rig of channels up, the column still says CHANNELS AND INPUTS and
 // why nothing can be edited (a v1 run drew nothing at all on the rig).
 function stripsRegion(el, model, unsaved) {
+  let parts = state.stripParts;
+  if (!parts || parts.el !== el) {
+    parts = { el, head: h("div", { class: "strips-head" }), list: h("div", { class: "strip-list" }),
+      foot: h("div", { class: "strips-foot" }), slots: new Map() };
+    el.replaceChildren(parts.head, parts.list, parts.foot);
+    state.stripParts = parts;
+  }
   const w = state.wiring;
   const rig = state.health && state.health.ok ? state.health.body.rig || {} : {};
   const view = R.wiringView(state.health, rig.running ? state.rigChannels[rig.config_name] || null : null, unsaved);
-  const live = model ? model.tracks.filter((t) => t.send) : [];
-  const heading = h("h2", {}, "CHANNELS AND INPUTS");
-  if (view.blocked) {
-    patch(el, JSON.stringify([view, live.map((t) => [t.name, t.send.name])]), () => {
-      state.stripUpdaters = [];
-      return [heading, h("p", { class: "sub inputs-why" }, view.blocked), live.map((t) => strip(t, null, null, null))];
-    });
-    return;
-  }
-  const ready = filesReady({ sources: false }) && !!state.rigChannels[view.rig];
-  const choices = R.roleChoices(state.roles);
-  const sources = w.adding && filesReady() ? R.sourceChoices(state.rigs, state.rigChannels) : null;
-  const busy = state.health && state.health.ok ? (state.health.body.agent || {}).busy || null : null;
-  const focus = focusedName(el);
-  const key = JSON.stringify([view, ready, live.map((t) => [t.name, t.send.name, t.send.panel]), choices, w.editing, w.change,
-    w.adding && [w.adding.input, w.adding.width, w.adding.from], sources, w.pending, w.result, w.restartConfirm, busy, !!state.pending]);
+  // While a command runs, /live is not read (R.readsLive) and there is no
+  // model; the rig is still up, so its strips stay as they were, faders and
+  // all, rather than be rebuilt empty and again a moment later.
+  const busyNow = !!(state.health && state.health.ok && (state.health.body.agent || {}).busy);
+  if (model) parts.model = model;
+  else if (!(busyNow && rig.running)) parts.model = null;
+  const shown = parts.model;
+  const live = shown ? shown.tracks.filter((t) => t.send) : [];
+  const master = shown ? shown.tracks.find((t) => t.isMaster) || null : null;
   const names = live.map((t) => t.name);
+  const ready = !view.blocked && filesReady({ sources: false }) && !!state.rigChannels[view.rig];
+  const choices = R.roleChoices(state.roles);
   const filed = ready ? view.channels : [];
-  const rebuilt = patch(el, key, () => {
+  const extra = filed.filter((c) => !names.includes(c.name));
+
+  patch(parts.head, JSON.stringify([view.blocked || null, view.file || null, view.problem || null, ready && choices.problem]), () => [
+    h("h2", {}, "CHANNELS AND INPUTS"),
+    view.blocked ? h("p", { class: "sub inputs-why" }, view.blocked) : null,
+    view.file ? h("p", { class: "sub" }, h("code", {}, view.file), " — an input edit writes the file; the rig plays it after a restart") : null,
+    view.problem ? h("p", { class: "rig-problem" }, view.problem) : null,
+    ready && choices.problem ? h("p", { class: "rig-problem" }, choices.problem) : null,
+  ]);
+
+  patch(parts.list, JSON.stringify([live.map((t) => [t.name, t.send.name, t.send.panel]), extra.map((c) => c.name),
+    master ? master.units.length : null]), () => {
     state.stripUpdaters = [];
+    parts.slots = new Map();
+    const strip = (name, volume) => {
+      const slot = h("div", { class: "strip-input-slot" });
+      parts.slots.set(name, slot);
+      return h("section", { class: "strip", "data-channel": name, "aria-label": `${name} channel` },
+        h("a", { class: "strip-name", href: `#t-${name}` }, name), slot, volume);
+    };
     return [
-      heading,
-      view.file ? h("p", { class: "sub" }, h("code", {}, view.file), " — an input edit writes the file; the rig plays it after a restart") : null,
-      view.problem ? h("p", { class: "rig-problem" }, view.problem) : null,
-      ready && choices.problem ? h("p", { class: "rig-problem" }, choices.problem) : null,
-      live.map((t) => strip(t, ready ? filed.find((c) => c.name === t.name) || null : undefined, view, choices)),
-      filed.filter((c) => !names.includes(c.name)).map((c) => strip(null, c, view, choices)),
-      !ready ? null
-        : w.adding && !sources ? h("p", { class: "sub" }, "Reading the rigs' channels, to start from…")
-          : w.adding ? addChannelForm(el, view, choices, sources)
-            : h("button", { class: "save-act add-channel", disabled: !!w.pending,
-              onclick: () => { w.adding = R.newChannel(choices, view.channels); w.result = null; render(); inBackground("rig channels", refreshAllRigChannels); } }, "Add channel"),
-      h("p", { class: "warn" }, view.unsaved),
-      w.result ? rigFileResult(w.result, () => { w.result = null; render(); }, () => { w.restartConfirm = true; render(); }) : null,
-      w.restartConfirm ? h("div", { class: "confirm", role: "group", "aria-label": "Confirm the restart" },
-        h("p", {}, `Restart ${view.rig}? The sound stops for a few seconds while it comes back from its file.`),
-        h("button", { class: "rig-act danger", disabled: !!state.pending || !!busy, onclick: restartForEdit }, "Restart now"),
-        h("button", { class: "rig-act", onclick: () => { w.restartConfirm = false; render(); } }, "Not now")) : null,
+      live.map((t) => strip(t.name, channelVolume(t, "strip", state.stripUpdaters))),
+      extra.map((c) => strip(c.name, h("p", { class: "sub" }, "Added to the file: restart the rig to play it, and its volume comes with it."))),
+      master ? h("section", { class: "strip strip-master", "data-channel": R.MASTER, "aria-label": "master" },
+        h("a", { class: "strip-name", href: `#t-${R.MASTER}` }, R.MASTER),
+        h("p", { class: "sub" }, `The mix: ${master.units.length} plugin${master.units.length === 1 ? "" : "s"} on its chain. `
+          + "Its volume is the master's, in the header.")) : null,
     ];
   });
-  if (rebuilt) refocus(el, focus);
-  if (ready) drawAddCheck(el, view);
-}
 
-// One strip: `track` is the live track (null for a channel only the file
-// has yet), `filed` the file's channel (null when the file lacks it,
-// undefined while the file is being read).
-function strip(track, filed, view, choices) {
-  const name = track ? track.name : filed.name;
-  const input = filed === undefined ? h("p", { class: "sub strip-input" }, "Reading the rig's file…")
-    : filed === null ? (view ? h("p", { class: "sub strip-input" }, "Not in the running rig's file.") : null)
-      : wiringRow(view, filed, choices);
-  return h("section", { class: "strip", "data-channel": name, "aria-label": `${name} channel` },
-    h("a", { class: "strip-name", href: `#t-${name}` }, name),
-    input,
-    track ? channelVolume(track, "strip", state.stripUpdaters)
-      : h("p", { class: "sub" }, "Added to the file: restart the rig to play it, and its volume comes with it."));
+  // Each strip's input line, on its own key.
+  for (const [name, slot] of parts.slots) {
+    const c = ready ? filed.find((x) => x.name === name) || null : undefined;
+    const editing = w.editing === name;
+    const focus = focusedName(slot);
+    const rebuilt = patch(slot, JSON.stringify([view.blocked ? "blocked" : c === undefined ? "reading" : c, editing,
+      editing ? [w.change, choices] : null, !!w.pending, view.rig || null]), () => (
+      view.blocked ? null
+        : c === undefined ? h("p", { class: "sub strip-input" }, "Reading the rig's file…")
+          : c === null ? h("p", { class: "sub strip-input" }, "Not in the running rig's file.")
+            : wiringRow(view, c, choices)));
+    if (rebuilt) refocus(slot, focus);
+  }
+
+  if (view.blocked) { patch(parts.foot, "blocked", () => []); return; }
+  const sources = w.adding && filesReady() ? R.sourceChoices(state.rigs, state.rigChannels) : null;
+  const busy = state.health && state.health.ok ? (state.health.body.agent || {}).busy || null : null;
+  const focus = focusedName(parts.foot);
+  const rebuilt = patch(parts.foot, JSON.stringify([ready, view.rig, view.channels.map((c) => c.name), choices,
+    w.adding && [w.adding.input, w.adding.width, w.adding.from], sources, w.pending, w.result, w.restartConfirm, busy,
+    !!state.pending, view.unsaved]), () => [
+    !ready ? null
+      : w.adding && !sources ? h("p", { class: "sub" }, "Reading the rigs' channels, to start from…")
+        : w.adding ? addChannelForm(parts.foot, view, choices, sources)
+          : h("button", { class: "save-act add-channel", disabled: !!w.pending,
+            onclick: () => { w.adding = R.newChannel(choices, view.channels); w.result = null; render(); inBackground("rig channels", refreshAllRigChannels); } }, "Add channel"),
+    h("p", { class: "warn" }, view.unsaved),
+    w.result ? rigFileResult(w.result, () => { w.result = null; render(); }, () => { w.restartConfirm = true; render(); }) : null,
+    w.restartConfirm ? h("div", { class: "confirm", role: "group", "aria-label": "Confirm the restart" },
+      h("p", {}, `Restart ${view.rig}? The sound stops for a few seconds while it comes back from its file.`),
+      h("button", { class: "rig-act danger", disabled: !!state.pending || !!busy, onclick: restartForEdit }, "Restart now"),
+      h("button", { class: "rig-act", onclick: () => { w.restartConfirm = false; render(); } }, "Not now")) : null,
+  ]);
+  if (rebuilt) refocus(parts.foot, focus);
+  if (ready) drawAddCheck(parts.foot, view);
 }
 
 function wiringRow(view, c, choices) {
@@ -2105,6 +2169,7 @@ function render() {
       state.ampUpdaters = [];
       state.levelUpdaters = [];
       state.stripUpdaters = [];
+      state.stripParts = null;
       state.masterUpdaters = [];
       const built = screen === "stage" ? stageFrame() : screen === "newrig" ? newRigFrame() : rackFrame();
       app.replaceChildren(built.frame);
@@ -2119,7 +2184,7 @@ function render() {
     const model = live ? R.rackModel(live, state.plugins, state.profiles) : null;
     const rig = state.health && state.health.ok ? state.health.body.rig : null;
     const amp = state.amp && state.amp.ok ? state.amp.body : null;
-    const unsaved = live ? R.unsavedChanges(state.log, live, rig, amp) : { items: [], partial: false };
+    const unsaved = live ? R.unsavedChanges(state.log, live, rig, amp, state.plugins) : { items: [], partial: false };
     const status = R.rigStatus(state.health, state.live);
     document.title = `${status.title} · sushi-rig`;
     if (screen === "stage") renderStage(state.regions, model, status);

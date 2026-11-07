@@ -2785,7 +2785,7 @@ def test_a_channel_is_added_to_the_running_rig_and_a_restart_is_offered(browser,
     page = Watched(browser, files_served, "/#rack")
     p = page.page
     wiring = inputs_region(p)
-    expect(wiring.locator(".strip .strip-name")).to_have_text(["board", "vocal"])
+    expect(wiring.locator(".strip .strip-name")).to_have_text(["board", "vocal", "master"])
     expect(wiring.locator(".wiring-row")).to_have_text([re.compile(r"^guitar-in · mono"), re.compile(r"^vocal-in · mono")])
     before = (files_served.save.root / "config" / "rigs" / "electric_board.yaml").read_text()
     wiring.get_by_role("button", name="Add channel").click()

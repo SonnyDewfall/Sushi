@@ -154,12 +154,21 @@ def test_ids_sort_as_times_and_never_collide():
     assert saves.new_id(now, {first, first + "-1"}) == first + "-2"
 
 
-def test_the_newest_fifty_are_kept_and_the_oldest_go_first():
-    ids = [f"2026110{d}T0000{n:02d}.000000Z" for d in range(1, 4) for n in range(20)]
-    gone = saves.to_prune(ids, 50)
-    assert len(gone) == 10 and gone == sorted(ids)[:10]
-    assert saves.to_prune(ids[:5], 50) == []
+def test_the_fifty_written_last_are_kept_and_the_first_written_go_first():
+    order = {f"id{n:02d}": n for n in range(60)}
+    gone = saves.to_prune(order, 50)
+    assert gone == [f"id{n:02d}" for n in range(10)]
+    assert saves.to_prune({"a": 1, "b": 2}, 50) == []
     assert saves.KEEP == 50
+
+
+def test_the_save_just_written_is_never_the_one_pruned_whatever_its_id():
+    """An id from a clock that is behind sorts first; pruning goes by write
+    order and never takes the new one (review, 2026-11-07)."""
+    order = {f"20991231T0000{n:02d}.000000Z": n + 1 for n in range(50)}
+    new = "20200101T000000.000000Z"
+    order[new] = 51
+    assert saves.to_prune(order, 50, new=new) == ["20991231T000000.000000Z"]
 
 
 def test_git_log_is_read_as_commit_points():
@@ -227,6 +236,20 @@ def test_only_the_newest_snapshots_are_kept(root):
     assert saves.snapshot_bytes(root, "electric_board", listed[0]["id"]) == b"n: 6\n", "newest first"
     assert saves.snapshot_bytes(root, "electric_board", listed[-1]["id"]) == b"n: 2\n"
     assert len(list((root / ".sushi-rig" / "saves" / "electric_board").iterdir())) == 10
+
+
+def test_a_save_on_a_clock_behind_the_last_save_is_kept_and_an_old_one_goes(root):
+    from datetime import datetime, timedelta, timezone
+
+    future = datetime(2099, 1, 1, tzinfo=timezone.utc)
+    for n in range(5):
+        saves.keep(root, "electric_board", f"n: {n}\n".encode(), {}, now=future + timedelta(seconds=n), limit=5)
+    point = saves.keep(root, "electric_board", b"latest\n", {}, now=datetime(2020, 1, 1, tzinfo=timezone.utc), limit=5)
+    listed, _ = saves.snapshots(root, "electric_board")
+    assert len(listed) == 5 and listed[0]["id"] == point["id"], "kept, and listed as the newest written"
+    assert saves.snapshot_bytes(root, "electric_board", point["id"]) == b"latest\n"
+    with pytest.raises(saves.SaveNotFound):
+        saves.snapshot_bytes(root, "electric_board", saves.new_id(future, set()))  # the first written went
 
 
 def test_a_snapshot_without_its_file_is_said_not_listed(root):
@@ -390,3 +413,34 @@ def test_a_reverted_file_keeps_its_permissions(root):
     status, body = call(agent, "POST", "/rigs/electric_board/revert", json={"save": first["snapshot"]["id"]})
     assert status == 200, body
     assert (path.stat().st_mode & 0o777) == 0o640
+
+
+def test_a_slow_git_leaves_the_saves_listed_and_says_why_the_commits_are_not(root, monkeypatch):
+    import time as _time
+
+    from sushi_rig import agent as agent_module
+
+    agent, *_ = make_agent(root)
+    _, first = call(agent, "POST", "/rig/save")
+    monkeypatch.setattr(agent_module, "SAVE_TIMEOUT", 0.3)
+    monkeypatch.setattr(saves, "commits", lambda root, path, limit=50: (_time.sleep(1.5), ([], None))[1])
+    status, listed = call(agent, "GET", "/rigs/electric_board/saves")
+    assert status == 200, listed
+    assert [p["id"] for p in listed["points"]] == [first["snapshot"]["id"]] and listed["commits"] == 0
+    assert "git did not answer within 0.3s" in listed["git_note"]
+    assert listed["current"]["kept_as"] == first["snapshot"]["id"]
+
+
+def test_a_switch_that_fails_after_the_write_says_the_file_was_written(root, monkeypatch):
+    agent, *_ = make_agent(root)
+    _, first = call(agent, "POST", "/rig/save")
+
+    async def broken(*args, **kwargs):
+        raise RuntimeError("the switch fell over (test)")
+
+    monkeypatch.setattr(agent, "_switch_held", broken)
+    status, body = call(agent, "POST", "/rigs/electric_board/revert", json={"save": first["snapshot"]["id"]})
+    assert status == 409 and body["code"] == "not_switched" and body["written"] is True, body
+    assert "RuntimeError: the switch fell over (test)" in body["reason"] and "was reverted" in body["reason"]
+    _, health = call(agent, "GET", "/health")
+    assert "the switch fell over" in health["agent"]["last_error"]["message"]

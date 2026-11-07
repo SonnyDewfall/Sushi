@@ -19,16 +19,18 @@ the repository's own `.gitignore`), so `git status` stays clean in any
 checkout -- a temporary one, or one on a branch older than this -- and a
 save's "what git says of the file" is never muddied by its own snapshot.
 
-**How many: the newest `KEEP` (50) per rig.** Older ones are deleted as a new
-one is written. A rig file is a few kilobytes, so the bound is about what a
-list on a phone can usefully show, not about disk; and the commits are there
-for anything older.
+**How many: the `KEEP` (50) written last, per rig.** Older ones are deleted
+as a new one is written, by the order they were written in (a `seq` in each
+account), never by time: a rig's clock can run behind its last save, and
+the save just kept is never the one deleted. A rig file is a few
+kilobytes, so the bound is about what a list on a phone can usefully show,
+not about disk; and the commits are there for anything older.
 
 Each snapshot is two files: `<id>.yaml`, the file's bytes as the save wrote
 them, and `<id>.json`, what the save said (when, which rig, how, and the
 commit it sat on as `take.library_state` and `save.file_git_state` gave it).
-The id is the save's UTC time to the microsecond, so ids sort as times and
-are never made from anything a request sends: a revert names an id, which is
+The id is the save's UTC time to the microsecond, unique per rig and never
+made from anything a request sends: a revert names an id, which is
 checked against `ID_PATTERN` and looked up, never joined to a path as given.
 
 Git is read with a timeout (`GIT_TIMEOUT`) and never written: a commit point
@@ -84,11 +86,16 @@ def new_id(now: datetime, taken: set[str]) -> str:
     return f"{base}-{n}"
 
 
-def to_prune(ids: list[str], keep: int = KEEP) -> list[str]:
-    """Which snapshots go so that the newest `keep` stay: the oldest first.
-    Ids sort as times (`new_id`). Pure."""
-    ordered = sorted(ids)
-    return ordered[:max(0, len(ordered) - keep)]
+def to_prune(order: dict[str, int], keep: int = KEEP, new: str | None = None) -> list[str]:
+    """Which snapshots go so that the `keep` written last stay, the first
+    written first: `order` is each id's write sequence (`seq`), never its
+    time, and `new`, the one just written, never goes. On a rig whose clock
+    is behind its last save (no RTC, before NTP), an id from the clock sorts
+    oldest, and pruning by id deleted the save as it was kept (review,
+    2026-11-07). Pure."""
+    ordered = sorted((sid for sid in order if sid != new), key=lambda sid: (order[sid], sid))
+    room = keep - (1 if new is not None else 0)
+    return ordered[:max(0, len(ordered) - room)]
 
 
 def _ignore_itself(root: Path) -> None:
@@ -124,14 +131,30 @@ def keep(root: Path, rig: str, data: bytes, said: dict[str, Any], now: datetime 
     where.mkdir(parents=True, exist_ok=True)
     taken = {p.stem for p in where.glob("*.json")} | {p.stem for p in where.glob("*.yaml")}
     sid = new_id(now, taken)
+    order = _write_order(where)
     meta = {"id": sid, "kind": "save", "rig": rig, "at": now.astimezone(timezone.utc).isoformat(),
+            "seq": max(order.values(), default=0) + 1,
             "bytes": len(data), **{k: v for k, v in said.items() if k in ("file", "how", "library", "saved_as")}}
     _atomic(where / f"{sid}.yaml", data)
     _atomic(where / f"{sid}.json", json.dumps(meta, indent=2).encode())
-    for old in to_prune([p.stem for p in where.glob("*.json")], limit):
+    order[sid] = meta["seq"]
+    for old in to_prune(order, limit, new=sid):
         for suffix in (".json", ".yaml"):
             (where / f"{old}{suffix}").unlink(missing_ok=True)
     return meta
+
+
+def _write_order(where: Path) -> dict[str, int]:
+    """Each snapshot's write sequence, by id: its account's `seq`, or 0 for
+    one without (or unreadable), which then goes first."""
+    order = {}
+    for meta_path in where.glob("*.json"):
+        try:
+            seq = json.loads(meta_path.read_text()).get("seq")
+        except (OSError, ValueError, AttributeError):
+            seq = None
+        order[meta_path.stem] = seq if isinstance(seq, int) and not isinstance(seq, bool) else 0
+    return order
 
 
 def snapshots(root: Path, rig: str) -> tuple[list[dict[str, Any]], list[str]]:
@@ -141,7 +164,8 @@ def snapshots(root: Path, rig: str) -> tuple[list[dict[str, Any]], list[str]]:
     points, problems = [], []
     if not where.is_dir():
         return points, problems
-    for meta_path in sorted(where.glob("*.json"), reverse=True):
+    order = _write_order(where)
+    for meta_path in sorted(where.glob("*.json"), key=lambda p: (order.get(p.stem, 0), p.stem), reverse=True):
         if not ID_PATTERN.match(meta_path.stem):
             continue
         try:

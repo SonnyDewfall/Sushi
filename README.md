@@ -1011,7 +1011,8 @@ no Node and the UI has to run from a checkout. Two screens from the mockups:
 
 - **The rack (S1), laid out as a mixing desk (2026-11-06).** Three columns,
   because that is how a desk is read: a **strip per channel on the left** (its
-  name, a small, quiet input line, and its volume as the large part), **the
+  name, a small, quiet input line, and its volume as the large part, then a
+  strip for the master, which leads to its chain), **the
   chains and the amp in the middle**, the widest part, and **the files on the
   right**: the rig picker, New rig…, Start, Stop and Switch, Undo, Save,
   Save as…, Revert…, and the takes. The **master volume is in the header**,
@@ -1032,8 +1033,12 @@ no Node and the UI has to run from a checkout. Two screens from the mockups:
   px for its whole travel** (it was 200 px, either way), with the pointer
   captured, so leaving the knob mid-drag does not drop it; **shift, or a
   second finger, is a tenth of the speed**. **The wheel and a trackpad** step
-  it a notch at a time, and the page scrolls only when the pointer is not
-  over a control. A step is about 1 % of the range, rounded to 1, 2 or 5
+  it a notch at a time, but only over the dial or fader itself (never its
+  label or text), only when it can be set, and only when meant: the pointer
+  has rested on it 300 ms since it arrived and since the page last scrolled,
+  or it has the focus. Otherwise the wheel scrolls the page, so a scroll down
+  a rack of knobs passes over them rather than stopping at one and turning
+  it. A step is about 1 % of the range, rounded to 1, 2 or 5
   times a power of ten so steps land on values one would type (a send's 144
   dB in 1 dB steps, the overdrive's 24 dB Level in 0.2, a 0-to-1 Drive in
   0.01, a 900 Hz Tone in 5 Hz; an integer one at a time; a log scale 1 % of
@@ -1044,11 +1049,13 @@ no Node and the UI has to run from a checkout. Two screens from the mockups:
   or without the unit, a typographic minus, a comma, "-inf"; clamped to the
   range; exact, never snapped; and nonsense is refused in place (red, its
   reason in the title) and not sent. A poll never writes into a field that
-  has the focus. **Whole numbers are sticky**: within 0.15 of a whole number
-  in the units shown (dB, %, plain numbers), a drag lands on it and holds it
-  until 0.35 away; a scroll snaps without holding (a notch that did nothing
-  would read as a broken wheel); a normalised 0-to-1 parameter with no unit
-  is held to hundredths instead. Fine control does not snap: it is for the
+  has the focus, and only what was typed is ever committed: a field left
+  untouched while the value moved under it shows the value again. **Whole
+  numbers are sticky**: within 0.15 of a whole number in the units shown
+  (dB, %, plain numbers), a drag lands on it and holds it until 0.35 away; a
+  scroll notch always moves the value the way it was turned, and lands on a
+  whole number it crosses; a normalised 0-to-1 parameter with no unit is held
+  to hundredths instead. Fine control does not snap: it is for the
   values between. The amp's faders and every volume take a typed value and
   the wheel the same way. The decisions are rig.js's (`dragPosition`,
   `sticky`, `stepped`, `scrolled`, `wheelNotches`, `parseTyped`), each
@@ -1134,8 +1141,11 @@ no Node and the UI has to run from a checkout. Two screens from the mockups:
   at logout, and the user's state dir would need keying by checkout and would
   outlive one deleted). The directory ignores itself (a `.gitignore` of `*`
   inside, beside the line in the repository's own), so `git status` stays
-  clean in any checkout. **The newest 50 per rig are kept**; the commits are
-  there for anything older. "Revert…" lists the saves by time and how long
+  clean in any checkout. **The 50 written last per rig are kept**, pruned by
+  the order they were written, never by the clock (the rig's can run behind),
+  and never the one just written; the commits are there for anything older.
+  A git that does not answer leaves the saves listed and says why the
+  commits are not. "Revert…" lists the saves by time and how long
   ago, the one the file is now marked, then **the file's own commits** (`git
   log`, read-only, off the agent's loop, with a timeout). Choosing one opens a
   confirm that **names what is lost**: the unsaved changes playing now, and

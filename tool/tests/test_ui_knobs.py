@@ -84,17 +84,34 @@ def test_the_wheel_steps_by_a_round_one_percent_and_a_tenth_with_shift(blank):
     assert out["log"] == pytest.approx(0.51) and out["ends"] == "4.0"
 
 
-def test_a_scroll_snaps_to_a_whole_number_without_holding_it_and_fine_does_not(blank):
+def test_a_scroll_moves_every_notch_and_lands_on_the_whole_numbers_it_crosses(blank):
+    """Stateless: each notch starts from the value as it is, so a slow
+    scroll leaves a whole number (review, 2026-11-07: a 1-10 Ratio at 4.0 in
+    0.05 steps snapped back to 4.0 on every notch)."""
     out = rigjs(blank, """
-      const c = R.makeControl('x', {automatable: true, value: 0, min_domain_value: -3, max_domain_value: 3}, {unit: 'dB'});
-      const run = (fine) => { let g = null, v = R.fromDisplay(c, -1), out = [];
-        for (let i = 0; i < 6; i++) { const r = R.scrolled(c, g, v, 1, fine); g = r.gesture; v = r.v; out.push(R.formatValue(c, v)); }
-        return out; };
-      return [R.niceStep(c), run(false), run(true)];""")
-    assert out[0] == 0.05
-    assert out[1] == ["−1.00 dB", "−1.00 dB", "−1.00 dB", "−0.80 dB", "−0.75 dB", "−0.70 dB"]
-    fine = [float(t.replace("−", "-").split()[0]) for t in out[2]]
-    assert fine == sorted(fine) and fine[-1] > -1.0, "fine is not held on -1: it moves from the first notch on"
+      const mk = (min, max, e) => R.makeControl('x', {automatable: true, value: 0, min_domain_value: min, max_domain_value: max}, e);
+      const ratio = mk(1, 10, null), db = mk(-3, 3, {unit: 'dB'}), mix = mk(0, 1, {unit: 'dB'});
+      const run = (c, d, n, fine = false) => { let v = R.fromDisplay(c, d), out = [];
+        for (let i = 0; i < n; i++) { v = R.scrolled(c, v, 1, fine); out.push(R.displayOf(c, v)); } return out; };
+      return {ratio: run(ratio, 4, 3), down: R.displayOf(ratio, R.scrolled(ratio, R.fromDisplay(ratio, 4), -1)),
+              crosses: run(db, -1.07, 3), zero: run(mix, 0, 2), fine: run(db, -1.02, 3, true),
+              steps: [R.niceStep(ratio), R.niceStep(db)]};""")
+    assert out["steps"] == [0.05, 0.05]
+    assert out["ratio"] == [pytest.approx(4.05), pytest.approx(4.1), pytest.approx(4.15)], "it leaves 4.0"
+    assert out["down"] == pytest.approx(3.95)
+    assert out["crosses"] == [pytest.approx(-1.05), pytest.approx(-1.0), pytest.approx(-0.95)], "lands on -1 as it passes"
+    assert out["zero"] == [pytest.approx(0.01), pytest.approx(0.02)], "it leaves 0, the whole number it starts on"
+    assert out["fine"] == [pytest.approx(-1.015), pytest.approx(-1.01), pytest.approx(-1.005)], "fine never snaps"
+
+
+def test_the_wheel_is_the_controls_only_when_meant(blank):
+    out = rigjs(blank, """
+      const t = (o) => R.takesWheel({settable: true, focused: false, now: 10000, enteredAt: 9000, scrolledAt: 0, ...o});
+      return [R.WHEEL_REST_MS, t({}), t({settable: false}), t({settable: false, focused: true}), t({focused: true, enteredAt: 9990}),
+              t({enteredAt: 9900}), t({scrolledAt: 9800}), t({scrolledAt: 9600}), t({enteredAt: null})];""")
+    assert out[0] == 300
+    assert out[1:] == [True, False, False, True, False, False, True, False], \
+        "rested and not scrolling: yes; not settable: never; focused: yes; just arrived or the page just scrolled: no"
 
 
 def test_wheel_events_are_whole_notches_and_a_trackpads_add_up(blank):
@@ -150,14 +167,20 @@ def test_a_volume_runs_from_off_to_plus_six_and_typed_as_db(blank):
         slider: [R.volumeSlider(-Infinity), R.volumeSlider(-80), R.volumeSlider(3), R.volumeOfSlider(-61), R.volumeOfSlider(-60.2)],
         steps: [R.volumeStepped(-Infinity, 1).db, R.volumeStepped(-60, -1).db, R.volumeStepped(-3, 1).db,
                 R.volumeStepped(-3, 1, true).db, R.volumeStepped(6, 1).db],
+        outside: [R.volumeStepped(10, 1).db, R.volumeStepped(10, -1).db, R.volumeStepped(-80, 1).db,
+                  R.volumeStepped(-80, -1).db, R.volumeSlider(-80), R.volumeSlider(10)],
         sticky: [R.volumeSticky(-2.9).db, R.volumeSticky(-2.7, -3).db, R.volumeSticky(-2.6, -3).db]};""")
     assert out["range"] == [-60, 6, -61]
     assert out["db"][0] == pytest.approx(-6) and out["db"][1] is True and out["db"][2] == 0
     assert out["text"] == ["0.0 dB", "−6.0 dB", "−∞ dB", "—"]
     assert out["typed"] == ["−6.0 dB", "−6.0 dB", "−∞ dB", "−∞ dB", "−60.0 dB", "6.0 dB", "refused"]
-    assert out["slider"] == [-61, -61, 3, float("-inf"), -60]
+    assert out["slider"] == [-61, -60, 3, float("-inf"), -60], "only -∞ sits on the -∞ notch"
     assert out["steps"] == [-60, float("-inf"), -2.5, pytest.approx(-2.95), 6], "below -60 is off"
     assert out["sticky"] == [-3, -3, -2.6]
+    # Outside the fader's range a step never moves against its direction
+    # (review, 2026-11-07): up from +10 stays, down steps toward the range;
+    # up from -80 steps toward it, down is -∞; the fader shows each at its end.
+    assert out["outside"] == [10, 9.5, -79.5, float("-inf"), -60, 6]
 
 
 def test_a_channel_a_blend_drives_is_said_by_its_control(blank):
@@ -235,6 +258,13 @@ def rack_page(browser, served, width=1280):
     page.page.wait_for_selector(".unit")
     page.page.wait_for_selector(".strip .volume")
     return page
+
+
+def rest_on(p, box):
+    """The pointer on a control's middle, resting: the wheel is the control's
+    only once the pointer has rested on it (R.takesWheel)."""
+    p.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+    time.sleep(0.4)
 
 
 def drive_value(served):
@@ -342,7 +372,7 @@ def test_the_wheel_steps_a_knob_a_notch_at_a_time_and_only_scrolls_it(browser, s
     p = page.page
     level = slider(p, "overdrive Level")
     box = level.locator("svg").bounding_box()
-    p.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+    rest_on(p, box)
     scroll = p.evaluate("() => document.scrollingElement.scrollTop")
     p.mouse.wheel(0, -100)
     expect(level).to_have_attribute("aria-valuetext", "−2.8")
@@ -430,7 +460,7 @@ def test_the_amp_fader_takes_a_typed_value_and_the_wheel(browser):
         until(lambda: abs(served.amp.carla.values().get("Output Lvl", 0) - -6.5) < 1e-6)
         fader = p.get_by_role("slider", name="amp Output Lvl")
         box = fader.bounding_box()
-        p.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        rest_on(p, box)
         p.mouse.wheel(0, -100)
         # Off the 0.2 dB grid, the first notch lands on it.
         until(lambda: served.amp.carla.values().get("Output Lvl", 0) == -6.4)
@@ -456,7 +486,7 @@ def test_the_master_volume_is_on_the_racks_header_and_saved_as_the_masters_level
         # The wheel, a notch at a time, and down to off.
         fader = master.get_by_role("slider", name="Master volume")
         box = fader.bounding_box()
-        p.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        rest_on(p, box)
         p.mouse.wheel(0, -100)
         expect(field).to_have_value("−8.5 dB")
         p.get_by_role("button", name="Save to electric_board").click()
@@ -487,8 +517,7 @@ def test_the_master_and_each_channels_volume_work_on_the_stage_while_locked(brow
     until(lambda: abs(served.rig.info["master"]["gain"]["value"] - 117 / 144) < 1e-6)
     vocal = p.get_by_role("textbox", name="vocal volume value")
     expect(vocal).to_have_value("−6.0 dB")
-    box = p.locator(".levels").get_by_role("group", name="vocal volume").bounding_box()
-    p.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+    rest_on(p, p.locator(".levels").get_by_role("slider", name="vocal volume").bounding_box())
     p.mouse.wheel(0, 100)
     until(lambda: abs(served.rig.info["vocal_send"]["gain"]["value"] - 113.5 / 144) < 1e-6)
     expect(vocal).to_have_value("−6.5 dB")
@@ -504,8 +533,12 @@ def test_the_rack_is_a_mixing_desk_strips_left_chains_middle_files_right(browser
     page = rack_page(browser, served)
     p = page.page
     strips = p.locator("nav.channels .strip")
-    expect(strips).to_have_count(2)
-    expect(strips.locator(".strip-name")).to_have_text(["board", "vocal"])
+    expect(strips.locator(".strip-name")).to_have_text(["board", "vocal", "master"])
+    # The master's strip leads to its chain; its volume is the header's.
+    master = p.locator('nav.channels .strip-master')
+    expect(master.get_by_role("link", name="master")).to_have_attribute("href", "#t-master")
+    expect(master).to_contain_text("Its volume is the master's, in the header.")
+    expect(master.get_by_role("slider")).to_have_count(0)
     board = strips.first
     expect(board.get_by_role("textbox", name="board volume value")).to_have_value("0.0 dB")
     expect(board.get_by_role("slider", name="board volume")).to_be_visible()
@@ -553,8 +586,7 @@ def test_a_channel_a_blend_drives_says_so_and_does_not_fight_the_pedal(browser):
             field = volume.get_by_role("textbox")
             expect(field).to_have_attribute("readonly", "")
             writes = len(served.rig.writes())
-            box = volume.bounding_box()
-            p.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+            rest_on(p, volume.get_by_role("slider").bounding_box())
             p.mouse.wheel(0, -100)
             time.sleep(0.3)
             assert len(served.rig.writes()) == writes, "the pedal's, not the page's"
@@ -750,3 +782,146 @@ def test_a_mono_plugin_with_nothing_stereo_before_it_is_marked_mono_quietly(brow
     expect(badge).to_have_attribute("title", "mono: processes the left side and its output is copied to both")
     expect(badge).not_to_have_class(re.compile(r"\bwarn\b"))
     page.close()
+
+
+# --------------------------------------------------------------------------- #
+# Review of the branch (2026-11-07)
+# --------------------------------------------------------------------------- #
+
+def test_a_field_left_untouched_never_sends_its_stale_text(browser, served):
+    """Focused, the field is not written by a poll; left without typing, it
+    shows the value as it is now and sends nothing (it sent its old text,
+    undoing the change made meanwhile)."""
+    page = rack_page(browser, served)
+    p = page.page
+    field = p.get_by_role("textbox", name="overdrive Level value")
+    field.click()
+    post(served, "/live/parameter", {"processor": "overdrive", "parameter": "Level", "value": 0.5})  # -8.0, from elsewhere
+    time.sleep(1.2)
+    expect(field).to_have_value("−3.0")  # not overwritten while it has the focus
+    writes = len(served.rig.writes())
+    p.locator("body").click(position={"x": 5, "y": 5})
+    expect(field).to_have_value("−8.0")
+    time.sleep(0.4)
+    assert len(served.rig.writes()) == writes and served.rig.info["overdrive"]["Level"]["value"] == 0.5
+    # Enter with nothing typed is the same: the value now, nothing sent.
+    field.click()
+    post(served, "/live/parameter", {"processor": "overdrive", "parameter": "Level", "value": 0.25})  # -14.0
+    time.sleep(1.2)
+    p.keyboard.press("Enter")
+    expect(field).to_have_value("−14.0")
+    time.sleep(0.4)
+    assert served.rig.info["overdrive"]["Level"]["value"] == 0.25
+    # The wheel on the dial while the field has the focus: the scroll stands.
+    field.click()
+    rest_on(p, slider(p, "overdrive Level").locator("svg").bounding_box())
+    p.mouse.wheel(0, -100)
+    expect(field).to_have_value("−13.8")
+    p.locator("body").click(position={"x": 5, "y": 5})
+    time.sleep(0.4)
+    assert served.rig.info["overdrive"]["Level"]["value"] == pytest.approx((-13.8 + 20) / 24)
+    page.close()
+
+
+def test_a_scroll_down_the_rack_passes_over_knobs_and_a_rested_one_turns(browser, served):
+    page = Page(browser, served.url + "/#rack", width=1280, height=600)
+    p = page.page
+    p.wait_for_selector(".strip .volume")
+    p.evaluate("""() => { window.prevented = []; window.addEventListener('wheel',
+      (e) => window.prevented.push(e.defaultPrevented), {passive: true}); }""")
+    dial = slider(p, "overdrive Drive").locator("svg").bounding_box()
+    # Start scrolling just above the knob, so it passes under the pointer.
+    p.mouse.move(dial["x"] + dial["width"] / 2, dial["y"] - 30)
+    time.sleep(0.4)
+    before = p.evaluate("() => document.scrollingElement.scrollTop")
+    for _ in range(4):
+        p.mouse.wheel(0, 40)
+        time.sleep(0.05)
+    time.sleep(0.3)
+    assert p.evaluate("() => document.scrollingElement.scrollTop") > before, "the page scrolled"
+    assert p.evaluate("() => window.prevented") == [False] * 4, "no wheel was taken from the page"
+    assert served.rig.writes() == [], "and nothing on the rig was turned"
+    # Deliberate: the pointer rests on a dial, then scrolls it.
+    rest_on(p, slider(p, "overdrive Drive").locator("svg").bounding_box())
+    p.mouse.wheel(0, -100)
+    expect(slider(p, "overdrive Drive")).to_have_attribute("aria-valuetext", "0.63")
+    assert p.evaluate("() => window.prevented.at(-1)") is True
+    page.close()
+
+
+def test_a_wheel_over_a_knobs_label_or_text_is_the_pages(browser, served):
+    page = rack_page(browser, served)
+    p = page.page
+    p.evaluate("""() => { window.prevented = []; window.addEventListener('wheel',
+      (e) => window.prevented.push(e.defaultPrevented), {passive: true}); }""")
+    for part in (".label", ".value-field"):
+        rest_on(p, p.locator(f'.unit[data-unit="overdrive"] .knob[data-control$="Drive"] {part}').bounding_box())
+        p.mouse.wheel(0, -100)
+    time.sleep(0.3)
+    assert p.evaluate("() => window.prevented") == [False, False]
+    assert served.rig.writes() == []
+    page.close()
+
+
+def test_a_blended_faders_wheel_is_the_pages(browser):
+    with Served(save=True) as served:
+        path = served.save.root / "config" / "rigs" / "electric_board.yaml"
+        path.write_text(path.read_text() + "midi:\n  controller: pedalboard\n  controls:\n"
+                        "  - control: expression\n    blend: [board, vocal]\n")
+        page = rack_page(browser, served)
+        p = page.page
+        volume = p.locator(".strips").get_by_role("group", name="board volume")
+        expect(volume).to_contain_text("driven by expression")
+        p.evaluate("""() => { window.prevented = []; window.addEventListener('wheel',
+          (e) => window.prevented.push(e.defaultPrevented), {passive: true}); }""")
+        rest_on(p, volume.get_by_role("slider").bounding_box())
+        p.mouse.wheel(0, -100)
+        time.sleep(0.3)
+        assert p.evaluate("() => window.prevented") == [False], "not settable: never taken"
+        page.close()
+
+
+def test_a_strips_fader_keeps_its_focus_and_element_through_a_busy_agent(browser):
+    """What changed around the strips (the agent busy, an edit's answer, a
+    form opened) rebuilt them, ending a drag and taking the focus."""
+    import threading
+    import urllib.request
+
+    with Served(save=True) as served:
+        page = rack_page(browser, served)
+        p = page.page
+        fader = p.locator("nav.channels").get_by_role("slider", name="vocal volume")
+        fader.focus()
+        handle = fader.element_handle()
+        served.lifecycle.delay = 2.5
+
+        def busy():
+            request = urllib.request.Request(served.url + "/rig/up", data=b'{"config_name": "electric_board", "rig": true}',
+                                             headers={"Content-Type": "application/json"}, method="POST")
+            try:
+                urllib.request.urlopen(request, timeout=10).read()
+            except Exception:  # noqa: BLE001 -- refused (a rig is up): only the busy time matters
+                pass
+
+        thread = threading.Thread(target=busy)
+        thread.start()
+        expect(p.locator(".rig-busy")).to_contain_text("up is running", timeout=4000)
+        p.locator("nav.channels").get_by_role("button", name="Add channel").click()  # the foot changes too
+        assert handle.evaluate("(e) => e.isConnected"), "the same fader element"
+        handle.focus()
+        thread.join()
+        served.lifecycle.delay = 0
+        p.keyboard.press("ArrowUp")
+        until(lambda: abs(served.rig.info["vocal_send"]["gain"]["value"] - 114.5 / 144) < 1e-6)
+        assert handle.evaluate("(e) => e.isConnected && document.activeElement === e")
+        page.close()
+
+
+def test_a_copy_known_only_by_its_uid_is_no_chain_change(blank):
+    out = rigjs(blank, """
+      const log = {log: [{op: 'add', args: {track: 'board', name: 'odd'}, previous: ['comp', 'board_send'], at: '2026-11-07T10:00:00Z'}], first: 0};
+      const live = {tracks: {board: ['comp', 'odd', 'board_send']}, processors: {}, parameter_info: {}};
+      const plugins = {odd: {uid: R.COPY_UID, role: null}};
+      return [R.unsavedChanges(log, live, null, null, plugins).items, R.unsavedChanges(log, live, null, null, null).items.map((i) => i.kind)];""")
+    assert out[0] == [], "a copy by its uid is the compiler's: no change"
+    assert out[1] == ["added"], "known by nothing, it is a plugin, as before"

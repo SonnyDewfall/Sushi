@@ -3425,3 +3425,29 @@ A LIVE SUSHI:** the master track's gain (range read from parameter_info,
 recorded from 1.3.0's source), a revert's live switch into the rig already
 up, a blend's fader against a real pedal, and the knobs' feel on the rig's
 touch screen. *(2026-11-07)*
+
+**Knobs, volume and Revert: answering review.** Seven findings and three
+smaller ones, each with a test (`test_ui_knobs.py` and `test_agent_revert.py`
+unless said). (1) A value field committed its stale text on blur when the
+value had moved under it (the wheel, a pedal, another page): only typed text
+is committed now; untouched, the field shows the value again. (2) The
+channel strips were one region keyed on the agent's busy state, an edit's
+answer and the forms, so a save from another device ended a fader drag: the
+column is now three parts patched apart, each strip's input line on its own,
+the faders rebuilt only when the channels change and kept while a command
+runs; the faders have names for `refocus`. (3) The wheel was taken over a
+knob's label and text, and over a fader that could not be set, so scrolling a
+rack stopped at the first knob and turned it: it is taken only over the dial
+or fader, only when settable, and only after the pointer has rested 300 ms
+since it arrived and since the page last scrolled, or with the focus
+(`R.takesWheel`). (4) Volume steps outside −60..+6 moved against their
+direction (+10 dB up gave +6): they now step toward the range or not at all,
+and only −∞ sits on the −∞ notch. (5) A slow scroll could not leave a whole
+number on a small range: a notch is stateless and always moves, landing on a
+whole number only when it crosses one. (6) A slow git hid the whole Revert
+list: the snapshots are read apart from git, and git's timeout is said in
+`git_note`. (7) A save on a clock behind the last could be pruned as it was
+kept: snapshots carry a write sequence, pruning goes by it, and never takes
+the new one. (a) Any error from the switch after a revert's write answers
+`written: true` and the reason. (b) The unsaved diff knows a copy by
+`isCopy`, uid included. (c) A master strip leads to the master's chain. *(2026-11-07)*
