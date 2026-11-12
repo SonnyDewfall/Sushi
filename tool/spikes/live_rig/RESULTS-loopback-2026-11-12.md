@@ -432,3 +432,19 @@ the saved state has to hold 127, which needs root:
 
 (run while the control reads 127). The state is also stored at shutdown, so it
 would correct itself at the next clean shutdown with the control at 127.
+
+### After `sudo alsactl store` and another replug: stereo with nothing done by hand
+
+Sonny ran `sudo alsactl store` with the control at 127, then replugged. The
+saved state now holds 127 and the control came back at 127,127,127,127. No
+`idctl`, no `amixer`, sink volume 100%, sent at -20 dBFS:
+
+| layer | left | right | verdict |
+|---|---|---|---|
+| iD14 alone | -62.6 | -61.3 | PASS |
+| through PipeWire | -62.6 | -61.3 | PASS |
+
+So the interface's stereo now rests on two things on this laptop: the
+WirePlumber rule (PipeWire never writes the control) and the saved ALSA state
+(the control restored at 0 dB on connect). Neither is in the repository's
+power to install; both are written down in `51-id14-soft-volume.conf`.
