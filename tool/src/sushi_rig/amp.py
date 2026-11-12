@@ -533,10 +533,18 @@ def summarise_model(described: dict[str, Any], rig_rate: int = RIG_SAMPLE_RATE) 
     return "\n".join(lines)
 
 
-def guitar_port(root: Path) -> str | None:
+def guitar_port(root: Path, machine_file: Path | None = None) -> str | None:
     """The physical port the machine file gives the guitar, if it says.
 
-    None when there is no machine file for this host, or it names no guitar
+    `machine_file` is the one the run was compiled and wired against
+    (`up --rig --machine`); None means this host's. It has to be the run's:
+    the base patchbay was generated from that file, so the guitar's port in
+    any other file feeds nothing in it and `amp_patchbay` then returns the
+    base unchanged, the amp running with no link to or from it. Found on
+    2026-11-12 with `machines/loopback-test.yaml`, where this read the host's
+    file regardless and `rig-amp.qpwgraph` came out without NAM in it.
+
+    None when there is no machine file, or it names no guitar
     role — and then `amp_patchbay` falls back to its old positional rule. That
     fallback is said out loud rather than taken quietly: it is right for a
     single-channel rig and wrong the moment a second channel moves the guitar
@@ -545,7 +553,7 @@ def guitar_port(root: Path) -> str | None:
     from .machine import MachineError, MachineSpec, machine_path
     from .patchbay import GUITAR_ROLE
 
-    path = machine_path(Path(root))
+    path = Path(machine_file) if machine_file else machine_path(Path(root))
     if not path.is_file():
         print(
             f"warning: no machine file at {path.name}, so the amp is wired to "
@@ -583,7 +591,7 @@ def guitar_port(root: Path) -> str | None:
 
 def prepare(
     config: Path, root: Path, runtime: Path, override_model: str | None = None,
-    base: Path | None = None,
+    base: Path | None = None, machine_file: Path | None = None,
 ) -> dict[str, Any]:
     """Everything a run needs for the amp, written out and ready.
 
@@ -626,7 +634,8 @@ def prepare(
     base = Path(base) if base is not None else Path(root) / "Patchbay" / "rig.qpwgraph"
     if base.is_file():
         patchbay = runtime / "rig-amp.qpwgraph"
-        patchbay.write_text(amp_patchbay(base.read_text(), guitar_port(Path(root))))
+        # `machine_file` is the run's, the one `base` was generated from.
+        patchbay.write_text(amp_patchbay(base.read_text(), guitar_port(Path(root), machine_file)))
 
     return {
         "model": model,

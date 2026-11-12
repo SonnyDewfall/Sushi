@@ -532,3 +532,13 @@ use. For these runs `stereo_check.py rig` made the amp's two links itself, as
 Across the session: 17 starts, restarts and switches of the rig, by the command
 line and by the agent, with and without the amp, and stereo was not lost once.
 The one cause of "left only" found today is the interface's volume control.
+
+### Fixed: the amp is wired from the run's machine file
+
+`amp.prepare` and `guitar_port` now take the run's machine file, and `rig.up`
+passes the one the rig was compiled against. Started again with
+`--machine machines/loopback-test.yaml`, `rig-amp.qpwgraph` holds
+`stereo-check-guitar:output_MONO -> NAM:Input` and
+`NAM:Output -> sushi:audio_input_0`, and qpwgraph made the second of those
+itself before the test touched anything. Through the loop: guitar +0.3 dB left
+minus right, PASS. `tests/test_amp.py` and `tests/test_rig.py` cover it.

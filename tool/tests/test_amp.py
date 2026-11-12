@@ -330,6 +330,47 @@ def test_the_guitar_port_comes_from_the_machine_file(tmp_path, monkeypatch, caps
     assert capsys.readouterr().err == "", "nothing to warn about"
 
 
+def test_the_amp_is_wired_from_the_runs_machine_file_not_the_hosts(tmp_path, monkeypatch):
+    """`up --rig --machine other.yaml` generates the patchbay from other.yaml,
+    so the guitar's port in the host's file feeds nothing in it. Read from the
+    host's file, the amp's patchbay came out as the base, with no link to or
+    from NAM: the amp ran unwired and the guitar went in dry (found on the rig,
+    2026-11-12, with machines/loopback-test.yaml)."""
+    from sushi_rig.amp import guitar_port, prepare
+
+    root = _rig_tree(tmp_path)
+    (root / "machines").mkdir(exist_ok=True)
+    (root / "machines" / "testhost.yaml").write_text(
+        "schema_version: 1\nroles:\n  guitar-in:\n"
+        "    ports: ['Audient iD14:capture_AUX0']\n    mono_to_stereo: true\n"
+    )
+    other = root / "machines" / "other.yaml"
+    other.write_text(
+        "schema_version: 1\nroles:\n  guitar-in:\n"
+        "    ports: ['tone:output_MONO']\n    mono_to_stereo: true\n"
+    )
+    monkeypatch.setattr("socket.gethostname", lambda: "testhost")
+    assert guitar_port(root, other) == "tone:output_MONO"
+
+    base = root / "generated.qpwgraph"
+    base.write_text(
+        '<patchbay name="rig">\n <items>\n'
+        '  <item node-type="pipewire" port-type="pipewire-audio">\n'
+        '   <output node="tone" port="tone:output_MONO"/>\n'
+        '   <input node="sushi" port="sushi:audio_input_0"/>\n'
+        '  </item>\n </items>\n</patchbay>\n'
+    )
+    config = root / "c.json"
+    config.write_text(json.dumps({"_amp": {"model": "amp/models/M.nam", "parameters": {}}}))
+
+    hosts = prepare(config, root, root / "run", base=base)["patchbay"].read_text()
+    assert "NAM:Input" not in hosts, "the host's guitar port feeds nothing in this patchbay"
+
+    runs = prepare(config, root, root / "run", base=base, machine_file=other)["patchbay"].read_text()
+    assert 'port="tone:output_MONO"/>\n   <input node="NAM" port="NAM:Input"' in runs
+    assert 'port="NAM:Output"/>\n   <input node="sushi" port="sushi:audio_input_0"' in runs
+
+
 @pytest.mark.parametrize(
     "roles, expected",
     [

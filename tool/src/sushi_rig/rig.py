@@ -1277,7 +1277,8 @@ def prepare_launch(
     if amp:
         from .amp import prepare as prepare_amp
 
-        prepared = prepare_amp(config, root, runtime_dir(), amp_model, base=rig_patchbay)
+        prepared = prepare_amp(config, root, runtime_dir(), amp_model, base=rig_patchbay,
+                               machine_file=rig_machine)
     amp_project = prepared.get("project")
     amp_patch = prepared.get("patchbay") or rig_patchbay
     amp_values = prepared.get("values", {})
