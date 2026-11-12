@@ -1,0 +1,105 @@
+# Hand-authored source for config/electric_board.json.
+#
+# Emit with:
+#   tool/.venv/bin/sushi-rig emit config/src/electric_board.yaml \
+#     -o config/electric_board.json
+#   tool/.venv/bin/sushi-rig emit config/src/electric_board.yaml \
+#     --state <captured>.json -o config/electric_board.json   # after tweak + capture
+#
+# Plugin parameter values are never written here. They live in initial_state,
+# generated from a captured live session — or, as on the first emit, left out
+# entirely so every plugin starts at its own TTL-declared defaults.
+#
+# Plugins are named by ROLE, not by vendor id. The name below becomes Sushi's
+# processor name, which becomes both the OSC path prefix and the panel's tab
+# label — "overdrive" is a far more usable tab than "gxts9".
+#
+# The set is deliberately simple: eight plugins, ~41 parameters in total. The
+# rig this replaced used three LSP plugins and produced ~130 panel faders.
+# Every plugin here is control-port-only (no atom ports), so none of them keep
+# state outside the config — nothing needs a file loaded, and nothing depends
+# on the LV2 patch: extension that Sushi doesn't support.
+
+meta:
+  name: electric_board
+  version: "1.0"
+  description: Electric guitar — compressor, overdrive, octave, EQ, chorus, delay,
+    and two reverbs — a clean room and a big hall
+  status: stable
+
+host:
+  samplerate: 48000
+
+tracks:
+  - name: board
+    channels: 2
+    # Machine-file roles, invisible to Sushi (`TrackSpec.to_sushi` drops them).
+    # They let `patchbay generate` wire the physical ports, and they are what
+    # the amp and the tuner follow instead of an input index (#18).
+    source: guitar-in
+    sink: monitor-out
+    inputs:
+      - engine_bus: 0
+        track_bus: 0
+    outputs:
+      - engine_bus: 0
+        track_bus: 0
+    plugins:
+      # Conventional pedalboard order: dynamics and dirt first, tone shaping
+      # in the middle, time-based effects last.
+      - name: compressor
+        type: lv2
+        uri: http://guitarix.sourceforge.net/plugins/gx_compressor#_compressor
+      - name: overdrive
+        type: lv2
+        uri: http://guitarix.sourceforge.net/plugins/gxts9#ts9sim
+      # Two GxDetune in series, one shifting down and one up, replacing the
+      # Guitarix OC-2 model. That pedal is a sub-octave *divider*: octave down
+      # only, and monophonic by design, so it falls apart on anything more than
+      # a single note. Neither is a fault in the model — the hardware never did
+      # either.
+      #
+      # Each GxDetune has its own WET and DRY, which is what makes stacking
+      # them work rather than simply shifting twice: the first outputs
+      # dry + down, the second outputs that plus its own octave up. The result
+      # carries the dry note, an octave below and an octave above together.
+      #
+      # Both are mono (1 in / 1 out), as the OC-2 model was.
+      - name: octave_down
+        type: lv2
+        uri: http://guitarix.sourceforge.net/plugins/gx_detune_#_detune_
+      - name: octave_up
+        type: lv2
+        uri: http://guitarix.sourceforge.net/plugins/gx_detune_#_detune_
+      - name: eq
+        type: lv2
+        uri: http://distrho.sf.net/plugins/3BandEQ
+      - name: chorus
+        type: lv2
+        uri: http://guitarix.sourceforge.net/plugins/gx_chorus_stereo#_chorus_stereo
+      # Three independent taps in milliseconds up to 2.7 seconds, with
+      # feedback, damping and a stereo Spread control — the big spacious end.
+      #
+      # It replaces mda Delay, whose L/R Delay controls were bare 0-1 with no
+      # units at all: there was no time to set, only a fraction of some
+      # undisclosed maximum. Reported as "I need something where I can set the
+      # timing", and that is exactly why.
+      - name: delay
+        type: lv2
+        uri: http://plugin.org.uk/swh-plugins/lcrDelay
+      # Two reverbs, doing two different jobs — named for those jobs, per the
+      # role-naming rule above. Untick one plugin's "Active" box in the panel
+      # to hear the other on its own.
+      #
+      # ACE Reverb: small, clean, almost free. Two useful controls (Blend and
+      # Room Size; its third, Enable, is the plugin's own on/off and is hidden
+      # from the panel in favour of the host tickbox). ~0.9 s tail.
+      - name: room
+        type: lv2
+        uri: urn:ardour:a-reverb
+      # MaGigaverb for the big echoey end: revtime goes to 360 s and roomsize
+      # to 300, so it reaches well past anything useful. Starts at an 11 s
+      # revtime, which is its own TTL default and will want pulling back.
+      - name: hall
+        type: lv2
+        uri: http://distrho.sf.net/plugins/MaGigaverb

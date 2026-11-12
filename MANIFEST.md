@@ -3470,6 +3470,212 @@ phone width, and paths in problems and code wrap. The phone test now also
 checks each column is the phone's width and nothing is wider, with the
 page's fonts and a wider fallback. *(2026-11-07)*
 
+**Master green again: tests stop pinning what the rig files hold, and the CI
+image gets libatomic.** Two causes, both from outside the code. (1) 2c36874
+committed rigs saved on the laptop (a new rig, a second channel on
+electric-chorus-2) and eight tests failed that had pinned those files:
+`(72, 110)` pairs, accustomed to electric-chorus-2 as the known live switch,
+each rig equal to its v1 config. The rule now, in `tests/rig_fixtures.py`: a
+test may fail because the code is wrong or because a committed rig is not a
+valid rig, never because a rig changed. So a test reads all of `config/rigs/`
+and assumes nothing of its contents, or reads `tests/fixtures/rigs/`, the
+eleven rigs as they were at c494625, frozen. `tests/test_rig_fixtures.py`
+checks every committed rig parses, compiles and wires as `up --rig` does it
+(all twelve do, the two-channel electric-chorus-2 and clean among them),
+every frozen one still does, and that no test writes a path into
+`config/rigs/`. test_rig_diff's contract runs on both sets; the count and
+"restarts only for the amp or the tracks" are of the frozen rigs; of the
+committed ones, a rig no distance from itself, and tracks or an amp that
+differ a restart that says so (the rest of what was written here, "decided,
+the same way twice", could not fail; the entry after next says what
+replaced it). test_convert holds each v1 config to the conversion committed on the day
+(frozen) and to what `convert` writes now, and no longer to the rig in
+`config/rigs/`, whose first line says to edit it: a list of diverged rigs was
+not taken, since the next save would fail it the same way. Every test that
+named a committed rig reads the frozen one, and the web UI's fake serves a
+checkout of them. **Tried, not assumed:** on a copy of the tree with the
+saves an owner might make next (rigs deleted, renamed and added, a master
+level, a third channel, another amp model and levels, an amp taken off, a
+vocals-only rig, two guitars, a chain reordered with a plugin removed and
+every value changed, a MIDI map) the fast suite passes; with a rig that does
+not parse, one on a role the machine lacks and one naming an unknown plugin,
+it fails on each by name and still runs. That trial, and reading each test
+that takes every rig, found more that pinned content, fixed here: no
+committed rig stated a master level
+(test_rigfile_master; the page's master fader writes one), none had a MIDI
+map (rigs were compiled with no controller), every rig had one track on the
+guitar's role and an output pair free for the probe (test_probes: a
+vocals-only or three-channel rig is refused or unprobed, and says so), each
+v1 config's rig of the same name still described it
+(`test_every_committed_config_has_a_source_to_save_from`), and
+test_render_spread read electric-octave-up's chain as it was imported. (2)
+`ci/Dockerfile`: pip resolved playwright 1.65.1 (1.64.1 on the last green
+build, 2026-11-07), whose bundled node 26 links `libatomic.so.1`, absent from
+a bare ubuntu:24.04, so `playwright install` died loading; `libatomic1` is
+installed with the other packages. Shown here: the failure reproduced in
+ubuntu:24.04, and with the package this Dockerfile builds (a stand-in for the
+Sushi AppImage) through its apt, pip and the playwright step's own apt
+install, as far as the Chromium download, which this sandbox's network
+refuses. **Not built past that, and not run in CI.** `ui-test` is still
+`playwright>=1.49,<2`: that range is what let 1.65 in, and it is not narrowed
+here because no pin could be shown to work in the container. **Still red
+after this, and not fixed here:** the container job's sound check. `clean`
+has no reference in `config/sound/`, and electric-chorus-2, now two channels,
+is looked for as `electric-chorus-2.board` and `.vocal` with its old
+`electric-chorus-2.yaml` orphaned, so `nulltest --all` and
+`test_every_v2_rig_sounds_like_its_reference` fail on both until references
+are calibrated in the container (the job prints the candidates). Read from
+the code, not run: there is no Sushi here. **The rewritten numbers in
+2c36874** (`1.0` to `1` on fifteen lines of electric-chorus-2) are what a
+save wrote before 709cea5 (2026-11-02, #117): that code, run here on the old
+file, rewrites exactly those fifteen lines, and today's save and add-channel
+rewrite none, though neither puts a `.0` back. The compiled config is the
+same byte for byte either way (`emit` writes every parameter as a float).
+*(2026-11-12)*
+
+**References for the laptop's rigs, from the container's own candidates.** CI
+ran on 8ef207d (run 43309457857): the fast suite passed on 3.11 and 3.13 and
+the image built, playwright 1.65.1 with `libatomic1`, which is that fix
+shown. The container job then failed as the entry above said it would, and
+on nothing else: the full suite 4256 passed with two failures, both
+`test_every_v2_rig_sounds_like_its_reference` (clean, electric-chorus-2), no
+skip and no retried render; `nulltest --all` could not confirm 4 of 27, the
+three missing references and `config/sound/electric-chorus-2.yaml` orphaned,
+with every other config and channel "sounds the same". The job calibrated
+all 27 and printed them. Added from that log, byte for byte: `clean.yaml`,
+`electric-chorus-2.board.yaml`, `electric-chorus-2.vocal.yaml`.
+`electric-chorus-2.yaml` is renamed to the `.board` file, which is how the
+code says to treat an orphan (delete it); `electric-chorus-2.v1-mono.yaml`
+stays, since `electric-chorus-2.json` is still there and still sounds like
+it, and clean gets no `.v1-mono` because it has no v1 config. Checked before
+committing: the board's candidate is the old `electric-chorus-2.yaml` in
+every line but its `config:` name, so neither the second channel nor the
+whole numbers written without `.0` moved the guitar's sound by 0.0001 dB;
+the vocal's measurements are `guitar_vocal.vocal.yaml`'s exactly, the same
+five plugins at their defaults; clean's sides are -24.0403 and -24.0400
+dBFS. No reference of a rig that did not change was touched. Thirteen of the
+other candidates are the committed files byte for byte; eight differ only in
+the tolerance note's wording; `electric_board.yaml` differs by up to 0.0028
+dB, inside its hand-set 0.01 (gx_detune_, as the README says); and
+`electric-octave-up.v1-mono.yaml` and `electric_board.v1-mono.yaml` are
+still schema 1 in the repository, with no level for each channel, where the
+candidates are schema 2 with the same measurements: left as they are, and
+said. **Not shown:** `verify --all` did not run (the job skips it when the
+suite fails), so neither new rig has been through it; the artifact could not
+be fetched here, so the three files are the log's text and not the zip's;
+and the references say what Sushi rendered, not that anyone heard clean: the
+amp is not in that image. *(2026-11-12)*
+
+**Review of 8ef207d: the committed rigs had been left under-checked.** Moving
+the tests onto frozen copies took away what tied a rig in `config/rigs/` to
+anything; seven findings, each tried before it was fixed. (1) **A committed
+rig is held to more** (`rig_fixtures.valid`, one test for each rig by name):
+its amp's model is a file, found as `up` finds it (`amp.resolve_model`; `up`
+refuses after it has prepared the rig, and the test did not), and its amp's
+parameters are the amp's, numbers, and in range. `Output Lvl: 99.0` used to
+pass that test and fail seven tests of pairs; now it fails the rig's own
+test and the rig is left out of the others (`committed_that`). A parameter
+its plugin does not have (`RATIOO_NOT_A_PARAMETER`) passed the whole fast
+suite, and still does: **no file in the checkout lists a plugin's
+parameters** (`plugin-ports.txt` is audio ports, the bundles under
+`tests/fixtures/lv2` are three plugins), so that is `verify`'s names check
+against Sushi's own dump, one test for each committed rig, which runs in the
+container and skips on a bare runner. The three trials are tests, on copies
+of a frozen rig. (2) **An empty `config/rigs/` fails**, where it passed 444
+tests lighter. (3) **The guard is behavioural**, replacing the search of the
+tests' source, which missed eight ways of writing the path and flagged one
+that was not a read: `sys.addaudithook` hears every `open` and folder
+listing in the test process, and a test that reads `config/rigs/` without
+the marker `committed_rigs`, or a module that reads it at import other than
+through `rig_fixtures`, fails with the line that did it. It was run on the
+whole fast suite, which reads the folder nowhere else, and on Python 3.11
+and 3.12 for the rig tests. What it cannot see is in `rig_fixtures.py`: a
+child process, a path only tested for existence, a test not run where the
+suite is, and a marked test that goes on to name one rig. (4) **The frozen
+set has its companions**: the eleven v1 configs and three sources under
+`tests/fixtures/v1/` and the machine file under `tests/fixtures/machines/`,
+byte for byte c494625's, and every test that paired a frozen rig with the
+live one of those reads the frozen one. The conversions are an explicit list
+of eleven names. The committed machine file gets its own validity test, and
+committed rigs are wired against it with no graph, since the one capture
+there is belongs to the frozen file. Still read from the checkout by frozen
+tests, and said in the docstring: `plugin-ports.txt`. (5) **The NaN guard**
+renders each gx_detune_ of each committed rig, by its settings (five today),
+beside the frozen octave up. Written with no Sushi; set up and collected
+here, never rendered. (6) **The pair test that could not fail** is replaced:
+the restart reasons a pair must give are read off the two configs with none
+of `diff`'s code (tracks, their shape, wiring, the amp's model or presence,
+host, MIDI map), a restart must name each and nothing the rigs do not show,
+so rigs alike in those are a live switch. With the amp's parameters made a
+restart again, or the amp ignored, it fails on both sets (tried). It found
+one thing `diff` does that is not quite right and is left as it is: from a
+rig with no mono plugin to one with some, it restarts as `stereo_missing`,
+"compiled before the copies existed". (7) **Every frozen file is pinned** by
+sha256, and fails under its own name. Tried again on the copy of the tree
+with a dozen saves an owner might make: the fast suite passes. **Not run:**
+the two tests that need Sushi (the names check, the NaN guard on committed
+rigs), and whether the guard is quiet under the slow tests, which were read
+for it and not run; the container job is the test of all three.
+*(2026-11-12)*
+
+**Re-review of 0ae6593: four more, the first of them the failure this work
+is to end.** (1) **The pair test took every plugin for LV2.** A rig file may
+hold a plugin that is not (`type: internal`, a uid), a program, properties
+and a chain on its master; with an internal gain added to electric-clean,
+`diff` rightly answered `plugin_type`, the test had no place for it, and a
+valid save failed the suite. Every reason `diff` can give is now read off
+its source and placed (`test_rig_diff.py`): nine it must give for a
+difference the two configs show, eight it may give where they hold a
+particular fact (a plugin that is not LV2 and not already there, a
+parameter such a plugin leaves unstated, a program or properties the next
+rig states, a send a player stated, a MIDI map, no copies to stereo), and
+four that cannot arise between two rig files, each with why and a test that
+they do not. A reason added to `diff` fails until it is placed. The trial
+is a test, among sixteen saves of one rig. (2) **A read in a fixture
+wider than a test** was nobody's to fail and passed: whatever is left
+unreported when the run ends now fails the run, with each line. (3) **A
+relative path read from inside the folder** is seen (one `getcwd` for a
+relative open, 0.7 microseconds against 0.3); a symlink whose path has no
+"rigs" in it and a read by directory descriptor are not, and are in the
+docstring's list. (4) **A rig that is not valid fails one test and no
+other, which the entry above said before it was so**: four tests took the
+committed rigs unfiltered, and two of them stopped at the broken one. They
+take `valid_committed()` now, and the two loops look at every rig before
+they fail. Tried on copies: a module fixture reading every rig ends the run
+with status 1 and thirteen lines; a rig that does not parse, sorted in the
+middle, is one failure in the fast suite (run without tests/test_ui.py,
+which compiles no rig); and with thirteen rigs saved the ways the review named (an
+internal plugin added, a parameter dropped, a plugin replaced by one of
+another type, a third channel, a stereo channel, no amp, plugins on the
+master, a MIDI map, vocals only, two guitars) the whole fast suite passes.
+*(2026-11-12)*
+
+**The next rig from the laptop, mid-review: hard-feelings-record.** 612e179
+went to master while this branch was in review, and the pull request's CI
+runs on the merge. Merged here as it is (3052003). **The fast suite passes
+with it there and nothing changed for it**: 4185 passed, 41 skipped, which is
+what the work above was for. The container job (run 43323360288, on the
+merge with 61e4c81) failed on one test of 4396,
+`test_every_v2_rig_sounds_like_its_reference[hard-feelings-record]`, and
+`nulltest --all` on 2 of 28, both the new rig's channels with no reference;
+no skip, no retried render, nothing from the guard. The three things that
+had never run did, and passed: the names check on all thirteen rigs and its
+trial, the NaN guard over the committed rigs' five gx_detune_ settings (no
+NaN in five renders of each), and the guard under the slow tests. One number
+from that table worth keeping: electric-octave-up's octave_down, alone and
+not bypassed, differed between its five renders by 0.03 dB overall and 0.3
+dB in one band, where the README says a few thousandths for the chains as
+they are played (it is bypassed in the rig). Added from that run's
+candidates, byte for byte from the log: `hard-feelings-record.board.yaml`
+and `hard-feelings-record.vocal.yaml`, each with both sides level (-25.68
+and -25.70; -12.46 and -12.53 dBFS). The folder is the 28 names `nulltest
+--all` looks for, none missing, none orphaned. No other reference is
+touched: of the 26 others, fifteen candidates are the committed file byte
+for byte, eight differ in the note's wording alone, and three, all running
+gx_detune_ (`electric_board.yaml`, and the two schema 1 `.v1-mono` files of
+electric_board and electric-octave-up), moved by at most 0.004 dB, inside
+their hand-set 0.01. **Not run here:** nulltest and the slow tests on this
+commit. *(2026-11-12)*
 **The loopback test, answering review (PR #132).** `stereo_check.py rig`
 (tool/spikes/live_rig) had six findings against it, and one was against the
 shipped amp. (1) Its feedback guard looked only at what feeds Sushi's inputs

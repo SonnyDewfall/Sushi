@@ -2364,23 +2364,25 @@ def test_a_successful_command_carries_its_warnings_for_a_phone_to_read():
 # --------------------------------------------------------------------------- #
 #
 # `RigLive` is `FakeLive` holding a whole rig, loaded from a compiled config of
-# config/rigs/ as Sushi would load it, so a switch can be played end to end:
+# the frozen rigs (fixtures/rigs/, rig_fixtures.py: these tests name rigs and
+# know their contents, which the rigs in config/rigs/ are free to stop having)
+# as Sushi would load it, so a switch can be played end to end:
 # the reading, each step through the routes' own calls, the read-back. Its
 # plugins' parameters are every one any rig states for that plugin, starting
 # at 0.5 where the config states nothing: invented, since no Sushi was to hand,
 # and only ever compared with what the configs state.
 
 import copy as _copy  # noqa: E402
-from pathlib import Path as _Path  # noqa: E402
 
 from sushi_rig import rigfile as _rigfile  # noqa: E402
 from sushi_rig.agent import Switching, place_switch_add, state_blockers, switched_state  # noqa: E402
 from sushi_rig.rig import RigError  # noqa: E402
 from sushi_rig.verify import diff_state  # noqa: E402
 
-_ROOT = _Path(__file__).resolve().parents[2]
+from rig_fixtures import FROZEN as _FROZEN  # noqa: E402
+
 _COMPILED = {path.stem: _rigfile.emit_rig(_rigfile.load_rig(path))
-             for path in sorted((_ROOT / "config" / "rigs").glob("*.yaml"))}
+             for path in sorted(_FROZEN.glob("*.yaml"))}
 # Every parameter any rig states for a plugin: what the fake gives that plugin.
 _PLUGIN_PARAMETERS: dict = {}
 for _config in _COMPILED.values():

@@ -1,0 +1,132 @@
+# Hand-authored source for config/guitar_vocal.json.
+#
+# Emit with:
+#   tool/.venv/bin/sushi-rig emit config/src/guitar_vocal.yaml \
+#     -o config/guitar_vocal.json
+#
+# The first two-channel rig (#18): a guitar channel and a vocal channel, each
+# with its own chain, summing into the same monitor pair.
+#
+# ## Why two tracks rather than one with everything bypassed
+#
+# A vocal does not want a guitar's chain — no overdrive, no octave, and no amp
+# at all. One config per sensible pairing keeps each panel to the controls that
+# belong to it, which is the same reason the plugin set here is small.
+#
+# ## How a third channel is added
+#
+# Declare it. A channel is a `source` role, a chain, and an `engine_bus` the
+# machine file's patchbay feeds. Nothing outside this file and the machine file
+# needs to change: the amp follows `guitar-in`, the tuner follows `guitar-in`,
+# and `patchbay generate` reads the roles off the tracks below. That is #18's
+# actual deliverable — adding a channel is a declaration, not an edit in five
+# places.
+#
+# ## Routing
+#
+# `source` and `sink` name machine-file roles and are invisible to Sushi
+# (`TrackSpec.to_sushi` drops them). They exist so `patchbay generate` can wire
+# the physical ports; the `inputs`/`outputs` below still say how each track sits
+# on the engine.
+#
+# Guitar on engine bus 0, vocal on bus 1, both out on bus 0. Two tracks writing
+# one engine output bus is Sushi summing them, which is the monitor mix.
+#
+# ## Why every plugin name carries its channel
+#
+# Sushi's processor names are global, not per track: two plugins called `eq`
+# are refused outright. `guitar_eq` and `vocal_eq` are also what the panel tabs
+# are labelled with, so on a two-channel rig the prefix is the thing that says
+# which channel a tab belongs to.
+#
+# ## Not here yet
+#
+# No amp section: `_amp` is written by a capture, so run
+# `sushi-rig up config/guitar_vocal.json --amp-model <name>` to audition one.
+# No per-channel level control either — the panel is per-plugin today, and track
+# gain/pan/mute is the v2 mixer strip (#18's pan knob per channel).
+
+meta:
+  name: guitar_vocal
+  version: "1.0"
+  description: Guitar and vocals — two channels, two chains, one monitor mix
+  status: wip
+
+host:
+  samplerate: 48000
+
+tracks:
+  - name: guitar
+    channels: 2
+    source: guitar-in
+    sink: monitor-out
+    inputs:
+      - engine_bus: 0
+        track_bus: 0
+    outputs:
+      - engine_bus: 0
+        track_bus: 0
+    plugins:
+      # The electric_board chain, shortened. Compressor, dirt and tone stay;
+      # the octave pair and the second reverb go, because a config that has to
+      # share the panel with a vocal channel is not the place to keep every
+      # pedal. electric_board.json remains the full board.
+      - name: guitar_compressor
+        type: lv2
+        uri: http://guitarix.sourceforge.net/plugins/gx_compressor#_compressor
+      - name: guitar_overdrive
+        type: lv2
+        uri: http://guitarix.sourceforge.net/plugins/gxts9#ts9sim
+      - name: guitar_eq
+        type: lv2
+        uri: http://distrho.sf.net/plugins/3BandEQ
+      - name: guitar_chorus
+        type: lv2
+        uri: http://guitarix.sourceforge.net/plugins/gx_chorus_stereo#_chorus_stereo
+      - name: guitar_delay
+        type: lv2
+        uri: http://plugin.org.uk/swh-plugins/lcrDelay
+      - name: guitar_room
+        type: lv2
+        uri: urn:ardour:a-reverb
+
+  - name: vocal
+    channels: 2
+    source: vocal-in
+    sink: monitor-out
+    inputs:
+      # Bus 1, which the machine file's `vocal-in` feeds: `engine_bus: 1` is
+      # engine channels 2 and 3, and `mono_to_stereo` on that role puts the one
+      # microphone into both.
+      - engine_bus: 1
+        track_bus: 0
+    outputs:
+      - engine_bus: 0
+        track_bus: 0
+    plugins:
+      # Gate, then compressor, then sibilance, then tone, then space, then a
+      # ceiling. The conventional order for a live vocal, and the shortest
+      # chain that is usable on stage rather than a demonstration.
+      #
+      # mda Dynamics is gate, compressor and limiter in one plugin, which is
+      # why it comes first: the gate has to see the signal before anything
+      # raises the room noise with it.
+      - name: vocal_dynamics
+        type: lv2
+        uri: http://drobilla.net/plugins/mda/Dynamics
+      # Sibilance after compression, not before: a compressor pushes esses up,
+      # so de-essing first leaves them to come back.
+      - name: vocal_deess
+        type: lv2
+        uri: http://drobilla.net/plugins/mda/DeEss
+      - name: vocal_eq
+        type: lv2
+        uri: http://distrho.sf.net/plugins/3BandEQ
+      - name: vocal_reverb
+        type: lv2
+        uri: http://distrho.sf.net/plugins/MVerb
+      # Last in the chain and nowhere else: this is the ceiling before the
+      # interface, and anything after it would undo the point of it.
+      - name: vocal_limiter
+        type: lv2
+        uri: http://drobilla.net/plugins/mda/Limiter

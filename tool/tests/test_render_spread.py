@@ -65,20 +65,27 @@ import yaml
 np = pytest.importorskip("numpy")
 
 import spread_table  # noqa: E402
+from rig_fixtures import committed_that, frozen  # noqa: E402
 from sushi_rig import rigfile  # noqa: E402
 from sushi_rig.analysis import first_non_finite  # noqa: E402
 from sushi_rig.nulltest import compare, fingerprint, from_dict  # noqa: E402
 from sushi_rig.paths import checkout_root  # noqa: E402
 from sushi_rig.render import (  # noqa: E402
-    Stimulus, channels_of, detune_nan, prepare_stimulus, render_offline, rig_channels,
+    DETUNE_URI, Stimulus, channels_of, detune_nan, prepare_stimulus, render_offline, rig_channels,
     sushi_argv,
 )
 from sushi_rig.verify import sushi_env  # noqa: E402
 
 ROOT = checkout_root()
 SUSHI = ROOT / "sushi"
-OCTAVE_UP = ROOT / "config" / "rigs" / "electric-octave-up.yaml"
-BOARD = ROOT / "config" / "rigs" / "electric_board.yaml"
+# The frozen copies (rig_fixtures.py), which are these two rigs as they were
+# when this was measured: the targets below are built from electric-octave-up's
+# chain as this file is imported, so on the committed file a save that renamed
+# a plugin would stop the whole suite at collection. The references they are
+# priced against are still config/sound/'s, calibrated to the committed rigs:
+# if those two rigs have changed since, rerun with that in mind.
+OCTAVE_UP = frozen("electric-octave-up")
+BOARD = frozen("electric_board")
 
 # Forty of each: thirteen targets at about a quarter of a second a render, and
 # a fingerprint for each distinct one, is two to four minutes. A NaN in one
@@ -255,6 +262,42 @@ def test_the_octave_up_renders_only_its_known_nan(tmp_path, request):
     _, what, build, reference = target
     _measure("the guard, in every run: gx_detune_ an octave up alone", what, build, reference,
              GUARD_RENDERS, tmp_path, request)
+
+
+def _committed_detunes() -> list[tuple[str, dict]]:
+    """Every gx_detune_ in a chain of a committed rig, once for each setting
+    of it, as (rig/name, its entry). Read as this is imported, so through
+    `committed_that`: every rig, and one that does not load left out."""
+    found: dict[str, tuple[str, dict]] = {}
+    for path, raw in committed_that(_raw):
+        chains = [c.get("chain") or [] for c in raw.get("channels") or []] + [(raw.get("master") or {}).get("chain") or []]
+        for entry in (e for chain in chains for e in chain):
+            if entry.get("uri") == DETUNE_URI:
+                settings = json.dumps(entry.get("parameters") or {}, sort_keys=True)
+                found.setdefault(settings, (f"{path.stem}/{entry['name']}", entry))
+    return list(found.values())
+
+
+COMMITTED_DETUNES = _committed_detunes()
+
+
+@needs_sushi
+@pytest.mark.slow
+def test_each_gx_detune_of_the_committed_rigs_renders_only_its_known_nan(tmp_path, request):
+    """The guard above is of the frozen electric-octave-up's octave_up, which
+    is the plugin as it was set when the NaN was found. What the owner plays
+    is config/rigs/, and a save that moves DETUNE or OCTAVE there is a
+    setting nobody has rendered: so each gx_detune_ of each committed rig,
+    by its settings and once for each, alone and not bypassed as above. One
+    test over them all and not a case for each, since a day with no
+    gx_detune_ in any rig is not a failure, and a test with no cases is a
+    skip, which the container fails on. (Added 2026-11-12 by review, where
+    there was no Sushi: its first run in CI is its test.)"""
+    for i, (what, entry) in enumerate(COMMITTED_DETUNES):
+        folder = tmp_path / str(i)
+        folder.mkdir()
+        _measure("the guard, in every run: each gx_detune_ of the committed rigs, alone", f"gx_detune_ [{what}]",
+                 (lambda e=entry: _alone(e)), None, GUARD_RENDERS, folder, request)
 
 
 def _tree(pid: int) -> list[int]:

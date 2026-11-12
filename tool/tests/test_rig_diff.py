@@ -2,10 +2,19 @@
 
 `diff` says how to turn the running rig into the next one through the live
 operations, or why a restart is needed. These pin what it decides without a
-Sushi: on every ordered pair of the rigs in config/rigs/, a plan is checked by
+Sushi: on every ordered pair of rigs, a plan is checked by
 playing it on a model of what a loaded config holds, and must leave exactly
 what loading the next rig would; a restart must name only reasons the table
-knows. The model is invented, not captured: it holds what a config states,
+knows.
+
+Two sets of rigs (rig_fixtures.py says why). The frozen copies under
+fixtures/rigs/ are the ones a test names and knows the contents of: which
+pairs switch live, how many, in how many steps. The rigs committed to
+config/rigs/ are the owner's and change with every save, so of them only
+what holds for any valid rigs is asked: every pair is decided, a plan
+reaches the next rig, what cannot be done live restarts and says so.
+
+The model is invented, not captured: it holds what a config states,
 and treats a parameter it does not state as "at the plugin's default", which
 is what Sushi is assumed to load (not observed here: no Sushi in this suite).
 The agent's use of the plan, against a fake Sushi, is in test_agent.py.
@@ -20,9 +29,10 @@ from __future__ import annotations
 import copy
 import itertools
 import re
-from pathlib import Path
 
 import pytest
+from rig_fixtures import FROZEN, committed_that
+from rig_fixtures import compiled as compiled_rig
 
 from sushi_rig import rigfile, stereo
 from sushi_rig.amp import PARAMETER_INDEX
@@ -32,14 +42,26 @@ from sushi_rig.rigfile import (
     level_to_gain,
 )
 
-ROOT = Path(__file__).resolve().parents[2]
-RIGS = sorted((ROOT / "config" / "rigs").glob("*.yaml"))
-COMPILED = {path.stem: rigfile.emit_rig(rigfile.load_rig(path)) for path in RIGS}
+
+def _compiled_rigs(paths):
+    # With a rig's MIDI map compiled, if it has one, as a run loads it: a
+    # switch diffs what two runs loaded.
+    return {path.stem: compiled_rig(path) for path in paths}
+
+
+# The frozen rigs: every test that names a rig means one of these.
+COMPILED = _compiled_rigs(sorted(FROZEN.glob("*.yaml")))
 PAIRS = list(itertools.permutations(sorted(COMPILED), 2))
+# The committed rigs, whatever they hold today, for what must hold of any.
+# One that does not compile is test_rig_fixtures.py's to fail on (`committed_that`).
+COMMITTED_COMPILED = {path.stem: config for path, config in committed_that(compiled_rig)}
+SETS = {"frozen": COMPILED, "committed": COMMITTED_COMPILED}
+EVERY_PAIR = [(where, a, b) for where, rigs in SETS.items() for a, b in itertools.permutations(sorted(rigs), 2)]
+EVERY_PAIR_IDS = [f"{where}:{a}->{b}" for where, a, b in EVERY_PAIR]
 
 
-def compiled(name):
-    return copy.deepcopy(COMPILED[name])
+def compiled(name, where="frozen"):
+    return copy.deepcopy(SETS[where][name])
 
 
 # --------------------------------------------------------------------------- #
@@ -173,16 +195,17 @@ def inversions(before, after):
 
 
 # --------------------------------------------------------------------------- #
-# Every pair of rigs in config/rigs/
+# Every pair of rigs: the frozen ones, and the ones in config/rigs/ today
 # --------------------------------------------------------------------------- #
 
-@pytest.mark.parametrize("running, upcoming", PAIRS, ids=[f"{a}->{b}" for a, b in PAIRS])
-def test_every_pair_is_a_plan_that_reaches_the_next_rig_or_a_named_restart(running, upcoming):
+@pytest.mark.parametrize("where, running, upcoming", EVERY_PAIR, ids=EVERY_PAIR_IDS)
+def test_every_pair_is_a_plan_that_reaches_the_next_rig_or_a_named_restart(where, running, upcoming):
     """The contract: a plan, played on what the running rig holds, leaves
     exactly what loading the next rig would -- chains, plugins, values and
     bypass -- with every step one the agent would make; or a restart, for
-    reasons the table names."""
-    before, after = compiled(running), compiled(upcoming)
+    reasons the table names. It asks nothing of what a rig holds, so it is
+    asked of the committed rigs too."""
+    before, after = compiled(running, where), compiled(upcoming, where)
     decided = diff(before, after)
     if isinstance(decided, NeedsRestart):
         assert decided.reasons, "a restart says why"
@@ -196,22 +219,31 @@ def test_every_pair_is_a_plan_that_reaches_the_next_rig_or_a_named_restart(runni
     assert re.fullmatch(r"B*R*M*(AB)*P*N*B*", shape(decided)), shape(decided)
 
 
+def _track_names(config):
+    return [t["name"] for t in config["tracks"]]
+
+
+def _carla(config):
+    """What Carla is started with: the `_amp` section but for its parameters."""
+    amp = config.get("_amp")
+    return None if amp is None else {k: v for k, v in amp.items() if k != "parameters"}
+
+
 @pytest.mark.parametrize("running, upcoming", PAIRS, ids=[f"{a}->{b}" for a, b in PAIRS])
 def test_every_pair_restarts_exactly_where_the_live_operations_cannot_reach(running, upcoming):
-    """For the committed rigs, which have no MIDI maps and one host config,
+    """For the frozen rigs, which have no MIDI maps and one host config,
     what decides is the amp's presence and model (Carla loads a model only as
     it starts, and is started only with the rig) and the tracks (none are
     made or removed live): a restart for those, and only those. The amp's
-    parameters differing is not one: they are `amp` steps."""
+    parameters differing is not one: they are `amp` steps.
+
+    "Only those" is a fact about these eleven rigs, not about rigs: one with
+    a MIDI map or a program restarts for that, rightly. So it is asked of the
+    frozen rigs, and the half that holds of any rig is the test below."""
     before, after = compiled(running), compiled(upcoming)
     decided = diff(before, after)
-    tracks_differ = [t["name"] for t in before["tracks"]] != [t["name"] for t in after["tracks"]]
-
-    def carla(config):
-        amp = config.get("_amp")
-        return None if amp is None else {k: v for k, v in amp.items() if k != "parameters"}
-
-    amp_differs = carla(before) != carla(after)
+    tracks_differ = _track_names(before) != _track_names(after)
+    amp_differs = _carla(before) != _carla(after)
     assert isinstance(decided, NeedsRestart) == (tracks_differ or amp_differs)
     if isinstance(decided, NeedsRestart):
         if tracks_differ:
@@ -222,11 +254,28 @@ def test_every_pair_restarts_exactly_where_the_live_operations_cannot_reach(runn
         assert any(s.op == "amp" for s in decided.steps), "the amp's settings are steps"
 
 
-@pytest.mark.parametrize("running, upcoming", PAIRS, ids=[f"{a}->{b}" for a, b in PAIRS])
-def test_a_reading_that_is_the_running_config_makes_the_same_plan(running, upcoming):
+@pytest.mark.parametrize("where, running, upcoming", EVERY_PAIR, ids=EVERY_PAIR_IDS)
+def test_every_pair_whose_tracks_or_amp_differ_is_a_restart_that_says_so(where, running, upcoming):
+    """The half of the test above that holds of any two rigs, so of the
+    committed ones whatever they come to hold: tracks that differ (none are
+    made, removed or reordered live) and an amp on one side only or on
+    another model (Carla is started only with the rig) are each a restart
+    under their own code. That nothing else restarts is not asked here."""
+    before, after = compiled(running, where), compiled(upcoming, where)
+    decided = diff(before, after)
+    if _track_names(before) != _track_names(after):
+        assert isinstance(decided, NeedsRestart), "tracks differ and the plan would switch live"
+        assert {"track_added", "track_removed", "track_order"} & set(decided.codes)
+    if _carla(before) != _carla(after):
+        assert isinstance(decided, NeedsRestart), "the amp differs and the plan would switch live"
+        assert "amp" in decided.codes
+
+
+@pytest.mark.parametrize("where, running, upcoming", EVERY_PAIR, ids=EVERY_PAIR_IDS)
+def test_a_reading_that_is_the_running_config_makes_the_same_plan(where, running, upcoming):
     """With the rig as its config says, the plan made from a live reading is
     the plan made from the config."""
-    before, after = compiled(running), compiled(upcoming)
+    before, after = compiled(running, where), compiled(upcoming, where)
     assert diff(before, after, capture_of(before)) == diff(before, after)
 
 
@@ -236,16 +285,312 @@ def test_both_kinds_of_pair_are_among_the_rigs():
     assert kinds == {SwitchPlan, NeedsRestart}
 
 
-def test_how_many_of_the_committed_pairs_switch_live():
-    """The README's count. 26 of the 110 while the amp's parameters were a
-    restart; with them as steps, every pair of two rigs with the same tracks
-    and the same amp model (all nine with an amp use one) is live. What is
-    left restarts for an amp on one side only, or for the tracks."""
+def test_how_many_of_the_frozen_pairs_switch_live():
+    """26 of the 110 while the amp's parameters were a restart; with them as
+    steps, every pair of two rigs with the same tracks and the same amp model
+    (all nine with an amp use one) is live. What is left restarts for an amp
+    on one side only, or for the tracks.
+
+    Until 2026-11-12 this counted the pairs in config/rigs/ and was the
+    README's count, so it failed on the day a rig was added (132 pairs, 56
+    live) with nothing wrong. The number is of the frozen rigs now: it moves
+    only if `diff` decides differently, which is what it was there to catch.
+    What it protected, said of any rigs, is the test below."""
     live = [pair for pair in PAIRS if isinstance(diff(compiled(pair[0]), compiled(pair[1])), SwitchPlan)]
     assert (len(live), len(PAIRS)) == (72, 110)
     amp_only = [pair for pair in PAIRS if pair not in live
                 and diff(compiled(pair[0]), compiled(pair[1])).codes == ["amp"]]
     assert len(amp_only) == 18, "an amp on one side only, nothing else between them"
+
+
+# Every reason `diff` can give, sorted by what a test of two rig files may
+# expect of it. Read off `diff`'s and `_amp_plan`'s source, each `need("...")`
+# and `RestartReason("...")`, and held to that source by the test below, so
+# that a reason added there has to be placed here before the pair test can
+# pass a rig that gives it.
+#
+# MUST: decided by a difference the two configs show, and always given for it.
+MUST_CODES = {"track_added", "track_removed", "track_order", "track", "wiring", "amp", "host", "midi",
+              "config_section"}
+# MAY: given only where the two configs hold a particular fact (`_may_restart`).
+MAY_CODES = {"amp", "program", "properties", "plugin_type", "parameter_default", "protected", "midi_target",
+             "stereo_missing"}
+# NEVER, between two rig files compiled in one process with no live reading,
+# and why not.
+NEVER_CODES = {
+    "unreadable": "a compiled rig always has its list of tracks",
+    "wiring_unknown": "the compiler always records which roles its tracks are wired to",
+    "drifted": "it compares a live reading with the running config, and there is no reading",
+    "stereo": "one plugin has the same ports in both rigs: one plugin-ports.txt, read once",
+}
+# The sections of a compiled config `diff` knows; any other that differs is `config_section`.
+_SECTIONS = {"tracks", "initial_state", "host_config", "midi", "_amp", WIRING, "_meta", rigfile.AGENT_BINDINGS}
+# The compiler's own processors, by uid: a send, the return, a copy to stereo.
+_COMPILERS = {SEND_UID, rigfile.RETURN_UID, stereo.COPY_UID}
+
+
+def test_every_reason_diff_can_give_is_one_the_pair_test_has_a_place_for():
+    """The codes are read from the source, not by running it: a reason that
+    no pair of today's rigs reaches is still one a save could reach."""
+    import inspect
+
+    source = inspect.getsource(rigfile.diff) + inspect.getsource(rigfile._amp_plan)
+    given = set(re.findall(r'(?:\bneed|RestartReason)\(\s*"(\w+)"', source))
+    assert given == set(RESTART_REASONS), "a reason is given that the table does not name, or named and never given"
+    assert given == MUST_CODES | MAY_CODES | set(NEVER_CODES), sorted(given ^ (MUST_CODES | MAY_CODES | set(NEVER_CODES)))
+    assert not (MUST_CODES | MAY_CODES) & set(NEVER_CODES)
+
+
+def _state(config):
+    return {e["processor"]: e for e in config.get("initial_state") or []}
+
+
+def _plugins(config):
+    """{(track, name): plugin} for every plugin of `config`."""
+    return {(t["name"], p["name"]): p for t in config["tracks"] for p in t["plugins"]}
+
+
+def _must_restart(before, after):
+    """The reasons a switch from `before` to `after` has to restart for, read
+    off the two configs with none of `diff`'s code: what Sushi takes only as
+    it loads (the tracks, their shape, the host, its MIDI map, any section
+    nothing live reaches), what only the patchbay wires, and the amp Carla
+    is started with."""
+    codes = set()
+    names_b, names_a = _track_names(before), _track_names(after)
+    if set(names_a) - set(names_b):
+        codes.add("track_added")
+    if set(names_b) - set(names_a):
+        codes.add("track_removed")
+    common = [n for n in names_a if n in names_b]
+    if [n for n in names_b if n in names_a] != common:
+        codes.add("track_order")
+
+    def shape(config, name):
+        (track,) = [t for t in config["tracks"] if t["name"] == name]
+        return {k: v for k, v in track.items() if k != "plugins"}
+
+    if any(shape(before, n) != shape(after, n) for n in common):
+        codes.add("track")  # channels, inputs, outputs: a channel's width is here
+    if any(before[WIRING][n] != after[WIRING][n] for n in common):
+        codes.add("wiring")  # a channel's input, the master's output
+    if _carla(before) != _carla(after):
+        codes.add("amp")
+    if before.get("host_config") != after.get("host_config"):
+        codes.add("host")
+    if (before.get("midi") or {}) != (after.get("midi") or {}):
+        codes.add("midi")
+    if any(before.get(k) != after.get(k) for k in (set(before) | set(after)) - _SECTIONS):
+        codes.add("config_section")
+    assert codes <= MUST_CODES
+    return codes
+
+
+def _may_restart(before, after):
+    """The other reasons two rig files can give `diff`, each with the fact
+    in the two configs that has to be there for it. A rig file may hold a
+    plugin that is not LV2 (`type: internal`, a uid), a program, properties,
+    and its master a chain: all of these are a valid rig's to have."""
+    codes = set()
+    plugins_b, plugins_a = _plugins(before), _plugins(after)
+    state_b, state_a = _state(before), _state(after)
+
+    def same(key):
+        """In both rigs: that name on that track, and the same plugin under it."""
+        return key in plugins_b and key in plugins_a and plugins_b[key] == plugins_a[key]
+
+    def user(plugin):
+        return plugin.get("uid") not in _COMPILERS
+
+    def not_lv2(plugin):
+        return user(plugin) and plugin.get("type") != "lv2"
+
+    amp_b, amp_a = before.get("_amp") or {}, after.get("_amp") or {}
+    if set(amp_b.get("parameters") or {}) - set(amp_a.get("parameters") or {}):
+        codes.add("amp")  # an amp parameter the next rig leaves unstated
+    # A program the next rig states where the running one has not that one:
+    # nothing live sets a program, on a plugin that stays or one to add.
+    if any(e.get("program") is not None and e.get("program") != (state_b.get(name) or {}).get("program")
+           for name, e in state_a.items()):
+        codes.add("program")
+    # Properties the next rig states that the running one has not, the same.
+    if any(e.get("properties") and e.get("properties") != (state_b.get(name) or {}).get("properties")
+           for name, e in state_a.items()):
+        codes.add("properties")
+    # A plugin that is not LV2 and is not already there as it is: the live
+    # add makes LV2 plugins only.
+    if any(not_lv2(plugin) and not same(key) for key, plugin in plugins_a.items()):
+        codes.add("plugin_type")
+    # A plugin that stays and cannot be added fresh (not LV2), of which the
+    # next rig leaves unstated a parameter, the program or the properties the
+    # running rig set: only a fresh plugin is at its defaults.
+    for key, plugin in plugins_a.items():
+        if not_lv2(plugin) and same(key):
+            was, will = state_b.get(key[1]) or {}, state_a.get(key[1]) or {}
+            if (set(was.get("parameters") or {}) - set(will.get("parameters") or {})
+                    or (was.get("program") is not None and will.get("program") is None)
+                    or (was.get("properties") and not will.get("properties"))):
+                codes.add("parameter_default")
+    # A send or a return that is in one rig and not the other, on tracks both
+    # have: the compiler's are the same on both, so one a player stated.
+    shared = set(_track_names(before)) & set(_track_names(after))
+
+    def routing(plugins):
+        return {key for key, plugin in plugins.items()
+                if key[0] in shared and plugin.get("uid") in (SEND_UID, rigfile.RETURN_UID)}
+
+    if routing(plugins_b) != routing(plugins_a):
+        codes.add("protected")
+    if (before.get("midi") or {}).get("cc_mappings"):
+        codes.add("midi_target")  # a mapped plugin that goes would lose its pedal
+
+    def copies(config):
+        return {p["name"] for t in config["tracks"] for p in t["plugins"] if stereo.is_copy(p["name"], p.get("uid"))}
+
+    if copies(after) and not copies(before):
+        # A rig of stereo plugins only, then one with a mono plugin: `diff`
+        # takes the first for a config compiled before the copies existed.
+        codes.add("stereo_missing")
+    assert codes <= MAY_CODES
+    return codes
+
+
+def _restarts_only_for_what_shows(before, after, pair):
+    """`diff`'s answer for one ordered pair, held to the two functions above."""
+    decided = diff(before, after)
+    must, may = _must_restart(before, after), _may_restart(before, after)
+    if isinstance(decided, SwitchPlan):
+        assert not must, f"{pair}: a live switch, though the rigs differ in {sorted(must)}"
+        return decided
+    codes = set(decided.codes)
+    assert must <= codes, f"{pair}: the restart does not say {sorted(must - codes)}"
+    assert codes <= must | may, (
+        f"{pair}: restarts for {sorted(codes - must - may)}, which nothing between the two rigs shows: "
+        + "; ".join(r.detail for r in decided.reasons if r.code not in must | may))
+    assert all(r.detail for r in decided.reasons), pair
+    return decided
+
+
+@pytest.mark.parametrize("where", sorted(SETS))
+def test_every_pair_restarts_for_what_the_two_rigs_show_and_for_nothing_else(where):
+    """What the count protected (how many pairs switch live, which moved from
+    26 to 72 of 110 when the amp's parameters became steps), said of any
+    rigs and so of the committed ones, with no number in it. For every
+    ordered pair: where the two differ in what cannot be done live (a track
+    there or not, its width, its input, the amp's model or presence, the
+    host, the MIDI map), the answer is a restart that names each such
+    difference; and a restart names nothing the two rigs do not show. So two
+    rigs with the same channels, inputs, widths and amp model, and nothing
+    else of that kind between them, are a live switch whatever their chains
+    and values are, which is the whole of what a count could say. And a rig
+    is no distance from itself: switching to the rig that is running is an
+    empty plan. That a plan, played, leaves the next rig is the first test
+    of this section, on the same pairs.
+
+    "What the two rigs show" is `_must_restart` and `_may_restart`: every
+    reason `diff` has is in one of them or in `NEVER_CODES`, so a committed
+    rig may hold anything a rig file can (a plugin that is not LV2, a
+    program, a chain on the master) and this still holds of it. The first
+    form of this test took every plugin for LV2, and failed on a rig with an
+    internal gain in its chain (review of 0ae6593): the test after this one
+    is that rig, and its like.
+
+    How many pairs are live is the owner's to change with any save, and is
+    asked only of the frozen rigs, above."""
+    rigs = sorted(SETS[where])
+    for name in rigs:
+        assert diff(compiled(name, where), compiled(name, where)) == SwitchPlan(()), name
+    for running, upcoming in itertools.permutations(rigs, 2):
+        _restarts_only_for_what_shows(compiled(running, where), compiled(upcoming, where), f"{running} -> {upcoming}")
+
+
+def _electric_clean(change=None):
+    """The frozen electric-clean, compiled, with `change` made to its document first."""
+    import yaml
+
+    raw = yaml.safe_load((FROZEN / "electric-clean.yaml").read_text())
+    if change:
+        change(raw)
+    return rigfile.emit_rig(rigfile.parse_rig(raw))
+
+
+def _chain(raw):
+    return raw["channels"][0]["chain"]
+
+
+_TRIM = {"name": "trim", "uid": "sushi.testing.gain", "type": "internal", "parameters": {"gain": 0.5}}
+# Saves an owner might make to electric-clean, each a valid rig, and each a
+# rig file's to hold. The first three are the review's trial.
+_SAVES = {
+    "as it is": None,
+    "an internal plugin added": lambda raw: _chain(raw).insert(1, dict(_TRIM)),
+    "that plugin, its parameter dropped": lambda raw: _chain(raw).insert(1, {k: v for k, v in _TRIM.items() if k != "parameters"}),
+    "a plugin replaced by one of another type": lambda raw: _chain(raw).__setitem__(
+        0, {"name": _chain(raw)[0]["name"], "uid": "sushi.testing.gain", "type": "internal"}),
+    "a parameter of an LV2 plugin dropped": lambda raw: _chain(raw)[0]["parameters"].pop("RATIO"),
+    "a program": lambda raw: (_chain(raw)[0].pop("parameters"), _chain(raw)[0].update(program=2)),
+    "a third channel": lambda raw: raw["channels"].extend([
+        {"name": "vocal", "input": "vocal-in", "width": "mono", "chain": []},
+        {"name": "keys", "input": "vocal-in", "width": "mono",
+         "chain": [{"name": "keys_eq", "uri": "http://distrho.sf.net/plugins/3BandEQ"}]}]),
+    "a stereo channel": lambda raw: raw["channels"][0].update(width="stereo"),
+    "another input": lambda raw: raw["channels"][0].update(input="vocal-in"),
+    "no amp": lambda raw: raw.pop("amp"),
+    "another amp model": lambda raw: raw["amp"].update(model="amp/models/Neve 3.nam"),
+    "an amp parameter left out": lambda raw: raw["amp"]["parameters"].pop("Quality"),
+    "a plugin on the master": lambda raw: raw["master"]["chain"].append(
+        {"name": "ceiling", "uri": "http://drobilla.net/plugins/mda/Limiter"}),
+    "an internal plugin on the master": lambda raw: raw["master"]["chain"].append(dict(_TRIM)),
+    "stereo plugins only": lambda raw: raw["channels"][0].update(
+        chain=[{"name": "verb", "uri": "http://distrho.sf.net/plugins/MVerb"}]),
+    "an empty chain": lambda raw: raw["channels"][0].update(chain=[]),
+    "another sample rate": lambda raw: raw.update(host={"samplerate": 44100}),
+}
+
+
+def test_a_rig_may_hold_anything_a_rig_file_can_and_the_pair_test_still_holds_of_it():
+    """Every ordered pair of electric-clean as it is and as sixteen saves
+    would leave it, the frozen rigs beside them: whatever `diff` decides, it is for
+    something the two show. And what it decides for the review's trial."""
+    saved = {name: _electric_clean(change) for name, change in _SAVES.items()}
+    everything = {**{f"frozen {name}": config for name, config in COMPILED.items()}, **saved}
+    for running, upcoming in itertools.permutations(sorted(everything), 2):
+        _restarts_only_for_what_shows(copy.deepcopy(everything[running]), copy.deepcopy(everything[upcoming]),
+                                      f"{running} -> {upcoming}")
+
+    def decided(running, upcoming):
+        return diff(copy.deepcopy(saved[running]), copy.deepcopy(saved[upcoming]))
+
+    # The trial: an internal gain cannot be added live, and can be taken out;
+    # with its parameter dropped it cannot be put back to a default nobody knows.
+    assert decided("as it is", "an internal plugin added").codes == ["plugin_type"]
+    assert isinstance(decided("an internal plugin added", "as it is"), SwitchPlan)
+    assert decided("an internal plugin added", "that plugin, its parameter dropped").codes == ["parameter_default"]
+    assert isinstance(decided("that plugin, its parameter dropped", "an internal plugin added"), SwitchPlan)
+    assert decided("as it is", "a plugin replaced by one of another type").codes == ["plugin_type"]
+    # And the rest, one each way of saying it.
+    assert isinstance(decided("as it is", "a parameter of an LV2 plugin dropped"), SwitchPlan), "replaced fresh"
+    assert decided("as it is", "a program").codes == ["program"]
+    assert decided("as it is", "a stereo channel").codes == ["track"]
+    assert decided("as it is", "another input").codes == ["wiring"]
+    assert decided("as it is", "an amp parameter left out").codes == ["amp"]
+    assert decided("as it is", "an internal plugin on the master").codes == ["plugin_type"]
+    assert isinstance(decided("as it is", "a plugin on the master"), SwitchPlan)
+    assert decided("stereo plugins only", "as it is").codes == ["stereo_missing"]
+    assert decided("as it is", "another sample rate").codes == ["host"]
+
+
+def test_the_reasons_that_cannot_arise_between_two_rig_files_do_not():
+    """`NEVER_CODES`, each with why: asked of every pair there is here, the
+    sixteen saves among them."""
+    everything = {**COMPILED, **COMMITTED_COMPILED, **{name: _electric_clean(change) for name, change in _SAVES.items()}}
+    seen = set()
+    for running, upcoming in itertools.permutations(sorted(everything), 2):
+        decided = diff(copy.deepcopy(everything[running]), copy.deepcopy(everything[upcoming]))
+        seen |= set(getattr(decided, "codes", ()))
+    assert not seen & set(NEVER_CODES), sorted(seen & set(NEVER_CODES))
+    assert {"plugin_type", "parameter_default", "program", "track", "wiring", "amp", "host", "stereo_missing",
+            "track_added", "track_removed"} <= seen, "not vacuous: these saves reach the reasons a rig file can"
 
 
 def test_moves_are_the_fewest_steps_that_put_the_survivors_in_order():
@@ -575,9 +920,10 @@ def test_steps_name_only_what_the_routes_take():
         plan = diff(compiled(running), compiled(upcoming))
         assert plan.steps and all(set(s.args) - ({"copy"} if s.op == "add" else set()) == bodies[s.op]
                                   for s in plan.steps)
-    adds = [s for a, b in PAIRS for s in getattr(diff(compiled(a), compiled(b)), "steps", ()) if s.op == "add"]
+    adds = [s for where, a, b in EVERY_PAIR
+            for s in getattr(diff(compiled(a, where), compiled(b, where)), "steps", ()) if s.op == "add"]
     with_copy = [s for s in adds if "copy" in s.args]
-    assert with_copy, "not vacuous: some pair adds a mono plugin"
+    assert with_copy, "not vacuous: some pair adds a mono plugin (the frozen rigs have such pairs)"
     assert all(s.args["copy"] == stereo.copy_name(s.args["name"]) for s in with_copy)
 
 

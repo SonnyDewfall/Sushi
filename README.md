@@ -337,7 +337,8 @@ then.
 │   │                             selftest, take, transport, recorder,
 │   │                             recorder_process, capture, midi_listener, agent,
 │   │                             agent_client, service, yamlmerge, paths, _numpy, stereo, cli
-│   ├── tests/                    fast suite; fixtures/ holds captured artefacts
+│   ├── tests/                    fast suite; fixtures/ holds captured artefacts, and the
+│   │                             rigs, v1 configs and machine file the tests name, frozen
 │   ├── examples/
 │   │   ├── rig.example.yaml       annotated rig spec (real plugins)
 │   │   ├── dump.example.json      real --dump-plugins output, test fixture
@@ -754,9 +755,11 @@ read-back that is not the next rig. A switch that fails part-way restarts into
 the next rig, and brings the previous rig back if that restart fails; if the
 restart cannot even take the rig down, `/health` and the answer say the rig is
 **half-switched**, naming both rigs, and nothing more is tried: read `/live`
-and bring it down and up by hand. Of the committed rigs, 72 of the 110 ordered pairs are
+and bring it down and up by hand. Of the eleven rigs as they were on 2026-11-07
+(kept under `tool/tests/fixtures/rigs/`), 72 of the 110 ordered pairs are
 live (26 while the amp's parameters were a restart); the rest have an amp on
-one side only, or other tracks. One `op: "rig"` entry goes in
+one side only, or other tracks. The rigs in `config/rigs/` have changed since
+and will again, so no count of them is kept here or pinned by a test. One `op: "rig"` entry goes in
 `/live/log` either way, and undo stops at it. A rig that would not compile is
 refused (`409 rig_problem`) with the running one left playing. **Not run
 against a live Sushi and not heard**: shown against the fake only, and how long
@@ -1684,6 +1687,34 @@ it; without them those tests skip, and the rest of the file still runs:
 ```bash
 pip install -e "tool[ui-test]" && python -m playwright install chromium
 ```
+
+**A test may fail because the code is wrong, or because a committed rig is
+not a valid rig. It must not fail because a rig changed.** `config/rigs/` is
+saved into from the web UI and committed, so a test that reads it takes every
+rig there through `tests/rig_fixtures.py` and assumes nothing about what any
+of them holds. What a committed rig is held to is in
+`tests/test_rig_fixtures.py`, one test for each by name: it parses and
+compiles, its amp's model is a file and its amp's parameters are in the amp's
+range, and it wires on the committed machine file; in the container, where
+there is a Sushi, every parameter it names is one its plugin has (nothing in
+the checkout lists a plugin's parameters, so a bare runner cannot ask). A rig
+that fails that is left out of the tests over every pair of rigs, which ask
+only what holds of any two. A test that needs a rig it knows (one channel
+called `board`, two rigs that differ only in the amp's levels) reads the
+frozen set in `tests/fixtures/`: `rigs/`, the eleven rigs as they were at
+c494625, with the v1 configs and sources they were converted from (`v1/`) and
+the machine file they are wired against (`machines/`). They are test data,
+pinned by checksum, and do not follow `config/` or `machines/`. The
+conversions of #30 are held to their v1 configs there, and as `convert`
+writes them today; the rig in `config/rigs/` is the one to edit and is not
+compared with the config it came from. A guard keeps this so: every file
+opened and folder listed in the test process is audited, and a test that
+reads `config/rigs/` without the marker `committed_rigs` fails, however the
+path was spelt and whatever code did the reading (`rig_fixtures.py` says what
+it cannot see). The one check that does follow a rig's content is its sound:
+see `nulltest --all` below, where a rig with no reference, or one that no
+longer sounds like its reference, fails the container job until a reference
+is calibrated for it.
 
 **Every test must run somewhere, and a skip counts as a failure.** CI is two
 workflows because no single runner has everything:

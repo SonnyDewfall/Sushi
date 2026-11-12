@@ -31,6 +31,7 @@ np = pytest.importorskip("numpy")
 
 from sushi_rig import signals, take  # noqa: E402
 from sushi_rig.paths import checkout_root  # noqa: E402
+from rig_fixtures import frozen, frozen_v1  # noqa: E402
 from sushi_rig.take import DRY, PROCESSED, Stem, TakeError  # noqa: E402
 
 SR = 48000
@@ -55,7 +56,7 @@ def four_stems() -> list[Stem]:
 
 
 def config() -> dict:
-    return json.loads((ROOT / "config" / "guitar_vocal.json").read_text())
+    return json.loads(frozen_v1("guitar_vocal").read_text())
 
 
 def start(tmp_path, name="riff-idea", stems=None, cfg=None, **overrides) -> dict[str, Path]:
@@ -244,7 +245,7 @@ def test_the_config_as_it_was_live_is_what_is_kept(tmp_path):
     assert copied["_amp"]["model"] == "amp/models/audition.nam"
 
 
-RIG_TEXT = (checkout_root() / "config" / "rigs" / "guitar_vocal.yaml").read_text()
+RIG_TEXT = frozen("guitar_vocal").read_text()  # the rig as these tests know it (rig_fixtures.py)
 LIBRARY = {"commit": "987e37691ba8f69960019bbd746c0fc18586a4ed", "dirty": False}
 
 

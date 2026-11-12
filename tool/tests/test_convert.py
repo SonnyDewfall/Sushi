@@ -1,9 +1,22 @@
 """Today's tones as v2 rigs (#30): converted, held to the configs they replace,
 and null-tested against the references those configs were calibrated to.
 
-Until `up` runs v2 rigs, each tone exists twice — `config/<name>.json` and
-`config/rigs/<name>.yaml` — and the two must not drift. The fast test says they
-hold the same plugins and settings; the slow one says they sound the same.
+Each tone exists twice, `config/<name>.json` and `config/rigs/<name>.yaml`,
+and a conversion must lose nothing: the fast tests say the two hold the same
+plugins and settings; the slow one says each rig sounds like its reference.
+
+**What is held to a config, since 2026-11-12.** A conversion is: the one
+`convert` makes of each config today, and the one that was committed on the
+day (#30), kept as it was under fixtures/rigs/ beside the config it was made
+from, under fixtures/v1/ (rig_fixtures.py). The rig in
+config/rigs/ is not: its first line says "Edit this file, not that one", the
+web UI's Save does exactly that, and a rig that gained a channel on the
+laptop (electric-chorus-2, 2c36874) is not a conversion that lost anything.
+Until then these tests read config/rigs/ and so failed on that save. A list
+here of the rigs known to have diverged was the other rule considered, and
+not taken: the next save of a rig not yet on it would fail the same way,
+which is the thing being fixed. The converter's faithfulness is a fact about
+`convert` and about the files it wrote, and both are still checked in full.
 """
 
 from __future__ import annotations
@@ -12,37 +25,60 @@ import json
 
 import pytest
 import yaml
+from rig_fixtures import FROZEN_V1, compiled_to_render, frozen, frozen_names, frozen_v1, valid_committed
 
 from sushi_rig import rigfile
 from sushi_rig.convert import ConvertError, Input, convert, differences, parse_input, to_rig
 from sushi_rig.paths import checkout_root
 
 ROOT = checkout_root()
-CONFIGS = sorted((ROOT / "config").glob("*.json"))
+# The conversions committed on the day (#30), as they were: each frozen v1
+# config with the frozen rig of its name. Named, so that one of either going
+# missing fails as a missing file and not as a test that ran on fewer.
+CONVERTED_NAMES = [
+    "accustomed", "electric-chorus", "electric-chorus-2", "electric-chorus-hall", "electric-clean",
+    "electric-delay", "electric-octave-up", "electric-spacey-delay", "electric_board", "guitar_vocal",
+    "hard-feelings",
+]
+CONVERTED = [frozen_v1(name) for name in CONVERTED_NAMES]
+# What `convert` is given today: the same frozen configs. The v1 configs in
+# config/ are to be retired, and a test of `convert` is not to go with them.
+CONFIGS = CONVERTED
+# What a config of more than one track cannot say for itself (`convert --input`).
+INPUTS = {"guitar_vocal": {"guitar": Input("guitar-in", "mono"), "vocal": Input("vocal-in", "mono")}}
 
 
 def v1(name: str) -> dict:
-    return json.loads((ROOT / "config" / f"{name}.json").read_text())
+    return json.loads(frozen_v1(name).read_text())
 
 
-@pytest.mark.parametrize("config", CONFIGS, ids=lambda p: p.stem)
+def test_the_conversions_kept_are_every_frozen_rig_and_every_frozen_config():
+    """The explicit list is the whole frozen set, both ways."""
+    assert sorted(CONVERTED_NAMES) == frozen_names() == sorted(p.stem for p in FROZEN_V1.glob("*.json"))
+
+
+@pytest.mark.parametrize("config", CONVERTED, ids=lambda p: p.stem)
 def test_every_tone_has_a_v2_rig_that_holds_everything_it_did(config):
-    rig = ROOT / "config" / "rigs" / f"{config.stem}.yaml"
-    assert rig.exists(), f"no v2 rig for {config.name}: `sushi-rig convert {config}`"
-    assert differences(json.loads(config.read_text()), rigfile.emit_rig(rigfile.load_rig(rig))) == []
+    """The conversion as it was committed (fixtures/rigs/), compiled by
+    today's compiler: a change to `emit_rig` or the parser that loses a
+    setting of a converted rig fails here."""
+    assert differences(json.loads(config.read_text()), rigfile.emit_rig(rigfile.load_rig(frozen(config.stem)))) == []
 
 
 @pytest.mark.parametrize("config", CONFIGS, ids=lambda p: p.stem)
-def test_every_rig_names_the_plugins_its_config_names_read_without_the_converter(config):
-    """The test above asks `differences` whether a rig matches its config, and
-    `differences` lives in convert.py beside the code that wrote the rigs: if
-    the two share a blind spot, it passes. This reads both files with nothing
-    but json and yaml, and compares the plugin names and URIs on each channel
-    with those on the config's track of the same name, so a plugin the converter
-    dropped, renamed or moved to another channel fails here whatever it believes.
-    """
-    raw_config = json.loads(config.read_text())
-    raw_rig = yaml.safe_load((ROOT / "config" / "rigs" / f"{config.stem}.yaml").read_text())
+def test_every_tone_converted_today_holds_everything_it_did(config):
+    """What `convert` writes for each config now, with nothing read from
+    config/rigs/: parsed and compiled, it is the config's plugins and
+    settings. `convert` refuses its own work otherwise, so this also says it
+    does not refuse a config it once converted."""
+    raw = json.loads(config.read_text())
+    rig = convert(raw, config.stem, INPUTS.get(config.stem))
+    assert differences(raw, rigfile.emit_rig(rigfile.parse_rig(rig))) == []
+
+
+def _plugin_names(raw_config: dict, raw_rig: dict) -> None:
+    """Both read with nothing but json and yaml: the plugin names and URIs on
+    each channel are those on the config's track of the same name."""
 
     def plugin(entry):
         return entry["name"], entry.get("uri") or entry.get("uid")
@@ -51,6 +87,27 @@ def test_every_rig_names_the_plugins_its_config_names_read_without_the_converter
     found = {c["name"]: {plugin(p) for p in c["chain"]} for c in raw_rig["channels"]}
     assert found == wanted
     assert all(found.values()), "a channel with no plugins would make this vacuous"
+
+
+@pytest.mark.parametrize("config", CONVERTED, ids=lambda p: p.stem)
+def test_every_rig_names_the_plugins_its_config_names_read_without_the_converter(config):
+    """The tests above ask `differences` whether a rig matches its config, and
+    `differences` lives in convert.py beside the code that wrote the rigs: if
+    the two share a blind spot, it passes. This reads both files with nothing
+    but json and yaml, and compares the plugin names and URIs on each channel
+    with those on the config's track of the same name, so a plugin the converter
+    dropped, renamed or moved to another channel fails here whatever it believes.
+    Of the conversions as committed (fixtures/rigs/); the next test is of
+    what `convert` writes today.
+    """
+    _plugin_names(json.loads(config.read_text()), yaml.safe_load(frozen(config.stem).read_text()))
+
+
+@pytest.mark.parametrize("config", CONFIGS, ids=lambda p: p.stem)
+def test_every_rig_converted_today_names_the_plugins_its_config_names(config):
+    """The same reading, of the rig `to_rig` builds before `convert` checks it."""
+    raw_config = json.loads(config.read_text())
+    _plugin_names(raw_config, to_rig(raw_config, config.stem, INPUTS.get(config.stem)))
 
 
 def test_a_converted_tone_is_a_mono_guitar_channel_into_the_master():
@@ -115,7 +172,7 @@ def test_an_input_is_given_as_track_role_width():
 
 def test_the_hand_written_guitar_vocal_is_the_same_tone_as_its_config():
     """Written before `convert` existed, with comments a conversion would lose."""
-    rig = rigfile.load_rig(ROOT / "config" / "rigs" / "guitar_vocal.yaml")
+    rig = rigfile.load_rig(frozen("guitar_vocal"))
     assert differences(v1("guitar_vocal"), rigfile.emit_rig(rig)) == []
 
 
@@ -123,11 +180,13 @@ def test_the_command_writes_once_and_refuses_to_overwrite(tmp_path, capsys):
     from sushi_rig.cli import main
 
     out = tmp_path / "clean.yaml"
-    assert main(["convert", str(ROOT / "config" / "electric-clean.json"), "-o", str(out)]) == 0
+    config = frozen_v1("electric-clean")
+    assert main(["convert", str(config), "-o", str(out)]) == 0
     text = out.read_text()
-    assert text.startswith("# Converted from config/electric-clean.json")
+    # The path as given, from the checkout's root: where the frozen config is.
+    assert text.startswith(f"# Converted from {config.relative_to(ROOT).as_posix()} by `sushi-rig convert`")
     assert rigfile.parse_rig(yaml.safe_load(text)).name == "electric-clean"
-    assert main(["convert", str(ROOT / "config" / "electric-clean.json"), "-o", str(out)]) == 1
+    assert main(["convert", str(config), "-o", str(out)]) == 1
     assert "exists; --force updates it, keeping its comments" in capsys.readouterr().out
 
 
@@ -135,7 +194,7 @@ def test_force_updates_a_rig_file_in_place_and_keeps_its_comments(tmp_path):
     from sushi_rig.cli import main
 
     out = tmp_path / "clean.yaml"
-    config = str(ROOT / "config" / "electric-clean.json")
+    config = str(frozen_v1("electric-clean"))
     assert main(["convert", config, "-o", str(out)]) == 0
     fresh = out.read_text()
     out.write_text(fresh.replace("channels:\n", "channels:\n# Written by hand, and wanted.\n", 1))
@@ -145,7 +204,7 @@ def test_force_updates_a_rig_file_in_place_and_keeps_its_comments(tmp_path):
 
 
 def test_settings_in_a_rig_file_are_checked_for_shape():
-    raw = yaml.safe_load((ROOT / "config" / "rigs" / "electric-clean.yaml").read_text())
+    raw = yaml.safe_load(frozen("electric-clean").read_text())
     raw["channels"][0]["chain"][0]["parameters"]["RATIO"] = "high"
     raw["channels"][0]["chain"][1]["bypassed"] = "no"
     with pytest.raises(rigfile.RigFileError) as caught:
@@ -154,7 +213,7 @@ def test_settings_in_a_rig_file_are_checked_for_shape():
 
 
 def test_a_capture_overrides_the_files_settings_and_keeps_the_rest():
-    rig = rigfile.load_rig(ROOT / "config" / "rigs" / "electric-clean.yaml")
+    rig = rigfile.load_rig(frozen("electric-clean"))
     config = rigfile.emit_rig(rig, {"processors": {"compressor": {"parameters": {"RATIO": 0.5}}}})
     state = {e["processor"]: e for e in config["initial_state"]}
     assert state["compressor"]["parameters"]["RATIO"] == 0.5
@@ -164,7 +223,7 @@ def test_a_capture_overrides_the_files_settings_and_keeps_the_rest():
 
 
 def test_what_is_heard_offline_is_the_master_alone():
-    config = rigfile.emit_rig(rigfile.load_rig(ROOT / "config" / "rigs" / "guitar_vocal.yaml"))
+    config = rigfile.emit_rig(rigfile.load_rig(frozen("guitar_vocal")))
     views = dict(rigfile.heard(config))
     assert list(views) == ["guitar_vocal.guitar", "guitar_vocal.vocal"]
     vocal = views["guitar_vocal.vocal"]
@@ -179,7 +238,10 @@ def test_what_is_heard_offline_is_the_master_alone():
 # --------------------------------------------------------------------------- #
 
 SUSHI = ROOT / "sushi"
-RIGS = sorted((ROOT / "config" / "rigs").glob("*.yaml"))
+# The committed rigs: this one is about config/rigs/ and config/sound/ as they
+# are. Those that are rigs: one that does not compile is test_rig_fixtures.py's
+# to fail on, by name, and has no sound to compare.
+RIGS = valid_committed()
 
 
 @pytest.mark.skipif(not SUSHI.exists(), reason="needs the Sushi binary")
@@ -199,7 +261,7 @@ def test_every_v2_rig_sounds_like_its_reference(rig, tmp_path, request):
     from sushi_rig.nulltest import compare, from_dict
     from sushi_rig.render import measure
 
-    config = rigfile.emit_rig(rigfile.load_rig(rig))
+    config = compiled_to_render(rig)  # emit_rig, but for a MIDI map, which no render plays
     for name, view in rigfile.heard(config):
         reference = ROOT / "config" / "sound" / f"{name}.yaml"
         assert reference.exists(), f"no reference for {name}"
@@ -220,7 +282,7 @@ def test_every_v2_rig_sounds_like_its_reference(rig, tmp_path, request):
 # --------------------------------------------------------------------------- #
 
 def _clean_rig() -> dict:
-    return yaml.safe_load((ROOT / "config" / "rigs" / "electric-clean.yaml").read_text())
+    return yaml.safe_load(frozen("electric-clean").read_text())
 
 
 def test_a_captured_program_replaces_the_files_parameters():
@@ -234,7 +296,7 @@ def test_a_captured_program_replaces_the_files_parameters():
 def test_a_setting_only_the_rig_has_is_a_difference_too():
     """electric_board's config has no initial_state, so a one-way check let
     anything be added to its rig unseen."""
-    raw = yaml.safe_load((ROOT / "config" / "rigs" / "electric_board.yaml").read_text())
+    raw = yaml.safe_load(frozen("electric_board").read_text())
     raw["channels"][0]["chain"][0]["bypassed"] = True
     found = differences(v1("electric_board"), rigfile.emit_rig(rigfile.parse_rig(raw)))
     assert len(found) == 1 and "was None" in found[0]
@@ -292,7 +354,7 @@ def test_a_copy_of_a_config_converts_under_its_own_name_or_one_given(tmp_path, c
     from sushi_rig.cli import main
 
     copy = tmp_path / "my-tone.json"
-    copy.write_text((ROOT / "config" / "electric-clean.json").read_text())
+    copy.write_text(frozen_v1("electric-clean").read_text())
     out = tmp_path / "out.yaml"
     assert main(["convert", str(copy), "-o", str(out)]) == 0
     assert yaml.safe_load(out.read_text())["name"] == "electric-clean"
@@ -337,7 +399,7 @@ def test_an_empty_host_config_is_refused_as_an_absent_one_is_for_the_host_it_add
 
 def test_empty_and_absent_agree_in_differences_both_ways():
     config = v1("electric-clean")
-    compiled = rigfile.emit_rig(rigfile.load_rig(ROOT / "config" / "rigs" / "electric-clean.yaml"))
+    compiled = rigfile.emit_rig(rigfile.load_rig(frozen("electric-clean")))
     config["_amp"] = {}
     del compiled["_amp"]
     assert differences(config, compiled) == []
@@ -367,7 +429,7 @@ def test_a_plugin_named_like_a_send_is_held_to_its_settings_not_mistaken_for_one
 
 def test_the_compilers_own_send_is_still_not_counted_against_the_config():
     config = v1("electric-clean")
-    compiled = rigfile.emit_rig(rigfile.load_rig(ROOT / "config" / "rigs" / "electric-clean.yaml"))
+    compiled = rigfile.emit_rig(rigfile.load_rig(frozen("electric-clean")))
     assert any(e["processor"] == "board_send" for e in compiled["initial_state"])
     assert differences(config, compiled) == []
 
