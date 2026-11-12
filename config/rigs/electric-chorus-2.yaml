@@ -37,45 +37,45 @@ channels:
       THRESHOLD: 0.8
       RELEASE: 0.02
       ATTACK: 0.002
-      BYPASS: 1.0
+      BYPASS: 1
   - name: overdrive
     uri: http://guitarix.sourceforge.net/plugins/gxts9#ts9sim
     bypassed: true
     parameters:
       Level: 0.93
       Tone: 0.13
-      Drive: 0.0
-      BYPASS: 1.0
+      Drive: 0
+      BYPASS: 1
   - name: octave_down
     uri: http://guitarix.sourceforge.net/plugins/gx_detune_#_detune_
     bypassed: true
     parameters:
       DETUNE: 0.5
-      OCTAVE: 0.0
-      COMPENSATE: 0.0
-      LATENCY: 0.0
+      OCTAVE: 0
+      COMPENSATE: 0
+      LATENCY: 0
       WET: 0.5
       DRY: 0.5
       LOW: 0.5
       MIDDLELOW: 0.5
       MIDDLETREBLE: 0.5
       TREBLE: 0.5
-      BYPASS: 1.0
+      BYPASS: 1
   - name: octave_up
     uri: http://guitarix.sourceforge.net/plugins/gx_detune_#_detune_
     bypassed: true
     parameters:
       DETUNE: 0.5
-      OCTAVE: 0.0
-      COMPENSATE: 0.0
-      LATENCY: 0.0
+      OCTAVE: 0
+      COMPENSATE: 0
+      LATENCY: 0
       WET: 0.5
       DRY: 0.5
       LOW: 0.5
       MIDDLELOW: 0.5
       MIDDLETREBLE: 0.5
       TREBLE: 0.5
-      BYPASS: 1.0
+      BYPASS: 1
   - name: eq
     uri: http://distrho.sf.net/plugins/3BandEQ
     bypassed: false
@@ -94,7 +94,7 @@ channels:
       Delay: 0.5
       Depth: 0.03
       Freq: 0.08
-      BYPASS: 1.0
+      BYPASS: 1
   - name: delay
     uri: http://plugin.org.uk/swh-plugins/lcrDelay
     bypassed: true
@@ -109,14 +109,14 @@ channels:
       High damp (%): 0.5
       Low damp (%): 0.5
       Spread: 0.5
-      Dry/Wet level: 0.0
+      Dry/Wet level: 0
   - name: room
     uri: urn:ardour:a-reverb
     bypassed: false
     parameters:
       Blend: 0.15
       Room Size: 0.41
-      Enable: 1.0
+      Enable: 1
   - name: hall
     uri: http://distrho.sf.net/plugins/MaGigaverb
     bypassed: true
@@ -124,11 +124,25 @@ channels:
       damping: 0.12
       revtime: 0.01
       roomsize: 0.29
-      spread: 0.0
+      spread: 0
       bandwidth: 0.12
       tail: 0.08
       dry: 0.92
       early: 0.16
+- name: vocal
+  input: vocal-in
+  width: mono
+  chain:
+  - name: vocal_dynamics
+    uri: http://drobilla.net/plugins/mda/Dynamics
+  - name: vocal_deess
+    uri: http://drobilla.net/plugins/mda/DeEss
+  - name: vocal_eq
+    uri: http://distrho.sf.net/plugins/3BandEQ
+  - name: vocal_reverb
+    uri: http://distrho.sf.net/plugins/MVerb
+  - name: vocal_limiter
+    uri: http://drobilla.net/plugins/mda/Limiter
 master:
   output: monitor-out
   chain: []
