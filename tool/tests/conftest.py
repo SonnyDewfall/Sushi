@@ -18,6 +18,15 @@ def pytest_collection_finish(session):
     del rig_fixtures.STRAY[:]
 
 
+def pytest_sessionfinish(session, exitstatus):
+    """A read of config/rigs/ that no test was failed for fails the run: one
+    made in a module-, class- or session-scoped fixture is set up before the
+    fixture below looks and torn down after it, and passed unseen, its
+    entries left behind (review of 0ae6593). Said in the summary, below."""
+    if rig_fixtures.left_unreported() and session.exitstatus == pytest.ExitCode.OK:
+        session.exitstatus = pytest.ExitCode.TESTS_FAILED
+
+
 @pytest.fixture(autouse=True)
 def _config_rigs_is_read_only_on_purpose(request):
     """Fails a test that read the checkout's config/rigs/ without being
@@ -94,6 +103,10 @@ def pytest_terminal_summary(terminalreporter):
     import spread_table
     import stereo_table
 
+    unreported = rig_fixtures.left_unreported()
+    if unreported:
+        terminalreporter.section("config/rigs/ read outside any test: THE RUN FAILS", sep="!", red=True, bold=True)
+        terminalreporter.write_line(unreported)
     stash = terminalreporter.config.stash
     found = stash.get(stereo_table.ROWS, [])
     if found:

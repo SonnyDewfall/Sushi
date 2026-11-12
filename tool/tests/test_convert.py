@@ -25,7 +25,7 @@ import json
 
 import pytest
 import yaml
-from rig_fixtures import FROZEN_V1, committed, compiled_to_render, frozen, frozen_names, frozen_v1
+from rig_fixtures import FROZEN_V1, compiled_to_render, frozen, frozen_names, frozen_v1, valid_committed
 
 from sushi_rig import rigfile
 from sushi_rig.convert import ConvertError, Input, convert, differences, parse_input, to_rig
@@ -238,8 +238,10 @@ def test_what_is_heard_offline_is_the_master_alone():
 # --------------------------------------------------------------------------- #
 
 SUSHI = ROOT / "sushi"
-# The committed rigs: this one is about config/rigs/ and config/sound/ as they are.
-RIGS = committed()
+# The committed rigs: this one is about config/rigs/ and config/sound/ as they
+# are. Those that are rigs: one that does not compile is test_rig_fixtures.py's
+# to fail on, by name, and has no sound to compare.
+RIGS = valid_committed()
 
 
 @pytest.mark.skipif(not SUSHI.exists(), reason="needs the Sushi binary")

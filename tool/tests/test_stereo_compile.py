@@ -88,17 +88,19 @@ def test_a_copy_follows_each_mono_plugin_and_no_stereo_one():
 def test_every_committed_guitar_chain_gets_its_copies():
     """Of the rigs in config/rigs/ as they are, and of the frozen ones, which
     are known to hold both plugins (rig_fixtures.py)."""
-    from rig_fixtures import FROZEN, committed, compiled
+    from rig_fixtures import FROZEN, compiled, valid_committed
 
-    seen = set()
-    for path in committed() + sorted(FROZEN.glob("*.yaml")):
+    seen, without = set(), []
+    for path in valid_committed() + sorted(FROZEN.glob("*.yaml")):
         config = compiled(path)
         for track in config["tracks"]:
             names = [p["name"] for p in track["plugins"]]
             for plugin in track["plugins"]:
                 if plugin.get("uri") in (COMP, TS9):
-                    assert names[names.index(plugin["name"]) + 1] == plugin["name"] + "_to_stereo", path.name
                     seen.add(plugin["uri"])
+                    if names[names.index(plugin["name"]) + 1:][:1] != [plugin["name"] + "_to_stereo"]:
+                        without.append(f"{path.name}: {plugin['name']}")
+    assert without == [], "every rig is looked at before this fails"
     assert seen == {COMP, TS9}, "no rig holds the compressor and the overdrive, so this proved nothing"
 
 

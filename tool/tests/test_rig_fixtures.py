@@ -40,7 +40,7 @@ import rig_fixtures
 import yaml
 from rig_fixtures import (
     COMMITTED, COMMITTED_MACHINE, FIXTURES, FROZEN, FROZEN_MACHINE, STRAY, committed, committed_that, compiled,
-    frozen, frozen_files, frozen_names, valid,
+    frozen, frozen_files, frozen_names, valid, valid_committed,
 )
 
 from sushi_rig import rig, rigfile
@@ -115,7 +115,7 @@ def test_every_committed_rig_parses_compiles_and_wires(path):
 
 
 @needs_sushi
-@pytest.mark.parametrize("path", committed(), ids=lambda p: p.stem)
+@pytest.mark.parametrize("path", valid_committed(), ids=lambda p: p.stem)
 def test_every_parameter_a_committed_rig_names_is_one_its_plugin_has(path, tmp_path):
     """`verify`'s names check, against Sushi's own list of each plugin's
     parameters: the half of validity no file here can answer. A rig is
@@ -347,6 +347,52 @@ def test_the_guard_sees_config_rigs_read_by_any_spelling_and_through_code_given_
     for way, read in ways.items():
         made = _strays_made(read)
         assert made and all(path.startswith(os.path.realpath(COMMITTED)) for _, path, _ in made), way
+
+
+def test_the_guard_sees_a_relative_path_read_from_inside_the_folder(monkeypatch):
+    """A path with no "rigs" in it, relative to a working directory that is
+    config/rigs/: passed unseen while only the path as given was looked at
+    (review of 0ae6593)."""
+    monkeypatch.chdir(COMMITTED)
+    made = _strays_made(lambda: open(_a_committed_name()).close())
+    assert [event for event, _, _ in made] == ["open"]
+    assert made[0][1] == os.path.join(os.path.realpath(COMMITTED), _a_committed_name())
+    monkeypatch.chdir(TESTS)
+    assert _strays_made(lambda: open("conftest.py").close()) == [], "and a relative path anywhere else is let be"
+
+
+def test_a_read_no_test_was_failed_for_fails_the_run_when_it_ends():
+    """A module-, class- or session-scoped fixture is set up before a test's
+    own guard looks and torn down after it, so what it reads of config/rigs/
+    is left on the list with no test to fail (review of 0ae6593: a module
+    fixture read every rig, and the run passed). conftest's
+    `pytest_sessionfinish` fails the run for whatever is left, and the
+    summary says where each came from."""
+    import conftest
+
+    class Session:
+        exitstatus = pytest.ExitCode.OK
+
+    assert rig_fixtures.left_unreported() is None, "nothing is left over as this test starts"
+    session = Session()
+    conftest.pytest_sessionfinish(session, session.exitstatus)
+    assert session.exitstatus == pytest.ExitCode.OK
+    before = len(STRAY)
+    (COMMITTED / _a_committed_name()).exists() and (COMMITTED / _a_committed_name()).read_text()
+    sorted(COMMITTED.glob("*.yaml"))
+    try:
+        assert len(STRAY) > before
+        message = rig_fixtures.left_unreported()
+        assert message.startswith("Not reported by any test") and "test_rig_fixtures.py:" in message
+        assert "os.scandir config/rigs" in message or "os.listdir config/rigs" in message
+        conftest.pytest_sessionfinish(session, session.exitstatus)
+        assert session.exitstatus == pytest.ExitCode.TESTS_FAILED
+        failed = Session()
+        failed.exitstatus = pytest.ExitCode.INTERRUPTED
+        conftest.pytest_sessionfinish(failed, failed.exitstatus)
+        assert failed.exitstatus == pytest.ExitCode.INTERRUPTED, "a run that failed some other way keeps its own status"
+    finally:
+        del STRAY[before:]  # this test's own, made to try it
 
 
 def test_the_guard_leaves_the_frozen_rigs_a_copy_of_them_and_the_readers_alone(frozen_root, tmp_path):

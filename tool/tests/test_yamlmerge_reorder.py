@@ -533,11 +533,13 @@ def test_every_committed_rig_with_its_chains_reordered_keeps_each_plugins_commen
     """Every rig in config/rigs/ as it is today, and the frozen ones
     (rig_fixtures.py), which are what keeps this from proving nothing if the
     committed rigs come to have no chain to reorder."""
-    from rig_fixtures import FROZEN, committed
+    from rig_fixtures import FROZEN, valid_committed
 
-    rigs = committed() + sorted(FROZEN.glob("*.yaml"))
+    # The committed rigs that are rigs: one that does not parse is
+    # test_rig_fixtures.py's to fail on, and would stop this at its name.
+    rigs = valid_committed() + sorted(FROZEN.glob("*.yaml"))
     assert rigs
-    moved = 0
+    moved, wrong = 0, []
     for path in rigs:
         text = path.read_text()
         data = yaml.safe_load(text)
@@ -545,10 +547,14 @@ def test_every_committed_rig_with_its_chains_reordered_keeps_each_plugins_commen
         for chain in chains:
             chain[:] = chain[::-1] if how == "reversed" else chain[1:] + chain[:1]
             moved += len(chain) > 1
-        out = merged(text, data)
-        assert yaml.safe_load(out) == data, path.name
-        assert _above_and_beside(out) == _above_and_beside(text), path.name
-        assert merged(out, data) == out, path.name
+        try:
+            out = merged(text, data)
+            assert yaml.safe_load(out) == data, "read back as something else"
+            assert _above_and_beside(out) == _above_and_beside(text), "a comment moved"
+            assert merged(out, data) == out, "written again, it changes"
+        except (AssertionError, MergeError) as exc:
+            wrong.append(f"{path.name}: {type(exc).__name__}: {exc}")
+    assert wrong == [], "every rig is tried before this fails:\n" + "\n".join(wrong)
     assert moved, "no rig has a chain of two or more plugins, so this proved nothing"
 
 

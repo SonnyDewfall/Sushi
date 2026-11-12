@@ -64,13 +64,14 @@ import stereo_table  # noqa: E402
 from sushi_rig import rigfile, stereo  # noqa: E402
 from sushi_rig.analysis import channel_balance, check_finite  # noqa: E402
 from sushi_rig.paths import checkout_root  # noqa: E402
-from rig_fixtures import committed, committed_that, compiled_to_render  # noqa: E402
+from rig_fixtures import committed_that, compiled_to_render, valid_committed  # noqa: E402
 from sushi_rig.render import Stimulus, channels_of, render_offline  # noqa: E402
 
 ROOT = checkout_root()
 SUSHI = ROOT / "sushi"
-# Every committed rig, whatever it holds: balance is asked of any rig (rig_fixtures.py).
-RIGS = committed()
+# Every committed rig that is one, whatever it holds: balance is asked of any
+# rig, and one that does not compile is test_rig_fixtures.py's to fail on.
+RIGS = valid_committed()
 V1_CONFIGS = sorted((ROOT / "config").glob("*.json"))
 
 # The null tests' sweep, shorter: level and correlation need no low band

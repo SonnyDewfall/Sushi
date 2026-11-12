@@ -3617,3 +3617,35 @@ the two tests that need Sushi (the names check, the NaN guard on committed
 rigs), and whether the guard is quiet under the slow tests, which were read
 for it and not run; the container job is the test of all three.
 *(2026-11-12)*
+
+**Re-review of 0ae6593: four more, the first of them the failure this work
+is to end.** (1) **The pair test took every plugin for LV2.** A rig file may
+hold a plugin that is not (`type: internal`, a uid), a program, properties
+and a chain on its master; with an internal gain added to electric-clean,
+`diff` rightly answered `plugin_type`, the test had no place for it, and a
+valid save failed the suite. Every reason `diff` can give is now read off
+its source and placed (`test_rig_diff.py`): nine it must give for a
+difference the two configs show, eight it may give where they hold a
+particular fact (a plugin that is not LV2 and not already there, a
+parameter such a plugin leaves unstated, a program or properties the next
+rig states, a send a player stated, a MIDI map, no copies to stereo), and
+four that cannot arise between two rig files, each with why and a test that
+they do not. A reason added to `diff` fails until it is placed. The trial
+is a test, among sixteen saves of one rig. (2) **A read in a fixture
+wider than a test** was nobody's to fail and passed: whatever is left
+unreported when the run ends now fails the run, with each line. (3) **A
+relative path read from inside the folder** is seen (one `getcwd` for a
+relative open, 0.7 microseconds against 0.3); a symlink whose path has no
+"rigs" in it and a read by directory descriptor are not, and are in the
+docstring's list. (4) **A rig that is not valid fails one test and no
+other, which the entry above said before it was so**: four tests took the
+committed rigs unfiltered, and two of them stopped at the broken one. They
+take `valid_committed()` now, and the two loops look at every rig before
+they fail. Tried on copies: a module fixture reading every rig ends the run
+with status 1 and thirteen lines; a rig that does not parse, sorted in the
+middle, is one failure in the fast suite (run without tests/test_ui.py,
+which compiles no rig); and with thirteen rigs saved the ways the review named (an
+internal plugin added, a parameter dropped, a plugin replaced by one of
+another type, a third channel, a stereo channel, no amp, plugins on the
+master, a MIDI map, vocals only, two guitars) the whole fast suite passes.
+*(2026-11-12)*

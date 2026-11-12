@@ -41,7 +41,7 @@ machine file. In the container, where there is a Sushi, every parameter it
 names is one its plugin has (`verify`'s names check). No file in the checkout
 lists a plugin's parameters, so that last one cannot be asked without Sushi.
 A rig `valid` refuses fails one test, by name, and is left out of every
-other test over the committed rigs (`committed_that`).
+other test over the committed rigs (`valid_committed`, `committed_that`).
 
 **The guard** (`watch`, conftest.py). Every `open`, `os.scandir` and
 `os.listdir` in the test process is audited (`sys.addaudithook`), and one that
@@ -49,12 +49,26 @@ lands in the checkout's config/rigs/ while nothing here is reading it, and in
 a test not marked `committed_rigs`, fails that test. So a test cannot read a
 committed rig by any spelling of its path, nor through code that is handed
 the checkout's root (`prepare_rig("guitar_vocal", ROOT, ...)`,
-`rigs_to_check(ROOT)`), without saying that it means to. What it does not
-see: a rig read by a child process; a path only tested for existence
-(`is_file`, which opens nothing); a test that is not run where the suite is
-(the slow ones here: the container runs them, and the guard with them); and
-a marked test that goes on to name one rig, which is left to whoever reads
-the marker.
+`rigs_to_check(ROOT)`), without saying that it means to. A read in a
+fixture wider than one test (module, class, session) is nobody's to fail, so
+whatever is left unreported when the run ends fails the run, with its lines
+(`left_unreported`, conftest's `pytest_sessionfinish`).
+
+What it costs: every audited call in the process runs `_audit`. Timed
+here on 2026-11-12, by calling it: about 0.1 microseconds for an event that
+is not a file's or a folder's, 0.3 for an open of an absolute path with no
+"rigs" in it, 0.7 for a relative one (one `getcwd`, to see whether the
+working directory is the folder), and 14 for a path that does say "rigs",
+which is the only kind resolved: a frozen rig, a temporary checkout's.
+
+What it does not see: a rig read by a child process; a path only tested for
+existence (`is_file`, which opens nothing); a symbolic link into the folder
+whose own path has no "rigs" in it, since only a path that says "rigs" is
+resolved; a file opened relative to a directory descriptor
+(`os.open(name, dir_fd=...)`), whose path the event does not carry; a test
+that is not run where the suite is (the slow ones here: the container runs
+them, and the guard with them); and a marked test that goes on to name one
+rig, which is left to whoever reads the marker.
 """
 
 from __future__ import annotations
@@ -253,6 +267,15 @@ def valid(path: Path, root: Path | None = None) -> dict:
     return config
 
 
+def valid_committed() -> list[Path]:
+    """Every committed rig that is `valid`: what a test over all of them
+    takes. One that is not fails test_rig_fixtures.py, by name, and nothing
+    else: a test here that took it too would fail on a rig that is already
+    said to be broken, and a loop would stop there with the rigs after it
+    unlooked at."""
+    return [path for path, _ in committed_that(lambda path: path)]
+
+
 def committed_that(read) -> list[tuple[Path, object]]:
     """`(path, read(path))` for every committed rig that is `valid` and that
     `read` accepts, for a module that reads them all as it is imported (to
@@ -305,8 +328,11 @@ def _audit(event: str, args: tuple) -> None:
         if not isinstance(target, (str, bytes, os.PathLike)):
             return  # a file descriptor, or the current directory
         text = os.fsdecode(target)
-        if "rigs" not in text:
-            return  # the cheap half: nearly every open in a run ends here
+        if "rigs" not in text and (text.startswith(os.sep) or "rigs" not in os.getcwd()):
+            # The cheap half, where nearly every open in a run ends: a path
+            # with no "rigs" in it, nor in the working directory it is
+            # relative to (a relative path costs one getcwd to find out).
+            return
         resolved = os.path.realpath(text)
         if resolved == _LIVE or resolved.startswith(_LIVE + os.sep):
             STRAY.append((event, resolved, _where()))
@@ -320,6 +346,16 @@ def watch() -> None:
     if not _watching:
         sys.addaudithook(_audit)
         _watching = True
+
+
+def left_unreported() -> str | None:
+    """What to say, when the run ends, of reads no test was failed for: ones
+    made in a fixture wider than a test, set up before the test's own guard
+    looked and torn down after. None when there are none."""
+    if not STRAY:
+        return None
+    return ("Not reported by any test (read in a module-, class- or session-scoped fixture, or between "
+            "tests):\n" + said(STRAY))
 
 
 def said(stray: list[tuple[str, str, str]]) -> str:

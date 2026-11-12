@@ -13,7 +13,7 @@ import copy
 
 import pytest
 import yaml
-from rig_fixtures import FROZEN, committed, controller_of
+from rig_fixtures import FROZEN, controller_of, valid_committed
 
 from sushi_rig import rigfile
 from sushi_rig.rigfile import MASTER, RigFileError, diff, emit_rig, fold_state, level_to_gain, load_rig, parse_rig
@@ -21,7 +21,8 @@ from sushi_rig.rigfile import MASTER, RigFileError, diff, emit_rig, fold_state, 
 # The frozen rigs, none of which states a master level, and the rigs in
 # config/rigs/, which may come to (rig_fixtures.py; the page has a master
 # fader, and Save writes it).
-RIGS = [("frozen", path) for path in sorted(FROZEN.glob("*.yaml"))] + [("committed", path) for path in committed()]
+# The committed ones that are rigs: one that is not is test_rig_fixtures.py's to fail on.
+RIGS = [("frozen", path) for path in sorted(FROZEN.glob("*.yaml"))] + [("committed", path) for path in valid_committed()]
 
 
 def doc(**master):
