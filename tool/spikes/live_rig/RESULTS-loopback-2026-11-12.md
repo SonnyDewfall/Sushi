@@ -346,3 +346,56 @@ open, and the level was kept at −20 dBFS as instructed.
   why Part A and this cable cannot be in place at the same time.
 - **B3** — replug, in the "rule not installed" form.
 - **B2 on output 2** — needs the cable's output end moved from Output 1 to Output 2.
+
+## Later the same day: two cables, and what the right channel's fault actually is
+
+Two mono cables on the back panel, Output 1 -> Input 1 and Output 2 -> Input 2,
+48V off, rig down. Measured with `stereo_check.py` (this directory), which plays
+a different pitch on every output at once; every run is in
+`stereo-check-log.jsonl`.
+
+**On a freshly plugged iD14, with no routing written, ALSA's `Speaker Playback
+Volume` attenuates the right output only. The left output ignores it.** PipeWire
+drives that control from its sink volume, so any sink volume under 100% turns
+the right side down and leaves the left alone. At 18%, where it was, that is
+44 dB: "left only".
+
+Fresh replug, nothing applied, ALSA direct. "Loss" is received minus sent:
+
+| `Speaker Playback Volume` (4 values, dB) | sent | left loss | right loss |
+|---|---|---|---|
+| -44, -44, -44, -44 (as PipeWire left it) | -20 | -37.6 | -80.6 |
+| -22, -22, -22, -22 | -42 | -37.6 | -58.6 |
+| 0, 0, 0, 0 | -64 | -37.9 | -36.7 |
+| 0, -44, -44, -44 | -42 | -37.7 | at the floor |
+| -44, 0, -44, -44 | -42 | -37.6 | -36.3 |
+| -44, -44, 0, 0 | -20 | -37.6 | -80.6 |
+
+The left's loss never moves (it is the monitor knob at about half, plus the
+input gain). The right's is the same figure plus the control's second value,
+dB for dB. The first, third and fourth values do nothing to either output.
+
+The same through PipeWire, still with no routing written:
+
+| PipeWire sink volume | left | right | verdict |
+|---|---|---|---|
+| 18% | -58.3 | -101.2 | left only |
+| 50% | -57.6 | -74.3 | unbalanced, 16.7 dB |
+| 100% | -57.6 | -56.3 | PASS, stereo |
+
+So there are two ways to stereo, and they are not equivalent:
+
+- **Sink volume at 100% (control at 0 dB), default routing.** Stereo within
+  1.3 dB, and the monitor knob still sets the level.
+- **`idctl apply daw`.** Stereo within 1.3 dB (measured before the replug), but
+  the same tone came back 52 dB louder than before the apply, with the control
+  still reading -44 dB: this routing bypasses the volume control, and by the
+  level, the knob's attenuation too. Whether the knob does anything at all in
+  this routing was not tested.
+
+Also settled: a USB reset does not clear the routing (`idctl`'s own teardown
+resets the device and stereo held after it); a replug does. `sudo` is not
+available to this session, so unbind/rebind was not tried.
+
+Not yet tested: the rig itself through the loop, and whether this is the whole
+of "sometimes no stereo when I start the rig".
