@@ -3475,7 +3475,9 @@ page's fonts and a wider fallback. *(2026-11-07)*
 shipped amp. (1) Its feedback guard looked only at what feeds Sushi's inputs
 directly, so the interface through the amp (`iD14 -> NAM -> sushi`) passed:
 `feedback` now walks back from every Sushi input through any node between and
-`rig` refuses, before linking and again after. (2) A PASS counted inputs heard
+`rig` refuses, before linking and again after; a node with one name going in
+and another coming out is not seen through, so `rig` also refuses any node it
+does not know upstream of Sushi, and a `pw-link -l` that fails. (2) A PASS counted inputs heard
 without saying which, and the amp's products on the vocal's pitches counted
 as a vocal: `--inputs` names the rig's inputs, each must be heard on both
 sides equally, within 20 dB of the strongest and 10 dB above the level beside
@@ -3489,8 +3491,9 @@ that is running and unwired by name, wires it by hand only under `--wire-amp`
 (and says so in the verdict), and removes every link it made in a `finally`.
 (4) `amp.prepare` wrote an unwired `rig-amp.qpwgraph` without a word: it now
 returns `warnings` (`amp.unwired_amp`) that `rig.prepare_launch` says with
-the start's others. (5) SIGTERM and SIGHUP now end every subcommand through
-its cleanup. (6) Noise alone can no longer be heard as an input. New:
+the start's others. (5) SIGTERM, SIGHUP and Ctrl-C now end every subcommand through
+its cleanup: felt only in the waits, noted anywhere else, so no cleanup is cut
+and a child or a link is on record before one is felt. (6) Noise alone can no longer be heard as an input. New:
 `tool/tests/test_stereo_check.py`, which loads the script by path and tests
 the walk, the plan, the verdict, the pitches and the cleanup against
 stand-ins for `pw-link` and `pw-record`. **Nothing here has been run against

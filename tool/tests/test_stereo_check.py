@@ -122,6 +122,27 @@ def test_a_node_name_with_a_colon_is_cut_short_which_only_refuses_more():
     assert sc.node_of("Midi-Bridge:Midi Through:(capture_0) Port-0") == "Midi-Bridge"
 
 
+def test_a_node_with_one_name_in_and_another_out_is_not_seen_through_and_is_named():
+    """A `pw-loopback` is two nodes to PipeWire. The interface into its input
+    side and its output side into Sushi is a feedback path the walk cannot
+    follow, since nothing in the names joins the two. It does not pretend to:
+    the node it stopped at is reported, and `rig` refuses on that."""
+    links = [(CAPTURE, "input.loop:playback_FL"), ("output.loop:capture_FL", "sushi:audio_input_0"), *OUTPUTS]
+    assert sc.feedback(links) == []
+    assert sc.unknown_upstream(links) == ["output.loop (sushi:audio_input_0 <- output.loop:capture_FL)"]
+
+
+def test_the_nodes_the_test_knows_are_sushi_the_amp_its_tones_and_the_interface():
+    wired = [(GUITAR, "NAM:Input"), ("NAM:Output", "sushi:audio_input_0"),
+             (VOCAL, "sushi:audio_input_1"), *OUTPUTS, (CAPTURE, "pw-record:input_FL")]
+    assert sc.unknown_upstream(wired) == []
+    assert sc.unknown_upstream([(CAPTURE, "NAM:Input"), ("NAM:Output", "sushi:audio_input_0")]) == [], (
+        "the interface is feedback's to refuse, not an unknown")
+    # A node between whose sides share a name is followed, and still not vouched for.
+    through = [(GUITAR, "eq:in"), ("eq:out", "NAM:Input"), ("NAM:Output", "sushi:audio_input_0")]
+    assert sc.unknown_upstream(through) == ["eq (sushi:audio_input_0 <- NAM:Output <- NAM:Input <- eq:out)"]
+
+
 # ---- the rig's patchbay, and what `rig` may link ----------------------------------
 
 
@@ -411,6 +432,8 @@ class World:
     def __init__(self, sc, monkeypatch, tmp_path, live, wanted, recording, amp=False, refuse=()):
         self.links, self.calls, self.refuse, self.recorders = list(live), [], set(refuse), []
         self.amp = amp
+        self.listings, self.listing_fails_from, self.empty_listing = 0, None, False
+        self.on_call = self.on_record = None
         self.file = tmp_path / "rig.qpwgraph"
         self.file.write_text(patchbay(*wanted))
         self.log = tmp_path / "log.jsonl"
@@ -420,6 +443,8 @@ class World:
             def __init__(self, command, **_):
                 self.command, self.running, self.pid = command, True, 4242
                 world.recorders.append(self)
+                if world.on_record:
+                    world.on_record()
                 if recording is not None:
                     with wave.open(command[-1], "wb") as f:
                         f.setnchannels(2), f.setsampwidth(4), f.setframerate(RATE)
@@ -455,6 +480,11 @@ class World:
             return done(out=f"77 qpwgraph -a {self.file} -m\n")
         assert cmd[0] == "pw-link", cmd
         if cmd[1] == "-l":
+            self.listings += 1
+            if self.listing_fails_from is not None and self.listings >= self.listing_fails_from:
+                return done(1, err="failed to connect: Host is down")
+            if self.empty_listing:
+                return done()
             ports = {}
             for out, inp in self.links:
                 ports.setdefault(out, []).append(f"  |-> {inp}")
@@ -464,7 +494,11 @@ class World:
         if cmd[1] == "-i":
             return done(out="sushi:audio_input_0\nsushi:audio_input_1\n" + ("NAM:Input\n" if self.amp else ""))
         self.calls.append(tuple(cmd[1:]))
+        if self.on_call:
+            self.on_call(tuple(cmd[1:]))
         if cmd[1] == "-d":
+            if (cmd[2], cmd[3]) not in self.links:
+                return done(1, err="failed to unlink ports: No such file or directory")
             self.links.remove((cmd[2], cmd[3]))
             return done()
         if (cmd[1], cmd[2]) in self.refuse:
@@ -489,6 +523,11 @@ def frames(levels, noise_db=-90.0):
 @pytest.fixture(scope="module")
 def balanced_guitar():
     return frames([[-60.0, None], [-60.5, None]])
+
+
+@pytest.fixture(scope="module")
+def balanced_both():
+    return frames([[-60.0, -62.0], [-60.5, -62.5]])
 
 
 @pytest.fixture
@@ -544,15 +583,19 @@ def test_wire_amp_says_so_in_the_verdict_and_removes_both_links(fresh, monkeypat
 
 
 def test_a_link_pw_link_refuses_is_a_fail_and_what_was_made_before_it_is_removed(
-        fresh, monkeypatch, tmp_path, balanced_guitar):
+        fresh, monkeypatch, tmp_path, balanced_guitar, capsys):
     """Its exit status used to be ignored."""
     world = World(fresh, monkeypatch, tmp_path, [*OUTPUTS], TWO_CHANNELS, balanced_guitar,
                   refuse={(VOCAL, "sushi:audio_input_1")})
     assert fresh.cmd_rig(world.args([0, 1])) == 1
     assert world.entries()[-1]["verdict"] == (
         f"FAIL: could not link {VOCAL} -> sushi:audio_input_1: failed to link ports: No such file or directory")
-    assert world.calls[-1] == ("-d", GUITAR, "sushi:audio_input_0")
+    # The refused link was on record before it was asked for, so its removal is
+    # tried too; that it was never there to remove is not a failure to remove it.
+    assert world.calls[-2:] == [("-d", VOCAL, "sushi:audio_input_1"), ("-d", GUITAR, "sushi:audio_input_0")]
     assert world.links == [*OUTPUTS] and world.recorders == []
+    assert "WARNING" not in capsys.readouterr().out
+    assert world.entries()[-1]["made"] == [f"{GUITAR} -> sushi:audio_input_0"]
 
 
 def test_rig_refuses_a_loop_closed_through_the_amp_and_links_nothing(fresh, monkeypatch, tmp_path, balanced_guitar):
@@ -591,6 +634,146 @@ def test_a_kill_while_recording_stops_the_recorder_and_removes_the_links(fresh, 
     assert world.links == [*OUTPUTS]
     assert not world.recorders[0].running
     assert not Path(world.recorders[0].command[-1]).parent.exists()
+
+
+@pytest.fixture
+def signals(fresh):
+    """The tool's own handlers in this process, and the test's put back after."""
+    kept = {sig: signal.getsignal(sig) for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT)}
+    fresh.stop_on_signals()
+    yield fresh
+    for sig, handler in kept.items():
+        signal.signal(sig, handler)
+
+
+@pytest.mark.parametrize("signum", [signal.SIGTERM, signal.SIGHUP, signal.SIGINT])
+def test_a_signal_during_the_cleanup_of_a_pass_does_not_cut_it(signals, monkeypatch, tmp_path, balanced_both, signum):
+    """The re-review's reproduction. A run that passed is taking its links
+    down when the first signal of its life arrives, in the first `pw-link -d`:
+    raised there, it left both tones linked into the rig. It is noted, the
+    cleanup finishes, and the exit status says a signal came."""
+    fresh = signals
+    world = World(fresh, monkeypatch, tmp_path, [*OUTPUTS], TWO_CHANNELS, balanced_both)
+    sent = []
+
+    def kill_on_first_removal(call):
+        if call[0] == "-d" and not sent:
+            sent.append(signum)
+            os.kill(os.getpid(), signum)
+
+    world.on_call = kill_on_first_removal
+    assert fresh.cmd_rig(world.args([0, 1])) == 0
+    assert sent == [signum]
+    assert world.calls[-2:] == [("-d", VOCAL, "sushi:audio_input_1"), ("-d", GUITAR, "sushi:audio_input_0")]
+    assert world.links == [*OUTPUTS], "both links are gone"
+    assert world.entries()[-1]["verdict"].startswith("PASS")
+    assert fresh.exit_status(0) == 128 + signum
+
+
+def test_a_signal_while_a_link_is_being_made_still_finds_it_on_record(signals, monkeypatch, tmp_path, balanced_both):
+    """Felt inside `pw-link`, it could leave a link that was made and not yet
+    written down. It is felt at the next wait instead, with both on record."""
+    fresh = signals
+    world = World(fresh, monkeypatch, tmp_path, [*OUTPUTS], TWO_CHANNELS, balanced_both)
+    world.on_call = lambda call: call == (GUITAR, "sushi:audio_input_0") and os.kill(os.getpid(), signal.SIGTERM)
+    with pytest.raises(fresh.Stopped):
+        fresh.cmd_rig(world.args([0, 1]))
+    assert world.calls == [(GUITAR, "sushi:audio_input_0"), (VOCAL, "sushi:audio_input_1"),
+                           ("-d", VOCAL, "sushi:audio_input_1"), ("-d", GUITAR, "sushi:audio_input_0")]
+    assert world.links == [*OUTPUTS] and world.recorders == []
+    assert world.sleeps == 0, "felt on the way into the first wait, not after it"
+    assert fresh.exit_status(1) == 128 + signal.SIGTERM
+
+
+def test_a_signal_while_the_recorder_starts_still_finds_it_on_record(signals, monkeypatch, tmp_path, balanced_guitar):
+    fresh = signals
+    world = World(fresh, monkeypatch, tmp_path, [*OUTPUTS], ONE_CHANNEL, balanced_guitar)
+    world.on_record = lambda: os.kill(os.getpid(), signal.SIGHUP)
+    with pytest.raises(fresh.Stopped):
+        fresh.cmd_rig(world.args([0]))
+    (recorder,) = world.recorders
+    assert not recorder.running, "started, held, and stopped by the cleanup"
+    assert not Path(recorder.command[-1]).parent.exists()
+    assert world.links == [*OUTPUTS]
+
+
+def test_only_one_signal_is_ever_felt(signals):
+    """One felt in a wait unwinds through the cleanups; a second, in a later
+    wait on the way out, is noted and no more."""
+    fresh = signals
+    with pytest.raises(fresh.Stopped):
+        with fresh.interruptible():
+            os.kill(os.getpid(), signal.SIGTERM)
+            time.sleep(1)  # where it is felt, if not at once
+    with fresh.interruptible():
+        os.kill(os.getpid(), signal.SIGHUP)
+    fresh.check()
+    assert fresh.exit_status(0) == 128 + signal.SIGTERM
+
+
+def test_a_listing_that_fails_is_a_stop_not_an_empty_graph(fresh, monkeypatch, tmp_path, balanced_guitar):
+    """`pw-link -l`'s exit status was not looked at: a failed listing read as
+    no links, so as no feedback path, and the guard passed without looking."""
+    real = [(CAPTURE, "NAM:Input"), ("NAM:Output", "sushi:audio_input_0"), *OUTPUTS]
+    world = World(fresh, monkeypatch, tmp_path, real, AMPED, balanced_guitar, amp=True)
+    world.listing_fails_from = 1
+    assert fresh.graph_links() == (None, "`pw-link -l` failed: failed to connect: Host is down")
+    with pytest.raises(SystemExit) as stopped:
+        fresh.cmd_rig(world.args([0]))
+    assert str(stopped.value).startswith("STOP: the graph cannot be read")
+    assert "failed to connect: Host is down" in str(stopped.value)
+    assert world.calls == [] and world.recorders == []
+    assert world.entries()[-1]["verdict"] == (
+        "FAIL: refused, the graph cannot be read: `pw-link -l` failed: failed to connect: Host is down")
+
+
+def test_a_listing_with_nothing_in_it_while_sushi_runs_is_a_stop(fresh, monkeypatch, tmp_path, balanced_guitar):
+    world = World(fresh, monkeypatch, tmp_path, [*OUTPUTS], ONE_CHANNEL, balanced_guitar)
+    world.empty_listing = True
+    with pytest.raises(SystemExit, match="STOP: the graph cannot be read"):
+        fresh.cmd_rig(world.args([0]))
+    assert world.calls == []
+    assert "listed no links at all, though Sushi is running" in world.entries()[-1]["verdict"]
+
+
+def test_a_listing_that_fails_after_the_links_are_made_is_a_stop_and_they_are_removed(
+        fresh, monkeypatch, tmp_path, balanced_guitar, capsys):
+    world = World(fresh, monkeypatch, tmp_path, [*OUTPUTS], ONE_CHANNEL, balanced_guitar)
+    world.listing_fails_from = 2
+    with pytest.raises(SystemExit) as stopped:
+        fresh.cmd_rig(world.args([0]))
+    assert "The links made here are being removed." in str(stopped.value)
+    assert world.calls == [(GUITAR, "sushi:audio_input_0"), ("-d", GUITAR, "sushi:audio_input_0")]
+    assert world.links == [*OUTPUTS] and world.recorders == []
+
+
+def test_rig_refuses_a_node_it_does_not_know_upstream_of_sushi(fresh, monkeypatch, tmp_path, balanced_guitar):
+    """The interface into Sushi through a loopback node: not a path the walk
+    can follow, so not one it may pass."""
+    live = [(CAPTURE, "input.loop:playback_FL"), ("output.loop:capture_FL", "sushi:audio_input_1"), *OUTPUTS]
+    world = World(fresh, monkeypatch, tmp_path, live, ONE_CHANNEL, balanced_guitar)
+    with pytest.raises(SystemExit) as stopped:
+        fresh.cmd_rig(world.args([0]))
+    assert str(stopped.value).startswith("STOP: a node this test does not know is upstream of a Sushi input")
+    assert "output.loop (sushi:audio_input_1 <- output.loop:capture_FL)" in str(stopped.value)
+    assert world.calls == [] and world.recorders == []
+    assert world.entries()[-1]["verdict"].startswith("FAIL: refused, a node this test does not know feeds Sushi")
+
+
+def test_a_link_that_cannot_be_removed_and_is_still_there_is_said(fresh, monkeypatch, tmp_path):
+    world = World(fresh, monkeypatch, tmp_path, [*OUTPUTS, (GUITAR, "sushi:audio_input_0")], ONE_CHANNEL, None)
+    kept = world.run
+
+    def stuck(cmd, **kw):
+        if cmd[:2] == ["pw-link", "-d"]:
+            return SimpleNamespace(returncode=1, stdout="", stderr="failed to unlink ports: Operation not permitted")
+        return kept(cmd, **kw)
+
+    monkeypatch.setattr(fresh, "run", stuck)
+    made = [(GUITAR, "sushi:audio_input_0"), (VOCAL, "sushi:audio_input_1")]
+    assert fresh.take_down(made) == [
+        (VOCAL, "sushi:audio_input_1", None),
+        (GUITAR, "sushi:audio_input_0", "failed to unlink ports: Operation not permitted")]
 
 
 def test_an_empty_recording_is_a_fail(fresh, monkeypatch, tmp_path):

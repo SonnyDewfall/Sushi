@@ -46,6 +46,7 @@ Standard library only; run with `python3 -I`.
 
 import argparse
 import array
+import contextlib
 import datetime
 import html
 import json
@@ -77,27 +78,79 @@ ID14 = "iD14"
 
 
 class Stopped(BaseException):
-    """SIGTERM or SIGHUP arrived. Raised where the signal landed, so every
-    `finally` and `with` on the way out runs as it does for Ctrl-C."""
+    """SIGTERM or SIGHUP was felt: every `finally` and `with` on the way out
+    runs, as for Ctrl-C."""
 
     def __init__(self, signum):
         super().__init__(signum)
         self.signum = signum
 
 
-def _stopped(signum, _frame):
-    # Once only: a second signal must not cut the cleanup the first one began.
-    for sig in (signal.SIGTERM, signal.SIGHUP):
-        signal.signal(sig, signal.SIG_IGN)
-    raise Stopped(signum)
+# How SIGTERM, SIGHUP and SIGINT are taken once `stop_on_signals` has run.
+#
+# A signal is felt, as an exception, only inside `interruptible()`: the waits
+# (a pause, the player playing, the tones' loop). Anywhere else it is noted
+# and felt at the next of those, or at `check()`. So no cleanup can be cut
+# short by one, however that cleanup began, and a child or a link is always
+# on record before a signal is felt: starting one and writing it down are not
+# in a wait. Only one signal is ever felt; a later one is noted and no more.
+# `exit_status` makes the status say a signal came even when it came during
+# the cleanup of a run that had ended some other way.
+#
+# Not done by blocking the signals (`pthread_sigmask`) or ignoring them for a
+# while: a child keeps either across exec, so a recorder started under one
+# would not take the SIGTERM that stops it (tried, 2026-11-12: `sleep` started
+# either way outlived `terminate()`; started under a handler it did not).
+_signals = {"open": 0, "noted": None, "felt": False}
+
+
+def _feel():
+    _signals["felt"] = True
+    signum = _signals["noted"]
+    raise KeyboardInterrupt() if signum == signal.SIGINT else Stopped(signum)
+
+
+def _on_signal(signum, _frame):
+    if _signals["noted"] is None:
+        _signals["noted"] = signum
+    if _signals["open"] and not _signals["felt"]:
+        _feel()
+
+
+def check():
+    """Feel a signal that was noted while it could not be felt."""
+    if _signals["noted"] is not None and not _signals["felt"]:
+        _feel()
+
+
+@contextlib.contextmanager
+def interruptible():
+    """A wait a signal may end at once. Nothing is started or recorded in one."""
+    check()
+    _signals["open"] += 1
+    try:
+        yield
+    finally:
+        _signals["open"] -= 1
+
+
+def pause(seconds):
+    with interruptible():
+        time.sleep(seconds)
+
+
+def exit_status(status):
+    """The status to exit with: a signal's, if one came at any point."""
+    noted = _signals["noted"]
+    return status if noted is None else 128 + noted
 
 
 def stop_on_signals():
-    """A plain `kill`, or the terminal closing, ends every subcommand through
-    its normal cleanup: children stopped by pid, temporary directories removed,
-    links taken down. The default action would skip all of it."""
-    for sig in (signal.SIGTERM, signal.SIGHUP):
-        signal.signal(sig, _stopped)
+    """A plain `kill`, the terminal closing or Ctrl-C ends every subcommand
+    through its cleanup: children stopped by pid, temporary directories
+    removed, links taken down. The default action would skip all of it."""
+    for sig in (signal.SIGTERM, signal.SIGHUP, signal.SIGINT):
+        signal.signal(sig, _on_signal)
 
 
 def stop(proc):
@@ -157,6 +210,7 @@ def db(v):
 
 def tone_level(xs, freq, rate):
     """dBFS of `freq` while it was sounding: the loudest two seconds of blocks."""
+    check()  # the analysis runs for seconds and holds nothing: a kill may end it here
     n = int(rate * BLOCK)
     blocks = sorted(goertzel(xs[i:i + n], freq, rate) for i in range(0, len(xs) - n + 1, n))
     top = blocks[-int(2.0 / BLOCK):]
@@ -215,6 +269,9 @@ def print_matrix(matrix, level_db):
 # ---- the machine ------------------------------------------------------------
 
 def run(cmd, **kw):
+    """One short command to its end. Not a wait a signal can end (it is used
+    in cleanup), so it is bounded instead: none of these takes a second."""
+    kw.setdefault("timeout", 30)
     return subprocess.run(cmd, capture_output=True, text=True, **kw)
 
 
@@ -268,16 +325,22 @@ def speaker_volume(card):
 
 
 def record_play(rec_cmd, play_cmd, seconds):
-    """Start the recorder, play, stop the recorder by its own pid."""
+    """Start the recorder, play, stop each by its own pid."""
+    # Neither start is in a wait, so each child is held here before a signal is felt.
     rec = subprocess.Popen(rec_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
     try:
-        time.sleep(1.0)
+        pause(1.0)
         if rec.poll() is not None:
             sys.exit(f"recorder failed: {' '.join(rec_cmd)}\n{rec.stderr.read()}")
-        played = run(play_cmd)
-        if played.returncode:
-            sys.exit(f"player failed: {' '.join(play_cmd)}\n{played.stderr}")
-        time.sleep(0.5)
+        player = subprocess.Popen(play_cmd, stdout=subprocess.DEVNULL, stderr=subprocess.PIPE, text=True)
+        try:
+            with interruptible():
+                _, said = player.communicate()
+        finally:
+            stop(player)
+        if player.returncode:
+            sys.exit(f"player failed: {' '.join(play_cmd)}\n{said}")
+        pause(0.5)
     finally:
         stop(rec)
     return seconds
@@ -502,10 +565,11 @@ def cmd_tones(args):
             players.append((proc, block))
             print(f"{node}: {len(freqs)} pitches, {freqs[0]:.0f} to {freqs[-1]:.0f} Hz, "
                   f"peak under {args.level:.0f} dBFS, pid {proc.pid}", flush=True)
-        while all(p.poll() is None for p, _ in players):
-            for proc, block in players:
-                proc.stdin.write(block)  # blocks when the pipe is full: pw-cat sets the pace
-                proc.stdin.flush()
+        with interruptible():  # the players are all on record by here
+            while all(p.poll() is None for p, _ in players):
+                for proc, block in players:
+                    proc.stdin.write(block)  # blocks when the pipe is full: pw-cat sets the pace
+                    proc.stdin.flush()
     except (KeyboardInterrupt, Stopped, BrokenPipeError):
         pass  # Ctrl-C or a plain kill is how this ends
     finally:
@@ -527,18 +591,26 @@ def links_of(ports):
 
 
 def node_of(port):
-    """The node a port belongs to: the text before the first colon. A node
-    whose own name holds a colon is cut short by this, which can only take two
-    nodes for one. The feedback guard then refuses too often, never too
-    seldom."""
+    """The node a port belongs to, as far as its name says: the text before
+    the first colon. A node whose own name holds a colon is cut short by this,
+    which can only take two nodes for one.
+
+    The walk below joins a node's inputs to its outputs by this name, so it
+    sees through a node only when both sides carry one name, as the amp's do
+    (`NAM:Input`, `NAM:Output`). It does NOT see through a node that is two
+    nodes to PipeWire, one name going in and another coming out: a
+    `pw-loopback`, a filter-chain, an echo-cancel. Followed back, such a path
+    just ends at the output side. Nothing in this repository makes one, and
+    they are not followed: `rig` refuses instead when any node it does not
+    know is upstream of a Sushi input (`unknown_upstream`)."""
     return port.split(":", 1)[0]
 
 
-def feedback(links):
-    """Every way one of the interface's ports reaches a Sushi input, followed
-    back from each Sushi input through any node between: `[]` when there is
-    none. What goes into a node is taken to come out of every output it has,
-    so `iD14 -> NAM:Input` and `NAM:Output -> sushi` is a path."""
+def upstream(links):
+    """Every output port upstream of a Sushi input, each with the path back to
+    it from that input: `[(source port, [the ports on the way])]`. Followed
+    back through any node between whose two sides share a name (`node_of`):
+    what goes into such a node is taken to come out of every output it has."""
     feeders, inputs_of = {}, {}
     for out, inp in links:
         feeders.setdefault(inp, []).append(out)
@@ -549,8 +621,8 @@ def feedback(links):
 
     def walk(port, path, seen):
         for src in feeders.get(port, []):
+            found.append((src, path + [src]))
             if ID14 in src:
-                found.append(" <- ".join(path + [src]))
                 continue
             for inp in inputs_of.get(node_of(src), []):
                 if inp not in seen:
@@ -561,6 +633,27 @@ def feedback(links):
         if SUSHI_INPUT.match(port):
             walk(port, [port], {port})
     return found
+
+
+def feedback(links):
+    """Every way one of the interface's ports reaches a Sushi input: `[]` when
+    there is none. `iD14 -> NAM:Input` and `NAM:Output -> sushi` is a path."""
+    return [" <- ".join(path) for src, path in upstream(links) if ID14 in src]
+
+
+def known_node(port):
+    """Whether a port is on a node this test can vouch for: Sushi, the amp,
+    one of its own tones, or the interface (which `feedback` answers for)."""
+    node = node_of(port)
+    return (ID14 in port or node in TONE_NODES or node == node_of(AMP_OUT)
+            or bool(re.fullmatch(r"(?i)sushi[^:]*", node)))
+
+
+def unknown_upstream(links):
+    """Every node upstream of a Sushi input that is none of `known_node`'s,
+    with the path back to it. The walk cannot say what feeds such a node (see
+    `node_of`), so the test cannot say the interface does not."""
+    return [f"{node_of(src)} ({' <- '.join(path)})" for src, path in upstream(links) if not known_node(src)]
 
 
 def patchbay_links(xml):
@@ -654,10 +747,44 @@ def plan_rig(wanted, live, amp_running, expected, wire_amp=False):
 
 def pw_link(out, inp, remove=False):
     """Make or remove one link: None, or why `pw-link` could not."""
-    done = run(["pw-link"] + (["-d"] if remove else []) + [out, inp])
+    try:
+        done = run(["pw-link"] + (["-d"] if remove else []) + [out, inp], timeout=10)
+    except subprocess.TimeoutExpired:
+        return "pw-link did not answer within 10 s"
     if done.returncode == 0:
         return None
     return (done.stderr or done.stdout).strip() or f"pw-link exit status {done.returncode}"
+
+
+def graph_links():
+    """The live graph's links, or why they cannot be had: `(links, None)` or
+    `(None, why)`. A listing that failed, or that lists nothing while Sushi is
+    up, is not an empty graph: read as one, the feedback guard would pass
+    without having looked."""
+    done = run(["pw-link", "-l"])
+    if done.returncode != 0:
+        return None, "`pw-link -l` failed: " + (
+            (done.stderr or done.stdout).strip() or f"exit status {done.returncode}")
+    links = links_of(parse_links(done.stdout))
+    if not links:
+        return None, "`pw-link -l` listed no links at all, though Sushi is running"
+    return links, None
+
+
+def take_down(made):
+    """Remove the links made here, last first: `[(out, in, error or None)]`.
+    All of them are tried before anything is said. A link that is not there
+    to remove (never made, or gone with its port) is no error."""
+    tried = [(out, inp, pw_link(out, inp, remove=True)) for out, inp in reversed(made)]
+    if any(error for _, _, error in tried):
+        try:
+            listing = run(["pw-link", "-l"])
+            still = links_of(parse_links(listing.stdout)) if listing.returncode == 0 else None
+        except (OSError, subprocess.TimeoutExpired):
+            still = None  # cannot tell, so every failure is reported
+        tried = [(out, inp, error if error and (still is None or (out, inp) in still) else None)
+                 for out, inp, error in tried]
+    return tried
 
 
 def judge_rig(matrix, beside, expected, tolerance_db):
@@ -755,15 +882,34 @@ def cmd_rig(args):
     if not sushi_pids():
         return ended("FAIL: Sushi is not running")
 
+    def refuse(why, said):
+        save({**entry, "verdict": "FAIL: refused, " + why})
+        sys.exit("STOP: " + said)
+
+    def graph(linked="Nothing was linked here."):
+        links, why = graph_links()
+        if why:
+            refuse(f"the graph cannot be read: {why}",
+                   f"the graph cannot be read, so nothing says the interface does not feed Sushi.\n"
+                   f"  {why}\n{linked}")
+        return links
+
     def refuse_feedback(links, linked="Nothing was linked here."):
         loop = feedback(links)
         if loop:
-            save({**entry, "verdict": "FAIL: refused, the interface feeds Sushi: " + "; ".join(loop)})
-            sys.exit("STOP: the interface's ports feed Sushi, which with the loop cabled is a\n"
-                     f"feedback path. Stop the rig. {linked}\n  " + "\n  ".join(loop))
+            refuse("the interface feeds Sushi: " + "; ".join(loop),
+                   "the interface's ports feed Sushi, which with the loop cabled is a\n"
+                   f"feedback path. Stop the rig. {linked}\n  " + "\n  ".join(loop))
+        unknown = unknown_upstream(links)
+        if unknown:
+            refuse("a node this test does not know feeds Sushi: " + "; ".join(unknown),
+                   "a node this test does not know is upstream of a Sushi input. It knows Sushi,\n"
+                   "the amp (NAM), its own tones and the interface; what feeds any other node it\n"
+                   f"cannot follow, so it cannot say the interface does not. {linked}\n  "
+                   + "\n  ".join(unknown))
 
     # First, before the patchbay is even looked for: this is the safety check.
-    live = links_of(parse_links(run(["pw-link", "-l"]).stdout))
+    live = graph()
     refuse_feedback(live)
     files = [args.patchbay] if args.patchbay else running_patchbays()
     if len(files) != 1:
@@ -775,7 +921,11 @@ def cmd_rig(args):
     except OSError as exc:
         return ended(f"FAIL: cannot read the rig's patchbay: {exc}")
     # -l lists only ports that are linked, so the amp's presence is read from -i.
-    amp_running = AMP_IN in [line.strip() for line in run(["pw-link", "-i"]).stdout.splitlines()]
+    inputs = run(["pw-link", "-i"])
+    if inputs.returncode != 0:
+        return ended("FAIL: `pw-link -i` failed, so nothing says whether the amp is running: "
+                     + ((inputs.stderr or inputs.stdout).strip() or f"exit status {inputs.returncode}"))
+    amp_running = AMP_IN in [line.strip() for line in inputs.stdout.splitlines()]
     wanted, make, problems = plan_rig(wanted, live, amp_running, expected, args.wire_amp)
     refuse_feedback(live + make)  # again, with what would be linked here counted in
     if problems:
@@ -784,15 +934,18 @@ def cmd_rig(args):
     print(f"rig: patchbay {files[0]}")
     made = []
     try:
+        entry["made"] = []
         for out, inp in make:
+            # On record before it is asked for: whatever happens during the
+            # call, this link is taken down. Removing one never made is no error.
+            made.append((out, inp))
             error = pw_link(out, inp)
             if error:
                 return ended(f"FAIL: could not link {out} -> {inp}: {error}")
-            made.append((out, inp))
+            entry["made"].append(f"{out} -> {inp}")
             print(f"  linked {out} -> {inp}")
-        entry["made"] = [f"{a} -> {b}" for a, b in made]
-        time.sleep(1.0)
-        live = links_of(parse_links(run(["pw-link", "-l"]).stdout))
+        pause(1.0)
+        live = graph("The links made here are being removed.")
         refuse_feedback(live, "The links made here are being removed.")
         unmade = [f"{a} -> {b}" for a, b in wanted if ours((a, b)) and (a, b) not in live]
         if unmade:
@@ -803,12 +956,13 @@ def cmd_rig(args):
             return ended("FAIL: PipeWire has no iD14 source")
         with tempfile.TemporaryDirectory() as d:
             back = os.path.join(d, "back.wav")
+            # Not in a wait: the recorder is held here before a signal is felt.
             rec = subprocess.Popen(
                 ["pw-record", "--target", source["name"], "--rate", str(RATE), "--format", "s32",
                  "--channels", "2", "--channel-map", ",".join(source["position"][:2]), back],
                 stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
             try:
-                time.sleep(args.seconds + 0.5)
+                pause(args.seconds + 0.5)
             finally:
                 stop(rec)
             try:
@@ -825,12 +979,14 @@ def cmd_rig(args):
             verdict = "FAIL: the sound is balanced but the links are not as expected (see links)"
         return ended(verdict, matrix_dbfs=matrix, beside_dbfs=beside, pitches_hz=TONE_SETS)
     finally:
-        # Every removal before any is reported: a print to a terminal that has
-        # gone (SIGHUP) must not leave the rest of the links in the rig.
-        removed = [(out, inp, pw_link(out, inp, remove=True)) for out, inp in reversed(made)]
-        for out, inp, error in removed:
-            print(f"  removed {out} -> {inp}" if not error else
-                  f"  WARNING: {out} -> {inp} was made here and could not be removed: {error}")
+        # No signal is felt in here (see `_signals`), and every removal is
+        # tried before any is reported: a print to a terminal that has gone
+        # (SIGHUP) must not leave the rest of the links in the rig.
+        for out, inp, error in take_down(made):
+            if error:
+                print(f"  WARNING: {out} -> {inp} was made here and could not be removed: {error}")
+        if made:
+            print("  the links made here are removed")
 
 
 def cmd_log(args):
@@ -886,9 +1042,9 @@ def main():
     stop_on_signals()
     try:
         status = args.fn(args)
-    except Stopped as stopped:
-        status = 128 + stopped.signum  # after every finally on the way out has run
-    sys.exit(status)
+    except (Stopped, KeyboardInterrupt):
+        status = 1  # every finally on the way out has run; exit_status says which signal
+    sys.exit(exit_status(status))
 
 
 if __name__ == "__main__":
