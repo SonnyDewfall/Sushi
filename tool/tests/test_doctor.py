@@ -21,6 +21,7 @@ import json
 from pathlib import Path
 
 import pytest
+from rig_fixtures import frozen
 
 from sushi_rig import doctor
 from sushi_rig.doctor import FAULT, OK, UNCHECKED, Check, Environment
@@ -639,7 +640,7 @@ def test_one_odd_config_does_not_take_the_doctor_down(tmp_path, body):
 # The recorder's ports (2026-11-02: 11 checks passed while no take could start)
 # --------------------------------------------------------------------------- #
 
-GUITAR_VOCAL = ROOT / "config" / "rigs" / "guitar_vocal.yaml"
+GUITAR_VOCAL = frozen("guitar_vocal")  # the rig as these tests know it (rig_fixtures.py)
 THIS_MACHINE = ROOT / "machines" / "sonny-dewfall-XPS-9320.yaml"
 
 

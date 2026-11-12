@@ -27,6 +27,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import pytest
+from rig_fixtures import frozen
 
 from sushi_rig import cli, patchbay
 from sushi_rig.amp import amp_patchbay
@@ -1211,7 +1212,7 @@ def test_the_committed_patchbay_keeps_the_two_channels_apart():
 
 # --- a v2 rig: channels and a master (#30) -----------------------------------
 
-V2_RIG = checkout_root() / "config" / "rigs" / "guitar_vocal.yaml"
+V2_RIG = frozen("guitar_vocal")  # the rig as these tests know it (rig_fixtures.py)
 THIS_MACHINE = checkout_root() / "machines" / "sonny-dewfall-XPS-9320.yaml"
 
 

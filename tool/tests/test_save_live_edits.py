@@ -19,12 +19,12 @@ import struct
 
 import pytest
 import yaml
+from rig_fixtures import FROZEN
 
-from sushi_rig.paths import checkout_root
 from sushi_rig.rigfile import RigFileError, fold_state, level_to_gain
 from sushi_rig.save import SaveError, save_rig
 
-RIGS = checkout_root() / "config" / "rigs"
+RIGS = FROZEN  # the rigs as these tests know them (rig_fixtures.py), not config/rigs/
 DELAY = "http://drobilla.net/plugins/mda/Delay"
 LIMITER = "http://drobilla.net/plugins/mda/Limiter"
 # The mda Delay's defaults, normalised: from its Turtle (tests/fixtures/lv2/mda.lv2),

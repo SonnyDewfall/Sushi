@@ -65,6 +65,7 @@ import yaml
 np = pytest.importorskip("numpy")
 
 import spread_table  # noqa: E402
+from rig_fixtures import frozen  # noqa: E402
 from sushi_rig import rigfile  # noqa: E402
 from sushi_rig.analysis import first_non_finite  # noqa: E402
 from sushi_rig.nulltest import compare, fingerprint, from_dict  # noqa: E402
@@ -77,8 +78,14 @@ from sushi_rig.verify import sushi_env  # noqa: E402
 
 ROOT = checkout_root()
 SUSHI = ROOT / "sushi"
-OCTAVE_UP = ROOT / "config" / "rigs" / "electric-octave-up.yaml"
-BOARD = ROOT / "config" / "rigs" / "electric_board.yaml"
+# The frozen copies (rig_fixtures.py), which are these two rigs as they were
+# when this was measured: the targets below are built from electric-octave-up's
+# chain as this file is imported, so on the committed file a save that renamed
+# a plugin would stop the whole suite at collection. The references they are
+# priced against are still config/sound/'s, calibrated to the committed rigs:
+# if those two rigs have changed since, rerun with that in mind.
+OCTAVE_UP = frozen("electric-octave-up")
+BOARD = frozen("electric_board")
 
 # Forty of each: thirteen targets at about a quarter of a second a render, and
 # a fingerprint for each distinct one, is two to four minutes. A NaN in one

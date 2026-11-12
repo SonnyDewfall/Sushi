@@ -2,10 +2,19 @@
 
 `diff` says how to turn the running rig into the next one through the live
 operations, or why a restart is needed. These pin what it decides without a
-Sushi: on every ordered pair of the rigs in config/rigs/, a plan is checked by
+Sushi: on every ordered pair of rigs, a plan is checked by
 playing it on a model of what a loaded config holds, and must leave exactly
 what loading the next rig would; a restart must name only reasons the table
-knows. The model is invented, not captured: it holds what a config states,
+knows.
+
+Two sets of rigs (rig_fixtures.py says why). The frozen copies under
+fixtures/rigs/ are the ones a test names and knows the contents of: which
+pairs switch live, how many, in how many steps. The rigs committed to
+config/rigs/ are the owner's and change with every save, so of them only
+what holds for any valid rigs is asked: every pair is decided, a plan
+reaches the next rig, what cannot be done live restarts and says so.
+
+The model is invented, not captured: it holds what a config states,
 and treats a parameter it does not state as "at the plugin's default", which
 is what Sushi is assumed to load (not observed here: no Sushi in this suite).
 The agent's use of the plan, against a fake Sushi, is in test_agent.py.
@@ -20,9 +29,10 @@ from __future__ import annotations
 import copy
 import itertools
 import re
-from pathlib import Path
 
 import pytest
+from rig_fixtures import FROZEN, committed_that
+from rig_fixtures import compiled as compiled_rig
 
 from sushi_rig import rigfile, stereo
 from sushi_rig.amp import PARAMETER_INDEX
@@ -32,14 +42,26 @@ from sushi_rig.rigfile import (
     level_to_gain,
 )
 
-ROOT = Path(__file__).resolve().parents[2]
-RIGS = sorted((ROOT / "config" / "rigs").glob("*.yaml"))
-COMPILED = {path.stem: rigfile.emit_rig(rigfile.load_rig(path)) for path in RIGS}
+
+def _compiled_rigs(paths):
+    # With a rig's MIDI map compiled, if it has one, as a run loads it: a
+    # switch diffs what two runs loaded.
+    return {path.stem: compiled_rig(path) for path in paths}
+
+
+# The frozen rigs: every test that names a rig means one of these.
+COMPILED = _compiled_rigs(sorted(FROZEN.glob("*.yaml")))
 PAIRS = list(itertools.permutations(sorted(COMPILED), 2))
+# The committed rigs, whatever they hold today, for what must hold of any.
+# One that does not compile is test_rig_fixtures.py's to fail on (`committed_that`).
+COMMITTED_COMPILED = {path.stem: config for path, config in committed_that(compiled_rig)}
+SETS = {"frozen": COMPILED, "committed": COMMITTED_COMPILED}
+EVERY_PAIR = [(where, a, b) for where, rigs in SETS.items() for a, b in itertools.permutations(sorted(rigs), 2)]
+EVERY_PAIR_IDS = [f"{where}:{a}->{b}" for where, a, b in EVERY_PAIR]
 
 
-def compiled(name):
-    return copy.deepcopy(COMPILED[name])
+def compiled(name, where="frozen"):
+    return copy.deepcopy(SETS[where][name])
 
 
 # --------------------------------------------------------------------------- #
@@ -173,16 +195,17 @@ def inversions(before, after):
 
 
 # --------------------------------------------------------------------------- #
-# Every pair of rigs in config/rigs/
+# Every pair of rigs: the frozen ones, and the ones in config/rigs/ today
 # --------------------------------------------------------------------------- #
 
-@pytest.mark.parametrize("running, upcoming", PAIRS, ids=[f"{a}->{b}" for a, b in PAIRS])
-def test_every_pair_is_a_plan_that_reaches_the_next_rig_or_a_named_restart(running, upcoming):
+@pytest.mark.parametrize("where, running, upcoming", EVERY_PAIR, ids=EVERY_PAIR_IDS)
+def test_every_pair_is_a_plan_that_reaches_the_next_rig_or_a_named_restart(where, running, upcoming):
     """The contract: a plan, played on what the running rig holds, leaves
     exactly what loading the next rig would -- chains, plugins, values and
     bypass -- with every step one the agent would make; or a restart, for
-    reasons the table names."""
-    before, after = compiled(running), compiled(upcoming)
+    reasons the table names. It asks nothing of what a rig holds, so it is
+    asked of the committed rigs too."""
+    before, after = compiled(running, where), compiled(upcoming, where)
     decided = diff(before, after)
     if isinstance(decided, NeedsRestart):
         assert decided.reasons, "a restart says why"
@@ -196,22 +219,31 @@ def test_every_pair_is_a_plan_that_reaches_the_next_rig_or_a_named_restart(runni
     assert re.fullmatch(r"B*R*M*(AB)*P*N*B*", shape(decided)), shape(decided)
 
 
+def _track_names(config):
+    return [t["name"] for t in config["tracks"]]
+
+
+def _carla(config):
+    """What Carla is started with: the `_amp` section but for its parameters."""
+    amp = config.get("_amp")
+    return None if amp is None else {k: v for k, v in amp.items() if k != "parameters"}
+
+
 @pytest.mark.parametrize("running, upcoming", PAIRS, ids=[f"{a}->{b}" for a, b in PAIRS])
 def test_every_pair_restarts_exactly_where_the_live_operations_cannot_reach(running, upcoming):
-    """For the committed rigs, which have no MIDI maps and one host config,
+    """For the frozen rigs, which have no MIDI maps and one host config,
     what decides is the amp's presence and model (Carla loads a model only as
     it starts, and is started only with the rig) and the tracks (none are
     made or removed live): a restart for those, and only those. The amp's
-    parameters differing is not one: they are `amp` steps."""
+    parameters differing is not one: they are `amp` steps.
+
+    "Only those" is a fact about these eleven rigs, not about rigs: one with
+    a MIDI map or a program restarts for that, rightly. So it is asked of the
+    frozen rigs, and the half that holds of any rig is the test below."""
     before, after = compiled(running), compiled(upcoming)
     decided = diff(before, after)
-    tracks_differ = [t["name"] for t in before["tracks"]] != [t["name"] for t in after["tracks"]]
-
-    def carla(config):
-        amp = config.get("_amp")
-        return None if amp is None else {k: v for k, v in amp.items() if k != "parameters"}
-
-    amp_differs = carla(before) != carla(after)
+    tracks_differ = _track_names(before) != _track_names(after)
+    amp_differs = _carla(before) != _carla(after)
     assert isinstance(decided, NeedsRestart) == (tracks_differ or amp_differs)
     if isinstance(decided, NeedsRestart):
         if tracks_differ:
@@ -222,11 +254,28 @@ def test_every_pair_restarts_exactly_where_the_live_operations_cannot_reach(runn
         assert any(s.op == "amp" for s in decided.steps), "the amp's settings are steps"
 
 
-@pytest.mark.parametrize("running, upcoming", PAIRS, ids=[f"{a}->{b}" for a, b in PAIRS])
-def test_a_reading_that_is_the_running_config_makes_the_same_plan(running, upcoming):
+@pytest.mark.parametrize("where, running, upcoming", EVERY_PAIR, ids=EVERY_PAIR_IDS)
+def test_every_pair_whose_tracks_or_amp_differ_is_a_restart_that_says_so(where, running, upcoming):
+    """The half of the test above that holds of any two rigs, so of the
+    committed ones whatever they come to hold: tracks that differ (none are
+    made, removed or reordered live) and an amp on one side only or on
+    another model (Carla is started only with the rig) are each a restart
+    under their own code. That nothing else restarts is not asked here."""
+    before, after = compiled(running, where), compiled(upcoming, where)
+    decided = diff(before, after)
+    if _track_names(before) != _track_names(after):
+        assert isinstance(decided, NeedsRestart), "tracks differ and the plan would switch live"
+        assert {"track_added", "track_removed", "track_order"} & set(decided.codes)
+    if _carla(before) != _carla(after):
+        assert isinstance(decided, NeedsRestart), "the amp differs and the plan would switch live"
+        assert "amp" in decided.codes
+
+
+@pytest.mark.parametrize("where, running, upcoming", EVERY_PAIR, ids=EVERY_PAIR_IDS)
+def test_a_reading_that_is_the_running_config_makes_the_same_plan(where, running, upcoming):
     """With the rig as its config says, the plan made from a live reading is
     the plan made from the config."""
-    before, after = compiled(running), compiled(upcoming)
+    before, after = compiled(running, where), compiled(upcoming, where)
     assert diff(before, after, capture_of(before)) == diff(before, after)
 
 
@@ -236,16 +285,41 @@ def test_both_kinds_of_pair_are_among_the_rigs():
     assert kinds == {SwitchPlan, NeedsRestart}
 
 
-def test_how_many_of_the_committed_pairs_switch_live():
-    """The README's count. 26 of the 110 while the amp's parameters were a
-    restart; with them as steps, every pair of two rigs with the same tracks
-    and the same amp model (all nine with an amp use one) is live. What is
-    left restarts for an amp on one side only, or for the tracks."""
+def test_how_many_of_the_frozen_pairs_switch_live():
+    """26 of the 110 while the amp's parameters were a restart; with them as
+    steps, every pair of two rigs with the same tracks and the same amp model
+    (all nine with an amp use one) is live. What is left restarts for an amp
+    on one side only, or for the tracks.
+
+    Until 2026-11-12 this counted the pairs in config/rigs/ and was the
+    README's count, so it failed on the day a rig was added (132 pairs, 56
+    live) with nothing wrong. The number is of the frozen rigs now: it moves
+    only if `diff` decides differently, which is what it was there to catch.
+    What it said of the committed rigs is the test below."""
     live = [pair for pair in PAIRS if isinstance(diff(compiled(pair[0]), compiled(pair[1])), SwitchPlan)]
     assert (len(live), len(PAIRS)) == (72, 110)
     amp_only = [pair for pair in PAIRS if pair not in live
                 and diff(compiled(pair[0]), compiled(pair[1])).codes == ["amp"]]
     assert len(amp_only) == 18, "an amp on one side only, nothing else between them"
+
+
+def test_the_committed_rigs_are_each_decided_and_the_same_way_each_time():
+    """What the count protected, of the rigs in config/rigs/ as they are
+    today, with no number in it: every ordered pair is decided, as a plan or
+    as a restart with a reason; asked again, the answer is the same; and a
+    rig is no distance from itself, so switching to the rig that is running
+    is an empty plan and never a restart. How many pairs are live is the
+    owner's to change with any save, and is not asked."""
+    names = sorted(COMMITTED_COMPILED)
+    for name in names:
+        assert diff(compiled(name, "committed"), compiled(name, "committed")) == SwitchPlan(()), name
+    for running, upcoming in itertools.permutations(names, 2):
+        decided = diff(compiled(running, "committed"), compiled(upcoming, "committed"))
+        assert isinstance(decided, (SwitchPlan, NeedsRestart)), (running, upcoming)
+        if isinstance(decided, NeedsRestart):
+            assert decided.reasons and all(r.code in RESTART_REASONS and r.detail for r in decided.reasons), \
+                (running, upcoming)
+        assert diff(compiled(running, "committed"), compiled(upcoming, "committed")) == decided, (running, upcoming)
 
 
 def test_moves_are_the_fewest_steps_that_put_the_survivors_in_order():
@@ -575,9 +649,10 @@ def test_steps_name_only_what_the_routes_take():
         plan = diff(compiled(running), compiled(upcoming))
         assert plan.steps and all(set(s.args) - ({"copy"} if s.op == "add" else set()) == bodies[s.op]
                                   for s in plan.steps)
-    adds = [s for a, b in PAIRS for s in getattr(diff(compiled(a), compiled(b)), "steps", ()) if s.op == "add"]
+    adds = [s for where, a, b in EVERY_PAIR
+            for s in getattr(diff(compiled(a, where), compiled(b, where)), "steps", ()) if s.op == "add"]
     with_copy = [s for s in adds if "copy" in s.args]
-    assert with_copy, "not vacuous: some pair adds a mono plugin"
+    assert with_copy, "not vacuous: some pair adds a mono plugin (the frozen rigs have such pairs)"
     assert all(s.args["copy"] == stereo.copy_name(s.args["name"]) for s in with_copy)
 
 

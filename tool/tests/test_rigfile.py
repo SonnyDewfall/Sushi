@@ -11,13 +11,14 @@ from __future__ import annotations
 import json
 import pytest
 import yaml
+from rig_fixtures import frozen
 
 from sushi_rig import rigfile
 from sushi_rig.paths import checkout_root
 from sushi_rig.rigfile import RigFileError, compile_rig, emit_rig, parse_rig
 
 ROOT = checkout_root()
-EXAMPLE = ROOT / "config" / "rigs" / "guitar_vocal.yaml"
+EXAMPLE = frozen("guitar_vocal")  # the rig as these tests know it (rig_fixtures.py)
 
 
 def rig_yaml(channels: list[dict], master: dict | None = None, **top) -> dict:

@@ -337,7 +337,8 @@ then.
 │   │                             selftest, take, transport, recorder,
 │   │                             recorder_process, capture, midi_listener, agent,
 │   │                             agent_client, service, yamlmerge, paths, _numpy, stereo, cli
-│   ├── tests/                    fast suite; fixtures/ holds captured artefacts
+│   ├── tests/                    fast suite; fixtures/ holds captured artefacts, and
+│   │                             fixtures/rigs/ the rigs the tests name, frozen
 │   ├── examples/
 │   │   ├── rig.example.yaml       annotated rig spec (real plugins)
 │   │   ├── dump.example.json      real --dump-plugins output, test fixture
@@ -754,9 +755,11 @@ read-back that is not the next rig. A switch that fails part-way restarts into
 the next rig, and brings the previous rig back if that restart fails; if the
 restart cannot even take the rig down, `/health` and the answer say the rig is
 **half-switched**, naming both rigs, and nothing more is tried: read `/live`
-and bring it down and up by hand. Of the committed rigs, 72 of the 110 ordered pairs are
+and bring it down and up by hand. Of the eleven rigs as they were on 2026-11-07
+(kept under `tool/tests/fixtures/rigs/`), 72 of the 110 ordered pairs are
 live (26 while the amp's parameters were a restart); the rest have an amp on
-one side only, or other tracks. One `op: "rig"` entry goes in
+one side only, or other tracks. The rigs in `config/rigs/` have changed since
+and will again, so no count of them is kept here or pinned by a test. One `op: "rig"` entry goes in
 `/live/log` either way, and undo stops at it. A rig that would not compile is
 refused (`409 rig_problem`) with the running one left playing. **Not run
 against a live Sushi and not heard**: shown against the fake only, and how long
@@ -1684,6 +1687,23 @@ it; without them those tests skip, and the rest of the file still runs:
 ```bash
 pip install -e "tool[ui-test]" && python -m playwright install chromium
 ```
+
+**A test may fail because the code is wrong, or because a committed rig is
+not a valid rig. It must not fail because a rig changed.** `config/rigs/` is
+saved into from the web UI and committed, so a test that reads it takes every
+file there (`tests/rig_fixtures.py`, `committed()`) and assumes nothing about
+what any of them holds: `tests/test_rig_fixtures.py` checks that each parses,
+compiles and wires, and the tests over every pair of rigs ask only what holds
+of any two. A test that needs a rig it knows (one channel called `board`, two
+rigs that differ only in the amp's levels) reads the frozen copies in
+`tests/fixtures/rigs/`, the eleven rigs as they were at c494625, which are
+test data and do not follow `config/rigs/`. The conversions of #30 are held
+to their v1 configs there too, and as `convert` writes them today; the rig in
+`config/rigs/` is the one to edit and is not compared with the config it came
+from. The one check that does follow a rig's content is its sound: see
+`nulltest --all` below, where a rig with no reference, or one that no longer
+sounds like its reference, fails the container job until a reference is
+calibrated for it.
 
 **Every test must run somewhere, and a skip counts as a failure.** CI is two
 workflows because no single runner has everything:

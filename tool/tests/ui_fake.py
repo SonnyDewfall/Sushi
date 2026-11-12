@@ -802,8 +802,23 @@ class Served:
             root = root or self.save.root
         if self.recorder:
             extra.update(recorder=self.recorder.link, takes_dir=self.recorder.takes)
-        # `root` is where the profiles are read from (tool/examples/profiles/ under it).
-        self.agent = Agent(root=root or checkout_root(), live=self.rig, describe=lambda: self.state["describe"](),
+        # `root` is where the profiles are read from (tool/examples/profiles/
+        # under it) and where the picker's rigs are listed from (config/rigs/).
+        # With none given it is a checkout of the frozen rigs (rig_fixtures.py)
+        # and the checkout's own profiles: the browser tests click rigs by
+        # name, and the names in config/rigs/ are the owner's to change.
+        self._frozen = None
+        if root is None:
+            import tempfile
+
+            from rig_fixtures import frozen_checkout
+
+            self._frozen = tempfile.TemporaryDirectory(prefix="ui-rigs-")
+            root = frozen_checkout(Path(self._frozen.name) / "checkout")
+            profiles = root / "tool" / "examples" / "profiles"
+            profiles.parent.mkdir(parents=True)
+            profiles.symlink_to(checkout_root() / "tool" / "examples" / "profiles", target_is_directory=True)
+        self.agent = Agent(root=root, live=self.rig, describe=lambda: self.state["describe"](),
                            library=library or (lambda: {"plugins": [], "problems": []}), run=self.lifecycle.run,
                            # No pedals: the MIDI listener follows a rig after every
                            # lifecycle command, and this rig has no compiled config.
@@ -858,6 +873,8 @@ class Served:
             self.amp.close()
         if self.recorder:
             self.recorder.core.close()  # a take a test left running: its writer thread ends with it
+        if self._frozen:
+            self._frozen.cleanup()
         if self.save:
             self.save.close()
 

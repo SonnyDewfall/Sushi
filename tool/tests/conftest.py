@@ -30,6 +30,16 @@ def runtime(tmp_path, monkeypatch):
     return tmp_path / "run" / "sushi-rig"
 
 
+@pytest.fixture
+def frozen_root(tmp_path):
+    """A checkout whose config/rigs/ is the frozen rigs (rig_fixtures.py): the
+    root to give code that looks a rig up by name, in a test that knows what
+    the rig holds. The committed config/rigs/ is the owner's and changes."""
+    from rig_fixtures import frozen_checkout
+
+    return frozen_checkout(tmp_path / "frozen-checkout")
+
+
 # The marker of an investigation kept to be run again, not on every push
 # (test_render_spread.py). Deselected, not skipped: the container job fails on
 # any skip, and an opt-in measurement is not a missing dependency.

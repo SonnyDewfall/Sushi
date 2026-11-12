@@ -529,9 +529,12 @@ def _above_and_beside(text: str) -> dict[str, list[tuple[tuple[str, ...], str]]]
 
 @pytest.mark.parametrize("how", ["reversed", "rotated"])
 def test_every_committed_rig_with_its_chains_reordered_keeps_each_plugins_comments(how):
-    from sushi_rig.paths import checkout_root
+    """Every rig in config/rigs/ as it is today, and the frozen ones
+    (rig_fixtures.py), which are what keeps this from proving nothing if the
+    committed rigs come to have no chain to reorder."""
+    from rig_fixtures import FROZEN, committed
 
-    rigs = sorted((checkout_root() / "config" / "rigs").glob("*.yaml"))
+    rigs = committed() + sorted(FROZEN.glob("*.yaml"))
     assert rigs
     moved = 0
     for path in rigs:
@@ -545,7 +548,7 @@ def test_every_committed_rig_with_its_chains_reordered_keeps_each_plugins_commen
         assert yaml.safe_load(out) == data, path.name
         assert _above_and_beside(out) == _above_and_beside(text), path.name
         assert merged(out, data) == out, path.name
-    assert moved, "no committed rig has a chain of two or more plugins, so this proved nothing"
+    assert moved, "no rig has a chain of two or more plugins, so this proved nothing"
 
 
 @pytest.mark.parametrize("new, how", [

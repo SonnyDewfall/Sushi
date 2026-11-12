@@ -3469,3 +3469,65 @@ chains; the phone rule is restated after it, the header's master shrinks at
 phone width, and paths in problems and code wrap. The phone test now also
 checks each column is the phone's width and nothing is wider, with the
 page's fonts and a wider fallback. *(2026-11-07)*
+
+**Master green again: tests stop pinning what the rig files hold, and the CI
+image gets libatomic.** Two causes, both from outside the code. (1) 2c36874
+committed rigs saved on the laptop (a new rig, a second channel on
+electric-chorus-2) and eight tests failed that had pinned those files:
+`(72, 110)` pairs, accustomed to electric-chorus-2 as the known live switch,
+each rig equal to its v1 config. The rule now, in `tests/rig_fixtures.py`: a
+test may fail because the code is wrong or because a committed rig is not a
+valid rig, never because a rig changed. So a test reads all of `config/rigs/`
+and assumes nothing of its contents, or reads `tests/fixtures/rigs/`, the
+eleven rigs as they were at c494625, frozen. `tests/test_rig_fixtures.py`
+checks every committed rig parses, compiles and wires as `up --rig` does it
+(all twelve do, the two-channel electric-chorus-2 and clean among them),
+every frozen one still does, and that no test writes a path into
+`config/rigs/`. test_rig_diff's contract runs on both sets; the count and
+"restarts only for the amp or the tracks" are of the frozen rigs; of the
+committed ones, that every pair is decided, the same way twice, a rig no
+distance from itself, and tracks or an amp that differ a restart that says
+so. test_convert holds each v1 config to the conversion committed on the day
+(frozen) and to what `convert` writes now, and no longer to the rig in
+`config/rigs/`, whose first line says to edit it: a list of diverged rigs was
+not taken, since the next save would fail it the same way. Every test that
+named a committed rig reads the frozen one, and the web UI's fake serves a
+checkout of them. **Tried, not assumed:** on a copy of the tree with the
+saves an owner might make next (rigs deleted, renamed and added, a master
+level, a third channel, another amp model and levels, an amp taken off, a
+vocals-only rig, two guitars, a chain reordered with a plugin removed and
+every value changed, a MIDI map) the fast suite passes; with a rig that does
+not parse, one on a role the machine lacks and one naming an unknown plugin,
+it fails on each by name and still runs. That trial, and reading each test
+that takes every rig, found more that pinned content, fixed here: no
+committed rig stated a master level
+(test_rigfile_master; the page's master fader writes one), none had a MIDI
+map (rigs were compiled with no controller), every rig had one track on the
+guitar's role and an output pair free for the probe (test_probes: a
+vocals-only or three-channel rig is refused or unprobed, and says so), each
+v1 config's rig of the same name still described it
+(`test_every_committed_config_has_a_source_to_save_from`), and
+test_render_spread read electric-octave-up's chain as it was imported. (2)
+`ci/Dockerfile`: pip resolved playwright 1.65.1 (1.64.1 on the last green
+build, 2026-11-07), whose bundled node 26 links `libatomic.so.1`, absent from
+a bare ubuntu:24.04, so `playwright install` died loading; `libatomic1` is
+installed with the other packages. Shown here: the failure reproduced in
+ubuntu:24.04, and with the package this Dockerfile builds (a stand-in for the
+Sushi AppImage) through its apt, pip and the playwright step's own apt
+install, as far as the Chromium download, which this sandbox's network
+refuses. **Not built past that, and not run in CI.** `ui-test` is still
+`playwright>=1.49,<2`: that range is what let 1.65 in, and it is not narrowed
+here because no pin could be shown to work in the container. **Still red
+after this, and not fixed here:** the container job's sound check. `clean`
+has no reference in `config/sound/`, and electric-chorus-2, now two channels,
+is looked for as `electric-chorus-2.board` and `.vocal` with its old
+`electric-chorus-2.yaml` orphaned, so `nulltest --all` and
+`test_every_v2_rig_sounds_like_its_reference` fail on both until references
+are calibrated in the container (the job prints the candidates). Read from
+the code, not run: there is no Sushi here. **The rewritten numbers in
+2c36874** (`1.0` to `1` on fifteen lines of electric-chorus-2) are what a
+save wrote before 709cea5 (2026-11-02, #117): that code, run here on the old
+file, rewrites exactly those fifteen lines, and today's save and add-channel
+rewrite none, though neither puts a `.0` back. The compiled config is the
+same byte for byte either way (`emit` writes every parameter as a float).
+*(2026-11-12)*

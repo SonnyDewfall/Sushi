@@ -64,11 +64,13 @@ import stereo_table  # noqa: E402
 from sushi_rig import rigfile, stereo  # noqa: E402
 from sushi_rig.analysis import channel_balance, check_finite  # noqa: E402
 from sushi_rig.paths import checkout_root  # noqa: E402
+from rig_fixtures import committed, committed_that, compiled_to_render  # noqa: E402
 from sushi_rig.render import Stimulus, channels_of, render_offline  # noqa: E402
 
 ROOT = checkout_root()
 SUSHI = ROOT / "sushi"
-RIGS = sorted((ROOT / "config" / "rigs").glob("*.yaml"))
+# Every committed rig, whatever it holds: balance is asked of any rig (rig_fixtures.py).
+RIGS = committed()
 V1_CONFIGS = sorted((ROOT / "config").glob("*.json"))
 
 # The null tests' sweep, shorter: level and correlation need no low band
@@ -90,8 +92,7 @@ needs_sushi = pytest.mark.skipif(not SUSHI.exists(), reason="needs the Sushi bin
 
 def _rig_uris() -> list[str]:
     found: dict[str, None] = {}
-    for path in RIGS:
-        rig = rigfile.load_rig(path)
+    for _, rig in committed_that(rigfile.load_rig):  # at import: one that does not load is not this module's to raise
         for plugin in [p for c in rig.channels for p in c.chain] + list(rig.master.chain):
             if plugin.uri:
                 found[plugin.uri] = None
@@ -204,7 +205,7 @@ def _balanced(what, balance):
 def test_each_rig_through_the_master(rig, variant, tmp_path, request):
     """As compiled, the guarantee: left and right within BALANCE_DB. Without
     the copies, the measurement of what they fix, asserted on nothing."""
-    config = rigfile.emit_rig(rigfile.load_rig(rig))
+    config = compiled_to_render(rig)  # emit_rig, but for a MIDI map, which no render plays
     for name, view in rigfile.heard(config):
         if variant != "as compiled":
             view = _without_copies(view)

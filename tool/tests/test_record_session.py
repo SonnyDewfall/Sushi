@@ -13,6 +13,7 @@ import textwrap
 from pathlib import Path
 
 import pytest
+from rig_fixtures import frozen
 
 from sushi_rig import capture, cli, transport
 from sushi_rig.capture import CaptureUnavailable, plan_columns
@@ -34,7 +35,7 @@ from sushi_rig.transport import (
 from sushi_rig.transport import _live_jack_names as live_jack_names
 
 ROOT = checkout_root()
-GUITAR_VOCAL = ROOT / "config" / "rigs" / "guitar_vocal.yaml"
+GUITAR_VOCAL = frozen("guitar_vocal")  # the rig as these tests know it (rig_fixtures.py)
 THIS_MACHINE = ROOT / "machines" / "sonny-dewfall-XPS-9320.yaml"
 
 TWO_CHANNELS = textwrap.dedent("""\

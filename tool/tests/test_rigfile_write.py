@@ -24,11 +24,12 @@ import re
 
 import pytest
 import yaml
+from rig_fixtures import frozen
 
 from sushi_rig.paths import checkout_root
 from sushi_rig.rigfile import RigFileError, load_rig, write_rig
 
-EXAMPLE = checkout_root() / "config" / "rigs" / "guitar_vocal.yaml"
+EXAMPLE = frozen("guitar_vocal")  # the rig as these tests know it (rig_fixtures.py)
 
 # Comments above a channel, inside a chain (above a plugin, beside a value, above
 # a parameter), after a plugin, at the end; a blank line between the channels.
@@ -459,7 +460,7 @@ def test_convert_force_says_fail_instead_of_a_traceback_when_the_write_cannot_be
 def test_a_long_comment_elsewhere_does_not_reflow_an_unchanged_scalar(tmp_path):
     # A converted rig, whose description is folded at 100 columns, plus one long comment line.
     path = tmp_path / "accustomed.yaml"
-    text = (checkout_root() / "config" / "rigs" / "accustomed.yaml").read_text()
+    text = frozen("accustomed").read_text()
     text = text.replace("kind: rig\n", "# " + "long " * 26 + "\nkind: rig\n", 1)
     assert max(len(l) for l in text.splitlines()) > 125
     path.write_text(text)
@@ -470,7 +471,7 @@ def test_a_long_comment_elsewhere_does_not_reflow_an_unchanged_scalar(tmp_path):
 def test_a_long_flow_line_and_a_folded_description_together_stay_as_they_were(tmp_path):
     # guitar_vocal.yaml has flow lines of 109 columns; give it a description folded at 100,
     # as `convert` writes them. No single "longest line" width keeps both.
-    folded = re.search(r"^description: .*\n  .*\n", (checkout_root() / "config" / "rigs" / "accustomed.yaml").read_text(),
+    folded = re.search(r"^description: .*\n  .*\n", frozen("accustomed").read_text(),
                        re.M).group(0)
     text = example_text().replace(
         "description: Guitar and vocals — two channels, two chains, one monitor mix\n", folded)
@@ -833,7 +834,10 @@ def test_one_knob_saved_into_a_committed_rig_changes_exactly_one_line(tmp_path, 
 
     from sushi_rig.save import save_rig
 
-    source = checkout_root() / "config" / "rigs" / f"{rig}.yaml"
+    # The frozen copies, which still write `1.0`: the committed
+    # electric-chorus-2 has had its whole numbers rewritten since (2c36874),
+    # and on a file with none left to lose this would show nothing.
+    source = frozen(rig)
     path = tmp_path / "config" / "rigs" / source.name
     path.parent.mkdir(parents=True)
     shutil.copy(source, path)

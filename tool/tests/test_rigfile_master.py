@@ -10,16 +10,18 @@ source (`LEVEL_RANGE`, `UNITY_STRIP`); no Sushi is run here.
 from __future__ import annotations
 
 import copy
-from pathlib import Path
 
 import pytest
 import yaml
+from rig_fixtures import FROZEN, committed, controller_of
 
 from sushi_rig import rigfile
 from sushi_rig.rigfile import MASTER, RigFileError, diff, emit_rig, fold_state, level_to_gain, load_rig, parse_rig
 
-ROOT = Path(__file__).resolve().parents[2]
-COMMITTED = sorted((ROOT / "config" / "rigs").glob("*.yaml"))
+# The frozen rigs, none of which states a master level, and the rigs in
+# config/rigs/, which may come to (rig_fixtures.py; the page has a master
+# fader, and Save writes it).
+RIGS = [("frozen", path) for path in sorted(FROZEN.glob("*.yaml"))] + [("committed", path) for path in committed()]
 
 
 def doc(**master):
@@ -35,35 +37,35 @@ def master_state(config):
     return [e for e in config.get("initial_state", []) if e["processor"] == MASTER]
 
 
-@pytest.mark.parametrize("path", COMMITTED, ids=lambda p: p.stem)
-def test_every_committed_rig_compiles_as_before_with_no_master_level(path):
-    """Unity writes nothing: no committed rig states a master level, none
-    gets a master entry, and stating `level: 0` changes nothing either.
+@pytest.mark.parametrize("where, path", RIGS, ids=[f"{where}:{path.stem}" for where, path in RIGS])
+def test_every_rig_compiles_as_before_with_no_master_level(where, path):
+    """Unity writes nothing: a rig that states no master level gets no master
+    entry, and stating `level: 0` changes nothing either. No frozen rig
+    states one, which is how every rig was when the master level was added.
     (Checked once by hand too, on 2026-11-06: every committed rig's compiled
-    config, byte for byte, the same as the code before this change gave.)"""
+    config, byte for byte, the same as the code before this change gave.)
+
+    A committed rig may state one since, and is then asked the same thing the
+    other way about: its level is the master's one entry, and with the level
+    taken out, or put at 0, it compiles to the same config without it."""
     raw = yaml.safe_load(path.read_text())
-    assert "level" not in raw["master"]
     rig = load_rig(path)
-    assert rig.master.level == 0.0
-    config = emit_rig(rig, controller=_controller(rig))
-    assert master_state(config) == []
-    unity = copy.deepcopy(raw)
-    unity["master"]["level"] = 0
-    assert emit_rig(parse_rig(unity), controller=_controller(rig)) == config
-
-
-def _controller(rig):
-    """The controller a rig's MIDI map names, from a committed machine file
-    that describes it; None for a rig with no map (all of them, today)."""
-    if rig.midi is None:
-        return None
-    from sushi_rig.machine import MachineSpec
-
-    for machine in sorted((ROOT / "machines").glob("*.yaml")):
-        spec = MachineSpec.load(machine)
-        if rig.midi.controller in (spec.controllers or {}):
-            return spec.controller(rig.midi.controller)
-    raise AssertionError(f"no committed machine file describes {rig.midi.controller}")
+    config = emit_rig(rig, controller=controller_of(rig))
+    if where == "frozen":
+        assert "level" not in raw["master"] and rig.master.level == 0.0
+    if rig.master.level == 0.0:
+        assert master_state(config) == []
+        at_unity = config
+    else:
+        (entry,) = master_state(config)
+        assert entry["parameters"] == {"gain": round(level_to_gain(rig.master.level), 6)}
+        at_unity = {**config, "initial_state": [e for e in config["initial_state"] if e["processor"] != MASTER]}
+    for level in ("left out", 0):
+        unity = copy.deepcopy(raw)
+        unity["master"].pop("level", None)
+        if level == 0:
+            unity["master"]["level"] = 0
+        assert emit_rig(parse_rig(unity), controller=controller_of(rig)) == at_unity, f"master level {level}"
 
 
 def test_a_master_level_compiles_to_the_master_tracks_gain_as_a_channels_to_its_send():

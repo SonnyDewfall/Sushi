@@ -179,18 +179,24 @@ def test_the_ui_folder_itself_sends_the_browser_to_the_page(path):
     assert asyncio.run(go()) == (302, "/")
 
 
-def test_the_rigs_a_start_or_switch_can_name_are_config_rigs():
+@pytest.mark.parametrize("which", ["frozen", "committed"])
+def test_the_rigs_a_start_or_switch_can_name_are_config_rigs(which, frozen_root):
     """The picker's list: config/rigs/ by name, in program order, whether or
     not the running rig's MIDI map switches rigs (which is when /rig lists
-    them as `programs`). Which one is up is /health's to say."""
+    them as `programs`). Which one is up is /health's to say. Of a checkout
+    of the frozen rigs, whose names are known, and of this one, whatever
+    config/rigs/ holds today."""
     import json
 
-    status, _, body = call(ui_agent(live=UiRig()), "GET", "/rigs")
+    root = frozen_root if which == "frozen" else checkout_root()
+    status, _, body = call(ui_agent(live=UiRig(), root=root), "GET", "/rigs")
     answer = json.loads(body)
     # By file name, as a Program Change counts them: "electric-chorus-2.yaml"
     # sorts before "electric-chorus.yaml", though its name sorts after.
-    names = [p.stem for p in sorted((checkout_root() / "config" / "rigs").glob("*.yaml"), key=lambda p: p.name)]
-    assert status == 200 and answer == {"ok": True, "rigs": names} and "electric_board" in names
+    names = [p.stem for p in sorted((root / "config" / "rigs").glob("*.yaml"), key=lambda p: p.name)]
+    assert status == 200 and answer == {"ok": True, "rigs": names}
+    if which == "frozen":
+        assert names.index("electric-chorus-2") < names.index("electric-chorus") and "electric_board" in names
 
 
 def profiles_root(tmp_path, *extra):

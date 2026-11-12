@@ -11,6 +11,7 @@ from __future__ import annotations
 import textwrap
 
 import pytest
+from rig_fixtures import FROZEN, committed_that
 
 from sushi_rig.paths import checkout_root
 from sushi_rig.probes import (
@@ -322,7 +323,9 @@ def test_the_command_refuses_a_rig_that_does_not_validate(tmp_path, capsys):
 # A v2 rig: channels and a master (#30)
 # --------------------------------------------------------------------------- #
 
-RIGS = checkout_root() / "config" / "rigs"
+# The rigs these tests name and know the channels of (rig_fixtures.py); the
+# committed ones, whatever they hold, are `committed_rigs` below.
+RIGS = FROZEN
 
 
 def test_a_v2_rig_is_probed_through_each_stem_and_through_the_master():
@@ -508,11 +511,30 @@ def test_electric_board_injects_only_where_nothing_else_plays():
 
 
 def committed_rigs():
+    """The v1 sources, the frozen rigs, and every rig in config/rigs/ as it
+    is today. What the tests below know of a rig (that it has an output pair
+    free for the probe) they know of the first two; of a committed rig they
+    ask only what holds of any."""
     from sushi_rig.rigfile import spec_of
 
     return [(path.name, RigSpec.load(path)) for path in sorted(SOURCES.glob("*.yaml"))] + [
-        (f"rigs/{path.name}", spec_of(path)) for path in sorted(RIGS.glob("*.yaml"))
+        (f"frozen/{path.name}", spec_of(path)) for path in sorted(FROZEN.glob("*.yaml"))] + [
+        (f"rigs/{path.name}", spec) for path, spec in committed_that(spec_of)
     ]
+
+
+def _plan_with_the_amp(spec):
+    """The plan with the amp on, as these two tests ask for it. The amp sits
+    in front of the one track on the guitar's role; a rig with none (vocals
+    only) or two (two guitars) is a rig all the same, and asked for the amp
+    it refuses in a sentence, so its plan here is the one without."""
+    from sushi_rig.patchbay import GUITAR_ROLE
+
+    if len([t for t in spec.tracks if t.source == GUITAR_ROLE]) == 1:
+        return plan_probes(spec, amp=True)
+    with pytest.raises(ProbeError, match=GUITAR_ROLE):
+        plan_probes(spec, amp=True)
+    return plan_probes(spec, amp=False)
 
 
 @pytest.mark.parametrize("name,spec", committed_rigs(), ids=lambda v: v if isinstance(v, str) else "")
@@ -525,9 +547,21 @@ def test_no_probe_shares_a_sushi_port_with_the_rig(name, spec):
 
     used = {label: {c for t in spec.tracks for d in track_route(t, label)[0] for c in d.channels()}
             for label in ("inputs", "outputs")}
-    plan = plan_probes(spec, amp=True)
+    plan = _plan_with_the_amp(spec)
     sushi = [p for p in plan.points if p.track is not None]
-    assert sushi, f"{name}: nothing is probed through Sushi"
+    if name.startswith("rigs/"):
+        # A committed rig may leave the probe no room (three channels use
+        # every output Sushi has): then nothing shares a port, and each
+        # channel must be said to be unprobed rather than read as passed.
+        if not sushi:
+            from sushi_rig.rigfile import MASTER
+
+            for track in spec.tracks:
+                if track.name != MASTER:
+                    assert any(note.startswith(f"{track.name}: ") and "not probed" in note
+                               for note in plan.not_checked), (name, track.name, plan.not_checked)
+    else:
+        assert sushi, f"{name}: nothing is probed through Sushi"
     for point in sushi:
         sinks = [sink for _, sink in probe_links(point, "stimulus:out")]
         for port in sinks + [point.capture]:
@@ -544,7 +578,7 @@ def test_no_probe_shares_a_sushi_port_with_the_rig(name, spec):
 def test_the_probe_track_is_a_track_the_rig_could_hold(name, spec):
     """Beside the rig's own tracks it must still validate: its name and its
     copies' names are new, and it routes as a track does."""
-    for point in plan_probes(spec, amp=True).points:
+    for point in _plan_with_the_amp(spec).points:
         if point.track is not None:
             beside = RigSpec(host=spec.host, tracks=list(spec.tracks) + [point.track.to_spec()])
             # Its name is the one thing a rig may not use, which is the point.

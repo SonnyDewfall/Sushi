@@ -429,7 +429,8 @@ def test_a_property_listed_but_unreadable_is_unchecked_not_absent():
 
 # --- a rig file given to verify (the rig, 2026-11-02: a raw JSONDecodeError) --------------
 
-def test_a_rig_file_of_config_rigs_is_compiled_as_up_compiles_it_and_that_is_checked(tmp_path, monkeypatch):
+def test_a_rig_file_of_config_rigs_is_compiled_as_up_compiles_it_and_that_is_checked(tmp_path, monkeypatch,
+                                                                                    frozen_root):
     import json
 
     from sushi_rig import rig as rig_module, verify as verify_module
@@ -446,9 +447,12 @@ def test_a_rig_file_of_config_rigs_is_compiled_as_up_compiles_it_and_that_is_che
 
     monkeypatch.setattr(verify_module, "dump_plugins", fake_dump)
     monkeypatch.setattr(verify_module, "check_names", lambda parsed, dump: [])
-    rig = checkout_root() / "config" / "rigs" / "electric-chorus-2.yaml"
+    # A checkout of the frozen rigs (rig_fixtures.py): `verify` finds the
+    # root it compiles from as every command does, so that is stood in.
+    monkeypatch.setattr(verify_module, "checkout_root", lambda: frozen_root)
+    rig = frozen_root / "config" / "rigs" / "electric-chorus-2.yaml"
     assert verify_module.verify(rig, "sushi", quick=True) == []
-    expected = real("electric-chorus-2", checkout_root(), machine)
+    expected = real("electric-chorus-2", frozen_root, machine)
     expected.pop("initial_state", None)  # the dump is taken without it (`_without_state`)
     assert checked == [expected]
 
