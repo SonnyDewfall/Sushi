@@ -142,24 +142,14 @@ def test_a_config_with_no_source_anywhere_gets_none_and_a_reason(tmp_path):
 def test_every_committed_config_has_a_source_to_save_from(frozen_root):
     """guitar_vocal was the one that fell through to electric_board.
 
-    The v1 configs and their config/src/ sources, beside the frozen rigs
+    The frozen v1 configs and config/src/ sources, beside the frozen rigs
     (rig_fixtures.py). For most configs the source that describes them is the
     rig of their name, and the one in config/rigs/ stops describing its
     config the day a plugin is removed from it and saved: SAVE is then off
     for that v1 config and says so, which is right, and is not this test's
     to fail on."""
-    import shutil
-
-    from sushi_rig.paths import checkout_root
-
-    committed = checkout_root() / "config"
-    (frozen_root / "config" / "src").mkdir()
-    for path in sorted(committed.glob("*.json")):
-        shutil.copy(path, frozen_root / "config" / path.name)
-    for path in sorted((committed / "src").glob("*.yaml")):
-        shutil.copy(path, frozen_root / "config" / "src" / path.name)
     configs = sorted((frozen_root / "config").glob("*.json"))
-    assert configs
+    assert len(configs) == 11
     for config in configs:
         source = resolve_rig_yaml(config, frozen_root)
         assert source is not None, (config.name, rig_source_problem(config, frozen_root))
@@ -179,9 +169,11 @@ def test_the_listener_is_started_without_a_rig_when_there_is_none(plan_args):
 # --- v2 rigs: up --rig (#30's last slice) ------------------------------------
 
 
+from rig_fixtures import FROZEN_MACHINE  # noqa: E402
+
 ROOT = checkout_root()
 CAPTURED_DUMP = (Path(__file__).parent / "fixtures" / "pw-dump-rig.json").read_text()
-MACHINE = ROOT / "machines" / "sonny-dewfall-XPS-9320.yaml"
+MACHINE = FROZEN_MACHINE  # frozen beside the capture above (rig_fixtures.py)
 
 
 def test_a_v2_rig_is_compiled_and_wired_from_its_own_file(tmp_path, frozen_root):

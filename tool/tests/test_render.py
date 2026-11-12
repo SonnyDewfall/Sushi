@@ -18,6 +18,8 @@ import pytest
 
 np = pytest.importorskip("numpy")
 
+from rig_fixtures import frozen_v1  # noqa: E402
+
 from sushi_rig import render, signals  # noqa: E402
 from sushi_rig.render import RenderError, Stimulus, sushi_argv  # noqa: E402
 
@@ -708,7 +710,7 @@ def test_guitar_vocal_cannot_be_rendered_offline_and_says_why():
     alone. CI saw "Failed to load tracks" at two channels and at four."""
     import json
 
-    problem = render.offline_problem(json.loads((ROOT / "config" / "guitar_vocal.json").read_text()))
+    problem = render.offline_problem(json.loads(frozen_v1("guitar_vocal").read_text()))
     assert problem and "'vocal'" in problem and "engine bus 1" in problem
 
 
@@ -870,8 +872,8 @@ def test_a_single_track_config_is_its_own_one_channel_untouched():
     the file Sushi renders is the very file on disk."""
     import json
 
-    config = json.loads((ROOT / "config" / "electric_board.json").read_text())
-    (only,) = render.channels_of(config, ROOT / "config" / "electric_board.json")
+    config = json.loads(frozen_v1("electric_board").read_text())
+    (only,) = render.channels_of(config, frozen_v1("electric_board"))
     assert (only.name, only.whole) == ("electric_board", True)
     assert only.config is config
 

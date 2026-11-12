@@ -434,9 +434,7 @@ def test_a_rig_file_of_config_rigs_is_compiled_as_up_compiles_it_and_that_is_che
     import json
 
     from sushi_rig import rig as rig_module, verify as verify_module
-    from sushi_rig.paths import checkout_root
-
-    machine = checkout_root() / "machines" / "sonny-dewfall-XPS-9320.yaml"
+    machine = frozen_root / "machines" / "sonny-dewfall-XPS-9320.yaml"
     real = rig_module.compile_named_rig
     monkeypatch.setattr(rig_module, "compile_named_rig", lambda name, root: real(name, root, machine))
     checked = []

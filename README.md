@@ -337,8 +337,8 @@ then.
 │   │                             selftest, take, transport, recorder,
 │   │                             recorder_process, capture, midi_listener, agent,
 │   │                             agent_client, service, yamlmerge, paths, _numpy, stereo, cli
-│   ├── tests/                    fast suite; fixtures/ holds captured artefacts, and
-│   │                             fixtures/rigs/ the rigs the tests name, frozen
+│   ├── tests/                    fast suite; fixtures/ holds captured artefacts, and the
+│   │                             rigs, v1 configs and machine file the tests name, frozen
 │   ├── examples/
 │   │   ├── rig.example.yaml       annotated rig spec (real plugins)
 │   │   ├── dump.example.json      real --dump-plugins output, test fixture
@@ -1691,19 +1691,30 @@ pip install -e "tool[ui-test]" && python -m playwright install chromium
 **A test may fail because the code is wrong, or because a committed rig is
 not a valid rig. It must not fail because a rig changed.** `config/rigs/` is
 saved into from the web UI and committed, so a test that reads it takes every
-file there (`tests/rig_fixtures.py`, `committed()`) and assumes nothing about
-what any of them holds: `tests/test_rig_fixtures.py` checks that each parses,
-compiles and wires, and the tests over every pair of rigs ask only what holds
-of any two. A test that needs a rig it knows (one channel called `board`, two
-rigs that differ only in the amp's levels) reads the frozen copies in
-`tests/fixtures/rigs/`, the eleven rigs as they were at c494625, which are
-test data and do not follow `config/rigs/`. The conversions of #30 are held
-to their v1 configs there too, and as `convert` writes them today; the rig in
-`config/rigs/` is the one to edit and is not compared with the config it came
-from. The one check that does follow a rig's content is its sound: see
-`nulltest --all` below, where a rig with no reference, or one that no longer
-sounds like its reference, fails the container job until a reference is
-calibrated for it.
+rig there through `tests/rig_fixtures.py` and assumes nothing about what any
+of them holds. What a committed rig is held to is in
+`tests/test_rig_fixtures.py`, one test for each by name: it parses and
+compiles, its amp's model is a file and its amp's parameters are in the amp's
+range, and it wires on the committed machine file; in the container, where
+there is a Sushi, every parameter it names is one its plugin has (nothing in
+the checkout lists a plugin's parameters, so a bare runner cannot ask). A rig
+that fails that is left out of the tests over every pair of rigs, which ask
+only what holds of any two. A test that needs a rig it knows (one channel
+called `board`, two rigs that differ only in the amp's levels) reads the
+frozen set in `tests/fixtures/`: `rigs/`, the eleven rigs as they were at
+c494625, with the v1 configs and sources they were converted from (`v1/`) and
+the machine file they are wired against (`machines/`). They are test data,
+pinned by checksum, and do not follow `config/` or `machines/`. The
+conversions of #30 are held to their v1 configs there, and as `convert`
+writes them today; the rig in `config/rigs/` is the one to edit and is not
+compared with the config it came from. A guard keeps this so: every file
+opened and folder listed in the test process is audited, and a test that
+reads `config/rigs/` without the marker `committed_rigs` fails, however the
+path was spelt and whatever code did the reading (`rig_fixtures.py` says what
+it cannot see). The one check that does follow a rig's content is its sound:
+see `nulltest --all` below, where a rig with no reference, or one that no
+longer sounds like its reference, fails the container job until a reference
+is calibrated for it.
 
 **Every test must run somewhere, and a skip counts as a failure.** CI is two
 workflows because no single runner has everything:

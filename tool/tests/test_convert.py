@@ -7,7 +7,8 @@ plugins and settings; the slow one says each rig sounds like its reference.
 
 **What is held to a config, since 2026-11-12.** A conversion is: the one
 `convert` makes of each config today, and the one that was committed on the
-day (#30), kept as it was under fixtures/rigs/ (rig_fixtures.py). The rig in
+day (#30), kept as it was under fixtures/rigs/ beside the config it was made
+from, under fixtures/v1/ (rig_fixtures.py). The rig in
 config/rigs/ is not: its first line says "Edit this file, not that one", the
 web UI's Save does exactly that, and a rig that gained a channel on the
 laptop (electric-chorus-2, 2c36874) is not a conversion that lost anything.
@@ -24,29 +25,36 @@ import json
 
 import pytest
 import yaml
-from rig_fixtures import FROZEN, committed, compiled_to_render, frozen
+from rig_fixtures import FROZEN_V1, committed, compiled_to_render, frozen, frozen_names, frozen_v1
 
 from sushi_rig import rigfile
 from sushi_rig.convert import ConvertError, Input, convert, differences, parse_input, to_rig
 from sushi_rig.paths import checkout_root
 
 ROOT = checkout_root()
-CONFIGS = sorted((ROOT / "config").glob("*.json"))
-# The conversions committed on the day, as they were: every frozen rig with a
-# config of its name.
-CONVERTED = [path for path in CONFIGS if (FROZEN / f"{path.stem}.yaml").is_file()]
+# The conversions committed on the day (#30), as they were: each frozen v1
+# config with the frozen rig of its name. Named, so that one of either going
+# missing fails as a missing file and not as a test that ran on fewer.
+CONVERTED_NAMES = [
+    "accustomed", "electric-chorus", "electric-chorus-2", "electric-chorus-hall", "electric-clean",
+    "electric-delay", "electric-octave-up", "electric-spacey-delay", "electric_board", "guitar_vocal",
+    "hard-feelings",
+]
+CONVERTED = [frozen_v1(name) for name in CONVERTED_NAMES]
+# What `convert` is given today: the same frozen configs. The v1 configs in
+# config/ are to be retired, and a test of `convert` is not to go with them.
+CONFIGS = CONVERTED
 # What a config of more than one track cannot say for itself (`convert --input`).
 INPUTS = {"guitar_vocal": {"guitar": Input("guitar-in", "mono"), "vocal": Input("vocal-in", "mono")}}
 
 
 def v1(name: str) -> dict:
-    return json.loads((ROOT / "config" / f"{name}.json").read_text())
+    return json.loads(frozen_v1(name).read_text())
 
 
-def test_the_conversions_kept_are_of_configs_that_are_still_here():
-    """Not vacuous: the two tests of the frozen conversions run on something,
-    the hand-written guitar_vocal among them."""
-    assert "guitar_vocal" in {p.stem for p in CONVERTED}, "no frozen rig has a config of its name"
+def test_the_conversions_kept_are_every_frozen_rig_and_every_frozen_config():
+    """The explicit list is the whole frozen set, both ways."""
+    assert sorted(CONVERTED_NAMES) == frozen_names() == sorted(p.stem for p in FROZEN_V1.glob("*.json"))
 
 
 @pytest.mark.parametrize("config", CONVERTED, ids=lambda p: p.stem)
@@ -172,11 +180,13 @@ def test_the_command_writes_once_and_refuses_to_overwrite(tmp_path, capsys):
     from sushi_rig.cli import main
 
     out = tmp_path / "clean.yaml"
-    assert main(["convert", str(ROOT / "config" / "electric-clean.json"), "-o", str(out)]) == 0
+    config = frozen_v1("electric-clean")
+    assert main(["convert", str(config), "-o", str(out)]) == 0
     text = out.read_text()
-    assert text.startswith("# Converted from config/electric-clean.json")
+    # The path as given, from the checkout's root: where the frozen config is.
+    assert text.startswith(f"# Converted from {config.relative_to(ROOT).as_posix()} by `sushi-rig convert`")
     assert rigfile.parse_rig(yaml.safe_load(text)).name == "electric-clean"
-    assert main(["convert", str(ROOT / "config" / "electric-clean.json"), "-o", str(out)]) == 1
+    assert main(["convert", str(config), "-o", str(out)]) == 1
     assert "exists; --force updates it, keeping its comments" in capsys.readouterr().out
 
 
@@ -184,7 +194,7 @@ def test_force_updates_a_rig_file_in_place_and_keeps_its_comments(tmp_path):
     from sushi_rig.cli import main
 
     out = tmp_path / "clean.yaml"
-    config = str(ROOT / "config" / "electric-clean.json")
+    config = str(frozen_v1("electric-clean"))
     assert main(["convert", config, "-o", str(out)]) == 0
     fresh = out.read_text()
     out.write_text(fresh.replace("channels:\n", "channels:\n# Written by hand, and wanted.\n", 1))
@@ -342,7 +352,7 @@ def test_a_copy_of_a_config_converts_under_its_own_name_or_one_given(tmp_path, c
     from sushi_rig.cli import main
 
     copy = tmp_path / "my-tone.json"
-    copy.write_text((ROOT / "config" / "electric-clean.json").read_text())
+    copy.write_text(frozen_v1("electric-clean").read_text())
     out = tmp_path / "out.yaml"
     assert main(["convert", str(copy), "-o", str(out)]) == 0
     assert yaml.safe_load(out.read_text())["name"] == "electric-clean"

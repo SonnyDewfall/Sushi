@@ -2,8 +2,38 @@ import json
 from pathlib import Path
 
 import pytest
+import rig_fixtures
 
 EXAMPLES = Path(__file__).parent.parent / "examples"
+
+# The guard on config/rigs/ (rig_fixtures.py): on before any test module is
+# imported, so that a rig read as one is imported is seen too.
+rig_fixtures.watch()
+
+
+def pytest_collection_finish(session):
+    """What read config/rigs/ while the test modules were imported, set aside
+    for test_rig_fixtures.py to fail on: no test was running to blame."""
+    rig_fixtures.AT_COLLECTION[:] = rig_fixtures.STRAY
+    del rig_fixtures.STRAY[:]
+
+
+@pytest.fixture(autouse=True)
+def _config_rigs_is_read_only_on_purpose(request):
+    """Fails a test that read the checkout's config/rigs/ without being
+    marked `committed_rigs` (rig_fixtures.py, the guard): from its fixtures'
+    set-up to its last line. First of the autouse fixtures, so it is around
+    the others."""
+    if request.node.get_closest_marker(rig_fixtures.MARKER):
+        with rig_fixtures.reading_committed():
+            yield
+        return
+    before = len(rig_fixtures.STRAY)
+    yield
+    stray = rig_fixtures.STRAY[before:]
+    del rig_fixtures.STRAY[before:]
+    if stray:
+        pytest.fail(rig_fixtures.said(stray), pytrace=False)
 
 
 @pytest.fixture
@@ -35,9 +65,7 @@ def frozen_root(tmp_path):
     """A checkout whose config/rigs/ is the frozen rigs (rig_fixtures.py): the
     root to give code that looks a rig up by name, in a test that knows what
     the rig holds. The committed config/rigs/ is the owner's and changes."""
-    from rig_fixtures import frozen_checkout
-
-    return frozen_checkout(tmp_path / "frozen-checkout")
+    return rig_fixtures.frozen_checkout(tmp_path / "frozen-checkout")
 
 
 # The marker of an investigation kept to be run again, not on every push

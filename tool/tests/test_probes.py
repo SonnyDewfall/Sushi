@@ -11,7 +11,7 @@ from __future__ import annotations
 import textwrap
 
 import pytest
-from rig_fixtures import FROZEN, committed_that
+from rig_fixtures import FROZEN, FROZEN_SRC, committed_that
 
 from sushi_rig.paths import checkout_root
 from sushi_rig.probes import (
@@ -43,7 +43,7 @@ def by_name(plan) -> dict[str, ProbePoint]:
 
 
 def test_guitar_vocal_as_committed(tmp_path):
-    plan = plan_probes(RigSpec.load(SOURCES / "guitar_vocal.yaml"), amp=True)
+    plan = plan_probes(RigSpec.load(FROZEN_SRC / "guitar_vocal.yaml"), amp=True)
     points = by_name(plan)
     # The rig reads buses 0 and 1 and writes bus 0, so the probe track takes
     # input bus 2 and output bus 1: ports nothing in the rig touches.
@@ -79,12 +79,12 @@ def test_guitar_vocal_as_committed(tmp_path):
 def test_every_half_of_a_stereo_output_is_its_own_probe(tmp_path):
     """The guitar once came out of the left speaker only; a probe reading one
     side, or the two summed, would have passed it."""
-    plan = plan_probes(RigSpec.load(SOURCES / "electric_board.yaml"), amp=False)
+    plan = plan_probes(RigSpec.load(FROZEN_SRC / "electric_board.yaml"), amp=False)
     assert [p.capture for p in plan.points] == ["sushi:audio_output_2", "sushi:audio_output_3"]
 
 
 def test_without_the_amp_nothing_is_asserted_nonlinear():
-    plan = plan_probes(RigSpec.load(SOURCES / "guitar_vocal.yaml"), amp=False)
+    plan = plan_probes(RigSpec.load(FROZEN_SRC / "guitar_vocal.yaml"), amp=False)
     assert plan.points and all(p.nonlinear is None for p in plan.points)
     assert not any("NAM" in port for p in plan.points for port in p.inject)
 
@@ -264,12 +264,12 @@ def test_every_committed_rig_has_a_plan(source):
 def test_the_command_prints_the_plan_and_what_it_cannot_check(capsys):
     from sushi_rig.cli import main
 
-    assert main(["probes", str(SOURCES / "guitar_vocal.yaml")]) == 0
+    assert main(["probes", str(FROZEN_SRC / "guitar_vocal.yaml")]) == 0
     out = capsys.readouterr().out
     # No amp unless asked for: guitar_vocal names none, and `up` starts none.
     assert "NAM" not in out
     assert "NOT CHECKED separation of guitar and vocal" in out
-    assert main(["probes", str(SOURCES / "guitar_vocal.yaml"), "--amp"]) == 0
+    assert main(["probes", str(FROZEN_SRC / "guitar_vocal.yaml"), "--amp"]) == 0
     out = capsys.readouterr().out
     assert "amp\n  inject  NAM:Input\n  listen  NAM:Output  must add harmonics\n" in out
     assert "  beside  guitar-in: the instrument feeds this too" in out

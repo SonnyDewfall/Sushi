@@ -31,7 +31,7 @@ np = pytest.importorskip("numpy")
 
 from sushi_rig import signals, take  # noqa: E402
 from sushi_rig.paths import checkout_root  # noqa: E402
-from rig_fixtures import frozen  # noqa: E402
+from rig_fixtures import frozen, frozen_v1  # noqa: E402
 from sushi_rig.take import DRY, PROCESSED, Stem, TakeError  # noqa: E402
 
 SR = 48000
@@ -56,7 +56,7 @@ def four_stems() -> list[Stem]:
 
 
 def config() -> dict:
-    return json.loads((ROOT / "config" / "guitar_vocal.json").read_text())
+    return json.loads(frozen_v1("guitar_vocal").read_text())
 
 
 def start(tmp_path, name="riff-idea", stems=None, cfg=None, **overrides) -> dict[str, Path]:

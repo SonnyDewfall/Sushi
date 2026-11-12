@@ -527,6 +527,7 @@ def _above_and_beside(text: str) -> dict[str, list[tuple[tuple[str, ...], str]]]
     return {name: sorted(entries) for name, entries in found.items()}
 
 
+@pytest.mark.committed_rigs
 @pytest.mark.parametrize("how", ["reversed", "rotated"])
 def test_every_committed_rig_with_its_chains_reordered_keeps_each_plugins_comments(how):
     """Every rig in config/rigs/ as it is today, and the frozen ones

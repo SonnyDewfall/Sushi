@@ -1,0 +1,104 @@
+{
+  "_meta": {
+    "name": "guitar_vocal",
+    "version": "1.0",
+    "description": "Guitar and vocals \u2014 two channels, two chains, one monitor mix",
+    "status": "wip"
+  },
+  "host_config": {
+    "samplerate": 48000
+  },
+  "tracks": [
+    {
+      "name": "guitar",
+      "channels": 2,
+      "inputs": [
+        {
+          "engine_bus": 0,
+          "track_bus": 0
+        }
+      ],
+      "outputs": [
+        {
+          "engine_bus": 0,
+          "track_bus": 0
+        }
+      ],
+      "plugins": [
+        {
+          "name": "guitar_compressor",
+          "type": "lv2",
+          "uri": "http://guitarix.sourceforge.net/plugins/gx_compressor#_compressor"
+        },
+        {
+          "name": "guitar_overdrive",
+          "type": "lv2",
+          "uri": "http://guitarix.sourceforge.net/plugins/gxts9#ts9sim"
+        },
+        {
+          "name": "guitar_eq",
+          "type": "lv2",
+          "uri": "http://distrho.sf.net/plugins/3BandEQ"
+        },
+        {
+          "name": "guitar_chorus",
+          "type": "lv2",
+          "uri": "http://guitarix.sourceforge.net/plugins/gx_chorus_stereo#_chorus_stereo"
+        },
+        {
+          "name": "guitar_delay",
+          "type": "lv2",
+          "uri": "http://plugin.org.uk/swh-plugins/lcrDelay"
+        },
+        {
+          "name": "guitar_room",
+          "type": "lv2",
+          "uri": "urn:ardour:a-reverb"
+        }
+      ]
+    },
+    {
+      "name": "vocal",
+      "channels": 2,
+      "inputs": [
+        {
+          "engine_bus": 1,
+          "track_bus": 0
+        }
+      ],
+      "outputs": [
+        {
+          "engine_bus": 0,
+          "track_bus": 0
+        }
+      ],
+      "plugins": [
+        {
+          "name": "vocal_dynamics",
+          "type": "lv2",
+          "uri": "http://drobilla.net/plugins/mda/Dynamics"
+        },
+        {
+          "name": "vocal_deess",
+          "type": "lv2",
+          "uri": "http://drobilla.net/plugins/mda/DeEss"
+        },
+        {
+          "name": "vocal_eq",
+          "type": "lv2",
+          "uri": "http://distrho.sf.net/plugins/3BandEQ"
+        },
+        {
+          "name": "vocal_reverb",
+          "type": "lv2",
+          "uri": "http://distrho.sf.net/plugins/MVerb"
+        },
+        {
+          "name": "vocal_limiter",
+          "type": "lv2",
+          "uri": "http://drobilla.net/plugins/mda/Limiter"
+        }
+      ]
+    }
+  ]
+}

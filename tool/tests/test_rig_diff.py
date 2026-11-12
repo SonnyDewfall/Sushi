@@ -295,7 +295,7 @@ def test_how_many_of_the_frozen_pairs_switch_live():
     README's count, so it failed on the day a rig was added (132 pairs, 56
     live) with nothing wrong. The number is of the frozen rigs now: it moves
     only if `diff` decides differently, which is what it was there to catch.
-    What it said of the committed rigs is the test below."""
+    What it protected, said of any rigs, is the test below."""
     live = [pair for pair in PAIRS if isinstance(diff(compiled(pair[0]), compiled(pair[1])), SwitchPlan)]
     assert (len(live), len(PAIRS)) == (72, 110)
     amp_only = [pair for pair in PAIRS if pair not in live
@@ -303,23 +303,103 @@ def test_how_many_of_the_frozen_pairs_switch_live():
     assert len(amp_only) == 18, "an amp on one side only, nothing else between them"
 
 
-def test_the_committed_rigs_are_each_decided_and_the_same_way_each_time():
-    """What the count protected, of the rigs in config/rigs/ as they are
-    today, with no number in it: every ordered pair is decided, as a plan or
-    as a restart with a reason; asked again, the answer is the same; and a
-    rig is no distance from itself, so switching to the rig that is running
-    is an empty plan and never a restart. How many pairs are live is the
-    owner's to change with any save, and is not asked."""
-    names = sorted(COMMITTED_COMPILED)
-    for name in names:
-        assert diff(compiled(name, "committed"), compiled(name, "committed")) == SwitchPlan(()), name
-    for running, upcoming in itertools.permutations(names, 2):
-        decided = diff(compiled(running, "committed"), compiled(upcoming, "committed"))
-        assert isinstance(decided, (SwitchPlan, NeedsRestart)), (running, upcoming)
-        if isinstance(decided, NeedsRestart):
-            assert decided.reasons and all(r.code in RESTART_REASONS and r.detail for r in decided.reasons), \
-                (running, upcoming)
-        assert diff(compiled(running, "committed"), compiled(upcoming, "committed")) == decided, (running, upcoming)
+def _must_restart(before, after):
+    """The reasons a switch from `before` to `after` has to restart for, read
+    off the two configs with none of `diff`'s code: what Sushi takes only as
+    it loads (the tracks, their shape, the host, its MIDI map), what only the
+    patchbay wires, and the amp Carla is started with."""
+    codes = set()
+    names_b, names_a = _track_names(before), _track_names(after)
+    if set(names_a) - set(names_b):
+        codes.add("track_added")
+    if set(names_b) - set(names_a):
+        codes.add("track_removed")
+    common = [n for n in names_a if n in names_b]
+    if [n for n in names_b if n in names_a] != common:
+        codes.add("track_order")
+
+    def shape(config, name):
+        (track,) = [t for t in config["tracks"] if t["name"] == name]
+        return {k: v for k, v in track.items() if k != "plugins"}
+
+    if any(shape(before, n) != shape(after, n) for n in common):
+        codes.add("track")  # channels, inputs, outputs: a channel's width is here
+    if any(before[WIRING][n] != after[WIRING][n] for n in common):
+        codes.add("wiring")  # a channel's input, the master's output
+    if _carla(before) != _carla(after):
+        codes.add("amp")
+    if before.get("host_config") != after.get("host_config"):
+        codes.add("host")
+    if (before.get("midi") or {}) != (after.get("midi") or {}):
+        codes.add("midi")
+    return codes
+
+
+def _may_restart(before, after):
+    """The other reasons two rig files can give `diff`, each with the fact
+    that has to be there for it. Anything else in a restart between two
+    compiled rig files (a send to add, a plugin that is not LV2, a default
+    not known) is `diff` deciding wrongly."""
+    codes = set()
+
+    def states(config):
+        return [e for e in config.get("initial_state") or []]
+
+    def copies(config):
+        return {p["name"] for t in config["tracks"] for p in t["plugins"] if stereo.is_copy(p["name"], p.get("uid"))}
+
+    amp_b, amp_a = before.get("_amp") or {}, after.get("_amp") or {}
+    if set(amp_b.get("parameters") or {}) - set(amp_a.get("parameters") or {}):
+        codes.add("amp")  # an amp parameter the next rig leaves unstated
+    if any(e.get("program") is not None for e in states(before) + states(after)):
+        codes.add("program")
+    sends = {t["name"] + rigfile.SEND_SUFFIX for config in (before, after) for t in config["tracks"]}
+    if any(e.get("properties") for e in states(before) + states(after) if e["processor"] not in sends):
+        codes.add("properties")
+    if before.get("midi"):
+        codes.add("midi_target")
+    if copies(after) and not copies(before):
+        # A rig of stereo plugins only, then one with a mono plugin: `diff`
+        # takes the first for a config compiled before the copies existed.
+        codes.add("stereo_missing")
+    return codes
+
+
+@pytest.mark.parametrize("where", sorted(SETS))
+def test_every_pair_restarts_for_what_the_two_rigs_show_and_for_nothing_else(where):
+    """What the count protected (how many pairs switch live, which moved from
+    26 to 72 of 110 when the amp's parameters became steps), said of any
+    rigs and so of the committed ones, with no number in it. For every
+    ordered pair: where the two differ in what cannot be done live (a track
+    there or not, its width, its input, the amp's model or presence, the
+    host, the MIDI map), the answer is a restart that names each such
+    difference; and a restart names nothing the two rigs do not show. So two
+    rigs with the same channels, inputs, widths and amp model, and nothing
+    else of that kind between them, are a live switch whatever their chains
+    and values are, which is the whole of what a count could say. And a rig
+    is no distance from itself: switching to the rig that is running is an
+    empty plan. That a plan, played, leaves the next rig is the first test
+    of this section, on the same pairs.
+
+    How many pairs are live is the owner's to change with any save, and is
+    asked only of the frozen rigs, above."""
+    rigs = sorted(SETS[where])
+    for name in rigs:
+        assert diff(compiled(name, where), compiled(name, where)) == SwitchPlan(()), name
+    for running, upcoming in itertools.permutations(rigs, 2):
+        before, after = compiled(running, where), compiled(upcoming, where)
+        decided = diff(before, after)
+        must, may = _must_restart(before, after), _may_restart(before, after)
+        pair = f"{running} -> {upcoming}"
+        if isinstance(decided, SwitchPlan):
+            assert not must, f"{pair}: a live switch, though the rigs differ in {sorted(must)}"
+            continue
+        codes = set(decided.codes)
+        assert must <= codes, f"{pair}: the restart does not say {sorted(must - codes)}"
+        assert codes <= must | may, (
+            f"{pair}: restarts for {sorted(codes - must - may)}, which nothing between the two rigs shows: "
+            + "; ".join(r.detail for r in decided.reasons if r.code not in must | may))
+        assert all(r.detail for r in decided.reasons), pair
 
 
 def test_moves_are_the_fewest_steps_that_put_the_survivors_in_order():

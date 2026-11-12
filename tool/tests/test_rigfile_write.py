@@ -24,7 +24,7 @@ import re
 
 import pytest
 import yaml
-from rig_fixtures import frozen
+from rig_fixtures import frozen, frozen_v1
 
 from sushi_rig.paths import checkout_root
 from sushi_rig.rigfile import RigFileError, load_rig, write_rig
@@ -452,7 +452,7 @@ def test_convert_force_says_fail_instead_of_a_traceback_when_the_write_cannot_be
 
     monkeypatch.setattr(yamlmerge, "_dump", lambda y, data: "kind: [unclosed\n")
     out = tmp_path / "clean.yaml"
-    assert main(["convert", str(checkout_root() / "config" / "electric-clean.json"),
+    assert main(["convert", str(frozen_v1("electric-clean")),
                  "-o", str(out), "--force"]) == 1
     assert "FAIL" in capsys.readouterr().out
 

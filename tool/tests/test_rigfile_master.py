@@ -37,6 +37,7 @@ def master_state(config):
     return [e for e in config.get("initial_state", []) if e["processor"] == MASTER]
 
 
+@pytest.mark.committed_rigs
 @pytest.mark.parametrize("where, path", RIGS, ids=[f"{where}:{path.stem}" for where, path in RIGS])
 def test_every_rig_compiles_as_before_with_no_master_level(where, path):
     """Unity writes nothing: a rig that states no master level gets no master

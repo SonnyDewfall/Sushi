@@ -21,8 +21,7 @@ import pytest
 np = pytest.importorskip("numpy")
 
 from sushi_rig import signals, take  # noqa: E402
-from sushi_rig.paths import checkout_root  # noqa: E402
-from rig_fixtures import frozen  # noqa: E402
+from rig_fixtures import frozen, frozen_v1  # noqa: E402
 from sushi_rig.take import DRY, PROCESSED, Stem  # noqa: E402
 from sushi_rig.transport import (  # noqa: E402
     NOT_MEASURED,
@@ -48,7 +47,7 @@ def plan(tmp_path, stems=None) -> TakePlan:
     ]
     return TakePlan(
         takes_dir=tmp_path,
-        config=json.loads((checkout_root() / "config" / "guitar_vocal.json").read_text()),
+        config=json.loads(frozen_v1("guitar_vocal").read_text()),
         config_source="config/guitar_vocal.json",
         stems=tuple(zip(stems, WIDTHS)),
         sample_rate=SR,

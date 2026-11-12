@@ -11,7 +11,7 @@ from __future__ import annotations
 import json
 import pytest
 import yaml
-from rig_fixtures import frozen
+from rig_fixtures import FROZEN_SRC, frozen
 
 from sushi_rig import rigfile
 from sushi_rig.paths import checkout_root
@@ -175,7 +175,7 @@ def test_every_problem_is_reported_at_once():
 
 
 def test_a_v1_rig_is_not_mistaken_for_one():
-    v1 = yaml.safe_load((ROOT / "config" / "src" / "guitar_vocal.yaml").read_text())
+    v1 = yaml.safe_load((FROZEN_SRC / "guitar_vocal.yaml").read_text())
     assert not rigfile.is_rig_file(v1)
     assert rigfile.is_rig_file(yaml.safe_load(EXAMPLE.read_text()))
 
@@ -260,7 +260,7 @@ def test_the_command_emits_either_kind(tmp_path):
     assert main(["emit", str(EXAMPLE), "-o", str(out), "--no-verify"]) == 0
     assert json.loads(out.read_text())["tracks"][-1]["name"] == "master"
     v1 = tmp_path / "v1.json"
-    assert main(["emit", str(ROOT / "config" / "src" / "guitar_vocal.yaml"), "-o", str(v1), "--no-verify"]) == 0
+    assert main(["emit", str(FROZEN_SRC / "guitar_vocal.yaml"), "-o", str(v1), "--no-verify"]) == 0
     assert "master" not in [t["name"] for t in json.loads(v1.read_text())["tracks"]]
 
 

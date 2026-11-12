@@ -179,7 +179,7 @@ def test_the_ui_folder_itself_sends_the_browser_to_the_page(path):
     assert asyncio.run(go()) == (302, "/")
 
 
-@pytest.mark.parametrize("which", ["frozen", "committed"])
+@pytest.mark.parametrize("which", ["frozen", pytest.param("committed", marks=pytest.mark.committed_rigs)])
 def test_the_rigs_a_start_or_switch_can_name_are_config_rigs(which, frozen_root):
     """The picker's list: config/rigs/ by name, in program order, whether or
     not the running rig's MIDI map switches rigs (which is when /rig lists

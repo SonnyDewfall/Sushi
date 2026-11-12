@@ -3485,9 +3485,10 @@ checks every committed rig parses, compiles and wires as `up --rig` does it
 every frozen one still does, and that no test writes a path into
 `config/rigs/`. test_rig_diff's contract runs on both sets; the count and
 "restarts only for the amp or the tracks" are of the frozen rigs; of the
-committed ones, that every pair is decided, the same way twice, a rig no
-distance from itself, and tracks or an amp that differ a restart that says
-so. test_convert holds each v1 config to the conversion committed on the day
+committed ones, a rig no distance from itself, and tracks or an amp that
+differ a restart that says so (the rest of what was written here, "decided,
+the same way twice", could not fail; the entry after next says what
+replaced it). test_convert holds each v1 config to the conversion committed on the day
 (frozen) and to what `convert` writes now, and no longer to the rig in
 `config/rigs/`, whose first line says to edit it: a list of diverged rigs was
 not taken, since the next save would fail it the same way. Every test that
@@ -3564,3 +3565,55 @@ suite fails), so neither new rig has been through it; the artifact could not
 be fetched here, so the three files are the log's text and not the zip's;
 and the references say what Sushi rendered, not that anyone heard clean: the
 amp is not in that image. *(2026-11-12)*
+
+**Review of 8ef207d: the committed rigs had been left under-checked.** Moving
+the tests onto frozen copies took away what tied a rig in `config/rigs/` to
+anything; seven findings, each tried before it was fixed. (1) **A committed
+rig is held to more** (`rig_fixtures.valid`, one test for each rig by name):
+its amp's model is a file, found as `up` finds it (`amp.resolve_model`; `up`
+refuses after it has prepared the rig, and the test did not), and its amp's
+parameters are the amp's, numbers, and in range. `Output Lvl: 99.0` used to
+pass that test and fail seven tests of pairs; now it fails the rig's own
+test and the rig is left out of the others (`committed_that`). A parameter
+its plugin does not have (`RATIOO_NOT_A_PARAMETER`) passed the whole fast
+suite, and still does: **no file in the checkout lists a plugin's
+parameters** (`plugin-ports.txt` is audio ports, the bundles under
+`tests/fixtures/lv2` are three plugins), so that is `verify`'s names check
+against Sushi's own dump, one test for each committed rig, which runs in the
+container and skips on a bare runner. The three trials are tests, on copies
+of a frozen rig. (2) **An empty `config/rigs/` fails**, where it passed 444
+tests lighter. (3) **The guard is behavioural**, replacing the search of the
+tests' source, which missed eight ways of writing the path and flagged one
+that was not a read: `sys.addaudithook` hears every `open` and folder
+listing in the test process, and a test that reads `config/rigs/` without
+the marker `committed_rigs`, or a module that reads it at import other than
+through `rig_fixtures`, fails with the line that did it. It was run on the
+whole fast suite, which reads the folder nowhere else, and on Python 3.11
+and 3.12 for the rig tests. What it cannot see is in `rig_fixtures.py`: a
+child process, a path only tested for existence, a test not run where the
+suite is, and a marked test that goes on to name one rig. (4) **The frozen
+set has its companions**: the eleven v1 configs and three sources under
+`tests/fixtures/v1/` and the machine file under `tests/fixtures/machines/`,
+byte for byte c494625's, and every test that paired a frozen rig with the
+live one of those reads the frozen one. The conversions are an explicit list
+of eleven names. The committed machine file gets its own validity test, and
+committed rigs are wired against it with no graph, since the one capture
+there is belongs to the frozen file. Still read from the checkout by frozen
+tests, and said in the docstring: `plugin-ports.txt`. (5) **The NaN guard**
+renders each gx_detune_ of each committed rig, by its settings (five today),
+beside the frozen octave up. Written with no Sushi; set up and collected
+here, never rendered. (6) **The pair test that could not fail** is replaced:
+the restart reasons a pair must give are read off the two configs with none
+of `diff`'s code (tracks, their shape, wiring, the amp's model or presence,
+host, MIDI map), a restart must name each and nothing the rigs do not show,
+so rigs alike in those are a live switch. With the amp's parameters made a
+restart again, or the amp ignored, it fails on both sets (tried). It found
+one thing `diff` does that is not quite right and is left as it is: from a
+rig with no mono plugin to one with some, it restarts as `stereo_missing`,
+"compiled before the copies existed". (7) **Every frozen file is pinned** by
+sha256, and fails under its own name. Tried again on the copy of the tree
+with a dozen saves an owner might make: the fast suite passes. **Not run:**
+the two tests that need Sushi (the names check, the NaN guard on committed
+rigs), and whether the guard is quiet under the slow tests, which were read
+for it and not run; the container job is the test of all three.
+*(2026-11-12)*

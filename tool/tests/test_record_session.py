@@ -13,7 +13,7 @@ import textwrap
 from pathlib import Path
 
 import pytest
-from rig_fixtures import frozen
+from rig_fixtures import FROZEN_MACHINE, FROZEN_SRC, frozen, frozen_v1
 
 from sushi_rig import capture, cli, transport
 from sushi_rig.capture import CaptureUnavailable, plan_columns
@@ -36,7 +36,7 @@ from sushi_rig.transport import _live_jack_names as live_jack_names
 
 ROOT = checkout_root()
 GUITAR_VOCAL = frozen("guitar_vocal")  # the rig as these tests know it (rig_fixtures.py)
-THIS_MACHINE = ROOT / "machines" / "sonny-dewfall-XPS-9320.yaml"
+THIS_MACHINE = FROZEN_MACHINE
 
 TWO_CHANNELS = textwrap.dedent("""\
     kind: rig
@@ -415,8 +415,8 @@ def test_with_jack_client_the_default_engine_is_a_capture_engine(duo, tmp_path, 
 
 
 def test_a_v1_rig_of_tracks_has_no_stems_to_record(tmp_path):
-    v1 = ROOT / "config" / "src" / "electric_board.yaml"
-    said = no_engine(record_session(v1, ROOT / "config" / "electric_board.json",
+    v1 = FROZEN_SRC / "electric_board.yaml"
+    said = no_engine(record_session(v1, frozen_v1("electric_board"),
                                     engine=StandInEngine))
     assert said == (
         f"recording is not available: no take can be planned for this run: {v1} is a "

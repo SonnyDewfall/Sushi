@@ -5,7 +5,7 @@ rigedit.py's decisions).
 
 Against real rig files in a temporary checkout -- copies of rigs as they were
 committed (the frozen ones, rig_fixtures.py: config/rigs/ itself changes with
-every save) and of the committed machine file, in a git repository -- and the
+every save) and of the machine file frozen with them, in a git repository -- and the
 real compiler and patchbay, through `rig.compile_rig_draft`: every refusal
 here is the compiler's own words, not a copy of its rules. The running rig
 is a state file and `describe_rig`'s answer held in memory (`World`), its
@@ -42,8 +42,9 @@ from sushi_rig.paths import checkout_root  # noqa: E402
 from sushi_rig.rig import RigError, compile_named_rig, compile_rig_draft  # noqa: E402
 
 from rig_fixtures import FROZEN as RIGS  # noqa: E402
+from rig_fixtures import FROZEN_MACHINE  # noqa: E402
 
-MACHINE = checkout_root() / "machines" / "sonny-dewfall-XPS-9320.yaml"
+MACHINE = FROZEN_MACHINE  # the machine file as these tests know it (rig_fixtures.py)
 # A role of one port that does not declare `mono_to_stereo`, and a pair:
 # added to the copy of the committed machine file, never to it.
 EXTRA_ROLES = """\
