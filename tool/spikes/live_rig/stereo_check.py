@@ -454,8 +454,16 @@ def cmd_rig(args):
     # here, each tone to the engine input its channel reads. Sushi's outputs,
     # which are what is under test, are left exactly as the rig wired them.
     inputs = run(["pw-link", "-i"]).stdout.split()  # -l lists only ports that are linked
+    amp = "NAM:Input" in inputs
     for n, node in enumerate(TONE_NODES):
-        if f"sushi:audio_input_{n}" in inputs:
+        if f"sushi:audio_input_{n}" not in inputs:
+            continue
+        if n == 0 and amp:
+            # The amp goes in front of the guitar, as amp.amp_patchbay wires it:
+            # the guitar into NAM, and NAM into the input the guitar fed.
+            run(["pw-link", f"{node}:output_MONO", "NAM:Input"])
+            run(["pw-link", "NAM:Output", "sushi:audio_input_0"])
+        else:
             run(["pw-link", f"{node}:output_MONO", f"sushi:audio_input_{n}"])
     time.sleep(1.0)
     links_status = cmd_links(args)

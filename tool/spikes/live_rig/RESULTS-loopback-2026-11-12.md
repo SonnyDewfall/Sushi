@@ -488,3 +488,47 @@ patchbay's links from the tone streams (`up` warns of 2 links not made), so
 Not covered: starting through the agent and the web UI, the amp (Carla) in the
 path, a second qpwgraph open on the desktop, and the real machine file's
 inputs.
+
+## The agent's routes, the amp, and a second qpwgraph
+
+Same loop and signals. The rig was started `--direct` with
+`machines/loopback-test.yaml`, then `sushi-rig agent` was started, which took
+that machine file from the state file and carried it through every switch and
+restart (checked in `/health` each time). Switches were `POST /rig/switch`, the
+route the web UI calls; the UI itself was not clicked.
+
+| Run | Links | Guitar L−R | Vocal L−R | Verdict |
+|---|---|---|---|---|
+| electric-clean with the amp (Neve 2), cold start, direct | FL, FR | +0.3 dB | – | PASS |
+| agent: switch electric-clean → guitar_vocal (by restart) | FL, FR | -0.6 | -1.0 | PASS |
+| agent: switch guitar_vocal → electric-clean with the amp | FL, FR | +0.3 | – | PASS |
+| agent: `sushi-rig restart`, electric-clean with the amp | FL, FR | +0.3 | – | PASS |
+| guitar_vocal, a second `qpwgraph -m` launched beside the rig's | FL, FR | -0.4 | -1.0 | PASS |
+| the same, restarted through the agent | FL, FR | -0.6 | -1.0 | PASS |
+
+On the one-channel rig with the amp, the vocal's pitches read about -90 dBFS on
+both sides, 29 dB under the guitar: products of the amp's distortion landing on
+them, not a vocal channel. The verdict line counts it as a second input; it is
+not one.
+
+**The second qpwgraph did not stay.** Launched with no `-a` while the rig's own
+was up, with `qpwgraph.conf` saying `Activated=true`, `Exclusive=false` and a
+remembered `Path`: four seconds later only the rig's qpwgraph was in the process
+list, and the second had printed nothing. Why it left was not established. The
+links did not change. So suspect 1 of the 7 Nov brief could not be made to
+happen here.
+
+**Found on the way: the amp is wired from the host's machine file, not the
+run's.** `amp.prepare` calls `guitar_port(root)`, which reads
+`machines/<hostname>.yaml` whatever `--machine` the run was given
+(`amp.py`, `guitar_port`). With `--machine machines/loopback-test.yaml` the
+guitar's port is the tone stream, the host file's `capture_AUX0` feeds nothing
+in the generated patchbay, and `rig-amp.qpwgraph` came out with no link to or
+from `NAM` at all: the amp ran, unwired, and the guitar would have gone in dry.
+On this laptop's own machine file the two agree, so it does not bite in normal
+use. For these runs `stereo_check.py rig` made the amp's two links itself, as
+`amp_patchbay` would have.
+
+Across the session: 17 starts, restarts and switches of the rig, by the command
+line and by the agent, with and without the amp, and stereo was not lost once.
+The one cause of "left only" found today is the interface's volume control.
