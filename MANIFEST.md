@@ -3531,3 +3531,36 @@ file, rewrites exactly those fifteen lines, and today's save and add-channel
 rewrite none, though neither puts a `.0` back. The compiled config is the
 same byte for byte either way (`emit` writes every parameter as a float).
 *(2026-11-12)*
+
+**References for the laptop's rigs, from the container's own candidates.** CI
+ran on 8ef207d (run 43309457857): the fast suite passed on 3.11 and 3.13 and
+the image built, playwright 1.65.1 with `libatomic1`, which is that fix
+shown. The container job then failed as the entry above said it would, and
+on nothing else: the full suite 4256 passed with two failures, both
+`test_every_v2_rig_sounds_like_its_reference` (clean, electric-chorus-2), no
+skip and no retried render; `nulltest --all` could not confirm 4 of 27, the
+three missing references and `config/sound/electric-chorus-2.yaml` orphaned,
+with every other config and channel "sounds the same". The job calibrated
+all 27 and printed them. Added from that log, byte for byte: `clean.yaml`,
+`electric-chorus-2.board.yaml`, `electric-chorus-2.vocal.yaml`.
+`electric-chorus-2.yaml` is renamed to the `.board` file, which is how the
+code says to treat an orphan (delete it); `electric-chorus-2.v1-mono.yaml`
+stays, since `electric-chorus-2.json` is still there and still sounds like
+it, and clean gets no `.v1-mono` because it has no v1 config. Checked before
+committing: the board's candidate is the old `electric-chorus-2.yaml` in
+every line but its `config:` name, so neither the second channel nor the
+whole numbers written without `.0` moved the guitar's sound by 0.0001 dB;
+the vocal's measurements are `guitar_vocal.vocal.yaml`'s exactly, the same
+five plugins at their defaults; clean's sides are -24.0403 and -24.0400
+dBFS. No reference of a rig that did not change was touched. Thirteen of the
+other candidates are the committed files byte for byte; eight differ only in
+the tolerance note's wording; `electric_board.yaml` differs by up to 0.0028
+dB, inside its hand-set 0.01 (gx_detune_, as the README says); and
+`electric-octave-up.v1-mono.yaml` and `electric_board.v1-mono.yaml` are
+still schema 1 in the repository, with no level for each channel, where the
+candidates are schema 2 with the same measurements: left as they are, and
+said. **Not shown:** `verify --all` did not run (the job skips it when the
+suite fails), so neither new rig has been through it; the artifact could not
+be fetched here, so the three files are the log's text and not the zip's;
+and the references say what Sushi rendered, not that anyone heard clean: the
+amp is not in that image. *(2026-11-12)*
