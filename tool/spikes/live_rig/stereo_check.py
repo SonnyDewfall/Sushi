@@ -17,7 +17,7 @@ player and the recorder.
     stereo_check.py log     # every run so far, one line each
 
 Give a run a `--label` saying what state the rig was in ("fresh replug",
-"after idctl apply daw"). Each run is appended to stereo-check-log.jsonl beside
+"after a reboot"). Each run is appended to stereo-check-log.jsonl beside
 this file, so states can be compared afterwards. Exit status is 0 only for
 PASS.
 

@@ -3500,3 +3500,14 @@ stand-ins for `pw-link` and `pw-record`. **Nothing here has been run against
 the interface, PipeWire or Sushi**; the results file has a dated note on the
 four logged verdicts this changes the reading of. Also:
 `tests/test_rigfile_master.py` names the machine file it means. *(2026-11-12)*
+
+**Removed: `idctl` and the iD14 routing-on-connect service**
+(`tool/spikes/live_rig/`: `idctl.c`, `id14_profile.*`, `idctl.mk`, the two
+`.expected` files, `85-id14-route.rules`, `id14-route@.service`,
+`id14-route-on-connect.sh`, their three tests, `ID14-AUTO-ROUTING-2026-11-04.md`
+and `BRIEF-auto-connect.md`). At Sonny's word: stereo and the headphones work
+without the routing since the volume fix of 12 Nov, and the routing bypasses the
+volume control (a tone came back 52 dB louder with it), so the connect service
+was a hazard to leave installable. The write-ups of the device's controls and
+every results file stay; the tool is at `b8192b7` in history, and the spike
+folder's README says so. *(2026-11-12)*

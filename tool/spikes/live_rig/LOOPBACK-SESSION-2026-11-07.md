@@ -1,5 +1,10 @@
 # Loopback session: where the stereo goes wrong (7 Nov 2026)
 
+> **Run on 12 Nov 2026.** The results are in RESULTS-loopback-2026-11-12.md.
+> This hand-over is kept as written. Its `idctl` steps refer to a tool that was
+> removed afterwards: the README beside this file says why and where it is in
+> history.
+
 A hand-over for a local Claude session on the rig laptop
 (`sonny-dewfall-XPS-9320`), with Sonny there, the Audient iD14 and a loopback
 cable. Written by the cloud session working on SonnyDewfall/Sushi.
