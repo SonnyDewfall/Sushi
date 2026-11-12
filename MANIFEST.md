@@ -3649,3 +3649,30 @@ internal plugin added, a parameter dropped, a plugin replaced by one of
 another type, a third channel, a stereo channel, no amp, plugins on the
 master, a MIDI map, vocals only, two guitars) the whole fast suite passes.
 *(2026-11-12)*
+
+**The next rig from the laptop, mid-review: hard-feelings-record.** 612e179
+went to master while this branch was in review, and the pull request's CI
+runs on the merge. Merged here as it is (3052003). **The fast suite passes
+with it there and nothing changed for it**: 4185 passed, 41 skipped, which is
+what the work above was for. The container job (run 43323360288, on the
+merge with 61e4c81) failed on one test of 4396,
+`test_every_v2_rig_sounds_like_its_reference[hard-feelings-record]`, and
+`nulltest --all` on 2 of 28, both the new rig's channels with no reference;
+no skip, no retried render, nothing from the guard. The three things that
+had never run did, and passed: the names check on all thirteen rigs and its
+trial, the NaN guard over the committed rigs' five gx_detune_ settings (no
+NaN in five renders of each), and the guard under the slow tests. One number
+from that table worth keeping: electric-octave-up's octave_down, alone and
+not bypassed, differed between its five renders by 0.03 dB overall and 0.3
+dB in one band, where the README says a few thousandths for the chains as
+they are played (it is bypassed in the rig). Added from that run's
+candidates, byte for byte from the log: `hard-feelings-record.board.yaml`
+and `hard-feelings-record.vocal.yaml`, each with both sides level (-25.68
+and -25.70; -12.46 and -12.53 dBFS). The folder is the 28 names `nulltest
+--all` looks for, none missing, none orphaned. No other reference is
+touched: of the 26 others, fifteen candidates are the committed file byte
+for byte, eight differ in the note's wording alone, and three, all running
+gx_detune_ (`electric_board.yaml`, and the two schema 1 `.v1-mono` files of
+electric_board and electric-octave-up), moved by at most 0.004 dB, inside
+their hand-set 0.01. **Not run here:** nulltest and the slow tests on this
+commit. *(2026-11-12)*
