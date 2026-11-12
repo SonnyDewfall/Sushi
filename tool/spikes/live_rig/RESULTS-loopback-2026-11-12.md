@@ -415,3 +415,20 @@ iD14, so PipeWire never writes `Speaker Playback Volume`; the control was set to
 
 Not yet tested: what the hardware control reads after a replug, now that
 PipeWire no longer sets it.
+
+### After a replug with the rule in place: the control comes back at -44 dB
+
+Replugged with `api.alsa.soft-mixer` set. `Speaker Playback Volume` read
+83,83,83,83 (-44 dB) and both layers were left-only again, right 42.7 dB under.
+PipeWire did not write it (the rule held: sink at 100%, control at 83). The
+value is the system's saved ALSA state: `/var/lib/alsa/asound.state` has
+`state.iD14` with `Speaker Playback Volume` at 83, and udev's
+`90-alsa-restore.rules` runs `alsactl restore` on every connect.
+
+Setting the control back to 127 gave stereo again at once. To make it stick,
+the saved state has to hold 127, which needs root:
+
+    sudo alsactl store
+
+(run while the control reads 127). The state is also stored at shutdown, so it
+would correct itself at the next clean shutdown with the control at 127.
