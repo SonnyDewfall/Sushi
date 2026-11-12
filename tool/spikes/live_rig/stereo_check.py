@@ -40,6 +40,7 @@ import math
 import os
 import pathlib
 import re
+import signal
 import subprocess
 import sys
 import tempfile
@@ -385,6 +386,8 @@ def cmd_tones(args):
     amp = 10 ** (args.level / 20.0) * 32767.0
     chunk = RATE // 10  # 100 ms holds a whole number of cycles of every pitch
     players = []
+    # A plain `kill` must stop the players too, not leave them sounding.
+    signal.signal(signal.SIGTERM, lambda *_: (_ for _ in ()).throw(KeyboardInterrupt()))
     try:
         for node, freqs in zip(TONE_NODES, TONE_SETS):
             each = amp / len(freqs)  # so the sum can never exceed the stated level
