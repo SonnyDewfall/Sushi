@@ -399,3 +399,19 @@ available to this session, so unbind/rebind was not tried.
 
 Not yet tested: the rig itself through the loop, and whether this is the whole
 of "sometimes no stereo when I start the rig".
+
+### The fix chosen: PipeWire does the volume in software
+
+`51-id14-soft-volume.conf` (this directory, installed to
+`~/.config/wireplumber/wireplumber.conf.d/`) sets `api.alsa.soft-mixer` on the
+iD14, so PipeWire never writes `Speaker Playback Volume`; the control was set to
+0 dB by hand. Default routing, no `idctl`, through PipeWire at -14 dBFS:
+
+| sink volume | hardware control | left | right | verdict |
+|---|---|---|---|---|
+| 18% | 127 (0 dB) | -96.5 | -95.1 | PASS |
+| 50% | 127 (0 dB) | -69.7 | -68.3 | PASS |
+| 100% | 127 (0 dB) | -51.6 | -50.3 | PASS |
+
+Not yet tested: what the hardware control reads after a replug, now that
+PipeWire no longer sets it.
