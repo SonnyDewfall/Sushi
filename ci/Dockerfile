@@ -52,6 +52,14 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
         # git: a save reports the rig file's own git state (save.file_git_state)
         # and its tests build a real repository; the rig is always a checkout.
         git \
+        # libatomic1: playwright's driver is a node binary carried in the wheel,
+        # and playwright 1.65.1's (node 26) links libatomic.so.1, which a bare
+        # ubuntu:24.04 does not have. `playwright install --with-deps` cannot
+        # bring it: it is that node that runs the install, and it died loading
+        # (2026-11-12, the first build to resolve 1.65.1; 1.64.1's node 24,
+        # on the build before, does not link it). ci.yml's runner image has
+        # the library, so the same playwright installed there without a word.
+        libatomic1 \
         ca-certificates \
     && rm -rf /var/lib/apt/lists/*
 

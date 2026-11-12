@@ -21,6 +21,7 @@ import json
 from pathlib import Path
 
 import pytest
+from rig_fixtures import FROZEN_MACHINE, frozen
 
 from sushi_rig import doctor
 from sushi_rig.doctor import FAULT, OK, UNCHECKED, Check, Environment
@@ -247,7 +248,7 @@ def test_an_unreadable_machine_file_does_not_cascade_into_the_clock_check():
 def test_the_rigs_own_machine_file_is_valid_and_names_its_interface():
     """Both halves at once: the file the rig actually ships passes, and what
     `interface_clients` reads off it is what the captured driver answers to."""
-    spec = MachineSpec.load(ROOT / "machines" / "sonny-dewfall-XPS-9320.yaml")
+    spec = MachineSpec.load(FROZEN_MACHINE)  # frozen beside the capture it is read against (rig_fixtures.py)
     assert spec.validate() == []
     assert doctor.interface_clients(spec.role_ports()) == CLIENTS
 
@@ -639,8 +640,8 @@ def test_one_odd_config_does_not_take_the_doctor_down(tmp_path, body):
 # The recorder's ports (2026-11-02: 11 checks passed while no take could start)
 # --------------------------------------------------------------------------- #
 
-GUITAR_VOCAL = ROOT / "config" / "rigs" / "guitar_vocal.yaml"
-THIS_MACHINE = ROOT / "machines" / "sonny-dewfall-XPS-9320.yaml"
+GUITAR_VOCAL = frozen("guitar_vocal")  # the rig as these tests know it (rig_fixtures.py)
+THIS_MACHINE = FROZEN_MACHINE
 
 
 def planned_stems():

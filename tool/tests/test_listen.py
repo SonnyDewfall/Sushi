@@ -6,6 +6,7 @@ import textwrap
 from pathlib import Path
 
 import pytest
+from rig_fixtures import frozen
 
 from sushi_rig.amp import AmpError
 from sushi_rig.listen import AMP_ADDRESS_PREFIX, amp_command, handle_move, handle_save, move_direction
@@ -192,10 +193,7 @@ def test_a_missing_elkpy_is_the_same_message_it_was_when_it_exited(tmp_path, rig
 def test_a_capture_of_a_different_rig_is_refused_not_written_into_a_rig_of_channels(tmp_path, fake_capture):
     """The autouse capture is of the v1 test rig (`comp` on `fx_track`); folded
     into guitar_vocal it would be a different rig under that name."""
-    from sushi_rig.paths import checkout_root
-
-    said = handle_save("riff", checkout_root() / "config" / "rigs" / "guitar_vocal.yaml",
-                       tmp_path, tmp_path / "archive")
+    said = handle_save("riff", frozen("guitar_vocal"), tmp_path, tmp_path / "archive")
     assert said.startswith("save failed: the capture names comp")
     assert not (tmp_path / "rigs" / "riff.yaml").exists()
 

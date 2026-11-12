@@ -21,7 +21,7 @@ import pytest
 np = pytest.importorskip("numpy")
 
 from sushi_rig import signals, take  # noqa: E402
-from sushi_rig.paths import checkout_root  # noqa: E402
+from rig_fixtures import frozen, frozen_v1  # noqa: E402
 from sushi_rig.take import DRY, PROCESSED, Stem  # noqa: E402
 from sushi_rig.transport import (  # noqa: E402
     NOT_MEASURED,
@@ -47,7 +47,7 @@ def plan(tmp_path, stems=None) -> TakePlan:
     ]
     return TakePlan(
         takes_dir=tmp_path,
-        config=json.loads((checkout_root() / "config" / "guitar_vocal.json").read_text()),
+        config=json.loads(frozen_v1("guitar_vocal").read_text()),
         config_source="config/guitar_vocal.json",
         stems=tuple(zip(stems, WIDTHS)),
         sample_rate=SR,
@@ -187,7 +187,7 @@ def test_a_take_from_a_v2_rig_carries_the_rig_and_the_library_through_the_transp
     """The plan carries them; the session hands them on; the folder has them."""
     import dataclasses
 
-    rig_text = (checkout_root() / "config" / "rigs" / "guitar_vocal.yaml").read_text()
+    rig_text = frozen("guitar_vocal").read_text()
     library = {"commit": "0123456789abcdef0123456789abcdef01234567", "dirty": True}
     with_rig = dataclasses.replace(plan(tmp_path), rig_text=rig_text, library=library)
     transport = Transport(TakeSession(with_rig, FakeEngine()))

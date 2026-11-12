@@ -139,15 +139,21 @@ def test_a_config_with_no_source_anywhere_gets_none_and_a_reason(tmp_path):
     assert resolve_rig_yaml(broken, root) is None
 
 
-def test_every_committed_config_has_a_source_to_save_from():
-    """guitar_vocal was the one that fell through to electric_board."""
-    from sushi_rig.paths import checkout_root
+def test_every_committed_config_has_a_source_to_save_from(frozen_root):
+    """guitar_vocal was the one that fell through to electric_board.
 
-    root = checkout_root()
-    for config in sorted((root / "config").glob("*.json")):
-        source = resolve_rig_yaml(config, root)
-        assert source is not None, (config.name, rig_source_problem(config, root))
-        assert (root / source).is_file()
+    The frozen v1 configs and config/src/ sources, beside the frozen rigs
+    (rig_fixtures.py). For most configs the source that describes them is the
+    rig of their name, and the one in config/rigs/ stops describing its
+    config the day a plugin is removed from it and saved: SAVE is then off
+    for that v1 config and says so, which is right, and is not this test's
+    to fail on."""
+    configs = sorted((frozen_root / "config").glob("*.json"))
+    assert len(configs) == 11
+    for config in configs:
+        source = resolve_rig_yaml(config, frozen_root)
+        assert source is not None, (config.name, rig_source_problem(config, frozen_root))
+        assert (frozen_root / source).is_file()
 
 
 def test_the_listener_is_started_without_a_rig_when_there_is_none(plan_args):
@@ -163,12 +169,14 @@ def test_the_listener_is_started_without_a_rig_when_there_is_none(plan_args):
 # --- v2 rigs: up --rig (#30's last slice) ------------------------------------
 
 
+from rig_fixtures import FROZEN_MACHINE  # noqa: E402
+
 ROOT = checkout_root()
 CAPTURED_DUMP = (Path(__file__).parent / "fixtures" / "pw-dump-rig.json").read_text()
-MACHINE = ROOT / "machines" / "sonny-dewfall-XPS-9320.yaml"
+MACHINE = FROZEN_MACHINE  # frozen beside the capture above (rig_fixtures.py)
 
 
-def test_a_v2_rig_is_compiled_and_wired_from_its_own_file(tmp_path):
+def test_a_v2_rig_is_compiled_and_wired_from_its_own_file(tmp_path, frozen_root):
     """The committed patchbay describes the v1 layout: on guitar_vocal it would
     feed the guitar into input 1, the vocal channel under v2, and wire the
     microphone to inputs 2/3, which v2 does not read. Read off the files on
@@ -177,7 +185,7 @@ def test_a_v2_rig_is_compiled_and_wired_from_its_own_file(tmp_path):
     real pw-dump capture."""
     from sushi_rig.patchbay import parse_patchbay
 
-    out = rig.prepare_rig("guitar_vocal", ROOT, tmp_path / "run",
+    out = rig.prepare_rig("guitar_vocal", frozen_root, tmp_path / "run",
                           machine_file=MACHINE, dump=CAPTURED_DUMP)
     assert out["source"] == "config/rigs/guitar_vocal.yaml"
     config = json.loads(out["config"].read_text())
@@ -283,14 +291,14 @@ def test_up_hands_the_supervisor_the_machine_file_the_rig_was_compiled_against(u
     assert seen[0].machine_file == MACHINE
 
 
-def test_a_rig_that_does_not_exist_is_refused_by_name(tmp_path):
+def test_a_rig_that_does_not_exist_is_refused_by_name(tmp_path, frozen_root):
     with pytest.raises(rig.RigError, match="no such rig"):
-        rig.prepare_rig("nope", ROOT, tmp_path, machine_file=MACHINE, dump=CAPTURED_DUMP)
+        rig.prepare_rig("nope", frozen_root, tmp_path, machine_file=MACHINE, dump=CAPTURED_DUMP)
 
 
-def test_a_rig_without_a_machine_file_is_refused_not_half_wired(tmp_path):
+def test_a_rig_without_a_machine_file_is_refused_not_half_wired(tmp_path, frozen_root):
     with pytest.raises(rig.RigError, match="machine file"):
-        rig.prepare_rig("guitar_vocal", ROOT, tmp_path,
+        rig.prepare_rig("guitar_vocal", frozen_root, tmp_path,
                         machine_file=tmp_path / "missing.yaml", dump=CAPTURED_DUMP)
 
 
@@ -358,12 +366,12 @@ def test_the_machine_file_is_recorded_as_an_absolute_path(tmp_path, monkeypatch)
     assert rig._machine_record(None) is None
 
 
-def test_a_v2_runs_artefacts_cannot_collide_with_the_state_file(tmp_path):
+def test_a_v2_runs_artefacts_cannot_collide_with_the_state_file(tmp_path, frozen_root):
     """The state file is runtime/rig.json, so a rig called `rig` compiled into
     the runtime root would overwrite it, or be overwritten by it."""
     from sushi_rig.paths import state_path
 
-    out = rig.prepare_rig("guitar_vocal", ROOT, tmp_path / "run",
+    out = rig.prepare_rig("guitar_vocal", frozen_root, tmp_path / "run",
                           machine_file=MACHINE, dump=CAPTURED_DUMP)
     assert out["config"].parent == tmp_path / "run" / "rigs"
     assert out["config"].name != state_path().name or out["config"].parent != tmp_path / "run"

@@ -342,7 +342,9 @@ def test_every_plugin_in_the_shipped_rig_is_config_drivable():
     sound. This is the invariant the rig's plugin set has to hold."""
     from sushi_rig.probe import probe
 
-    rig = json.loads((REPO / "config" / "electric_board.json").read_text())
+    from rig_fixtures import frozen_v1
+
+    rig = json.loads(frozen_v1("electric_board").read_text())
     uris = [p["uri"] for t in rig["tracks"] for p in t["plugins"]]
     assert uris, "electric_board declares no plugins"
     for uri in uris:

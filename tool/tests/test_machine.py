@@ -383,8 +383,8 @@ def test_rig_controller_is_one_helper_for_every_caller(tmp_path):
 
 
 def test_the_rig_machines_file_describes_the_mpd218():
-    from pathlib import Path
+    from rig_fixtures import FROZEN_MACHINE  # the file as it was when the MPD218 was measured
 
-    machine = MachineSpec.load(Path(__file__).parent.parent.parent / "machines" / "sonny-dewfall-XPS-9320.yaml")
+    machine = MachineSpec.load(FROZEN_MACHINE)
     assert machine.validate() == []
     assert machine.controller("mpd218")["controls"]["knob1"] == ("cc", 3)

@@ -1,34 +1,34 @@
 schema_version: 2
-config: electric-chorus-2
+config: hard-feelings-record.vocal
 stimulus: log_sweep 20-20000Hz 5s -20dBFS 2ch
 sample_rate: 48000
 frames: 240000
 measured:
-  peak_dbfs: -6.6692
-  rms_dbfs: -15.9566
+  peak_dbfs: -1.6895
+  rms_dbfs: -12.4961
   channel_rms_dbfs:
-  - -15.9482
-  - -15.965
+  - -12.4635
+  - -12.5289
   delay_samples: 0
   bands:
   - low_hz: 20.0
     high_hz: 80.0
-    level_dbfs: -36.7718
+    level_dbfs: -29.433
   - low_hz: 80.0
     high_hz: 250.0
-    level_dbfs: -25.8498
+    level_dbfs: -19.1538
   - low_hz: 250.0
     high_hz: 800.0
-    level_dbfs: -20.8394
+    level_dbfs: -16.0204
   - low_hz: 800.0
     high_hz: 2500.0
-    level_dbfs: -20.2186
+    level_dbfs: -17.2746
   - low_hz: 2500.0
     high_hz: 8000.0
-    level_dbfs: -25.2011
+    level_dbfs: -23.9742
   - low_hz: 8000.0
     high_hz: 20000.0
-    level_dbfs: -41.5049
+    level_dbfs: -41.4658
 tolerance:
   band_db: 0.0001
   level_db: 0.0001
