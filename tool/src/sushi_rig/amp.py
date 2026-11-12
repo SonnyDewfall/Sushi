@@ -363,9 +363,11 @@ def amp_patchbay(
                 port = out_port
                 break
     if port is None:
-        # The guitar's port does not feed Sushi at all, so there is nothing to
-        # put an amp in front of. Better an unchanged patchbay than a guessed
-        # one -- and `up` reports the amp as unwired rather than silently dry.
+        # Nothing feeds Sushi's first input, so there is nothing to put an amp
+        # in front of. Better an unchanged patchbay than a guessed one. The
+        # amp is then linked to nothing, and `prepare` says so
+        # (`unwired_amp`), as it does when a declared port feeds no Sushi
+        # input below: its warning is one of `up`'s.
         return base_xml
 
     # Every node the port is saved under, in file order and without duplicates.
@@ -397,6 +399,31 @@ def amp_patchbay(
         for node in nodes
     )
     return rewired.replace("</items>", feed + "</items>", 1)
+
+
+def unwired_amp(patchbay_xml: str) -> list[str]:
+    """Which of the amp's two sides a patchbay leaves unlinked: `[]` when it
+    is wired, else `into NAM:Input`, `out of NAM:Output` or both.
+
+    `amp_patchbay` hands the base back unchanged when it finds nothing to
+    rewire, and a patchbay with no link to or from the amp is a Carla that
+    runs the model while the guitar goes in dry, or nowhere: the rig looks
+    healthy and has no amp in it. That was silent until 2026-11-12, when a
+    run against `machines/loopback-test.yaml` came up that way. The check of
+    the loaded patchbay's links (`rig.link_problems`) cannot see it, since it
+    only looks for links the file asks for."""
+    import re
+
+    ports = re.findall(
+        r'<output node="[^"]*" port="([^"]*)"/>\s*<input node="[^"]*" port="([^"]*)"/>',
+        patchbay_xml,
+    )
+    missing = []
+    if not any(in_port == AMP_INPUT for _out, in_port in ports):
+        missing.append(f"into {AMP_INPUT}")
+    if not any(out_port == AMP_OUTPUT for out_port, _in in ports):
+        missing.append(f"out of {AMP_OUTPUT}")
+    return missing
 
 
 # --- reading a .nam model ---------------------------------------------------
@@ -533,10 +560,18 @@ def summarise_model(described: dict[str, Any], rig_rate: int = RIG_SAMPLE_RATE) 
     return "\n".join(lines)
 
 
-def guitar_port(root: Path) -> str | None:
+def guitar_port(root: Path, machine_file: Path | None = None) -> str | None:
     """The physical port the machine file gives the guitar, if it says.
 
-    None when there is no machine file for this host, or it names no guitar
+    `machine_file` is the one the run was compiled and wired against
+    (`up --rig --machine`); None means this host's. It has to be the run's:
+    the base patchbay was generated from that file, so the guitar's port in
+    any other file feeds nothing in it and `amp_patchbay` then returns the
+    base unchanged, the amp running with no link to or from it. Found on
+    2026-11-12 with `machines/loopback-test.yaml`, where this read the host's
+    file regardless and `rig-amp.qpwgraph` came out without NAM in it.
+
+    None when there is no machine file, or it names no guitar
     role — and then `amp_patchbay` falls back to its old positional rule. That
     fallback is said out loud rather than taken quietly: it is right for a
     single-channel rig and wrong the moment a second channel moves the guitar
@@ -545,7 +580,7 @@ def guitar_port(root: Path) -> str | None:
     from .machine import MachineError, MachineSpec, machine_path
     from .patchbay import GUITAR_ROLE
 
-    path = machine_path(Path(root))
+    path = Path(machine_file) if machine_file else machine_path(Path(root))
     if not path.is_file():
         print(
             f"warning: no machine file at {path.name}, so the amp is wired to "
@@ -583,7 +618,7 @@ def guitar_port(root: Path) -> str | None:
 
 def prepare(
     config: Path, root: Path, runtime: Path, override_model: str | None = None,
-    base: Path | None = None,
+    base: Path | None = None, machine_file: Path | None = None,
 ) -> dict[str, Any]:
     """Everything a run needs for the amp, written out and ready.
 
@@ -597,6 +632,11 @@ def prepare(
     Both files are generated per run rather than kept on disk. The Carla project
     has to be, since the model changes with the config; the patchbay has to be so
     it cannot drift from the saved one it is derived from.
+
+    `warnings` is what the caller must say: an amp that was asked for and that
+    the patchbay does not wire. Returned, not printed, so it goes out with the
+    start's other warnings (`rig.prepare_launch`'s `warn`): `up` prints them,
+    and the agent sends them back with the start's answer.
     """
     described = amp_from_config_file(config)
     if override_model and not described:
@@ -623,14 +663,39 @@ def prepare(
     # config, the one generated from the rig for a v2 rig (#30), which the
     # committed file would wire wrongly past one channel.
     patchbay = None
+    warnings: list[str] = []
     base = Path(base) if base is not None else Path(root) / "Patchbay" / "rig.qpwgraph"
     if base.is_file():
         patchbay = runtime / "rig-amp.qpwgraph"
-        patchbay.write_text(amp_patchbay(base.read_text(), guitar_port(Path(root))))
+        # `machine_file` is the run's, the one `base` was generated from.
+        port = guitar_port(Path(root), machine_file)
+        wired = amp_patchbay(base.read_text(), port)
+        patchbay.write_text(wired)
+        missing = unwired_amp(wired)
+        if missing:
+            why = (
+                f"the guitar's port, {port}, feeds no Sushi input in {base.name}"
+                if port is not None else f"nothing feeds Sushi's first input in {base.name}"
+            )
+            warnings.append(
+                f"THE AMP IS NOT WIRED: {patchbay.name} has no link "
+                + " and none ".join(missing)
+                + f", because {why}. Carla will run {model} with the guitar going "
+                "in dry or not at all, while everything looks healthy; check that "
+                "the machine file names the port the guitar is on and the patchbay "
+                "routes it into Sushi"
+            )
+    else:
+        warnings.append(
+            f"THE AMP IS NOT WIRED: there is no patchbay at {base} to wire it "
+            f"into, so nothing links the guitar to it. Carla will run {model} "
+            "with the guitar going in dry or not at all"
+        )
 
     return {
         "model": model,
         "values": dict(described.get("parameters") or {}),
         "project": project,
         "patchbay": patchbay,
+        "warnings": warnings,
     }

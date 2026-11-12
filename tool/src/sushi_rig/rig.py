@@ -1277,7 +1277,12 @@ def prepare_launch(
     if amp:
         from .amp import prepare as prepare_amp
 
-        prepared = prepare_amp(config, root, runtime_dir(), amp_model, base=rig_patchbay)
+        prepared = prepare_amp(config, root, runtime_dir(), amp_model, base=rig_patchbay,
+                               machine_file=rig_machine)
+        # An amp asked for and left unwired (`amp.unwired_amp`): said with the
+        # start's other warnings, so `up` prints it and the agent returns it.
+        for warning in prepared.get("warnings") or []:
+            warn(warning)
     amp_project = prepared.get("project")
     amp_patch = prepared.get("patchbay") or rig_patchbay
     amp_values = prepared.get("values", {})

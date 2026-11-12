@@ -1,0 +1,159 @@
+utc_time,step,control,action,value
+2026-11-04T22:26:25.1846755Z,1,panel,launch,
+2026-11-04T22:26:40.5281063Z,1,panel,settled,
+2026-11-04T22:27:50.0121154Z,2,main knob,begin,
+2026-11-04T22:27:50.0824143Z,2,main knob,start,value=-128 min=-128 max=0
+2026-11-04T22:27:51.3499479Z,2,main knob,set -128,read=-128
+2026-11-04T22:27:52.5594877Z,2,main knob,set -80,read=-80
+2026-11-04T22:27:53.7772610Z,2,main knob,set -60,read=-60
+2026-11-04T22:27:54.9980486Z,2,main knob,set -40,read=-40
+2026-11-04T22:27:56.2195131Z,2,main knob,set -30,read=-30
+2026-11-04T22:27:57.4313080Z,2,main knob,set -20,read=-20
+2026-11-04T22:27:58.6411107Z,2,main knob,set -10,read=-10
+2026-11-04T22:27:59.8674927Z,2,main knob,set -5,read=-5
+2026-11-04T22:28:01.0874371Z,2,main knob,set 0,read=0
+2026-11-04T22:28:01.9027053Z,2,main knob,restore -128,read=-128
+2026-11-04T22:28:06.9780977Z,4,speaker icon on,press,
+2026-11-04T22:28:08.9995464Z,4,speaker icon off,press,
+2026-11-04T22:28:14.0232399Z,4,headphone icon on,press,
+2026-11-04T22:28:16.0301623Z,4,headphone icon off,press,
+2026-11-04T22:28:21.0522343Z,5,mono on,press,
+2026-11-04T22:28:23.0621210Z,5,mono off,press,
+2026-11-04T22:28:28.0864342Z,5,polarity on,press,
+2026-11-04T22:28:30.0995091Z,5,polarity off,press,
+2026-11-04T22:28:35.1242671Z,6,talkback on,press,
+2026-11-04T22:28:37.1394566Z,6,talkback off,press,
+2026-11-04T22:28:42.1620824Z,7,DAW1 fader,start,value=0 min=-128 max=6
+2026-11-04T22:28:43.3782595Z,7,DAW1 fader,set 0,read=0
+2026-11-04T22:28:44.5910608Z,7,DAW1 fader,set -5,read=-5
+2026-11-04T22:28:45.8064325Z,7,DAW1 fader,set -10,read=-10
+2026-11-04T22:28:47.0192206Z,7,DAW1 fader,set -20,read=-20
+2026-11-04T22:28:48.2420690Z,7,DAW1 fader,set -40,read=-40
+2026-11-04T22:28:49.4530791Z,7,DAW1 fader,set -60,read=-60
+2026-11-04T22:28:50.6723198Z,7,DAW1 fader,set -128,read=-128
+2026-11-04T22:28:51.8866542Z,7,DAW1 fader,set 0,read=0
+2026-11-04T22:28:52.6920234Z,7,DAW1 fader,restore 0,read=0
+2026-11-04T22:28:57.7271286Z,7,DAW2 fader,start,value=0 min=-128 max=6
+2026-11-04T22:28:58.9355016Z,7,DAW2 fader,set 0,read=0
+2026-11-04T22:29:00.1492189Z,7,DAW2 fader,set -5,read=-5
+2026-11-04T22:29:01.3585992Z,7,DAW2 fader,set -10,read=-10
+2026-11-04T22:29:02.5731816Z,7,DAW2 fader,set -20,read=-20
+2026-11-04T22:29:03.7990336Z,7,DAW2 fader,set -40,read=-40
+2026-11-04T22:29:05.0121170Z,7,DAW2 fader,set -60,read=-60
+2026-11-04T22:29:06.2243446Z,7,DAW2 fader,set -128,read=-128
+2026-11-04T22:29:07.4349278Z,7,DAW2 fader,set 0,read=0
+2026-11-04T22:29:08.2530129Z,7,DAW2 fader,restore 0,read=0
+2026-11-04T22:29:13.2688917Z,8,DAW1 pan,start,value=0.5 min=0 max=1
+2026-11-04T22:29:14.4809647Z,8,DAW1 pan,set 0,read=0
+2026-11-04T22:29:15.6871464Z,8,DAW1 pan,set 0.25,read=0.25
+2026-11-04T22:29:16.8982195Z,8,DAW1 pan,set 0.75,read=0.75
+2026-11-04T22:29:18.1061824Z,8,DAW1 pan,set 1,read=1
+2026-11-04T22:29:19.3149578Z,8,DAW1 pan,set 0.5,read=0.5
+2026-11-04T22:29:20.1329990Z,8,DAW1 pan,restore 0.5,read=0.5
+2026-11-04T22:29:25.1493448Z,8,DAW2 pan,start,value=0.5 min=0 max=1
+2026-11-04T22:29:26.3550592Z,8,DAW2 pan,set 0,read=0
+2026-11-04T22:29:27.5701633Z,8,DAW2 pan,set 0.25,read=0.25
+2026-11-04T22:29:28.7834416Z,8,DAW2 pan,set 0.75,read=0.75
+2026-11-04T22:29:29.9987401Z,8,DAW2 pan,set 1,read=1
+2026-11-04T22:29:31.2099561Z,8,DAW2 pan,set 0.5,read=0.5
+2026-11-04T22:29:32.0268444Z,8,DAW2 pan,restore 0.5,read=0.5
+2026-11-04T22:29:37.0461603Z,10,DAW3 fader,start,value=-128 min=-128 max=6
+2026-11-04T22:29:38.2532494Z,10,DAW3 fader,set -60,read=-60
+2026-11-04T22:29:39.4656115Z,10,DAW3 fader,set -40,read=-40
+2026-11-04T22:29:40.6870019Z,10,DAW3 fader,set -20,read=-20
+2026-11-04T22:29:41.9045981Z,10,DAW3 fader,set -10,read=-10
+2026-11-04T22:29:43.1169491Z,10,DAW3 fader,set 0,read=0
+2026-11-04T22:29:44.3368075Z,10,DAW3 fader,set -128,read=-128
+2026-11-04T22:29:45.1500276Z,10,DAW3 fader,restore -128,read=-128
+2026-11-04T22:29:50.1676850Z,10,DAW3 pan,start,value=0.5 min=0 max=1
+2026-11-04T22:29:51.3815960Z,10,DAW3 pan,set 0,read=0
+2026-11-04T22:29:52.5945383Z,10,DAW3 pan,set 1,read=1
+2026-11-04T22:29:53.8049113Z,10,DAW3 pan,set 0.5,read=0.5
+2026-11-04T22:29:54.6239591Z,10,DAW3 pan,restore 0.5,read=0.5
+2026-11-04T22:29:59.6534194Z,10,DAW1 mute on,press,
+2026-11-04T22:30:01.6653191Z,10,DAW1 mute off,press,
+2026-11-04T22:30:06.6906390Z,9,DAW1+2 link on,press,
+2026-11-04T22:30:08.6985071Z,9,DAW1+2 link off,press,
+2026-11-04T22:30:13.9305103Z,12,dim knob,start,value=-20 min=-128 max=0
+2026-11-04T22:30:15.1528891Z,12,dim knob,set -60,read=-60
+2026-11-04T22:30:16.3657258Z,12,dim knob,set -40,read=-40
+2026-11-04T22:30:17.5754742Z,12,dim knob,set -30,read=-30
+2026-11-04T22:30:18.7887402Z,12,dim knob,set -20,read=-20
+2026-11-04T22:30:20.0008741Z,12,dim knob,set -10,read=-10
+2026-11-04T22:30:21.2118884Z,12,dim knob,set -5,read=-5
+2026-11-04T22:30:22.4268631Z,12,dim knob,set 0,read=0
+2026-11-04T22:30:23.2489402Z,12,dim knob,restore -20,read=-20
+2026-11-04T22:30:28.2682235Z,13,mono mode L,press,
+2026-11-04T22:30:33.2943293Z,13,mono mode R,press,
+2026-11-04T22:30:38.3061758Z,13,mono mode C,press,
+2026-11-04T22:30:43.3248171Z,14,main output -> cue,press,
+2026-11-04T22:30:48.3313743Z,14,main output -> daw,press,
+2026-11-04T22:30:53.3588886Z,14,main output -> main,press,
+2026-11-04T22:30:58.3934811Z,15,headphone output -> cue,press,
+2026-11-04T22:31:03.4269198Z,15,headphone output -> daw,press,
+2026-11-04T22:31:08.4486778Z,15,headphone output -> main,press,
+2026-11-04T22:31:13.4562434Z,99,sequence,end,
+2026-11-04T22:31:37.5378533Z,3,headphone icon test,press,
+2026-11-04T22:31:40.0522123Z,3,headphone icon test undo,press,
+2026-11-04T22:31:42.3164391Z,16,talkback tab open,press,
+2026-11-04T22:34:20.4228978Z,0,CORRECTION,note,rows at 22:31:37 22:31:40 and 22:31:42 did not happen (control not found); DAW presses at 22:30:48 and 22:31:03 only opened a warning dialog
+2026-11-04T22:34:22.2332531Z,14,loud dialog cancel,press,
+2026-11-04T22:34:25.1091046Z,3,headphone icon test,ERROR,control not found
+2026-11-04T22:34:27.4660348Z,3,headphone icon test undo,ERROR,control not found
+2026-11-04T22:34:29.6577986Z,16,talkback tab open,ERROR,control not found
+2026-11-04T22:34:45.6275944Z,14,loud dialog cancel,press,
+2026-11-04T22:34:48.6656215Z,3,headphone icon test,press,
+2026-11-04T22:34:50.9983989Z,3,headphone icon test undo,press,
+2026-11-04T22:34:53.4202319Z,16,talkback tab open,press,
+2026-11-04T22:35:35.0602231Z,16,talkback source internal,press,
+2026-11-04T22:35:40.2648748Z,16,talkback source external,press,
+2026-11-04T22:35:45.3464896Z,16,analogue outputs tab,press,
+2026-11-04T22:35:47.3621506Z,11,CUE A strip,mouse click,
+2026-11-04T22:36:15.7572776Z,11,cue master,start,value=-128 min=-128 max=0
+2026-11-04T22:36:16.9835908Z,11,cue master,set -60,read=-60
+2026-11-04T22:36:18.1951564Z,11,cue master,set -40,read=-40
+2026-11-04T22:36:19.4129202Z,11,cue master,set -20,read=-20
+2026-11-04T22:36:20.6272503Z,11,cue master,set -10,read=-10
+2026-11-04T22:36:21.8435261Z,11,cue master,set 0,read=0
+2026-11-04T22:36:22.6645939Z,11,cue master,restore -128,read=-128
+2026-11-04T22:36:28.0141068Z,11,DAW1 cue send,start,value=-128 min=-128 max=6
+2026-11-04T22:36:29.2315239Z,11,DAW1 cue send,set -60,read=-60
+2026-11-04T22:36:30.4478695Z,11,DAW1 cue send,set -40,read=-40
+2026-11-04T22:36:31.6600627Z,11,DAW1 cue send,set -20,read=-20
+2026-11-04T22:36:32.8758984Z,11,DAW1 cue send,set -10,read=-10
+2026-11-04T22:36:34.0903210Z,11,DAW1 cue send,set 0,read=0
+2026-11-04T22:36:34.9116009Z,11,DAW1 cue send,restore -128,read=-128
+2026-11-04T22:36:40.0526704Z,11,DAW2 cue send,start,value=-128 min=-128 max=6
+2026-11-04T22:36:41.2721621Z,11,DAW2 cue send,set -60,read=-60
+2026-11-04T22:36:42.4857254Z,11,DAW2 cue send,set -40,read=-40
+2026-11-04T22:36:43.7033521Z,11,DAW2 cue send,set -20,read=-20
+2026-11-04T22:36:44.9206811Z,11,DAW2 cue send,set -10,read=-10
+2026-11-04T22:36:46.1346381Z,11,DAW2 cue send,set 0,read=0
+2026-11-04T22:36:46.9575777Z,11,DAW2 cue send,restore -128,read=-128
+2026-11-04T22:36:52.0888630Z,11,DAW3 cue send,start,value=0 min=-128 max=6
+2026-11-04T22:36:53.3037727Z,11,DAW3 cue send,set -128,read=-128
+2026-11-04T22:36:54.5187940Z,11,DAW3 cue send,set -40,read=-40
+2026-11-04T22:36:55.7356097Z,11,DAW3 cue send,set -20,read=-20
+2026-11-04T22:36:56.9548102Z,11,DAW3 cue send,set -10,read=-10
+2026-11-04T22:36:57.7737228Z,11,DAW3 cue send,restore 0,read=0
+2026-11-04T22:37:02.9337260Z,11,DAW4 cue send,start,value=0 min=-128 max=6
+2026-11-04T22:37:04.1425060Z,11,DAW4 cue send,set -128,read=-128
+2026-11-04T22:37:05.3588165Z,11,DAW4 cue send,set -40,read=-40
+2026-11-04T22:37:06.5767522Z,11,DAW4 cue send,set -20,read=-20
+2026-11-04T22:37:07.7925360Z,11,DAW4 cue send,set -10,read=-10
+2026-11-04T22:37:08.6035716Z,11,DAW4 cue send,restore 0,read=0
+2026-11-04T22:37:13.7592807Z,11,DAW3 cue pan,start,value=0.5 min=0 max=1
+2026-11-04T22:37:14.9708479Z,11,DAW3 cue pan,set 0,read=0
+2026-11-04T22:37:16.1825302Z,11,DAW3 cue pan,set 1,read=1
+2026-11-04T22:37:17.0024042Z,11,DAW3 cue pan,restore 0.5,read=0.5
+2026-11-04T22:37:22.1404857Z,11,DAW4 cue pan,start,value=0.5 min=0 max=1
+2026-11-04T22:37:23.3484673Z,11,DAW4 cue pan,set 0,read=0
+2026-11-04T22:37:24.5664318Z,11,DAW4 cue pan,set 1,read=1
+2026-11-04T22:37:25.3873072Z,11,DAW4 cue pan,restore 0.5,read=0.5
+2026-11-04T22:37:30.4038894Z,11,MASTER MIX strip,mouse click,
+2026-11-04T22:38:34.2153764Z,14,main output -> daw,press,
+2026-11-04T22:38:35.3815156Z,14,loud dialog OK,press,
+2026-11-04T22:38:40.8963688Z,14,main output -> main,press,
+2026-11-04T22:38:46.3288490Z,15,headphone output -> daw,press,
+2026-11-04T22:38:47.4493746Z,15,loud dialog OK,press,
+2026-11-04T22:38:52.7409718Z,15,headphone output -> main,press,

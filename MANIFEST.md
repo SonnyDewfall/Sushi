@@ -3676,3 +3676,44 @@ gx_detune_ (`electric_board.yaml`, and the two schema 1 `.v1-mono` files of
 electric_board and electric-octave-up), moved by at most 0.004 dB, inside
 their hand-set 0.01. **Not run here:** nulltest and the slow tests on this
 commit. *(2026-11-12)*
+**The loopback test, answering review (PR #132).** `stereo_check.py rig`
+(tool/spikes/live_rig) had six findings against it, and one was against the
+shipped amp. (1) Its feedback guard looked only at what feeds Sushi's inputs
+directly, so the interface through the amp (`iD14 -> NAM -> sushi`) passed:
+`feedback` now walks back from every Sushi input through any node between and
+`rig` refuses, before linking and again after; a node with one name going in
+and another coming out is not seen through, so `rig` also refuses any node it
+does not know upstream of Sushi, and a `pw-link -l` that fails. (2) A PASS counted inputs heard
+without saying which, and the amp's products on the vocal's pitches counted
+as a vocal: `--inputs` names the rig's inputs, each must be heard on both
+sides equally, within 20 dB of the strongest and 10 dB above the level beside
+its own pitches, and one not named is reported and never counted; `--expect`
+is refused. The two pitch sets were chosen again so that no product of the
+guitar's below the 7th order falls on the vocal's, and none of the vocal's on
+the guitar's. (3) `rig` made the amp's links itself, ignored `pw-link`'s exit
+status and left its links in the rig: it now reads the patchbay the rig's
+qpwgraph loaded, makes only the tones' links that file asks for, fails an amp
+that is running and unwired by name, wires it by hand only under `--wire-amp`
+(and says so in the verdict), and removes every link it made in a `finally`.
+(4) `amp.prepare` wrote an unwired `rig-amp.qpwgraph` without a word: it now
+returns `warnings` (`amp.unwired_amp`) that `rig.prepare_launch` says with
+the start's others. (5) SIGTERM, SIGHUP and Ctrl-C now end every subcommand through
+its cleanup: felt only in the waits, noted anywhere else, so no cleanup is cut
+and a child or a link is on record before one is felt. (6) Noise alone can no longer be heard as an input. New:
+`tool/tests/test_stereo_check.py`, which loads the script by path and tests
+the walk, the plan, the verdict, the pitches and the cleanup against
+stand-ins for `pw-link` and `pw-record`. **Nothing here has been run against
+the interface, PipeWire or Sushi**; the results file has a dated note on the
+four logged verdicts this changes the reading of. Also:
+`tests/test_rigfile_master.py` names the machine file it means. *(2026-11-12)*
+
+**Removed: `idctl` and the iD14 routing-on-connect service**
+(`tool/spikes/live_rig/`: `idctl.c`, `id14_profile.*`, `idctl.mk`, the two
+`.expected` files, `85-id14-route.rules`, `id14-route@.service`,
+`id14-route-on-connect.sh`, their three tests, `ID14-AUTO-ROUTING-2026-11-04.md`
+and `BRIEF-auto-connect.md`). At Sonny's word: stereo and the headphones work
+without the routing since the volume fix of 12 Nov, and the routing bypasses the
+volume control (a tone came back 52 dB louder with it), so the connect service
+was a hazard to leave installable. The write-ups of the device's controls and
+every results file stay; the tool is at `b8192b7` in history, and the spike
+folder's README says so. *(2026-11-12)*

@@ -173,3 +173,19 @@ Write `tool/spikes/live_rig/RESULTS-<hostname>-<date>.md` containing:
 Commit it, along with the JSON reports and any screenshot, to
 `claude/laptop-tests`, and push. Then tell Sonny it is pushed.
 The cloud session reads it from there.
+
+## The iD14 routing tool, removed (12 Nov 2026)
+
+`idctl` (a C tool that wrote the iD14's internal routing) and the service that
+ran it on every connect were written here between 4 and 7 Nov and removed on
+12 Nov, at Sonny's word. They are not needed: the left-only fault was the
+interface's hardware volume control, fixed by `51-id14-soft-volume.conf` and a
+saved ALSA state (RESULTS-loopback-2026-11-12.md). The service must not be
+installed in any case: the routing it wrote bypasses the volume control, and a
+test tone came back 52 dB louder with it.
+
+What stays is the record of how the device's controls work
+(RESULTS-id14-windows-2026-11-04.md, RESULTS-id14-mixer-2026-11-03.md) and the
+results that used the tool. The tool itself is in this repository's history:
+`git show b8192b7:tool/spikes/live_rig/idctl.c`, with `id14_profile.c`,
+`idctl.mk`, the connect script and their tests beside it at that commit.

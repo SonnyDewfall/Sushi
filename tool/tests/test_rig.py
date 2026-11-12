@@ -337,12 +337,15 @@ def test_up_on_a_v2_rig_with_an_amp_wires_the_amp_into_the_generated_patchbay(up
     rewired = tmp_path / "rig-amp.qpwgraph"
     monkeypatch.setattr(rig, "prepare_rig", lambda name, root, runtime, **kw: {
         "config": compiled, "patchbay": wired, "source": "config/rigs/x.yaml", "warnings": [],
-        "machine": None,
+        "machine": tmp_path / "other-machine.yaml",
     })
     seen = {}
 
-    def fake_prepare_amp(config, root, runtime, override, base=None):
+    def fake_prepare_amp(config, root, runtime, override, base=None, machine_file=None):
         seen["base"] = base
+        # The run's machine file, not this host's: the patchbay in `base` was
+        # generated from it, and the amp is wired by the guitar's port in it.
+        assert machine_file == tmp_path / "other-machine.yaml"
         return {"model": "amp/models/M.nam", "values": {}, "project": tmp_path / "amp.carxp", "patchbay": rewired}
 
     monkeypatch.setattr("sushi_rig.amp.prepare", fake_prepare_amp)
@@ -355,6 +358,24 @@ def test_up_on_a_v2_rig_with_an_amp_wires_the_amp_into_the_generated_patchbay(up
     up_world.say("READY", then_write=running_state(config_name="x", rig="config/rigs/x.yaml"))
     assert rig.up("x", headless=True, amp=True, rig=True) == 0
     assert seen == {"base": wired, "patchbay": rewired}
+
+
+def test_up_says_an_amp_that_is_not_wired(up_world, monkeypatch, tmp_path, capsys):
+    """`amp.prepare`'s warnings go out as the start's own: printed by `up`,
+    and handed to `warn` for the agent, which returns them with its answer."""
+    def unwired(config, root, runtime, override, base=None, machine_file=None):
+        return {"model": "amp/models/M.nam", "values": {}, "project": tmp_path / "amp.carxp",
+                "patchbay": None, "warnings": ["THE AMP IS NOT WIRED: rig-amp.qpwgraph has no link"]}
+
+    monkeypatch.setattr("sushi_rig.amp.prepare", unwired)
+    monkeypatch.setattr(rig, "plan_children", lambda root, config, rig_yaml, **kw: [])
+    up_world.say("READY", then_write=running_state())
+    assert rig.up(headless=True, amp=True) == 0
+    assert "warning: THE AMP IS NOT WIRED: rig-amp.qpwgraph has no link" in capsys.readouterr().err
+
+    heard = []
+    rig.prepare_launch(headless=True, amp=True, warn=heard.append)
+    assert heard == ["THE AMP IS NOT WIRED: rig-amp.qpwgraph has no link"]
 
 
 def test_the_machine_file_is_recorded_as_an_absolute_path(tmp_path, monkeypatch):
