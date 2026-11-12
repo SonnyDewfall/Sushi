@@ -584,6 +584,61 @@ def test_preparing_writes_a_project_and_a_patchbay(tmp_path):
     assert out["values"] == {"Input Lvl": 3.0}
 
 
+def test_an_amp_the_patchbay_does_not_wire_is_said_and_a_wired_one_is_not(tmp_path, monkeypatch):
+    """`amp_patchbay` hands the base back unchanged when the guitar's port
+    feeds no Sushi input in it, and `prepare` wrote that as `rig-amp.qpwgraph`
+    without a word: Carla ran the model and the guitar went in dry. The
+    comment in `amp_patchbay` said `up` reports the amp as unwired; nothing
+    did. Now `prepare` returns the warning, for `rig.prepare_launch` to say
+    with the start's others."""
+    from sushi_rig.amp import prepare, unwired_amp
+
+    root = _rig_tree(tmp_path)
+    (root / "machines").mkdir()
+    machine = root / "machines" / "testhost.yaml"
+    monkeypatch.setattr("socket.gethostname", lambda: "testhost")
+    config = root / "c.json"
+    config.write_text(json.dumps({"_amp": {"model": "amp/models/M.nam", "parameters": {}}}))
+
+    # The guitar on a port the patchbay does not route: nothing to rewire.
+    machine.write_text(
+        "schema_version: 1\nroles:\n  guitar-in:\n"
+        "    ports: ['iface:capture_AUX9']\n    mono_to_stereo: true\n"
+    )
+    out = prepare(config, root, root / "run")
+    assert out["patchbay"].read_text() == BASE_PATCHBAY, "the base, unchanged: no NAM in it"
+    (warning,) = out["warnings"]
+    assert warning.startswith("THE AMP IS NOT WIRED: rig-amp.qpwgraph has no link "
+                              "into NAM:Input and none out of NAM:Output")
+    assert "iface:capture_AUX9, feeds no Sushi input in rig.qpwgraph" in warning
+    assert "amp/models/M.nam" in warning and "dry" in warning
+
+    # The same rig with the guitar where the patchbay has it: wired, and quiet.
+    machine.write_text(
+        "schema_version: 1\nroles:\n  guitar-in:\n"
+        "    ports: ['iface:capture_AUX0']\n    mono_to_stereo: true\n"
+    )
+    out = prepare(config, root, root / "run")
+    assert unwired_amp(out["patchbay"].read_text()) == []
+    assert out["warnings"] == []
+
+    # No patchbay to wire it into at all is the same amp, linked to nothing.
+    (root / "Patchbay" / "rig.qpwgraph").unlink()
+    out = prepare(config, root, root / "run")
+    assert out["patchbay"] is None
+    assert out["warnings"][0].startswith("THE AMP IS NOT WIRED: there is no patchbay at")
+
+
+def test_each_side_of_the_amp_left_unlinked_is_named():
+    from sushi_rig.amp import amp_patchbay, unwired_amp
+
+    assert unwired_amp(BASE_PATCHBAY) == ["into NAM:Input", "out of NAM:Output"]
+    wired = amp_patchbay(BASE_PATCHBAY)
+    assert unwired_amp(wired) == []
+    fed_only = "\n".join(line for line in wired.splitlines() if 'port="NAM:Output"' not in line)
+    assert unwired_amp(fed_only) == ["out of NAM:Output"]
+
+
 def test_an_override_model_wins_over_the_config(tmp_path):
     """--amp-model is for auditioning without editing the config."""
     from sushi_rig.amp import prepare

@@ -10,7 +10,11 @@
 #
 #     python3 -I tool/spikes/live_rig/stereo_check.py tones &
 #     sushi-rig up --rig guitar_vocal --machine machines/loopback-test.yaml --direct --headless --no-tuner --no-amp
-#     python3 -I tool/spikes/live_rig/stereo_check.py rig --label "what this run is"
+#     python3 -I tool/spikes/live_rig/stereo_check.py rig --inputs guitar,vocal --label "what this run is"
+#
+# `--inputs` names the inputs the rig has (`guitar` alone for a one-channel
+# rig); `rig` links the tones as the rig's own patchbay asks and removes those
+# links when it ends.
 #
 # Not a machine: never the default for any hostname.
 schema_version: 1

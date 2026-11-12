@@ -352,6 +352,24 @@ def test_up_on_a_v2_rig_with_an_amp_wires_the_amp_into_the_generated_patchbay(up
     assert seen == {"base": wired, "patchbay": rewired}
 
 
+def test_up_says_an_amp_that_is_not_wired(up_world, monkeypatch, tmp_path, capsys):
+    """`amp.prepare`'s warnings go out as the start's own: printed by `up`,
+    and handed to `warn` for the agent, which returns them with its answer."""
+    def unwired(config, root, runtime, override, base=None, machine_file=None):
+        return {"model": "amp/models/M.nam", "values": {}, "project": tmp_path / "amp.carxp",
+                "patchbay": None, "warnings": ["THE AMP IS NOT WIRED: rig-amp.qpwgraph has no link"]}
+
+    monkeypatch.setattr("sushi_rig.amp.prepare", unwired)
+    monkeypatch.setattr(rig, "plan_children", lambda root, config, rig_yaml, **kw: [])
+    up_world.say("READY", then_write=running_state())
+    assert rig.up(headless=True, amp=True) == 0
+    assert "warning: THE AMP IS NOT WIRED: rig-amp.qpwgraph has no link" in capsys.readouterr().err
+
+    heard = []
+    rig.prepare_launch(headless=True, amp=True, warn=heard.append)
+    assert heard == ["THE AMP IS NOT WIRED: rig-amp.qpwgraph has no link"]
+
+
 def test_the_machine_file_is_recorded_as_an_absolute_path(tmp_path, monkeypatch):
     """The listener resolves it from its own directory, which is not where
     `up` was run: a relative path would fail every SAVE check."""

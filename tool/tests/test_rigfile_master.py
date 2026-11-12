@@ -52,18 +52,24 @@ def test_every_committed_rig_compiles_as_before_with_no_master_level(path):
     assert emit_rig(parse_rig(unity), controller=_controller(rig)) == config
 
 
+# The machine the committed rigs are played on. Named, not found by a glob of
+# machines/: `loopback-test.yaml` sorts before it and carries a copy of this
+# file's controllers, so a glob would compile a rig's MIDI map against a file
+# that is no machine at all.
+MACHINE = ROOT / "machines" / "sonny-dewfall-XPS-9320.yaml"
+
+
 def _controller(rig):
-    """The controller a rig's MIDI map names, from a committed machine file
-    that describes it; None for a rig with no map (all of them, today)."""
+    """The controller a rig's MIDI map names, from the real machine's file;
+    None for a rig with no map (all of them, today)."""
     if rig.midi is None:
         return None
     from sushi_rig.machine import MachineSpec
 
-    for machine in sorted((ROOT / "machines").glob("*.yaml")):
-        spec = MachineSpec.load(machine)
-        if rig.midi.controller in (spec.controllers or {}):
-            return spec.controller(rig.midi.controller)
-    raise AssertionError(f"no committed machine file describes {rig.midi.controller}")
+    spec = MachineSpec.load(MACHINE)
+    if rig.midi.controller not in (spec.controllers or {}):
+        raise AssertionError(f"{MACHINE.name} does not describe {rig.midi.controller}")
+    return spec.controller(rig.midi.controller)
 
 
 def test_a_master_level_compiles_to_the_master_tracks_gain_as_a_channels_to_its_send():

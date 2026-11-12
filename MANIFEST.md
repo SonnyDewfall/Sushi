@@ -3469,3 +3469,31 @@ chains; the phone rule is restated after it, the header's master shrinks at
 phone width, and paths in problems and code wrap. The phone test now also
 checks each column is the phone's width and nothing is wider, with the
 page's fonts and a wider fallback. *(2026-11-07)*
+
+**The loopback test, answering review (PR #132).** `stereo_check.py rig`
+(tool/spikes/live_rig) had six findings against it, and one was against the
+shipped amp. (1) Its feedback guard looked only at what feeds Sushi's inputs
+directly, so the interface through the amp (`iD14 -> NAM -> sushi`) passed:
+`feedback` now walks back from every Sushi input through any node between and
+`rig` refuses, before linking and again after. (2) A PASS counted inputs heard
+without saying which, and the amp's products on the vocal's pitches counted
+as a vocal: `--inputs` names the rig's inputs, each must be heard on both
+sides equally, within 20 dB of the strongest and 10 dB above the level beside
+its own pitches, and one not named is reported and never counted; `--expect`
+is refused. The two pitch sets were chosen again so that no product of the
+guitar's below the 7th order falls on the vocal's, and none of the vocal's on
+the guitar's. (3) `rig` made the amp's links itself, ignored `pw-link`'s exit
+status and left its links in the rig: it now reads the patchbay the rig's
+qpwgraph loaded, makes only the tones' links that file asks for, fails an amp
+that is running and unwired by name, wires it by hand only under `--wire-amp`
+(and says so in the verdict), and removes every link it made in a `finally`.
+(4) `amp.prepare` wrote an unwired `rig-amp.qpwgraph` without a word: it now
+returns `warnings` (`amp.unwired_amp`) that `rig.prepare_launch` says with
+the start's others. (5) SIGTERM and SIGHUP now end every subcommand through
+its cleanup. (6) Noise alone can no longer be heard as an input. New:
+`tool/tests/test_stereo_check.py`, which loads the script by path and tests
+the walk, the plan, the verdict, the pitches and the cleanup against
+stand-ins for `pw-link` and `pw-record`. **Nothing here has been run against
+the interface, PipeWire or Sushi**; the results file has a dated note on the
+four logged verdicts this changes the reading of. Also:
+`tests/test_rigfile_master.py` names the machine file it means. *(2026-11-12)*

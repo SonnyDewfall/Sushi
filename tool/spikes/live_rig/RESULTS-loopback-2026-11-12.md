@@ -542,3 +542,34 @@ passes the one the rig was compiled against. Started again with
 `NAM:Output -> sushi:audio_input_0`, and qpwgraph made the second of those
 itself before the test touched anything. Through the loop: guitar +0.3 dB left
 minus right, PASS. `tests/test_amp.py` and `tests/test_rig.py` cover it.
+
+## Note added later on 12 Nov 2026, after review: how to read four logged verdicts
+
+Nothing above and nothing in `stereo-check-log.jsonl` has been changed. This is
+about what four of its lines mean.
+
+**Lines 71, 75, 77 and 83 of the log** (`rig`, at 18:18:32, 18:19:39, 18:20:02
+and 18:43:23: the four runs of one-channel electric-clean with the amp) say
+"PASS: 2 rig input(s), each on both sides equally". **It is one input.** The
+second is the amp's distortion of the guitar's pitches landing on the vocal's
+(2 × 310 − 190 = 430 Hz, and five more of the eight), at -90 to -93 dBFS, 28 to
+29 dB under the guitar. There was no vocal channel in that rig. The paragraph
+under the table in "The agent's routes, the amp, and a second qpwgraph" says so
+already; the verdict lines themselves do not. The guitar's left-minus-right in
+those lines stands.
+
+**The same four PASSes say nothing about whether the rig wired its own amp.**
+`rig` made the amp's two links itself whenever `NAM:Input` was in the graph.
+Lines 71, 75 and 77 were measured before the machine-file fix, with no link to
+or from `NAM` in `rig-amp.qpwgraph`: they are a PASS of an amp wired by the
+test. Line 83 is after the fix, and the text above records that qpwgraph had
+made `NAM:Output -> sushi:audio_input_0` before the test touched anything, but
+the verdict would have read the same had it not.
+
+`stereo_check.py rig` was changed after the review so that neither can happen
+again: the caller names the rig's inputs (`--inputs`), an input not named is
+never counted, and the amp's links are made only when `--wire-amp` asks, with
+the verdict then saying so. The two sets of pitches were changed as well (the
+tool says why), so levels in the lines above are not pitch for pitch what a
+run from here on reads; such runs carry `expected` and `pitches_hz` in the
+log. **None of the changed tool has been run on the interface yet.**
