@@ -11,12 +11,19 @@ player and the recorder.
     stereo_check.py iface   # layer 1: the iD14 alone, ALSA direct, no PipeWire
     stereo_check.py pw      # layer 2: the same tones through PipeWire's sink
     stereo_check.py links   # layer 3: what Sushi's outputs are linked to
+    stereo_check.py tones   # layer 3: a tone per rig input, left running
+    stereo_check.py rig     # layer 3: links, then the running rig through the loop
     stereo_check.py log     # every run so far, one line each
 
 Give a run a `--label` saying what state the rig was in ("fresh replug",
 "after idctl apply daw"). Each run is appended to stereo-check-log.jsonl beside
 this file, so states can be compared afterwards. Exit status is 0 only for
 PASS.
+
+`rig` needs the rig started with machines/loopback-test.yaml, whose inputs are
+the two `tones` streams (eight pitches each, none shared) and not the interface's
+inputs. A mono source through a stereo rig should come back on both inputs at
+the same level; `rig` passes when every pitch it hears does.
 
 `iface` and `pw` refuse to run while Sushi is up: with the outputs cabled into
 the inputs, the rig's own guitar input is the loop's return, and a tone would
@@ -163,7 +170,8 @@ def run(cmd, **kw):
 
 
 def sushi_pids():
-    out = run(["pgrep", "-x", "sushi"]).stdout.split()
+    """Sushi's pids. It runs as `sushi.bin` from the AppImage, or as `sushi`."""
+    out = run(["pgrep", "-x", "sushi|sushi\\.bin"]).stdout.split()
     return [int(p) for p in out]
 
 
@@ -355,6 +363,123 @@ def cmd_links(args):
     return 0 if verdict.startswith("PASS") else 1
 
 
+TONE_NODES = ["stereo-check-guitar", "stereo-check-vocal"]
+# Eight pitches per rig input, spread over five octaves, no two shared, all
+# multiples of 10 Hz. One steady pitch is not a fair test of a stereo reverb:
+# its two sides differ at any single frequency by design (measured 2026-11-12,
+# MVerb alone: 17 dB apart at 310 Hz). Summed over a spread they should agree,
+# as the offline sweep in tests/test_stereo.py finds they do.
+TONE_SETS = [
+    [110.0, 190.0, 310.0, 530.0, 890.0, 1490.0, 2510.0, 4210.0],
+    [130.0, 230.0, 430.0, 710.0, 1130.0, 1870.0, 3070.0, 5090.0],
+]
+
+
+def set_level(xs, freqs, rate):
+    """dBFS of a set of pitches together: their powers summed."""
+    return round(db(math.sqrt(sum((10 ** (tone_level(xs, f, rate) / 20.0)) ** 2 for f in freqs))), 1)
+
+
+def cmd_tones(args):
+    """One endless tone per rig input, linked to nothing until the rig's patchbay links it."""
+    amp = 10 ** (args.level / 20.0) * 32767.0
+    chunk = RATE // 10  # 100 ms holds a whole number of cycles of every pitch
+    players = []
+    try:
+        for node, freqs in zip(TONE_NODES, TONE_SETS):
+            each = amp / len(freqs)  # so the sum can never exceed the stated level
+            block = array.array("h", (int(round(sum(each * math.sin(2 * math.pi * f * n / RATE + i)
+                                                    for i, f in enumerate(freqs))))
+                                      for n in range(chunk))).tobytes()
+            props = f"{{ node.name={node} node.description={node} node.autoconnect=false }}"
+            proc = subprocess.Popen(
+                ["pw-cat", "-p", "--raw", "--target", "0", "--format", "s16", "--rate", str(RATE),
+                 "--channels", "1", "-P", props, "-"], stdin=subprocess.PIPE)
+            players.append((proc, block))
+            print(f"{node}: {len(freqs)} pitches, {freqs[0]:.0f} to {freqs[-1]:.0f} Hz, "
+                  f"peak under {args.level:.0f} dBFS, pid {proc.pid}", flush=True)
+        while all(p.poll() is None for p, _ in players):
+            for proc, block in players:
+                proc.stdin.write(block)  # blocks when the pipe is full: pw-cat sets the pace
+                proc.stdin.flush()
+    except (KeyboardInterrupt, BrokenPipeError):
+        pass
+    finally:
+        for proc, _ in players:
+            if proc.poll() is None:
+                proc.terminate()
+    return 0
+
+
+def judge_rig(matrix, expect, tolerance_db):
+    """Each rig input's pitch should be on both interface inputs, equally."""
+    loudest = max(max(row) for row in matrix)
+    limit = max(loudest - PRESENT_BELOW_LOUDEST_DB, FLOOR_DBFS)
+    lines, bad, heard = [], [], 0
+    for t, node in enumerate(TONE_NODES):
+        left, right = matrix[0][t], matrix[1][t]
+        name = node.split("-")[-1]
+        if left < limit and right < limit:
+            lines.append(f"{name}: not heard on either side")
+            continue
+        heard += 1
+        lines.append(f"{name}: left {left:.1f} dBFS, right {right:.1f} dBFS, left minus right {left - right:+.1f} dB")
+        if left < limit or right < limit:
+            bad.append(f"{name} is on the {'left' if right < limit else 'right'} only")
+        elif abs(left - right) > tolerance_db:
+            bad.append(f"{name} is unbalanced by {left - right:+.1f} dB")
+    if heard < expect:
+        bad.append(f"heard {heard} of the {expect} rig inputs expected")
+    verdict = "FAIL: " + "; ".join(bad) if bad else f"PASS: {heard} rig input(s), each on both sides equally"
+    return verdict, lines
+
+
+def cmd_rig(args):
+    """The running rig through the loop: its links, then what comes back on each input."""
+    if not sushi_pids():
+        print("rig: FAIL: Sushi is not running")
+        save({"layer": "rig", "label": args.label, "verdict": "FAIL: Sushi is not running"})
+        return 1
+    ports = parse_links(run(["pw-link", "-l"]).stdout)
+    feedback = [f"{p} <- {src}" for p, l in ports.items() if re.match(r"(?i)sushi[^:]*:audio_input_", p)
+                for src in l["from"] if ID14 in src]
+    if feedback:
+        sys.exit("STOP: the interface's inputs feed Sushi, which with the loop cabled is a\n"
+                 "feedback path. Stop the rig. " + "; ".join(feedback))
+    # qpwgraph does not make the tones' links (it warns so at `up`: it does not
+    # match a stream node by the name the patchbay gives it), so they are made
+    # here, each tone to the engine input its channel reads. Sushi's outputs,
+    # which are what is under test, are left exactly as the rig wired them.
+    inputs = run(["pw-link", "-i"]).stdout.split()  # -l lists only ports that are linked
+    for n, node in enumerate(TONE_NODES):
+        if f"sushi:audio_input_{n}" in inputs:
+            run(["pw-link", f"{node}:output_MONO", f"sushi:audio_input_{n}"])
+    time.sleep(1.0)
+    links_status = cmd_links(args)
+    source = pw_nodes().get("Audio/Source")
+    if not source:
+        sys.exit("PipeWire has no iD14 source")
+    with tempfile.TemporaryDirectory() as d:
+        back = os.path.join(d, "back.wav")
+        rec = subprocess.Popen(
+            ["pw-record", "--target", source["name"], "--rate", str(RATE), "--format", "s32",
+             "--channels", "2", "--channel-map", ",".join(source["position"][:2]), back],
+            stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+        time.sleep(args.seconds + 0.5)
+        rec.terminate()
+        rec.wait(timeout=5)
+        chans, rate = read_wav(back)
+        matrix = [[set_level(chans[i], freqs, rate) for freqs in TONE_SETS] for i in (0, 1)]
+    verdict, lines = judge_rig(matrix, args.expect, args.tolerance)
+    for line in lines:
+        print("  " + line)
+    if links_status and verdict.startswith("PASS"):
+        verdict = "FAIL: the sound is balanced but the links are not as expected (see links)"
+    print(f"\n  rig: {verdict}\n")
+    save({"layer": "rig", "label": args.label, "verdict": verdict, "matrix_dbfs": matrix})
+    return 0 if verdict.startswith("PASS") else 1
+
+
 def cmd_log(args):
     if not LOG.exists():
         print("no runs yet")
@@ -381,6 +506,17 @@ def main():
     s.add_argument("--label", default="")
     s.add_argument("--file", help="read a saved `pw-link -l` instead of the live graph")
     s.set_defaults(fn=cmd_links)
+    s = sub.add_parser("tones", help=cmd_tones.__doc__)
+    s.add_argument("--level", type=float, default=-20.0, help="tone level, dBFS [-20]")
+    s.set_defaults(fn=cmd_tones)
+    s = sub.add_parser("rig", help=cmd_rig.__doc__)
+    s.add_argument("--label", default="")
+    s.add_argument("--file", help=argparse.SUPPRESS)
+    s.add_argument("--expect", type=int, default=1, help="how many rig inputs should be heard [1]")
+    s.add_argument("--seconds", type=float, default=3.0, help="how long to listen [3]")
+    s.add_argument("--tolerance", type=float, default=2.5,
+                   help="left/right difference that still passes, dB [2.5; the bare loop is 1.3]")
+    s.set_defaults(fn=cmd_rig)
     sub.add_parser("log", help="every run so far").set_defaults(fn=cmd_log)
     args = p.parse_args()
     if getattr(args, "level", -40) > -12:

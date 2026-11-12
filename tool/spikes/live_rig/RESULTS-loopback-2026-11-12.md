@@ -448,3 +448,43 @@ So the interface's stereo now rests on two things on this laptop: the
 WirePlumber rule (PipeWire never writes the control) and the saved ALSA state
 (the control restored at 0 dB on connect). Neither is in the repository's
 power to install; both are written down in `51-id14-soft-volume.conf`.
+
+## The rig itself through the loop (Q1, Q2)
+
+Started with `machines/loopback-test.yaml`, whose guitar and vocal inputs are
+two generated signals (`stereo_check.py tones`), not the interface's inputs, so
+the loop cannot feed the rig. `stereo_check.py rig` checks Sushi's links, then
+records the interface's two inputs. All `--direct --headless --no-tuner
+--no-amp`, default routing, software volume at 100%.
+
+| Run | Links | Guitar L−R | Vocal L−R | Verdict |
+|---|---|---|---|---|
+| guitar_vocal, first start | FL, FR | -0.5 dB | -0.9 dB | PASS |
+| guitar_vocal, `restart` ×4 | FL, FR each time | -0.5 to -0.6 | -0.9 to -1.0 | PASS ×4 |
+| electric-clean, cold start ×3 | FL, FR each time | +0.3 | (one channel) | PASS ×3 |
+| guitar_vocal, cold start after electric-clean ×3 | FL, FR each time | -0.4 to -0.5 | -0.9 to -1.0 | PASS ×3 |
+
+The bare loop is -1.3 dB left minus right, so the rig is balanced to within a
+decibel of the cables. Stereo was not lost once in eleven starts.
+
+Each plugin of guitar_vocal's two chains alone on a channel, and an empty
+chain, also came back within 0.1 dB of the bare loop, MaGigaverb within 1.2:
+the copy to stereo after a one-output plugin does its job in the live engine,
+and a mono input does reach both halves of its channel.
+
+**A trap, recorded so it is not fallen into again.** The first version of this
+test sent one steady pitch per input and read guitar_vocal as 5.6 dB (guitar)
+and 15.4 dB (vocal) left-heavy, inside Sushi, with correct links. One plugin at
+a time put it on MVerb (17 dB) and a-reverb (6 dB). It was the stimulus: a
+stereo reverb's two sides differ at any single frequency. With eight pitches
+per input spread over five octaves, the same plugins and the same rig are
+balanced, which is what the offline sweep in `tests/test_stereo.py` finds.
+The single-pitch rows are still in the log, labelled without "8 pitches".
+
+Two things about the test rather than the rig: qpwgraph does not make the
+patchbay's links from the tone streams (`up` warns of 2 links not made), so
+`rig` makes those two itself with `pw-link`; and Sushi runs as `sushi.bin`.
+
+Not covered: starting through the agent and the web UI, the amp (Carla) in the
+path, a second qpwgraph open on the desktop, and the real machine file's
+inputs.
