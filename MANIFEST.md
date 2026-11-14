@@ -3717,3 +3717,50 @@ volume control (a tone came back 52 dB louder with it), so the connect service
 was a hazard to leave installable. The write-ups of the device's controls and
 every results file stay; the tool is at `b8192b7` in history, and the spike
 folder's README says so. *(2026-11-12)*
+
+**The documentation, restructured: a front page, user guides, reference and
+design.** At Sonny's word ("easy to read user guides for each of our
+experiences"). `README.md` was 1,979 lines, about 1,000 of them one section;
+it is now a front page of about a hundred: what the rig is, what it needs, how
+to start it, and links. **`docs/guide/`**: nine guides and an index, one for
+each thing a player does (getting started, playing live, shaping a sound,
+mixing, saving and going back, building a rig, recording, the audio interface,
+when something's wrong), written for a musician and not a programmer, every
+button and label taken from `app.js` and `rig.js` as master has them and
+checked against the page; seven screenshots in `img/`, of the real page over
+`ui_fake.py`, made by `tool/tests/guide_shots.py`. **`docs/reference/`**: the
+README's detail, moved by section and not rewritten (the rig file, the machine
+file, the commands, the agent, the web UI, MIDI, takes, plugins, the
+environment, tests and CI, the v1 workflow, the layout). **`docs/design/`**:
+the problem and the decision, the principles, v2, what the project owns, and
+`IMPLEMENTATION_BRIEF.md`, moved there. This file stays where it is. **Stale
+facts corrected on the way**, each against the code or an entry above: the
+capture engine "has not been run against a live PipeWire" (the take of
+2026-11-06); the web UI, the agent's `up`, the live switch, the amp and Save
+"not run" on the rig (RESULTS-ui-2026-11-02 ran them); "none of this has been
+heard on the rig" of the copy to stereo and "a two-channel rig has not been"
+(the loopback of 2026-11-12 measured both); rigs of channels "not yet what
+`up` runs", and each tone "held together" with its v1 config by CI (not since
+the frozen fixtures); the rig picker in "the rack's left column" (the right,
+since the desk layout); the machine file's example monitors on
+`playback_AUX0/1` (the rig's are `playback_FL/FR`); a take's folder shown
+without `master.wav`; "45 modules" (47: `saves`, `rigedit`); `start_qpwgraph`
+"in `rig.py`" (`qpwgraph.py`); "nothing in the code calls `SaveSession`"
+(`live.read_live_plugins` does, to learn which plugin a processor is); "v1
+gets tagged" (it is: `v1.0`, `v1.1`); and the Open Stage Control panel as how
+parameters are tweaked (the web UI is; the panel is the v1 workflow's page
+now). History the entries above already hold was cut from the reference
+pages; history they do not hold was kept. Pointers that named a README
+section or the brief (code messages, docstrings, the CI files, the unit's
+`Documentation=`, `.gitignore`) name where the text now lives; the spikes and
+the entries above are dated records and were left. New:
+`tool/tests/test_docs.py`, in the fast suite: every relative link and image in
+`README.md` and under `docs/` leads to a file that exists, a link to a heading
+names one the page has, every image has alt text, the front page links to
+every guide and reference page, and the README stays under 200 lines. **What
+the guides say is not yet tried on the rig**, because nothing above records
+it: Undo, the volume faders, Revert, the New rig screen and the channel edits,
+pedals, and a take of a two-channel rig. **Not in the guides**, because the
+page does not do it: adding or removing a plugin. Two changes in flight will
+update their own guides: take names (#134) and the rack's tab per channel
+(#135). *(2026-11-14)*

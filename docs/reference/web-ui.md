@@ -284,3 +284,9 @@ that checkout a recorder, whose takes are real folders made by a stand-in engine
 with `Cache-Control: no-cache`, so a browser asks again on every load (an
 unchanged file is a 304 against its ETag): without it, a browser kept the
 app.js it had before the agent was updated and ran it against the new one.
+
+The user guides' screenshots (`docs/guide/img/`) are taken from that same fake:
+`cd tool && PYTHONPATH=src:tests python tests/guide_shots.py` writes them all
+afresh, at twice the screen's density. Run it after the page changes, and read
+the guide beside each picture: the guides name every control in words, taken
+from `app.js` and `rig.js`.
