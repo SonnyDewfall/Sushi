@@ -3717,3 +3717,52 @@ volume control (a tone came back 52 dB louder with it), so the connect service
 was a hazard to leave installable. The write-ups of the device's controls and
 every results file stay; the tool is at `b8192b7` in history, and the spike
 folder's README says so. *(2026-11-12)*
+
+**A take without a name is named for the rig, the day and a take number
+(#134).** It was `take-<date>-<time>` (`transport.auto_name`, now removed: it
+has no caller left); it is `<rig>-<date>-take-<nn>`,
+`electric-clean-2026-11-12-take-03`. **The rule** is `take.default_name(rig,
+day, taken)`, pure: the rig's name, the local date as `YYYY-MM-DD`, and one
+more than the highest number that rig has had that day, two digits and three
+past 99. `take.names_used` lists what it counts from, the takes folder and
+`_archive/` (so a take recorded over keeps its number), and `take.next_name`
+is the two together, the one function every caller asks. Chosen where the
+issue left it open: the number is one past the highest, not the first gap, so
+a take renamed or deleted leaves a gap that stays one and the numbers stay in
+the order played; a number written by hand with other digits (`-take-3`)
+counts; a rig name too long for 64 characters is cut from its end, by as much
+as the number's digits need, and loses a separator it would end on (two rigs
+alike up to the cut share one run of numbers); a rig file's name the name rule
+would refuse (capitals, a dot) is spelt so that it passes. **The agent** works
+it out, from the state file's rig file name and its own clock
+(`Agent.take_clock`, `datetime.now`): `GET /record` carries `default_name`
+while idle and at no other time, and `POST /record/start` with no name asks
+the same function under the record lock, after the refusals, so a run that
+cannot be recorded is refused as before and a second page pressing Record on
+the name both showed gets the next number, not the first one's take. **The
+page**: the record bar's name field shows that default and is editable.
+`state.takeName` holds only what the player typed (`R.takeTyped`: text that is
+not the default the field showed), so an untouched field sends no name and the
+agent names the take. Entering the field selects a default, so typing replaces
+it; typed text is kept through polls, a rig switch and finished takes until it
+is recorded with or cleared; a field held open and empty keeps the default as
+its placeholder and is not written into, and one left empty shows the default
+again. **The listener** (the panel's RECORD): `Transport.on_record` asks its
+session (`Session.default_name`), and `TakeSession` answers by the same
+`take.next_name`, from its rig file's name and its takes folder; `NoEngine`
+answers with why recording is off, as it did. The panel's own name field is
+not filled in: open-stage-control holds that widget's value, and nothing here
+can show a value pushed to it. `recorder_process` never named a take; the
+agent sends it the name. Takes named `take-<date>-<time>` are listed, checked
+and archived as before and count towards no number
+(`test_a_take_named_from_the_time_is_still_a_take_everywhere`). Tests: the
+rule in `test_take.py`, the agent's routes in `test_agent_record.py`, the
+listener's path in `test_transport.py`, `test_transport_take.py` and
+`test_record_session.py`, and five browser tests in `test_ui.py` (prefilled
+and used; midnight and a rig switch; typing over; an emptied field; two
+pages). The fast suite: 4307 passed, 41 skipped (4260 before). **Not run
+here:** a take captured for real (there is no Sushi, PipeWire or JACK here:
+the recorder's core and the agent are real, the engine is stood in); the
+panel in open-stage-control; the page in any browser but headless Chromium,
+so not the select-on-focus on a phone's keyboard; the slow tests and the
+container job. *(2026-11-14)*

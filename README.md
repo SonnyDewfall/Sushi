@@ -1658,7 +1658,7 @@ name used, unless a take was made in between (from another page, or
 midnight passed), when the start gets the next number instead of a name a
 take already has. A name typed is used as it is, and recording under a name
 already used moves the earlier take to `_archive/`, as before. Takes named
-`take-<date>-<time>`, the default until 2026-11-12, are takes like any
+`take-<date>-<time>`, the default before #134, are takes like any
 other: listed, checked and archived, and counted towards no rig's number.
 
 The panel's record bar (#57) is a take name, RECORD and STOP, with its own
