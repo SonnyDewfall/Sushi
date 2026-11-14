@@ -15,19 +15,28 @@ from sushi_rig.transport import (
     NoEngine,
     Transport,
     TransportError,
-    auto_name,
 )
 
 NOW = datetime(2026, 10, 31, 14, 25, 1)
 
 
 class FakeSession:
-    """Records what the transport asked of it, and does what it is told."""
+    """Records what the transport asked of it, and does what it is told.
 
-    def __init__(self, start_error=None, stop_error=None):
+    Its default name is the real rule's (`take.default_name`) for a rig
+    called `duo`, counted from the takes it has started, where a real session
+    counts from the takes folder (test_transport_take.py)."""
+
+    def __init__(self, start_error=None, stop_error=None, name_error=None):
         self.calls = []
         self.start_error = start_error
         self.stop_error = stop_error
+        self.name_error = name_error
+
+    def default_name(self, now):
+        if self.name_error:
+            raise self.name_error
+        return take.default_name("duo", now, [call[1] for call in self.calls if call[0] == "start"])
 
     def start(self, name):
         self.calls.append(("start", name))
@@ -46,11 +55,6 @@ class FakeSession:
 # Decisions
 # --------------------------------------------------------------------------- #
 
-def test_a_take_recorded_without_a_name_is_named_by_when_it_was_recorded():
-    assert auto_name(NOW) == "take-20261031-142501"
-    assert not take.check_name(auto_name(NOW))
-
-
 def test_record_uses_the_last_name_received():
     session = FakeSession()
     transport = Transport(session, clock=lambda: NOW)
@@ -60,9 +64,46 @@ def test_record_uses_the_last_name_received():
     assert transport.recording == "riff-idea"
 
 
-def test_record_with_no_name_still_records():
+def test_record_with_no_name_records_under_the_sessions_default_for_the_day():
+    """#134: the rig, the day by the listener's clock, and the next number,
+    asked of the session at each RECORD."""
     session = FakeSession()
-    assert Transport(session, clock=lambda: NOW).on_record() == "recording take-20261031-142501"
+    clock = [NOW]
+    transport = Transport(session, clock=lambda: clock[0])
+    assert transport.on_record() == "recording duo-2026-10-31-take-01"
+    transport.on_stop()
+    assert transport.on_record() == "recording duo-2026-10-31-take-02"
+    transport.on_stop()
+    clock[0] = datetime(2026, 11, 1, 0, 0, 5)
+    assert transport.on_record() == "recording duo-2026-11-01-take-01"
+    assert transport.recording == "duo-2026-11-01-take-01"
+
+
+def test_a_typed_name_is_used_as_it_is_and_the_default_is_not_asked_for():
+    session = FakeSession(name_error=AssertionError("asked for a default with a name typed"))
+    transport = Transport(session, clock=lambda: NOW)
+    transport.on_name("riff-idea")
+    assert transport.on_record() == "recording riff-idea"
+
+
+@pytest.mark.parametrize("error, said", [
+    (TransportError("no rig file to name it after"), "record failed: no rig file to name it after"),
+    (OSError("disk gone"), "record failed: unexpected error: disk gone"),
+])
+def test_a_default_name_that_cannot_be_made_is_said_and_nothing_starts(error, said):
+    session = FakeSession(name_error=error)
+    transport = Transport(session, clock=lambda: NOW)
+    assert transport.on_record() == said
+    assert session.calls == [] and transport.recording is None
+
+
+def test_a_default_the_name_rule_refuses_never_reaches_the_session():
+    """The session's default is checked as a typed name is: a session that
+    answered a path would not be handed it back."""
+    session = FakeSession()
+    session.default_name = lambda now: "../escape"
+    said = Transport(session, clock=lambda: NOW).on_record()
+    assert said.startswith("record refused: invalid take name") and session.calls == []
 
 
 def test_a_name_that_could_escape_the_takes_folder_never_reaches_the_session():
@@ -139,7 +180,7 @@ def test_a_reloaded_panel_forgets_the_name_it_no_longer_shows():
     transport = Transport(session, clock=lambda: NOW)
     transport.on_name("riff-idea")
     assert transport.on_panel_reloaded() is None
-    assert transport.on_record() == "recording take-20261031-142501"
+    assert transport.on_record() == "recording duo-2026-10-31-take-01"
 
 
 def test_a_reloaded_panel_is_told_a_take_is_still_running():

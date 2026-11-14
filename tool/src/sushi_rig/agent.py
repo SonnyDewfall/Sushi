@@ -28,8 +28,8 @@ and the two things worth reading about a rig, served over HTTP on localhost.
     POST /amp/model     {"model"} -- restarts Carla alone, so THE SOUND STOPS for a moment
     POST /rig/save      {"name"?} -- the running rig into its own rig file, or as a new one (S4);
                         written, never committed
-    GET  /record        the recorder: idle, recording (name, started, elapsed, stems), or unavailable and why
-    POST /record/start  {"name"?} -- a take of the running rig (S7); no name is take-<date>-<time>
+    GET  /record        the recorder: idle (and the name a take without one would get), recording (name, started, elapsed, stems), or unavailable and why
+    POST /record/start  {"name"?} -- a take of the running rig (S7); no name is <rig>-<date>-take-<nn>
     POST /record/stop   {} -- finish it; the answer says `take check`'s verdict
     GET  /takes         the takes, newest first: name, when, length, stems, `take check`'s verdict
     GET  /machine/roles the machine file's roles: ports, widths each can feed, which tracks use each
@@ -280,16 +280,25 @@ The panel's record bar is the listener's, and the listener runs only beside
 the panel; the page starts rigs headless. So a headless rig of channels gets
 a recorder of its own, `sushi-rig recorder`, a child of the rig started with
 it under `pw-jack` (recorder_process.py says why a child, and why a Unix
-socket), and the agent asks it. `POST /record/start` names the take (or
-leaves it to `transport.auto_name`) and sends the run's files from the state
-file as it is now, and the amp as the agent last sent it (`_take_amp`, the
-amp a save writes, #117); the recorder plans the take then, with
-`transport.record_session`, so the take's config is the one Sushi loaded for
-the rig running now (a live switch rewrites it) and its rig.yaml the rig
-file as it is at RECORD (#110). `POST /record/stop` finishes it and answers
+socket), and the agent asks it. `POST /record/start` names the take and
+sends the run's files from the state file as it is now, and the amp as the
+agent last sent it (`_take_amp`, the amp a save writes, #117); the recorder
+plans the take then, with `transport.record_session`, so the take's config
+is the one Sushi loaded for the rig running now (a live switch rewrites it)
+and its rig.yaml the rig file as it is at RECORD (#110). `POST /record/stop` finishes it and answers
 `take check`'s verdict. Whether a take runs is the recorder's to say, never
 the page's (the reason #57 made RECORD and STOP two buttons). Each start and
 stop is in the live log (`op: "record"`), and undo passes over them.
+
+A take started without a name is `<rig>-<date>-take-<nn>` (#134,
+`take.default_name`): the running rig, the day by this machine's clock, and
+the next number that rig has not had that day, the archive counted. The
+agent works it out, not the page, so two pages always agree: `GET /record`
+offers it while idle (`default_name`), for the record bar to show, and a
+start with no name asks the same function (`_default_take_name`) again,
+under the record lock. So the name shown is the name used, unless a take
+was made between the two, by another page or another day, and then the
+start gets the next number rather than a name a take already has.
 
 Refused (409, with a `code`): `no_rig`; `panel` (the listener's record bar
 owns recording); `v1` (a take records each channel's own output, which only
@@ -4789,6 +4798,9 @@ class Agent:
 
         self.recorder = recorder or RecorderLink()
         self.takes_dir = Path(takes_dir) if takes_dir is not None else default_takes_dir()
+        # The player's clock, for the day in a take's default name; local
+        # time, as the name is for the player to recognise. A test moves it.
+        self.take_clock: Callable[[], datetime] = datetime.now
         self._record_lock = asyncio.Lock()
         self._takes_cache: dict[str, Any] = {}  # GET /takes: each take's summary, by what is in its folder
         self._takes_lock = threading.Lock()  # the cache is read and written in worker threads
@@ -4805,6 +4817,16 @@ class Agent:
         described = self.describe()
         state = await asyncio.to_thread(self.switching.read_state) or {}
         return state, described, record_refusal(state, described)
+
+    async def _default_take_name(self, state: dict[str, Any]) -> str:
+        """What a take of the running rig started now without a name is
+        called (`take.next_name`: `<rig>-<date>-take-<nn>`), counted from the
+        takes folder as it is now, off the loop. For a run `record_refusal`
+        lets through, so `state` names its rig file. The one function GET
+        /record's offer and a start with no name both ask."""
+        from .take import next_name
+
+        return await asyncio.to_thread(next_name, self.takes_dir, take_rig_name(state), self.take_clock())
 
     async def _ask_recorder(self, request: dict[str, Any], timeout: float) -> dict[str, Any]:
         """One request to the recorder, off the loop. `RecorderDown` and
@@ -4830,9 +4852,11 @@ class Agent:
     async def record_route(self, request):
         """`GET /record`: `state` is always one of `recording` (`name`,
         `started_at`, `elapsed` in seconds as the recorder counts it,
-        `stems`), `idle` (`stems` a take would record now, and `names`, the
+        `stems`), `idle` (`stems` a take would record now; `names`, the
         takes already in the folder, so a page can say a name will replace
-        one) or `unavailable` (`reason`, and a `code`: `no_rig`, `panel`,
+        one; and `default_name`, what a take started now without a name
+        would be called, for the record bar to show: `_default_take_name`)
+        or `unavailable` (`reason`, and a `code`: `no_rig`, `panel`,
         `v1`, `no_recorder`, `recorder_timeout`, or none when the recorder
         cannot plan a take, with its reason). `doing` while a start or stop is
         under way. 200 for each of those, since unavailable is a state; a
@@ -4861,12 +4885,16 @@ class Agent:
         if answer["state"] == "idle":
             from .take import take_names
 
-            answer = {**answer, "names": await asyncio.to_thread(take_names, self.takes_dir)}
+            answer = {**answer, "names": await asyncio.to_thread(take_names, self.takes_dir),
+                      "default_name": await self._default_take_name(state)}
         return web.json_response(answer)
 
     async def record_start_route(self, request):
         """`POST /record/start {"name"?}`: start a take. No name is
-        `transport.auto_name` (`take-<date>-<time>`, local time); a name is
+        `<rig>-<date>-take-<nn>` (`_default_take_name`, what GET /record
+        offered), worked out here under the record lock and after the
+        refusals, so two starts never get one number and a run that cannot
+        be recorded is refused as it always was; a name is
         checked as a take's is (`take.check_name`), 400 otherwise. A take
         under a name already used moves the earlier one to `_archive/`, and
         the answer says so (`replaced`, `said`).
@@ -4893,9 +4921,6 @@ class Agent:
             name = record_request(await self._json_body(request))
         except AgentError as exc:
             raise web.HTTPBadRequest(reason=str(exc))
-        from .transport import auto_name
-
-        name = name or auto_name(datetime.now())
         self._refuse_while_busy()
         async with self._amp_lock:
             async with self._record_lock:
@@ -4903,6 +4928,8 @@ class Agent:
                 state, described, refused = await self._record_state()
                 if refused is not None:
                     raise _conflict(*refused)
+                if name is None:
+                    name = await self._default_take_name(state)
                 amp, amp_said = await self._take_amp()
                 run = recorder_run(state, self._midi_root(), self.takes_dir)
                 answer = await self._recorder_call(
@@ -5465,9 +5492,10 @@ RECORD_STATES = ("recording", "idle", "unavailable")
 
 
 def record_request(body: Any) -> str | None:
-    """The name a start asks for, None for one made from the time, or
-    `AgentError` (400): a name the take rule refuses (`take.check_name`, the
-    rule a config's name keeps), or a body with anything but `name`."""
+    """The name a start asks for, None for one the agent is to make
+    (`take.default_name`), or `AgentError` (400): a name the take rule
+    refuses (`take.check_name`, the rule a config's name keeps), or a body
+    with anything but `name`."""
     from .take import check_name
 
     if body is None:
@@ -5504,6 +5532,13 @@ def record_refusal(state: dict[str, Any], described: dict[str, Any]) -> tuple[st
                 "an output of its own (a v1 rig sums its tracks into the monitor bus). Start it as a rig of "
                 "channels (up --rig) to record", "v1")
     return None
+
+
+def take_rig_name(state: dict[str, Any]) -> str:
+    """The running rig's name as a take's default name carries it: its rig
+    file's, which is what the picker and a save call it. For a state file
+    `record_refusal` lets through, which names a rig file. Pure."""
+    return Path(state["rig"]).stem
 
 
 def recorder_run(state: dict[str, Any], root: Path, takes_dir: Path) -> dict[str, Any]:

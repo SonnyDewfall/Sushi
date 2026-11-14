@@ -124,8 +124,16 @@ would be acted on, and whether a take runs is GET /record's answer, never
 the page's: a page reloaded mid-take, or a second one, shows the take
 running (#57's reason for two buttons). Both work with the lock on, since
 recording is a stage action, and Stop takes no confirm, since stopping a
-take loses nothing. A name is checked before sending (`checkTakeName`, the
-rule take.check_name keeps); none is named from the time by the agent; a
+take loses nothing. The name field shows the agent's default for the next
+take (GET /record's `default_name`, `<rig>-<date>-take-<nn>`, #134), which
+is the agent's to work out, never the page's, so two pages show the same
+one. Record on an untouched field sends no name, and the agent names the
+take by its count at that moment: the name shown, unless a take was made
+since, and then the next number. Entering the field selects a default, so
+typing replaces it; only what the player typed is kept (`takeTyped`), through
+polls, a rig switch and finished takes, until it is recorded with or
+cleared, and a field left empty shows the default again. A name is checked
+before sending (`checkTakeName`, the rule take.check_name keeps); a
 name already in the takes list says the earlier take will move to the
 archive. The elapsed time is the recorder's (`elapsed`, by its clock),
 counted on by this page's clock between answers (`elapsedNow`), so it keeps

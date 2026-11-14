@@ -2240,7 +2240,9 @@ def test_the_record_bar_follows_what_the_recorder_says(blank):
     views = rigjs(blank, """
       const up = arg.up, recording = {ok: true, body: {state: "recording", name: "riff", elapsed: 3, stems: arg.stems,
         said: "recording riff"}};
-      const idle = {ok: true, body: {state: "idle", stems: arg.stems, names: ["riff"]}};
+      const idle = {ok: true, body: {state: "idle", stems: arg.stems, names: ["riff"],
+        default_name: "electric_board-2026-11-12-take-03"}};
+      const unnamed = {ok: true, body: {state: "idle", stems: arg.stems, names: []}};
       return [
         R.recordBar({ok: false, reason: "x"}, null, "", null),
         R.recordBar({ok: true, body: {rig: {running: false}, agent: {}}}, null, "", null),
@@ -2252,6 +2254,8 @@ def test_the_record_bar_follows_what_the_recorder_says(blank):
         R.recordBar(up, recording, "", null),
         R.recordBar(up, recording, "", "stop"),
         R.recordBar(up, idle, "", "start"),
+        R.recordBar(up, unnamed, "", null),
+        R.recordBar(up, idle, "riff-idea", null),
       ];
     """, {"up": health_up(), "busy": health_up("restart"), "stems": STEMS})
     off = [v for v in views[:4]]
@@ -2261,8 +2265,14 @@ def test_the_record_bar_follows_what_the_recorder_says(blank):
     assert all(v["record"]["disabled"] and v["stop"]["disabled"] for v in off), "nothing to press"
     idle = views[4]
     assert (idle["state"], idle["record"], idle["stop"]["disabled"]) == ("idle", {"label": "Record", "disabled": False}, True)
-    assert idle["note"] == "No name: the take is named from the time it starts."
+    # #134: the agent's name for the next take is the view's, for the field
+    # to show; a field showing it needs no note.
+    assert (idle["default"], idle["note"]) == ("electric_board-2026-11-12-take-03", None)
     assert idle["stems"] == "3 stems: board.wav, board-dry.wav, master.wav"
+    assert (views[10]["default"], views[10]["note"]) == (None, "No name: the agent names the take when it starts.")
+    assert (views[11]["default"], views[11]["note"], views[11]["record"]["disabled"]) == (
+        "electric_board-2026-11-12-take-03", None, False), "a typed name does not hide what the default is"
+    assert all("default" not in v for v in views[:4] + views[7:9]), "no default but while a take could start"
     assert views[5]["record"]["disabled"] and views[5]["bad"] and "lowercase letters" in views[5]["note"]
     assert views[6]["note"] == "Will replace the earlier riff, which moves to _archive/riff/."
     rec = views[7]
@@ -2316,9 +2326,32 @@ def test_what_a_start_or_stop_said_is_shown_as_it_was_said(blank):
     assert said[7] == "record riff" and said[8] == 0, "undo passes over a take"
 
 
+def test_what_is_typed_is_what_differs_from_the_default_the_field_showed(blank):
+    """#134: the field starts as the agent's default, so only text that is
+    not it counts as the player's, and an emptied field is theirs no more."""
+    typed = rigjs(blank, """
+      const d = "electric_board-2026-11-12-take-03";
+      return [R.takeTyped(d, d), R.takeTyped("", d), R.takeTyped("   ", d), R.takeTyped(` ${d} `, d),
+              R.takeTyped("riff", d), R.takeTyped(d + "-solo", d), R.takeTyped("electric_board-2026-11-12-take-0", d),
+              R.takeTyped(" riff ", d), R.takeTyped("riff", null), R.takeTyped("", null), R.takeTyped(undefined, d)];
+    """)
+    assert typed == ["", "", "", "", "riff", "electric_board-2026-11-12-take-03-solo",
+                     "electric_board-2026-11-12-take-0", " riff ", "riff", "", ""]
+    # Only what was typed is sent: an untouched field sends no name, and the agent names the take.
+    assert rigjs(blank, 'return R.recordCall(R.takeTyped("x-take-03", "x-take-03"));') == {
+        "path": "/record/start", "json": {}}
+
+
+# The day the fake's agent names takes for (#134): its take clock is held, so
+# a default name here is one string and a test can move midnight past it.
+TAKE_DAY = datetime(2026, 11, 12, 21, 58)
+FIRST, SECOND = "electric_board-2026-11-12-take-01", "electric_board-2026-11-12-take-02"
+
+
 @pytest.fixture
 def record_served():
     with Served(record=True) as served:
+        served.agent.take_clock = lambda: TAKE_DAY
         yield served
 
 
@@ -2394,7 +2427,7 @@ def test_a_page_opened_mid_take_shows_it_running(browser, record_served):
     first.page.get_by_role("button", name="Record", exact=True).click()
     expect(first.page.locator(".record-bar h2")).to_have_text("Recording")
     second = stage_page(browser, record_served)
-    expect(second.page.locator(".record-bar .take-now .v")).to_have_text(re.compile(r"^take-\d{8}-\d{6}$"))
+    expect(second.page.locator(".record-bar .take-now .v")).to_have_text(FIRST)
     expect(second.page.get_by_role("button", name="Record", exact=True)).to_be_disabled()
     second.page.get_by_role("button", name="Stop", exact=True).click()
     expect(first.page.locator(".record-bar h2")).to_have_text("Record", timeout=5000)
@@ -2421,6 +2454,163 @@ def test_a_name_the_rule_refuses_is_said_before_sending_and_a_reused_one_warns(b
     p.get_by_role("button", name="Stop", exact=True).click()
     assert (record_served.recorder.takes / "_archive" / "riff").is_dir()
     page.close()
+
+
+# -- the take's default name (#134): the rig, the day and a number, from the agent --
+
+def switch_to(served, name):
+    """The state file after a switch to rig `name`, a copy of the running
+    rig's file under that name: what the agent reads the running rig from.
+    The fake's own switch (`UiLifecycle.switch_held`) stands in the switch's
+    body and does not write the state file, so this does."""
+    rigs = served.save.root / "config" / "rigs"
+    (rigs / f"{name}.yaml").write_text(
+        (rigs / "electric_board.yaml").read_text().replace("name: electric_board", f"name: {name}"))
+    served.save.state.update(rig=f"config/rigs/{name}.yaml", config_name=name)
+
+
+def a_take_from_elsewhere(served):
+    """An unnamed take recorded and stopped by another page; its name."""
+    name = post(served, "/record/start", {})["name"]
+    post(served, "/record/stop", {})
+    return name
+
+
+def test_the_take_name_is_prefilled_with_the_agents_default_which_record_uses(browser, record_served):
+    """The bar shows the name before Record is pressed; untouched, Record
+    uses it; after the take the field refills with the next number."""
+    page = stage_page(browser, record_served)
+    p = page.page
+    bar = p.locator(".record-bar")
+    name = p.get_by_label("Take name")
+    expect(name).to_have_value(FIRST)
+    expect(name).to_be_editable()
+    expect(p.locator("#take-note")).to_have_text("")
+    sent = []
+    p.on("request", lambda r: sent.append(r.post_data) if r.url.endswith("/record/start") else None)
+    p.get_by_role("button", name="Record", exact=True).click()
+    expect(bar.locator(".take-now .v")).to_have_text(FIRST)
+    assert sent == ["{}"], "an untouched field sends no name: the agent names the take, by its count then"
+    p.get_by_role("button", name="Stop", exact=True).click()
+    expect(bar.locator(".record-result")).to_contain_text(f"Recorded {FIRST}")
+    expect(p.get_by_label("Take name")).to_have_value(SECOND)
+    assert (record_served.recorder.takes / FIRST / "take.yaml").is_file()
+    # And the next one, with Enter in the untouched field.
+    p.get_by_label("Take name").press("Enter")
+    expect(bar.locator(".take-now .v")).to_have_text(SECOND)
+    p.get_by_role("button", name="Stop", exact=True).click()
+    expect(p.get_by_label("Take name")).to_have_value("electric_board-2026-11-12-take-03")
+    page.close()
+
+
+def test_an_untouched_field_follows_the_agent_through_midnight_and_a_rig_switch(browser, record_served):
+    page = stage_page(browser, record_served)
+    name = page.page.get_by_label("Take name")
+    expect(name).to_have_value(FIRST)
+    record_served.agent.take_clock = lambda: datetime(2026, 11, 13, 0, 0, 1)
+    expect(name).to_have_value("electric_board-2026-11-13-take-01")
+    switch_to(record_served, "acoustic")
+    expect(name).to_have_value("acoustic-2026-11-13-take-01")
+    page.close()
+
+
+def test_typing_replaces_the_default_and_what_is_typed_is_kept_until_it_is_used(browser, record_served):
+    """Typed over, the name is the player's: a poll, a take finished on
+    another page and a rig switch each bring a new default, and none of them
+    touches the field. Recording with the name uses it up."""
+    page = stage_page(browser, record_served)
+    p = page.page
+    bar = p.locator(".record-bar")
+    name = p.get_by_label("Take name")
+    expect(name).to_have_value(FIRST)
+    name.click()
+    p.keyboard.type("riff")
+    expect(name).to_have_value("riff")  # the default was selected, so typing replaced it whole
+    p.wait_for_timeout(2200)  # two polls and more
+    expect(name).to_have_value("riff")
+    switch_to(record_served, "acoustic")
+    # The placeholder is the default as the agent now has it: the page has
+    # read the new one, and left the field alone.
+    expect(name).to_have_attribute("placeholder", "acoustic-2026-11-12-take-01")
+    expect(name).to_have_value("riff")
+    expect(name).to_be_focused()
+    p.keyboard.type("-idea")  # and typing goes on where it was, in a field that poll rebuilt
+    expect(name).to_have_value("riff-idea")
+    assert a_take_from_elsewhere(record_served) == "acoustic-2026-11-12-take-01"
+    expect(name).to_have_attribute("placeholder", "acoustic-2026-11-12-take-02")
+    expect(name).to_have_value("riff-idea")
+    p.get_by_role("button", name="Record", exact=True).click()
+    expect(bar.locator(".take-now .v")).to_have_text("riff-idea")
+    p.get_by_role("button", name="Stop", exact=True).click()
+    expect(bar.locator(".record-result")).to_contain_text("Recorded riff-idea")
+    expect(p.get_by_label("Take name")).to_have_value("acoustic-2026-11-12-take-02")
+    assert (record_served.recorder.takes / "riff-idea" / "take.yaml").is_file()
+    page.close()
+
+
+def test_an_emptied_field_goes_back_to_the_default(browser, record_served):
+    """Cleared, the name is the agent's again. While the field is held open
+    and empty the default is its placeholder, so nothing is put under the
+    caret; left empty, it shows the default as it does untouched."""
+    page = stage_page(browser, record_served)
+    p = page.page
+    name = p.get_by_label("Take name")
+    name.fill("riff")
+    name.fill("")
+    expect(name).to_have_value("")
+    expect(name).to_have_attribute("placeholder", FIRST)
+    expect(name).to_be_focused()
+    expect(p.get_by_role("button", name="Record", exact=True)).to_be_enabled()
+    # A new default while the field is held empty (midnight, here): shown as
+    # the placeholder, and not written under the caret.
+    record_served.agent.take_clock = lambda: datetime(2026, 11, 13, 0, 0, 1)
+    tomorrow = "electric_board-2026-11-13-take-01"
+    expect(name).to_have_attribute("placeholder", tomorrow)
+    expect(name).to_have_value("")
+    expect(name).to_be_focused()
+    name.blur()
+    expect(name).to_have_value(tomorrow)
+    # Untouched again, so it follows the agent, and Record uses it.
+    assert a_take_from_elsewhere(record_served) == tomorrow
+    expect(p.get_by_label("Take name")).to_have_value("electric_board-2026-11-13-take-02")
+    p.get_by_role("button", name="Record", exact=True).click()
+    expect(p.locator(".record-bar .take-now .v")).to_have_text("electric_board-2026-11-13-take-02")
+    p.get_by_role("button", name="Stop", exact=True).click()
+    page.close()
+
+
+def test_two_pages_show_the_same_next_name_and_each_gets_a_take_of_its_own(browser, record_served):
+    first = stage_page(browser, record_served)
+    second = stage_page(browser, record_served)
+    for page in (first, second):
+        expect(page.page.get_by_label("Take name")).to_have_value(FIRST)
+    first.page.get_by_role("button", name="Record", exact=True).click()
+    expect(second.page.locator(".record-bar .take-now .v")).to_have_text(FIRST)
+    first.page.get_by_role("button", name="Stop", exact=True).click()
+    for page in (first, second):
+        expect(page.page.get_by_label("Take name")).to_have_value(SECOND)
+    # Both press Record on the name both show. The second page's polls are
+    # held from here, so it still shows that name when it is pressed: it gets
+    # the next number, and no take is replaced.
+    held = []
+    second.page.route("**/record", lambda route: held.append(route))
+    second.page.wait_for_timeout(300)  # a poll already out has answered
+    first.page.get_by_role("button", name="Record", exact=True).click()
+    expect(first.page.locator(".record-bar .take-now .v")).to_have_text(SECOND)
+    first.page.get_by_role("button", name="Stop", exact=True).click()
+    expect(first.page.locator(".record-bar .record-result")).to_contain_text(f"Recorded {SECOND}")
+    second.page.wait_for_timeout(1500)  # a poll and more
+    assert held, "the second page has asked since, and has not been answered"
+    expect(second.page.get_by_label("Take name")).to_have_value(SECOND)
+    second.page.get_by_role("button", name="Record", exact=True).click()
+    third = "electric_board-2026-11-12-take-03"
+    expect(second.page.locator(".record-bar .take-now .v")).to_have_text(third)
+    second.page.get_by_role("button", name="Stop", exact=True).click()
+    expect(second.page.locator(".record-bar .record-result")).to_contain_text(f"Recorded {third}")
+    takes = record_served.recorder.takes
+    assert sorted(entry.name for entry in takes.iterdir()) == [FIRST, SECOND, third], "three takes, none archived"
+    first.close()
+    second.close()
 
 
 @pytest.mark.parametrize("change, said", [
@@ -2560,7 +2750,7 @@ def test_an_older_takes_answer_never_replaces_a_newer_one(browser, record_served
     expect(p.locator("section.takes .take .note")).to_have_text("Whole · 5 stems · nothing lost", timeout=8000)
     held[0].fulfill(status=200, content_type="application/json", body=json_module.dumps(stale))
     p.wait_for_timeout(500)
-    expect(p.locator("section.takes .take .n")).to_have_text(re.compile(r"^take-"))
+    expect(p.locator("section.takes .take .n")).to_have_text(FIRST)
     expect(p.locator("section.takes")).not_to_contain_text("stale-take")
     stage.close()
     page.close()

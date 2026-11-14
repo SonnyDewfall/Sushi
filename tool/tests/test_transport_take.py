@@ -13,6 +13,7 @@ run on a machine with no numpy.
 from __future__ import annotations
 
 import json
+import shutil
 import threading
 from datetime import datetime
 
@@ -199,6 +200,53 @@ def test_a_take_from_a_v2_rig_carries_the_rig_and_the_library_through_the_transp
     assert finished.metadata["rig"] == take.RIG_FILE
     assert finished.metadata["library"] == library
     assert take.check_take(finished) == []
+
+
+def test_takes_recorded_without_a_name_are_numbered_for_the_rig_and_the_day(tmp_path):
+    """#134 through the real session, recorder and folders: RECORD with
+    nothing typed is `<rig file's name>-<date>-take-<nn>`, counted from the
+    takes folder at each RECORD, the day by the listener's (local) clock."""
+    import dataclasses
+
+    clock = [NOW]
+    with_rig = dataclasses.replace(plan(tmp_path), rig_path=frozen("guitar_vocal"))
+    session = TakeSession(with_rig, FakeEngine())
+    transport = Transport(session, clock=lambda: clock[0])
+    assert transport.on_record() == "recording guitar_vocal-2026-10-31-take-01"
+    assert transport.on_stop() == "recorded guitar_vocal-2026-10-31-take-01: 0.5 s"
+    session.engine = FakeEngine()
+    assert transport.on_record() == "recording guitar_vocal-2026-10-31-take-02"
+    transport.on_stop()
+    assert take.check_take(take.load_take(tmp_path / "guitar_vocal-2026-10-31-take-02")) == []
+    # A take recorded over is archived, and one archived keeps its number.
+    session.engine = FakeEngine()
+    transport.on_name("guitar_vocal-2026-10-31-take-02")
+    assert "the earlier guitar_vocal-2026-10-31-take-02 is in _archive/" in transport.on_record()
+    transport.on_stop()
+    shutil.rmtree(tmp_path / "guitar_vocal-2026-10-31-take-02")
+    session.engine = FakeEngine()
+    transport.on_name("")
+    assert transport.on_record() == "recording guitar_vocal-2026-10-31-take-03"
+    transport.on_stop()
+    clock[0] = datetime(2026, 11, 1, 0, 0, 1)
+    session.engine = FakeEngine()
+    assert transport.on_record() == "recording guitar_vocal-2026-11-01-take-01"
+    transport.on_stop()
+    assert take.take_names(tmp_path) == [
+        "guitar_vocal-2026-10-31-take-01", "guitar_vocal-2026-10-31-take-03", "guitar_vocal-2026-11-01-take-01"]
+
+
+def test_a_run_with_no_rig_file_has_no_default_name_and_says_to_type_one(tmp_path):
+    """No rig, no default: refused in words, and nothing is written. No run
+    of the listener makes such a plan (`plan_for_run` refuses first)."""
+    transport = Transport(TakeSession(plan(tmp_path), FakeEngine()), clock=lambda: NOW)
+    assert transport.on_record() == (
+        "record failed: this take has no name, and the run has no rig file to name it after: "
+        "type a name for the take")
+    assert transport.recording is None and list(tmp_path.iterdir()) == []
+    transport.on_name("riff-idea")
+    assert transport.on_record() == "recording riff-idea"
+    transport.on_stop()
 
 
 def test_recording_over_a_name_keeps_the_earlier_take_and_says_where(tmp_path):

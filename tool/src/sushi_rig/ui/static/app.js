@@ -74,7 +74,7 @@ const state = {
   record: null, recordBase: null,  // GET /record, with /live; and {elapsed, at} of the take running
   takes: null, takesAt: 0,   // GET /takes, on the rack only: every TAKES_MS, and after a start or stop
   takesOrder: new R.Latest(),  // so an older /takes answer never replaces a newer one
-  takeName: "",              // what is typed in the record bar's name
+  takeName: "",              // what the player typed in the record bar's name; "" while it shows the agent's default
   recordPending: null,       // "start" or "stop", from this page, in flight
   recordResult: null,        // what the last start or stop from this page said (R.recordOutcome)
   // The New rig screen and the rack's channel edits (the rig files):
@@ -1551,13 +1551,26 @@ function saveAsForm(view) {
 // runs its name and elapsed time. Keyed without what is typed and without
 // the elapsed time (redrawn by `tickElapsed`), so neither a poll nor the
 // clock rebuilds the field under the fingers.
+//
+// The name (#134). The field shows the agent's default for the next take
+// (`view.default`) until the player types; `state.takeName` holds only what
+// they typed (`R.takeTyped`), so Record on an untouched field sends no name
+// and the agent names the take, by its count at that moment. The key holds
+// the default, so a new one (a take finished, here or on another page; a rig
+// switch; midnight) rebuilds the field with it, and what the player typed
+// goes back in as it was: only clearing the field, or recording with it,
+// ends it.
 function recordBarView(typed = state.takeName) {
   return R.recordBar(state.health, state.record, typed, state.recordPending);
 }
 
 function recordRegion(el) {
   const view = recordBarView();
-  const typing = document.activeElement && document.activeElement.name === "take-name";
+  const held = el.querySelector('input[name="take-name"]');
+  const typing = !!held && document.activeElement === held;
+  // Held open and emptied: the player is about to type, and a rebuild must
+  // not put a name back under the caret (the placeholder shows the default).
+  const cleared = typing && held.value === "";
   const result = state.recordResult;
   // What follows the typing (the check, Record's state) is drawn by the
   // field's own handler (`drawNameCheck`), not by a rebuild.
@@ -1586,7 +1599,11 @@ function recordRegion(el) {
   });
   if (rebuilt && typing) {
     const input = el.querySelector('input[name="take-name"]');
-    if (input) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
+    if (input) {
+      if (cleared) input.value = "";
+      input.focus();  // which selects a default again, as the first focus did
+      if (state.takeName) input.setSelectionRange(input.value.length, input.value.length);
+    }
   }
   drawNameCheck(el);
   tickElapsed();
@@ -1603,12 +1620,20 @@ function drawNameCheck(el) {
 
 function nameField(view) {
   const input = h("input", { name: "take-name", type: "text", autocomplete: "off", spellcheck: "false",
-    autocapitalize: "none", placeholder: "e.g. riff-idea", "aria-describedby": "take-note",
+    autocapitalize: "none", placeholder: view.default || "e.g. riff-idea", "aria-describedby": "take-note",
     enterkeyhint: "go" });
-  input.value = state.takeName;
+  input.value = state.takeName || view.default || "";
   // Redrawn through render(), whose key holds the view and not the text, so
   // the check under the field follows the typing without a rebuild.
-  input.addEventListener("input", () => { state.takeName = input.value; drawNameCheck(input.closest(".record-bar")); });
+  input.addEventListener("input", () => {
+    state.takeName = R.takeTyped(input.value, view.default);
+    drawNameCheck(input.closest(".record-bar"));
+  });
+  // A default is selected whole when the field is entered, so that typing
+  // replaces it; what the player typed is theirs to edit, and is left alone.
+  input.addEventListener("focus", () => { if (!state.takeName && input.value) input.select(); });
+  // Left empty, the field shows the default again: an empty name is the default.
+  input.addEventListener("blur", () => { if (!input.value.trim()) input.value = view.default || ""; });
   input.addEventListener("keydown", (event) => { if (event.key === "Enter" && !recordBarView().record.disabled) recordStart(); });
   return h("label", { class: "take-name" }, h("span", {}, "Take name"), input);
 }

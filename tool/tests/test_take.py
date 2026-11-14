@@ -22,7 +22,7 @@ from __future__ import annotations
 
 import json
 import os
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 
 import pytest
@@ -103,6 +103,137 @@ def test_the_archive_cannot_collide_with_a_take_of_the_same_name():
     name rule cannot produce."""
     assert take.check_name("archive") == []
     assert take.check_name(take.ARCHIVE_DIR)
+
+
+# --------------------------------------------------------------------------- #
+# The name of a take recorded without one (#134)
+# --------------------------------------------------------------------------- #
+
+TODAY = date(2026, 11, 12)
+CLEAN = "electric-clean-2026-11-12-take-"
+
+
+def test_an_unnamed_take_is_named_for_the_rig_the_day_and_its_number():
+    assert take.default_name("electric-clean", TODAY, []) == "electric-clean-2026-11-12-take-01"
+    assert take.default_name("electric-clean", TODAY, [CLEAN + "01"]) == CLEAN + "02"
+    assert take.default_name("electric-clean", TODAY, [CLEAN + "01", CLEAN + "02"]) == CLEAN + "03"
+    # A moment is a day too: the callers pass the clock's reading as it is.
+    assert take.default_name("electric-clean", datetime(2026, 11, 12, 23, 59, 59), []) == CLEAN + "01"
+
+
+def test_the_number_starts_again_for_another_day_and_for_another_rig():
+    taken = [CLEAN + "01", CLEAN + "02", "electric-clean-2026-11-11-take-07", "acoustic-2026-11-12-take-05"]
+    assert take.default_name("electric-clean", date(2026, 11, 13), taken) == "electric-clean-2026-11-13-take-01"
+    assert take.default_name("electric-clean", TODAY, taken) == CLEAN + "03"
+    assert take.default_name("acoustic", TODAY, taken) == "acoustic-2026-11-12-take-06"
+    assert take.default_name("electric", TODAY, taken) == "electric-2026-11-12-take-01", \
+        "a rig whose name another's begins with has its own count"
+
+
+def test_a_gap_is_left_a_gap_so_a_number_is_never_given_twice():
+    """Take 02 was renamed or deleted: the next is 04, not 02 again, and the
+    numbers stay in the order the takes were played."""
+    assert take.default_name("electric-clean", TODAY, [CLEAN + "01", CLEAN + "03"]) == CLEAN + "04"
+    assert take.default_name("electric-clean", TODAY, [CLEAN + "07"]) == CLEAN + "08"
+
+
+def test_the_number_keeps_two_digits_and_grows_past_99():
+    assert take.default_name("electric-clean", TODAY, [CLEAN + "09"]) == CLEAN + "10"
+    assert take.default_name("electric-clean", TODAY, [CLEAN + "99"]) == CLEAN + "100"
+    assert take.default_name("electric-clean", TODAY, [CLEAN + "99", CLEAN + "100"]) == CLEAN + "101"
+    assert sorted([CLEAN + "09", CLEAN + "10"]) == [CLEAN + "09", CLEAN + "10"], "take 10 sorts after take 9"
+
+
+@pytest.mark.parametrize("other", [
+    "take-20261112-142501",                       # the default before #134
+    "x-electric-clean-2026-11-12-take-07",        # another rig, whose name ends as this one's
+    "electric-clean-2026-11-12-take-07-b",        # a take renamed after its number
+    "electric-clean-2026-11-12-take-",
+    "electric-clean-2026-11-12-take-seven",
+    "electric-clean-2026-11-12-take-\u0667",      # a digit the name rule would refuse
+    "riff-idea",
+])
+def test_a_name_that_only_looks_like_a_numbered_take_does_not_count(other):
+    assert take.default_name("electric-clean", TODAY, [other, CLEAN + "02"]) == CLEAN + "03"
+    assert take.default_name("electric-clean", TODAY, [other]) == CLEAN + "01"
+
+
+def test_a_number_written_by_hand_with_other_digits_still_counts():
+    assert take.default_name("electric-clean", TODAY, [CLEAN + "3"]) == CLEAN + "04"
+    assert take.default_name("electric-clean", TODAY, [CLEAN + "012"]) == CLEAN + "13"
+
+
+def test_the_longest_name_is_what_the_name_rule_says_it_is():
+    assert take.check_name("a" * take.NAME_MAX) == []
+    assert take.check_name("a" * (take.NAME_MAX + 1))
+
+
+@pytest.mark.parametrize("rig", ["a" * 45, "a" * 46, "a" * 64, "electric-" * 7 + "x", "a" * 44 + "-" + "b" * 19])
+def test_a_long_rig_name_is_shortened_in_the_default_never_refused(rig):
+    """`NAME_PATTERN` allows a rig 64 characters, which leaves no room for the
+    date and the number. The default cuts the rig's name to fit; it is still
+    a name the take rule passes, and it still counts."""
+    first = take.default_name(rig, TODAY, [])
+    assert take.check_name(first) == [] and len(first) <= take.NAME_MAX
+    assert first.endswith("-2026-11-12-take-01")
+    assert "--" not in first, "a name cut at a separator does not keep it before the date's"
+    assert rig.startswith(first[:-len("-2026-11-12-take-01")]), "cut from the end, not respelt"
+    second = take.default_name(rig, TODAY, [first])
+    assert second == first[:-2] + "02"
+    # Past 99 the number needs a third character, which the rig's name gives up.
+    hundredth = take.default_name(rig, TODAY, [first, second[:-2] + "99"])
+    assert hundredth.endswith("-2026-11-12-take-100")
+    assert take.check_name(hundredth) == [] and len(hundredth) <= take.NAME_MAX
+    assert take.default_name(rig, TODAY, [first, hundredth]).endswith("-take-101")
+
+
+def test_a_rig_name_that_fits_is_kept_whole():
+    rig = "a" * 45  # 45 + "-2026-11-12-take-01" is 64
+    assert take.default_name(rig, TODAY, []) == rig + "-2026-11-12-take-01"
+
+
+@pytest.mark.parametrize("rig, said", [("My Rig.v2", "my-rig-v2"), ("_board", "board"), ("...", "rig")])
+def test_a_rig_name_the_take_rule_would_refuse_is_spelt_so_that_it_passes(rig, said):
+    """A rig file can be called anything; RECORD without a name must not be
+    refused for it."""
+    name = take.default_name(rig, TODAY, [])
+    assert name == f"{said}-2026-11-12-take-01" and take.check_name(name) == []
+
+
+def test_the_count_is_of_the_takes_folder_and_its_archive(tmp_path):
+    """An archived take keeps its number: a take recorded over, and then
+    removed from the takes folder, is still counted from `_archive/`."""
+    assert take.next_name(tmp_path / "no-such-folder-yet", "electric-clean", TODAY) == CLEAN + "01"
+    assert take.next_name(tmp_path, "electric-clean", TODAY) == CLEAN + "01"
+    record(start(tmp_path, name=CLEAN + "01"))
+    record(start(tmp_path, name=CLEAN + "02"))
+    record(start(tmp_path, name=CLEAN + "02"))  # recorded over: the earlier one is archived
+    assert take.next_name(tmp_path, "electric-clean", TODAY) == CLEAN + "03"
+    import shutil
+
+    shutil.rmtree(tmp_path / (CLEAN + "02"))
+    assert take.take_names(tmp_path) == [CLEAN + "01"]
+    assert take.names_used(tmp_path) == {CLEAN + "01", CLEAN + "02", take.ARCHIVE_DIR}
+    assert take.next_name(tmp_path, "electric-clean", TODAY) == CLEAN + "03", "02 is in the archive, so it is taken"
+    assert take.next_name(tmp_path, "electric-clean", date(2026, 11, 13)) == "electric-clean-2026-11-13-take-01"
+
+
+def test_a_take_named_from_the_time_is_still_a_take_everywhere(tmp_path):
+    """`take-<date>-<time>` was the default until #134, and the takes folder
+    holds them: each is still named by the rule, listed, checked and archived
+    as any take is, and counts towards no rig's number."""
+    old = "take-20261031-142501"
+    assert take.check_name(old) == []
+    record(start(tmp_path, name=old))
+    take.finish_take(tmp_path / old, {}, measured_by="")
+    assert take.take_names(tmp_path) == [old]
+    (listed,) = take.list_takes(tmp_path)["takes"]
+    assert (listed["name"], listed["take"], listed["complete"], listed["problems"]) == (old, True, True, [])
+    assert take.check_take(take.load_take(tmp_path / old)) == []
+    assert take.next_name(tmp_path, "take", date(2026, 10, 31)) == "take-2026-10-31-take-01"
+    record(start(tmp_path, name=old, now=datetime(2026, 11, 12, 9, 0, tzinfo=timezone.utc)))
+    assert (tmp_path / take.ARCHIVE_DIR / old / "2026-10-30T21-40-00" / "guitar.wav").is_file()
+    assert take.list_takes(tmp_path)["archived"] == 1
 
 
 def test_takes_live_outside_the_checkout_where_git_clean_cannot_reach_them():
