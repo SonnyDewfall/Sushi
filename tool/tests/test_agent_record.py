@@ -22,6 +22,7 @@ import copy
 import json
 import re
 import sys
+from datetime import datetime
 from pathlib import Path
 
 import pytest
@@ -32,12 +33,12 @@ from aiohttp.test_utils import TestClient, TestServer  # noqa: E402
 
 from sushi_rig import midi_listener  # noqa: E402
 from sushi_rig.agent import (  # noqa: E402
-    Agent, AgentError, Switching, pick_undo, record_refusal, record_request, recorder_run,
+    Agent, AgentError, Switching, pick_undo, record_refusal, record_request, recorder_run, take_rig_name,
 )
 from sushi_rig.recorder_process import RecorderCore, RecorderLink  # noqa: E402
 from sushi_rig.rigfile import load_rig  # noqa: E402
 from sushi_rig.supervisor import AmpRestart, Outcome  # noqa: E402
-from sushi_rig.take import check_take, list_takes, load_take, start_take, take_summary  # noqa: E402
+from sushi_rig.take import check_name, check_take, list_takes, load_take, start_take, take_summary  # noqa: E402
 
 from carla_fake import FakeCarla  # noqa: E402
 from test_agent_amp import nam  # noqa: E402
@@ -188,8 +189,20 @@ def call(agent, method, path, **kwargs):
 
 
 START = ("POST", "/record/start", {"json": {"name": "riff-idea"}})
+UNNAMED = ("POST", "/record/start", {"json": {}})
 STOP = ("POST", "/record/stop", {})
 STATUS = ("GET", "/record", {})
+
+# The agent's clock for a take's default name (#134): local, and a test's to move.
+EVENING = datetime(2026, 11, 12, 21, 58)
+
+
+def on_the_day(agent, now=EVENING):
+    """`agent` with its take clock held at `now`; the list's one item is the
+    clock's reading, for a test to change."""
+    held = [now]
+    agent.take_clock = lambda: held[0]
+    return held
 
 
 # --------------------------------------------------------------------------- #
@@ -198,8 +211,13 @@ STATUS = ("GET", "/record", {})
 
 @pytest.mark.parametrize("body, name", [(None, None), ({}, None), ({"name": None}, None), ({"name": ""}, None),
                                         ({"name": "riff-idea"}, "riff-idea")])
-def test_a_start_names_its_take_or_leaves_it_to_the_time(body, name):
+def test_a_start_names_its_take_or_leaves_it_to_the_agent(body, name):
     assert record_request(body) == name
+
+
+def test_the_rig_in_a_takes_default_name_is_the_running_rigs_file_name():
+    assert take_rig_name({"rig": "config/rigs/electric-clean.yaml"}) == "electric-clean"
+    assert take_rig_name({"rig": "/abs/elsewhere/duo.yaml"}) == "duo"
 
 
 @pytest.mark.parametrize("body, said", [
@@ -279,10 +297,167 @@ def test_a_take_from_record_to_stop_is_logged_and_checks_clean(root):
                          "by": "request"}
 
 
-def test_a_take_without_a_name_is_named_from_the_time(root):
+# --------------------------------------------------------------------------- #
+# A take without a name (#134): <rig>-<date>-take-<nn>, worked out by the agent
+# --------------------------------------------------------------------------- #
+
+def test_a_take_without_a_name_is_named_for_the_rig_the_day_and_its_number(root):
+    """The issue's first "done": the first unnamed take of `duo` today is
+    `-take-01`, the next `-take-02`, and tomorrow's first `-take-01` again."""
+    agent, _, link, _ = record_agent(root)
+    clock = on_the_day(agent)
+
+    def midnight(i):
+        if i == 3:
+            clock[0] = datetime(2026, 11, 13, 0, 0, 1)
+
+    (status, first), _, (_, second), _, (_, tomorrow), _, (_, log) = calls(
+        agent, UNNAMED, STOP, UNNAMED, STOP, UNNAMED, STOP, ("GET", "/live/log", {}), between=midnight)
+    assert status == 200, first
+    assert [first["name"], second["name"], tomorrow["name"]] == [
+        "duo-2026-11-12-take-01", "duo-2026-11-12-take-02", "duo-2026-11-13-take-01"]
+    for name in (first["name"], second["name"], tomorrow["name"]):
+        assert check_take(load_take(root / "takes" / name)) == []
+    assert [e["args"]["name"] for e in log["log"] if e["args"]["action"] == "start"] == [
+        "duo-2026-11-12-take-01", "duo-2026-11-12-take-02", "duo-2026-11-13-take-01"]
+    assert [a["name"] for a in link.asked if a["op"] == "start"] == [
+        "duo-2026-11-12-take-01", "duo-2026-11-12-take-02", "duo-2026-11-13-take-01"], "the recorder is told the name"
+    assert not (root / "takes" / "_archive").exists(), "no take replaced another"
+
+
+def test_idle_offers_the_name_an_unnamed_take_would_get_and_a_start_uses_it(root):
+    """The name shown is the name used: GET /record's `default_name` and a
+    start with no name ask one function."""
     agent, _, _, _ = record_agent(root)
-    (status, body), _ = calls(agent, ("POST", "/record/start", {"json": {}}), STOP)
-    assert status == 200 and re.fullmatch(r"take-\d{8}-\d{6}", body["name"]), body
+    on_the_day(agent)
+    (_, idle), (_, started), (_, recording), _, (_, after) = calls(agent, STATUS, UNNAMED, STATUS, STOP, STATUS)
+    assert idle["state"] == "idle" and idle["default_name"] == "duo-2026-11-12-take-01"
+    assert started["name"] == idle["default_name"]
+    assert recording["state"] == "recording" and "default_name" not in recording
+    assert after["default_name"] == "duo-2026-11-12-take-02", "after a take, the next number"
+    assert after["names"] == ["duo-2026-11-12-take-01"]
+
+
+def test_two_pages_shown_the_same_name_each_get_a_take_of_their_own(root):
+    """Two pages read the same default. One records and stops; the other,
+    still showing that name, presses Record: it sends no name, as an
+    untouched field does, and gets the next number. Nothing is replaced."""
+    agent, _, _, _ = record_agent(root)
+    on_the_day(agent)
+    (_, one), (_, two), (_, first), (busy, refused), _, (status, second), _ = calls(
+        agent, STATUS, STATUS, UNNAMED, UNNAMED, STOP, UNNAMED, STOP)
+    assert one["default_name"] == two["default_name"] == "duo-2026-11-12-take-01", "two pages agree"
+    assert first["name"] == "duo-2026-11-12-take-01"
+    # Pressed while the first still runs: one take at a time, as ever, and said so.
+    assert (busy, refused["code"]) == (409, "recording")
+    assert refused["reason"] == "already recording duo-2026-11-12-take-01: stop it first"
+    assert status == 200 and second["name"] == "duo-2026-11-12-take-02" and not second.get("replaced")
+    assert sorted(p.name for p in (root / "takes").iterdir()) == [
+        "duo-2026-11-12-take-01", "duo-2026-11-12-take-02"], "two takes, and no archive"
+
+
+def test_the_number_counts_archived_takes_and_leaves_gaps_and_other_names_alone(root):
+    takes = root / "takes"
+    for name in ("duo-2026-11-12-take-01", "duo-2026-11-12-take-03", "take-20261112-142501",
+                 "duo-2026-11-11-take-09", "trio-2026-11-12-take-20", "_archive/duo-2026-11-12-take-05/2026-11-12T20-00-00"):
+        (takes / name).mkdir(parents=True)
+    agent, _, _, _ = record_agent(root)
+    on_the_day(agent)
+    (_, idle), (_, started), _ = calls(agent, STATUS, UNNAMED, STOP)
+    assert idle["default_name"] == "duo-2026-11-12-take-06", "one past the archived 05, and 02 and 04 stay gaps"
+    assert started["name"] == "duo-2026-11-12-take-06"
+    assert "take-20261112-142501" in idle["names"], "a take named from the time is still a take"
+
+
+def test_a_name_typed_is_used_as_it_is_and_recording_over_one_still_archives(root):
+    agent, _, _, _ = record_agent(root)
+    on_the_day(agent)
+    again = ("POST", "/record/start", {"json": {"name": "duo-2026-11-12-take-01"}})
+    (_, first), _, (status, second), _, (_, idle) = calls(agent, UNNAMED, STOP, again, STOP, STATUS)
+    assert first["name"] == "duo-2026-11-12-take-01"
+    assert status == 200 and second["name"] == "duo-2026-11-12-take-01" and second["replaced"] is True
+    assert (root / "takes" / "_archive" / "duo-2026-11-12-take-01").is_dir()
+    assert idle["default_name"] == "duo-2026-11-12-take-02"
+
+
+def test_an_unnamed_start_never_archives_a_take_even_when_the_listing_comes_back_empty(root, monkeypatch):
+    """The only way an unnamed start could move an existing take aside was a
+    listing that came back short, so that the count gave a name in use. The
+    name is checked against the folders themselves (`take.next_name`)."""
+    from sushi_rig import take as take_module
+
+    agent, _, _, _ = record_agent(root)
+    on_the_day(agent)
+    (_, first), _ = calls(agent, UNNAMED, STOP)
+    assert first["name"] == "duo-2026-11-12-take-01"
+    monkeypatch.setattr(take_module, "names_used", lambda takes_dir: set())
+    (_, idle), (status, second), _ = calls(agent, STATUS, UNNAMED, STOP)
+    assert idle["default_name"] == "duo-2026-11-12-take-02"
+    assert status == 200 and second["name"] == "duo-2026-11-12-take-02" and not second.get("replaced")
+    assert not (root / "takes" / "_archive").exists()
+
+
+def test_the_default_follows_the_rig_that_is_running(root):
+    """After a switch the state file names another rig file, and the next
+    unnamed take is that rig's first."""
+    (root / "config" / "rigs" / "trio.yaml").write_text(TWO_CHANNELS.replace("name: duo", "name: trio"))
+    world = World(root)
+    agent, _, _, _ = record_agent(root, world)
+    on_the_day(agent)
+
+    def switch(i):
+        if i == 2:
+            world.state["rig"] = "config/rigs/trio.yaml"
+
+    (_, before), _, _, (_, idle), (status, started), _ = calls(
+        agent, STATUS, UNNAMED, STOP, STATUS, UNNAMED, STOP, between=switch)
+    assert before["default_name"] == "duo-2026-11-12-take-01"
+    assert idle["default_name"] == "trio-2026-11-12-take-01"
+    assert status == 200 and started["name"] == "trio-2026-11-12-take-01"
+
+
+def test_a_rig_with_a_long_name_records_under_a_shortened_default(root):
+    """A rig's name may be 64 characters, which leaves no room for the date
+    and the number: the default is shortened, and the take is made."""
+    long = "a-rig-with-a-name-as-long-as-the-rule-for-names-allows-one-to-be"
+    assert len(long) == 64 and check_name(long) == []
+    (root / "config" / "rigs" / f"{long}.yaml").write_text(TWO_CHANNELS.replace("name: duo", f"name: {long}"))
+    agent, _, _, _ = record_agent(root, World(root, rig=f"config/rigs/{long}.yaml"))
+    on_the_day(agent)
+    (_, idle), (status, started), _, (_, after) = calls(agent, STATUS, UNNAMED, STOP, STATUS)
+    # Cut to 43 characters, whatever the number: room for four digits of it.
+    name = "a-rig-with-a-name-as-long-as-the-rule-for-n-2026-11-12-take-01"
+    assert idle["default_name"] == name and len(name) == 62 and check_name(name) == []
+    assert status == 200 and started["name"] == name, started
+    assert check_take(load_take(root / "takes" / name)) == []
+    assert after["default_name"] == name[:-2] + "02"
+
+
+@pytest.mark.parametrize("change, code", [
+    (lambda w: setattr(w, "running", False), "no_rig"),
+    (lambda w: w.state.update(mode="panel"), "panel"),
+    (lambda w: w.state.pop("rig"), "v1"),
+])
+def test_with_no_rig_to_record_there_is_no_default_and_an_unnamed_start_is_refused(root, change, code):
+    world = World(root)
+    change(world)
+    agent, _, link, _ = record_agent(root, world)
+    on_the_day(agent)
+    (status, start), (_, now) = calls(agent, UNNAMED, STATUS)
+    assert (status, start["code"]) == (409, code)
+    assert now["state"] == "unavailable" and "default_name" not in now
+    assert link.asked == [] and not (root / "takes").exists()
+
+
+def test_the_day_is_the_agents_own_clocks_unless_a_test_holds_it(root):
+    """Local time, as the name is for the player to recognise: `datetime.now`
+    with no zone, the clock `transport.auto_name` read before #134."""
+    agent, _, _, _ = record_agent(root)
+    assert agent.take_clock == datetime.now
+    before = datetime.now().strftime("%Y-%m-%d")
+    _, idle = call(agent, "GET", "/record")
+    after = datetime.now().strftime("%Y-%m-%d")
+    assert idle["default_name"] in (f"duo-{before}-take-01", f"duo-{after}-take-01")
 
 
 def test_the_take_carries_the_amp_as_the_agent_last_sent_it_and_the_rig_file_as_it_is(root):
@@ -400,6 +575,7 @@ def test_a_run_no_take_can_be_planned_for_says_why(root):
     assert (status, start["code"]) == (409, "unavailable")
     assert "channel 'keys' plays from 'keys-in', which the machine file gives no ports" in start["reason"]
     assert now["state"] == "unavailable" and now["reason"] == start["reason"]
+    assert "default_name" not in now, "no take can be made, so none is named"
 
 
 def test_a_take_that_did_not_start_is_502_and_its_folder_says_why(root):

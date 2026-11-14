@@ -1565,7 +1565,8 @@ export function recordCall(name) {
 export const STOP_CALL = { path: "/record/stop", json: {} };
 
 // Why a take name will not do, or null. Empty is fine: the agent names the
-// take from the time. The rule is a config's (take.check_name, NAME_PATTERN).
+// take (`default_name` below). The rule is a config's (take.check_name,
+// NAME_PATTERN).
 export function checkTakeName(name) {
   const n = typeof name === "string" ? name.trim() : "";
   if (!n) return null;
@@ -1575,16 +1576,30 @@ export function checkTakeName(name) {
   return null;
 }
 
+// What the player has typed into the take's name, or "" when the field holds
+// nothing of theirs: it is empty, or it shows the agent's default as it was
+// put there (#134). Only what this returns is sent as a name and kept across
+// polls; with "" the agent names the take, by its own count at that moment.
+export function takeTyped(value, fallback) {
+  const text = typeof value === "string" ? value : "";
+  return !text.trim() || text.trim() === fallback ? "" : text;
+}
+
 function stemsText(stems) {
   const files = (stems || []).map((s) => s.file);
   return files.length ? `${files.length} stem${files.length === 1 ? "" : "s"}: ${files.join(", ")}` : "";
 }
 
 // The record bar, from /health, GET /record's answer (whose `names` are the
-// takes already in the folder), the name typed and the start or stop in
-// flight from this page. Record and
+// takes already in the folder, and `default_name` what the agent would call
+// a take started now without a name), the name typed and the start or stop
+// in flight from this page. Record and
 // Stop are both always there; each is enabled when it would be acted on.
 // Neither is touched by the performance lock: recording is a stage action.
+//
+// `default` is the agent's name for the next take, `<rig>-<date>-take-<nn>`
+// (#134): the field shows it until the player types, and it is the agent's
+// to work out, never this page's, so two pages show the same one.
 export function recordBar(health, answer, typed, pending) {
   const agentUp = !!(health && health.ok);
   const rig = agentUp ? health.body.rig || {} : {};
@@ -1612,13 +1627,15 @@ export function recordBar(health, answer, typed, pending) {
   const problem = checkTakeName(name);
   const replaces = name && !problem && (body.names || []).includes(name);
   const starting = pending === "start" || body.doing === "starting";
+  const fallback = typeof body.default_name === "string" && body.default_name ? body.default_name : null;
   return {
     state: "idle", title: "Record", reason: null, name: null, stems: stemsText(body.stems),
+    default: fallback,
     record: { label: starting ? "Starting…" : "Record", disabled: !!problem || starting },
     stop: { label: "Stop", disabled: true },
     note: problem ? problem
       : replaces ? `Will replace the earlier ${name}, which moves to _archive/${name}/.`
-        : name ? null : "No name: the take is named from the time it starts.",
+        : name || fallback ? null : "No name: the agent names the take when it starts.",
     bad: !!problem,
   };
 }

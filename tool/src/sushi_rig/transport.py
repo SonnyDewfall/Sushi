@@ -2,7 +2,8 @@
 
 Issue #57. The listener already takes a name and a save over OSC; this is the
 same shape for a take. A name arrives as its own message, RECORD starts a take
-under the last name received, STOP finishes it, and every outcome goes back to
+under the last name received (with none, under the session's default,
+`<rig>-<date>-take-<nn>`, #134), STOP finishes it, and every outcome goes back to
 the panel as a sentence. The two buttons carry no payload, for the reason
 `listen.py`'s docstring gives for the save button.
 
@@ -173,13 +174,6 @@ class TransportError(Exception):
     player reads on the panel, so it is a sentence, not a code."""
 
 
-def auto_name(now: datetime) -> str:
-    """`take-20261031-142501`: a take recorded without a name still gets one
-    that sorts by time and passes `save.NAME_PATTERN`. Local time, because it
-    is for the player to recognise; `take.yaml` records the moment in UTC."""
-    return now.strftime("take-%Y%m%d-%H%M%S")
-
-
 # --------------------------------------------------------------------------- #
 # Effects
 # --------------------------------------------------------------------------- #
@@ -188,8 +182,13 @@ class Session(Protocol):
     """One take at a time: `start` begins it, `stop` ends it.
 
     Both return the sentence the panel shows, and raise `TransportError` with
-    one if they cannot do what was asked.
+    one if they cannot do what was asked. `default_name` is what a take
+    started at `now` (local time) is called when the player gave no name, by
+    the one rule for that (`take.default_name`, #134); it raises
+    `TransportError` when there is nothing to name a take after.
     """
+
+    def default_name(self, now: datetime) -> str: ...
 
     def start(self, name: str) -> str: ...
 
@@ -208,6 +207,11 @@ class NoEngine:
     def __init__(self, reason: str | None = None):
         self.reason = reason
         self.message = f"recording is not available: {reason}" if reason else self.MESSAGE
+
+    def default_name(self, now: datetime) -> str:
+        # No run to record is no rig to name a take after: RECORD says why
+        # recording is off, as it did when the name was the time.
+        raise TransportError(self.message)
 
     def start(self, name: str) -> str:
         raise TransportError(self.message)
@@ -283,6 +287,26 @@ class TakeSession:
         self._clock = clock
         self._folder: Path | None = None
         self._recorder = None
+
+    def default_name(self, now: datetime) -> str:
+        """`<rig>-<date>-take-<nn>` for a take started at `now`
+        (`take.next_name`): the rig is the run's rig file, by its file's
+        name, which is what the agent calls the running rig too (the state
+        file's `rig`), so a take is named alike from the panel and the page.
+        Counted from the takes folder as it is now, at each RECORD.
+
+        A plan with no rig file has no rig to name a take after. No run of
+        the listener or the recorder makes one (`plan_for_run` refuses a run
+        without a rig file); said as a refusal, not papered over with
+        another kind of name."""
+        from .take import next_name
+
+        plan = self.plan
+        if plan.rig_path is None:
+            raise TransportError(
+                "this take has no name, and the run has no rig file to name it after: "
+                "type a name for the take")
+        return next_name(Path(plan.takes_dir), Path(plan.rig_path).stem, now)
 
     def start(self, name: str) -> str:
         if self._recorder is not None:
@@ -796,7 +820,16 @@ class Transport:
     def on_record(self) -> str:
         if self.recording is not None:
             return f"already recording {self.recording} — press STOP first"
-        name = self.name or auto_name(self._clock())
+        name = self.name
+        if not name:
+            # No name typed: the session's, `<rig>-<date>-take-<nn>`, by the
+            # rule the web UI's takes are named by (`take.default_name`).
+            try:
+                name = self.session.default_name(self._clock())
+            except TransportError as exc:
+                return f"record failed: {exc}"
+            except Exception as exc:  # noqa: BLE001 — the listener must survive
+                return f"record failed: unexpected error: {exc}"
         problems = check_name(name)
         if problems:
             return f"record refused: {problems[0]}"
