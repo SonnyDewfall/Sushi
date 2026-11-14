@@ -87,7 +87,7 @@ def install(root: Path, *, env: dict[str, str] | None = None, home: Path | None 
         # The unit starts this, and `up` starts the listener from it too.
         raise ServiceError(
             f"{program} does not exist, and the service would start it. Create the venv "
-            "as the README's Environment section says, then run this again"
+            "as docs/reference/environment.md says, then run this again"
         )
     unit = unit_text(template, root)
     targets = wanted_by(unit)

@@ -8,9 +8,9 @@ sushi
 # Runtime logs
 *.log
 
-# Third-party plugin binaries. These are installed per-machine (see README:
-# Portability) and catalogued by URI in plugin-manifest.txt, which is what the
-# rig configs actually reference.
+# Third-party plugin binaries. These are installed per-machine (see
+# docs/reference/plugins.md) and catalogued by URI in plugin-manifest.txt,
+# which is what the rig configs actually reference.
 plugins/
 
 # Python

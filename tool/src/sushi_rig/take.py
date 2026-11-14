@@ -53,7 +53,8 @@ carry the number, and says both are defensible. Carried, for three reasons:
    an earlier measurement — and this project does not write in numbers it has
    not measured. Carrying lets the offset be measured from this take, after it,
    and recorded beside audio nothing has touched.
-2. **A stem is a capture.** The README's fixture corollary was paid for once
+2. **A stem is a capture.** The fixture corollary of principle 1
+   (docs/design/principles.md) was paid for once
    already: a capture tidied into something neater encodes a guess as a fact.
    If an offset is ever wrong, a carried one is corrected by editing one line;
    a compensated one is baked into every stem.

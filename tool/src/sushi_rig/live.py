@@ -61,7 +61,7 @@ def _controller(address: str):
     except ImportError:
         raise ElkpyMissing(
             "elkpy not found. Install it into the tool's venv: "
-            "pip install elkpy (see README: Environment)"
+            "pip install elkpy (see docs/reference/environment.md)"
         ) from None
     return sc.SushiController(address)
 
