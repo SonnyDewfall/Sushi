@@ -25,6 +25,8 @@ Hand-authored: `rig.yaml` (or, for the v2 rigs, `config/rigs/*.yaml`), the
 per-machine `machines/<hostname>.yaml` that names physical ports, and any
 component profile under `tool/examples/profiles/`. Everything below the rig file
 in the diagram is generated.
+[`tool/examples/rig.example.yaml`](../../tool/examples/rig.example.yaml) is an
+annotated rig.yaml of this kind.
 
 **Two modes, for two ways of using the rig.** `sushi-rig up` by default gives
 you the panel and the save listener behind it: tweak, type a name, press save,
