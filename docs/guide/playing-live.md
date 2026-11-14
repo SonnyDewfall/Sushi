@@ -11,7 +11,7 @@ phone this is not yet recorded as tried: see
 click **Stage** at the top of the rack; **Rack**, at the bottom of the stage
 screen, takes you back.
 
-<img src="img/stage-phone.png" alt="The stage screen at a phone's width: the rig's name and the Locked button, the master volume, the load, xruns and amp tiles, the Record bar, each channel's volume, and a card for each plugin with a round bypass button" width="320">
+<img src="img/stage-phone.png" alt="The stage screen at a phone's width: the rig's name and the Locked button, the master volume, the load, xruns and amp tiles, the Record bar with the next take's name filled in, each channel's volume, and a card for each plugin with a round bypass button" width="320">
 
 ## What is on the stage screen
 

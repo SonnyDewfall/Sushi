@@ -39,7 +39,7 @@ curl -X POST localhost:8029/rig/save -d '{"name": "electric-board-2"}'   # save 
 curl localhost:8029/rigs/electric_board/saves                       # the points a rig can be reverted to: its saves, and its file's commits
 curl -X POST localhost:8029/rigs/electric_board/revert -d '{"save": "<an id from saves>"}'   # write one back and play it; "discard": true drops unsaved work
 curl localhost:8029/record           # recording, idle, or why recording is off (S7)
-curl -X POST localhost:8029/record/start -d '{"name": "riff-idea"}'   # a take; no name is take-<date>-<time>
+curl -X POST localhost:8029/record/start -d '{"name": "riff-idea"}'   # a take; no name is <rig>-<date>-take-<nn>
 curl -X POST localhost:8029/record/stop                              # finish it: take check's verdict in the answer
 curl localhost:8029/takes            # the takes, newest first, each with take check's verdict
 curl localhost:8029/machine/roles    # the machine file's roles: ports, the widths each can feed, who uses each
@@ -520,7 +520,9 @@ held the rig, finds it too. A child rather than started at the first RECORD:
 it is then supervised like Sushi (a crash is in `/health`, under
 `agent.supervisor.crashed`, and is **not restarted**), it stops with the rig
 (`down`'s SIGINT finishes a running take), and it opens no JACK client until a
-take. `POST /record/start {"name"?}` sends the run's files from the state file
+take. `POST /record/start {"name"?}` names the take (with no name,
+`<rig>-<date>-take-<nn>`, which `GET /record` offers while idle as
+`default_name`: [Takes](takes.md#names)), sends the run's files from the state file
 as it is now and the amp as the agent last sent it (the amp a save writes), and
 the recorder plans the take then with `transport.record_session`, the
 listener's own: the same eight columns for guitar_vocal, the same refusals, a

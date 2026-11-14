@@ -203,7 +203,21 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   runs its name and elapsed time in red. Both work locked (recording is a stage
   action), and Stop takes no confirm, since stopping a take loses nothing.
   Whether a take is running is the agent's answer, never the page's, so a page
-  opened mid-take shows it running. No name is a name from the time; a name
+  opened mid-take shows it running. The name field is filled in with the
+  agent's default for the next take (`<rig>-<date>-take-<nn>`,
+  [Takes](takes.md#names)), so Record can be pressed straight away. Entering
+  the field selects the whole default, so typing replaces it; what was typed
+  is the player's to edit and is left alone, and it stays through polls, a rig
+  switch and other pages' takes until it is recorded with or cleared. A field
+  left empty shows the default again. Only what was typed is sent as a name:
+  Record on an untouched field sends none, and the agent names the take by its
+  count at that moment. **Selecting the default on a tap is untested on
+  WebKit, so on a real phone**: only Chromium is in the tests, and the
+  selection is deferred past the tap because WebKit places the caret after the
+  focus event (`app.js`, `nameField`). At a phone's width the field is
+  narrower than a default name: at 390 px it shows
+  `electric_board-2026-11-14-take-` and not the number (seen in
+  `docs/guide/img/stage-phone.png`). A name
   already taken says the earlier take moves to `_archive/`. Why recording is
   off is said on the bar (no rig, the panel, a v1 run, no recorder, or the
   recorder's own reason). The rack lists the takes beside Save, each with its

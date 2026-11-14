@@ -78,9 +78,12 @@ automatically after `emit` and after the panel's SAVE.
 The panel's record bar (#57) is a take name, RECORD and STOP, with its own
 status line. Like the save bar, the name is its own message and the buttons
 carry nothing, and the listener decides whether a take is running, so a panel
-reloaded mid-take cannot show it stopped. A take without a name is called
-`take-<date>-<time>`; recording again under a name moves the earlier take to
-`_archive/`, and the status line says so. What a take holds is in
+reloaded mid-take cannot show it stopped. RECORD with no name typed names the
+take by the rule the web UI's takes are named by ([Takes](takes.md#names)),
+from the listener's rig file and its takes folder (the panel's field is not
+filled in with it: the status line says the name once the take is running);
+recording again under a name moves the earlier take to `_archive/`, and the
+status line says so. What a take holds is in
 [Takes](takes.md).
 
 To check the record bar's layout on the rig, with the rig up, write a panel with

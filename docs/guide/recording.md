@@ -8,7 +8,7 @@ The page calls a take's sound files **stems**.
 
 Recording is on the **stage** screen, and works while the page is **Locked**.
 
-<img src="img/recording.png" alt="The stage screen while recording: the Record bar turned red, reading Recording with the time 0:47, the take name riff-idea, the five stems it is writing, and the Stop button" width="420">
+<img src="img/recording.png" alt="The stage screen while recording: the Record bar turned red, reading Recording with the time 0:47, the take name electric_board-2026-11-14-take-01 that the rig gave it, the five stems it is writing, and the Stop button" width="420">
 
 ## Record a take
 
@@ -16,9 +16,11 @@ Recording is on the **stage** screen, and works while the page is **Locked**.
    ([Getting started](getting-started.md)).
 2. Open the stage screen: on the laptop, click **Stage** at the top of the
    rack.
-3. Optionally type a name under **Take name**, such as `riff-idea`. Names are
-   lowercase letters, digits, `-` and `_`. With no name, the take is named from
-   the date and time it starts, like `take-20261106-203817`.
+3. Look at the box under **Take name**. It already holds the name this take
+   will get: the rig, the date and a take number, such as
+   `electric-clean-2026-11-14-take-03`. To keep it, leave the box alone. To use
+   your own, tap the box and type: the whole name is selected, so typing
+   replaces it. Names are lowercase letters, digits, `-` and `_`.
 4. Look at the line under the name box. It lists the stems this take will
    write, for example
    `5 stems: board.wav, board-dry.wav, vocal.wav, vocal-dry.wav, master.wav`.
@@ -83,10 +85,24 @@ Things worth knowing about these files:
 
 ## Names
 
-- Recording under a name you have already used does not overwrite the earlier
-  take. The earlier one is moved into a folder called `_archive` inside the
-  takes folder, and the bar warns you before you start:
+- **The name you are given** is the rig's name, the day, and a take number: the
+  third take of `electric-clean` on 14 November is
+  `electric-clean-2026-11-14-take-03`. After each take the number in the box
+  moves on. On a narrow screen the box can be too short to show the number at
+  the end.
+- **A name you type stays in the box** until you record with it or clear it.
+  Empty the box and the given name comes back.
+- **The number is one more than the highest so far** for that rig on that day,
+  counting takes that were moved to `_archive`. So numbers run in the order you
+  played, and a gap is never filled; but if you delete the newest take, the
+  next one gets its number.
+- A take recorded under the given name never replaces another take.
+- Recording under a name you typed that is already used does not overwrite the
+  earlier take. The earlier one is moved into a folder called `_archive` inside
+  the takes folder, and the bar warns you before you start:
   **Will replace the earlier …, which moves to _archive/…**.
+- Takes named the older way, `take-` and a date and time, are still listed and
+  still work.
 - A name the rules do not allow is refused before the take starts, with the
   rule shown under the box.
 

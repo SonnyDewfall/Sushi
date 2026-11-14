@@ -77,6 +77,61 @@ recorded" of one that holds no audio. A take written before 2026-11-02 could say
 falls behind, the stems lose the same frames together and stay aligned, and
 `take.yaml` lists where audio was lost.
 
+## Names
+
+A take's name follows the rule rigs and configs share (lowercase letters,
+digits, `-` and `_`, starting with a letter or digit, at most 64 characters:
+`take.check_name`). Recording under a name already used moves the earlier take
+to `_archive/<name>/`, never overwrites it.
+
+A take recorded without a name is named for the rig, the day and a take
+number (#134, `take.default_name`): `electric-clean-2026-11-12-take-03` is the
+third take of electric-clean on 12 November.
+
+- **The rig** is the running rig's name, which is its rig file's.
+- **The date** is the day by the rig machine's own clock, local time, since
+  the name is for the player to recognise; `take.yaml` records the moment in
+  UTC.
+- **The number** is one more than the highest present for that rig and that
+  day, counted from the takes folder and `_archive/` (`take.names_used`). So a
+  take recorded over keeps its number in the archive, and a gap below the
+  highest (a take renamed or deleted) is never filled, which keeps the numbers
+  in the order played. It is not a promise that a number is never used twice:
+  nothing remembers a take gone from both folders, so removing the newest take
+  frees its number and the next take gets it. Two digits, so take 10 sorts
+  after take 9, and as many as it needs past 99. Takes are counted by the name
+  the rule would give them whatever digits the number is written with, so one
+  numbered by hand (`-take-3`) counts, and a name that only looks like one
+  does not.
+- **A long rig name** is cut to its first 43 characters in its takes' names,
+  the same at every take number (64 characters, less the date, `take` and
+  room for four digits: `take.rig_in_name`); the take is never refused for it.
+  A name the rule for names would refuse is spelt so that it passes:
+  lowercase, anything else a separator, a run of separators collapsed to its
+  first, and none at either end (`My Rig!` is `my-rig`, `a__b` is `a_b`). Two
+  rigs alike in those 43 characters, or alike but for their separators, share
+  one run of numbers. Past take 9999 of the longest rig name the default no
+  longer fits and is refused by the name rule: that take has to be named by
+  hand.
+- **It never takes a name a take has** (`take.next_name`). Whatever the count
+  said, the name is looked for in the takes folder and in `_archive/`, and the
+  number steps on until neither has it: a take recorded without a name never
+  moves an existing take to the archive. Only a name typed does that.
+
+The agent works the name out, not the page: `GET /record` offers it while idle
+(`default_name`) and the record bar shows it in the name field, so two pages
+show the same one, and `POST /record/start` with no name asks the same function
+again. The name shown is therefore the name used, unless a take was made in
+between (from another page, or midnight passed), when the start gets the next
+number instead of a name a take already has. A name typed is used as it is.
+Takes named `take-<date>-<time>`, the default before #134, are takes like any
+other: listed, checked and archived, and counted towards no rig's number.
+
+How the page's name field behaves, and that selecting the default on a tap is
+not yet tried on a real phone, is in [the web UI](web-ui.md); the panel's
+record bar names an unnamed take by the same rule
+([the v1 workflow](v1-workflow.md#the-panels-record-bar)).
+
 ## The capture engine
 
 The capture engine (#53, `tool/src/sushi_rig/capture.py`) is the part that takes

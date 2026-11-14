@@ -3889,3 +3889,18 @@ model change a greyed list, never a box starting "Locked:"; the button is
 by Sushi, Carla, stems and headless. `transport.py`'s own docstring still
 says "NOT VERIFIED: no take has been recorded this way"; it was left, as code
 outside this change. *(2026-11-14)*
+
+**The take's default name, in the documentation.** #134 landed while the
+README was being cut to a front page, so what it added to the old README is
+under `docs/` now, written from the code (`take.default_name`, `rig_in_name`,
+`next_name`; the record bar in `app.js` and `rig.js`): the rule in full in
+`docs/reference/takes.md` ("Names"), the route's `default_name` in
+`docs/reference/agent.md`, the name field's behaviour in
+`docs/reference/web-ui.md`, the panel's RECORD in
+`docs/reference/v1-workflow.md`, and the short of it in
+`docs/guide/recording.md`. The guide's pictures of the record bar were retaken
+and show a default name. Seen in the retaken phone-width picture: at 390 px
+the name field is narrower than a default name and cuts
+`electric_board-2026-11-14-take-` before its number. Selecting the default on
+a tap is still untried on a real phone, as the entry above says.
+*(2026-11-14)*

@@ -120,10 +120,12 @@ def shots(browser) -> list[str]:
         shoot(page, "new-rig.png", clip=span(page, "header.bar", "form.new-rig-form"))
         context.close()
 
-        # Recording: the stage's record bar, a take running.
+        # Recording: the stage's record bar, a take running under the name the
+        # agent gave it (the field is left as it came: `<rig>-<date>-take-<nn>`,
+        # with today's date, so the picture's name is the day it was taken).
         context, page = page_of(browser, served.url + "/#stage", {"width": 1280, "height": 900})
         page.wait_for_selector("input[name=take-name]")
-        page.fill("input[name=take-name]", "riff-idea")
+        page.wait_for_function("document.querySelector('input[name=take-name]').value.includes('-take-')")
         page.click("button.record-act.rec")
         page.wait_for_selector(".record-bar.recording")
         served.recorder.clock.advance(47)
