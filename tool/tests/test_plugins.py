@@ -205,7 +205,8 @@ def test_copy_makes_flat_bundles_and_an_archive_with_a_manifest(tmp_path):
 
 def test_archive_manifest_is_not_zero_bytes():
     """A zero-byte manifest.ttl makes lilv (serd 0.32) log an error on every
-    startup — found by running it; the README says empty is fine."""
+    startup — found by running it; the README of the time said empty is fine
+    (docs/reference/plugins.md now says why it is a comment)."""
     assert ARCHIVE_MANIFEST.strip().startswith("#")
 
 

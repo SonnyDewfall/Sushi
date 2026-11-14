@@ -6,9 +6,10 @@ end of each channel, the master's return first on the master). It changes as
 it is asked, so a browser driving the agent sees its own changes come back on
 the next poll. `Served` runs a real agent over it on a real port, for
 Playwright; run this file to serve it by hand (`python tests/ui_fake.py`),
-which is how the README's screenshots were taken.
+which is how the screenshots in docs/ui/ were taken (those in
+docs/guide/img/ are made by tests/guide_shots.py, over the same fake).
 
-What is observed and what is invented (README, principle 1: a fixture is a
+What is observed and what is invented (docs/design/principles.md, principle 1: a fixture is a
 captured artefact). Observed: every plugin parameter's name and range, read
 here from the repository's captured plugin data -- the overdrive's from
 `fixtures/probe_gxts9.json` (lilv on the real bundle), the delays' from

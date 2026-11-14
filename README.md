@@ -1971,7 +1971,7 @@ Sushi, so the whole test suite can run without the rig machine.
 ## Where to start reading
 
 1. **[MANIFEST.md](MANIFEST.md)** — current state and what is being worked on.
-2. **[IMPLEMENTATION_BRIEF.md](IMPLEMENTATION_BRIEF.md)** — the original brief,
+2. **[IMPLEMENTATION_BRIEF.md](docs/design/IMPLEMENTATION_BRIEF.md)** — the original brief,
    kept as history. §2 lists domain facts that are easy to get wrong; several
    contradict a reasonable first guess. Where it and the code disagree, the code
    is right (see *Repository layout*).

@@ -7,7 +7,7 @@ the same port, which is what the agent's "is Carla answering" asks
 (`procs.port_is_open`). It runs `Carla.at(port=...)`, the agent's own sender,
 end to end.
 
-What is observed and what is invented (README, principle 1). Observed, and
+What is observed and what is invented (docs/design/principles.md, principle 1). Observed, and
 written down in rig.py and amp.py: Carla serves OSC on 22752 over both UDP
 and TCP, addresses a parameter as `/Carla/<plugin>/set_parameter_value
 <index> <value>`, numbers plugins from 0, and says nothing back to a UDP

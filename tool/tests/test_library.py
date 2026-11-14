@@ -281,7 +281,7 @@ def test_the_reader_agrees_with_lilv_on_every_bundle_in_plugins():
     lilv = pytest.importorskip("lilv", reason="lilv is a system package (python3-lilv)")
     plugins_dir = ROOT / "plugins"
     if not plugins_dir.is_dir():
-        pytest.skip(f"{plugins_dir} is not present (it is untracked; see README)")
+        pytest.skip(f"{plugins_dir} is not present (it is untracked; see docs/reference/plugins.md)")
     from sushi_rig.plugins import _lv2_path
 
     with _lv2_path(str(plugins_dir)):
