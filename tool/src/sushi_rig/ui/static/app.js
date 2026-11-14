@@ -74,7 +74,7 @@ const state = {
   record: null, recordBase: null,  // GET /record, with /live; and {elapsed, at} of the take running
   takes: null, takesAt: 0,   // GET /takes, on the rack only: every TAKES_MS, and after a start or stop
   takesOrder: new R.Latest(),  // so an older /takes answer never replaces a newer one
-  takeName: "",              // what is typed in the record bar's name
+  takeName: "",              // what the player typed in the record bar's name; "" while it shows the agent's default
   recordPending: null,       // "start" or "stop", from this page, in flight
   recordResult: null,        // what the last start or stop from this page said (R.recordOutcome)
   // The New rig screen and the rack's channel edits (the rig files):
@@ -1551,13 +1551,34 @@ function saveAsForm(view) {
 // runs its name and elapsed time. Keyed without what is typed and without
 // the elapsed time (redrawn by `tickElapsed`), so neither a poll nor the
 // clock rebuilds the field under the fingers.
+//
+// The name (#134). The field shows the agent's default for the next take
+// (`view.default`) until the player types; `state.takeName` holds only what
+// they typed (`R.takeTyped`), so Record on an untouched field sends no name
+// and the agent names the take, by its count at that moment. The key holds
+// the default, so a new one (a take finished, here or on another page; a rig
+// switch; midnight) rebuilds the field with it, and what the player typed
+// goes back in as it was: only clearing the field, or recording with it,
+// ends it.
 function recordBarView(typed = state.takeName) {
   return R.recordBar(state.health, state.record, typed, state.recordPending);
 }
 
+// True while a rebuild hands the focus back to the name field: that focus is
+// not the player entering the field, so it selects nothing (`nameField`).
+let restoringTakeFocus = false;
+
 function recordRegion(el) {
   const view = recordBarView();
-  const typing = document.activeElement && document.activeElement.name === "take-name";
+  const held = el.querySelector('input[name="take-name"]');
+  const typing = !!held && document.activeElement === held;
+  // Held open and emptied: the player is about to type, and a rebuild must
+  // not put a name back under the caret (the placeholder shows the default).
+  const cleared = typing && held.value === "";
+  // Where the caret or the selection was, for a rebuild to put back.
+  const caret = typing
+    ? { start: held.selectionStart, end: held.selectionEnd, way: held.selectionDirection, length: held.value.length }
+    : null;
   const result = state.recordResult;
   // What follows the typing (the check, Record's state) is drawn by the
   // field's own handler (`drawNameCheck`), not by a rebuild.
@@ -1586,7 +1607,19 @@ function recordRegion(el) {
   });
   if (rebuilt && typing) {
     const input = el.querySelector('input[name="take-name"]');
-    if (input) { input.focus(); input.setSelectionRange(input.value.length, input.value.length); }
+    if (input) {
+      if (cleared) input.value = "";
+      restoringTakeFocus = true;
+      try { input.focus(); } finally { restoringTakeFocus = false; }
+      // The field as the player left it: a caret they placed stays where it
+      // was (a new default once selected itself here, and the next key
+      // replaced the name they meant to add to), kept within the new text;
+      // a name selected whole stays selected whole, however long the new one.
+      const length = input.value.length;
+      const whole = caret.length > 0 && caret.start === 0 && caret.end === caret.length;
+      input.setSelectionRange(whole ? 0 : Math.min(caret.start, length), whole ? length : Math.min(caret.end, length),
+        caret.way || "none");
+    }
   }
   drawNameCheck(el);
   tickElapsed();
@@ -1603,12 +1636,56 @@ function drawNameCheck(el) {
 
 function nameField(view) {
   const input = h("input", { name: "take-name", type: "text", autocomplete: "off", spellcheck: "false",
-    autocapitalize: "none", placeholder: "e.g. riff-idea", "aria-describedby": "take-note",
+    autocapitalize: "none", placeholder: view.default || "e.g. riff-idea", "aria-describedby": "take-note",
     enterkeyhint: "go" });
-  input.value = state.takeName;
+  input.value = state.takeName || view.default || "";
   // Redrawn through render(), whose key holds the view and not the text, so
   // the check under the field follows the typing without a rebuild.
-  input.addEventListener("input", () => { state.takeName = input.value; drawNameCheck(input.closest(".record-bar")); });
+  input.addEventListener("input", () => {
+    state.takeName = R.takeTyped(input.value, view.default);
+    drawNameCheck(input.closest(".record-bar"));
+  });
+  // A default is selected whole when the player enters the field, so that
+  // typing replaces it; what they typed is theirs to edit, and is left alone.
+  // Only on entering: a rebuild that hands the focus back selects nothing
+  // (`restoringTakeFocus`), and a second press places a caret as it would
+  // anywhere.
+  //
+  // Selected once the press or tap that gave the focus is over, not inside
+  // the focus event: WebKit places the caret after that event and undoes a
+  // selection made in it, and then the first key lands inside the default.
+  // So the focus defers it to the next task; the release of a press that
+  // gave the focus is kept from moving the caret, and selects then and once
+  // more in the task after. A deferred selection still waiting is dropped
+  // the moment the player does anything else in the field (a key, a second
+  // press, leaving it): a timer of 0 ms was seen to fire 11 ms late here,
+  // after an End pressed meanwhile, and took back the caret it had placed.
+  // UNTESTED on WebKit: only Chromium is here, where the test is a press, a
+  // release, and the whole default still selected (test_ui.py).
+  const selectDefault = () => {
+    if (document.activeElement === input && !state.takeName && input.value) {
+      input.setSelectionRange(0, input.value.length);
+    }
+  };
+  let later = null;
+  const selectLater = () => { clearTimeout(later); later = setTimeout(selectDefault, 0); };
+  const dropLater = () => { clearTimeout(later); later = null; };
+  let pressGaveFocus = false;
+  input.addEventListener("pointerdown", () => { pressGaveFocus = document.activeElement !== input; dropLater(); });
+  input.addEventListener("pointercancel", () => { pressGaveFocus = false; });
+  input.addEventListener("focus", () => { if (!restoringTakeFocus) selectLater(); });
+  input.addEventListener("mouseup", (event) => {
+    if (!pressGaveFocus) return;
+    pressGaveFocus = false;
+    if (state.takeName || !input.value) return;
+    event.preventDefault();
+    selectDefault();
+    selectLater();
+  });
+  input.addEventListener("keydown", dropLater);
+  input.addEventListener("blur", dropLater);
+  // Left empty, the field shows the default again: an empty name is the default.
+  input.addEventListener("blur", () => { if (!input.value.trim()) input.value = view.default || ""; });
   input.addEventListener("keydown", (event) => { if (event.key === "Enter" && !recordBarView().record.disabled) recordStart(); });
   return h("label", { class: "take-name" }, h("span", {}, "Take name"), input);
 }

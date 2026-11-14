@@ -3717,3 +3717,93 @@ volume control (a tone came back 52 dB louder with it), so the connect service
 was a hazard to leave installable. The write-ups of the device's controls and
 every results file stay; the tool is at `b8192b7` in history, and the spike
 folder's README says so. *(2026-11-12)*
+
+**A take without a name is named for the rig, the day and a take number
+(#134).** It was `take-<date>-<time>` (`transport.auto_name`, now removed: it
+has no caller left); it is `<rig>-<date>-take-<nn>`,
+`electric-clean-2026-11-12-take-03`. **The rule** is `take.default_name(rig,
+day, taken)`, pure: the rig's name, the local date as `YYYY-MM-DD`, and one
+more than the highest number present for that rig and that day, two digits and
+more past 99. `take.names_used` lists what it counts from, the takes folder and
+`_archive/` (so a take recorded over keeps its number), and `take.next_name`
+is the two together, the one function every caller asks. Chosen where the
+issue left it open: the number is one past the highest, not the first gap, so
+a gap below the highest is never filled and the numbers stay in the order
+played, while removing the newest take frees its number (nothing remembers a
+take gone from both folders); a number written by hand with other digits
+(`-take-3`) counts; a long rig name is cut to its first 43 characters, the
+same at every take number (two rigs alike in those share one run of numbers);
+a rig file's name the name rule would refuse (capitals, a dot) is spelt so
+that it passes, a run of separators as one and none at either end. **The agent** works
+it out, from the state file's rig file name and its own clock
+(`Agent.take_clock`, `datetime.now`): `GET /record` carries `default_name`
+while idle and at no other time, and `POST /record/start` with no name asks
+the same function under the record lock, after the refusals, so a run that
+cannot be recorded is refused as before and a second page pressing Record on
+the name both showed gets the next number, not the first one's take. **The
+page**: the record bar's name field shows that default and is editable.
+`state.takeName` holds only what the player typed (`R.takeTyped`: text that is
+not the default the field showed), so an untouched field sends no name and the
+agent names the take. Entering the field selects a default, so typing replaces
+it; typed text is kept through polls, a rig switch and finished takes until it
+is recorded with or cleared; a field held open and empty keeps the default as
+its placeholder and is not written into, and one left empty shows the default
+again. **The listener** (the panel's RECORD): `Transport.on_record` asks its
+session (`Session.default_name`), and `TakeSession` answers by the same
+`take.next_name`, from its rig file's name and its takes folder; `NoEngine`
+answers with why recording is off, as it did. The panel's own name field is
+not filled in: open-stage-control holds that widget's value, and nothing here
+can show a value pushed to it. `recorder_process` never named a take; the
+agent sends it the name. Takes named `take-<date>-<time>` are listed, checked
+and archived as before and count towards no number
+(`test_a_take_named_from_the_time_is_still_a_take_everywhere`). Tests: the
+rule in `test_take.py`, the agent's routes in `test_agent_record.py`, the
+listener's path in `test_transport.py`, `test_transport_take.py` and
+`test_record_session.py`, and five browser tests in `test_ui.py` (prefilled
+and used; midnight and a rig switch; typing over; an emptied field; two
+pages). The fast suite: 4307 passed, 41 skipped (4260 before). **Not run
+here:** a take captured for real (there is no Sushi, PipeWire or JACK here:
+the recorder's core and the agent are real, the engine is stood in); the
+panel in open-stage-control; the page in any browser but headless Chromium,
+so not the select-on-focus on a phone's keyboard; the slow tests and the
+container job. *(2026-11-14)*
+
+**The take's default name, answering review (PR #145).** Six findings, none
+of which lost a take; the entry above is corrected where it said what was not
+so. (1) The page selected the default inside the focus event, which is the
+pattern WebKit undoes when the tap places the caret, so that on a phone the
+first key could land inside the default (`…take-0riff3`). The selection is now
+made after the press: the focus defers it to the next task, and the release of
+a press that gave the focus is kept from moving the caret and selects then
+and once more in the task after, with `setSelectionRange`, not `select()`. A
+deferred selection is dropped at the next key, press or blur: Chromium was
+seen to run a 0 ms timer 11 ms late, after an End pressed meanwhile.
+**WebKit is not installed here and this is untested on it.** (2) A rebuild
+(a new default while the field is held) gave the focus back as a first focus,
+selecting the name whole, so a caret placed to add `-solo` was lost and the
+keys replaced the name. Only a focus from outside the field selects now; a
+rebuild puts back the caret or selection the field had, within the new text,
+and a name selected whole stays whole. (3) "A number is never given twice"
+was not true of the highest: delete the newest take by hand and its number is
+the next one. No counter is kept; the docstring, the README and the entry
+above now say that. (4) A listing that failed part-way was counted as
+complete, so the count could come out low and an unnamed start be given a
+name in use, which `start_take` would archive. `take.next_name` now looks for
+the name itself in the takes folder and in `_archive/` and steps the number
+until neither has it, so an unnamed start never archives a take, whatever the
+listing did. (5) The rig's name was cut by as much as each number's digits
+needed, so a rig of 45 characters became one of 44 at take 100 and shared
+numbers from then on with a rig of that name. It is cut once, to 43
+characters (`take.RIG_ROOM`: room for four digits), at every count; a name
+past take 9999 of the longest rig would be refused by the name rule, and said.
+(6) `My Rig!.yaml` gave `my-rig--2026-11-12-take-01`: a run of separators is
+now one and none is kept at either end, cut or not (`take.rig_in_name`), which
+holds for a valid name too (`a__b` is `a_b` in its takes). Tests: for (1) a
+press, a release and the whole default still selected, with the press held
+and not; for (2) the caret kept through a new default, and a whole selection
+kept through a longer one; for (4) a listing that raises part-way, in
+`test_take.py`, and one that comes back empty, through the agent. The fast
+suite: 4325 passed, 41 skipped. **Not run
+here:** any of it on WebKit, so on the rig: tap the take name on the phone and
+type, and the name should be what was typed and nothing of the default; the
+slow tests and the container job on this commit. *(2026-11-14)*

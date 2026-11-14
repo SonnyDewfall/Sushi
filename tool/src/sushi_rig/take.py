@@ -29,6 +29,13 @@ The archive is `_archive`, not `archive`. `NAME_PATTERN` allows a take called
 "archive", which would have been the archive directory; it cannot start with an
 underscore, so `_archive` can never collide with a take.
 
+A take recorded without a name is `<rig>-<date>-take-<nn>` (#134,
+`default_name`): `electric-clean-2026-11-12-take-03` is the third take of that
+rig that day, which says what was played, when, and which attempt, and is
+found again without having been typed. Until then it was the moment alone,
+`take-20261112-142501`; takes named so are takes like any other, here and in
+the archive, and count towards nobody's number.
+
 A stem is named after its channel, which is the track's name in the config, and
 its tap: the processed stem gets the plain name because it is what you heard,
 and the dry tap carries the suffix.
@@ -95,11 +102,12 @@ from __future__ import annotations
 
 import json
 import os
+import re
 import shutil
 import subprocess
 import sys
 from dataclasses import dataclass, field
-from datetime import datetime, timezone
+from datetime import date, datetime, timezone
 from pathlib import Path
 from typing import Any, Collection, Sequence
 
@@ -216,6 +224,75 @@ def check_name(name: Any) -> list[str]:
             "max 64 characters) — the same rule as a config's"
         ]
     return []
+
+
+# The longest name `NAME_PATTERN` passes. Written out, since the pattern does
+# not say it as a number; test_take.py holds the two together.
+NAME_MAX = 64
+
+# How many digits of take number a default name always has room for, and so
+# how much of a long rig name it keeps: `NAME_MAX` less `-YYYY-MM-DD-take-`
+# and this many digits, 43 characters. Fixed, so that what a rig is called in
+# its takes' names never depends on how many takes it has had.
+NUMBER_ROOM = 4
+RIG_ROOM = NAME_MAX - len("-0000-00-00-take-") - NUMBER_ROOM
+
+
+def rig_in_name(rig: str) -> str:
+    """`rig` as the start of its takes' default names: at most `RIG_ROOM`
+    characters that the rule for names passes. Pure.
+
+    A rig's name is its file's, and one the rule would refuse (capitals, a
+    space, a dot) is spelt so that it passes rather than left to refuse
+    every take recorded without a name: the default is never the reason
+    RECORD does nothing. Whatever is not a lowercase letter or a digit is a
+    separator; a run of separators becomes its first, and none is kept at
+    either end, so the date never follows two (`My Rig!` is `my-rig`). That
+    holds for a name the rule would pass too: `a__b` is `a_b` in its takes.
+
+    A long name is cut once, to `RIG_ROOM`, whatever the take's number: cut
+    by as much as each number needed, a rig of 45 characters became one of
+    44 at its hundredth take, and from then on counted with whatever rig
+    had that shorter name. Two rigs alike in their first `RIG_ROOM`
+    characters, or alike but for their separators, share one run of
+    numbers; that costs a number, never a take."""
+    part = re.sub(r"[^a-z0-9_-]", "-", str(rig).lower())
+    part = re.sub(r"[-_]{2,}", lambda run: run.group()[0], part).strip("-_")
+    return part[:RIG_ROOM].rstrip("-_") or "rig"
+
+
+def default_name(rig: str, day: date, taken: Collection[str]) -> str:
+    """The name of a take recorded without one: `<rig>-<date>-take-<nn>`,
+    `electric-clean-2026-11-12-take-03` (#134).
+
+    `rig` is the running rig's name (as `rig_in_name` spells it), `day` the
+    day as the player's clock has it (local, because the name is for the
+    player to recognise; `take.yaml` records the moment in UTC) and `taken`
+    the names to count from (`names_used`: the takes folder and its
+    archive). Pure.
+
+    The number is one more than the highest among `taken` for that rig and
+    day. So a take that was archived keeps its number, and a gap below the
+    highest (a take renamed or deleted) is never filled, which keeps the
+    numbers in the order the takes were played. It is not a promise that a
+    number is never given twice: nothing remembers a take once it is gone
+    from both folders, so removing the newest take frees its number, and
+    the next take gets it. Two digits, so take 10 sorts after take 9, and
+    as many as it needs past 99.
+
+    Takes are counted by the name this would give them, whatever digits the
+    number is written with: one numbered by hand (`-take-3`) counts, and a
+    name that only looks like one does not. The name fits `NAME_MAX` up to
+    take 9999 of the longest rig name (`NUMBER_ROOM`); the next would be
+    refused by the name rule, loudly, and has to be named by hand.
+    """
+    stem = f"{rig_in_name(rig)}-{day.strftime('%Y-%m-%d')}-take-"
+    highest = 0
+    for name in taken:
+        name = str(name)
+        if name.startswith(stem) and re.fullmatch(r"[0-9]+", name[len(stem):]):
+            highest = max(highest, int(name[len(stem):]))
+    return f"{stem}{highest + 1:02d}"
 
 
 def check_stems(stems: Sequence[Stem]) -> list[str]:
@@ -1198,6 +1275,47 @@ def take_names(takes_dir: Path) -> list[str]:
         return sorted(entry.name for entry in Path(takes_dir).iterdir() if _is_take_folder(entry))
     except OSError:
         return []
+
+
+def names_used(takes_dir: Path) -> set[str]:
+    """The names in `takes_dir` now: the takes there, and the earlier ones
+    kept in `_archive/` (one folder per name), for `default_name` to count
+    from. A listing of two folders and nothing read.
+
+    A folder that cannot be listed counts as holding nothing, as in
+    `take_names` (a takes folder not made yet is the usual case), and a
+    listing that fails part-way keeps what it had read. Either can leave the
+    count too low, which is why `next_name` does not rest on it."""
+    used: set[str] = set()
+    for folder in (Path(takes_dir), Path(takes_dir) / ARCHIVE_DIR):
+        try:
+            for entry in folder.iterdir():
+                used.add(entry.name)
+        except OSError:
+            continue
+    return used
+
+
+def next_name(takes_dir: Path, rig: str, day: date) -> str:
+    """`default_name` for `rig` on `day`, counted from what is in
+    `takes_dir` now, and free: no take has it there or in `_archive/`. The
+    one function every RECORD without a name asks (the agent's, the
+    listener's) and the record bar shows, so the name shown is the name used.
+
+    Free whatever the listing did. `start_take` archives a take whose name it
+    is given, which is right for a name the player typed and would be wrong
+    for one worked out here: a listing that came back short (`names_used`)
+    would count too low, and the take already under that name would be moved
+    aside by a RECORD nobody named. So each candidate is looked for by name,
+    in both folders, and the number steps on until neither has it: a take
+    recorded without a name never archives one that exists."""
+    takes_dir = Path(takes_dir)
+    taken = names_used(takes_dir)
+    while True:
+        name = default_name(rig, day, taken)
+        if not (os.path.lexists(takes_dir / name) or os.path.lexists(takes_dir / ARCHIVE_DIR / name)):
+            return name
+        taken.add(name)
 
 
 def _folder_key(folder: Path) -> tuple:

@@ -453,7 +453,7 @@ curl -X POST localhost:8029/amp/model -d '{"model": "Some Model.nam"}'   # resta
 curl -X POST localhost:8029/rig/save                                # the running rig into its own rig file, in place (S4)
 curl -X POST localhost:8029/rig/save -d '{"name": "electric-board-2"}'   # save as a new rig, which becomes the running one
 curl localhost:8029/record           # recording, idle, or why recording is off (S7)
-curl -X POST localhost:8029/record/start -d '{"name": "riff-idea"}'   # a take; no name is take-<date>-<time>
+curl -X POST localhost:8029/record/start -d '{"name": "riff-idea"}'   # a take; no name is <rig>-<date>-take-<nn>
 curl -X POST localhost:8029/record/stop                              # finish it: take check's verdict in the answer
 curl localhost:8029/takes            # the takes, newest first, each with take check's verdict
 curl localhost:8029/machine/roles    # the machine file's roles: ports, the widths each can feed, who uses each
@@ -919,7 +919,9 @@ held the rig, finds it too. A child rather than started at the first RECORD:
 it is then supervised like Sushi (a crash is in `/health`, under
 `agent.supervisor.crashed`, and is **not restarted**), it stops with the rig
 (`down`'s SIGINT finishes a running take), and it opens no JACK client until a
-take. `POST /record/start {"name"?}` sends the run's files from the state file
+take. `POST /record/start {"name"?}` names the take (with no name,
+`<rig>-<date>-take-<nn>`, which `GET /record` offers while idle as
+`default_name`: "Takes" below), sends the run's files from the state file
 as it is now and the amp as the agent last sent it (the amp a save writes), and
 the recorder plans the take then with `transport.record_session`, the
 listener's own: the same eight columns for guitar_vocal, the same refusals, a
@@ -1197,7 +1199,11 @@ no Node and the UI has to run from a checkout. Two screens from the mockups:
   runs its name and elapsed time in red. Both work locked (recording is a stage
   action), and Stop takes no confirm, since stopping a take loses nothing.
   Whether a take is running is the agent's answer, never the page's, so a page
-  opened mid-take shows it running. No name is a name from the time; a name
+  opened mid-take shows it running. The name field is filled in with the
+  agent's default for the next take (`<rig>-<date>-take-<nn>`, under "Takes"
+  below), so Record can be pressed straight away; typing replaces it, and what
+  was typed stays through polls, a rig switch and other pages' takes until it
+  is recorded with or cleared, when the default comes back. A name
   already taken says the earlier take moves to `_archive/`. Why recording is
   off is said on the bar (no rig, the panel, a v1 run, no recorder, or the
   recorder's own reason). The rack lists the takes beside Save, each with its
@@ -1627,11 +1633,52 @@ recorded" of one that holds no audio. A take written before 2026-11-02 could say
 falls behind, the stems lose the same frames together and stay aligned, and
 `take.yaml` lists where audio was lost.
 
+A take recorded without a name is named for the rig, the day and a take
+number (#134): `electric-clean-2026-11-12-take-03` is the third take of
+electric-clean on 12 November.
+
+- **The rig** is the running rig's name, which is its rig file's.
+- **The date** is the day by the rig machine's own clock, local time, since
+  the name is for the player to recognise; `take.yaml` records the moment in
+  UTC.
+- **The number** is one more than the highest present for that rig and that
+  day, counted from the takes folder and `_archive/`. So a take recorded over
+  keeps its number in the archive, and a gap below the highest (a take
+  renamed or deleted) is never filled, which keeps the numbers in the order
+  played. It is not a promise that a number is never used twice: nothing
+  remembers a take gone from both folders, so removing the newest take
+  frees its number and the next take gets it. Two digits, so take 10 sorts
+  after take 9, and as many as it needs past 99.
+- **A long rig name** is cut to its first 43 characters in its takes' names,
+  the same at every take number (64 characters, less the date, `take` and
+  room for four digits); the take is never refused for it. A name the rule
+  for names would refuse is spelt so that it passes: lowercase, anything else
+  a separator, a run of separators one, and none at either end (`My Rig!`
+  is `my-rig`). Two rigs alike in those 43 characters, or alike but for
+  their separators, share one run of numbers.
+- **It never takes a name a take has.** Whatever the count said, the name is
+  looked for in the takes folder and in `_archive/`, and the number steps on
+  until neither has it: a take recorded without a name never moves an
+  existing take to the archive. Only a name typed does that.
+
+The agent works the name out (`take.default_name`), not the page: `GET
+/record` offers it while idle (`default_name`) and the record bar shows it
+in the name field, so two pages show the same one, and `POST /record/start`
+with no name asks the same function again. The name shown is therefore the
+name used, unless a take was made in between (from another page, or
+midnight passed), when the start gets the next number instead of a name a
+take already has. A name typed is used as it is, and recording under a name
+already used moves the earlier take to `_archive/`, as before. Takes named
+`take-<date>-<time>`, the default before #134, are takes like any
+other: listed, checked and archived, and counted towards no rig's number.
+
 The panel's record bar (#57) is a take name, RECORD and STOP, with its own
 status line. Like the save bar, the name is its own message and the buttons
 carry nothing, and the listener decides whether a take is running, so a panel
-reloaded mid-take cannot show it stopped. A take without a name is called
-`take-<date>-<time>`; recording again under a name moves the earlier take to
+reloaded mid-take cannot show it stopped. RECORD with no name typed names the
+take by the same rule, from the listener's rig file and its takes folder (the
+panel's field is not filled in with it: the status line says the name once the
+take is running); recording again under a name moves the earlier take to
 `_archive/`, and the status line says so.
 
 The capture engine (#53, `tool/src/sushi_rig/capture.py`) is the part that takes

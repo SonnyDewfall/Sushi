@@ -10,12 +10,14 @@ from __future__ import annotations
 
 import json
 import textwrap
+from datetime import datetime
 from pathlib import Path
 
 import pytest
 from rig_fixtures import FROZEN_MACHINE, FROZEN_SRC, frozen, frozen_v1
 
 from sushi_rig import capture, cli, transport
+from sushi_rig import take as take_module
 from sushi_rig.capture import CaptureUnavailable, plan_columns
 from sushi_rig.machine import MachineSpec
 from sushi_rig.paths import checkout_root
@@ -519,6 +521,24 @@ def test_the_listener_gets_a_take_session_when_the_pieces_are_there(duo, tmp_pat
     assert "RECORD records guitar.wav from sushi:audio_output_2" in capsys.readouterr().err
 
 
+def test_the_listeners_session_names_an_unnamed_take_for_its_rig_file(duo, tmp_path, monkeypatch):
+    """#134 on the panel's path: the session `sushi-rig listen --rig` builds
+    answers the default from the rig file it was given and its takes folder,
+    by the rule the agent's takes are named by (`take.next_name`)."""
+    rig_path, config_path, machine_path = duo
+    monkeypatch.setattr(transport, "_capture_engine", StandInEngine)
+    session = run_listen(monkeypatch, [
+        "--rig", str(rig_path), "--panel-config", str(config_path),
+        "--machine", str(machine_path), "--takes-dir", str(tmp_path / "takes"),
+    ])
+    now = datetime(2026, 11, 12, 21, 0)
+    assert session.default_name(now) == "duo-2026-11-12-take-01"
+    (tmp_path / "takes" / "duo-2026-11-12-take-01").mkdir(parents=True)
+    (tmp_path / "takes" / "_archive" / "duo-2026-11-12-take-04").mkdir(parents=True)
+    assert session.default_name(now) == "duo-2026-11-12-take-05"
+    assert session.default_name(now) == take_module.next_name(tmp_path / "takes", "duo", now)
+
+
 def test_the_listener_says_at_start_why_record_is_off(monkeypatch, capsys):
     session = run_listen(monkeypatch, [])
     assert isinstance(session, NoEngine)
@@ -575,8 +595,8 @@ def test_a_config_that_cannot_be_made_is_the_takes_own_refusal(duo, tmp_path):
         raise KeyError("Input Lvl")
 
     session.amend_config = broken
-    said = Transport(session).on_record()
-    assert said.startswith("record failed: cannot record take-")
+    said = Transport(session, clock=lambda: datetime(2026, 11, 12, 21, 0)).on_record()
+    assert said.startswith("record failed: cannot record duo-2026-11-12-take-01: ")
     assert said.endswith("the config it would carry could not be made (KeyError: 'Input Lvl')")
     assert not (tmp_path / "takes").exists()
 
