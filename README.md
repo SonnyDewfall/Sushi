@@ -17,7 +17,8 @@ phone.
   starts and stops it, changes it while it plays, saves it, records it, and
   serves the page.
 - **The page** has two screens: the **rack**, laid out like a mixing desk, for
-  shaping a sound; and the **stage**, for playing, which is what a phone opens.
+  shaping a sound; and the **stage**, for playing, which is what a phone-sized
+  screen opens.
 - **`sushi-rig`**, the Python tool under `tool/`, is everything else: the
   compiler that turns a rig file into what Sushi loads, the checks, the
   recorder, and the commands.
@@ -47,7 +48,7 @@ sushi-rig agent      # leave this running
 
 Then open <http://127.0.0.1:8029/>, click a rig under **RIGS**, and click
 **Start**. The first guide, [Getting started](docs/guide/getting-started.md),
-walks through it, including how to use a phone.
+walks through it, including how to reach it from a phone.
 
 After a `git pull`, stop the agent and start it again: it keeps running the
 code it was started with.

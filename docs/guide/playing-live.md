@@ -5,10 +5,13 @@ mid-song is big, and everything that could cut the sound by accident is put out
 of reach. This guide covers that screen, switching between rigs, the lock, and
 pedals.
 
-A phone opens the stage screen by default. On the laptop, click **Stage** at the
-top of the rack; **Rack**, at the bottom of the stage screen, takes you back.
+A screen as narrow as a phone's opens the stage screen by default (from a real
+phone this is not yet recorded as tried: see
+[Getting started](getting-started.md#use-your-phone-as-well)). On the laptop,
+click **Stage** at the top of the rack; **Rack**, at the bottom of the stage
+screen, takes you back.
 
-<img src="img/stage-phone.png" alt="The stage screen on a phone: the rig's name and the Locked button, the master volume, the load, xruns and amp tiles, the Record bar, each channel's volume, and a card for each plugin with a round bypass button" width="320">
+<img src="img/stage-phone.png" alt="The stage screen at a phone's width: the rig's name and the Locked button, the master volume, the load, xruns and amp tiles, the Record bar, each channel's volume, and a card for each plugin with a round bypass button" width="320">
 
 ## What is on the stage screen
 
@@ -37,7 +40,10 @@ again to close it. For every control an effect has, use the rack: see
 
 ## The lock
 
-The page starts **Locked**, so a stray thumb cannot stop the rig mid-song.
+The page starts **Locked**. On the stage screen that puts stopping and switching
+the rig out of reach, so a stray thumb cannot cut the sound mid-song. The rack
+keeps its **Stop** and **Switch to** buttons even while locked: the lock does
+not protect you there.
 
 While locked you can still turn knobs, bypass effects, move every volume and
 record. What the lock takes away:
@@ -60,8 +66,9 @@ pedal, or another device that is unlocked, from changing the rig.
 
 ## Switch to another rig
 
-1. On the stage screen, unlock. (On the rack the list is always there, under
-   **RIGS** on the right.)
+1. On the stage screen, unlock, then scroll to the very bottom: **RIGS** is the
+   last thing on the screen, below every plugin's card. (On the rack the list
+   is always there, under **RIGS** on the right.)
 2. Under **RIGS**, tap the rig you want. The one playing is marked **up now**.
 3. Tap **Switch to** and its name. There is no second question: it switches at
    once.
@@ -77,7 +84,8 @@ the other.
 **A switch throws away unsaved changes without asking.** If you have turned
 knobs you want to keep, save first: see [Saving and going back](saving.md).
 
-If a take is recording when you switch, the take is finished first.
+If a take is recording when you switch, the take is finished first (not yet
+tried on the rig).
 
 ## Pedals
 

@@ -15,8 +15,8 @@ microphone is another.
 - Each channel's **VOLUME** is in that channel's strip, down the left of the
   rack, and under **CHANNELS** on the stage screen.
 
-They are the same faders in both places: move one on the phone and it moves on
-the laptop.
+They are the same faders in both places, and on every device: move one and it
+moves everywhere within a second.
 
 ## Set a volume
 
@@ -59,8 +59,8 @@ when you save: see [Saving and going back](saving.md).
   up to fade that channel, and it would undo whatever you set. See
   [Playing live](playing-live.md#pedals).
 - **The faders show "—" and will not move** when no rig is running.
-- The volume faders are newer than most of the page. The project's log still
-  lists them as not yet tried on the rig itself.
+- The channel **VOLUME** faders have been mixed with on the rig. The **MASTER**
+  fader is not yet recorded as tried on the rig itself.
 
 ## If something goes wrong
 

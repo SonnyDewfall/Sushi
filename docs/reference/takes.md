@@ -3,20 +3,28 @@
 What a recording is on disk, how to check one, and the engine that captures
 it. To make one, see [Recording](../guide/recording.md).
 
-A recording is a folder, not loose WAVs: the stems, a copy of the config that
-was live when it was made (amp included), a copy of the v2 rig file it was
-compiled from when there was one, and a `take.yaml` saying how the stems line
-up and which commit the library was at. Because the rig is in the folder, a
-take can be re-amped through the exact rig that made it months later. Takes go
-in `~/sushi-rig-takes/`, outside the checkout, so `git clean -x` cannot delete
-them.
+A recording is a folder, not loose WAVs: the stems, a copy of the config Sushi
+loaded for the run (with the amp written into it), a copy of the v2 rig file it
+was compiled from when there was one, and a `take.yaml` saying what was
+recorded, what is known of how the stems line up, and which commit the library
+was at. Because the rig is in the folder, a take can be re-amped through the
+rig that made it months later. Takes go in `~/sushi-rig-takes/`, outside the
+checkout, so `git clean -x` cannot delete them.
+
+**What the copies hold, and what they do not** (`transport.py`). `config.json`
+is the config file Sushi loaded, read at RECORD (a live switch rewrites it under
+a running rig), with the amp as the agent last sent it. `rig.yaml` is the rig
+file as it stood at RECORD, so a Save made before the take is in it. Neither is
+a capture of the running Sushi: **a parameter moved since the rig came up and
+not saved is in neither**, where Save would have captured it. A take that must
+carry the exact sound wants a Save first.
 
 ```
 ~/sushi-rig-takes/riff-idea/
-    take.yaml         how the stems line up, what made them, and the library commit
-    config.json       the rig, as it was live: what ran
-    rig.yaml          the v2 rig it was compiled from: what was meant (v2 rigs only)
-        guitar.wav        the guitar channel after its chain, before its volume
+    take.yaml         what was recorded, what is known of how the stems line up, and the library commit
+    config.json       the config Sushi loaded for the run, with the amp
+    rig.yaml          the v2 rig file as it stood at RECORD (v2 rigs only)
+    guitar.wav        the guitar channel after its chain, before its volume
     guitar-dry.wav    what went in: the interface's input, before the amp
     master.wav        the mix as it reached the monitors
 ```
@@ -34,12 +42,23 @@ for the role (`guitar-in-dry.wav`). A v1 run (a rig.yaml of tracks) cannot be
 recorded from the web UI: its routing sums every track into the monitor bus, so
 there is no stem of one track to take.
 
-The processed stems are a block later than the dry ones — 5.35 ms at the rig's
-quantum. They are written exactly as captured and `take.yaml` says how far to
-slide them, rather than being shifted on write.
+**Offsets are carried, not compensated, and the record button does not measure
+them yet.** A dry tap leads its processed stem by the rig's buffering, 257
+samples, 5.35 ms, at a quantum of 256 (`take.py`). Stems are written exactly as
+captured, never shifted on write; `take.yaml` has a place for each stem's
+measured offset (`latency_samples`) and states the consequence as a sentence
+under `alignment.note`, with what measured it under `alignment.measured_by`. A
+take made by RECORD, from the page or the panel, passes no offsets
+(`transport._finish`): its `measured_by` reads "not measured: the record button
+does not measure offsets yet" and its note says each processed stem's offset
+"was not measured, so they are exactly as captured and may need lining up by
+ear". Only a caller of `take.finish_take` that hands it measured offsets gets
+the "move them N ms earlier" sentence; nothing in the tool does today. Whether
+the figure above holds for a dry tap against what came out of the amp is, in
+`transport.py`'s words, a hypothesis to test on the rig.
 
 ```bash
-sushi-rig take check ~/sushi-rig-takes/riff-idea       # whole, and how it lines up
+sushi-rig take check ~/sushi-rig-takes/riff-idea       # whole, and what it says of how it lines up
 sushi-rig verify ~/sushi-rig-takes/riff-idea/config.json  # the rig that made it
 ```
 
@@ -79,8 +98,11 @@ records what was linked under `capture.engine.sources`.
 recorded on the rig on 2026-11-06** (`take-20261106-203817`, electric-chorus-2,
 five columns, 24.6 s, `take check` ok, 0 lost frames and 0 xruns; MANIFEST and
 `capture.py` have the numbers, including a slowest callback of 10.2 ms against
-a 5.3 ms budget that lost nothing and is not explained). Still not verified:
-eight columns (a two-channel rig; that take was five) and a stereo dry tap.
+a 5.3 ms budget that lost nothing and is not explained). A take of a
+two-channel rig, guitar and vocal, has since been recorded from the page and
+its `master.wav` listened back (at Sonny's word; MANIFEST, 2026-11-14), but
+with no figures kept, so the accounting of an eight-column take is still not
+on record. Still not verified: a stereo dry tap.
 The listener constructs an engine for a `--rig` run with its panel (#57), and
 `sushi-rig recorder` for a headless one, which is how the web UI records
 ([the agent](agent.md#recording-from-the-web-ui)); either says why it has none

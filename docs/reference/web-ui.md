@@ -264,12 +264,18 @@ says what in it is observed). Which plugin each processor is comes from
 Sushi's saved session; that its `path` holds an LV2 plugin's URI is an
 assumption `live.py` records as unverified against 1.3.0.
 
+Used on the rig since, at Sonny's word (MANIFEST, 2026-11-14): each channel's
+volume fader, Add channel followed by the restart it offers, and a take of a
+two-channel rig.
+
 Not recorded as run against a live Sushi (MANIFEST, 2026-11-07): Undo, the
-master volume on the master track's `gain` (its range is read from Sushi's parameter_info, and rigfile.py
-records it as -120 to +24 dB from 1.3.0's source, unobserved), a channel's
-volume (the send's gain, already saved and switched by #101 and #112), a
-revert's live switch into the rig already up, the New rig screen and the
-rack's channel edits, and the knobs' feel on the rig's touch screen.
+master volume on the master track's `gain` (its range is read from Sushi's
+parameter_info, and rigfile.py records it as -120 to +24 dB from 1.3.0's
+source, unobserved), a revert's live switch into the rig already up, the New
+rig screen and a channel's input change, and the knobs' feel on the rig's
+touch screen. Nor is the page recorded as opened from a phone's own browser
+(MANIFEST, 2026-11-02): the stage screen is tested at a phone's width in
+Chromium.
 
 ## Trying it without a rig
 

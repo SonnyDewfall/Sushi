@@ -28,7 +28,8 @@ These screens are on the rack only, and work whether or not the page is locked.
      no effects, or pick a channel of another rig to copy its effects and its
      volume.
 4. For another channel, click **Add channel** and fill it in the same way.
-   **Remove channel** takes one out again. The count beside **CHANNELS** shows
+   Each channel then has a button to take it out again, **Remove channel 1**,
+   **Remove channel 2** and so on. The count beside **CHANNELS** shows
    how many you have, of at most three.
 5. Click **Create** and the rig's name.
 
@@ -84,9 +85,10 @@ rig is. **Back to the rack**, at the top right, leaves the screen.
   moved.
 - The page has no way to rename or delete a rig. A rig is one file in the
   project's `config/rigs/` folder.
-- The project's log last recorded these screens as not yet tried on the rig
-  itself. Rigs with a second channel have been saved from the laptop since, but
-  the log does not say they were made here.
+- Adding a channel from the page and restarting to play it has been done on the
+  rig: a vocal channel was added to a guitar rig that way. Making a whole new
+  rig on the **New rig** screen, and **Change input**, are not yet recorded as
+  tried on the rig.
 
 ## If something goes wrong
 

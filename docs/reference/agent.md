@@ -501,12 +501,11 @@ with its panel, whose changes the agent cannot see. A stop and a switch to
 another rig still drop unsaved work, as they always have. Remote callers are treated as
 `POST /rig/save` treats them, no differently: a write needs no loopback peer,
 since Save writes the same files without one; the agent binds to localhost,
-and `--host 0.0.0.0` stays your call. **Not recorded as run against a live Sushi**: the
-rigs these write are shown to compile and wire as `up --rig` would, and
-MANIFEST's last word (2026-11-06) is that no rig made this way had been started
-on the rig. Rigs with a new name and an added channel have been committed from
-the laptop since (2c36874, 612e179); the record does not say which screen made
-them.
+and `--host 0.0.0.0` stays your call. **On the rig**: a channel added from the
+page and played after the restart it offers has been done (a vocal channel on
+electric-chorus-2, at Sonny's word; MANIFEST, 2026-11-14). `POST /rigs/new` and
+a channel's input change are not recorded as run against a live Sushi: the
+rigs they write are shown to compile and wire as `up --rig` would.
 
 ## Recording from the web UI
 
@@ -551,7 +550,9 @@ is resolved to the name JACK sees before the take is planned
 its own JACK client lists, by name or by JACK alias; the machine file stays as
 it is, since the patchbay needs the alias. **A take was captured on the rig on
 2026-11-06** (electric-chorus-2, five columns, 24.6 s, `take check` ok; see
-[Takes](takes.md#the-capture-engine)). Still not run on the rig: a take of
-eight columns (a two-channel rig), a stereo dry tap, and the engine's own
-match by JACK alias, which is the second line when the first resolution
-cannot read the graph.
+[Takes](takes.md#the-capture-engine)). A take of a two-channel rig, guitar and
+vocal, has since been recorded from the page and its `master.wav` listened
+back (at Sonny's word; MANIFEST, 2026-11-14), with no figures kept. Still not
+run on the rig: a stereo dry tap, the engine's own match by JACK alias, which
+is the second line when the first resolution cannot read the graph, and a
+stop, switch or model change made while a take is recording.

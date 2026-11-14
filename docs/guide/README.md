@@ -12,11 +12,24 @@ A few words used throughout:
 - The **agent** is the small program that runs the rig and serves the page you
   control it from.
 - The **rack** is the main page, laid out like a mixing desk. The **stage** is
-  the simpler page for playing, and what a phone opens.
+  the simpler page for playing, and what a phone-sized screen opens.
+
+The page's messages use a few names of their own:
+
+- **Sushi** is the effects engine: the program the plugins run in. "Sushi
+  exited", "nothing is running in Sushi" and "Up, but Sushi did not answer" are
+  all about that program.
+- **Carla** is the program the amp runs in. "Carla is not running" means the amp
+  has stopped.
+- **Stems** are a take's sound files, one for each thing recorded: "5 stems"
+  is five files.
+- **Headless** means started from the page, with no separate control panel
+  beside the rig. Every rig the page starts is headless; "Started …, headless."
+  is the normal message.
 
 | Guide | What it covers |
 |---|---|
-| [Getting started](getting-started.md) | Start the agent, open the page, start a rig, use a phone |
+| [Getting started](getting-started.md) | Start the agent, open the page, start a rig, reach it from a phone |
 | [Playing live](playing-live.md) | The stage screen, switching rigs, the lock, pedals |
 | [Shaping a sound](shaping-a-sound.md) | Plugins, knobs, bypass, the amp, undo |
 | [Mixing](mixing.md) | Each channel's volume, and the master |

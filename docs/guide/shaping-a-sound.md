@@ -85,6 +85,8 @@ Click again for the one before.
 
 - It takes back knobs, bypasses, moves, volumes and the amp's levels, newest
   first.
+- It also takes back a change of the amp's model. That restarts the amp, so the
+  sound cuts out for a moment, just as the change did.
 - There is no redo.
 - It stops at a rig switch: the button then reads
   **Nothing to undo past the rig switch**.
@@ -116,7 +118,11 @@ Undo has not yet been tried on the rig itself, only against a stand-in.
 - **A knob shows "refused:" under it, and a box appears starting
   "Not changed:".** The agent would not make the change; the reason is in the
   box and in the knob's tooltip.
-- **A box says "Locked: …".** The page is locked. Unlock it and try again.
+- **A box headed "Not moved:" and the plugin's name, with a reason starting
+  "Locked:".** You tried to move a plugin while the page is locked. Unlock it
+  and try again.
+- **The Model list is greyed out, with a line starting "Locked:" under it.**
+  The same: unlock the page to change the amp's model.
 - **A box starts "Amp model not changed:".** The model did not load. The box
   says whether the previous model was brought back; if it was not, see
   [When something's wrong](troubleshooting.md#a-part-of-the-rig-has-stopped).

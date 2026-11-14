@@ -3764,3 +3764,38 @@ pedals, and a take of a two-channel rig. **Not in the guides**, because the
 page does not do it: adding or removing a plugin. Two changes in flight will
 update their own guides: take names (#134) and the rack's tab per channel
 (#135). *(2026-11-14)*
+
+**Used on the rig between 7 and 12 Nov, at Sonny's word; and the guides
+corrected after an accuracy review (PR #146).** Three things the entries above
+still listed as not run on the rig have been, by the owner, in use and not in a
+measured session, so nothing here has figures: **each channel's volume fader**
+on the web UI (he mixed with them; `config/rigs/hard-feelings-record.yaml`
+carries levels of -10.0 and 6.0 saved from the laptop); **Add channel from the
+rack, then the restart it offers** (the vocal channel on electric-chorus-2 was
+added that way); and **a take of a two-channel rig**, guitar and vocal,
+recorded from the page and listened back as `master.wav`. The guides and the
+reference no longer hedge those three. **Still with nothing to say they were
+tried:** Undo, Revert, the master volume fader, the New rig screen and a
+channel's input change, pedals, a stop or switch or model change during a
+take, and the page from a phone's own browser (the entry of 2026-11-02 says
+"Not run: ... a phone's own browser", and nothing since records one); the
+guides now say so of the phone and of the take finished by a stop, which they
+had stated as working. The review's other corrections, each checked against
+the code first: **a take made by RECORD does not measure its stems' offsets**
+(`transport._finish` passes none; `take.yaml` says "not measured" and "may
+need lining up by ear"), where the recording guide and `docs/reference/takes.md`
+had carried the old README's "`take.yaml` says how far to slide them"; **a
+take's `config.json` and `rig.yaml` are the files as they stood at RECORD, not
+a capture of the running Sushi**, so a knob turned and not saved is in neither
+(`transport.py`), which the guide had as "the rig exactly as it was"; two
+channels on one input share one dry stem named for the input
+(`guitar-in-dry.wav`); an agent restarted under a playing rig does not watch
+it, so a part that stops gives no box; Undo takes back an amp model change
+too, by restarting the amp; the lock keeps Stop and Switch off the stage
+screen only, the rack has both while locked; on the stage RIGS is the last
+thing on the screen; a locked move is a box headed "Not moved:" and a locked
+model change a greyed list, never a box starting "Locked:"; the button is
+"Remove channel 2", numbered. The guides' index now says what the page means
+by Sushi, Carla, stems and headless. `transport.py`'s own docstring still
+says "NOT VERIFIED: no take has been recorded this way"; it was left, as code
+outside this change. *(2026-11-14)*

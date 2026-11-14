@@ -13,7 +13,8 @@ Work down this list. Stop at the first thing that is wrong.
 
 1. **Is a rig up?** Look at the top left of the page. If it reads **Rig down**,
    start one ([Getting started](getting-started.md)). If it reads
-   **Agent not answering**, see the next section but one.
+   **Agent not answering**, see
+   [The page says "Agent not answering"](#the-page-says-agent-not-answering).
 2. **Is there a box near the top?** If a part of the rig has stopped, it says
    which. See [A part of the rig has stopped](#a-part-of-the-rig-has-stopped).
 3. **Are the volumes up?** Check **MASTER** in the header and each channel's
@@ -57,10 +58,16 @@ To restart cleanly:
 4. Reload the page, and start the rig again.
 
 You can restart the agent without stopping the rig, and the rig keeps playing.
-But the new agent starts with an empty memory: **Undo** has nothing to take
-back, the number on **Save** starts again from nothing, and it cannot change
-the amp's model until the rig has been started from it. Stopping and starting
-the rig as well, as above, avoids all of that.
+But the new agent did not start that rig, and it shows:
+
+- It does not watch the rig. If a part of the rig stops, **no box appears** to
+  tell you.
+- **Undo** has nothing to take back, and the number on **Save** starts again
+  from nothing.
+- It cannot change the amp's model.
+
+All of that lasts until the rig is next started from the new agent. Stopping
+and starting the rig as well, as above, avoids it.
 
 ## The page says "Agent not answering"
 

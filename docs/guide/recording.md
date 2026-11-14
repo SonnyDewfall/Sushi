@@ -2,30 +2,35 @@
 
 The rig can record what you play, straight from the page. A **take** is one
 recording. It is saved as a folder holding a sound file for each channel, the
-mix you heard, and a copy of the rig that made it.
+mix you heard, and a copy of the rig's files.
+
+The page calls a take's sound files **stems**.
 
 Recording is on the **stage** screen, and works while the page is **Locked**.
 
-<img src="img/recording.png" alt="The stage screen while recording: the Record bar turned red, reading Recording with the time 0:47, the take name riff-idea, the five files it is writing, and the Stop button" width="420">
+<img src="img/recording.png" alt="The stage screen while recording: the Record bar turned red, reading Recording with the time 0:47, the take name riff-idea, the five stems it is writing, and the Stop button" width="420">
 
 ## Record a take
 
 1. Start a rig from the page, if one is not playing
    ([Getting started](getting-started.md)).
-2. Open the stage screen: on a phone it is the first screen; on the laptop,
-   click **Stage** at the top of the rack.
+2. Open the stage screen: on the laptop, click **Stage** at the top of the
+   rack.
 3. Optionally type a name under **Take name**, such as `riff-idea`. Names are
    lowercase letters, digits, `-` and `_`. With no name, the take is named from
    the date and time it starts, like `take-20261106-203817`.
-4. Tap **Record**. The bar turns red and reads **Recording**, with the take's
-   name and a running clock. The line under the name lists the files being
-   written.
-5. Play.
-6. Tap **Stop**. There is no second question, because stopping loses nothing.
+4. Look at the line under the name box. It lists the stems this take will
+   write, for example
+   `5 stems: board.wav, board-dry.wav, vocal.wav, vocal-dry.wav, master.wav`.
+5. Tap **Record**. The bar turns red and reads **Recording**, with the take's
+   name and a running clock.
+6. Play.
+7. Tap **Stop**. There is no second question, because stopping loses nothing.
 
-A line headed **Recorded** and the take's name gives the verdict: its length,
-then **Whole** and **nothing lost** if all is well, or the first problem found
-if not.
+A line headed **Recorded** and the take's name gives the verdict. If all is
+well it reads like `0:47 · Whole · 5 stems · nothing lost`: the length, that
+the take is whole, how many stems, and that no sound was dropped. If not, it
+gives the number of problems and the first of them.
 
 ## Find your takes
 
@@ -38,30 +43,43 @@ recording software.
 
 ## What is in a take's folder
 
-For a rig with a channel called `guitar` and one called `vocal`:
+For a rig with a channel called `guitar` and one called `vocal`, each on its
+own input:
 
 | File | What it is |
 |---|---|
 | `guitar.wav`, `vocal.wav` | Each channel by itself, after its effects, **before its volume fader** |
 | `guitar-dry.wav`, `vocal-dry.wav` | Each input exactly as it came into the interface: no amp, no effects |
-| `master.wav` | The mix as you heard it, with the channel volumes, the master's effects and the master volume |
-| `take.yaml` | Notes about the take: what was recorded, whether it is complete, and how the files line up |
-| `config.json`, `rig.yaml` | The rig exactly as it was, so the take can be remade through the same sound later |
+| `master.wav` | The mix as it went to the monitors, with the channel volumes, the master's effects and the master volume |
+| `take.yaml` | Notes about the take: what was recorded and from where, whether it is complete, anything that was lost, and what is known about how the stems line up |
+| `config.json`, `rig.yaml` | The rig's files as they stood when you pressed Record |
 
-The files are named after your channels, so a rig whose one channel is called
+The stems are named after your channels, so a rig whose one channel is called
 `board` gives `board.wav`, `board-dry.wav` and `master.wav`.
 
-Three things worth knowing about these files:
+**Two channels on the same input share one dry file**, named after the input
+instead of a channel. A rig with channels `clean` and `dirty` both listening to
+`guitar-in` gives `clean.wav`, `dirty.wav`, one `guitar-in-dry.wav`, and
+`master.wav`. It is one guitar, so it is recorded dry once.
 
-- **The channel files are deliberately without the channel's volume.** Whatever
+Things worth knowing about these files:
+
+- **The channel stems are deliberately without the channel's volume.** Whatever
   the **VOLUME** faders were at, each channel is recorded at the level its
   effects left it, so you can rebalance later. If you want the balance you
   heard, that is `master.wav`.
-- **The dry files are for re-amping**: playing the bare guitar back through a
+- **The dry stems are for re-amping**: playing the bare guitar back through a
   different sound later.
-- **The dry files run slightly ahead of the others**, by about five thousandths
-  of a second. They are written exactly as captured; `take.yaml` says how far
-  to slide them to line up.
+- **The stems do not line up exactly, and a take from the page does not yet
+  measure by how much.** The dry stems run slightly ahead of the others, by
+  about five thousandths of a second. Every stem is written exactly as it was
+  captured, and `take.yaml` says in words that the offset was not measured and
+  the stems may need lining up by ear.
+- **The take's copy of the rig does not include knobs you have turned and not
+  saved.** `rig.yaml` is the rig's file as it stood when you pressed Record, and
+  `config.json` is what the rig was loaded from when it was started or last
+  switched, with the amp as the page last set it. If you want a take to carry the exact sound you played, save before
+  you record ([Saving and going back](saving.md)).
 
 ## Names
 
@@ -75,15 +93,16 @@ Three things worth knowing about these files:
 ## Things that may surprise you
 
 - **Stopping the rig, switching rigs or changing the amp's model while
-  recording finishes the take first.** The take is kept, up to that moment.
+  recording finishes the take first** (not yet tried on the rig). The take is
+  kept, up to that moment.
 - **Recording needs a rig started the way the page starts one.** A rig started
   from a terminal in an older way cannot be recorded here. If the bar reads
   **Recording is off**, the line under it says why.
 - There are no level meters, and the page does not show how much disk space is
   left.
-- One take has been recorded on the rig so far to prove this works, with a
-  one-channel rig. A two-channel rig records more files at once, and that has
-  not yet been tried on the rig.
+- Takes have been recorded from the page on the rig with a one-channel rig and
+  with a two-channel one, guitar and vocal, whose `master.wav` was listened
+  back.
 
 ## If something goes wrong
 
@@ -99,7 +118,7 @@ Three things worth knowing about these files:
   ```
 
 - **The rig crashed or was killed mid-take.** The take is cut off but not
-  lost. This makes it readable:
+  lost. This makes its stems readable:
 
   ```bash
   sushi-rig take repair ~/sushi-rig-takes/riff-idea
