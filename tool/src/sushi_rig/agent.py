@@ -292,7 +292,8 @@ stop is in the live log (`op: "record"`), and undo passes over them.
 
 A take started without a name is `<rig>-<date>-take-<nn>` (#134,
 `take.default_name`): the running rig, the day by this machine's clock, and
-the next number that rig has not had that day, the archive counted. The
+one past the highest number present for that rig that day, the archive
+counted, stepped on past any name a take has (`take.next_name`). The
 agent works it out, not the page, so two pages always agree: `GET /record`
 offers it while idle (`default_name`), for the record bar to show, and a
 start with no name asks the same function (`_default_take_name`) again,

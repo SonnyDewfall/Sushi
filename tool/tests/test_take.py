@@ -130,11 +130,19 @@ def test_the_number_starts_again_for_another_day_and_for_another_rig():
         "a rig whose name another's begins with has its own count"
 
 
-def test_a_gap_is_left_a_gap_so_a_number_is_never_given_twice():
+def test_a_gap_below_the_highest_is_left_a_gap():
     """Take 02 was renamed or deleted: the next is 04, not 02 again, and the
     numbers stay in the order the takes were played."""
     assert take.default_name("electric-clean", TODAY, [CLEAN + "01", CLEAN + "03"]) == CLEAN + "04"
     assert take.default_name("electric-clean", TODAY, [CLEAN + "07"]) == CLEAN + "08"
+
+
+def test_removing_the_newest_take_frees_its_number():
+    """What the rule does not promise. The number is one past the highest
+    that is there, and nothing remembers a take gone from the takes folder
+    and the archive both: delete take 03 by hand and the next is 03 again."""
+    assert take.default_name("electric-clean", TODAY, [CLEAN + "01", CLEAN + "02", CLEAN + "03"]) == CLEAN + "04"
+    assert take.default_name("electric-clean", TODAY, [CLEAN + "01", CLEAN + "02"]) == CLEAN + "03"
 
 
 def test_the_number_keeps_two_digits_and_grows_past_99():
@@ -168,36 +176,63 @@ def test_the_longest_name_is_what_the_name_rule_says_it_is():
     assert take.check_name("a" * (take.NAME_MAX + 1))
 
 
-@pytest.mark.parametrize("rig", ["a" * 45, "a" * 46, "a" * 64, "electric-" * 7 + "x", "a" * 44 + "-" + "b" * 19])
+DATED = "-2026-11-12-take-"
+
+
+@pytest.mark.parametrize("rig", ["a" * 44, "a" * 45, "a" * 64, "electric-" * 7 + "x", "a" * 42 + "-" + "b" * 21])
 def test_a_long_rig_name_is_shortened_in_the_default_never_refused(rig):
     """`NAME_PATTERN` allows a rig 64 characters, which leaves no room for the
     date and the number. The default cuts the rig's name to fit; it is still
     a name the take rule passes, and it still counts."""
     first = take.default_name(rig, TODAY, [])
-    assert take.check_name(first) == [] and len(first) <= take.NAME_MAX
-    assert first.endswith("-2026-11-12-take-01")
+    stem = first[:-len(DATED + "01")]
+    assert first == stem + DATED + "01" and take.check_name(first) == []
+    assert len(stem) <= take.RIG_ROOM == 43 and rig.startswith(stem), "cut from the end, not respelt"
     assert "--" not in first, "a name cut at a separator does not keep it before the date's"
-    assert rig.startswith(first[:-len("-2026-11-12-take-01")]), "cut from the end, not respelt"
-    second = take.default_name(rig, TODAY, [first])
-    assert second == first[:-2] + "02"
-    # Past 99 the number needs a third character, which the rig's name gives up.
-    hundredth = take.default_name(rig, TODAY, [first, second[:-2] + "99"])
-    assert hundredth.endswith("-2026-11-12-take-100")
-    assert take.check_name(hundredth) == [] and len(hundredth) <= take.NAME_MAX
-    assert take.default_name(rig, TODAY, [first, hundredth]).endswith("-take-101")
+    assert take.default_name(rig, TODAY, [first]) == stem + DATED + "02"
+
+
+@pytest.mark.parametrize("rig", ["a" * 43, "a" * 45, "a" * 64, "electric-clean"])
+def test_what_a_rig_is_called_in_its_takes_does_not_change_with_the_count(rig):
+    """Cut by as much as each number needed, a rig of 45 characters became
+    one of 44 at take 100 and from then on shared numbers with whatever rig
+    had that name. The cut is one cut, with room for four digits."""
+    stem = take.rig_in_name(rig)
+    assert stem == rig[:43]
+    for number, after in (("01", "02"), ("99", "100"), ("100", "101"), ("999", "1000"), ("9998", "9999")):
+        name = take.default_name(rig, TODAY, [stem + DATED + number])
+        assert name == stem + DATED + after
+        assert take.check_name(name) == [] and len(name) <= take.NAME_MAX
+
+
+def test_a_rig_shorter_than_the_cut_never_shares_a_longer_ones_numbers():
+    """At any count: the 45-character rig's takes are under its first 43
+    characters from take 01 to take 9999, so a rig of 42 is always another."""
+    for number in ("07", "150", "2000"):
+        assert take.default_name("a" * 42, TODAY, [take.default_name("a" * 45, TODAY, [])[:-2] + number]) == \
+            "a" * 42 + DATED + "01"
 
 
 def test_a_rig_name_that_fits_is_kept_whole():
-    rig = "a" * 45  # 45 + "-2026-11-12-take-01" is 64
+    rig = "a" * 43  # 43 + "-2026-11-12-take-" + four digits is 64
     assert take.default_name(rig, TODAY, []) == rig + "-2026-11-12-take-01"
+    assert take.rig_in_name("electric-clean") == "electric-clean"
+    assert take.rig_in_name("electric_board") == "electric_board"
 
 
-@pytest.mark.parametrize("rig, said", [("My Rig.v2", "my-rig-v2"), ("_board", "board"), ("...", "rig")])
+@pytest.mark.parametrize("rig, said", [
+    ("My Rig.v2", "my-rig-v2"), ("_board", "board"), ("...", "rig"),
+    # Separators: a run is one, and none at either end, cut or not.
+    ("My Rig!", "my-rig"), ("rig-", "rig"), ("a  b", "a-b"), ("a__b--c", "a_b-c"), ("a-_-b", "a-b"),
+    ("-_x_-", "x"),
+])
 def test_a_rig_name_the_take_rule_would_refuse_is_spelt_so_that_it_passes(rig, said):
     """A rig file can be called anything; RECORD without a name must not be
-    refused for it."""
+    refused for it. `My Rig!.yaml` was `my-rig--2026-11-12-take-01`: a
+    separator was dropped from the end only of a name that was cut."""
     name = take.default_name(rig, TODAY, [])
     assert name == f"{said}-2026-11-12-take-01" and take.check_name(name) == []
+    assert "--" not in name
 
 
 def test_the_count_is_of_the_takes_folder_and_its_archive(tmp_path):
@@ -216,6 +251,35 @@ def test_the_count_is_of_the_takes_folder_and_its_archive(tmp_path):
     assert take.names_used(tmp_path) == {CLEAN + "01", CLEAN + "02", take.ARCHIVE_DIR}
     assert take.next_name(tmp_path, "electric-clean", TODAY) == CLEAN + "03", "02 is in the archive, so it is taken"
     assert take.next_name(tmp_path, "electric-clean", date(2026, 11, 13)) == "electric-clean-2026-11-13-take-01"
+
+
+def test_an_unnamed_take_never_gets_a_name_a_take_has_whatever_the_listing_said(tmp_path, monkeypatch):
+    """A listing that fails part-way is a count that comes out low. The
+    name is then looked for itself, in the takes folder and the archive, and
+    the number steps on until neither has it, so `start_take` is never
+    handed an existing take's name to archive by a RECORD nobody named."""
+    for name in (CLEAN + "01", CLEAN + "02", CLEAN + "03"):
+        record(start(tmp_path, name=name))
+    (tmp_path / take.ARCHIVE_DIR / (CLEAN + "04")).mkdir(parents=True)
+    assert take.next_name(tmp_path, "electric-clean", TODAY) == CLEAN + "05"
+    real = Path.iterdir
+
+    def fails_part_way(folder):
+        """The takes folder gives its first take and then the error a disk
+        gives mid-listing; the archive gives the error at once."""
+        if folder == tmp_path:
+            yield tmp_path / (CLEAN + "01")
+        raise OSError(5, "Input/output error")
+
+    monkeypatch.setattr(Path, "iterdir", fails_part_way)
+    assert take.names_used(tmp_path) == {CLEAN + "01"}, "what was read before it failed, and no more"
+    assert take.default_name("electric-clean", TODAY, take.names_used(tmp_path)) == CLEAN + "02", \
+        "the count alone would name a take that exists"
+    assert take.next_name(tmp_path, "electric-clean", TODAY) == CLEAN + "05", "past 02 and 03 there, and 04 archived"
+    monkeypatch.setattr(Path, "iterdir", real)
+    record(start(tmp_path, name=CLEAN + "05"))
+    assert not (tmp_path / take.ARCHIVE_DIR / (CLEAN + "01")).exists(), "no take was moved aside"
+    assert take.take_names(tmp_path) == [CLEAN + n for n in ("01", "02", "03", "05")]
 
 
 def test_a_take_named_from_the_time_is_still_a_take_everywhere(tmp_path):

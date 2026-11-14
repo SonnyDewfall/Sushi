@@ -2514,6 +2514,87 @@ def test_an_untouched_field_follows_the_agent_through_midnight_and_a_rig_switch(
     page.close()
 
 
+def name_selection(page):
+    """`[start, end, length, focused]` of the take name field."""
+    return page.evaluate("""() => {
+      const i = document.querySelector('input[name="take-name"]');
+      return [i.selectionStart, i.selectionEnd, i.value.length, document.activeElement === i];
+    }""")
+
+
+@pytest.mark.parametrize("held_ms", [0, 250])
+def test_a_press_into_the_untouched_field_leaves_the_default_selected_once_released(browser, record_served, held_ms):
+    """Press, release, then look: the sequence in which WebKit undoes a
+    selection made in the focus event, so that the first key lands inside the
+    default. Shown in Chromium only (none other is installed here): whether
+    it holds on a phone is for the phone to say. The press is held as a
+    finger is, and not at all, since the selection is made after the focus
+    and again at the release."""
+    page = stage_page(browser, record_served)
+    p = page.page
+    name = p.get_by_label("Take name")
+    expect(name).to_have_value(FIRST)
+    box = name.bounding_box()
+    x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+    p.mouse.move(x, y)
+    p.mouse.down()
+    p.wait_for_timeout(held_ms)
+    p.mouse.up()
+    p.wait_for_timeout(100)
+    assert name_selection(p) == [0, len(FIRST), len(FIRST), True]
+    # A second press places a caret, as anywhere: only entering the field selects.
+    p.mouse.down()
+    p.mouse.up()
+    p.wait_for_timeout(100)
+    start, end, _, focused = name_selection(p)
+    assert start == end and focused, "a caret, not the whole name"
+    name.press("End")
+    p.keyboard.type("-solo")
+    expect(name).to_have_value(FIRST + "-solo")
+    page.close()
+
+
+def test_a_new_default_keeps_the_caret_the_player_placed(browser, record_served):
+    """The caret is put after the default, to add to it, and before a key is
+    pressed the default changes (midnight; a take finished elsewhere) and the
+    field is rebuilt. The rebuild used to give the focus back as a first
+    focus does, selecting the name whole, and the keys replaced it."""
+    page = stage_page(browser, record_served)
+    p = page.page
+    name = p.get_by_label("Take name")
+    expect(name).to_have_value(FIRST)
+    name.click()
+    name.press("End")
+    assert name_selection(p) == [len(FIRST), len(FIRST), len(FIRST), True]
+    record_served.agent.take_clock = lambda: datetime(2026, 11, 13, 0, 0, 1)
+    tomorrow = "electric_board-2026-11-13-take-01"
+    expect(name).to_have_value(tomorrow)
+    assert name_selection(p) == [len(tomorrow), len(tomorrow), len(tomorrow), True], "the caret is where it was"
+    p.keyboard.type("-solo")
+    expect(name).to_have_value(tomorrow + "-solo")
+    page.close()
+
+
+def test_a_default_selected_whole_stays_selected_whole_when_a_longer_one_replaces_it(browser, record_served):
+    """Entered and not yet typed in: the next key is still to replace the
+    name, all of it, though the new default is a character longer."""
+    takes = record_served.recorder.takes
+    (takes / "electric_board-2026-11-12-take-98").mkdir(parents=True)
+    page = stage_page(browser, record_served)
+    p = page.page
+    name = p.get_by_label("Take name")
+    expect(name).to_have_value("electric_board-2026-11-12-take-99")
+    name.click()
+    p.wait_for_timeout(100)
+    assert name_selection(p) == [0, 33, 33, True]
+    (takes / "electric_board-2026-11-12-take-99").mkdir()
+    expect(name).to_have_value("electric_board-2026-11-12-take-100")
+    assert name_selection(p) == [0, 34, 34, True]
+    p.keyboard.type("riff")
+    expect(name).to_have_value("riff")
+    page.close()
+
+
 def test_typing_replaces_the_default_and_what_is_typed_is_kept_until_it_is_used(browser, record_served):
     """Typed over, the name is the player's: a poll, a take finished on
     another page and a rig switch each bring a new default, and none of them

@@ -380,6 +380,23 @@ def test_a_name_typed_is_used_as_it_is_and_recording_over_one_still_archives(roo
     assert idle["default_name"] == "duo-2026-11-12-take-02"
 
 
+def test_an_unnamed_start_never_archives_a_take_even_when_the_listing_comes_back_empty(root, monkeypatch):
+    """The only way an unnamed start could move an existing take aside was a
+    listing that came back short, so that the count gave a name in use. The
+    name is checked against the folders themselves (`take.next_name`)."""
+    from sushi_rig import take as take_module
+
+    agent, _, _, _ = record_agent(root)
+    on_the_day(agent)
+    (_, first), _ = calls(agent, UNNAMED, STOP)
+    assert first["name"] == "duo-2026-11-12-take-01"
+    monkeypatch.setattr(take_module, "names_used", lambda takes_dir: set())
+    (_, idle), (status, second), _ = calls(agent, STATUS, UNNAMED, STOP)
+    assert idle["default_name"] == "duo-2026-11-12-take-02"
+    assert status == 200 and second["name"] == "duo-2026-11-12-take-02" and not second.get("replaced")
+    assert not (root / "takes" / "_archive").exists()
+
+
 def test_the_default_follows_the_rig_that_is_running(root):
     """After a switch the state file names another rig file, and the next
     unnamed take is that rig's first."""
@@ -408,8 +425,9 @@ def test_a_rig_with_a_long_name_records_under_a_shortened_default(root):
     agent, _, _, _ = record_agent(root, World(root, rig=f"config/rigs/{long}.yaml"))
     on_the_day(agent)
     (_, idle), (status, started), _, (_, after) = calls(agent, STATUS, UNNAMED, STOP, STATUS)
-    name = "a-rig-with-a-name-as-long-as-the-rule-for-nam-2026-11-12-take-01"
-    assert idle["default_name"] == name and len(name) == 64 and check_name(name) == []
+    # Cut to 43 characters, whatever the number: room for four digits of it.
+    name = "a-rig-with-a-name-as-long-as-the-rule-for-n-2026-11-12-take-01"
+    assert idle["default_name"] == name and len(name) == 62 and check_name(name) == []
     assert status == 200 and started["name"] == name, started
     assert check_take(load_take(root / "takes" / name)) == []
     assert after["default_name"] == name[:-2] + "02"

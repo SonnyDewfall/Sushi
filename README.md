@@ -1641,14 +1641,25 @@ electric-clean on 12 November.
 - **The date** is the day by the rig machine's own clock, local time, since
   the name is for the player to recognise; `take.yaml` records the moment in
   UTC.
-- **The number** is one more than the highest that rig has had that day,
-  counted from the takes folder and `_archive/`, so a number is never given
-  twice: a take recorded over keeps its number in the archive, and a take
-  renamed or deleted leaves a gap that stays one. Two digits, so take 10
-  sorts after take 9, and three past 99.
-- **A rig name too long** for the date and number to fit in a name's 64
-  characters is cut short in the take's name; the take is never refused for
-  it. Two rigs whose names differ only past the cut share one run of numbers.
+- **The number** is one more than the highest present for that rig and that
+  day, counted from the takes folder and `_archive/`. So a take recorded over
+  keeps its number in the archive, and a gap below the highest (a take
+  renamed or deleted) is never filled, which keeps the numbers in the order
+  played. It is not a promise that a number is never used twice: nothing
+  remembers a take gone from both folders, so removing the newest take
+  frees its number and the next take gets it. Two digits, so take 10 sorts
+  after take 9, and as many as it needs past 99.
+- **A long rig name** is cut to its first 43 characters in its takes' names,
+  the same at every take number (64 characters, less the date, `take` and
+  room for four digits); the take is never refused for it. A name the rule
+  for names would refuse is spelt so that it passes: lowercase, anything else
+  a separator, a run of separators one, and none at either end (`My Rig!`
+  is `my-rig`). Two rigs alike in those 43 characters, or alike but for
+  their separators, share one run of numbers.
+- **It never takes a name a take has.** Whatever the count said, the name is
+  looked for in the takes folder and in `_archive/`, and the number steps on
+  until neither has it: a take recorded without a name never moves an
+  existing take to the archive. Only a name typed does that.
 
 The agent works the name out (`take.default_name`), not the page: `GET
 /record` offers it while idle (`default_name`) and the record bar shows it

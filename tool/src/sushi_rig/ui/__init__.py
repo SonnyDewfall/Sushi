@@ -130,9 +130,12 @@ is the agent's to work out, never the page's, so two pages show the same
 one. Record on an untouched field sends no name, and the agent names the
 take by its count at that moment: the name shown, unless a take was made
 since, and then the next number. Entering the field selects a default, so
-typing replaces it; only what the player typed is kept (`takeTyped`), through
-polls, a rig switch and finished takes, until it is recorded with or
-cleared, and a field left empty shows the default again. A name is checked
+typing replaces it: once the press that gave the focus is over, not in the
+focus event, where WebKit undoes it (untested on WebKit: only Chromium is
+here). Only entering selects: a rebuild that hands the focus back puts the
+caret or selection where it was. Only what the player typed is kept
+(`takeTyped`), through polls, a rig switch and finished takes, until it is
+recorded with or cleared, and a field left empty shows the default again. A name is checked
 before sending (`checkTakeName`, the rule take.check_name keeps); a
 name already in the takes list says the earlier take will move to the
 archive. The elapsed time is the recorder's (`elapsed`, by its clock),
