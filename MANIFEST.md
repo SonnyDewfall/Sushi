@@ -3807,3 +3807,34 @@ suite: 4325 passed, 41 skipped. **Not run
 here:** any of it on WebKit, so on the rig: tap the take name on the phone and
 type, and the name should be what was typed and nothing of the default; the
 slow tests and the container job on this commit. *(2026-11-14)*
+
+**The take's name is all there to read on a phone.** Retaking the guide's
+screenshots showed the stage's name field, at 390 px, holding about 31
+characters and cutting a default name at its end:
+`electric_board-2026-11-14-take-`, with the number, the one part that changes,
+off the edge. Every rig but the shortest lost it (a default is the rig's name
+and 19 characters more), and the stage screen is 520 px at most, so the
+longest default (64 characters) is cut on a desktop too. Now a name the field
+cannot show whole is also on a line under it, wrapped (`drawNameWhole` in
+app.js, `.take-whole` in style.css); a name the field shows has no such line.
+Chosen over the others because it is the one that shows the whole name at any
+length and touches nothing of the field: not shrinking the type (to fit
+`hard-feelings-record`'s default the field would need 12 px, and a phone's
+browser zooms the page on entering a field under 16), and not scrolling the
+field to its end (that shows the number and hides the rig, and puts the
+field's scroll in this page's hands beside the caret and selection #145 took
+care over). The line is of whatever the field holds, a typed name too; it is
+measured (`scrollWidth` against `clientWidth`) when the bar is drawn, which is
+every poll, on each key, and when the field is left, and it stays while the
+field is held, so leaving the field for Record does not move Record. The
+rack has no name field: its takes list, the take while it records and the
+line that says it was recorded already wrapped, and are now tested to.
+Tests, in `test_ui.py`: at 390 and 1280 px, for `clean`, `electric_board`,
+`hard-feelings-record` and the 64-character rig, the number is drawn inside
+the bar and the window and nothing scrolls sideways, idle, recording and
+recorded; the line follows typing and leaves the caret alone; the rack's list
+shows the longest name whole. #145's tests pass unchanged. **Not run here:**
+any browser but headless Chromium, so not the phone: whether Safari reports a
+field's `scrollWidth` as Chromium does is unchecked, and if it does not the
+line is simply absent, as before; the slow tests and the container job.
+*(2026-11-14)*

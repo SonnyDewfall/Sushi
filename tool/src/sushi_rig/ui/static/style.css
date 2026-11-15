@@ -359,6 +359,9 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 .take-now .v { font-family: var(--mono); font-size: 16px; overflow-wrap: anywhere; }
 .take-name { display: flex; flex-direction: column; gap: 6px; }
 .take-name input { min-height: 48px; box-sizing: border-box; padding: 0 12px; border-radius: 10px; background: var(--ground); border: 1px solid var(--edge); color: var(--text); font-family: var(--mono); font-size: 16px; }
+/* The name in full, when the field cuts it (`drawNameWhole`): it wraps anywhere, so the take's number is always on the page. */
+.take-whole { margin: -4px 0 0; padding: 0 12px; font-family: var(--mono); font-size: 14px; line-height: 1.45; overflow-wrap: anywhere; }
+.take-whole:empty { display: none; }
 .record-note { margin: 0; font-size: 13px; color: var(--muted); line-height: 1.5; }
 .record-note:empty { display: none; }
 .record-note.bad { color: var(--refused); }

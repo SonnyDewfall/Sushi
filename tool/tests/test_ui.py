@@ -2694,6 +2694,140 @@ def test_two_pages_show_the_same_next_name_and_each_gets_a_take_of_its_own(brows
     second.close()
 
 
+# -- a default name is all there to read, its number too, however narrow the field --
+
+# The reported case (a 14-character rig, on a phone), the owner's longest
+# kind of rig name, the longest a default can be (a 43-character stem: 64 in
+# all), and one short enough for any field.
+LONGEST_RIG = "a-rig-with-a-name-as-long-as-the-rule-for-names-allows-one-to-be"
+LONGEST = "a-rig-with-a-name-as-long-as-the-rule-for-n-2026-11-12-take-01"
+RIGS_BY_LENGTH = ["clean", "electric_board", "hard-feelings-record", LONGEST_RIG]
+
+
+def seen_in(page, selector, within):
+    """Where the text of `selector` ends on the page: its text, and whether
+    its last two characters (a default name's number) are drawn, inside the
+    element, inside `within` and inside the window's width."""
+    return page.evaluate("""([selector, within]) => {
+      const el = document.querySelector(selector);
+      const node = [...el.childNodes].find((n) => n.nodeType === Node.TEXT_NODE);
+      if (!node || node.length < 2) return {text: el.textContent, shown: false};
+      const range = document.createRange();
+      range.setStart(node, node.length - 2);
+      range.setEnd(node, node.length);
+      const r = range.getBoundingClientRect(), own = el.getBoundingClientRect();
+      const box = el.closest(within).getBoundingClientRect();
+      const inside = (o) => r.left >= o.left - 0.5 && r.right <= o.right + 0.5 && r.top >= o.top - 0.5 && r.bottom <= o.bottom + 0.5;
+      return {text: el.textContent, shown: r.width > 0 && r.height > 0 && inside(own) && inside(box)
+        && r.left >= 0 && r.right <= innerWidth && getComputedStyle(el).visibility === "visible"};
+    }""", [selector, within])
+
+
+def no_sideways_scroll(page):
+    width = page.evaluate("() => [document.documentElement.scrollWidth, innerWidth]")
+    assert width[0] <= width[1], width
+
+
+def field_and_line(page):
+    """The name field's text, whether the field shows all of it, and the
+    line under it."""
+    return page.evaluate("""() => {
+      const i = document.querySelector('input[name="take-name"]'), w = document.querySelector(".take-whole");
+      return {value: i.value, fits: i.scrollWidth <= i.clientWidth, line: w.textContent,
+              lineShown: getComputedStyle(w).display !== "none", size: parseFloat(getComputedStyle(i).fontSize)};
+    }""")
+
+
+@pytest.mark.parametrize("width, height", [(390, 844), (1280, 900)])
+def test_the_take_number_is_always_on_the_page_whatever_the_rigs_name(browser, record_served, width, height):
+    """At phone width the stage's field holds about 31 characters and cut a
+    default name at its end, so `electric_board-2026-11-14-take-` had lost
+    the one part that changes. A name the field cannot show whole is on a
+    line under it, wrapped, and one it can show has no such line. The stage
+    is 520 px at most, so the longest default is cut on a desktop too."""
+    from sushi_rig.take import default_name
+
+    page = Page(browser, record_served.url + "/#stage", width=width, height=height)
+    p = page.page
+    name = p.get_by_label("Take name")
+    cut = []
+    for rig in RIGS_BY_LENGTH:
+        switch_to(record_served, rig)
+        default = default_name(rig, TAKE_DAY, [])
+        expect(name).to_have_value(default)
+        shown = field_and_line(p)
+        assert shown["size"] >= 16, "under 16 px a phone's browser zooms the page when the field is entered"
+        if shown["fits"]:
+            assert (shown["line"], shown["lineShown"]) == ("", False), "a name the field shows is not said twice"
+        else:
+            cut.append(rig)
+            assert shown["line"] == default and shown["lineShown"]
+            assert seen_in(p, ".take-whole", ".record-bar") == {"text": default, "shown": True}, (rig, width)
+        no_sideways_scroll(p)
+    assert default == LONGEST and len(LONGEST) == 62
+    # No field here is wide enough for the longest, nor so narrow as to cut the shortest.
+    assert LONGEST_RIG in cut and "clean" not in cut
+    if width == 390:
+        assert cut == RIGS_BY_LENGTH[1:], "what the phone cut before: every default but a short rig's"
+    # Recording, and recorded: the name is whole there too, and nothing scrolls sideways.
+    p.get_by_role("button", name="Record", exact=True).click()
+    expect(p.locator(".record-bar .take-now .v")).to_have_text(LONGEST)
+    assert seen_in(p, ".record-bar .take-now .v", ".record-bar")["shown"]
+    no_sideways_scroll(p)
+    p.get_by_role("button", name="Stop", exact=True).click()
+    expect(p.locator(".record-bar .record-result strong")).to_have_text(f"Recorded {LONGEST}")
+    assert seen_in(p, ".record-bar .record-result strong", ".record-bar")["shown"]
+    expect(name).to_have_value(LONGEST[:-2] + "02")
+    expect(p.locator(".take-whole")).to_have_text(LONGEST[:-2] + "02")
+    assert seen_in(p, ".take-whole", ".record-bar")["shown"]
+    no_sideways_scroll(p)
+    page.close()
+
+
+def test_the_line_under_the_field_follows_what_is_typed_and_the_field_is_left_alone(browser, record_served):
+    """The line is of whatever the field holds and cannot show: a long name
+    typed is on it key by key, and a short one needs none. Nothing of the
+    field's own is touched: its text, its caret and where it has scrolled to
+    are the browser's, as they were."""
+    page = stage_page(browser, record_served)
+    p = page.page
+    name = p.get_by_label("Take name")
+    expect(name).to_have_value(FIRST)
+    expect(p.locator(".take-whole")).to_have_text(FIRST)
+    name.click()
+    p.keyboard.type("riff")
+    expect(p.locator(".take-whole")).to_have_text("")
+    assert not field_and_line(p)["lineShown"]
+    p.keyboard.type("-with-a-name-far-too-long-for-the-field-to-show")
+    typed = "riff-with-a-name-far-too-long-for-the-field-to-show"
+    expect(name).to_have_value(typed)
+    expect(p.locator(".take-whole")).to_have_text(typed)
+    assert seen_in(p, ".take-whole", ".record-bar")["shown"]
+    assert name_selection(p) == [len(typed), len(typed), len(typed), True], "the caret is where typing left it"
+    no_sideways_scroll(p)
+    # Cleared and left: the default again, in the field and on the line.
+    name.fill("")
+    expect(p.locator(".take-whole")).to_have_text("")
+    name.blur()
+    expect(name).to_have_value(FIRST)
+    expect(p.locator(".take-whole")).to_have_text(FIRST)
+    page.close()
+
+
+def test_the_racks_takes_list_shows_a_long_name_whole(browser, record_served):
+    """The rack has no name field; its takes list is where a take's name is
+    read there, in the files column, and it wraps."""
+    switch_to(record_served, LONGEST_RIG)
+    assert a_take_from_elsewhere(record_served) == LONGEST
+    page = Page(browser, record_served.url + "/#rack")
+    p = page.page
+    expect(p.locator("section.takes .take .n")).to_have_text(LONGEST)
+    assert p.locator('input[name="take-name"]').count() == 0
+    assert seen_in(p, "section.takes .take .n", ".side.files") == {"text": LONGEST, "shown": True}
+    no_sideways_scroll(p)
+    page.close()
+
+
 @pytest.mark.parametrize("change, said", [
     (lambda s: s.save.state.update(mode="panel"), "whose record bar owns recording"),
     (lambda s: s.save.state.update(rig=None), "is a v1 config, not a rig of channels"),

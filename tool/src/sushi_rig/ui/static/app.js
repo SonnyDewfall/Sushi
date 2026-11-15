@@ -1593,6 +1593,7 @@ function recordRegion(el) {
       recording
         ? h("div", { class: "take-now" }, h("span", { class: "k" }, "Take name"), h("span", { class: "v" }, view.name))
         : view.state === "idle" ? nameField(view) : null,
+      view.state === "idle" ? h("p", { class: "take-whole", "aria-hidden": "true" }) : null,
       view.reason ? h("p", { class: "record-note" }, view.reason) : null,
       view.state === "idle" ? h("p", { class: "record-note", id: "take-note", "aria-live": "polite" }) : null,
       recording && view.note ? h("p", { class: "record-note" }, view.note) : null,
@@ -1632,6 +1633,30 @@ function drawNameCheck(el) {
   const button = el.querySelector("button.record-act.rec");
   if (note) { note.textContent = view.note || ""; note.classList.toggle("bad", !!view.bad); }
   if (button) { button.disabled = view.record.disabled; button.textContent = view.record.label; }
+  drawNameWhole(el);
+}
+
+// The name in full on a line under the field, when the field is too narrow
+// to show all of it. A default name is the rig, the date and the take's
+// number, in that order, and a field cuts its text at the end: on a phone
+// the stage's field holds 31 characters, so every default but the shortest
+// rig's lost its number, the part the player most needs to read. The line
+// wraps, so a name of any length (64 characters at most) is all there and
+// the page never scrolls sideways for it.
+//
+// The field itself is left as it is, its type size too (under 16 px, a
+// phone's browser zooms the page when the field is entered), and nothing
+// here touches its text, caret or scroll. Measured, since only the browser
+// knows how wide the text is: drawn with the bar (every poll, so a phone
+// turned on its side is caught up with within one), on each key and when the
+// field is left. Shown while the field is held too, so that leaving it for
+// Record does not move Record under the finger.
+function drawNameWhole(el) {
+  const input = el.querySelector('input[name="take-name"]');
+  const whole = el.querySelector(".take-whole");
+  if (!input || !whole) return;
+  const text = input.scrollWidth > input.clientWidth ? input.value : "";
+  if (whole.textContent !== text) whole.textContent = text;
 }
 
 function nameField(view) {
@@ -1685,7 +1710,11 @@ function nameField(view) {
   input.addEventListener("keydown", dropLater);
   input.addEventListener("blur", dropLater);
   // Left empty, the field shows the default again: an empty name is the default.
-  input.addEventListener("blur", () => { if (!input.value.trim()) input.value = view.default || ""; });
+  input.addEventListener("blur", () => {
+    if (input.value.trim()) return;
+    input.value = view.default || "";
+    drawNameWhole(input.closest(".record-bar"));
+  });
   input.addEventListener("keydown", (event) => { if (event.key === "Enter" && !recordBarView().record.disabled) recordStart(); });
   return h("label", { class: "take-name" }, h("span", {}, "Take name"), input);
 }
