@@ -3,8 +3,9 @@
 # `sushi-rig verify --all`, and `sushi-rig nulltest --all` against the sound
 # references in config/sound/. ci.yml runs the fast suite on a bare runner, where
 # the lilv- and Sushi-guarded tests skip; this job is the only place they run.
-# Between the two workflows every test must run somewhere (README: Running the
-# tests), so a test that skips here is a failure, not a footnote.
+# Between the two workflows every test must run somewhere
+# (docs/reference/testing.md), so a test that skips here is a failure, not a
+# footnote.
 #
 # Every step that can fail puts the tail of its output into a CI annotation.
 # The full log is there too, but annotations are what the check-run API returns,
@@ -31,8 +32,8 @@ permissions:
   contents: read
 
 env:
-  # Where Sushi comes from. elk-audio/sushi's 1.3.0 release (the README's
-  # "Sushi 1.3.0") ships Linux as a zip, not as a bare AppImage: release-page
+  # Where Sushi comes from. elk-audio/sushi's 1.3.0 release (the "Sushi 1.3.0" of
+  # docs/reference/environment.md) ships Linux as a zip, not as a bare AppImage: release-page
   # AppImages stop at 0.12.0. The AppImage is expected inside the zip; if it is
   # not there, the fetch step's annotation lists what the zip does contain.
   SUSHI_REPO: elk-audio/sushi

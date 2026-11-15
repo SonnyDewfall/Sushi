@@ -11,7 +11,7 @@
 
 [Unit]
 Description=sushi-rig agent: the rig's control plane on 127.0.0.1:8029 (#29)
-Documentation=file://@CHECKOUT@/README.md
+Documentation=file://@CHECKOUT@/docs/reference/agent.md
 # The rig's children reach PipeWire as this user. Wants, not Requires: an
 # agent with no PipeWire still answers /health and /doctor, which say so.
 Wants=pipewire.service

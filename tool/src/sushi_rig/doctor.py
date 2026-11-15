@@ -753,8 +753,7 @@ def check_fuse(environment: Environment) -> Check:
     if environment.sushi_is_appimage is None:
         return Check(
             "fuse2", UNCHECKED, "there is no ./sushi to run",
-            "see the README's Plugins and portability section for where Sushi "
-            "comes from",
+            "see docs/reference/environment.md for where Sushi comes from",
         )
     if not environment.sushi_is_appimage:
         return Check("fuse2", OK, "./sushi is not an AppImage, so FUSE is not needed")

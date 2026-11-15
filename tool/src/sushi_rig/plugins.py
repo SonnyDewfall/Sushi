@@ -1,6 +1,6 @@
 """Build the rig's `plugins/` folder from installed packages, and prove it is whole.
 
-`plugins/` is untracked (README: Plugins and portability), so on a fresh machine
+`plugins/` is untracked (docs/reference/plugins.md), so on a fresh machine
 it has to be made. Doing that by hand is how the old defect arose: a flat copy
 of the whole system tree that only worked because `/usr/lib/lv2` was *also* on
 the path. This module makes it reproducibly and then checks the one property
@@ -37,7 +37,7 @@ the reason for it has gone.
 
 ## `archive/`
 
-The README's layout has an `archive/` beside the bundles, holding everything
+The layout in docs/reference/plugins.md has an `archive/` beside the bundles, holding everything
 off the path, with a `manifest.ttl` that declares nothing (a single comment, see
 `ARCHIVE_MANIFEST`) so lilv's probe of it stays quiet. An assembled tree has nothing to archive, but gets the same shape:
 anything parked there later behaves exactly as it does on the rig machine.

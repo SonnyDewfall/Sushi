@@ -3807,3 +3807,100 @@ suite: 4325 passed, 41 skipped. **Not run
 here:** any of it on WebKit, so on the rig: tap the take name on the phone and
 type, and the name should be what was typed and nothing of the default; the
 slow tests and the container job on this commit. *(2026-11-14)*
+
+**The documentation, restructured: a front page, user guides, reference and
+design.** At Sonny's word ("easy to read user guides for each of our
+experiences"). `README.md` was 1,979 lines, about 1,000 of them one section;
+it is now a front page of about a hundred: what the rig is, what it needs, how
+to start it, and links. **`docs/guide/`**: nine guides and an index, one for
+each thing a player does (getting started, playing live, shaping a sound,
+mixing, saving and going back, building a rig, recording, the audio interface,
+when something's wrong), written for a musician and not a programmer, every
+button and label taken from `app.js` and `rig.js` as master has them and
+checked against the page; seven screenshots in `img/`, of the real page over
+`ui_fake.py`, made by `tool/tests/guide_shots.py`. **`docs/reference/`**: the
+README's detail, moved by section and not rewritten (the rig file, the machine
+file, the commands, the agent, the web UI, MIDI, takes, plugins, the
+environment, tests and CI, the v1 workflow, the layout). **`docs/design/`**:
+the problem and the decision, the principles, v2, what the project owns, and
+`IMPLEMENTATION_BRIEF.md`, moved there. This file stays where it is. **Stale
+facts corrected on the way**, each against the code or an entry above: the
+capture engine "has not been run against a live PipeWire" (the take of
+2026-11-06); the web UI, the agent's `up`, the live switch, the amp and Save
+"not run" on the rig (RESULTS-ui-2026-11-02 ran them); "none of this has been
+heard on the rig" of the copy to stereo and "a two-channel rig has not been"
+(the loopback of 2026-11-12 measured both); rigs of channels "not yet what
+`up` runs", and each tone "held together" with its v1 config by CI (not since
+the frozen fixtures); the rig picker in "the rack's left column" (the right,
+since the desk layout); the machine file's example monitors on
+`playback_AUX0/1` (the rig's are `playback_FL/FR`); a take's folder shown
+without `master.wav`; "45 modules" (47: `saves`, `rigedit`); `start_qpwgraph`
+"in `rig.py`" (`qpwgraph.py`); "nothing in the code calls `SaveSession`"
+(`live.read_live_plugins` does, to learn which plugin a processor is); "v1
+gets tagged" (it is: `v1.0`, `v1.1`); and the Open Stage Control panel as how
+parameters are tweaked (the web UI is; the panel is the v1 workflow's page
+now). History the entries above already hold was cut from the reference
+pages; history they do not hold was kept. Pointers that named a README
+section or the brief (code messages, docstrings, the CI files, the unit's
+`Documentation=`, `.gitignore`) name where the text now lives; the spikes and
+the entries above are dated records and were left. New:
+`tool/tests/test_docs.py`, in the fast suite: every relative link and image in
+`README.md` and under `docs/` leads to a file that exists, a link to a heading
+names one the page has, every image has alt text, the front page links to
+every guide and reference page, and the README stays under 200 lines. **What
+the guides say is not yet tried on the rig**, because nothing above records
+it: Undo, the volume faders, Revert, the New rig screen and the channel edits,
+pedals, and a take of a two-channel rig. **Not in the guides**, because the
+page does not do it: adding or removing a plugin. Two changes in flight will
+update their own guides: take names (#134) and the rack's tab per channel
+(#135). *(2026-11-14)*
+
+**Used on the rig between 7 and 12 Nov, at Sonny's word; and the guides
+corrected after an accuracy review (PR #146).** Three things the entries above
+still listed as not run on the rig have been, by the owner, in use and not in a
+measured session, so nothing here has figures: **each channel's volume fader**
+on the web UI (he mixed with them; `config/rigs/hard-feelings-record.yaml`
+carries levels of -10.0 and 6.0 saved from the laptop); **Add channel from the
+rack, then the restart it offers** (the vocal channel on electric-chorus-2 was
+added that way); and **a take of a two-channel rig**, guitar and vocal,
+recorded from the page and listened back as `master.wav`. The guides and the
+reference no longer hedge those three. **Still with nothing to say they were
+tried:** Undo, Revert, the master volume fader, the New rig screen and a
+channel's input change, pedals, a stop or switch or model change during a
+take, and the page from a phone's own browser (the entry of 2026-11-02 says
+"Not run: ... a phone's own browser", and nothing since records one); the
+guides now say so of the phone and of the take finished by a stop, which they
+had stated as working. The review's other corrections, each checked against
+the code first: **a take made by RECORD does not measure its stems' offsets**
+(`transport._finish` passes none; `take.yaml` says "not measured" and "may
+need lining up by ear"), where the recording guide and `docs/reference/takes.md`
+had carried the old README's "`take.yaml` says how far to slide them"; **a
+take's `config.json` and `rig.yaml` are the files as they stood at RECORD, not
+a capture of the running Sushi**, so a knob turned and not saved is in neither
+(`transport.py`), which the guide had as "the rig exactly as it was"; two
+channels on one input share one dry stem named for the input
+(`guitar-in-dry.wav`); an agent restarted under a playing rig does not watch
+it, so a part that stops gives no box; Undo takes back an amp model change
+too, by restarting the amp; the lock keeps Stop and Switch off the stage
+screen only, the rack has both while locked; on the stage RIGS is the last
+thing on the screen; a locked move is a box headed "Not moved:" and a locked
+model change a greyed list, never a box starting "Locked:"; the button is
+"Remove channel 2", numbered. The guides' index now says what the page means
+by Sushi, Carla, stems and headless. `transport.py`'s own docstring still
+says "NOT VERIFIED: no take has been recorded this way"; it was left, as code
+outside this change. *(2026-11-14)*
+
+**The take's default name, in the documentation.** #134 landed while the
+README was being cut to a front page, so what it added to the old README is
+under `docs/` now, written from the code (`take.default_name`, `rig_in_name`,
+`next_name`; the record bar in `app.js` and `rig.js`): the rule in full in
+`docs/reference/takes.md` ("Names"), the route's `default_name` in
+`docs/reference/agent.md`, the name field's behaviour in
+`docs/reference/web-ui.md`, the panel's RECORD in
+`docs/reference/v1-workflow.md`, and the short of it in
+`docs/guide/recording.md`. The guide's pictures of the record bar were retaken
+and show a default name. Seen in the retaken phone-width picture: at 390 px
+the name field is narrower than a default name and cuts
+`electric_board-2026-11-14-take-` before its number. Selecting the default on
+a tap is still untried on a real phone, as the entry above says.
+*(2026-11-14)*
