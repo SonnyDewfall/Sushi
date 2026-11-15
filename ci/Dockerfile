@@ -6,7 +6,7 @@
 #
 #   docker build -f ci/Dockerfile -t sushi-rig-ci .
 #
-# What this reproduces from the README, and how:
+# What this reproduces from docs/reference/ (environment.md, plugins.md), and how:
 #   plugins/   assembled from distro packages by `sushi-rig plugins assemble`,
 #              then proven self-contained by `sushi-rig plugins check` (which
 #              runs with LV2_PATH set to plugins/ alone, as the rig does)
@@ -38,7 +38,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 #
 # The second group is what the tool needs. `liblilv-dev` and `lv2-dev` are both
 # required: python3-lilv's ctypes binding looks for the unversioned
-# liblilv-0.so (README: Environment).
+# liblilv-0.so (docs/reference/environment.md).
 #
 RUN apt-get update && apt-get install -y --no-install-recommends \
         guitarix-lv2 mda-lv2 dpf-plugins-lv2 x42-plugins zynaddsubfx-lv2 \
@@ -98,7 +98,7 @@ RUN ./Sushi.AppImage --appimage-extract >/dev/null \
 #
 # --system-site-packages is how the venv sees apt's python3-lilv, which has no
 # PyPI wheel. `elkpy` installs cleanly on Ubuntu's Python 3.12 (checked in this
-# image; the README reports 3.14 too). `audio` brings numpy, without which the
+# image; docs/reference/environment.md reports 3.14 too). `audio` brings numpy, without which the
 # signal and analysis tests skip -- and a skip fails the job. `agent` brings
 # aiohttp, for the same reason, and `capture` brings JACK-Client, which needs the
 # libjack the apt line above installs: without both the capture tests skip.
@@ -125,7 +125,7 @@ ENV PLAYWRIGHT_BROWSERS_PATH=/opt/ms-playwright
 RUN playwright install --with-deps chromium \
     && rm -rf /var/lib/apt/lists/*
 
-# `./sushi` at the repo root is where tests/test_configs.py and the README look.
+# `./sushi` at the repo root is where tests/test_configs.py and docs/reference/ look.
 RUN ln -s /opt/sushi/squashfs-root/AppRun /rig/sushi
 
 # --- plugins/ ---------------------------------------------------------------
@@ -161,7 +161,8 @@ RUN ln -s /rig /root/Sushi \
 
 # --- preflight --------------------------------------------------------------
 #
-# README: "./sushi --version must list lv2". `test -x` follows the symlink, so a
+# docs/reference/environment.md: Sushi is built with lv2, so `./sushi --version`
+# must list it. `test -x` follows the symlink, so a
 # dangling link fails the build here instead of letting tests/test_configs.py
 # skip itself silently (its `needs_sushi` marker skips when ./sushi is absent).
 RUN test -x /rig/sushi \

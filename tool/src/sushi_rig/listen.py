@@ -278,7 +278,7 @@ def serve(
     except ImportError:
         sys.exit(
             "python-osc not found. Install it into the tool's venv: "
-            "pip install python-osc (see README: Environment, or the 'live' extra)"
+            "pip install python-osc (see docs/reference/environment.md, or the 'live' extra)"
         )
 
     status_client = SimpleUDPClient(status_host, status_port)

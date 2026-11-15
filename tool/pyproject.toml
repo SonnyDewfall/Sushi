@@ -11,7 +11,7 @@ dependencies = [
 [project.optional-dependencies]
 live = ["elkpy", "python-osc"]
 audio = ["numpy>=1.24"]  # offline signal generation and analysis (signals, analysis)
-probe = []  # lilv has no PyPI wheel; install python3-lilv via apt (see README)
+probe = []  # lilv has no PyPI wheel; install python3-lilv via apt (see docs/reference/environment.md)
 # The rig agent (#29): `sushi-rig agent`. python-osc too: the agent sets the amp
 # in Carla over OSC itself (amp_live.py), with no listener in between.
 agent = ["aiohttp>=3.9", "python-osc"]

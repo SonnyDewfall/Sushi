@@ -1,7 +1,9 @@
 """sushi-rig — author an LV2 rig live in Sushi, then capture it back as a config file.
 
-The workflow this supports is in README.md. IMPLEMENTATION_BRIEF.md is the
-original brief, kept as history; where it and the code disagree, the code is right.
+The commands are described in docs/reference/commands.md, and the workflow they
+came from in docs/reference/v1-workflow.md. docs/design/IMPLEMENTATION_BRIEF.md
+is the original brief, kept as history; where it and the code disagree, the
+code is right.
 """
 
 from __future__ import annotations
