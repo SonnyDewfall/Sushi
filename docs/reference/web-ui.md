@@ -214,10 +214,21 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   count at that moment. **Selecting the default on a tap is untested on
   WebKit, so on a real phone**: only Chromium is in the tests, and the
   selection is deferred past the tap because WebKit places the caret after the
-  focus event (`app.js`, `nameField`). At a phone's width the field is
-  narrower than a default name: at 390 px it shows
-  `electric_board-2026-11-14-take-` and not the number (seen in
-  `docs/guide/img/stage-phone.png`). A name
+  focus event (`app.js`, `nameField`). A name the field is too narrow to
+  show whole is also written out on a line under the field, wrapped
+  (`drawNameWhole`, `.take-whole`), so the take's number is always on the
+  page: at 390 px the field holds about 31 characters, and a default is the
+  rig's name and 19 more with its number last, so every rig but the shortest
+  gets the line on a phone (`docs/guide/img/stage-phone.png`), and the
+  64-character longest gets it on a desktop too, where the stage is 520 px at
+  most. A name the field shows whole has no such line. The line is of
+  whatever the field holds, a typed name too, measured (`scrollWidth` against
+  `clientWidth`) each time the bar is drawn, on each key and when the field is
+  left; the field itself, its 16 px type (under 16, a phone's browser zooms
+  the page when a field is entered), its caret and its scroll are untouched.
+  **Untested on WebKit** like the selection: if a browser does not report a
+  field's `scrollWidth`, the line is absent and the field cuts the name as it
+  did. A name
   already taken says the earlier take moves to `_archive/`. Why recording is
   off is said on the bar (no rig, the panel, a v1 run, no recorder, or the
   recorder's own reason). The rack lists the takes beside Save, each with its

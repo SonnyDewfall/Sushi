@@ -3930,7 +3930,19 @@ Tests, in `test_ui.py`: at 390 and 1280 px, for `clean`, `electric_board`,
 `hard-feelings-record` and the 64-character rig, the number is drawn inside
 the bar and the window and nothing scrolls sideways, idle, recording and
 recorded; the line follows typing and leaves the caret alone; the rack's list
-shows the longest name whole. #145's tests pass unchanged. **Not run here:**
+shows the longest name whole. #145's tests pass unchanged. **The docs**
+(#146 was merged into this branch): `docs/guide/recording.md` and
+`docs/reference/web-ui.md` said the box could be too short to show the number,
+which is no longer so; the guide now says the whole name is written out under
+the box, and tells the stems line by where it is (just above **Record**), not
+as the line under the box, which on a phone is now the name; the reference
+says what the field does. The two pictures that show the record bar were
+retaken with `tests/guide_shots.py`: `stage-phone.png`, which now shows the
+name in full under the box, and `recording.png`, in which only the day in the
+take's name differs; their alt texts follow. The script retakes every
+picture; `save-and-revert.png` came out different too (it does not show the
+bar) and was left as it was. The fast suite: 4372 passed, 41 skipped.
+**Not run here:**
 any browser but headless Chromium, so not the phone: whether Safari reports a
 field's `scrollWidth` as Chromium does is unchecked, and if it does not the
 line is simply absent, as before; the slow tests and the container job.
