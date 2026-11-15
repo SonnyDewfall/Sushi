@@ -2697,8 +2697,9 @@ def test_two_pages_show_the_same_next_name_and_each_gets_a_take_of_its_own(brows
 # -- a default name is all there to read, its number too, however narrow the field --
 
 # The reported case (a 14-character rig, on a phone), the owner's longest
-# kind of rig name, the longest a default can be (a 43-character stem: 64 in
-# all), and one short enough for any field.
+# kind of rig name, the longest a rig's name is in a default (a 43-character
+# stem: 62 in all with a two-digit number, and 64, the name rule's limit, from
+# its thousandth take of a day), and one short enough for any field.
 LONGEST_RIG = "a-rig-with-a-name-as-long-as-the-rule-for-names-allows-one-to-be"
 LONGEST = "a-rig-with-a-name-as-long-as-the-rule-for-n-2026-11-12-take-01"
 RIGS_BY_LENGTH = ["clean", "electric_board", "hard-feelings-record", LONGEST_RIG]
@@ -2769,6 +2770,16 @@ def test_the_take_number_is_always_on_the_page_whatever_the_rigs_name(browser, r
     assert LONGEST_RIG in cut and "clean" not in cut
     if width == 390:
         assert cut == RIGS_BY_LENGTH[1:], "what the phone cut before: every default but a short rig's"
+    # The longest name there can be: 64 characters, the name rule's limit,
+    # which a default reaches at that rig's thousandth take of the day.
+    thousandth = LONGEST[:-2] + "1000"
+    assert len(thousandth) == 64
+    (record_served.recorder.takes / (LONGEST[:-2] + "999")).mkdir(parents=True)
+    expect(name).to_have_value(thousandth)
+    assert seen_in(p, ".take-whole", ".record-bar") == {"text": thousandth, "shown": True}
+    no_sideways_scroll(p)
+    (record_served.recorder.takes / (LONGEST[:-2] + "999")).rmdir()
+    expect(name).to_have_value(LONGEST)
     # Recording, and recorded: the name is whole there too, and nothing scrolls sideways.
     p.get_by_role("button", name="Record", exact=True).click()
     expect(p.locator(".record-bar .take-now .v")).to_have_text(LONGEST)
@@ -2805,12 +2816,76 @@ def test_the_line_under_the_field_follows_what_is_typed_and_the_field_is_left_al
     assert seen_in(p, ".take-whole", ".record-bar")["shown"]
     assert name_selection(p) == [len(typed), len(typed), len(typed), True], "the caret is where typing left it"
     no_sideways_scroll(p)
-    # Cleared and left: the default again, in the field and on the line.
+    # Cleared: the name Record would use is the default again, which the
+    # placeholder shows cut, so the line has it already; leaving the field
+    # puts it in the field and changes nothing else.
     name.fill("")
-    expect(p.locator(".take-whole")).to_have_text("")
+    expect(name).to_have_attribute("placeholder", FIRST)
+    expect(p.locator(".take-whole")).to_have_text(FIRST)
+    assert seen_in(p, ".take-whole", ".record-bar")["shown"]
     name.blur()
     expect(name).to_have_value(FIRST)
     expect(p.locator(".take-whole")).to_have_text(FIRST)
+    page.close()
+
+
+def press_and_release(page, button, edge):
+    """A press on `button` four pixels inside its top or bottom edge, then
+    the release. Where the button was before the press, and while it was
+    held."""
+    before = button.bounding_box()
+    y = before["y"] + 4 if edge == "top" else before["y"] + before["height"] - 4
+    page.mouse.move(before["x"] + before["width"] / 2, y)
+    page.mouse.down()
+    held = button.bounding_box()
+    page.mouse.up()
+    return before, held
+
+
+# What the name field may hold, and be holding the focus with, when Record is
+# pressed: how to get it there, and the take that must start.
+FIELD_STATES = [
+    ("entered and not typed in", lambda name: name.click(), re.compile(r"^electric_board-2026-11-12-take-\d\d$")),
+    ("a short name typed", lambda name: name.fill("riff"), "riff"),
+    ("a name typed that the field cuts", lambda name: name.fill("a-name-typed-that-is-far-too-long-for-the-field"),
+     "a-name-typed-that-is-far-too-long-for-the-field"),
+    ("emptied", lambda name: (name.fill("riff"), name.fill("")), re.compile(r"^electric_board-2026-11-12-take-\d\d$")),
+    ("only spaces", lambda name: name.fill("   "), re.compile(r"^electric_board-2026-11-12-take-\d\d$")),
+    ("a name a take already has", lambda name: name.fill("riff"), "riff"),
+]
+
+
+@pytest.mark.parametrize("edge", ["top", "bottom"])
+def test_record_and_stop_do_not_move_between_a_press_and_its_release(browser, record_served, edge):
+    """Pressing Record takes the focus from the name field, and what the
+    field does on losing it must move nothing: a press that lands on Record
+    and a release that misses it starts no take. It did miss. With the field
+    emptied there was no line under it; the press blurred the field, the
+    default came back and its line with it, and Record was 26 px lower at the
+    release, so the top 26 px of the button did nothing. Each state the field
+    can be left in, at a phone's width, pressed four pixels inside the
+    button's top edge or its bottom one; then Stop, the same way."""
+    page = stage_page(browser, record_served)
+    p = page.page
+    bar = p.locator(".record-bar")
+    name = p.get_by_label("Take name")
+    record = p.get_by_role("button", name="Record", exact=True)
+    stop = p.get_by_role("button", name="Stop", exact=True)
+    for state, reach, take in FIELD_STATES:
+        expect(name).to_have_value(re.compile(r"-take-\d\d$"))
+        reach(name)
+        expect(name).to_be_focused()
+        if state == "a name a take already has":
+            expect(p.locator("#take-note")).to_have_text("Will replace the earlier riff, which moves to _archive/riff/.")
+        before, held = press_and_release(p, record, edge)
+        assert held == before, f"Record moved under the press with the field {state}"
+        expect(bar).to_have_class(re.compile(r"\brecording\b"))
+        expect(bar.locator(".take-now .v")).to_have_text(take)
+        before, held = press_and_release(p, stop, edge)
+        assert held == before, f"Stop moved under the press after {state}"
+        expect(bar).not_to_have_class(re.compile(r"\brecording\b"))
+        expect(bar.locator(".record-result")).to_contain_text("Recorded")
+    assert (record_served.recorder.takes / "_archive" / "riff").is_dir(), "the name typed twice replaced, as a typed name does"
     page.close()
 
 

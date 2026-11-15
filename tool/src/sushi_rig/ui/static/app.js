@@ -1633,7 +1633,7 @@ function drawNameCheck(el) {
   const button = el.querySelector("button.record-act.rec");
   if (note) { note.textContent = view.note || ""; note.classList.toggle("bad", !!view.bad); }
   if (button) { button.disabled = view.record.disabled; button.textContent = view.record.label; }
-  drawNameWhole(el);
+  drawNameWhole(el, view.default);
 }
 
 // The name in full on a line under the field, when the field is too narrow
@@ -1646,17 +1646,41 @@ function drawNameCheck(el) {
 //
 // The field itself is left as it is, its type size too (under 16 px, a
 // phone's browser zooms the page when the field is entered), and nothing
-// here touches its text, caret or scroll. Measured, since only the browser
-// knows how wide the text is: drawn with the bar (every poll, so a phone
-// turned on its side is caught up with within one), on each key and when the
-// field is left. Shown while the field is held too, so that leaving it for
-// Record does not move Record under the finger.
-function drawNameWhole(el) {
+// here touches its text, caret or scroll. Drawn with the bar (every poll, so
+// a phone turned on its side is caught up with within one) and on each key.
+//
+// The line is of the name Record would use, not of the field's text: with
+// the field empty, or holding only spaces, that is the default (`fallback`),
+// which the placeholder shows cut and the field takes back when it is left.
+// So leaving the field changes nothing here, and Record does not move
+// between a press on it and the release. It did: an emptied field had no
+// line, the press on Record blurred the field, the default and its line came
+// back, and Record was 26 px lower when the finger came up, so the top of
+// the button started no take. The width is measured as the field draws text
+// (`nameCut`), not read from the field's `scrollWidth`, since a name that is
+// not in the field has none: one measure for the default whether it is the
+// field's text or its placeholder, so the two cannot disagree.
+function drawNameWhole(el, fallback) {
   const input = el.querySelector('input[name="take-name"]');
   const whole = el.querySelector(".take-whole");
   if (!input || !whole) return;
-  const text = input.scrollWidth > input.clientWidth ? input.value : "";
+  const name = input.value.trim() ? input.value : fallback || "";
+  const text = name && nameCut(input, name) ? name : "";
   if (whole.textContent !== text) whole.textContent = text;
+}
+
+// Whether `input` is too narrow to show `text` whole, in the type it draws
+// its own text in. A canvas measures as the field lays out (in Chromium, to
+// within a pixel of the field's own `scrollWidth`, for names of 24 to 62
+// characters).
+let nameRuler = null;
+function nameCut(input, text) {
+  const style = getComputedStyle(input);
+  const room = input.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+  if (!(room > 0)) return false;  // not laid out yet: the next draw measures it
+  nameRuler = nameRuler || document.createElement("canvas").getContext("2d");
+  nameRuler.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
+  return nameRuler.measureText(text).width > room;
 }
 
 function nameField(view) {
@@ -1709,12 +1733,10 @@ function nameField(view) {
   });
   input.addEventListener("keydown", dropLater);
   input.addEventListener("blur", dropLater);
-  // Left empty, the field shows the default again: an empty name is the default.
-  input.addEventListener("blur", () => {
-    if (input.value.trim()) return;
-    input.value = view.default || "";
-    drawNameWhole(input.closest(".record-bar"));
-  });
+  // Left empty, the field shows the default again: an empty name is the
+  // default. Nothing else is drawn for it: the line under the field already
+  // held the default (`drawNameWhole`), so this moves nothing on the page.
+  input.addEventListener("blur", () => { if (!input.value.trim()) input.value = view.default || ""; });
   input.addEventListener("keydown", (event) => { if (event.key === "Enter" && !recordBarView().record.disabled) recordStart(); });
   return h("label", { class: "take-name" }, h("span", {}, "Take name"), input);
 }

@@ -3911,7 +3911,8 @@ characters and cutting a default name at its end:
 `electric_board-2026-11-14-take-`, with the number, the one part that changes,
 off the edge. Every rig but the shortest lost it (a default is the rig's name
 and 19 characters more), and the stage screen is 520 px at most, so the
-longest default (64 characters) is cut on a desktop too. Now a name the field
+longest defaults (62 characters for a rig's name cut to 43, and 64 from its
+thousandth take of a day) are cut on a desktop too. Now a name the field
 cannot show whole is also on a line under it, wrapped (`drawNameWhole` in
 app.js, `.take-whole` in style.css); a name the field shows has no such line.
 Chosen over the others because it is the one that shows the whole name at any
@@ -3927,7 +3928,7 @@ field is held, so leaving the field for Record does not move Record. The
 rack has no name field: its takes list, the take while it records and the
 line that says it was recorded already wrapped, and are now tested to.
 Tests, in `test_ui.py`: at 390 and 1280 px, for `clean`, `electric_board`,
-`hard-feelings-record` and the 64-character rig, the number is drawn inside
+`hard-feelings-record` and the longest rig (62 characters), the number is drawn inside
 the bar and the window and nothing scrolls sideways, idle, recording and
 recorded; the line follows typing and leaves the caret alone; the rack's list
 shows the longest name whole. #145's tests pass unchanged. **The docs**
@@ -3946,4 +3947,35 @@ bar) and was left as it was. The fast suite: 4372 passed, 41 skipped.
 any browser but headless Chromium, so not the phone: whether Safari reports a
 field's `scrollWidth` as Chromium does is unchecked, and if it does not the
 line is simply absent, as before; the slow tests and the container job.
+*(2026-11-15)*
+
+**The take's name under the field, answering review (PR #147).** One defect
+and one wrong number. (1) Record moved between a press and its release. With
+the name field emptied there was no line under it (its placeholder showed the
+default, cut, and the line was drawn from the field's text); a press on Record
+took the focus, the field put the default back, the line came with it, and
+Record was 26 px lower when the finger came up: the top 26 px of a 64 px
+button started no take. Reproduced here (Record's top at 412 px before the
+press and 438 after, the bar still idle). The line is now of the name Record
+would use, so with the field empty, or holding only spaces, it is the default,
+and leaving the field draws nothing. Its width is measured as the field draws
+text (`nameCut`: a canvas in the field's own type, within a pixel of the
+field's `scrollWidth` for the names tried), not read from `scrollWidth`, which
+a name that is not in the field does not have; one measure for the default
+whether it is the field's text or its placeholder. That also ends the
+dependence on a browser reporting a field's `scrollWidth`. The other things a
+blur could change were looked at: the note under the field follows what was
+typed, not the focus, and is there before the press. Test:
+`test_record_and_stop_do_not_move_between_a_press_and_its_release`, at 390 px,
+the field holding the focus in each of six states (entered, a short name, a
+name it cuts, emptied, only spaces, a name a take has), Record pressed four
+pixels inside its top edge and its bottom one, then Stop the same way: the
+button is where it was while held, and a take starts and stops. It fails on
+the code as reviewed, at "emptied". (2) "The 64-character longest" default is
+62 characters; 64 is the name rule's limit, which a default reaches at a rig's
+thousandth take of a day. The reference, the entry above and the test's
+comment say 62, and the width test now has the 64-character name too. The
+fast suite: 4374 passed, 41 skipped. **Not run here:** WebKit, as before; a
+phone, where leaving the field also puts the keyboard away, which moves the
+page in ways no test here sees; the slow tests and the container job.
 *(2026-11-15)*

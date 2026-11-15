@@ -140,7 +140,9 @@ name the field is too narrow to show whole (on a phone it holds about 31
 characters, and a default is at least the rig's name and 19 more, its number
 last) is also on a line under the field, wrapped (`drawNameWhole`), so the
 take's number is always on the page; the field itself, its type size and
-its caret are left as they are. A name is checked
+its caret are left as they are. The line is of the name Record would use,
+so with the field emptied it holds the default, and leaving the field (as a
+press on Record does) moves nothing in the bar. A name is checked
 before sending (`checkTakeName`, the rule take.check_name keeps); a
 name already in the takes list says the earlier take will move to the
 archive. The elapsed time is the recorder's (`elapsed`, by its clock),

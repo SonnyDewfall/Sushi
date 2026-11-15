@@ -220,15 +220,19 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   page: at 390 px the field holds about 31 characters, and a default is the
   rig's name and 19 more with its number last, so every rig but the shortest
   gets the line on a phone (`docs/guide/img/stage-phone.png`), and the
-  64-character longest gets it on a desktop too, where the stage is 520 px at
-  most. A name the field shows whole has no such line. The line is of
-  whatever the field holds, a typed name too, measured (`scrollWidth` against
-  `clientWidth`) each time the bar is drawn, on each key and when the field is
-  left; the field itself, its 16 px type (under 16, a phone's browser zooms
-  the page when a field is entered), its caret and its scroll are untouched.
-  **Untested on WebKit** like the selection: if a browser does not report a
-  field's `scrollWidth`, the line is absent and the field cuts the name as it
-  did. A name
+  longest defaults get it on a desktop too, where the stage is 520 px at
+  most: 62 characters for a rig whose name is cut to 43, and 64, the name
+  rule's limit, from that rig's thousandth take of a day. A name the field
+  shows whole has no such line. The line is of the name Record would use: a
+  typed name, or with the field empty or holding only spaces the default,
+  which the placeholder shows cut. So emptying the field and leaving it,
+  which puts the default back, moves nothing: nothing in the bar changes
+  height between a press on Record or Stop and its release. The width is
+  measured as the field draws text (a canvas, in the field's own type:
+  `nameCut`), each time the bar is drawn and on each key; the field itself,
+  its 16 px type (under 16, a phone's browser zooms the page when a field is
+  entered), its caret and its scroll are untouched. **Untested on WebKit**
+  like the selection. A name
   already taken says the earlier take moves to `_archive/`. Why recording is
   off is said on the bar (no rig, the panel, a v1 run, no recorder, or the
   recorder's own reason). The rack lists the takes beside Save, each with its
