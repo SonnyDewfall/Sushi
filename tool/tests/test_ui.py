@@ -2889,6 +2889,115 @@ def test_record_and_stop_do_not_move_between_a_press_and_its_release(browser, re
     page.close()
 
 
+# How the measure of a name's width can fail, as a script run before the
+# page's own. The first is what took the stage down when a canvas did the
+# measuring; the rest are the ruler in the page (`nameCut`) failing.
+MEASURE_FAILS = {
+    "no 2D context": "HTMLCanvasElement.prototype.getContext = () => null;",
+    "the ruler throws": """
+        const real = Element.prototype.getBoundingClientRect;
+        Element.prototype.getBoundingClientRect = function () {
+          if (this.parentElement && this.parentElement.classList.contains("take-rule")) throw new Error("no measure (test)");
+          return real.call(this);
+        };""",
+    "the ruler has no width": """
+        const real = Element.prototype.getBoundingClientRect;
+        Element.prototype.getBoundingClientRect = function () {
+          if (this.parentElement && this.parentElement.classList.contains("take-rule")) return new DOMRect(0, 0, 0, 0);
+          return real.call(this);
+        };""",
+    "there is no ruler": """
+        const real = Element.prototype.querySelector;
+        Element.prototype.querySelector = function (selector) {
+          return selector === ".take-rule span" ? null : real.call(this, selector);
+        };""",
+}
+
+
+@pytest.mark.parametrize("how", list(MEASURE_FAILS))
+def test_a_measure_that_cannot_be_made_shows_the_line_and_never_takes_the_page_down(browser, record_served, how):
+    """With no 2D context the canvas that once measured the name threw from
+    inside the draw, and the stage was replaced by "The page failed to draw
+    the rig" at every poll. The measure is in the page's layout now; when it
+    cannot be made it says the name is cut, since the name said twice costs
+    nothing and the take's number off the page is the defect."""
+    page = Watched.__new__(Watched)
+    page.asked, page.console, page.errors = [], [], []
+    page.page = p = browser.new_page(viewport={"width": 390, "height": 844})
+    p.on("pageerror", lambda error: page.errors.append(str(error)))
+    p.add_init_script(MEASURE_FAILS[how])
+    p.goto(record_served.url + "/#stage")
+    name = p.get_by_label("Take name")
+    expect(name).to_have_value(FIRST)
+    expect(p.locator(".take-whole")).to_have_text(FIRST)
+    assert seen_in(p, ".take-whole", ".record-bar")["shown"]
+    p.wait_for_timeout(1300)  # a poll's draw too
+    expect(p.get_by_text("The page failed to draw the rig")).to_have_count(0)
+    # Wide enough for the name: only a measure that was made may say so. The
+    # line is drawn again with the bar, at the next poll, so that is waited for.
+    p.set_viewport_size({"width": 1280, "height": 900})
+    p.wait_for_timeout(1300)
+    assert field_and_line(p)["fits"]
+    expect(p.locator(".take-whole")).to_have_text("" if how == "no 2D context" else FIRST)
+    no_sideways_scroll(p)
+    p.get_by_role("button", name="Record", exact=True).click()
+    expect(p.locator(".record-bar .take-now .v")).to_have_text(FIRST)
+    p.get_by_role("button", name="Stop", exact=True).click()
+    expect(p.locator(".record-bar .record-result")).to_contain_text(f"Recorded {FIRST}")
+    page.close()
+
+
+def test_text_the_browser_enlarges_past_its_computed_size_is_measured_as_it_is_drawn(browser, record_served):
+    """A phone's font scale, or a browser's text-only zoom, draws the field's
+    text larger than the size the page's script can read: a measure made at
+    the computed 16 px (a canvas's) says a name fits that the field cuts, and
+    the line is gone again. The ruler is laid out by the browser, so it is
+    enlarged with the field.
+
+    Emulated, since Chromium has no text-only zoom to switch on: a context
+    that emulates a phone (`is_mobile`, which turns on Chromium's text
+    autosizing), `text-size-adjust: 150%` on the field's and the ruler's one
+    rule, and `getComputedStyle` made to answer 16px for the field's font
+    size as a browser with text-only zoom does (Chromium itself answers
+    24px). Not run on the browsers that have the setting."""
+    context = browser.new_context(viewport={"width": 520, "height": 900}, is_mobile=True)
+    p = context.new_page()
+    errors = []
+    p.on("pageerror", lambda error: errors.append(str(error)))
+    p.add_init_script("""
+      const real = window.getComputedStyle;
+      window.getComputedStyle = function (element, ...rest) {
+        const style = real.call(window, element, ...rest);
+        if (!(element instanceof HTMLInputElement) || element.name !== "take-name") return style;
+        return new Proxy(style, {get(target, key) {
+          if (key === "fontSize") return "16px";
+          const value = Reflect.get(target, key);
+          return typeof value === "function" ? value.bind(target) : value;
+        }});
+      };""")
+    p.goto(record_served.url + "/#stage")
+    name = p.get_by_label("Take name")
+    expect(name).to_have_value(FIRST)
+    p.wait_for_timeout(200)
+    before = field_and_line(p)
+    assert before["fits"] and (before["line"], before["lineShown"]) == ("", False), "at 520 px the name fits"
+    ruler = "() => document.querySelector('.take-rule span').getBoundingClientRect().width"
+    narrow = p.evaluate(ruler)
+    p.add_style_tag(content=".take-name input, .take-rule span { text-size-adjust: 150%; -webkit-text-size-adjust: 150%; }")
+    expect(p.locator(".take-whole")).to_have_text(FIRST)
+    after = field_and_line(p)
+    assert after["size"] == 16, "what a script reads of the field's type has not changed"
+    assert not after["fits"] and p.evaluate(ruler) > narrow * 1.4, "what is drawn has, and the ruler with it"
+    assert seen_in(p, ".take-whole", ".record-bar") == {"text": FIRST, "shown": True}
+    no_sideways_scroll(p)
+    # An emptied field has only the ruler to go by: the line stays, so Record does not move.
+    name.fill("riff")
+    name.fill("")
+    expect(p.locator(".take-whole")).to_have_text(FIRST)
+    context.close()
+    assert errors == []
+
+
 def test_the_racks_takes_list_shows_a_long_name_whole(browser, record_served):
     """The rack has no name field; its takes list is where a take's name is
     read there, in the files column, and it wraps."""

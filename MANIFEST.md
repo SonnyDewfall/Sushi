@@ -3979,3 +3979,41 @@ fast suite: 4374 passed, 41 skipped. **Not run here:** WebKit, as before; a
 phone, where leaving the field also puts the keyboard away, which moves the
 page in ways no test here sees; the slow tests and the container job.
 *(2026-11-15)*
+
+**The take's name under the field: the measure is in the page, not a canvas
+(re-review of PR #147).** The canvas of the entry above had two faults, and is
+gone. (1) With no 2D context `nameCut` threw from inside the draw, and the
+stage was replaced by "The page failed to draw the rig" at every poll
+(reproduced: `getContext` returning null). Its other failures failed the wrong
+way: no room in the field read as "fits", and so did a font string the canvas
+refused. (2) It measured at the computed font size, which is not always the
+size drawn: text-only zoom and a phone's font scale enlarge the text and leave
+the computed 16 px alone, so the field cut a name the canvas said fitted, and
+the line was gone again, which the first `scrollWidth` version did not do.
+Now a hidden ruler in the bar (`.take-rule`: out of the flow, no size of its
+own and clipped to it, `aria-hidden`, its text one unwrapped line) carries the
+field's type by one CSS rule shared with the field, and its width with the
+name in it is compared with the room inside the field: the browser lays the
+ruler out, so what it does to the field's text it does to the ruler's. One
+measure for a typed name and for the default, as before; where the field
+holds the name its `scrollWidth` is asked too, and a cut either sees shows the
+line. Every failure (no ruler, no width, no room, anything thrown) says "cut":
+the name said twice is harmless, and the number off the page is the defect.
+Tests: the page draws and shows the line with no 2D context, a ruler that
+throws, one with no width and none at all, and at a width the name fits only
+a measure that was made may say so; text enlarged past its computed size
+shows the line for a name that fitted. **How that last was emulated, since
+Chromium has no text-only zoom:** a context emulating a phone (`is_mobile`,
+which turns on text autosizing), `text-size-adjust: 150%` on the rule the
+field and the ruler share, and `getComputedStyle` made to answer 16px for the
+field as a browser with text-only zoom does (Chromium itself answers 24px).
+On the code as reviewed that test's case leaves the field cutting the name
+and the line empty; here the line is there. The press-and-release test and the
+width tests pass unchanged, the 64-character name in the ruler widens nothing
+(`scrollWidth <= innerWidth`). The fast suite: 4379 passed, 41 skipped.
+**Not run here:** Firefox's Zoom Text Only, Android's font scale, or any
+phone; whether a phone's font scale enlarges a field and a hidden element
+alike is not known, and where it does not, the field's own `scrollWidth`
+still shows the line for a name the field holds, and only an emptied field
+goes by the ruler alone; WebKit; the slow tests and the container job.
+*(2026-11-15)*

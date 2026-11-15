@@ -1594,6 +1594,8 @@ function recordRegion(el) {
         ? h("div", { class: "take-now" }, h("span", { class: "k" }, "Take name"), h("span", { class: "v" }, view.name))
         : view.state === "idle" ? nameField(view) : null,
       view.state === "idle" ? h("p", { class: "take-whole", "aria-hidden": "true" }) : null,
+      // The ruler a name is measured on (`nameCut`): never seen, and no part of the layout.
+      view.state === "idle" ? h("span", { class: "take-rule", "aria-hidden": "true" }, h("span", {})) : null,
       view.reason ? h("p", { class: "record-note" }, view.reason) : null,
       view.state === "idle" ? h("p", { class: "record-note", id: "take-note", "aria-live": "polite" }) : null,
       recording && view.note ? h("p", { class: "record-note" }, view.note) : null,
@@ -1656,31 +1658,50 @@ function drawNameCheck(el) {
 // between a press on it and the release. It did: an emptied field had no
 // line, the press on Record blurred the field, the default and its line came
 // back, and Record was 26 px lower when the finger came up, so the top of
-// the button started no take. The width is measured as the field draws text
-// (`nameCut`), not read from the field's `scrollWidth`, since a name that is
-// not in the field has none: one measure for the default whether it is the
-// field's text or its placeholder, so the two cannot disagree.
+// the button started no take. The width is measured on a ruler in the page
+// (`nameCut`), not read from the field's `scrollWidth` alone, since a name
+// that is not in the field has none: one measure for the default whether it
+// is the field's text or its placeholder, so the two cannot disagree.
 function drawNameWhole(el, fallback) {
   const input = el.querySelector('input[name="take-name"]');
   const whole = el.querySelector(".take-whole");
   if (!input || !whole) return;
   const name = input.value.trim() ? input.value : fallback || "";
-  const text = name && nameCut(input, name) ? name : "";
+  const text = name && nameCut(el, input, name) ? name : "";
   if (whole.textContent !== text) whole.textContent = text;
 }
 
-// Whether `input` is too narrow to show `text` whole, in the type it draws
-// its own text in. A canvas measures as the field lays out (in Chromium, to
-// within a pixel of the field's own `scrollWidth`, for names of 24 to 62
-// characters).
-let nameRuler = null;
-function nameCut(input, text) {
-  const style = getComputedStyle(input);
-  const room = input.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
-  if (!(room > 0)) return false;  // not laid out yet: the next draw measures it
-  nameRuler = nameRuler || document.createElement("canvas").getContext("2d");
-  nameRuler.font = `${style.fontStyle} ${style.fontWeight} ${style.fontSize} ${style.fontFamily}`;
-  return nameRuler.measureText(text).width > room;
+// Whether `input` is too narrow to show `text` whole.
+//
+// Measured in the page's own layout: `.take-rule` is a hidden element in the
+// bar that carries the field's type (one rule in style.css gives both their
+// font), and its width with `text` in it is compared with the room inside
+// the field. So whatever the browser does to the field's text it does to the
+// ruler's. A canvas did this for a day and measured at the computed font
+// size, which is not always the size drawn: text-only zoom (Firefox's Zoom
+// Text Only, a phone's font scale) enlarges the text and leaves the computed
+// 16 px and a canvas's text as they were, so on a phone with large text the
+// name was cut, the canvas said it fitted, and the line was gone again.
+// Where the field holds `text` itself its own `scrollWidth` is asked as
+// well, and a cut that either sees shows the line.
+//
+// A measure that cannot be made says "cut", and never throws: the line shown
+// for a name that fits is the name said twice, and the line missing is the
+// take's number off the page. The canvas threw where there was no 2D
+// context, from inside the draw, and the whole stage went with it.
+function nameCut(el, input, text) {
+  try {
+    const rule = el.querySelector(".take-rule span");
+    const style = getComputedStyle(input);
+    const room = input.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+    if (!rule || !(room > 0)) return true;
+    if (rule.textContent !== text) rule.textContent = text;
+    const width = rule.getBoundingClientRect().width;
+    if (!(width > 0) || width > room) return true;
+    return input.value === text && input.scrollWidth > input.clientWidth;
+  } catch {
+    return true;
+  }
 }
 
 function nameField(view) {

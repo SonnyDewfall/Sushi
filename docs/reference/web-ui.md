@@ -228,11 +228,19 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   which the placeholder shows cut. So emptying the field and leaving it,
   which puts the default back, moves nothing: nothing in the bar changes
   height between a press on Record or Stop and its release. The width is
-  measured as the field draws text (a canvas, in the field's own type:
-  `nameCut`), each time the bar is drawn and on each key; the field itself,
-  its 16 px type (under 16, a phone's browser zooms the page when a field is
-  entered), its caret and its scroll are untouched. **Untested on WebKit**
-  like the selection. A name
+  measured in the page's own layout (`nameCut`): a hidden ruler in the bar
+  (`.take-rule`, out of the flow and clipped, so it moves and widens nothing)
+  carries the field's type by the same CSS rule, and its width with the name
+  in it is compared with the room inside the field, each time the bar is
+  drawn and on each key. So text the browser enlarges past its computed size
+  (text-only zoom, a phone's font scale) is measured as it is drawn. Where
+  the field holds the name its own `scrollWidth` is asked too, and a cut
+  either sees shows the line; a measure that cannot be made shows it as well,
+  and never stops the page drawing. The field itself, its 16 px type (under
+  16, a phone's browser zooms the page when a field is entered), its caret
+  and its scroll are untouched. **Untested on WebKit** like the selection,
+  **and with a real text-zoom setting**: Chromium has none, so the tests
+  emulate one (`text-size-adjust` under phone emulation). A name
   already taken says the earlier take moves to `_archive/`. Why recording is
   off is said on the bar (no rig, the panel, a v1 run, no recorder, or the
   recorder's own reason). The rack lists the takes beside Save, each with its
