@@ -1593,6 +1593,9 @@ function recordRegion(el) {
       recording
         ? h("div", { class: "take-now" }, h("span", { class: "k" }, "Take name"), h("span", { class: "v" }, view.name))
         : view.state === "idle" ? nameField(view) : null,
+      view.state === "idle" ? h("p", { class: "take-whole", "aria-hidden": "true" }) : null,
+      // The ruler a name is measured on (`nameCut`): never seen, and no part of the layout.
+      view.state === "idle" ? h("span", { class: "take-rule", "aria-hidden": "true" }, h("span", {})) : null,
       view.reason ? h("p", { class: "record-note" }, view.reason) : null,
       view.state === "idle" ? h("p", { class: "record-note", id: "take-note", "aria-live": "polite" }) : null,
       recording && view.note ? h("p", { class: "record-note" }, view.note) : null,
@@ -1632,6 +1635,73 @@ function drawNameCheck(el) {
   const button = el.querySelector("button.record-act.rec");
   if (note) { note.textContent = view.note || ""; note.classList.toggle("bad", !!view.bad); }
   if (button) { button.disabled = view.record.disabled; button.textContent = view.record.label; }
+  drawNameWhole(el, view.default);
+}
+
+// The name in full on a line under the field, when the field is too narrow
+// to show all of it. A default name is the rig, the date and the take's
+// number, in that order, and a field cuts its text at the end: on a phone
+// the stage's field holds 31 characters, so every default but the shortest
+// rig's lost its number, the part the player most needs to read. The line
+// wraps, so a name of any length (64 characters at most) is all there and
+// the page never scrolls sideways for it.
+//
+// The field itself is left as it is, its type size too (under 16 px, a
+// phone's browser zooms the page when the field is entered), and nothing
+// here touches its text, caret or scroll. Drawn with the bar (every poll, so
+// a phone turned on its side is caught up with within one) and on each key.
+//
+// The line is of the name Record would use, not of the field's text: with
+// the field empty, or holding only spaces, that is the default (`fallback`),
+// which the placeholder shows cut and the field takes back when it is left.
+// So leaving the field changes nothing here, and Record does not move
+// between a press on it and the release. It did: an emptied field had no
+// line, the press on Record blurred the field, the default and its line came
+// back, and Record was 26 px lower when the finger came up, so the top of
+// the button started no take. The width is measured on a ruler in the page
+// (`nameCut`), not read from the field's `scrollWidth` alone, since a name
+// that is not in the field has none: one measure for the default whether it
+// is the field's text or its placeholder, so the two cannot disagree.
+function drawNameWhole(el, fallback) {
+  const input = el.querySelector('input[name="take-name"]');
+  const whole = el.querySelector(".take-whole");
+  if (!input || !whole) return;
+  const name = input.value.trim() ? input.value : fallback || "";
+  const text = name && nameCut(el, input, name) ? name : "";
+  if (whole.textContent !== text) whole.textContent = text;
+}
+
+// Whether `input` is too narrow to show `text` whole.
+//
+// Measured in the page's own layout: `.take-rule` is a hidden element in the
+// bar that carries the field's type (one rule in style.css gives both their
+// font), and its width with `text` in it is compared with the room inside
+// the field. So whatever the browser does to the field's text it does to the
+// ruler's. A canvas did this for a day and measured at the computed font
+// size, which is not always the size drawn: text-only zoom (Firefox's Zoom
+// Text Only, a phone's font scale) enlarges the text and leaves the computed
+// 16 px and a canvas's text as they were, so on a phone with large text the
+// name was cut, the canvas said it fitted, and the line was gone again.
+// Where the field holds `text` itself its own `scrollWidth` is asked as
+// well, and a cut that either sees shows the line.
+//
+// A measure that cannot be made says "cut", and never throws: the line shown
+// for a name that fits is the name said twice, and the line missing is the
+// take's number off the page. The canvas threw where there was no 2D
+// context, from inside the draw, and the whole stage went with it.
+function nameCut(el, input, text) {
+  try {
+    const rule = el.querySelector(".take-rule span");
+    const style = getComputedStyle(input);
+    const room = input.clientWidth - parseFloat(style.paddingLeft) - parseFloat(style.paddingRight);
+    if (!rule || !(room > 0)) return true;
+    if (rule.textContent !== text) rule.textContent = text;
+    const width = rule.getBoundingClientRect().width;
+    if (!(width > 0) || width > room) return true;
+    return input.value === text && input.scrollWidth > input.clientWidth;
+  } catch {
+    return true;
+  }
 }
 
 function nameField(view) {
@@ -1684,7 +1754,9 @@ function nameField(view) {
   });
   input.addEventListener("keydown", dropLater);
   input.addEventListener("blur", dropLater);
-  // Left empty, the field shows the default again: an empty name is the default.
+  // Left empty, the field shows the default again: an empty name is the
+  // default. Nothing else is drawn for it: the line under the field already
+  // held the default (`drawNameWhole`), so this moves nothing on the page.
   input.addEventListener("blur", () => { if (!input.value.trim()) input.value = view.default || ""; });
   input.addEventListener("keydown", (event) => { if (event.key === "Enter" && !recordBarView().record.disabled) recordStart(); });
   return h("label", { class: "take-name" }, h("span", {}, "Take name"), input);

@@ -214,10 +214,33 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   count at that moment. **Selecting the default on a tap is untested on
   WebKit, so on a real phone**: only Chromium is in the tests, and the
   selection is deferred past the tap because WebKit places the caret after the
-  focus event (`app.js`, `nameField`). At a phone's width the field is
-  narrower than a default name: at 390 px it shows
-  `electric_board-2026-11-14-take-` and not the number (seen in
-  `docs/guide/img/stage-phone.png`). A name
+  focus event (`app.js`, `nameField`). A name the field is too narrow to
+  show whole is also written out on a line under the field, wrapped
+  (`drawNameWhole`, `.take-whole`), so the take's number is always on the
+  page: at 390 px the field holds about 31 characters, and a default is the
+  rig's name and 19 more with its number last, so every rig but the shortest
+  gets the line on a phone (`docs/guide/img/stage-phone.png`), and the
+  longest defaults get it on a desktop too, where the stage is 520 px at
+  most: 62 characters for a rig whose name is cut to 43, and 64, the name
+  rule's limit, from that rig's thousandth take of a day. A name the field
+  shows whole has no such line. The line is of the name Record would use: a
+  typed name, or with the field empty or holding only spaces the default,
+  which the placeholder shows cut. So emptying the field and leaving it,
+  which puts the default back, moves nothing: nothing in the bar changes
+  height between a press on Record or Stop and its release. The width is
+  measured in the page's own layout (`nameCut`): a hidden ruler in the bar
+  (`.take-rule`, out of the flow and clipped, so it moves and widens nothing)
+  carries the field's type by the same CSS rule, and its width with the name
+  in it is compared with the room inside the field, each time the bar is
+  drawn and on each key. So text the browser enlarges past its computed size
+  (text-only zoom, a phone's font scale) is measured as it is drawn. Where
+  the field holds the name its own `scrollWidth` is asked too, and a cut
+  either sees shows the line; a measure that cannot be made shows it as well,
+  and never stops the page drawing. The field itself, its 16 px type (under
+  16, a phone's browser zooms the page when a field is entered), its caret
+  and its scroll are untouched. **Untested on WebKit** like the selection,
+  **and with a real text-zoom setting**: Chromium has none, so the tests
+  emulate one (`text-size-adjust` under phone emulation). A name
   already taken says the earlier take moves to `_archive/`. Why recording is
   off is said on the bar (no rig, the panel, a v1 run, no recorder, or the
   recorder's own reason). The rack lists the takes beside Save, each with its

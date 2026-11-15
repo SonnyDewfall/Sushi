@@ -2694,6 +2694,324 @@ def test_two_pages_show_the_same_next_name_and_each_gets_a_take_of_its_own(brows
     second.close()
 
 
+# -- a default name is all there to read, its number too, however narrow the field --
+
+# The reported case (a 14-character rig, on a phone), the owner's longest
+# kind of rig name, the longest a rig's name is in a default (a 43-character
+# stem: 62 in all with a two-digit number, and 64, the name rule's limit, from
+# its thousandth take of a day), and one short enough for any field.
+LONGEST_RIG = "a-rig-with-a-name-as-long-as-the-rule-for-names-allows-one-to-be"
+LONGEST = "a-rig-with-a-name-as-long-as-the-rule-for-n-2026-11-12-take-01"
+RIGS_BY_LENGTH = ["clean", "electric_board", "hard-feelings-record", LONGEST_RIG]
+
+
+def seen_in(page, selector, within):
+    """Where the text of `selector` ends on the page: its text, and whether
+    its last two characters (a default name's number) are drawn, inside the
+    element, inside `within` and inside the window's width."""
+    return page.evaluate("""([selector, within]) => {
+      const el = document.querySelector(selector);
+      const node = [...el.childNodes].find((n) => n.nodeType === Node.TEXT_NODE);
+      if (!node || node.length < 2) return {text: el.textContent, shown: false};
+      const range = document.createRange();
+      range.setStart(node, node.length - 2);
+      range.setEnd(node, node.length);
+      const r = range.getBoundingClientRect(), own = el.getBoundingClientRect();
+      const box = el.closest(within).getBoundingClientRect();
+      const inside = (o) => r.left >= o.left - 0.5 && r.right <= o.right + 0.5 && r.top >= o.top - 0.5 && r.bottom <= o.bottom + 0.5;
+      return {text: el.textContent, shown: r.width > 0 && r.height > 0 && inside(own) && inside(box)
+        && r.left >= 0 && r.right <= innerWidth && getComputedStyle(el).visibility === "visible"};
+    }""", [selector, within])
+
+
+def no_sideways_scroll(page):
+    width = page.evaluate("() => [document.documentElement.scrollWidth, innerWidth]")
+    assert width[0] <= width[1], width
+
+
+def field_and_line(page):
+    """The name field's text, whether the field shows all of it, and the
+    line under it."""
+    return page.evaluate("""() => {
+      const i = document.querySelector('input[name="take-name"]'), w = document.querySelector(".take-whole");
+      return {value: i.value, fits: i.scrollWidth <= i.clientWidth, line: w.textContent,
+              lineShown: getComputedStyle(w).display !== "none", size: parseFloat(getComputedStyle(i).fontSize)};
+    }""")
+
+
+@pytest.mark.parametrize("width, height", [(390, 844), (1280, 900)])
+def test_the_take_number_is_always_on_the_page_whatever_the_rigs_name(browser, record_served, width, height):
+    """At phone width the stage's field holds about 31 characters and cut a
+    default name at its end, so `electric_board-2026-11-14-take-` had lost
+    the one part that changes. A name the field cannot show whole is on a
+    line under it, wrapped, and one it can show has no such line. The stage
+    is 520 px at most, so the longest default is cut on a desktop too."""
+    from sushi_rig.take import default_name
+
+    page = Page(browser, record_served.url + "/#stage", width=width, height=height)
+    p = page.page
+    name = p.get_by_label("Take name")
+    cut = []
+    for rig in RIGS_BY_LENGTH:
+        switch_to(record_served, rig)
+        default = default_name(rig, TAKE_DAY, [])
+        expect(name).to_have_value(default)
+        shown = field_and_line(p)
+        assert shown["size"] >= 16, "under 16 px a phone's browser zooms the page when the field is entered"
+        if shown["fits"]:
+            assert (shown["line"], shown["lineShown"]) == ("", False), "a name the field shows is not said twice"
+        else:
+            cut.append(rig)
+            assert shown["line"] == default and shown["lineShown"]
+            assert seen_in(p, ".take-whole", ".record-bar") == {"text": default, "shown": True}, (rig, width)
+        no_sideways_scroll(p)
+    assert default == LONGEST and len(LONGEST) == 62
+    # No field here is wide enough for the longest, nor so narrow as to cut the shortest.
+    assert LONGEST_RIG in cut and "clean" not in cut
+    if width == 390:
+        assert cut == RIGS_BY_LENGTH[1:], "what the phone cut before: every default but a short rig's"
+    # The longest name there can be: 64 characters, the name rule's limit,
+    # which a default reaches at that rig's thousandth take of the day.
+    thousandth = LONGEST[:-2] + "1000"
+    assert len(thousandth) == 64
+    (record_served.recorder.takes / (LONGEST[:-2] + "999")).mkdir(parents=True)
+    expect(name).to_have_value(thousandth)
+    assert seen_in(p, ".take-whole", ".record-bar") == {"text": thousandth, "shown": True}
+    no_sideways_scroll(p)
+    (record_served.recorder.takes / (LONGEST[:-2] + "999")).rmdir()
+    expect(name).to_have_value(LONGEST)
+    # Recording, and recorded: the name is whole there too, and nothing scrolls sideways.
+    p.get_by_role("button", name="Record", exact=True).click()
+    expect(p.locator(".record-bar .take-now .v")).to_have_text(LONGEST)
+    assert seen_in(p, ".record-bar .take-now .v", ".record-bar")["shown"]
+    no_sideways_scroll(p)
+    p.get_by_role("button", name="Stop", exact=True).click()
+    expect(p.locator(".record-bar .record-result strong")).to_have_text(f"Recorded {LONGEST}")
+    assert seen_in(p, ".record-bar .record-result strong", ".record-bar")["shown"]
+    expect(name).to_have_value(LONGEST[:-2] + "02")
+    expect(p.locator(".take-whole")).to_have_text(LONGEST[:-2] + "02")
+    assert seen_in(p, ".take-whole", ".record-bar")["shown"]
+    no_sideways_scroll(p)
+    page.close()
+
+
+def test_the_line_under_the_field_follows_what_is_typed_and_the_field_is_left_alone(browser, record_served):
+    """The line is of whatever the field holds and cannot show: a long name
+    typed is on it key by key, and a short one needs none. Nothing of the
+    field's own is touched: its text, its caret and where it has scrolled to
+    are the browser's, as they were."""
+    page = stage_page(browser, record_served)
+    p = page.page
+    name = p.get_by_label("Take name")
+    expect(name).to_have_value(FIRST)
+    expect(p.locator(".take-whole")).to_have_text(FIRST)
+    name.click()
+    p.keyboard.type("riff")
+    expect(p.locator(".take-whole")).to_have_text("")
+    assert not field_and_line(p)["lineShown"]
+    p.keyboard.type("-with-a-name-far-too-long-for-the-field-to-show")
+    typed = "riff-with-a-name-far-too-long-for-the-field-to-show"
+    expect(name).to_have_value(typed)
+    expect(p.locator(".take-whole")).to_have_text(typed)
+    assert seen_in(p, ".take-whole", ".record-bar")["shown"]
+    assert name_selection(p) == [len(typed), len(typed), len(typed), True], "the caret is where typing left it"
+    no_sideways_scroll(p)
+    # Cleared: the name Record would use is the default again, which the
+    # placeholder shows cut, so the line has it already; leaving the field
+    # puts it in the field and changes nothing else.
+    name.fill("")
+    expect(name).to_have_attribute("placeholder", FIRST)
+    expect(p.locator(".take-whole")).to_have_text(FIRST)
+    assert seen_in(p, ".take-whole", ".record-bar")["shown"]
+    name.blur()
+    expect(name).to_have_value(FIRST)
+    expect(p.locator(".take-whole")).to_have_text(FIRST)
+    page.close()
+
+
+def press_and_release(page, button, edge):
+    """A press on `button` four pixels inside its top or bottom edge, then
+    the release. Where the button was before the press, and while it was
+    held."""
+    before = button.bounding_box()
+    y = before["y"] + 4 if edge == "top" else before["y"] + before["height"] - 4
+    page.mouse.move(before["x"] + before["width"] / 2, y)
+    page.mouse.down()
+    held = button.bounding_box()
+    page.mouse.up()
+    return before, held
+
+
+# What the name field may hold, and be holding the focus with, when Record is
+# pressed: how to get it there, and the take that must start.
+FIELD_STATES = [
+    ("entered and not typed in", lambda name: name.click(), re.compile(r"^electric_board-2026-11-12-take-\d\d$")),
+    ("a short name typed", lambda name: name.fill("riff"), "riff"),
+    ("a name typed that the field cuts", lambda name: name.fill("a-name-typed-that-is-far-too-long-for-the-field"),
+     "a-name-typed-that-is-far-too-long-for-the-field"),
+    ("emptied", lambda name: (name.fill("riff"), name.fill("")), re.compile(r"^electric_board-2026-11-12-take-\d\d$")),
+    ("only spaces", lambda name: name.fill("   "), re.compile(r"^electric_board-2026-11-12-take-\d\d$")),
+    ("a name a take already has", lambda name: name.fill("riff"), "riff"),
+]
+
+
+@pytest.mark.parametrize("edge", ["top", "bottom"])
+def test_record_and_stop_do_not_move_between_a_press_and_its_release(browser, record_served, edge):
+    """Pressing Record takes the focus from the name field, and what the
+    field does on losing it must move nothing: a press that lands on Record
+    and a release that misses it starts no take. It did miss. With the field
+    emptied there was no line under it; the press blurred the field, the
+    default came back and its line with it, and Record was 26 px lower at the
+    release, so the top 26 px of the button did nothing. Each state the field
+    can be left in, at a phone's width, pressed four pixels inside the
+    button's top edge or its bottom one; then Stop, the same way."""
+    page = stage_page(browser, record_served)
+    p = page.page
+    bar = p.locator(".record-bar")
+    name = p.get_by_label("Take name")
+    record = p.get_by_role("button", name="Record", exact=True)
+    stop = p.get_by_role("button", name="Stop", exact=True)
+    for state, reach, take in FIELD_STATES:
+        expect(name).to_have_value(re.compile(r"-take-\d\d$"))
+        reach(name)
+        expect(name).to_be_focused()
+        if state == "a name a take already has":
+            expect(p.locator("#take-note")).to_have_text("Will replace the earlier riff, which moves to _archive/riff/.")
+        before, held = press_and_release(p, record, edge)
+        assert held == before, f"Record moved under the press with the field {state}"
+        expect(bar).to_have_class(re.compile(r"\brecording\b"))
+        expect(bar.locator(".take-now .v")).to_have_text(take)
+        before, held = press_and_release(p, stop, edge)
+        assert held == before, f"Stop moved under the press after {state}"
+        expect(bar).not_to_have_class(re.compile(r"\brecording\b"))
+        expect(bar.locator(".record-result")).to_contain_text("Recorded")
+    assert (record_served.recorder.takes / "_archive" / "riff").is_dir(), "the name typed twice replaced, as a typed name does"
+    page.close()
+
+
+# How the measure of a name's width can fail, as a script run before the
+# page's own. The first is what took the stage down when a canvas did the
+# measuring; the rest are the ruler in the page (`nameCut`) failing.
+MEASURE_FAILS = {
+    "no 2D context": "HTMLCanvasElement.prototype.getContext = () => null;",
+    "the ruler throws": """
+        const real = Element.prototype.getBoundingClientRect;
+        Element.prototype.getBoundingClientRect = function () {
+          if (this.parentElement && this.parentElement.classList.contains("take-rule")) throw new Error("no measure (test)");
+          return real.call(this);
+        };""",
+    "the ruler has no width": """
+        const real = Element.prototype.getBoundingClientRect;
+        Element.prototype.getBoundingClientRect = function () {
+          if (this.parentElement && this.parentElement.classList.contains("take-rule")) return new DOMRect(0, 0, 0, 0);
+          return real.call(this);
+        };""",
+    "there is no ruler": """
+        const real = Element.prototype.querySelector;
+        Element.prototype.querySelector = function (selector) {
+          return selector === ".take-rule span" ? null : real.call(this, selector);
+        };""",
+}
+
+
+@pytest.mark.parametrize("how", list(MEASURE_FAILS))
+def test_a_measure_that_cannot_be_made_shows_the_line_and_never_takes_the_page_down(browser, record_served, how):
+    """With no 2D context the canvas that once measured the name threw from
+    inside the draw, and the stage was replaced by "The page failed to draw
+    the rig" at every poll. The measure is in the page's layout now; when it
+    cannot be made it says the name is cut, since the name said twice costs
+    nothing and the take's number off the page is the defect."""
+    page = Watched.__new__(Watched)
+    page.asked, page.console, page.errors = [], [], []
+    page.page = p = browser.new_page(viewport={"width": 390, "height": 844})
+    p.on("pageerror", lambda error: page.errors.append(str(error)))
+    p.add_init_script(MEASURE_FAILS[how])
+    p.goto(record_served.url + "/#stage")
+    name = p.get_by_label("Take name")
+    expect(name).to_have_value(FIRST)
+    expect(p.locator(".take-whole")).to_have_text(FIRST)
+    assert seen_in(p, ".take-whole", ".record-bar")["shown"]
+    p.wait_for_timeout(1300)  # a poll's draw too
+    expect(p.get_by_text("The page failed to draw the rig")).to_have_count(0)
+    # Wide enough for the name: only a measure that was made may say so. The
+    # line is drawn again with the bar, at the next poll, so that is waited for.
+    p.set_viewport_size({"width": 1280, "height": 900})
+    p.wait_for_timeout(1300)
+    assert field_and_line(p)["fits"]
+    expect(p.locator(".take-whole")).to_have_text("" if how == "no 2D context" else FIRST)
+    no_sideways_scroll(p)
+    p.get_by_role("button", name="Record", exact=True).click()
+    expect(p.locator(".record-bar .take-now .v")).to_have_text(FIRST)
+    p.get_by_role("button", name="Stop", exact=True).click()
+    expect(p.locator(".record-bar .record-result")).to_contain_text(f"Recorded {FIRST}")
+    page.close()
+
+
+def test_text_the_browser_enlarges_past_its_computed_size_is_measured_as_it_is_drawn(browser, record_served):
+    """A phone's font scale, or a browser's text-only zoom, draws the field's
+    text larger than the size the page's script can read: a measure made at
+    the computed 16 px (a canvas's) says a name fits that the field cuts, and
+    the line is gone again. The ruler is laid out by the browser, so it is
+    enlarged with the field.
+
+    Emulated, since Chromium has no text-only zoom to switch on: a context
+    that emulates a phone (`is_mobile`, which turns on Chromium's text
+    autosizing), `text-size-adjust: 150%` on the field's and the ruler's one
+    rule, and `getComputedStyle` made to answer 16px for the field's font
+    size as a browser with text-only zoom does (Chromium itself answers
+    24px). Not run on the browsers that have the setting."""
+    context = browser.new_context(viewport={"width": 520, "height": 900}, is_mobile=True)
+    p = context.new_page()
+    errors = []
+    p.on("pageerror", lambda error: errors.append(str(error)))
+    p.add_init_script("""
+      const real = window.getComputedStyle;
+      window.getComputedStyle = function (element, ...rest) {
+        const style = real.call(window, element, ...rest);
+        if (!(element instanceof HTMLInputElement) || element.name !== "take-name") return style;
+        return new Proxy(style, {get(target, key) {
+          if (key === "fontSize") return "16px";
+          const value = Reflect.get(target, key);
+          return typeof value === "function" ? value.bind(target) : value;
+        }});
+      };""")
+    p.goto(record_served.url + "/#stage")
+    name = p.get_by_label("Take name")
+    expect(name).to_have_value(FIRST)
+    p.wait_for_timeout(200)
+    before = field_and_line(p)
+    assert before["fits"] and (before["line"], before["lineShown"]) == ("", False), "at 520 px the name fits"
+    ruler = "() => document.querySelector('.take-rule span').getBoundingClientRect().width"
+    narrow = p.evaluate(ruler)
+    p.add_style_tag(content=".take-name input, .take-rule span { text-size-adjust: 150%; -webkit-text-size-adjust: 150%; }")
+    expect(p.locator(".take-whole")).to_have_text(FIRST)
+    after = field_and_line(p)
+    assert after["size"] == 16, "what a script reads of the field's type has not changed"
+    assert not after["fits"] and p.evaluate(ruler) > narrow * 1.4, "what is drawn has, and the ruler with it"
+    assert seen_in(p, ".take-whole", ".record-bar") == {"text": FIRST, "shown": True}
+    no_sideways_scroll(p)
+    # An emptied field has only the ruler to go by: the line stays, so Record does not move.
+    name.fill("riff")
+    name.fill("")
+    expect(p.locator(".take-whole")).to_have_text(FIRST)
+    context.close()
+    assert errors == []
+
+
+def test_the_racks_takes_list_shows_a_long_name_whole(browser, record_served):
+    """The rack has no name field; its takes list is where a take's name is
+    read there, in the files column, and it wraps."""
+    switch_to(record_served, LONGEST_RIG)
+    assert a_take_from_elsewhere(record_served) == LONGEST
+    page = Page(browser, record_served.url + "/#rack")
+    p = page.page
+    expect(p.locator("section.takes .take .n")).to_have_text(LONGEST)
+    assert p.locator('input[name="take-name"]').count() == 0
+    assert seen_in(p, "section.takes .take .n", ".side.files") == {"text": LONGEST, "shown": True}
+    no_sideways_scroll(p)
+    page.close()
+
+
 @pytest.mark.parametrize("change, said", [
     (lambda s: s.save.state.update(mode="panel"), "whose record bar owns recording"),
     (lambda s: s.save.state.update(rig=None), "is a v1 config, not a rig of channels"),

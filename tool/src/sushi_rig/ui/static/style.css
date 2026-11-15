@@ -358,7 +358,15 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 .record-bar.recording .take-now .k { color: var(--recording-soft); }
 .take-now .v { font-family: var(--mono); font-size: 16px; overflow-wrap: anywhere; }
 .take-name { display: flex; flex-direction: column; gap: 6px; }
-.take-name input { min-height: 48px; box-sizing: border-box; padding: 0 12px; border-radius: 10px; background: var(--ground); border: 1px solid var(--edge); color: var(--text); font-family: var(--mono); font-size: 16px; }
+.take-name input { min-height: 48px; box-sizing: border-box; padding: 0 12px; border-radius: 10px; background: var(--ground); border: 1px solid var(--edge); color: var(--text); }
+/* The name field's type, and the ruler's that measures a name in it (`nameCut` in app.js): one rule, so they cannot differ. Everything that sets a text's width is said, since the ruler inherits where the field does not. */
+.take-name input, .take-rule span { font-family: var(--mono); font-size: 16px; font-weight: 400; font-style: normal; font-stretch: normal; font-variant: normal; letter-spacing: normal; word-spacing: normal; text-transform: none; text-indent: 0; }
+/* The ruler: out of the flow, no size of its own and clipped to it, so it moves nothing and widens nothing; its text is one unwrapped line. */
+.take-rule { position: absolute; width: 0; height: 0; overflow: hidden; visibility: hidden; pointer-events: none; }
+.take-rule span { display: inline-block; white-space: pre; }
+/* The name in full, when the field cuts it (`drawNameWhole`): it wraps anywhere, so the take's number is always on the page. */
+.take-whole { margin: -4px 0 0; padding: 0 12px; font-family: var(--mono); font-size: 14px; line-height: 1.45; overflow-wrap: anywhere; }
+.take-whole:empty { display: none; }
 .record-note { margin: 0; font-size: 13px; color: var(--muted); line-height: 1.5; }
 .record-note:empty { display: none; }
 .record-note.bad { color: var(--refused); }

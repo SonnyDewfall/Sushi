@@ -8,7 +8,7 @@ The page calls a take's sound files **stems**.
 
 Recording is on the **stage** screen, and works while the page is **Locked**.
 
-<img src="img/recording.png" alt="The stage screen while recording: the Record bar turned red, reading Recording with the time 0:47, the take name electric_board-2026-11-14-take-01 that the rig gave it, the five stems it is writing, and the Stop button" width="420">
+<img src="img/recording.png" alt="The stage screen while recording: the Record bar turned red, reading Recording with the time 0:47, the take name electric_board-2026-11-15-take-01 that the rig gave it, the five stems it is writing, and the Stop button" width="420">
 
 ## Record a take
 
@@ -20,9 +20,11 @@ Recording is on the **stage** screen, and works while the page is **Locked**.
    will get: the rig, the date and a take number, such as
    `electric-clean-2026-11-14-take-03`. To keep it, leave the box alone. To use
    your own, tap the box and type: the whole name is selected, so typing
-   replaces it. Names are lowercase letters, digits, `-` and `_`.
-4. Look at the line under the name box. It lists the stems this take will
-   write, for example
+   replaces it. Names are lowercase letters, digits, `-` and `_`. On a phone
+   the box is too short for most names, so the whole name is also written out
+   just under it, take number and all.
+4. Look at the small line just above **Record**. It lists the stems this take
+   will write, for example
    `5 stems: board.wav, board-dry.wav, vocal.wav, vocal-dry.wav, master.wav`.
 5. Tap **Record**. The bar turns red and reads **Recording**, with the take's
    name and a running clock.
@@ -88,8 +90,8 @@ Things worth knowing about these files:
 - **The name you are given** is the rig's name, the day, and a take number: the
   third take of `electric-clean` on 14 November is
   `electric-clean-2026-11-14-take-03`. After each take the number in the box
-  moves on. On a narrow screen the box can be too short to show the number at
-  the end.
+  moves on. When the box is too short to show a whole name, the whole name is
+  written out under the box, so the number can always be read.
 - **A name you type stays in the box** until you record with it or clear it.
   Empty the box and the given name comes back.
 - **The number is one more than the highest so far** for that rig on that day,
