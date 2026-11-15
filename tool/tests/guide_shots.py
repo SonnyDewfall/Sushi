@@ -142,13 +142,15 @@ def shots(browser) -> list[str]:
         shoot(page, "stage-phone.png")
         context.close()
 
-    # Shaping a sound: the amp's card and a plugin opened for all its controls.
+    # Shaping a sound: the tabs, the amp's card in its channel's tab, a plugin
+    # opened for all its controls, and a bypassed one as a slim row.
     with Served(amp=True) as served:
         context, page = page_of(browser, served.url + "/", {"width": 1280, "height": 1100})
         page.wait_for_selector(".unit")
+        page.wait_for_selector(".amp-card .fader")
         page.click("article.unit[data-unit=overdrive] button.name")
         time.sleep(SETTLE)
-        shoot(page, "shaping-a-sound.png", clip=span(page, "section.amp-card", "article.unit[data-unit=octave]"))
+        shoot(page, "shaping-a-sound.png", clip=span(page, "div.tabs", "article.unit[data-unit=delay]"))
         context.close()
     return made
 

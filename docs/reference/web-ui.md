@@ -9,7 +9,7 @@ sushi-rig agent                      # then open http://127.0.0.1:8029/ (the rac
                                      # or http://127.0.0.1:8029/#stage (the stage screen; the default on a phone)
 ```
 
-![The rack as a mixing desk: the master volume in the header; on the left a strip per channel with its input and a volume fader; the chains in the middle, the overdrive open with its profile's groups and each knob's value as a text field; on the right the rigs of config/rigs, Undo, Save with a count of the unsaved changes, Save as, Revert, and the takes](../ui/rack.png)
+![The rack as a mixing desk: the master volume in the header; on the left a strip per channel with its input and a volume fader, the board's marked as the open tab's, and the master's strip; in the middle the tabs board, vocal and Master, and under them the board's chain, the overdrive open with its profile's groups and each knob's value as a text field, the bypassed octave a slim row, and the delay; on the right the rigs of config/rigs, Undo, Save with a count of the unsaved changes, Save as, Revert, and the takes](../ui/rack.png)
 
 <img src="../ui/stage.png" alt="The stage screen at phone width: the rig's name and state, the master volume, load and xruns from pw-top, each channel's volume as a fader, one card per plugin with a big bypass switch, and the lock, with start, stop and switch hidden while it is on" width="300">
 
@@ -21,12 +21,12 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
 - **The rack (S1), laid out as a mixing desk (2026-11-06).** Three columns,
   because that is how a desk is read: a **strip per channel on the left** (its
   name, a small, quiet input line, and its volume as the large part, then a
-  strip for the master, which leads to its chain), **the
-  chains and the amp in the middle**, the widest part, and **the files on the
+  strip for the master), **one chain at a time in the middle**, the widest
+  part, behind a tab per channel and Master (below), and **the files on the
   right**: the rig picker, New rig…, Start, Stop and Switch, Undo, Save,
   Save as…, Revert…, and the takes. The **master volume is in the header**,
   not in a column. At phone width the columns stack in that order, strips
-  first, since volume is what a hand reaches for. Every chain is a row of
+  first, since volume is what a hand reaches for. A chain is a row of
   plugin cards, each with its knobs: the profile's controls in its groups and
   labels for a plugin that has one (`tool/examples/profiles/`), every
   parameter in a plain list for one that does not. Values are in the plugin's
@@ -38,6 +38,61 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   of changes and the per-knob "was" are gone. Undo stays, above Save: it is an
   action, not a view of history. A browser test compares every element's box
   before and after four changes.
+- **A tab per channel, and bypassed plugins minimised (#135, 2026-11-15).**
+  The middle column is a tablist: **one tab per channel in the rig's order,
+  then Master**, and the open tab's chain under them, nothing of another
+  channel's. A rig of one channel has two tabs, so the layout is the same on
+  every rig of channels; a v1 run has a tab per track and no Master; with no
+  rig up there are no tabs, and while a command runs the tabs stay as they
+  were, as the strips do. **The strips stay together**, since they are the
+  mix: a strip's name is a button that opens its tab (so is a tap on the strip
+  that lands on nothing else; its fader, its value and Change input are their
+  own gestures and do not), the master's strip opens Master, and the open
+  tab's strip is marked. On a phone a strip tapped also brings the tabs into
+  view, since the chain is below the strips. **The amp's card is in one tab**,
+  the channel it is in front of: the first channel the running rig's file
+  plays from `guitar-in` (`patchbay.GUITAR_ROLE`, read from `GET
+  /rigs/<rig>/channels`), the first channel where the file does not say or
+  cannot be read or there is none (a v1 run); while the file is still being
+  read the card waits, rather than be drawn in one tab and then another.
+  **The open tab is remembered per device**, in the browser's storage, as one
+  record of the rig and the tab (`sushi-rig.tab`): a reload comes back to it,
+  another rig opens on its first channel (even one seen before), as does a
+  remembered channel the rig no longer has, and a browser that refuses storage
+  remembers nothing and works. **A bypassed plugin is a slim row**: its name,
+  its switch and its mono badge, in its place in the chain. Switching it on
+  opens it and switching it off minimises it, **from anywhere**: every page
+  follows the bypass it reads, so a pedal's or another device's shows within a
+  poll. Its name is a button (`aria-expanded`): on a slim row it, or a tap on
+  the row, **opens the row without switching it on**, with all its controls,
+  to set it up; that lasts until the name is tapped again or the tab changes.
+  On a row that is on, the name shows all the controls or the main ones, as
+  before. A plugin being used when its bypass arrives (a knob mid-drag, a
+  value half typed) is not minimised under the hand: its row stays open as one
+  tapped open does. A slim row has no move buttons: open it to move it.
+  **Nothing moves on a poll**: a row changes size only when its bypass changes
+  or the player taps it, and a browser test compares every element's box
+  across values changing on an open row, a slim row and a closed tab. **A
+  view change never interrupts a gesture**: each plugin's row is drawn on its
+  own, and a bypass only hides or shows what the row already holds, so a
+  bypass from a pedal, a neighbour opening, or a plugin added, removed or
+  moved from elsewhere rebuilds nothing under a drag or a half-typed value
+  (the rows are put in their new order round the one that holds the focus).
+  Tabs and opening a row are **allowed while locked**: they change what is
+  shown, not the rig. **Nothing that matters is behind a closed tab**: the
+  problem boxes (a refusal, a child that exited) are above the tabs; and a
+  tab carries a red dot, with the reason as its title, while a change to one
+  of its plugins stands refused or its amp is not playing (Carla not running,
+  the amp unreadable, a problem with its model), which the amp's card alone
+  said. Undo, Save, the unsaved count and Revert take no notice of the tab: a
+  change on a closed tab counts and is undone as any other. The keyboard: the
+  tabs are `role="tab"` in a `tablist`, the open one alone in the tab order,
+  the left and right arrows, Home and End move and open, and the panel is a
+  `tabpanel` labelled by its tab. The decisions are rig.js's (`rackTabs`,
+  `openTab`, `rememberedTab`, `tabKey`, `ampTab`, `tabMarks`, `unitRow`,
+  `unitTapped`, `bypassSeen`), tested on their own and through the page in
+  `tool/tests/test_ui_tabs.py`. The stage screen is unchanged: its cards do
+  not minimise.
 - **Knobs that can be set (2026-11-06).** A knob is dragged **vertically, 320
   px for its whole travel**, with the pointer
   captured, so leaving the knob mid-drag does not drop it; **shift, or a
@@ -103,8 +158,8 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   or by restart, and why. While a command runs, from this page or another,
   nothing else is offered and what is running is said; a refusal shows the
   agent's reason.
-- **The amp.** A card at the top of the rack, since the amp is in front of the
-  board: the model's name and what it declares, faders for Input and Output in
+- **The amp.** A card at the top of its channel's tab (above), since the amp
+  is in front of the board: the model's name and what it declares, faders for Input and Output in
   dB, Quality shown but not on a fader (it trades CPU for accuracy, not tone),
   and a model picker that takes a confirm saying the sound cuts out for a
   moment, refused while locked. Values are labelled as what was last sent,
@@ -290,6 +345,12 @@ rig screen and a channel's input change, and the knobs' feel on the rig's
 touch screen. Nor is the page recorded as opened from a phone's own browser
 (MANIFEST, 2026-11-02): the stage screen is tested at a phone's width in
 Chromium.
+
+Not run on the rig (2026-11-15): the tabs and the minimised rows (#135). They
+are tested in headless Chromium against the fake rig, where a tap is a click
+and "a pedal" is the fake Sushi's bypass changed under the agent: not on the
+rig's touch screen, not from a phone, and not with a real pedal's bypass
+arriving through the MIDI listener.
 
 ## Trying it without a rig
 

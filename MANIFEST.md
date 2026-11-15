@@ -3904,3 +3904,54 @@ the name field is narrower than a default name and cuts
 `electric_board-2026-11-14-take-` before its number. Selecting the default on
 a tap is still untried on a real phone, as the entry above says.
 *(2026-11-14)*
+
+**The rack: a tab per channel, and bypassed plugins minimised (#135).** The
+middle of the rack stacked every channel's chain and the master's, each plugin
+at full size, bypassed or not. Now it shows **one chain at a time behind
+tabs**, one per channel in the rig's order and then Master, and **a bypassed
+plugin is a slim row** (its name, its switch, its mono badge) that opens when
+it is switched on, from anywhere, or tapped. The decisions are `rig.js`'s
+(`rackTabs`, `openTab`, `rememberedTab`, `tabKey`, `ampTab`, `tabMarks`,
+`unitRow`, `unitTapped`, `bypassSeen`); `app.js` draws them. What the issue
+and its brief did not settle, and how each was settled: (1) **the amp's tab**
+is the first channel the running rig's file plays from `guitar-in`
+(`patchbay.GUITAR_ROLE`), the first channel where the file does not say; the
+card waits for the file rather than be drawn in one tab and then another.
+(2) **What is remembered** is one record, the rig and the tab, in the
+browser's storage: a rig gone back to opens on its first channel, since the
+issue says the tab "falls back to the first channel when the rig changes".
+(3) **"Tapped open"** is the name's button, as it already was for a plugin
+that is on: on a slim row it opens the row with all its controls, and closes
+it again; a tap anywhere else on a slim row does the same. (4) **A slim row
+has no move buttons**: the issue lists what it holds. (5) **A row in use is
+not minimised under the hand**: a knob mid-drag or a value half typed when
+the plugin is bypassed keeps its row open, as one tapped open, until it is
+closed or the tab changes; a knob merely left focused does not. (6) **A strip
+opens its tab** by its name, now a button, or by a tap on the strip that
+lands on nothing else; its fader, its value and Change input do not, so
+setting one channel's volume does not take the middle column from another's
+chain. (7) **A tab carries a red dot**, its reason in its title, while a
+change to one of its plugins stands refused or its amp is not playing: the
+second was said only on the amp's card, which a closed tab now hides.
+(8) While a command runs the tabs stay as the strips do; with no rig there
+are none. How a gesture survives: each plugin's row is patched on its own
+key, a bypass only hides or shows what the row already holds, and the rows
+are put in a new order round the one holding the focus, so a bypass from
+elsewhere, a neighbour opening, or a plugin added, removed or moved from
+another device rebuilds nothing under a drag or a half-typed value. The stage
+screen is unchanged. Tests: `test_ui_tabs.py`, 6 of the decisions and 30 in
+the browser, among them the frozen guitar_vocal laid out by the real compiler
+(`ui_fake.rig_of`) with the fake's amp; six tests of `test_ui.py` and
+`test_ui_knobs.py` that named every chain on one page now name the open tab's.
+The guides (`shaping-a-sound.md`, `mixing.md`), `docs/reference/web-ui.md`
+and three pictures (`docs/guide/img/rack.png` and `shaping-a-sound.png` by
+`guide_shots.py`, `docs/ui/rack.png` by hand as before) follow. The fast
+suite: 4404 passed, 41 skipped (36 of them this change's). **Not run here:**
+anything on the rig. There is no Sushi, no phone and no touch screen here:
+the page was driven in headless Chromium only, where a tap is a click, so a
+finger's tap on a slim row or a strip, and two fingers at once (one dragging
+a knob while another taps), are untried; "a pedal" in the tests is the fake
+Sushi's bypass changed under the agent, not a pedal through the MIDI
+listener; no other browser (WebKit, Firefox) was tried, nor a browser's own
+scrollbar, which headless Chromium hides and which a row changing height
+could bring or remove; the slow tests and the container job. *(2026-11-15)*

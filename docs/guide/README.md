@@ -39,7 +39,7 @@ The page's messages use a few names of their own:
 | [The audio interface](audio-interface.md) | The iD14's volume fix, and what to do if one side goes quiet |
 | [When something's wrong](troubleshooting.md) | No sound, restarting the agent after an update, `doctor` |
 
-![The rack: the master volume in the header, a strip for each channel on the left, the amp and each channel's plugins in the middle, and the rigs and Save on the right](img/rack.png)
+![The rack: the master volume in the header, a strip for each channel on the left, a tab for each channel and Master in the middle with the open channel's plugins under them, and the rigs and Save on the right](img/rack.png)
 
 The pictures in these guides are of the real page, run against a stand-in rig,
 so the rig's name, its plugins and its values are examples. Yours will differ.

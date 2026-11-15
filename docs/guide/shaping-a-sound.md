@@ -1,23 +1,46 @@
 # Shaping a sound
 
-This is how you change what the rig sounds like: open a plugin, turn its knobs,
-switch it off and on, change its place in the chain, set the amp, and take a
-change back. All of it is on the **rack**, the main page.
+This is how you change what the rig sounds like: pick a channel, open a plugin,
+turn its knobs, switch it off and on, change its place in the chain, set the
+amp, and take a change back. All of it is on the **rack**, the main page.
 
 A **plugin** is one effect: a compressor, an overdrive, a delay. A channel's
 plugins sit in a row, in the order the sound passes through them; that row is
 its **chain**. The page calls a plugin's box a "unit".
 
-![The middle of the rack: the amp's card with its model, Input Lvl and Output Lvl faders and Model list, then the board channel with the overdrive opened to show all its knobs in groups, and a bypassed octave under it](img/shaping-a-sound.png)
+![The middle of the rack: three tabs, board, vocal and Master, with board open; under them the amp's card with its model, Input Lvl and Output Lvl faders and Model list, then the board's chain: the overdrive opened to show all its knobs in groups, the bypassed octave as a slim row with only its name and its round button, and the delay](img/shaping-a-sound.png)
 
 Every change is heard at once. None of it is kept until you save: see
 [Saving and going back](saving.md).
 
+## Pick the channel to work on
+
+The middle of the rack shows one channel's chain at a time. Above it is a row
+of tabs: one for each channel, named as the channel is, then **Master**, the
+chain the finished mix passes through.
+
+- Click a tab to see that channel's plugins. Nothing from another channel is
+  on the screen with them.
+- Or click a channel's name in its strip on the left: it opens the same tab.
+  The strip called **master** opens **Master**. The strip of the chain you are
+  looking at has an amber edge.
+- With the keyboard: click a tab, then use the left and right arrow keys, or
+  Home and End.
+
+The strips on the left stay where they are whichever tab is open, so every
+volume is always in reach. Moving a fader does not change the tab.
+
+Changing tab changes only what you see: every channel keeps playing, and it
+works while the page is **Locked**. The page remembers the tab you were on, on
+that device, so a reload comes back to it. When you switch to another rig it
+opens on the first channel.
+
+A rig with one channel still has two tabs: the channel's and **Master**.
+
 ## Open a plugin and turn a knob
 
-1. In the middle of the rack, find the plugin under its channel's name. Each
-   row shows the plugin's name, a few of its knobs and, on the right, a round
-   bypass button.
+1. Open the plugin's channel's tab. Each row shows the plugin's name, a few of
+   its knobs and, on the right, a round bypass button.
 2. Click the plugin's name. The row opens to show all its controls, in groups.
    Click the name again to close it.
 3. Change a knob in any of these ways:
@@ -41,7 +64,27 @@ for the page yet: it shows every control it has, in a plain list.
 
 Click the round button at the right of the plugin's row. This is **bypass**: it
 switches the effect off without removing it. The button glows when the effect is
-on; the row dims when it is bypassed.
+on.
+
+A bypassed plugin shrinks to a slim, dimmed row: its name, its **mono** mark if
+it has one, and the round button. It keeps its place in the chain, so the
+order still reads as the path the sound takes. Switch it on and it opens again.
+
+The same happens whoever does the switching: a pedal, or another phone or
+laptop. Within a second the row shrinks or opens on every device.
+
+### Set up a plugin without switching it on
+
+Click a slim row's name, or anywhere on the row except its round button. It
+opens with all its controls, still bypassed and still dimmed, so you can set it
+before you bring it in. Click the name again to shrink it. It also shrinks when
+you change tab.
+
+This works while the page is **Locked**.
+
+If a pedal bypasses a plugin while you are dragging one of its knobs or typing
+a value into it, its row stays open under your hand. Click its name when you
+are done.
 
 ## Move a plugin along its chain
 
@@ -50,12 +93,14 @@ on; the row dims when it is bypassed.
 2. Click **▲** or **▼** at the left of the plugin's row to move it one place
    earlier or later.
 
-While the page is locked those two buttons show a padlock.
+While the page is locked those two buttons show a padlock. A slim, bypassed row
+does not show them: open it first.
 
 ## Set the amp
 
-The **AMP** card sits above the chains, because the amp comes before the
-effects. If the rig has no amp, the card says so.
+The **AMP** card is at the top of one tab: the channel the guitar plays
+through, because the amp comes before that channel's effects. It is not on the
+other tabs. If the rig has no amp, the card says so.
 
 - **Input Lvl** and **Output Lvl** are faders, in dB. Drag them, or type a
   value in the box beside them.
@@ -118,6 +163,12 @@ Undo has not yet been tried on the rig itself, only against a stand-in.
 - **A knob shows "refused:" under it, and a box appears starting
   "Not changed:".** The agent would not make the change; the reason is in the
   box and in the knob's tooltip.
+- **A red dot on a tab.** Something behind that tab needs a look: a change
+  there was refused, or the amp has stopped. Hover over the tab to read what,
+  or open it. The boxes at the top of the page are above the tabs and show
+  whichever tab is open.
+- **A plugin you expected is not on the screen.** It is on another channel's
+  tab, or it is bypassed and so a slim row: look for its name.
 - **A box headed "Not moved:" and the plugin's name, with a reason starting
   "Locked:".** You tried to move a plugin while the page is locked. Unlock it
   and try again.
