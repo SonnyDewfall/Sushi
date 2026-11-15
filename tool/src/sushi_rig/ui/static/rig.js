@@ -510,6 +510,149 @@ export function channelLevels(model, live) {
   });
 }
 
+// ---------------------------------------------------------------- the rack's tabs and rows (#135)
+// The rack's centre shows one chain at a time, behind tabs, and a bypassed
+// plugin as a slim row. What is a tab, which is open, where the amp goes,
+// what a closed tab must still say, and how big a row is, are decided here;
+// app.js draws them and holds what the player opened.
+
+// The role the amp is in front of (patchbay.GUITAR_ROLE): the amp, the tuner
+// and the recorder's dry tap all key off the channel that takes it.
+export const GUITAR_ROLE = "guitar-in";
+
+// The tabs: one per channel in the rig's order, then the master's, labelled
+// Master. A rig of one channel has two, so the layout is the same on every
+// rig of channels; a v1 run has its tracks and no Master, having no master.
+export function rackTabs(model) {
+  const tracks = (model && model.tracks) || [];
+  return [...tracks.filter((t) => !t.isMaster), ...tracks.filter((t) => t.isMaster)]
+    .map((t) => ({ id: t.name, label: t.isMaster ? "Master" : t.name, master: !!t.isMaster }));
+}
+
+// The tab that is open: the one wanted when the rig has it, else the first
+// (the first channel), else none.
+export function openTab(tabs, wanted) {
+  if (tabs.some((t) => t.id === wanted)) return wanted;
+  return tabs.length ? tabs[0].id : null;
+}
+
+// What the browser keeps of the open tab, and reads back: one record, the
+// rig it was chosen on and the tab. Another rig's is not this rig's (a
+// channel called vocal there says nothing of the one here), so a rig that
+// changes opens on its first channel. Anything unreadable is nothing kept.
+export function tabToRemember(rig, tab) {
+  return JSON.stringify({ rig, tab });
+}
+
+export function rememberedTab(stored, rig) {
+  if (typeof stored !== "string" || typeof rig !== "string") return null;
+  let kept = null;
+  try { kept = JSON.parse(stored); } catch { return null; }
+  return kept && typeof kept === "object" && kept.rig === rig && typeof kept.tab === "string" ? kept.tab : null;
+}
+
+// The tab a key moves to from `current`, as a tablist's keys go: the arrows
+// to the next and the one before, round the ends, Home and End to the ends.
+// Null for any other key.
+export function tabKey(tabs, current, key) {
+  const i = tabs.findIndex((t) => t.id === current);
+  if (!tabs.length || i < 0) return null;
+  const to = key === "ArrowRight" ? (i + 1) % tabs.length
+    : key === "ArrowLeft" ? (i + tabs.length - 1) % tabs.length
+      : key === "Home" ? 0 : key === "End" ? tabs.length - 1 : null;
+  return to === null ? null : tabs[to].id;
+}
+
+// The tab the amp's card is in: the channel the amp is in front of, which is
+// the first one the rig's file plays from GUITAR_ROLE (`channelsAnswer` is
+// GET /rigs/<rig>/channels's, {ok, body}). A file that could not be read, or
+// that gives no running channel that role, leaves it with the first channel,
+// as does a run with no rig file (`filed` false: a v1 run). With a file still
+// to be read (`filed`, and no answer yet) the answer is null: the card waits
+// for it rather than being drawn in one tab and then another.
+export function ampTab(tabs, channelsAnswer, filed) {
+  const channels = tabs.filter((t) => !t.master);
+  if (!tabs.length) return null;
+  if (filed && !channelsAnswer) return null;
+  const inFile = channelsAnswer && channelsAnswer.ok ? channelsAnswer.body.channels || [] : [];
+  const fed = inFile.find((c) => c.input === GUITAR_ROLE && channels.some((t) => t.id === c.name));
+  return fed ? fed.name : (channels[0] || tabs[0]).id;
+}
+
+// What each tab says of what is behind it, open or not: a closed panel must
+// not hide what matters (principle 8). Two things do and are said nowhere
+// else: a change the agent refused, marked beside its control (`failed`, the
+// keys of the controls whose last change was refused, as app.js keys them),
+// and an amp that is not playing (`amp`, `ampCard`'s view, on `ampOn`, the
+// amp's tab). {tab id: the note, or null}.
+export function tabMarks(tabs, model, { failed = [], amp = null, ampOn = null } = {}) {
+  const refused = new Set();
+  let ampRefused = false;
+  for (const key of failed) {
+    const [kind, name] = String(key).split("\u0000");
+    if (kind === "a") ampRefused = true;
+    else if (kind === "p" || kind === "b") refused.add(name);
+  }
+  const tracks = new Map(((model && model.tracks) || []).map((t) => [t.name, t]));
+  const out = {};
+  for (const tab of tabs) {
+    const notes = [];
+    if (tab.id === ampOn && amp) {
+      if (amp.state === "failed") notes.push(`The amp could not be read: ${amp.why}`);
+      if (amp.state === "up" && amp.down) notes.push("Carla is not running: restart the rig to bring the amp back.");
+      if (amp.state === "up" && amp.model && amp.model.problem) notes.push(amp.model.problem);
+      if (ampRefused) notes.push("A change to the amp was refused.");
+    }
+    const track = tracks.get(tab.id);
+    for (const unit of track ? track.units : []) {
+      if (refused.has(unit.name)) notes.push(`A change to ${unit.name} was refused.`);
+    }
+    out[tab.id] = notes.length ? notes.join(" ") : null;
+  }
+  return out;
+}
+
+// A plugin's row. Bypassed, it is minimised: a slim row with its name, its
+// switch and its mono badge. `peeked` is a bypassed row the player opened to
+// set it up without switching it on; `expanded` is the row showing all its
+// controls (the name's button, as before #135). `bypassed` is true, false,
+// or null where Sushi did not say, which is drawn as on: nothing is hidden
+// on a guess.
+//   minimised: the slim row.
+//   all: every control is drawn (what the row holds under the slim one too,
+//     so a bypass arriving only hides it and never rebuilds a control).
+//   opened: what the name's button says of itself (aria-expanded): for a
+//     bypassed row, that it is open at all; for one that is on, that all its
+//     controls show.
+export function unitRow(bypassed, { expanded = false, peeked = false } = {}) {
+  const minimised = bypassed === true && !peeked;
+  return { minimised, all: expanded, opened: bypassed === true ? peeked : expanded };
+}
+
+// The name's button, tapped. On a bypassed row it opens it, with all its
+// controls, and closes it again to the slim row; on one that is on it shows
+// all the controls or the main ones, as it did.
+export function unitTapped(bypassed, { expanded = false, peeked = false } = {}) {
+  if (bypassed === true) return peeked ? { expanded: false, peeked: false } : { expanded: true, peeked: true };
+  return { expanded: !expanded, peeked: false };
+}
+
+// A bypass seen to change, from this page or anywhere (a pedal, another
+// device). Switched on, the row opens as it was left, and is no longer one
+// peeked into. Switched off, it minimises, unless the player is in the
+// middle of it (`inUse`: a knob being dragged, a value half typed): that
+// row stays open under their hand, as one tapped open does, until they close
+// it or change tab.
+export function bypassSeen(bypassed, { expanded = false, peeked = false } = {}, inUse = false) {
+  if (bypassed === true) return { expanded, peeked: peeked || !!inUse };
+  return { expanded, peeked: false };
+}
+
+// The tab changed: what was peeked into closes (`unitTapped`'s close).
+export function tabLeft(expanded, peeked) {
+  return { expanded: [...expanded].filter((name) => !peeked.includes(name)), peeked: [] };
+}
+
 // ---------------------------------------------------------------- unsaved
 
 const sameChain = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((x, i) => x === b[i]);

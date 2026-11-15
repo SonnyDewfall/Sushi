@@ -24,6 +24,8 @@ const SOUND_NOTE = "Nothing measures the rig's sound yet (#49). Load and xruns s
 // inside this, so a pocket or a stray palm cannot do it (S6: deliberate).
 const UNLOCK_MS = 4000;
 const LOCK_KEY = "sushi-rig.locked";
+// The rack's open tab, kept in this browser (#135): `R.tabToRemember`'s record.
+const TAB_KEY = "sushi-rig.tab";
 // amp/models is listed again this often while the page is open, so a model
 // copied in shows in the picker without a reload; a failed listing is asked
 // for again after RETRY_MS.
@@ -46,6 +48,16 @@ function readLocked() {
 }
 function writeLocked(locked) {
   try { localStorage.setItem(LOCK_KEY, locked ? "on" : "off"); } catch { /* the page still works */ }
+}
+
+// The rack's open tab is remembered in this browser only, as the lock is: a
+// phone and a laptop each keep their own. Storage can be absent or refuse;
+// then nothing is remembered and the rack opens on the first channel.
+function readTab() {
+  try { return localStorage.getItem(TAB_KEY); } catch { return null; }
+}
+function writeTab(text) {
+  try { localStorage.setItem(TAB_KEY, text); } catch { /* the page still works */ }
 }
 
 const state = {
@@ -83,6 +95,11 @@ const state = {
   newRig: { name: "", channels: [], touched: false, pending: false, result: null, addRefused: null },
   wiring: freshWiring(),     // the rack's channel edits: see freshWiring
   open: new Set(),           // units opened, by name
+  // The rack's tabs and rows (#135):
+  tab: { rig: null, id: null },  // the tab the player chose (or the one remembered), and the rig it is for
+  peeked: new Set(),         // bypassed units opened without switching them on, by name (R.unitRow)
+  rackParts: null,           // the centre column's parts, made with the rack's frame: see chainRegion
+  unitUpdaters: new Map(),   // the rack's units' updaters, by unit: each row is rebuilt on its own
   failures: [],              // this page's refused changes, newest first
   failed: new Map(),         // control key -> the reason its last change was refused
   notice: null,
@@ -540,6 +557,7 @@ function bindGestures(target, ctrl, get, set, { drag: draggable = true, field = 
       if (event.button !== undefined && event.button > 0) return;
       target.setPointerCapture(event.pointerId);
       drag = { id: event.pointerId, y: event.clientY, p: R.positionOf(ctrl, get() ?? 0), held: null, pointers: new Set([event.pointerId]) };
+      target.dataset.dragging = "1";  // a row in use is not minimised under the hand (`rowInUse`)
       target.focus({ preventScroll: true });
       event.preventDefault();
     });
@@ -558,7 +576,7 @@ function bindGestures(target, ctrl, get, set, { drag: draggable = true, field = 
     const end = (event) => {
       if (!drag) return;
       drag.pointers.delete(event.pointerId);
-      if (event.pointerId === drag.id) drag = null;
+      if (event.pointerId === drag.id) { drag = null; delete target.dataset.dragging; }
     };
     target.addEventListener("pointerup", end);
     target.addEventListener("pointercancel", end);
@@ -627,7 +645,8 @@ function knob(unit, ctrl, size) {
     sender.change(key, v, (x) => ({ path: "/live/parameter", json: { processor: unit.name, parameter: ctrl.name, value: x } }));
     draw(v);
   };
-  const field = valueField(`${unit.name} ${ctrl.label} value`, typedInto(ctrl, set));
+  // Named, so a row rebuilt round it can give back what was being typed (`giveBack`).
+  const field = valueField(`${unit.name} ${ctrl.label} value`, typedInto(ctrl, set), `knob-${unit.name}-${ctrl.name}`);
   if (inert) field.input.readOnly = true;
   const el = h("div", { class: `knob k-${size}${inert ? " inert" : ""}`, "data-control": key, title: ctrl.description || null },
     dial, h("span", { class: "text" }, field.input, h("span", { class: "label", title: ctrl.label }, ctrl.label), note));
@@ -703,7 +722,10 @@ function control(unit, ctrl, size) {
   return knob(unit, ctrl, size);
 }
 
-function bypassButton(unit, size) {
+// A unit's on/off switch. `seen(bypassed)`, when given, is told what the
+// switch shows at every render (true, false, or null where Sushi did not
+// say): the rack's row minimises and opens by it.
+function bypassButton(unit, size, seen = null) {
   const key = `b\u0000${unit.name}`;
   const led = h("span", { class: "led" });
   const el = h("button", { class: `bypass b-${size}` }, led);
@@ -725,6 +747,7 @@ function bypassButton(unit, size) {
     el.classList.toggle("failed", state.failed.has(key));
     const row = el.closest(".unit, .card");
     if (row) row.classList.toggle("bypassed", current === true);
+    if (seen) seen(current);
   });
   return el;
 }
@@ -1246,6 +1269,8 @@ function rackFrame() {
     rigs: h("section", { class: "rigs", "aria-label": "Rigs" }),
     channels: h("div", { class: "channel-list" }),
     wiring: h("section", { class: "wiring strips", "aria-label": "Channels and their inputs" }),
+    tabs: h("div", { class: "tabs", role: "tablist", "aria-label": "Chains", hidden: true }),
+    panel: h("div", { class: "tab-panel", id: "rack-panel" }),
     amp: h("section", { class: "amp-card", "aria-label": "Amp" }),
     rack: h("main", { class: "rack" }),
     changes: h("div", { class: "changes-list" }),
@@ -1260,52 +1285,291 @@ function rackFrame() {
     h("svg", { width: 28, height: 28, viewBox: "0 0 28 28", "aria-hidden": "true", class: "mark" }, h("path", { d: "M5 18a9 9 0 0 1 18 0" }), h("path", { d: "M10 18a4 4 0 0 1 8 0" })),
     regions.title, masterFader("rack"), regions.status,
     h("span", { class: "spacer" }), regions.tiles, h("a", { class: "go", href: "#stage" }, "Stage"), regions.lock);
-  // The amp first: it is in front of Sushi, between the guitar and the board.
+  // The open tab's panel (#135): the amp first, in the tab of the channel it
+  // is in front of (between the guitar and the board), then that chain.
+  regions.panel.append(regions.amp, regions.rack);
   const frame = h("div", { class: "screen rack-screen" }, regions.header, regions.problems,
     // A mixing desk (2026-11-06): the channel strips on the left, the chains
-    // and the amp in the middle, the files (rigs, save, revert, takes) on the
-    // right, the master in the header. At phone width they stack in that
-    // order, the strips first: volume is what is reached for.
+    // in the middle, one at a time behind a tab per channel (#135), the
+    // files (rigs, save, revert, takes) on the right, the master in the
+    // header. At phone width they stack in that order, the strips first:
+    // volume is what is reached for. The problem boxes are above all three,
+    // outside the tabs: nothing they say is behind a closed one.
     h("div", { class: "rack-body" }, h("nav", { class: "channels", "aria-label": "Channel strips" }, regions.wiring),
-      h("div", { class: "rack-main" }, regions.amp, regions.rack),
+      h("div", { class: "rack-main" }, regions.tabs, regions.panel),
       h("div", { class: "side files", "aria-label": "Rigs and files" }, regions.rigs,
         h("aside", { class: "changes", "aria-label": "Undo, save and revert" }, regions.changes, regions.save),
         regions.takes, regions.channels)));
   return { frame, regions };
 }
 
-function unitRow(track, unit, index) {
-  const open = state.open.has(unit.name);
+// ---------------------------------------------------------------- the rack's tabs and rows (#135)
+
+// What the player opened, kept as two sets of unit names (R.unitRow says
+// what they mean): `state.open`, all of a unit's controls; `state.peeked`, a
+// bypassed unit opened without switching it on.
+function rowState(name) {
+  return { expanded: state.open.has(name), peeked: state.peeked.has(name) };
+}
+
+function setRow(name, { expanded, peeked }) {
+  if (expanded) state.open.add(name); else state.open.delete(name);
+  if (peeked) state.peeked.add(name); else state.peeked.delete(name);
+}
+
+// Whether the player is in the middle of a row: a knob of it being dragged
+// (`bindGestures` marks it), or a value half typed into one of its fields. A
+// focus left on a knob turned a while ago is not that: a pedal's bypass must
+// still minimise the row.
+function rowInUse(el) {
+  const active = document.activeElement;
+  return !!el.querySelector("[data-dragging]") || !!(active && el.contains(active) && active.dataset.typed === "1");
+}
+
+// The name's button, or a tap on a slim row: open or close it (R.unitTapped).
+// Allowed locked: it changes what is shown, not the rig.
+function tapUnit(name, slot) {
+  setRow(name, R.unitTapped(slot.bypass ?? null, rowState(name)));
+  render();
+}
+
+// The switch's state, at every render: the row minimises when its plugin is
+// bypassed and opens when it is switched on, whoever did it (this page,
+// another device, a pedal). Only classes and the button's state change here,
+// never the row's controls, so a bypass arriving rebuilds nothing: a knob
+// being dragged on the row above keeps its pointer, and a row in use stays
+// open (R.bypassSeen).
+function rowSeen(name, slot, bypassed) {
+  if (slot.bypass !== undefined && slot.bypass !== bypassed) setRow(name, R.bypassSeen(bypassed, rowState(name), rowInUse(slot.el)));
+  slot.bypass = bypassed;
+  const view = R.unitRow(bypassed, rowState(name));
+  slot.el.classList.toggle("minimised", view.minimised);
+  slot.el.classList.toggle("open", view.all && !view.minimised);
+  slot.name.setAttribute("aria-expanded", String(view.opened));
+  slot.name.title = view.minimised ? "Bypassed: open it to set it up without switching it on"
+    : bypassed === true ? "Bypassed, and open: tap to close it" : "";
+}
+
+// A unit's row, built into its slot (an <article> that stays while the unit
+// is on the open chain). Everything the row can show is built: bypassed, it
+// is only hidden (`rowSeen`).
+function unitParts(slot, unit, expanded, name) {
   const panel = unit.panel;
   const primary = R.primaryControls(panel);
   // Closed, a row shows what fits beside its name; open, everything.
-  const shown = open ? [] : primary.slice(0, 6);
-  const sub = [
-    pluginName(unit),
-    unit.profile ? "profile" : "no profile: every parameter",
-  ].join(" · ");
-  const moveButton = (direction) => {
-    const possible = R.canMove(track, index, direction);
-    return h("button", {
-      class: `step${state.locked ? " locked" : ""}`, disabled: !possible,
-      "aria-label": `Move ${unit.name} ${direction}${state.locked ? " (locked)" : ""}`,
-      title: state.locked ? "Locked: reordering changes the rig's structure" : null,
-      onclick: () => move(unit, direction),
-    }, state.locked ? lockIcon() : (direction === "up" ? "▲" : "▼"));
-  };
-  const row = h("article", { class: `unit${open ? " open" : ""}`, "data-unit": unit.name },
-    h("div", { class: "steps" }, moveButton("up"), moveButton("down")),
+  const shown = expanded ? [] : primary.slice(0, 6);
+  const sub = [name, unit.profile ? "profile" : "no profile: every parameter"].join(" · ");
+  // Whether a step is possible is drawn in place (`unitSlot`): a neighbour
+  // added or moved from elsewhere changes it, and must not rebuild the row.
+  const moveButton = (direction) => h("button", {
+    class: `step${state.locked ? " locked" : ""}`,
+    "aria-label": `Move ${unit.name} ${direction}${state.locked ? " (locked)" : ""}`,
+    title: state.locked ? "Locked: reordering changes the rig's structure" : null,
+    onclick: () => move(unit, direction),
+  }, state.locked ? lockIcon() : (direction === "up" ? "▲" : "▼"));
+  slot.steps = { up: moveButton("up"), down: moveButton("down") };
+  slot.name = h("button", { class: "name", "aria-expanded": "false", onclick: () => tapUnit(unit.name, slot) }, unit.name);
+  return [
+    h("div", { class: "steps" }, slot.steps.up, slot.steps.down),
     h("span", { class: "swatch", style: `background:${swatch(unit)}` }),
     h("div", { class: "who" },
-      h("span", { class: "name-line" },
-        h("button", { class: "name", "aria-expanded": String(open), onclick: () => { open ? state.open.delete(unit.name) : state.open.add(unit.name); render(); } }, unit.name),
-        monoBadge(unit)),
+      h("span", { class: "name-line" }, slot.name, monoBadge(unit)),
       h("span", { class: "sub" }, sub)),
     h("div", { class: "knobs" }, shown.map((c) => control(unit, c, "small")),
-      !open && primary.length > shown.length ? h("span", { class: "more" }, `+${primary.length - shown.length} more`) : null),
-    bypassButton(unit, "small"));
-  if (open) row.append(detail(unit, "big"));
-  return row;
+      !expanded && primary.length > shown.length ? h("span", { class: "more" }, `+${primary.length - shown.length} more`) : null),
+    bypassButton(unit, "small", (bypassed) => rowSeen(unit.name, slot, bypassed)),
+    expanded ? detail(unit, "big") : null,
+  ];
+}
+
+// One unit's slot, patched on its own key: what the plugin is and whether
+// all its controls show. Not its bypass, its place or its neighbours, so
+// nothing that happens to another row, or arrives from elsewhere, rebuilds
+// this one under a drag or a half-typed value. Its updaters are its own list
+// (`state.unitUpdaters`), replaced when it is rebuilt.
+function unitSlot(slot, track, unit, index) {
+  const expanded = state.open.has(unit.name);
+  const name = pluginName(unit);
+  const typing = typedIn(slot.el);
+  const onName = !!slot.name && document.activeElement === slot.name;
+  const rebuilt = patch(slot.el, JSON.stringify([unit.uri, unit.profile, unit.panel, unit.monoNote, expanded, state.locked, name]), () => {
+    const outer = state.updaters;
+    state.updaters = [];
+    try {
+      return unitParts(slot, unit, expanded, name);
+    } finally {
+      state.unitUpdaters.set(unit.name, state.updaters);
+      state.updaters = outer;
+    }
+  });
+  if (rebuilt) {
+    giveBack(slot.el, typing);
+    // The name's button was tapped, or the keys were on it: they stay on it.
+    if (onName) slot.name.focus();
+  }
+  slot.steps.up.disabled = !R.canMove(track, index, "up");
+  slot.steps.down.disabled = !R.canMove(track, index, "down");
+}
+
+// Put `els` in `container`, in that order. The row that holds the focus (a
+// knob being dragged takes it, a field being typed in has it) is never
+// taken out of the page to do it, which would end the drag and blur the
+// field: the others are placed round it.
+function inOrder(container, els) {
+  const now = [...container.children];
+  if (now.length === els.length && els.every((el, i) => now[i] === el)) return;
+  for (const el of now) if (!els.includes(el)) el.remove();
+  const active = document.activeElement;
+  const held = els.find((el) => el.parentNode === container && el.contains(active)) || null;
+  if (!held) { container.replaceChildren(...els); return; }
+  const at = els.indexOf(held);
+  for (let i = 0; i < at; i++) container.insertBefore(els[i], held);
+  for (let i = at + 1; i < els.length; i++) container.append(els[i]);
+}
+
+// A tab chosen: by its tab, by the keys on the tablist (`focus`), or by its
+// channel's strip (`reveal`: on a phone the chain is below the strips, so
+// the page goes to it, as the strip's link did). Remembered in this browser
+// for this rig. Allowed locked: it changes what is shown, not the rig.
+function chooseTab(id, { focus = false, reveal = false } = {}) {
+  state.tab = { rig: state.tab.rig, id };
+  writeTab(R.tabToRemember(state.tab.rig, id));
+  render();
+  const parts = state.rackParts;
+  const tab = parts && parts.buttons.get(id);
+  if (focus && tab) tab.button.focus();
+  if (reveal && parts) {
+    const box = parts.el.getBoundingClientRect();
+    if (box.top < 0 || box.top > innerHeight - 2 * box.height) parts.el.scrollIntoView({ block: "start" });
+  }
+}
+
+// The tabs (#135): one per channel in the rig's order, then Master, and
+// which is open. A real tablist: the open tab is the one in the tab order,
+// the arrows, Home and End move between them (R.tabKey), and the panel is
+// labelled by its tab. Keyed by the tabs alone and marked in place, so
+// choosing one keeps the focus on it. While a command runs the rig's tabs
+// stay as they were, as its strips do. Returns the open tab, or null.
+function tabsRegion(regions, model, ampView) {
+  let parts = state.rackParts;
+  if (!parts || parts.el !== regions.tabs) {
+    parts = { el: regions.tabs, model: null, buttons: new Map(), open: null, ampOn: null, slots: new Map(), chain: null, hint: null };
+    state.rackParts = parts;
+  }
+  const rig = state.health && state.health.ok ? state.health.body.rig || {} : {};
+  const busyNow = !!(state.health && state.health.ok && (state.health.body.agent || {}).busy);
+  if (model) parts.model = model;
+  else if (!(busyNow && rig.running)) parts.model = null;
+  const tabs = R.rackTabs(parts.model);
+  if (model) {
+    // Another rig: its own remembered tab, or its first channel.
+    const name = rig.config_name ?? null;
+    if (state.tab.rig !== name) state.tab = { rig: name, id: R.rememberedTab(readTab(), name) };
+  }
+  const open = R.openTab(tabs, state.tab.id);
+  // A tab that has gone (its channel left the rig) is not come back to.
+  if (open !== null && state.tab.id !== null && state.tab.id !== open) state.tab.id = open;
+  if (open !== parts.open) {
+    // The tab changed, however it did: what was peeked into closes.
+    const left = R.tabLeft([...state.open], [...state.peeked]);
+    state.open = new Set(left.expanded);
+    state.peeked = new Set(left.peeked);
+    parts.open = open;
+  }
+  const focused = regions.tabs.contains(document.activeElement) ? document.activeElement.dataset.tab : null;
+  const rebuilt = patch(regions.tabs, JSON.stringify(tabs), () => {
+    parts.buttons = new Map();
+    return tabs.map((t, i) => {
+      const button = h("button", {
+        class: `tab${t.master ? " tab-master" : ""}`, role: "tab", type: "button", id: `rack-tab-${i}`,
+        "data-tab": t.id, "aria-controls": "rack-panel",
+        onclick: () => chooseTab(t.id),
+        onkeydown: (event) => {
+          const to = R.tabKey(tabs, t.id, event.key);
+          if (to === null) return;
+          event.preventDefault();
+          chooseTab(to, { focus: true });
+        },
+      }, h("span", { class: "tab-label" }, t.label), h("span", { class: "tab-mark", "aria-hidden": "true" }));
+      parts.buttons.set(t.id, { button });
+      return button;
+    });
+  });
+  regions.tabs.hidden = !tabs.length;
+  if (rebuilt && focused && parts.buttons.has(focused)) parts.buttons.get(focused).button.focus();
+  // The amp is in the tab of the channel it is in front of (R.ampTab).
+  const filed = !!(rig.running && rig.rig);
+  parts.ampOn = R.ampTab(tabs, filed ? state.rigChannels[rig.config_name] || null : null, filed);
+  const marks = R.tabMarks(tabs, parts.model, { failed: state.failed.keys(), amp: ampView, ampOn: parts.ampOn });
+  for (const [id, { button }] of parts.buttons) {
+    button.setAttribute("aria-selected", String(id === open));
+    button.tabIndex = id === open ? 0 : -1;
+    // A mark of its own size that is always there, so one coming or going
+    // moves nothing; what it is about is the tab's title.
+    button.classList.toggle("marked", !!marks[id]);
+    button.title = marks[id] || "";
+  }
+  if (open !== null) {
+    regions.panel.setAttribute("role", "tabpanel");
+    regions.panel.setAttribute("aria-labelledby", parts.buttons.get(open).button.id);
+  } else {
+    regions.panel.removeAttribute("role");
+    regions.panel.removeAttribute("aria-labelledby");
+  }
+  regions.amp.hidden = open === null || parts.ampOn !== open;
+  return open;
+}
+
+// The open tab's chain: a slot per plugin, in the chain's order. The chain
+// is rebuilt whole only when the tab changes; a plugin added, removed or
+// moved, here or from elsewhere, adds, drops or moves its slot and leaves
+// the others as they are (`inOrder`, `unitSlot`).
+function chainRegion(regions, model, status, open) {
+  const parts = state.rackParts;
+  const track = model && open !== null ? model.tracks.find((t) => t.name === open) || null : null;
+  // With no rig, the message depends on the tone (changing, or down), so
+  // the tone is in the key, or it would never be redrawn (found by review).
+  patch(regions.rack, JSON.stringify(track ? ["chain", track.name] : ["none", !!model, status.tone]), () => {
+    state.unitUpdaters = new Map();
+    parts.slots = new Map();
+    parts.chain = parts.hint = null;
+    if (!track) {
+      return h("p", { class: "empty" }, model ? "This rig has no tracks to show."
+        : status.tone === "busy" ? "The rig is changing; the rack comes back when it is up."
+          : status.tone === "off" ? "No rig to show: nothing is running in Sushi. Choose one under RIGS to start it."
+            : "No rig to show: nothing is running in Sushi.");
+    }
+    parts.hint = h("span", { class: "hint" });
+    parts.chain = h("div", { class: "chain" });
+    // A channel's volume is its strip's, in the left column, and its name is
+    // its tab's: the chain's own head is only what it holds.
+    return h("section", { class: "track", id: `t-${track.name}` }, h("div", { class: "track-head" }, parts.hint), parts.chain);
+  });
+  if (!track) return;
+  const count = track.units.length;
+  const hint = count ? `${count} plugin${count === 1 ? "" : "s"} · open a unit for all its controls` : "no plugins";
+  if (parts.hint.textContent !== hint) parts.hint.textContent = hint;
+  const names = new Set(track.units.map((u) => u.name));
+  for (const [name, slot] of [...parts.slots]) {
+    if (names.has(name)) continue;
+    parts.slots.delete(name);
+    state.unitUpdaters.delete(name);
+    state.peeked.delete(name);
+    slot.el.remove();
+  }
+  for (const unit of track.units) {
+    if (parts.slots.has(unit.name)) continue;
+    const slot = { el: h("article", { class: "unit", "data-unit": unit.name }), bypass: undefined, name: null, steps: null };
+    // A slim row is opened by a tap anywhere on it that is not its switch;
+    // the name's button is the same gesture for the keys and a screen reader.
+    slot.el.addEventListener("click", (event) => {
+      if (!slot.el.classList.contains("minimised") || event.target.closest("button, a, input, select, label")) return;
+      tapUnit(unit.name, slot);
+    });
+    parts.slots.set(unit.name, slot);
+  }
+  inOrder(parts.chain, track.units.map((u) => parts.slots.get(u.name).el));
+  track.units.forEach((unit, index) => unitSlot(parts.slots.get(unit.name), track, unit, index));
 }
 
 // The small "mono" mark on a plugin the compiler copies to stereo after
@@ -1335,25 +1599,9 @@ function renderRack(regions, model, unsaved, status) {
   patch(regions.lock, JSON.stringify([state.locked, state.armed]), () => lockButton());
   tilesRegion(regions.tiles);
   problemsRegion(regions.problems);
-  const live = liveBody();
-  // With no rig, the message depends on the tone (changing, or down), so
-  // the tone is in the key, or it would never be redrawn (found by review).
-  const structure = model ? JSON.stringify([model.tracks.map((t) => [t.name, t.chain, t.units.map((u) => [u.uri, u.profile, u.panel, u.monoNote])]), state.locked, [...state.open], !!state.names]) : JSON.stringify(["none", status.tone]);
-  patch(regions.rack, structure, () => {
-    state.updaters = [];
-    if (!model) {
-      return h("p", { class: "empty" }, status.tone === "busy" ? "The rig is changing; the rack comes back when it is up."
-        : status.tone === "off" ? "No rig to show: nothing is running in Sushi. Choose one under RIGS to start it."
-          : "No rig to show: nothing is running in Sushi.");
-    }
-    return model.tracks.map((track) => h("section", { class: "track", id: `t-${track.name}` },
-      // A channel's volume is its strip's, in the left column: one control
-      // per channel (the small "send to master" knob that ended each row,
-      // and was the same gain, is gone, 2026-11-06).
-      h("div", { class: "track-head" }, h("span", { class: "ring", "aria-hidden": "true" }), h("h2", {}, track.name),
-        h("span", { class: "hint" }, track.units.length ? `${track.units.length} plugin${track.units.length === 1 ? "" : "s"} · open a unit for all its controls` : "no plugins")),
-      track.units.map((u, i) => unitRow(track, u, i))));
-  });
+  const ampView = R.ampCard(state.amp, state.ampModels, { locked: state.locked, pending: state.ampPending });
+  const open = tabsRegion(regions, model, ampView);
+  chainRegion(regions, model, status, open);
   ampRegion(regions.amp);
   rigsRegion(regions.rigs, { newRig: true });
   stripsRegion(regions.wiring, model, unsaved);
@@ -1821,7 +2069,7 @@ function typedIn(el) {
 
 function giveBack(el, typing) {
   if (!typing) return;
-  const input = el.querySelector(`[name="${typing.name}"]`);
+  const input = el.querySelector(`[name="${CSS.escape(typing.name)}"]`);
   if (!input) return;
   input.focus();
   if (typing.typed && input.value !== typing.value) {
@@ -2048,8 +2296,11 @@ async function playNewRig(offer) {
 // the channel's name, a small, quiet input line (its role and width as the
 // running rig's file has them, and "Change input" behind a tap), and its
 // volume as the large part (`channelVolume`, the send's gain). Then a strip
-// for the master, whose name leads to its chain (its volume is the
-// header's), and Add channel at the bottom. An input edit writes the file;
+// for the master (its volume is the header's), and Add channel at the
+// bottom. A strip opens its channel's tab in the middle column, the
+// master's opens Master, and the open tab's strip is marked (#135); the
+// strips stay together whatever tab is open, because they are the mix. An
+// input edit writes the file;
 // the rig keeps playing as it was until the restart offered, which takes a
 // confirm.
 //
@@ -2110,21 +2361,43 @@ function stripsRegion(el, model, unsaved) {
     !!master]), () => {
     state.stripUpdaters = [];
     parts.slots = new Map();
-    const strip = (name, volume) => {
+    // A strip that plays opens its tab (#135): its name is the button, and
+    // so is a tap on the strip that lands on nothing else (not its fader,
+    // its value or its input, which are their own gestures). One the file
+    // has gained since the rig came up has no chain to open yet.
+    const opens = (el, name) => {
+      el.addEventListener("click", (event) => {
+        if (!event.target.closest("button, a, input, select, label, form, .volume")) chooseTab(name, { reveal: true });
+      });
+      return el;
+    };
+    const opener = (name) => h("button", { class: "strip-name", type: "button", "aria-controls": "rack-panel",
+      title: `Show ${name}'s chain`, onclick: () => chooseTab(name, { reveal: true }) }, name);
+    const strip = (name, volume, plays = true) => {
       const slot = h("div", { class: "strip-input-slot" });
       parts.slots.set(name, slot);
-      return h("section", { class: "strip", "data-channel": name, "aria-label": `${name} channel` },
-        h("a", { class: "strip-name", href: `#t-${name}` }, name), slot, volume);
+      const el = h("section", { class: "strip", "data-channel": name, "aria-label": `${name} channel` },
+        plays ? opener(name) : h("span", { class: "strip-name" }, name), slot, volume);
+      return plays ? opens(el, name) : el;
     };
     return [
       live.map((t) => strip(t.name, channelVolume(t, "strip", state.stripUpdaters))),
-      extra.map((c) => strip(c.name, h("p", { class: "sub" }, "Added to the file: restart the rig to play it, and its volume comes with it."))),
-      master ? h("section", { class: "strip strip-master", "data-channel": R.MASTER, "aria-label": "master" },
-        h("a", { class: "strip-name", href: `#t-${R.MASTER}` }, R.MASTER),
-        h("p", { class: "sub master-says" })) : null,
+      extra.map((c) => strip(c.name, h("p", { class: "sub" }, "Added to the file: restart the rig to play it, and its volume comes with it."), false)),
+      master ? opens(h("section", { class: "strip strip-master", "data-channel": R.MASTER, "aria-label": "master" },
+        opener(R.MASTER),
+        h("p", { class: "sub master-says" })), R.MASTER) : null,
     ];
   });
   if (listRebuilt) giveBack(parts.list, typing);
+  // The open tab's strip is marked, in place: choosing a tab rebuilds no strip.
+  const openTab = state.rackParts ? state.rackParts.open : null;
+  for (const el of parts.list.querySelectorAll(".strip")) {
+    const here = el.dataset.channel === openTab;
+    el.classList.toggle("open", here);
+    const button = el.querySelector("button.strip-name");
+    if (button && here) button.setAttribute("aria-current", "true");
+    else if (button) button.removeAttribute("aria-current");
+  }
   const says = parts.list.querySelector(".master-says");
   if (says && master) {
     says.textContent = `The mix: ${master.units.length} plugin${master.units.length === 1 ? "" : "s"} on its chain. `
@@ -2278,6 +2551,8 @@ function render() {
       state.levelUpdaters = [];
       state.stripUpdaters = [];
       state.stripParts = null;
+      state.rackParts = null;
+      state.unitUpdaters = new Map();
       state.masterUpdaters = [];
       const built = screen === "stage" ? stageFrame() : screen === "newrig" ? newRigFrame() : rackFrame();
       app.replaceChildren(built.frame);
@@ -2299,7 +2574,10 @@ function render() {
     else if (screen === "newrig") renderNewRig(state.regions, status);
     else renderRack(state.regions, model, unsaved, status);
     const ctx = { live, seq: state.seq };
-    if (live) for (const update of [...state.updaters, ...state.ampUpdaters, ...state.levelUpdaters, ...state.stripUpdaters]) update(ctx);
+    if (live) {
+      const units = [...state.unitUpdaters.values()].flat();
+      for (const update of [...state.updaters, ...units, ...state.ampUpdaters, ...state.levelUpdaters, ...state.stripUpdaters]) update(ctx);
+    }
     // The master is drawn with no rig too: there, and off, saying so.
     for (const update of state.masterUpdaters) update(ctx);
   } catch (error) {
@@ -2312,10 +2590,13 @@ function render() {
 
 // How many updaters the page holds, for the browser tests to see that the
 // count stays flat as regions are rebuilt. Read-only, and nothing else.
-window.sushiRigUpdaters = () => ({ rack: state.updaters.length, amp: state.ampUpdaters.length,
+window.sushiRigUpdaters = () => ({ rack: state.updaters.length + [...state.unitUpdaters.values()].flat().length, amp: state.ampUpdaters.length,
   levels: state.levelUpdaters.length, strips: state.stripUpdaters.length, master: state.masterUpdaters.length });
 
-// A channel's link is a hash too; only a change of screen closes what was open.
-window.addEventListener("hashchange", () => { if (currentScreen() !== state.screen) state.open.clear(); render(); });
+// Only a change of screen closes what was open.
+window.addEventListener("hashchange", () => {
+  if (currentScreen() !== state.screen) { state.open.clear(); state.peeked.clear(); }
+  render();
+});
 setInterval(tickElapsed, TICK_MS);
 poll().then(pollLoad);
