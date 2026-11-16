@@ -4227,7 +4227,8 @@ lilv comparison of the classes for CI); `test_agent_edits.py` (`first`).
 The guide (`shaping-a-sound.md`, and `building-a-rig.md`'s "cannot add"),
 `docs/reference/web-ui.md`, `agent.md`, three retaken pictures and one new
 (`library.png`) follow. The fast suite: 4481 passed, 42 skipped (the one more skipped is the lilv
-class comparison). **Not run here:** anything on the rig: no Sushi,
+class comparison). Under load, two loops side by side of 10 runs each of
+`test_ui_library.py`: 20 of 20 passed. **Not run here:** anything on the rig: no Sushi,
 so that a real Sushi places a processor added first or moved as a pair as
 the commands say is unseen; the container test of #130's "done" list (add,
 move and remove from the page's request shapes, then `verify` against a fresh
