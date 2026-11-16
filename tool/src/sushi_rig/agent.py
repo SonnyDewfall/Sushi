@@ -1851,7 +1851,8 @@ class Agent:
         if outcome.ok:
             # A rig started or stopped afresh: no master is left down by a
             # dip, and the block pw-top measured belonged to the run before.
-            self._master_down, self._block_s = None, None
+            self._master_back()
+            self._block_s = None
         if outcome.ok and (self.last_error or {}).get("kind") == "lifecycle":
             # A later success supersedes the old failure: left in place,
             # a healthy agent reports a refused request forever and
@@ -2349,6 +2350,10 @@ class Agent:
         if not dry_run:
             await self._sushi(
                 request, self.live.set_parameter, controller, processor, parameter, value, reading=False)
+            if (processor, parameter) == (ramp.MASTER, ramp.GAIN):
+                # The master volume set by the route, an undo or a switch's
+                # step: whatever a dip left, the level is the player's again.
+                self._master_back()
         return previous
 
     async def _apply_bypass(
@@ -2409,8 +2414,6 @@ class Agent:
             entry = self._record(
                 "parameter", {"processor": processor, "parameter": parameter, "value": value}, previous,
             )
-            if (processor, parameter) == (ramp.MASTER, ramp.GAIN):
-                self._master_back()  # the player has set the master volume: it is theirs again
         return web.json_response({"ok": True, **entry})
 
     async def live_bypass(self, request):
@@ -3058,8 +3061,10 @@ class Agent:
         reading GET /rig/load gives, from the same shared sample
         (`_pw_top_sample`), so an add made while a page polls costs no
         second pw-top. A pw-top that cannot be read, or a rig not running by
-        the state file, is said in `load` and refuses nothing. Off the lock:
-        a sample takes about a second, and nothing it reads is the chain's."""
+        the state file, is said in `load` and refuses nothing. The first reading is
+        taken off the lock (a sample takes about a second, and nothing it
+        reads is the chain's); an add that waited for the lock while another
+        went in reads again under it, and live changes queue behind that run."""
         try:
             described = self.describe()  # as GET /rig/load reads it
             if not described.get("running"):

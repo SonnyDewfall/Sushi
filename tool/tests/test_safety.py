@@ -586,8 +586,42 @@ def test_a_master_left_down_is_put_right_by_a_lifecycle_command_that_works():
     agent, fake = dip_agent(run=FakeRunner())
     _down_and_stuck(agent, fake)
     agent.describe = lambda: {"verdict": "absent", "running": False}
+    assert call(agent, "GET", "/health")[1]["agent"]["last_error"]["kind"] == "master"
     assert call(agent, "POST", "/rig/down", json={})[0] == 200
-    assert call(agent, "GET", "/health")[1]["agent"]["master_down"] is None
+    health = call(agent, "GET", "/health")[1]["agent"]
+    assert health["master_down"] is None
+    assert health["last_error"] is None, "nor the master's warning to set the volume again"
+
+
+def test_a_master_left_down_is_put_right_by_any_set_of_the_master_not_only_the_route():
+    """An undo or a live switch's step sets the master through the same
+    `_apply_parameter` the route does, and puts it right just as well."""
+    from sushi_rig.agent import _MidiOrigin
+
+    agent, fake = dip_agent()
+    _down_and_stuck(agent, fake)
+
+    async def set_master():
+        await agent._apply_parameter(_MidiOrigin("MIDI", "cc 7"), fake.connect(), "master", "gain", 0.6)
+
+    asyncio.run(set_master())
+    assert master_gain(fake) == 0.6
+    health = call(agent, "GET", "/health")[1]["agent"]
+    assert health["master_down"] is None and health["last_error"] is None
+
+
+def test_a_dry_run_of_a_master_set_does_not_put_it_right():
+    from sushi_rig.agent import _MidiOrigin
+
+    agent, fake = dip_agent()
+    _down_and_stuck(agent, fake)
+
+    async def ask():
+        await agent._apply_parameter(_MidiOrigin("MIDI", "cc 7"), fake.connect(), "master", "gain", 0.6, dry_run=True)
+
+    asyncio.run(ask())
+    assert master_gain(fake) == 0.0
+    assert call(agent, "GET", "/health")[1]["agent"]["master_down"] is not None
 
 
 def test_a_take_back_after_a_failed_put_back_is_dipped_too():

@@ -306,7 +306,8 @@ standing and logged, with `dip.restored: false` and a `warning` saying the rig
 may be silent, printed on stderr and in `/health`: in `last_error` (kind
 `master`), which a later change may replace, and in `agent.master_down` (`at`,
 `message`, and `level`, the level the dip meant to put back), which stays until
-the master volume is set through the agent, a later dip puts a level back, or a
+the master volume is set through the agent (by the page, an undo or a
+live switch), a later dip puts a level back, or a
 lifecycle command succeeds. **A save while it stands** writes `level` as the
 master's, not the floor, and says so in the answer's `master`; once the player
 has set the master again, a save writes theirs. After an edit that failed, the

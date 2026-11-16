@@ -4412,3 +4412,16 @@ test, which checked them in two lists, is folded into it). The fast suite:
 tests) in a loop of 5: 5 of 5 passed. **Not run:** the rig (nothing heard), a live Sushi, the slow tests
 and the container job.
 *(2026-11-16)*
+
+**#137, PR #150: the re-review's two findings.** A master left down by a dip
+was put right only by `POST /live/parameter`. An undo or a live switch's step
+that set the master volume left `master_down` standing, and a lifecycle
+command that worked cleared `master_down` but left the master's warning in
+`last_error`. Now every set of the master through `_apply_parameter` (the
+route, an undo, a switch's step; not a dry run) puts it right, and a lifecycle
+success clears both. Tests: `test_a_master_left_down_is_put_right_by_any_set_of_the_master_not_only_the_route`,
+`test_a_dry_run_of_a_master_set_does_not_put_it_right`, and the lifecycle test
+now checks `last_error` too; both fail without the fix. The load check's
+docstring now says an add that waited reads the load again under the live
+lock. **Not run:** the rig, a live Sushi.
+*(2026-11-16)*
