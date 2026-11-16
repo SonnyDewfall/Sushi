@@ -736,31 +736,39 @@ function parameterIo(unit, ctrl) {
 }
 
 function mixIo(unit, ctrl) {
-  const keyOf = (parameter) => `p\u0000${unit.name}\u0000${parameter}`;
+  // One key for the whole control: each turn is one POST /live/parameters
+  // of all its levels, so one log entry and one undo, like a step of any
+  // knob, and all or none.
+  const key = `m\u0000${unit.name}\u0000${ctrl.name}`;
+  // Where turning starts from (`R.mixAnchor`), and where it last sent the
+  // knob: while the levels are where that put them, the knob is there;
+  // otherwise (a load, an undo, another page, a pedal) it starts again
+  // from what the levels are, so nothing jumps on the next turn.
+  let anchor = null, at = null;
   return {
-    // Each parameter through POST /live/parameter, as its own knob would
-    // send it: logged, undone and saved as that parameter.
     send: (v) => {
-      for (const t of R.mixTargets(ctrl, v)) {
-        sender.change(keyOf(t.parameter), t.value, (x) => ({ path: "/live/parameter", json: { processor: unit.name, parameter: t.parameter, value: x } }));
-      }
+      if (!anchor) return;  // nothing read yet: nothing to turn from
+      at = v;
+      const json = (x) => ({
+        path: "/live/parameters",
+        json: { processor: unit.name, parameters: Object.fromEntries(R.mixPath(ctrl, anchor, x).map((t) => [t.parameter, t.value])) },
+      });
+      sender.change(key, v, json);
     },
     read: (ctx) => {
       const values = {};
-      for (const d of ctrl.drives) {
-        values[d.parameter] = sender.displayed(keyOf(d.parameter), R.valueOf(ctx.live, unit.name, d.parameter), ctx.seq);
+      for (const d of ctrl.drives) values[d.parameter] = R.valueOf(ctx.live, unit.name, d.parameter);
+      const pending = sender.busy(key) ? sender.displayed(key, null, ctx.seq) : null;
+      if (pending !== null) return { v: pending, notes: [] };
+      if (!(anchor && R.onMixPath(ctrl, anchor, at, values))) {
+        anchor = R.mixAnchor(ctrl, values);
+        at = anchor ? anchor.m0 : null;
       }
-      const at = R.mixPosition(ctrl, values);
-      if (!at) return { v: null, notes: [] };
-      return { v: at.v, notes: at.off > R.MIX_OFF_CURVE ? ["between Mix's settings: shown at the nearest"] : [] };
+      if (!anchor) return { v: null, notes: [] };
+      const off = R.mixPath(ctrl, anchor, at).some((t, i) => Math.abs(t.value - R.mixTargets(ctrl, at)[i].value) > R.MIX_OFF_CURVE);
+      return { v: at, notes: off ? ["off Mix's curve: turning moves each level from where it is"] : [] };
     },
-    failed: () => {
-      for (const d of ctrl.drives) {
-        const why = state.failed.get(keyOf(d.parameter));
-        if (why) return why;
-      }
-      return null;
-    },
+    failed: () => state.failed.get(key),
   };
 }
 

@@ -480,11 +480,11 @@ def test_the_library_lists_the_manifest_with_the_one_profile_and_its_groups():
     assert entries[GXTS9]["profile"] is True
     assert [g["id"] for g in entries[GXTS9]["groups"]] == ["dirt", "output"]
     assert entries[GXTS9]["name"] == "GxTubeScreamer"
-    # As many as tool/examples/profiles/ holds, not a count of them (#154 added two).
-    from sushi_rig.library import PROFILES_DIR, load_profiles
-
-    profiled, _ = load_profiles(ROOT / PROFILES_DIR)
-    assert {u for u, e in entries.items() if e["profile"]} == set(profiled) & set(entries)
+    # The examples' profiles, by URI (#154 added the room's and the hall's);
+    # not a count, which grows with the folder.
+    for uri in (GXTS9, "urn:ardour:a-reverb", "http://distrho.sf.net/plugins/MaGigaverb"):
+        assert entries[uri]["profile"] is True, uri
+    assert entries["http://distrho.sf.net/plugins/MVerb"]["profile"] is False, "MVerb has none"
     assert entries[NAM]["addable"] is False
     assert body["sources"]["plugins_dir"] == str(ROOT / "plugins")
     assert all(e["name_from"] in ("plugin", "profile", "uri") for e in body["plugins"])

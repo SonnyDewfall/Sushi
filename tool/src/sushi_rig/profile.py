@@ -871,7 +871,17 @@ def _check_controls(
             v = entry.get("visibility")
             shown[entry["name"]] = v.get("value") if isinstance(v, dict) else None
     driven_by: dict[str, str] = {}
+    # Each group's orders, the parameters' first, so a control that takes a
+    # parameter's place is warned of as two parameters would be.
     orders: dict[str, dict[int, str]] = {}
+    for entry in params if isinstance(params, list) else []:
+        if not isinstance(entry, dict):
+            continue
+        g, o = entry.get("group"), entry.get("order")
+        g = g.get("value") if isinstance(g, dict) else None
+        o = o.get("value") if isinstance(o, dict) else None
+        if isinstance(g, str) and _is_int(o):
+            orders.setdefault(g, {}).setdefault(o, entry.get("name"))
 
     for i, entry in enumerate(controls):
         path = f"controls[{i}]"
@@ -930,6 +940,13 @@ def _check_controls(
             o = value("order")
             if not _is_int(o) or o < 0:
                 c.error("bad-value", f"{path}.order.value", "order must be an integer >= 0")
+            elif j["group"] and isinstance(value("group"), str):
+                taken = orders.setdefault(value("group"), {})
+                if o in taken:
+                    c.warn("duplicate-order", f"{path}.order.value",
+                           f"order {o} in group {value('group')!r} is also used by "
+                           f"{taken[o]!r}; their relative position is ambiguous")
+                taken.setdefault(o, cid)
         if j["label"] and (not isinstance(value("label"), str) or not value("label").strip()):
             c.error("bad-value", f"{path}.label.value", "label must be non-empty text")
         if j["description"]:
@@ -957,6 +974,7 @@ def _check_drives(
         c.error("bad-value", path, "drives must be a non-empty list of {parameter, curve, at_0, at_1}")
         return
     seen: set[str] = set()
+    moving = 0
     for k, drive in enumerate(drives):
         where = f"{path}[{k}]"
         if not isinstance(drive, dict):
@@ -988,6 +1006,12 @@ def _check_drives(
             elif _is_number(lo) and _is_number(hi) and not (lo - 1e-9 <= v <= hi + 1e-9):
                 c.error("bad-value", f"{where}.{end}",
                         f"{v!r} is outside {name!r}'s range, {lo!r} to {hi!r}")
+        if _is_number(drive.get("at_0")) and drive.get("at_0") == drive.get("at_1"):
+            c.error("constant-drive", where,
+                    f"{name!r} is {drive['at_0']!r} at both ends: a drive that never moves its parameter "
+                    "only pins it, which is not the control's to do")
+        else:
+            moving += 1
         if name in driven_by and driven_by[name] != cid:
             c.warn("driven-twice", where,
                    f"{name!r} is driven by {driven_by[name]!r} too; each would move it from under the other")
@@ -996,6 +1020,8 @@ def _check_drives(
             c.warn("driven-and-shown", where,
                    f"{name!r} is driven by {cid!r} and shown as well ({shown.get(name) or 'primary'}): "
                    "two knobs that move the same parameter. Hide it, unless that is meant")
+    if seen and not moving:
+        c.error("constant-control", path, f"none of {cid!r}'s drives moves its parameter: the control does nothing")
 
 
 def _check_facts(c: _Collector, path: str, restated: Any, fact: dict[str, Any]) -> None:

@@ -120,11 +120,16 @@ export function makeControl(name, info, entry) {
 
 // How far from at_0 to at_1 a driven parameter is at travel m, on `curve`:
 // profile.curve_at, the same three.
+export const CURVES = ["linear", "sine", "cosine"];
+
 export function curveAt(curve, m) {
   const x = clamp01(m);
   if (curve === "sine") return Math.sin(x * Math.PI / 2);
   if (curve === "cosine") return 1 - Math.cos(x * Math.PI / 2);
-  return x; // linear, and anything a profile loaded unvalidated calls a curve
+  if (curve === "linear") return x;
+  // As profile.curve_at: a curve this does not know is not guessed at.
+  // `makeMix` will not make a control of one, so this is a programming error.
+  throw new Error(`unknown curve ${JSON.stringify(curve)}; one of ${CURVES.join(", ")}`);
 }
 
 export function makeMix(entry, params) {
@@ -133,8 +138,9 @@ export function makeMix(entry, params) {
     parameter: d.parameter, curve: d.curve, at_0: d.at_0, at_1: d.at_1,
     ctrl: makeControl(d.parameter, params[d.parameter], null),
   }));
-  const missing = !drives.length || drives.some((d) => d.ctrl.missing);
-  const notes = [];
+  const unknown = drives.filter((d) => !CURVES.includes(d.curve)).map((d) => `${d.parameter}'s curve ${JSON.stringify(d.curve)}`);
+  const missing = !drives.length || unknown.length > 0 || drives.some((d) => d.ctrl.missing);
+  const notes = unknown.length ? [`not drawn: ${unknown.join(", ")} is not a curve this page knows`] : [];
   const lacking = drives.filter((d) => d.ctrl.missing).map((d) => d.parameter);
   if (lacking.length && lacking.length < drives.length) notes.push(`drives ${lacking.join(", ")}, which the running plugin lacks`);
   return {
@@ -190,6 +196,47 @@ export function mixPosition(mix, values) {
   const m = cost((lo + hi) / 2) < bestCost ? (lo + hi) / 2 : best;
   const off = Math.max(...mixTargets(mix, m).map((t, i) => Math.abs(t.value - now[i])));
   return { v: m, off };
+}
+
+// Where a turn from `anchor` takes the levels (#154, review of PR #159). A
+// rig saved off the curve (the hall at dry 0.81, early 0.16, tail 0.09) is
+// shown at its nearest point m0; turning from there along the curve itself
+// would jump every level to the curve at the first step. Instead each level
+// goes from where it is to the curve's own end, at the pace the curve goes
+// from m0 to that end: for m above m0, level = L + (C(1) - L) * s, where s
+// = (C(m) - C(m0)) / (C(1) - C(m0)) runs 0 to 1 as the curve does; below,
+// the same towards C(0). So m0 leaves the levels exactly as they are, 0 and
+// 100 % are the curve's own ends, and each level moves one way only on each
+// side of m0, as its curve does (turning up never raises dry, nor turning
+// down a wet level, since C(1) is dry's floor and C(0) the wets'). On the
+// curve, L is C(m0) and this is the curve. `anchor` is `{m0, levels}`, real
+// values by parameter: `mixAnchor` makes one from what the parameters are.
+export function mixAnchor(mix, values) {
+  const at = mixPosition(mix, values);
+  if (!at) return null;
+  const levels = {};
+  for (const d of mix.drives) levels[d.parameter] = realOf(d.ctrl, values[d.parameter]);
+  return { m0: at.v, levels, off: at.off };
+}
+
+export function mixPath(mix, anchor, v) {
+  if (!anchor) return mixTargets(mix, v);
+  const m = clamp01(v), m0 = anchor.m0;
+  return mix.drives.map((d) => {
+    const C = (x) => d.at_0 + (d.at_1 - d.at_0) * curveAt(d.curve, x);
+    const L = anchor.levels[d.parameter];
+    const end = m >= m0 ? C(1) : C(0);
+    const span = end - C(m0);
+    const s = Math.abs(span) < 1e-12 ? (m === m0 ? 0 : 1) : (C(m) - C(m0)) / span;
+    return { parameter: d.parameter, value: normalisedOf(d.ctrl, L + (end - L) * clamp01(s)) };
+  });
+}
+
+// Whether `values` are where `mixPath(anchor, v)` put them: then the knob is
+// at v, though the levels are off the curve.
+export function onMixPath(mix, anchor, v, values) {
+  if (!anchor || !isNumber(v)) return false;
+  return mixPath(mix, anchor, v).every((t) => isNumber(values[t.parameter]) && Math.abs(values[t.parameter] - t.value) <= TOLERANCE);
 }
 
 // The knob's value in a /live answer (or null), for a card's summary.
@@ -1070,6 +1117,14 @@ export function unsavedChanges(logAnswer, live, rig, amp = null, plugins = null)
     const op = e.op === "undo" ? e.args.of : e.op;
     const a = e.args || {};
     if (op === "parameter") note(`p\u0000${a.processor}\u0000${a.parameter}`, "parameter", { processor: a.processor, parameter: a.parameter }, e.previous, e);
+    else if (op === "parameters") {
+      // Several of one processor's at once (a profile's control, #154): each
+      // is a parameter of its own here, as if set one by one.
+      for (const parameter of Object.keys(a.parameters || {})) {
+        const was = e.previous && typeof e.previous === "object" ? e.previous[parameter] : null;
+        note(`p\u0000${a.processor}\u0000${parameter}`, "parameter", { processor: a.processor, parameter }, was ?? null, e);
+      }
+    }
     else if (op === "bypass") note(`b\u0000${a.processor}`, "bypass", { processor: a.processor }, e.previous, e);
     else if (op === "move") {
       // The move's own `previous` is the chain before it; only its track's
@@ -1167,6 +1222,7 @@ export function describeEntry(entry) {
   const a = entry.args || {};
   switch (entry.op) {
     case "parameter": return `${a.processor} · ${a.parameter}`;
+    case "parameters": return `${a.processor} · ${Object.keys(a.parameters || {}).join(", ")}`;
     case "bypass": return `${a.bypassed ? "bypass" : "turn on"} ${a.processor}`;
     case "move": return `move ${a.processor} ${a.direction}`;
     case "add": return `add ${a.name}`;
@@ -2002,8 +2058,14 @@ export class Sender {
     s.inFlight = false;
     if (this.state.get(key) !== s) return;
     if (!result.ok) {
-      this.state.delete(key);
+      // Said either way. A newer value asked for while this one was in
+      // flight is still sent (review of PR #159: it was dropped, and the
+      // control showed the rig's value with the player's last move lost);
+      // with none, the control goes back to showing the rig's.
       this.onFailure(key, result);
+      if (this.state.get(key) !== s) return;
+      if (s.want !== value) { this._send(key, s); return; }
+      this.state.delete(key);
       return;
     }
     this.onSent(key, result);

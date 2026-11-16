@@ -137,6 +137,7 @@ def test_a_driven_parameter_left_showing_is_warned_of(hall):
 def test_a_parameter_two_controls_drive_is_warned_of(hall):
     second = copy.deepcopy(mix(hall))
     second["id"] = "wet"
+    second["order"]["value"] = 2
     second["drives"]["value"] = [{"parameter": "tail", "curve": "linear", "at_0": 0.0, "at_1": 1.0}]
     hall["controls"].append(second)
     found = validate(hall, facts("MaGigaverb"))
@@ -166,3 +167,42 @@ def test_equal_power_is_what_the_profile_gives_the_hall(hall):
         wet = driven_value(drives["early"], m) / 0.8
         assert math.isclose(dry ** 2 + wet ** 2, 1.0, rel_tol=1e-12)
         assert math.isclose(driven_value(drives["early"], m), 2 * driven_value(drives["tail"], m), abs_tol=1e-15)
+
+
+# --- review of PR #159 ------------------------------------------------------
+
+def test_a_drive_that_never_moves_is_refused_and_so_is_a_control_of_only_those(hall):
+    drive(hall, "tail").update(at_0=0.25, at_1=0.25)
+    found = errors(validate(hall, facts("MaGigaverb")))
+    assert codes(found) == ["constant-drive"] and "(tail)" in found[0].path
+    for name, v in (("dry", 1.0), ("early", 0.25)):
+        drive(hall, name).update(at_0=v, at_1=v)
+    assert sorted(codes(errors(validate(hall, facts("MaGigaverb"))))) == ["constant-control"] + ["constant-drive"] * 3
+
+
+def test_a_control_sharing_a_parameters_place_in_its_group_is_warned_of(hall):
+    roomsize = next(p for p in hall["parameters"] if p["name"] == "roomsize")
+    mix(hall)["group"]["value"] = "space"
+    mix(hall)["order"]["value"] = roomsize["order"]["value"]
+    found = validate(hall, facts("MaGigaverb"))
+    assert errors(found) == []
+    (warned,) = warnings(found)
+    assert warned.code == "duplicate-order" and "'roomsize'" in warned.message
+
+
+def test_the_panel_refuses_controls_that_are_not_a_list_of_mappings():
+    from sushi_rig.ui import PanelError, panel_profile
+
+    for controls, said in (({"id": "mix"}, "controls is not a list"), (["mix"], "control 1 is not a mapping")):
+        with pytest.raises(PanelError, match=said):
+            panel_profile({"_file": "p.yaml", "plugin": {"uri": "urn:x"}, "parameters": [], "controls": controls})
+
+
+def test_the_panel_leaves_out_a_control_on_a_curve_it_does_not_know():
+    from sushi_rig.ui import panel_profile
+
+    flat, problems = panel_profile({"_file": "p.yaml", "plugin": {"uri": "urn:x"}, "parameters": [], "controls": [
+        {"id": "mix", "drives": {"value": [{"parameter": "A", "curve": "exponential", "at_0": 0, "at_1": 1}],
+                                 "provenance": "draft"}}]})
+    assert flat["parameters"] == []
+    assert problems == ["p.yaml: control mix has no drives the panel can follow and is left out"]

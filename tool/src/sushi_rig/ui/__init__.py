@@ -164,6 +164,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from ..profile import CURVES
+
 #: The folder the agent serves: the page's files and nothing else, so this
 #: module's own source is not among them.
 UI_DIR = Path(__file__).parent / "static"
@@ -224,9 +226,12 @@ def panel_profile(profile: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     problems: list[str] = []
     plugin = profile.get("plugin") if isinstance(profile.get("plugin"), dict) else {}
     where = profile.get("_file") or plugin.get("uri") or "a profile"
-    for key in ("groups", "parameters"):
+    for key in ("groups", "parameters", "controls"):
         if profile.get(key) is not None and not isinstance(profile.get(key), list):
             raise PanelError(f"{where}: {key} is not a list: {profile.get(key)!r}")
+    for position, entry in enumerate(profile.get("controls") or []):
+        if not isinstance(entry, dict):
+            raise PanelError(f"{where}: control {position + 1} is not a mapping: {entry!r}")
     groups = []
     for group in profile.get("groups") or []:
         if isinstance(group, dict) and isinstance(group.get("id"), str):
@@ -287,13 +292,14 @@ def _panel_control(entry: Any, where: str, position: int, problems: list[str]) -
     """One of a profile's controls as the browser draws it, or None (and a
     problem said) when it cannot be: no id, or drives that are not a
     non-empty list of {parameter, curve, at_0, at_1} with numbers at the
-    ends. Loaded unvalidated, as the parameters are."""
+    ends and a curve `profile.CURVES` names. Loaded unvalidated, as the
+    parameters are."""
     if not isinstance(entry, dict) or not isinstance(entry.get("id"), str) or not entry["id"]:
         problems.append(f"{where}: control {position + 1} has no id and is left out")
         return None
     drives = _judged(entry, "drives")
     ok = isinstance(drives, list) and drives and all(
-        isinstance(d, dict) and isinstance(d.get("parameter"), str) and isinstance(d.get("curve"), str)
+        isinstance(d, dict) and isinstance(d.get("parameter"), str) and d.get("curve") in CURVES
         and all(isinstance(d.get(k), (int, float)) and not isinstance(d.get(k), bool) for k in ("at_0", "at_1"))
         for d in drives)
     if not ok:
