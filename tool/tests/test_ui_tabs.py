@@ -1259,8 +1259,8 @@ def test_the_amps_tab_is_the_running_rigs_and_moves_only_with_the_run(browser):
         p.route("**/machine/roles", lambda route: route.fulfill(json=roles_answer(said["used_by"])))
         p.route("**/rigs/*/channels", lambda route: route.fulfill(json={
             "ok": True, "rig": "electric_board", "file": "config/rigs/electric_board.yaml", "blended": [], "blended_note": None,
-            "channels": [{"name": "board", "input": "guitar-in", "width": "mono"},
-                         {"name": "vocal", "input": "vocal-in", "width": "mono"}]}))
+            "channels": [{"name": "board", "input": "guitar-in", "width": "mono", "level": 0.0, "plugins": []},
+                         {"name": "vocal", "input": "vocal-in", "width": "mono", "level": 0.0, "plugins": []}]}))
         p.goto(served.url + "/#rack")
         expect(p.locator(".unit").first).to_be_visible()
         amp = p.locator(".amp-card")
@@ -1365,3 +1365,150 @@ def test_an_amp_whose_models_cannot_be_listed_marks_its_tab(browser):
         expect(tab(p, "board")).to_have_attribute("title", "The amp's models could not be listed: amp/models is unreadable (test)")
         expect(tab(p, "vocal")).not_to_have_class(MARKED)
         page.close()
+
+
+# --------------------------------------------------------------------------- #
+# Re-review of #135: which run the page is showing
+# --------------------------------------------------------------------------- #
+
+def test_the_amps_tab_waits_for_the_new_runs_own_tabs(browser):
+    """A restart with a channel more, whose first polls find Sushi not
+    answering: the run before's tabs are not kept for it, so the amp is not
+    placed against them (it would have gone to the first channel for the
+    whole run); it is placed with the new run's own, in the new channel."""
+    with Served(amp=True) as served:
+        page = Page.__new__(Page)
+        page.page = browser.new_page(viewport={"width": 1280, "height": 900})
+        page.errors = []
+        p = page.page
+        p.on("pageerror", lambda error: page.errors.append(str(error)))
+        said = {"used_by": ["board"]}
+        p.route("**/machine/roles", lambda route: route.fulfill(json=roles_answer(said["used_by"])))
+        p.goto(served.url + "/#rack")
+        expect(p.locator(".amp-card .fader").first).to_be_visible()
+        is_selected(p, "board")
+        # The restart: a channel gtr2 on the guitar's input, Sushi not answering yet.
+        recover = failing_live(p)
+        served.rig.add_track("gtr2")
+        said["used_by"] = ["gtr2"]
+        from datetime import datetime, timezone
+        served.lifecycle.started = datetime.now(timezone.utc).replace(microsecond=0)
+        expect(p.get_by_role("tab")).to_have_count(0, timeout=5000)  # the run before's tabs are not this run's
+        expect(p.locator(".amp-card")).to_be_visible()  # and with none, the card on its own
+        time.sleep(2.5)  # past the hold's bound: nothing was decided against tabs that are not there
+        recover()
+        expect(p.get_by_role("tab")).to_have_text(["board", "vocal", "gtr2", "Master"], timeout=5000)
+        expect(p.locator(".amp-card")).to_be_hidden()
+        tab(p, "gtr2").click()
+        expect(p.locator(".amp-card .fader").first).to_be_visible()
+        page.close()
+
+
+def test_another_rig_takes_no_input_from_the_rig_before_while_its_plugins_are_read(browser):
+    """A switch to another rig whose plugins are slow to read: the chain of
+    the rig switched from is not left on the page taking input, and a key
+    pressed on its knob in that window reaches neither rig."""
+    with Served() as served:
+        page = rack_page(browser, served)
+        p = page.page
+        slider(p, "overdrive Drive").focus()
+        served.rig.plugins_delay = 3.0
+        writes = len(served.rig.writes())
+        assert post(served, "/rig/switch", {"config_name": "accustomed"})["ok"]
+        expect(p.locator(".rack .empty")).to_have_text("Reading the rig…", timeout=4000)
+        expect(p.get_by_role("slider", name="overdrive Drive")).to_have_count(0)
+        for _ in range(3):
+            p.keyboard.press("ArrowDown")
+        time.sleep(0.5)
+        assert served.rig.writes()[writes:] == [], "nothing sent, to the rig switched to or any other"
+        # The plugins answered: the chain, drawn once.
+        expect(shown(p)).to_have_text(["overdrive", "octave", "delay"], timeout=6000)
+        expect(unit(p, "overdrive")).to_contain_text("GxTubeScreamer · profile")
+        served.rig.plugins_delay = 0.0
+        page.close()
+
+
+def test_a_change_waiting_to_be_sent_is_dropped_when_the_rig_shown_changes(blank):
+    """The Sender sends a control's newest value after the one in flight; a
+    value waiting when the page comes to show another rig is not sent to it."""
+    out = rigjs(blank, """
+      let run = 'rig-a';
+      const posted = [];
+      let answer = null;
+      const sender = new R.Sender((call) => { posted.push([run, call.json.value]); return new Promise((done) => { answer = done; }); },
+        {run: () => run});
+      const body = (x) => ({path: '/live/parameter', json: {processor: 'overdrive', parameter: 'Drive', value: x}});
+      sender.change('k', 0.5, body);   // sent at once
+      sender.change('k', 0.4, body);   // waits for the first's answer
+      run = 'rig-b';                   // the page now shows another rig
+      answer({ok: true});
+      await new Promise((done) => setTimeout(done, 20));
+      const after = [...posted];
+      sender.change('k', 0.3, body);   // a change made on the rig now shown is sent
+      await new Promise((done) => setTimeout(done, 20));
+      return [after, posted, sender.busy('k')];""")
+    assert out[0] == [["rig-a", 0.5]], "the waiting 0.4 was made on rig-a, and is not sent once rig-b is shown"
+    assert out[1] == [["rig-a", 0.5], ["rig-b", 0.3]]
+
+
+def test_the_amps_tab_is_kept_for_the_run_when_the_rack_is_left_and_come_back_to(browser):
+    """Leaving the rack (for the stage, the New rig screen) and coming back
+    makes the rack afresh; the amp's tab, decided for the run, is not decided
+    again from a file that has changed since (Change input)."""
+    with Served(amp=True) as served:
+        page = Page.__new__(Page)
+        page.page = browser.new_page(viewport={"width": 1280, "height": 900})
+        page.errors = []
+        p = page.page
+        p.on("pageerror", lambda error: page.errors.append(str(error)))
+        unread = {**roles_answer([]), "wiring_note": "the running rig's compiled config could not be read (test)"}
+        p.route("**/machine/roles", lambda route: route.fulfill(json=unread))  # the running rig cannot say: the file decides
+        file = {"guitar": "vocal"}
+        p.route("**/rigs/*/channels", lambda route: route.fulfill(json={
+            "ok": True, "rig": "electric_board", "file": "config/rigs/electric_board.yaml", "blended": [], "blended_note": None,
+            "channels": [{"name": name, "input": "guitar-in" if name == file["guitar"] else "vocal-in", "width": "mono",
+                          "level": 0.0, "plugins": []} for name in ("board", "vocal")]}))
+        p.goto(served.url + "/#rack")
+        expect(p.locator(".unit").first).to_be_visible()
+        tab(p, "vocal").click()
+        expect(p.locator(".amp-card .fader").first).to_be_visible()
+        # The file is edited, and the page reads it again (the New rig screen reads every rig's).
+        file["guitar"] = "board"
+        p.evaluate("() => { location.hash = '#new-rig'; }")
+        expect(p.locator("form.new-rig-form")).to_be_visible(timeout=5000)
+        time.sleep(0.5)
+        p.evaluate("() => { location.hash = '#rack'; }")
+        expect(p.locator(".unit").first).to_be_visible()
+        tab(p, "vocal").click()
+        expect(p.locator(".amp-card .fader").first).to_be_visible()
+        tab(p, "board").click()
+        expect(p.locator(".amp-card")).to_be_hidden()
+        page.close()
+
+
+def test_a_knob_focused_before_its_profile_arrives_keeps_the_focus_and_turns(browser, served):
+    """CI on #135 (3.13): the profiles came after a test had focused a knob;
+    its row was rebuilt with them, the focus fell to the page's body, and the
+    key turned nothing, so the edit that should have been refused for unsaved
+    work went through."""
+    page = Page.__new__(Page)
+    page.page = browser.new_page(viewport={"width": 1280, "height": 900})
+    page.errors = []
+    p = page.page
+    p.on("pageerror", lambda error: page.errors.append(str(error)))
+    held = []
+    p.route("**/profiles", lambda route: held.append(route))
+    p.goto(served.url + "/#rack")
+    p.wait_for_selector(".unit")
+    drive = slider(p, "overdrive Drive")
+    drive.focus()
+    before = drive.element_handle()
+    expect(unit(p, "overdrive")).to_contain_text("no profile: every parameter")
+    for route in held:
+        route.continue_()
+    expect(unit(p, "overdrive")).to_contain_text("GxTubeScreamer · profile")
+    assert before.evaluate("(e) => !e.isConnected"), "the row was rebuilt, as it must be for its profile's controls"
+    expect(slider(p, "overdrive Drive")).to_be_focused()
+    p.keyboard.press("ArrowDown")
+    until(lambda: abs(served.rig.info["overdrive"]["Drive"]["value"] - 0.61) < 1e-9)
+    page.close()

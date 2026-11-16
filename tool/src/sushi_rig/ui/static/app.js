@@ -63,6 +63,8 @@ function writeTab(text) {
 const state = {
   health: null, live: null, log: null,
   plugins: null, pluginsFor: null, pluginsRig: null, pluginsError: null, pluginsAt: 0,
+  reading: null,             // another rig's plugins being read: {rig, since}; its chain is held back meanwhile
+  ampPlace: null,            // the amp's tab, decided once a run: see placeAmp
   profiles: null, profilesError: null, profilesAt: 0, profileProblems: [],
   names: null, namesAt: 0,   // plugin names by URI, from /library: decoration, so a failure is not shown
   locked: readLocked(), armed: false, armTimer: null,
@@ -128,8 +130,14 @@ async function request(method, path, body) {
   }
 }
 
+// `run` is the rig the page shows (`rigIdentity`): a change queued for one
+// rig is never sent once the page shows another, where a plugin of the same
+// name would take it (review of #135). The agent's /live routes take no
+// word of which rig a change is meant for, so one already in flight when
+// the rig changes cannot be stopped here.
 const sender = new R.Sender((call) => request("POST", call.path, call.json), {
   pollSeq: () => state.pollSeq,
+  run: () => JSON.stringify(rigIdentity(state.health, state.log)),
   onFailure: (key, result) => {
     state.failed.set(key, result.reason);
     fail(`Not changed: ${key.split("\u0000").slice(1).join(" · ")}`, result);
@@ -359,20 +367,30 @@ async function poll() {
       R.readsLive(health) ? request("GET", "/record") : null,
     ]);
     const logBody = log && log.ok ? log.body : null;
-    // See `pluginsDue`: another rig's plugins are read before any of it is
-    // shown; the same rig's, after, with what is held shown meanwhile.
+    // See `pluginsDue`. Another rig is shown at once, so that nothing of the
+    // rig before stays on the page taking input (review of #135: a knob of
+    // the rig switched from, still drawn, would have sent its change to the
+    // rig switched to); with no plugins held for it, and its chain held
+    // back meanwhile (`state.reading`, `chainRegion`). The same rig's new
+    // chains are shown with the plugins already held. Either way the
+    // plugins are read after, and drawn when they come.
     const due = live && live.ok ? pluginsDue(live.body, rigIdentity(health, logBody)) : null;
-    const first = due && due.rig !== state.pluginsRig ? await readPlugins(due) : null;
+    const another = !!due && due.rig !== state.pluginsRig;
     state.health = health;
     state.live = live;
     state.amp = amp;
     noteRecord(record);
     state.log = logBody;
     state.seq = seq;
-    if (first) Object.assign(state, first);
+    if (another) {
+      Object.assign(state, { plugins: null, pluginsError: null, pluginsFor: null, pluginsRig: due.rig });
+      state.reading = { rig: due.rig, since: Date.now() };
+      setTimeout(render, HOLD_MS + 20);  // the hold's bound, if the answer is slower
+    }
     render();
-    if (due && !first) {
+    if (due) {
       Object.assign(state, await readPlugins(due));
+      if (state.reading && state.reading.rig === due.rig) state.reading = null;
       render();
     }
     inBackground("profiles", refreshProfiles);
@@ -1466,6 +1484,12 @@ function unitSlot(slot, track, unit, index) {
   const name = pluginName(unit);
   const typing = typedIn(slot.el);
   const onName = !!slot.name && document.activeElement === slot.name;
+  // Any other control of the row with the focus (a knob, say), by its name:
+  // a row rebuilt (its profile arriving after the first draw) gave the
+  // focus to the page's body, and the next key turned nothing (CI on
+  // #135, a knob focused just before the profiles came).
+  const active = document.activeElement;
+  const focusedLabel = !typing && !onName && active && slot.el.contains(active) ? active.getAttribute("aria-label") : null;
   const rebuilt = patch(slot.el, JSON.stringify([unit.uri, unit.profile, unit.panel, expanded, state.locked, name]), () => {
     const outer = state.updaters;
     state.updaters = [];
@@ -1480,6 +1504,8 @@ function unitSlot(slot, track, unit, index) {
     giveBack(slot.el, typing);
     // The name's button was tapped, or the keys were on it: they stay on it.
     if (onName) slot.name.focus();
+    const again = focusedLabel ? slot.el.querySelector(`[aria-label="${CSS.escape(focusedLabel)}"]`) : null;
+    if (again) again.focus({ preventScroll: true });
   }
   patch(slot.badge, JSON.stringify(unit.monoNote), () => monoBadge(unit));
   slot.steps.up.disabled = !R.canMove(track, index, "up");
@@ -1542,13 +1568,18 @@ function chooseTab(id, { focus = false, reveal = false } = {}) {
 function tabsRegion(regions, model, ampView) {
   let parts = state.rackParts;
   if (!parts || parts.el !== regions.tabs) {
-    parts = { el: regions.tabs, model: null, buttons: new Map(), open: null, ampOn: null, ampWaiting: false, amp: null,
+    parts = { el: regions.tabs, model: null, modelRun: null, buttons: new Map(), open: null, ampOn: null, ampWaiting: false,
       slots: new Map(), chain: null, hint: null };
     state.rackParts = parts;
   }
   const rig = state.health && state.health.ok ? state.health.body.rig || {} : {};
-  if (model) parts.model = model;
-  else if (!rig.running) parts.model = null;
+  // A model held is held for its run only: tabs drawn from the run before
+  // must never stand for a run that has started since (a restart with a
+  // channel more, /live not answering yet), nor place its amp (review of
+  // #135).
+  const run = runKey();
+  if (model) { parts.model = model; parts.modelRun = run; }
+  else if (!rig.running || parts.modelRun !== run) { parts.model = null; parts.modelRun = null; }
   const tabs = R.rackTabs(parts.model);
   if (model) {
     // Another rig: its own remembered tab, or its first channel.
@@ -1610,12 +1641,14 @@ function tabsRegion(regions, model, ampView) {
   return open;
 }
 
-// How long the centre waits, the first time a run is seen with an amp, for
-// what says which channel the amp is in front of (R.ampTab: the running
-// rig's roles, else its file) before it puts the card with the first
-// channel. Both are asked for as the rack is first drawn and usually answer
-// in a few milliseconds; a slow agent is not waited for longer than this.
-const AMP_WAIT_MS = 2000;
+// How long the centre holds the open chain back while what is drawn there
+// is still to come: at a run's first sight with an amp, what says which
+// channel the amp is in front of (R.ampTab: the running rig's roles, else
+// its file), and for another rig, its plugins. Each usually answers in a
+// few milliseconds; a slow agent is not waited for longer than this, after
+// which the amp goes with the first channel, and a chain whose plugins have
+// not come is drawn without them.
+const HOLD_MS = 2000;
 
 // The amp's tab, decided once a run (`parts.ampOn`), so that the card never
 // moves while the rig plays: not when an answer arrives late, nor when the
@@ -1625,20 +1658,23 @@ const AMP_WAIT_MS = 2000;
 // tap was aimed at (review of #135: the first row went from 226 px to 609 px
 // on every load). With no amp to place (none on the rig, none read yet) the
 // card, which then says only why there is none, goes with the first channel
-// and nothing waits.
+// and nothing waits. The decision is the page's, kept by run
+// (`state.ampPlace`), not the rack frame's: leaving the rack for the stage
+// and coming back must not decide it again, from a file edited since. It is
+// only made against tabs drawn from this run's own /live (`parts.modelRun`).
 function placeAmp(parts, tabs, rig, ampView) {
   const run = runKey();
   const channels = tabs.filter((t) => !t.master);
   const first = tabs.length ? (channels[0] || tabs[0]).id : null;
-  if (!parts.amp || parts.amp.run !== run) {
-    if (parts.amp) clearTimeout(parts.amp.timer);
-    parts.amp = { run, on: null, since: null, timer: null };
+  if (!state.ampPlace || state.ampPlace.run !== run) {
+    if (state.ampPlace) clearTimeout(state.ampPlace.timer);
+    state.ampPlace = { run, on: null, since: null, timer: null };
   }
-  const amp = parts.amp;
+  const amp = state.ampPlace;
   // A channel the amp was placed with that has left the rig: placed again.
   if (amp.on !== null && !tabs.some((t) => t.id === amp.on)) amp.on = null;
   const placing = ampView.state === "up" || ampView.state === "failed";
-  if (!placing || !tabs.length) {
+  if (!placing || !tabs.length || parts.modelRun !== run) {
     parts.ampOn = first;
     parts.ampWaiting = false;
     return;
@@ -1648,7 +1684,7 @@ function placeAmp(parts, tabs, rig, ampView) {
     const roles = state.rolesRun === run ? state.roles : null;
     const decided = R.ampTab(tabs, roles, filed ? state.rigChannels[rig.config_name] || null : null, filed);
     if (amp.since === null) amp.since = Date.now();
-    const left = AMP_WAIT_MS - (Date.now() - amp.since);
+    const left = HOLD_MS - (Date.now() - amp.since);
     if (decided !== null) amp.on = decided;
     else if (left <= 0) amp.on = first;
     else if (!amp.timer) amp.timer = setTimeout(() => { amp.timer = null; render(); }, left + 20);
@@ -1668,8 +1704,11 @@ function placeAmp(parts, tabs, rig, ampView) {
 // the others as they are (`inOrder`, `unitSlot`).
 function chainRegion(regions, model, status, open) {
   const parts = state.rackParts;
-  // Held back, with the amp's card, until the card's tab is known (`placeAmp`).
-  const waiting = parts.ampWaiting && !!model;
+  // Held back, with the amp's card, until the card's tab is known
+  // (`placeAmp`); and while another rig's plugins are read (`poll`), so
+  // that its rows are drawn once, with them, not plain and then again.
+  const reading = !!state.reading && Date.now() - state.reading.since < HOLD_MS;
+  const waiting = (parts.ampWaiting || reading) && !!model;
   const track = model && open !== null && !waiting ? model.tracks.find((t) => t.name === open) || null : null;
   // With no rig, the message depends on the tone (changing, or down), so
   // the tone is in the key, or it would never be redrawn (found by review).

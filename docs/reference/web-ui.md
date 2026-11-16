@@ -89,7 +89,17 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   focus or a drag, and are never taken out of the page). The chains of the
   same rig changing are shown at once with the plugins already known, and
   `/live/plugins` read after, so only a new plugin's row is rebuilt when it
-  answers; another rig is not shown until its plugins are. A drag ends when
+  answers. Another rig (a switch, a restart) is shown at once, so nothing of
+  the rig before stays on the page taking input, with its chain held back,
+  "Reading the rig…", until its plugins are read (at most two seconds, then
+  drawn without them). A change still waiting to be sent when the page comes
+  to show another rig is dropped, not sent to it; one already in flight
+  cannot be, since the agent's `/live` routes take no word of which rig a
+  change is meant for. A row rebuilt (a profile arriving late) gives the
+  focus back to the control that had it. Tabs held while `/live` fails are
+  held for their own run only, and the amp's tab is decided only against
+  this run's tabs, and kept by the page for the run, not by the rack: leaving
+  for the stage and coming back does not decide it again. A drag ends when
   its pointer capture is lost, so a press after it is a drag of its own. A
   bypass that hides the control with the focus (a knob, a value not typed
   into) moves the focus to the row's name, which opens it again.

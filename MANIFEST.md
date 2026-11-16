@@ -4111,3 +4111,32 @@ tap is a click in headless Chromium, and a lost pointer capture was made with
 config's wiring (the fake rig has an amp or a rig file, not both, so that
 answer was given to the page by the test); the slow tests and the container
 job. *(2026-11-16)*
+
+**The rack's tabs, the run the page is showing (PR #148, re-review).** Three
+findings, each tied to which run is on screen, and one CI failure. (1) Tabs
+kept while `/live` failed were kept across a restart, so a new run's amp
+could be placed against the run before's tabs (with a channel added on the
+guitar's input, in the old first channel for the whole run): a held model is
+now held for its own run only (`config_name` and `started_at`), and the amp's
+tab is decided only against tabs drawn from this run's `/live`. (2) While
+another rig's `/live/plugins` was read, the rig switched from stayed on the
+page with its knobs live, and a knob turned would have been sent to the rig
+switched to: another rig is now shown at once, its chain held back ("Reading
+the rig…", at most two seconds) until its plugins come, which keeps the rows
+from being drawn plain and then again under a hand; and a change still
+waiting to be sent when the rig shown changes is dropped. The agent's `/live`
+routes take no word of which rig a change is for, so one already in flight
+cannot be recalled; no such word is added here. (3) The amp's decision was
+the rack frame's, so leaving for the stage and coming back decided it again,
+from a file edited since: it is the page's now, by run. CI on 3.13 failed
+`test_an_edit_of_the_running_rig_with_unsaved_work_is_refused_in_place`: its
+knob was focused before the profiles arrived, the row was rebuilt with them,
+the focus fell to the page's body and the key turned nothing, so the edit
+went through as if nothing were unsaved. Not reproduced in 50 runs under
+load here; made to happen every time by holding `/profiles` back. A rebuilt
+row now gives the focus back to the control that had it. Each has a test
+that fails on 049778a and passes now. Under load (four loops at once): 10
+runs of `test_ui_tabs.py` and 20 each of the two tests that failed in CI,
+none failed. The fast suite: 4430 passed, 41 skipped. **Not run here:** a
+real restart or switch on the rig, a phone, the slow tests and the container
+job. *(2026-11-16)*

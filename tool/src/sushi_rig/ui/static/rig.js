@@ -1664,10 +1664,14 @@ export function ampModelOutcome(model, answer) {
 // confirmed it, so an older poll cannot pull the knob back mid-gesture.
 // A refused change is dropped, and its reason given to `onFailure`: the
 // knob then shows the rig's value with the reason beside it, not quietly.
+// `run()` names the rig the page shows: a change is sent only to the rig it
+// was made on, and one still waiting when that changes is dropped, never
+// sent to the next rig (#135's review), whose plugin may share the name.
 export class Sender {
-  constructor(post, { pollSeq = () => 0, onFailure = () => {}, onSent = () => {} } = {}) {
+  constructor(post, { pollSeq = () => 0, onFailure = () => {}, onSent = () => {}, run = () => null } = {}) {
     this.post = post;
     this.pollSeq = pollSeq;
+    this.run = run;
     this.onFailure = onFailure;
     this.onSent = onSent;
     this.state = new Map();
@@ -1676,11 +1680,12 @@ export class Sender {
   change(key, value, body) {
     let s = this.state.get(key);
     if (!s) { s = { want: value, body, inFlight: false, confirmedAt: null }; this.state.set(key, s); }
-    s.want = value; s.body = body; s.confirmedAt = null;
+    s.want = value; s.body = body; s.confirmedAt = null; s.run = this.run();
     if (!s.inFlight) this._send(key, s);
   }
 
   async _send(key, s) {
+    if (s.run !== this.run()) { this.state.delete(key); return; }  // made on a rig no longer the one shown
     s.inFlight = true;
     const value = s.want;
     const result = await this.post(s.body(value));
