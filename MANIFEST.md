@@ -4506,8 +4506,8 @@ the slow tests and the container job. `docs/ui/rack.png`, taken by hand, is
 not retaken and shows the picker without Delete.
 *(2026-11-16)*
 
-**Delete a rig: the review of PR #160 (#129).** Each finding has a test that
-fails without its fix. (1) **No placeholder, nothing moved over.** A restore
+**Delete a rig: the review of PR #160 (#129).** Each finding has a test (not
+each run against the code before it). (1) **No placeholder.** A restore
 made an empty file at `config/rigs/<name>.yaml` and moved over it, so a file
 the CLI's `save`, a `git checkout` or an editor wrote meanwhile (none takes
 the agent's lock) was replaced, or removed on a failure; the empty file was
