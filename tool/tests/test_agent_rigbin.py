@@ -17,9 +17,13 @@ from __future__ import annotations
 
 import asyncio
 import copy
+import os
+import shlex
 import shutil
 import subprocess
 from datetime import datetime, timezone
+from pathlib import Path
+from urllib.parse import quote
 
 import pytest
 
@@ -443,3 +447,251 @@ def test_a_listed_rig_whose_name_a_new_file_could_not_have_can_still_go_and_come
     assert status == 200 and not path.exists()
     status, body = call(agent, "POST", deleted["undo"]["path"], json=deleted["undo"]["json"])
     assert status == 200 and path.is_file()
+
+
+# --------------------------------------------------------------------------- #
+# Review of PR #160
+# --------------------------------------------------------------------------- #
+
+def test_a_file_written_by_another_program_during_a_restore_is_never_replaced_or_removed(root, monkeypatch):
+    """The CLI's save, a git checkout, an editor: none takes the agent's
+    lock. One that writes config/rigs/<name>.yaml between the restore's
+    check and its move keeps its file, and the deleted one stays binned."""
+    agent = bin_agent(root, rig=None)
+    status, deleted = call(agent, "POST", "/rigs/accustomed/delete")
+    path = root / "config/rigs/accustomed.yaml"
+    real = rigbin.os.link
+    seen = []
+
+    def meanwhile(src, dst, **kwargs):
+        seen.append(midi_listener.program_order(root))
+        if Path(dst) == path:
+            path.write_text("written by another program meanwhile\n")
+        return real(src, dst, **kwargs)
+
+    monkeypatch.setattr(rigbin.os, "link", meanwhile)
+    status, body = call(agent, "POST", deleted["undo"]["path"], json=deleted["undo"]["json"])
+    assert status == 409 and body["code"] == "taken"
+    assert path.read_text() == "written by another program meanwhile\n"
+    assert binned(root) == [deleted["binned"]["entry"]]
+    assert seen and "accustomed" not in seen[0], "no placeholder is listed before the move"
+
+
+def test_a_restore_leaves_no_empty_file_behind_when_it_fails(root, monkeypatch):
+    agent = bin_agent(root, rig=None)
+    status, deleted = call(agent, "POST", "/rigs/accustomed/delete")
+
+    def broken(src, dst, **kwargs):
+        raise PermissionError(1, "Operation not permitted")
+
+    monkeypatch.setattr(rigbin.os, "link", broken)
+    status, body = call(agent, "POST", deleted["undo"]["path"], json=deleted["undo"]["json"])
+    assert status == 500
+    assert not (root / "config/rigs/accustomed.yaml").exists() and binned(root) == [deleted["binned"]["entry"]]
+    monkeypatch.undo()
+    status, body = call(agent, "POST", deleted["undo"]["path"], json=deleted["undo"]["json"])
+    assert status == 200, "a failed Undo can be tried again: nothing it left says taken"
+
+
+def test_a_rig_file_replaced_during_a_delete_is_left_as_it_is(root, monkeypatch):
+    path = root / "config/rigs/accustomed.yaml"
+    real = rigbin.os.link
+
+    def replaced_after(src, dst, **kwargs):
+        done = real(src, dst, **kwargs)
+        newer = path.with_name("accustomed.yaml.tmp")
+        newer.write_text("saved by another program meanwhile\n")
+        os.replace(newer, path)  # as an editor or `sushi-rig save` writes a file
+        return done
+
+    monkeypatch.setattr(rigbin.os, "link", replaced_after)
+    status, body = call(bin_agent(root, rig=None), "POST", "/rigs/accustomed/delete")
+    assert status == 409 and body["code"] == "changed"
+    assert path.read_text() == "saved by another program meanwhile\n"
+    assert binned(root) == [], "the link taken back"
+
+
+def test_a_delete_never_replaces_an_entry_already_in_the_bin(tmp_path):
+    rigs = tmp_path / "config" / "rigs"
+    (rigs / ".deleted").mkdir(parents=True)
+    now = datetime(2026, 11, 16, 10, 15, 2, tzinfo=timezone.utc)
+    (rigs / ".deleted" / "a-20261116T101502Z.yaml").write_text("there first\n")
+    (rigs / "a.yaml").write_text("second\n")
+    made = rigbin.move_to_bin(tmp_path, "a", now)
+    assert made.name == "a-20261116T101502Z-2.yaml"
+    assert (rigs / ".deleted" / "a-20261116T101502Z.yaml").read_text() == "there first\n"
+
+
+# --- cross-site requests ----------------------------------------------------
+
+def guarded(agent, path, headers, own_origin=False):
+    async def go():
+        async with TestClient(TestServer(agent.app())) as client:
+            sent = dict(headers)
+            if own_origin:
+                sent["Origin"] = f"http://127.0.0.1:{client.server.port}"
+            response = await client.post(path, json={"dry_run": True}, headers=sent)
+            return response.status, await response.json()
+
+    return asyncio.run(go())
+
+
+@pytest.mark.parametrize("headers", [
+    {"Sec-Fetch-Site": "cross-site"},
+    {"Origin": "https://example.invalid"},
+    {"Origin": "http://127.0.0.1:1"},           # another port of this machine: same-site, not this origin
+    {"Origin": "null"},
+    {"Origin": "file://"},
+])
+@pytest.mark.parametrize("route", ["/rigs/accustomed/delete", "/rigs/accustomed/restore"])
+def test_a_request_from_another_site_is_refused_with_nothing_moved(root, headers, route):
+    before = files_of(root)
+    status, body = guarded(bin_agent(root, rig=None), route, headers)
+    assert status == 403 and body["reason"].startswith("refused"), body
+    assert files_of(root) == before
+
+
+@pytest.mark.parametrize("headers, own", [
+    ({}, False),                                            # curl, the CLI
+    ({"Sec-Fetch-Site": "same-origin"}, True),              # the page the agent serves
+    ({"Sec-Fetch-Site": "none"}, False),                    # typed into the address bar
+])
+def test_curl_and_the_agents_own_page_are_allowed(root, headers, own):
+    status, body = guarded(bin_agent(root, rig=None), "/rigs/accustomed/delete", headers, own_origin=own)
+    assert status == 200 and body["how"] == "dry_run", body
+
+
+def test_cross_site_refusal_reads_ports_as_a_browser_writes_them():
+    from sushi_rig.agent import cross_site_refusal
+
+    assert cross_site_refusal({"Origin": "http://rig.local"}, "rig.local:80") is None
+    assert cross_site_refusal({"Origin": "http://RIG.local:8029"}, "rig.local:8029") is None
+    assert cross_site_refusal({"Origin": "http://192.168.1.20:8029"}, "192.168.1.20:8029") is None
+    assert cross_site_refusal({"Origin": "https://rig.local"}, "rig.local:80") is not None
+    assert cross_site_refusal({"Origin": "http://rig.local:8030"}, "rig.local:8029") is not None
+    assert cross_site_refusal({"Origin": "http://rig.local:8029"}, None) is not None
+    assert cross_site_refusal({}, "rig.local:8029") is None
+    assert cross_site_refusal({"Sec-Fetch-Site": "Cross-Site"}, "x") is not None
+
+
+# --- long names, links, quoting ---------------------------------------------
+
+def test_the_longest_name_a_rig_may_have_goes_and_comes_back(root):
+    name = "r" * rigbin.MAX_NAME
+    path = root / "config/rigs" / f"{name}.yaml"
+    path.write_text("long\n")
+    agent = bin_agent(root, rig=None)
+    status, deleted = call(agent, "POST", f"/rigs/{name}/delete")
+    assert status == 200, deleted
+    status, body = call(agent, "POST", deleted["undo"]["path"], json=deleted["undo"]["json"])
+    assert status == 200, body
+    assert path.read_text() == "long\n"
+    assert call(agent, "POST", f"/rigs/{name}r/delete")[1]["code"] == "name", "one byte more is not a name"
+
+
+def test_an_entry_is_held_to_the_rig_names_cap_plus_the_stamp_not_to_the_cap():
+    name = "r" * rigbin.MAX_NAME
+    assert rigbin.parse_entry(f"{name}-20261116T101502Z-999999.yaml")[0] == name
+    with pytest.raises(rigbin.BinRefused) as refused:
+        rigbin.parse_entry(f"{name}r-20261116T101502Z.yaml")
+    assert refused.value.code == "name"
+
+
+def test_a_rig_file_that_is_a_link_is_refused_and_its_target_untouched(root, tmp_path_factory):
+    outside = tmp_path_factory.mktemp("elsewhere") / "secret.yaml"
+    outside.write_text("not a rig of this checkout\n")
+    (root / "config/rigs/linked.yaml").symlink_to(outside)
+    status, body = call(bin_agent(root, rig=None), "POST", "/rigs/linked/delete")
+    assert status == 409 and body["code"] == "link"
+    assert outside.read_text() == "not a rig of this checkout\n" and (root / "config/rigs/linked.yaml").is_symlink()
+
+
+def test_a_bin_that_is_a_link_is_never_followed(root, tmp_path_factory):
+    outside = tmp_path_factory.mktemp("elsewhere")
+    (outside / "accustomed-20261116T100000Z.yaml").write_text("planted\n")
+    (root / "config/rigs/.deleted").symlink_to(outside, target_is_directory=True)
+    agent = bin_agent(root, rig=None)
+    before = files_of(root)
+    status, body = call(agent, "POST", "/rigs/guitar_vocal/delete")
+    assert status == 409 and body["code"] == "link"
+    for json in ({"entry": "accustomed-20261116T100000Z.yaml"}, None):
+        (root / "config/rigs/accustomed.yaml").unlink(missing_ok=True)
+        status, body = call(agent, "POST", "/rigs/accustomed/restore", json=json)
+        assert status == 409 and body["code"] == "link", body
+    assert sorted(p.name for p in outside.iterdir()) == ["accustomed-20261116T100000Z.yaml"]
+    status, listing = call(agent, "GET", "/rigs/bin")
+    assert listing["entries"] == [] and "symbolic link" in listing["problem"]
+    assert files_of(root).keys() <= before.keys()
+
+
+def test_an_entry_that_is_a_link_is_refused(root, tmp_path_factory):
+    outside = tmp_path_factory.mktemp("elsewhere") / "x.yaml"
+    outside.write_text("planted\n")
+    agent = bin_agent(root, rig=None)
+    call(agent, "POST", f"/rigs/{LOOSE}/delete")
+    entry = "accustomed-20261116T100000Z.yaml"
+    (root / "config/rigs/.deleted" / entry).symlink_to(outside)
+    (root / "config/rigs/accustomed.yaml").unlink()
+    status, body = call(agent, "POST", "/rigs/accustomed/restore", json={"entry": entry})
+    assert status == 409 and body["code"] == "link"
+    assert not (root / "config/rigs/accustomed.yaml").exists()
+    assert [e["rig"] for e in call(agent, "GET", "/rigs/bin")[1]["entries"]] == [LOOSE], \
+        "a link in the bin is not listed"
+
+
+@pytest.mark.parametrize("name", ["my rig", "x$(touch pwned)", "it's"])
+def test_the_git_checkout_given_is_quoted_and_restores_only_the_file(root, name):
+    path = root / "config/rigs" / f"{name}.yaml"
+    path.write_text("odd name\n")
+    git(root, "add", "--", str(path))
+    git(root, "commit", "-q", "-m", "an odd name")
+    status, body = call(bin_agent(root, rig=None), "POST", f"/rigs/{quote(name, safe='')}/delete")
+    assert status == 200, body
+    restore = body["git"]["restore"]
+    assert shlex.split(restore) == ["git", "checkout", "HEAD", "--", f"config/rigs/{name}.yaml"]
+    subprocess.run(["bash", "-c", restore], cwd=root, check=True, capture_output=True)
+    assert path.read_text() == "odd name\n"
+    assert not (root / "pwned").exists() and not (root / "config/rigs/pwned").exists()
+
+
+# --- what the page reads ----------------------------------------------------
+
+def test_the_bin_listing_is_newest_first_and_says_which_are_back(root):
+    agent = bin_agent(root, rig=None)
+    rigs = root / "config/rigs"
+    rigbin.move_to_bin(root, "accustomed", datetime(2026, 11, 16, 9, 0, tzinfo=timezone.utc))
+    rigbin.move_to_bin(root, LOOSE, datetime(2026, 11, 16, 10, 0, tzinfo=timezone.utc))
+    (rigs / "accustomed.yaml").write_text("made again\n")
+    (rigs / ".deleted" / "stray.txt").write_text("not an entry\n")
+    status, body = call(agent, "GET", "/rigs/bin")
+    assert status == 200
+    assert [(e["rig"], e["entry"], e["back"], e["deleted_at"]) for e in body["entries"]] == [
+        (LOOSE, f"{LOOSE}-20261116T100000Z.yaml", False, "2026-11-16T10:00:00+00:00"),
+        ("accustomed", "accustomed-20261116T090000Z.yaml", True, "2026-11-16T09:00:00+00:00")]
+    assert body["entries"][0]["file"] == f"config/rigs/.deleted/{LOOSE}-20261116T100000Z.yaml"
+
+
+def test_the_bins_agent_is_the_same_across_agents_of_one_checkout_and_differs_between_checkouts(root, tmp_path_factory):
+    other = tmp_path_factory.mktemp("other")
+    (other / "config/rigs").mkdir(parents=True)
+    one = call(bin_agent(root), "GET", "/rigs/bin")[1]["agent"]
+    assert call(bin_agent(root, rig=None), "GET", "/rigs/bin")[1]["agent"] == one
+    assert call(bin_agent(other, rig=None), "GET", "/rigs/bin")[1]["agent"] != one
+    assert call(bin_agent(root, rig=None), "POST", f"/rigs/{LOOSE}/delete")[1]["agent"] == one
+
+
+def test_rigs_marks_the_running_rig_as_the_bin_refuses_it(root):
+    assert call(bin_agent(root, rig="guitar_vocal"), "GET", "/rigs")[1]["running"] == "guitar_vocal"
+    assert call(bin_agent(root, rig=None), "GET", "/rigs")[1]["running"] is None
+    world = World(root, rig="accustomed")
+    world.state["rig"] = str(root / "config/rigs/accustomed.yaml")  # absolute, as a state file may hold it
+    agent = Agent(root=root, describe=lambda: {**world.described(), "rig": world.state["rig"], "config_name": "x"},
+                  switching=world.switching(), run=_never, live=_NoSushi(),
+                  library=lambda: {"plugins": [], "problems": []},
+                  midi=midi_listener.World(plan=lambda described, root: midi_listener.Off("no pedals here")))
+    assert call(agent, "GET", "/rigs")[1]["running"] == "accustomed", "by its file, not by the config's name"
+    v1 = Agent(root=root, describe=lambda: {"running": True, "rig": None, "config_name": "accustomed"},
+               switching=World(root, rig=None).switching(), run=_never, live=_NoSushi(),
+               library=lambda: {"plugins": [], "problems": []},
+               midi=midi_listener.World(plan=lambda described, root: midi_listener.Off("no pedals here")))
+    assert call(v1, "GET", "/rigs")[1]["running"] is None, "a v1 run holds no rig file"

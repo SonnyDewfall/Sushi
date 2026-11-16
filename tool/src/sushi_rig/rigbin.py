@@ -23,16 +23,32 @@ bin can.
 config/rigs/, without its `.yaml`, never a path. No `/` or `\\`, no `..`, no
 leading dot (which would be the bin itself, or a file hidden from the
 player), no control character. A bin entry is checked the same way and must
-be one of this rig's (`ENTRY`), so neither route can name a file outside
-config/rigs/ or its bin. The `stamp` is the UTC second the file was binned;
-two deletes of one name in a second get `-2`, `-3`, as `save.unused_path`
-names archives, the name claimed by creating it so nothing is ever replaced.
+be one of this rig's (`ENTRY`: its rig part a plain name, the whole within
+`MAX_ENTRY`), so neither route can name a file outside config/rigs/ or its
+bin. A symbolic link is never followed: a rig file, the bin or an entry
+that is one, or a path that resolves outside config/rigs/ or the bin, is
+refused (`link`). The `stamp` is the UTC second the file was binned; two
+deletes of one name in a second get `-2`, `-3`.
+
+**Nothing another program writes is replaced or removed** (review of PR
+#160). The CLI's `save`, a `git checkout` and an editor write config/rigs/
+without any lock of the agent's, so neither move makes a placeholder or
+moves over a name: each is a hard link, which fails atomically if the name
+is taken, and then the unlink of the old name. A restore links the bin
+file to config/rigs/<name>.yaml and unlinks the bin file, which only this
+module writes. A delete links the rig file into the bin under a new name
+and unlinks the rig file only if the name is still that same file (device
+and inode); one replaced in between is left where it is, the link taken
+back, and the delete refused (`changed`). What is left is the instant
+between that check and the unlink. A crash between the link and the unlink
+leaves the file in both places, never in neither.
 """
 
 from __future__ import annotations
 
 import os
 import re
+import shlex
 from datetime import datetime, timezone
 from pathlib import Path
 
@@ -42,6 +58,9 @@ ENTRY = re.compile(r"^(?P<rig>.+)-(?P<stamp>\d{8}T\d{6}Z)(?:-(?P<n>[2-9]|[1-9][0
 # The longest name a rig file can have on the filesystems the rig runs on is
 # 255 bytes; its bin entry adds the stamp and a few digits.
 MAX_NAME = 200
+# A bin entry: the name, "-", the stamp, a "-n" for a second delete in the
+# same second (up to six digits), ".yaml".
+MAX_ENTRY = MAX_NAME + len("-20261116T101502Z") + len("-999999") + len(".yaml")
 IGNORE = "# sushi-rig's own: rig files deleted from the web UI (rigbin.py). Never committed.\n*\n"
 
 
@@ -56,15 +75,19 @@ class BinRefused(ValueError):
         self.code = code
 
 
-def plain(name: object, what: str = "a rig's name") -> str:
-    """`name` if it is a plain file name, else `BinRefused("name")`."""
+def _plain_text(name: object, what: str, limit: int) -> str:
     if not isinstance(name, str) or not name:
         raise BinRefused(f"{what} must be given, as text", "name")
     if ("/" in name or "\\" in name or ".." in name or name.startswith(".")
-            or any(ord(c) < 32 or ord(c) == 127 for c in name) or len(name.encode()) > MAX_NAME):
+            or any(ord(c) < 32 or ord(c) == 127 for c in name) or len(name.encode()) > limit):
         raise BinRefused(f"{name!r} is not a plain name: {what} is a file name of config/rigs/, with no '/', "
-                         f"no '..', no leading dot, and at most {MAX_NAME} bytes", "name")
+                         f"no '..', no leading dot, and at most {limit} bytes", "name")
     return name
+
+
+def plain(name: object, what: str = "a rig's name") -> str:
+    """`name` if it is a plain file name, else `BinRefused("name")`."""
+    return _plain_text(name, what, MAX_NAME)
 
 
 def rigs_dir(root: Path) -> Path:
@@ -79,31 +102,71 @@ def rig_path(root: Path, name: str) -> Path:
     return rigs_dir(root) / f"{plain(name)}.yaml"
 
 
-def entries(root: Path, name: str) -> list[Path]:
-    """Rig `name`'s files in the bin, newest first (by stamp, then by the
-    number a second delete in the same second was given)."""
+def _no_link(path: Path, inside: Path, what: str) -> Path:
+    """`path` unless it is a symbolic link or resolves outside `inside`
+    (`BinRefused("link")`)."""
+    if path.is_symlink():
+        raise BinRefused(f"{what} is a symbolic link, which the bin never follows: move it by hand", "link")
+    try:
+        path.resolve().relative_to(inside.resolve())
+    except ValueError as exc:
+        raise BinRefused(f"{what} resolves outside {inside.name}/, which the bin never reaches", "link") from exc
+    return path
+
+
+def _bin_folder(root: Path) -> Path:
     folder = bin_dir(root)
+    if folder.is_symlink():
+        raise BinRefused(f"config/rigs/{BIN} is a symbolic link, which the bin never follows", "link")
+    return folder
+
+
+def parse_entry(entry: object) -> tuple[str, str, int]:
+    """`(rig, stamp, n)` of a bin entry's name, or `BinRefused`: `name` for
+    one that is not a plain file name or whose rig part is not a plain
+    name, `entry` for one not shaped as an entry."""
+    entry = _plain_text(entry, "a bin entry", MAX_ENTRY)
+    match = ENTRY.fullmatch(entry)
+    if not match:
+        raise BinRefused(f"{entry} is not a file of config/rigs/{BIN}/ as a delete names one", "entry")
+    return plain(match["rig"]), match["stamp"], int(match["n"] or 1)
+
+
+def listing(root: Path) -> list[dict]:
+    """Every entry in the bin, newest first: `{"rig", "entry", "stamp",
+    "n"}`. A link, or a name not shaped as an entry, is left out."""
+    folder = _bin_folder(root)
     if not folder.is_dir():
         return []
     found = []
     for path in folder.iterdir():
-        match = ENTRY.fullmatch(path.name)
-        if match and match["rig"] == name and path.is_file():
-            found.append((match["stamp"], int(match["n"] or 1), path))
-    return [path for _, _, path in sorted(found, reverse=True)]
+        try:
+            rig, stamp, n = parse_entry(path.name)
+        except BinRefused:
+            continue
+        if path.is_symlink() or not path.is_file():
+            continue
+        found.append({"rig": rig, "entry": path.name, "stamp": stamp, "n": n})
+    return sorted(found, key=lambda e: (e["stamp"], e["n"], e["entry"]), reverse=True)
+
+
+def entries(root: Path, name: str) -> list[Path]:
+    """Rig `name`'s files in the bin, newest first (by stamp, then by the
+    number a second delete in the same second was given)."""
+    return [bin_dir(root) / e["entry"] for e in listing(root) if e["rig"] == name]
 
 
 def entry_path(root: Path, name: str, entry: object) -> Path:
     """The bin file `entry` names, if it is rig `name`'s and is there."""
-    entry = plain(entry, "a bin entry")
-    match = ENTRY.fullmatch(entry)
-    if not match or match["rig"] != name:
+    rig, _, _ = parse_entry(entry)
+    if rig != name:
         raise BinRefused(f"{entry} is not one of {name}'s files in config/rigs/{BIN}/", "entry")
-    path = bin_dir(root) / entry
-    if not path.is_file():
+    folder = _bin_folder(root)
+    path = folder / entry
+    if not path.is_symlink() and not path.is_file():
         raise BinRefused(f"config/rigs/{BIN}/{entry} is not there any more, so {name} cannot be put back "
                          "from it", "gone")
-    return path
+    return _no_link(path, folder, f"config/rigs/{BIN}/{entry}")
 
 
 def _ignore_itself(folder: Path) -> None:
@@ -112,44 +175,54 @@ def _ignore_itself(folder: Path) -> None:
         ignore.write_text(IGNORE)
 
 
-def _claim(path: Path) -> bool:
-    """Create `path` empty; False if anything is there (a dangling link too)."""
+def _link(src: Path, dst: Path) -> bool:
+    """A hard link of `src` at `dst`, made atomically; False if anything is
+    at `dst` already (a dangling link too). Nothing is created otherwise."""
     try:
-        path.open("x").close()
+        os.link(src, dst, follow_symlinks=False)
     except FileExistsError:
         return False
     return True
 
 
 def move_to_bin(root: Path, name: str, now: datetime | None = None) -> Path:
-    """Move config/rigs/<name>.yaml into the bin; the bin file it became."""
+    """Move config/rigs/<name>.yaml into the bin; the bin file it became.
+    See the module's docstring for why it is a link and an unlink."""
+    rigs = rigs_dir(root)
     path = rig_path(root, name)
-    if not path.is_file():
+    if not path.is_symlink() and not path.is_file():
         raise BinRefused(f"there is no rig called {name} in config/rigs/", "gone")
-    folder = bin_dir(root)
+    _no_link(path, rigs, f"config/rigs/{name}.yaml")
+    folder = _bin_folder(root)
     folder.mkdir(exist_ok=True)
+    _no_link(folder, rigs, f"config/rigs/{BIN}")
     _ignore_itself(folder)
     stamp = (now or datetime.now(timezone.utc)).astimezone(timezone.utc).strftime(STAMP)
     n = 1
     while True:
         target = folder / f"{name}-{stamp}{'' if n == 1 else f'-{n}'}.yaml"
-        if _claim(target):
+        if _link(path, target):
             break
         n += 1
+    moved = os.stat(target, follow_symlinks=False)
     try:
-        os.replace(path, target)
-    except BaseException:
-        target.unlink(missing_ok=True)
-        raise
+        now_there = os.stat(path, follow_symlinks=False)
+    except FileNotFoundError:
+        now_there = None
+    if now_there is None or (now_there.st_dev, now_there.st_ino) != (moved.st_dev, moved.st_ino):
+        target.unlink()
+        raise BinRefused(f"config/rigs/{name}.yaml changed while it was being deleted (another program wrote "
+                         "or moved it), so it was left as it is: look at it, then delete it again", "changed")
+    os.unlink(path)
     return target
 
 
 def restore(root: Path, name: str, entry: str | None = None) -> tuple[Path, Path]:
     """Move rig `name`'s bin file back: `entry`, or the newest of its own.
     `(was, path)`: where it came from and the rig file it is again. Refused
-    (`taken`) if a file of that name is there again, which is never
-    replaced: the place is claimed by creating it, and only then moved
-    over, so a file made meanwhile is not lost."""
+    (`taken`) if anything is at config/rigs/<name>.yaml, which is never
+    replaced or removed: the bin file is linked there, which fails if the
+    name is taken, and only then unlinked from the bin."""
     path = rig_path(root, name)
     if entry is not None:
         was = entry_path(root, name, entry)
@@ -158,18 +231,15 @@ def restore(root: Path, name: str, entry: str | None = None) -> tuple[Path, Path
         if not found:
             raise BinRefused(f"there is nothing of {name}'s in config/rigs/{BIN}/ to put back", "gone")
         was = found[0]
-    if not _claim(path):
+    try:
+        made = _link(was, path)
+    except FileNotFoundError as exc:
+        raise BinRefused(f"config/rigs/{BIN}/{was.name} went while it was being put back", "gone") from exc
+    if not made:
         raise BinRefused(f"config/rigs/{name}.yaml is there again, so the deleted one is not put back over "
                          f"it: rename or delete that one first (the deleted one stays in config/rigs/{BIN}/"
                          f"{was.name})", "taken")
-    try:
-        os.replace(was, path)
-    except FileNotFoundError as exc:
-        path.unlink(missing_ok=True)
-        raise BinRefused(f"config/rigs/{BIN}/{was.name} went while it was being put back", "gone") from exc
-    except BaseException:
-        path.unlink(missing_ok=True)
-        raise
+    os.unlink(was)
     return was, path
 
 
@@ -209,4 +279,4 @@ def committed_copy(root: Path, path: Path, now_at: Path | None = None, timeout: 
         return {"committed": False, "same": None, "restore": None}
     hashed = git("hash-object", "--", str(now_at or path))
     return {"committed": True, "same": None if hashed is None else hashed == fields[2],
-            "restore": f"git checkout HEAD -- {rel}"}
+            "restore": f"git checkout HEAD -- {shlex.quote(rel)}"}
