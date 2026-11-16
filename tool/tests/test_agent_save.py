@@ -718,6 +718,29 @@ def test_an_add_a_remove_and_a_move_through_the_agent_are_saved_as_exactly_those
     assert status == 200 and read(root) == text, "saved twice, the same file"
 
 
+def test_an_add_and_a_remove_trimmed_out_of_the_log_by_later_changes_are_still_saved(root):
+    """Found live (16 Nov): four plugins removed, then hundreds of knob moves,
+    and the save refused the rig as lacking plugins the log no longer said
+    were removed. The log is trimmed for the page; the save's record of adds
+    and removes is not."""
+    agent, world, rig = save_agent(root)
+    agent.log_limit = 2
+    answers = calls(
+        agent,
+        ("POST", "/live/remove", {"json": {"processor": "octave"}}),
+        ("POST", "/live/add", {"json": {"track": "board", "uri": MDA_DELAY, "name": "slap"}}),
+        *[("POST", "/live/parameter", {"json": {"processor": "slap", "parameter": "FX Mix", "value": v}})
+          for v in (0.3, 0.4, 0.5)],
+        ("GET", "/live/log", {}),
+        ("POST", "/rig/save", {}),
+    )
+    assert [status for status, _ in answers] == [200] * 7, answers
+    assert {e["op"] for e in answers[5][1]["log"]} == {"parameter"}, "the add and the remove were trimmed"
+    chain = chain_of(read(root))
+    assert [e["name"] for e in chain] == ["overdrive", "delay", "slap"]
+    assert chain[2]["parameters"] == {"FX Mix": 0.5}
+
+
 def test_undo_past_a_save_of_an_add_takes_it_out_and_the_next_save_writes_that(root):
     agent, world, rig = save_agent(root)
     answers = calls(

@@ -1616,6 +1616,12 @@ class Agent:
         self._lock = asyncio.Lock()  # lifecycle: one command at a time
         self._live_lock = asyncio.Lock()  # live: one change at a time; waits, not 409. Reads do not take it
         self.log: list[dict[str, Any]] = []  # operations made through /live, newest last
+        # The log's adds, removes, their undos, and the saves and switches that
+        # bound them: what a save needs (`live_edits`), kept apart from the log
+        # so trimming the log for the page never loses a plugin taken out
+        # hours of knob moves ago. Cut at each save or switch, so it holds only
+        # the running rig's own chain edits since then.
+        self._chain_log: list[dict[str, Any]] = []
         self._trimmed = 0  # entries dropped from the front, so log[i] has index _trimmed + i
         # Sushi calls run here (see LIVE_WORKERS), not in the loop's executor.
         self._executor = concurrent.futures.ThreadPoolExecutor(
@@ -2155,6 +2161,10 @@ class Agent:
         entry = log_entry(
             op, args, previous, datetime.now(timezone.utc).isoformat(timespec="seconds"), **marks)
         self.log.append(entry)
+        if op in ("add", "remove", "rig", "save") or (op == "undo" and args.get("of") in ("add", "remove")):
+            self._chain_log.append(entry)
+            if op in ("rig", "save"):
+                del self._chain_log[:-1]
         before = len(self.log)
         trim_log(self.log, self.log_limit)
         self._trimmed += before - len(self.log)
@@ -4271,7 +4281,7 @@ class Agent:
                     # up, so the file is written with the plugins it now
                     # runs (#32): read here, under the live lock, so no edit
                     # lands between it and the capture.
-                    edits = live_edits(self.log, since=state.get("started_at"))
+                    edits = live_edits(self._chain_log, since=state.get("started_at"))
                     out, library, written = await self._save_write(
                         request, target, source, captured, model, parameters, edits)
                     created = out != source
