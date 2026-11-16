@@ -156,7 +156,12 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   derive is free across the whole rig (Sushi's names are one namespace,
   tracks included), its copy to stereo's name too for a mono plugin; else
   that name and a number, `mda_delay_2`, the first free, never past 64
-  characters or ending as the compiler's copies do. The drawer closes, the
+  characters or ending as the compiler's copies do. The names of this page's
+  adds still in flight count as taken, so the same plugin added twice at once
+  is named twice; a name another device took since the last read comes back
+  `409` with `code: "name_taken"`, and the page reads `/live` again and sends
+  the next free name, once, saying "try again" if that is taken too, never
+  the agent's "give a name", which is for a client that chooses none. The drawer closes, the
   place reads "Adding mda_delay…" (`aria-busy`, and it keeps the focus)
   until the agent has confirmed and the row is drawn in its place, and a
   refusal comes back to the place, in red, with the agent's reason and a
@@ -187,9 +192,23 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   a phone's width** the drawer is a sheet from the bottom of the screen, its
   full width and at most 88 % of its height, over the page and not a column
   beside the rack; its list scrolls inside it, and nothing is wider than the
-  screen. **Nothing moves under the hand**: the drawer is over the page, the
-  rest of which is inert while it is open (Escape, Close or a tap outside it
-  closes it, and the focus goes back to the place it was opened from); an add
+  screen. **The drawer is modal**: the rest of the page is inert while it is
+  open, Tab and Shift+Tab go round its own controls, Escape closes it
+  wherever the focus is (as do Close and a tap outside it), and the focus is
+  put back in it if it is lost (an entry with the focus turned off, say). It
+  goes into the search on opening, or Close on a touch screen, where a
+  field brings up the keyboard over the list. On closing, the focus goes back
+  to the place it was opened from, found by its key, or if that has gone the
+  place before it, the start, then the open tab; after a remove, to the row
+  that took the removed one's place, or the place there. **It is for the rig
+  it was opened on** (`rigIdentity`, with #135's positive signs): when the
+  page comes to show another rig or a restart of this one, it says so ("The
+  rig changed since the library was opened…") and adds nothing until it is
+  opened again; an add or a remove in flight across that change is said as
+  the rig it was sent to, in the boxes at the top. A Remove armed, an
+  "Adding…" or a refusal said on a place, belong to the rig shown too, and go
+  when it changes or the chain is drawn again (a tab chosen); every "Locked:"
+  line said of a refused edit goes when the page is unlocked. **Nothing moves under the hand**: the drawer is over the page; an add
   or a remove from another device rebuilds nothing in it (the list, its
   scroll, the search and its focus stay), and if the plugin the place
   follows is removed, it says so and adds nothing. A drag on a knob keeps

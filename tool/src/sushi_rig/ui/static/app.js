@@ -107,6 +107,7 @@ const state = {
   // The Library drawer and the chain edits (#130):
   drawer: null,              // the drawer open: {track, slot (R.addSlots), opener, query}; null when closed
   drawerParts: null,         // what the open drawer was built with: see drawerRegion
+  editsRun: null,            // the rig shown (`shownRun`) the three below belong to: see forgetOtherRuns
   adding: new Map(),         // "track\u0000slot" -> {shown, done?, at}: an add from that slot in flight, or confirmed and not drawn yet
   addRefused: new Map(),     // "track\u0000slot" -> the agent's reason an add from there was refused, shown in place
   removing: new Map(),       // unit -> {armed, timer} | {pending} | {reason}: its Remove, in place in its row
@@ -155,7 +156,7 @@ const sender = new R.Sender((call) => request("POST", call.path, call.json), {
 });
 
 function fail(title, result, action = null) {
-  state.failures.unshift({ title, reason: result.reason, code: result.code || null, action, at: new Date() });
+  state.failures.unshift({ title, reason: result.reason, code: result.code || null, action, at: new Date(), lock: !!result.lock });
   state.failures.length = Math.min(state.failures.length, 4);
 }
 
@@ -863,6 +864,7 @@ function lockButton() {
       } else {
         clearTimeout(state.armTimer);
         state.armed = false; state.locked = false; writeLocked(false);
+        forgetLockRefusals();
       }
       render();
     },
@@ -922,7 +924,7 @@ function problemsRegion(el) {
 
 async function move(unit, direction) {
   const refusal = R.lockRefusal(state.locked, "move");
-  if (refusal) { fail(`Not moved: ${unit.name}`, { reason: refusal }); render(); return; }
+  if (refusal) { fail(`Not moved: ${unit.name}`, { reason: refusal, lock: true }); render(); return; }
   const answer = await request("POST", "/live/move", { processor: unit.name, direction });
   if (!answer.ok) fail(`Not moved: ${unit.name} ${direction}`, answer);
   render();
@@ -1527,6 +1529,8 @@ function removeParts(slot, unit) {
 
 // The Remove's state, in place: offered, armed (the confirm), in flight, or
 // refused with the agent's reason. Locked, it says so and refuses in place.
+// In flight its button keeps the focus the confirm had (`aria-disabled`,
+// not `disabled`, which would drop it to the page), until its row goes.
 function drawRemove(slot, name) {
   const parts = slot.remove;
   if (!parts || !parts.ask.isConnected) return;
@@ -1536,7 +1540,7 @@ function drawRemove(slot, name) {
   const label = pending ? `Removing ${name}…` : state.locked ? `Remove ${name}… (locked)` : `Remove ${name}…`;
   if (parts.ask.textContent !== label) parts.ask.textContent = label;
   parts.ask.title = state.locked ? R.lockRefusal(true, "remove") : "";
-  parts.ask.disabled = pending;
+  parts.ask.setAttribute("aria-disabled", String(pending));
   parts.ask.hidden = armed;
   parts.yes.hidden = parts.keep.hidden = !armed;
   const said = now.reason || (armed ? `Take ${name} out of the chain? Undo puts it back with its settings.` : "");
@@ -1546,24 +1550,29 @@ function drawRemove(slot, name) {
   parts.said.setAttribute("role", now.reason ? "alert" : "status");
 }
 
+function removeFocus(name, which) {
+  const slot = state.rackParts && state.rackParts.slots.get(name);
+  if (slot && slot.remove) slot.remove[which].focus({ preventScroll: true });
+}
+
 function askRemove(name) {
-  const refusal = R.lockRefusal(state.locked, "remove");
   const was = state.removing.get(name);
+  if (was && was.pending) return;
   if (was && was.timer) clearTimeout(was.timer);
+  const refusal = R.lockRefusal(state.locked, "remove");
   if (refusal) {
-    state.removing.set(name, { reason: refusal });
+    state.removing.set(name, { reason: refusal, lock: true });
     render();
     return;
   }
   // Left alone, the confirm is forgotten, as Stop's second tap is.
   const timer = setTimeout(() => {
     const now = state.removing.get(name);
-    if (now && now.armed) { state.removing.delete(name); render(); }
+    if (now && now.armed && now.timer === timer) { state.removing.delete(name); render(); }
   }, CONFIRM_MS);
   state.removing.set(name, { armed: true, timer });
   render();
-  const slot = state.rackParts && state.rackParts.slots.get(name);
-  if (slot && slot.remove) slot.remove.yes.focus({ preventScroll: true });
+  removeFocus(name, "yes");
 }
 
 function keepUnit(name) {
@@ -1571,25 +1580,70 @@ function keepUnit(name) {
   if (was && was.timer) clearTimeout(was.timer);
   state.removing.delete(name);
   render();
-  const slot = state.rackParts && state.rackParts.slots.get(name);
-  if (slot && slot.remove) slot.remove.ask.focus({ preventScroll: true });
+  removeFocus(name, "ask");
 }
 
+// The confirm, tapped: removed through the agent. Its answer is about the
+// rig it was sent to: if the page has come to show another since (a switch,
+// a restart, from anywhere), it is said as that rig's, in the boxes at the
+// top, and nothing on this rig's rows is touched (review of #130).
 async function removeUnit(name) {
   const was = state.removing.get(name);
-  if (was && was.timer) clearTimeout(was.timer);
+  if (!was || !was.armed) return;  // only an armed confirm of this rig's (see forgetOtherRuns)
+  clearTimeout(was.timer);
   const refusal = R.lockRefusal(state.locked, "remove");
-  if (refusal) { state.removing.set(name, { reason: refusal }); render(); return; }
+  if (refusal) { state.removing.set(name, { reason: refusal, lock: true }); render(); return; }
+  const run = shownRun(), rig = shownRigName();
   state.removing.set(name, { pending: true });
   render();
+  removeFocus(name, "ask");
   const call = R.removeCall(name);
   const answer = await request("POST", call.path, call.json);
-  // Gone: its row goes when the next /live shows the chain without it, and
-  // says "Removing…" until then (forgotten after a few seconds whatever).
-  if (answer.ok) state.removing.set(name, { pending: true, done: true, at: Date.now() });
-  else state.removing.set(name, { reason: `Not removed: ${answer.reason}` });
+  if (shownRun() !== run) {
+    if (answer.ok) state.notice = `Removed ${name} from ${rig}, which the page no longer shows.`;
+    else fail(`Not removed from ${rig}: ${name}`, answer);
+  } else if (answer.ok) {
+    // Gone: its row goes when the next /live shows the chain without it,
+    // and says "Removing…" until then (forgotten after a few seconds).
+    state.removing.set(name, { pending: true, done: true, at: Date.now() });
+  } else {
+    state.removing.set(name, { reason: `Not removed: ${answer.reason}` });
+  }
   render();
   kick();
+}
+
+// The rig the page shows (`rigIdentity`), as a key, and its name: what a
+// confirm armed, a place's "Adding…" or refusal, and an open drawer belong
+// to. Null while /health has not answered: no answer is no sign of another.
+function shownRun() {
+  return state.health && state.health.ok ? JSON.stringify(rigIdentity(state.health)) : null;
+}
+function shownRigName() {
+  const rig = state.health && state.health.ok ? state.health.body.rig || {} : {};
+  return rig.config_name || "the rig";
+}
+
+// The page has come to show another rig, or the same rig started again:
+// everything of the chain edits kept by a unit's or a place's name was the
+// rig before's, and a confirm left armed would remove the new rig's plugin
+// of that name with one tap (review of #130). So all of it goes. An add or
+// a remove still in flight says its answer as the rig it was sent to.
+function forgetOtherRuns() {
+  const run = shownRun();
+  if (run === null || run === state.editsRun) return;
+  state.editsRun = run;
+  for (const held of state.removing.values()) if (held.timer) clearTimeout(held.timer);
+  state.removing.clear();
+  state.adding.clear();
+  state.addRefused.clear();
+}
+
+// The page unlocked: every "Locked:" line said for a refused structural edit
+// goes, since the lock it was about is off (review of #130).
+function forgetLockRefusals() {
+  for (const [name, held] of [...state.removing]) if (held.lock) state.removing.delete(name);
+  state.failures = state.failures.filter((f) => !f.lock);
 }
 
 // One unit's slot, patched on its own key: what the plugin is and whether
@@ -1859,6 +1913,16 @@ function chainRegion(regions, model, status, open) {
     parts.slots = new Map();
     parts.chain = parts.hint = null;
     parts.start = null;
+    parts.order = [];
+    // The rows they were drawn on are gone: a confirm left armed or a line
+    // said on them goes too, and only what is in flight is kept (review of
+    // #130: they outlived the chain they were said of).
+    for (const [name, held] of [...state.removing]) {
+      if (held.pending) continue;
+      if (held.timer) clearTimeout(held.timer);
+      state.removing.delete(name);
+    }
+    state.addRefused.clear();
     if (waiting) return h("p", { class: "empty" }, "Reading the rig…");
     if (!track) {
       // With no chain to add to, the library can still be looked through
@@ -1868,7 +1932,7 @@ function chainRegion(regions, model, status, open) {
           : status.tone === "off" ? "No rig to show: nothing is running in Sushi. Choose one under RIGS to start it."
             : "No rig to show: nothing is running in Sushi."),
       h("p", { class: "browse" }, h("button", { class: "add browse-library", "data-focus": "browse",
-        onclick: (event) => openDrawer(null, null, event.currentTarget) }, "Browse the library…"))];
+        onclick: () => openDrawer(null, null) }, "Browse the library…"))];
     }
     parts.hint = h("span", { class: "hint" });
     parts.chain = h("div", { class: "chain" });
@@ -1887,8 +1951,13 @@ function chainRegion(regions, model, status, open) {
   const hint = count ? `${count} plugin${count === 1 ? "" : "s"} · open a unit for all its controls` : "no plugins";
   if (parts.hint.textContent !== hint) parts.hint.textContent = hint;
   const names = new Set(track.units.map((u) => u.name));
+  // A row taken away with the focus in it (its "Removing…", most often): the
+  // focus goes to the row that takes its place, or the place to add there,
+  // not to the page (review of #130).
+  let focusAt = null;
   for (const [name, slot] of [...parts.slots]) {
     if (names.has(name)) continue;
+    if (slot.place.contains(document.activeElement)) focusAt = Math.max(0, (parts.order || []).indexOf(name));
     parts.slots.delete(name);
     state.unitUpdaters.delete(name);
     state.peeked.delete(name);
@@ -1918,6 +1987,13 @@ function chainRegion(regions, model, status, open) {
     drawRemove(slot, unit.name);
     drawAddSlot(slot.add, track, slots[index + 1]);
   });
+  parts.order = track.units.map((u) => u.name);
+  if (focusAt !== null) {
+    const units = track.units;
+    const to = units[focusAt] ? parts.slots.get(units[focusAt].name).name
+      : focusAt === 0 || !units[focusAt - 1] ? parts.start.button : parts.slots.get(units[focusAt - 1].name).add.button;
+    if (to) to.focus({ preventScroll: true });
+  }
 }
 
 // ---------------------------------------------------------------- the Library drawer (#130)
@@ -1931,7 +2007,7 @@ function addSlotParts(track, slot) {
   parts.button = h("button", { class: "add", "data-focus": "add", "aria-haspopup": "dialog",
     onclick: (event) => {
       if (event.currentTarget.getAttribute("aria-disabled") === "true") return;
-      openDrawer(track, parts.slot, event.currentTarget);
+      openDrawer(track, parts.slot);
     } });
   parts.said = h("span", { class: "add-said", hidden: true });
   parts.dismiss = h("button", { class: "dismiss small", "aria-label": "Dismiss", hidden: true,
@@ -1972,50 +2048,114 @@ function drawAddSlot(parts, track, slot) {
 // The drawer opened for a place (`slot` on `track`), or with neither, to
 // look through the library with nothing to add to. The rest of the page is
 // inert while it is open, so a tap or a key cannot reach the rack under it.
-function openDrawer(track, slot, opener) {
-  state.drawer = { track, slot, opener, query: "" };
+// It is for the rig shown when it was opened (`run`): which rig is shown
+// needs a sign, and a drawer left open across a switch must not add to the
+// rig switched to (review of #130). Where it was opened from is kept by
+// what it is (`back`), not by the element, which may be gone when it closes.
+// The focus goes into it (`drawerRegion`, `drawerHome`).
+function openDrawer(track, slot) {
+  state.drawer = { track, slot, query: "", run: shownRun(),
+    back: slot ? { track, key: slot.key, index: slot.index } : { browse: true } };
   inBackground("names", refreshNames);
   render();
-  // Into the drawer: its search, where there is a keyboard to type with and
-  // a pointer to aim; on a touch screen the sheet itself, since focusing a
-  // field there brings up a keyboard over half the list (not tried on a
-  // real phone: the tests' Chromium has a mouse).
-  const el = state.regions && state.regions.drawer;
-  const typing = matchMedia("(hover: hover) and (pointer: fine)").matches;
-  const into = el && (typing ? el.querySelector("input[type=search]") : el.querySelector(".drawer-sheet"));
-  if (into) into.focus({ preventScroll: true });
 }
 
 function closeDrawer() {
   if (!state.drawer) return;
-  const { opener } = state.drawer;
+  const { back } = state.drawer;
   state.drawer = null;
   render();
-  if (opener && opener.isConnected) opener.focus({ preventScroll: true });
+  focusBack(back);
+}
+
+// The focus back where the drawer was opened from: that place on the chain,
+// found by its key; if it has gone (the plugin it followed was removed, from
+// anywhere), the place before where it was, then the start, then the open
+// tab; from "Browse the library…", that button, or the chain's first place
+// if a rig has come up meanwhile.
+function focusBack(back) {
+  const rack = state.regions && state.regions.rack;
+  if (!rack || !back) return;
+  const places = [...rack.querySelectorAll(".add-slot")];
+  const button = (place) => (place ? place.querySelector("button.add") : null);
+  let to = null;
+  if (back.browse) to = rack.querySelector("button.browse-library") || button(places[0]);
+  else if (rack.querySelector(`#t-${CSS.escape(back.track)}`) && places.length) {
+    to = button(places.find((p) => p.dataset.slot === back.key))
+      || button(places[Math.max(0, Math.min(back.index - 1, places.length - 1))]);
+  }
+  if (!to && state.regions.tabs) to = state.regions.tabs.querySelector('[role="tab"][aria-selected="true"]');
+  if (to) to.focus({ preventScroll: true });
+}
+
+// The control the focus goes to in the drawer: its search where there is a
+// keyboard to type with and a pointer to aim; on a touch screen its Close,
+// since focusing a field there brings up a keyboard over half the list (not
+// tried on a real phone: the tests' Chromium has a mouse).
+function drawerHome(parts) {
+  return matchMedia("(hover: hover) and (pointer: fine)").matches ? parts.search : parts.close;
+}
+
+// The drawer is modal (review of #130): Escape closes it wherever the focus
+// is, Tab and Shift+Tab go round its own controls, and the rest of the page
+// is inert meanwhile.
+document.addEventListener("keydown", (event) => {
+  if (!state.drawer || !state.drawerParts) return;
+  if (event.key === "Escape") { event.preventDefault(); closeDrawer(); return; }
+  if (event.key !== "Tab") return;
+  const sheet = state.drawerParts.sheet;
+  const stops = [...sheet.querySelectorAll("button, input")].filter((e) => !e.disabled && e.offsetParent !== null);
+  if (!stops.length) return;
+  const first = stops[0], last = stops[stops.length - 1], at = document.activeElement;
+  const inside = sheet.contains(at);
+  if (event.shiftKey && (at === first || !inside)) { event.preventDefault(); last.focus(); }
+  else if (!event.shiftKey && (at === last || !inside)) { event.preventDefault(); first.focus(); }
+});
+
+// The names adds from this page have taken that /live may not show yet: in
+// flight, or confirmed and not drawn (review of #130: a second add of the
+// same plugin went with no name, and the agent refused the name it chose).
+function namesInFlight(except = null) {
+  return [...state.adding].filter(([key]) => key !== except).map(([, a]) => a.done || a.shown);
 }
 
 // An entry tapped: added at the drawer's place, through the agent. The
 // drawer closes, the place says "Adding…" until the agent answers and the
 // row is drawn there, and a refusal comes back to the place with the
-// agent's reason. The name is one the agent will take (`R.addName`).
+// agent's reason. The name is one the agent will take (`R.addName`), with
+// this page's adds in flight counted; a name another device took since the
+// last read (409 `name_taken`) is chosen again, once, from /live read
+// again. The answer is about the rig it was sent to: if the page has come
+// to show another since, it is said as that rig's, in the boxes at the top.
 async function addFrom(entry) {
   const drawer = state.drawer;
   const live = liveBody();
-  if (!drawer || !drawer.slot || !live) return;
+  const run = shownRun(), rig = shownRigName();
+  if (!drawer || !drawer.slot || !live || drawer.run !== run) return;
   const model = R.rackModel(live, state.plugins, state.profiles);
   const track = model.tracks.find((t) => t.name === drawer.track) || null;
   const slot = track ? R.addSlots(track).find((x) => x.key === drawer.slot.key) || drawer.slot : drawer.slot;
   const blocked = R.addBlocked({ health: state.health, track, slot, locked: state.locked });
   if (blocked || !R.libraryEntry(entry).addable) return;  // drawn as off, with why: nothing to send
   const key = `${drawer.track}\u0000${slot.key}`;
-  const { name, shown } = R.addName(entry, live);
-  state.adding.set(key, { shown, at: Date.now() });
+  let { name, shown } = R.addName(entry, live, namesInFlight(key));
+  const at = Date.now();
+  state.adding.set(key, { shown, at });
   state.addRefused.delete(key);
   closeDrawer();
-  const call = R.addCall(drawer.track, slot, entry, name);
-  const answer = await request("POST", call.path, call.json);
+  const send = (n) => { const call = R.addCall(drawer.track, slot, entry, n); return request("POST", call.path, call.json); };
+  let answer = await send(name);
+  if (!answer.ok && answer.code === "name_taken" && shownRun() === run) {
+    const fresh = await request("GET", "/live");
+    ({ name, shown } = R.addName(entry, fresh.ok ? fresh.body : liveBody(), [...namesInFlight(key), shown]));
+    if (state.adding.has(key)) { state.adding.set(key, { shown, at }); render(); }
+    answer = await send(name || shown);
+  }
   const outcome = R.addOutcome(shown, answer);
-  if (outcome.ok) {
+  if (shownRun() !== run) {
+    if (outcome.ok) state.notice = `Added ${outcome.name} to ${drawer.track} on ${rig}, which the page no longer shows.`;
+    else fail(`Not added to ${rig}: ${shown}`, { reason: outcome.reason });
+  } else if (outcome.ok) {
     state.adding.set(key, { shown, done: outcome.name, at: Date.now() });
     knowAdded(drawer.track, entry, answer.body.args || {});
   } else {
@@ -2053,7 +2193,10 @@ function drawerRegion(el, model) {
   el.hidden = !open;
   if (!open) { patch(el, "closed", () => []); return; }
   const d = state.drawer;
-  const track = model && d.track ? model.tracks.find((t) => t.name === d.track) || null : null;
+  // Opened for another rig than the one shown now: nothing is added to this
+  // one from it, and it says so until it is opened again.
+  const moved = d.run !== null && shownRun() !== null && shownRun() !== d.run;
+  const track = model && d.track && !moved ? model.tracks.find((t) => t.name === d.track) || null : null;
   const slot = d.slot ? (track ? R.addSlots(track).find((x) => x.key === d.slot.key) : null) || d.slot : null;
   if (slot) d.slot = slot;
   const where = !d.slot ? "Look through what can be added." : d.slot.first ? `Add at the start of ${d.track}` : `Add after ${d.slot.after} on ${d.track}`;
@@ -2063,15 +2206,16 @@ function drawerRegion(el, model) {
       "aria-label": "Search the library", autocomplete: "off", spellcheck: "false",
       oninput: (event) => { d.query = event.target.value; filterDrawer(parts); } });
     parts.search.value = d.query;
-    const sheet = h("div", { class: "drawer-sheet", role: "dialog", "aria-modal": "true", "aria-labelledby": "drawer-title", tabindex: "-1",
-      onkeydown: (event) => { if (event.key === "Escape") { event.preventDefault(); closeDrawer(); } } },
+    parts.close = h("button", { class: "drawer-close", "aria-label": "Close the library", onclick: closeDrawer }, "Close");
+    const sheet = h("div", { class: "drawer-sheet", role: "dialog", "aria-modal": "true", "aria-labelledby": "drawer-title", tabindex: "-1" },
     h("div", { class: "drawer-head" },
       h("div", { class: "drawer-title" },
         h("h2", { id: "drawer-title" }, "LIBRARY"),
-        h("button", { class: "drawer-close", "aria-label": "Close the library", onclick: closeDrawer }, "Close")),
+        parts.close),
       h("p", { class: "drawer-where" }, where),
       parts.search, parts.why),
     parts.list);
+    parts.sheet = sheet;
     state.drawerParts = parts;
     return [h("div", { class: "drawer-back", "aria-hidden": "true", onclick: closeDrawer }), sheet];
   });
@@ -2103,20 +2247,31 @@ function drawerRegion(el, model) {
       return section;
     }), h("p", { class: "drawer-none lib-nothing", hidden: true }, "Nothing in the library matches that.")];
   });
-  const blocked = R.addBlocked({ health: state.health, track, slot: d.slot, locked: state.locked });
+  const blocked = moved
+    ? `The rig changed since the library was opened (it is now ${shownRigName()}): close this, and open it again from the chain.`
+    : R.addBlocked({ health: state.health, track, slot: d.slot, locked: state.locked });
   // Opened to look through, with a rig up: where adding is done from.
-  const why = !d.slot && R.readsLive(state.health) ? "To add a plugin, use an “Add after…” in a chain." : blocked;
+  const why = !d.slot && !moved && R.readsLive(state.health) ? "To add a plugin, use an “Add after…” in a chain." : blocked;
   if (parts.why.textContent !== (why || "")) parts.why.textContent = why || "";
   parts.why.hidden = !why;
+  const home = drawerHome(parts);
+  const flying = namesInFlight();
   for (const item of parts.entries || []) {
     const warning = !blocked && item.view.addable && track && d.slot
-      ? R.addWarning(track, d.slot, item.entry, R.addName(item.entry, liveBody()).shown) : null;
+      ? R.addWarning(track, d.slot, item.entry, R.addName(item.entry, liveBody(), flying).shown) : null;
     const note = item.view.why ? `Cannot be added: ${item.view.why}` : warning ? warning.text : "";
     if (item.note.textContent !== note) item.note.textContent = note;
     item.note.classList.toggle("warn", !!warning);
-    item.button.disabled = !!blocked || !item.view.addable || !d.slot;
+    const off = !!blocked || !item.view.addable || !d.slot;
+    // An entry turned off with the focus on it would drop the focus to the
+    // page, where no key reaches the drawer: it goes home first.
+    if (off && !item.button.disabled && document.activeElement === item.button) home.focus({ preventScroll: true });
+    item.button.disabled = off;
   }
   filterDrawer(parts);
+  // However the focus left the drawer (opened just now, a control under it
+  // hidden or gone), it comes back: the rest of the page is inert.
+  if (!parts.sheet.contains(document.activeElement)) home.focus({ preventScroll: true });
 }
 
 // The search, applied in place: an entry that does not match is hidden, a
@@ -3204,6 +3359,7 @@ function render() {
         inBackground("rig channels", () => refreshAllRigChannels(true));
       }
     }
+    forgetOtherRuns();
     const live = liveBody();
     const model = live ? R.rackModel(live, state.plugins, state.profiles) : null;
     const rig = state.health && state.health.ok ? state.health.body.rig : null;

@@ -463,6 +463,7 @@ def read_bundle(bundle: Path) -> tuple[dict[str, dict[str, Any]], list[str]]:
     manifest = _read_turtle(bundle / "manifest.ttl", problems, "f0.")
     declared = plugins_described(manifest)
     data: list[Path] = []
+    files: dict[str, list[Path | None]] = {}  # each plugin's data files; None for one not followed
     for s, p, o in manifest:
         if p != RDFS_SEE_ALSO or str(s) not in declared or not isinstance(o, IRI):
             continue
@@ -470,14 +471,26 @@ def read_bundle(bundle: Path) -> tuple[dict[str, dict[str, Any]], list[str]]:
         path = Path(unquote(parsed.path)) if parsed.scheme == "file" else None
         if path is None or root not in path.resolve().parents:
             problems.append(f"{name}: {o} is outside the bundle, so it is not read")
+            files.setdefault(str(s), []).append(None)
             continue
+        files.setdefault(str(s), []).append(path)
         if path not in data:
             data.append(path)
     triples = list(manifest)
+    unread: set[Path] = set()
     for number, path in enumerate(data, 1):
+        said = len(problems)
         triples += _read_turtle(path, problems, f"f{number}.")
+        if len(problems) > said:
+            unread.add(path)
     described = plugins_described(triples)
-    return {uri: {**described[uri], "bundle": name} for uri in declared}, problems
+    found = {uri: {**described[uri], "bundle": name} for uri in declared}
+    # A plugin whose own data was not all read has classes not known (None),
+    # which is not the same as classes it does not declare ([]).
+    for uri, paths in files.items():
+        if any(path is None or path in unread for path in paths):
+            found[uri]["classes"] = None
+    return found, problems
 
 
 def scan_plugins(plugins_dir: Path) -> tuple[dict[str, dict[str, Any]], list[str]]:

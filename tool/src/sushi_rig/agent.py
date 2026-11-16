@@ -1048,7 +1048,14 @@ def sushi_unreachable(exc: BaseException) -> bool:
 class Conflict(AgentError):
     """A request the running rig cannot take as it is now (409): a name it
     already has, a track it lacks, a send that must stay where it is. Unlike a
-    bad request it may succeed later, against a different rig."""
+    bad request it may succeed later, against a different rig. `code`, where
+    given, goes in the answer beside the reason, for a client to act on:
+    "name_taken" for an add whose name (or its copy's) the rig already has,
+    which a client choosing names can choose again (#130)."""
+
+    def __init__(self, reason: str, code: str | None = None):
+        super().__init__(reason)
+        self.code = code
 
 
 class Unconfirmed(AgentError):
@@ -1200,13 +1207,13 @@ def check_add(reading: dict[str, Any], request: AddRequest) -> Addition:
     if track not in chains:
         raise Conflict(f"the running rig has no track {track!r}: it has {sorted(chains)}")
     if name in chains:
-        raise Conflict(f"{name!r} is a track of the running rig; give the processor another name")
+        raise Conflict(f"{name!r} is a track of the running rig; give the processor another name", "name_taken")
     holder = _track_of(chains, name)
     if holder is not None:
         what = "give a 'name'" if not request.named else "give another name"
-        raise Conflict(f"{name!r} is already on the rig, on track {holder!r}: {what}")
+        raise Conflict(f"{name!r} is already on the rig, on track {holder!r}: {what}", "name_taken")
     if request.copy is not None and (request.copy in chains or _track_of(chains, request.copy) is not None):
-        raise Conflict(f"{request.copy!r}, the name of {name!r}'s copy to stereo, is already on the rig")
+        raise Conflict(f"{request.copy!r}, the name of {name!r}'s copy to stereo, is already on the rig", "name_taken")
     chain = list(chains[track])
     sends = [index for index, held in enumerate(chain) if is_send(track, held, uids.get(held))]
     if after is not None:
@@ -2536,12 +2543,14 @@ class Agent:
             try:
                 addition = await self._apply_add(request, controller, lambda reading: check_add(reading, asked))
             except Conflict as exc:
-                raise web.HTTPConflict(reason=str(exc))
+                raise _conflict(str(exc), exc.code) if exc.code else web.HTTPConflict(reason=str(exc))
             defaults, note = await self._read_defaults(request, controller, addition)
+            # `first` only where it was asked, so the log says what was done
+            # and every other add's entry keeps its shape.
             entry = self._record("add", {
                 "track": addition.track, "uri": addition.uri, "name": addition.name,
-                "after": addition.after, "copy": addition.copy, "chain": list(addition.expected),
-                "defaults": defaults,
+                "after": addition.after, **({"first": True} if asked.first else {}), "copy": addition.copy,
+                "chain": list(addition.expected), "defaults": defaults,
             }, list(addition.chain))
         answer = {
             "ok": True, **entry, "chain": addition.expected,

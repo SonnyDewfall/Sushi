@@ -4237,3 +4237,47 @@ headless Chromium, "a phone" a 390 px viewport, and the drawer's focus on a
 touch screen, which goes to the sheet and not the search, is untried); the
 lilv class comparison (no python3-lilv here); the slow tests and the
 container job. *(2026-11-16)*
+
+**The Library drawer, answering review and the container (PR #149).** Six
+findings in the page, each reproduced by a test that fails on 6ae3e79's page
+and passes now (`test_ui_library.py`, "Found by review"). (1) The same plugin
+added twice at once, from one page or two, was refused the second time with
+the agent's "give a 'name'", which the page cannot do: names of this page's
+adds in flight now count as taken, and a name taken since the last read
+comes back `409 name_taken` (a code the agent's add now gives), on which the
+page reads `/live` again and sends the next free name, once; a second clash
+says to try again. (2) The drawer was not modal: Tab left it for the page's
+body, and an entry turned off under the focus dropped it there, after which
+Escape did nothing. Escape now closes it from anywhere, Tab goes round it, and
+focus lost is put back in it. (3) Closing it, or confirming a remove, left
+the focus on the body when what it came from was gone: the drawer goes back
+to its place by key (or the place before, the start, the open tab), a remove
+to the row that took its place. (4) An armed Remove, "Adding…" and a place's
+refusal outlived a switch to a rig with the same names, where the confirm was
+one tap from removing the new rig's plugin: they belong to the rig shown
+(`rigIdentity`) and go when it changes or the chain is drawn again. (5) A
+drawer left open across a switch would add to the rig switched to: it is for
+the rig it was opened on, says when that changed, and adds nothing until it
+is opened again; an add or remove in flight across it is said as the rig it
+was sent to (the fake's live switch does not wait for an add held in Sushi,
+so this happens). (6) A "Locked:" line stayed after unlocking: every lock
+refusal goes on unlock. Also: an add made `first` says so in the log; a
+plugin whose data file did not parse has classes `None` (not read), not `[]`;
+the fake's ids only ever go up. **The container's failure** of
+`test_the_classes_read_here_hold_the_one_lilv_gives_every_bundle_in_plugins`
+was the test, not the reading: lilv's `get_class` resolves a class against
+the LV2 specification's class tree (`core.lv2`, from `lv2-dev`), which is not
+in plugins/, and with plugins/ alone on LV2_PATH it gives lv2:Plugin for
+everything. Shown here with lv2info: the seven captured bundles alone give
+"Plugin" for each, and with `core.lv2` beside them their own classes; over
+this machine's /usr/lib/lv2 (the specification included), lv2info's class for
+each of the 49 manifest plugins installed is the one read here. It is now two
+tests: the classes read here equal the rdf:types lilv holds for each plugin
+(no specification needed), and lilv's `get_class`, with a copy of `core.lv2`
+beside plugins/ and nothing else from the system's folders, is one of them.
+Neither has run here (no python3-lilv); the container is their test. The
+fast suite: 4494 passed, 43 skipped. Under load, two loops side by side of 10
+runs each of `test_ui_library.py` and `test_ui_tabs.py` (101 tests a run):
+20 of 20 passed. **Not run here:** the rig, a phone, a
+touch screen, a pedal, the lilv tests, the slow tests and the container job.
+*(2026-11-16)*

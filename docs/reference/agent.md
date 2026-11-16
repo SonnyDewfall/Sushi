@@ -241,10 +241,12 @@ first; both together are `400`. The send is known by its uid in Sushi's session 
 name, and `/live/move` now refuses (`400`) to move a send or the return, or a
 pedal past one. A bad request is `400` with Sushi untouched; a name the rig already
 has, a track it lacks, an `after` not on that track, or a remove of a send,
-the master's return, a track or something not there, is `409`. Both edits are
+the master's return, a track or something not there, is `409`; a name taken
+(the plugin's, its copy's, or a track's) carries `code: "name_taken"`, for a
+client that chooses names to choose again. Both edits are
 confirmed by reading the chain back, and one that does not read back as asked
 is `502` and not logged. The log entry for an add has the chain before
-(`previous`) and in `args` the name used, its `copy` to stereo (or null), the
+(`previous`) and in `args` the name used, `first: true` for one put first, its `copy` to stereo (or null), the
 `chain` it left, and `defaults`: the plugin's parameter values read straight
 after the add, which are what a save compares with. Defaults Sushi will not
 give, or do not give in time, leave the add standing and logged, `null`,

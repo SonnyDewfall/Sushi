@@ -1415,3 +1415,22 @@ def test_an_add_first_through_the_route_is_logged_and_undone_like_any_add():
     assert fake.chains["guitar"] == ["comp", "drive", "guitar_send"]
     status, answer = call(agent, "POST", "/live/add", json={"track": "guitar", "uri": DELAY, "first": 2})
     assert status == 400 and "'first'" in answer["reason"]
+
+
+def test_a_name_the_rig_has_is_a_conflict_with_a_code_a_client_can_act_on():
+    """#130: the page names a plugin itself when the agent's own name is
+    taken; a clash it could not see coming (another device's add since its
+    last read) says so by `code`, so it can choose again without reading prose."""
+    agent, fake = edit_agent()
+    status, body = call(agent, "POST", "/live/add", json={"track": "guitar", "uri": GXTS9, "name": "drive"})
+    assert (status, body.get("code")) == (409, "name_taken")
+    status, body = call(agent, "POST", "/live/add", json={"track": "guitar", "uri": DELAY, "after": "nope"})
+    assert status == 409 and "code" not in body, "a place not on the track is not a name to choose again"
+
+
+def test_an_add_made_first_says_so_in_the_log():
+    agent, fake = edit_agent()
+    status, body = call(agent, "POST", "/live/add", json={"track": "guitar", "uri": DELAY, "name": "ts", "first": True})
+    assert status == 200 and body["args"]["first"] is True and body["args"]["after"] is None
+    status, body = call(agent, "POST", "/live/add", json={"track": "guitar", "uri": DELAY, "name": "ts2"})
+    assert "first" not in body["args"]

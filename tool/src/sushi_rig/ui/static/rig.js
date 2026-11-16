@@ -795,10 +795,11 @@ export function deriveName(pluginName) {
 // refuses (409) a name already on the rig: Sushi's names are one namespace,
 // tracks included, and a mono plugin's copy (`<name>_to_stereo`) needs its
 // own. So the derived name when it is free, and sent as null; else that name
-// and a number (`mda_delay_2`), the first free. `live` is GET /live's body.
+// and a number (`mda_delay_2`), the first free. `live` is GET /live's body;
+// `also`, names taken that it may not show yet (this page's adds in flight).
 // `shown` is the name either way, for the slot to say what is being added.
-export function addName(entry, live) {
-  const taken = new Set();
+export function addName(entry, live, also = []) {
+  const taken = new Set(also);
   for (const [track, chain] of Object.entries((live && live.tracks) || {})) {
     taken.add(track);
     for (const name of chain) taken.add(name);
@@ -870,6 +871,11 @@ export function addBlocked({ health, track, slot, locked }) {
 // reason for refusing it, shown in place.
 export function addOutcome(shown, answer) {
   if (answer.ok) return { ok: true, name: answer.body.args ? answer.body.args.name : shown };
+  // The agent's words for a name taken tell its client to give one, which
+  // the page has already done: what the player can do is try again.
+  if (answer.code === "name_taken") {
+    return { ok: false, reason: `Not added: the name ${shown} was taken on the rig as this was sent, from somewhere else. Try again: another is chosen for you.` };
+  }
   return { ok: false, reason: `Not added: ${answer.reason}` };
 }
 

@@ -236,6 +236,10 @@ the same as a knob: see [Saving and going back](saving.md).
 - **The library says a plugin "is no longer on" the chain.** Someone took out,
   from another phone or laptop, the plugin you were adding after. Close the
   library and choose another place.
+- **The library says "The rig changed since the library was opened".** The rig
+  was switched or restarted, here or from another device, while it was open.
+  Close it and open it again from the chain: it adds only to the rig it was
+  opened on.
 - **A plugin in the library is greyed out with "Cannot be added:" under it.**
   It cannot go in a chain at all, for the reason given: the amp, for one, has
   its own card.

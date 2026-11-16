@@ -258,6 +258,7 @@ class UiRig:
         # a plugin and its copy is two commands, the second named by the ids
         # the first was planned with.
         self._id_of: dict = {}
+        self._id_next = 0  # only ever goes up: an id is never given twice
 
     # -- the shape of agent.Live --------------------------------------------
     def connect(self):
@@ -271,7 +272,8 @@ class UiRig:
     def _ids(self):
         names = list(self.chains) + [p for chain in self.chains.values() for p in chain]
         for name in names:
-            self._id_of.setdefault(name, len(self._id_of) and max(self._id_of.values()) + 1)
+            if name not in self._id_of:
+                self._id_of[name], self._id_next = self._id_next, self._id_next + 1
         return {name: self._id_of[name] for name in names}
 
     def _uids(self):

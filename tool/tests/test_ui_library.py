@@ -451,23 +451,36 @@ def test_with_no_rig_running_the_library_can_be_browsed_and_nothing_added(browse
         page.close()
 
 
-def test_the_open_drawer_turns_its_adds_off_while_the_rig_restarts_and_back_on_after(browser, lib):
+def test_the_open_drawer_turns_its_adds_off_while_the_rig_restarts_and_stays_off_for_the_new_run(browser, lib):
     """While a command runs the agent's routes are busy: the drawer, open
-    already, says so and lists everything, off, until the rig is up again."""
+    already, says so and lists everything, off. The rig that comes back is
+    another run, and the drawer was opened for the one before: it says so,
+    and adds nothing until it is opened again (review of #130). The entry
+    that had the focus when it was turned off gave it to the search, and
+    Escape still closes the drawer."""
     page = library_page(browser, lib)
     p = page.page
     unlock(p)
     slot(p, "Add after overdrive…").click()
-    expect(entry(p, MDA_DELAY)).to_be_enabled()
+    entry(p, MDA_DELAY).focus()
     lib.lifecycle.delay = 2.0
     restart = threading.Thread(target=post, args=(lib, "/rig/restart", {}))
     restart.start()
     try:
         expect(drawer(p).locator(".drawer-why")).to_have_text("restart is running: adding waits until it is done.")
         expect(p.locator(".lib-entry:enabled")).to_have_count(0)
+        expect(p.get_by_role("searchbox", name="Search the library")).to_be_focused()
     finally:
         restart.join(10)
-    expect(entry(p, MDA_DELAY)).to_be_enabled(timeout=8000)
+    expect(drawer(p).locator(".drawer-why")).to_have_text(
+        "The rig changed since the library was opened (it is now electric_board): close this, and open it again from the chain.",
+        timeout=8000)
+    expect(p.locator(".lib-entry:enabled")).to_have_count(0)
+    p.keyboard.press("Escape")
+    expect(drawer(p)).to_be_hidden()
+    expect(slot(p, "Add after overdrive…")).to_be_focused()
+    slot(p, "Add after overdrive…").click()
+    expect(entry(p, MDA_DELAY)).to_be_enabled()
     expect(drawer(p).locator(".drawer-why")).to_be_hidden()
     page.close()
 
@@ -694,3 +707,218 @@ def test_an_add_a_move_and_a_remove_from_the_page_are_saved_with_the_files_comme
         assert chain[1] == {"name": "mda_delay", "uri": MDA_DELAY}, "at its defaults: its name and URI"
         assert "# the drive: a comment the save keeps" in text
         page.close()
+
+
+# --------------------------------------------------------------------------- #
+# Found by review (PR #149)
+# --------------------------------------------------------------------------- #
+
+def test_a_name_counts_what_is_in_flight_and_a_clash_says_what_the_player_can_do(blank):
+    out = rigjs(blank, LIBRARY + """
+      const dly = L.plugins[1];
+      const live = {tracks: {board: ['od', 'board_send']}};
+      return [R.addName(dly, live, ['mda_delay']), R.addName(dly, live, ['mda_delay', 'mda_delay_2']),
+              R.addOutcome('mda_delay_2', {ok: false, code: 'name_taken', reason: "'mda_delay_2' is already on the rig: give another name"}),
+              R.addOutcome('x', {ok: false, code: null, reason: 'MVerb is not in plugin-ports.txt'})];""")
+    assert out[0] == {"name": "mda_delay_2", "shown": "mda_delay_2"}
+    assert out[1] == {"name": "mda_delay_3", "shown": "mda_delay_3"}
+    assert "give" not in out[2]["reason"] and "Try again" in out[2]["reason"], "nothing the page cannot act on"
+    assert out[3]["reason"] == "Not added: MVerb is not in plugin-ports.txt"
+
+
+def test_the_same_plugin_added_twice_at_once_from_one_page_is_named_twice(browser, lib):
+    page = library_page(browser, lib)
+    p = page.page
+    unlock(p)
+    sent = adds(p)
+    held = threading.Event()
+    real_add = lib.rig.add
+    lib.rig.add = lambda connection, addition: (held.wait(10), real_add(connection, addition))[1]
+    slot(p, "Add after overdrive…").click()
+    entry(p, MDA_DELAY).click()
+    slot(p, "Add after octave…").click()
+    entry(p, MDA_DELAY).click()
+    expect(slot(p, "Adding mda_delay_2…")).to_be_visible()
+    held.set()
+    until(lambda: lib.rig.chains["board"] == ["overdrive", "mda_delay", "octave", "mda_delay_2", "delay", "board_send"])
+    assert sent == [{"track": "board", "uri": MDA_DELAY, "after": "overdrive"},
+                    {"track": "board", "uri": MDA_DELAY, "name": "mda_delay_2", "after": "octave"}]
+    expect(shown(p)).to_have_text(["overdrive", "mda_delay", "octave", "mda_delay_2", "delay"])
+    expect(p.locator(".add-said:visible")).to_have_count(0)
+    page.close()
+
+
+def test_the_same_plugin_added_at_once_from_two_pages_is_named_again_not_refused(browser, lib):
+    pages = [library_page(browser, lib) for _ in range(2)]
+    ps = [page.page for page in pages]
+    sent = [adds(p) for p in ps]
+    held = threading.Event()
+    real_add = lib.rig.add
+    lib.rig.add = lambda connection, addition: (held.wait(10), real_add(connection, addition))[1]
+    for p in ps:
+        unlock(p)
+        slot(p, "Add after overdrive…").click()
+    for p in ps:
+        entry(p, MDA_DELAY).click()
+    until(lambda: len(sent[0]) + len(sent[1]) >= 2)
+    held.set()
+    until(lambda: {"mda_delay", "mda_delay_2"} <= set(lib.rig.chains["board"]))
+    for p in ps:
+        expect(p.locator("#t-board .unit button.name")).to_have_count(5)
+        expect(p.locator(".add-said:visible")).to_have_count(0)
+    # Neither knew of the other: both sent no name, and the one refused
+    # chose again from /live read again, once.
+    bodies = sent[0] + sent[1]
+    assert sorted(b.get("name", "") for b in bodies) == ["", "", "mda_delay_2"], bodies
+    for page in pages:
+        page.close()
+
+
+def test_the_drawer_keeps_the_focus_and_escape_closes_it_from_anywhere(browser, lib):
+    page = library_page(browser, lib)
+    p = page.page
+    unlock(p)
+    slot(p, "Add after overdrive…").click()
+    inside = "() => document.querySelector('.drawer-sheet').contains(document.activeElement)"
+    for _ in range(60):  # past the last entry, round to the first, and on
+        p.keyboard.press("Tab")
+        assert p.evaluate(inside), p.evaluate("() => document.activeElement.outerHTML.slice(0, 80)")
+    close = p.get_by_role("button", name="Close the library")
+    close.focus()
+    p.keyboard.press("Shift+Tab")
+    expect(p.locator(".lib-entry").last).to_be_focused()
+    p.keyboard.press("Tab")
+    expect(close).to_be_focused()
+    # Focus lost to the page however it happened: Escape still closes it.
+    p.evaluate("() => document.activeElement.blur()")
+    p.keyboard.press("Escape")
+    expect(drawer(p)).to_be_hidden()
+    expect(slot(p, "Add after overdrive…")).to_be_focused()
+    page.close()
+
+
+def test_the_focus_goes_somewhere_sensible_when_what_it_came_from_has_gone(browser):
+    from ui_fake import UiLifecycle
+
+    with Served(library=fixture_library) as served:
+        page = library_page(browser, served)
+        p = page.page
+        unlock(p)
+        # The place's plugin removed from elsewhere while the drawer is open: the place before it.
+        slot(p, "Add after octave…").click()
+        assert post(served, "/live/remove", {"processor": "octave"})["ok"]
+        expect(drawer(p).locator(".drawer-why")).to_have_text("octave is no longer on board: close this and choose another place.")
+        p.keyboard.press("Escape")
+        expect(slot(p, "Add after overdrive…")).to_be_focused()
+        # A remove: to the row that takes its place, or the place there when it was the last.
+        unit(p, "overdrive").get_by_role("button", name="overdrive", exact=True).click()
+        unit(p, "overdrive").get_by_role("button", name="Remove overdrive…").click()
+        unit(p, "overdrive").get_by_role("button", name="Remove overdrive", exact=True).click()
+        until(lambda: served.rig.chains["board"] == ["delay", "board_send"])
+        expect(unit(p, "delay").get_by_role("button", name="delay", exact=True)).to_be_focused()
+        unit(p, "delay").get_by_role("button", name="delay", exact=True).click()
+        unit(p, "delay").get_by_role("button", name="Remove delay…").click()
+        unit(p, "delay").get_by_role("button", name="Remove delay", exact=True).click()
+        until(lambda: served.rig.chains["board"] == ["board_send"])
+        expect(slot(p, "Add at the start…")).to_be_focused()
+        page.close()
+
+    world = UiLifecycle(up=None)
+    with Served(library=fixture_library, lifecycle=world) as served:
+        page = Page(browser, served.url + "/#rack")
+        p = page.page
+        p.get_by_role("button", name="Browse the library…").click()
+        expect(drawer(p)).to_be_visible()
+        # A rig comes up meanwhile, from elsewhere: the button it came from is gone.
+        assert post(served, "/rig/up", {"config_name": "electric_board", "rig": True, "headless": True})["ok"]
+        expect(p.locator(".add-slot")).to_have_count(4, timeout=8000)
+        p.keyboard.press("Escape")
+        expect(slot(p, "Add at the start…")).to_be_focused()
+        page.close()
+
+
+def test_an_armed_remove_and_a_places_refusal_do_not_outlive_a_switch_to_a_rig_with_the_same_names(browser, lib):
+    """`accustomed`, switched to live from elsewhere, is the same fake rig:
+    the same tracks and plugin names (review of #130: the confirm armed on
+    the rig before came back on the new rig's delay, one tap from removing it)."""
+    page = library_page(browser, lib)
+    p = page.page
+    unlock(p)
+    unit(p, "delay").get_by_role("button", name="delay", exact=True).click()
+    unit(p, "delay").get_by_role("button", name="Remove delay…").click()
+    expect(unit(p, "delay").get_by_role("button", name="Remove delay", exact=True)).to_be_visible()
+    assert post(lib, "/rig/switch", {"config_name": "accustomed"})["ok"]
+    expect(p.locator(".rig-name")).to_have_text("accustomed")
+    expect(unit(p, "delay").get_by_role("button", name="Remove delay…")).to_be_visible(timeout=6000)
+    expect(unit(p, "delay").get_by_role("button", name="Remove delay", exact=True)).to_be_hidden()
+    expect(unit(p, "delay").locator(".row-said")).to_be_hidden()
+    assert lib.rig.chains["board"] == ["overdrive", "octave", "delay", "board_send"]
+    page.close()
+
+
+def test_a_drawer_open_across_a_switch_adds_nothing_to_the_rig_switched_to(browser, lib):
+    page = library_page(browser, lib)
+    p = page.page
+    unlock(p)
+    slot(p, "Add after overdrive…").click()
+    expect(entry(p, MDA_DELAY)).to_be_enabled()
+    assert post(lib, "/rig/switch", {"config_name": "accustomed"})["ok"]
+    expect(drawer(p).locator(".drawer-why")).to_have_text(
+        "The rig changed since the library was opened (it is now accustomed): close this, and open it again from the chain.")
+    expect(p.locator(".lib-entry:enabled")).to_have_count(0)
+    assert lib.rig.writes() == []
+    p.get_by_role("button", name="Close the library").click()
+    slot(p, "Add after overdrive…").click()
+    expect(entry(p, MDA_DELAY)).to_be_enabled()
+    page.close()
+
+
+def test_an_add_in_flight_across_a_switch_is_said_as_the_rig_it_was_sent_to(browser, lib):
+    """The agent's live switch does not wait for an add Sushi is still
+    answering (seen here: the fake's switch is done while the add is held),
+    so the page shows the next rig before the add's answer comes. The answer
+    is said as electric_board's, not drawn as an add on the rig shown."""
+    page = library_page(browser, lib)
+    p = page.page
+    unlock(p)
+    held = threading.Event()
+    real_add = lib.rig.add
+    lib.rig.add = lambda connection, addition: (held.wait(10), real_add(connection, addition))[1]
+    slot(p, "Add after overdrive…").click()
+    entry(p, MDA_DELAY).click()
+    expect(slot(p, "Adding mda_delay…")).to_be_visible()
+    assert post(lib, "/rig/switch", {"config_name": "accustomed"})["ok"]
+    expect(p.locator(".rig-name")).to_have_text("accustomed")
+    expect(slot(p, "Add after overdrive…")).to_have_attribute("aria-busy", "false", timeout=6000)
+    held.set()
+    expect(p.locator(".notice")).to_have_text(
+        re.compile(r"^Added mda_delay to board on electric_board, which the page no longer shows\."))
+    expect(p.locator(".add-said:visible")).to_have_count(0)
+    page.close()
+
+
+def test_a_locked_line_goes_when_the_page_is_unlocked(browser, lib):
+    page = library_page(browser, lib)
+    p = page.page
+    unit(p, "delay").get_by_role("button", name="delay", exact=True).click()
+    unit(p, "delay").get_by_role("button", name="Remove delay… (locked)").click()
+    expect(unit(p, "delay").locator(".row-said")).to_contain_text("Locked: removing a plugin")
+    p.get_by_role("button", name="Move delay up (locked)").click()
+    expect(p.locator(".problem.refused")).to_contain_text("Locked: reordering")
+    unlock(p)
+    expect(unit(p, "delay").locator(".row-said")).to_be_hidden()
+    expect(p.locator(".problem.refused")).to_have_count(0)
+    expect(unit(p, "delay").get_by_role("button", name="Remove delay…")).to_be_visible()
+    page.close()
+
+
+def test_the_fakes_ids_only_ever_go_up_as_sushis_do():
+    rig = UiRig()
+    first = rig._ids()
+    with rig.lock:
+        rig.chains["board"].remove("delay")
+        rig._id_of.pop("delay")
+    rig.chains["board"].insert(0, "delay")
+    again = rig._ids()
+    assert again["delay"] > max(first.values()), "a processor added again gets an id never given before"
+    assert {k: v for k, v in again.items() if k != "delay"} == {k: v for k, v in first.items() if k != "delay"}

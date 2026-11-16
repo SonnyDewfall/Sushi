@@ -160,7 +160,7 @@ def test_a_plugin_whose_data_file_is_missing_is_found_without_a_name_and_said():
     assert found["http://drobilla.net/plugins/mda/Delay"] == {
         "name": "MDA Delay", "ports": 10, "classes": ["DelayPlugin"], "bundle": "mda.lv2"}
     assert found["http://drobilla.net/plugins/mda/Combo"] == {
-        "name": None, "ports": None, "classes": [], "bundle": "mda.lv2"}
+        "name": None, "ports": None, "classes": None, "bundle": "mda.lv2"}
     assert len(found) == 36
     assert any("Combo.ttl" in p and "cannot be read" in p for p in problems)
     assert len(problems) == 35, "one per missing file, not one per preset"
@@ -175,8 +175,22 @@ def test_a_data_file_outside_its_bundle_is_not_followed(tmp_path):
         "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n"
         "<urn:x> a lv2:Plugin ; rdfs:seeAlso <../elsewhere.ttl> .\n")
     found, problems = read_bundle(bundle)
-    assert found == {"urn:x": {"name": None, "ports": None, "classes": [], "bundle": "x.lv2"}}
+    assert found == {"urn:x": {"name": None, "ports": None, "classes": None, "bundle": "x.lv2"}}
     assert any("outside the bundle" in p for p in problems)
+
+
+def test_a_plugin_whose_data_does_not_parse_has_classes_not_known_and_one_with_none_has_none(tmp_path):
+    bundle = tmp_path / "x.lv2"
+    bundle.mkdir()
+    (bundle / "manifest.ttl").write_text(
+        "@prefix lv2: <http://lv2plug.in/ns/lv2core#> .\n"
+        "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n"
+        "<urn:x> a lv2:Plugin ; rdfs:seeAlso <x.ttl> .\n<urn:y> a lv2:Plugin ; rdfs:seeAlso <y.ttl> .\n")
+    (bundle / "x.ttl").write_text("<urn:x> {} .\n")
+    (bundle / "y.ttl").write_text('<urn:y> <http://usefulinc.com/ns/doap#name> "Y" .\n')
+    found, problems = read_bundle(bundle)
+    assert (found["urn:x"]["classes"], found["urn:y"]["classes"]) == (None, [])
+    assert len(problems) == 1 and "x.ttl" in problems[0]
 
 
 def test_a_file_that_does_not_parse_is_a_problem_not_a_crash(tmp_path):
@@ -305,11 +319,12 @@ def test_every_kind_is_read_from_a_captured_bundle_and_an_unread_one_has_none():
         "http://distrho.sf.net/plugins/3BandEQ": ("eq", ["EQPlugin"]),
     }
     # The octave shifts pitch, which is none of the six; mda's Combo is
-    # declared with no data file (classes []); a-reverb's bundle is not
-    # there at all (classes None), so it is not called a reverb by its name.
+    # declared, its data file missing (classes not known: None, not []);
+    # a-reverb's bundle is not there at all (None), so it is not called a
+    # reverb by its name.
     assert (entries["http://breakfastquay.com/rdf/lv2-rubberband#mono"]["kind"],
             entries["http://breakfastquay.com/rdf/lv2-rubberband#mono"]["classes"]) == (None, ["PitchPlugin"])
-    assert (entries["http://drobilla.net/plugins/mda/Combo"]["kind"], entries["http://drobilla.net/plugins/mda/Combo"]["classes"]) == (None, [])
+    assert (entries["http://drobilla.net/plugins/mda/Combo"]["kind"], entries["http://drobilla.net/plugins/mda/Combo"]["classes"]) == (None, None)
     assert (entries["urn:ardour:a-reverb"]["kind"], entries["urn:ardour:a-reverb"]["classes"]) == (None, None)
 
 
@@ -345,32 +360,79 @@ def test_the_reader_agrees_with_lilv_on_every_bundle_in_plugins():
     assert ours == truth
 
 
-def test_the_classes_read_here_hold_the_one_lilv_gives_every_bundle_in_plugins():
-    """The kinds (#130) are read from the same files: where lilv and plugins/
-    are both present, the class lilv gives each plugin is one of the classes
-    read here, or lv2:Plugin itself where none was. Not run where it was
-    written (no python3-lilv there); lv2info gave the same classes for the
-    seven captured bundles."""
+def _lilv_world(lilv, path):
+    from sushi_rig.plugins import _lv2_path
+
+    with _lv2_path(path):
+        world = lilv.World()
+        world.load_all()
+    return world
+
+
+def test_the_classes_read_here_are_the_ones_each_plugin_in_plugins_declares():
+    """The kinds (#130) come from each plugin's declared LV2 classes: where
+    lilv and plugins/ are both present (the container, the rig machine),
+    the classes read here are exactly the rdf:types lilv holds for the
+    plugin, lv2:Plugin aside. This needs no LV2 specification: it compares
+    what the bundles say, as lilv read them, with what this reader read."""
     lilv = pytest.importorskip("lilv", reason="lilv is a system package (python3-lilv)")
     plugins_dir = ROOT / "plugins"
     if not plugins_dir.is_dir():
         pytest.skip(f"{plugins_dir} is not present (it is untracked; see docs/reference/plugins.md)")
-    from sushi_rig.plugins import _lv2_path
     from sushi_rig.probe import _each
 
-    with _lv2_path(str(plugins_dir)):
-        world = lilv.World()
-        world.load_all()
+    world = _lilv_world(lilv, str(plugins_dir))
+    rdf_type = world.new_uri(library.RDF_TYPE)
     found, _ = scan_plugins(plugins_dir)
     wrong = {}
+    for plugin in _each(world.get_all_plugins()):
+        uri = str(plugin.get_uri())
+        if uri not in found:
+            continue
+        declared = sorted({str(n)[len(library.LV2):] for n in _each(plugin.get_value(rdf_type))
+                           if str(n).startswith(library.LV2) and str(n) != library.LV2_PLUGIN})
+        if found[uri]["classes"] != declared:
+            wrong[uri] = (declared, found[uri]["classes"])
+    assert wrong == {}
+
+
+def test_the_classes_read_here_hold_the_one_lilv_gives_with_the_lv2_specification_loaded(tmp_path):
+    """And lilv's own answer for a plugin's class (`get_class`) is one of
+    them. lilv can only give a class it knows from the LV2 specification's
+    class tree (`core.lv2`, lv2core.ttl), which is not a plugin and so not in
+    plugins/: with plugins/ alone on LV2_PATH it answers lv2:Plugin for every
+    plugin (the container's first run of this test, 2026-11-16, and lv2info
+    here, for the captured bundles alone). So the specification is copied
+    beside plugins/ for the world this asks, and nothing else from the
+    system's LV2 folders is put on the path. The container has it from
+    `lv2-dev` (ci/Dockerfile); where no copy is found, this says so."""
+    import shutil
+
+    lilv = pytest.importorskip("lilv", reason="lilv is a system package (python3-lilv)")
+    plugins_dir = ROOT / "plugins"
+    if not plugins_dir.is_dir():
+        pytest.skip(f"{plugins_dir} is not present (it is untracked; see docs/reference/plugins.md)")
+    spec = next((d / "core.lv2" for d in (Path("/usr/lib/lv2"), Path("/usr/local/lib/lv2"),
+                                          Path("/usr/lib/x86_64-linux-gnu/lv2"))
+                 if (d / "core.lv2" / "lv2core.ttl").is_file()), None)
+    if spec is None:
+        pytest.skip("the LV2 specification (core.lv2, from the lv2-dev package) is not installed")
+    shutil.copytree(spec, tmp_path / "spec" / "core.lv2")
+    from sushi_rig.probe import _each
+
+    world = _lilv_world(lilv, f"{plugins_dir}:{tmp_path / 'spec'}")
+    found, _ = scan_plugins(plugins_dir)
+    wrong, specific = {}, 0
     for plugin in _each(world.get_all_plugins()):
         uri, said = str(plugin.get_uri()), str(plugin.get_class().get_uri())
         if uri not in found:
             continue
-        classes = [library.LV2 + c for c in found[uri]["classes"]]
-        if said not in classes and not (said == library.LV2_PLUGIN and not classes):
+        classes = [library.LV2 + c for c in found[uri]["classes"] or []]
+        specific += said != library.LV2_PLUGIN
+        if said not in classes and not (said == library.LV2_PLUGIN and found[uri]["classes"] == []):
             wrong[uri] = (said, classes)
     assert wrong == {}
+    assert specific, "lilv gave no plugin a class of its own: the specification was not loaded"
 
 
 # --------------------------------------------------------------------------- #
