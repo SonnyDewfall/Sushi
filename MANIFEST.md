@@ -4408,6 +4408,7 @@ except the move undo's, which dipped already and is now pinned.
 Also: a gain read as nothing says so in `dip.why`, and the failed switch's
 test asserts the level coming back and the restart in one sequence (the old
 test, which checked them in two lists, is folded into it). The fast suite:
-4548 passed, 43 skipped. **Not run:** the rig (nothing heard), a live Sushi, the slow tests
+4548 passed, 43 skipped; `test_ui_library.py` and `test_ui_tabs.py` (106
+tests) in a loop of 5: 5 of 5 passed. **Not run:** the rig (nothing heard), a live Sushi, the slow tests
 and the container job.
 *(2026-11-16)*
