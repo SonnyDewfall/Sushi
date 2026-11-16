@@ -48,8 +48,8 @@ they are meant to be reached for while you play.
   hits them.
 - **MASTER** is the level of the finished mix, on its way to the monitors.
 
-Adding, taking out or moving a plugin dips the whole mix for a moment, about a
-twentieth of a second, and brings it back to where **MASTER** was; the fader
+Adding, taking out or moving a plugin dips the whole mix for a moment, a few
+hundredths of a second, and brings it back to where **MASTER** was; the fader
 does not move. If you move **MASTER** during the dip, your level wins. See
 [Shaping a sound](shaping-a-sound.md#the-short-dip-when-the-chain-changes).
 

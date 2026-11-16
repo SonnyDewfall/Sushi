@@ -4371,3 +4371,43 @@ container job.
   heard: no pop or its absence, no dip, no refusal), a live Sushi, the slow
   tests and the container job.
 *(2026-11-16)*
+
+**Safety: the review of PR #150 (#137).** The limiter stays out, Sonny not
+having chosen. Each finding has a test that fails on 36f4cf9 and passes now,
+except the move undo's, which dipped already and is now pinned.
+
+1. `GET /live` read the dip as over once the snapshot returned, so a walk that
+   read the floor mid-dip and answered after it showed -inf. It now hides the
+   floor when a dip was under way as the read began or ended, or began and
+   ended within it (a count of dips), with the level the last dip left; not
+   where that dip could not put its level back, when the floor is the truth.
+2. A master a dip could not put back was only `last_error`, which the next
+   failure replaced and the next change cleared. It is now `master_down` in
+   `/health` too, until the master volume is set through the agent, a dip puts
+   a level back or a lifecycle command works. *Decided:* a save then writes the
+   level the dip meant to put back, never the floor, and says so; once the
+   player has set the master, theirs.
+3. The wait assumed a 256-sample block; the rig's own captured pw-top sample
+   ran at 1024. *Default:* the block pw-top last measured (kept from any
+   reading until a lifecycle command), else 1024 at 48 kHz: 37 ms at 256,
+   53 ms unmeasured. The gap is about 57 or 73 ms plus the edit's commands.
+4. The remove that takes back a plugin an undo could not set ran outside any
+   dip: it has its own now.
+5. A second add could pass on the reading the first passed on. Every add drops
+   the sample and the run under way, and an add that waited for the lock while
+   another went in reads the load again under it (a pw-top run, about a second,
+   that other live changes then wait behind).
+6. An edit that timed out and a level that could not be put back raised a new
+   502, losing the stuck call, so a pedal's switch closed the connection under
+   the worker. The error keeps the edit's class and its `pending`.
+7. The reference said a move's undo did not dip; it does, and says so.
+8. Only pw-top's own `LoadError` let an add through: a pw-top that cannot be
+   run, a state file that cannot be read, anything, now lets it go ahead with
+   the reason in `load.why` and a warning on stderr.
+
+Also: a gain read as nothing says so in `dip.why`, and the failed switch's
+test asserts the level coming back and the restart in one sequence (the old
+test, which checked them in two lists, is folded into it). The fast suite:
+4548 passed, 43 skipped. **Not run:** the rig (nothing heard), a live Sushi, the slow tests
+and the container job.
+*(2026-11-16)*

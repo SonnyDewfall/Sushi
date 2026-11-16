@@ -31,17 +31,25 @@ is set in seconds):
 
 ## The gap
 
-The agent waits `SETTLE` after the gain goes down before it sends the edit:
-long enough for the level to be `DEPTH_DB` down, plus one block of the rig
-(`rig.QUANTUM` at `rig.RATE`), since Sushi takes an event at the start of the
-block after it arrives, and the gain's set and the edit could otherwise land
-one block closer together in audio than they were sent. Then the edit and its
-read-back, then the gain is set back and returns with no wait: the level is
-within 1 dB about 20 ms later. So the master is more than 1 dB down for about
-`SETTLE` + 20 ms, about 57 ms, plus the edit's own commands and read-back,
-which have not been timed on the rig (a whole live switch took 0.4 to 1.2 s
-there on 2026-11-02, every step of it). A live switch dips once around all
-of its structural steps, not once per step (`STRUCTURAL`).
+The agent waits (`settle`) after the gain goes down before it sends the edit:
+long enough for the level to be `DEPTH_DB` down (`FALL`, about 32 ms), plus
+one block of the rig, since Sushi takes an event at the start of the block
+after it arrives, and the gain's set and the edit could otherwise land one
+block closer together in audio than they were sent. The block is the one
+pw-top last measured for the rig (the budget `GET /rig/load` reads, which the
+agent keeps from every sample it reads), and where none has been measured,
+`MARGIN_BLOCK`: 1024 samples at 48 kHz, 21.3 ms. The rig asks for 256
+(`rig.QUANTUM`), but its own captured pw-top sample (`tests/fixtures/
+pw-top-b-n2.txt`) ran at 1024, and a JACK client keeps the quantum the graph
+had when it started (`rig.py`), so 256 is not assumed. The wait is then about
+37 ms at 256 and about 53 ms unmeasured or at 1024 (`SETTLE`, the unmeasured
+wait). Then the edit and its read-back, then the gain is set back and returns
+with no wait: the level is within 1 dB about 20 ms later. So the master is more
+than 1 dB down for the wait + 20 ms, about 57 ms at 256 and 73 ms at 1024,
+plus the edit's own commands and read-back, which have not been timed on the
+rig (a whole live switch took 0.4 to 1.2 s there on 2026-11-02, every step of
+it). A live switch dips once around all of its structural steps, not once per
+step (`switch_span`).
 
 ## Where it goes back to, and what is never touched
 
@@ -69,8 +77,6 @@ A master already at the floor is not dipped: there is nothing to hear.
 from __future__ import annotations
 
 import math
-
-from .rig import QUANTUM, RATE
 
 # The master track and its own gain: what the page's master volume sets
 # (`POST /live/parameter`, #131), named as `rigfile.MASTER` names the track.
@@ -100,8 +106,26 @@ def falling_db_per_second() -> float:
 # under almost anything the rig is playing.
 DEPTH_DB = 30.0
 
-# The wait between the gain going down and the edit going in (see "The gap").
-SETTLE = DEPTH_DB / -falling_db_per_second() + QUANTUM / RATE
+# How long the smoothed gain takes to fall DEPTH_DB (see "The gap").
+FALL = DEPTH_DB / -falling_db_per_second()
+
+# The block assumed where pw-top has measured none: 1024 at 48 kHz, the
+# quantum the rig's own captured sample shows, four times what it asks for.
+MARGIN_BLOCK = 1024 / 48000
+
+
+def settle(block_s: float | None = None) -> float:
+    """The wait between the gain going down and the edit going in, in
+    seconds: `FALL` plus one block, `block_s` where one was measured (a
+    positive, finite number of seconds), else `MARGIN_BLOCK`. Pure."""
+    if (isinstance(block_s, bool) or not isinstance(block_s, (int, float))
+            or not math.isfinite(block_s) or block_s <= 0):
+        block_s = MARGIN_BLOCK
+    return FALL + block_s
+
+
+# The wait with no block measured.
+SETTLE = settle(None)
 
 # The steps of a live switch (`rigfile.SwitchStep.op`) that change the graph.
 # A plan puts them together, after the bypasses that go on and before the

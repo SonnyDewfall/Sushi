@@ -751,3 +751,63 @@ def test_a_plugin_moved_to_another_channel_by_a_remove_and_an_add_is_saved_there
     assert [e["name"] for e in board] == ["overdrive", "octave"]
     assert [e["name"] for e in vocal] == ["vocal_delay", "delay"]
     assert vocal[1] == {"name": "delay", "uri": MDA_DELAY}, "at its defaults: its name and URI"
+
+
+# --------------------------------------------------------------------------- #
+# A master a dip could not put back (#137, review of PR #150)
+# --------------------------------------------------------------------------- #
+
+class _MasterStuck(UiRig):
+    """Sushi takes the dip's floor and then refuses the master's level back."""
+
+    def set_parameter(self, connection, processor, parameter, value):
+        if (processor, parameter) == ("master", "gain") and value != 0.0 and self.stuck:
+            with self.lock:
+                self.calls.append(("set_parameter", processor, parameter, value))
+            from sushi_rig.live import LiveError
+
+            raise LiveError("Sushi would not set it")
+        super().set_parameter(connection, processor, parameter, value)
+
+    stuck = True
+
+
+def _master_level(text):
+    return (yaml.safe_load(text)["master"] or {}).get("level")
+
+
+def test_a_save_with_the_master_left_down_by_a_dip_writes_the_level_it_had_not_the_floor(root):
+    rig = _MasterStuck()
+    agent, world, rig = save_agent(root, rig=rig)
+    (status, added), (_, health), (status_save, saved) = calls(
+        agent,
+        ("POST", "/live/add", {"json": {"track": "board", "uri": MDA_DELAY, "name": "slap"}}),
+        ("GET", "/health", {}),
+        ("POST", "/rig/save", {}),
+    )
+    assert status == 200 and added["dip"]["restored"] is False
+    assert rig.info["master"]["gain"]["value"] == 0.0, "the master is at the floor"
+    assert health["agent"]["master_down"] is not None
+    assert status_save == 200, saved
+    assert _master_level(read(root)) is None, "the master at 0 dB, as it was: unity writes nothing, never -120"
+    assert "not -inf" in saved["master"]
+
+
+def test_a_save_after_the_player_set_the_master_again_writes_the_players_level(root):
+    rig = _MasterStuck()
+    agent, world, rig = save_agent(root, rig=rig)
+    (status, _), = calls(agent, ("POST", "/live/add", {"json": {"track": "board", "uri": MDA_DELAY, "name": "slap"}}))
+    assert status == 200
+    rig.stuck = False
+    from sushi_rig.rigfile import level_to_gain
+
+    (status_set, _), (_, health), (status_save, saved) = calls(
+        agent,
+        ("POST", "/live/parameter", {"json": {"processor": "master", "parameter": "gain",
+                                              "value": level_to_gain(-6.0)}}),
+        ("GET", "/health", {}),
+        ("POST", "/rig/save", {}),
+    )
+    assert status_set == 200 and health["agent"]["master_down"] is None
+    assert status_save == 200 and "master" not in saved
+    assert _master_level(read(root)) == pytest.approx(-6.0, abs=1e-3), "the player's level, as set"

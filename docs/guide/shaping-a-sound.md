@@ -157,7 +157,7 @@ you never see it.
 ## The short dip when the chain changes
 
 When you add, take out or move a plugin, the whole rig goes quiet for a
-moment, about a twentieth of a second, and comes back at the level it was.
+moment, a few hundredths of a second, and comes back at the level it was.
 Changing a chain while it plays can make a pop; the dip hides it. Switching to
 another rig does the same once, while its plugins change.
 
