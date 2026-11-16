@@ -194,7 +194,9 @@ def test_the_rigs_a_start_or_switch_can_name_are_config_rigs(which, frozen_root)
     # By file name, as a Program Change counts them: "electric-chorus-2.yaml"
     # sorts before "electric-chorus.yaml", though its name sorts after.
     names = [p.stem for p in sorted((root / "config" / "rigs").glob("*.yaml"), key=lambda p: p.name)]
-    assert status == 200 and answer == {"ok": True, "rigs": names}
+    # `running` is the running rig's file among them (#129): the fake's
+    # state names no file of config/rigs/, so none (test_agent_rigbin.py has it).
+    assert status == 200 and answer == {"ok": True, "rigs": names, "running": None}
     if which == "frozen":
         assert names.index("electric-chorus-2") < names.index("electric-chorus") and "electric_board" in names
 
