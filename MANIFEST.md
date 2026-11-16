@@ -4140,3 +4140,30 @@ runs of `test_ui_tabs.py` and 20 each of the two tests that failed in CI,
 none failed. The fast suite: 4430 passed, 41 skipped. **Not run here:** a
 real restart or switch on the rig, a phone, the slow tests and the container
 job. *(2026-11-16)*
+
+**The rack's tabs: a rig change needs a sign, and a row is drawn once (PR
+#148, second re-review).** (1) The rig's identity held the log's index of
+its last `op: "rig"` entry, which goes to nothing when 500 knob turns trim
+it away or when one `/live/log` fails: either read as "another rig", which
+cleared the plugins, held the chain back and dropped a queued change. A
+live switch is now counted only on a positive sign, an `op: "rig"` entry
+newer than every entry seen (`R.switchesSeen`); a switch to another rig is
+also a new `config_name` in `/health`, which does not carry the state file's
+`switched_at`. (2) A rebuilt row gave the focus back by `aria-label`, which
+the switch gets only from an updater and changes when pressed, and a move
+button's changes with the lock: a probe of a689de9 lost the focus from the
+switch (open row and slim) and the move buttons. Each focusable control of a
+row now says what it is (`data-focus`), set as it is built. CI then failed a
+third existing test, on 3.11 (`test_a_knob_turns_by_dragging_with_a_pointer`:
+the knob's box was None), the second after 3.13's: the common cause was the
+first chain drawn before the profiles' first answer, so every row was drawn
+again a moment after the page looked settled (the rack fixture waits for the
+first row). The first chain now waits for the profiles (at most two
+seconds), which are asked for as the page opens, and the plugin's name under
+a unit's is written in place rather than by a rebuild when the library
+answers. Under load on a689de9's page the 3.11 test failed 10 times in 20;
+on this one none in 20, nor the 3.13 test or the container's (20 each).
+Each fix has a test that fails on a689de9. The fast suite: 4442 passed, 41
+skipped. **Not run here:** the browser tests on 3.11 (this machine's 3.11
+has no Playwright: CI is that test), the rig, a phone, the slow tests and
+the container job. *(2026-11-16)*

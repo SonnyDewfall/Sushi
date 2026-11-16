@@ -1512,3 +1512,191 @@ def test_a_knob_focused_before_its_profile_arrives_keeps_the_focus_and_turns(bro
     p.keyboard.press("ArrowDown")
     until(lambda: abs(served.rig.info["overdrive"]["Drive"]["value"] - 0.61) < 1e-9)
     page.close()
+
+
+# --------------------------------------------------------------------------- #
+# Re-review of a689de9: a log trimmed or unread is no switch; a rebuilt row
+# gives the focus back to the same control, whatever its label
+# --------------------------------------------------------------------------- #
+
+def test_a_live_switch_is_counted_only_on_a_rig_entry_newer_than_any_seen(blank):
+    out = rigjs(blank, """
+      const log = (first, ops) => ({first, log: ops.map((op) => ({op}))});
+      const steps = [
+        [null, log(0, ['parameter', 'rig', 'parameter'])],     // the first log seen: a baseline, no switch
+        ['same', log(0, ['parameter', 'rig', 'parameter', 'bypass'])],
+        ['trimmed past the rig entry', log(600, ['parameter', 'parameter'])],
+        ['not read', null],
+        ['a switch', log(600, ['parameter', 'parameter', 'rig'])],
+        ['the same switch, seen again', log(601, ['parameter', 'rig', 'parameter'])],
+        ['the agent restarted', log(0, ['rig'])],
+        ['a switch after that', log(0, ['rig', 'parameter', 'rig'])],
+      ];
+      let seen = null;
+      return steps.map(([what, l]) => { seen = R.switchesSeen(seen, l); return [what, seen && seen.count]; });""")
+    assert out == [[None, 0], ["same", 0], ["trimmed past the rig entry", 0], ["not read", 0], ["a switch", 1],
+                   ["the same switch, seen again", 1], ["the agent restarted", 1], ["a switch after that", 2]]
+    # A log never read (the first poll's failed) counts nothing either.
+    assert rigjs(blank, "return R.switchesSeen(null, null);") is None
+
+
+def held_drag_across(p, served, between):
+    """A drag on the delay's Feedback, with `between()` done in the middle
+    and a poll or two after it: the dial must stay, and the drag land."""
+    dial = slider(p, "delay Feedback")
+    box = dial.locator("svg").bounding_box()
+    x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+    handle = dial.element_handle()
+    calls = sum(1 for c in served.rig.calls if c[0] == "plugins")
+    p.mouse.move(x, y)
+    p.mouse.down()
+    p.mouse.move(x, y - 32, steps=4)
+    between()
+    held = []
+    for _ in range(25):  # 2.5 s: two polls and a load tile, watched for the hold
+        held.append(p.locator(".rack .empty").count())
+        time.sleep(0.1)
+    assert held == [0] * 25, "the chain was never held back"
+    assert handle.evaluate("(e) => e.isConnected && !!e.dataset.dragging"), "the dial, still held"
+    p.mouse.move(x, y - 64, steps=4)
+    p.mouse.up()
+    until(lambda: abs(served.rig.info["delay"]["Feedback"]["value"] - 0.55) < 1e-6)
+    assert sum(1 for c in served.rig.calls if c[0] == "plugins") == calls, "the plugins were not read again"
+
+
+def after_a_live_switch(browser, served):
+    """The rack, after a live switch has put an `op: "rig"` entry in the log."""
+    assert post(served, "/rig/switch", {"config_name": "accustomed"})["ok"]
+    page = rack_page(browser, served)
+    expect(page.page.locator(".rig-name")).to_have_text("accustomed")
+    return page
+
+
+def test_a_log_trimmed_past_the_rig_switch_is_no_switch(browser, served):
+    """The log keeps its last 500 entries, so knob turns trim the rig
+    switch's entry away: that is not another rig."""
+    page = after_a_live_switch(browser, served)
+    p = page.page
+    trim = {"on": False}
+
+    def log(route):
+        if not trim["on"]:
+            route.continue_()
+            return
+        body = route.fetch().json()
+        last = max(i for i, e in enumerate(body["log"]) if e["op"] == "rig")
+        route.fulfill(json={**body, "first": (body.get("first") or 0) + last + 1, "log": body["log"][last + 1:]})
+
+    p.route("**/live/log", log)
+    held_drag_across(p, served, lambda: trim.update(on=True))
+    page.close()
+
+
+def test_one_unread_log_is_no_switch(browser, served):
+    page = after_a_live_switch(browser, served)
+    p = page.page
+    fail = {"left": 0}
+
+    def log(route):
+        if fail["left"]:
+            fail["left"] -= 1
+            route.fulfill(status=500, json={"ok": False, "reason": "the log could not be read (test)"})
+        else:
+            route.continue_()
+
+    p.route("**/live/log", log)
+    held_drag_across(p, served, lambda: fail.update(left=1))
+    page.close()
+
+
+ROW_CONTROLS = [
+    ("overdrive", "the dial", lambda p: slider(p, "overdrive Drive")),
+    ("overdrive", "a value field", lambda p: p.get_by_role("textbox", name="overdrive Drive value", exact=True)),
+    ("overdrive", "the switch", lambda p: unit(p, "overdrive").locator("button.bypass")),
+    ("overdrive", "a move button", lambda p: unit(p, "overdrive").locator('button.step[data-focus="down"]')),
+    ("overdrive", "the name", lambda p: name_of(p, "overdrive")),
+    ("slim", "the switch", lambda p: unit(p, "overdrive").locator("button.bypass")),
+    ("slim", "the name", lambda p: name_of(p, "overdrive")),
+]
+
+
+@pytest.mark.parametrize("row, what, find", ROW_CONTROLS, ids=[f"{r} row, {w}" for r, w, _ in ROW_CONTROLS])
+def test_a_row_rebuilt_gives_the_focus_back_to_the_same_control(browser, served, row, what, find):
+    """Each kind of control a row has, in a row that is on and a slim one:
+    its profile arrives after it has the focus, the row is rebuilt, and the
+    focus is on the same control of the new row, found by what it is, not by
+    a label that an updater writes after (the switch's) or that its state
+    changes ("Bypass X", "Turn on X")."""
+    page = Page.__new__(Page)
+    page.page = browser.new_page(viewport={"width": 1280, "height": 900})
+    page.errors = []
+    p = page.page
+    p.on("pageerror", lambda error: page.errors.append(str(error)))
+    held = []
+    p.route("**/profiles", lambda route: held.append(route))
+    p.goto(served.url + "/#rack")
+    p.wait_for_selector(".unit")
+    expect(unit(p, "overdrive")).to_contain_text("no profile: every parameter")
+    if row == "slim":
+        pedal(served, "overdrive", True)
+        expect(unit(p, "overdrive")).to_have_class(MINIMISED)
+    control = find(p)
+    control.focus()
+    before = control.element_handle()
+    key = before.evaluate("(e) => e.dataset.focus")
+    key = key or before.evaluate("(e) => e.getAttribute('aria-label')")  # PROBE
+    for route in held:
+        route.continue_()
+    expect(unit(p, "overdrive")).to_contain_text("GxTubeScreamer · profile")
+    assert before.evaluate("(e) => !e.isConnected"), "the row was rebuilt"
+    assert p.evaluate("() => document.activeElement.dataset.focus") == key
+    assert p.evaluate("() => document.activeElement.closest('.unit').dataset.unit") == "overdrive"
+    page.close()
+
+
+def test_the_first_chain_is_drawn_with_its_profiles_so_its_rows_are_final(browser, served):
+    """CI on #135 (3.11 and 3.13, a different test each time): a test took
+    hold of a knob as soon as the first row was drawn, the profiles came a
+    moment later and every row was drawn again, and the knob it held was
+    gone. The first chain now waits for the profiles' first answer."""
+    page = Page.__new__(Page)
+    page.page = browser.new_page(viewport={"width": 1280, "height": 900})
+    page.errors = []
+    p = page.page
+    p.on("pageerror", lambda error: page.errors.append(str(error)))
+    release = hold(p, "**/profiles")
+    p.goto(served.url + "/#rack")
+    expect(p.get_by_role("tab")).to_have_text(["board", "vocal", "Master"])
+    time.sleep(0.8)
+    assert p.locator(".unit").count() == 0, "no row drawn before the profiles have answered"
+    release()
+    p.wait_for_selector(".unit")
+    dial = slider(p, "overdrive Drive").element_handle()
+    expect(unit(p, "overdrive")).to_contain_text("GxTubeScreamer · profile")
+    time.sleep(2.2)  # polls, the load tiles, the names
+    assert dial.evaluate("(e) => e.isConnected"), "the row first drawn is the row that stays"
+    assert slider(p, "overdrive Drive").locator("svg").bounding_box() is not None
+    page.close()
+
+
+def test_the_plugins_names_arriving_late_change_a_rows_text_and_nothing_else(browser):
+    """The plugin's name under a unit's is the library's, which may answer
+    after the rows are drawn: it is written in place, not by a rebuild."""
+    from ui_fake import fixture_library
+
+    with Served(library=fixture_library) as served:
+        page = Page.__new__(Page)
+        page.page = browser.new_page(viewport={"width": 1280, "height": 900})
+        page.errors = []
+        p = page.page
+        p.on("pageerror", lambda error: page.errors.append(str(error)))
+        release = hold(p, "**/library")
+        p.goto(served.url + "/#rack")
+        p.wait_for_selector(".unit")
+        sub = unit(p, "delay").locator(".sub")
+        before = sub.inner_text()
+        dial = slider(p, "delay Feedback").element_handle()
+        release()
+        expect(sub).not_to_have_text(before, timeout=5000)
+        assert dial.evaluate("(e) => e.isConnected"), "the row was not rebuilt for its text"
+        page.close()

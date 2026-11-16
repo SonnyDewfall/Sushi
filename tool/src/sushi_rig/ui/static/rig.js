@@ -510,6 +510,34 @@ export function channelLevels(model, live) {
   });
 }
 
+// ---------------------------------------------------------------- which rig is shown
+
+// The live switches the page has seen, from one GET /live/log answer after
+// another (`seen` is the last call's, null to begin; `log` the answer's
+// body, or null when it was not read). A live switch to another rig is
+// already a new `config_name` in /health; this is for one /health cannot
+// tell apart (#93 writes the state file's `switched_at`, which /health does
+// not carry), and counts one only on a positive sign: an `op: "rig"` entry
+// newer than every entry seen before it. Absent is never a sign: the log
+// keeps its last 500 entries, so a rig entry is trimmed away by ordinary
+// knob turns, and one /live/log that fails says nothing; either counted as
+// "another rig" cleared the plugins and held the chain back (re-review of
+// #135). Entries are numbered from `first`, the same number for the same
+// entry across answers; a log whose newest is older than one seen (the agent
+// restarted) is a fresh start, and counts nothing either. Returns {max, count}.
+export function switchesSeen(seen, log) {
+  if (!log || !Array.isArray(log.log)) return seen;
+  const first = isNumber(log.first) ? log.first : 0;
+  const last = first + log.log.length - 1;
+  let rig = null;
+  for (let i = log.log.length - 1; i >= 0; i--) {
+    if (log.log[i] && log.log[i].op === "rig") { rig = first + i; break; }
+  }
+  if (!seen || last < seen.max) return { max: Math.max(rig ?? -1, last), count: seen ? seen.count : 0 };
+  if (rig !== null && rig > seen.max) return { max: Math.max(rig, last), count: seen.count + 1 };
+  return { max: Math.max(seen.max, last), count: seen.count };
+}
+
 // ---------------------------------------------------------------- the rack's tabs and rows (#135)
 // The rack's centre shows one chain at a time, behind tabs, and a bypassed
 // plugin as a slim row. What is a tab, which is open, where the amp goes,

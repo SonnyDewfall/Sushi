@@ -64,6 +64,7 @@ const state = {
   health: null, live: null, log: null,
   plugins: null, pluginsFor: null, pluginsRig: null, pluginsError: null, pluginsAt: 0,
   reading: null,             // another rig's plugins being read: {rig, since}; its chain is held back meanwhile
+  switches: null,            // the live switches seen in the log (R.switchesSeen), for `rigIdentity`
   ampPlace: null,            // the amp's tab, decided once a run: see placeAmp
   profiles: null, profilesError: null, profilesAt: 0, profileProblems: [],
   names: null, namesAt: 0,   // plugin names by URI, from /library: decoration, so a failure is not shown
@@ -137,7 +138,7 @@ async function request(method, path, body) {
 // the rig changes cannot be stopped here.
 const sender = new R.Sender((call) => request("POST", call.path, call.json), {
   pollSeq: () => state.pollSeq,
-  run: () => JSON.stringify(rigIdentity(state.health, state.log)),
+  run: () => JSON.stringify(rigIdentity(state.health)),
   onFailure: (key, result) => {
     state.failed.set(key, result.reason);
     fail(`Not changed: ${key.split("\u0000").slice(1).join(" · ")}`, result);
@@ -153,16 +154,12 @@ function fail(title, result, action = null) {
 
 // Which rig this is, beyond its processors' names: a switch can bring up a
 // rig with the same tracks and names and a different plugin under one of
-// them, by a restart (a new start time) or live (a new name, or a rig switch
-// in the agent's log, which the live swap of #93 writes without a restart).
-function rigIdentity(health, log) {
+// them, by a restart (a new start time) or live (a new name, or a live
+// switch the log shows, `R.switchesSeen`, which counts one only on a
+// positive sign: never a log trimmed or unread).
+function rigIdentity(health, switches = state.switches) {
   const rig = health && health.ok ? health.body.rig || {} : {};
-  let switched = null;
-  const entries = (log && log.log) || [];
-  for (let i = entries.length - 1; i >= 0; i--) {
-    if (entries[i].op === "rig") { switched = (log.first || 0) + i; break; }
-  }
-  return [rig.config_name ?? null, rig.rig ?? null, rig.started_at ?? null, switched];
+  return [rig.config_name ?? null, rig.rig ?? null, rig.started_at ?? null, switches ? switches.count : 0];
 }
 
 // Which plugin each processor is (GET /live/plugins): due again when the
@@ -211,7 +208,9 @@ function inBackground(name, fetch) {
   // `request` never rejects, but the name is let go whatever happens, so a
   // throw anywhere in a fetch can never stop its retry for good.
   fetch()
-    .then((fetched) => { if (fetched) render(); })
+    // Drawn once the first poll has (`state.health`): a fetch from the page's
+    // first moment answering before it would draw "Agent not answering".
+    .then((fetched) => { if (fetched && state.health) render(); })
     .catch((error) => console.error(`fetching ${name}:`, error))
     .finally(() => fetching.delete(name));
 }
@@ -374,13 +373,15 @@ async function poll() {
     // back meanwhile (`state.reading`, `chainRegion`). The same rig's new
     // chains are shown with the plugins already held. Either way the
     // plugins are read after, and drawn when they come.
-    const due = live && live.ok ? pluginsDue(live.body, rigIdentity(health, logBody)) : null;
+    const switches = R.switchesSeen(state.switches, logBody);
+    const due = live && live.ok ? pluginsDue(live.body, rigIdentity(health, switches)) : null;
     const another = !!due && due.rig !== state.pluginsRig;
     state.health = health;
     state.live = live;
     state.amp = amp;
     noteRecord(record);
     state.log = logBody;
+    state.switches = switches;
     state.seq = seq;
     if (another) {
       Object.assign(state, { plugins: null, pluginsError: null, pluginsFor: null, pluginsRig: due.rig });
@@ -705,7 +706,7 @@ function knob(unit, ctrl, size) {
   const arc = h("circle", { cx: box / 2, cy: box / 2, r, class: "arc", "stroke-width": w, transform: `rotate(135 ${box / 2} ${box / 2})` });
   const note = h("span", { class: "note" });
   const dial = h("span", {
-    class: "dial", role: "slider", tabindex: inert ? -1 : 0,
+    class: "dial", role: "slider", tabindex: inert ? -1 : 0, "data-focus": `dial ${ctrl.name}`,
     "aria-label": `${unit.name} ${ctrl.label}`, "aria-valuemin": 0, "aria-valuemax": 100,
     "aria-readonly": inert ? "true" : null,
   }, h("svg", { width: box, height: box, viewBox: `0 0 ${box} ${box}`, "aria-hidden": "true" },
@@ -719,6 +720,7 @@ function knob(unit, ctrl, size) {
   };
   // Named, so a row rebuilt round it can give back what was being typed (`giveBack`).
   const field = valueField(`${unit.name} ${ctrl.label} value`, typedInto(ctrl, set), `knob-${unit.name}-${ctrl.name}`);
+  field.input.dataset.focus = `field ${ctrl.name}`;
   if (inert) field.input.readOnly = true;
   const el = h("div", { class: `knob k-${size}${inert ? " inert" : ""}`, "data-control": key, title: ctrl.description || null },
     dial, h("span", { class: "text" }, field.input, h("span", { class: "label", title: ctrl.label }, ctrl.label), note));
@@ -750,7 +752,8 @@ function knob(unit, ctrl, size) {
 function toggle(unit, ctrl) {
   const key = `p\u0000${unit.name}\u0000${ctrl.name}`;
   const value = h("span", { class: "value" });
-  const el = h("button", { class: "switch", "aria-label": `${unit.name} ${ctrl.label}`, disabled: ctrl.readOnly || ctrl.missing },
+  const el = h("button", { class: "switch", "aria-label": `${unit.name} ${ctrl.label}`, disabled: ctrl.readOnly || ctrl.missing,
+    "data-focus": `toggle ${ctrl.name}` },
     h("span", { class: "label" }, ctrl.label), value);
   let current = null;
   el.addEventListener("click", () => {
@@ -769,8 +772,8 @@ function toggle(unit, ctrl) {
 
 function selector(unit, ctrl) {
   const key = `p\u0000${unit.name}\u0000${ctrl.name}`;
-  const select = h("select", { "aria-label": `${unit.name} ${ctrl.label}`, disabled: ctrl.readOnly || ctrl.missing },
-    ctrl.choices.map((c) => h("option", { value: c.value }, c.label)));
+  const select = h("select", { "aria-label": `${unit.name} ${ctrl.label}`, disabled: ctrl.readOnly || ctrl.missing,
+    "data-focus": `select ${ctrl.name}` }, ctrl.choices.map((c) => h("option", { value: c.value }, c.label)));
   select.addEventListener("change", () => {
     const v = R.normalisedOf(ctrl, Number(select.value));
     sender.change(key, v, (x) => ({ path: "/live/parameter", json: { processor: unit.name, parameter: ctrl.name, value: x } }));
@@ -800,7 +803,7 @@ function control(unit, ctrl, size) {
 function bypassButton(unit, size, seen = null) {
   const key = `b\u0000${unit.name}`;
   const led = h("span", { class: "led" });
-  const el = h("button", { class: `bypass b-${size}` }, led);
+  const el = h("button", { class: `bypass b-${size}`, "data-focus": "bypass" }, led);
   let current = null;
   el.addEventListener("click", () => {
     if (current === null) return; // unknown: which way would be a guess
@@ -1441,22 +1444,25 @@ function rowSeen(name, slot, bypassed) {
 // A unit's row, built into its slot (an <article> that stays while the unit
 // is on the open chain). Everything the row can show is built: bypassed, it
 // is only hidden (`rowSeen`).
-function unitParts(slot, unit, expanded, name) {
+function unitParts(slot, unit, expanded) {
   const panel = unit.panel;
   const primary = R.primaryControls(panel);
   // Closed, a row shows what fits beside its name; open, everything.
   const shown = expanded ? [] : primary.slice(0, 6);
-  const sub = [name, unit.profile ? "profile" : "no profile: every parameter"].join(" · ");
+  // The plugin's name under the unit's is written in place (`unitSlot`): it
+  // comes from the library, which may answer after the row is drawn, and
+  // a row rebuilt for its text alone took the control under a hand with it.
+  slot.sub = h("span", { class: "sub" });
   // Whether a step is possible is drawn in place (`unitSlot`): a neighbour
   // added or moved from elsewhere changes it, and must not rebuild the row.
   const moveButton = (direction) => h("button", {
-    class: `step${state.locked ? " locked" : ""}`,
+    class: `step${state.locked ? " locked" : ""}`, "data-focus": direction,
     "aria-label": `Move ${unit.name} ${direction}${state.locked ? " (locked)" : ""}`,
     title: state.locked ? "Locked: reordering changes the rig's structure" : null,
     onclick: () => move(unit, direction),
   }, state.locked ? lockIcon() : (direction === "up" ? "▲" : "▼"));
   slot.steps = { up: moveButton("up"), down: moveButton("down") };
-  slot.name = h("button", { class: "name", "aria-expanded": "false", onclick: () => tapUnit(unit.name, slot) }, unit.name);
+  slot.name = h("button", { class: "name", "aria-expanded": "false", "data-focus": "name", onclick: () => tapUnit(unit.name, slot) }, unit.name);
   // The mono badge has a place of its own, drawn in place (`unitSlot`): it
   // changes when a stereo plugin is moved past this one, from anywhere.
   slot.badge = h("span", { class: "badge-slot" });
@@ -1465,7 +1471,7 @@ function unitParts(slot, unit, expanded, name) {
     h("span", { class: "swatch", style: `background:${swatch(unit)}` }),
     h("div", { class: "who" },
       h("span", { class: "name-line" }, slot.name, slot.badge),
-      h("span", { class: "sub" }, sub)),
+      slot.sub),
     h("div", { class: "knobs" }, shown.map((c) => control(unit, c, "small")),
       !expanded && primary.length > shown.length ? h("span", { class: "more" }, `+${primary.length - shown.length} more`) : null),
     bypassButton(unit, "small", (bypassed) => rowSeen(unit.name, slot, bypassed)),
@@ -1481,33 +1487,33 @@ function unitParts(slot, unit, expanded, name) {
 // (`state.unitUpdaters`), replaced when it is rebuilt.
 function unitSlot(slot, track, unit, index) {
   const expanded = state.open.has(unit.name);
-  const name = pluginName(unit);
   const typing = typedIn(slot.el);
-  const onName = !!slot.name && document.activeElement === slot.name;
-  // Any other control of the row with the focus (a knob, say), by its name:
-  // a row rebuilt (its profile arriving after the first draw) gave the
-  // focus to the page's body, and the next key turned nothing (CI on
-  // #135, a knob focused just before the profiles came).
+  // The control of the row with the focus, by what it is in the row
+  // (`data-focus`, set as it is built: its kind and its parameter, never its
+  // state or a label an updater writes later): a row rebuilt (its profile
+  // arriving after the first draw) gave the focus to the page's body, and
+  // the next key turned nothing (CI on #135, a knob focused just before the
+  // profiles came).
   const active = document.activeElement;
-  const focusedLabel = !typing && !onName && active && slot.el.contains(active) ? active.getAttribute("aria-label") : null;
-  const rebuilt = patch(slot.el, JSON.stringify([unit.uri, unit.profile, unit.panel, expanded, state.locked, name]), () => {
+  const focused = active && slot.el.contains(active) ? active.dataset.focus || null : null;
+  const rebuilt = patch(slot.el, JSON.stringify([unit.uri, unit.profile, unit.panel, expanded, state.locked]), () => {
     const outer = state.updaters;
     state.updaters = [];
     try {
-      return unitParts(slot, unit, expanded, name);
+      return unitParts(slot, unit, expanded);
     } finally {
       state.unitUpdaters.set(unit.name, state.updaters);
       state.updaters = outer;
     }
   });
   if (rebuilt) {
-    giveBack(slot.el, typing);
-    // The name's button was tapped, or the keys were on it: they stay on it.
-    if (onName) slot.name.focus();
-    const again = focusedLabel ? slot.el.querySelector(`[aria-label="${CSS.escape(focusedLabel)}"]`) : null;
+    giveBack(slot.el, typing);  // a field typed in: its text too
+    const again = !typing && focused ? slot.el.querySelector(`[data-focus="${CSS.escape(focused)}"]`) : null;
     if (again) again.focus({ preventScroll: true });
   }
   patch(slot.badge, JSON.stringify(unit.monoNote), () => monoBadge(unit));
+  const sub = [pluginName(unit), unit.profile ? "profile" : "no profile: every parameter"].join(" · ");
+  if (slot.sub.textContent !== sub) slot.sub.textContent = sub;
   slot.steps.up.disabled = !R.canMove(track, index, "up");
   slot.steps.down.disabled = !R.canMove(track, index, "down");
 }
@@ -1698,6 +1704,22 @@ function placeAmp(parts, tabs, rig, ampView) {
   parts.ampWaiting = amp.on === null;
 }
 
+// Whether the chain is still to wait for the profiles' first answer. A row
+// drawn before it is drawn again when it comes, with its profile's controls
+// in place of the plain list: every control replaced, after the page had
+// looked settled (CI on #135: a knob focused, or measured, a moment before
+// was gone). So the first chain is drawn once the profiles have answered,
+// or failed, or HOLD_MS after it was first due, whichever is first; the
+// profiles are asked for as the page opens.
+function profilesDue() {
+  if (state.profilesAt) return false;
+  if (state.profilesWaitSince === undefined) {
+    state.profilesWaitSince = Date.now();
+    setTimeout(render, HOLD_MS + 20);
+  }
+  return Date.now() - state.profilesWaitSince < HOLD_MS;
+}
+
 // The open tab's chain: a slot per plugin, in the chain's order. The chain
 // is rebuilt whole only when the tab changes; a plugin added, removed or
 // moved, here or from elsewhere, adds, drops or moves its slot and leaves
@@ -1708,7 +1730,7 @@ function chainRegion(regions, model, status, open) {
   // (`placeAmp`); and while another rig's plugins are read (`poll`), so
   // that its rows are drawn once, with them, not plain and then again.
   const reading = !!state.reading && Date.now() - state.reading.since < HOLD_MS;
-  const waiting = (parts.ampWaiting || reading) && !!model;
+  const waiting = (parts.ampWaiting || reading || profilesDue()) && !!model;
   const track = model && open !== null && !waiting ? model.tracks.find((t) => t.name === open) || null : null;
   // With no rig, the message depends on the tone (changing, or down), so
   // the tone is in the key, or it would never be redrawn (found by review).
@@ -2855,4 +2877,8 @@ window.addEventListener("hashchange", () => {
   render();
 });
 setInterval(tickElapsed, TICK_MS);
+// The profiles and the plugins' names from the start, beside the first poll:
+// the first chain waits for the profiles (`profilesDue`).
+inBackground("profiles", refreshProfiles);
+inBackground("names", refreshNames);
 poll().then(pollLoad);
