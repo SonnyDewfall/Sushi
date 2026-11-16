@@ -922,10 +922,11 @@ def unsaved_count(page, count):
     expect(dot).to_have_class(re.compile(r"\bhas\b") if count else re.compile(r"^save-dot$"))
 
 
-def test_the_rack_shows_every_chain_as_a_row_of_cards_with_the_profiles_controls(rack):
-    tracks = rack.locator("section.track")
-    expect(tracks).to_have_count(3)
-    expect(rack.locator("section.track h2")).to_have_text(["board", "vocal", "master"])
+def test_the_rack_shows_the_open_chain_as_a_row_of_cards_with_the_profiles_controls(rack):
+    # One chain at a time, behind a tab per channel and Master (#135): the
+    # first channel's is open (test_ui_tabs.py has the tabs themselves).
+    expect(rack.get_by_role("tab")).to_have_text(["board", "vocal", "Master"])
+    expect(rack.locator("section.track")).to_have_count(1)
     expect(rack.locator("#t-board .unit button.name")).to_have_text(["overdrive", "octave", "delay"])
     overdrive = rack.locator('.unit[data-unit="overdrive"]')
     expect(overdrive.get_by_role("slider")).to_have_count(3)
@@ -936,6 +937,8 @@ def test_the_rack_shows_every_chain_as_a_row_of_cards_with_the_profiles_controls
     # No profile: every parameter, in a plain list, the read-only one said so.
     expect(rack.locator('.unit[data-unit="delay"]')).to_contain_text("no profile: every parameter")
     expect(rack.locator('.unit[data-unit="delay"]').get_by_role("slider")).to_have_count(6)
+    # The octave is bypassed, so a slim row: opened, its read-only one says so.
+    rack.locator('.unit[data-unit="octave"] button.name').click()
     expect(slider(rack, "octave latency")).to_have_attribute("aria-readonly", "true")
     # The send is the channel's volume, at the top of its row, in dB; no
     # second control for it at the row's end (2026-11-06).
@@ -1083,7 +1086,10 @@ def test_a_mono_plugin_added_is_one_card_and_one_change_and_its_copy_is_not_show
     post(served, "/live/add", {"track": "vocal", "uri": "http://guitarix.sourceforge.net/plugins/gxts9#ts9sim",
                                "name": "grit"})
     assert served.rig.chains["vocal"] == ["vocal_delay", "grit", "grit_to_stereo", "vocal_send"]
+    # Counted while its tab is closed, and there when the tab is opened.
+    expect(p.get_by_role("tab", name="board")).to_have_attribute("aria-selected", "true")
     unsaved_count(p, 1)
+    p.get_by_role("tab", name="vocal").click()
     expect(p.locator("#t-vocal .unit button.name")).to_have_text(["vocal_delay", "grit"])
     p.locator("aside.changes button.undo").click()
     until(lambda: served.rig.chains["vocal"] == ["vocal_delay", "vocal_send"])
@@ -1376,8 +1382,8 @@ def test_profiles_and_names_that_fail_to_arrive_are_asked_for_again_and_hold_not
     page.page.route("**/library", library)
     page.page.clock.install()
     page.page.goto(served.url + "/#rack")
-    # The rig shows while the library is still being built.
-    expect(page.page.locator(".unit")).to_have_count(4)
+    # The rig shows while the library is still being built (the open tab's chain).
+    expect(page.page.locator(".unit")).to_have_count(3)
     expect(page.page.locator(".problem.page")).to_contain_text("profiles folder unreadable (test)")
     held[0].abort()
     advance(page.page, 12)
@@ -1607,7 +1613,8 @@ def test_a_rig_is_started_from_the_picker_headless_and_busy_is_shown_meanwhile(b
         expect(p.locator(".notice")).to_contain_text("Started electric_board, headless.", timeout=8000)
         assert world.calls == [["up", "electric_board", "--rig", "--headless"]]
         expect(p.locator(".rig.up")).to_have_text("electric_boardup now")
-        expect(p.locator(".unit")).to_have_count(4)
+        expect(p.get_by_role("tab")).to_have_text(["board", "vocal", "Master"])
+        expect(p.locator(".unit")).to_have_count(3)
         expect(p.get_by_role("button", name="Stop electric_board")).to_be_enabled()
         page.close()
 
@@ -3398,14 +3405,14 @@ def test_a_channel_is_added_to_the_running_rig_and_a_restart_is_offered(browser,
             if line[:1] in "+-" and not line.startswith(("+++", "---"))] == [
         "+- name: keys", "+  input: keys-in", "+  width: stereo", "+  chain: []"], "only the channel's own lines"
     expect(wiring.locator(".wiring-row")).to_have_count(3)
-    expect(p.locator("section.track")).to_have_count(3), "still playing as it was"
+    expect(p.get_by_role("tab")).to_have_text(["board", "vocal", "Master"]), "still playing as it was"
     result.get_by_role("button", name="Restart electric_board to play it").click()
     confirm = wiring.get_by_role("group", name="Confirm the restart")
     expect(confirm).to_contain_text("The sound stops for a few seconds")
     confirm.get_by_role("button", name="Restart now").click()
     expect(p.locator(".notice")).to_contain_text("Restarted electric_board from its file.")
     assert ["restart"] in files_served.lifecycle.calls
-    expect(p.locator("section.track h2")).to_have_text(["board", "vocal", "keys", "master"])
+    expect(p.get_by_role("tab")).to_have_text(["board", "vocal", "keys", "Master"])
     page.close()
 
 

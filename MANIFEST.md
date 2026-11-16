@@ -4017,3 +4017,170 @@ alike is not known, and where it does not, the field's own `scrollWidth`
 still shows the line for a name the field holds, and only an emptied field
 goes by the ruler alone; WebKit; the slow tests and the container job.
 *(2026-11-15)*
+
+**The rack: a tab per channel, and bypassed plugins minimised (#135).** The
+middle of the rack stacked every channel's chain and the master's, each plugin
+at full size, bypassed or not. Now it shows **one chain at a time behind
+tabs**, one per channel in the rig's order and then Master, and **a bypassed
+plugin is a slim row** (its name, its switch, its mono badge) that opens when
+it is switched on, from anywhere, or tapped. The decisions are `rig.js`'s
+(`rackTabs`, `openTab`, `rememberedTab`, `tabKey`, `ampTab`, `tabMarks`,
+`unitRow`, `unitTapped`, `bypassSeen`); `app.js` draws them. What the issue
+and its brief did not settle, and how each was settled: (1) **the amp's tab**
+is the first channel the running rig's file plays from `guitar-in`
+(`patchbay.GUITAR_ROLE`), the first channel where the file does not say; the
+card waits for the file rather than be drawn in one tab and then another.
+(2) **What is remembered** is one record, the rig and the tab, in the
+browser's storage: a rig gone back to opens on its first channel, since the
+issue says the tab "falls back to the first channel when the rig changes".
+(3) **"Tapped open"** is the name's button, as it already was for a plugin
+that is on: on a slim row it opens the row with all its controls, and closes
+it again; a tap anywhere else on a slim row does the same. (4) **A slim row
+has no move buttons**: the issue lists what it holds. (5) **A row in use is
+not minimised under the hand**: a knob mid-drag or a value half typed when
+the plugin is bypassed keeps its row open, as one tapped open, until it is
+closed or the tab changes; a knob merely left focused does not. (6) **A strip
+opens its tab** by its name, now a button, or by a tap on the strip that
+lands on nothing else; its fader, its value and Change input do not, so
+setting one channel's volume does not take the middle column from another's
+chain. (7) **A tab carries a red dot**, its reason in its title, while a
+change to one of its plugins stands refused or its amp is not playing: the
+second was said only on the amp's card, which a closed tab now hides.
+(8) While a command runs the tabs stay as the strips do; with no rig there
+are none. How a gesture survives: each plugin's row is patched on its own
+key, a bypass only hides or shows what the row already holds, and the rows
+are put in a new order round the one holding the focus, so a bypass from
+elsewhere, a neighbour opening, or a plugin added, removed or moved from
+another device rebuilds nothing under a drag or a half-typed value. The stage
+screen is unchanged. Tests: `test_ui_tabs.py`, 6 of the decisions and 30 in
+the browser, among them the frozen guitar_vocal laid out by the real compiler
+(`ui_fake.rig_of`) with the fake's amp; six tests of `test_ui.py` and
+`test_ui_knobs.py` that named every chain on one page now name the open tab's.
+The guides (`shaping-a-sound.md`, `mixing.md`), `docs/reference/web-ui.md`
+and three pictures (`docs/guide/img/rack.png` and `shaping-a-sound.png` by
+`guide_shots.py`, `docs/ui/rack.png` by hand as before) follow. The fast
+suite: 4404 passed, 41 skipped (36 of them this change's). **Not run here:**
+anything on the rig. There is no Sushi, no phone and no touch screen here:
+the page was driven in headless Chromium only, where a tap is a click, so a
+finger's tap on a slim row or a strip, and two fingers at once (one dragging
+a knob while another taps), are untried; "a pedal" in the tests is the fake
+Sushi's bypass changed under the agent, not a pedal through the MIDI
+listener; no other browser (WebKit, Firefox) was tried, nor a browser's own
+scrollbar, which headless Chromium hides and which a row changing height
+could bring or remove; the slow tests and the container job. *(2026-11-15)*
+
+**The rack's tabs, answering review and the container (PR #148).** The
+container's run failed one of #135's own tests: a value half typed into the
+overdrive was taken out of the page when the delay was moved past it from
+another device. It was not the reorder (which moved the delay, never the row
+in use) but the read of `/live/plugins`: the page dropped the plugins it knew
+as soon as the chains changed and then waited for the answer with the new
+chains already shown, so a render in that wait (the load tiles redraw every
+two seconds) rebuilt every row as a plain list, and again when the answer
+came. Here it failed 6 times in 50 under load, and none in 50 since. The
+review's seven findings, each reproduced with a test that fails on the code
+reviewed and passes now: (1) the amp's card vanished whenever there were no
+tabs, and one failed `/live` poll took it from under a fader drag: the tabs
+now stay while the rig is up, and with none the card shows on its own; (2)
+the plugins read above, now shown with what was held for the same rig and
+read before anything is shown for another; (3) the chain was drawn and then
+pushed down 380 px by the card arriving above it: the amp's tab is decided
+once a run, the chain held back with the card until then (at most two
+seconds, then the first channel); (4) the amp's tab followed the rig's file,
+so Change input moved it before the restart: it follows the running rig now
+(`GET /machine/roles`'s `used_by`, from the running config's wiring), the
+file only when that cannot say; (5) a reorder could take out a row being
+dragged once the focus was elsewhere, and a drag whose pointer was lost
+stayed set: rows holding the focus or a drag are never moved, and a drag ends
+when its capture is lost; (6) a pedal's bypass dropped the focus to the page:
+it goes to the row's name; (7) the tab's dot missed the model's rate warning
+and an unlisted models folder, and said nothing while the amp's tab was not
+known: every fault the card can show is on its tab, and on every channel's
+tab meanwhile. Also: `refocus` escapes a field's name as `giveBack` does; the
+phone test uses three channels with long names at 390 and 320 px, which found
+a strip's long name widening a 320 px page (it now breaks anywhere); and
+`test_live_close.py` no longer gathers an empty list of tasks, which asks for
+a current event loop that thread has none of (a RuntimeError on 3.12, a
+ValueError on 3.13 here) whenever the cancelled task happened to be done
+already: forced empty, the old test fails and the new passes; run 30 times
+here it never was empty, so the container is its real test. The fast suite:
+4414 passed, 41 skipped before merging master (#147), 4425 passed and 41
+skipped after. **Not run here:** anything on the rig, a phone or a touch screen (a
+tap is a click in headless Chromium, and a lost pointer capture was made with
+`releasePointerCapture`, not by a browser); the amp placed by a real running
+config's wiring (the fake rig has an amp or a rig file, not both, so that
+answer was given to the page by the test); the slow tests and the container
+job. *(2026-11-16)*
+
+**The rack's tabs, the run the page is showing (PR #148, re-review).** Three
+findings, each tied to which run is on screen, and one CI failure. (1) Tabs
+kept while `/live` failed were kept across a restart, so a new run's amp
+could be placed against the run before's tabs (with a channel added on the
+guitar's input, in the old first channel for the whole run): a held model is
+now held for its own run only (`config_name` and `started_at`), and the amp's
+tab is decided only against tabs drawn from this run's `/live`. (2) While
+another rig's `/live/plugins` was read, the rig switched from stayed on the
+page with its knobs live, and a knob turned would have been sent to the rig
+switched to: another rig is now shown at once, its chain held back ("Reading
+the rig…", at most two seconds) until its plugins come, which keeps the rows
+from being drawn plain and then again under a hand; and a change still
+waiting to be sent when the rig shown changes is dropped. The agent's `/live`
+routes take no word of which rig a change is for, so one already in flight
+cannot be recalled; no such word is added here. (3) The amp's decision was
+the rack frame's, so leaving for the stage and coming back decided it again,
+from a file edited since: it is the page's now, by run. CI on 3.13 failed
+`test_an_edit_of_the_running_rig_with_unsaved_work_is_refused_in_place`: its
+knob was focused before the profiles arrived, the row was rebuilt with them,
+the focus fell to the page's body and the key turned nothing, so the edit
+went through as if nothing were unsaved. Not reproduced in 50 runs under
+load here; made to happen every time by holding `/profiles` back. A rebuilt
+row now gives the focus back to the control that had it. Each has a test
+that fails on 049778a and passes now. Under load (four loops at once): 10
+runs of `test_ui_tabs.py` and 20 each of the two tests that failed in CI,
+none failed. The fast suite: 4430 passed, 41 skipped. **Not run here:** a
+real restart or switch on the rig, a phone, the slow tests and the container
+job. *(2026-11-16)*
+
+**The rack's tabs: a rig change needs a sign, and a row is drawn once (PR
+#148, second re-review).** (1) The rig's identity held the log's index of
+its last `op: "rig"` entry, which goes to nothing when 500 knob turns trim
+it away or when one `/live/log` fails: either read as "another rig", which
+cleared the plugins, held the chain back and dropped a queued change. A
+live switch is now counted only on a positive sign, an `op: "rig"` entry
+newer than every entry seen (`R.switchesSeen`); a switch to another rig is
+also a new `config_name` in `/health`, which does not carry the state file's
+`switched_at`. (2) A rebuilt row gave the focus back by `aria-label`, which
+the switch gets only from an updater and changes when pressed, and a move
+button's changes with the lock: a probe of a689de9 lost the focus from the
+switch (open row and slim) and the move buttons. Each focusable control of a
+row now says what it is (`data-focus`), set as it is built. CI then failed a
+third existing test, on 3.11 (`test_a_knob_turns_by_dragging_with_a_pointer`:
+the knob's box was None), the second after 3.13's: the common cause was the
+first chain drawn before the profiles' first answer, so every row was drawn
+again a moment after the page looked settled (the rack fixture waits for the
+first row). The first chain now waits for the profiles (at most two
+seconds), which are asked for as the page opens, and the plugin's name under
+a unit's is written in place rather than by a rebuild when the library
+answers. Under load on a689de9's page the 3.11 test failed 10 times in 20;
+on this one none in 20, nor the 3.13 test or the container's (20 each).
+Each fix has a test that fails on a689de9. The fast suite: 4442 passed, 41
+skipped. **Not run here:** the browser tests on 3.11 (this machine's 3.11
+has no Playwright: CI is that test), the rig, a phone, the slow tests and
+the container job. *(2026-11-16)*
+
+**The rack's tabs: an agent started again, and a drag under a late profile
+(PR #148, third re-review).** (1) A live switch was counted by its log
+entry's number being newer than any seen, but an agent started again numbers
+its log from 0 while Sushi keeps running, so a switch just after an agent's
+restart (its entry numbered below what the page had seen) went uncounted,
+and the rows kept the plugins of the rig before. `R.switchesSeen` now keys
+what it has seen to the agent's start (`/health`'s `agent.started_at`, set
+once each time the agent starts, to the second): in a log of another start,
+any rig entry counts; an unread log changes nothing, that start included.
+(2) Profiles arriving after the first draw's two-second wait rebuilt a row
+under a knob being dragged: a row with a drag is now left as it is, and
+takes its profile when the drag ends. Each has a test that fails on 4fe129e
+and passes now. The fast suite: 4445 passed, 41 skipped. **Not run here:**
+an agent really restarted under a running Sushi (`/health` and `/live/log`
+were given to the page by the test), the browser tests on 3.11, the rig, a
+phone, the slow tests and the container job. *(2026-11-16)*

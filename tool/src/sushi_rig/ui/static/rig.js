@@ -510,6 +510,214 @@ export function channelLevels(model, live) {
   });
 }
 
+// ---------------------------------------------------------------- which rig is shown
+
+// The live switches the page has seen, from one GET /live/log answer after
+// another (`seen` is the last call's, null to begin; `log` the answer's
+// body, or null when it was not read; `agent` /health's `agent.started_at`,
+// which names the agent's own start). A live switch to another rig is
+// already a new `config_name` in /health; this is for one /health cannot
+// tell apart (#93 writes the state file's `switched_at`, which /health does
+// not carry), and counts one only on a positive sign: an `op: "rig"` entry
+// newer than every entry seen before it. Absent is never a sign: the log
+// keeps its last 500 entries, so a rig entry is trimmed away by ordinary
+// knob turns, and one /live/log that fails says nothing; either counted as
+// "another rig" cleared the plugins and held the chain back (re-review of
+// #135). Entries are numbered from `first`, the same number for the same
+// entry across answers of one agent; an agent started again (its start not
+// the one seen, or a log whose newest is older than one seen) begins again
+// from 0 and keeps Sushi running, and any rig entry in its log happened
+// since the page last saw the agent before, so it counts. An unread log
+// changes nothing, the agent's start with it, so that a log read later
+// from the new agent is still known as one. Returns {agent, max, count}.
+export function switchesSeen(seen, log, agent = null) {
+  if (!log || !Array.isArray(log.log)) return seen;
+  const first = isNumber(log.first) ? log.first : 0;
+  const last = first + log.log.length - 1;
+  let rig = null;
+  for (let i = log.log.length - 1; i >= 0; i--) {
+    if (log.log[i] && log.log[i].op === "rig") { rig = first + i; break; }
+  }
+  if (!seen) return { agent, max: Math.max(rig ?? -1, last), count: 0 };
+  if (agent !== seen.agent || last < seen.max) {
+    return { agent, max: Math.max(rig ?? -1, last), count: seen.count + (rig !== null ? 1 : 0) };
+  }
+  if (rig !== null && rig > seen.max) return { agent, max: Math.max(rig, last), count: seen.count + 1 };
+  return { agent, max: Math.max(seen.max, last), count: seen.count };
+}
+
+// ---------------------------------------------------------------- the rack's tabs and rows (#135)
+// The rack's centre shows one chain at a time, behind tabs, and a bypassed
+// plugin as a slim row. What is a tab, which is open, where the amp goes,
+// what a closed tab must still say, and how big a row is, are decided here;
+// app.js draws them and holds what the player opened.
+
+// The role the amp is in front of (patchbay.GUITAR_ROLE): the amp, the tuner
+// and the recorder's dry tap all key off the channel that takes it.
+export const GUITAR_ROLE = "guitar-in";
+
+// The tabs: one per channel in the rig's order, then the master's, labelled
+// Master. A rig of one channel has two, so the layout is the same on every
+// rig of channels; a v1 run has its tracks and no Master, having no master.
+export function rackTabs(model) {
+  const tracks = (model && model.tracks) || [];
+  return [...tracks.filter((t) => !t.isMaster), ...tracks.filter((t) => t.isMaster)]
+    .map((t) => ({ id: t.name, label: t.isMaster ? "Master" : t.name, master: !!t.isMaster }));
+}
+
+// The tab that is open: the one wanted when the rig has it, else the first
+// (the first channel), else none.
+export function openTab(tabs, wanted) {
+  if (tabs.some((t) => t.id === wanted)) return wanted;
+  return tabs.length ? tabs[0].id : null;
+}
+
+// What the browser keeps of the open tab, and reads back: one record, the
+// rig it was chosen on and the tab. Another rig's is not this rig's (a
+// channel called vocal there says nothing of the one here), so a rig that
+// changes opens on its first channel. Anything unreadable is nothing kept.
+export function tabToRemember(rig, tab) {
+  return JSON.stringify({ rig, tab });
+}
+
+export function rememberedTab(stored, rig) {
+  if (typeof stored !== "string" || typeof rig !== "string") return null;
+  let kept = null;
+  try { kept = JSON.parse(stored); } catch { return null; }
+  return kept && typeof kept === "object" && kept.rig === rig && typeof kept.tab === "string" ? kept.tab : null;
+}
+
+// The tab a key moves to from `current`, as a tablist's keys go: the arrows
+// to the next and the one before, round the ends, Home and End to the ends.
+// Null for any other key.
+export function tabKey(tabs, current, key) {
+  const i = tabs.findIndex((t) => t.id === current);
+  if (!tabs.length || i < 0) return null;
+  const to = key === "ArrowRight" ? (i + 1) % tabs.length
+    : key === "ArrowLeft" ? (i + tabs.length - 1) % tabs.length
+      : key === "Home" ? 0 : key === "End" ? tabs.length - 1 : null;
+  return to === null ? null : tabs[to].id;
+}
+
+// The tab the amp's card is in: the channel the amp is in front of, which is
+// the first channel the RUNNING rig plays from GUITAR_ROLE. What the running
+// rig plays from each role is GET /machine/roles's `used_by` (`rolesAnswer`,
+// {ok, body}), read from the running config's own wiring, so it does not
+// change when Change input writes the file: until the restart the amp is
+// still in front of the channel it was (review of #135). It can say only
+// when the agent read the running config (`running` set, no `wiring_note`:
+// otherwise every `used_by` is empty, and says nothing). Only when it
+// cannot say (the answer failed, the running config was unread, or no such
+// role) is the rig's file asked (`channelsAnswer`, GET
+// /rigs/<rig>/channels's). A run that has nothing on that role, or no rig
+// file at all (`filed` false: a v1 run), leaves the amp with the first
+// channel. Null while an answer it needs is still to come: app.js then
+// waits, a bounded while, rather than draw the card in one tab and then
+// move it to another.
+export function ampTab(tabs, rolesAnswer, channelsAnswer, filed) {
+  const channels = tabs.filter((t) => !t.master);
+  if (!tabs.length) return null;
+  const first = (channels[0] || tabs[0]).id;
+  if (!filed) return first;
+  if (!rolesAnswer) return null;
+  const said = rolesAnswer.ok && rolesAnswer.body.running && !rolesAnswer.body.wiring_note;
+  const role = said ? (rolesAnswer.body.roles || []).find((r) => r && r.name === GUITAR_ROLE) : null;
+  if (role) {
+    const fed = channels.find((t) => (role.used_by || []).includes(t.id));
+    return fed ? fed.id : first;
+  }
+  if (!channelsAnswer) return null;
+  const inFile = channelsAnswer.ok ? channelsAnswer.body.channels || [] : [];
+  const fed = inFile.find((c) => c.input === GUITAR_ROLE && channels.some((t) => t.id === c.name));
+  return fed ? fed.name : first;
+}
+
+// Everything the amp's card says is wrong, for its tab's mark (`ampCard`'s
+// view): what a closed tab would otherwise hide.
+export function ampFaults(amp) {
+  if (!amp) return [];
+  if (amp.state === "failed") return [`The amp could not be read: ${amp.why}`];
+  if (amp.state !== "up") return [];
+  const out = [];
+  if (amp.down) out.push("Carla is not running: restart the rig to bring the amp back.");
+  if (amp.model && amp.model.problem) out.push(amp.model.problem);
+  if (amp.model && amp.model.warning) out.push(amp.model.warning);
+  if (amp.listProblem) out.push(`The amp's models could not be listed: ${amp.listProblem}`);
+  return out;
+}
+
+// What each tab says of what is behind it, open or not: a closed panel must
+// not hide what matters (principle 8). Two things do and are said nowhere
+// else: a change the agent refused, marked beside its control (`failed`, the
+// keys of the controls whose last change was refused, as app.js keys them),
+// and anything wrong with the amp (`amp`, `ampCard`'s view, `ampFaults`), on
+// its tab (`ampOn`). While the amp's tab is not known yet (`ampOn` null and
+// the card held back), its faults are on every channel's tab, so that no
+// tab hides them meanwhile. {tab id: the note, or null}.
+export function tabMarks(tabs, model, { failed = [], amp = null, ampOn = null } = {}) {
+  const refused = new Set();
+  let ampRefused = false;
+  for (const key of failed) {
+    const [kind, name] = String(key).split("\u0000");
+    if (kind === "a") ampRefused = true;
+    else if (kind === "p" || kind === "b") refused.add(name);
+  }
+  const ampNotes = [...ampFaults(amp), ...(ampRefused ? ["A change to the amp was refused."] : [])];
+  const tracks = new Map(((model && model.tracks) || []).map((t) => [t.name, t]));
+  const out = {};
+  for (const tab of tabs) {
+    const notes = [];
+    if (tab.id === ampOn || (ampOn === null && !tab.master)) notes.push(...ampNotes);
+    const track = tracks.get(tab.id);
+    for (const unit of track ? track.units : []) {
+      if (refused.has(unit.name)) notes.push(`A change to ${unit.name} was refused.`);
+    }
+    out[tab.id] = notes.length ? notes.join(" ") : null;
+  }
+  return out;
+}
+
+// A plugin's row. Bypassed, it is minimised: a slim row with its name, its
+// switch and its mono badge. `peeked` is a bypassed row the player opened to
+// set it up without switching it on; `expanded` is the row showing all its
+// controls (the name's button, as before #135). `bypassed` is true, false,
+// or null where Sushi did not say, which is drawn as on: nothing is hidden
+// on a guess.
+//   minimised: the slim row.
+//   all: every control is drawn (what the row holds under the slim one too,
+//     so a bypass arriving only hides it and never rebuilds a control).
+//   opened: what the name's button says of itself (aria-expanded): for a
+//     bypassed row, that it is open at all; for one that is on, that all its
+//     controls show.
+export function unitRow(bypassed, { expanded = false, peeked = false } = {}) {
+  const minimised = bypassed === true && !peeked;
+  return { minimised, all: expanded, opened: bypassed === true ? peeked : expanded };
+}
+
+// The name's button, tapped. On a bypassed row it opens it, with all its
+// controls, and closes it again to the slim row; on one that is on it shows
+// all the controls or the main ones, as it did.
+export function unitTapped(bypassed, { expanded = false, peeked = false } = {}) {
+  if (bypassed === true) return peeked ? { expanded: false, peeked: false } : { expanded: true, peeked: true };
+  return { expanded: !expanded, peeked: false };
+}
+
+// A bypass seen to change, from this page or anywhere (a pedal, another
+// device). Switched on, the row opens as it was left, and is no longer one
+// peeked into. Switched off, it minimises, unless the player is in the
+// middle of it (`inUse`: a knob being dragged, a value half typed): that
+// row stays open under their hand, as one tapped open does, until they close
+// it or change tab.
+export function bypassSeen(bypassed, { expanded = false, peeked = false } = {}, inUse = false) {
+  if (bypassed === true) return { expanded, peeked: peeked || !!inUse };
+  return { expanded, peeked: false };
+}
+
+// The tab changed: what was peeked into closes (`unitTapped`'s close).
+export function tabLeft(expanded, peeked) {
+  return { expanded: [...expanded].filter((name) => !peeked.includes(name)), peeked: [] };
+}
+
 // ---------------------------------------------------------------- unsaved
 
 const sameChain = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((x, i) => x === b[i]);
@@ -1445,6 +1653,9 @@ export function ampCard(answer, models, { locked = false, pending = null } = {})
   return {
     state: "up", known: b.known, note: b.known_note, panel, down, model, faders, shown,
     override: b.override || null,
+    // Said on the picker too, as `why` when nothing more pressing is; kept
+    // apart so the amp's tab can mark it (`ampFaults`).
+    listProblem: models && !models.ok ? models.reason : null,
     picker: { options, canChange: !why, why, warning: MODEL_WARNING },
   };
 }
@@ -1489,10 +1700,14 @@ export function ampModelOutcome(model, answer) {
 // confirmed it, so an older poll cannot pull the knob back mid-gesture.
 // A refused change is dropped, and its reason given to `onFailure`: the
 // knob then shows the rig's value with the reason beside it, not quietly.
+// `run()` names the rig the page shows: a change is sent only to the rig it
+// was made on, and one still waiting when that changes is dropped, never
+// sent to the next rig (#135's review), whose plugin may share the name.
 export class Sender {
-  constructor(post, { pollSeq = () => 0, onFailure = () => {}, onSent = () => {} } = {}) {
+  constructor(post, { pollSeq = () => 0, onFailure = () => {}, onSent = () => {}, run = () => null } = {}) {
     this.post = post;
     this.pollSeq = pollSeq;
+    this.run = run;
     this.onFailure = onFailure;
     this.onSent = onSent;
     this.state = new Map();
@@ -1501,11 +1716,12 @@ export class Sender {
   change(key, value, body) {
     let s = this.state.get(key);
     if (!s) { s = { want: value, body, inFlight: false, confirmedAt: null }; this.state.set(key, s); }
-    s.want = value; s.body = body; s.confirmedAt = null;
+    s.want = value; s.body = body; s.confirmedAt = null; s.run = this.run();
     if (!s.inFlight) this._send(key, s);
   }
 
   async _send(key, s) {
+    if (s.run !== this.run()) { this.state.delete(key); return; }  // made on a rig no longer the one shown
     s.inFlight = true;
     const value = s.want;
     const result = await this.post(s.body(value));

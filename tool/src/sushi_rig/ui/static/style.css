@@ -189,7 +189,7 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 
 .rack-body { flex: 1; display: flex; flex-wrap: wrap; min-height: 0; }
 .channels { flex: 0 1 232px; border-right: 1px solid var(--line); background: var(--panel); padding: 18px 14px; display: flex; flex-direction: column; gap: 8px; }
-.channels h2, .track-head h2, .send .k, .levels .k, .cards .track h2 {
+.channels h2, .send .k, .levels .k, .cards .track h2 {
   font-family: var(--display); font-size: 14px; font-weight: 500; letter-spacing: .1em; color: var(--muted); text-transform: uppercase;
 }
 .channel { min-height: 56px; display: flex; flex-direction: column; justify-content: center; gap: 2px; padding: 0 12px; border-radius: 10px; text-decoration: none; border: 1px solid var(--edge); color: var(--text); }
@@ -202,9 +202,27 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 .rack-main { flex: 999 1 560px; min-width: 0; padding: 14px 20px 24px; }
 .rack { display: flex; flex-direction: column; gap: 6px; }
 .track { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
-.track-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-height: 28px; padding-left: 34px; }
-.track-head .ring { width: 12px; height: 12px; border-radius: 50%; border: 3px solid #4A4C57; }
+.track-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-height: 28px; }
 .track-head .hint { margin-left: auto; font-size: 12px; color: var(--muted); }
+.chain { display: flex; flex-direction: column; gap: 6px; }
+
+/* The tabs (#135): one chain at a time. A tab is a thumb high, and as wide
+   whether it is the open one or not (one weight, one border), so choosing
+   one moves nothing. They wrap rather than push the page wider than a phone. */
+.tabs { display: flex; flex-wrap: wrap; gap: 4px 6px; margin-bottom: 12px; border-bottom: 1px solid var(--line); }
+.tabs[hidden], .amp-card[hidden] { display: none; }
+.tab {
+  min-height: 44px; min-width: 0; max-width: 100%; display: inline-flex; align-items: center; gap: 8px; padding: 0 16px;
+  border: 1px solid transparent; border-bottom: none; border-radius: 10px 10px 0 0; background: transparent; cursor: pointer;
+  font-family: var(--display); font-size: 17px; font-weight: 600; color: var(--muted); overflow-wrap: anywhere; text-align: left;
+}
+.tab[aria-selected="true"] { background: var(--card); border-color: var(--edge); color: var(--text); box-shadow: inset 0 2px 0 var(--accent); }
+.tab:not([aria-selected="true"]):hover { border-color: var(--edge); }
+.tab:focus-visible { outline: 2px solid var(--accent); outline-offset: -2px; }
+/* What a tab says of what is behind it (R.tabMarks): a mark of its own size
+   that is always there, shown or not. */
+.tab-mark { flex: none; width: 8px; height: 8px; border-radius: 50%; background: var(--refused); visibility: hidden; }
+.tab.marked .tab-mark { visibility: visible; }
 
 .unit {
   display: flex; flex-wrap: wrap; align-items: center; gap: 10px; min-height: 60px; padding: 0 12px 0 0;
@@ -212,6 +230,15 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 }
 .unit.open { background: var(--card-open); border: 2px solid var(--accent); padding-bottom: 12px; }
 .unit.bypassed { opacity: .55; }
+/* A bypassed plugin, minimised (#135): its name, its mono badge and its
+   switch, in its place in the chain. Its controls are still there, hidden,
+   so a bypass arriving rebuilds nothing; the name keeps the column the
+   other rows' names are in (the steps' width). */
+.unit.minimised { min-height: 46px; padding-left: 48px; cursor: pointer; }
+.unit.minimised > .steps, .unit.minimised .sub, .unit.minimised > .knobs, .unit.minimised > .detail { display: none; }
+.unit.minimised .swatch { margin: 8px 0; }
+.unit.minimised .who { flex: 1 1 auto; width: auto; min-width: 0; }
+.unit.minimised .name { font-size: 17px; }
 .unit .steps { display: flex; flex-direction: column; margin-left: 4px; }
 .step { width: 44px; height: 30px; border: none; background: transparent; color: #6E717C; cursor: pointer; font-size: 11px; display: inline-flex; align-items: center; justify-content: center; }
 .step:disabled { opacity: .25; cursor: default; }
@@ -458,7 +485,6 @@ a.rig-act { display: inline-flex; align-items: center; justify-content: center; 
 .volume.failed { border-color: var(--refused); }
 .volume-stage { display: flex; flex: 1; min-width: 0; }
 .volume-stage input[type=range] { flex: 1; width: auto; min-width: 0; }
-.track-head .volume { margin-left: 8px; }
 .levels .level { flex: 1 1 100%; padding-left: 10px; }
 .levels .level .n { width: 4.5em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
 .levels .level .volume { border: none; background: transparent; padding: 0; }
@@ -506,6 +532,14 @@ a.rig-act { display: inline-flex; align-items: center; justify-content: center; 
 .strips h2 { font-family: var(--display); font-size: 14px; font-weight: 500; letter-spacing: .1em; color: var(--muted); }
 .strip { display: flex; flex-direction: column; gap: 6px; padding: 10px 10px 12px; border-radius: 12px; background: var(--card); border: 1px solid var(--edge); }
 .strip-name { font-family: var(--display); font-size: 18px; font-weight: 600; color: var(--text); text-decoration: none; }
+/* A strip opens its channel's tab (#135): its name is the button, a thumb
+   high, and the open tab's strip is marked. */
+button.strip-name { min-height: 44px; margin: -6px 0; padding: 0; background: none; border: none; text-align: left; cursor: pointer; }
+/* A channel's name is one word as long as it likes (keyboards_and_synth_pads):
+   it breaks anywhere rather than push a phone's page wider (review of #135). */
+.strip-name { overflow-wrap: anywhere; min-width: 0; }
+button.strip-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
+.strip.open { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
 .strip .wiring-row { padding: 0; border: none; gap: 6px; }
 .strip .wiring-row .s { font-size: 11px; }
 .strip .wiring-row .rig-act.small { min-height: 36px; padding: 0 10px; font-size: 12px; opacity: .8; }
@@ -521,6 +555,7 @@ a.rig-act { display: inline-flex; align-items: center; justify-content: center; 
 /* A plugin the compiler copies to stereo after: "mono", small, in its name's
    line; amber where it follows a stereo plugin and collapses its width. */
 .name-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.badge-slot { display: contents; }
 .mono-badge { flex: none; font-family: var(--mono); font-size: 10px; font-weight: 400; letter-spacing: 0; line-height: 1; padding: 2px 5px;
   border-radius: 5px; border: 1px solid var(--edge); color: var(--muted); vertical-align: middle; cursor: help; }
 .mono-badge.warn { border-color: var(--accent); color: var(--accent-soft); }

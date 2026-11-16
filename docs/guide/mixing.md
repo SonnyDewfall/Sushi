@@ -18,6 +18,11 @@ microphone is another.
 They are the same faders in both places, and on every device: move one and it
 moves everywhere within a second.
 
+On the rack the strips stay together down the left whichever channel's plugins
+are open in the middle. Clicking a strip's name opens that channel's tab there
+([Shaping a sound](shaping-a-sound.md#pick-the-channel-to-work-on)); moving
+its fader does not.
+
 ## Set a volume
 
 1. Find the fader.
@@ -44,8 +49,9 @@ they are meant to be reached for while you play.
 - **MASTER** is the level of the finished mix, on its way to the monitors.
 
 The strip at the bottom of the left column, **master**, is the mix itself. It
-says how many plugins are on the master's own chain; click its name to jump to
-them. Its volume is the **MASTER** fader in the header.
+says how many plugins are on the master's own chain; click its name to open
+the **Master** tab in the middle and see them. Its volume is the **MASTER**
+fader in the header.
 
 Like any other change, a volume can be taken back with **Undo** and is kept only
 when you save: see [Saving and going back](saving.md).

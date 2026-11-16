@@ -83,6 +83,14 @@ Invented: what a restart does (`UiLifecycle`: a new start time, the running
 config compiled again from the file, and a channel the file gained since
 coming up as an empty track with its send on `UiRig`, which is how the
 compiler builds one; plugins a copied chain brings are not put on it).
+
+A rig file's own rig (`rig_of`, #135): `UiRig` holding the tracks the real
+compiler lays out for a rig file (`rigfile.compile_rig`: each channel's
+plugins in order, each mono plugin's copy to stereo, the sends, the master
+and its return), so the page can be driven against a frozen rig's channels
+and plugin names. Invented: every value (a plugin with captured ports is at
+their defaults, any other has no parameters at all, a send is at 0 dB) and
+that nothing is bypassed.
 """
 
 from __future__ import annotations
@@ -234,6 +242,10 @@ class UiRig:
             "master_return": {"uri": None, "uid": RETURN_UID, "type": "internal"},
         }
         self.refuse: dict = {}
+        # How long `plugins` (GET /live/plugins) takes to answer: a test
+        # sets it to see the page with that answer outstanding. Invented: a
+        # session read on the rig has not been timed.
+        self.plugins_delay = 0.0
         self.calls: list = []
         self.lock = threading.Lock()  # the agent calls from its worker threads
         self._next = 0
@@ -316,6 +328,7 @@ class UiRig:
             return reading
 
     def plugins(self, connection):
+        time.sleep(self.plugins_delay)  # outside the lock: the rest of the rig answers meanwhile
         with self.lock:
             self.calls.append(("plugins",))
             return {name: {"track": track, **self.classes[name]}
@@ -373,6 +386,28 @@ class UiRig:
 
     def writes(self):
         return [c for c in self.calls if c[0] in ("set_parameter", "set_bypass", "move", "add", "remove")]
+
+
+def rig_of(path: Path) -> UiRig:
+    """`UiRig` holding the rig file at `path` as the compiler lays it out
+    (module docstring: the tracks and names are the compile's, the values
+    invented)."""
+    from sushi_rig.rigfile import compile_rig, emit_compiled, load_rig
+
+    rig = load_rig(path)
+    compiled = emit_compiled(rig, *compile_rig(rig))
+    out = UiRig()
+    out.chains = {track["name"]: [plugin["name"] for plugin in track["plugins"]] for track in compiled["tracks"]}
+    out.info, out.bypassed, out.classes = {}, {}, {}
+    for track in compiled["tracks"]:
+        out.info[track["name"]] = strip()
+        for plugin in track["plugins"]:
+            name, uid, uri = plugin["name"], plugin.get("uid"), plugin.get("uri")
+            ports = PORTS.get(uri)
+            out.info[name] = send(0.0) if uid == SEND_UID else info_of(ports()) if ports else {}
+            out.bypassed[name] = False
+            out.classes[name] = {"uri": uri, "uid": uid, "type": plugin["type"]}
+    return out
 
 
 def describe_up(started: datetime, name: str = "electric_board", amp_model: str | None = None,

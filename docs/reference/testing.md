@@ -9,8 +9,8 @@ cd tool && PYTHONPATH=src python -m pytest -rs   # everything, on a machine with
 With the package not installed, put `PYTHONPATH=src` in front of any of them, as
 the last line does.
 
-The web UI's browser tests (`tests/test_ui.py`) need Playwright and a Chromium for
-it; without them those tests skip, and the rest of the file still runs:
+The web UI's browser tests (`tests/test_ui*.py`) need Playwright and a Chromium for
+it; without them those tests skip, and the rest of each file still runs:
 
 ```bash
 pip install -e "tool[ui-test]" && python -m playwright install chromium

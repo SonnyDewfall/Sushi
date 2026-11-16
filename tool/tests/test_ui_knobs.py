@@ -290,7 +290,9 @@ def test_nothing_comes_or_goes_or_moves_when_values_change(browser):
     """The player's first request: labels that popped in and out as values
     changed. A knob turned, a level and the master moved, a bypass, the
     Save count going from none to some: every element's box is where it was,
-    and no element came or went."""
+    and no element came or went. (A bypass does change its own row's size
+    since #135, and nothing else: that case, and values changing on a
+    minimised row and a closed tab, are test_ui_tabs.py's, with `boxes`.)"""
     with Served(save=True) as served:
         page = rack_page(browser, served)
         p = page.page
@@ -534,9 +536,9 @@ def test_the_rack_is_a_mixing_desk_strips_left_chains_middle_files_right(browser
     p = page.page
     strips = p.locator("nav.channels .strip")
     expect(strips.locator(".strip-name")).to_have_text(["board", "vocal", "master"])
-    # The master's strip leads to its chain; its volume is the header's.
+    # The master's strip opens its chain's tab (test_ui_tabs.py); its volume is the header's.
     master = p.locator('nav.channels .strip-master')
-    expect(master.get_by_role("link", name="master")).to_have_attribute("href", "#t-master")
+    expect(master.get_by_role("button", name="master")).to_have_attribute("aria-controls", "rack-panel")
     expect(master).to_contain_text("Its volume is the master's, in the header.")
     expect(master.get_by_role("slider")).to_have_count(0)
     board = strips.first
