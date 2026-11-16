@@ -471,19 +471,22 @@ def _nulltest(args: argparse.Namespace) -> int:
     (`nulltest.staleness`, #144); one that was not, or no reference at all, is
     STALE, a warning, once the render is finite, two-sided and balanced
     (`nulltest.heard_findings`), which every rig render is held to whatever
-    its reference says. An orphaned reference of a committed rig is a warning.
+    its reference says; a v1 config's render, to its left side not being
+    silent (`nulltest.v1_findings`). No reference is written of a render
+    that fails either. An orphaned reference of a committed rig is a warning.
     """
     import tempfile
 
     import yaml
 
     from .nulltest import (
-        ORPHAN_PREFIX, STALE_PREFIX, MadeFrom, compare, from_dict, heard_findings, keep_wider,
-        made_from_of, staleness, to_dict,
+        ORPHAN_PREFIX, STALE_PREFIX, MadeFrom, compare, from_dict, keep_wider, made_from_of,
+        played_findings, staleness, to_dict,
     )
     from .paths import checkout_root
     from .render import (
-        FROZEN_SOUND, RETRIED, RETRIED_PREFIX, SOUND_DIR, V1_REFERENCE_SUFFIX, RenderError, calibrate,
+        FROZEN_SOUND, RETRIED, RETRIED_PREFIX, SOUND_DIR, V1_REFERENCE_SUFFIX, RenderError, Unplayable,
+        calibrate,
         channels_of, frozen_reference_path, frozen_rigs_to_check, is_frozen, measure, offline_problem,
         reference_path, rig_channels, rig_file_hash, rigs_to_check, v1_reference_path,
     )
@@ -619,15 +622,23 @@ def _nulltest(args: argparse.Namespace) -> int:
                         source = work / f"{channel.name}.json"
                         source.write_text(json.dumps(channel.config, indent=2) + "\n")
 
+                    # What every render is held to, whatever its reference
+                    # says, and what no reference is made of: two sides,
+                    # neither silent, balanced, for a rig; the left side not
+                    # silent for a v1 config, which plays that side alone.
+                    def played(fp, is_rig=is_rig):
+                        return played_findings(fp, is_rig)
+
                     if args.calibrate:
-                        fp, measured = calibrate(source, root, work, sushi_bin=sushi,
-                                                 retried=retried)
-                        refused = heard_findings(fp) if is_rig else []
-                        if refused:
-                            # A reference of a rig that cannot pass the checks
-                            # every rig is held to would fail every run after.
+                        try:
+                            fp, measured = calibrate(source, root, work, sushi_bin=sushi,
+                                                     retried=retried, refuse=played)
+                        except Unplayable as exc:
+                            # Through --calibrate, --missing and the job's
+                            # failure path alike: a reference made of such a
+                            # render would pass every such render after it.
                             failed += 1
-                            print(f"{label}: NOT CALIBRATED — {'; '.join(str(f) for f in refused)}",
+                            print(f"{label}: NOT CALIBRATED — {'; '.join(str(f) for f in exc.findings)}",
                                   file=sys.stderr)
                             for note in retried[already:]:
                                 print(f"   {note}", file=sys.stderr)
@@ -668,11 +679,15 @@ def _nulltest(args: argparse.Namespace) -> int:
                         # #144: a committed rig the owner changed, or added, is
                         # not a failure of the sound. It is rendered all the
                         # same, and held to what any rig must sound like.
-                        if args.candidates is not None:
-                            fp, measured = calibrate(source, root, work, sushi_bin=sushi, retried=retried)
-                        else:
-                            fp = measure(source, root, work, sushi_bin=sushi, retried=retried)
-                        problems = heard_findings(fp)
+                        try:
+                            if args.candidates is not None:
+                                fp, measured = calibrate(source, root, work, sushi_bin=sushi, retried=retried,
+                                                         refuse=played)
+                            else:
+                                fp = measure(source, root, work, sushi_bin=sushi, retried=retried)
+                            problems = played(fp)
+                        except Unplayable as exc:
+                            problems = exc.findings
                         if problems:
                             failed += 1
                             print(f"{label}: {len(problems)} problem(s), with no reference made from this "
@@ -719,9 +734,7 @@ def _nulltest(args: argparse.Namespace) -> int:
                         continue
 
                     fp = measure(source, root, work, sushi_bin=sushi, retried=retried)
-                    differences = compare(reference, fp, tolerance)
-                    if is_rig:
-                        differences += heard_findings(fp)
+                    differences = compare(reference, fp, tolerance) + played(fp)
                 except (RenderError, ValueError, OSError, KeyError, TypeError,
                         AttributeError, yaml.YAMLError) as exc:
                     # Everything a hand-edited reference can do, caught per

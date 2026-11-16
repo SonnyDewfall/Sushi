@@ -477,20 +477,54 @@ def from_dict(raw: dict[str, Any]) -> tuple[Fingerprint, Tolerance]:
 #
 # The record is a hash of the rig file as parsed, not of the config it compiles
 # to: a change to the compiler must still be compared against every reference,
-# not make every one look stale at once. And the numbers in it are normalised,
+# not make every one look stale at once. It is of the part of the file the
+# rendered graph is made from (`RENDERED`), so that a change the render cannot
+# hear (the amp's levels saved from the page, the MIDI map, the description)
+# does not make a reference stale and open a window in which a change of sound
+# by the code would pass as the owner's. And the numbers in it are normalised,
 # so that a save writing `1` where the file said `1.0` is not a change (the
 # web UI's Save did exactly that once, 2c36874; the compiled config is the same
 # either way, since `emit` writes every parameter as a float).
+
+# Bumped when what `rig_hash` reads changes: every reference made under another
+# rule is then stale, which is said, and is what a change of rule must mean.
+# 1 hashed the whole file; 2 the part of it the render is made from (review of
+# PR #158).
+RIG_HASH_RULE = 2
+
+# What of a rig file `render.rig_channels` renders, read off the compiler
+# (`rigfile.compile_rig`, `emit_compiled`, `heard`) rather than assumed, by key
+# of the file, the channel and the master. Every key the format has is in one
+# of the two (test_sound_refs.py fails on a key added to `rigfile` until it is
+# placed), and changing any key outside RENDERED leaves the rendered configs,
+# Sushi's part of them, as they were (tried on every frozen rig, the same test).
+#
+# - `schema_version` says what the rest means. `host` is the config's
+#   `host_config`. `channels` and `master` are the tracks, their chains, levels
+#   and strips, in order: a channel's place decides its engine channels.
+# - Not rendered: `kind` (always "rig"); `name`, which names the references and
+#   the config's `_meta`, and no sound (a renamed rig has references of other
+#   names); `description` and `meta` (`_meta`); `amp` (`_amp`: the amp runs in
+#   Carla, outside Sushi and outside any render); `midi`, which a render
+#   compiles without (no controller); a channel's `input` and the master's
+#   `output`, which are machine roles, written to `_wiring` for the patchbay
+#   and never to Sushi. Sushi ignores an underscored key.
+RENDERED = {
+    "rig": ("schema_version", "host", "channels", "master"),
+    "channel": ("name", "width", "strip", "chain", "level"),
+    "master": ("chain", "level"),
+}
+NOT_RENDERED = {
+    "rig": ("kind", "name", "description", "meta", "amp", "midi"),
+    "channel": ("input",),
+    "master": ("output",),
+}
 
 # What starts each line of `nulltest`'s summary that reports a warning, and
 # only those lines: the container job counts them and makes its annotation of
 # them (.github/workflows/rig-container.yml), as it does `render.RETRIED_PREFIX`.
 STALE_PREFIX = "STALE-REFERENCE:"
 ORPHAN_PREFIX = "ORPHANED-REFERENCE:"
-
-# Bumped when what `rig_hash` reads changes: every reference made under another
-# rule is then stale, which is said, and is what a change of rule must mean.
-RIG_HASH_RULE = 1
 
 
 @dataclass(frozen=True)
@@ -526,15 +560,36 @@ def _canonical(value: Any) -> Any:
     return f"{type(value).__name__}:{value}"
 
 
+def _kept(entry: Any, keys: tuple[str, ...]) -> Any:
+    """Of a mapping, the `keys` it has; anything else as it is, so a file
+    the compiler would refuse still hashes, and differently."""
+    if not isinstance(entry, dict):
+        return entry
+    return {key: entry[key] for key in keys if key in entry}
+
+
+def rendered_part(raw: Any) -> Any:
+    """The part of a parsed rig file the render is made from (`RENDERED`)."""
+    if not isinstance(raw, dict):
+        return raw
+    part = _kept(raw, RENDERED["rig"])
+    if isinstance(part.get("channels"), list):
+        part["channels"] = [_kept(channel, RENDERED["channel"]) for channel in part["channels"]]
+    if "master" in part:
+        part["master"] = _kept(part["master"], RENDERED["master"])
+    return part
+
+
 def rig_hash(raw: Any) -> str:
-    """sha256, in hex, of a rig file as parsed (`yaml.safe_load`, as
-    `rigfile.load_rig` reads it): its mappings in key order, every whole
-    number as an int, compact json, UTF-8. So key order, comments, quoting,
-    layout and `1.0` against `1` do not change it, and any value, key or
-    list order that differs does. The rule's number is part of what is
+    """sha256, in hex, of the part of a rig file the render is made from
+    (`rendered_part`), as parsed (`yaml.safe_load`, as `rigfile.load_rig`
+    reads it): its mappings in key order, every whole number as an int,
+    compact json, UTF-8. So key order, comments, quoting, layout, `1.0`
+    against `1`, and any key outside `RENDERED` do not change it; any value,
+    key or list order inside it does. The rule's number is part of what is
     hashed, so two rules never share a hash."""
     text = json.dumps(
-        {"rig_hash_rule": RIG_HASH_RULE, "rig": _canonical(raw)},
+        {"rig_hash_rule": RIG_HASH_RULE, "rendered": _canonical(rendered_part(raw))},
         sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=True,
     )
     return hashlib.sha256(text.encode("utf-8")).hexdigest()
@@ -598,3 +653,23 @@ def heard_findings(fp: Fingerprint) -> list[Finding]:
     if abs(left - right) > BALANCE_DB:
         return [Finding("unbalanced", f"L {left:.2f} and R {right:.2f} dBFS, more than {BALANCE_DB} dB apart")]
     return []
+
+
+def v1_findings(fp: Fingerprint) -> list[Finding]:
+    """What a v1 config's render must be, whatever its reference says: its
+    left side, the one it plays (`render.V1_REFERENCE_SUFFIX`), not silent.
+    Its right side may be: every v1 config whose chain starts with a mono
+    plugin leaves it so. Without this a silent render calibrated into a
+    reference compared equal to every silent render after it (review of PR
+    #158), since `compare` passes a side silent in both."""
+    levels = fp.channel_rms_dbfs
+    if not levels:
+        return [Finding("not-measured", "the render has no channel levels to check")]
+    if not _audible(levels[0]):
+        return [Finding("silent", f"the left side, the one a v1 config plays, is silent ({levels[0]:.1f} dBFS)")]
+    return []
+
+
+def played_findings(fp: Fingerprint, is_rig: bool) -> list[Finding]:
+    """`heard_findings` for a rig of channels, `v1_findings` for a v1 config."""
+    return heard_findings(fp) if is_rig else v1_findings(fp)

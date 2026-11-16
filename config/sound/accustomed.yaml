@@ -37,5 +37,5 @@ tolerance:
     file is written at'
 made_from:
   rig: accustomed.yaml
-  hash: 0ee89f52661440f765306282c54c76d0e12ca92941a78913e2105a1c222b21d1
-  hash_rule: 1
+  hash: 4be970400b18636928d5d5891249e2979b9b7b5b80dc396ff9a4884c23df4fe8
+  hash_rule: 2

@@ -37,5 +37,5 @@ tolerance:
     file is written at'
 made_from:
   rig: clean.yaml
-  hash: f2e07d91670c559ca58c3099edd47b27050a1d5eb6ffdafb1bd9b04103b943dd
-  hash_rule: 1
+  hash: 96d956029972b910c42817200e8447fd68ca7520ac0119e28e8035e09d23d075
+  hash_rule: 2

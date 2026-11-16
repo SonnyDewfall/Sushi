@@ -60,6 +60,17 @@ class RenderError(Exception):
     """Something about the render the user needs to fix."""
 
 
+class Unplayable(RenderError):
+    """A render that is finite but is no rig's sound: silent, or silent on a
+    side it plays (`nulltest.played_findings`). Raised by `calibrate`, so
+    that no reference is ever written from one."""
+
+    def __init__(self, config: str, findings: list):
+        self.findings = list(findings)
+        super().__init__(f"{config} rendered what no reference may be made of: "
+                         + "; ".join(str(f) for f in self.findings))
+
+
 @dataclass(frozen=True)
 class Stimulus:
     """What gets pushed through the graph.
@@ -740,8 +751,15 @@ def calibrate(
     stimulus: Stimulus | None = None,
     sushi_bin: str = "./sushi",
     retried: list[str] | None = None,
+    refuse=None,
 ) -> tuple[Any, Any]:
     """Render `config` twice and measure how far apart two identical runs are.
+
+    `refuse`, when given, is asked of each of the two fingerprints for the
+    findings that mean no reference may be made of it
+    (`nulltest.played_findings`), and any it finds raise `Unplayable`: of
+    either render, since a floor measured between a silent run and a sounding
+    one would be a tolerance wide enough to pass anything.
 
     The second fingerprint is the one kept, arbitrarily -- if the two differ by
     more than the floor they establish, there is no "right" one of the pair, and
@@ -758,4 +776,9 @@ def calibrate(
                     retried=retried)
     second = measure(config, root, work / "run-2", stimulus=stimulus, sushi_bin=sushi_bin,
                      retried=retried)
+    if refuse is not None:
+        for fp in (first, second):
+            found = refuse(fp)
+            if found:
+                raise Unplayable(config.name, found)
     return second, floor_between(first, second)

@@ -4534,3 +4534,52 @@ describe), the slow tests, the rig, and the container job, which is the first
 real render of the frozen references from their new place and of the
 warning annotation. Step 4 of the issue, the job committing candidates
 itself, is not done. *(2026-11-16)*
+
+**#144, PR #158: the review's five findings.** (1) **A silent v1 render could
+be calibrated and then pass for good.** The guard that let a render with a
+silent left side be fingerprinted (no delay, rather than "no correlation")
+took away the one thing that had stopped a silent v1 render: v1 configs are
+not held to `heard_findings`, and `compare` passes a side silent in both. So
+a plugin update that silenced a v1 config failed `--all`, and the failure
+path's `--calibrate` wrote a silent candidate that, once committed, passed
+every silent render after it. Now every render is held to what it plays
+(`nulltest.played_findings`): a rig to `heard_findings`, a v1 config to
+`v1_findings`, its left side not silent (its right may be). That is added to
+every exact comparison, and `render.calibrate(refuse=...)` raises `Unplayable`
+on either of its two renders, so no reference is written of one by
+`--calibrate`, `--calibrate --missing`, `--candidates` or the job's failure
+path; a recalibration leaves the committed reference as it was. (2) **The
+hash covered what the render never uses.** Rule 2 (`RIG_HASH_RULE`) hashes
+`rendered_part`: `schema_version`, `host`, and the channels and master less
+their machine roles (`nulltest.RENDERED`). Read off the compiler, not
+assumed: `compile_rig` takes the tracks from the channels' names, widths,
+chains, levels and strips and the master's chain and level, and `host` as
+`host_config`; `name`, `description` and `meta` go to `_meta`, the amp to
+`_amp`, the roles to `_wiring`, all of which Sushi ignores, and a render
+compiles without a controller, so the MIDI map reaches nothing (its blends
+act only on captured state, which a render has none of). Then shown: on all
+eleven frozen rigs, changing the amp's levels, taking the amp off, the
+description, `meta`, adding a MIDI map, every channel's input, the master's
+output and the rig's name leaves Sushi's part of every rendered config, and
+the hash, as they were; a level, the master's level, `host` or a plugin
+taken out changes both. A key added to the rig format fails a test until it
+is placed. The sixteen committed references are re-stamped under rule 2, on
+the evidence the first stamps had (CI run 43891871551 on 155e6c8, and
+`config/rigs/` unchanged since, checked again). (3) **The STALE annotation's
+title lost its names at the comma**: a workflow command's properties are
+split on `,`. The title is now `N rig channel(s) STALE`, with no comma or
+colon, and the names open the message. The test reads the job's output as
+the runner does, properties split on `,` and ended at `::`, and checks the
+title whole. (4) The rule test patches `RIG_HASH_RULE` and sees the hash
+change; an unchanged rig compared exactly fails on silence and on a silent
+right side (the earlier "with its reference" case was stale, as the review
+said); the workflow's shell runs as GitHub runs a step, `bash --noprofile
+--norc -eo pipefail`, with and without warnings to give. (5)
+`test_render_spread.py` prices the frozen rigs against
+`rig_fixtures.FROZEN_SOUND`; its v1 row still reads config/sound/'s
+`.v1-mono`, the only reference of a v1 config there is, so when
+`claude/plugin-update` retires electric-octave-up that row needs its path
+then. Docs: `testing.md`, `rig-file.md`, `saving.md`. Merged master's #157
+(a spike), MANIFEST kept both. **Run here:** the fast suite, 4683 passed and 35 skipped. **Not
+run here:** Sushi, the slow tests, the spread table, the container job.
+*(2026-11-16)*

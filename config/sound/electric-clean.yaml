@@ -37,5 +37,5 @@ tolerance:
     file is written at'
 made_from:
   rig: electric-clean.yaml
-  hash: 282295f58adbcc7e6132dc605064d834ffbcede452fea9c2cc1eb4dd26b24662
-  hash_rule: 1
+  hash: 597c2e1b04e3cdb87c89e04795ef76cb8181c20fa78e0005c3ea7bccfea81b6a
+  hash_rule: 2

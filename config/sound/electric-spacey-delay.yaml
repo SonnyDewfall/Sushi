@@ -37,5 +37,5 @@ tolerance:
     file is written at'
 made_from:
   rig: electric-spacey-delay.yaml
-  hash: 032602b666646030e5b21890c8dab559b1e23f949e08a92b343838aa5fe0ad79
-  hash_rule: 1
+  hash: 4ac36e895ce6e51bde6fdcda780e3fe9214bc24348a4abecfbf337575698bf50
+  hash_rule: 2

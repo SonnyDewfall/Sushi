@@ -41,5 +41,5 @@ tolerance:
     is set well above all of it instead'
 made_from:
   rig: electric-octave-up.yaml
-  hash: 9fd9922d393193475a98f35fa5df971c2109f065102743d7aee523f671101e30
-  hash_rule: 1
+  hash: 6804e286153a89c35e0e9392427b95e55cee480a8b5e1bd0b6deee0223ce0e17
+  hash_rule: 2

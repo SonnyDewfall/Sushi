@@ -88,6 +88,9 @@ its sound reference. What happens to a rig you saved:
 
 Saving the file again with a number written differently (`1` where it said
 `1.0`), or with its comments or layout changed, does not count as a change.
+Nor does a change to the amp, the pedals' MIDI map, the rig's description or
+which inputs it plays from: the check plays the rig's effects through Sushi,
+and none of those reaches it.
 
 ## Things that may surprise you
 

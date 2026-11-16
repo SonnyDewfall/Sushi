@@ -192,7 +192,12 @@ jobs:
                     done)"
             printf '%s\n' "$body"
             names="$(grep '^STALE-REFERENCE: ' nulltest.log | cut -d' ' -f2 | tr -d ':' | tr '\n' ' ')"
-            echo "::warning title=${stale} rig channel(s) STALE, held to the generic checks only: ${names}::$(printf '%s\n' "$body" | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
+            # The names go in the message, not the title: a workflow command's
+            # properties are split on `,` and end at `::`, so a title holds
+            # neither (review of PR #158; test_sound_refs.py parses it so).
+            body="$(printf 'Held to the generic checks only, with no reference made from the rig as it is: %s\n%s' \
+                "$names" "$body")"
+            echo "::warning title=${stale} rig channel(s) STALE::$(printf '%s\n' "$body" | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
           fi
           orphans="$(grep -c '^ORPHANED-REFERENCE: ' nulltest.log || true)"
           if [ "$orphans" -gt 0 ]; then

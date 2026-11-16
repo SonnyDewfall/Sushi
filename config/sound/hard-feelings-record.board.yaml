@@ -37,5 +37,5 @@ tolerance:
     file is written at'
 made_from:
   rig: hard-feelings-record.yaml
-  hash: a864b7016edd09570abeef22eea267b373db031127dffe8bca20b58228592468
-  hash_rule: 1
+  hash: 888c0e9490fe2ebaaf83986ee2efa7ebee1f0aa5a53382ed513d0bb5815425a6
+  hash_rule: 2

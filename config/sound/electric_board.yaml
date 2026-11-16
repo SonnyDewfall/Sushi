@@ -44,5 +44,5 @@ tolerance:
     this reference on delay alone if the two ever traded places'
 made_from:
   rig: electric_board.yaml
-  hash: 165a52ca6bc39eaa5d2fca344ed64f0ea598d9b7a177bc070bdbe8987c7cfd93
-  hash_rule: 1
+  hash: ad8e9508926504231cda01074b8f06b55b11f96164e284d5a3c0d370d14a2549
+  hash_rule: 2

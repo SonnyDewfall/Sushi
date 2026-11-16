@@ -177,9 +177,10 @@ plugin's output on both channels and the v1 config does not (see
 each has a sound reference of its own, the rig's `config/sound/<name>.yaml`
 (`<name>.<channel>.yaml` for a rig of more than one channel) and the v1
 config's `<name>.v1-mono.yaml`. A rig's reference records the rig file it was
-made from (`made_from`, a hash of the file as parsed), so a rig saved with a
-setting changed is reported stale, with a new reference to commit, and does
-not fail CI ([Tests and CI](testing.md#ci)).
+made from (`made_from`, a hash of the part of the file the render is made
+from: the channels, the master and `host`, not the amp, the MIDI map or the
+description), so a rig saved with a setting changed is reported stale, with
+a new reference to commit, and does not fail CI ([Tests and CI](testing.md#ci)).
 
 Rig files keep their comments when the tool rewrites them: `write_rig` updates
 the file in place (comments, blank lines and key order stay), and `convert

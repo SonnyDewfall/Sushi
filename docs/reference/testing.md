@@ -81,15 +81,27 @@ workflows because no single runner has everything:
   | sound differs from the reference | **fails** | **fails**, if the reference was made from the rig as it is: the code changed the sound |
   | rig changed since its reference, or no reference | **fails** (no reference) | **STALE**, a warning, with a candidate reference attached |
   | orphaned reference | **fails** | a warning |
-  | render NaN, silent, or one side only (or the sides more than 1 dB apart) | **fails** (a rig; a v1 config plays its left side alone) | **fails**, whatever its reference says |
+  | render NaN, silent, or one side only (or the sides more than 1 dB apart) | **fails**, a frozen rig on any of them, a v1 config if its left side, the one it plays, is silent | **fails**, whatever its reference says |
+
+  No reference is ever written of such a render, by `--calibrate`,
+  `--calibrate --missing`, `--candidates` or the job's failure path: of
+  either of a calibration's two renders, since a silent reference would pass
+  every silent render after it.
 
   A committed rig's reference records the rig it was made from under
-  `made_from`: the file's name and a sha256 of the file **as parsed**, its
-  mappings in key order and every whole number written as an integer
-  (`nulltest.rig_hash`). So comments, layout, key order and `1.0` against `1`
-  do not make it stale, any value that changes does, and a compiler change
-  does not make every reference stale at once: it is compared against all of
-  them. A STALE channel is rendered, twice, and held to being finite,
+  `made_from`: the file's name and a sha256 (`nulltest.rig_hash`, rule 2) of
+  the part of the file **as parsed** that the render is made from, its
+  mappings in key order and every whole number written as an integer. That
+  part is the schema version, `host`, and the channels and the master less
+  their machine roles (`nulltest.RENDERED`): not the amp, which runs in
+  Carla outside any render, nor the MIDI map, the description, `meta`, the
+  rig's name, a channel's `input` or the master's `output`, none of which
+  reaches what Sushi renders (shown on every frozen rig in
+  `tests/test_sound_refs.py`, which also fails on a key added to the rig
+  format until it is placed). So comments, layout, key order, `1.0` against
+  `1` and an amp nudged from the page do not make a reference stale; any
+  rendered value that changes does; and a compiler change does not make
+  every reference stale at once: it is compared against all of them. A STALE channel is rendered, twice, and held to being finite,
   two-sided and balanced alone; the job then puts a warning on the check run
   naming each channel, with its candidate in the warning, printed in the log,
   and as the `stale-sound-references` artifact (`nulltest --all --candidates

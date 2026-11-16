@@ -37,5 +37,5 @@ tolerance:
     file is written at'
 made_from:
   rig: electric-chorus-hall.yaml
-  hash: abc3a96580276f7b0f8259e94bf92c365d5584641679465a2fd5dd3e778284fa
-  hash_rule: 1
+  hash: dd05cbf03597cfa7e0745c8f1f6d547c8412cb1cf1b7120ff2666f6dcdae4c5f
+  hash_rule: 2

@@ -55,36 +55,168 @@ def _hash(text: str) -> str:
     return rig_hash(yaml.safe_load(text))
 
 
+# A rig file's shape, every key the format has, for the hash to be asked of.
+SHAPED = """\
+kind: rig
+schema_version: 1
+name: x
+description: a rig
+meta: {version: '1.0'}
+host: {samplerate: 48000}
+amp: {plugin: nam, parameters: {Output Lvl: 1.0}}
+channels:
+- {name: board, input: guitar-in, width: mono, level: 0.0, chain: [{name: a, uri: u, parameters: {P: 0.5}}]}
+master: {output: monitor-out, level: -1.0, chain: []}
+midi: {controller: c, controls: [{control: k, mute: board}]}
+"""
+
+
 def test_the_hash_does_not_see_how_a_number_is_written():
-    """`1.0` and `1`, `0.50` and `.5`, `-0.0` and `0`: what a save may
-    rewrite without changing anything (2c36874 did, fifteen lines)."""
-    assert _hash("a: 1.0\nb: 0.50\nc: -0.0\nd: 1.000e+2\n") == _hash("a: 1\nb: .5\nc: 0\nd: 100\n")
+    """`1.0` and `1`, `0.50` and `.5`, `-0.0` and `0`, `1.000e+2` and `100`:
+    what a save may rewrite without changing anything (2c36874 did, fifteen
+    lines)."""
+    written = SHAPED.replace("P: 0.5", "P: 0.50").replace("level: 0.0", "level: -0.0").replace(
+        "level: -1.0", "level: -1").replace("samplerate: 48000", "samplerate: 4.8000e+4")
+    assert written != SHAPED and _hash(written) == _hash(SHAPED)
 
 
 def test_the_hash_does_not_see_key_order_comments_quoting_or_layout():
-    one = "kind: rig\nname: x  # the rig\nmaster: {output: monitor-out, chain: []}\n"
-    two = "# saved from the page\nmaster:\n  chain: []\n  output: 'monitor-out'\nname: \"x\"\nkind: rig\n"
-    assert _hash(one) == _hash(two)
+    raw = yaml.safe_load(SHAPED)
+    shuffled = "# saved from the page\n" + yaml.dump(
+        {key: raw[key] for key in reversed(list(raw))}, default_flow_style=False, sort_keys=True)
+    assert _hash(shuffled) == _hash(SHAPED)
 
 
-@pytest.mark.parametrize("changed", [
-    "a: 1.01\nb: [x, y]\nc: true\n",   # a value
-    "a: 1\nb: [y, x]\nc: true\n",      # a chain's order
-    "a: 1\nb: [x, y]\nc: 1\n",         # a bool is not the number 1
-    "a: 1\nb: [x, y]\nc: 'true'\n",    # nor a string
-    "a: 1\nb: [x, y]\nc: true\nd: 0\n",  # a key added
-    "a: 1\nb: [x, y]\n",               # a key taken away
+@pytest.mark.parametrize("old, new", [
+    ("P: 0.5", "P: 0.51"),                        # a value
+    ("level: 0.0", "level: -3.0"),                # a channel's level
+    ("level: -1.0", "level: -2.0"),               # the master's
+    ("samplerate: 48000", "samplerate: 44100"),   # the host
+    ("parameters: {P: 0.5}", "parameters: {P: 0.5}, bypassed: true"),  # a key added
+    ("width: mono", "width: stereo"),
+    ("name: a,", "name: b,"),                     # a plugin's name, which the config keys it by
+    ("name: board,", "name: lead,"),              # a channel's
+    ("chain: []}", "chain: [{name: z, uri: v}]}"),  # the master's chain
+    ("schema_version: 1", "schema_version: 2"),
 ])
-def test_the_hash_does_see_any_change_of_value(changed):
-    assert _hash(changed) != _hash("a: 1\nb: [x, y]\nc: true\n")
+def test_the_hash_does_see_any_change_to_what_is_rendered(old, new):
+    assert old in SHAPED
+    assert _hash(SHAPED.replace(old, new)) != _hash(SHAPED)
 
 
-def test_the_hash_is_a_sha256_and_names_its_rule():
-    """Hex, 64 characters; and the rule's number is hashed with the rig, so a
+def test_the_hash_sees_a_chains_order_and_a_bool_against_a_number():
+    two = SHAPED.replace("chain: [{name: a, uri: u, parameters: {P: 0.5}}]",
+                         "chain: [{name: a, uri: u}, {name: b, uri: v}]")
+    assert _hash(two) != _hash(two.replace("{name: a, uri: u}, {name: b, uri: v}",
+                                           "{name: b, uri: v}, {name: a, uri: u}"))
+    assert _hash(SHAPED.replace("P: 0.5", "P: true")) != _hash(SHAPED.replace("P: 0.5", "P: 1"))
+
+
+@pytest.mark.parametrize("old, new", [
+    ("Output Lvl: 1.0", "Output Lvl: 2.5"),       # the amp nudged from the page
+    ("amp: {plugin: nam, parameters: {Output Lvl: 1.0}}\n", ""),  # or taken off
+    ("description: a rig", "description: another"),
+    ("meta: {version: '1.0'}", "meta: {version: '1.1', status: stable}"),
+    ("mute: board", "bypass: board/a"),           # the MIDI map
+    ("midi: {controller: c, controls: [{control: k, mute: board}]}\n", ""),
+    ("input: guitar-in", "input: vocal-in"),      # a machine role
+    ("output: monitor-out", "output: phones-out"),
+    ("name: x\n", "name: y\n"),                   # the rig's own name names its references
+])
+def test_an_amp_metadata_midi_or_role_change_keeps_the_hash(old, new):
+    """What the render never hears does not make a reference stale (review
+    of PR #158): an amp nudged from the page would otherwise widen the window
+    in which a code change passes as the owner's."""
+    assert old in SHAPED
+    assert _hash(SHAPED.replace(old, new)) == _hash(SHAPED)
+
+
+def test_every_key_of_the_format_is_hashed_or_said_not_to_be_rendered():
+    """A key added to the rig format fails here until it is placed: in
+    `RENDERED` if the compiled config can depend on it, which must then be
+    shown below; in `NOT_RENDERED` with why, in nulltest.py."""
+    from sushi_rig import rigfile
+
+    for part, known in (("rig", rigfile._KEYS), ("channel", rigfile._CHANNEL_KEYS),
+                        ("master", rigfile._MASTER_KEYS)):
+        hashed, not_hashed = set(nulltest.RENDERED[part]), set(nulltest.NOT_RENDERED[part])
+        assert not hashed & not_hashed, part
+        assert hashed | not_hashed == set(known), part
+
+
+def _sushis_part(views):
+    """What Sushi reads of each rendered config: every key but the underscored
+    ones, which it ignores (`rigfile.emit_compiled`), in channel order."""
+    return [{key: value for key, value in view.items() if not key.startswith("_")} for _, view in views]
+
+
+def _rendered_views(raw):
+    from sushi_rig import rigfile
+
+    rig = rigfile.parse_rig(raw)
+    return _sushis_part(rigfile.heard(rigfile.emit_compiled(rig, *rigfile.compile_rig(rig))))
+
+
+NOT_RENDERED_CHANGES = {
+    "the amp's levels": lambda raw: raw.setdefault("amp", {}).setdefault("parameters", {}).update(
+        {"Output Lvl": 7.0, "Input Lvl": -3.0}),
+    "no amp": lambda raw: raw.pop("amp", None),
+    "the description": lambda raw: raw.update(description="something else"),
+    "the meta": lambda raw: raw.update(meta={"version": "9.9", "status": "draft"}),
+    "a MIDI map": lambda raw: raw.update(midi={"controller": "c", "controls": [
+        {"control": "k", "mute": raw["channels"][0]["name"]}]}),
+    "each channel's input": lambda raw: [c.update(input="vocal-in") for c in raw["channels"]],
+    "the master's output": lambda raw: raw["master"].update(output="phones-out"),
+    "the rig's name": lambda raw: raw.update(name="renamed"),
+}
+
+
+@pytest.mark.parametrize("change", sorted(NOT_RENDERED_CHANGES))
+def test_what_the_hash_leaves_out_changes_nothing_sushi_renders(change):
+    """Shown on every frozen rig, through the compiler as `rig_channels`
+    compiles it: each change outside `RENDERED` leaves Sushi's part of every
+    rendered config as it was, and the hash too. Not assumed from reading."""
+    import copy
+
+    from rig_fixtures import frozen, frozen_names
+
+    tried = 0
+    for name in frozen_names():
+        raw = yaml.safe_load(frozen(name).read_text())
+        changed = copy.deepcopy(raw)
+        NOT_RENDERED_CHANGES[change](changed)
+        if changed == raw:
+            continue  # no amp to take off this one
+        tried += 1
+        assert _rendered_views(changed) == _rendered_views(raw), f"{name}: {change} reached the render"
+        assert rig_hash(changed) == rig_hash(raw), name
+    assert tried >= 9, f"{change} was tried on {tried} frozen rigs"
+
+
+def test_what_the_hash_keeps_does_reach_the_render():
+    """The other half, on a frozen rig: a change the hash sees, Sushi's part
+    of the render sees too."""
+    import copy
+
+    from rig_fixtures import frozen
+
+    raw = yaml.safe_load(frozen("electric-clean").read_text())
+    for change in (lambda r: r["channels"][0].update(level=-3.0), lambda r: r["master"].update(level=-2.0),
+                   lambda r: r.update(host={"samplerate": 44100}),
+                   lambda r: r["channels"][0]["chain"].pop()):
+        changed = copy.deepcopy(raw)
+        change(changed)
+        assert rig_hash(changed) != rig_hash(raw)
+        assert _rendered_views(changed) != _rendered_views(raw)
+
+
+def test_the_hash_is_a_sha256_of_its_rule_and_the_rendered_part(monkeypatch):
+    """Hex, 64 characters; and the rule's number reaches the hash, so a
     change of rule makes every reference stale on purpose, and says so."""
-    digest = _hash("a: 1\n")
+    digest = _hash(SHAPED)
     assert len(digest) == 64 and int(digest, 16) >= 0
-    assert digest != nulltest.hashlib.sha256(b'{"a":1}').hexdigest()
+    monkeypatch.setattr(nulltest, "RIG_HASH_RULE", RIG_HASH_RULE + 1)
+    assert _hash(SHAPED) != digest
 
 
 def test_a_reference_round_trips_the_rig_it_was_made_from():
@@ -273,7 +405,7 @@ def test_a_reference_from_before_the_rig_was_recorded_is_stale(tmp_path, monkeyp
 def test_a_reference_whose_made_from_is_broken_fails(tmp_path, monkeypatch, capsys):
     nulltest_, _ = _checkout(tmp_path, monkeypatch)
     assert nulltest_("--all", "--calibrate") == 0
-    _reference(tmp_path).write_text(_reference(tmp_path).read_text().replace("hash_rule: 1", "hash_rule: one"))
+    _reference(tmp_path).write_text(_reference(tmp_path).read_text().replace(f"hash_rule: {RIG_HASH_RULE}", "hash_rule: one"))
     capsys.readouterr()
     assert nulltest_("--all") == 1
     assert "clean.yaml: CANNOT CHECK — ValueError: made_from" in capsys.readouterr().err
@@ -299,6 +431,23 @@ def test_a_rig_that_renders_silence_or_one_side_fails_whatever_its_reference_say
     assert said in out and "STALE" not in err
     assert not (tmp_path / "candidates").exists() or not any((tmp_path / "candidates").iterdir()), \
         "no candidate for a render no rig should make"
+
+
+@pytest.mark.parametrize("chain, said", [
+    (lambda samples: samples * 0.0, "silent: both sides are silent"),
+    (_left_only, "one-sided: the right side is silent"),
+], ids=["silence", "right side silent"])
+def test_an_unchanged_rig_compared_exactly_fails_on_silence_or_one_side(tmp_path, monkeypatch, capsys, chain, said):
+    """The rig as its reference was made from it, so compared exactly: the
+    generic checks are among its findings, not only the reference's."""
+    nulltest_, _ = _checkout(tmp_path, monkeypatch)
+    assert nulltest_("--all", "--calibrate") == 0
+    _sushi(monkeypatch, chain)
+    capsys.readouterr()
+    assert nulltest_("--all") == 1
+    out, err = capsys.readouterr()
+    assert "clean.yaml: " in out and "difference(s)" in out and f"   {said}" in out
+    assert "STALE" not in err
 
 
 def test_one_side_fails_a_rig_compared_exactly_too(tmp_path, monkeypatch, capsys):
@@ -482,15 +631,48 @@ def _warning_script() -> str:
     return step[start:step.index('if [ "$status" != 0 ]', start)]
 
 
-def test_the_job_warns_naming_each_stale_channel_with_its_candidate_and_each_orphan(tmp_path, monkeypatch, capsys):
-    """nulltest's own output, from a stale rig of two channels and an orphan,
-    put through the workflow's shell: a warning that names both channels and
-    carries both candidates, and one for the orphan. Not an error."""
+def _commands(stdout: str) -> list[tuple[str, dict[str, str], str]]:
+    """The workflow commands in `stdout`, read as the runner reads them:
+    `::name key=value,key=value::message`, the properties split on `,` and
+    ended by the first `::`, each value and the message unescaped (`%25`,
+    `%0D`, `%0A`, and in a property `%3A` and `%2C`)."""
+    def unescape(text, prop=False):
+        for code, char in ((("%0D", "\r"), ("%0A", "\n")) + ((("%3A", ":"), ("%2C", ",")) if prop else ())
+                           + (("%25", "%"),)):
+            text = text.replace(code, char)
+        return text
+
+    found = []
+    for line in stdout.splitlines():
+        if not line.startswith("::"):
+            continue
+        head, _, message = line[2:].partition("::")
+        name, _, props = head.partition(" ")
+        properties = {}
+        for prop in props.split(",") if props else []:
+            key, _, value = prop.partition("=")
+            properties[key] = unescape(value, prop=True)
+        found.append((name, properties, unescape(message)))
+    return found
+
+
+def _run_as_github(script: str, cwd: Path):
+    """`script` as a GitHub runner runs a step: `bash --noprofile --norc -eo
+    pipefail` (the default shell). A step that fails under -e fails here."""
     import shutil
 
     bash = shutil.which("bash")
     if bash is None:  # every runner and the container have it; said, not skipped
         raise AssertionError("bash is needed to run the workflow's own shell")
+    return RUN([bash, "--noprofile", "--norc", "-eo", "pipefail", "-c", script], cwd=cwd,
+               capture_output=True, text=True, check=True)
+
+
+def test_the_job_warns_naming_each_stale_channel_with_its_candidate_and_each_orphan(tmp_path, monkeypatch, capsys):
+    """nulltest's own output, from a stale rig of two channels and an orphan,
+    put through the workflow's shell under -e as the runner runs it: a
+    warning whose title the runner keeps whole and whose message names both
+    channels and carries both candidates, and one for the orphan. No error."""
     nulltest_, rig = _checkout(tmp_path, monkeypatch)
     rig.write_text(RIG.format(name="clean").replace(
         "master:", "- {name: vocal, input: vocal-in, width: mono, chain: []}\nmaster:"))
@@ -505,14 +687,139 @@ def test_the_job_warns_naming_each_stale_channel_with_its_candidate_and_each_orp
     out, err = capsys.readouterr()
     (job / "nulltest.log").write_text(out + err)
 
-    ran = RUN([bash, "-c", "set -o pipefail\n" + _warning_script()], cwd=job,
-                         capture_output=True, text=True, check=True)
-    annotations = [line for line in ran.stdout.splitlines() if line.startswith("::")]
-    assert len(annotations) == 2, ran.stdout
-    stale, orphan = annotations
-    assert stale.startswith("::warning title=2 rig channel(s) STALE, held to the generic checks only: "
-                            "clean.board clean.vocal ::")
-    assert "===== BEGIN config/sound/clean.vocal.yaml =====" in stale and "made_from:" in stale
-    assert orphan.startswith("::warning title=1 orphaned reference(s) of committed rigs::")
-    assert "config/sound/old-name.yaml" in orphan
-    assert "::error" not in ran.stdout
+    commands = _commands(_run_as_github(_warning_script(), job).stdout)
+    assert [(name, props) for name, props, _ in commands] == [
+        ("warning", {"title": "2 rig channel(s) STALE"}),
+        ("warning", {"title": "1 orphaned reference(s) of committed rigs"}),
+    ]
+    stale, orphan = (message for _, _, message in commands)
+    assert stale.splitlines()[0] == ("Held to the generic checks only, with no reference made from the rig "
+                                     "as it is: clean.board clean.vocal ")
+    assert "\n===== BEGIN config/sound/clean.vocal.yaml =====\n" in stale and "\nmade_from:\n" in stale
+    assert orphan == "ORPHANED-REFERENCE: config/sound/old-name.yaml\n"
+
+
+def test_the_job_says_nothing_when_there_is_nothing_to_warn_of(tmp_path, monkeypatch, capsys):
+    """Under -e, as the runner runs it: no STALE and no orphan is no command,
+    and the step goes on (a `grep -c` that counts none exits 1)."""
+    nulltest_, _ = _checkout(tmp_path, monkeypatch)
+    assert nulltest_("--all", "--calibrate") == 0
+    capsys.readouterr()
+    assert nulltest_("--all") == 0
+    out, err = capsys.readouterr()
+    job = tmp_path / "job"
+    (job / "stale-candidates").mkdir(parents=True)
+    (job / "nulltest.log").write_text(out + err)
+    ran = _run_as_github(_warning_script() + "\necho reached the end\n", job)
+    assert _commands(ran.stdout) == [] and ran.stdout.endswith("reached the end\n")
+
+
+
+# --------------------------------------------------------------------------- #
+# A v1 config: its played side, never silent (review of PR #158)
+# --------------------------------------------------------------------------- #
+
+def _v1_checkout(tmp_path, monkeypatch, *, chain=None):
+    """A checkout with one v1 config and no rig, and a Sushi applying `chain`."""
+    from sushi_rig import cli, paths
+
+    monkeypatch.setattr(paths, "checkout_root", lambda: tmp_path)
+    (tmp_path / "config").mkdir(parents=True, exist_ok=True)
+    config = tmp_path / "config" / "electric-delay.json"
+    config.write_text("{}")
+    _sushi(monkeypatch, chain)
+    return (lambda *argv: cli.main(["nulltest", *argv])), config
+
+
+def _v1_reference(tmp_path):
+    return tmp_path / "config" / "sound" / "electric-delay.v1-mono.yaml"
+
+
+def _silence(samples):
+    return samples * 0.0
+
+
+@pytest.mark.parametrize("how", [("--all", "--calibrate"), ("--all", "--calibrate", "--missing")],
+                         ids=["--calibrate", "--calibrate --missing"])
+def test_no_reference_is_made_of_a_silent_v1_render(tmp_path, monkeypatch, capsys, how):
+    """The scenario of the review: a plugin update makes a v1 config render
+    silence, and the job's failure path (`--all --calibrate`) wrote a silent
+    candidate that, committed, passed every silent render after it."""
+    nulltest_, _ = _v1_checkout(tmp_path, monkeypatch, chain=_silence)
+    assert nulltest_(*how) == 1
+    assert ("electric-delay.json: NOT CALIBRATED — silent: the left side, the one a v1 config plays, is "
+            "silent") in capsys.readouterr().err
+    assert not _v1_reference(tmp_path).exists()
+
+
+def test_a_recalibration_of_a_v1_config_gone_silent_keeps_the_reference_it_had(tmp_path, monkeypatch, capsys):
+    nulltest_, _ = _v1_checkout(tmp_path, monkeypatch)
+    assert nulltest_("--all", "--calibrate") == 0
+    before = _v1_reference(tmp_path).read_text()
+    _sushi(monkeypatch, _silence)
+    assert nulltest_("--all", "--calibrate") == 1
+    assert _v1_reference(tmp_path).read_text() == before
+
+
+def test_a_v1_config_compared_with_a_silent_reference_fails_on_its_silence(tmp_path, monkeypatch, capsys):
+    """A silent reference already committed (as the failure path could make
+    one) passes the comparison itself, silent against silent: the played
+    side's check fails it."""
+    nulltest_, _ = _v1_checkout(tmp_path, monkeypatch, chain=_silence)
+    with monkeypatch.context() as allowed:
+        allowed.setattr(nulltest, "v1_findings", lambda fp: [])  # a reference --calibrate now refuses
+        assert nulltest_("--all", "--calibrate") == 0
+    capsys.readouterr()
+    assert nulltest_("--all") == 1
+    out = capsys.readouterr().out
+    assert "electric-delay.json: 1 difference(s)\n   silent: the left side, the one a v1 config plays" in out
+
+
+def test_a_v1_config_silent_on_its_right_side_is_what_it_is(tmp_path, monkeypatch, capsys):
+    """Only the left side is required of a v1 config: it plays that alone."""
+    nulltest_, _ = _v1_checkout(tmp_path, monkeypatch, chain=_left_only)
+    assert nulltest_("--all", "--calibrate") == 0
+    capsys.readouterr()
+    assert nulltest_("--all") == 0
+    assert "electric-delay.json: sounds the same" in capsys.readouterr().out
+
+
+def test_a_v1_config_silent_on_its_left_side_fails(tmp_path, monkeypatch, capsys):
+    nulltest_, _ = _v1_checkout(tmp_path, monkeypatch, chain=lambda samples: samples * np.array([0.0, 1.0]))
+    assert nulltest_("--all", "--calibrate") == 1
+    assert not _v1_reference(tmp_path).exists()
+
+
+def test_a_calibration_whose_first_render_is_silent_writes_nothing(tmp_path, monkeypatch, capsys):
+    """Calibrating renders twice and keeps the second; a floor measured
+    between a silent first and a sounding second would be wide enough to
+    pass anything. Either render refuses it."""
+    nulltest_, _ = _v1_checkout(tmp_path, monkeypatch)
+    renders = []
+
+    def first_silent(samples):
+        renders.append(1)
+        return samples * 0.0 if len(renders) == 1 else samples
+
+    _sushi(monkeypatch, first_silent)
+    assert nulltest_("--all", "--calibrate") == 1
+    assert len(renders) == 2 and not _v1_reference(tmp_path).exists()
+    assert "NOT CALIBRATED" in capsys.readouterr().err
+
+
+def test_v1_findings():
+    assert nulltest.v1_findings(_a_fingerprint(1.0, 0.0)) == []
+    (found,) = nulltest.v1_findings(_a_fingerprint(0.0, 1.0))
+    assert found.check == "silent"
+    assert [f.check for f in nulltest.v1_findings(_a_fingerprint(0.0, 0.0))] == ["silent"]
+
+
+def test_the_spread_tables_references_are_the_frozen_ones():
+    """test_render_spread.py renders frozen rigs, so prices them against the
+    frozen rigs' references, which retiring a committed rig does not move."""
+    import test_render_spread
+    from rig_fixtures import FROZEN_SOUND
+
+    references = [target[3] for target in test_render_spread.TARGETS if target[3] is not None]
+    assert references and all(path.is_file() for path in references)
+    assert {path.parent for path in references if not path.name.endswith(".v1-mono.yaml")} == {FROZEN_SOUND}
