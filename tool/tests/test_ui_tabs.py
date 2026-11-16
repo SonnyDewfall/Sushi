@@ -129,22 +129,44 @@ def test_the_arrows_move_between_tabs_round_the_ends(blank):
     assert out == ["vocal", "board", "master", "board", "board", "master", None, None, None]
 
 
-def test_the_amp_is_in_the_tab_of_the_channel_that_takes_the_guitar(blank):
+def test_the_amp_is_in_the_tab_of_the_channel_the_running_rig_feeds_from_the_guitar(blank):
+    """The running rig decides (GET /machine/roles's `used_by`, read from the
+    running config), and the file only when that cannot say: Change input
+    writes the file, and the amp is in front of the channel it was until
+    the restart (review of #135, finding 4)."""
     out = rigjs(blank, """
       const tabs = [{id: 'vocal', master: false}, {id: 'guitar', master: false}, {id: 'master', master: true}];
       const file = (channels) => ({ok: true, body: {channels}});
-      const both = file([{name: 'vocal', input: 'vocal-in'}, {name: 'guitar', input: 'guitar-in'}]);
-      return [R.GUITAR_ROLE, R.ampTab(tabs, both, true), R.ampTab(tabs, null, true), R.ampTab(tabs, null, false),
-              R.ampTab(tabs, {ok: false, reason: 'unreadable'}, true), R.ampTab(tabs, file([{name: 'vocal', input: 'vocal-in'}]), true),
-              R.ampTab(tabs, file([{name: 'bass', input: 'guitar-in'}]), true), R.ampTab([], both, true),
-              R.ampTab([{id: 'master', master: true}], both, true)];""")
+      const roles = (usedBy, over = {}) => ({ok: true, body: {running: {rig: 'gv'}, wiring_note: null,
+        roles: [{name: 'vocal-in', used_by: ['vocal']}, {name: 'guitar-in', used_by: usedBy}], ...over}});
+      const fileSaysVocal = file([{name: 'vocal', input: 'guitar-in'}, {name: 'guitar', input: 'vocal-in'}]);
+      const fileSaysGuitar = file([{name: 'vocal', input: 'vocal-in'}, {name: 'guitar', input: 'guitar-in'}]);
+      return [R.GUITAR_ROLE,
+        R.ampTab(tabs, roles(['guitar']), fileSaysVocal, true),
+        R.ampTab(tabs, roles([]), fileSaysGuitar, true),
+        R.ampTab(tabs, roles(['guitar']), null, true),
+        R.ampTab(tabs, null, fileSaysGuitar, true),
+        R.ampTab(tabs, {ok: false, reason: 'no machine file'}, fileSaysGuitar, true),
+        R.ampTab(tabs, roles([], {running: null}), fileSaysGuitar, true),
+        R.ampTab(tabs, roles([], {wiring_note: 'the running config could not be read'}), fileSaysGuitar, true),
+        R.ampTab(tabs, {ok: true, body: {running: {rig: 'gv'}, wiring_note: null, roles: []}}, fileSaysGuitar, true),
+        R.ampTab(tabs, {ok: false, reason: 'x'}, null, true),
+        R.ampTab(tabs, {ok: false, reason: 'x'}, {ok: false, reason: 'unreadable'}, true),
+        R.ampTab(tabs, {ok: false, reason: 'x'}, file([{name: 'bass', input: 'guitar-in'}]), true),
+        R.ampTab(tabs, null, null, false),
+        R.ampTab([], roles(['guitar']), null, true),
+        R.ampTab([{id: 'master', master: true}], null, null, false)];""")
     assert out[0] == "guitar-in", "patchbay.GUITAR_ROLE"
-    assert out[1] == "guitar", "the channel the file plays from the guitar's input, not the first"
-    assert out[2] is None, "a file still to be read: the card waits, it is not drawn in one tab then another"
-    assert out[3] == "vocal", "no rig file (a v1 run): the first channel"
-    assert out[4] == "vocal" and out[5] == "vocal", "a file unread, or with no channel on the guitar: the first channel"
-    assert out[6] == "vocal", "a channel the file names that is not playing is not a tab"
-    assert out[7] is None and out[8] == "master"
+    assert out[1] == "guitar", "the running rig's wiring, whatever the file now says"
+    assert out[2] == "vocal", "a run with nothing on the guitar's input: the first channel, not the file's word"
+    assert out[3] == "guitar", "the running rig said: the file is not waited for"
+    assert out[4] is None, "the running rig still to answer: the card waits, it is not drawn in one tab then another"
+    assert out[5] == "guitar" and out[6] == "guitar" and out[7] == "guitar" and out[8] == "guitar", \
+        "the running rig cannot say (no answer, no running rig of channels, its config unread, no such role): the file"
+    assert out[9] is None, "and the file still to answer: the card waits"
+    assert out[10] == "vocal" and out[11] == "vocal", "a file unread, or naming a channel not playing: the first channel"
+    assert out[12] == "vocal", "no rig file (a v1 run): the first channel, nothing waited for"
+    assert out[13] is None and out[14] == "master"
 
 
 def test_a_tab_says_what_is_behind_it_that_is_said_nowhere_else(blank):
@@ -152,22 +174,35 @@ def test_a_tab_says_what_is_behind_it_that_is_said_nowhere_else(blank):
       const m = model({board: ['od', 'delay', 'board_send'], vocal: ['verb', 'vocal_send'], master: ['master_return']});
       const tabs = R.rackTabs(m);
       const up = (over) => ({state: 'up', down: false, model: {problem: null}, ...over});
+      const card = (answer, models) => R.ampCard({ok: true, body: {known: 'sent', model: {stored: 'amp/models/x.nam', ...answer},
+        parameters: [], held: true, carla: {alive: true}}}, models);
       return [
         R.tabMarks(tabs, m, {}),
-        R.tabMarks(tabs, m, {failed: ['p\\u0000delay\\u0000Feedback', 'b\\u0000verb', 'p\\u0000vocal_send\\u0000gain'], amp: up({}), ampOn: 'board'}),
+        R.tabMarks(tabs, m, {failed: ['p\u0000delay\u0000Feedback', 'b\u0000verb', 'p\u0000vocal_send\u0000gain'], amp: up({}), ampOn: 'board'}),
         R.tabMarks(tabs, m, {amp: up({down: true}), ampOn: 'board'}),
         R.tabMarks(tabs, m, {amp: {state: 'failed', why: 'Carla did not answer'}, ampOn: 'vocal'}),
-        R.tabMarks(tabs, m, {amp: up({model: {problem: 'the model is not a file'}}), ampOn: 'board', failed: ['a\\u0000Input Lvl']}),
+        R.tabMarks(tabs, m, {amp: up({model: {problem: 'the model is not a file'}}), ampOn: 'board', failed: ['a\u0000Input Lvl']}),
         R.tabMarks(tabs, m, {amp: {state: 'none', why: 'no amp'}, ampOn: 'board'}),
+        R.tabMarks(tabs, m, {amp: card({warning: 'made at 44100 Hz, the rig runs at 48000'}, {ok: true, body: {models: []}}), ampOn: 'board'}),
+        R.tabMarks(tabs, m, {amp: card({}, {ok: false, reason: 'amp/models is not a folder'}), ampOn: 'board'}),
+        R.tabMarks(tabs, m, {amp: up({down: true}), ampOn: null}),
+        card({}, {ok: true, body: {models: []}}).listProblem,
       ];""")
     quiet = {"board": None, "vocal": None, "master": None}
+    carla = "Carla is not running: restart the rig to bring the amp back."
     assert out[0] == quiet
     assert out[1] == {"board": "A change to delay was refused.", "vocal": "A change to verb was refused.", "master": None}, \
         "a send's volume is on its strip, which no tab hides"
-    assert out[2] == {**quiet, "board": "Carla is not running: restart the rig to bring the amp back."}
+    assert out[2] == {**quiet, "board": carla}
     assert out[3] == {**quiet, "vocal": "The amp could not be read: Carla did not answer"}
     assert out[4] == {**quiet, "board": "the model is not a file A change to the amp was refused."}
     assert out[5] == quiet, "a rig with no amp is not a problem"
+    # Every fault the card can show (review of #135, finding 7).
+    assert out[6] == {**quiet, "board": "made at 44100 Hz, the rig runs at 48000"}, "the model's rate warning"
+    assert out[7] == {**quiet, "board": "The amp's models could not be listed: amp/models is not a folder"}
+    assert out[8] == {"board": carla, "vocal": carla, "master": None}, \
+        "the amp's tab not known yet: its fault on every channel's tab, hidden by none"
+    assert out[9] is None
 
 
 def test_a_row_is_slim_when_bypassed_and_opens_by_its_switch_or_a_tap(blank):
@@ -1001,22 +1036,29 @@ def test_a_rig_of_one_channel_still_has_its_tab_and_master(browser):
         page.close()
 
 
+LONG = ["acoustic_guitar_and_looper", "backing_vocals_left_and_right", "keyboards_and_synth_pads"]
+
+
 @pytest.mark.parametrize("font", ["", "* { font-family: 'DejaVu Sans', 'Liberation Sans', sans-serif !important; letter-spacing: .08em; }"],
                          ids=["page fonts", "a wider fallback font"])
-def test_at_phone_width_three_channels_tabs_do_not_make_the_page_scroll_sideways(browser, served, font):
-    """Strips, then the tabs and the open chain, then the files; and four
-    tabs (three channels and Master) wrap rather than widen the page."""
-    served.rig.add_track("keyboards")
-    page = Page(browser, served.url + "/#rack", width=390, height=844)
+@pytest.mark.parametrize("width", [390, 320])
+def test_at_phone_width_long_channels_tabs_do_not_make_the_page_scroll_sideways(browser, served, font, width):
+    """Strips, then the tabs and the open chain, then the files; and six
+    tabs, three of them channels named as long as names get (24 to 29
+    characters), wrap rather than widen the page, at a phone's 390 px and a
+    small one's 320."""
+    for name in LONG:
+        served.rig.add_track(name)
+    page = Page(browser, served.url + "/#rack", width=width, height=844)
     p = page.page
     p.wait_for_selector(".strip .volume")
     p.wait_for_selector(".unit")
     if font:
         p.add_style_tag(content=font)
-    expect(p.get_by_role("tab")).to_have_text(["board", "vocal", "keyboards", "Master"])
+    expect(p.get_by_role("tab")).to_have_text(["board", "vocal", *LONG, "Master"])
     tops = [p.locator(sel).bounding_box()["y"] for sel in ("nav.channels", ".tabs", ".tab-panel", ".files")]
     assert tops == sorted(tops), tops
-    for name in ("board", "keyboards", "Master"):
+    for name in ("board", *LONG, "Master"):
         tab(p, name).click()
         is_selected(p, name)
         wide = p.evaluate("() => [...document.querySelectorAll('#app *')].filter((e) => e.getBoundingClientRect().right > innerWidth + 0.5).map((e) => e.className)")
@@ -1028,5 +1070,298 @@ def test_at_phone_width_three_channels_tabs_do_not_make_the_page_scroll_sideways
     p.evaluate("() => scrollTo(0, 0)")
     p.locator("nav.channels").get_by_role("button", name="vocal", exact=True).click()
     is_selected(p, "vocal")
-    until(lambda: 0 <= p.get_by_role("tablist").bounding_box()["y"] < 200)
+    until(lambda: -1 <= p.get_by_role("tablist").bounding_box()["y"] < 200)  # at its top, give or take a sub-pixel
     page.close()
+
+
+# --------------------------------------------------------------------------- #
+# Review of #135: what a late or failing answer, a lost pointer or a pedal
+# must not do
+# --------------------------------------------------------------------------- #
+
+def amp_rack(browser, served, **size):
+    page = Page(browser, served.url + "/#rack", **size)
+    page.page.wait_for_selector(".amp-card .fader", state="visible")
+    settled(page.page)
+    return page
+
+
+def failing_live(p):
+    """/live answers as a Sushi that stopped answering would (a 502 with the
+    agent's reason), until the returned function is called."""
+    on = {"fail": True}
+
+    def live(route):
+        if on["fail"]:
+            route.fulfill(status=502, json={"ok": False, "reason": "Sushi did not answer (test)"})
+        else:
+            route.continue_()
+
+    p.route(lambda url: url.endswith("/live"), live)
+    return lambda: on.update(fail=False)
+
+
+def test_a_failed_live_keeps_the_amp_card_where_it_is_and_a_drag_on_its_fader(browser):
+    """Finding 1: with Sushi not answering, the card is Carla's and still
+    works; on master it stayed, and one failed poll must not take it away
+    from under a fader. With no chain ever read, there are no tabs, and the
+    card is shown on its own."""
+    with Served(amp=True) as served:
+        page = amp_rack(browser, served)
+        p = page.page
+        fader = p.get_by_role("slider", name="amp Output Lvl")
+        handle = fader.element_handle()
+        box = fader.bounding_box()
+        y = box["y"] + box["height"] / 2
+        p.mouse.move(box["x"] + box["width"] * 0.3, y)
+        p.mouse.down()
+        until(lambda: "Output Lvl" in served.amp.carla.values())
+        pressed = served.amp.carla.values()["Output Lvl"]
+        recover = failing_live(p)
+        expect(p.locator(".status")).to_contain_text("Up, but Sushi did not answer", timeout=4000)
+        time.sleep(1.2)  # another poll, failing too
+        expect(p.locator(".amp-card")).to_be_visible()
+        assert fader.bounding_box() == box, "the card did not move"
+        assert handle.evaluate("(e) => e.isConnected")
+        expect(p.get_by_role("tab")).to_have_text(["board", "vocal", "Master"])  # kept while the rig is up
+        p.mouse.move(box["x"] + box["width"] * 0.8, y, steps=5)
+        p.mouse.up()
+        until(lambda: served.amp.carla.values()["Output Lvl"] > pressed + 5)
+        recover()
+        expect(p.locator(".unit").first).to_be_visible(timeout=4000)
+        page.close()
+        # Failing from the first: no chain read, no tabs, the card on its own.
+        page = Page.__new__(Page)
+        page.page = browser.new_page(viewport={"width": 1280, "height": 900})
+        page.errors = []
+        page.page.on("pageerror", lambda error: page.errors.append(str(error)))
+        failing_live(page.page)
+        page.page.goto(served.url + "/#rack")
+        expect(page.page.locator(".amp-card .fader").first).to_be_visible(timeout=4000)
+        expect(page.page.get_by_role("tab")).to_have_count(0)
+        page.close()
+
+
+def test_a_drag_survives_a_plugin_added_and_moved_while_their_plugins_are_read_slowly(browser):
+    """Finding 2, and the container's failure: with /live/plugins slow, the
+    new chains are shown with the plugins already known, and a render while
+    the answer is out (the load tiles' every two seconds) rebuilds no row."""
+    from ui_fake import MDA_DELAY, fixture_library
+
+    with Served(library=fixture_library) as served:
+        page = rack_page(browser, served)
+        p = page.page
+        served.rig.plugins_delay = 3.0
+        other = slider(p, "overdrive Drive").element_handle()
+        dial = slider(p, "delay Feedback")
+        box = dial.locator("svg").bounding_box()
+        x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+        p.mouse.move(x, y)
+        p.mouse.down()
+        p.mouse.move(x, y - 32, steps=4)
+        handle = dial.element_handle()
+        assert post(served, "/live/add", {"track": "board", "uri": MDA_DELAY, "name": "slap", "after": "overdrive"})["ok"]
+        expect(shown(p)).to_have_text(["overdrive", "slap", "octave", "delay"])
+        assert post(served, "/live/move", {"processor": "delay", "direction": "up"})["ok"]
+        time.sleep(2.5)  # a render from the load tiles while the plugins' answer is out
+        assert handle.evaluate("(e) => e.isConnected && document.activeElement === e"), "the same dial, still held"
+        assert other.evaluate("(e) => e.isConnected"), "no other row rebuilt either"
+        p.mouse.move(x, y - 64, steps=4)
+        p.mouse.up()
+        until(lambda: abs(served.rig.info["delay"]["Feedback"]["value"] - 0.55) < 1e-6)
+        expect(shown(p)).to_have_text(["overdrive", "slap", "delay", "octave"], timeout=8000)
+        # The answer, when it comes, names the new plugin and rebuilds its row alone.
+        expect(unit(p, "slap")).to_contain_text("no profile: every parameter", timeout=8000)
+        assert other.evaluate("(e) => e.isConnected") and handle.evaluate("(e) => e.isConnected")
+        served.rig.plugins_delay = 0.0
+        page.close()
+
+
+def hold(p, *patterns):
+    """Requests for `patterns` held unanswered, until the returned function
+    lets them go (and every later one through)."""
+    held, on = [], {"hold": True}
+
+    def keep(route):
+        if on["hold"]:
+            held.append(route)
+        else:
+            route.continue_()
+
+    for pattern in patterns:
+        p.route(pattern, keep)
+
+    def release():
+        on["hold"] = False
+        for route in held:
+            route.continue_()
+    return release
+
+
+@pytest.mark.parametrize("late", [0.6, 3.0], ids=["answered in time", "answered past the wait"])
+def test_nothing_moves_when_what_places_the_amp_arrives_late(browser, late):
+    """Finding 3: the chain is not drawn and then pushed down by the card.
+    Held until the answers that place the amp arrive or a bounded wait ends
+    (then the first channel, and it stays there for the run)."""
+    with Served(amp=True) as served:
+        page = Page.__new__(Page)
+        page.page = browser.new_page(viewport={"width": 1280, "height": 900})
+        page.errors = []
+        p = page.page
+        p.on("pageerror", lambda error: page.errors.append(str(error)))
+        release = hold(p, "**/machine/roles", "**/rigs/*/channels")
+        p.goto(served.url + "/#rack")
+        expect(p.get_by_role("tab")).to_have_text(["board", "vocal", "Master"])
+        seen = []
+        deadline = time.monotonic() + late
+        while time.monotonic() < deadline:
+            seen.append(p.evaluate("""() => { const u = document.querySelector('.unit'); const a = document.querySelector('.amp-card');
+              return [u ? Math.round(u.getBoundingClientRect().y) : null, a && !a.hidden ? Math.round(a.getBoundingClientRect().y) : null]; }"""))
+            time.sleep(0.1)
+        release()
+        expect(p.locator(".amp-card .fader").first).to_be_visible(timeout=4000)
+        expect(p.locator(".unit").first).to_be_visible()
+        settled(p)
+        final = [round(unit(p, "overdrive").bounding_box()["y"]), round(p.locator(".amp-card").bounding_box()["y"])]
+        time.sleep(1.5)  # the answers in, a poll or so
+        assert [round(unit(p, "overdrive").bounding_box()["y"]), round(p.locator(".amp-card").bounding_box()["y"])] == final
+        # Before: nothing drawn yet, or (past the wait) drawn where it ends up.
+        assert all(s in ([None, None], final) for s in seen), seen
+        if late > 2.5:
+            assert final in seen, "past the wait the chain was drawn, with the card, in the first channel"
+        else:
+            assert final not in seen, "in time, nothing was drawn before the answers"
+        page.close()
+
+
+def roles_answer(used_by):
+    """GET /machine/roles as the agent answers it for a running rig of
+    channels: the shape is rigedit.role_options's, the ports invented."""
+    role = lambda name, used: {"name": name, "ports": [f"iface:{name}"], "mono_to_stereo": False, "direction": "input",  # noqa: E731
+                               "widths": {"mono": {"ok": True, "why": None}, "stereo": {"ok": False, "why": "one port"}},
+                               "master": {"ok": False, "why": "an input"}, "used_by": used}
+    return {"ok": True, "machine": "machines/fake.yaml", "output": "monitor-out", "ceiling": None, "wiring_note": None,
+            "running": {"rig": "electric_board", "file": "config/rigs/electric_board.yaml"},
+            "roles": [role("guitar-in", used_by), role("vocal-in", [c for c in ("board", "vocal") if c not in used_by])]}
+
+
+def test_the_amps_tab_is_the_running_rigs_and_moves_only_with_the_run(browser):
+    """Finding 4: the rig's file says the guitar is on the board, the running
+    rig plays it into the vocal: the card is in the vocal's tab. A new run
+    that plays it into the board moves it there."""
+    with Served(amp=True) as served:
+        page = Page.__new__(Page)
+        page.page = browser.new_page(viewport={"width": 1280, "height": 900})
+        page.errors = []
+        p = page.page
+        p.on("pageerror", lambda error: page.errors.append(str(error)))
+        said = {"used_by": ["vocal"]}
+        p.route("**/machine/roles", lambda route: route.fulfill(json=roles_answer(said["used_by"])))
+        p.route("**/rigs/*/channels", lambda route: route.fulfill(json={
+            "ok": True, "rig": "electric_board", "file": "config/rigs/electric_board.yaml", "blended": [], "blended_note": None,
+            "channels": [{"name": "board", "input": "guitar-in", "width": "mono"},
+                         {"name": "vocal", "input": "vocal-in", "width": "mono"}]}))
+        p.goto(served.url + "/#rack")
+        expect(p.locator(".unit").first).to_be_visible()
+        amp = p.locator(".amp-card")
+        expect(amp).to_be_hidden()
+        tab(p, "vocal").click()
+        expect(amp).to_be_visible()
+        expect(p.get_by_role("slider", name="amp Output Lvl")).to_be_visible()
+        # The file is edited (Change input) and read again: the running rig still says vocal.
+        time.sleep(1.2)
+        expect(amp).to_be_visible()
+        # A restart that plays the guitar into the board: a new run.
+        said["used_by"] = ["board"]
+        from datetime import datetime, timezone
+        served.lifecycle.started = datetime.now(timezone.utc).replace(microsecond=0)
+        expect(amp).to_be_hidden(timeout=5000)
+        tab(p, "board").click()
+        expect(amp).to_be_visible()
+        page.close()
+
+
+def test_a_drag_ends_cleanly_when_its_pointer_is_lost_and_a_reorder_keeps_the_dragged_row(rack, served):
+    """Finding 5: a knob dragged while the focus is elsewhere (a second
+    finger on a strip's fader) is still in use, and a reorder from another
+    device does not take it out of the page; and a drag whose pointer is lost
+    ends, so the next press is a drag of its own and not a "second finger"."""
+    dial = slider(rack, "delay Feedback")
+    box = dial.locator("svg").bounding_box()
+    x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+    rack.mouse.move(x, y)
+    rack.mouse.down()
+    rack.mouse.move(x, y - 32, steps=4)
+    expect(dial).to_have_attribute("aria-valuetext", "0.45")
+    handle = dial.element_handle()
+    rack.locator("nav.channels").get_by_role("slider", name="vocal volume").focus()  # the focus elsewhere
+    assert post(served, "/live/move", {"processor": "delay", "direction": "up"})["ok"]
+    expect(shown(rack)).to_have_text(["overdrive", "delay", "octave"])
+    assert handle.evaluate("(e) => e.isConnected && !!e.dataset.dragging"), "the dragged row was not taken out of the page"
+    rack.mouse.move(x, y - 64, steps=4)
+    rack.mouse.up()
+    expect(dial).to_have_attribute("aria-valuetext", "0.55")
+    assert handle.evaluate("(e) => e.dataset.dragging") is None, "released: the drag is over"
+    # A pedal's bypass now minimises it: nothing holds it open.
+    pedal(served, "delay", True)
+    expect(unit(rack, "delay")).to_have_class(MINIMISED)
+    pedal(served, "delay", False)
+    expect(unit(rack, "delay")).not_to_have_class(MINIMISED)
+    # The pointer lost mid-drag (the browser taking it): the drag ends with it.
+    box = dial.locator("svg").bounding_box()
+    x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+    rack.mouse.move(x, y)
+    rack.mouse.down()
+    rack.mouse.move(x, y - 32, steps=4)
+    expect(dial).to_have_attribute("aria-valuetext", "0.65")
+    dial.evaluate("(e) => e.releasePointerCapture(Number(e.dataset.dragging))")
+    rack.mouse.move(x, y - 48, steps=2)  # the browser says the capture is lost as the pointer next moves
+    assert dial.evaluate("(e) => e.dataset.dragging") is None, "the drag ended with its pointer"
+    expect(dial).to_have_attribute("aria-valuetext", "0.65")  # and that move set nothing
+    rack.mouse.up()
+    # A press of its own: a full-speed drag from where it is, not a fine one from a stale height.
+    rack.mouse.move(x, y)
+    rack.mouse.down()
+    rack.mouse.move(x, y - 32, steps=4)
+    rack.mouse.up()
+    expect(dial).to_have_attribute("aria-valuetext", "0.75")
+
+
+def test_a_pedals_bypass_moves_the_focus_from_what_it_hides_to_the_rows_name(rack, served):
+    """Finding 6: a keyboard or screen reader keeps its place."""
+    slider(rack, "overdrive Drive").focus()
+    pedal(served, "overdrive", True)
+    expect(unit(rack, "overdrive")).to_have_class(MINIMISED)
+    expect(name_of(rack, "overdrive")).to_be_focused()
+    rack.keyboard.press("Enter")  # and from there, opened again with a key
+    expect(unit(rack, "overdrive")).not_to_have_class(MINIMISED)
+    # A value clicked into and not typed in: the same.
+    rack.get_by_role("textbox", name="delay Feedback value", exact=True).click()
+    pedal(served, "delay", True)
+    expect(unit(rack, "delay")).to_have_class(MINIMISED)
+    expect(name_of(rack, "delay")).to_be_focused()
+    # The switch itself stays where it is, and keeps the focus.
+    pedal(served, "octave", False)
+    expect(rack.get_by_role("button", name="Bypass octave")).to_be_visible()
+    rack.get_by_role("button", name="Bypass octave").focus()
+    pedal(served, "octave", True)
+    expect(unit(rack, "octave")).to_have_class(MINIMISED)
+    expect(rack.get_by_role("button", name="Turn on octave")).to_be_focused()
+
+
+def test_an_amp_whose_models_cannot_be_listed_marks_its_tab(browser):
+    """Finding 7: every fault the card shows is on its tab."""
+    with Served(amp=True) as served:
+        page = Page.__new__(Page)
+        page.page = browser.new_page(viewport={"width": 1280, "height": 900})
+        page.errors = []
+        p = page.page
+        p.on("pageerror", lambda error: page.errors.append(str(error)))
+        p.route("**/amp/models", lambda route: route.fulfill(status=500, json={"ok": False, "reason": "amp/models is unreadable (test)"}))
+        p.goto(served.url + "/#rack")
+        expect(p.locator(".amp-card .fader").first).to_be_visible()
+        tab(p, "vocal").click()
+        expect(tab(p, "board")).to_have_class(MARKED)
+        expect(tab(p, "board")).to_have_attribute("title", "The amp's models could not be listed: amp/models is unreadable (test)")
+        expect(tab(p, "vocal")).not_to_have_class(MARKED)
+        page.close()

@@ -141,7 +141,12 @@ def test_a_thread_that_will_not_stop_is_left_with_its_loop(monkeypatch):
         pending = [task for task in asyncio.all_tasks(loop) if not task.done()]
         for task in pending:
             task.cancel()
-        loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
+        # Only when there is something to wait for: `gather()` of nothing
+        # asks for the current event loop, which this thread has none of
+        # (RuntimeError on 3.12, ValueError on 3.13), and whether the
+        # cancelled sleep is still pending here is a matter of timing.
+        if pending:
+            loop.run_until_complete(asyncio.gather(*pending, return_exceptions=True))
         loop.close()
 
 

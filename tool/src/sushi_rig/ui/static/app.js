@@ -62,7 +62,7 @@ function writeTab(text) {
 
 const state = {
   health: null, live: null, log: null,
-  plugins: null, pluginsFor: null, pluginsError: null, pluginsAt: 0,
+  plugins: null, pluginsFor: null, pluginsRig: null, pluginsError: null, pluginsAt: 0,
   profiles: null, profilesError: null, profilesAt: 0, profileProblems: [],
   names: null, namesAt: 0,   // plugin names by URI, from /library: decoration, so a failure is not shown
   locked: readLocked(), armed: false, armTimer: null,
@@ -90,7 +90,7 @@ const state = {
   recordPending: null,       // "start" or "stop", from this page, in flight
   recordResult: null,        // what the last start or stop from this page said (R.recordOutcome)
   // The New rig screen and the rack's channel edits (the rig files):
-  roles: null, rolesAt: 0, rolesFor: null,  // GET /machine/roles; read again when the run changes
+  roles: null, rolesAt: 0, rolesFor: null, rolesRun: null,  // GET /machine/roles; read again when the run changes
   rigChannels: {},           // GET /rigs/<rig>/channels, by rig: "start from", and the running rig's inputs
   newRig: { name: "", channels: [], touched: false, pending: false, result: null, addRefused: null },
   wiring: freshWiring(),     // the rack's channel edits: see freshWiring
@@ -157,16 +157,38 @@ function rigIdentity(health, log) {
   return [rig.config_name ?? null, rig.rig ?? null, rig.started_at ?? null, switched];
 }
 
-async function refreshPlugins(live, identity) {
+// Which plugin each processor is (GET /live/plugins): due again when the
+// chains or the rig changed, and after RETRY_MS while it fails. `pluginsDue`
+// says whether it is, and for which rig; `readPlugins` asks, and returns what
+// goes into `state`. Neither changes `state`: the poll decides when what was
+// read is shown (review of #135, and the container's run of its tests).
+//
+// It used to drop the plugins held as soon as the chains changed and then
+// wait for the answer, with the new /live already shown. A render landing in
+// that wait (the load tiles' every two seconds, any fetch coming back) drew
+// the new chains with no plugin known: every row was rebuilt as a plain
+// list, and again when the answer came, under whatever knob was being
+// dragged or value typed. A plugin moved from another device took the field
+// from under the fingers six times in fifty here. So:
+//  - the same rig with its chains changed (a plugin added, removed or moved)
+//    is shown at once with the plugins already held, which still say what
+//    every plugin that was there is; the answer then says what a new one is,
+//    and rebuilds that row alone;
+//  - another rig, or the first sight of one, is not shown until its plugins
+//    have been read, so the page is never drawn with one rig's chains and
+//    another's plugins, nor with a rig's chains and none.
+function pluginsDue(live, identity) {
   const key = JSON.stringify([live.tracks, identity]);
   const retry = state.pluginsError && Date.now() - state.pluginsAt > RETRY_MS;
-  if (key === state.pluginsFor && !retry) return;
-  if (key !== state.pluginsFor) state.plugins = null; // never another rig's plugins, even for a moment
+  return key === state.pluginsFor && !retry ? null : { key, rig: JSON.stringify(identity) };
+}
+
+async function readPlugins(due) {
   const answer = await request("GET", "/live/plugins");
-  state.pluginsFor = key;
-  state.pluginsAt = Date.now();
-  state.plugins = answer.ok ? answer.body.processors : null;
-  state.pluginsError = answer.ok ? null : answer.reason;
+  return {
+    pluginsFor: due.key, pluginsRig: due.rig, pluginsAt: Date.now(),
+    plugins: answer.ok ? answer.body.processors : null, pluginsError: answer.ok ? null : answer.reason,
+  };
 }
 
 // The profiles and the plugins' names are files, not the rig, and the library
@@ -236,15 +258,29 @@ async function refreshAmpModels(force = false) {
 // run changes (which tracks use each role is the running rig's), after a
 // write, and after RETRY_MS while it fails.
 async function refreshRoles(force = false) {
-  const rig = state.health && state.health.ok ? state.health.body.rig || {} : {};
-  const run = JSON.stringify([rig.running ? rig.config_name : null, rig.started_at ?? null]);
+  const run = runKey();
   if (run !== state.rolesFor) force = true;
   if (!force && state.roles && state.roles.ok) return false;
   if (!force && state.rolesAt && Date.now() - state.rolesAt < RETRY_MS) return false;
   state.rolesFor = run;
   state.rolesAt = Date.now();
-  state.roles = await request("GET", "/machine/roles");
+  const answer = await request("GET", "/machine/roles");
+  // An answer for a run since replaced is dropped: the newer run's request
+  // is out, and its answer is the one to keep.
+  if (state.rolesFor !== run) return false;
+  // The run this answer is about, set with it: `rolesFor` is set before the
+  // request, so it cannot say whether `roles` is still the run before's. The
+  // amp's tab (R.ampTab) is only decided from this run's.
+  state.roles = answer;
+  state.rolesRun = run;
   return true;
+}
+
+// The run, as the roles are kept by it: the rig up and when it started (a
+// restart is a new run; a live switch, another rig's name).
+function runKey() {
+  const rig = state.health && state.health.ok ? state.health.body.rig || {} : {};
+  return JSON.stringify([rig.running ? rig.config_name : null, rig.started_at ?? null]);
 }
 
 // One rig file's channels (GET /rigs/<rig>/channels), kept by rig; asked
@@ -322,14 +358,23 @@ async function poll() {
       // And the recorder: with no rig up there is none (R.recordBar says so).
       R.readsLive(health) ? request("GET", "/record") : null,
     ]);
+    const logBody = log && log.ok ? log.body : null;
+    // See `pluginsDue`: another rig's plugins are read before any of it is
+    // shown; the same rig's, after, with what is held shown meanwhile.
+    const due = live && live.ok ? pluginsDue(live.body, rigIdentity(health, logBody)) : null;
+    const first = due && due.rig !== state.pluginsRig ? await readPlugins(due) : null;
     state.health = health;
     state.live = live;
     state.amp = amp;
     noteRecord(record);
-    state.log = log && log.ok ? log.body : null;
+    state.log = logBody;
     state.seq = seq;
-    if (live && live.ok) await refreshPlugins(live.body, rigIdentity(health, state.log));
+    if (first) Object.assign(state, first);
     render();
+    if (due && !first) {
+      Object.assign(state, await readPlugins(due));
+      render();
+    }
     inBackground("profiles", refreshProfiles);
     inBackground("names", refreshNames);
     inBackground("rigs", refreshRigs);
@@ -546,8 +591,15 @@ function bindGestures(target, ctrl, get, set, { drag: draggable = true, field = 
     if (v !== get()) set(v);
   });
   let drag = null;
+  // The drag ends, whatever ended it: its pointer released or cancelled, or
+  // its capture lost (the dial taken out of the page, the browser taking the
+  // pointer). A drag left set when its pointer was gone made every later
+  // press a "second finger", jumping from a stale height, and held its row
+  // open for good (review of #135).
+  const stop = () => { drag = null; delete target.dataset.dragging; };
   if (draggable) {
     target.addEventListener("pointerdown", (event) => {
+      if (drag && !target.hasPointerCapture(drag.id)) stop();  // a drag whose pointer was lost unseen
       if (drag) {
         // A second finger on the control while the first drags: fine.
         drag.pointers.add(event.pointerId);
@@ -557,10 +609,12 @@ function bindGestures(target, ctrl, get, set, { drag: draggable = true, field = 
       if (event.button !== undefined && event.button > 0) return;
       target.setPointerCapture(event.pointerId);
       drag = { id: event.pointerId, y: event.clientY, p: R.positionOf(ctrl, get() ?? 0), held: null, pointers: new Set([event.pointerId]) };
-      target.dataset.dragging = "1";  // a row in use is not minimised under the hand (`rowInUse`)
+      // A row in use is neither minimised nor moved under the hand (`dragging`).
+      target.dataset.dragging = String(event.pointerId);
       target.focus({ preventScroll: true });
       event.preventDefault();
     });
+    target.addEventListener("lostpointercapture", (event) => { if (drag && event.pointerId === drag.id) stop(); });
     target.addEventListener("pointermove", (event) => {
       if (!drag || event.pointerId !== drag.id) return;
       const dy = event.clientY - drag.y;
@@ -576,7 +630,7 @@ function bindGestures(target, ctrl, get, set, { drag: draggable = true, field = 
     const end = (event) => {
       if (!drag) return;
       drag.pointers.delete(event.pointerId);
-      if (event.pointerId === drag.id) { drag = null; delete target.dataset.dragging; }
+      if (event.pointerId === drag.id) stop();
     };
     target.addEventListener("pointerup", end);
     target.addEventListener("pointercancel", end);
@@ -1323,7 +1377,15 @@ function setRow(name, { expanded, peeked }) {
 // still minimise the row.
 function rowInUse(el) {
   const active = document.activeElement;
-  return !!el.querySelector("[data-dragging]") || !!(active && el.contains(active) && active.dataset.typed === "1");
+  return dragging(el) || !!(active && el.contains(active) && active.dataset.typed === "1");
+}
+
+// Whether a control in `el` is being dragged: marked by `bindGestures`, and
+// still holding its pointer (a mark whose capture is gone is no drag).
+function dragging(el) {
+  return [...el.querySelectorAll("[data-dragging]")].some((c) => {
+    try { return c.hasPointerCapture(Number(c.dataset.dragging)); } catch { return false; }
+  });
 }
 
 // The name's button, or a tap on a slim row: open or close it (R.unitTapped).
@@ -1343,7 +1405,15 @@ function rowSeen(name, slot, bypassed) {
   if (slot.bypass !== undefined && slot.bypass !== bypassed) setRow(name, R.bypassSeen(bypassed, rowState(name), rowInUse(slot.el)));
   slot.bypass = bypassed;
   const view = R.unitRow(bypassed, rowState(name));
+  // The focus on a part of the row a minimise hides (a knob, a value not
+  // typed into) would drop to the page's body, and a keyboard or a screen
+  // reader would lose its place (review of #135): it goes to the row's
+  // name, which is still there and opens the row again.
+  const active = document.activeElement;
+  const hiding = view.minimised && !slot.el.classList.contains("minimised") && active && slot.el.contains(active)
+    && active !== slot.name && !active.closest(".bypass");
   slot.el.classList.toggle("minimised", view.minimised);
+  if (hiding) slot.name.focus({ preventScroll: true });
   slot.el.classList.toggle("open", view.all && !view.minimised);
   slot.name.setAttribute("aria-expanded", String(view.opened));
   slot.name.title = view.minimised ? "Bypassed: open it to set it up without switching it on"
@@ -1369,11 +1439,14 @@ function unitParts(slot, unit, expanded, name) {
   }, state.locked ? lockIcon() : (direction === "up" ? "▲" : "▼"));
   slot.steps = { up: moveButton("up"), down: moveButton("down") };
   slot.name = h("button", { class: "name", "aria-expanded": "false", onclick: () => tapUnit(unit.name, slot) }, unit.name);
+  // The mono badge has a place of its own, drawn in place (`unitSlot`): it
+  // changes when a stereo plugin is moved past this one, from anywhere.
+  slot.badge = h("span", { class: "badge-slot" });
   return [
     h("div", { class: "steps" }, slot.steps.up, slot.steps.down),
     h("span", { class: "swatch", style: `background:${swatch(unit)}` }),
     h("div", { class: "who" },
-      h("span", { class: "name-line" }, slot.name, monoBadge(unit)),
+      h("span", { class: "name-line" }, slot.name, slot.badge),
       h("span", { class: "sub" }, sub)),
     h("div", { class: "knobs" }, shown.map((c) => control(unit, c, "small")),
       !expanded && primary.length > shown.length ? h("span", { class: "more" }, `+${primary.length - shown.length} more`) : null),
@@ -1383,16 +1456,17 @@ function unitParts(slot, unit, expanded, name) {
 }
 
 // One unit's slot, patched on its own key: what the plugin is and whether
-// all its controls show. Not its bypass, its place or its neighbours, so
-// nothing that happens to another row, or arrives from elsewhere, rebuilds
-// this one under a drag or a half-typed value. Its updaters are its own list
+// all its controls show. Not its bypass, its place, its neighbours or its
+// mono badge (which is its neighbours' doing), so nothing that happens to
+// another row, or arrives from elsewhere, rebuilds this one under a drag or
+// a half-typed value. Its updaters are its own list
 // (`state.unitUpdaters`), replaced when it is rebuilt.
 function unitSlot(slot, track, unit, index) {
   const expanded = state.open.has(unit.name);
   const name = pluginName(unit);
   const typing = typedIn(slot.el);
   const onName = !!slot.name && document.activeElement === slot.name;
-  const rebuilt = patch(slot.el, JSON.stringify([unit.uri, unit.profile, unit.panel, unit.monoNote, expanded, state.locked, name]), () => {
+  const rebuilt = patch(slot.el, JSON.stringify([unit.uri, unit.profile, unit.panel, expanded, state.locked, name]), () => {
     const outer = state.updaters;
     state.updaters = [];
     try {
@@ -1407,24 +1481,35 @@ function unitSlot(slot, track, unit, index) {
     // The name's button was tapped, or the keys were on it: they stay on it.
     if (onName) slot.name.focus();
   }
+  patch(slot.badge, JSON.stringify(unit.monoNote), () => monoBadge(unit));
   slot.steps.up.disabled = !R.canMove(track, index, "up");
   slot.steps.down.disabled = !R.canMove(track, index, "down");
 }
 
-// Put `els` in `container`, in that order. The row that holds the focus (a
-// knob being dragged takes it, a field being typed in has it) is never
-// taken out of the page to do it, which would end the drag and blur the
-// field: the others are placed round it.
+// Put `els` in `container`, in that order, never moving a row in use: one
+// that holds the focus (a field being typed in has it) or a drag (a knob
+// keeps its drag when the focus goes elsewhere, a second finger on a strip,
+// say). Taking a row out of the page to put it back, even where it was,
+// ends its drag and blurs its field, so the others are placed round the
+// rows in use. Two rows in use stay as they are towards each other, even
+// where the order has swapped them: the order is put right once one is let
+// go (the next render). A row already followed by the right row stays.
 function inOrder(container, els) {
   const now = [...container.children];
   if (now.length === els.length && els.every((el, i) => now[i] === el)) return;
   for (const el of now) if (!els.includes(el)) el.remove();
   const active = document.activeElement;
-  const held = els.find((el) => el.parentNode === container && el.contains(active)) || null;
-  if (!held) { container.replaceChildren(...els); return; }
-  const at = els.indexOf(held);
-  for (let i = 0; i < at; i++) container.insertBefore(els[i], held);
-  for (let i = at + 1; i < els.length; i++) container.append(els[i]);
+  const held = new Set(els.filter((el) => el.parentNode === container && (el.contains(active) || dragging(el))));
+  // The rows in use, in the order they stand, take the places the order
+  // gives rows in use; every other row is placed round them.
+  const standing = [...container.children].filter((el) => held.has(el));
+  const want = els.map((el) => (held.has(el) ? standing.shift() : el));
+  let ref = null;
+  for (let i = want.length - 1; i >= 0; i--) {
+    const el = want[i];
+    if (!held.has(el) && (el.parentNode !== container || el.nextSibling !== ref)) container.insertBefore(el, ref);
+    ref = el;
+  }
 }
 
 // A tab chosen: by its tab, by the keys on the tablist (`focus`), or by its
@@ -1448,18 +1533,22 @@ function chooseTab(id, { focus = false, reveal = false } = {}) {
 // which is open. A real tablist: the open tab is the one in the tab order,
 // the arrows, Home and End move between them (R.tabKey), and the panel is
 // labelled by its tab. Keyed by the tabs alone and marked in place, so
-// choosing one keeps the focus on it. While a command runs the rig's tabs
-// stay as they were, as its strips do. Returns the open tab, or null.
+// choosing one keeps the focus on it. While the rig is up and /live is not
+// read (a command running) or fails, the rig's tabs stay as they were, so
+// nothing above the chain moves under a hand: the amp's card in particular,
+// whose faders are Carla's and work without Sushi (review of #135: one
+// failed poll hid the card under a fader drag). Returns the open tab, or
+// null.
 function tabsRegion(regions, model, ampView) {
   let parts = state.rackParts;
   if (!parts || parts.el !== regions.tabs) {
-    parts = { el: regions.tabs, model: null, buttons: new Map(), open: null, ampOn: null, slots: new Map(), chain: null, hint: null };
+    parts = { el: regions.tabs, model: null, buttons: new Map(), open: null, ampOn: null, ampWaiting: false, amp: null,
+      slots: new Map(), chain: null, hint: null };
     state.rackParts = parts;
   }
   const rig = state.health && state.health.ok ? state.health.body.rig || {} : {};
-  const busyNow = !!(state.health && state.health.ok && (state.health.body.agent || {}).busy);
   if (model) parts.model = model;
-  else if (!(busyNow && rig.running)) parts.model = null;
+  else if (!rig.running) parts.model = null;
   const tabs = R.rackTabs(parts.model);
   if (model) {
     // Another rig: its own remembered tab, or its first channel.
@@ -1497,10 +1586,9 @@ function tabsRegion(regions, model, ampView) {
   });
   regions.tabs.hidden = !tabs.length;
   if (rebuilt && focused && parts.buttons.has(focused)) parts.buttons.get(focused).button.focus();
-  // The amp is in the tab of the channel it is in front of (R.ampTab).
-  const filed = !!(rig.running && rig.rig);
-  parts.ampOn = R.ampTab(tabs, filed ? state.rigChannels[rig.config_name] || null : null, filed);
-  const marks = R.tabMarks(tabs, parts.model, { failed: state.failed.keys(), amp: ampView, ampOn: parts.ampOn });
+  placeAmp(parts, tabs, rig, ampView);
+  const marks = R.tabMarks(tabs, parts.model, { failed: state.failed.keys(), amp: ampView,
+    ampOn: parts.ampWaiting ? null : parts.ampOn });
   for (const [id, { button }] of parts.buttons) {
     button.setAttribute("aria-selected", String(id === open));
     button.tabIndex = id === open ? 0 : -1;
@@ -1516,8 +1604,62 @@ function tabsRegion(regions, model, ampView) {
     regions.panel.removeAttribute("role");
     regions.panel.removeAttribute("aria-labelledby");
   }
-  regions.amp.hidden = open === null || parts.ampOn !== open;
+  // With no tabs (no chains read yet, or /live failing from the first) the
+  // card is shown on its own, as before #135; with tabs, in its tab alone.
+  regions.amp.hidden = tabs.length > 0 && (parts.ampWaiting || parts.ampOn !== open);
   return open;
+}
+
+// How long the centre waits, the first time a run is seen with an amp, for
+// what says which channel the amp is in front of (R.ampTab: the running
+// rig's roles, else its file) before it puts the card with the first
+// channel. Both are asked for as the rack is first drawn and usually answer
+// in a few milliseconds; a slow agent is not waited for longer than this.
+const AMP_WAIT_MS = 2000;
+
+// The amp's tab, decided once a run (`parts.ampOn`), so that the card never
+// moves while the rig plays: not when an answer arrives late, nor when the
+// file is edited (the restart that plays the edit is a new run). Until it is
+// decided the open tab's chain is held back with the card (`chainRegion`):
+// a chain drawn first and pushed down by the card arriving moved the knob a
+// tap was aimed at (review of #135: the first row went from 226 px to 609 px
+// on every load). With no amp to place (none on the rig, none read yet) the
+// card, which then says only why there is none, goes with the first channel
+// and nothing waits.
+function placeAmp(parts, tabs, rig, ampView) {
+  const run = runKey();
+  const channels = tabs.filter((t) => !t.master);
+  const first = tabs.length ? (channels[0] || tabs[0]).id : null;
+  if (!parts.amp || parts.amp.run !== run) {
+    if (parts.amp) clearTimeout(parts.amp.timer);
+    parts.amp = { run, on: null, since: null, timer: null };
+  }
+  const amp = parts.amp;
+  // A channel the amp was placed with that has left the rig: placed again.
+  if (amp.on !== null && !tabs.some((t) => t.id === amp.on)) amp.on = null;
+  const placing = ampView.state === "up" || ampView.state === "failed";
+  if (!placing || !tabs.length) {
+    parts.ampOn = first;
+    parts.ampWaiting = false;
+    return;
+  }
+  if (amp.on === null) {
+    const filed = !!(rig.running && rig.rig);
+    const roles = state.rolesRun === run ? state.roles : null;
+    const decided = R.ampTab(tabs, roles, filed ? state.rigChannels[rig.config_name] || null : null, filed);
+    if (amp.since === null) amp.since = Date.now();
+    const left = AMP_WAIT_MS - (Date.now() - amp.since);
+    if (decided !== null) amp.on = decided;
+    else if (left <= 0) amp.on = first;
+    else if (!amp.timer) amp.timer = setTimeout(() => { amp.timer = null; render(); }, left + 20);
+    // What places it is asked for now, not on the next poll.
+    if (decided === null && filed && state.screen === "rack") {
+      inBackground("roles", refreshRoles);
+      inBackground("running channels", refreshRunningChannels);
+    }
+  }
+  parts.ampOn = amp.on;
+  parts.ampWaiting = amp.on === null;
 }
 
 // The open tab's chain: a slot per plugin, in the chain's order. The chain
@@ -1526,13 +1668,16 @@ function tabsRegion(regions, model, ampView) {
 // the others as they are (`inOrder`, `unitSlot`).
 function chainRegion(regions, model, status, open) {
   const parts = state.rackParts;
-  const track = model && open !== null ? model.tracks.find((t) => t.name === open) || null : null;
+  // Held back, with the amp's card, until the card's tab is known (`placeAmp`).
+  const waiting = parts.ampWaiting && !!model;
+  const track = model && open !== null && !waiting ? model.tracks.find((t) => t.name === open) || null : null;
   // With no rig, the message depends on the tone (changing, or down), so
   // the tone is in the key, or it would never be redrawn (found by review).
-  patch(regions.rack, JSON.stringify(track ? ["chain", track.name] : ["none", !!model, status.tone]), () => {
+  patch(regions.rack, JSON.stringify(track ? ["chain", track.name] : waiting ? ["waiting"] : ["none", !!model, status.tone]), () => {
     state.unitUpdaters = new Map();
     parts.slots = new Map();
     parts.chain = parts.hint = null;
+    if (waiting) return h("p", { class: "empty" }, "Reading the rig…");
     if (!track) {
       return h("p", { class: "empty" }, model ? "This rig has no tracks to show."
         : status.tone === "busy" ? "The rig is changing; the rack comes back when it is up."
@@ -2081,7 +2226,7 @@ function giveBack(el, typing) {
 
 function refocus(el, name) {
   if (!name) return;
-  const input = el.querySelector(`[name="${name}"]`);
+  const input = el.querySelector(`[name="${CSS.escape(name)}"]`);
   if (!input) return;
   input.focus();
   if (input.setSelectionRange && input.type === "text") input.setSelectionRange(input.value.length, input.value.length);

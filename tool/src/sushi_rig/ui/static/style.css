@@ -527,6 +527,9 @@ a.rig-act { display: inline-flex; align-items: center; justify-content: center; 
 /* A strip opens its channel's tab (#135): its name is the button, a thumb
    high, and the open tab's strip is marked. */
 button.strip-name { min-height: 44px; margin: -6px 0; padding: 0; background: none; border: none; text-align: left; cursor: pointer; }
+/* A channel's name is one word as long as it likes (keyboards_and_synth_pads):
+   it breaks anywhere rather than push a phone's page wider (review of #135). */
+.strip-name { overflow-wrap: anywhere; min-width: 0; }
 button.strip-name:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; border-radius: 6px; }
 .strip.open { border-color: var(--accent); box-shadow: inset 3px 0 0 var(--accent); }
 .strip .wiring-row { padding: 0; border: none; gap: 6px; }
@@ -544,6 +547,7 @@ button.strip-name:focus-visible { outline: 2px solid var(--accent); outline-offs
 /* A plugin the compiler copies to stereo after: "mono", small, in its name's
    line; amber where it follows a stereo plugin and collapses its width. */
 .name-line { display: flex; align-items: center; gap: 6px; min-width: 0; }
+.badge-slot { display: contents; }
 .mono-badge { flex: none; font-family: var(--mono); font-size: 10px; font-weight: 400; letter-spacing: 0; line-height: 1; padding: 2px 5px;
   border-radius: 5px; border: 1px solid var(--edge); color: var(--muted); vertical-align: middle; cursor: help; }
 .mono-badge.warn { border-color: var(--accent); color: var(--accent-soft); }

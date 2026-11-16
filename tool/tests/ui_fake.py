@@ -242,6 +242,10 @@ class UiRig:
             "master_return": {"uri": None, "uid": RETURN_UID, "type": "internal"},
         }
         self.refuse: dict = {}
+        # How long `plugins` (GET /live/plugins) takes to answer: a test
+        # sets it to see the page with that answer outstanding. Invented: a
+        # session read on the rig has not been timed.
+        self.plugins_delay = 0.0
         self.calls: list = []
         self.lock = threading.Lock()  # the agent calls from its worker threads
         self._next = 0
@@ -324,6 +328,7 @@ class UiRig:
             return reading
 
     def plugins(self, connection):
+        time.sleep(self.plugins_delay)  # outside the lock: the rest of the rig answers meanwhile
         with self.lock:
             self.calls.append(("plugins",))
             return {name: {"track": track, **self.classes[name]}

@@ -564,27 +564,60 @@ export function tabKey(tabs, current, key) {
 }
 
 // The tab the amp's card is in: the channel the amp is in front of, which is
-// the first one the rig's file plays from GUITAR_ROLE (`channelsAnswer` is
-// GET /rigs/<rig>/channels's, {ok, body}). A file that could not be read, or
-// that gives no running channel that role, leaves it with the first channel,
-// as does a run with no rig file (`filed` false: a v1 run). With a file still
-// to be read (`filed`, and no answer yet) the answer is null: the card waits
-// for it rather than being drawn in one tab and then another.
-export function ampTab(tabs, channelsAnswer, filed) {
+// the first channel the RUNNING rig plays from GUITAR_ROLE. What the running
+// rig plays from each role is GET /machine/roles's `used_by` (`rolesAnswer`,
+// {ok, body}), read from the running config's own wiring, so it does not
+// change when Change input writes the file: until the restart the amp is
+// still in front of the channel it was (review of #135). It can say only
+// when the agent read the running config (`running` set, no `wiring_note`:
+// otherwise every `used_by` is empty, and says nothing). Only when it
+// cannot say (the answer failed, the running config was unread, or no such
+// role) is the rig's file asked (`channelsAnswer`, GET
+// /rigs/<rig>/channels's). A run that has nothing on that role, or no rig
+// file at all (`filed` false: a v1 run), leaves the amp with the first
+// channel. Null while an answer it needs is still to come: app.js then
+// waits, a bounded while, rather than draw the card in one tab and then
+// move it to another.
+export function ampTab(tabs, rolesAnswer, channelsAnswer, filed) {
   const channels = tabs.filter((t) => !t.master);
   if (!tabs.length) return null;
-  if (filed && !channelsAnswer) return null;
-  const inFile = channelsAnswer && channelsAnswer.ok ? channelsAnswer.body.channels || [] : [];
+  const first = (channels[0] || tabs[0]).id;
+  if (!filed) return first;
+  if (!rolesAnswer) return null;
+  const said = rolesAnswer.ok && rolesAnswer.body.running && !rolesAnswer.body.wiring_note;
+  const role = said ? (rolesAnswer.body.roles || []).find((r) => r && r.name === GUITAR_ROLE) : null;
+  if (role) {
+    const fed = channels.find((t) => (role.used_by || []).includes(t.id));
+    return fed ? fed.id : first;
+  }
+  if (!channelsAnswer) return null;
+  const inFile = channelsAnswer.ok ? channelsAnswer.body.channels || [] : [];
   const fed = inFile.find((c) => c.input === GUITAR_ROLE && channels.some((t) => t.id === c.name));
-  return fed ? fed.name : (channels[0] || tabs[0]).id;
+  return fed ? fed.name : first;
+}
+
+// Everything the amp's card says is wrong, for its tab's mark (`ampCard`'s
+// view): what a closed tab would otherwise hide.
+export function ampFaults(amp) {
+  if (!amp) return [];
+  if (amp.state === "failed") return [`The amp could not be read: ${amp.why}`];
+  if (amp.state !== "up") return [];
+  const out = [];
+  if (amp.down) out.push("Carla is not running: restart the rig to bring the amp back.");
+  if (amp.model && amp.model.problem) out.push(amp.model.problem);
+  if (amp.model && amp.model.warning) out.push(amp.model.warning);
+  if (amp.listProblem) out.push(`The amp's models could not be listed: ${amp.listProblem}`);
+  return out;
 }
 
 // What each tab says of what is behind it, open or not: a closed panel must
 // not hide what matters (principle 8). Two things do and are said nowhere
 // else: a change the agent refused, marked beside its control (`failed`, the
 // keys of the controls whose last change was refused, as app.js keys them),
-// and an amp that is not playing (`amp`, `ampCard`'s view, on `ampOn`, the
-// amp's tab). {tab id: the note, or null}.
+// and anything wrong with the amp (`amp`, `ampCard`'s view, `ampFaults`), on
+// its tab (`ampOn`). While the amp's tab is not known yet (`ampOn` null and
+// the card held back), its faults are on every channel's tab, so that no
+// tab hides them meanwhile. {tab id: the note, or null}.
 export function tabMarks(tabs, model, { failed = [], amp = null, ampOn = null } = {}) {
   const refused = new Set();
   let ampRefused = false;
@@ -593,16 +626,12 @@ export function tabMarks(tabs, model, { failed = [], amp = null, ampOn = null } 
     if (kind === "a") ampRefused = true;
     else if (kind === "p" || kind === "b") refused.add(name);
   }
+  const ampNotes = [...ampFaults(amp), ...(ampRefused ? ["A change to the amp was refused."] : [])];
   const tracks = new Map(((model && model.tracks) || []).map((t) => [t.name, t]));
   const out = {};
   for (const tab of tabs) {
     const notes = [];
-    if (tab.id === ampOn && amp) {
-      if (amp.state === "failed") notes.push(`The amp could not be read: ${amp.why}`);
-      if (amp.state === "up" && amp.down) notes.push("Carla is not running: restart the rig to bring the amp back.");
-      if (amp.state === "up" && amp.model && amp.model.problem) notes.push(amp.model.problem);
-      if (ampRefused) notes.push("A change to the amp was refused.");
-    }
+    if (tab.id === ampOn || (ampOn === null && !tab.master)) notes.push(...ampNotes);
     const track = tracks.get(tab.id);
     for (const unit of track ? track.units : []) {
       if (refused.has(unit.name)) notes.push(`A change to ${unit.name} was refused.`);
@@ -1588,6 +1617,9 @@ export function ampCard(answer, models, { locked = false, pending = null } = {})
   return {
     state: "up", known: b.known, note: b.known_note, panel, down, model, faders, shown,
     override: b.override || null,
+    // Said on the picker too, as `why` when nothing more pressing is; kept
+    // apart so the amp's tab can mark it (`ampFaults`).
+    listProblem: models && !models.ok ? models.reason : null,
     picker: { options, canChange: !why, why, warning: MODEL_WARNING },
   };
 }
