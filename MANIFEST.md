@@ -4425,3 +4425,50 @@ now checks `last_error` too; both fail without the fix. The load check's
 docstring now says an add that waited reads the load again under the live
 lock. **Not run:** the rig, a live Sushi.
 *(2026-11-16)*
+
+**Delete a rig file from the UI, and Undo (#129).** Each row of the rack's
+rig picker has **Delete**; the stage's picker has none. `POST
+/rigs/{name}/delete` moves `config/rigs/<name>.yaml` to
+`config/rigs/.deleted/<name>-<UTC stamp>.yaml` (`rigbin.py`), and `POST
+/rigs/{name}/restore {"entry"?}` moves it back. *Decided:* (1) **Undo across
+a reload** is the restore taking the bin entry the delete answered with,
+which the page keeps in its own storage (`sushi-rig.binned`) as it keeps the
+lock and the open tab; with no entry the restore takes the newest of that
+name's, for `curl`. It needs nothing of the agent's memory, so an agent
+restarted meanwhile does it too; another browser does not offer it. (2)
+**The confirm is a dry run** of the delete (`{"dry_run": true}`), so its
+refusals are the delete's own; it shows "X moves from program a to b" for
+each rig whose number moves and nothing about programs when none does, and
+what git's HEAD holds of the file: committed, with `git checkout HEAD --
+config/rigs/<name>.yaml` (and, when the file differs from HEAD, that the
+changes since are only in the bin), or not committed, the bin its only copy.
+(3) **The running rig** is `/health`'s `rig.rig`, the state file's file, not
+the config's name: refused `409 running` under the lifecycle lock, and its
+row's Delete is off with the reason under the list. A v1 run holds no rig
+file and greys out none. (4) **Names** are plain: no `/` or `\`, no `..`, no
+leading dot, no control character, refused `409 name` however the URL spelt
+them (`%2F`, `%2E%2E`); a plain name `/rigs` does not list is 404. Not
+`validate_name`, which is for a name a new file is given: a listed rig such
+as `Guitar.Vocal` can go and come back. (5) **Undo is refused** `409 taken`
+when a file of that name is there again (never replaced: the place is
+claimed by creating it, and the binned file stays), and `409 gone` when the
+bin file is not there; the page keeps Undo after `taken` and drops it after
+`gone`. (6) **The bin is in no list of rigs** with no change to any of
+them: `program_order` (so `/rigs`, the picker and the Program Change
+numbers), `render.rigs_to_check` (the sound references) and
+`rig_fixtures.committed` all glob `config/rigs/*.yaml` and nothing deeper;
+a test pins each. It is gitignored twice, a line in `.gitignore` and a
+`.gitignore` of `*` the bin writes in itself (as `.sushi-rig/` does), so a
+`git add config/rigs` never commits it. Nothing is committed or staged by
+either route. Tests: `test_agent_rigbin.py` (40) and `test_ui_rigbin.py`
+(4 of the decisions, 8 in the browser). The guide (`building-a-rig.md`, a
+new "Delete a rig"), `docs/reference/agent.md`, `web-ui.md` and the two
+guide pictures with the picker in them (`rack.png`, `start-a-rig.png`)
+follow. FAST_SUITE_LINE **Not run:** anything on the rig machine
+(no Sushi here): no rig deleted or put back there, and no Program Change
+sent from a pedal after a delete, so that a pedal's numbers move as
+`program_order` says is shown only through that function; no phone or touch
+screen; the reload that keeps Undo is Playwright's in one browser context;
+the slow tests and the container job. `docs/ui/rack.png`, taken by hand, is
+not retaken and shows the picker without Delete.
+*(2026-11-16)*

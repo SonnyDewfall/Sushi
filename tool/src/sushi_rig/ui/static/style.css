@@ -93,6 +93,19 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 .rig-act:disabled { opacity: .5; cursor: default; }
 .rig-busy { margin: 0; font-size: 13px; color: var(--accent-soft); }
 .rig-problem { margin: 0; font-size: 13px; color: var(--refused); }
+/* The rack's picker: Delete on each row (#129), quiet until hovered, and
+   off with its reason on the running rig's; its confirm and Undo under the list. */
+.rig-row { display: flex; align-items: center; gap: 4px; }
+.rig-row .rig { flex: 1 1 auto; min-width: 0; }
+.rig-del { min-height: 44px; flex: 0 0 auto; padding: 0 10px; border-radius: 10px; background: transparent; border: 1px solid transparent; color: var(--muted); font-size: 12px; cursor: pointer; }
+.rig-del:hover:not(:disabled) { border-color: var(--refused-edge); color: var(--refused); }
+.rig-del:disabled { opacity: .45; cursor: default; }
+.rig-del-why { margin: 0; font-size: 12px; color: var(--muted); line-height: 1.5; }
+.delete-confirm .lost, .delete-confirm .moves { flex: 1 0 100%; margin: 0; padding-left: 18px; font-size: 13px; color: var(--text); line-height: 1.5; }
+.delete-confirm .programs-moved { flex: 1 0 100%; }
+.delete-confirm .delete-cancel, .delete-confirm .delete-go { flex: 1 1 auto; }
+.delete-confirm p.sub { color: var(--muted); font-size: 13px; }
+.rig-deleted .undo-delete { align-self: flex-start; margin-top: 4px; }
 
 .lock {
   min-height: 44px; display: inline-flex; align-items: center; gap: 8px; padding: 0 14px;

@@ -431,3 +431,15 @@ def test_undo_names_only_this_rigs_own_bin_entries(root, entry, code):
     status, body = call(agent, "POST", "/rigs/accustomed/restore", json={"entry": entry})
     assert status == 409 and body["code"] == code, body
     assert files_of(root) == before
+
+
+def test_a_listed_rig_whose_name_a_new_file_could_not_have_can_still_go_and_come_back(root):
+    """`/rigs/new`'s naming rule is for a name a new file is given; a delete
+    names a file that is there, and one called so compiles and saves."""
+    path = root / "config/rigs/Guitar.Vocal.yaml"
+    shutil.copy(RIGS / "guitar_vocal.yaml", path)
+    agent = bin_agent(root, rig=None)
+    status, deleted = call(agent, "POST", "/rigs/Guitar.Vocal/delete")
+    assert status == 200 and not path.exists()
+    status, body = call(agent, "POST", deleted["undo"]["path"], json=deleted["undo"]["json"])
+    assert status == 200 and path.is_file()

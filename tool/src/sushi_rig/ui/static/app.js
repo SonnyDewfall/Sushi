@@ -26,6 +26,8 @@ const UNLOCK_MS = 4000;
 const LOCK_KEY = "sushi-rig.locked";
 // The rack's open tab, kept in this browser (#135): `R.tabToRemember`'s record.
 const TAB_KEY = "sushi-rig.tab";
+// The Undo of the last rig deleted from this browser (#129): `R.binnedToRemember`'s record.
+const BIN_KEY = "sushi-rig.binned";
 // amp/models is listed again this often while the page is open, so a model
 // copied in shows in the picker without a reload; a failed listing is asked
 // for again after RETRY_MS.
@@ -60,6 +62,18 @@ function writeTab(text) {
   try { localStorage.setItem(TAB_KEY, text); } catch { /* the page still works */ }
 }
 
+// The Undo of a delete is kept in this browser too, so a reload still offers
+// it: the bin is on the rig, and the restore needs only the entry kept here.
+function readBinned() {
+  try { return R.rememberedBinned(localStorage.getItem(BIN_KEY)); } catch { return null; }
+}
+function writeBinned(binned) {
+  try {
+    if (binned) localStorage.setItem(BIN_KEY, R.binnedToRemember(binned));
+    else localStorage.removeItem(BIN_KEY);
+  } catch { /* the page still works: Undo lasts until a reload */ }
+}
+
 const state = {
   health: null, live: null, log: null,
   plugins: null, pluginsFor: null, pluginsRig: null, pluginsError: null, pluginsAt: 0,
@@ -81,6 +95,10 @@ const state = {
   levelUpdaters: [],         // the stage's channel levels', emptied whenever that region is rebuilt
   stripUpdaters: [],         // the rack's channel strips' volumes, likewise
   chosen: null,              // the rig picked in the picker; null follows the running rig
+  // Deleting a rig from the rack's picker (#129): the confirm open ({rig,
+  // answer}: the dry run's, null while asked), the delete in flight, and the
+  // Undo offered ({rig, entry, file}, kept in this browser) with what it said.
+  bin: { confirm: null, pending: false, undo: readBinned(), said: null, restoring: false },
   pending: null,             // this page's lifecycle command in flight: {op, name}
   saving: null,              // this page's save in flight: {name}, null for the running rig's own file
   saveAsOpen: false, saveAsName: "",  // the Save as… form, and what is typed in it
@@ -1088,20 +1106,32 @@ function armStop() {
 // The picker: config/rigs/ as a list, the running rig marked, one chosen, and
 // what can be done with it (`R.rigPicker`). The rack's left column, as the
 // mockups' S1 has it; on the stage, below the cards and only while unlocked.
-function rigsRegion(el, { newRig = false } = {}) {
+function rigsRegion(el, { newRig = false, deletes = false } = {}) {
   const rig = state.health && state.health.ok ? state.health.body.rig || {} : {};
   const running = rig.running ? rig.config_name : null;
   const view = R.rigPicker(state.health, state.rigs, state.chosen ?? running, state.pending);
   const stop = view.actions.find((a) => a.op === "stop" && !a.disabled);
   const confirming = state.confirming && !!stop;
-  patch(el, JSON.stringify([view, confirming, newRig]), () => [
+  // The rack's picker (the files panel) has a Delete on each row (#129); the
+  // stage's does not: deleting a file is not a stage action.
+  const dels = deletes ? view.rows.map((r) => R.deleteAction(r.name, state.health, state.bin.pending)) : null;
+  const bin = deletes ? binKey() : null;
+  const rigButton = (r) => h("button", {
+    class: `rig${r.up ? " up" : ""}${r.chosen ? " chosen" : ""}`, "aria-pressed": String(r.chosen),
+    onclick: () => { state.chosen = r.name; state.confirming = false; render(); },
+  }, h("span", { class: "n" }, r.name), r.up ? h("span", { class: "tag" }, "up now") : null);
+  const held = dels && dels.find((d) => d.why);
+  const rebuilt = patch(el, JSON.stringify([view, confirming, newRig, dels, bin]), () => [
     h("h2", {}, "RIGS"),
     view.problem ? h("p", { class: "rig-problem" }, view.problem) : null,
     view.rows.length ? h("div", { class: "rig-list", role: "group", "aria-label": "Rigs in config/rigs" },
-      view.rows.map((r) => h("button", {
-        class: `rig${r.up ? " up" : ""}${r.chosen ? " chosen" : ""}`, "aria-pressed": String(r.chosen),
-        onclick: () => { state.chosen = r.name; state.confirming = false; render(); },
-      }, h("span", { class: "n" }, r.name), r.up ? h("span", { class: "tag" }, "up now") : null))) : null,
+      view.rows.map((r, i) => (dels ? h("div", { class: "rig-row", "data-rig": r.name }, rigButton(r),
+        h("button", { class: "rig-del", disabled: dels[i].disabled, "aria-label": dels[i].aria, title: dels[i].why,
+          "aria-describedby": dels[i].why ? "rig-del-why" : null, onclick: () => askDelete(r.name) }, dels[i].label))
+        : rigButton(r)))) : null,
+    held ? h("p", { class: "sub rig-del-why", id: "rig-del-why" }, held.why) : null,
+    bin && bin.confirm ? deleteConfirmBox(bin.confirm) : null,
+    bin && (bin.undo || bin.said) ? undoBox(bin) : null,
     view.busy ? h("p", { class: "rig-busy", role: "status" }, view.busy) : null,
     confirming
       ? h("div", { class: "confirm", role: "group", "aria-label": "Confirm stopping the rig" },
@@ -1116,6 +1146,127 @@ function rigsRegion(el, { newRig = false } = {}) {
     // stage action, so the stage's picker does not offer it.
     newRig ? h("a", { class: "rig-act new-rig", href: "#new-rig" }, "New rig…") : null,
   ]);
+  if (rebuilt && state.bin.focus) {
+    const target = el.querySelector(state.bin.focus);
+    if (target) { state.bin.focus = null; target.focus(); }
+  }
+}
+
+// ---------------------------------------------------------------- deleting a rig (#129)
+// The rack's picker: Delete on a row asks the agent what it would do (a dry
+// run: refused for the running rig, the Program Change numbers that move,
+// what git holds of the file), and the confirm says it; the delete moves the
+// file into config/rigs/.deleted/, and Undo, kept in this browser across a
+// reload, moves it back.
+
+function binKey() {
+  const b = state.bin;
+  return { confirm: b.confirm ? { ...R.deleteConfirm(b.confirm.rig, b.confirm.answer), refusedNow: b.confirm.refused || null, pending: b.pending } : null,
+    undo: b.undo, said: b.said, restoring: b.restoring };
+}
+
+function deleteConfirmBox(c) {
+  const refused = c.refusedNow || c.refused;
+  return h("div", { class: "confirm delete-confirm", role: "group", "aria-label": `Confirm deleting ${c.rig}` },
+    c.loading ? h("p", { class: "sub" }, `Asking the agent what deleting ${c.rig} would change…`) : null,
+    refused ? h("p", { role: "alert" }, `${c.rig} cannot be deleted: ${refused}`) : null,
+    c.title && !refused ? h("p", {}, c.title) : null,
+    c.lines && !refused ? h("ul", { class: "lost" }, c.lines.map((line) => h("li", {}, line))) : null,
+    c.moves && c.moves.length && !refused ? h("div", { class: "programs-moved", role: "note" },
+      h("span", { class: "warn" }, c.programsNote),
+      h("ul", { class: "moves" }, c.moves.map((line) => h("li", {}, line)))) : null,
+    h("button", { class: "rig-act danger delete-go", disabled: !!(c.loading || refused || c.pending),
+      onclick: () => deleteRig(c.rig) }, c.pending ? "Deleting…" : c.go),
+    h("button", { class: "rig-act delete-cancel", onclick: cancelDelete }, "Cancel"));
+}
+
+function undoBox(b) {
+  const said = b.said;
+  const offer = b.undo && (!said || said.ok || said.undo);
+  return h("div", { class: `save-result rig-deleted ${said && !said.ok ? "refused" : "ok"}`, role: said && !said.ok ? "alert" : "status" },
+    h("strong", {}, said ? said.title : `Deleted ${b.undo.rig}`),
+    h("span", { class: "said" }, said ? (said.ok ? said.text : said.reason) : `It is in ${b.undo.file}.`),
+    offer ? h("button", { class: "rig-act undo-delete", disabled: b.restoring, onclick: undoDelete },
+      b.restoring ? "Putting it back…" : `Undo: put back ${b.undo.rig}`) : null,
+    h("button", { class: "dismiss", "aria-label": "Dismiss", onclick: () => {
+      Object.assign(state.bin, { undo: null, said: null });
+      writeBinned(null);
+      render();
+    } }, "×"));
+}
+
+async function askDelete(rig) {
+  const b = state.bin;
+  if (b.pending) return;
+  b.confirm = { rig, answer: null, refused: null };
+  b.focus = ".delete-cancel";
+  render();
+  const call = R.deleteCall(rig, true);
+  const answer = await request("POST", call.path, call.json);
+  if (b.confirm && b.confirm.rig === rig && !b.confirm.answer) {
+    b.confirm.answer = answer;
+    // Cancel keeps the focus: a second Enter does not delete.
+    b.focus = ".delete-cancel";
+  }
+  render();
+}
+
+function cancelDelete() {
+  const rig = state.bin.confirm && state.bin.confirm.rig;
+  state.bin.confirm = null;
+  if (rig) state.bin.focus = `.rig-row[data-rig="${CSS.escape(rig)}"] .rig-del`;
+  render();
+}
+
+async function deleteRig(rig) {
+  const b = state.bin;
+  if (b.pending) return;
+  b.pending = true;
+  render();
+  const call = R.deleteCall(rig);
+  let answer;
+  try {
+    answer = await request("POST", call.path, call.json);
+  } finally {
+    b.pending = false;
+  }
+  const said = R.deletedOutcome(rig, answer);
+  if (said.ok) {
+    Object.assign(b, { confirm: null, undo: said.binned, said, focus: ".undo-delete" });
+    writeBinned(said.binned);
+    if (state.chosen === rig) state.chosen = null;
+    await refreshRigs(true);
+  } else if (b.confirm && b.confirm.rig === rig) {
+    b.confirm.refused = said.reason;
+  }
+  render();
+}
+
+async function undoDelete() {
+  const b = state.bin;
+  if (b.restoring || !b.undo) return;
+  const { rig, entry } = b.undo;
+  b.restoring = true;
+  render();
+  const call = R.restoreCall(rig, entry);
+  let answer;
+  try {
+    answer = await request("POST", call.path, call.json);
+  } finally {
+    b.restoring = false;
+  }
+  const said = R.restoreOutcome(rig, answer);
+  b.said = said;
+  if (said.ok) {
+    b.undo = null;
+    writeBinned(null);
+    b.focus = `.rig-row[data-rig="${CSS.escape(rig)}"] .rig`;
+    await refreshRigs(true);
+  } else if (!said.undo) {
+    b.undo = null;
+    writeBinned(null);
+  }
+  render();
 }
 
 // ---------------------------------------------------------------- the amp
@@ -2388,7 +2539,7 @@ function renderRack(regions, model, unsaved, status) {
   chainRegion(regions, model, status, open);
   drawerRegion(regions.drawer, model);
   ampRegion(regions.amp);
-  rigsRegion(regions.rigs, { newRig: true });
+  rigsRegion(regions.rigs, { newRig: true, deletes: true });
   stripsRegion(regions.wiring, model, unsaved);
   patch(regions.channels, "agent", () => h("p", { class: "agent" }, `Agent on ${location.host}. Phone and laptop see the same rig.`));
   renderChanges(regions.changes);

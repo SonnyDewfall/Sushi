@@ -1342,6 +1342,116 @@ export function lifecycleOutcome(op, name, answer) {
     : { ok: false, title: `Not stopped: ${name || "the rig"}`, reason: answer.reason };
 }
 
+// ---------------------------------------------------------------- deleting a rig (#129)
+// POST /rigs/<rig>/delete moves the file into config/rigs/.deleted/, out of
+// the picker and the Program Change list, and POST /rigs/<rig>/restore puts
+// it back. The agent decides (the running rig is refused, a name must be
+// plain); these say what the rack's picker offers and what an answer means.
+
+// The running rig's own file, by name: the state file's rig as /health
+// gives it (`config/rigs/<name>.yaml`), which the agent refuses to delete.
+// A v1 run has none.
+export function runningRigFile(health) {
+  const rig = health && health.ok ? health.body.rig || {} : {};
+  if (!rig.running || typeof rig.rig !== "string" || !rig.rig) return null;
+  const base = rig.rig.split("/").pop();
+  return base.endsWith(".yaml") ? base.slice(0, -5) : base;
+}
+
+// Each row's Delete: refused, with the reason, on the running rig's row.
+export function deleteAction(name, health, busy = false) {
+  if (name === runningRigFile(health)) {
+    return { name, disabled: true, label: "Delete", aria: `Delete ${name}: not while it is the running rig`,
+      why: `${name} is the running rig, so it cannot be deleted: switch to another rig, or stop it, first.` };
+  }
+  return { name, disabled: !!busy, label: "Delete", aria: `Delete ${name}…`, why: null };
+}
+
+export function deleteCall(rig, dryRun = false) {
+  return { path: `/rigs/${encodeURIComponent(rig)}/delete`, json: dryRun ? { dry_run: true } : {} };
+}
+
+export function restoreCall(rig, entry = null) {
+  return { path: `/rigs/${encodeURIComponent(rig)}/restore`, json: entry ? { entry } : {} };
+}
+
+// "electric-delay moves from program 6 to 5", for each rig whose number
+// moves; none when none does.
+export function programMoves(programs) {
+  return programs && Array.isArray(programs.moved)
+    ? programs.moved.map((m) => `${m.rig} moves from program ${m.from} to ${m.to}`) : [];
+}
+
+// What git holds of the file, in a sentence: a committed rig comes back
+// with a `git checkout` too, a rig never committed only from the bin.
+function binGitText(git, note) {
+  if (!git) return `${note || "What git holds of it is not known"}.`;
+  if (!git.committed) return "It is not committed, so the bin holds the only copy.";
+  return `It is committed, so \`${git.restore}\` restores it too`
+    + (git.same === false ? ", as it was last committed: the changes since are only in the bin." : ".");
+}
+
+// The confirm, from the agent's dry run (`answer`, null while it is asked).
+export function deleteConfirm(rig, answer) {
+  if (!answer) return { rig, loading: true, go: `Delete ${rig}` };
+  if (!answer.ok) return { rig, refused: answer.reason, code: answer.code || null, go: `Delete ${rig}` };
+  const b = answer.body || {};
+  const moves = programMoves(b.programs);
+  return {
+    rig, file: b.file, title: `Delete ${b.file}?`,
+    lines: [
+      "It moves to config/rigs/.deleted/, out of the picker and the Program Change list, and Undo puts it back. Nothing is committed.",
+      binGitText(b.git, b.git_note),
+    ],
+    moves,
+    programsNote: moves.length ? "Program Change numbers follow config/rigs by file name, so a pedal preset set for a number then selects the rig listed against it after." : null,
+    go: `Delete ${rig}`,
+  };
+}
+
+// What a delete said: `{ok, title, text, binned}` with what Undo needs, or
+// `{ok: false, title, reason, code}`.
+export function deletedOutcome(rig, answer) {
+  if (!answer.ok) return { ok: false, title: `Not deleted: ${rig}`, reason: answer.reason, code: answer.code || null };
+  const b = answer.body || {};
+  const moves = programMoves(b.programs);
+  return {
+    ok: true, title: `Deleted ${rig}`,
+    text: `${b.file} is now ${b.binned.file}. ${binGitText(b.git, b.git_note)}${moves.length ? ` ${moves.join("; ")}.` : ""}`,
+    binned: { rig, entry: b.binned.entry, file: b.binned.file },
+  };
+}
+
+// What an Undo said. Refused, `undo` is whether trying again could work: a
+// file of that name made since can be moved away, a bin file gone cannot.
+export function restoreOutcome(rig, answer) {
+  if (!answer.ok) {
+    return { ok: false, title: `Not put back: ${rig}`, reason: answer.reason, code: answer.code || null,
+      undo: answer.code === "taken" || answer.code === "busy" || !answer.status };
+  }
+  const b = answer.body || {};
+  const moves = programMoves(b.programs);
+  return { ok: true, title: `Put back ${rig}`, text: `${b.file} is back from ${b.from}.${moves.length ? ` ${moves.join("; ")}.` : ""}` };
+}
+
+// The Undo offered, kept in this browser so a reload still offers it (as the
+// lock and the open tab are kept). What comes back is checked: a rig and a
+// bin entry of that rig's, else nothing.
+const ENTRY_RE = /^.+-\d{8}T\d{6}Z(?:-\d+)?\.yaml$/;
+
+export function binnedToRemember(binned) {
+  return JSON.stringify({ rig: binned.rig, entry: binned.entry, file: binned.file });
+}
+
+export function rememberedBinned(text) {
+  let kept;
+  try { kept = JSON.parse(text); } catch { return null; }
+  if (!kept || typeof kept.rig !== "string" || typeof kept.entry !== "string" || typeof kept.file !== "string") return null;
+  if (!kept.rig || kept.rig.startsWith(".") || kept.rig.includes("/")) return null;
+  if (!ENTRY_RE.test(kept.entry) || !kept.entry.startsWith(`${kept.rig}-`)) return null;
+  return { rig: kept.rig, entry: kept.entry, file: kept.file };
+}
+
 // ---------------------------------------------------------------- saving (S4)
 // POST /rig/save: the running rig into its own file of config/rigs, or "save
 // as" a new one, which then is the running rig. The agent decides what can be

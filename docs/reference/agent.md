@@ -47,6 +47,9 @@ curl localhost:8029/rigs/guitar_vocal/channels                      # a rig file
 curl -X POST localhost:8029/rigs/new -d '{"name": "two-guitars", "channels": [{"name": "clean", "input": "guitar-in", "width": "mono"}, {"name": "dirty", "input": "guitar-in", "width": "stereo", "from": {"rig": "electric_board", "channel": "board"}}]}'
 curl -X POST localhost:8029/rigs/guitar_vocal/channels/add -d '{"name": "keys", "input": "vocal-in", "width": "stereo"}'
 curl -X POST localhost:8029/rigs/guitar_vocal/channels/vocal/input -d '{"input": "guitar-in"}'   # or "width", or both
+curl -X POST localhost:8029/rigs/electric-delay/delete -d '{"dry_run": true}'   # what deleting it would do: the confirm's question
+curl -X POST localhost:8029/rigs/electric-delay/delete                           # into config/rigs/.deleted/ (#129); never the running rig
+curl -X POST localhost:8029/rigs/electric-delay/restore -d '{"entry": "electric-delay-20261116T101502Z.yaml"}'   # Undo; no entry: the newest
 
 curl localhost:8029/health | jq .agent.midi   # the pedals: listening, or why not, and what was last heard
 ```
@@ -603,6 +606,62 @@ page and played after the restart it offers has been done (a vocal channel on
 electric-chorus-2, at Sonny's word; MANIFEST, 2026-11-14). `POST /rigs/new` and
 a channel's input change are not recorded as run against a live Sushi: the
 rigs they write are shown to compile and wire as `up --rig` would.
+
+## Deleting a rig file
+
+What the rack picker's **Delete** and **Undo** call (#129). `POST
+/rigs/<name>/delete` moves `config/rigs/<name>.yaml` to
+`config/rigs/.deleted/<name>-<stamp>.yaml` (`rigbin.py`; the stamp is the UTC
+second, `-2`, `-3` for a second delete in the same second, each name claimed
+by creating it so nothing is replaced). Everything that lists the rigs globs
+`config/rigs/*.yaml` and nothing deeper, so the bin is in none of them:
+`/rigs` and the picker, the Program Change numbers (`program_order`), the
+sound references' list (`render.rigs_to_check`, so `nulltest --all`), and the
+tests over every committed rig (`rig_fixtures.committed`). The bin ignores
+itself (a `.gitignore` of `*` written with it) and is in the repository's
+`.gitignore` too. **Nothing is committed or staged**: a committed rig deleted
+shows in `git status` as deleted, and `git checkout HEAD --
+config/rigs/<name>.yaml` brings its committed version back as well as Undo
+does.
+
+- **Refused for the running rig** (`409 running`): the rig `/health` names
+  (`rig.rig`, the state file's rig), whose file a restart reloads and the next
+  save writes. Switch away or stop it first. With no rig running, or a v1 run
+  (which holds no rig file), any rig may go. Checked under the lifecycle lock
+  (`busy: "rig file edit"`, as the rig files routes take it), so no start,
+  switch, save-as or revert lands between the check and the move; while one
+  runs the delete is `409 busy`.
+- **Plain names only** (`409 name`): a name with `/` or `\`, `..`, a leading
+  dot or a control character is refused before anything is read, however it
+  was spelt in the URL (`%2F`, `%2E%2E`), so neither route can reach a file
+  outside `config/rigs/` or its bin; a plain name `/rigs` does not list is
+  404. The rule is not `/rigs/new`'s `validate_name`, which is for a name a
+  new file is given: a delete names a file that exists, and a rig whose name
+  that rule would refuse (`Guitar.Vocal.yaml` compiles) can still be deleted.
+- **The answer** has `binned` (`entry`, the bin file's name, and `file`),
+  `undo` (the restore call that puts it back), `committed: false`, `git`
+  (whether HEAD has the file, whether the bytes binned are HEAD's, and the
+  `git checkout` that brings HEAD's back; `null` with `git_note` when git
+  cannot be read or does not answer within `SAVE_TIMEOUT`, read outside the
+  lock), `programs` when a number moves (`programs_deleted`: each later rig
+  down one, `moved` as `{rig, from, to}` with the tables before and after),
+  and `note`. `{"dry_run": true}` gives the same answer, and the same
+  refusals, with nothing moved and no lock taken: the page's confirm shows it.
+
+`POST /rigs/<name>/restore {"entry"?}` is Undo: it moves the bin file
+`entry` back to `config/rigs/<name>.yaml`, or with no entry the newest of
+`name`'s in the bin. Refused (409): `taken` when a file of that name is there
+again (it is never replaced: the place is claimed by creating it, and the
+binned one stays), `gone` when the bin file is not there (removed by hand, or
+put back already) or `name` has nothing in the bin, `entry` for an entry
+that is not `name`'s, `name` for a name or entry that is not plain. The
+answer has `from`, `programs` when numbers move back, and `note`. **Undo
+survives a reload** because it needs nothing of the agent's memory: the page
+keeps the entry the delete answered with in its own storage
+(`sushi-rig.binned`), and the restore finds the file by it, from any agent,
+after a restart too. A revert's saves (`.sushi-rig/saves/<name>/`) are not
+touched by a delete, so a rig made later with the same name lists them.
+Nothing of this is recorded as run on the rig machine.
 
 ## Recording from the web UI
 
