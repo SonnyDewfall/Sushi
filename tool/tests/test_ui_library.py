@@ -922,3 +922,128 @@ def test_the_fakes_ids_only_ever_go_up_as_sushis_do():
     again = rig._ids()
     assert again["delay"] > max(first.values()), "a processor added again gets an id never given before"
     assert {k: v for k, v in again.items() if k != "delay"} == {k: v for k, v in first.items() if k != "delay"}
+
+
+# --------------------------------------------------------------------------- #
+# Found by re-review (PR #149): no answer is not another rig
+# --------------------------------------------------------------------------- #
+
+HEALTH = re.compile(r"/health$")
+
+
+def outage(p):
+    """/health refused from here on, as an agent not answering is, until
+    `p.unroute(HEALTH)`; returns once the page has said so."""
+    p.route(HEALTH, lambda route: route.fulfill(status=503, content_type="application/json", body="{}"))
+    expect(p.locator(".rig-name")).to_have_text("Agent not answering")
+
+
+def held_add(served):
+    held = threading.Event()
+    real_add = served.rig.add
+    served.rig.add = lambda connection, addition: (held.wait(10), real_add(connection, addition))[1]
+    return held
+
+
+def test_an_add_answered_while_health_does_not_answer_ends_on_its_own_rig(browser, lib):
+    page = library_page(browser, lib)
+    p = page.page
+    unlock(p)
+    held = held_add(lib)
+    slot(p, "Add after overdrive…").click()
+    entry(p, MDA_DELAY).click()
+    expect(slot(p, "Adding mda_delay…")).to_be_visible()
+    outage(p)
+    held.set()
+    until(lambda: "mda_delay" in lib.rig.chains["board"])
+    p.wait_for_timeout(500)  # the answer is in, the run still not known
+    p.unroute(HEALTH)
+    expect(shown(p)).to_have_text(["overdrive", "mda_delay", "octave", "delay"])
+    expect(slot(p, "Add after overdrive…")).to_have_attribute("aria-busy", "false")
+    expect(slot(p, "Add after overdrive…")).to_have_attribute("aria-disabled", "false")
+    expect(p.locator(".notice")).to_have_count(0)
+    expect(p.locator(".problem.refused")).to_have_count(0)
+    page.close()
+
+
+def test_an_add_refused_while_health_does_not_answer_says_so_and_frees_its_name(browser, lib):
+    page = library_page(browser, lib)
+    p = page.page
+    unlock(p)
+    sent = adds(p)
+    held = held_add(lib)
+    lib.rig.refuse["mda_delay"] = "Sushi would not create it (test)"
+    slot(p, "Add after overdrive…").click()
+    entry(p, MDA_DELAY).click()
+    outage(p)
+    held.set()
+    p.wait_for_timeout(800)
+    p.unroute(HEALTH)
+    # Its place was not on the page when the answer was placed (the chain is
+    # not drawn while /health does not answer): said in the boxes at the top.
+    refused = p.locator(".problem.refused")
+    expect(refused).to_contain_text("Not added: mda_delay")
+    expect(refused).to_contain_text("Sushi would not create it (test)")
+    expect(slot(p, "Add after overdrive…")).to_have_attribute("aria-busy", "false")
+    expect(p.locator(".notice")).to_have_count(0)
+    # Its name is free again: the next add of it sends none, and is mda_delay.
+    del lib.rig.refuse["mda_delay"]
+    slot(p, "Add after overdrive…").click()
+    entry(p, MDA_DELAY).click()
+    until(lambda: lib.rig.chains["board"][:2] == ["overdrive", "mda_delay"])
+    assert sent == [{"track": "board", "uri": MDA_DELAY, "after": "overdrive"}] * 2
+    page.close()
+
+
+def test_a_remove_refused_while_health_does_not_answer_ends_and_can_be_tried_again(browser, lib):
+    page = library_page(browser, lib)
+    p = page.page
+    unlock(p)
+    held = threading.Event()
+    real_remove = lib.rig.remove
+    lib.rig.remove = lambda connection, removal: (held.wait(10), real_remove(connection, removal))[1]
+    lib.rig.refuse["delay"] = "Sushi would not delete it (test)"
+    unit(p, "delay").get_by_role("button", name="delay", exact=True).click()
+    unit(p, "delay").get_by_role("button", name="Remove delay…").click()
+    unit(p, "delay").get_by_role("button", name="Remove delay", exact=True).click()
+    expect(unit(p, "delay").get_by_role("button", name="Removing delay…")).to_be_visible()
+    outage(p)
+    held.set()
+    p.wait_for_timeout(800)
+    p.unroute(HEALTH)
+    # Its row was not on the page when the answer was placed (the chain is
+    # not drawn while /health does not answer): said in the boxes at the top.
+    expect(p.locator(".problem.refused")).to_contain_text("Not removed: delay")
+    expect(p.locator(".problem.refused")).to_contain_text("Sushi would not delete it (test)")
+    expect(p.locator(".notice")).to_have_count(0)
+    ask = unit(p, "delay").get_by_role("button", name="Remove delay…")
+    expect(ask).to_have_attribute("aria-disabled", "false")
+    del lib.rig.refuse["delay"]
+    ask.click()
+    unit(p, "delay").get_by_role("button", name="Remove delay", exact=True).click()
+    until(lambda: lib.rig.chains["board"] == ["overdrive", "octave", "board_send"])
+    expect(shown(p)).to_have_text(["overdrive", "octave"])
+    page.close()
+
+
+def test_a_drawer_opened_while_health_does_not_answer_says_why_and_takes_the_rig_that_comes_back(browser, lib):
+    """The only drawer that can be opened then is "Browse the library…" (the
+    chain, and its places, are not drawn while /health does not answer): it
+    adds nothing, saying why, before and after, and the rig that comes back is
+    the one it is for."""
+    page = library_page(browser, lib)
+    p = page.page
+    unlock(p)
+    outage(p)
+    p.get_by_role("button", name="Browse the library…").click()
+    expect(drawer(p).locator(".drawer-why")).to_have_text("The agent is not answering, so nothing can be added.")
+    expect(p.locator(".lib-entry:enabled")).to_have_count(0)
+    p.unroute(HEALTH)
+    expect(drawer(p).locator(".drawer-why")).to_have_text("To add a plugin, use an “Add after…” in a chain.")
+    expect(p.locator(".lib-entry:enabled")).to_have_count(0)
+    p.keyboard.press("Escape")
+    expect(slot(p, "Add at the start…")).to_be_focused()
+    slot(p, "Add at the start…").click()
+    entry(p, MDA_DELAY).click()
+    until(lambda: lib.rig.chains["board"][0] == "mda_delay")
+    page.close()

@@ -205,7 +205,13 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   page comes to show another rig or a restart of this one, it says so ("The
   rig changed since the library was opened…") and adds nothing until it is
   opened again; an add or a remove in flight across that change is said as
-  the rig it was sent to, in the boxes at the top. A Remove armed, an
+  the rig it was sent to, in the boxes at the top. A `/health` that does not
+  answer is not another rig: which rig is shown is then not known, an answer
+  arriving meanwhile is held and placed once it answers again (on its row or
+  place, or in the boxes at the top where that is not drawn), and every add
+  or remove in flight ends, so a place never says "Adding…" for good; a
+  drawer opened then is for the rig that comes back, and adds nothing until
+  then, saying why. Nothing that stops an add from the drawer is silent. A Remove armed, an
   "Adding…" or a refusal said on a place, belong to the rig shown too, and go
   when it changes or the chain is drawn again (a tab chosen); every "Locked:"
   line said of a refused edit goes when the page is unlocked. **Nothing moves under the hand**: the drawer is over the page; an add

@@ -107,7 +107,8 @@ const state = {
   // The Library drawer and the chain edits (#130):
   drawer: null,              // the drawer open: {track, slot (R.addSlots), opener, query}; null when closed
   drawerParts: null,         // what the open drawer was built with: see drawerRegion
-  editsRun: null,            // the rig shown (`shownRun`) the three below belong to: see forgetOtherRuns
+  editsRun: null,            // the rig shown (`shownRun`) the three below belong to: see settleEdits
+  unplaced: [],              // answers of adds and removes that came while /health did not answer: see placeAnswer
   adding: new Map(),         // "track\u0000slot" -> {shown, done?, at}: an add from that slot in flight, or confirmed and not drawn yet
   addRefused: new Map(),     // "track\u0000slot" -> the agent's reason an add from there was refused, shown in place
   removing: new Map(),       // unit -> {armed, timer} | {pending} | {reason}: its Remove, in place in its row
@@ -1589,28 +1590,49 @@ function keepUnit(name) {
 // top, and nothing on this rig's rows is touched (review of #130).
 async function removeUnit(name) {
   const was = state.removing.get(name);
-  if (!was || !was.armed) return;  // only an armed confirm of this rig's (see forgetOtherRuns)
+  if (!was || !was.armed) return;  // only an armed confirm of this rig's (see settleEdits)
   clearTimeout(was.timer);
   const refusal = R.lockRefusal(state.locked, "remove");
   if (refusal) { state.removing.set(name, { reason: refusal, lock: true }); render(); return; }
-  const run = shownRun(), rig = shownRigName();
+  const run = state.editsRun, rig = shownRigName();
   state.removing.set(name, { pending: true });
   render();
   removeFocus(name, "ask");
   const call = R.removeCall(name);
   const answer = await request("POST", call.path, call.json);
-  if (shownRun() !== run) {
+  placeAnswer(run, () => {
+    if (answer.ok) {
+      // Gone: its row goes when the next /live shows the chain without it,
+      // and says "Removing…" until then (forgotten after a few seconds).
+      state.removing.set(name, { pending: true, done: true, at: Date.now() });
+    } else if (state.rackParts && state.rackParts.slots.has(name)) {
+      state.removing.set(name, { reason: `Not removed: ${answer.reason}` });
+    } else {
+      // Its row is not on the page now (another tab, the chain redrawn):
+      // said where it is seen, and the row is free to try again.
+      state.removing.delete(name);
+      fail(`Not removed: ${name}`, answer);
+    }
+  }, () => {
+    state.removing.delete(name);
     if (answer.ok) state.notice = `Removed ${name} from ${rig}, which the page no longer shows.`;
     else fail(`Not removed from ${rig}: ${name}`, answer);
-  } else if (answer.ok) {
-    // Gone: its row goes when the next /live shows the chain without it,
-    // and says "Removing…" until then (forgotten after a few seconds).
-    state.removing.set(name, { pending: true, done: true, at: Date.now() });
-  } else {
-    state.removing.set(name, { reason: `Not removed: ${answer.reason}` });
-  }
+  });
   render();
   kick();
+}
+
+// An answer to an add or a remove sent while the page showed rig `run`,
+// placed by which rig it shows now: `same` for that rig, `other` for
+// another (said as the rig it was sent to). While /health does not answer,
+// which rig is shown is not known, and that is no sign of another (review
+// of #130: a poll that failed read as a switch, and the add's place said
+// "Adding…" for good): the answer is held, and placed once it answers again
+// (`settleEdits`). Either way every add and remove in flight ends.
+function placeAnswer(run, same, other) {
+  const now = shownRun();
+  if (now === null) state.unplaced.push({ run, same, other });
+  else (now === run ? same : other)();
 }
 
 // The rig the page shows (`rigIdentity`), as a key, and its name: what a
@@ -1624,19 +1646,32 @@ function shownRigName() {
   return rig.config_name || "the rig";
 }
 
-// The page has come to show another rig, or the same rig started again:
-// everything of the chain edits kept by a unit's or a place's name was the
-// rig before's, and a confirm left armed would remove the new rig's plugin
-// of that name with one tap (review of #130). So all of it goes. An add or
-// a remove still in flight says its answer as the rig it was sent to.
-function forgetOtherRuns() {
+// At each render, before anything is drawn. Once the page knows which rig
+// it shows (/health answered): if that is another rig, or the same rig
+// started again, everything of the chain edits kept by a unit's or a
+// place's name was the rig before's, and a confirm left armed would remove
+// the new rig's plugin of that name with one tap (review of #130), so all
+// of it goes; then the answers held while it was not known are placed. A
+// /health that did not answer is not known, never "another rig". And an add
+// confirmed whose row was never drawn here (its chain left the page) is let
+// go after a few seconds, so its name is not counted as in flight for good.
+function settleEdits() {
   const run = shownRun();
-  if (run === null || run === state.editsRun) return;
-  state.editsRun = run;
-  for (const held of state.removing.values()) if (held.timer) clearTimeout(held.timer);
-  state.removing.clear();
-  state.adding.clear();
-  state.addRefused.clear();
+  if (run === null) return;
+  if (run !== state.editsRun) {
+    const first = state.editsRun === null;
+    state.editsRun = run;
+    if (!first) {
+      for (const held of state.removing.values()) if (held.timer) clearTimeout(held.timer);
+      state.removing.clear();
+      state.adding.clear();
+      state.addRefused.clear();
+    }
+  }
+  const held = state.unplaced;
+  state.unplaced = [];
+  for (const answer of held) (answer.run === run ? answer.same : answer.other)();
+  for (const [key, adding] of [...state.adding]) if (adding.done && Date.now() - adding.at > 5000) state.adding.delete(key);
 }
 
 // The page unlocked: every "Locked:" line said for a refused structural edit
@@ -2129,14 +2164,22 @@ function namesInFlight(except = null) {
 // to show another since, it is said as that rig's, in the boxes at the top.
 async function addFrom(entry) {
   const drawer = state.drawer;
-  const live = liveBody();
+  if (!drawer) return;
+  // Never quietly: whatever stops an add is said in the drawer (review of #130).
+  const refuse = (why) => { drawer.said = why; render(); };
   const run = shownRun(), rig = shownRigName();
-  if (!drawer || !drawer.slot || !live || drawer.run !== run) return;
+  if (drawer.run === null && run !== null) drawer.run = run;
+  if (!drawer.slot) return refuse("To add a plugin, use an “Add after…” in a chain.");
+  if (run === null) return refuse("The agent is not answering, so nothing can be added.");
+  if (drawer.run !== run) return refuse(`The rig changed since the library was opened (it is now ${rig}): close this, and open it again from the chain.`);
+  const live = liveBody();
+  if (!live) return refuse("The rig's chains could not be read just now, so nothing is added: try again in a moment.");
   const model = R.rackModel(live, state.plugins, state.profiles);
   const track = model.tracks.find((t) => t.name === drawer.track) || null;
   const slot = track ? R.addSlots(track).find((x) => x.key === drawer.slot.key) || drawer.slot : drawer.slot;
   const blocked = R.addBlocked({ health: state.health, track, slot, locked: state.locked });
-  if (blocked || !R.libraryEntry(entry).addable) return;  // drawn as off, with why: nothing to send
+  if (blocked) return refuse(blocked);
+  if (!R.libraryEntry(entry).addable) return refuse(`${entry.name} cannot be added: ${R.libraryEntry(entry).why}`);
   const key = `${drawer.track}\u0000${slot.key}`;
   let { name, shown } = R.addName(entry, live, namesInFlight(key));
   const at = Date.now();
@@ -2152,18 +2195,31 @@ async function addFrom(entry) {
     answer = await send(name || shown);
   }
   const outcome = R.addOutcome(shown, answer);
-  if (shownRun() !== run) {
-    if (outcome.ok) state.notice = `Added ${outcome.name} to ${drawer.track} on ${rig}, which the page no longer shows.`;
-    else fail(`Not added to ${rig}: ${shown}`, { reason: outcome.reason });
-  } else if (outcome.ok) {
-    state.adding.set(key, { shown, done: outcome.name, at: Date.now() });
-    knowAdded(drawer.track, entry, answer.body.args || {});
-  } else {
+  placeAnswer(run, () => {
+    if (outcome.ok) {
+      state.adding.set(key, { shown, done: outcome.name, at: Date.now() });
+      knowAdded(drawer.track, entry, answer.body.args || {});
+      return;
+    }
     state.adding.delete(key);
-    state.addRefused.set(key, outcome.reason);
-  }
+    // Said at its place; where that is not on the page now, in the boxes.
+    if (placeOnPage(key)) state.addRefused.set(key, outcome.reason);
+    else fail(`Not added: ${shown}`, { reason: outcome.reason.replace(/^Not added: /, "") });
+  }, () => {
+    state.adding.delete(key);
+    if (outcome.ok) state.notice = `Added ${outcome.name} to ${drawer.track} on ${rig}, which the page no longer shows.`;
+    else fail(`Not added to ${rig}: ${shown}`, { reason: outcome.reason.replace(/^Not added: /, "") });
+  });
   render();
   kick();
+}
+
+// Whether the place with this key is drawn on the page now.
+function placeOnPage(key) {
+  const parts = state.rackParts;
+  if (!parts) return false;
+  if (parts.start && parts.start.key === key) return true;
+  return [...parts.slots.values()].some((slot) => slot.add && slot.add.key === key);
 }
 
 // What the page already knows of a plugin it has just added, so its row is
@@ -2193,6 +2249,10 @@ function drawerRegion(el, model) {
   el.hidden = !open;
   if (!open) { patch(el, "closed", () => []); return; }
   const d = state.drawer;
+  // Opened while /health did not answer: it is for the first rig it sees
+  // once it answers (review of #130: one opened then stayed on no rig, and
+  // an add from it did nothing). Until then it adds nothing, and says why.
+  if (d.run === null && shownRun() !== null) d.run = shownRun();
   // Opened for another rig than the one shown now: nothing is added to this
   // one from it, and it says so until it is opened again.
   const moved = d.run !== null && shownRun() !== null && shownRun() !== d.run;
@@ -2251,7 +2311,8 @@ function drawerRegion(el, model) {
     ? `The rig changed since the library was opened (it is now ${shownRigName()}): close this, and open it again from the chain.`
     : R.addBlocked({ health: state.health, track, slot: d.slot, locked: state.locked });
   // Opened to look through, with a rig up: where adding is done from.
-  const why = !d.slot && !moved && R.readsLive(state.health) ? "To add a plugin, use an “Add after…” in a chain." : blocked;
+  const why = (!d.slot && !moved && R.readsLive(state.health) ? "To add a plugin, use an “Add after…” in a chain." : blocked)
+    || d.said || null;
   if (parts.why.textContent !== (why || "")) parts.why.textContent = why || "";
   parts.why.hidden = !why;
   const home = drawerHome(parts);
@@ -2262,7 +2323,7 @@ function drawerRegion(el, model) {
     const note = item.view.why ? `Cannot be added: ${item.view.why}` : warning ? warning.text : "";
     if (item.note.textContent !== note) item.note.textContent = note;
     item.note.classList.toggle("warn", !!warning);
-    const off = !!blocked || !item.view.addable || !d.slot;
+    const off = !!blocked || !item.view.addable || !d.slot || d.run === null;
     // An entry turned off with the focus on it would drop the focus to the
     // page, where no key reaches the drawer: it goes home first.
     if (off && !item.button.disabled && document.activeElement === item.button) home.focus({ preventScroll: true });
@@ -3359,7 +3420,7 @@ function render() {
         inBackground("rig channels", () => refreshAllRigChannels(true));
       }
     }
-    forgetOtherRuns();
+    settleEdits();
     const live = liveBody();
     const model = live ? R.rackModel(live, state.plugins, state.profiles) : null;
     const rig = state.health && state.health.ok ? state.health.body.rig : null;

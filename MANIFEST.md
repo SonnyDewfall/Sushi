@@ -4281,3 +4281,30 @@ runs each of `test_ui_library.py` and `test_ui_tabs.py` (101 tests a run):
 20 of 20 passed. **Not run here:** the rig, a phone, a
 touch screen, a pedal, the lilv tests, the slow tests and the container job.
 *(2026-11-16)*
+
+**The Library drawer: no answer is not another rig (PR #149, re-review).**
+Fix 5 of the round before read a `/health` that did not answer as a switch to
+another rig: an add or a remove answered then was said as another rig's, its
+place kept "Adding…" and its name counted as taken for good, and a remove
+refused stayed pending, so the plugin could not be removed again until a
+reload. Now the rig shown is "not known" while `/health` does not answer, an
+answer arriving then is held (`placeAnswer`) and placed once it answers again
+(`settleEdits`): on its row or place if that rig is still shown and the row
+is drawn, in the boxes at the top if it is not (the chain is not drawn
+during the outage, so that is where these land), as the earlier rig's if it
+is not; every add and remove in flight ends, and a confirmed add whose row
+never shows is let go after five seconds. A drawer opened while the rig is
+not known takes the first rig it sees, and nothing in `addFrom` returns
+without saying why in the drawer. Three tests (an add answered, an add
+refused, a remove refused, each during a `/health` outage made by
+Playwright's routing) fail on 63d0f29 and pass now. The fourth, a drawer
+opened during an outage, passes on 63d0f29 too: the scenario reviewed is not
+reachable as written, since a place to add from is only drawn while
+`/health` answers, so the only drawer that can be opened without a rig known
+is "Browse the library…", which adds nothing either way; the test pins that
+it says why before and after. The fast suite: 4498 passed, 43 skipped. Under
+load, two loops side by side of 10 runs each of `test_ui_library.py` and
+`test_ui_tabs.py` (105 tests a run): 20 of 20 passed. **Not run here:** the
+rig, a phone, a touch screen, a real agent restart, the slow tests and the
+container job.
+*(2026-11-16)*
