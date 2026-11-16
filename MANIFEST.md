@@ -4473,3 +4473,67 @@ pictures show `ui_fake.py`'s invented rig, not a committed one, and were left.
 **Not run here:** anything on the rig (nothing heard; the load fade of a
 bypassed plugin is read from the source and the renders, not heard); the CI
 container job, whose calibration this one stands in for. *(2026-11-16)*
+
+**A Mix on each reverb, and one knob that drives several parameters (#154).**
+Sonny chose to keep MaGigaverb as the hall, with one Mix; it is not swapped for
+MVerb, and MVerb has no profile (made optional, not done). **The room**
+(`urn:ardour:a-reverb`, `tool/examples/profiles/a-reverb.yaml`): Blend shown
+as **Mix**, then Room size; its own Enable hidden. Rendered here with lv2apply
+on a plucked, guitar-like input (an E minor strum, a single A, a muted stab;
+peak -12 dBFS): Blend 0 is the input exactly, 1 has no direct signal left,
+0.5 is half of each, so Blend is a straight linear crossfade, and so it dips:
+at 0.5 the level is 4 dB under dry. It is shown 0 to 1, as the plugin
+declares it; the profile cannot give it a unit. **The hall**
+(`magigaverb.yaml`): a profile could not make one control of several
+parameters, so it can now: a `controls` entry (profile.py, "Controls"), a knob
+whose travel, 0 to 100 %, sets each parameter it `drives` along a curve
+(`linear`, `sine`, `cosine`) between real values at 0 and 100 %, validated
+against probe's facts like a parameter (each driven parameter real, numeric,
+both ends in range; `drives` a judgement, never `fact`; a driven parameter
+left showing is warned of). The page (rig.js `makeMix`, `mixTargets`,
+`mixPosition`; app.js's knob) sets one by sending each driven parameter
+through `POST /live/parameter`, as its own knob would, so each is logged,
+undone and saved as that parameter: **Undo takes one parameter at a time**, so
+one step of Mix is three presses (grouping them would be a change to the
+agent's log, not made). It shows the control from what its parameters are,
+the nearest point of its curve (least squares, as a fraction of each range)
+when they are off it, with a note saying so, and sends nothing until it is
+turned. Mix drives dry on `cosine` from 1 to 0, early on `sine` from 0 to 0.8
+and tail on `sine` from 0 to 0.4: equal power, with early twice tail as every
+rig's hall has it (0.16 and 0.08). Hidden: dry, early, tail. Primary: Mix,
+Room size, Reverb time (log knobs). Advanced: damping, bandwidth, spread. No
+rig's saved values change, so no reference does. **Rendered here**, through
+Sushi 1.3.0's offline frontend as the compiler builds a one-plugin mono
+channel, at the rigs' hall settings (revtime 3.7, roomsize 87, damping and
+bandwidth 0.12, spread 0), the same input: Mix 0, 25, 50, 75 and 100 % gave
+-32.92, -32.93, -32.95, -33.07 and -33.36 dBFS RMS, so the midpoint is where 0
+% is and the whole travel is within 0.44 dB; the saved hall (dry 0.92, early
+0.16, tail 0.08) gave -33.18 and shows as Mix 14 %. At the plugin's defaults
+(revtime 11, roomsize 75) the wet is louder, and the same travel rises 3.6
+dB: the ends were chosen at the rigs' settings. 0.4 and 0.2 at 100 % would have
+put the saved hall on the curve at about 25 %, but fell 2.9 dB across the
+travel. **Found in the plugin:** MaGigaverb's dry, early and tail at 0 are not
+silence. Its Gen source (DPF-Max-Gen, `plugins/gigaverb/gen_exported.cpp`,
+read 2026-11-16) adds the input, unscaled, ahead of the three allpasses on its
+output (`add_859 = add_847 + in1`), so a copy of the guitar, smeared over a
+few milliseconds, is always there at the input's level: an impulse of 0.25
+comes out at 0.0732 at once with all three at 0, which is 0.75 x 0.625 x 0.625,
+the three allpasses' gains. So 0 % is the dry level plus that copy (4 dB over
+the input, and coloured where the two add), and 100 % still has it; no
+setting of the plugin's is wet only. Tests: `test_profile_controls.py` (the
+two profiles clean against their real probes, canonical, and the validator's
+refusals), `test_ui_mix.py` (the flattening; the curves, equal power, the
+read-back and the nearest point in rig.js; and in Chromium over the fake with
+a hall added: a page that loads shows the nearest Mix and sends nothing over
+several polls, a step sends one set of each of the three through the agent
+and the log, the poll after sends nothing, three undos put the saved values
+back, and a typed 50 % is saved as its three levels with nothing else
+moved). `test_library.py`'s "the one profile" and the drawer test's
+a-reverb name assumed no other profile; they now take whatever profiles
+there are (a-reverb is named "ACE Reverb", its profile's restated name, where
+its bundle is not captured). `ui_fake.py` can carry a hall and a rig file of
+the test's own. The plugin-profile skill, `web-ui.md` and the guide say how
+Mix behaves. The probe facts are committed (`tests/fixtures/probe_MaGigaverb.json`,
+`probe_a-reverb.json`). **Not tried on the rig:** nothing heard; how a Mix
+turned live sounds while its three sets land one after another; a phone; the
+container job. *(2026-11-16)*

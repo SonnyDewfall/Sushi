@@ -30,7 +30,16 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   plugin cards, each with its knobs: the profile's controls in its groups and
   labels for a plugin that has one (`tool/examples/profiles/`), every
   parameter in a plain list for one that does not. Values are in the plugin's
-  own range, never 0 to 1. A turned knob is sent at once. **Nothing comes,
+  own range, never 0 to 1. A turned knob is sent at once. A profile may also
+  give a knob that sets several of the plugin's parameters at once (its
+  `controls`, `profile.py`): the hall's **Mix**, 0 to 100 %, sets its dry
+  level, early reflections and tail along an equal-power curve. Turning it
+  sends each of those parameters through `POST /live/parameter`, as their own
+  knobs would, so each is a change in the log, Undo takes them back one at a
+  time (three presses for one step of Mix), and Save writes them. It is shown
+  from what those parameters are, at the nearest point of its curve when a
+  rig's saved values are not on it (and its note says so), and nothing is
+  sent until it is turned. **Nothing comes,
   goes or moves as values change** (the player's first request: "was 0.5 dB"
   labels that popped in and out). Each knob's text, label and note have a
   size of their own whatever they hold, and the one sign of unsaved work is a
