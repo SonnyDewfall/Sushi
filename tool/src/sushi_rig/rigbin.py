@@ -124,11 +124,18 @@ def _bin_folder(root: Path) -> Path:
 def parse_entry(entry: object) -> tuple[str, str, int]:
     """`(rig, stamp, n)` of a bin entry's name, or `BinRefused`: `name` for
     one that is not a plain file name or whose rig part is not a plain
-    name, `entry` for one not shaped as an entry."""
+    name, `entry` for one not shaped as an entry or whose stamp is no
+    real time."""
     entry = _plain_text(entry, "a bin entry", MAX_ENTRY)
     match = ENTRY.fullmatch(entry)
     if not match:
         raise BinRefused(f"{entry} is not a file of config/rigs/{BIN}/ as a delete names one", "entry")
+    try:
+        datetime.strptime(match["stamp"], STAMP)
+    except ValueError:
+        # Shaped like a stamp but no real time (a month 13, a hand-renamed
+        # file): not an entry a delete wrote, and GET /rigs/bin reads its time.
+        raise BinRefused(f"{entry} is not a file of config/rigs/{BIN}/ as a delete names one", "entry") from None
     return plain(match["rig"]), match["stamp"], int(match["n"] or 1)
 
 

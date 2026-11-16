@@ -671,6 +671,22 @@ def test_the_bin_listing_is_newest_first_and_says_which_are_back(root):
     assert body["entries"][0]["file"] == f"config/rigs/.deleted/{LOOSE}-20261116T100000Z.yaml"
 
 
+def test_a_bin_file_whose_stamp_is_no_real_time_is_left_out_and_the_listing_still_answers(root):
+    """Re-review of PR #160: a hand-renamed file shaped like an entry but
+    stamped month 13 made every GET /rigs/bin a 500, so no kept Undo was
+    offered after a reload."""
+    agent = bin_agent(root, rig=None)
+    rigbin.move_to_bin(root, "accustomed", datetime(2026, 11, 16, 9, 0, tzinfo=timezone.utc))
+    (root / "config/rigs/.deleted" / "stray-20261340T256199Z.yaml").write_text("kind: rig\n")
+    status, body = call(agent, "GET", "/rigs/bin")
+    assert status == 200, body
+    assert [e["entry"] for e in body["entries"]] == ["accustomed-20261116T090000Z.yaml"]
+    with pytest.raises(rigbin.BinRefused):
+        rigbin.parse_entry("stray-20261340T256199Z.yaml")
+    status, _ = call(agent, "POST", "/rigs/stray/restore", json={"entry": "stray-20261340T256199Z.yaml"})
+    assert status == 409
+
+
 def test_the_bins_agent_is_the_same_across_agents_of_one_checkout_and_differs_between_checkouts(root, tmp_path_factory):
     other = tmp_path_factory.mktemp("other")
     (other / "config/rigs").mkdir(parents=True)

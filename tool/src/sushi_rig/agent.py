@@ -579,9 +579,11 @@ def cross_site_refusal(headers: Any, host: str | None) -> str | None:
     "same-site" but not this origin). Refused: either of those, and `Origin:
     null` (a sandboxed or file page). Allowed: neither header (curl, the
     CLI, `agent_client`) and this origin (the page the agent serves, from
-    this machine or a phone on the LAN). Not a defence against DNS
-    rebinding, where the attacker's name is both the `Host` and the
-    `Origin`: the agent binding to localhost is that."""
+    this machine or a phone on the LAN). **Not a defence against DNS
+    rebinding**: a page of an attacker's name that then resolves to this
+    machine sends that name as both `Host` and `Origin`, and passes. Binding
+    to localhost does not stop it either, since localhost is what the name
+    is rebound to. Closing that needs a `Host` allowlist (#161)."""
     site = (headers.get("Sec-Fetch-Site") or "").strip().lower()
     if site == "cross-site":
         return "refused: a page of another site sent this (Sec-Fetch-Site: cross-site)"

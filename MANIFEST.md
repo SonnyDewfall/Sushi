@@ -4552,3 +4552,10 @@ cross-site page (the headers are set by the test, as a browser sets them),
 a filesystem without hard links (the moves then fail with a 500 and move
 nothing), the slow tests and the container job.
 *(2026-11-16)*
+
+**#129, PR #160: the re-review's two findings.**
+- **Impossible stamps.** A bin file shaped like an entry, but stamped with no real time (say month 13, from a hand rename), made every `GET /rigs/bin` a 500. After a reload, the page then offered none of its kept Undos. `rigbin.parse_entry` now refuses such a stamp, so the listing leaves the file out and a restore of it is refused with 409.
+  - Test: `test_a_bin_file_whose_stamp_is_no_real_time_is_left_out_and_the_listing_still_answers`, which fails without the fix.
+- **DNS rebinding.** `cross_site_refusal`'s docstring said binding to localhost defends against it. It does not: a rebound page sends its own name as both `Host` and `Origin`, so it passes. The docstring now says so. A `Host` allowlist is left to #161, which puts the check on every route.
+- **Not run:** the rig, or a real rebinding page.
+*(2026-11-16)*
