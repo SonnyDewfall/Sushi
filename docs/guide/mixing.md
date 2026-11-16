@@ -48,6 +48,14 @@ they are meant to be reached for while you play.
   hits them.
 - **MASTER** is the level of the finished mix, on its way to the monitors.
 
+Adding, taking out or moving a plugin dips the whole mix for a moment, about a
+twentieth of a second, and brings it back to where **MASTER** was; the fader
+does not move. If you move **MASTER** during the dip, your level wins. See
+[Shaping a sound](shaping-a-sound.md#the-short-dip-when-the-chain-changes).
+
+There is no limiter on the master yet: nothing holds the mix under full scale
+except the faders. One is planned, and is waiting on a choice of plugin.
+
 The strip at the bottom of the left column, **master**, is the mix itself. It
 says how many plugins are on the master's own chain; click its name to open
 the **Master** tab in the middle and see them. Its volume is the **MASTER**

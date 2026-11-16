@@ -21,6 +21,7 @@ import copy
 import subprocess
 import threading
 import time
+from pathlib import Path
 
 import pytest
 import yaml
@@ -117,11 +118,18 @@ def root(tmp_path):
     return tmp_path
 
 
+# A pw-top sample captured on the rig, its load well under the add's budget.
+PW_TOP = (Path(__file__).parent / "fixtures" / "pw-top-b-n2.txt").read_text(encoding="utf-8")
+
+
 def save_agent(root, world=None, rig=None):
     world = world or World(root)
     rig = rig or UiRig()
     agent = Agent(root=root, describe=world.described, switching=world.switching(), live=rig,
                   carla=FakeCarla().carla(), run=_never, library=fixture_library,
+                  # The load read before an add (#137): the captured sample, never
+                  # this machine's own pw-top.
+                  pw_top=lambda timeout: PW_TOP,
                   # No pedals: a save-as has the listener follow the renamed rig.
                   midi=midi_listener.World(plan=lambda described, root: midi_listener.Off("no pedals here")))
     return agent, world, rig

@@ -154,6 +154,31 @@ A plugin with the **mono** mark has a hidden partner that copies its sound to
 both sides. It always moves with it, and is added and taken out with it, so
 you never see it.
 
+## The short dip when the chain changes
+
+When you add, take out or move a plugin, the whole rig goes quiet for a
+moment, about a twentieth of a second, and comes back at the level it was.
+Changing a chain while it plays can make a pop; the dip hides it. Switching to
+another rig does the same once, while its plugins change.
+
+- Knobs, bypass and the volumes never dip.
+- The **MASTER** fader does not move during the dip, and a dip never counts as
+  a change: Undo and Save do not see it.
+- If you move **MASTER** during a dip, your new level is the one you end up
+  with.
+
+The dip has been tried only against a stand-in for the rig, not heard on the
+rig itself.
+
+## When the rig is too busy to add a plugin
+
+Before a plugin goes in, the rig checks how hard the computer is working, the
+figure the stage screen shows as **LOAD**. Above 80 %, one more plugin could
+make the sound drop out, so the add is refused, and the line beside the Add
+button says how busy the rig is. Switch off or take out a plugin you are not
+using, then add again. If the load cannot be read, the plugin is added
+anyway.
+
 ## Set the amp
 
 The **AMP** card is at the top of one tab: the channel the guitar plays
@@ -229,7 +254,12 @@ the same as a knob: see [Saving and going back](saving.md).
   "Locked:".** You tried to move a plugin while the page is locked. Unlock it
   and try again.
 - **A red line starting "Not added:" beside an Add button.** The rig would not
-  take that plugin; the line says why. Click **×** to clear it.
+  take that plugin; the line says why. Click **×** to clear it. If it says
+  "the rig is using" and a percentage, the rig is too busy for one more: see
+  [When the rig is too busy to add a plugin](#when-the-rig-is-too-busy-to-add-a-plugin).
+- **The sound went away after a plugin was added, taken out or moved, and
+  MASTER reads −∞.** The dip could not put the level back. Set **MASTER**
+  again.
 - **A line starting "Not removed:", or "Locked:", at the foot of a row.** The
   plugin was not taken out; the line says why. If it says "Locked:", unlock
   the page and try again.

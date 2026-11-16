@@ -256,6 +256,68 @@ type from Sushi's saved session, its `copy`, the chain before as `units`
 uids), and its `parameters` and `bypassed`, read just before the remove (a remove whose values cannot be read
 is `502` and removes nothing).
 
+### The dip around a chain edit
+
+An add, a remove and a move change Sushi's graph while it plays, which can pop
+(#137). So each is sent inside a **dip of the master**: the agent reads the
+master track's own `gain` (the master volume, #131), sets it to 0 (Sushi's
+-120 dB floor), waits `ramp.SETTLE` (37 ms), sends the edit and confirms it as
+the route always has (an add and a remove from a walk of the chains, a move
+from Sushi's strict answer), then reads the gain again and puts the level it
+read back. **One set each way**: Sushi 1.3.0 smooths a track's gain itself
+(a one-pole filter with a 20 ms rise, stepped every 64 samples and ramped
+across each, read from its source), so the level falls about 0.95 dB a
+millisecond, is 30 dB down when the edit goes in, and is back within 1 dB about
+20 ms after the second set: the master is more than 1 dB down for about 57 ms
+plus the edit's own commands, which have not been timed on the rig. The 37 ms is
+the 32 ms the smoother takes to fall 30 dB, plus one block of the rig (256 at
+48 kHz), since Sushi takes an event at the start of the block after it arrives.
+The undo of an add or a remove dips as the route does; parameters, bypasses and
+the volumes never dip. A live switch dips once, around all its structural steps
+(below).
+
+The dip is no change of the rig's: it is **never logged**, Undo never offers it,
+and a save, which captures under the live lock the dip holds, never sees it;
+`GET /live`, which does not wait for the lock, gives the master's `gain` as the
+level the dip will put back. The level comes back when the edit fails part-way
+or raises, too. **A master volume set during the dip is not lost**: one through
+the agent (the page's MASTER fader is `POST /live/parameter`) waits for the live
+lock and lands after the level is back, its `previous` the player's level; one
+that reaches Sushi beside the agent (a MIDI mapping Sushi serves itself, the v1
+panel's OSC) is seen when the agent reads the gain again, since it is neither
+the floor nor the level from before, and is left as it is. Not seen: a change in
+the instant between that read and the agent's set, or one to exactly the floor
+or exactly the level it started at.
+
+The answer to each edit carries `dip`: `made`, `ms` (how long the master was
+down as the agent timed its two sets), `kept` (a level someone else set during
+it, left), or `made: false` with `why` (a rig with no master track, a master
+already at its floor, a gain Sushi will not read: the edit goes ahead). A gain
+Sushi will not turn down stops the edit (502), after an attempt to put the level
+back. A level that cannot be put back after an edit that worked leaves the edit
+standing and logged, with `dip.restored: false` and a `warning` saying the rig
+may be silent, printed on stderr and kept in `/health` (`last_error`, kind
+`master`) until a dip next puts a level back; after an edit that failed, the
+answer's reason says both. **Not run against a live Sushi**: the order of the
+calls and every failure above are shown against the fakes only, and nothing of
+it has been heard.
+
+### The load before an add
+
+Before an add, the agent reads the load `GET /rig/load` reads, from the same
+shared pw-top sample, so an add while a page polls costs no second run (#137).
+Over 80 % of the block (`top.ADD_BUDGET`, the rig's `total_load`, the figure
+the page's LOAD tile shows) the add is refused, `409` with `code:
+"over_budget"`, the figure in its reason ("the rig is using 86% of its
+21.333 ms block, over the 80% a live add may start from...") and `load`
+beside it, before Sushi is asked anything. A load that cannot be read (pw-top
+missing, failing or slow, or nothing of the rig's measured) refuses nothing:
+the add's answer says it, in `load.why`, as it gives `load.measured` and
+`load.budget` when it was read. Only `POST /live/add` is checked; an undo that
+puts a removed plugin back, and a live switch's adds, are not. 80 % is a margin,
+not a prediction: what the next plugin costs is not known until it runs. Not
+run on the rig.
+
 ### Undoing an add or a remove
 
 An add is undone by removing what it
@@ -362,7 +424,11 @@ live, in about 0.4 to 1.2 seconds, with no pops or clicks heard
 were measured through a loopback on 2026-11-12
 (`tool/spikes/live_rig/RESULTS-loopback-2026-11-12.md`). The steps of a live
 switch that add, remove or move a plugin, or set the amp, are not recorded as
-run on the rig.
+run on the rig. Those that add, remove or move are made inside **one dip of the
+master** (#137, [the dip](#the-dip-around-a-chain-edit)), from before the first
+to after the bypass that follows the last add; the parameters, which may set
+the next rig's master volume, come after the level is back. A switch that fails
+part-way puts the level back before it restarts. Its answer carries `dip`.
 
 ## Saving the running rig
 
