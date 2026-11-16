@@ -4464,7 +4464,10 @@ either route. Tests: `test_agent_rigbin.py` (40) and `test_ui_rigbin.py`
 (4 of the decisions, 8 in the browser). The guide (`building-a-rig.md`, a
 new "Delete a rig"), `docs/reference/agent.md`, `web-ui.md` and the two
 guide pictures with the picker in them (`rack.png`, `start-a-rig.png`)
-follow. FAST_SUITE_LINE **Not run:** anything on the rig machine
+follow. Merged origin/master (#156) on the way. The fast suite: 4638 passed,
+35 skipped. Under load, two loops side by side of 5 runs each of
+`test_ui_rigbin.py`, `test_ui_tabs.py` and `test_ui_library.py` (118 tests a
+run): 10 of 10 passed. **Not run:** anything on the rig machine
 (no Sushi here): no rig deleted or put back there, and no Program Change
 sent from a pedal after a delete, so that a pedal's numbers move as
 `program_order` says is shown only through that function; no phone or touch
