@@ -4544,7 +4544,9 @@ listed), the page marks that row, and reads `/rigs` again whenever
 `agent.md` say `git clean -x` empties the bin. Also: `test_ui.py`'s check of
 `/rigs`'s answer gains `running`. Merged origin/master (#157). Tests:
 `test_agent_rigbin.py` 69, `test_ui_rigbin.py` 17 (6 of the decisions, 11 in
-the browser). REVIEW_COUNTS **Not run:** the rig machine, a phone, a
+the browser). The fast suite: 4672 passed, 35 skipped. Under load, two loops
+side by side of 5 runs each of `test_ui_rigbin.py`, `test_ui_tabs.py` and
+`test_ui_library.py` (123 tests a run): 10 of 10 passed. **Not run:** the rig machine, a phone, a
 pedal's switch (stood in by the state file changed under the agent), a real
 cross-site page (the headers are set by the test, as a browser sets them),
 a filesystem without hard links (the moves then fail with a 500 and move
