@@ -375,6 +375,21 @@ bypassed, and `/live/plugins` gives it the role "stereo", which the page
 does not show. Each of these is two of Sushi's commands where one was, and
 none has been run against a live Sushi.
 
+## Safety (#137): the master's dip, and the load before an add
+
+An add, a remove and a move, their undos, and the structural steps of a live
+switch (once, around them all) are sent inside a dip of the master track's
+own gain: down to Sushi's floor, a wait (`ramp.settle`), the edit and its
+read-back, and the level read before put back, also when the edit fails or
+raises (`Agent._dip`). Its timing and what it may overwrite are `ramp.py`'s
+to say. It is never logged and sets nothing but Sushi's gain; `GET /live`
+shows the level it will put back while one is under way. A `POST /live/add`
+first reads the load the page's LOAD tile reads, from the same shared pw-top
+sample, and is refused (409 `over_budget`, the figure in the reason) over
+`top.ADD_BUDGET` of the block; a load that cannot be read is said in the
+answer and refuses nothing (`top.add_budget`). The master limiter #137 also
+asks for is not built: `tool/spikes/master_limiter/README.md` says why.
+
 ## The web UI (#31)
 
     GET  /              the UI's page; its files are under /ui/ (`sushi_rig/ui/static/`),
@@ -441,6 +456,7 @@ from . import midi_listener
 from . import top as top_module  # GET /rig/load (#111)
 from . import amp_live  # the amp: GET /amp, POST /amp/parameter and /amp/model
 from . import stereo  # the compiler's copy to stereo after a mono plugin
+from . import ramp  # the master's dip around a live structural edit (#137)
 from .live import DEFAULT_GRPC_ADDRESS, ElkpyMissing, LiveError, Move
 from .live import is_send, protected_processor
 from .rig import describe_rig
@@ -1333,6 +1349,33 @@ def check_remove(reading: dict[str, Any], processor: str) -> Removal:
 KEPT_PENDING: Any = (web.RequestKey("sushi_rig.agent.pending", object)
                      if web is not None and hasattr(web, "RequestKey") else "sushi_rig.agent.pending")
 
+# Where a request keeps what the master's dip around its edit did (`Agent._dip`),
+# for the route's answer: the dip is never logged, so the answer is where it
+# is said. The same typed-key rule as above.
+DIP_SAID: Any = (web.RequestKey("sushi_rig.agent.dip", dict)
+                 if web is not None and hasattr(web, "RequestKey") else "sushi_rig.agent.dip")
+
+
+def _dip_said(request: Any) -> dict[str, Any] | None:
+    """What the dip around this request's edit did, if one was tried."""
+    try:
+        return request.get(DIP_SAID)
+    except (AttributeError, TypeError):  # not an aiohttp request (a pedal's origin)
+        return None
+
+
+def _dip_answer(request: Any) -> dict[str, Any]:
+    """`{"dip": ...}` for an edit's answer, beside its log entry and never in
+    it, and `warning` when the master could not be put back; `{}` where no
+    dip was tried (a move that sent nothing)."""
+    said = _dip_said(request)
+    if said is None:
+        return {}
+    answer: dict[str, Any] = {"dip": dict(said)}
+    if said.get("restored") is False:
+        answer["warning"] = said["why"]
+    return answer
+
 
 def _keep_pending(request: Any, exc: BaseException) -> None:
     """Keep a timed-out call's future on the request (the first one: one
@@ -1552,6 +1595,7 @@ class Agent:
         carla: "amp_live.Carla | None" = None,
         recorder: Any = None,
         takes_dir: Path | None = None,
+        sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
     ) -> None:
         self.root = root
         self.log_limit = log_limit
@@ -1596,6 +1640,26 @@ class Agent:
         self.pw_top = pw_top or top_module.read_pw_top
         self._load_run: asyncio.Future | None = None  # the pw-top run in flight, shared
         self._load_last: tuple[float, str] | None = None  # (clock, output) of the last that worked
+        # Bumped by every structural add (#137, `_load_stale`): a sample, or a
+        # run, from before one says nothing of the load with it in.
+        self._load_gen = 0
+        # The master's dip around a structural edit (#137, `_dip`): the wait
+        # after the gain goes down, which a test stands in, and the level the
+        # dip will put back while one is under way, which GET /live shows.
+        self.sleep = sleep
+        self._dipping: float | None = None
+        self._dips = 0  # dips begun, so a read can tell one began and ended under it
+        self._dip_left: float | None = None  # the level the last dip left the master at
+        # A master a dip could not put back (#137, review of PR #150): kept
+        # apart from `last_error`, which any later change replaces or clears,
+        # until a dip puts a level back, the master volume is set through the
+        # agent, or a lifecycle command succeeds. `{"at", "message", "level"}`,
+        # `level` the one the dip meant to put back, which a save writes.
+        self._master_down: dict[str, Any] | None = None
+        # The rig's block as pw-top last measured it, in seconds, for the
+        # dip's wait (`ramp.settle`); kept from every sample read, since a
+        # sample itself is dropped after an add (`_load_last`).
+        self._block_s: float | None = None
 
     @property
     def stuck_live_calls(self) -> int:
@@ -1648,6 +1712,8 @@ class Agent:
                 "busy": self.busy,
                 "stuck_live_calls": self.stuck_live_calls,
                 "last_error": self.last_error,
+                # A master a dip could not put back (#137): until it is put right.
+                "master_down": self._master_down,
                 "midi": self._midi_status(),
                 # The rig this agent holds, and its children that exited with
                 # no `down` asking them to: what a phone reads after a crash.
@@ -1782,6 +1848,11 @@ class Agent:
                     restored = (f"; {fallback[1]} was brought back" if back.ok else
                                 f"; bringing {fallback[1]} back failed too: {back.reason}")
                 break
+        if outcome.ok:
+            # A rig started or stopped afresh: no master is left down by a
+            # dip, and the block pw-top measured belonged to the run before.
+            self._master_back()
+            self._block_s = None
         if outcome.ok and (self.last_error or {}).get("kind") == "lifecycle":
             # A later success supersedes the old failure: left in place,
             # a healthy agent reports a refused request forever and
@@ -2097,19 +2168,167 @@ class Agent:
         does.
         """
         self._refuse_while_busy()
+        # Whether a dip was under way as the read began, as it ended, or began
+        # and ended while it ran (#137): a snapshot reads the gain somewhere
+        # in between, so any of the three may have read the floor (review of
+        # PR #150: the dip ending before the snapshot returned showed -inf).
+        before, dips_before = self._dipping, self._dips
         async with self._connected(request) as controller:
             rig = await self._sushi(request, self.live.snapshot, controller, reading=True)
+        processors = self._hide_dip(rig.get("processors", {}), before, dips_before)
         return web.json_response({
             "ok": True,
-            "processors": rig.get("processors", {}),
+            "processors": processors,
             "tracks": rig.get("tracks", {}),
             "parameter_info": rig.get("parameter_info", {}),
         })
+
+    def _hide_dip(self, processors: Any, before: float | None, dips_before: int) -> Any:
+        """`processors` with the master's gain as the level a dip puts back,
+        where a dip was under way at either end of the read, or ran within it:
+        the master volume is the player's, and the dip is no change of the
+        rig's, so a fader polling GET /live must not flick to -inf and back.
+        The level is the dip's that is under way, else the one the last dip
+        left (`_dip_left`); a dip that could not put its level back leaves
+        none, and the floor read is the truth."""
+        during = self._dipping
+        if during is None and before is None and self._dips == dips_before:
+            return processors
+        held = during if during is not None else self._dip_left
+        master = processors.get(ramp.MASTER) if isinstance(processors, dict) else None
+        if held is None or not isinstance(master, dict) or not isinstance(master.get("parameters"), dict):
+            return processors
+        return {**processors, ramp.MASTER: {**master, "parameters": {**master["parameters"], ramp.GAIN: held}}}
 
     async def live_log(self, request):
         return web.json_response({
             "ok": True, "limit": self.log_limit, "first": self._trimmed, "log": list(self.log),
         })
+
+    # The master's dip around a structural edit (#137): see `ramp.py` for why,
+    # how long and where the level goes back to. Here are its effects.
+
+    @contextlib.asynccontextmanager
+    async def _dip(self, request, controller, chains: Any):
+        """Turn the master down, wait `ramp.settle`, run the body (the edit and
+        its read-back), and put the master back, also when the body fails or
+        raises. Yields a dict of what was done, kept on the request for the
+        answer (`DIP_SAID`): `made`, and `why` when no dip was made; `ms`, how
+        long the master was down as the agent timed its two sets; `kept`, a
+        level someone else set during the dip, left as it was; `restored`
+        false and `why` when the level could not be put back.
+
+        Never logged, never undoable, never folded into a save: only Sushi's
+        own gain parameter is set, with the live lock held, and nothing is
+        recorded. No dip on a rig with no master track (a v1 config), or a
+        master already at the floor, or one whose gain Sushi will not read;
+        the edit goes ahead and the answer says why. A gain that cannot be
+        turned down stops the edit (502 or 504, as any change Sushi fails),
+        after an attempt to put the level back, since it may have been set."""
+        said: dict[str, Any] = {"made": False}
+        try:
+            request.setdefault(DIP_SAID, said)
+        except (AttributeError, TypeError):  # a pedal's origin: nothing answers it
+            pass
+        if not isinstance(chains, dict) or ramp.MASTER not in chains:
+            said["why"] = "the rig has no master track"
+            yield said
+            return
+        reading = await self._sushi(
+            request, self.live.parameter, controller, ramp.MASTER, ramp.GAIN, reading=True)
+        try:
+            level = check_parameter(reading, ramp.MASTER, ramp.GAIN)
+        except AgentError as exc:
+            level, said["why"] = None, f"the master's volume could not be read: {exc}"
+        if "why" not in said and (isinstance(level, bool) or not isinstance(level, (int, float))
+                                  or not math.isfinite(level)):
+            level, said["why"] = None, f"Sushi gave the master's volume as {level!r}"
+        if level is None:
+            yield said
+            return
+        if not ramp.worth_dipping(level):
+            said["why"] = "the master is already at its floor"
+            yield said
+            return
+        level = float(level)
+        self._dipping = level
+        self._dips += 1
+        started = self.clock()
+        try:
+            await self._sushi(
+                request, self.live.set_parameter, controller, ramp.MASTER, ramp.GAIN, ramp.FLOOR,
+                reading=False)
+            said["made"] = True
+            wait = ramp.settle(self._block_s)
+            said["wait_ms"] = round(wait * 1000, 1)
+            await self.sleep(wait)
+            yield said
+        except BaseException as exc:
+            problem = await self._undip(request, controller, level, said, started)
+            if problem and isinstance(exc, web.HTTPException):
+                # The edit's failure and the master's both, in one answer: a
+                # silent master after a failed add must not read as the add's
+                # problem alone. The same class, so a 504 is still one, and
+                # the call it left running stays with it (`pending`, which
+                # `_connected` closes the connection after, a pedal's origin
+                # included) and on the request.
+                _keep_pending(request, exc)
+                combined = type(exc)(reason=f"{exc.reason}; and {problem}")
+                for kept in ("pending", "agent_code", "agent_extra"):
+                    if hasattr(exc, kept):
+                        setattr(combined, kept, getattr(exc, kept))
+                raise combined from exc
+            raise
+        else:
+            await self._undip(request, controller, level, said, started)
+        finally:
+            self._dipping = None
+
+    async def _undip(self, request, controller, level: float, said: dict[str, Any], started: float) -> str | None:
+        """Read the master's gain again and put `level` back, unless someone
+        else set it during the dip (`ramp.restore_to`). Never raises: returns
+        what went wrong, or None, and says it in `said`, on stderr and in
+        /health, since a master left down is a silent rig."""
+        now = None
+        try:
+            reading = await self._sushi(
+                request, self.live.parameter, controller, ramp.MASTER, ramp.GAIN, reading=False)
+            now = reading.get("value") if isinstance(reading, dict) else None
+        except web.HTTPException as exc:
+            _keep_pending(request, exc)
+        target = ramp.restore_to(level, now)
+        if target is None:
+            said["kept"] = now
+            said["ms"] = round((self.clock() - started) * 1000, 1)
+            self._dip_left, self._master_down = float(now), None  # someone's level is on it
+            return None
+        try:
+            await self._sushi(
+                request, self.live.set_parameter, controller, ramp.MASTER, ramp.GAIN, target, reading=False)
+        except web.HTTPException as exc:
+            _keep_pending(request, exc)
+            problem = (f"the master volume, turned down for the edit, could not be put back to where it "
+                       f"was ({exc.reason}): the rig may be silent, so set the master volume again")
+            said.update(restored=False, why=problem)
+            print(f"sushi-rig agent: {problem}", file=sys.stderr, flush=True)
+            self._remember([request.method, request.path], problem, kind="master")
+            # Kept apart from `last_error` too (see `_master_down`): a silent
+            # master is said in /health until it is put right.
+            self._master_down = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                                 "message": problem, "level": level}
+            self._dip_left = None
+            return problem
+        self._master_back()
+        self._dip_left = target
+        said["ms"] = round((self.clock() - started) * 1000, 1)
+        return None
+
+    def _master_back(self) -> None:
+        """A master put right: a dip put its level back, the player set it
+        through the agent, or a lifecycle command worked."""
+        self._master_down = None
+        if (self.last_error or {}).get("kind") == "master":
+            self.last_error = None
 
     # The read-check-set of each change, shared by its route and by undo, so an
     # undo is checked by the very code a change is. `expect` is called with the
@@ -2131,6 +2350,10 @@ class Agent:
         if not dry_run:
             await self._sushi(
                 request, self.live.set_parameter, controller, processor, parameter, value, reading=False)
+            if (processor, parameter) == (ramp.MASTER, ramp.GAIN):
+                # The master volume set by the route, an undo or a switch's
+                # step: whatever a dip left, the level is the player's again.
+                self._master_back()
         return previous
 
     async def _apply_bypass(
@@ -2149,14 +2372,16 @@ class Agent:
 
     async def _apply_move(
         self, request, controller, processor: str, direction: str,
-        *, expect: Callable[[Any], None] | None = None, dry_run: bool = False,
+        *, expect: Callable[[Any], None] | None = None, dry_run: bool = False, dip: bool = True,
     ) -> tuple[Move, Move | None]:
         """Move one processor a step; `(planned, moved)`, where `moved` is None
         if nothing was sent (already at that end, or a dry run). One walk, one
         decision (`live.decide_move`), and the command sent is the one decided
         on: success is what Sushi confirmed, not a word in a status line, and a
         processor found already at that end only now is "unchanged", not a
-        failure. `planned.chain` is the chain before."""
+        failure. `planned.chain` is the chain before. The move is sent inside
+        the master's dip (`_dip`), unless `dip` is false: a live switch dips
+        once around all its structural steps instead."""
         planned = await self._sushi(
             request, self.live.plan_move, controller, processor, DIRECTIONS[direction], reading=True)
         check_move(planned)
@@ -2164,7 +2389,9 @@ class Agent:
             expect(planned.chain)
         if planned.outcome == "unchanged" or dry_run:
             return planned, None
-        return planned, await self._sushi(request, self.live.send_move, controller, planned, reading=False)
+        async with (self._dip(request, controller, planned.chains) if dip else contextlib.nullcontext()):
+            moved = await self._sushi(request, self.live.send_move, controller, planned, reading=False)
+        return planned, moved
 
     async def live_parameter(self, request):
         """Set one parameter, by processor and parameter name.
@@ -2224,7 +2451,8 @@ class Agent:
                 })
             entry = self._record(
                 "move", {"processor": processor, "direction": direction}, planned.chain)
-        return web.json_response({"ok": True, "changed": True, "message": moved.message, **entry})
+        return web.json_response({"ok": True, "changed": True, "message": moved.message, **entry,
+                                  **_dip_answer(request)})
 
     # How undo puts each op back: (previous, state) -- what the undo replaced,
     # and the state it set. `args` is `undo_inverse`'s, the route's own words.
@@ -2304,8 +2532,11 @@ class Agent:
         what = f"put {addition.name!r} back on {addition.track!r}"
         try:
             reading = await self._sushi(request, self.live.removal, controller, addition.name, reading=False)
-            await self._sushi(request, self.live.remove, controller, check_remove(reading, addition.name),
-                              reading=False)
+            removal = check_remove(reading, addition.name)
+            # A structural edit like any other: inside a dip of its own (#137,
+            # review of PR #150), the add's having ended with the failure.
+            async with self._dip(request, controller, reading.get("chains") if isinstance(reading, dict) else None):
+                await self._sushi(request, self.live.remove, controller, removal, reading=False)
         except (web.HTTPException, AgentError) as again:
             if isinstance(again, web.HTTPException):
                 _keep_pending(request, again)
@@ -2421,7 +2652,8 @@ class Agent:
                     "a skip is only for one that cannot be", "not_stale")
             entry = self._record("undo", {"of": undone["op"], **args}, previous, undoes=index)
         # `state` is what was set and Sushi confirmed, not read back again.
-        return web.json_response({"ok": True, **entry, "undone": undone, "state": state})
+        return web.json_response({"ok": True, **entry, "undone": undone, "state": state,
+                                  **_dip_answer(request)})
 
     def _pick_undo(self) -> tuple[int, dict[str, Any]] | None:
         """`pick_undo` on the agent's log, a rig switch in the way answered as
@@ -2539,7 +2771,20 @@ class Agent:
             asked = add_request(body, library)
         except AgentError as exc:
             raise web.HTTPBadRequest(reason=str(exc))
+        # The CPU check (#137): busy first, so a rig coming up or going down
+        # is `busy` and not a load read off a rig in between.
+        self._refuse_while_busy()
+        read_at = self._load_gen
+        load, over = await self._load_before_add()
+        self._refuse_over_budget(load, over)
         async with self._connected_for_a_change(request) as controller:
+            if self._load_gen != read_at:
+                # Another add went in while this one waited for the lock: the
+                # reading above is of the rig without it, so it is read again
+                # (a fresh pw-top run, the sample having been dropped), and an
+                # add queued behind another cannot pass on the first's reading.
+                load, over = await self._load_before_add()
+                self._refuse_over_budget(load, over)
             try:
                 addition = await self._apply_add(request, controller, lambda reading: check_add(reading, asked))
             except Conflict as exc:
@@ -2554,7 +2799,7 @@ class Agent:
             }, list(addition.chain))
         answer = {
             "ok": True, **entry, "chain": addition.expected,
-            "message": f"added {addition.name} to {addition.track}",
+            "message": f"added {addition.name} to {addition.track}", **_dip_answer(request), "load": load,
         }
         if note:
             answer["note"] = note
@@ -2587,7 +2832,7 @@ class Agent:
             entry = self._record("remove", {"processor": removal.processor}, removed_record(removal, values))
         return web.json_response({
             "ok": True, **entry, "chain": removal.expected,
-            "message": f"removed {removal.processor} from {removal.track}",
+            "message": f"removed {removal.processor} from {removal.track}", **_dip_answer(request),
         })
 
     # The read-decide-send-confirm of an add and a remove, shared by their
@@ -2609,13 +2854,26 @@ class Agent:
         addition = decide(reading)
         if dry_run:
             return addition
-        await self._sushi(request, self.live.add, controller, addition, reading=False)
-        if after_send is not None:
-            await after_send(addition)
-        after = await self._sushi(request, self.live.walk, controller, reading=False)
-        what = f"added {addition.name!r} to {addition.track!r}"
-        self._confirm(request, after, addition.track, addition.expected, what)
+        # Sent, and confirmed, inside the master's dip (#137, `_dip`).
+        async with self._dip(request, controller, reading.get("chains") if isinstance(reading, dict) else None):
+            try:
+                await self._sushi(request, self.live.add, controller, addition, reading=False)
+            finally:
+                self._load_stale()  # sent, so perhaps on the rig: the load read before is not its
+            if after_send is not None:
+                await after_send(addition)
+            after = await self._sushi(request, self.live.walk, controller, reading=False)
+            what = f"added {addition.name!r} to {addition.track!r}"
+            self._confirm(request, after, addition.track, addition.expected, what)
         return addition
+
+    @staticmethod
+    def _refuse_over_budget(load: dict[str, Any], over: str | None) -> None:
+        """409 `over_budget`, the load beside its reason, when `over` says why."""
+        if over:
+            refused = _conflict(over, "over_budget")
+            refused.agent_extra = {"load": load}
+            raise refused
 
     async def _read_defaults(self, request, controller, addition: "Addition") -> tuple[dict | None, str | None]:
         """`(defaults, note)`: the added plugin's parameter values, read just
@@ -2663,12 +2921,14 @@ class Agent:
             self._unconfirmed(
                 request, f"Sushi gave no parameters for {processor!r}, so it is not removed: the log could "
                 "not say how to put it back")
-        await self._sushi(request, self.live.remove, controller, removal, reading=False)
-        after = await self._sushi(request, self.live.walk, controller, reading=False)
-        what = f"removed {removal.processor!r} from {removal.track!r}"
-        chains = self._confirm(request, after, removal.track, removal.expected, what)
-        if _track_of(chains, removal.processor) is not None:
-            self._unconfirmed(request, f"Sushi confirmed it {what}, but it is still on the rig")
+        # Sent, and confirmed, inside the master's dip (#137, `_dip`).
+        async with self._dip(request, controller, reading.get("chains") if isinstance(reading, dict) else None):
+            await self._sushi(request, self.live.remove, controller, removal, reading=False)
+            after = await self._sushi(request, self.live.walk, controller, reading=False)
+            what = f"removed {removal.processor!r} from {removal.track!r}"
+            chains = self._confirm(request, after, removal.track, removal.expected, what)
+            if _track_of(chains, removal.processor) is not None:
+                self._unconfirmed(request, f"Sushi confirmed it {what}, but it is still on the rig")
         return removal, {"parameters": dict(values["parameters"]), "bypassed": values.get("bypassed")}
 
     def _confirm(
@@ -2747,12 +3007,14 @@ class Agent:
             return self._load_last[1]
         if self._load_run is None:
             run = asyncio.ensure_future(asyncio.to_thread(self.pw_top, LOAD_TIMEOUT))
+            gen = self._load_gen
 
             def finished(task) -> None:
                 if self._load_run is task:
                     self._load_run = None
                 if not task.cancelled() and task.exception() is None:  # retrieves it either way
-                    self._load_last = (self.clock(), task.result())
+                    if gen == self._load_gen:  # not a run from before an add since (#137)
+                        self._load_last = (self.clock(), task.result())
 
             run.add_done_callback(finished)
             self._load_run = run
@@ -2776,8 +3038,53 @@ class Agent:
             raise error
         self._said_load = None
         report = top_module.load_report(top_module.parse_pw_top(output), described.get("children"))
+        self._know_block(report)
         return web.json_response({
             "ok": True, "at": datetime.now(timezone.utc).isoformat(timespec="seconds"), **report})
+
+    def _know_block(self, report: dict[str, Any]) -> None:
+        """Keep the block pw-top measured, for the dip's wait (`ramp.settle`)."""
+        block_ms = (report.get("budget") or {}).get("block_ms")
+        if isinstance(block_ms, (int, float)) and not isinstance(block_ms, bool) and block_ms > 0:
+            self._block_s = block_ms / 1000
+
+    def _load_stale(self) -> None:
+        """A structural add was sent (#137): the sample held, and a pw-top run
+        under way, are of the rig without it, so neither answers again. The
+        run in flight still answers those already waiting for it."""
+        self._load_gen += 1
+        self._load_last = None
+        self._load_run = None
+
+    async def _load_before_add(self) -> tuple[dict[str, Any], str | None]:
+        """`top.add_budget`'s `(load, refusal)` for a live add (#137): the
+        reading GET /rig/load gives, from the same shared sample
+        (`_pw_top_sample`), so an add made while a page polls costs no
+        second pw-top. A pw-top that cannot be read, or a rig not running by
+        the state file, is said in `load` and refuses nothing. The first reading is
+        taken off the lock (a sample takes about a second, and nothing it
+        reads is the chain's); an add that waited for the lock while another
+        went in reads again under it, and live changes queue behind that run."""
+        try:
+            described = self.describe()  # as GET /rig/load reads it
+            if not described.get("running"):
+                return top_module.add_budget(None, "the state file says no rig is running")
+            output = await self._pw_top_sample()
+            report = top_module.load_report(top_module.parse_pw_top(output), described.get("children"))
+        except asyncio.CancelledError:
+            raise
+        except Exception as exc:  # noqa: BLE001 -- whatever stops the reading, the add goes ahead, said
+            # Not only pw-top's own failures (`LoadError`): a pw-top that
+            # cannot be run (PermissionError), a state file that cannot be
+            # read, a sample this parser trips on. A check that cannot be
+            # made must not stop every add (review of PR #150).
+            why = str(exc) if isinstance(exc, top_module.LoadError) else f"{type(exc).__name__}: {exc}"
+            why = " ".join(why.split()) or type(exc).__name__
+            print(f"sushi-rig agent: warning: the load before an add could not be read ({why}); "
+                  "the add goes ahead unchecked", file=sys.stderr, flush=True)
+            return top_module.add_budget(None, why)
+        self._know_block(report)
+        return top_module.add_budget(report)
 
     async def ui_page(self, request):
         from .ui import UI_DIR
@@ -3199,7 +3506,7 @@ class Agent:
         except SwitchRefused as exc:
             raise _conflict(str(exc), exc.code)
         status = 200 if answer["ok"] else (504 if answer.get("abandoned") else 409)
-        return web.json_response(answer, status=status)
+        return web.json_response({**answer, **_dip_answer(request)}, status=status)
 
     async def _switch(
         self, origin, name: str, *, program: int | None = None,
@@ -3376,9 +3683,22 @@ class Agent:
                         return {**progress, "ok": False, "failed": rigfile.RestartReason(reason.code, detail)}
                     progress["plan"] = [step.as_dict() for step in plan.steps]
                     progress["counts"] = plan.counts()
-                    for step in plan.steps:
-                        await self._switch_step(origin, controller, step)
-                        progress["applied"] += 1
+                    # One dip of the master (#137, `_dip`) around every step
+                    # that changes the graph, which a plan puts together
+                    # (`ramp.switch_span`): from the first to the last, the
+                    # bypass after each add inside it. A step that fails
+                    # leaves the dip with the level put back, before the
+                    # restart the failure leads to.
+                    span = ramp.switch_span([step.op for step in plan.steps])
+                    async with contextlib.AsyncExitStack() as dipped:
+                        for index, step in enumerate(plan.steps):
+                            if span and index == span[0]:
+                                await dipped.enter_async_context(
+                                    self._dip(origin, controller, (before or {}).get("tracks")))
+                            await self._switch_step(origin, controller, step)
+                            progress["applied"] += 1
+                            if span and index == span[1]:
+                                await dipped.aclose()
                     after = await self._sushi(origin, self.live.snapshot, controller, reading=True)
             # What the next config states, and everything the plan set beyond
             # that (strip and send defaults, un-bypasses): each against what
@@ -3419,7 +3739,9 @@ class Agent:
         elif step.op == "bypass":
             await self._apply_bypass(origin, controller, args["processor"], args["bypassed"])
         elif step.op == "move":
-            planned, moved = await self._apply_move(origin, controller, args["processor"], args["direction"])
+            # Dipped with the switch's other structural steps, not on its own.
+            planned, moved = await self._apply_move(origin, controller, args["processor"], args["direction"],
+                                                    dip=False)
             if moved is None:
                 raise Unconfirmed(f"{args['processor']!r} was already at that end of {planned.chain}, "
                                   "so the chain is not the one the plan was made from")
@@ -3441,7 +3763,10 @@ class Agent:
             reading = await self._sushi(origin, self.live.walk, controller, True, reading=True)
             addition = place_switch_add(reading, args["track"], args["name"], args["uri"], args["before"],
                                         args.get("copy"))
-            await self._sushi(origin, self.live.add, controller, addition, reading=False)
+            try:
+                await self._sushi(origin, self.live.add, controller, addition, reading=False)
+            finally:
+                self._load_stale()  # as an add through the route (#137)
             after = await self._sushi(origin, self.live.walk, controller, reading=False)
             confirm_chain((after or {}).get("chains") or {}, addition.track, addition.expected,
                           f"added {addition.name!r} to {addition.track!r}")
@@ -3938,6 +4263,7 @@ class Agent:
                 async with self._amp_lock:
                     model, parameters, amp_said = await self._save_amp()
                     captured = await self._sushi(request, self.live.snapshot, controller, reading=True)
+                    captured, master_said = self._save_master(captured)
                     # The adds and removes the agent made since the rig came
                     # up, so the file is written with the plugins it now
                     # runs (#32): read here, under the live lock, so no edit
@@ -3954,6 +4280,7 @@ class Agent:
                         "how": "new" if created else "updated", "previous": was,
                         "note": note + "; it is not committed", "committed": False, "library": library,
                         "amp": amp_said,
+                        **({"master": master_said} if master_said else {}),
                     }
                     if created:
                         failure = await self._save_as_running(state, out.stem)
@@ -3982,6 +4309,24 @@ class Agent:
                         {"file": shown, "how": answer["how"], "library": library,
                          **({"saved_as": was} if created else {})})
         return answer
+
+    def _save_master(self, captured: Any) -> tuple[Any, str | None]:
+        """A capture with the master's gain as the level a dip meant to put
+        back, where a dip could not (#137, `_master_down`) and the master is
+        still at the floor it left: the floor is the dip's, not the player's,
+        and a save must never write it as the rig's master volume. A master
+        set to anything else since is the player's, and saved as it is."""
+        down = self._master_down
+        processors = captured.get("processors") if isinstance(captured, dict) else None
+        master = processors.get(ramp.MASTER) if isinstance(processors, dict) else None
+        parameters = master.get("parameters") if isinstance(master, dict) else None
+        gain = parameters.get(ramp.GAIN) if isinstance(parameters, dict) else None
+        if down is None or not isinstance(gain, (int, float)) or not ramp.same(gain, ramp.FLOOR):
+            return captured, None
+        fixed = {**captured, "processors": {**processors, ramp.MASTER: {
+            **master, "parameters": {**parameters, ramp.GAIN: down["level"]}}}}
+        return fixed, ("the master volume is at -inf because a dip around a chain edit could not put it "
+                       "back; the file has the level it had before that dip, not -inf")
 
     async def _keep_snapshot(self, request, rig: str, data: bytes, said: dict[str, Any]) -> dict[str, Any]:
         """Keep a save's bytes as a revert point (saves.py), off the loop.

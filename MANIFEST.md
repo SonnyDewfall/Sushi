@@ -4308,3 +4308,120 @@ load, two loops side by side of 10 runs each of `test_ui_library.py` and
 rig, a phone, a touch screen, a real agent restart, the slow tests and the
 container job.
 *(2026-11-16)*
+
+**Safety: the master's dip around a chain edit, and the load before an add
+(#137). The limiter is not built.** Nothing of this has been heard on the rig.
+
+- **The limiter: stopped, for Sonny to choose** (`tool/spikes/master_limiter/`).
+  The default given was mda/Limiter, the manifest's only limiter. It has no
+  latency and is transparent below its threshold, bit for bit (its code keeps
+  the gain at exactly 1.0 there; rendered with lv2apply, a -20 dBFS sweep and a
+  -1.5 dBFS sine come out identical), so at a -1 dBFS ceiling no sound
+  reference would change: the loudest peaks at -1.69 dBFS. But it holds no
+  ceiling: its own Turtle says "not a brickwall limiter"; it watches the sum
+  of the channels, so opposite phases pass (+6 dBFS in, +6 out); at its
+  default attack a +20 dBFS sweep or noise comes out at +2.6 dBFS; and its
+  gain step has no floor, so at +40 dBFS its two fastest attacks, the
+  default among them, come out louder than they went in. The one limiter on the machine that holds
+  a ceiling, x42's dpl (already in CI's image, not in the manifest), looks
+  64 samples ahead at 48 kHz (1.33 ms, from its source), which would change
+  `delay_samples` in every one of the 28 references and the rig's monitoring
+  latency; its atom ports kept it from lv2apply, and nothing has shown Sushi
+  hosting it. Per the brief, stopped before recalibrating anything. Also found:
+  Sushi applies a track's gain after its plugins, so a limiter last on the
+  master's chain sits ahead of the master volume, which goes to +6 dB. The
+  defaults the brief gave for it (-1 dBFS, last on the master, placed by the
+  compiler, hidden like the send and return, a read-only line in the Master
+  tab) are unused, and none of that machinery was written.
+- **The dip** (`ramp.py`, `Agent._dip`). An add, a remove and a move, and
+  their undos, go inside it: the master's gain read, set to 0 (Sushi's
+  -120 dB floor), a wait, the edit and its confirmation (a walk for an add
+  and a remove, Sushi's strict answer for a move, as the routes already
+  confirmed them), the gain read again and the level put back, also on a
+  failure part-way or an exception. A live switch dips once around its
+  removes, moves and adds, to the bypass after its last add, with its
+  parameters after. *Default:* one set each way, since Sushi 1.3.0 smooths a
+  track's gain itself (one pole, 20 ms rise, per 64-sample chunk with a ramp
+  across each: `track.cpp`, `value_smoother.h`, `constants.h` at the 1.3.0
+  tag, read 2026-11-16, not measured; nothing in the repository had recorded
+  it for #131). *Default:* the wait is 37 ms, the 32 ms that smoother takes
+  to fall 30 dB plus one 256-sample block; the master is more than 1 dB down
+  for about 57 ms plus the edit's own commands, which are untimed. *Default:*
+  a master volume set during the dip is not lost: through the agent it waits
+  for the live lock and lands after; beside it (Sushi's own MIDI mapping, the
+  v1 panel) it is seen on the second read, being neither the floor nor the
+  level before, and left. Never logged, never undone, never saved; `GET
+  /live` shows the level the dip puts back; a level that cannot be put back
+  is a `warning` and stays in `/health`.
+- **The load before an add.** `POST /live/add` reads the shared pw-top
+  sample `GET /rig/load` reads and is refused, `409 over_budget` with the
+  figure, over 80 % of the block (`top.ADD_BUDGET`, *default*); unreadable,
+  it is said in the answer and blocks nothing. The page shows the refusal at
+  its place, unchanged code.
+- **Tests changed, for the dip or the check:** in `test_agent_edits.py`, the
+  fake gained the master's gain and a `parameter` read, `edit_agent` a
+  pw-top that is never this machine's, and six tests that pin the calls an
+  edit makes now pin the dip's calls around them; three that fail a plugin's
+  `set_parameter` aim it at the plugin, not the dip (`only`).
+  `test_agent_save.py`'s agent reads the captured pw-top sample. New:
+  `test_safety.py` (33) and one browser test in `test_ui_library.py`.
+- The fast suite: 4532 passed, 43 skipped. Under load, two loops side by
+  side of 10 runs each of `test_ui_library.py` and `test_ui_tabs.py` (106
+  tests a run): 20 of 20 passed. **Not run:** the rig (nothing
+  heard: no pop or its absence, no dip, no refusal), a live Sushi, the slow
+  tests and the container job.
+*(2026-11-16)*
+
+**Safety: the review of PR #150 (#137).** The limiter stays out, Sonny not
+having chosen. Each finding has a test that fails on 36f4cf9 and passes now,
+except the move undo's, which dipped already and is now pinned.
+
+1. `GET /live` read the dip as over once the snapshot returned, so a walk that
+   read the floor mid-dip and answered after it showed -inf. It now hides the
+   floor when a dip was under way as the read began or ended, or began and
+   ended within it (a count of dips), with the level the last dip left; not
+   where that dip could not put its level back, when the floor is the truth.
+2. A master a dip could not put back was only `last_error`, which the next
+   failure replaced and the next change cleared. It is now `master_down` in
+   `/health` too, until the master volume is set through the agent, a dip puts
+   a level back or a lifecycle command works. *Decided:* a save then writes the
+   level the dip meant to put back, never the floor, and says so; once the
+   player has set the master, theirs.
+3. The wait assumed a 256-sample block; the rig's own captured pw-top sample
+   ran at 1024. *Default:* the block pw-top last measured (kept from any
+   reading until a lifecycle command), else 1024 at 48 kHz: 37 ms at 256,
+   53 ms unmeasured. The gap is about 57 or 73 ms plus the edit's commands.
+4. The remove that takes back a plugin an undo could not set ran outside any
+   dip: it has its own now.
+5. A second add could pass on the reading the first passed on. Every add drops
+   the sample and the run under way, and an add that waited for the lock while
+   another went in reads the load again under it (a pw-top run, about a second,
+   that other live changes then wait behind).
+6. An edit that timed out and a level that could not be put back raised a new
+   502, losing the stuck call, so a pedal's switch closed the connection under
+   the worker. The error keeps the edit's class and its `pending`.
+7. The reference said a move's undo did not dip; it does, and says so.
+8. Only pw-top's own `LoadError` let an add through: a pw-top that cannot be
+   run, a state file that cannot be read, anything, now lets it go ahead with
+   the reason in `load.why` and a warning on stderr.
+
+Also: a gain read as nothing says so in `dip.why`, and the failed switch's
+test asserts the level coming back and the restart in one sequence (the old
+test, which checked them in two lists, is folded into it). The fast suite:
+4548 passed, 43 skipped; `test_ui_library.py` and `test_ui_tabs.py` (106
+tests) in a loop of 5: 5 of 5 passed. **Not run:** the rig (nothing heard), a live Sushi, the slow tests
+and the container job.
+*(2026-11-16)*
+
+**#137, PR #150: the re-review's two findings.** A master left down by a dip
+was put right only by `POST /live/parameter`. An undo or a live switch's step
+that set the master volume left `master_down` standing, and a lifecycle
+command that worked cleared `master_down` but left the master's warning in
+`last_error`. Now every set of the master through `_apply_parameter` (the
+route, an undo, a switch's step; not a dry run) puts it right, and a lifecycle
+success clears both. Tests: `test_a_master_left_down_is_put_right_by_any_set_of_the_master_not_only_the_route`,
+`test_a_dry_run_of_a_master_set_does_not_put_it_right`, and the lifecycle test
+now checks `last_error` too; both fail without the fix. The load check's
+docstring now says an add that waited reads the load again under the live
+lock. **Not run:** the rig, a live Sushi.
+*(2026-11-16)*

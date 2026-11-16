@@ -166,7 +166,11 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   until the agent has confirmed and the row is drawn in its place, and a
   refusal comes back to the place, in red, with the agent's reason and a
   dismiss: a plugin Sushi cannot host is refused from the manifest (400)
-  before Sushi is asked anything. No other row is rebuilt: the new plugin's
+  before Sushi is asked anything, and an add while the rig's load is over
+  80 % of its block (409 `over_budget`, #137) is refused with the load
+  measured ("Not added: the rig is using 86% of its 21.333 ms block, over
+  the 80% a live add may start from…"), the page adding nothing of its own
+  to it. No other row is rebuilt: the new plugin's
   row is drawn once, as what it is, since the page already knows from the add
   which plugin it is and does not wait for `/live/plugins` to say. **The
   collapse** a mono plugin makes of a stereo one before it (#119) is said on
@@ -455,7 +459,12 @@ asking within 1.5 s, so two pages do not keep pw-top running beside the rig. LOA
 block (B/Q, summed as `sushi-rig top` sums it) against the block's length from
 Sushi's driver, XRUNS how many since the page opened, counted per node, marked
 when rising. A
-pw-top that is missing or fails shows as "unreadable" with the reason. Each
+pw-top that is missing or fails shows as "unreadable" with the reason. The
+same sample is what the agent reads before an add (#137), so the figure in an
+`over_budget` refusal is the one LOAD showed. Read during the master's dip
+around an add, a remove or a move (#137, [the agent](agent.md#the-dip-around-a-chain-edit)),
+`/live` gives the master's `gain` as the level the dip puts back, so the
+MASTER fader does not flick to −∞ and back. Each
 change is sent as it happens. A change the agent refuses shows the agent's
 reason on screen, beside the knob; nothing is put back without saying why.
 
@@ -499,6 +508,10 @@ rig screen and a channel's input change, and the knobs' feel on the rig's
 touch screen. Nor is the page recorded as opened from a phone's own browser
 (MANIFEST, 2026-11-02): the stage screen is tested at a phone's width in
 Chromium.
+
+Not run on the rig (2026-11-16): the master's dip around an add, a remove or
+a move, and the load check before an add (#137), tested against the fakes
+only; nothing of them has been heard.
 
 Not run on the rig (2026-11-16): the Library drawer, and adding, removing and
 moving a plugin from the page (#130). Tested in headless Chromium against the

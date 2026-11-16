@@ -45,6 +45,7 @@ from sushi_rig.agent import _track_of, check_move  # noqa: E402
 from sushi_rig.live import LiveError, decide_move, protected_processor  # noqa: E402
 from sushi_rig.paths import checkout_root  # noqa: E402
 from sushi_rig.stereo import COPY_UID, load_ports  # noqa: E402
+from sushi_rig.top import LoadError  # noqa: E402
 
 ROOT = checkout_root()
 FIXTURES = Path(__file__).parent / "fixtures" / "lv2"
@@ -84,7 +85,15 @@ VALUES = {
     "limiter": {"parameters": {"Thresh": 0.8}, "bypassed": False},
     "guitar_send": {"parameters": {"gain": 0.8333}, "bypassed": False},
     "master_return": {"parameters": {}, "bypassed": False},
+    # The master track's own gain, its volume (#131), which an edit dips
+    # (#137): -6 dB, normalised on Sushi's -120 to +24.
+    "master": {"parameters": {"gain": 114 / 144}, "bypassed": False},
 }
+MASTER_LEVEL = 114 / 144
+# What the master's dip around an edit asks of Sushi (#137, `Agent._dip`):
+# its gain read and turned down before the edit, read and put back after.
+DIP_DOWN = [("parameter", "master", "gain"), ("set_parameter", "master", "gain", 0.0)]
+DIP_BACK = [("parameter", "master", "gain"), ("set_parameter", "master", "gain", MASTER_LEVEL)]
 
 
 def reading():
@@ -317,16 +326,22 @@ class EditingLive:
         self.hang_on = None
         self.hung, self.release = threading.Event(), threading.Event()
         self.added_bypassed = False  # what a processor added live starts as
+        # Which calls of a name `fail_on` and `hang_on` mean, by their
+        # arguments: None for every one. The master's dip (#137) sets a
+        # parameter too, so a test of a plugin's values failing says it is
+        # the plugin's (`not_the_master`).
+        self.only = None
 
     def _enter(self, name, connection, *args):
         assert connection in self.opened and connection not in self.closed, \
             f"{name} was not given the request's open connection"
         self.calls.append((name, *args))
-        if name == self.hang_on and not self.hung.is_set():
+        meant = self.only is None or self.only(name, args)
+        if meant and name == self.hang_on and not self.hung.is_set():
             self.hung.set()  # once: whatever comes after it answers
             assert self.release.wait(10), "a test left a call hanging"
         failing = self.fail_on if isinstance(self.fail_on, (set, frozenset)) else {self.fail_on}
-        if self.fail is not None and (self.fail_on is None or name in failing):
+        if meant and self.fail is not None and (self.fail_on is None or name in failing):
             raise self.fail
 
     def connect(self):
@@ -401,6 +416,15 @@ class EditingLive:
         self._enter("values", connection, processor)
         return copy.deepcopy(self.values_of[processor])
 
+    def parameter(self, connection, processor, parameter):
+        """As `live.read_live_parameter`: what the master's dip reads (#137)."""
+        self._enter("parameter", connection, processor, parameter)
+        values = self.values_of.get(processor)
+        parameters = None if values is None else values["parameters"]
+        return {"chains": copy.deepcopy(self.chains),
+                "parameters": None if parameters is None else {n: {"automatable": True} for n in parameters},
+                "value": None if parameters is None else parameters.get(parameter)}
+
     def set_parameter(self, connection, processor, parameter, value):
         self._enter("set_parameter", connection, processor, parameter, value)
         self.values_of[processor]["parameters"][parameter] = value
@@ -412,11 +436,30 @@ class EditingLive:
     def writes(self):
         return [c for c in self.calls if c[0] in ("add", "remove", "move", "set_parameter", "set_bypass")]
 
+    def edits(self):
+        """The writes, without the master's dip around them (#137): what a
+        test of the edit itself asks about. The dip has tests of its own."""
+        dip = {tuple(c) for c in DIP_DOWN + DIP_BACK}
+        return [c for c in self.writes() if c not in dip]
+
+
+def not_the_master(name, args):
+    """`EditingLive.only` for a failure meant for a plugin's calls, not the
+    master's dip around them (#137)."""
+    return not args or args[0] != "master"
+
+
+def no_pw_top(timeout):
+    """GET /rig/load's pw-top, in a test that is not about the load: never the
+    machine's own, whose figure would decide an add (#137)."""
+    raise LoadError("pw-top is not run in this test", "no_pw_top")
+
 
 def edit_agent(**kwargs):
     fake = EditingLive()
     kwargs.setdefault("describe", lambda: dict(UP))
     kwargs.setdefault("library", lambda: LIBRARY)
+    kwargs.setdefault("pw_top", no_pw_top)
     return Agent(live=fake, **kwargs), fake
 
 
@@ -429,7 +472,7 @@ def test_the_library_lists_the_manifest_with_the_one_profile_and_its_groups():
     wiring (`read_library` of the checkout). Whether names come from bundles
     depends on this machine having plugins/, so only what holds either way is
     asserted."""
-    agent = Agent(describe=lambda: dict(UP), live=EditingLive())
+    agent = Agent(describe=lambda: dict(UP), live=EditingLive(), pw_top=no_pw_top)
     status, body = call(agent, "GET", "/library")
     assert status == 200 and body["ok"] is True
     entries = {e["uri"]: e for e in body["plugins"]}
@@ -492,7 +535,8 @@ def test_an_add_goes_in_before_the_send_and_is_logged_with_the_chain_before():
     agent, fake = edit_agent()
     status, body = call(agent, "POST", "/live/add", json={"track": "guitar", "uri": DELAY, "name": "ts"})
     assert status == 200
-    assert fake.writes() == [("add", "ts", DELAY, 1, 4, False)]
+    assert fake.writes() == [DIP_DOWN[1], ("add", "ts", DELAY, 1, 4, False), DIP_BACK[1]], \
+        "sent inside the master's dip (#137)"
     assert body["chain"] == ["comp", "drive", "ts", "guitar_send"]
     assert body["message"] == "added ts to guitar"
     assert (body["op"], body["previous"]) == ("add", ["comp", "drive", "guitar_send"])
@@ -503,7 +547,9 @@ def test_an_add_goes_in_before_the_send_and_is_logged_with_the_chain_before():
     }, "the chain it left, for undo, and the values it started at, for a save"
     assert [c[:1] + c[-1:] for c in fake.calls if c[0] == "walk"] == [("walk", True), ("walk", False)], \
         "read with the uids (to know the send), change, read back"
-    assert [c[0] for c in fake.calls] == ["walk", "add", "walk", "values"], "its defaults read once it is confirmed"
+    assert [c[0] for c in fake.calls] == [
+        "walk", "parameter", "set_parameter", "add", "walk", "parameter", "set_parameter", "values"], \
+        "the dip around the add and its read-back; its defaults read once it is confirmed"
     assert "note" not in body
     assert [(e["op"], e["previous"]) for e in log(agent)] == [("add", ["comp", "drive", "guitar_send"])]
     assert set(log(agent)[0]) == {"at", "op", "args", "previous"}
@@ -576,7 +622,8 @@ def test_a_remove_is_logged_with_the_chain_before_and_the_plugin_to_put_back():
     agent, fake = edit_agent()
     status, body = call(agent, "POST", "/live/remove", json={"processor": "drive"})
     assert status == 200
-    assert fake.writes() == [("remove", "drive", 3, 1)]
+    assert fake.writes() == [DIP_DOWN[1], ("remove", "drive", 3, 1), DIP_BACK[1]], \
+        "sent inside the master's dip (#137)"
     assert body["chain"] == ["comp", "guitar_send"]
     assert body["message"] == "removed drive from guitar"
     assert body["op"] == "remove" and body["args"] == {"processor": "drive"}
@@ -586,8 +633,9 @@ def test_a_remove_is_logged_with_the_chain_before_and_the_plugin_to_put_back():
         "uri": GXTS9, "uid": None, "type": "lv2", "copy": None,
         "parameters": {"Drive": 0.62, "Level": 0.4}, "bypassed": True,
     }, "where it was, as the remove grouped it, what it was and how it was set: what an undo puts back"
-    assert [c[0] for c in fake.calls] == ["removal", "values", "remove", "walk"], \
-        "its values read just before it goes"
+    assert [c[0] for c in fake.calls] == [
+        "removal", "values", "parameter", "set_parameter", "remove", "walk", "parameter", "set_parameter"], \
+        "its values read just before it goes, outside the dip"
     assert [e["op"] for e in log(agent)] == ["remove"]
 
 
@@ -1026,8 +1074,9 @@ def test_an_add_is_undone_by_removing_it_through_the_removes_own_path():
     status, body = undo(agent)
     assert status == 200, body
     assert fake.chains["guitar"] == CHAINS["guitar"]
-    assert [c[0] for c in fake.calls] == ["removal", "values", "remove", "walk"], \
-        "the remove's own path: read, its values, remove, read back"
+    assert [c[0] for c in fake.calls] == [
+        "removal", "values", "parameter", "set_parameter", "remove", "walk", "parameter", "set_parameter"], \
+        "the remove's own path: read, its values, remove, read back; the remove dipped as the route's is"
     assert (body["op"], body["undoes"], body["args"]) == ("undo", 0, {"of": "add", "processor": "ts"})
     assert body["previous"] == {
         "track": "guitar", "chain": ["comp", "drive", "ts", "guitar_send"],
@@ -1086,13 +1135,14 @@ def test_a_remove_is_undone_by_adding_it_back_where_it_was_with_its_values_and_b
     assert status == 200, body
     assert fake.chains["guitar"] == CHAINS["guitar"]
     assert fake.values_of["drive"] == VALUES["drive"], "Drive 0.62, Level 0.4, bypassed: as it was"
-    assert fake.calls[:3] == [("walk", True), ("add", "drive", GXTS9, 1, IDS["guitar_send"], False),
+    assert fake.calls[:5] == [("walk", True), *DIP_DOWN, ("add", "drive", GXTS9, 1, IDS["guitar_send"], False),
                               ("set_bypass", "drive", True)], \
-        "bypassed by the very next command after the add, before anything else"
-    assert [c[0] for c in fake.calls[3:]] == ["walk", "set_parameter", "set_parameter", "set_bypass"], \
-        "then the add's read-back, every value, and only then the bypass it had"
+        "inside the master's dip (#137), bypassed by the very next command after the add, before anything else"
+    assert fake.calls[5:8] == [("walk", False), *DIP_BACK], "then the add's read-back, and the master back"
+    assert [c[0] for c in fake.calls[8:]] == ["set_parameter", "set_parameter", "set_bypass"], \
+        "then every value, and only then the bypass it had"
     assert fake.calls[-1] == ("set_bypass", "drive", True)
-    assert fake.writes()[0] == ("add", "drive", GXTS9, 1, IDS["guitar_send"], False), "after comp, as before"
+    assert fake.edits()[0] == ("add", "drive", GXTS9, 1, IDS["guitar_send"], False), "after comp, as before"
     assert body["args"] == {"of": "remove", "track": "guitar", "uri": GXTS9, "name": "drive", "after": "comp",
                             "parameters": {"Drive": 0.62, "Level": 0.4}, "bypassed": True}
     assert body["previous"] == ["comp", "guitar_send"], "shaped as an add's: the chain before"
@@ -1142,6 +1192,7 @@ def test_a_put_back_plugin_whose_values_sushi_refuses_is_removed_again():
     agent, fake = edit_agent()
     call(agent, "POST", "/live/remove", json={"processor": "drive"})
     fake.fail, fake.fail_on = LiveError("Sushi would not set Drive"), "set_parameter"
+    fake.only = not_the_master  # Drive's set, not the dip's (#137)
     status, body = undo(agent)
     assert status == 502
     assert "could not set it as it was (Sushi would not set Drive), so it was removed again" in body["reason"]
@@ -1155,6 +1206,7 @@ def test_a_put_back_plugin_that_cannot_be_set_or_removed_again_says_what_the_rig
     agent, fake = edit_agent()
     call(agent, "POST", "/live/remove", json={"processor": "drive"})
     fake.fail, fake.fail_on = LiveError("Sushi said no"), {"set_parameter", "remove"}
+    fake.only = not_the_master  # the plugin's set, not the dip's (#137)
     status, body = undo(agent)
     assert status == 502
     assert "removing it again failed too (Sushi said no)" in body["reason"]
@@ -1257,8 +1309,10 @@ def test_a_put_back_plugin_is_bypassed_until_its_values_are_set_then_given_the_b
     fake.calls.clear()
     assert undo(agent)[0] == 200
     order = [c[0] if c[0] != "set_bypass" else ("set_bypass", c[2]) for c in fake.calls]
-    assert order == ["walk", "add", ("set_bypass", True), "walk", "set_parameter", "set_parameter",
-                     ("set_bypass", False)], "bypassed first, set, then on again as it was"
+    assert order == ["walk", "parameter", "set_parameter", "add", ("set_bypass", True), "walk",
+                     "parameter", "set_parameter", "set_parameter", "set_parameter",
+                     ("set_bypass", False)], \
+        "bypassed first inside the master's dip (#137), set, then on again as it was"
     assert fake.values_of["comp"] == VALUES["comp"]
 
 
@@ -1299,6 +1353,7 @@ def test_a_timeout_while_a_plugin_is_put_back_removes_it_again_and_says_so(monke
     monkeypatch.setattr(agent_module, "LIVE_TIMEOUT", 0.3)
     agent, fake = edit_agent()
     fake.hang_on = "set_parameter"
+    fake.only = not_the_master  # Drive's set hangs, not the dip's (#137)
     out, closed_before, entries = _hung(
         agent, fake, [("/live/remove", {"processor": "drive"}), ("/live/undo", None)],
         settled=lambda: 2 in fake.closed)
@@ -1407,7 +1462,7 @@ def test_an_add_first_through_the_route_is_logged_and_undone_like_any_add():
     agent, fake = edit_agent()
     status, body = call(agent, "POST", "/live/add", json={"track": "guitar", "uri": DELAY, "name": "ts", "first": True})
     assert status == 200
-    assert fake.writes() == [("add", "ts", DELAY, 1, 2, False)]
+    assert fake.edits() == [("add", "ts", DELAY, 1, 2, False)]
     assert body["chain"] == ["ts", "comp", "drive", "guitar_send"]
     assert body["args"]["chain"] == ["ts", "comp", "drive", "guitar_send"]
     status, undone = call(agent, "POST", "/live/undo", json={})

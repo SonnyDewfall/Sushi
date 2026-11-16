@@ -266,6 +266,50 @@ def load_report(nodes: list[dict[str, Any]], children: dict[str, Any] | None) ->
     }
 
 
+# The share of the block past which a live add is refused (#137). Above
+# `BUSY_WARN`, which only colours the page's LOAD tile: an add is refused
+# when the rig already has too little room for one more plugin, and a
+# reverb has cost twenty times the rest of a chain (the module docstring).
+# What the next plugin costs is not known until it runs, so this is a margin,
+# not a prediction: 20 % of a 5.3 ms block is about a millisecond.
+ADD_BUDGET = 0.80
+
+
+def _percent(share: float, budget: float) -> str:
+    """`share` as a percentage, with a decimal where whole numbers would read
+    as the budget itself ("80 %, over the 80 %")."""
+    whole = f"{share * 100:.0f}"
+    return whole if whole != f"{budget * 100:.0f}" else f"{share * 100:.1f}"
+
+
+def add_budget(report: dict[str, Any] | None, unread: str | None = None,
+               budget: float = ADD_BUDGET) -> tuple[dict[str, Any], str | None]:
+    """`(load, refusal)` for a live add, from `load_report`'s `report` (or
+    `unread`, why pw-top could not be read). Pure.
+
+    `load` is for the add's answer: `measured` (the rig's `total_load`, the
+    figure the page's LOAD tile shows, or None), `budget`, and `why` when
+    nothing was measured. `refusal` is the 409's reason when the measured load
+    is over the budget, with the figure in it; None otherwise. A load that
+    cannot be read never refuses: it is said, and the add goes ahead, since a
+    rig whose pw-top is missing or slow must still be playable.
+    """
+    measured = report.get("total_load") if isinstance(report, dict) else None
+    load: dict[str, Any] = {"measured": measured, "budget": budget}
+    if measured is None:
+        load["why"] = (f"the rig's load could not be read ({unread}), so it was not checked before this add"
+                       if unread else "pw-top measured none of the rig's nodes, so the load was not checked "
+                       "before this add")
+        return load, None
+    if measured <= budget:
+        return load, None
+    block = (report.get("budget") or {}).get("block_ms")
+    of = f" of its {block:g} ms block" if isinstance(block, (int, float)) else " of its block"
+    return load, (f"the rig is using {_percent(measured, budget)}%{of}, over the {budget * 100:.0f}% a "
+                  "live add may start from, so one more plugin could make it drop out: bypass or remove "
+                  "a plugin to make room, then add it")
+
+
 def read_pw_top(timeout: float) -> str:
     """One `pw-top -b -n 2` (two samples: see `parse_pw_top`), its output, or
     `LoadError` saying why not. Blocking, so the agent runs it off its loop;

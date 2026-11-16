@@ -62,8 +62,14 @@ sushi-rig emit config/rigs/guitar_vocal.yaml -o /tmp/gv.json
 `emit` reads either kind of file. For this kind it allocates everything: one
 engine input per mono channel (feeding both halves of its stereo chain), each
 channel's own output for its stem, a send at the end of each chain, and a
-master track — last, on output bus 0, with its own chain for the limiter — that
-is all the monitors hear. A rig has at most three channels, because the master
+master track — last, on output bus 0, with its own chain — that
+is all the monitors hear. **No limiter is compiled onto the master yet** (#137):
+the one limiter in `plugin-manifest.txt`, mda/Limiter, holds no ceiling (at
+its default attack, +20 dBFS in comes out at +2.6 dBFS) and at +40 dBFS comes
+out louder than it went in, and the one on the
+machine that holds a ceiling, x42's dpl, looks 64 samples ahead, which would
+change every sound reference. What was found is in
+`tool/spikes/master_limiter/README.md`; which to do is the owner's call. A rig has at most three channels, because the master
 and three stereo stems fill Sushi's eight outputs; more is refused with the
 arithmetic.
 

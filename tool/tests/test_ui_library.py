@@ -514,6 +514,28 @@ def test_a_plugin_the_agent_refuses_says_its_reason_in_place_and_sushi_is_not_to
         page.close()
 
 
+def test_an_add_over_the_cpu_budget_is_refused_in_place_with_the_load_measured(browser, lib):
+    """#137: the agent reads the load the LOAD tile shows before an add, and
+    refuses one over 80 % of the block with the figure. The page says it at
+    the place, as it says every refusal, and nothing reaches Sushi."""
+    lib.pw_top_output = lib.pw_top_output.replace("0.23    2", "0.83    2")  # NAM's B/Q: the rig at 86 %
+    page = library_page(browser, lib)
+    p = page.page
+    unlock(p)
+    slot(p, "Add after overdrive…").click()
+    entry(p, MDA_DELAY).click()
+    said = p.locator('.add-slot[data-slot="overdrive"] .add-said')
+    expect(said).to_contain_text("Not added: the rig is using 86% of its 21.333 ms block, over the 80% a live "
+                                 "add may start from")
+    expect(said).to_contain_text("bypass or remove a plugin to make room")
+    expect(said).to_have_attribute("role", "alert")
+    assert not any(c[0] in ("add", "walk") for c in lib.rig.calls), "refused before Sushi is asked anything"
+    expect(shown(p)).to_have_text(["overdrive", "octave", "delay"])
+    expect(slot(p, "Add after overdrive…")).to_have_attribute("aria-busy", "false")
+    unsaved_count(p, 0)
+    page.close()
+
+
 def test_undo_takes_an_add_out_with_its_copy_and_puts_a_remove_back_with_its_settings(browser, lib):
     page = library_page(browser, lib)
     p = page.page
