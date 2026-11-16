@@ -79,14 +79,18 @@ workflows because no single runner has everything:
   is on the second — is checked one channel at a time, each with its own
   reference (`config/sound/<config>.<channel>.v1-mono.yaml`). To add a reference
   without re-baselining the rest, `nulltest <config> --calibrate --missing`.
-- **Two configs do not render the same twice**: electric-octave-up and
-  electric_board, the only two that run gx_detune_ unbypassed. The plugin plans
-  its FFTs by timing them (`FFTW_MEASURE`), so each Sushi rounds a little
-  differently; inside those chains that is at most a few thousandths of a dB,
-  and their references carry a hand-set 0.01 dB tolerance for it. Every other
-  plugin of electric-octave-up's chain, rendered alone, came out bit for bit
-  the same (CI, 2026-11-03, 40 renders each: `tests/test_render_spread.py`,
-  whose table prints at the end of the run). An octave up, as electric-octave-up's is, also reads past the end of
+- **One config does not render the same twice**: the v1 config
+  `electric_board.json`, the only one that still runs gx_detune_ unbypassed
+  (no rig in `config/rigs/` has it since #152; electric-octave-up, which had
+  the other, is retired). The plugin plans its FFTs by timing them
+  (`FFTW_MEASURE`), so each Sushi rounds a little differently; inside that
+  chain that is at most a few thousandths of a dB, and its reference
+  (`electric_board.v1-mono.yaml`) carries a hand-set 0.01 dB tolerance for it.
+  Every other plugin of electric-octave-up's chain, rendered alone, came out
+  bit for bit the same (CI, 2026-11-03, 40 renders each:
+  `tests/test_render_spread.py`, which renders the frozen copy of that rig and
+  whose table prints at the end of the run). An octave up, as
+  electric-octave-up's was, also reads past the end of
   two of the plugin's arrays, and one or two loads in a hundred render NaN
   from some point on (`tool/spikes/gx_detune_nan/`). The null tests render
   such a NaN once more, and only that NaN (a config running gx_detune_, starting on

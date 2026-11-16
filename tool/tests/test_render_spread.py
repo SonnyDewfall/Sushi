@@ -65,7 +65,7 @@ import yaml
 np = pytest.importorskip("numpy")
 
 import spread_table  # noqa: E402
-from rig_fixtures import committed_that, frozen  # noqa: E402
+from rig_fixtures import committed_that, frozen, frozen_v1  # noqa: E402
 from sushi_rig import rigfile  # noqa: E402
 from sushi_rig.analysis import first_non_finite  # noqa: E402
 from sushi_rig.nulltest import compare, fingerprint, from_dict  # noqa: E402
@@ -81,9 +81,12 @@ SUSHI = ROOT / "sushi"
 # The frozen copies (rig_fixtures.py), which are these two rigs as they were
 # when this was measured: the targets below are built from electric-octave-up's
 # chain as this file is imported, so on the committed file a save that renamed
-# a plugin would stop the whole suite at collection. The references they are
-# priced against are still config/sound/'s, calibrated to the committed rigs:
-# if those two rigs have changed since, rerun with that in mind.
+# a plugin would stop the whole suite at collection. electric-octave-up is
+# retired (#152): its v1 config is read from the frozen copy too, and its
+# references from config/retired/sound/, where they went with it. The
+# committed electric_board lost its octave pair in the same change, so its
+# reference no longer describes the frozen rig, and that target is priced
+# against nothing.
 OCTAVE_UP = frozen("electric-octave-up")
 BOARD = frozen("electric_board")
 
@@ -117,8 +120,7 @@ def _as_nulltest(path) -> tuple[str, dict]:
     return channel.name, channel.config
 
 
-def _v1(stem: str) -> tuple[str, dict]:
-    path = ROOT / "config" / f"{stem}.json"
+def _v1(path) -> tuple[str, dict]:
     (channel,) = channels_of(json.loads(path.read_text()), path)
     return channel.name, channel.config
 
@@ -148,6 +150,9 @@ def _just_under() -> tuple[str, dict]:
     return _compiled(raw)
 
 
+# Where electric-octave-up's references went when it was retired (#152).
+RETIRED_SOUND = ROOT / "config" / "retired" / "sound"
+
 SECTION_CONFIGS = "the configs, as the null tests render them"
 SECTION_ALONE = "each plugin of electric-octave-up's chain alone, its settings, not bypassed"
 SECTION_CANDIDATE = "a candidate setting, priced against the reference"
@@ -157,17 +162,17 @@ def _targets() -> list[tuple[str, str, object, str | None]]:
     """(section, what, a builder of (name, config), the reference to compare against)."""
     found = [
         (SECTION_CONFIGS, "electric-octave-up (rig)", lambda: _as_nulltest(OCTAVE_UP),
-         "electric-octave-up.yaml"),
-        (SECTION_CONFIGS, "electric-octave-up.json (v1)", lambda: _v1("electric-octave-up"),
-         "electric-octave-up.v1-mono.yaml"),
-        (SECTION_CONFIGS, "electric_board (rig)", lambda: _as_nulltest(BOARD), "electric_board.yaml"),
+         RETIRED_SOUND / "electric-octave-up.yaml"),
+        (SECTION_CONFIGS, "electric-octave-up.json (v1)", lambda: _v1(frozen_v1("electric-octave-up")),
+         RETIRED_SOUND / "electric-octave-up.v1-mono.yaml"),
+        (SECTION_CONFIGS, "electric_board (rig)", lambda: _as_nulltest(BOARD), None),
     ]
     for entry in _raw(OCTAVE_UP)["channels"][0]["chain"]:
         plugin = entry["uri"].rsplit("/", 1)[-1].split("#")[0].rsplit(":", 1)[-1]
         label = f"{plugin} [{entry['name']}]"
         found.append((SECTION_ALONE, label, (lambda e=entry: _alone(e)), None))
     found.append((SECTION_CANDIDATE, f"electric-octave-up, octave_up DETUNE {JUST_UNDER_AN_OCTAVE}",
-                  _just_under, "electric-octave-up.yaml"))
+                  _just_under, RETIRED_SOUND / "electric-octave-up.yaml"))
     return found
 
 
@@ -213,11 +218,11 @@ def _measure(section, what, build, reference, renders, tmp_path, request):
 
     note = ""
     if reference and prints:
-        expected, tolerance = from_dict(yaml.safe_load((ROOT / "config" / "sound" / reference).read_text()))
+        expected, tolerance = from_dict(yaml.safe_load(reference.read_text()))
         against = [compare(expected, fp, tolerance) for fp in prints]
         outside = sum(1 for found in against if found)
         worst = max(against, key=len)
-        note = (f"against {reference}: {outside} of {len(prints)} finite renders outside its tolerance"
+        note = (f"against {reference.name}: {outside} of {len(prints)} finite renders outside its tolerance"
                 + (f"; the worst: {'; '.join(str(f) for f in worst[:3])}"
                    + (f"; and {len(worst) - 3} more" if len(worst) > 3 else "") if worst else ""))
 

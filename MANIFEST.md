@@ -4425,3 +4425,51 @@ now checks `last_error` too; both fail without the fix. The load check's
 docstring now says an add that waited reads the load again under the live
 lock. **Not run:** the rig, a live Sushi.
 *(2026-11-16)*
+
+**The octave pair is out of every rig; electric-octave-up is retired (#152).**
+Both gx_detune_ units (`octave_down`, `octave_up`) are removed from the nine
+rigs of `config/rigs/` that had them (accustomed, clean, electric-chorus-2,
+electric-chorus-hall, electric-delay, electric-spacey-delay, electric_board,
+hard-feelings, hard-feelings-record), and their descriptions no longer list an
+octave. electric-octave-up, which existed for its octave up, is in
+`config/retired/` with its v1 config and both references
+(`retired/rigs/`, `retired/sound/`; its README says how to bring it back).
+Rigs are not generated from `config/src/`, which builds the v1 configs only,
+so `config/src/` and `config/*.json` are left as they were: the v1
+`electric_board.json` still runs the pair at no shift. gx_oc_2_, the other
+octaver (electric-chorus, electric-clean, bypassed in both), was not in the
+issue and stays. The plugin stays in `plugin-manifest.txt`. **Measured here**,
+with Sushi 1.3.0's release AppImage over this machine's Ubuntu 24.04 plugin
+packages (the CI image's): `nulltest --all` on master passed every one of its
+28 references, and a calibration of master here reproduced 26 of them to the
+last digit (the other two, electric_board's and electric-octave-up's rig, are
+the two gx_detune_ made non-deterministic), so a calibration here is CI's.
+(1) **electric_board** ran the pair unbypassed at the plugin's defaults, so its
+sound changes: +0.2 dB overall, 8 to 20 kHz +12 dB, and the strongest path's
+delay from 4163 samples to 1 (the 4163 was the pair's, not the delay pedal's
+echo, as the old reference guessed). Its reference is re-recorded; without
+gx_detune_ it renders the same twice, so its tolerance is the measured 0.0001
+dB, not the hand-set 0.01. (2) **The bypassed ones are not bit for bit the
+same**, which was not expected. Rendered before and after, sample by sample,
+every rig whose pair was bypassed differs, in frames 1 to 511 only (-37 to
+-40 dB against the signal there), and then where the delay and reverbs repeat
+those frames, under -96 dB within a second. Sushi 1.3.0 starts each processor
+running and ramps a saved bypass in over 10 ms (`BypassManager`,
+`processor.h`: 7 chunks, 448 frames), so a bypassed plugin is heard fading out
+at every load; without the pair there is nothing to fade. Six rigs still pass
+their references; electric-delay, electric-spacey-delay and
+hard-feelings-record's board moved 0.0001 to 0.0002 dB against a 0.0001
+tolerance and are re-recorded, in a commit of their own. Each re-recording is
+three calibrations, identical. After: `nulltest --all` passes all 26, with no
+orphaned reference. `tests/test_render_spread.py` (opt-in) read the retired
+v1 config and references from `config/`: it now reads the frozen v1 copy and
+`config/retired/sound/`, and its electric_board row is priced against
+nothing, since the frozen board still has the pair; run here with
+`SUSHI_RIG_SPREAD=1`, with `test_every_v2_rig_sounds_like_its_reference`: 27
+passed. The frozen fixtures and their pins are untouched. Docs: the known
+issue in `docs/reference/plugins.md`, `troubleshooting.md`, `testing.md`,
+`rig-file.md`, `agent.md`'s example and `repository-layout.md`. The guide's
+pictures show `ui_fake.py`'s invented rig, not a committed one, and were left.
+**Not run here:** anything on the rig (nothing heard; the load fade of a
+bypassed plugin is read from the source and the renders, not heard); the CI
+container job, whose calibration this one stands in for. *(2026-11-16)*
