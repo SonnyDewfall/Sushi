@@ -5,12 +5,13 @@
 
 Each candidate is set fully wet, where it has a mix, so what is measured is
 the octave and not the dry note under it. `--extra-lv2` adds a folder of
-bundles built from source (MOD's pitch shifters; see the README); a candidate
-that is not installed is listed as such. `--rubberband4` is a folder holding
-only Rubber Band 4.0's own `rubberband.lv2`: its URIs collide with Ubuntu's
-3.3.0, so those candidates render with LV2_PATH set to it alone.
+bundles built from source, and `--rubberband4` is a folder holding only
+Rubber Band 4.0's `rubberband.lv2` (its URIs collide with Ubuntu's 3.3.0, so
+those candidates render with LV2_PATH set to it alone); `build_extras.sh DIR`
+makes both, as DIR/lv2 and DIR/rb4/lv2. A candidate not installed is listed
+as such.
 
-What is printed, per candidate (README, "How it is measured", says why):
+What is printed, per candidate (the README, under #153, says the same):
 
 - latency: the plugin's latency port, and the onset of a 500 Hz burst in
   the output, in samples at 48 kHz;
@@ -230,7 +231,7 @@ def main(argv: list[str]) -> int:
         onset = bench.onset_delay(burst, rb.out[:, 0], 0.5) if rb.ok else None
         m = measure(x, events, y, ratio, max(0, int(onset or 0)))
         port = r.latency_port
-        print(f"| {name} | {way} | {'' if port is None else int(port)} | {'' if onset is None else int(onset)} "
+        print(f"| {name} | {way} | {'' if port is None else int(port)} | {'' if onset is None else max(0, int(onset))} "
               f"| {m['attack_ms']:.0f} | {m['pitch_err']:.0f} | {100 * m['in_tune']:.0f}% | {m['run']} "
               f"| {m['bend_err']:.0f} | {m['junk_notes']:.1f} | {m['junk_chord']:.1f} | {m['octave_share_notes']:.1f} "
               f"| {m['triad']:.1f} | {m['level_db']:+.1f} | {r.cpu_percent:.2f} |", flush=True)
