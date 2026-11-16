@@ -3905,6 +3905,119 @@ the name field is narrower than a default name and cuts
 a tap is still untried on a real phone, as the entry above says.
 *(2026-11-14)*
 
+**The take's name is all there to read on a phone.** Retaking the guide's
+screenshots showed the stage's name field, at 390 px, holding about 31
+characters and cutting a default name at its end:
+`electric_board-2026-11-14-take-`, with the number, the one part that changes,
+off the edge. Every rig but the shortest lost it (a default is the rig's name
+and 19 characters more), and the stage screen is 520 px at most, so the
+longest defaults (62 characters for a rig's name cut to 43, and 64 from its
+thousandth take of a day) are cut on a desktop too. Now a name the field
+cannot show whole is also on a line under it, wrapped (`drawNameWhole` in
+app.js, `.take-whole` in style.css); a name the field shows has no such line.
+Chosen over the others because it is the one that shows the whole name at any
+length and touches nothing of the field: not shrinking the type (to fit
+`hard-feelings-record`'s default the field would need 12 px, and a phone's
+browser zooms the page on entering a field under 16), and not scrolling the
+field to its end (that shows the number and hides the rig, and puts the
+field's scroll in this page's hands beside the caret and selection #145 took
+care over). The line is of whatever the field holds, a typed name too; it is
+measured (`scrollWidth` against `clientWidth`) when the bar is drawn, which is
+every poll, on each key, and when the field is left, and it stays while the
+field is held, so leaving the field for Record does not move Record. The
+rack has no name field: its takes list, the take while it records and the
+line that says it was recorded already wrapped, and are now tested to.
+Tests, in `test_ui.py`: at 390 and 1280 px, for `clean`, `electric_board`,
+`hard-feelings-record` and the longest rig (62 characters), the number is drawn inside
+the bar and the window and nothing scrolls sideways, idle, recording and
+recorded; the line follows typing and leaves the caret alone; the rack's list
+shows the longest name whole. #145's tests pass unchanged. **The docs**
+(#146 was merged into this branch): `docs/guide/recording.md` and
+`docs/reference/web-ui.md` said the box could be too short to show the number,
+which is no longer so; the guide now says the whole name is written out under
+the box, and tells the stems line by where it is (just above **Record**), not
+as the line under the box, which on a phone is now the name; the reference
+says what the field does. The two pictures that show the record bar were
+retaken with `tests/guide_shots.py`: `stage-phone.png`, which now shows the
+name in full under the box, and `recording.png`, in which only the day in the
+take's name differs; their alt texts follow. The script retakes every
+picture; `save-and-revert.png` came out different too (it does not show the
+bar) and was left as it was. The fast suite: 4372 passed, 41 skipped.
+**Not run here:**
+any browser but headless Chromium, so not the phone: whether Safari reports a
+field's `scrollWidth` as Chromium does is unchecked, and if it does not the
+line is simply absent, as before; the slow tests and the container job.
+*(2026-11-15)*
+
+**The take's name under the field, answering review (PR #147).** One defect
+and one wrong number. (1) Record moved between a press and its release. With
+the name field emptied there was no line under it (its placeholder showed the
+default, cut, and the line was drawn from the field's text); a press on Record
+took the focus, the field put the default back, the line came with it, and
+Record was 26 px lower when the finger came up: the top 26 px of a 64 px
+button started no take. Reproduced here (Record's top at 412 px before the
+press and 438 after, the bar still idle). The line is now of the name Record
+would use, so with the field empty, or holding only spaces, it is the default,
+and leaving the field draws nothing. Its width is measured as the field draws
+text (`nameCut`: a canvas in the field's own type, within a pixel of the
+field's `scrollWidth` for the names tried), not read from `scrollWidth`, which
+a name that is not in the field does not have; one measure for the default
+whether it is the field's text or its placeholder. That also ends the
+dependence on a browser reporting a field's `scrollWidth`. The other things a
+blur could change were looked at: the note under the field follows what was
+typed, not the focus, and is there before the press. Test:
+`test_record_and_stop_do_not_move_between_a_press_and_its_release`, at 390 px,
+the field holding the focus in each of six states (entered, a short name, a
+name it cuts, emptied, only spaces, a name a take has), Record pressed four
+pixels inside its top edge and its bottom one, then Stop the same way: the
+button is where it was while held, and a take starts and stops. It fails on
+the code as reviewed, at "emptied". (2) "The 64-character longest" default is
+62 characters; 64 is the name rule's limit, which a default reaches at a rig's
+thousandth take of a day. The reference, the entry above and the test's
+comment say 62, and the width test now has the 64-character name too. The
+fast suite: 4374 passed, 41 skipped. **Not run here:** WebKit, as before; a
+phone, where leaving the field also puts the keyboard away, which moves the
+page in ways no test here sees; the slow tests and the container job.
+*(2026-11-15)*
+
+**The take's name under the field: the measure is in the page, not a canvas
+(re-review of PR #147).** The canvas of the entry above had two faults, and is
+gone. (1) With no 2D context `nameCut` threw from inside the draw, and the
+stage was replaced by "The page failed to draw the rig" at every poll
+(reproduced: `getContext` returning null). Its other failures failed the wrong
+way: no room in the field read as "fits", and so did a font string the canvas
+refused. (2) It measured at the computed font size, which is not always the
+size drawn: text-only zoom and a phone's font scale enlarge the text and leave
+the computed 16 px alone, so the field cut a name the canvas said fitted, and
+the line was gone again, which the first `scrollWidth` version did not do.
+Now a hidden ruler in the bar (`.take-rule`: out of the flow, no size of its
+own and clipped to it, `aria-hidden`, its text one unwrapped line) carries the
+field's type by one CSS rule shared with the field, and its width with the
+name in it is compared with the room inside the field: the browser lays the
+ruler out, so what it does to the field's text it does to the ruler's. One
+measure for a typed name and for the default, as before; where the field
+holds the name its `scrollWidth` is asked too, and a cut either sees shows the
+line. Every failure (no ruler, no width, no room, anything thrown) says "cut":
+the name said twice is harmless, and the number off the page is the defect.
+Tests: the page draws and shows the line with no 2D context, a ruler that
+throws, one with no width and none at all, and at a width the name fits only
+a measure that was made may say so; text enlarged past its computed size
+shows the line for a name that fitted. **How that last was emulated, since
+Chromium has no text-only zoom:** a context emulating a phone (`is_mobile`,
+which turns on text autosizing), `text-size-adjust: 150%` on the rule the
+field and the ruler share, and `getComputedStyle` made to answer 16px for the
+field as a browser with text-only zoom does (Chromium itself answers 24px).
+On the code as reviewed that test's case leaves the field cutting the name
+and the line empty; here the line is there. The press-and-release test and the
+width tests pass unchanged, the 64-character name in the ruler widens nothing
+(`scrollWidth <= innerWidth`). The fast suite: 4379 passed, 41 skipped.
+**Not run here:** Firefox's Zoom Text Only, Android's font scale, or any
+phone; whether a phone's font scale enlarges a field and a hidden element
+alike is not known, and where it does not, the field's own `scrollWidth`
+still shows the line for a name the field holds, and only an emptied field
+goes by the ruler alone; WebKit; the slow tests and the container job.
+*(2026-11-15)*
+
 **The rack: a tab per channel, and bypassed plugins minimised (#135).** The
 middle of the rack stacked every channel's chain and the master's, each plugin
 at full size, bypassed or not. Now it shows **one chain at a time behind
@@ -3955,3 +4068,46 @@ Sushi's bypass changed under the agent, not a pedal through the MIDI
 listener; no other browser (WebKit, Firefox) was tried, nor a browser's own
 scrollbar, which headless Chromium hides and which a row changing height
 could bring or remove; the slow tests and the container job. *(2026-11-15)*
+
+**The rack's tabs, answering review and the container (PR #148).** The
+container's run failed one of #135's own tests: a value half typed into the
+overdrive was taken out of the page when the delay was moved past it from
+another device. It was not the reorder (which moved the delay, never the row
+in use) but the read of `/live/plugins`: the page dropped the plugins it knew
+as soon as the chains changed and then waited for the answer with the new
+chains already shown, so a render in that wait (the load tiles redraw every
+two seconds) rebuilt every row as a plain list, and again when the answer
+came. Here it failed 6 times in 50 under load, and none in 50 since. The
+review's seven findings, each reproduced with a test that fails on the code
+reviewed and passes now: (1) the amp's card vanished whenever there were no
+tabs, and one failed `/live` poll took it from under a fader drag: the tabs
+now stay while the rig is up, and with none the card shows on its own; (2)
+the plugins read above, now shown with what was held for the same rig and
+read before anything is shown for another; (3) the chain was drawn and then
+pushed down 380 px by the card arriving above it: the amp's tab is decided
+once a run, the chain held back with the card until then (at most two
+seconds, then the first channel); (4) the amp's tab followed the rig's file,
+so Change input moved it before the restart: it follows the running rig now
+(`GET /machine/roles`'s `used_by`, from the running config's wiring), the
+file only when that cannot say; (5) a reorder could take out a row being
+dragged once the focus was elsewhere, and a drag whose pointer was lost
+stayed set: rows holding the focus or a drag are never moved, and a drag ends
+when its capture is lost; (6) a pedal's bypass dropped the focus to the page:
+it goes to the row's name; (7) the tab's dot missed the model's rate warning
+and an unlisted models folder, and said nothing while the amp's tab was not
+known: every fault the card can show is on its tab, and on every channel's
+tab meanwhile. Also: `refocus` escapes a field's name as `giveBack` does; the
+phone test uses three channels with long names at 390 and 320 px, which found
+a strip's long name widening a 320 px page (it now breaks anywhere); and
+`test_live_close.py` no longer gathers an empty list of tasks, which asks for
+a current event loop that thread has none of (a RuntimeError on 3.12, a
+ValueError on 3.13 here) whenever the cancelled task happened to be done
+already: forced empty, the old test fails and the new passes; run 30 times
+here it never was empty, so the container is its real test. The fast suite:
+4414 passed, 41 skipped before merging master (#147), 4425 passed and 41
+skipped after. **Not run here:** anything on the rig, a phone or a touch screen (a
+tap is a click in headless Chromium, and a lost pointer capture was made with
+`releasePointerCapture`, not by a browser); the amp placed by a real running
+config's wiring (the fake rig has an amp or a rig file, not both, so that
+answer was given to the page by the test); the slow tests and the container
+job. *(2026-11-16)*

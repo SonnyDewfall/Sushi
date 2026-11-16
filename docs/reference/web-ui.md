@@ -43,18 +43,26 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   then Master**, and the open tab's chain under them, nothing of another
   channel's. A rig of one channel has two tabs, so the layout is the same on
   every rig of channels; a v1 run has a tab per track and no Master; with no
-  rig up there are no tabs, and while a command runs the tabs stay as they
-  were, as the strips do. **The strips stay together**, since they are the
+  rig up there are no tabs, and while the rig is up and `/live` is not read (a
+  command running) or fails, the tabs stay as they were, so nothing above the
+  chain moves. **The strips stay together**, since they are the
   mix: a strip's name is a button that opens its tab (so is a tap on the strip
   that lands on nothing else; its fader, its value and Change input are their
   own gestures and do not), the master's strip opens Master, and the open
   tab's strip is marked. On a phone a strip tapped also brings the tabs into
   view, since the chain is below the strips. **The amp's card is in one tab**,
-  the channel it is in front of: the first channel the running rig's file
-  plays from `guitar-in` (`patchbay.GUITAR_ROLE`, read from `GET
-  /rigs/<rig>/channels`), the first channel where the file does not say or
-  cannot be read or there is none (a v1 run); while the file is still being
-  read the card waits, rather than be drawn in one tab and then another.
+  the channel it is in front of: the first channel **the running rig** plays
+  from `guitar-in` (`patchbay.GUITAR_ROLE`), as `GET /machine/roles`'s
+  `used_by` says from the running config's own wiring, so Change input, which
+  writes the file, does not move it before the restart that plays the edit.
+  Only when the running rig cannot say (the answer failed, or its config was
+  not read) is the rig's file asked (`GET /rigs/<rig>/channels`); the first
+  channel where neither says, or the run has nothing on that role, or there
+  is no rig file (a v1 run). It is decided **once a run**: until then the
+  open chain is held back with the card, "Reading the rig…", for at most two
+  seconds and then the first channel, so the chain is never drawn and then
+  pushed down by the card arriving above it. With no tabs at all (no chain
+  read) the card is shown on its own, as before #135.
   **The open tab is remembered per device**, in the browser's storage, as one
   record of the rig and the tab (`sushi-rig.tab`): a reload comes back to it,
   another rig opens on its first channel (even one seen before), as does a
@@ -77,19 +85,27 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   own, and a bypass only hides or shows what the row already holds, so a
   bypass from a pedal, a neighbour opening, or a plugin added, removed or
   moved from elsewhere rebuilds nothing under a drag or a half-typed value
-  (the rows are put in their new order round the one that holds the focus).
+  (the rows are put in their new order round the ones in use, which hold the
+  focus or a drag, and are never taken out of the page). The chains of the
+  same rig changing are shown at once with the plugins already known, and
+  `/live/plugins` read after, so only a new plugin's row is rebuilt when it
+  answers; another rig is not shown until its plugins are. A drag ends when
+  its pointer capture is lost, so a press after it is a drag of its own. A
+  bypass that hides the control with the focus (a knob, a value not typed
+  into) moves the focus to the row's name, which opens it again.
   Tabs and opening a row are **allowed while locked**: they change what is
   shown, not the rig. **Nothing that matters is behind a closed tab**: the
   problem boxes (a refusal, a child that exited) are above the tabs; and a
   tab carries a red dot, with the reason as its title, while a change to one
-  of its plugins stands refused or its amp is not playing (Carla not running,
-  the amp unreadable, a problem with its model), which the amp's card alone
-  said. Undo, Save, the unsaved count and Revert take no notice of the tab: a
+  of its plugins stands refused or anything the amp's card says is wrong
+  (Carla not running, the amp unreadable, a problem with its model, the
+  model's rate warning, the models not listed: `ampFaults`); while the amp's
+  tab is not decided yet, every channel's tab carries its faults. Undo, Save, the unsaved count and Revert take no notice of the tab: a
   change on a closed tab counts and is undone as any other. The keyboard: the
   tabs are `role="tab"` in a `tablist`, the open one alone in the tab order,
   the left and right arrows, Home and End move and open, and the panel is a
   `tabpanel` labelled by its tab. The decisions are rig.js's (`rackTabs`,
-  `openTab`, `rememberedTab`, `tabKey`, `ampTab`, `tabMarks`, `unitRow`,
+  `openTab`, `rememberedTab`, `tabKey`, `ampTab`, `ampFaults`, `tabMarks`, `unitRow`,
   `unitTapped`, `bypassSeen`), tested on their own and through the page in
   `tool/tests/test_ui_tabs.py`. The stage screen is unchanged: its cards do
   not minimise.
@@ -269,10 +285,33 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   count at that moment. **Selecting the default on a tap is untested on
   WebKit, so on a real phone**: only Chromium is in the tests, and the
   selection is deferred past the tap because WebKit places the caret after the
-  focus event (`app.js`, `nameField`). At a phone's width the field is
-  narrower than a default name: at 390 px it shows
-  `electric_board-2026-11-14-take-` and not the number (seen in
-  `docs/guide/img/stage-phone.png`). A name
+  focus event (`app.js`, `nameField`). A name the field is too narrow to
+  show whole is also written out on a line under the field, wrapped
+  (`drawNameWhole`, `.take-whole`), so the take's number is always on the
+  page: at 390 px the field holds about 31 characters, and a default is the
+  rig's name and 19 more with its number last, so every rig but the shortest
+  gets the line on a phone (`docs/guide/img/stage-phone.png`), and the
+  longest defaults get it on a desktop too, where the stage is 520 px at
+  most: 62 characters for a rig whose name is cut to 43, and 64, the name
+  rule's limit, from that rig's thousandth take of a day. A name the field
+  shows whole has no such line. The line is of the name Record would use: a
+  typed name, or with the field empty or holding only spaces the default,
+  which the placeholder shows cut. So emptying the field and leaving it,
+  which puts the default back, moves nothing: nothing in the bar changes
+  height between a press on Record or Stop and its release. The width is
+  measured in the page's own layout (`nameCut`): a hidden ruler in the bar
+  (`.take-rule`, out of the flow and clipped, so it moves and widens nothing)
+  carries the field's type by the same CSS rule, and its width with the name
+  in it is compared with the room inside the field, each time the bar is
+  drawn and on each key. So text the browser enlarges past its computed size
+  (text-only zoom, a phone's font scale) is measured as it is drawn. Where
+  the field holds the name its own `scrollWidth` is asked too, and a cut
+  either sees shows the line; a measure that cannot be made shows it as well,
+  and never stops the page drawing. The field itself, its 16 px type (under
+  16, a phone's browser zooms the page when a field is entered), its caret
+  and its scroll are untouched. **Untested on WebKit** like the selection,
+  **and with a real text-zoom setting**: Chromium has none, so the tests
+  emulate one (`text-size-adjust` under phone emulation). A name
   already taken says the earlier take moves to `_archive/`. Why recording is
   off is said on the bar (no rig, the panel, a v1 run, no recorder, or the
   recorder's own reason). The rack lists the takes beside Save, each with its

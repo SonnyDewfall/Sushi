@@ -135,7 +135,14 @@ focus event, where WebKit undoes it (untested on WebKit: only Chromium is
 here). Only entering selects: a rebuild that hands the focus back puts the
 caret or selection where it was. Only what the player typed is kept
 (`takeTyped`), through polls, a rig switch and finished takes, until it is
-recorded with or cleared, and a field left empty shows the default again. A name is checked
+recorded with or cleared, and a field left empty shows the default again. A
+name the field is too narrow to show whole (on a phone it holds about 31
+characters, and a default is at least the rig's name and 19 more, its number
+last) is also on a line under the field, wrapped (`drawNameWhole`), so the
+take's number is always on the page; the field itself, its type size and
+its caret are left as they are. The line is of the name Record would use,
+so with the field emptied it holds the default, and leaving the field (as a
+press on Record does) moves nothing in the bar. A name is checked
 before sending (`checkTakeName`, the rule take.check_name keeps); a
 name already in the takes list says the earlier take will move to the
 archive. The elapsed time is the recorder's (`elapsed`, by its clock),

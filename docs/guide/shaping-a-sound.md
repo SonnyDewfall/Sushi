@@ -100,7 +100,9 @@ does not show them: open it first.
 
 The **AMP** card is at the top of one tab: the channel the guitar plays
 through, because the amp comes before that channel's effects. It is not on the
-other tabs. If the rig has no amp, the card says so.
+other tabs. If the rig has no amp, the card says so. If you change that
+channel's input, the card stays where it is until the rig restarts and plays
+the change.
 
 - **Input Lvl** and **Output Lvl** are faders, in dB. Drag them, or type a
   value in the box beside them.
@@ -164,7 +166,7 @@ Undo has not yet been tried on the rig itself, only against a stand-in.
   "Not changed:".** The agent would not make the change; the reason is in the
   box and in the knob's tooltip.
 - **A red dot on a tab.** Something behind that tab needs a look: a change
-  there was refused, or the amp has stopped. Hover over the tab to read what,
+  there was refused, or something is wrong with the amp. Hover over the tab to read what,
   or open it. The boxes at the top of the page are above the tabs and show
   whichever tab is open.
 - **A plugin you expected is not on the screen.** It is on another channel's
