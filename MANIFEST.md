@@ -4308,3 +4308,66 @@ load, two loops side by side of 10 runs each of `test_ui_library.py` and
 rig, a phone, a touch screen, a real agent restart, the slow tests and the
 container job.
 *(2026-11-16)*
+
+**Safety: the master's dip around a chain edit, and the load before an add
+(#137). The limiter is not built.** Nothing of this has been heard on the rig.
+
+- **The limiter: stopped, for Sonny to choose** (`tool/spikes/master_limiter/`).
+  The default given was mda/Limiter, the manifest's only limiter. It has no
+  latency and is transparent below its threshold, bit for bit (its code keeps
+  the gain at exactly 1.0 there; rendered with lv2apply, a -20 dBFS sweep and a
+  -1.5 dBFS sine come out identical), so at a -1 dBFS ceiling no sound
+  reference would change: the loudest peaks at -1.69 dBFS. But it holds no
+  ceiling: its own Turtle says "not a brickwall limiter"; it watches the sum
+  of the channels, so opposite phases pass (+6 dBFS in, +6 out); at its
+  default attack a +20 dBFS sweep or noise comes out at +2.6 dBFS; and its
+  gain step has no floor, so at +40 dBFS its two fastest attacks, the
+  default among them, come out louder than they went in. The one limiter on the machine that holds
+  a ceiling, x42's dpl (already in CI's image, not in the manifest), looks
+  64 samples ahead at 48 kHz (1.33 ms, from its source), which would change
+  `delay_samples` in every one of the 28 references and the rig's monitoring
+  latency; its atom ports kept it from lv2apply, and nothing has shown Sushi
+  hosting it. Per the brief, stopped before recalibrating anything. Also found:
+  Sushi applies a track's gain after its plugins, so a limiter last on the
+  master's chain sits ahead of the master volume, which goes to +6 dB. The
+  defaults the brief gave for it (-1 dBFS, last on the master, placed by the
+  compiler, hidden like the send and return, a read-only line in the Master
+  tab) are unused, and none of that machinery was written.
+- **The dip** (`ramp.py`, `Agent._dip`). An add, a remove and a move, and
+  their undos, go inside it: the master's gain read, set to 0 (Sushi's
+  -120 dB floor), a wait, the edit and its confirmation (a walk for an add
+  and a remove, Sushi's strict answer for a move, as the routes already
+  confirmed them), the gain read again and the level put back, also on a
+  failure part-way or an exception. A live switch dips once around its
+  removes, moves and adds, to the bypass after its last add, with its
+  parameters after. *Default:* one set each way, since Sushi 1.3.0 smooths a
+  track's gain itself (one pole, 20 ms rise, per 64-sample chunk with a ramp
+  across each: `track.cpp`, `value_smoother.h`, `constants.h` at the 1.3.0
+  tag, read 2026-11-16, not measured; nothing in the repository had recorded
+  it for #131). *Default:* the wait is 37 ms, the 32 ms that smoother takes
+  to fall 30 dB plus one 256-sample block; the master is more than 1 dB down
+  for about 57 ms plus the edit's own commands, which are untimed. *Default:*
+  a master volume set during the dip is not lost: through the agent it waits
+  for the live lock and lands after; beside it (Sushi's own MIDI mapping, the
+  v1 panel) it is seen on the second read, being neither the floor nor the
+  level before, and left. Never logged, never undone, never saved; `GET
+  /live` shows the level the dip puts back; a level that cannot be put back
+  is a `warning` and stays in `/health`.
+- **The load before an add.** `POST /live/add` reads the shared pw-top
+  sample `GET /rig/load` reads and is refused, `409 over_budget` with the
+  figure, over 80 % of the block (`top.ADD_BUDGET`, *default*); unreadable,
+  it is said in the answer and blocks nothing. The page shows the refusal at
+  its place, unchanged code.
+- **Tests changed, for the dip or the check:** in `test_agent_edits.py`, the
+  fake gained the master's gain and a `parameter` read, `edit_agent` a
+  pw-top that is never this machine's, and six tests that pin the calls an
+  edit makes now pin the dip's calls around them; three that fail a plugin's
+  `set_parameter` aim it at the plugin, not the dip (`only`).
+  `test_agent_save.py`'s agent reads the captured pw-top sample. New:
+  `test_safety.py` (33) and one browser test in `test_ui_library.py`.
+- The fast suite: 4532 passed, 43 skipped. Under load, two loops side by
+  side of 10 runs each of `test_ui_library.py` and `test_ui_tabs.py` (106
+  tests a run): 20 of 20 passed. **Not run:** the rig (nothing
+  heard: no pop or its absence, no dip, no refusal), a live Sushi, the slow
+  tests and the container job.
+*(2026-11-16)*
