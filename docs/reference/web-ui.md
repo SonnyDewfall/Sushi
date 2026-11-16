@@ -33,13 +33,17 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   own range, never 0 to 1. A turned knob is sent at once. A profile may also
   give a knob that sets several of the plugin's parameters at once (its
   `controls`, `profile.py`): the hall's **Mix**, 0 to 100 %, sets its dry
-  level, early reflections and tail along an equal-power curve. Turning it
-  sends each of those parameters through `POST /live/parameter`, as their own
-  knobs would, so each is a change in the log, Undo takes them back one at a
-  time (three presses for one step of Mix), and Save writes them. It is shown
-  from what those parameters are, at the nearest point of its curve when a
-  rig's saved values are not on it (and its note says so), and nothing is
-  sent until it is turned. **Nothing comes,
+  level, early reflections and tail along an equal-power curve. Each step
+  of it is one `POST /live/parameters` of the three: all or none (a level
+  Sushi refuses part-way puts back the ones already set), one change in the
+  log, one Undo, and Save writes them as it writes any parameter. It is
+  shown from what those parameters are, at the nearest point of its curve
+  when a rig's saved values are not on it (and its note says so), and
+  nothing is sent until it is turned; turned from off the curve, each level
+  goes from where it is to the curve's own value at 0 % or 100 %, at the
+  curve's pace, so the first step moves each a little and one way
+  (`R.mixPath`). A value asked for while a send that then failed was in
+  flight is still sent, and the failure said. **Nothing comes,
   goes or moves as values change** (the player's first request: "was 0.5 dB"
   labels that popped in and out). Each knob's text, label and note have a
   size of their own whatever they hold, and the one sign of unsaved work is a

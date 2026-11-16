@@ -23,6 +23,7 @@ curl -X POST localhost:8029/rig/restart -d '{"discard": true}'      # ... so thi
 curl -X POST localhost:8029/rig/switch -d '{"config_name": "electric-delay"}'   # live where it can be (#93)
 curl localhost:8029/live             # the running rig's parameters, bypass and chains, with ranges
 curl -X POST localhost:8029/live/parameter -d '{"processor": "reverb", "parameter": "Mix", "value": 0.4}'
+curl -X POST localhost:8029/live/parameters -d '{"processor": "hall", "parameters": {"dry": 0.7, "early": 0.57}}'   # all or none, one change (#154)
 curl -X POST localhost:8029/live/bypass -d '{"processor": "drive", "bypassed": true}'
 curl -X POST localhost:8029/live/move -d '{"processor": "drive", "direction": "up"}'
 curl localhost:8029/live/plugins     # which plugin each running processor is, with its role and width

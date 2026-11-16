@@ -123,7 +123,8 @@ When the control a player wants is not one port but several moved together (a re
 - Hide the parameters a control drives. The validator warns (`driven-and-shown`) when one is left showing: two knobs that move the same thing.
 - What a control drives is a judgement: `drives` is `draft`, never `fact`. The validator checks only that each parameter is real, takes a number (not a toggle, an enumeration or a whole number), and that both ends are inside its range.
 - Choose the ends from a render, not from the range: what level at 100 % keeps the loudness of 0 % depends on the plugin. Say in the hand-back what was rendered.
-- The page sets a control by setting each parameter through the agent's normal route, so Undo takes one parameter back at a time, and it only reads them to show where it is (the nearest point of its curve for a rig saved off it). Nothing is sent on load.
+- The page sets a control with one `POST /live/parameters` of all it drives a step: all or none, one change in the log, one Undo, saved as any parameter is. It only reads them to show where it is (the nearest point of its curve for a rig saved off it), sends nothing on load, and from off the curve moves each level from where it is to the curve's ends.
+- Drives that never move (`at_0` equal to `at_1`) are refused, and so is a control of only those.
 
 ### Provenance: use `fact` sparingly
 

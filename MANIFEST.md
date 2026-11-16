@@ -4526,12 +4526,14 @@ left showing is warned of). The page (rig.js `makeMix`, `mixTargets`,
 through `POST /live/parameter`, as its own knob would, so each is logged,
 undone and saved as that parameter: **Undo takes one parameter at a time**, so
 one step of Mix is three presses (grouping them would be a change to the
-agent's log, not made). It shows the control from what its parameters are,
+agent's log, not made; since made, by the review below: one change a step).
+It shows the control from what its parameters are,
 the nearest point of its curve (least squares, as a fraction of each range)
 when they are off it, with a note saying so, and sends nothing until it is
 turned. Mix drives dry on `cosine` from 1 to 0, early on `sine` from 0 to 0.8
-and tail on `sine` from 0 to 0.4: equal power, with early twice tail as every
-rig's hall has it (0.16 and 0.08). Hidden: dry, early, tail. Primary: Mix,
+and tail on `sine` from 0 to 0.4: equal power, with early twice tail as six of
+the eleven rigs with a hall have it (0.16 and 0.08; corrected by the review
+below, which this first said of every rig). Hidden: dry, early, tail. Primary: Mix,
 Room size, Reverb time (log knobs). Advanced: damping, bandwidth, spread. No
 rig's saved values change, so no reference does. **Rendered here**, through
 Sushi 1.3.0's offline frontend as the compiler builds a one-plugin mono
@@ -4568,3 +4570,61 @@ Mix behaves. The probe facts are committed (`tests/fixtures/probe_MaGigaverb.jso
 `probe_a-reverb.json`). **Not tried on the rig:** nothing heard; how a Mix
 turned live sounds while its three sets land one after another; a phone; the
 container job. *(2026-11-16)*
+
+**Mix, answering the review of PR #159 (#154).** (1) **A hall saved off the
+curve jumped on the first touch.** electric-delay and electric-chorus save
+the hall at dry 0.81, early 0.16, tail 0.09, electric-spacey-delay at tail
+0.11; shown at their nearest point (16.5 and 17.3 %), one step along the
+curve from there raised dry about 1.5 dB and early up to 2.9 dB (rendered
+through Sushi at each rig's own hall settings: +0.8 dB overall). Now a turn
+starts from the levels as they are (rig.js `mixAnchor`, `mixPath`): each goes
+from its value to its curve's own end, at the pace the curve itself goes from
+the point shown to that end, so the point shown leaves every level as it is,
+0 and 100 % are still exactly the curve's ends, and on each side each level
+moves one way only (turning up never raises dry; turning down never raises a
+wet level). The knob keeps that start while the levels are where it put them,
+and takes a new one from whatever they are otherwise (a load, an undo,
+another page). Rendered, first step up and down: electric-delay and
+electric-chorus dry -0.02 / +0.13 dB, early +0.32 / -0.28, tail +0.27 /
+-0.28, overall +0.02 / +0.04 dB; electric-spacey-delay dry -0.03 / +0.07,
+early +0.49 / -0.15, overall +0.03 / +0.01; the 0.92 / 0.16 / 0.08 hall
+(shown at 13.8 %) at most 0.53 dB on a wet level, overall +0.00 / +0.03.
+*Decided:* "no more than a normal step on the curve" is held as no more than
+a 1 % step moves that level where the curve is steepest, not where the
+curve is at the point shown: a hall at dry 0.81 has 0.19 to go to reach 1.0
+at 0 %, where the curve at 16 % has 0.03, so some step down has to move dry
+more than the curve does there. The tests take every distinct saved hall,
+the committed rigs' (through `committed_that`) and the frozen rigs' (which
+hold the off-curve ones), and assert the first step each way: one way per
+level, within that bound, dry under 0.2 dB, and the ends the curve's.
+The MANIFEST's "early twice tail as every rig's hall has it" was wrong: six of
+the eleven rigs with a hall have 0.16 / 0.08; corrected above. (2) **Undo.** A
+knob today is one log entry per value sent: the page's sender keeps one send
+in flight per control and sends the newest value when it returns, so a drag
+is a few entries, each undone by one press. Mix sent three such streams, so
+three entries a step and the hall part-way between steps after each undo.
+Now `POST /live/parameters` sets several of one processor's parameters as one
+change (one entry, `op: "parameters"`, undone as one, refused as stale if any
+of them moved since, unsaved as each parameter, saved from Sushi as any is),
+and Mix sends one per step under one key: the same entries and undos as a
+knob, and each undo puts back a whole earlier setting. Tested: ten steps of
+Mix and of the Drive knob, each at most ten entries, every undo leaving the
+three as one of the steps had them. (3) **All or none.** The route reads and
+checks every parameter before setting any; if Sushi refuses one part-way, the
+ones set are put back, newest first, and the error keeps its class (502, or
+504 with its pending call) and says what was put back or could not be.
+Tested with the fake refusing `early`: dry set and put back, tail never set,
+nothing logged, the page showing the reason. The page's sender dropped a
+value asked for while a send that failed was in flight; it now says the
+failure and sends that value. (4) A drive with `at_0` equal to `at_1` is
+refused (`constant-drive`), and a control whose drives are all so
+(`constant-control`). (5) A control sharing an order with a parameter in its
+group is warned of (`duplicate-order`). (6) The panel refuses `controls` that
+are not a list of mappings (`PanelError`). (7) `curveAt` throws on a curve it
+does not know, `makeMix` will not draw one (said in its note), and the panel
+leaves one out. (8) The agent's library test names the profiles it expects
+(the Tube Screamer's, a-reverb's, MaGigaverb's; MVerb has none). The hall's
+Mix sweep, rendered again through Sushi: as before (-32.92 to -33.36 dBFS).
+Docs: the guide, `web-ui.md`, `agent.md` (the route) and the skill. Merged
+origin/master (#156, #157) first. **Not tried on the rig:** nothing heard,
+a phone, the container job. *(2026-11-16)*
