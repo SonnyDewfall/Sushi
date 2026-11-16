@@ -63,6 +63,32 @@ the list. The question in step 3 tells you when it is not.
 
 Reverting has not yet been tried on the rig itself, only against a stand-in.
 
+## When you push a saved rig
+
+The project's checks run on every push. One of them plays each rig through
+Sushi and compares how it sounds with a recording of the numbers kept for it,
+its sound reference. What happens to a rig you saved:
+
+- **You changed a setting, or added a rig.** The checks stay green. They play
+  the rig anyway and make sure it makes a sound on both sides and nothing
+  broke, and then leave a warning on the run that names the rig and says its
+  reference is out of date ("STALE"). The warning has the new reference in
+  it, and the run keeps it as a download called `stale-sound-references`.
+- **To clear the warning**, commit that file as `config/sound/<name>.yaml`,
+  with the name the warning gives. From then on the rig is compared with it
+  exactly again. Until you do, the rig is only checked for working, not for
+  sounding as it did.
+- **You renamed or removed a rig or a channel.** Its old reference is left
+  behind. The checks stay green and warn about it ("orphaned"); delete the
+  file the warning names.
+- **The checks go red when the sound changed and you did not change the
+  rig**: an update to the code or a plugin changed it. That is for whoever
+  changed them, not for you. They also go red if a rig plays nothing, or plays
+  on one side only, whatever its reference says.
+
+Saving the file again with a number written differently (`1` where it said
+`1.0`), or with its comments or layout changed, does not count as a change.
+
 ## Things that may surprise you
 
 - **Switching to another rig, or stopping the rig, throws away unsaved changes

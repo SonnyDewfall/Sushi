@@ -35,3 +35,7 @@ tolerance:
   delay_samples: 0
   note: 'measured: two renders of this config were identical to the 0.0001 dB this
     file is written at'
+made_from:
+  rig: electric-chorus.yaml
+  hash: cc8daf1806154482593ed2db81b40e1d4272871e68a24d38c266aa988be152bb
+  hash_rule: 1

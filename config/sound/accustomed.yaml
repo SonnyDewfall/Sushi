@@ -35,3 +35,7 @@ tolerance:
   delay_samples: 0
   note: 'measured: two renders of this config were identical to the 0.0001 dB this
     file is written at'
+made_from:
+  rig: accustomed.yaml
+  hash: 0ee89f52661440f765306282c54c76d0e12ca92941a78913e2105a1c222b21d1
+  hash_rule: 1

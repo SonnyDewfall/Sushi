@@ -41,10 +41,11 @@ compared with the config it came from. A guard keeps this so: every file
 opened and folder listed in the test process is audited, and a test that
 reads `config/rigs/` without the marker `committed_rigs` fails, however the
 path was spelt and whatever code did the reading (`rig_fixtures.py` says what
-it cannot see). The one check that does follow a rig's content is its sound:
-see `nulltest --all` under [CI](#ci), where a rig with no reference, or one that no
-longer sounds like its reference, fails the container job until a reference
-is calibrated for it.
+it cannot see). The sound check makes the same split (#144): the frozen rigs'
+references, under `tests/fixtures/sound/`, are what pin the rig's sound and
+fail; a committed rig's reference is compared exactly only while it was made
+from the rig as it is, and a rig changed or added is a warning, not a failure.
+See `nulltest --all` under [CI](#ci).
 
 ## The documentation's links
 
@@ -63,17 +64,46 @@ workflows because no single runner has everything:
 - `rig-container.yml` builds `ci/Dockerfile` (system lilv, the distro plugins,
   a real Sushi 1.3.0) and runs the **whole** suite in it, failing the job on any
   `SKIPPED`. That is what makes the first workflow's skips safe.
-- The same job runs `nulltest --all`, so **a change in a config's sound fails
-  the build**. References live in `config/sound/` and are calibrated in that
-  container, for every v1 config (`<name>.v1-mono.yaml`) and every rig of
-  channels in `config/rigs/` (`<name>.yaml`, rendered through the master one
-  channel at a time). A reference records each channel's level as well as the
-  whole render's, so a channel lost is a finding of its own; a silent right
-  channel used to read as only 3 dB down. The check runs even when the suite
-  failed. When the check fails, the job calibrates every config afresh and
-  attaches the result (`sound-reference-candidates`, and printed in the log).
-  Commit those only if the change was meant; if it was not, they are the
-  evidence and the fix is in the config. A config is rendered whole when Sushi's
+- The same job runs `nulltest --all`, so **a change in the code or a plugin
+  that alters the sound fails the build**. References are calibrated in that
+  container, for every v1 config (`config/sound/<name>.v1-mono.yaml`), every
+  frozen rig (`tool/tests/fixtures/sound/<name>.yaml`) and every rig of
+  channels in `config/rigs/` (`config/sound/<name>.yaml`), a rig rendered
+  through the master one channel at a time. A reference records each
+  channel's level as well as the whole render's, so a channel lost is a
+  finding of its own; a silent right channel used to read as only 3 dB down.
+  The check runs even when the suite failed. What fails and what warns
+  (#144):
+
+  | | v1 config, frozen rig | committed rig (`config/rigs/`) |
+  |---|---|---|
+  | reference matches | passes | passes, if it was made from the rig as it is |
+  | sound differs from the reference | **fails** | **fails**, if the reference was made from the rig as it is: the code changed the sound |
+  | rig changed since its reference, or no reference | **fails** (no reference) | **STALE**, a warning, with a candidate reference attached |
+  | orphaned reference | **fails** | a warning |
+  | render NaN, silent, or one side only (or the sides more than 1 dB apart) | **fails** (a rig; a v1 config plays its left side alone) | **fails**, whatever its reference says |
+
+  A committed rig's reference records the rig it was made from under
+  `made_from`: the file's name and a sha256 of the file **as parsed**, its
+  mappings in key order and every whole number written as an integer
+  (`nulltest.rig_hash`). So comments, layout, key order and `1.0` against `1`
+  do not make it stale, any value that changes does, and a compiler change
+  does not make every reference stale at once: it is compared against all of
+  them. A STALE channel is rendered, twice, and held to being finite,
+  two-sided and balanced alone; the job then puts a warning on the check run
+  naming each channel, with its candidate in the warning, printed in the log,
+  and as the `stale-sound-references` artifact (`nulltest --all --candidates
+  DIR`). Committing a candidate as `config/sound/<name>.yaml` is what makes
+  that rig compared exactly again; until then a change to its sound by the
+  code is not caught for that rig, only by the frozen ones. The frozen
+  references are byte for byte config/sound/'s of the day each committed rig
+  compiled to the frozen one's channels, and are pinned by sha256 with the
+  frozen rigs (`tests/test_rig_fixtures.py`). When the check fails, the job
+  calibrates every config afresh and attaches the result
+  (`sound-reference-candidates`, with the frozen rigs' under `frozen/`, and
+  printed in the log). Commit those only if the change was meant; if it was
+  not, they are the evidence and the fix is in the config. A frozen rig's new
+  reference goes in with its new sha256, in the same commit. A config is rendered whole when Sushi's
   offline frontend can host it, which also checks how its channels mix. One it
   cannot — the offline frontend has one stereo bus, and `guitar_vocal`'s vocal
   is on the second — is checked one channel at a time, each with its own

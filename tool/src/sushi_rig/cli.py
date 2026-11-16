@@ -453,32 +453,56 @@ def _references_of(ref_stem: str, stem: str, is_rig: bool) -> bool:
 def _nulltest(args: argparse.Namespace) -> int:
     """`nulltest`: has any config, or any channel of one, changed its sound.
 
-    A config is rendered whole when Sushi's offline frontend can host it, and
-    one channel at a time when it cannot (`render.channels_of`). A rig of
-    channels (config/rigs/) is rendered through its master, one channel at a
-    time (`render.rig_channels`), with its reference under the channel's name;
-    a v1 config's is under that name and `.v1-mono` (`V1_REFERENCE_SUFFIX`).
+    Three kinds of target, each with its own references (`--all` takes all
+    three):
+
+    - a v1 config, `config/*.json`, rendered whole when Sushi's offline
+      frontend can host it and one channel at a time when it cannot
+      (`render.channels_of`), under `config/sound/<name>.v1-mono.yaml`;
+    - a frozen rig, `tool/tests/fixtures/rigs/*.yaml`, through its master one
+      channel at a time (`render.rig_channels`), under
+      `tool/tests/fixtures/sound/<name>.yaml`;
+    - a committed rig, `config/rigs/*.yaml`, the same way, under
+      `config/sound/<name>.yaml`.
+
+    The first two are held exactly: a reference missing, a sound changed or an
+    orphaned reference fails. A committed rig is the owner's to change, so its
+    reference is compared exactly only while it was made from the rig as it is
+    (`nulltest.staleness`, #144); one that was not, or no reference at all, is
+    STALE, a warning, once the render is finite, two-sided and balanced
+    (`nulltest.heard_findings`), which every rig render is held to whatever
+    its reference says. An orphaned reference of a committed rig is a warning.
     """
     import tempfile
 
     import yaml
 
-    from .nulltest import compare, from_dict, keep_wider, to_dict
+    from .nulltest import (
+        ORPHAN_PREFIX, STALE_PREFIX, MadeFrom, compare, from_dict, heard_findings, keep_wider,
+        made_from_of, staleness, to_dict,
+    )
     from .paths import checkout_root
     from .render import (
-        RETRIED, RETRIED_PREFIX, SOUND_DIR, RenderError, calibrate, channels_of, measure,
-        offline_problem, reference_path, rig_channels, rigs_to_check, v1_reference_path,
+        FROZEN_SOUND, RETRIED, RETRIED_PREFIX, SOUND_DIR, V1_REFERENCE_SUFFIX, RenderError, calibrate,
+        channels_of, frozen_reference_path, frozen_rigs_to_check, is_frozen, measure, offline_problem,
+        reference_path, rig_channels, rig_file_hash, rigs_to_check, v1_reference_path,
     )
     from .rigfile import RigFileError
     from .verify import configs_to_check
 
     root = checkout_root()
     if args.check_all:
-        targets = configs_to_check(root) + rigs_to_check(root)
+        targets = ([(path, "v1") for path in configs_to_check(root)]
+                   + [(path, "rig") for path in rigs_to_check(root)]
+                   + [(path, "frozen") for path in frozen_rigs_to_check(root)])
     elif args.config:
-        targets = [args.config]
+        kind = ("frozen" if is_frozen(root, args.config)
+                else "rig" if args.config.suffix in (".yaml", ".yml") else "v1")
+        targets = [(args.config, kind)]
     else:
         sys.exit("give a config to null-test, or --all")
+    if args.calibrate and args.candidates is not None:
+        sys.exit("--candidates writes what --calibrate would, for the stale rigs alone: give one or the other")
 
     sushi = _sushi_bin(args)
     failed = 0
@@ -487,10 +511,15 @@ def _nulltest(args: argparse.Namespace) -> int:
     # Every render retried after gx_detune_'s known NaN (`render.measure`),
     # printed beside its channel and again at the end, every time.
     retried: list[str] = []
-    expected: set[str] = set()
-    # (stem, is_rig) of each target that could not be expanded into channels:
+    # Each committed rig's channel with no reference made from the rig as it
+    # is, and each orphaned reference of one: warnings, said at the end too.
+    stale: list[str] = []
+    orphans: list[str] = []
+    # The references each folder's targets expect, for its orphan check.
+    expected: dict[str, set[str]] = {"sound": set(), "frozen": set()}
+    # (stem, kind) of each target that could not be expanded into channels:
     # its own references are kept out of the orphan check, and only its own.
-    unexpanded: list[tuple[str, bool]] = []
+    unexpanded: list[tuple[str, str]] = []
 
     def cannot_check(label: str, exc: Exception) -> None:
         nonlocal failed
@@ -499,30 +528,52 @@ def _nulltest(args: argparse.Namespace) -> int:
         print(f"{label}: CANNOT CHECK — {type(exc).__name__}: {exc}", file=sys.stderr)
         failed += 1
 
+    def write_reference(path: Path, fp, tolerance, made) -> None:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_text(yaml.dump(to_dict(fp, tolerance, made), default_flow_style=False, sort_keys=False))
+
+    def committed_tolerance(ref_file: Path):
+        if not ref_file.exists():
+            return None
+        try:
+            return from_dict(yaml.safe_load(ref_file.read_text()))[1]
+        except (ValueError, KeyError, TypeError, AttributeError, yaml.YAMLError):
+            # An unreadable reference has no tolerance worth keeping; this
+            # calibration replaces it whole.
+            return None
+
     with tempfile.TemporaryDirectory(prefix="sushi-rig-nulltest-") as tmp:
-        for target in targets:
-            is_rig = target.suffix in (".yaml", ".yml")
+        for target, kind in targets:
+            is_rig = kind != "v1"
+            current = None
             try:
                 if is_rig:
                     channels = rig_channels(target)
+                    if kind == "rig":
+                        current = rig_file_hash(target)
                 else:
                     channels = channels_of(json.loads(target.read_text()), target)
-            except (RigFileError, ValueError, OSError, TypeError, AttributeError) as exc:
+            except (RigFileError, ValueError, OSError, TypeError, AttributeError, yaml.YAMLError) as exc:
                 # TypeError and AttributeError too: a config that is a list, or
                 # whose tracks are null, must cost one line, not the whole run
                 # and the orphan check after it.
-                unexpanded.append((target.stem, is_rig))
+                unexpanded.append((target.stem, kind))
                 checked += 1
-                cannot_check(target.name, exc)
+                cannot_check(f"frozen {target.name}" if kind == "frozen" else target.name, exc)
                 continue
 
             for channel in channels:
                 checked += 1
-                ref_file = (reference_path(root, Path(f"{channel.name}.json")) if is_rig
-                            else v1_reference_path(root, Path(f"{channel.name}.json")))
+                label = f"frozen {channel.label}" if kind == "frozen" else channel.label
+                if kind == "v1":
+                    ref_file = v1_reference_path(root, Path(f"{channel.name}.json"))
+                elif kind == "rig":
+                    ref_file = reference_path(root, Path(f"{channel.name}.json"))
+                else:
+                    ref_file = frozen_reference_path(root, channel.name)
                 ref_name = ref_file.stem
-                expected.add(ref_name)
-                work = Path(tmp) / ref_name
+                expected["frozen" if kind == "frozen" else "sound"].add(ref_name)
+                work = Path(tmp) / kind / ref_name
                 # Where this channel's retries start, so they are printed beside
                 # it whether it passes, differs or cannot be checked.
                 already = len(retried)
@@ -530,7 +581,7 @@ def _nulltest(args: argparse.Namespace) -> int:
                     # --missing calibrates only what has no reference yet, so
                     # adding a channel does not quietly re-baseline the others,
                     # whose sound may have changed by accident.
-                    print(f"{channel.label}: has a reference, left as it is")
+                    print(f"{label}: has a reference, left as it is")
                     continue
                 try:
                     problem = offline_problem(channel.config)
@@ -542,7 +593,7 @@ def _nulltest(args: argparse.Namespace) -> int:
                             # unrenderable, exited 0 and left the stale
                             # reference to fail the next run.
                             print(
-                                f"{channel.label}: NO LONGER RENDERABLE — it has a "
+                                f"{label}: NO LONGER RENDERABLE — it has a "
                                 f"reference, so it used to be checked, but {problem}. "
                                 f"Fix the routing, or if the move was meant, delete "
                                 f"{ref_file.relative_to(root)}: its sound can no "
@@ -552,11 +603,11 @@ def _nulltest(args: argparse.Namespace) -> int:
                             failed += 1
                         else:
                             print(
-                                f"{channel.label}: NOT RENDERABLE OFFLINE — {problem}. "
+                                f"{label}: NOT RENDERABLE OFFLINE — {problem}. "
                                 "A change in its sound would not fail this check",
                                 file=sys.stderr,
                             )
-                            unrenderable.append(channel.label)
+                            unrenderable.append(label)
                         continue
 
                     if channel.whole:
@@ -571,29 +622,28 @@ def _nulltest(args: argparse.Namespace) -> int:
                     if args.calibrate:
                         fp, measured = calibrate(source, root, work, sushi_bin=sushi,
                                                  retried=retried)
-                        committed = None
-                        if ref_file.exists():
-                            try:
-                                committed = from_dict(yaml.safe_load(ref_file.read_text()))[1]
-                            except (ValueError, KeyError, TypeError, AttributeError,
-                                    yaml.YAMLError):
-                                # An unreadable reference has no tolerance worth
-                                # keeping; this calibration replaces it whole.
-                                committed = None
-                        tolerance = keep_wider(measured, committed)
+                        refused = heard_findings(fp) if is_rig else []
+                        if refused:
+                            # A reference of a rig that cannot pass the checks
+                            # every rig is held to would fail every run after.
+                            failed += 1
+                            print(f"{label}: NOT CALIBRATED — {'; '.join(str(f) for f in refused)}",
+                                  file=sys.stderr)
+                            for note in retried[already:]:
+                                print(f"   {note}", file=sys.stderr)
+                            continue
+                        tolerance = keep_wider(measured, committed_tolerance(ref_file))
                         if tolerance != measured:
                             print(
-                                f"{channel.label}: kept the committed tolerance, wider "
+                                f"{label}: kept the committed tolerance, wider "
                                 f"than this calibration's floor — delete the reference "
                                 f"first to tighten it",
                                 file=sys.stderr,
                             )
-                        ref_file.parent.mkdir(parents=True, exist_ok=True)
-                        ref_file.write_text(yaml.dump(
-                            to_dict(fp, tolerance), default_flow_style=False, sort_keys=False,
-                        ))
+                        write_reference(ref_file, fp, tolerance,
+                                        MadeFrom(target.name, current) if kind == "rig" else None)
                         print(
-                            f"{channel.label}: calibrated — band {tolerance.band_db:.4f} dB, "
+                            f"{label}: calibrated — band {tolerance.band_db:.4f} dB, "
                             f"level {tolerance.level_db:.4f} dB, "
                             f"delay {tolerance.delay_samples} samples "
                             f"-> {ref_file.relative_to(root)}"
@@ -602,7 +652,55 @@ def _nulltest(args: argparse.Namespace) -> int:
                             print(f"   {note}")
                         continue
 
-                    if not ref_file.exists():
+                    reference = tolerance = raw = None
+                    if ref_file.exists():
+                        # Read whole before anything is decided on it: a
+                        # reference that cannot be read fails, for a committed
+                        # rig as for any other, and is not taken for none.
+                        raw = yaml.safe_load(ref_file.read_text())
+                        reference, tolerance = from_dict(raw)
+                    why = None
+                    if kind == "rig":
+                        why = ("it has no reference yet" if reference is None
+                               else staleness(made_from_of(raw), current))
+
+                    if why is not None:
+                        # #144: a committed rig the owner changed, or added, is
+                        # not a failure of the sound. It is rendered all the
+                        # same, and held to what any rig must sound like.
+                        if args.candidates is not None:
+                            fp, measured = calibrate(source, root, work, sushi_bin=sushi, retried=retried)
+                        else:
+                            fp = measure(source, root, work, sushi_bin=sushi, retried=retried)
+                        problems = heard_findings(fp)
+                        if problems:
+                            failed += 1
+                            print(f"{label}: {len(problems)} problem(s), with no reference made from this "
+                                  f"rig to compare against ({why})")
+                            for problem in problems:
+                                print(f"   {problem}")
+                        else:
+                            where = None
+                            if args.candidates is not None:
+                                where = args.candidates / ref_file.name
+                                write_reference(where, fp, keep_wider(measured, tolerance),
+                                                MadeFrom(target.name, current))
+                            stale.append(f"{ref_name}: {why}"
+                                         + (f"; candidate {where}" if where is not None else ""))
+                            print(
+                                f"{label}: STALE — {why}, so it was held only to being finite, "
+                                f"two-sided and balanced, which it is. "
+                                + (f"Candidate reference: {where}" if where is not None else
+                                   f"Its reference: `sushi-rig nulltest {_as_typed(target, root)} "
+                                   "--calibrate` on a machine that can render, or the container job's "
+                                   "candidate"),
+                                file=sys.stderr,
+                            )
+                        for note in retried[already:]:
+                            print(f"   {note}")
+                        continue
+
+                    if reference is None:
                         # Not a failure of the sound: there is nothing to compare
                         # against yet. Saying "ok" here would be the loudest
                         # possible lie this command could tell. The path as the
@@ -612,7 +710,7 @@ def _nulltest(args: argparse.Namespace) -> int:
                         # alone: recalibrating the whole config would accept
                         # any accidental change in the others as the new sound.
                         print(
-                            f"{channel.label}: NO REFERENCE — run "
+                            f"{label}: NO REFERENCE — run "
                             f"`sushi-rig nulltest {_as_typed(target, root)} --calibrate --missing`"
                             " on a machine that can render",
                             file=sys.stderr,
@@ -620,28 +718,26 @@ def _nulltest(args: argparse.Namespace) -> int:
                         failed += 1
                         continue
 
-                    reference, tolerance = from_dict(yaml.safe_load(ref_file.read_text()))
-                    differences = compare(
-                        reference,
-                        measure(source, root, work, sushi_bin=sushi, retried=retried),
-                        tolerance,
-                    )
+                    fp = measure(source, root, work, sushi_bin=sushi, retried=retried)
+                    differences = compare(reference, fp, tolerance)
+                    if is_rig:
+                        differences += heard_findings(fp)
                 except (RenderError, ValueError, OSError, KeyError, TypeError,
                         AttributeError, yaml.YAMLError) as exc:
                     # Everything a hand-edited reference can do, caught per
                     # channel so one bad file does not abandon the rest.
-                    cannot_check(channel.label, exc)
+                    cannot_check(label, exc)
                     for note in retried[already:]:
                         print(f"   {note}", file=sys.stderr)
                     continue
 
                 if differences:
                     failed += 1
-                    print(f"{channel.label}: {len(differences)} difference(s)")
+                    print(f"{label}: {len(differences)} difference(s)")
                     for difference in differences:
                         print(f"   {difference}")
                 else:
-                    print(f"{channel.label}: sounds the same")
+                    print(f"{label}: sounds the same")
                 for note in retried[already:]:
                     print(f"   {note}")
 
@@ -650,22 +746,34 @@ def _nulltest(args: argparse.Namespace) -> int:
         # renamed or removed — checks nothing and fails nothing, which reads as
         # coverage that is not there. Only with --all, the one time every
         # expected name is known; a config that could not be expanded keeps
-        # its own references out of this.
-        sound = root / "config" / SOUND_DIR
-        for ref in sorted(sound.glob("*.yaml")) if sound.is_dir() else []:
-            if ref.stem in expected or any(
-                _references_of(ref.stem, stem, is_rig) for stem, is_rig in unexpanded
-            ):
-                continue
-            print(
-                f"{ref.relative_to(root)}: ORPHANED REFERENCE — no config or channel in "
-                f"config/ produces it any more, so it checks nothing. Delete it, or "
-                f"restore what it described",
-                file=sys.stderr,
-            )
-            # Counted as a check too, or the summary reads "3 of 1".
-            checked += 1
-            failed += 1
+        # its own references out of this. A committed rig's is a warning
+        # (#144): renaming a rig or a channel is the owner's to do. A v1
+        # config's, or a frozen rig's, fails.
+        for folder, which in ((root / "config" / SOUND_DIR, "sound"), (root / FROZEN_SOUND, "frozen")):
+            for ref in sorted(folder.glob("*.yaml")) if folder.is_dir() else []:
+                if ref.stem in expected[which] or any(
+                    _references_of(ref.stem, stem, kind != "v1") for stem, kind in unexpanded
+                    if (kind == "frozen") == (which == "frozen")
+                ):
+                    continue
+                # Counted as a check too, or the summary reads "3 of 1".
+                checked += 1
+                if which == "sound" and not ref.stem.endswith(V1_REFERENCE_SUFFIX):
+                    orphans.append(str(ref.relative_to(root)))
+                    print(
+                        f"{ref.relative_to(root)}: ORPHANED REFERENCE (a warning) — no rig in "
+                        f"config/rigs/ produces it any more, so it checks nothing: a rig or a "
+                        f"channel renamed or removed. Delete it, or restore what it described",
+                        file=sys.stderr,
+                    )
+                    continue
+                print(
+                    f"{ref.relative_to(root)}: ORPHANED REFERENCE — no config or channel "
+                    f"produces it any more, so it checks nothing. Delete it, or "
+                    f"restore what it described",
+                    file=sys.stderr,
+                )
+                failed += 1
 
     if unrenderable:
         # Every run, not only the first: a gap in coverage that is reported once
@@ -683,6 +791,17 @@ def _nulltest(args: argparse.Namespace) -> int:
         print(f"\n{len(retried)} render(s) {RETRIED}, each once:", file=sys.stderr)
         for note in retried:
             print(f"{RETRIED_PREFIX} {note}", file=sys.stderr)
+    if stale:
+        # The warnings, one prefixed line each, here only: what the CI job
+        # turns into its annotation. Not failures, and never quiet.
+        print(f"\n{len(stale)} committed rig channel(s) STALE, held to the generic checks alone:",
+              file=sys.stderr)
+        for line in stale:
+            print(f"{STALE_PREFIX} {line}", file=sys.stderr)
+    if orphans:
+        print(f"\n{len(orphans)} orphaned reference(s) of committed rigs:", file=sys.stderr)
+        for line in orphans:
+            print(f"{ORPHAN_PREFIX} {line}", file=sys.stderr)
     if failed:
         print(f"\n{failed} of {checked} check(s) could not be confirmed", file=sys.stderr)
     return 1 if failed else 0
@@ -951,7 +1070,8 @@ def _main(argv: list[str] | None = None) -> int:
     p.add_argument("config", type=Path, nargs="?", help="config to check")
     p.add_argument(
         "--all", action="store_true", dest="check_all",
-        help="every config in config/, skipping retired ones",
+        help="every v1 config in config/ (skipping retired ones), every rig in "
+        "config/rigs/, and every frozen rig in tool/tests/fixtures/rigs/",
     )
     p.add_argument(
         "--calibrate", action="store_true",
@@ -963,6 +1083,12 @@ def _main(argv: list[str] | None = None) -> int:
         "--missing", action="store_true",
         help="with --calibrate, only what has no reference yet — so adding a "
         "channel does not re-baseline the ones already checked",
+    )
+    p.add_argument(
+        "--candidates", type=Path, metavar="DIR",
+        help="for each committed rig's channel that is STALE (no reference made from "
+        "the rig as it is), calibrate it and write the candidate reference to DIR. "
+        "What the container job attaches to its warning",
     )
     p.add_argument("--sushi", help=_SUSHI_HELP)
 

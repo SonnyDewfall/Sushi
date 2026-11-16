@@ -35,3 +35,7 @@ tolerance:
   delay_samples: 0
   note: 'measured: two renders of this config were identical to the 0.0001 dB this
     file is written at'
+made_from:
+  rig: hard-feelings.yaml
+  hash: aa22fdbdf48e891e3c2200b1bc86a20b8e0b67f14edfaeadea384bb98fae6c76
+  hash_rule: 1

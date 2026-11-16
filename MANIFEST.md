@@ -4425,3 +4425,82 @@ now checks `last_error` too; both fail without the fix. The load check's
 docstring now says an add that waited reads the load again under the live
 lock. **Not run:** the rig, a live Sushi.
 *(2026-11-16)*
+
+**A saved rig no longer turns CI red for want of a sound reference (#144).**
+The sound check did two jobs, catching a change of code or plugin that alters
+the sound and pinning the sound of files the owner is meant to edit; it now
+does the first with rigs the owner cannot touch. (1) **The frozen rigs carry
+the pinned references**: `tool/tests/fixtures/sound/`, twelve, one for each
+channel of the eleven frozen rigs, checked exactly by `nulltest --all` (as
+"frozen <rig>.yaml") and by the new slow
+`test_every_frozen_rig_sounds_like_its_reference`; a reference missing, a
+sound changed or an orphan there fails. Eleven are config/sound/'s files of the
+same name at 155e6c8, byte for byte, where each committed rig compiled to the
+very channel config its frozen copy does (checked here, for all twelve
+channels of the frozen set) and CI run 43891871551, on that commit, found
+every reference "sounds the same". electric-chorus-2's is
+`config/sound/electric-chorus-2.yaml` from before 8c9bb76, which renamed it
+to the two-channel rig's `.board`: the two differ in their `config:` line
+alone, and the frozen rig's channel differs from the board's in its
+`_wiring` metadata alone, which no render reads. Each is pinned by sha256 in
+`test_rig_fixtures.py`'s CHECKSUMS, the git blob's, with where it came from;
+no other pin changed. (2) **A committed rig's reference records which rig it
+was made from**: `made_from: {rig, hash, hash_rule}`, the hash a sha256 of the
+rig file as parsed (`yaml.safe_load`, as `load_rig` reads it), its mappings in
+key order, every whole number written as an int (so `1.0` and `1`, `-0.0`
+and `0`, `1.000e+2` and `100` hash alike), compact json, with the rule's
+number inside what is hashed (`nulltest.rig_hash`, `RIG_HASH_RULE = 1`).
+Comments, layout, quoting and key order change nothing; a value, a key, a
+list's order or a bool against a number does; and a compiler change makes no
+reference stale. The sixteen rig references in `config/sound/` were stamped
+with their rigs' hashes as of 155e6c8 (four lines appended to each, the rest
+untouched), on the same evidence: CI run 43891871551 compared every one of
+them with its rig at that commit, and none of `config/rigs/` has changed
+since. (3) **The rule** (`cli._nulltest`): a committed rig whose reference
+was made from it is compared exactly, as before, and a difference fails; one
+changed since, with a reference that records no rig, or with none, is
+rendered and held to `heard_findings` alone (two sides, neither silent,
+within `BALANCE_DB`, 1 dB, test_stereo's guarantee and now its constant; NaN
+was already refused by `measure`), and is then **STALE**, a warning: beside
+the channel, and as one `STALE-REFERENCE:` line in the summary.
+`--candidates DIR` calibrates each stale channel (two renders) and writes its
+candidate there with its `made_from`. A committed rig's orphaned reference is
+a warning (`ORPHANED-REFERENCE:`); a v1 config's or a frozen rig's still
+fails. Every rig render, stale, compared or calibrated, fails on NaN,
+silence, one side or more than 1 dB between them whatever its reference says,
+and `--calibrate` writes no reference for such a render. A fingerprint of a
+render whose left side is silent now records no delay, rather than raising
+"no correlation" from `estimate_delay`, so that the finding is the silence.
+The v1 configs are as they were. **The job** (`rig-container.yml`) runs
+`nulltest --all --candidates`, turns the STALE lines into one warning
+annotation that names each channel and holds each candidate, prints them in
+the log, uploads them as `stale-sound-references`, and warns on the orphans;
+its exit is nulltest's, so warnings alone leave it green. The failure-path
+calibration now also calibrates the frozen references, into `frozen/` of
+`sound-reference-candidates`. `test_every_v2_rig_sounds_like_its_reference`
+holds each committed rig to the generic checks, and to its reference only when
+that was made from it, warning otherwise. Tests (`tests/test_sound_refs.py`,
+49): the hash's stability and its changes, staleness, the generic checks,
+and through `cli.main` on a temporary checkout with a passthrough for Sushi:
+an unchanged rig compared exactly and a code-made change failing, a rig
+rewritten with its numbers written otherwise still compared, a changed rig
+STALE with its candidate (which, committed, passes), a new rig, a reference
+from before the record, a broken `made_from`, NaN, silence, either side alone
+and imbalance failing with and without a reference, a one-sided reference
+failing the exact compare too, calibration refused, the orphan warning, and
+the frozen rigs failing by name; and the workflow's own warning shell, run
+in bash on nulltest's real output. The two orphan tests of test_render.py now
+name `.v1-mono` references, which still fail; test_workflow_retries.py counts
+the two new greps. Docs: `testing.md` (a table of what fails and what warns),
+`rig-file.md`, `repository-layout.md`, and the guide, `saving.md`'s "When you
+push a saved rig", with a line in `building-a-rig.md`. **Run here:** the fast
+suite, 4646 passed and 35 skipped (4585 and 35 on 155e6c8 here); `nulltest --all` over this checkout with a passthrough
+for Sushi (`--sushi`, a shell script that copies its input): all 40 checks
+found their references, 12 v1, 16 committed (compared exactly, none stale) and
+12 frozen, with no orphan, and each failed as a passthrough must. **Not run
+here:** Sushi (there is none on this machine; `lv2apply` is, but renders one
+plugin and not Sushi's graph, so it would check nothing these references
+describe), the slow tests, the rig, and the container job, which is the first
+real render of the frozen references from their new place and of the
+warning annotation. Step 4 of the issue, the job committing candidates
+itself, is not done. *(2026-11-16)*

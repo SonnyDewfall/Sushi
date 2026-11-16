@@ -506,6 +506,45 @@ def rigs_to_check(root: Path) -> list[Path]:
     return sorted((root / "config" / "rigs").glob("*.yaml"))
 
 
+# The frozen rigs (#133): eleven rigs as master held them at c494625, kept as
+# test data and pinned by sha256 (tests/test_rig_fixtures.py), and their sound
+# references beside them (#144). The owner cannot change them by saving a rig,
+# so a change in how one sounds is a change in the code or the plugins, and
+# fails: these, not the committed rigs, are what pin the rig's sound.
+FROZEN_RIGS = Path("tool") / "tests" / "fixtures" / "rigs"
+FROZEN_SOUND = Path("tool") / "tests" / "fixtures" / "sound"
+
+
+def frozen_rigs_to_check(root: Path) -> list[Path]:
+    """Every frozen rig: `tool/tests/fixtures/rigs/*.yaml`, none in a
+    checkout that has no tool/ beside its config/."""
+    return sorted((root / FROZEN_RIGS).glob("*.yaml"))
+
+
+def frozen_reference_path(root: Path, name: str) -> Path:
+    """The reference for the frozen rig's channel called `name`."""
+    return root / FROZEN_SOUND / f"{name}.yaml"
+
+
+def is_frozen(root: Path, path: Path) -> bool:
+    """Whether `path` is one of the frozen rigs."""
+    try:
+        Path(path).resolve().relative_to((root / FROZEN_RIGS).resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def rig_file_hash(path: Path) -> str:
+    """`nulltest.rig_hash` of the rig file at `path`, read as
+    `rigfile.load_rig` reads it."""
+    import yaml
+
+    from .nulltest import rig_hash
+
+    return rig_hash(yaml.safe_load(Path(path).read_text()))
+
+
 # --- the one NaN this tolerates once: gx_detune_'s ---------------------------
 #
 # guitarix 0.46.0's gx_detune_ (src/LV2/gx_detune.lv2/detune.cc, smbPitchShift)

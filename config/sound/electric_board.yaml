@@ -42,3 +42,7 @@ tolerance:
     path through the chain, where every other config measures 0; most likely the delay
     pedal''s echo outweighing the dry signal, which is unverified, and it would fail
     this reference on delay alone if the two ever traded places'
+made_from:
+  rig: electric_board.yaml
+  hash: 165a52ca6bc39eaa5d2fca344ed64f0ea598d9b7a177bc070bdbe8987c7cfd93
+  hash_rule: 1
