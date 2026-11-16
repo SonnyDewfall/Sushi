@@ -209,13 +209,14 @@ against the fake only.
 
 ### The library and chain edits
 
-Pick a plugin, add it to a chain, take one out (#32). These are the agent's
-routes only: the web UI does not offer adding or removing a plugin yet.
+Pick a plugin, add it to a chain, take one out (#32). The web UI does all
+three from its Library drawer (#130, [the web UI](web-ui.md)).
 
 ```bash
-curl localhost:8029/library          # every plugin in plugin-manifest.txt: uri, name, ports, profile, groups
+curl localhost:8029/library          # every plugin in plugin-manifest.txt: uri, name, ports, kind, profile, groups
 curl -X POST localhost:8029/live/add -d '{"track": "guitar", "uri": "http://guitarix.sourceforge.net/plugins/gxts9#ts9sim"}'
 curl -X POST localhost:8029/live/add -d '{"track": "guitar", "uri": "http://drobilla.net/plugins/mda/Delay", "name": "slap", "after": "guitar_overdrive"}'
+curl -X POST localhost:8029/live/add -d '{"track": "guitar", "uri": "http://drobilla.net/plugins/mda/Delay", "first": true}'
 curl -X POST localhost:8029/live/remove -d '{"processor": "slap"}'
 ```
 
@@ -223,13 +224,20 @@ curl -X POST localhost:8029/live/remove -d '{"processor": "slap"}'
 the bundles in `plugins/`, read without lilv (and checked against lilv on every
 bundle the packages provide), never from the system's LV2 paths. A name that
 could not be read is the URI's last segment, marked `name_from: "uri"` with a
-`note` saying why; a profile's groups come with its plugin. It is built once,
+`note` saying why; a profile's groups come with its plugin. Each entry's `kind`
+(drive, mod, delay, reverb, dynamics, EQ, or null) is read from the plugin's
+own LV2 classes in its bundle (`classes`, null where the bundle was not read),
+never from its name, and the answer's `kinds` lists them in the order the
+drawer groups by (`library.KINDS`). It is built once,
 on first use, and kept until the agent restarts. The amp is listed but
 `addable: false`: it runs in Carla, and on a Sushi chain it would have no model.
 An add needs a manifest URI and a track; with no `name` it is named from the
 plugin (`MDA Delay` is `mda_delay`), and with no `after` it goes last but in
 front of the channel's send, never behind it, since the send is what reaches the
-monitors; the send is known by its uid in Sushi's session as well as by its
+monitors. `"first": true` in place of `after` puts it at the start of the
+chain, which no `after` can say: in front of the first plugin, or of the send
+on a channel with none, and on the master behind its return, which stays
+first; both together are `400`. The send is known by its uid in Sushi's session as well as by its
 name, and `/live/move` now refuses (`400`) to move a send or the return, or a
 pedal past one. A bad request is `400` with Sushi untouched; a name the rig already
 has, a track it lacks, an `after` not on that track, or a remove of a send,

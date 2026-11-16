@@ -4184,3 +4184,55 @@ and passes now. The fast suite: 4445 passed, 41 skipped. **Not run here:**
 an agent really restarted under a running Sushi (`/health` and `/live/log`
 were given to the page by the test), the browser tests on 3.11, the rig, a
 phone, the slow tests and the container job. *(2026-11-16)*
+
+**Adding, removing and moving plugins from the page: the Library drawer
+(#130).** The agent could add, remove and move a plugin live (#32), and the
+page could only move one. Now each chain has a place to add a plugin at its
+start and under each plugin ("Add at the start…", "Add after overdrive…"),
+which opens **the Library drawer**: the manifest's plugins, searchable,
+grouped Drive, Mod, Delay, Reverb, Dynamics, EQ, then Other, each with its
+name, its bundle and a mono badge; an open row has **Remove**, behind a
+confirm in the row; and the ▲ ▼ moves keep a mono plugin with its copy. All
+of it is live work: logged, undone by Undo, counted and written by Save. What
+the issue and its brief did not settle, and how each was settled: (1) **A
+plugin's kind** is its bundle's own LV2 class (`library.KINDS`, `kind_of`:
+lv2:ReverbPlugin before lv2:DelayPlugin, which it is a kind of, then the
+drawer's order), read with the name and ports; filters, pitch shifters,
+instruments, simulators and anything unread are Other. Over Ubuntu 24.04's
+packages as installed here, 27 of the manifest's 55 are under Other (the amp
+and the four Rubber Band shifters among them; zynaddsubfx's chorus was not
+installed, so it was not read and is Other here). Four more bundles are
+captured into `tool/tests/fixtures/lv2` (gx_chorus, darc, MVerb, 3BandEQ, the
+`.ttl` files as installed), so every kind has a real bundle in the tests;
+lv2info gave each the class read here. (2) **The start of a chain** cannot be
+said with `after`, so the agent's add takes `"first": true` instead: in front
+of the first plugin, or the send on a channel with none, and behind the
+master's return. (3) **Names**: none is sent when the name the agent would
+derive is free across the rig (its copy's too, for a mono plugin), else that
+name and a number; a name ending as the compiler's copies do loses the suffix.
+(4) **The warning** is on each drawer entry before the add, in the badge's
+words, and also for a stereo plugin put in front of a mono one. (5)
+**Remove** is at the foot of an open row, not on a closed one: a closed row's
+height and its knobs stay as they were, and a slim row is opened first, as it
+is to move it. (6) **The drawer** is over the page at every width (a panel at
+the top on a laptop, a sheet from the bottom on a phone), with the rest of
+the page inert while it is open, rather than a column; with no rig there is
+"Browse the library…". (7) The added plugin's row is drawn once: the page
+knows from the add which plugin it is and does not wait for `/live/plugins`.
+Also found: the fake rig moved one processor by one place whatever the agent
+sent, so a mono plugin moved there left its copy behind; it now applies the
+agent's commands by stable ids, as Sushi would. Tests: `test_ui_library.py`,
+9 of the decisions and 15 in the browser (16 runs: the phone at 390 and 320 px); `test_library.py` (kinds, and a
+lilv comparison of the classes for CI); `test_agent_edits.py` (`first`).
+The guide (`shaping-a-sound.md`, and `building-a-rig.md`'s "cannot add"),
+`docs/reference/web-ui.md`, `agent.md`, three retaken pictures and one new
+(`library.png`) follow. The fast suite: 4481 passed, 42 skipped (the one more skipped is the lilv
+class comparison). **Not run here:** anything on the rig: no Sushi,
+so that a real Sushi places a processor added first or moved as a pair as
+the commands say is unseen; the container test of #130's "done" list (add,
+move and remove from the page's request shapes, then `verify` against a fresh
+load) is not written; no phone, touch screen or pedal (a tap is a click in
+headless Chromium, "a phone" a 390 px viewport, and the drawer's focus on a
+touch screen, which goes to the sheet and not the search, is untried); the
+lilv class comparison (no python3-lilv here); the slow tests and the
+container job. *(2026-11-16)*

@@ -560,3 +560,77 @@ button.strip-name:focus-visible { outline: 2px solid var(--accent); outline-offs
   border-radius: 5px; border: 1px solid var(--edge); color: var(--muted); vertical-align: middle; cursor: help; }
 .mono-badge.warn { border-color: var(--accent); color: var(--accent-soft); }
 .card .name .mono-badge { margin-left: 8px; }
+
+/* ---------------------------------------------------------------- the Library drawer (#130)
+   A place to add a plugin sits at the start of the chain and under each
+   unit, and goes where its unit goes. It is always there, the same height
+   whatever it says, so nothing below it moves when an add starts or ends. */
+.unit-place { display: flex; flex-direction: column; gap: 6px; }
+.add-slot { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 10px; }
+.add {
+  min-height: 32px; max-width: 100%; padding: 0 12px; border-radius: 8px; border: 1px dashed var(--edge);
+  background: transparent; color: var(--muted); font-size: 13px; cursor: pointer; text-align: left; overflow-wrap: anywhere;
+}
+.add:hover:not([aria-disabled="true"]) { color: var(--text); border-color: var(--accent); }
+.add:focus-visible { outline: 2px solid var(--accent); outline-offset: 1px; }
+.add[aria-disabled="true"] { cursor: default; opacity: .6; }
+.add.working { opacity: 1; color: var(--accent-soft); border-style: solid; border-color: var(--accent); }
+.add-said { flex: 1 1 220px; font-size: 13px; color: var(--refused); overflow-wrap: anywhere; }
+.dismiss.small { min-width: 32px; min-height: 32px; }
+.browse { margin: 0; padding: 0 20px; }
+
+/* A unit's Remove, at the foot of its open row, and its confirm in place. */
+.row-acts { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; }
+.row-act { min-height: 40px; padding: 0 14px; border-radius: 10px; background: transparent; border: 1px solid var(--edge); cursor: pointer; font-size: 14px; }
+.row-act.danger { background: var(--refused-ground); border-color: var(--refused); color: var(--refused); font-weight: 600; }
+.row-act:disabled { opacity: .6; cursor: default; }
+.row-said { flex: 1 1 100%; margin: 0; font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+.row-said.refused { color: var(--refused); }
+.row-acts [hidden], .add-slot [hidden] { display: none; }
+
+/* The drawer: a panel over the page, and a sheet from the bottom at a
+   phone's width, never a column beside the rack. Its list scrolls inside
+   it; nothing in it is wider than the screen. */
+.drawer[hidden] { display: none; }
+.drawer { position: fixed; inset: 0; z-index: 50; display: flex; justify-content: center; align-items: flex-start; padding: 56px 16px 16px; }
+.drawer-back { position: absolute; inset: 0; background: rgba(5, 6, 8, .66); }
+.drawer-sheet:focus { outline: none; }
+.drawer-sheet {
+  position: relative; width: min(560px, 100%); max-height: calc(100vh - 72px); display: flex; flex-direction: column;
+  background: var(--panel); border: 1px solid var(--edge); border-radius: 14px; overflow: hidden; box-shadow: 0 18px 48px rgba(0, 0, 0, .5);
+}
+.drawer-head { display: flex; flex-direction: column; gap: 8px; padding: 14px 16px 12px; border-bottom: 1px solid var(--line); }
+.drawer-title { display: flex; align-items: center; gap: 12px; }
+.drawer-title h2 { flex: 1; font-family: var(--display); font-size: 14px; font-weight: 500; letter-spacing: .1em; color: var(--muted); }
+.drawer-close { min-height: 44px; padding: 0 14px; border-radius: 10px; border: 1px solid var(--edge); background: transparent; cursor: pointer; }
+.drawer-where { margin: 0; font-family: var(--display); font-size: 18px; font-weight: 600; overflow-wrap: anywhere; }
+.drawer-head input[type=search] {
+  min-height: 44px; width: 100%; padding: 0 12px; border-radius: 10px; background: var(--card); border: 1px solid var(--edge);
+  color: var(--text); font-size: 16px; /* under 16, a phone's browser zooms the page */
+}
+.drawer-why { margin: 0; font-size: 13px; color: var(--accent-soft); overflow-wrap: anywhere; }
+.drawer-why[hidden] { display: none; }
+.drawer-list { flex: 1 1 auto; min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 4px 16px 16px; display: flex; flex-direction: column; gap: 14px; }
+.drawer-none { margin: 12px 0; font-size: 14px; color: var(--muted); }
+.lib-group { display: flex; flex-direction: column; gap: 6px; }
+.lib-group[hidden], .lib-entry[hidden], .drawer-none[hidden] { display: none; }
+.lib-group h3 { position: sticky; top: 0; padding: 10px 0 4px; background: var(--panel); font-family: var(--display); font-size: 13px; font-weight: 500; letter-spacing: .08em; color: var(--muted); }
+.lib-entry {
+  display: flex; flex-direction: column; align-items: flex-start; gap: 2px; min-height: 52px; width: 100%; padding: 8px 12px;
+  border-radius: 10px; background: var(--card); border: 1px solid var(--edge); cursor: pointer; text-align: left;
+}
+.lib-entry:hover:not(:disabled) { border-color: var(--accent); }
+.lib-entry:disabled { cursor: default; }
+.lib-entry:disabled .lib-name { color: var(--muted); }
+.lib-line { display: flex; align-items: center; gap: 8px; max-width: 100%; }
+.lib-name { font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
+.lib-bundle { font-family: var(--mono); font-size: 11px; color: var(--muted); overflow-wrap: anywhere; }
+.lib-note { font-size: 12px; color: var(--muted); overflow-wrap: anywhere; }
+.lib-note:empty { display: none; }
+.lib-note.warn { color: var(--accent-soft); }
+
+@media (max-width: 640px) {
+  .drawer { padding: 0; align-items: flex-end; }
+  .drawer-sheet { width: 100%; max-height: 88vh; border-radius: 14px 14px 0 0; border-bottom: none; }
+  .browse { padding: 0 16px; }
+}

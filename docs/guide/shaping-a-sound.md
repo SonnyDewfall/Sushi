@@ -1,14 +1,15 @@
 # Shaping a sound
 
 This is how you change what the rig sounds like: pick a channel, open a plugin,
-turn its knobs, switch it off and on, change its place in the chain, set the
-amp, and take a change back. All of it is on the **rack**, the main page.
+turn its knobs, switch it off and on, add a plugin or take one out, change its
+place in the chain, set the amp, and take a change back. All of it is on the
+**rack**, the main page.
 
 A **plugin** is one effect: a compressor, an overdrive, a delay. A channel's
 plugins sit in a row, in the order the sound passes through them; that row is
 its **chain**. The page calls a plugin's box a "unit".
 
-![The middle of the rack: three tabs, board, vocal and Master, with board open; under them the amp's card with its model, Input Lvl and Output Lvl faders and Model list, then the board's chain: the overdrive opened to show all its knobs in groups, the bypassed octave as a slim row with only its name and its round button, and the delay](img/shaping-a-sound.png)
+![The middle of the rack: three tabs, board, vocal and Master, with board open; under them the amp's card with its model, Input Lvl and Output Lvl faders and Model list, then the board's chain: a dashed Add at the start button, the overdrive opened to show all its knobs in groups and, at its foot, Remove overdrive (locked), a dashed Add after overdrive button, the bypassed octave as a slim row with only its name and its round button, Add after octave, and the delay](img/shaping-a-sound.png)
 
 Every change is heard at once. None of it is kept until you save: see
 [Saving and going back](saving.md).
@@ -86,15 +87,72 @@ If a pedal bypasses a plugin while you are dragging one of its knobs or typing
 a value into it, its row stays open under your hand. Click its name when you
 are done.
 
-## Move a plugin along its chain
+## Add a plugin
+
+Between the plugins of a chain are dashed buttons: **Add at the start…** above
+the first plugin, and under each plugin one that names it, such as
+**Add after overdrive…**. Pick the one where the new plugin should go.
 
 1. Unlock the page: click **Locked**, then **Tap again to unlock**. (See
    [Playing live](playing-live.md#the-lock).)
+2. Click **Add at the start…**, or **Add after** and the plugin it should
+   follow. The **LIBRARY** opens over the page, saying where the plugin will
+   go, for example **Add after overdrive on board**.
+3. Find the plugin. The library is in groups by what each plugin does:
+   **Drive**, **Mod**, **Delay**, **Reverb**, **Dynamics**, **EQ**, and
+   **Other** for the rest. Or type into the box at the top
+   (**Search by name or kind**): a word from the plugin's name, or a group's
+   name such as "reverb".
+4. Click the plugin. The library closes, the button you started from reads
+   **Adding** and the plugin's name for a moment, and then the plugin is in
+   the chain, switched on, at its own starting settings. You hear it at once.
+
+![The LIBRARY, opened from the button after the delay: its title Add after delay on board, the Close button and the search box, then the plugins in groups, each with its name and its folder: under Drive, GxTubeScreamer with its mono mark and an amber line saying "after delay: this collapses its stereo width"; GxChorus-Stereo under Mod, MDA Delay under Delay, MVerb under Reverb; under Dynamics the x42 compressor's mono version, with the same amber line, and its stereo one; and EQ](img/library.png)
+
+Each plugin in the library shows its name, and under it the folder it comes
+from on the rig. A **mono** mark means it works on one side only, as on the
+rack. If adding it where you chose would flatten a stereo plugin's width, an
+amber line under it says so before you add it, for example
+"after delay: this collapses its stereo width". Put it earlier in the chain to
+avoid that.
+
+The page gives the new plugin a name of its own, from its name in the library:
+"MDA Delay" becomes **mda_delay**, and a second one **mda_delay_2**.
+
+To close the library without adding anything, click **Close**, press Escape, or
+click outside it.
+
+While the page is **Locked** you can still open the library and look through
+it, but every plugin in it is greyed out, and a line at the top says the lock
+is on. With no rig running, the middle of the rack has
+**Browse the library…** instead, to look through it the same way.
+
+## Take a plugin out
+
+1. Unlock the page.
+2. Click the plugin's name to open its row. (A slim, bypassed row opens the
+   same way.)
+3. At the foot of the row, click **Remove** and its name, for example
+   **Remove overdrive…**. (While the page is locked it reads
+   **Remove overdrive… (locked)**, and clicking it only says the lock is on.)
+4. The row asks whether to take it out. Click **Remove overdrive** to do it,
+   or **Keep**. If you do neither, it stops asking after a few seconds.
+
+The plugin and its settings leave the chain. **Undo** puts it back where it
+was, with the settings it had.
+
+## Move a plugin along its chain
+
+1. Unlock the page.
 2. Click **▲** or **▼** at the left of the plugin's row to move it one place
    earlier or later.
 
 While the page is locked those two buttons show a padlock. A slim, bypassed row
 does not show them: open it first.
+
+A plugin with the **mono** mark has a hidden partner that copies its sound to
+both sides. It always moves with it, and is added and taken out with it, so
+you never see it.
 
 ## Set the amp
 
@@ -130,8 +188,9 @@ On the right of the rack, under **SAVE**, the top button names the last change,
 for example **Undo · overdrive · Drive**. Click it to put that change back.
 Click again for the one before.
 
-- It takes back knobs, bypasses, moves, volumes and the amp's levels, newest
-  first.
+- It takes back knobs, bypasses, moves, plugins added or taken out, volumes and
+  the amp's levels, newest first. A plugin added goes again; a plugin taken out
+  comes back where it was, with its settings.
 - It also takes back a change of the amp's model. That restarts the amp, so the
   sound cuts out for a moment, just as the change did.
 - There is no redo.
@@ -143,13 +202,8 @@ Click again for the one before.
 
 Undo has not yet been tried on the rig itself, only against a stand-in.
 
-## What you cannot do from the page yet
-
-- **Add or remove a plugin.** The page can only work with the plugins a rig
-  already has. To give a channel different plugins, start a new channel from
-  another rig's chain ([Building a rig](building-a-rig.md)), or edit the rig's
-  file by hand ([The rig file](../reference/rig-file.md)) and start the rig
-  again.
+Adding, taking out and moving plugins count as unsaved changes on **Save**,
+the same as a knob: see [Saving and going back](saving.md).
 
 ## Small things you will notice
 
@@ -174,6 +228,17 @@ Undo has not yet been tried on the rig itself, only against a stand-in.
 - **A box headed "Not moved:" and the plugin's name, with a reason starting
   "Locked:".** You tried to move a plugin while the page is locked. Unlock it
   and try again.
+- **A red line starting "Not added:" beside an Add button.** The rig would not
+  take that plugin; the line says why. Click **×** to clear it.
+- **A line starting "Not removed:", or "Locked:", at the foot of a row.** The
+  plugin was not taken out; the line says why. If it says "Locked:", unlock
+  the page and try again.
+- **The library says a plugin "is no longer on" the chain.** Someone took out,
+  from another phone or laptop, the plugin you were adding after. Close the
+  library and choose another place.
+- **A plugin in the library is greyed out with "Cannot be added:" under it.**
+  It cannot go in a chain at all, for the reason given: the amp, for one, has
+  its own card.
 - **The Model list is greyed out, with a line starting "Locked:" under it.**
   The same: unlock the page to change the amp's model.
 - **A box starts "Amp model not changed:".** The model did not load. The box

@@ -131,6 +131,73 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   `unitTapped`, `bypassSeen`), tested on their own and through the page in
   `tool/tests/test_ui_tabs.py`. The stage screen is unchanged: its cards do
   not minimise.
+- **Adding, removing and moving plugins: the Library drawer (#130,
+  2026-11-16).** The open tab's chain has a place to add a plugin **at its
+  start** ("Add at the start…") and **under each plugin** ("Add after
+  overdrive…"), each a dashed line of its own height that goes where its
+  plugin goes, since "after" names the plugin. A place opens **the Library
+  drawer** for it: every plugin of the manifest (`GET /library`), searchable
+  (every word typed, in any case, in the plugin's name, its bundle or its
+  group's name, hidden in place, nothing rebuilt), grouped by kind, Drive,
+  Mod, Delay, Reverb, Dynamics and EQ, then **Other**. A plugin's kind is its
+  own bundle's LV2 class (`library.KINDS`: a reverb is lv2:ReverbPlugin, a
+  compressor lv2:CompressorPlugin), never a guess from its name: a plugin
+  whose bundle declares none of the six (a pitch shifter, an instrument, a
+  filter) or was not read is under Other. Of the manifest's 55, 27 are under
+  Other over Ubuntu 24.04's packages as installed where this was written, the
+  amp and the four Rubber Band shifters among them (zynaddsubfx's chorus was
+  not installed there, so is counted as Other unread). Each entry shows its
+  name, its bundle and a **mono** badge where `plugin-ports.txt` gives it one
+  output, with the rack's own tooltip; the amp is listed, off, with the
+  library's reason. **The add** (`POST /live/add`) sends `after` the plugin
+  above the place, or `"first": true` from the start, which no `after` can
+  say (the agent keeps the master's return in front of it). Its name is the
+  agent's own (`R.addName`): none is sent when the name the agent would
+  derive is free across the whole rig (Sushi's names are one namespace,
+  tracks included), its copy to stereo's name too for a mono plugin; else
+  that name and a number, `mda_delay_2`, the first free, never past 64
+  characters or ending as the compiler's copies do. The drawer closes, the
+  place reads "Adding mda_delay…" (`aria-busy`, and it keeps the focus)
+  until the agent has confirmed and the row is drawn in its place, and a
+  refusal comes back to the place, in red, with the agent's reason and a
+  dismiss: a plugin Sushi cannot host is refused from the manifest (400)
+  before Sushi is asked anything. No other row is rebuilt: the new plugin's
+  row is drawn once, as what it is, since the page already knows from the add
+  which plugin it is and does not wait for `/live/plugins` to say. **The
+  collapse** a mono plugin makes of a stereo one before it (#119) is said on
+  the entry, in amber, before it is added ("after delay: this collapses its
+  stereo width", the badge's own words), as is a stereo plugin put in front of
+  a mono one ("od comes after it and collapses its stereo width"); a width the
+  ports table does not give is not guessed. **Remove** is at the foot of an
+  open row ("Remove overdrive…"), behind a confirm built into the row
+  ("Remove overdrive" and "Keep", forgotten after eight seconds), since
+  `confirm()` does not exist in every viewer the page is opened in; a slim
+  row is opened first, as it is to move it. It is never offered on the send,
+  the return or a copy to stereo, none of which is a row. **Moves** are the
+  row's ▲ and ▼, as before; the agent steps a mono plugin and its copy as one
+  and steps past a neighbour's pair whole, so nothing ever lands between
+  them. All three are **live work**: in the log, counted on Save, undone by
+  Undo (an add's undo takes the copy too; a remove's puts the plugin back with
+  its settings and its bypass), written by Save and dropped by Revert or a
+  restart with discard. **Locked**, the places still open the drawer to look
+  through, and every entry is off with the lock's reason; Remove says the
+  lock's reason in place. With no rig up, the centre column offers "Browse the
+  library…" and the drawer says why nothing can be added; a drawer open while
+  a command runs says that command is running, and comes back on after. **At
+  a phone's width** the drawer is a sheet from the bottom of the screen, its
+  full width and at most 88 % of its height, over the page and not a column
+  beside the rack; its list scrolls inside it, and nothing is wider than the
+  screen. **Nothing moves under the hand**: the drawer is over the page, the
+  rest of which is inert while it is open (Escape, Close or a tap outside it
+  closes it, and the focus goes back to the place it was opened from); an add
+  or a remove from another device rebuilds nothing in it (the list, its
+  scroll, the search and its focus stay), and if the plugin the place
+  follows is removed, it says so and adds nothing. A drag on a knob keeps
+  going through an add or a remove from elsewhere, as through a move
+  (#135). The decisions are rig.js's (`libraryGroups`, `libraryMatch`,
+  `libraryEntry`, `addSlots`, `addName`, `addCall`, `addWarning`,
+  `addBlocked`, `removable`), tested on their own and through the page in
+  `tool/tests/test_ui_library.py`.
 - **Knobs that can be set (2026-11-06).** A knob is dragged **vertically, 320
   px for its whole travel**, with the pointer
   captured, so leaving the knob mid-drag does not drop it; **shift, or a
@@ -379,9 +446,10 @@ canvas's Save, the commit (with its message), "throw all away" and the rig
 file shown on screen are not built; of its history, Revert is the whole of
 it, by the player's choice (2026-11-06). Of its Record, the
 meters (nothing measures levels yet), the free space and hours of takes left,
-and opening a take are not built. Library, Broken and Pedals from the canvas
-are not built: in particular **the page cannot add or remove a plugin**, though
-the agent has the routes ([the agent](agent.md#the-library-and-chain-edits)).
+and opening a take are not built. Broken and Pedals from the canvas are not built.
+Of its Library, the drawer (above) is the whole: there is no screen of its own,
+no drag and drop into a chain (#32), and a plugin's profile groups, which
+`/library` gives, are not shown in it.
 
 ## What has run on the real rig
 
@@ -406,6 +474,13 @@ rig screen and a channel's input change, and the knobs' feel on the rig's
 touch screen. Nor is the page recorded as opened from a phone's own browser
 (MANIFEST, 2026-11-02): the stage screen is tested at a phone's width in
 Chromium.
+
+Not run on the rig (2026-11-16): the Library drawer, and adding, removing and
+moving a plugin from the page (#130). Tested in headless Chromium against the
+fake rig, which applies the agent's adds, removes and moves as the agent sends
+them; that a real Sushi places a processor as `create_processor_on_track` and
+`move_processor_on_track` are told is the agent's assumption (`live.py`), not
+seen. Nor has the drawer been opened on a phone or the rig's touch screen.
 
 Not run on the rig (2026-11-15): the tabs and the minimised rows (#135). They
 are tested in headless Chromium against the fake rig, where a tap is a click

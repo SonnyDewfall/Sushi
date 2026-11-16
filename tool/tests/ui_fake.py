@@ -32,7 +32,11 @@ and octave; any other comes in with no parameters). `Served(library=
 fixture_library)` gives the agent a real library to add from, the
 repository's manifest and port table over the captured bundles. Invented:
 that a processor added live starts at its port defaults and un-bypassed,
-which is what the agent assumes of Sushi and nobody has seen.
+which is what the agent assumes of Sushi and nobody has seen. A move is
+applied as the agent sends it, each `move_processor_on_track` command by the
+ids it was planned with (which are kept per processor, as Sushi's are), so a
+mono plugin and its copy move as two commands (#130); that Sushi 1.3.0 places
+a processor as those commands say is `live.py`'s assumption, not seen.
 
 Start, stop and switch (#111), `UiLifecycle`: the agent's own routes, lock
 and busy, over a stand-in for what they run. Invented: the whole of what a
@@ -249,6 +253,11 @@ class UiRig:
         self.calls: list = []
         self.lock = threading.Lock()  # the agent calls from its worker threads
         self._next = 0
+        # Each processor's id, kept for as long as it is on the rig, as
+        # Sushi keeps one (a new one for a processor added again): a move of
+        # a plugin and its copy is two commands, the second named by the ids
+        # the first was planned with.
+        self._id_of: dict = {}
 
     # -- the shape of agent.Live --------------------------------------------
     def connect(self):
@@ -261,7 +270,9 @@ class UiRig:
 
     def _ids(self):
         names = list(self.chains) + [p for chain in self.chains.values() for p in chain]
-        return {name: i for i, name in enumerate(names)}
+        for name in names:
+            self._id_of.setdefault(name, len(self._id_of) and max(self._id_of.values()) + 1)
+        return {name: self._id_of[name] for name in names}
 
     def _uids(self):
         return {name: c["uid"] for name, c in self.classes.items()}
@@ -313,11 +324,19 @@ class UiRig:
             return decide_move(copy.deepcopy(self.chains), self._ids(), processor, direction, self._uids())
 
     def send_move(self, connection, move):
+        """Each of the move's commands as Sushi's move_processor_on_track
+        takes one (`live.send_live_move`): the processor put in front of
+        another, or at the back, by the ids the move was planned with. So a
+        plugin and its copy to stereo move as the agent sends them, two
+        commands for the two (#130: one step of the processor alone left the
+        copy behind)."""
         with self.lock:
             self.calls.append(("move", move.processor, move.direction))
-            chain = next(c for c in self.chains.values() if move.processor in c)
-            i = chain.index(move.processor)
-            chain.insert(i + move.direction, chain.pop(i))
+            names = {i: name for name, i in self._ids().items()}
+            for processor_id, track_id, before_id, to_back in (move.command, *move.then):
+                name, chain = names[processor_id], self.chains[names[track_id]]
+                chain.remove(name)
+                chain.insert(len(chain) if to_back else chain.index(names[before_id]), name)
             return replace(move, outcome="moved")
 
     def walk(self, connection, uids=False):
@@ -364,7 +383,7 @@ class UiRig:
             self._refused(removal.processor)
             for name in ([removal.copy] if removal.copy else []) + [removal.processor]:
                 self.chains[removal.track].remove(name)
-                for held in (self.info, self.bypassed, self.classes):
+                for held in (self.info, self.bypassed, self.classes, self._id_of):
                     held.pop(name, None)
 
     def add_track(self, name):
