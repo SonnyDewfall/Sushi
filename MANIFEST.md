@@ -4426,6 +4426,37 @@ docstring now says an add that waited reads the load again under the live
 lock. **Not run:** the rig, a live Sushi.
 *(2026-11-16)*
 
+**Plugin research: an octave that works (#153) and pedals to add (#155).**
+A spike, `tool/spikes/plugin_research/`; no rig file, tool code or manifest
+changed. Renders are offline, in a bench host (`host.c`) that offers exactly
+Sushi 1.3.0's host features (read from its source at the tag: urid, log,
+worker, makePath, options, loadDefaultState, buf-size; atom ports connected,
+`patch:writable` never a parameter, CV unsupported, latency ports read and
+not compensated), bit-identical to lv2apply on five plugins, over a
+synthesised guitar (no DI recording is in the repository), Ubuntu 24.04's
+packages. (1) **Octave.** Nothing packaged for 24.04 is good enough. Rubber
+Band 4.0's Live shifter (`lv2-rubberband#livemono`, built from source; 24.04
+has 3.3.0, Launchpad shows 4.0.0 from 26.04) is the cleanest octave up of
+the candidates tried, polyphonic, deterministic, valgrind-clean and NaN-free
+over 270 s; latency port 3,421 samples, a 500 Hz burst out after 3,203 (67 ms),
+about today's gx_detune_ (port 1,984; its octave 3,142 samples behind the dry
+note at electric-octave-up's settings). *Recommended*, at the cost of carrying
+the build. Nothing quick is clean on chords: MOD's Drop (built) is right for
+single notes an octave down at 652 samples; gx_oc_2_, MaPitchshift, swh's and
+mda's shifters are not usable as an octave. (2) **Two manifest URIs cannot
+load on 24.04**: rubberband-lv2 3.3.0 declares `#r3mono` and `#r3stereo` but
+its library exports `lv2-rubberband-r3#mono`/`#stereo`; `plugins check`
+passes, instantiation fails. No rig uses them. Also: swh pitchScaleHQ's
+library has an unresolved `fftwf_execute`, and mda Tracker passes its input
+through unchanged. (3) **Pedals**, ranked: GxBigMuffPi, fomp Auto-wah,
+GxTremolo, GxZita_rev1-Stereo, abGate, GxPhaser, mda Leslie (already in the
+manifest), GxFlanger, Gxshimmizita, GxEchoCat; seven come from guitarix-lv2,
+already in CI's image; fomp and abgate would be new packages. **Not run:**
+Sushi itself (its AppImage was not executed), the rig, anything heard; CPU is
+the container's; gx_livelooper_, MOD's Harmonizer, x42 fil4, ZAM and B.Shapr
+were not rendered. The fast suite: 4585 passed, 35 skipped.
+*(2026-11-16)*
+
 **The octave pair is out of every rig; electric-octave-up is retired (#152).**
 Both gx_detune_ units (`octave_down`, `octave_up`) are removed from the nine
 rigs of `config/rigs/` that had them (accustomed, clean, electric-chorus-2,
