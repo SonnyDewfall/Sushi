@@ -39,6 +39,7 @@ and the two things worth reading about a rig, served over HTTP on localhost.
     POST /rigs/{name}/channels/{channel}/input  {"input"?, "width"?} -- each written, never committed
     POST /rigs/{name}/delete    {"dry_run"?} -- into config/rigs/.deleted/ (#129); refused (409) for the running rig
     POST /rigs/{name}/restore   {"entry"?} -- Undo: back from the bin; refused if a file of that name is there
+    GET  /rigs/bin      the bin, newest first, and which agent's it is (the page checks a kept Undo against it)
 
 ## A fixed command set, never a shell
 

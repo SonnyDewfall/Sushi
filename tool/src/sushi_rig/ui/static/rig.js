@@ -1348,19 +1348,22 @@ export function lifecycleOutcome(op, name, answer) {
 // it back. The agent decides (the running rig is refused, a name must be
 // plain); these say what the rack's picker offers and what an answer means.
 
-// The running rig's own file, by name: the state file's rig as /health
-// gives it (`config/rigs/<name>.yaml`), which the agent refuses to delete.
-// A v1 run has none.
-export function runningRigFile(health) {
-  const rig = health && health.ok ? health.body.rig || {} : {};
-  if (!rig.running || typeof rig.rig !== "string" || !rig.rig) return null;
-  const base = rig.rig.split("/").pop();
-  return base.endsWith(".yaml") ? base.slice(0, -5) : base;
+// Which row is the running rig's file: the agent's own answer in GET /rigs
+// (`running`), the rig it refuses to delete, never a guess from a name.
+export function runningListed(rigsAnswer) {
+  return rigsAnswer && rigsAnswer.ok && typeof rigsAnswer.body.running === "string" ? rigsAnswer.body.running : null;
 }
 
-// Each row's Delete: refused, with the reason, on the running rig's row.
-export function deleteAction(name, health, busy = false) {
-  if (name === runningRigFile(health)) {
+// What the page reads of the run to know when to ask GET /rigs again: the
+// running rig can change under the page (a pedal, another page).
+export function runKeyOf(health) {
+  const rig = health && health.ok ? health.body.rig || {} : {};
+  return JSON.stringify([!!rig.running, rig.rig || null, rig.config_name || null, rig.started_at || null]);
+}
+
+// Each row's Delete: off, with the reason, on the running rig's row.
+export function deleteAction(name, running, busy = false) {
+  if (name === running) {
     return { name, disabled: true, label: "Delete", aria: `Delete ${name}: not while it is the running rig`,
       why: `${name} is the running rig, so it cannot be deleted: switch to another rig, or stop it, first.` };
   }
@@ -1391,10 +1394,16 @@ function binGitText(git, note) {
     + (git.same === false ? ", as it was last committed: the changes since are only in the bin." : ".");
 }
 
+// A refusal that may not hold a moment later: the agent busy with another
+// command, or not answering. Trying again is offered, in place.
+function passing(answer) {
+  return answer.code === "busy" || !answer.status;
+}
+
 // The confirm, from the agent's dry run (`answer`, null while it is asked).
 export function deleteConfirm(rig, answer) {
   if (!answer) return { rig, loading: true, go: `Delete ${rig}` };
-  if (!answer.ok) return { rig, refused: answer.reason, code: answer.code || null, go: `Delete ${rig}` };
+  if (!answer.ok) return { rig, refused: answer.reason, code: answer.code || null, retry: passing(answer), go: `Delete ${rig}` };
   const b = answer.body || {};
   const moves = programMoves(b.programs);
   return {
@@ -1409,47 +1418,82 @@ export function deleteConfirm(rig, answer) {
   };
 }
 
-// What a delete said: `{ok, title, text, binned}` with what Undo needs, or
-// `{ok: false, title, reason, code}`.
+// What a delete said: `{ok, title, text, binned, agent}` with what Undo
+// needs, or `{ok: false, title, reason, code, retry}`.
 export function deletedOutcome(rig, answer) {
-  if (!answer.ok) return { ok: false, title: `Not deleted: ${rig}`, reason: answer.reason, code: answer.code || null };
+  if (!answer.ok) return { ok: false, title: `Not deleted: ${rig}`, reason: answer.reason, code: answer.code || null, retry: passing(answer) };
   const b = answer.body || {};
   const moves = programMoves(b.programs);
   return {
     ok: true, title: `Deleted ${rig}`,
     text: `${b.file} is now ${b.binned.file}. ${binGitText(b.git, b.git_note)}${moves.length ? ` ${moves.join("; ")}.` : ""}`,
-    binned: { rig, entry: b.binned.entry, file: b.binned.file },
+    binned: { rig, entry: b.binned.entry, file: b.binned.file }, agent: b.agent || null,
   };
 }
 
-// What an Undo said. Refused, `undo` is whether trying again could work: a
-// file of that name made since can be moved away, a bin file gone cannot.
+// What an Undo said. Refused, `keep` is whether its Undo stays offered:
+// only for a refusal that may pass (busy, no answer). A file of that name
+// there again is said once, with the reason, and the Undo goes: the rig is
+// in the picker again, and the binned file stays in config/rigs/.deleted/.
 export function restoreOutcome(rig, answer) {
   if (!answer.ok) {
-    return { ok: false, title: `Not put back: ${rig}`, reason: answer.reason, code: answer.code || null,
-      undo: answer.code === "taken" || answer.code === "busy" || !answer.status };
+    return { ok: false, title: `Not put back: ${rig}`, reason: answer.reason, code: answer.code || null, keep: passing(answer) };
   }
   const b = answer.body || {};
   const moves = programMoves(b.programs);
   return { ok: true, title: `Put back ${rig}`, text: `${b.file} is back from ${b.from}.${moves.length ? ` ${moves.join("; ")}.` : ""}` };
 }
 
-// The Undo offered, kept in this browser so a reload still offers it (as the
-// lock and the open tab are kept). What comes back is checked: a rig and a
-// bin entry of that rig's, else nothing.
+// The Undos offered, kept in this browser so a reload still offers them (as
+// the lock and the open tab are kept): a few, newest first, by the agent
+// they came from (GET /rigs/bin's `agent`), so another rig machine served at
+// the same address never sees them. What comes back is checked: a rig and a
+// bin entry of that rig's, else it is left out.
+export const KEEP_UNDOS = 5;
 const ENTRY_RE = /^.+-\d{8}T\d{6}Z(?:-\d+)?\.yaml$/;
 
-export function binnedToRemember(binned) {
-  return JSON.stringify({ rig: binned.rig, entry: binned.entry, file: binned.file });
+function offerOk(o) {
+  return !!o && typeof o.rig === "string" && typeof o.entry === "string" && typeof o.file === "string"
+    && !!o.rig && !o.rig.startsWith(".") && !o.rig.includes("/")
+    && ENTRY_RE.test(o.entry) && o.entry.startsWith(`${o.rig}-`);
 }
 
-export function rememberedBinned(text) {
+function keptMap(text) {
   let kept;
-  try { kept = JSON.parse(text); } catch { return null; }
-  if (!kept || typeof kept.rig !== "string" || typeof kept.entry !== "string" || typeof kept.file !== "string") return null;
-  if (!kept.rig || kept.rig.startsWith(".") || kept.rig.includes("/")) return null;
-  if (!ENTRY_RE.test(kept.entry) || !kept.entry.startsWith(`${kept.rig}-`)) return null;
-  return { rig: kept.rig, entry: kept.entry, file: kept.file };
+  try { kept = JSON.parse(text); } catch { return {}; }
+  return kept && typeof kept === "object" && !Array.isArray(kept) ? kept : {};
+}
+
+export function rememberedOffers(text, agent) {
+  if (typeof agent !== "string" || !agent) return [];
+  const list = keptMap(text)[agent];
+  return Array.isArray(list) ? list.filter(offerOk).slice(0, KEEP_UNDOS).map((o) => ({ rig: o.rig, entry: o.entry, file: o.file })) : [];
+}
+
+export function offersToRemember(text, agent, offers) {
+  const kept = keptMap(text);
+  if (typeof agent !== "string" || !agent) return JSON.stringify(kept);
+  const list = offers.filter(offerOk).slice(0, KEEP_UNDOS).map((o) => ({ rig: o.rig, entry: o.entry, file: o.file }));
+  if (list.length) kept[agent] = list;
+  else delete kept[agent];
+  return JSON.stringify(kept);
+}
+
+export function addOffer(offers, binned) {
+  return [binned, ...offers.filter((o) => o.entry !== binned.entry)].slice(0, KEEP_UNDOS);
+}
+
+export function dropOffer(offers, entry) {
+  return offers.filter((o) => o.entry !== entry);
+}
+
+// The Undos still worth offering, by what the agent says is in its bin now
+// (GET /rigs/bin): an entry gone from it, or whose rig is in the picker
+// again, is not. Nothing is offered until the agent has said.
+export function checkedOffers(offers, binAnswer) {
+  if (!binAnswer || !binAnswer.ok) return [];
+  const there = new Map((binAnswer.body.entries || []).map((e) => [e.entry, e]));
+  return offers.filter((o) => there.has(o.entry) && there.get(o.entry).rig === o.rig && !there.get(o.entry).back);
 }
 
 // ---------------------------------------------------------------- saving (S4)

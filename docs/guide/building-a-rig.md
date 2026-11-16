@@ -71,9 +71,10 @@ rig is. **Back to the rack**, at the top right, leaves the screen.
    change, which rigs move, such as "electric-delay moves from program 6 to 5".
 3. Click **Delete** and the rig's name, or **Cancel**.
 
-A box headed **Deleted** says where the file went, with **Undo: put back** and
-the rig's name. Undo is still there after you reload the page, until you use
-it or close the box with **×**.
+A box headed **Deleted** says where the file went, and under it **Undo: put
+back** and the rig's name. Undo is still there after you reload the page, for
+each of the last few rigs you deleted, until you use it or forget it with
+**×** beside it.
 
 The file is not gone: it is moved into `config/rigs/.deleted/`, a folder the
 page, the pedal numbers and git all leave alone. If the rig was committed to
@@ -104,9 +105,11 @@ git, `git checkout` brings it back too; the box gives you the exact command.
 - **Deleting a rig moves the pedal numbers of the rigs after it** down by one,
   as a new rig moves them up. The box before you delete lists which.
 - **Undo is refused if a rig of that name has been made since**, so a new file
-  is never replaced; the box says so and keeps Undo for when that one is gone.
-  It is also refused if the deleted file was removed from
-  `config/rigs/.deleted/` by hand.
+  is never replaced; the box says so once. The deleted file stays in
+  `config/rigs/.deleted/`, to move back by hand if you want it. Undo is not
+  offered at all once the deleted file has been removed from there.
+- **`git clean -x` empties `config/rigs/.deleted/`**, because git is told to
+  ignore it. A deleted rig that was never committed is then gone for good.
 - **Undo is kept in this browser only.** Another phone or laptop does not offer
   it, but the file is in `config/rigs/.deleted/` for anyone to move back.
 - The page has no way to rename a rig. A rig is one file in the project's
@@ -122,8 +125,10 @@ git, `git checkout` brings it back too; the box gives you the exact command.
   usually because it was switched to from another page or a pedal meanwhile.
   Switch away, then try again.
 - **A box headed "Not put back".** It gives the reason: a rig of that name is
-  there again (rename or delete it, then Undo again), or the deleted file is no
-  longer in `config/rigs/.deleted/`.
+  there again (the deleted one is still in `config/rigs/.deleted/`), or the
+  deleted file is no longer there.
+- **"… cannot be deleted now"** with **Try again**: the agent was busy with
+  another command, such as a rig starting. Click **Try again**.
 - **A box headed "Not made", "Not added" or "Not changed".** The agent checks
   that the rig would really run before it writes anything, and refused. The box
   gives the reason, and nothing was written.

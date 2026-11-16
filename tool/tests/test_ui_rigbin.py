@@ -69,6 +69,10 @@ def row(p, name):
     return p.locator(f'.rig-row[data-rig="{name}"]')
 
 
+def undo(p, rig):
+    return p.locator(".bin-offers li", has_text=f"Deleted {rig}").locator(".undo-delete")
+
+
 def ask_delete(p, name):
     row(p, name).get_by_role("button", name=f"Delete {name}…").click()
     confirm = p.get_by_role("group", name=f"Confirm deleting {name}")
@@ -80,28 +84,25 @@ def ask_delete(p, name):
 # The decisions, pure (rig.js)
 # --------------------------------------------------------------------------- #
 
-def test_the_running_rigs_row_is_the_one_whose_delete_is_off_and_says_why(blank):
+def test_the_running_rigs_row_is_the_one_the_agent_names_in_rigs(blank):
     out = rigjs(blank, """
-      const health = (rig) => ({ok: true, body: {rig, agent: {}}});
-      const up = health({running: true, config_name: 'electric_board', rig: 'config/rigs/electric_board.yaml'});
-      const v1 = health({running: true, config_name: 'electric_board', rig: null});
-      const down = health({running: false});
+      const rigs = (running) => ({ok: true, body: {rigs: ['clean', 'electric_board'], running}});
+      const running = R.runningListed(rigs('electric_board'));
       return {
-        up: ['electric_board', 'clean'].map((n) => R.deleteAction(n, up)),
-        v1: R.deleteAction('electric_board', v1).disabled,
-        down: R.deleteAction('electric_board', down).disabled,
-        busy: R.deleteAction('clean', up, true).disabled,
-        noAgent: R.deleteAction('clean', {ok: false}).disabled,
-        file: [R.runningRigFile(up), R.runningRigFile(v1), R.runningRigFile(down)],
+        rows: ['electric_board', 'clean'].map((n) => R.deleteAction(n, running)),
+        none: [R.runningListed(rigs(null)), R.runningListed({ok: false, reason: 'x'}), R.runningListed(null)],
+        busy: R.deleteAction('clean', null, true).disabled,
+        keys: [R.runKeyOf({ok: true, body: {rig: {running: true, rig: 'config/rigs/a.yaml', config_name: 'a', started_at: 't'}}}),
+               R.runKeyOf({ok: true, body: {rig: {running: true, rig: 'config/rigs/b.yaml', config_name: 'a', started_at: 't'}}}),
+               R.runKeyOf({ok: false})],
       };""")
-    running, other = out["up"]
+    running, other = out["rows"]
     assert running["disabled"] is True and "electric_board is the running rig" in running["why"]
     assert "switch to another rig, or stop it, first" in running["why"]
     assert other == {"name": "clean", "disabled": False, "label": "Delete", "aria": "Delete clean…", "why": None}
-    assert out["v1"] is False, "a v1 run holds no rig file, so none is the running rig's"
-    assert out["down"] is False and out["noAgent"] is False
+    assert out["none"] == [None, None, None], "no row is off unless the agent says it is the running rig's"
     assert out["busy"] is True, "one delete at a time"
-    assert out["file"] == ["electric_board", None, None]
+    assert len(set(out["keys"])) == 3, "another rig file, or no answer, is another run: /rigs is read again"
 
 
 def test_the_confirm_says_the_numbers_that_move_and_only_when_one_does(blank):
@@ -116,6 +117,9 @@ def test_the_confirm_says_the_numbers_that_move_and_only_when_one_does(blank):
         unknown: R.deleteConfirm('clean', ok({file: 'config/rigs/clean.yaml', git: null, git_note: 'git could not be read here'})).lines[1],
         asking: R.deleteConfirm('clean', null),
         refused: R.deleteConfirm('electric_board', {ok: false, status: 409, reason: 'electric_board is the running rig', code: 'running'}),
+        busy: R.deleteConfirm('clean', {ok: false, status: 409, reason: "busy: 'up' is still running", code: 'busy'}).retry,
+        silent: R.deleteConfirm('clean', {ok: false, status: 0, reason: 'the agent did not answer'}).retry,
+        busyDelete: R.deletedOutcome('clean', {ok: false, status: 409, reason: 'busy', code: 'busy'}).retry,
       };""")
     assert out["moves"]["title"] == "Delete config/rigs/clean.yaml?"
     assert out["moves"]["moves"] == ["electric-delay moves from program 6 to 5", "zz moves from program 7 to 6"]
@@ -126,30 +130,54 @@ def test_the_confirm_says_the_numbers_that_move_and_only_when_one_does(blank):
     assert "as it was last committed: the changes since are only in the bin" in out["changed"]
     assert out["unknown"] == "git could not be read here."
     assert out["asking"]["loading"] is True
-    assert out["refused"]["refused"] == "electric_board is the running rig" and out["refused"]["code"] == "running"
+    assert out["refused"]["refused"] == "electric_board is the running rig" and out["refused"]["retry"] is False
+    assert out["busy"] is True and out["silent"] is True and out["busyDelete"] is True, "a passing refusal can be tried again"
 
 
-def test_undo_is_offered_again_only_when_trying_again_could_work(blank):
+def test_undo_stays_offered_only_after_a_refusal_that_may_pass(blank):
     out = rigjs(blank, """
       const no = (code) => ({ok: false, status: 409, reason: 'r', code});
-      return ['taken', 'gone', 'entry', 'name', 'busy'].map((c) => R.restoreOutcome('clean', no(c)).undo)
-        .concat([R.restoreOutcome('clean', {ok: false, status: 0, reason: 'the agent did not answer'}).undo]);""")
-    assert out == [True, False, False, False, True, True]
+      return ['taken', 'gone', 'entry', 'name', 'link', 'busy'].map((c) => R.restoreOutcome('clean', no(c)).keep)
+        .concat([R.restoreOutcome('clean', {ok: false, status: 0, reason: 'the agent did not answer'}).keep]);""")
+    assert out == [False, False, False, False, False, True, True], "a clash is said once, not kept"
 
 
-def test_only_a_rig_and_one_of_its_own_bin_entries_comes_back_from_storage(blank):
+def test_the_undos_kept_are_a_few_per_agent_and_only_well_formed_ones(blank):
     out = rigjs(blank, """
-      const kept = R.binnedToRemember({rig: 'clean', entry: 'clean-20261116T101502Z.yaml', file: 'config/rigs/.deleted/clean-20261116T101502Z.yaml'});
-      const of = (o) => R.rememberedBinned(JSON.stringify(o));
-      return [R.rememberedBinned(kept), R.rememberedBinned(null), R.rememberedBinned('not json'),
-              of({rig: 'clean', entry: 'other-20261116T101502Z.yaml', file: 'x'}),
-              of({rig: '../x', entry: '../x-20261116T101502Z.yaml', file: 'x'}),
-              of({rig: 'clean', entry: 'clean.yaml', file: 'x'}),
-              of({rig: 'clean', entry: 'clean-20261116T101502Z-2.yaml', file: 'x'}) !== null];""")
-    assert out[0] == {"rig": "clean", "entry": "clean-20261116T101502Z.yaml",
-                      "file": "config/rigs/.deleted/clean-20261116T101502Z.yaml"}
-    assert out[1:6] == [None] * 5
-    assert out[6] is True
+      const o = (rig, s) => ({rig, entry: `${rig}-20261116T1015${s}Z.yaml`, file: `config/rigs/.deleted/${rig}-20261116T1015${s}Z.yaml`});
+      let offers = [];
+      for (const [rig, s] of [['a', '01'], ['b', '02'], ['c', '03'], ['d', '04'], ['e', '05'], ['f', '06']]) offers = R.addOffer(offers, o(rig, s));
+      let text = R.offersToRemember(null, 'agent-one', offers);
+      text = R.offersToRemember(text, 'agent-two', [o('z', '09')]);
+      const bad = JSON.stringify({'agent-one': [{rig: '../x', entry: '../x-20261116T101501Z.yaml', file: 'x'},
+        {rig: 'a', entry: 'b-20261116T101501Z.yaml', file: 'x'}, {rig: 'a', entry: 'a.yaml', file: 'x'}, o('ok', '07')]});
+      return {
+        one: R.rememberedOffers(text, 'agent-one').map((x) => x.rig),
+        two: R.rememberedOffers(text, 'agent-two').map((x) => x.rig),
+        other: R.rememberedOffers(text, 'agent-three'), noAgent: R.rememberedOffers(text, null),
+        junk: [R.rememberedOffers('not json', 'agent-one'), R.rememberedOffers('[1]', 'agent-one')],
+        bad: R.rememberedOffers(bad, 'agent-one').map((x) => x.rig),
+        dropped: R.rememberedOffers(R.offersToRemember(text, 'agent-two', []), 'agent-two'),
+        kept: R.rememberedOffers(R.offersToRemember(text, 'agent-two', []), 'agent-one').length,
+      };""")
+    assert out["one"] == ["f", "e", "d", "c", "b"], "newest first, five at most: deleting B does not strand A"
+    assert out["two"] == ["z"] and out["other"] == [] and out["noAgent"] == [], "another rig's agent sees none"
+    assert out["junk"] == [[], []]
+    assert out["bad"] == ["ok"]
+    assert out["dropped"] == [] and out["kept"] == 5
+
+
+def test_an_undo_is_offered_only_while_the_agent_still_has_it_in_its_bin(blank):
+    out = rigjs(blank, """
+      const o = (rig) => ({rig, entry: `${rig}-20261116T101501Z.yaml`, file: 'f'});
+      const offers = [o('a'), o('b'), o('c'), o('d')];
+      const bin = {ok: true, body: {entries: [
+        {rig: 'a', entry: 'a-20261116T101501Z.yaml', back: false},
+        {rig: 'b', entry: 'b-20261116T101501Z.yaml', back: true},
+        {rig: 'x', entry: 'd-20261116T101501Z.yaml', back: false}]}};
+      return [R.checkedOffers(offers, bin).map((x) => x.rig), R.checkedOffers(offers, {ok: false, reason: 'x'}),
+              R.checkedOffers(offers, null)];""")
+    assert out == [["a"], [], []], "gone (c), back in the picker (b), not that rig's (d), or not asked yet"
 
 
 # --------------------------------------------------------------------------- #
@@ -197,6 +225,20 @@ def test_the_running_rigs_delete_is_off_with_the_reason_shown(browser, bin_serve
     page.close()
 
 
+def test_the_running_rigs_row_follows_a_switch_made_elsewhere(browser, bin_served):
+    """A switch from a pedal or another page: the page reads /rigs again
+    when /health says the run changed, and the agent says which row."""
+    page = rack(browser, bin_served)
+    p = page.page
+    expect(row(p, "electric_board").locator(".rig-del")).to_be_disabled()
+    save = bin_served.save
+    save.write_state({**save.state, "config_name": "clean", "rig": "config/rigs/clean.yaml"})
+    expect(row(p, "clean").locator(".rig-del")).to_be_disabled()
+    expect(row(p, "electric_board").locator(".rig-del")).to_be_enabled()
+    expect(p.locator("#rig-del-why")).to_contain_text("clean is the running rig")
+    page.close()
+
+
 def test_delete_then_undo_moves_the_file_out_and_back(browser, bin_served):
     page = rack(browser, bin_served)
     p = page.page
@@ -209,8 +251,8 @@ def test_delete_then_undo_moves_the_file_out_and_back(browser, bin_served):
     assert not (rigs_dir(bin_served) / "clean.yaml").exists()
     [entry] = binned(bin_served)
     assert entry.startswith("clean-")
-    expect(p.locator(".undo-delete")).to_be_focused()
-    p.locator(".undo-delete").click()
+    expect(undo(p, "clean")).to_be_focused()
+    undo(p, "clean").click()
     expect(said).to_contain_text("Put back clean")
     expect(said).to_contain_text("electric-delay moves from program 1 to 2")
     expect(row(p, "clean")).to_have_count(1)
@@ -220,41 +262,75 @@ def test_delete_then_undo_moves_the_file_out_and_back(browser, bin_served):
     page.close()
 
 
-def test_undo_is_still_offered_after_a_reload(browser, bin_served):
+def test_deleting_another_rig_keeps_the_first_ones_undo(browser, bin_served):
     page = rack(browser, bin_served)
     p = page.page
     ask_delete(p, "clean").locator(".delete-go").click()
-    expect(p.locator(".undo-delete")).to_be_visible()
+    expect(undo(p, "clean")).to_be_visible()
+    ask_delete(p, "accustomed").locator(".delete-go").click()
+    expect(p.locator(".bin-offers li")).to_have_count(2)
+    expect(p.locator(".bin-offers li").first).to_contain_text("Deleted accustomed")
+    undo(p, "clean").click()
+    expect(row(p, "clean")).to_have_count(1)
+    expect(p.locator(".bin-offers li")).to_have_count(1)
+    expect(undo(p, "accustomed")).to_be_visible()
+    page.close()
+
+
+def test_undo_is_still_offered_after_a_reload_while_its_file_is_in_the_bin(browser, bin_served):
+    page = rack(browser, bin_served)
+    p = page.page
+    ask_delete(p, "clean").locator(".delete-go").click()
+    ask_delete(p, LOOSE).locator(".delete-go").click()
+    expect(p.locator(".bin-offers li")).to_have_count(2)
+    # Meanwhile, by hand on the rig: one bin file removed.
+    [gone] = [e for e in binned(bin_served) if e.startswith(LOOSE)]
+    (rigs_dir(bin_served) / ".deleted" / gone).unlink()
     p.reload()
     p.wait_for_selector(".rig-row")
-    expect(p.locator(".rig-deleted")).to_contain_text("Deleted clean")
-    expect(row(p, "clean")).to_have_count(0)
-    p.locator(".undo-delete").click()
+    expect(p.locator(".bin-offers li")).to_have_count(1)
+    expect(undo(p, "clean")).to_be_visible()
+    stored = p.evaluate("() => JSON.parse(localStorage.getItem('sushi-rig.binned'))")
+    assert [[o["rig"] for o in kept] for kept in stored.values()] == [["clean"]], "the gone one let go in storage too"
+    undo(p, "clean").click()
     expect(row(p, "clean")).to_have_count(1)
     assert (rigs_dir(bin_served) / "clean.yaml").is_file()
     p.reload()
     p.wait_for_selector(".rig-row")
-    expect(p.locator(".rig-deleted")).to_have_count(0), "a done Undo is not offered again"
+    expect(p.locator(".bin-offers")).to_have_count(0), "a done Undo is not offered again"
     page.close()
 
 
-def test_undo_refused_on_a_clash_says_so_and_stays_offered(browser, bin_served):
+def test_an_undo_kept_by_another_agent_at_this_address_is_not_offered(browser, bin_served):
+    page = rack(browser, bin_served)
+    p = page.page
+    p.evaluate("""() => localStorage.setItem('sushi-rig.binned', JSON.stringify({'another-rig-machine': [
+      {rig: 'clean', entry: 'clean-20261116T101501Z.yaml', file: 'config/rigs/.deleted/clean-20261116T101501Z.yaml'}]}))""")
+    p.reload()
+    p.wait_for_selector(".rig-row")
+    p.wait_for_function("() => performance.getEntriesByType('resource').some((r) => r.name.endsWith('/rigs/bin'))")
+    expect(p.locator(".bin-offers")).to_have_count(0)
+    page.close()
+
+
+def test_undo_refused_on_a_clash_is_said_once_and_not_offered_again(browser, bin_served):
     page = rack(browser, bin_served)
     p = page.page
     ask_delete(p, "clean").locator(".delete-go").click()
-    expect(p.locator(".undo-delete")).to_be_visible()
+    expect(undo(p, "clean")).to_be_visible()
     (rigs_dir(bin_served) / "clean.yaml").write_text("made since\n")
-    p.locator(".undo-delete").click()
+    undo(p, "clean").click()
     said = p.locator(".rig-deleted")
     expect(said).to_contain_text("Not put back: clean")
     expect(said).to_contain_text("is there again")
-    expect(p.locator(".undo-delete")).to_be_visible()
+    expect(p.locator(".bin-offers")).to_have_count(0)
     assert (rigs_dir(bin_served) / "clean.yaml").read_text() == "made since\n"
-    assert len(binned(bin_served)) == 1
-    (rigs_dir(bin_served) / "clean.yaml").unlink()
-    p.locator(".undo-delete").click()
-    expect(said).to_contain_text("Put back clean")
-    assert (rigs_dir(bin_served) / "clean.yaml").read_text() == RIG_FILE
+    assert len(binned(bin_served)) == 1, "the binned one stays in config/rigs/.deleted/"
+    p.reload()
+    p.wait_for_selector(".rig-row")
+    p.wait_for_function("() => performance.getEntriesByType('resource').some((r) => r.name.endsWith('/rigs/bin'))")
+    expect(p.locator(".rig-deleted")).to_have_count(0)
+    expect(p.locator(".bin-offers")).to_have_count(0)
     page.close()
 
 
@@ -262,16 +338,41 @@ def test_undo_refused_when_the_bin_file_is_gone_says_so_and_offers_it_no_more(br
     page = rack(browser, bin_served)
     p = page.page
     ask_delete(p, "clean").locator(".delete-go").click()
-    expect(p.locator(".undo-delete")).to_be_visible()
+    expect(undo(p, "clean")).to_be_visible()
     [entry] = binned(bin_served)
     (rigs_dir(bin_served) / ".deleted" / entry).unlink()
-    p.locator(".undo-delete").click()
+    undo(p, "clean").click()
     said = p.locator(".rig-deleted")
     expect(said).to_contain_text("Not put back: clean")
     expect(said).to_contain_text("is not there any more")
     expect(p.locator(".undo-delete")).to_have_count(0)
     said.get_by_role("button", name="Dismiss").click()
     expect(said).to_have_count(0)
+    page.close()
+
+
+def test_a_busy_refusal_in_the_confirm_can_be_tried_again_in_place(browser, bin_served):
+    page = rack(browser, bin_served)
+    p = page.page
+    calls = {"n": 0}
+
+    def busy_once(route):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            route.fulfill(status=409, content_type="application/json",
+                          body='{"ok": false, "status": 409, "reason": "busy: \'up\' is still running", "code": "busy"}')
+        else:
+            route.continue_()
+
+    p.route("**/rigs/clean/delete", busy_once)
+    row(p, "clean").get_by_role("button", name="Delete clean…").click()
+    confirm = p.get_by_role("group", name="Confirm deleting clean")
+    expect(confirm).to_contain_text("clean cannot be deleted now: busy: 'up' is still running")
+    confirm.get_by_role("button", name="Try again").click()
+    expect(confirm.locator(".delete-go")).to_be_enabled()
+    expect(confirm).to_contain_text("Delete config/rigs/clean.yaml?")
+    confirm.locator(".delete-go").click()
+    expect(row(p, "clean")).to_have_count(0)
     page.close()
 
 

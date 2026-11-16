@@ -389,25 +389,34 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   Nothing of this is on the stage screen.
 - **Delete, and Undo (#129).** Each row of the rack's rig picker has a
   **Delete** beside the rig's name (the stage's picker has none). On the
-  running rig's row (the file `/health`'s `rig.rig` names, not the config's
-  name, so a v1 run greys out none) it is off, and a line under the list says
-  why: switch away or stop it first. Delete asks the agent for a dry run
-  (`POST /rigs/<rig>/delete {"dry_run": true}`) and shows a confirm that
-  names the file, says it goes to `config/rigs/.deleted/` and that nothing is
-  committed, says what git holds of it (committed: the `git checkout` that
-  restores it too, and that the changes since the commit are only in the bin
-  when the file differs; not committed: the bin is the only copy), and, only
-  when a Program Change number moves, one line per rig, "electric-delay moves
-  from program 6 to 5", under a note on pedal presets. The confirm's Cancel
-  has the focus, so a second Enter deletes nothing; Cancel gives it back to
-  the row's Delete. A refusal (the rig became the running one meanwhile) is shown in
-  the confirm and its Delete is off. After a delete, a box under the list says
-  where the file went and offers **Undo: put back** with the rig's name,
-  which has the focus. **The Undo is kept in this browser's storage**
-  (`sushi-rig.binned`: the rig and its bin entry), so a reload offers it
-  again; it goes when it is used, refused for good (`gone`) or dismissed. A
-  refusal because a file of that name is there again says so and keeps Undo,
-  for when that file is gone; the restored rig's row has the focus.
+  running rig's row it is off, and a line under the list says why: switch
+  away or stop it first. Which row that is, `GET /rigs` says (`running`, the
+  rig file the agent refuses to delete), and the page reads `/rigs` again
+  whenever `/health`'s run changes, so a switch from a pedal or another page
+  moves it. Delete asks the agent for a dry run (`POST /rigs/<rig>/delete
+  {"dry_run": true}`) and shows a confirm that names the file, says it goes
+  to `config/rigs/.deleted/` and that nothing is committed, says what git
+  holds of it (committed: the `git checkout` that restores it too, and that
+  the changes since the commit are only in the bin when the file differs;
+  not committed: the bin is the only copy), and, only when a Program Change
+  number moves, one line per rig, "electric-delay moves from program 6 to
+  5", under a note on pedal presets. The confirm's Cancel has the focus, so
+  a second Enter deletes nothing; Cancel gives it back to the row's Delete.
+  A refusal that will not pass (the rig became the running one meanwhile)
+  is shown in the confirm with its Delete off; one that may (`busy`, the
+  agent not answering) offers **Try again** in place, which asks again.
+  After a delete, a box under the list says where the file went, and below
+  it each Undo offered, newest first: **Undo: put back** and the rig's name,
+  the newest with the focus, and **×** to forget one. **The Undos are kept
+  in this browser's storage** (`sushi-rig.binned`: at most five, under the
+  agent's own id from `GET /rigs/bin`, so another rig machine served at the
+  same address sees none), and one is offered only once `GET /rigs/bin`
+  (read with `/rigs`) says its file is still in the bin and its rig is not
+  back in the picker; one that is not is let go from storage too. Deleting a
+  second rig keeps the first's Undo. A refusal because a file of that name
+  is there again is said once and the Undo goes (the binned file stays in
+  `config/rigs/.deleted/`); one that may pass keeps it. The restored rig's
+  row has the focus.
 - **Record (S7, S8).** A record bar on the stage screen, as the canvas's Record
   frame has it: a take name, a big Record and a big Stop, and while a take
   runs its name and elapsed time in red. Both work locked (recording is a stage

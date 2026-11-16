@@ -4505,3 +4505,48 @@ screen; the reload that keeps Undo is Playwright's in one browser context;
 the slow tests and the container job. `docs/ui/rack.png`, taken by hand, is
 not retaken and shows the picker without Delete.
 *(2026-11-16)*
+
+**Delete a rig: the review of PR #160 (#129).** Each finding has a test that
+fails without its fix. (1) **No placeholder, nothing moved over.** A restore
+made an empty file at `config/rigs/<name>.yaml` and moved over it, so a file
+the CLI's `save`, a `git checkout` or an editor wrote meanwhile (none takes
+the agent's lock) was replaced, or removed on a failure; the empty file was
+listed meanwhile and, left by a crash, made every Undo `taken`. Both moves
+are now a hard link, which fails atomically if the name is taken, and an
+unlink of the old name; a delete unlinks the rig file only while it is
+still the file it linked (device and inode), else takes its link back and
+is refused `409 changed`. Left: the instant between that check and the
+unlink. (2) **Cross-site POSTs**: both routes refuse with 403 a request a
+browser marks `Sec-Fetch-Site: cross-site`, or whose `Origin` is not the
+agent's own scheme, host and port (another port of this machine included),
+or `null`; no header (curl, the CLI) and this origin (the page, a phone on
+the LAN) pass. `cross_site_refusal` is pure over headers and `Host`, for a
+middleware over every POST route, which is its own issue. (3) **Long
+names**: an entry was held to the name's 200-byte cap, so a rig of 179 to
+200 bytes went and could not come back; an entry's rig part is now held to
+the name rule and the entry to the cap plus stamp and suffix. (4) **Symbolic
+links** (a rig file, the bin, an entry, or a path resolving outside
+`config/rigs/` or the bin) are refused `409 link`, never followed. (5) The
+`git checkout` given is `shlex.quote`d, shown restoring `my rig`, `it's` and
+`x$(touch pwned)` through bash with nothing run. (6) **Undo checked
+again**: `GET /rigs/bin` lists the bin, newest first, with `back` (a rig of
+that name is in `config/rigs/` again) and `agent` (a hash of this machine's
+name and the checkout's path). The page keeps up to five Undos, newest
+first, under that `agent`, offers one only while the bin still has it and
+its rig is not back (read with `/rigs`, and again after every delete and
+Undo), lets go of one that is not, in storage too, and says a `taken`
+refusal once without keeping its Undo. Deleting B keeps A's. (7) **One
+notion of the running rig**: `GET /rigs` gives `running` from the agent's
+own (`running_rig_listed`: the file `/health` names, resolved, among those
+listed), the page marks that row, and reads `/rigs` again whenever
+`/health`'s run changes (a pedal, another page). A refusal that may pass
+(`busy`, no answer) offers **Try again** in the confirm. (8) The guide and
+`agent.md` say `git clean -x` empties the bin. Also: `test_ui.py`'s check of
+`/rigs`'s answer gains `running`. Merged origin/master (#157). Tests:
+`test_agent_rigbin.py` 69, `test_ui_rigbin.py` 17 (6 of the decisions, 11 in
+the browser). REVIEW_COUNTS **Not run:** the rig machine, a phone, a
+pedal's switch (stood in by the state file changed under the agent), a real
+cross-site page (the headers are set by the test, as a browser sets them),
+a filesystem without hard links (the moves then fail with a 500 and move
+nothing), the slow tests and the container job.
+*(2026-11-16)*
