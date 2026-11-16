@@ -5,15 +5,15 @@ sample_rate: 48000
 frames: 240000
 measured:
   peak_dbfs: -6.967
-  rms_dbfs: -21.5427
+  rms_dbfs: -21.5426
   channel_rms_dbfs:
-  - -21.5963
-  - -21.4897
+  - -21.5962
+  - -21.4896
   delay_samples: 0
   bands:
   - low_hz: 20.0
     high_hz: 80.0
-    level_dbfs: -37.5032
+    level_dbfs: -37.5031
   - low_hz: 80.0
     high_hz: 250.0
     level_dbfs: -28.6702
