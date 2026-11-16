@@ -4,8 +4,7 @@
 kind: rig
 schema_version: 1
 name: electric_board
-description: Electric guitar — compressor, overdrive, octave, EQ, chorus, delay, and two reverbs — a
-  clean room and a big hall
+description: Electric guitar — compressor, overdrive, EQ, chorus, delay, a clean room and a big hall
 meta:
   version: '1.0'
   status: stable
@@ -20,10 +19,6 @@ channels:
     uri: http://guitarix.sourceforge.net/plugins/gx_compressor#_compressor
   - name: overdrive
     uri: http://guitarix.sourceforge.net/plugins/gxts9#ts9sim
-  - name: octave_down
-    uri: http://guitarix.sourceforge.net/plugins/gx_detune_#_detune_
-  - name: octave_up
-    uri: http://guitarix.sourceforge.net/plugins/gx_detune_#_detune_
   - name: eq
     uri: http://distrho.sf.net/plugins/3BandEQ
   - name: chorus

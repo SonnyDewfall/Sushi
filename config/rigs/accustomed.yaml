@@ -4,8 +4,7 @@
 kind: rig
 schema_version: 1
 name: accustomed
-description: Electric guitar — compressor, overdrive, octave, EQ, chorus, delay, and two reverbs — a
-  clean room and a big hall
+description: Electric guitar — compressor, overdrive, EQ, chorus, delay, a clean room and a big hall
 meta:
   version: '1.0'
   status: stable
@@ -45,36 +44,6 @@ channels:
       Level: 0.93
       Tone: 0.13
       Drive: 0.0
-      BYPASS: 1.0
-  - name: octave_down
-    uri: http://guitarix.sourceforge.net/plugins/gx_detune_#_detune_
-    bypassed: true
-    parameters:
-      DETUNE: 0.5
-      OCTAVE: 0.0
-      COMPENSATE: 0.0
-      LATENCY: 0.0
-      WET: 0.5
-      DRY: 0.5
-      LOW: 0.5
-      MIDDLELOW: 0.5
-      MIDDLETREBLE: 0.5
-      TREBLE: 0.5
-      BYPASS: 1.0
-  - name: octave_up
-    uri: http://guitarix.sourceforge.net/plugins/gx_detune_#_detune_
-    bypassed: true
-    parameters:
-      DETUNE: 0.5
-      OCTAVE: 0.0
-      COMPENSATE: 0.0
-      LATENCY: 0.0
-      WET: 0.5
-      DRY: 0.5
-      LOW: 0.5
-      MIDDLELOW: 0.5
-      MIDDLETREBLE: 0.5
-      TREBLE: 0.5
       BYPASS: 1.0
   - name: eq
     uri: http://distrho.sf.net/plugins/3BandEQ
