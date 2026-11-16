@@ -718,6 +718,178 @@ export function tabLeft(expanded, peeked) {
   return { expanded: [...expanded].filter((name) => !peeked.includes(name)), peeked: [] };
 }
 
+// ---------------------------------------------------------------- the Library drawer (#130)
+// Adding a plugin from the library, and taking one out. The agent decides
+// (POST /live/add, /live/remove); these say what the drawer lists, where an
+// add goes, what it is called, and what it would do to the chain's width,
+// before anything is sent.
+
+// The mono badge's own words, the same in the drawer as on a row.
+export const MONO_TITLE = "mono: processes the left side and its output is copied to both";
+
+// The library's plugins by kind, in the drawer's order (the answer's `kinds`,
+// library.KINDS), then "Other" for every plugin whose bundle declares none of
+// them or was not read: a kind is the plugin's own LV2 class, never a guess
+// from its name. Within a group, by name. A group with nothing in it is left
+// out. `library` is GET /library's body.
+export function libraryGroups(library) {
+  const kinds = (library && library.kinds) || [];
+  const known = new Set(kinds.map((k) => k.id));
+  const groups = [...kinds.map((k) => ({ id: k.id, label: k.label, entries: [] })), { id: null, label: "Other", entries: [] }];
+  const byId = new Map(groups.map((g) => [g.id, g]));
+  for (const entry of (library && library.plugins) || []) {
+    byId.get(known.has(entry.kind) ? entry.kind : null).entries.push(entry);
+  }
+  const byName = (a, b) => a.name.localeCompare(b.name, undefined, { sensitivity: "base" }) || a.uri.localeCompare(b.uri);
+  for (const g of groups) g.entries.sort(byName);
+  return groups.filter((g) => g.entries.length);
+}
+
+// Whether an entry is what the search asks for: every word of it in the
+// plugin's name, its bundle or its group's name, in any case and order.
+export function libraryMatch(entry, groupLabel, query) {
+  const words = String(query || "").toLowerCase().split(/\s+/).filter(Boolean);
+  const text = [entry.name, entry.bundle || "", groupLabel || ""].join(" ").toLowerCase();
+  return words.every((w) => text.includes(w));
+}
+
+// What an entry shows: its name, its bundle (or that it is not in plugins/),
+// a mono badge where plugin-ports.txt gives it one output, and why it cannot
+// be added where the library says so (the amp). Anything else is sent, and
+// the agent's refusal shown in place: the agent is what decides.
+export function libraryEntry(entry) {
+  const audio = entry.audio || null;
+  return {
+    uri: entry.uri, name: entry.name,
+    bundle: entry.bundle || "not in plugins/",
+    mono: !!audio && audio.out === 1,
+    width: !audio ? null : audio.out === 1 ? "mono" : audio.out >= 2 ? "stereo" : null,
+    addable: entry.addable !== false,
+    why: entry.addable === false ? entry.why_not || "the library says it cannot be added" : null,
+  };
+}
+
+// The places an add can go on a track's chain: at the start, and after each
+// plugin shown (a mono plugin's copy is not shown, and the agent puts what
+// follows it past the copy). The start is `first` and not `after`, since
+// nothing precedes the first plugin; the agent keeps the master's return in
+// front of it. `index` is where the new plugin lands among the units.
+export function addSlots(track) {
+  if (!track) return [];
+  return [
+    { key: "\u0000start", first: true, after: null, index: 0, label: "Add at the start…" },
+    ...track.units.map((u, i) => ({ key: u.name, first: false, after: u.name, index: i + 1, label: `Add after ${u.name}…` })),
+  ];
+}
+
+// A processor name from a plugin's, as the agent derives one
+// (agent.derive_name): lower case, each run of anything but a-z and 0-9 one
+// "_", at most 64 characters.
+export function deriveName(pluginName) {
+  const name = String(pluginName || "").toLowerCase().replace(/[^a-z0-9]+/g, "_").replace(/^_+|_+$/g, "");
+  return name.slice(0, 64).replace(/_+$/, "");
+}
+
+// The name an add sends, or null to let the agent name it. The agent names
+// a plugin from its library name (`deriveName`) when none is given, and
+// refuses (409) a name already on the rig: Sushi's names are one namespace,
+// tracks included, and a mono plugin's copy (`<name>_to_stereo`) needs its
+// own. So the derived name when it is free, and sent as null; else that name
+// and a number (`mda_delay_2`), the first free. `live` is GET /live's body;
+// `also`, names taken that it may not show yet (this page's adds in flight).
+// `shown` is the name either way, for the slot to say what is being added.
+export function addName(entry, live, also = []) {
+  const taken = new Set(also);
+  for (const [track, chain] of Object.entries((live && live.tracks) || {})) {
+    taken.add(track);
+    for (const name of chain) taken.add(name);
+  }
+  const mono = libraryEntry(entry).mono;
+  const ok = (name) => NAME_RE.test(name) && !name.endsWith(STEREO_SUFFIX)
+    && !taken.has(name) && !(mono && taken.has(name + STEREO_SUFFIX));
+  let base = deriveName(entry.name);
+  // The suffix is the compiler's, which no plugin of the player's may end in.
+  if (base.endsWith(STEREO_SUFFIX)) base = base.slice(0, -STEREO_SUFFIX.length).replace(/_+$/, "");
+  if (!NAME_RE.test(base)) base = "plugin";
+  if (ok(base) && base === deriveName(entry.name)) return { name: null, shown: base };
+  if (ok(base)) return { name: base, shown: base };
+  for (let n = 2; ; n++) {
+    const suffix = `_${n}`;
+    const name = base.slice(0, 64 - suffix.length).replace(/_+$/, "") + suffix;
+    if (ok(name)) return { name, shown: name };
+  }
+}
+
+// The request an add from `slot` (`addSlots`) makes.
+export function addCall(track, slot, entry, name) {
+  const json = { track, uri: entry.uri };
+  if (name) json.name = name;
+  if (slot.first) json.first = true;
+  else json.after = slot.after;
+  return { path: "/live/add", json };
+}
+
+// What adding `entry` at `slot` would do to the chain's stereo width, said
+// before it is added (#119: Sushi gives a mono plugin channel 0 alone): a
+// mono plugin after a stereo one collapses that one's width, and a stereo
+// plugin put in front of a mono one has its own collapsed there. Each is a
+// width collapsed that is not collapsed now; null when there is none. The
+// words are the rack's badge's (`monoNote`).
+export function addWarning(track, slot, entry, shown = "the new plugin") {
+  if (!track || !slot) return null;
+  const view = libraryEntry(entry);
+  const added = { name: shown, mono: view.mono, width: view.width, added: true };
+  const units = [...track.units.slice(0, slot.index), added, ...track.units.slice(slot.index)];
+  const before = new Map(track.units.map((u, i) => [u.name, monoNote(track.units, i)]));
+  for (let i = 0; i < units.length; i++) {
+    const note = monoNote(units, i);
+    if (!note || !note.warn) continue;
+    if (units[i].added) return { warn: true, text: note.title };
+    const was = before.get(units[i].name);
+    if (!was || !was.warn) return { warn: true, text: `${units[i].name} comes after it and collapses its stereo width` };
+  }
+  return null;
+}
+
+// Why the drawer cannot add anything now, or null: no rig to add to (the
+// agent's routes need a running rig, and a command running holds them), the place it was opened for gone (the
+// plugin it was to follow removed, here or from elsewhere), or the lock.
+// The drawer still opens and lists everything, to browse.
+export function addBlocked({ health, track, slot, locked }) {
+  if (!health || !health.ok) return "The agent is not answering, so nothing can be added.";
+  const rig = health.body.rig || {}, agent = health.body.agent || {};
+  if (agent.busy) return `${agent.busy} is running: adding waits until it is done.`;
+  if (!rig.running) return "No rig is running, so nothing can be added: start one under RIGS.";
+  if (!track) return "That chain is not on the rig now: close this and open another tab's.";
+  if (slot && !slot.first && !track.units.some((u) => u.name === slot.after)) {
+    return `${slot.after} is no longer on ${track.name}: close this and choose another place.`;
+  }
+  return lockRefusal(locked, "add");
+}
+
+// What an add's answer says, for its slot: the plugin added, or the agent's
+// reason for refusing it, shown in place.
+export function addOutcome(shown, answer) {
+  if (answer.ok) return { ok: true, name: answer.body.args ? answer.body.args.name : shown };
+  // The agent's words for a name taken tell its client to give one, which
+  // the page has already done: what the player can do is try again.
+  if (answer.code === "name_taken") {
+    return { ok: false, reason: `Not added: the name ${shown} was taken on the rig as this was sent, from somewhere else. Try again: another is chosen for you.` };
+  }
+  return { ok: false, reason: `Not added: ${answer.reason}` };
+}
+
+// The request a remove makes, and whether a unit offers one: only a
+// player's plugin, never the compiler's send, return or copy to stereo (the
+// agent refuses them too), none of which is a unit on the rack.
+export function removeCall(name) {
+  return { path: "/live/remove", json: { processor: name } };
+}
+
+export function removable(unit) {
+  return !!unit && unit.role === null && !isCopy(unit.name, null);
+}
+
 // ---------------------------------------------------------------- unsaved
 
 const sameChain = (a, b) => Array.isArray(a) && Array.isArray(b) && a.length === b.length && a.every((x, i) => x === b[i]);

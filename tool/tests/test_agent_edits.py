@@ -1362,3 +1362,75 @@ def test_a_save_reads_the_log_back_only_to_the_newest_save_and_starts_from_what_
         "the drive's remove is in the file already; the ts's defaults come from the save's record"
     # The walk back stops at the run's start, compared as the log writes its times.
     assert live_edits([add, save, later], since=at(4)) == {"added": {}, "removed": {"limiter": "master"}}
+
+
+# --------------------------------------------------------------------------- #
+# At the start of a chain (#130): the Library drawer's first slot
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize("track, expected, command", [
+    ("guitar", ["new", "comp", "drive", "guitar_send"], (1, 2, False)),
+    ("master", ["master_return", "new", "limiter"], (5, 7, False)),
+    ("aux", ["new"], (8, 0, True)),
+])
+def test_first_puts_it_in_front_of_the_first_plugin_and_never_before_the_return(track, expected, command):
+    addition = check_add(reading(), add_request({"track": track, "uri": DELAY, "name": "new", "first": True}, LIBRARY))
+    assert addition.expected == expected
+    assert (addition.track_id, addition.before_id, addition.add_to_back) == command
+
+
+def test_first_on_a_channel_with_no_plugins_goes_in_front_of_its_send():
+    chains = {"bass": ["bass_send"]}
+    addition = check_add({"chains": chains, "ids": {"bass": 1, "bass_send": 2}, "uids": {}},
+                         add_request({"track": "bass", "uri": DELAY, "name": "new", "first": True}, LIBRARY))
+    assert addition.expected == ["new", "bass_send"]
+    assert (addition.before_id, addition.add_to_back) == (2, False)
+
+
+def test_a_mono_plugin_first_brings_its_copy_with_it():
+    addition = check_add(reading(), add_request({"track": "guitar", "uri": GXTS9, "name": "grit", "first": True}, LIBRARY))
+    assert addition.expected == ["grit", "grit_to_stereo", "comp", "drive", "guitar_send"]
+
+
+@pytest.mark.parametrize("body, why", [
+    ({"track": "guitar", "uri": DELAY, "first": True, "after": "comp"}, "not both"),
+    ({"track": "guitar", "uri": DELAY, "first": "yes"}, "'first' must be true or false"),
+    ({"track": "guitar", "uri": DELAY, "first": 1}, "'first' must be true or false"),
+])
+def test_first_is_a_flag_and_not_beside_after(body, why):
+    with pytest.raises(AgentError, match=why) as caught:
+        add_request(body, LIBRARY)
+    assert not isinstance(caught.value, Conflict)
+
+
+def test_an_add_first_through_the_route_is_logged_and_undone_like_any_add():
+    agent, fake = edit_agent()
+    status, body = call(agent, "POST", "/live/add", json={"track": "guitar", "uri": DELAY, "name": "ts", "first": True})
+    assert status == 200
+    assert fake.writes() == [("add", "ts", DELAY, 1, 2, False)]
+    assert body["chain"] == ["ts", "comp", "drive", "guitar_send"]
+    assert body["args"]["chain"] == ["ts", "comp", "drive", "guitar_send"]
+    status, undone = call(agent, "POST", "/live/undo", json={})
+    assert status == 200, undone
+    assert fake.chains["guitar"] == ["comp", "drive", "guitar_send"]
+    status, answer = call(agent, "POST", "/live/add", json={"track": "guitar", "uri": DELAY, "first": 2})
+    assert status == 400 and "'first'" in answer["reason"]
+
+
+def test_a_name_the_rig_has_is_a_conflict_with_a_code_a_client_can_act_on():
+    """#130: the page names a plugin itself when the agent's own name is
+    taken; a clash it could not see coming (another device's add since its
+    last read) says so by `code`, so it can choose again without reading prose."""
+    agent, fake = edit_agent()
+    status, body = call(agent, "POST", "/live/add", json={"track": "guitar", "uri": GXTS9, "name": "drive"})
+    assert (status, body.get("code")) == (409, "name_taken")
+    status, body = call(agent, "POST", "/live/add", json={"track": "guitar", "uri": DELAY, "after": "nope"})
+    assert status == 409 and "code" not in body, "a place not on the track is not a name to choose again"
+
+
+def test_an_add_made_first_says_so_in_the_log():
+    agent, fake = edit_agent()
+    status, body = call(agent, "POST", "/live/add", json={"track": "guitar", "uri": DELAY, "name": "ts", "first": True})
+    assert status == 200 and body["args"]["first"] is True and body["args"]["after"] is None
+    status, body = call(agent, "POST", "/live/add", json={"track": "guitar", "uri": DELAY, "name": "ts2"})
+    assert "first" not in body["args"]

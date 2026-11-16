@@ -4,7 +4,13 @@ The bundles under `fixtures/lv2/` are **captured, not written**: the `.ttl`
 files of three bundles exactly as Ubuntu 24.04's packages install them
 (guitarix-lv2 0.46.0+dfsg-1, rubberband-lv2 3.3.0+dfsg-2build1, mda-lv2
 1.2.10-2build1), extracted from the .deb files on 2026-11-02, with the shared
-libraries left out. One thing is cut down, and only this: `mda.lv2` keeps its
+libraries left out. Four more were copied on 2026-11-16 from the packages
+installed on the machine this was written on, again only their `.ttl` files:
+`gx_chorus.lv2` (guitarix-lv2 0.46.0+dfsg-1), `darc.lv2` (x42-plugins
+20230915+ds-1build2), and `MVerb.lv2` and `3BandEQ.lv2` (dpf-plugins-lv2
+1.7+ds-2build3), so that each of the Library drawer's six kinds has a real
+bundle behind it (#130); lv2info (lilv 0.24.22) gave each of the seven
+plugins the one class read here. One thing is cut down, and only this: `mda.lv2` keeps its
 full `manifest.ttl` but only one of the plugin data files it points at
 (`Delay.ttl`), so the other 35 mda plugins are declared with no data, which is
 also what a bundle missing a file looks like. The expected names and port counts
@@ -26,6 +32,7 @@ from sushi_rig.library import (
     Literal,
     TurtleError,
     build_library,
+    kind_of,
     load_profiles,
     parse_turtle,
     plugins_described,
@@ -113,7 +120,7 @@ def test_a_plugin_is_what_is_typed_one_and_its_name_is_its_own():
     that took the first doap:name it met would call the pedal that."""
     base = (FIXTURES / "gxts9.lv2" / "gxts9.ttl").as_uri()
     described = plugins_described(parse_turtle((FIXTURES / "gxts9.lv2" / "gxts9.ttl").read_text(), base))
-    assert described == {GXTS9: {"name": "GxTubeScreamer", "ports": 6}}
+    assert described == {GXTS9: {"name": "GxTubeScreamer", "ports": 6, "classes": ["DistortionPlugin"]}}
 
 
 def test_the_uris_last_segment_is_the_fallback_name():
@@ -130,7 +137,8 @@ def test_the_uris_last_segment_is_the_fallback_name():
 
 def test_a_bundle_is_read_from_its_manifest_and_the_files_it_points_at():
     found, problems = read_bundle(FIXTURES / "gxts9.lv2")
-    assert found == {GXTS9: {"name": "GxTubeScreamer", "ports": 6, "bundle": "gxts9.lv2"}}
+    assert found == {GXTS9: {"name": "GxTubeScreamer", "ports": 6, "classes": ["DistortionPlugin"],
+                             "bundle": "gxts9.lv2"}}
     assert problems == []
 
 
@@ -150,9 +158,9 @@ def test_one_file_can_describe_several_plugins_sharing_ports():
 def test_a_plugin_whose_data_file_is_missing_is_found_without_a_name_and_said():
     found, problems = read_bundle(FIXTURES / "mda.lv2")
     assert found["http://drobilla.net/plugins/mda/Delay"] == {
-        "name": "MDA Delay", "ports": 10, "bundle": "mda.lv2"}
+        "name": "MDA Delay", "ports": 10, "classes": ["DelayPlugin"], "bundle": "mda.lv2"}
     assert found["http://drobilla.net/plugins/mda/Combo"] == {
-        "name": None, "ports": None, "bundle": "mda.lv2"}
+        "name": None, "ports": None, "classes": None, "bundle": "mda.lv2"}
     assert len(found) == 36
     assert any("Combo.ttl" in p and "cannot be read" in p for p in problems)
     assert len(problems) == 35, "one per missing file, not one per preset"
@@ -167,8 +175,22 @@ def test_a_data_file_outside_its_bundle_is_not_followed(tmp_path):
         "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n"
         "<urn:x> a lv2:Plugin ; rdfs:seeAlso <../elsewhere.ttl> .\n")
     found, problems = read_bundle(bundle)
-    assert found == {"urn:x": {"name": None, "ports": None, "bundle": "x.lv2"}}
+    assert found == {"urn:x": {"name": None, "ports": None, "classes": None, "bundle": "x.lv2"}}
     assert any("outside the bundle" in p for p in problems)
+
+
+def test_a_plugin_whose_data_does_not_parse_has_classes_not_known_and_one_with_none_has_none(tmp_path):
+    bundle = tmp_path / "x.lv2"
+    bundle.mkdir()
+    (bundle / "manifest.ttl").write_text(
+        "@prefix lv2: <http://lv2plug.in/ns/lv2core#> .\n"
+        "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n"
+        "<urn:x> a lv2:Plugin ; rdfs:seeAlso <x.ttl> .\n<urn:y> a lv2:Plugin ; rdfs:seeAlso <y.ttl> .\n")
+    (bundle / "x.ttl").write_text("<urn:x> {} .\n")
+    (bundle / "y.ttl").write_text('<urn:y> <http://usefulinc.com/ns/doap#name> "Y" .\n')
+    found, problems = read_bundle(bundle)
+    assert (found["urn:x"]["classes"], found["urn:y"]["classes"]) == (None, [])
+    assert len(problems) == 1 and "x.ttl" in problems[0]
 
 
 def test_a_file_that_does_not_parse_is_a_problem_not_a_crash(tmp_path):
@@ -185,7 +207,8 @@ def test_only_the_folder_given_is_scanned(tmp_path):
     is what the rig can load, not what this machine happens to have."""
     found, problems = scan_plugins(FIXTURES)
     assert set(found) >= {GXTS9, "http://drobilla.net/plugins/mda/Delay"}
-    assert {m["bundle"] for m in found.values()} == {"gxts9.lv2", "rubberband.lv2", "mda.lv2"}
+    assert {m["bundle"] for m in found.values()} == {"gxts9.lv2", "rubberband.lv2", "mda.lv2", "gx_chorus.lv2",
+                                                     "darc.lv2", "MVerb.lv2", "3BandEQ.lv2"}
     absent, problems = scan_plugins(tmp_path / "nope")
     assert absent == {}
     assert problems and "no plugins folder" in problems[0]
@@ -266,6 +289,45 @@ def test_read_library_against_the_real_manifest_and_profile(tmp_path):
     assert all(not p.startswith("/usr/lib") for p in result["problems"])
 
 
+# --------------------------------------------------------------------------- #
+# Kinds, for the Library drawer (#130)
+# --------------------------------------------------------------------------- #
+
+def test_a_kind_is_the_plugins_own_lv2_class_and_none_is_none():
+    assert [kind_of(c) for c in (["DistortionPlugin"], ["ChorusPlugin"], ["DelayPlugin"], ["ReverbPlugin"],
+                                 ["CompressorPlugin"], ["MultiEQPlugin"], ["WaveshaperPlugin"], ["LimiterPlugin"])] == \
+        ["drive", "mod", "delay", "reverb", "dynamics", "eq", "drive", "dynamics"]
+    assert kind_of(["DelayPlugin", "ReverbPlugin"]) == "reverb", "a reverb is a delay in LV2's tree: the narrower wins"
+    assert kind_of(["DynamicsPlugin", "DistortionPlugin"]) == "drive", "two kinds: the first in the drawer's order"
+    # Not one of the six: "Other", whatever the name might suggest.
+    assert [kind_of(c) for c in (["PitchPlugin"], ["FilterPlugin"], ["SimulatorPlugin"], [], None)] == [None] * 5
+
+
+def test_every_kind_is_read_from_a_captured_bundle_and_an_unread_one_has_none():
+    result = read_library(ROOT, plugins_dir=FIXTURES)
+    entries = {e["uri"]: e for e in result["plugins"]}
+    assert [k["id"] for k in result["kinds"]] == ["drive", "mod", "delay", "reverb", "dynamics", "eq"]
+    assert [k["label"] for k in result["kinds"]] == ["Drive", "Mod", "Delay", "Reverb", "Dynamics", "EQ"]
+    said = {u: (e["kind"], e["classes"]) for u, e in entries.items() if e["kind"]}
+    assert said == {
+        GXTS9: ("drive", ["DistortionPlugin"]),
+        "http://guitarix.sourceforge.net/plugins/gx_chorus_stereo#_chorus_stereo": ("mod", ["ChorusPlugin"]),
+        "http://drobilla.net/plugins/mda/Delay": ("delay", ["DelayPlugin"]),
+        "http://distrho.sf.net/plugins/MVerb": ("reverb", ["ReverbPlugin"]),
+        "http://gareus.org/oss/lv2/darc#mono": ("dynamics", ["CompressorPlugin"]),
+        "http://gareus.org/oss/lv2/darc#stereo": ("dynamics", ["CompressorPlugin"]),
+        "http://distrho.sf.net/plugins/3BandEQ": ("eq", ["EQPlugin"]),
+    }
+    # The octave shifts pitch, which is none of the six; mda's Combo is
+    # declared, its data file missing (classes not known: None, not []);
+    # a-reverb's bundle is not there at all (None), so it is not called a
+    # reverb by its name.
+    assert (entries["http://breakfastquay.com/rdf/lv2-rubberband#mono"]["kind"],
+            entries["http://breakfastquay.com/rdf/lv2-rubberband#mono"]["classes"]) == (None, ["PitchPlugin"])
+    assert (entries["http://drobilla.net/plugins/mda/Combo"]["kind"], entries["http://drobilla.net/plugins/mda/Combo"]["classes"]) == (None, None)
+    assert (entries["urn:ardour:a-reverb"]["kind"], entries["urn:ardour:a-reverb"]["classes"]) == (None, None)
+
+
 def test_read_library_says_when_the_manifest_cannot_be_read(tmp_path):
     with pytest.raises(library.LibraryError, match="plugin-manifest.txt"):
         read_library(tmp_path)
@@ -296,6 +358,81 @@ def test_the_reader_agrees_with_lilv_on_every_bundle_in_plugins():
     found, _ = scan_plugins(plugins_dir)
     ours = {u: (m["name"], m["ports"]) for u, m in found.items()}
     assert ours == truth
+
+
+def _lilv_world(lilv, path):
+    from sushi_rig.plugins import _lv2_path
+
+    with _lv2_path(path):
+        world = lilv.World()
+        world.load_all()
+    return world
+
+
+def test_the_classes_read_here_are_the_ones_each_plugin_in_plugins_declares():
+    """The kinds (#130) come from each plugin's declared LV2 classes: where
+    lilv and plugins/ are both present (the container, the rig machine),
+    the classes read here are exactly the rdf:types lilv holds for the
+    plugin, lv2:Plugin aside. This needs no LV2 specification: it compares
+    what the bundles say, as lilv read them, with what this reader read."""
+    lilv = pytest.importorskip("lilv", reason="lilv is a system package (python3-lilv)")
+    plugins_dir = ROOT / "plugins"
+    if not plugins_dir.is_dir():
+        pytest.skip(f"{plugins_dir} is not present (it is untracked; see docs/reference/plugins.md)")
+    from sushi_rig.probe import _each
+
+    world = _lilv_world(lilv, str(plugins_dir))
+    rdf_type = world.new_uri(library.RDF_TYPE)
+    found, _ = scan_plugins(plugins_dir)
+    wrong = {}
+    for plugin in _each(world.get_all_plugins()):
+        uri = str(plugin.get_uri())
+        if uri not in found:
+            continue
+        declared = sorted({str(n)[len(library.LV2):] for n in _each(plugin.get_value(rdf_type))
+                           if str(n).startswith(library.LV2) and str(n) != library.LV2_PLUGIN})
+        if found[uri]["classes"] != declared:
+            wrong[uri] = (declared, found[uri]["classes"])
+    assert wrong == {}
+
+
+def test_the_classes_read_here_hold_the_one_lilv_gives_with_the_lv2_specification_loaded(tmp_path):
+    """And lilv's own answer for a plugin's class (`get_class`) is one of
+    them. lilv can only give a class it knows from the LV2 specification's
+    class tree (`core.lv2`, lv2core.ttl), which is not a plugin and so not in
+    plugins/: with plugins/ alone on LV2_PATH it answers lv2:Plugin for every
+    plugin (the container's first run of this test, 2026-11-16, and lv2info
+    here, for the captured bundles alone). So the specification is copied
+    beside plugins/ for the world this asks, and nothing else from the
+    system's LV2 folders is put on the path. The container has it from
+    `lv2-dev` (ci/Dockerfile); where no copy is found, this says so."""
+    import shutil
+
+    lilv = pytest.importorskip("lilv", reason="lilv is a system package (python3-lilv)")
+    plugins_dir = ROOT / "plugins"
+    if not plugins_dir.is_dir():
+        pytest.skip(f"{plugins_dir} is not present (it is untracked; see docs/reference/plugins.md)")
+    spec = next((d / "core.lv2" for d in (Path("/usr/lib/lv2"), Path("/usr/local/lib/lv2"),
+                                          Path("/usr/lib/x86_64-linux-gnu/lv2"))
+                 if (d / "core.lv2" / "lv2core.ttl").is_file()), None)
+    if spec is None:
+        pytest.skip("the LV2 specification (core.lv2, from the lv2-dev package) is not installed")
+    shutil.copytree(spec, tmp_path / "spec" / "core.lv2")
+    from sushi_rig.probe import _each
+
+    world = _lilv_world(lilv, f"{plugins_dir}:{tmp_path / 'spec'}")
+    found, _ = scan_plugins(plugins_dir)
+    wrong, specific = {}, 0
+    for plugin in _each(world.get_all_plugins()):
+        uri, said = str(plugin.get_uri()), str(plugin.get_class().get_uri())
+        if uri not in found:
+            continue
+        classes = [library.LV2 + c for c in found[uri]["classes"] or []]
+        specific += said != library.LV2_PLUGIN
+        if said not in classes and not (said == library.LV2_PLUGIN and found[uri]["classes"] == []):
+            wrong[uri] = (said, classes)
+    assert wrong == {}
+    assert specific, "lilv gave no plugin a class of its own: the specification was not loaded"
 
 
 # --------------------------------------------------------------------------- #
@@ -353,7 +490,7 @@ def test_tokenising_is_linear_in_the_length_of_the_file():
     started = time.monotonic()
     described = plugins_described(parse_turtle(text, "file:///big.ttl"))
     assert time.monotonic() - started < 10, "quadratically it was about a minute"
-    assert len(described) == 1000 and described["urn:p7"] == {"name": "P7", "ports": 20}
+    assert len(described) == 1000 and described["urn:p7"] == {"name": "P7", "ports": 20, "classes": []}
 
 
 def test_an_error_late_in_a_file_says_its_line():

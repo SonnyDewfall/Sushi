@@ -64,10 +64,9 @@ rig is. **Back to the rack**, at the top right, leaves the screen.
 
 - **Adding a channel or changing an input needs the rig to restart**, which is
   a few seconds of silence. Nothing changes in the sound until then.
-- **A new channel with an empty chain has no effects, and the page cannot add
-  any yet.** To get effects on a new channel, use **Start from** to copy another
-  channel's chain, or edit the rig's file by hand
-  ([The rig file](../reference/rig-file.md)).
+- **A new channel with an empty chain has no effects.** Add them on the rack
+  once the rig is running ([Shaping a sound](shaping-a-sound.md#add-a-plugin)),
+  or use **Start from** to copy another channel's chain.
 - **Two channels in one rig cannot both be copied from the same chain.** Every
   plugin in a rig needs a name of its own, and a second copy would repeat the
   first's names. The page refuses it and says so.

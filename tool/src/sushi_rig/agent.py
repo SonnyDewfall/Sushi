@@ -336,7 +336,7 @@ operator's call to make, not a default.
 ## The library and chain edits (#32)
 
     GET  /library       every plugin in plugin-manifest.txt: uri, name, ports, profile and its groups
-    POST /live/add      {"track", "uri", "name"?, "after"?}
+    POST /live/add      {"track", "uri", "name"?, "after"? | "first"?}
     POST /live/remove   {"processor"}
 
 What S3 of the UX story needs: pick a plugin from the library, add it to a
@@ -1048,7 +1048,14 @@ def sushi_unreachable(exc: BaseException) -> bool:
 class Conflict(AgentError):
     """A request the running rig cannot take as it is now (409): a name it
     already has, a track it lacks, a send that must stay where it is. Unlike a
-    bad request it may succeed later, against a different rig."""
+    bad request it may succeed later, against a different rig. `code`, where
+    given, goes in the answer beside the reason, for a client to act on:
+    "name_taken" for an add whose name (or its copy's) the rig already has,
+    which a client choosing names can choose again (#130)."""
+
+    def __init__(self, reason: str, code: str | None = None):
+        super().__init__(reason)
+        self.code = code
 
 
 class Unconfirmed(AgentError):
@@ -1078,6 +1085,10 @@ class AddRequest:
     # The copy to stereo that goes in with it (`stereo.py`), for a plugin
     # with one output: added in the same operation, straight after it.
     copy: str | None = None
+    # At the start of the track's chain (`"first": true`), where `after`
+    # cannot put it: there is nothing before the first plugin to follow
+    # (#130, the Library drawer's slot at the start of a chain).
+    first: bool = False
 
 
 def add_request(body: Any, library: dict[str, Any]) -> AddRequest:
@@ -1116,6 +1127,11 @@ def add_request(body: Any, library: dict[str, Any]) -> AddRequest:
     after = body.get("after")
     if after is not None and (not isinstance(after, str) or not after):
         raise AgentError(f"'after' must name a processor on the track, or be left out, not {after!r}")
+    first = body.get("first", False)
+    if not isinstance(first, bool):
+        raise AgentError(f"'first' must be true or false, or be left out, not {first!r}")
+    if first and after is not None:
+        raise AgentError("give 'after' or 'first', not both: 'first' puts it at the start of the chain")
     # Which plugins are mono is the compiler's table (plugin-ports.txt), read
     # into the library: the same answer `up --rig` gives, so a plugin added
     # live is what a restart of the saved rig would be.
@@ -1127,7 +1143,7 @@ def add_request(body: Any, library: dict[str, Any]) -> AddRequest:
     if audio.get("out") == 0:
         raise AgentError(f"{entry['name']} has no audio output: on a track it would silence everything after it")
     return AddRequest(track, uri, name, after, named,
-                      stereo.copy_name(name) if audio.get("out") == 1 else None)
+                      stereo.copy_name(name) if audio.get("out") == 1 else None, first)
 
 
 
@@ -1181,7 +1197,9 @@ def check_add(reading: dict[str, Any], request: AddRequest) -> Addition:
     track's send when it has one; `after` the send is refused, because the
     send carries the channel to the master and whatever follows it is not
     heard. The master's return is first on its track and stays first: an add
-    is always after something or at the back.
+    is always after something or at the back, and one asked to go `first`
+    goes in front of the first processor that is not the return, which on a
+    channel is its first plugin, or its send when it has none.
     """
     chains, ids = reading.get("chains", {}), reading.get("ids", {})
     uids = reading.get("uids") or {}
@@ -1189,13 +1207,13 @@ def check_add(reading: dict[str, Any], request: AddRequest) -> Addition:
     if track not in chains:
         raise Conflict(f"the running rig has no track {track!r}: it has {sorted(chains)}")
     if name in chains:
-        raise Conflict(f"{name!r} is a track of the running rig; give the processor another name")
+        raise Conflict(f"{name!r} is a track of the running rig; give the processor another name", "name_taken")
     holder = _track_of(chains, name)
     if holder is not None:
         what = "give a 'name'" if not request.named else "give another name"
-        raise Conflict(f"{name!r} is already on the rig, on track {holder!r}: {what}")
+        raise Conflict(f"{name!r} is already on the rig, on track {holder!r}: {what}", "name_taken")
     if request.copy is not None and (request.copy in chains or _track_of(chains, request.copy) is not None):
-        raise Conflict(f"{request.copy!r}, the name of {name!r}'s copy to stereo, is already on the rig")
+        raise Conflict(f"{request.copy!r}, the name of {name!r}'s copy to stereo, is already on the rig", "name_taken")
     chain = list(chains[track])
     sends = [index for index, held in enumerate(chain) if is_send(track, held, uids.get(held))]
     if after is not None:
@@ -1206,6 +1224,14 @@ def check_add(reading: dict[str, Any], request: AddRequest) -> Addition:
                 f"nothing goes after {after!r}: the send must stay last, since it is what "
                 "carries the channel to the master")
         index = _unit_end(chain, after, uids)
+    elif request.first:
+        # Past the processors at the head that are the compiler's and not a
+        # send: the master's return (`protected_processor`). A send is last,
+        # and on a track with no plugins the add goes in front of it.
+        index = 0
+        while (index < len(chain) and index not in sends
+               and protected_processor(track, chain[index], uids.get(chain[index])) is not None):
+            index += 1
     else:
         index = sends[0] if sends else len(chain)
     before = chain[index] if index < len(chain) else None
@@ -2493,7 +2519,8 @@ class Agent:
     async def live_add(self, request):
         """Add a plugin from the library to a track of the running rig.
 
-        Body `{"track", "uri", "name"?, "after"?}`. Refused (400) before Sushi is
+        Body `{"track", "uri", "name"?, "after"?}`, or `"first": true` in place
+        of `after` to put it at the start of the chain. Refused (400) before Sushi is
         contacted for a bad shape, a URI not in the manifest or one Sushi cannot
         host; refused (409) from a walk of the chains for a track the rig lacks,
         a name it already has or an `after` not on the track. Sent as decided,
@@ -2516,12 +2543,14 @@ class Agent:
             try:
                 addition = await self._apply_add(request, controller, lambda reading: check_add(reading, asked))
             except Conflict as exc:
-                raise web.HTTPConflict(reason=str(exc))
+                raise _conflict(str(exc), exc.code) if exc.code else web.HTTPConflict(reason=str(exc))
             defaults, note = await self._read_defaults(request, controller, addition)
+            # `first` only where it was asked, so the log says what was done
+            # and every other add's entry keeps its shape.
             entry = self._record("add", {
                 "track": addition.track, "uri": addition.uri, "name": addition.name,
-                "after": addition.after, "copy": addition.copy, "chain": list(addition.expected),
-                "defaults": defaults,
+                "after": addition.after, **({"first": True} if asked.first else {}), "copy": addition.copy,
+                "chain": list(addition.expected), "defaults": defaults,
             }, list(addition.chain))
         answer = {
             "ok": True, **entry, "chain": addition.expected,

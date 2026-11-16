@@ -6,7 +6,7 @@ amp and a chain of LV2 plugins, and back out, with no DAW in the signal path.
 You play it, shape it, save it and record it from a web page on a laptop or a
 phone.
 
-![The rack: the master volume in the header, a strip for each channel on the left, a tab for each channel and Master in the middle with the open channel's plugins under them, and the rigs and Save on the right](docs/guide/img/rack.png)
+![The rack: the master volume in the header, a strip for each channel on the left, a tab for each channel and Master in the middle with the open channel's plugins under them, a dashed Add button above and below each, and the rigs and Save on the right](docs/guide/img/rack.png)
 
 ## What it is
 

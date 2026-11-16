@@ -35,6 +35,14 @@ falls back to the URI's last segment, is marked `name_from: "uri"`, and its
 profile's restated name (`plugin.name`) comes before that fallback, marked
 `"profile"`. Nothing falls back silently.
 
+## Kinds
+
+The Library drawer groups the plugins by what they do (#130). That is read
+from each plugin's own LV2 classes, the `a lv2:DelayPlugin` its bundle
+declares (`kind_of`, `KINDS`), never from its name: a plugin whose bundle says
+none of the six kinds, or whose bundle is not in `plugins/`, has no kind and
+is shown under "Other".
+
 ## Not every entry can be added
 
 The neural amp is in the manifest because `plugins/` must carry it, but it runs
@@ -57,7 +65,8 @@ from .plugins import ARCHIVE_DIR, read_manifest
 RDF = "http://www.w3.org/1999/02/22-rdf-syntax-ns#"
 RDF_TYPE = RDF + "type"
 RDFS_SEE_ALSO = "http://www.w3.org/2000/01/rdf-schema#seeAlso"
-LV2_PLUGIN = "http://lv2plug.in/ns/lv2core#Plugin"
+LV2 = "http://lv2plug.in/ns/lv2core#"
+LV2_PLUGIN = LV2 + "Plugin"
 LV2_PORT = "http://lv2plug.in/ns/lv2core#port"
 DOAP_NAME = "http://usefulinc.com/ns/doap#name"
 XSD = "http://www.w3.org/2001/XMLSchema#"
@@ -376,14 +385,15 @@ def parse_turtle(text: str, base: str, blank_prefix: str = "") -> list[tuple[str
 
 
 def plugins_described(triples: list[tuple[str, str, str]]) -> dict[str, dict[str, Any]]:
-    """`{uri: {"name", "ports"}}` for every subject typed `lv2:Plugin`.
+    """`{uri: {"name", "ports", "classes"}}` for every subject typed `lv2:Plugin`.
 
     The name is the subject's own `doap:name` -- a bundle's file often names the
     project too, in the same file -- preferring one with no language tag, then
     English, as lilv's `get_name` does; None if it has none. `ports` counts
     distinct `lv2:port` objects (Rubber Band's plugins share one latency port
     node), None if it declares none, since a plugin with no ports at all is not
-    something these files describe. Pure.
+    something these files describe. `classes` are its LV2 classes besides
+    `lv2:Plugin`, by local name (`["DelayPlugin"]`), and `[]` for none. Pure.
     """
     # Indexed in one pass and looked up per plugin: a scan of every triple per
     # plugin was plugins x triples (found by review).
@@ -399,9 +409,16 @@ def plugins_described(triples: list[tuple[str, str, str]]) -> dict[str, dict[str
         names = [o for o in about.get(DOAP_NAME, []) if isinstance(o, Literal)]
         names.sort(key=lambda n: (n.lang is not None, n.lang != "en"))
         ports = set(about.get(LV2_PORT, []))
+        # The plugin's own LV2 classes (`a lv2:DelayPlugin`), by their local
+        # names, sorted: what its kind is read from (`kind_of`). lv2:Plugin
+        # itself says nothing of what it does, and a class outside LV2's own
+        # vocabulary (doap:Project, which DISTRHO's carry) is not a kind.
+        classes = sorted({str(o)[len(LV2):] for o in about.get(RDF_TYPE, [])
+                          if isinstance(o, IRI) and o.startswith(LV2) and o != LV2_PLUGIN})
         described[str(uri)] = {
             "name": str(names[0]) if names else None,
             "ports": len(ports) or None,
+            "classes": classes,
         }
     return described
 
@@ -446,6 +463,7 @@ def read_bundle(bundle: Path) -> tuple[dict[str, dict[str, Any]], list[str]]:
     manifest = _read_turtle(bundle / "manifest.ttl", problems, "f0.")
     declared = plugins_described(manifest)
     data: list[Path] = []
+    files: dict[str, list[Path | None]] = {}  # each plugin's data files; None for one not followed
     for s, p, o in manifest:
         if p != RDFS_SEE_ALSO or str(s) not in declared or not isinstance(o, IRI):
             continue
@@ -453,14 +471,26 @@ def read_bundle(bundle: Path) -> tuple[dict[str, dict[str, Any]], list[str]]:
         path = Path(unquote(parsed.path)) if parsed.scheme == "file" else None
         if path is None or root not in path.resolve().parents:
             problems.append(f"{name}: {o} is outside the bundle, so it is not read")
+            files.setdefault(str(s), []).append(None)
             continue
+        files.setdefault(str(s), []).append(path)
         if path not in data:
             data.append(path)
     triples = list(manifest)
+    unread: set[Path] = set()
     for number, path in enumerate(data, 1):
+        said = len(problems)
         triples += _read_turtle(path, problems, f"f{number}.")
+        if len(problems) > said:
+            unread.add(path)
     described = plugins_described(triples)
-    return {uri: {**described[uri], "bundle": name} for uri in declared}, problems
+    found = {uri: {**described[uri], "bundle": name} for uri in declared}
+    # A plugin whose own data was not all read has classes not known (None),
+    # which is not the same as classes it does not declare ([]).
+    for uri, paths in files.items():
+        if any(path is None or path in unread for path in paths):
+            found[uri]["classes"] = None
+    return found, problems
 
 
 def scan_plugins(plugins_dir: Path) -> tuple[dict[str, dict[str, Any]], list[str]]:
@@ -532,6 +562,36 @@ def load_profiles(directory: Path) -> tuple[dict[str, dict[str, Any]], list[str]
 # The library, pure
 # --------------------------------------------------------------------------- #
 
+# The kinds the Library drawer groups plugins by (#130), in the order it shows
+# them, each with the LV2 classes (lv2core's, by local name) that make a
+# plugin that kind. A plugin's kind is its own bundle's word for what it is,
+# never a guess from its name: one that declares none of these (a pitch
+# shifter, an instrument, a filter, a simulator) or whose bundle was not read
+# has no kind, and the page lists it under "Other". Filters are not EQ here:
+# lv2:EQPlugin is a kind of lv2:FilterPlugin, not the other way round, and a
+# resonant filter or a vocoder is not what a player looks for under EQ.
+KINDS: tuple[tuple[str, str, frozenset[str]], ...] = (
+    ("drive", "Drive", frozenset({"DistortionPlugin", "WaveshaperPlugin"})),
+    ("mod", "Mod", frozenset({"ModulatorPlugin", "ChorusPlugin", "FlangerPlugin", "PhaserPlugin"})),
+    ("delay", "Delay", frozenset({"DelayPlugin"})),
+    ("reverb", "Reverb", frozenset({"ReverbPlugin"})),
+    ("dynamics", "Dynamics", frozenset({"DynamicsPlugin", "CompressorPlugin", "LimiterPlugin", "GatePlugin",
+                                        "ExpanderPlugin", "EnvelopePlugin"})),
+    ("eq", "EQ", frozenset({"EQPlugin", "ParaEQPlugin", "MultiEQPlugin"})),
+)
+
+
+def kind_of(classes: list[str] | None) -> str | None:
+    """The kind (`KINDS`' id) a plugin's LV2 classes make it, or None.
+
+    lv2:ReverbPlugin is a kind of lv2:DelayPlugin in LV2's own hierarchy, and
+    a reverb's bundle may declare both: reverb wins, as the narrower. Any other
+    plugin that declares two kinds takes the first in `KINDS`' order. Pure."""
+    held = set(classes or [])
+    if "ReverbPlugin" in held:
+        return "reverb"
+    return next((kind for kind, _label, made_of in KINDS if held & made_of), None)
+
 def _groups(profile: dict[str, Any]) -> list[dict[str, Any]]:
     groups = profile.get("groups")
     if not isinstance(groups, list):
@@ -557,7 +617,10 @@ def build_library(
     (`"plugin"`, its bundle's `doap:name`; `"profile"`, the profile's restated
     name; `"uri"`, the URI's last segment) and a `note` whenever it is not the
     plugin's own; `ports` and `bundle` (None where not read); `profile` and
-    `groups` (None without a profile); `addable`, and `why_not` when false.
+    `groups` (None without a profile); `classes`, the plugin's LV2 classes
+    (None where its bundle was not read), and `kind`, the `KINDS` id they make
+    it (`kind_of`, None for none); `addable`, and `why_not` when false. The
+    answer's `kinds` are `KINDS`' ids and labels in the drawer's order.
 
     With `audio`, the committed table of audio ports (`stereo.load_ports`),
     each entry has `audio`: `{"in", "out"}`, or None for a plugin the table
@@ -589,6 +652,9 @@ def build_library(
                 entry["note"] = f"{why}; the name is the URI's last segment"
         entry["ports"] = meta.get("ports") if meta else None
         entry["bundle"] = meta.get("bundle") if meta else None
+        # None where the bundle was not read: not known, which is not "none".
+        entry["classes"] = meta.get("classes") if meta else None
+        entry["kind"] = kind_of(entry["classes"])
         if audio is not None:
             counts = audio.get(uri)
             entry["audio"] = {"in": counts.inputs, "out": counts.outputs} if counts else None
@@ -605,7 +671,8 @@ def build_library(
     for uri, profile in profiles.items():
         if uri not in listed:
             problems.append(f"profile {profile.get('_file', '?')} is for {uri}, which is not in the manifest")
-    return {"plugins": entries, "problems": problems}
+    return {"plugins": entries, "problems": problems,
+            "kinds": [{"id": kind, "label": label} for kind, label, _classes in KINDS]}
 
 
 def read_library(root: Path, plugins_dir: Path | None = None) -> dict[str, Any]:

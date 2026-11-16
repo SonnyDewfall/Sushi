@@ -12,7 +12,8 @@ plugins, the amp's models, the port names) is in `ui_fake.py`'s docstring;
 the takes folder's path would be a temporary one, so no picture includes it.
 
 Kept few on purpose: one a guide, and only where a picture says what the
-steps cannot. A guide's text names every control it uses, so a picture that
+steps cannot; Shaping a sound has a second, the Library drawer, which is a
+screen of its own over the rack (#130). A guide's text names every control it uses, so a picture that
 has aged is an inconvenience and not a wrong instruction.
 """
 
@@ -24,7 +25,7 @@ from pathlib import Path
 
 from playwright.sync_api import sync_playwright
 
-from ui_fake import Served, UiLifecycle
+from ui_fake import Served, UiLifecycle, fixture_library
 
 OUT = Path(__file__).resolve().parents[2] / "docs" / "guide" / "img"
 DESKTOP = {"width": 1280, "height": 640}
@@ -151,6 +152,19 @@ def shots(browser) -> list[str]:
         page.click("article.unit[data-unit=overdrive] button.name")
         time.sleep(SETTLE)
         shoot(page, "shaping-a-sound.png", clip=span(page, "div.tabs", "article.unit[data-unit=delay]"))
+        context.close()
+
+    # Shaping a sound, adding a plugin: the Library drawer opened after the
+    # delay, unlocked, so the mono plugins say what they would collapse.
+    with Served(library=fixture_library) as served:
+        context, page = page_of(browser, served.url + "/", {"width": 1280, "height": 900})
+        page.wait_for_selector(".unit")
+        page.click("button.lock")
+        page.click("button.lock")
+        page.click("button.add:has-text('Add after delay')")
+        page.wait_for_selector(".lib-entry")
+        time.sleep(SETTLE)
+        shoot(page, "library.png", clip=box_of(page, ".drawer-sheet"))
         context.close()
     return made
 

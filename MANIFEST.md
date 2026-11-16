@@ -4184,3 +4184,127 @@ and passes now. The fast suite: 4445 passed, 41 skipped. **Not run here:**
 an agent really restarted under a running Sushi (`/health` and `/live/log`
 were given to the page by the test), the browser tests on 3.11, the rig, a
 phone, the slow tests and the container job. *(2026-11-16)*
+
+**Adding, removing and moving plugins from the page: the Library drawer
+(#130).** The agent could add, remove and move a plugin live (#32), and the
+page could only move one. Now each chain has a place to add a plugin at its
+start and under each plugin ("Add at the start…", "Add after overdrive…"),
+which opens **the Library drawer**: the manifest's plugins, searchable,
+grouped Drive, Mod, Delay, Reverb, Dynamics, EQ, then Other, each with its
+name, its bundle and a mono badge; an open row has **Remove**, behind a
+confirm in the row; and the ▲ ▼ moves keep a mono plugin with its copy. All
+of it is live work: logged, undone by Undo, counted and written by Save. What
+the issue and its brief did not settle, and how each was settled: (1) **A
+plugin's kind** is its bundle's own LV2 class (`library.KINDS`, `kind_of`:
+lv2:ReverbPlugin before lv2:DelayPlugin, which it is a kind of, then the
+drawer's order), read with the name and ports; filters, pitch shifters,
+instruments, simulators and anything unread are Other. Over Ubuntu 24.04's
+packages as installed here, 27 of the manifest's 55 are under Other (the amp
+and the four Rubber Band shifters among them; zynaddsubfx's chorus was not
+installed, so it was not read and is Other here). Four more bundles are
+captured into `tool/tests/fixtures/lv2` (gx_chorus, darc, MVerb, 3BandEQ, the
+`.ttl` files as installed), so every kind has a real bundle in the tests;
+lv2info gave each the class read here. (2) **The start of a chain** cannot be
+said with `after`, so the agent's add takes `"first": true` instead: in front
+of the first plugin, or the send on a channel with none, and behind the
+master's return. (3) **Names**: none is sent when the name the agent would
+derive is free across the rig (its copy's too, for a mono plugin), else that
+name and a number; a name ending as the compiler's copies do loses the suffix.
+(4) **The warning** is on each drawer entry before the add, in the badge's
+words, and also for a stereo plugin put in front of a mono one. (5)
+**Remove** is at the foot of an open row, not on a closed one: a closed row's
+height and its knobs stay as they were, and a slim row is opened first, as it
+is to move it. (6) **The drawer** is over the page at every width (a panel at
+the top on a laptop, a sheet from the bottom on a phone), with the rest of
+the page inert while it is open, rather than a column; with no rig there is
+"Browse the library…". (7) The added plugin's row is drawn once: the page
+knows from the add which plugin it is and does not wait for `/live/plugins`.
+Also found: the fake rig moved one processor by one place whatever the agent
+sent, so a mono plugin moved there left its copy behind; it now applies the
+agent's commands by stable ids, as Sushi would. Tests: `test_ui_library.py`,
+9 of the decisions and 15 in the browser (16 runs: the phone at 390 and 320 px); `test_library.py` (kinds, and a
+lilv comparison of the classes for CI); `test_agent_edits.py` (`first`).
+The guide (`shaping-a-sound.md`, and `building-a-rig.md`'s "cannot add"),
+`docs/reference/web-ui.md`, `agent.md`, three retaken pictures and one new
+(`library.png`) follow. The fast suite: 4481 passed, 42 skipped (the one more skipped is the lilv
+class comparison). Under load, two loops side by side of 10 runs each of
+`test_ui_library.py`: 20 of 20 passed. **Not run here:** anything on the rig: no Sushi,
+so that a real Sushi places a processor added first or moved as a pair as
+the commands say is unseen; the container test of #130's "done" list (add,
+move and remove from the page's request shapes, then `verify` against a fresh
+load) is not written; no phone, touch screen or pedal (a tap is a click in
+headless Chromium, "a phone" a 390 px viewport, and the drawer's focus on a
+touch screen, which goes to the sheet and not the search, is untried); the
+lilv class comparison (no python3-lilv here); the slow tests and the
+container job. *(2026-11-16)*
+
+**The Library drawer, answering review and the container (PR #149).** Six
+findings in the page, each reproduced by a test that fails on 6ae3e79's page
+and passes now (`test_ui_library.py`, "Found by review"). (1) The same plugin
+added twice at once, from one page or two, was refused the second time with
+the agent's "give a 'name'", which the page cannot do: names of this page's
+adds in flight now count as taken, and a name taken since the last read
+comes back `409 name_taken` (a code the agent's add now gives), on which the
+page reads `/live` again and sends the next free name, once; a second clash
+says to try again. (2) The drawer was not modal: Tab left it for the page's
+body, and an entry turned off under the focus dropped it there, after which
+Escape did nothing. Escape now closes it from anywhere, Tab goes round it, and
+focus lost is put back in it. (3) Closing it, or confirming a remove, left
+the focus on the body when what it came from was gone: the drawer goes back
+to its place by key (or the place before, the start, the open tab), a remove
+to the row that took its place. (4) An armed Remove, "Adding…" and a place's
+refusal outlived a switch to a rig with the same names, where the confirm was
+one tap from removing the new rig's plugin: they belong to the rig shown
+(`rigIdentity`) and go when it changes or the chain is drawn again. (5) A
+drawer left open across a switch would add to the rig switched to: it is for
+the rig it was opened on, says when that changed, and adds nothing until it
+is opened again; an add or remove in flight across it is said as the rig it
+was sent to (the fake's live switch does not wait for an add held in Sushi,
+so this happens). (6) A "Locked:" line stayed after unlocking: every lock
+refusal goes on unlock. Also: an add made `first` says so in the log; a
+plugin whose data file did not parse has classes `None` (not read), not `[]`;
+the fake's ids only ever go up. **The container's failure** of
+`test_the_classes_read_here_hold_the_one_lilv_gives_every_bundle_in_plugins`
+was the test, not the reading: lilv's `get_class` resolves a class against
+the LV2 specification's class tree (`core.lv2`, from `lv2-dev`), which is not
+in plugins/, and with plugins/ alone on LV2_PATH it gives lv2:Plugin for
+everything. Shown here with lv2info: the seven captured bundles alone give
+"Plugin" for each, and with `core.lv2` beside them their own classes; over
+this machine's /usr/lib/lv2 (the specification included), lv2info's class for
+each of the 49 manifest plugins installed is the one read here. It is now two
+tests: the classes read here equal the rdf:types lilv holds for each plugin
+(no specification needed), and lilv's `get_class`, with a copy of `core.lv2`
+beside plugins/ and nothing else from the system's folders, is one of them.
+Neither has run here (no python3-lilv); the container is their test. The
+fast suite: 4494 passed, 43 skipped. Under load, two loops side by side of 10
+runs each of `test_ui_library.py` and `test_ui_tabs.py` (101 tests a run):
+20 of 20 passed. **Not run here:** the rig, a phone, a
+touch screen, a pedal, the lilv tests, the slow tests and the container job.
+*(2026-11-16)*
+
+**The Library drawer: no answer is not another rig (PR #149, re-review).**
+Fix 5 of the round before read a `/health` that did not answer as a switch to
+another rig: an add or a remove answered then was said as another rig's, its
+place kept "Adding…" and its name counted as taken for good, and a remove
+refused stayed pending, so the plugin could not be removed again until a
+reload. Now the rig shown is "not known" while `/health` does not answer, an
+answer arriving then is held (`placeAnswer`) and placed once it answers again
+(`settleEdits`): on its row or place if that rig is still shown and the row
+is drawn, in the boxes at the top if it is not (the chain is not drawn
+during the outage, so that is where these land), as the earlier rig's if it
+is not; every add and remove in flight ends, and a confirmed add whose row
+never shows is let go after five seconds. A drawer opened while the rig is
+not known takes the first rig it sees, and nothing in `addFrom` returns
+without saying why in the drawer. Three tests (an add answered, an add
+refused, a remove refused, each during a `/health` outage made by
+Playwright's routing) fail on 63d0f29 and pass now. The fourth, a drawer
+opened during an outage, passes on 63d0f29 too: the scenario reviewed is not
+reachable as written, since a place to add from is only drawn while
+`/health` answers, so the only drawer that can be opened without a rig known
+is "Browse the library…", which adds nothing either way; the test pins that
+it says why before and after. The fast suite: 4498 passed, 43 skipped. Under
+load, two loops side by side of 10 runs each of `test_ui_library.py` and
+`test_ui_tabs.py` (105 tests a run): 20 of 20 passed. **Not run here:** the
+rig, a phone, a touch screen, a real agent restart, the slow tests and the
+container job.
+*(2026-11-16)*

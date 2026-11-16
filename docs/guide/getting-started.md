@@ -33,7 +33,7 @@ has had its one-time volume fix (see [The audio interface](audio-interface.md)).
    and beside it you see **Up** and how long, then **sound not measured**.
 6. Turn the monitors up and play.
 
-![The rack with no rig running: Rig down at the top left, the list of rigs on the right with electric-clean chosen, and the Start electric-clean button under the list](img/start-a-rig.png)
+![The rack with no rig running: Rig down at the top left, in the middle a line saying no rig is running and a Browse the library button, the list of rigs on the right with electric-clean chosen, and the Start electric-clean button under the list](img/start-a-rig.png)
 
 **sound not measured** is normal. Nothing in the rig listens to its own sound
 yet, so the page tells you the rig is up but never claims it sounds right.
