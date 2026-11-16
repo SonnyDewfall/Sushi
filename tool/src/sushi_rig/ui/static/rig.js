@@ -107,6 +107,99 @@ export function makeControl(name, info, entry) {
   };
 }
 
+// ---------------------------------------------------------------- a control of several parameters
+// A profile's control (profile.py, "Controls"): one knob whose travel, 0 to
+// 100 %, sets several of the plugin's parameters, each along a curve from
+// its real value at 0 % (`at_0`) to the one at 100 % (`at_1`). The knob's
+// own value is its travel, 0 to 1, shown as a percentage, so every gesture,
+// step and typed value of a parameter's knob works on it unchanged. It is
+// set by setting each parameter it drives (`mixTargets`), and shown from
+// what those parameters are (`mixPosition`): where they are not on its
+// curve, at the curve's nearest point, and nothing is sent until it is
+// turned.
+
+// How far from at_0 to at_1 a driven parameter is at travel m, on `curve`:
+// profile.curve_at, the same three.
+export function curveAt(curve, m) {
+  const x = clamp01(m);
+  if (curve === "sine") return Math.sin(x * Math.PI / 2);
+  if (curve === "cosine") return 1 - Math.cos(x * Math.PI / 2);
+  return x; // linear, and anything a profile loaded unvalidated calls a curve
+}
+
+export function makeMix(entry, params) {
+  params = params || {};
+  const drives = (entry.drives || []).map((d) => ({
+    parameter: d.parameter, curve: d.curve, at_0: d.at_0, at_1: d.at_1,
+    ctrl: makeControl(d.parameter, params[d.parameter], null),
+  }));
+  const missing = !drives.length || drives.some((d) => d.ctrl.missing);
+  const notes = [];
+  const lacking = drives.filter((d) => d.ctrl.missing).map((d) => d.parameter);
+  if (lacking.length && lacking.length < drives.length) notes.push(`drives ${lacking.join(", ")}, which the running plugin lacks`);
+  return {
+    name: entry.name, kind: "mix", drives,
+    label: entry.label || entry.name,
+    description: entry.description || null,
+    unit: "%", scale: "linear",
+    control: entry.control === "fader" ? "fader" : "knob",
+    min: 0, max: 100, hasRange: true, choices: null, integer: false,
+    group: entry.group ?? null,
+    visibility: entry.visibility || "primary",
+    phone: isNumber(entry.phone) ? entry.phone : null,
+    readOnly: drives.some((d) => d.ctrl.readOnly),
+    missing, profiled: true, notes,
+  };
+}
+
+// What each driven parameter is set to at travel v (0 to 1): `[{parameter,
+// value}]`, each value Sushi's normalised one over that parameter's range.
+export function mixTargets(mix, v) {
+  return mix.drives.map((d) => ({
+    parameter: d.parameter,
+    value: normalisedOf(d.ctrl, d.at_0 + (d.at_1 - d.at_0) * curveAt(d.curve, v)),
+  }));
+}
+
+// Off the curve by more than this (the largest difference, as a fraction of
+// a parameter's range) is said beside the knob.
+export const MIX_OFF_CURVE = 0.005;
+
+// Where the knob is for the driven parameters' values (`values`, by
+// parameter, normalised): the travel whose targets are nearest them (least
+// squares, each parameter as a fraction of its range), and how far the
+// furthest is from its target there (`off`). Null where any value is not
+// known. Pure: a grid of a thousand steps, then a narrowing search around
+// the best, so a value on the curve comes back to within float error.
+export function mixPosition(mix, values) {
+  if (!mix.drives.length) return null;
+  const now = mix.drives.map((d) => (values ? values[d.parameter] : null));
+  if (now.some((x) => !isNumber(x))) return null;
+  const cost = (m) => mixTargets(mix, m).reduce((s, t, i) => s + (t.value - now[i]) ** 2, 0);
+  let best = 0, bestCost = Infinity;
+  const N = 1000;
+  for (let i = 0; i <= N; i++) {
+    const c = cost(i / N);
+    if (c < bestCost) { best = i / N; bestCost = c; }
+  }
+  let lo = Math.max(0, best - 1 / N), hi = Math.min(1, best + 1 / N);
+  for (let k = 0; k < 60; k++) {
+    const a = lo + (hi - lo) / 3, b = hi - (hi - lo) / 3;
+    if (cost(a) <= cost(b)) hi = b; else lo = a;
+  }
+  const m = cost((lo + hi) / 2) < bestCost ? (lo + hi) / 2 : best;
+  const off = Math.max(...mixTargets(mix, m).map((t, i) => Math.abs(t.value - now[i])));
+  return { v: m, off };
+}
+
+// The knob's value in a /live answer (or null), for a card's summary.
+export function mixValueOf(live, processor, mix) {
+  const values = {};
+  for (const d of mix.drives) values[d.parameter] = valueOf(live, processor, d.parameter);
+  const at = mixPosition(mix, values);
+  return at ? at.v : null;
+}
+
 export function realOf(ctrl, v) {
   return ctrl.hasRange ? ctrl.min + v * (ctrl.max - ctrl.min) : v;
 }
@@ -415,6 +508,15 @@ export function unitPanel(params, profile) {
   const byId = new Map(groups.map((g) => [g.id, g]));
   const advanced = [], missing = [], listed = new Set();
   for (const entry of profile.parameters) {
+    if (Array.isArray(entry.drives)) {
+      // A control of several parameters: none of its own in Sushi.
+      if (entry.visibility === "hidden") continue;
+      const mix = makeMix(entry, params);
+      if (mix.missing) missing.push(mix);
+      else if (entry.visibility === "advanced") advanced.push(mix);
+      else (byId.get(entry.group) || other).controls.push(mix);
+      continue;
+    }
     listed.add(entry.name);
     if (entry.visibility === "hidden") continue;
     const ctrl = makeControl(entry.name, params[entry.name], entry);
@@ -500,7 +602,7 @@ export function summaryOf(unit, live, count = 3) {
     if (ranked.length) controls = ranked.sort((a, b) => a.phone - b.phone);
   }
   return controls.slice(0, count)
-    .map((c) => `${c.label} ${formatValue(c, valueOf(live, unit.name, c.name))}`).join(" · ");
+    .map((c) => `${c.label} ${formatValue(c, c.kind === "mix" ? mixValueOf(live, unit.name, c) : valueOf(live, unit.name, c.name))}`).join(" · ");
 }
 
 export function channelLevels(model, live) {

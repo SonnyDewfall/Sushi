@@ -71,6 +71,29 @@ at all, so naming one in a profile is reported as invented.
   decibels and `linear` is the honest scale.
 - `enum`, `toggle`: only for ports whose facts say enumeration/toggled.
 
+## Controls: one knob that drives several parameters
+
+A `controls` entry is a knob of the profile's own, not a port: `drives` maps
+its travel, 0 to 100 %, onto several of the plugin's parameters, each by a
+curve between the real value it has at 0 % (`at_0`) and at 100 % (`at_1`):
+
+- `linear`: in proportion to the travel;
+- `sine`: sin(m·π/2), quick at first, for a level fading in;
+- `cosine`: 1 − cos(m·π/2), slow at first, for a level fading out.
+
+A level fading out on `cosine` from 1 to 0 beside levels fading in on `sine`
+from 0 is an equal-power crossfade: MaGigaverb's Mix, its dry against its
+early reflections and tail. Which parameters a control drives, and how, is a
+judgement (`drives: {value, provenance}`), never `fact`; what the validator
+checks is that each driven parameter is one probe knows, can take a number
+(not a toggle or an enumeration), and that both ends are inside its range.
+The panel sets a control by setting each driven parameter, through the same
+route a parameter's own knob takes, so it is logged, undone and saved as
+those parameters are; and it only reads them to show where the control is,
+the nearest point of its curve when they are not on it, so a page that loads
+never moves them. A driven parameter is usually `hidden`: shown as well, it
+is a second knob moving what the control moves, which is warned about.
+
 ## The file format
 
 YAML, machine-written but meant to be read and diffed by a person. `dump_profile`
@@ -155,6 +178,25 @@ class Parameter(TypedDict, total=False):
     phone: Judgement
 
 
+class Drive(TypedDict):
+    parameter: str
+    curve: str
+    at_0: float
+    at_1: float
+
+
+class Control(TypedDict, total=False):
+    id: str
+    drives: Judgement  # value: list[Drive]
+    visibility: Judgement
+    group: Judgement
+    order: Judgement
+    label: Judgement
+    description: Judgement
+    control: Judgement
+    phone: Judgement
+
+
 class Profile(TypedDict, total=False):
     schema_version: int
     plugin: dict[str, Any]
@@ -164,6 +206,7 @@ class Profile(TypedDict, total=False):
     instrument: dict[str, Any]
     groups: list[dict[str, Any]]
     parameters: list[Parameter]
+    controls: list[Control]
     face: Face
 
 
@@ -171,7 +214,7 @@ class Profile(TypedDict, total=False):
 # appended after, sorted, so rewriting a file never drops data.
 _TOP_KEYS = (
     "schema_version", "plugin", "kind", "host", "ports", "instrument",
-    "groups", "parameters", "face",
+    "groups", "parameters", "controls", "face",
 )
 _PLUGIN_KEYS = ("uri", "version", "name")
 _PORTS_KEYS = ("audio_in", "audio_out", "config_drivable")
@@ -186,6 +229,19 @@ _JUDGEMENT_KEYS = (
     "phone",
 )
 _PARAMETER_KEYS = ("name", "symbol", "facts") + _JUDGEMENT_KEYS
+# A control's own judgements: a parameter's, less `scale`, since a control's
+# travel is always 0 to 100 %; and `drives`, what it sets.
+_CONTROL_JUDGEMENT_KEYS = (
+    "drives", "visibility", "group", "order", "label", "description", "control", "phone",
+)
+_CONTROL_KEYS = ("id",) + _CONTROL_JUDGEMENT_KEYS
+_DRIVE_KEYS = ("parameter", "curve", "at_0", "at_1")
+#: How a driven parameter follows a control's travel m, 0 to 1: its value is
+#: at_0 + (at_1 - at_0) * curve(m).
+CURVES = ("linear", "sine", "cosine")
+#: The controls a control may be drawn as: a knob or a fader, never a toggle
+#: or a selector, which a travel of 0 to 100 % is not.
+CONTROL_CONTROLS = ("knob", "fader")
 _FACE_KEYS = ("screenshot", "zones")
 _SCREENSHOT_KEYS = ("file", "width", "height")
 _ZONE_KEYS = ("parameter", "bbox", "confirmed")
@@ -263,6 +319,25 @@ def derive_scale(fact: dict[str, Any]) -> str:
     if fact.get("logarithmic"):
         return "log"
     return "linear"
+
+
+def curve_at(curve: str, m: float) -> float:
+    """How far along from `at_0` to `at_1` a driven parameter is at travel
+    `m` (0 to 1) on `curve`: 0 at m = 0, 1 at m = 1. Pure; `rig.js`'s
+    `curveAt` is the same and is what the panel uses."""
+    m = min(1.0, max(0.0, float(m)))
+    if curve == "sine":
+        return math.sin(m * math.pi / 2)
+    if curve == "cosine":
+        return 1.0 - math.cos(m * math.pi / 2)
+    if curve == "linear":
+        return m
+    raise ValueError(f"unknown curve {curve!r}; one of {', '.join(CURVES)}")
+
+
+def driven_value(drive: dict[str, Any], m: float) -> float:
+    """The real value a drive gives its parameter at travel `m`."""
+    return drive["at_0"] + (drive["at_1"] - drive["at_0"]) * curve_at(drive["curve"], m)
 
 
 def _has_choices(fact: dict[str, Any]) -> bool:
@@ -401,6 +476,9 @@ def canonicalise(profile: dict[str, Any]) -> dict[str, Any]:
     if isinstance(top.get("parameters"), list):
         top["parameters"] = [_canonical_parameter(p) for p in top["parameters"]]
 
+    if isinstance(top.get("controls"), list):
+        top["controls"] = [_canonical_control(c) for c in top["controls"]]
+
     face = top.get("face")
     if isinstance(face, dict):
         face = _ordered(face, _FACE_KEYS)
@@ -430,6 +508,27 @@ def _canonical_parameter(entry: Any) -> Any:
             # Free text stays in block style: inside a one-line `{...}` a
             # description's own commas and colons force quoting and bury the
             # provenance at the end of a very long line.
+            out[key] = ordered if key == "description" else _Flow(ordered)
+    return out
+
+
+def _canonical_control(entry: Any) -> Any:
+    if not isinstance(entry, dict):
+        return entry
+    out = _ordered(entry, _CONTROL_KEYS)
+    for key in _CONTROL_JUDGEMENT_KEYS:
+        if not isinstance(out.get(key), dict):
+            continue
+        ordered = _ordered(out[key], ("value", "provenance"))
+        if key == "drives":
+            # A block, with each drive on a line of its own.
+            if isinstance(ordered.get("value"), list):
+                ordered["value"] = [
+                    _Flow(_ordered(d, _DRIVE_KEYS)) if isinstance(d, dict) else d
+                    for d in ordered["value"]
+                ]
+            out[key] = ordered
+        else:
             out[key] = ordered if key == "description" else _Flow(ordered)
     return out
 
@@ -483,8 +582,8 @@ def _spaced(body: str) -> str:
             # (schema_version, kind, host) read better kept together.
             if out and line.endswith(":"):
                 out.append("")
-        elif section == "parameters" and line.startswith("  - "):
-            if not out[-1].startswith("parameters:"):
+        elif section in ("parameters", "controls") and line.startswith("  - "):
+            if not out[-1].startswith(f"{section}:"):
                 out.append("")
         out.append(line)
     return "\n".join(out) + "\n"
@@ -520,9 +619,17 @@ def validate(profile: Any, facts: dict[str, Any]) -> list[Finding]:
     _check_instrument(c, profile)
     group_ids = _check_groups(c, profile.get("groups"))
     declared = _check_parameters(c, profile.get("parameters"), facts, group_ids)
+    controls = _check_controls(c, profile.get("controls"), profile.get("parameters"), facts, group_ids)
     _check_face(c, profile.get("face"), facts, declared)
 
     drivable = bool(facts.get("config_drivable"))
+    if not drivable and controls:
+        c.error(
+            "not-drivable",
+            "controls",
+            f"{facts.get('uri', 'this plugin')} cannot be driven from a config, so a "
+            "control that sets its parameters would do nothing",
+        )
     if not drivable and declared:
         c.error(
             "not-drivable",
@@ -743,6 +850,152 @@ def _check_parameters(
             _check_facts(c, f"{path}.facts", entry["facts"], fact)
         _check_judgements(c, path, entry, fact, group_ids, orders)
     return declared
+
+
+def _check_controls(
+    c: _Collector, controls: Any, params: Any, facts: dict[str, Any], group_ids: set[str]
+) -> list[str]:
+    """Returns the ids of the controls the profile declares."""
+    ids: list[str] = []
+    if controls is None:
+        return ids
+    if not isinstance(controls, list):
+        c.error("bad-type", "controls", "controls must be a list")
+        return ids
+    by_name = {p["name"]: p for p in facts.get("parameters", [])}
+    # How each parameter is shown, by the profile's own say: a driven one
+    # that is not hidden is a second knob moving what the control moves.
+    shown = {}
+    for entry in params if isinstance(params, list) else []:
+        if isinstance(entry, dict) and isinstance(entry.get("name"), str):
+            v = entry.get("visibility")
+            shown[entry["name"]] = v.get("value") if isinstance(v, dict) else None
+    driven_by: dict[str, str] = {}
+    orders: dict[str, dict[int, str]] = {}
+
+    for i, entry in enumerate(controls):
+        path = f"controls[{i}]"
+        if not isinstance(entry, dict):
+            c.error("bad-type", path, "a control must be a mapping")
+            continue
+        _unknown_keys(c, path, entry, _CONTROL_KEYS)
+        cid = entry.get("id")
+        if not isinstance(cid, str) or not cid:
+            c.error("bad-type", f"{path}.id", "a control needs an id")
+            continue
+        path = f"controls[{i}] ({cid})"
+        if cid in ids:
+            c.error("duplicate-control", path, f"control {cid!r} is defined twice")
+            continue
+        if cid in by_name:
+            c.error("control-is-a-parameter", path,
+                    f"{cid!r} is a parameter's name in Sushi; a control's id must not be "
+                    "one, or the panel could not tell the two apart")
+            continue
+        ids.append(cid)
+
+        drives = _judgement(c, path, entry, "drives")
+        if drives is None:
+            if "drives" not in entry:
+                c.error("missing-judgement", f"{path}.drives", "a control needs `drives`: what it sets")
+        else:
+            if drives["provenance"] == "fact":
+                c.error("fact-not-derivable", f"{path}.drives.provenance",
+                        "what a control drives is a judgement, so it cannot be 'fact'")
+            _check_drives(c, f"{path}.drives.value", cid, drives["value"], by_name, shown, driven_by)
+
+        # The judgements a parameter has, checked as a parameter's are, with
+        # nothing to derive them from.
+        j = {k: _judgement(c, path, entry, k) for k in _CONTROL_JUDGEMENT_KEYS if k != "drives"}
+
+        def value(key: str) -> Any:
+            return j[key]["value"] if j[key] else None
+
+        if "visibility" not in entry:
+            c.error("missing-judgement", f"{path}.visibility",
+                    "every control needs a visibility (hidden is a valid answer)")
+        if j["visibility"] and value("visibility") not in VISIBILITIES:
+            c.error("bad-value", f"{path}.visibility.value",
+                    f"{value('visibility')!r} must be one of {', '.join(VISIBILITIES)}")
+        if j["control"] and value("control") not in CONTROL_CONTROLS:
+            c.error("bad-value", f"{path}.control.value",
+                    f"a control's travel is 0 to 100 %, so it is drawn as "
+                    f"{' or '.join(CONTROL_CONTROLS)}, not {value('control')!r}")
+        if j["group"]:
+            g = value("group")
+            if not isinstance(g, str) or g not in group_ids:
+                c.error("undefined-group", f"{path}.group.value",
+                        f"group {g!r} is not defined under `groups`")
+        if j["order"]:
+            o = value("order")
+            if not _is_int(o) or o < 0:
+                c.error("bad-value", f"{path}.order.value", "order must be an integer >= 0")
+        if j["label"] and (not isinstance(value("label"), str) or not value("label").strip()):
+            c.error("bad-value", f"{path}.label.value", "label must be non-empty text")
+        if j["description"]:
+            d = value("description")
+            if not isinstance(d, str):
+                c.error("bad-value", f"{path}.description.value", "description must be text")
+            elif len(d) > MAX_DESCRIPTION:
+                c.warn("long-description", f"{path}.description.value",
+                       f"{len(d)} characters; a phone shows about {MAX_DESCRIPTION}")
+        if j["phone"] and (not _is_int(value("phone")) or value("phone") < 1):
+            c.error("bad-value", f"{path}.phone.value",
+                    "phone priority must be an integer >= 1 (1 = most important)")
+        for key, judged in j.items():
+            if judged and judged["provenance"] == "fact":
+                c.error("fact-not-derivable", f"{path}.{key}.provenance",
+                        f"a control has no facts to derive its {key} from, so it cannot be 'fact'")
+    return ids
+
+
+def _check_drives(
+    c: _Collector, path: str, cid: str, drives: Any, by_name: dict[str, Any],
+    shown: dict[str, Any], driven_by: dict[str, str],
+) -> None:
+    if not isinstance(drives, list) or not drives:
+        c.error("bad-value", path, "drives must be a non-empty list of {parameter, curve, at_0, at_1}")
+        return
+    seen: set[str] = set()
+    for k, drive in enumerate(drives):
+        where = f"{path}[{k}]"
+        if not isinstance(drive, dict):
+            c.error("bad-type", where, "a drive is a mapping of parameter, curve, at_0 and at_1")
+            continue
+        _unknown_keys(c, where, drive, _DRIVE_KEYS)
+        name = drive.get("parameter")
+        fact = by_name.get(name) if isinstance(name, str) else None
+        if fact is None:
+            c.error("invented-parameter", f"{where}.parameter",
+                    f"probe knows no parameter named {name!r} (use the name Sushi uses)")
+            continue
+        where = f"{path}[{k}] ({name})"
+        if name in seen:
+            c.error("duplicate-parameter", where, f"{name!r} is driven twice by this control")
+            continue
+        seen.add(name)
+        if fact.get("toggled") or fact.get("enumeration") or fact.get("integer"):
+            c.error("control-not-allowed", where,
+                    f"{name!r} is a toggle, an enumeration or a whole number, which a curve "
+                    "would set to values between its steps")
+        if drive.get("curve") not in CURVES:
+            c.error("bad-value", f"{where}.curve", f"curve {drive.get('curve')!r} must be one of {', '.join(CURVES)}")
+        lo, hi = fact.get("min"), fact.get("max")
+        for end in ("at_0", "at_1"):
+            v = drive.get(end)
+            if not _is_number(v):
+                c.error("bad-value", f"{where}.{end}", f"{end} must be a number in {name!r}'s own units")
+            elif _is_number(lo) and _is_number(hi) and not (lo - 1e-9 <= v <= hi + 1e-9):
+                c.error("bad-value", f"{where}.{end}",
+                        f"{v!r} is outside {name!r}'s range, {lo!r} to {hi!r}")
+        if name in driven_by and driven_by[name] != cid:
+            c.warn("driven-twice", where,
+                   f"{name!r} is driven by {driven_by[name]!r} too; each would move it from under the other")
+        driven_by.setdefault(name, cid)
+        if shown.get(name, "hidden") != "hidden":
+            c.warn("driven-and-shown", where,
+                   f"{name!r} is driven by {cid!r} and shown as well ({shown.get(name) or 'primary'}): "
+                   "two knobs that move the same parameter. Hide it, unless that is meant")
 
 
 def _check_facts(c: _Collector, path: str, restated: Any, fact: dict[str, Any]) -> None:

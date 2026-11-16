@@ -719,8 +719,54 @@ function typedInto(ctrl, set, format = (v) => R.formatValue(ctrl, v)) {
   };
 }
 
-function knob(unit, ctrl, size) {
+// How a knob reaches what it shows: one parameter, or for a profile's
+// control of several (`R.makeMix`), each parameter it drives. `send(v)` sets
+// it, `read(ctx)` is what to show (the value a send in flight will leave, as
+// `sender.displayed` says, else the poll's), `failed()` a refusal to show.
+// A mix is only ever read on a poll: what it shows is where its parameters
+// are (`R.mixPosition`, the nearest point of its curve), and nothing is sent
+// until it is turned, so a page that loads never moves the sound.
+function parameterIo(unit, ctrl) {
   const key = `p\u0000${unit.name}\u0000${ctrl.name}`;
+  return {
+    send: (v) => sender.change(key, v, (x) => ({ path: "/live/parameter", json: { processor: unit.name, parameter: ctrl.name, value: x } })),
+    read: (ctx) => ({ v: sender.displayed(key, R.valueOf(ctx.live, unit.name, ctrl.name), ctx.seq), notes: [] }),
+    failed: () => state.failed.get(key),
+  };
+}
+
+function mixIo(unit, ctrl) {
+  const keyOf = (parameter) => `p\u0000${unit.name}\u0000${parameter}`;
+  return {
+    // Each parameter through POST /live/parameter, as its own knob would
+    // send it: logged, undone and saved as that parameter.
+    send: (v) => {
+      for (const t of R.mixTargets(ctrl, v)) {
+        sender.change(keyOf(t.parameter), t.value, (x) => ({ path: "/live/parameter", json: { processor: unit.name, parameter: t.parameter, value: x } }));
+      }
+    },
+    read: (ctx) => {
+      const values = {};
+      for (const d of ctrl.drives) {
+        values[d.parameter] = sender.displayed(keyOf(d.parameter), R.valueOf(ctx.live, unit.name, d.parameter), ctx.seq);
+      }
+      const at = R.mixPosition(ctrl, values);
+      if (!at) return { v: null, notes: [] };
+      return { v: at.v, notes: at.off > R.MIX_OFF_CURVE ? ["between Mix's settings: shown at the nearest"] : [] };
+    },
+    failed: () => {
+      for (const d of ctrl.drives) {
+        const why = state.failed.get(keyOf(d.parameter));
+        if (why) return why;
+      }
+      return null;
+    },
+  };
+}
+
+function knob(unit, ctrl, size) {
+  const key = ctrl.kind === "mix" ? `m\u0000${unit.name}\u0000${ctrl.name}` : `p\u0000${unit.name}\u0000${ctrl.name}`;
+  const io = ctrl.kind === "mix" ? mixIo(unit, ctrl) : parameterIo(unit, ctrl);
   const inert = ctrl.readOnly || ctrl.missing;
   const r = size === "big" ? 26 : 13, w = size === "big" ? 6 : 4, box = 2 * r + 2 * w;
   const sweep = 1.5 * Math.PI * r, round = 2 * Math.PI * r;
@@ -734,9 +780,11 @@ function knob(unit, ctrl, size) {
     h("circle", { cx: box / 2, cy: box / 2, r, class: "track", "stroke-width": w, "stroke-dasharray": `${sweep} ${round}`, transform: `rotate(135 ${box / 2} ${box / 2})` }),
     arc));
   let current = null;
+  let readNotes = [];
   const set = (v) => {
     v = Math.min(1, Math.max(0, v));
-    sender.change(key, v, (x) => ({ path: "/live/parameter", json: { processor: unit.name, parameter: ctrl.name, value: x } }));
+    io.send(v);
+    readNotes = [];
     draw(v);
   };
   // Named, so a row rebuilt round it can give back what was being typed (`giveBack`).
@@ -756,8 +804,8 @@ function knob(unit, ctrl, size) {
     field.show(text);
     dial.setAttribute("aria-valuenow", Math.round(p * 100));
     dial.setAttribute("aria-valuetext", text);
-    const failed = state.failed.get(key);
-    const notes = [...ctrl.notes];
+    const failed = io.failed();
+    const notes = [...ctrl.notes, ...readNotes];
     if (ctrl.missing) notes.unshift("not on the running plugin");
     else if (ctrl.readOnly) notes.unshift("read-only");
     if (failed) notes.unshift(`refused: ${failed}`);
@@ -766,7 +814,11 @@ function knob(unit, ctrl, size) {
     el.classList.toggle("failed", !!failed);
   };
   if (!inert) bindGestures(dial, ctrl, () => current, set, { field });
-  state.updaters.push((ctx) => draw(sender.displayed(key, R.valueOf(ctx.live, unit.name, ctrl.name), ctx.seq)));
+  state.updaters.push((ctx) => {
+    const read = io.read(ctx);
+    readNotes = read.notes;
+    draw(read.v);
+  });
   return el;
 }
 
@@ -813,6 +865,7 @@ function selector(unit, ctrl) {
 }
 
 function control(unit, ctrl, size) {
+  if (ctrl.kind === "mix") return knob(unit, ctrl, size);
   if (ctrl.control === "toggle" || ctrl.scale === "toggle") return toggle(unit, ctrl);
   if (ctrl.control === "selector" && ctrl.choices) return selector(unit, ctrl);
   return knob(unit, ctrl, size);
