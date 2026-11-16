@@ -373,7 +373,8 @@ async function poll() {
     // back meanwhile (`state.reading`, `chainRegion`). The same rig's new
     // chains are shown with the plugins already held. Either way the
     // plugins are read after, and drawn when they come.
-    const switches = R.switchesSeen(state.switches, logBody);
+    const switches = R.switchesSeen(state.switches, logBody,
+      health.ok ? (health.body.agent || {}).started_at ?? null : null);
     const due = live && live.ok ? pluginsDue(live.body, rigIdentity(health, switches)) : null;
     const another = !!due && due.rig !== state.pluginsRig;
     state.health = health;
@@ -615,7 +616,9 @@ function bindGestures(target, ctrl, get, set, { drag: draggable = true, field = 
   // pointer). A drag left set when its pointer was gone made every later
   // press a "second finger", jumping from a stale height, and held its row
   // open for good (review of #135).
-  const stop = () => { drag = null; delete target.dataset.dragging; };
+  // The page is drawn again after, outside whatever event ended the drag:
+  // a row held unchanged under the drag (`unitSlot`) takes its changes then.
+  const stop = () => { drag = null; delete target.dataset.dragging; setTimeout(render, 0); };
   if (draggable) {
     target.addEventListener("pointerdown", (event) => {
       if (drag && !target.hasPointerCapture(drag.id)) stop();  // a drag whose pointer was lost unseen
@@ -1466,6 +1469,7 @@ function unitParts(slot, unit, expanded) {
   // The mono badge has a place of its own, drawn in place (`unitSlot`): it
   // changes when a stereo plugin is moved past this one, from anywhere.
   slot.badge = h("span", { class: "badge-slot" });
+  slot.profiled = !!unit.profile;
   return [
     h("div", { class: "steps" }, slot.steps.up, slot.steps.down),
     h("span", { class: "swatch", style: `background:${swatch(unit)}` }),
@@ -1496,7 +1500,13 @@ function unitSlot(slot, track, unit, index) {
   // profiles came).
   const active = document.activeElement;
   const focused = active && slot.el.contains(active) ? active.dataset.focus || null : null;
-  const rebuilt = patch(slot.el, JSON.stringify([unit.uri, unit.profile, unit.panel, expanded, state.locked]), () => {
+  const key = JSON.stringify([unit.uri, unit.profile, unit.panel, expanded, state.locked]);
+  // A row with a knob being dragged is not rebuilt under the hand, as a
+  // bypass does not minimise it (review of #135: profiles arriving past the
+  // first draw's wait took the drag with the old row). What changed is drawn
+  // when the drag ends: the drag's end redraws the page (`bindGestures`).
+  const held = state.keys.has(slot.el) && state.keys.get(slot.el) !== key && dragging(slot.el);
+  const rebuilt = !held && patch(slot.el, key, () => {
     const outer = state.updaters;
     state.updaters = [];
     try {
@@ -1512,7 +1522,8 @@ function unitSlot(slot, track, unit, index) {
     if (again) again.focus({ preventScroll: true });
   }
   patch(slot.badge, JSON.stringify(unit.monoNote), () => monoBadge(unit));
-  const sub = [pluginName(unit), unit.profile ? "profile" : "no profile: every parameter"].join(" · ");
+  // What the row as drawn shows: a row held under a drag keeps its old controls.
+  const sub = [pluginName(unit), slot.profiled ? "profile" : "no profile: every parameter"].join(" · ");
   if (slot.sub.textContent !== sub) slot.sub.textContent = sub;
   slot.steps.up.disabled = !R.canMove(track, index, "up");
   slot.steps.down.disabled = !R.canMove(track, index, "down");

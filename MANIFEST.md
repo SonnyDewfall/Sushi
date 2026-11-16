@@ -4167,3 +4167,20 @@ Each fix has a test that fails on a689de9. The fast suite: 4442 passed, 41
 skipped. **Not run here:** the browser tests on 3.11 (this machine's 3.11
 has no Playwright: CI is that test), the rig, a phone, the slow tests and
 the container job. *(2026-11-16)*
+
+**The rack's tabs: an agent started again, and a drag under a late profile
+(PR #148, third re-review).** (1) A live switch was counted by its log
+entry's number being newer than any seen, but an agent started again numbers
+its log from 0 while Sushi keeps running, so a switch just after an agent's
+restart (its entry numbered below what the page had seen) went uncounted,
+and the rows kept the plugins of the rig before. `R.switchesSeen` now keys
+what it has seen to the agent's start (`/health`'s `agent.started_at`, set
+once each time the agent starts, to the second): in a log of another start,
+any rig entry counts; an unread log changes nothing, that start included.
+(2) Profiles arriving after the first draw's two-second wait rebuilt a row
+under a knob being dragged: a row with a drag is now left as it is, and
+takes its profile when the drag ends. Each has a test that fails on 4fe129e
+and passes now. The fast suite: 4445 passed, 41 skipped. **Not run here:**
+an agent really restarted under a running Sushi (`/health` and `/live/log`
+were given to the page by the test), the browser tests on 3.11, the rig, a
+phone, the slow tests and the container job. *(2026-11-16)*

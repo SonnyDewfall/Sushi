@@ -1529,13 +1529,14 @@ def test_a_live_switch_is_counted_only_on_a_rig_entry_newer_than_any_seen(blank)
         ['not read', null],
         ['a switch', log(600, ['parameter', 'parameter', 'rig'])],
         ['the same switch, seen again', log(601, ['parameter', 'rig', 'parameter'])],
-        ['the agent restarted', log(0, ['rig'])],
+        ['the agent restarted, a switch its first entry', log(0, ['rig'])],
         ['a switch after that', log(0, ['rig', 'parameter', 'rig'])],
       ];
       let seen = null;
       return steps.map(([what, l]) => { seen = R.switchesSeen(seen, l); return [what, seen && seen.count]; });""")
     assert out == [[None, 0], ["same", 0], ["trimmed past the rig entry", 0], ["not read", 0], ["a switch", 1],
-                   ["the same switch, seen again", 1], ["the agent restarted", 1], ["a switch after that", 2]]
+                   ["the same switch, seen again", 1], ["the agent restarted, a switch its first entry", 2],
+                   ["a switch after that", 3]]
     # A log never read (the first poll's failed) counts nothing either.
     assert rigjs(blank, "return R.switchesSeen(null, null);") is None
 
@@ -1700,3 +1701,102 @@ def test_the_plugins_names_arriving_late_change_a_rows_text_and_nothing_else(bro
         expect(sub).not_to_have_text(before, timeout=5000)
         assert dial.evaluate("(e) => e.isConnected"), "the row was not rebuilt for its text"
         page.close()
+
+
+
+def test_a_switch_in_a_restarted_agents_log_is_counted_however_its_entries_are_numbered(blank):
+    """An agent started again numbers its log from 0 and keeps Sushi
+    running (the rig's start, from the state file, is the same). Its start
+    (/health's agent.started_at) says it is another agent: any rig entry in
+    its log happened since the page last saw the one before."""
+    out = rigjs(blank, """
+      const log = (first, ops) => ({first, log: ops.map((op) => ({op}))});
+      const many = (n, at) => [...Array(n)].map((_, i) => (i === at ? 'rig' : 'parameter'));
+      const seen40 = R.switchesSeen(null, log(0, many(41, -1)), 'agent-1');
+      return {
+        // The log unread while the agent was down: nothing changes, its start included.
+        down: R.switchesSeen(seen40, null, 'agent-2'),
+        // Back, with a switch as its first entry, below the 40 seen.
+        first: R.switchesSeen(R.switchesSeen(seen40, null, 'agent-2'), log(0, ['rig']), 'agent-2').count,
+        // Back with more entries than were seen, the switch among the first 40.
+        past: R.switchesSeen(seen40, log(0, many(60, 10)), 'agent-2').count,
+        // A new agent with no switch in its log: none.
+        none: R.switchesSeen(seen40, log(0, many(5, -1)), 'agent-2').count,
+        // The same agent, the same 60: the switch at 10 is not newer than the 40 seen... and is counted once.
+        again: R.switchesSeen(R.switchesSeen(seen40, log(0, many(60, 10)), 'agent-2'), log(0, many(61, 10)), 'agent-2').count,
+      };""")
+    assert out["down"]["agent"] == "agent-1" and out["down"]["count"] == 0, "an unread log keeps what was seen"
+    assert out["first"] == 1
+    assert out["past"] == 1
+    assert out["none"] == 0
+    assert out["again"] == 1
+
+
+def test_a_switch_after_the_agent_restarted_is_read_as_another_rig(browser, served):
+    """Through the page: /health names another agent start, and its log has a
+    switch as its first entry, numbered below what the page had seen. The
+    page reads the plugins again, as for any other rig."""
+    for i in range(41):  # a log of 41 entries seen first: the new agent's entry 0 is below them
+        assert post(served, "/live/parameter", {"processor": "delay", "parameter": "Feedback", "value": 0.3 + i / 1000})["ok"]
+    page = rack_page(browser, served)
+    p = page.page
+    restarted = {"on": False}
+
+    def health(route):
+        body = route.fetch().json()
+        if restarted["on"]:
+            body["agent"]["started_at"] = "2099-01-01T00:00:00+00:00"
+        route.fulfill(json=body)
+
+    def log(route):
+        if not restarted["on"]:
+            route.continue_()
+            return
+        route.fulfill(json={"ok": True, "first": 0, "log": [{"op": "rig", "args": {"rig": "electric_board", "how": "live"},
+                                                             "previous": "electric_board", "at": "2099-01-01T00:00:01+00:00"}]})
+
+    p.route("**/health", health)
+    p.route("**/live/log", log)
+    # Waited for with the page's own clock: a route that fetches is served
+    # only while this thread is in a Playwright call, which time.sleep is not.
+    p.wait_for_timeout(1200)
+    calls = sum(1 for c in served.rig.calls if c[0] == "plugins")
+    restarted["on"] = True
+    for _ in range(50):
+        if sum(1 for c in served.rig.calls if c[0] == "plugins") > calls:
+            break
+        p.wait_for_timeout(100)
+    assert sum(1 for c in served.rig.calls if c[0] == "plugins") > calls, "the plugins were read again"
+    expect(shown(p)).to_have_text(["overdrive", "octave", "delay"])
+    page.close()
+
+
+def test_a_profile_arriving_under_a_drag_waits_for_the_drag_to_end(browser, served):
+    """Profiles later than the first draw's wait rebuild a row with its
+    profile's controls; one with a knob being dragged is left as it is until
+    the drag ends, so the drag lands, and then the row takes its profile."""
+    page = Page.__new__(Page)
+    page.page = browser.new_page(viewport={"width": 1280, "height": 900})
+    page.errors = []
+    p = page.page
+    p.on("pageerror", lambda error: page.errors.append(str(error)))
+    release = hold(p, "**/profiles")
+    p.goto(served.url + "/#rack")
+    expect(unit(p, "overdrive")).to_contain_text("no profile: every parameter", timeout=5000)  # past the wait, plain
+    dial = slider(p, "overdrive Drive")
+    box = dial.locator("svg").bounding_box()
+    x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+    handle = dial.element_handle()
+    p.mouse.move(x, y)
+    p.mouse.down()
+    p.mouse.move(x, y - 32, steps=4)
+    release()
+    time.sleep(1.5)  # the profiles in, a poll
+    assert handle.evaluate("(e) => e.isConnected && !!e.dataset.dragging"), "the dragged row was left as it was"
+    expect(unit(p, "overdrive")).to_contain_text("no profile: every parameter")
+    p.mouse.move(x, y - 64, steps=4)
+    p.mouse.up()
+    until(lambda: abs(served.rig.info["overdrive"]["Drive"]["value"] - 0.82) < 1e-6)
+    expect(unit(p, "overdrive")).to_contain_text("GxTubeScreamer · profile")
+    expect(slider(p, "overdrive Drive")).to_have_attribute("aria-valuetext", "0.82")
+    page.close()

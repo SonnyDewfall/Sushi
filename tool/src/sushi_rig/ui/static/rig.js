@@ -514,7 +514,8 @@ export function channelLevels(model, live) {
 
 // The live switches the page has seen, from one GET /live/log answer after
 // another (`seen` is the last call's, null to begin; `log` the answer's
-// body, or null when it was not read). A live switch to another rig is
+// body, or null when it was not read; `agent` /health's `agent.started_at`,
+// which names the agent's own start). A live switch to another rig is
 // already a new `config_name` in /health; this is for one /health cannot
 // tell apart (#93 writes the state file's `switched_at`, which /health does
 // not carry), and counts one only on a positive sign: an `op: "rig"` entry
@@ -523,9 +524,13 @@ export function channelLevels(model, live) {
 // knob turns, and one /live/log that fails says nothing; either counted as
 // "another rig" cleared the plugins and held the chain back (re-review of
 // #135). Entries are numbered from `first`, the same number for the same
-// entry across answers; a log whose newest is older than one seen (the agent
-// restarted) is a fresh start, and counts nothing either. Returns {max, count}.
-export function switchesSeen(seen, log) {
+// entry across answers of one agent; an agent started again (its start not
+// the one seen, or a log whose newest is older than one seen) begins again
+// from 0 and keeps Sushi running, and any rig entry in its log happened
+// since the page last saw the agent before, so it counts. An unread log
+// changes nothing, the agent's start with it, so that a log read later
+// from the new agent is still known as one. Returns {agent, max, count}.
+export function switchesSeen(seen, log, agent = null) {
   if (!log || !Array.isArray(log.log)) return seen;
   const first = isNumber(log.first) ? log.first : 0;
   const last = first + log.log.length - 1;
@@ -533,9 +538,12 @@ export function switchesSeen(seen, log) {
   for (let i = log.log.length - 1; i >= 0; i--) {
     if (log.log[i] && log.log[i].op === "rig") { rig = first + i; break; }
   }
-  if (!seen || last < seen.max) return { max: Math.max(rig ?? -1, last), count: seen ? seen.count : 0 };
-  if (rig !== null && rig > seen.max) return { max: Math.max(rig, last), count: seen.count + 1 };
-  return { max: Math.max(seen.max, last), count: seen.count };
+  if (!seen) return { agent, max: Math.max(rig ?? -1, last), count: 0 };
+  if (agent !== seen.agent || last < seen.max) {
+    return { agent, max: Math.max(rig ?? -1, last), count: seen.count + (rig !== null ? 1 : 0) };
+  }
+  if (rig !== null && rig > seen.max) return { agent, max: Math.max(rig, last), count: seen.count + 1 };
+  return { agent, max: Math.max(seen.max, last), count: seen.count };
 }
 
 // ---------------------------------------------------------------- the rack's tabs and rows (#135)

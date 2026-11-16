@@ -98,13 +98,17 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   change is meant for. "Another rig" is a new name or start in `/health`,
   or a live switch the log shows by an `op: "rig"` entry newer than any
   seen (`R.switchesSeen`); a log trimmed past that entry (it keeps 500) or
-  one `/live/log` that fails is never one. The first chain is drawn once the
+  one `/live/log` that fails is never one. The agent numbers its log from 0
+  again when it starts again (Sushi keeps running), so a log of another
+  agent start (`/health`'s `agent.started_at`) counts any rig entry in it. The first chain is drawn once the
   profiles have answered (at most two seconds), so its rows are not drawn
   plain and again a moment later; the plugin's name under a unit's, which
   the library may give later still, is written in place. A row rebuilt all
   the same gives the focus back to the control that had it, found by what it
   is in the row (`data-focus`: the dial or value of a parameter, the switch,
-  a move button, the name), never by a label that its state changes. Tabs held while `/live` fails are
+  a move button, the name), never by a label that its state changes. A row
+  with a knob being dragged is not rebuilt (its profile arriving late): it
+  takes the change when the drag ends. Tabs held while `/live` fails are
   held for their own run only, and the amp's tab is decided only against
   this run's tabs, and kept by the page for the run, not by the rack: leaving
   for the stage and coming back does not decide it again. A drag ends when
