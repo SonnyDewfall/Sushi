@@ -567,11 +567,11 @@ def is_local(remote: str | None) -> bool:
     return remote == "::1" or remote.startswith("127.") or remote.startswith("::ffff:127.")
 
 
-def cross_site_refusal(headers: Any, host: str | None) -> str | None:
+def cross_site_refusal(headers: Any, host: str | None, trusted: Any = ()) -> str | None:
     """Why a request a browser sent from another site must be refused, or
-    None. Pure over the request's headers and its `Host`: the agent's
-    middleware (`Agent._same_site_only`, #161) asks it of every POST, PUT,
-    PATCH and DELETE, with `rebinding_refusal` after it.
+    None. Pure over the request's headers, its `Host` and `trusted`: the
+    agent's middleware (`Agent._same_site_only`, #161) asks it of every
+    POST, PUT, PATCH and DELETE, with `rebinding_refusal` after it.
 
     Any web page open on the rig machine (or on a phone that can reach the
     agent) can POST to it: `fetch(url, {method: "POST", mode: "no-cors"})`
@@ -585,7 +585,15 @@ def cross_site_refusal(headers: Any, host: str | None) -> str | None:
     rebinding: a page of an attacker's name that then resolves to this
     machine sends that name as both `Host` and `Origin`, and passes here.
     That is `rebinding_refusal`'s, which reads whether `Host` is a name
-    this agent answers to."""
+    this agent answers to.
+
+    `trusted` is the operator's `--allow-host` names (review of PR #174):
+    an `Origin` of one of them is this agent's whatever `Host` says, on any
+    scheme and port, because a reverse proxy in front of the agent may
+    rewrite `Host` to the address it forwards to (nginx's `proxy_pass`
+    sends `127.0.0.1:8029` by default) while the browser's `Origin` is the
+    proxy's name. Only those names: a page of `localhost:3000`, another
+    program on this machine, is still not this origin."""
     site = (headers.get("Sec-Fetch-Site") or "").strip().lower()
     if site == "cross-site":
         return "refused: a page of another site sent this (Sec-Fetch-Site: cross-site)"
@@ -609,17 +617,57 @@ def cross_site_refusal(headers: Any, host: str | None) -> str | None:
     from urllib.parse import urlsplit
 
     sent = urlsplit(origin)
-    if sent.scheme not in ("http", "https") or not sent.netloc or not host:
+    if sent.scheme not in ("http", "https") or not sent.netloc:
+        return f"refused: Origin {origin!r} is not this agent's"
+    try:
+        sent_name = _bare_name(sent.hostname or "")
+    except ValueError:
+        sent_name = ""
+    if sent_name and sent_name in {_bare_name(name) for name in trusted}:
+        return None
+    if not host:
         return f"refused: Origin {origin!r} is not this agent's"
     if where(sent.scheme, sent.netloc) != where(sent.scheme, host):
         return f"refused: a page of {origin} sent this, not a page of this agent ({host})"
     return None
 
 
-# The methods that change something: what `Agent._same_site_only` is in
-# front of (#161). A GET, HEAD or OPTIONS changes nothing on the agent, and
-# another site's page cannot read the answer to one (no CORS header is sent).
+# The methods that change something: what `cross_site_refusal` is asked of
+# (#161). Another site's page may still GET (a link to the page from
+# elsewhere is a cross-site GET), and cannot read the answer, which has no
+# CORS header; no GET route changes anything (test_agent_cross_site.py lists
+# them). Every request, a GET included, is held to `rebinding_refusal`.
 STATE_CHANGING = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+
+_HOST_NAME = re.compile(r"[a-z0-9_](?:[a-z0-9_-]*[a-z0-9_])?(?:\.[a-z0-9_](?:[a-z0-9_-]*[a-z0-9_])?)*")
+
+
+def allowed_host_name(value: str) -> str:
+    """One `--allow-host` value as the guard compares it, or `ValueError`
+    saying why not (review of PR #174: `rig.vpn:8029` and `http://rig.ts.net`
+    were taken and never matched). A host name alone, or an IP address (any
+    IP is allowed already): no scheme, port or path, since the name is
+    allowed on every scheme and port. Lower case, any trailing dot gone."""
+    import ipaddress
+
+    raw = value.strip()
+    if "://" in raw:
+        raise ValueError(f"{value!r} has a scheme: give the host name alone (rig.ts.net, not "
+                         "http://rig.ts.net); it is allowed on every scheme and port")
+    try:
+        ipaddress.ip_address(raw)
+        return raw.lower()
+    except ValueError:
+        pass
+    name = _bare_name(raw)
+    if re.fullmatch(r"[^:]+:\d*", name):
+        raise ValueError(f"{value!r} has a port: give the host name alone ({name.split(':')[0]}, not "
+                         f"{raw}); it is allowed on every port")
+    if not _HOST_NAME.fullmatch(name) or len(name) > 253:
+        raise ValueError(f"{value!r} is not a host name (letters, digits, '-', '_' and dots, "
+                         "such as rig.ts.net)")
+    return name
 
 
 def _bare_name(name: str) -> str:
@@ -649,9 +697,9 @@ def own_names(allowed: Any = ()) -> frozenset[str]:
     return frozenset(names)
 
 
-def rebinding_refusal(headers: Any, host: str | None, names: Any) -> str | None:
-    """Why a request a browser sent to a name this agent does not answer to
-    must be refused, or None. Pure: `names` is `own_names()`.
+def rebinding_refusal(host: str | None, names: Any) -> str | None:
+    """Why a request sent to a name this agent does not answer to must be
+    refused, or None. Pure over the `Host` header: `names` is `own_names()`.
 
     DNS rebinding (#161): a page of an attacker's name, which then resolves
     to this machine, is same-origin with the agent to the browser, so it
@@ -661,24 +709,28 @@ def rebinding_refusal(headers: Any, host: str | None, names: Any) -> str | None:
     own: an IP address (a page loaded by IP was loaded from that address,
     and there is no name to rebind) or one of `names`.
 
-    Read only of a request a browser sent, one with `Origin` or
-    `Sec-Fetch-Site`: every browser sends `Origin` on a POST. curl, the CLI
-    and anything else may be pointed at the agent by any name (`/etc/hosts`,
-    `--resolve`), and could send any `Host` it liked, so there the check
-    would refuse what is no attack and stop none."""
+    Asked of every request, whatever its method and headers (review of PR
+    #174). A rebound page could read every GET's answer, and nothing in its
+    request says a browser sent it: Chromium 153 sends no `Sec-Fetch-*` to
+    an origin that is not potentially trustworthy (plain http by a name
+    other than localhost, as a rebound one is), and no `Origin` on a
+    same-origin GET or a page load (captured 2026-11-17). So curl and the
+    CLI are held to it too, and pass by the names they use: the CLI asks at
+    the address the agent wrote (the bound `--host`, or 127.0.0.1). No
+    `Host` at all is allowed, since a browser always sends one."""
     import ipaddress
     from urllib.parse import urlsplit
 
-    if headers.get("Origin") is None and headers.get("Sec-Fetch-Site") is None:
+    if host is None:
         return None
     if not host or any(c in host for c in "@/?#\\ "):
-        return f"refused: a browser sent this with no usable Host ({host!r})"
+        return f"refused: no usable Host ({host!r})"
     try:
         name = urlsplit(f"http://{host}").hostname
     except ValueError:
         name = None
     if not name:
-        return f"refused: a browser sent this with no usable Host ({host!r})"
+        return f"refused: no usable Host ({host!r})"
     name = _bare_name(name)
     try:
         ipaddress.ip_address(name)
@@ -687,7 +739,7 @@ def rebinding_refusal(headers: Any, host: str | None, names: Any) -> str | None:
         pass
     if name in names:
         return None
-    return (f"refused: a page of {name} sent this, and {name} is not a name this agent answers to "
+    return (f"refused: this was sent to {name}, which is not a name this agent answers to "
             f"(an IP, localhost, this machine's hostname or its .local name); a name of the "
             f"operator's for this machine is allowed with `sushi-rig agent --allow-host {name}`")
 
@@ -1763,11 +1815,19 @@ class Agent:
         takes_dir: Path | None = None,
         sleep: Callable[[float], Awaitable[None]] = asyncio.sleep,
         allow_hosts: Sequence[str] = (),
+        bound: str | None = None,
     ) -> None:
         self.root = root
         # Names a browser may reach this agent by beside its own (#161,
-        # `own_names`): the address `--host` bound, and each `--allow-host`.
-        self.allow_hosts = tuple(allow_hosts)
+        # `own_names`): each `--allow-host`, which is also an `Origin` the
+        # agent trusts behind a proxy (`cross_site_refusal`), and the address
+        # `--host` bound, which is not. A value with a port or a scheme is
+        # refused here, as at the command line (`allowed_host_name`).
+        try:
+            self.allow_hosts = tuple(allowed_host_name(name) for name in allow_hosts)
+        except ValueError as exc:
+            raise AgentError(f"--allow-host {exc}") from exc
+        self.bound = bound
         self.log_limit = log_limit
         self.describe = describe
         self.doctor = doctor or self._doctor
@@ -2997,28 +3057,34 @@ class Agent:
 
     @web.middleware if web else (lambda f: f)
     async def _same_site_only(self, request, handler):
-        """403 `cross_site` for a POST, PUT, PATCH or DELETE a browser sent
-        from another site's page (`cross_site_refusal`) or to a name this
-        agent does not answer to (`rebinding_refusal`), before any route
-        reads the body or touches anything (#161). One guard for every route
-        that changes state, so a route added later is covered without a word
-        of its own; a 403 here comes before the router's 404 and 405 too.
-        Allowed: a request with neither `Origin` nor `Sec-Fetch-Site` (curl,
-        the CLI, `agent_client`), and the agent's own page by any name it
-        answers to. The pedals' MIDI listener is in this process and sends
-        no request. Not stopped: a device on the LAN that sends no `Origin`,
-        which is a question of authentication (#29's permission split)."""
+        """403 `cross_site`, before any route reads the body or touches
+        anything (#161), for a POST, PUT, PATCH or DELETE a browser sent from
+        another site's page (`cross_site_refusal`), and for any request, a
+        GET or a page load included, sent to a name this agent does not
+        answer to (`rebinding_refusal`: under DNS rebinding the page is
+        same-origin, and could read what it may not change). One guard for
+        every route, so a route added later is covered without a word of its
+        own; a 403 here comes before the router's 404 and 405 too. Allowed:
+        a request with neither `Origin` nor `Sec-Fetch-Site` (curl, the CLI,
+        `agent_client`) by any name the agent answers to, and the agent's
+        own page by any of them. The pedals' MIDI listener is in this process
+        and sends no request. Not stopped: a device on the LAN that sends no
+        `Origin`, which is a question of authentication (#29's permission
+        split)."""
+        # The header itself: with none, aiohttp's `request.host` falls back
+        # to the address the request arrived on (3.14 here; older releases,
+        # `socket.getfqdn()`), which is a name no browser sent.
+        host = request.headers.get("Host")
+        reason = None
         if request.method in STATE_CHANGING:
-            # The header itself: with none, aiohttp's `request.host` falls
-            # back to the address the request arrived on (3.14 here; older
-            # releases, `socket.getfqdn()`), which is a name no browser sent.
-            host = request.headers.get("Host")
-            reason = (cross_site_refusal(request.headers, host)
-                      or rebinding_refusal(request.headers, host, own_names(self.allow_hosts)))
-            if reason is not None:
-                refused = web.HTTPForbidden(reason=reason)
-                refused.agent_code = "cross_site"
-                raise refused
+            reason = cross_site_refusal(request.headers, host, self.allow_hosts)
+        if reason is None:
+            names = own_names((*self.allow_hosts, self.bound) if self.bound else self.allow_hosts)
+            reason = rebinding_refusal(host, names)
+        if reason is not None:
+            refused = web.HTTPForbidden(reason=reason)
+            refused.agent_code = "cross_site"
+            raise refused
         return await handler(request)
 
     # ======================================================================= #
@@ -7383,7 +7449,7 @@ def serve(host: str, port: int, root: Path | None = None, allow_hosts: Sequence[
 
     from .agent_client import agent_url, remove_address, write_address
 
-    agent = Agent(root=root, allow_hosts=(host, *allow_hosts))
+    agent = Agent(root=root, allow_hosts=allow_hosts, bound=host)
     app = agent.app()
 
     # Where this agent listens, beside the state file, so the CLI finds it on

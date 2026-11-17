@@ -163,45 +163,75 @@ prints as it always printed them. The agent binds to localhost; `--host 0.0.0.0`
 opens it to the LAN, and until the local/remote permission split in #29 exists
 that is your call, not a default.
 
-### Writes refuse another site's page
+### Another site's page, and DNS rebinding
 
 One guard, a middleware (`Agent._same_site_only`, #161), stands in front of
-every `POST`, `PUT`, `PATCH` and `DELETE`, the routes above and any added
-later, and answers `403` with `code: "cross_site"` before the route reads
-anything. It exists because any web page open in a browser on the rig
-machine, or on a phone that can reach the agent, can send
+every route, those above and any added later, and answers `403` with
+`code: "cross_site"` before the route reads anything. It exists because any
+web page open in a browser on the rig machine, or on a phone that can reach
+the agent, can send
 `fetch("http://localhost:8029/rig/down", {method: "POST", mode: "no-cors"})`
 with no preflight. It refuses:
 
-- **another site's page**: `Sec-Fetch-Site: cross-site`, or an `Origin` that
-  is not the agent's own scheme, host and port (a page of another port on
-  this machine, `Origin: null` from a sandboxed or file page);
-  `cross_site_refusal`.
-- **a name the agent does not answer to** (DNS rebinding): a page of an
-  attacker's name whose DNS is then pointed at this machine is same-origin
-  to the browser, which sends that name as both `Host` and `Origin`. So a
-  request a browser sent (one with `Origin` or `Sec-Fetch-Site`) must carry
-  a `Host` that is an IP address, `localhost`, this machine's hostname (and
-  its first label), that label with `.local`, the `--host` it was bound to,
-  or a name given with `sushi-rig agent --allow-host NAME` (repeatable: a
-  tunnel's or a VPN's name for the machine); `rebinding_refusal`. An IP is
-  always allowed because a page loaded by IP has no name to rebind. Binding
-  to localhost does not stop rebinding, since localhost is what the name is
-  rebound to.
+- **a write from another site's page**: a `POST`, `PUT`, `PATCH` or
+  `DELETE` with `Sec-Fetch-Site: cross-site`, or an `Origin` that is not the
+  agent's own scheme, host and port (a page of another port on this
+  machine, `Origin: null` from a sandboxed or file page);
+  `cross_site_refusal`. A `GET` from another site is not refused, since a
+  link to the page from elsewhere is one, and that site cannot read the
+  answer, which carries no CORS header. No `GET` route changes anything;
+  `test_agent_cross_site.py` lists them, so a new one is reviewed.
+- **any request by a name the agent does not answer to** (DNS rebinding),
+  reads and page loads included: a page of an attacker's name whose DNS is
+  then pointed at this machine is same-origin to the browser, so it could
+  read every answer and send every write. The `Host` must be an IP
+  address, `localhost`, this machine's hostname (and its first label), that
+  label with `.local`, the `--host` it was bound to, or a name given with
+  `sushi-rig agent --allow-host NAME` (repeatable; a name alone, with no
+  scheme or port, which is refused at the command line); `rebinding_refusal`.
+  An IP is always allowed because a page loaded by IP has no name to rebind.
+  Binding to localhost does not stop rebinding, since localhost is what the
+  name is rebound to. The check does not wait for a browser's headers,
+  because there are none to wait for: Chromium sends no `Sec-Fetch-*` to a
+  plain-http name other than localhost, and no `Origin` on a GET or a page
+  load (captured from Chromium 153 on 2026-11-17), so a rebound page's read
+  carries only its `Host`.
 
-It allows a request with neither `Origin` nor `Sec-Fetch-Site`, whatever its
-`Host`: curl, the CLI (`agent_client`, urllib), scripts. The pedals' MIDI
-listener runs inside the agent and sends no request at all. The agent's own
-page is allowed from this machine and from a phone on the LAN, by the rig's
-IP or its `.local` name: its `fetch` calls are same-origin, relative paths.
-Reads (`GET`) are not guarded; they change nothing, and another site's page
-cannot read their answers, which carry no CORS header.
+Allowed: curl, the CLI (`agent_client`, urllib, at the address the agent
+wrote, so the bound `--host` or 127.0.0.1) and scripts, by any of those
+names; curl pointed at another name (`--resolve`, `/etc/hosts`) is refused
+like a browser, and `--allow-host` allows it. The pedals' MIDI listener runs
+inside the agent and sends no request at all. The agent's own page is allowed
+from this machine and from a phone on the LAN, by the rig's IP or its
+`.local` name: its `fetch` calls are same-origin, relative paths.
+
+**Behind a reverse proxy** (a tunnel, Tailscale Serve, nginx), give the
+proxy's public name with `--allow-host`. That name is then also trusted as
+an `Origin` whatever `Host` says, on any scheme and port, so both kinds of
+proxy work: one that passes `Host` through (`proxy_set_header Host $host`),
+and one that rewrites it to the address it forwards to (nginx's
+`proxy_pass` default sends `Host: 127.0.0.1:8029`). What does not work, or
+is not covered:
+
+- a proxy that rewrites `Host` to a name of its own (an upstream or
+  container name): that name needs `--allow-host` as well;
+- a proxy that rewrites `Host` to 127.0.0.1 and answers any name: the agent
+  sees an IP and cannot tell a rebound name from the proxy's, so reads by a
+  rebound name of the proxy are not refused (writes still are, by their
+  `Origin`). Make the proxy answer only its own name (nginx's
+  `server_name`, with a default server that refuses the rest), or pass
+  `Host` through;
+- a proxy that strips `Origin` and `Sec-Fetch-Site`: writes then look like
+  curl's, and another site's page is no longer refused;
+- trusting a name trusts every port of it: allow only a name that serves the
+  agent and nothing else.
 
 Not covered: a device on the LAN that sends no `Origin`, which is anything
-that is not a browser. Stopping that needs authentication, #29's
-local/remote split. Shown in Chromium against the agent over the UI's fake
-(`test_ui_cross_site.py`, with the names mapped by the resolver rules, not
-DNS); **not tried on the rig, from a real phone, or with a pedal.**
+that is not a browser, and a browser too old to send `Origin` on a `POST`.
+Stopping that needs authentication, #29's local/remote split. Shown in
+Chromium against the agent over the UI's fake (`test_ui_cross_site.py`, with
+the names mapped by the resolver rules, not DNS); **not tried on the rig,
+from a real phone, behind a real proxy, or with a pedal.**
 
 ## Live operations
 
@@ -700,8 +730,8 @@ committed is then gone for good.
   bin), is refused, and `GET /rigs/bin` lists a bin that is a link as empty,
   with `problem`.
 - **Only this agent's page, or no browser at all** (`403 cross_site`): as
-  every write is, by the guard in front of them all ([Writes refuse another
-  site's page](#writes-refuse-another-sites-page)).
+  every write is, by the guard in front of them all ([Another site's page, and DNS
+  rebinding](#another-sites-page-and-dns-rebinding)).
 - **The answer** has `binned` (`entry`, the bin file's name, and `file`),
   `undo` (the restore call that puts it back), `agent` (which bin this is,
   as `GET /rigs/bin` says), `committed: false`, `git` (whether HEAD has the
@@ -805,8 +835,8 @@ as always, the compiler's (`rig.compile_rig_draft`).
   (`command: ["load", ...]`), and its answer's `midi_note` says the pedals
   follow the rig as it runs (its compiled config), not the file. Both
   writes refuse a request from another site's page (`403 cross_site`), as
-  every write does ([Writes refuse another site's
-  page](#writes-refuse-another-sites-page)).
+  every write does ([Another site's page, and DNS
+  rebinding](#another-sites-page-and-dns-rebinding)).
 - **A channel from a preset**: `from: {"preset": <name>}` in `POST
   /rigs/new` and `POST /rigs/<rig>/channels/add`, beside #125's `{"rig",
   "channel"}` (below). The chain is copied as a load copies it, named for

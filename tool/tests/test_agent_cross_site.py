@@ -1,13 +1,15 @@
 """The one guard in front of every route that changes something (#161).
 
 `Agent._same_site_only`, a middleware: a POST, PUT, PATCH or DELETE that a
-browser says came from another site (`cross_site_refusal`), or that a browser
-sent to a name this agent does not answer to (`rebinding_refusal`, DNS
-rebinding), is 403 with `code: "cross_site"` before any route sees it. A
-request with neither `Origin` nor `Sec-Fetch-Site` (curl, the CLI's
-`agent_client`) is allowed, as is the agent's own page by any IP, localhost,
-this machine's hostname or its `.local` name, or a name given with
-`--allow-host`.
+browser says came from another site (`cross_site_refusal`), or any request,
+a GET or a page load included, sent to a name this agent does not answer to
+(`rebinding_refusal`, DNS rebinding), is 403 with `code: "cross_site"`
+before any route sees it. The names it answers to are any IP, localhost,
+this machine's hostname or its `.local` name, the bound `--host`, and a name
+given with `--allow-host`, which is also trusted as an `Origin` behind a
+reverse proxy that rewrites `Host` (review of PR #174). By those, a request
+with neither `Origin` nor `Sec-Fetch-Site` (curl, the CLI's `agent_client`)
+is allowed, as is the agent's own page.
 
 The browser itself is test_ui_cross_site.py's; here the headers a browser
 would send are written by hand, and the agent is served by aiohttp's test
@@ -23,12 +25,15 @@ import re
 import pytest
 
 aiohttp = pytest.importorskip("aiohttp")
+from aiohttp import web  # noqa: E402
 from aiohttp.test_utils import TestClient, TestServer  # noqa: E402
 
 from sushi_rig import agent_client  # noqa: E402
 from sushi_rig.agent import (  # noqa: E402
     STATE_CHANGING,
     Agent,
+    AgentError,
+    allowed_host_name,
     cross_site_refusal,
     own_names,
     rebinding_refusal,
@@ -150,7 +155,7 @@ ALLOWED = {
                                              "Sec-Fetch-Site": "same-origin"},
     "a browser that sends Origin and no Sec-Fetch-Site": {"Host": "127.0.0.1:{port}",
                                                           "Origin": "http://127.0.0.1:{port}"},
-    "curl with any Host and no browser headers": {"Host": "rebound.example:{port}"},
+    "curl by a LAN address": {"Host": "192.168.1.20:{port}"},
 }
 
 
@@ -189,71 +194,250 @@ def test_a_name_the_operator_allows_may_write_and_no_other():
 
 def test_the_name_the_agent_was_bound_to_may_write():
     """`sushi-rig agent --host rig.lan`: the bound address is a name it answers to."""
-    served, runner = agent(allow_hosts=["rig.lan"])
+    served, runner = agent(bound="rig.lan")
     assert send(served, "POST", "/rig/down", own_origin="rig.lan")[0] == 200
     assert runner.calls == [["down"]]
 
 
-def test_reads_are_not_guarded():
-    """A GET changes nothing, and the guard is not in front of one: another
-    site's page can still not read the answer, which has no CORS header."""
+# --- reads, and the page itself (review of PR #174) -------------------------
+
+# What a browser sends on each kind of GET, beside Host. Chromium sends the
+# first, nothing at all, to a plain-http name other than localhost, which a
+# rebound name and a phone's `.local` both are (test_ui_cross_site.py).
+GETS = {
+    "no header (plain http by a name)": {},
+    "a fetch": {"Sec-Fetch-Site": "same-origin", "Sec-Fetch-Mode": "cors", "Sec-Fetch-Dest": "empty"},
+    "a page load": {"Sec-Fetch-Site": "none", "Sec-Fetch-Mode": "navigate", "Sec-Fetch-Dest": "document",
+                    "Sec-Fetch-User": "?1"},
+    "a fetch with Origin": {"Origin": "http://{name}:{port}", "Sec-Fetch-Mode": "cors"},
+    "a script": {"Sec-Fetch-Dest": "script"},
+}
+READS = ["/health", "/rigs", "/doctor", "/live/log", "/takes", "/presets", "/rig", "/", "/ui/app.js"]
+
+
+@pytest.mark.parametrize("kind", GETS, ids=GETS.keys())
+@pytest.mark.parametrize("path", READS)
+def test_a_rebound_page_can_read_nothing(path, kind):
+    """Under DNS rebinding the page is same-origin, so it could read every
+    answer: each GET a browser sends to the rebound name is the guard's 403."""
     served, _ = agent()
+    headers = {k: v.replace("{name}", "rebound.example") for k, v in GETS[kind].items()}
+    status, body = send(served, "GET", path, {"Host": "rebound.example:{port}", **headers})
+    assert status == 403 and body["code"] == "cross_site", body
+    assert "rebound.example" in body["reason"], body
+
+
+@pytest.mark.parametrize("name", ["127.0.0.1", "localhost", f"{HOSTNAME}.local", "192.168.1.20", "[::1]"])
+@pytest.mark.parametrize("kind", GETS, ids=GETS.keys())
+def test_the_agents_own_page_loads_and_reads_by_any_name_it_answers_to(name, kind):
+    served, _ = agent()
+    for path in ("/", "/ui/app.js", "/health", "/rig"):
+        headers = {k: v.replace("{name}", name) for k, v in GETS[kind].items()}
+        status, _ = send_raw(served, "GET", path, {"Host": f"{name}:{{port}}", **headers})
+        assert status == 200, (path, status)
+
+
+def test_curl_and_the_cli_by_a_name_the_agent_answers_to_and_no_other():
+    """No Origin and no Sec-Fetch-*: curl, the CLI's `status`. Held to the
+    names as a browser is, since a rebound page's GET carries nothing more
+    (review of PR #174); a name of the operator's is `--allow-host`'s."""
+    served, runner = agent(bound="rig.lan")
+    for host in ("127.0.0.1:{port}", "localhost:{port}", "rig.lan:{port}", f"{HOSTNAME}.local:{{port}}"):
+        assert send_raw(served, "GET", "/health", {"Host": host})[0] == 200, host
+    assert send(served, "POST", "/rig/down", {"Host": "rig.lan:{port}"})[0] == 200
+    status, body = send(served, "GET", "/health", {"Host": "rebound.example:{port}"})
+    assert status == 403 and "--allow-host rebound.example" in body["reason"], body
+    status, body = send(served, "POST", "/rig/down", {"Host": "rebound.example:{port}"})
+    assert status == 403 and body["code"] == "cross_site", body
+    assert runner.calls == [["down"]]
+
+
+def test_another_sites_link_to_the_page_still_opens_it():
+    """A cross-site GET is not refused: a link to the rig's page from a notes
+    app or a bookmark page is one. Its answer has no CORS header, so a page
+    of that site cannot read it."""
+    served, _ = agent()
+    status, headers = send_raw(served, "GET", "/", {
+        "Host": "192.168.1.20:{port}", "Sec-Fetch-Site": "cross-site", "Sec-Fetch-Mode": "navigate",
+        "Sec-Fetch-Dest": "document"})
+    assert status == 200 and "Access-Control-Allow-Origin" not in headers
+    status, headers = send_raw(served, "GET", "/rig", {"Sec-Fetch-Site": "cross-site",
+                                                        "Origin": "https://example.invalid"})
+    assert status == 200 and "Access-Control-Allow-Origin" not in headers
+
+
+def send_raw(agent, method, path, headers):
+    """As `send`, answering (status, the response's headers)."""
 
     async def go():
-        async with TestClient(TestServer(served.app())) as client:
-            response = await client.get("/rig", headers={"Sec-Fetch-Site": "cross-site",
-                                                         "Origin": "https://example.invalid"})
+        async with TestClient(TestServer(agent.app())) as client:
+            port = client.server.port
+            sent = {k: v.format(port=port) for k, v in headers.items()}
+            response = await client.request(method, path, headers=sent)
+            await response.read()
             return response.status, response.headers
 
-    status, headers = asyncio.run(go())
-    assert status == 200 and "Access-Control-Allow-Origin" not in headers
+    return asyncio.run(go())
+
+
+# --- behind a reverse proxy (review of PR #174) ------------------------------
+
+PROXIED = {"Host": "127.0.0.1:{port}", "Origin": "https://rig.ts.net", "Sec-Fetch-Site": "same-origin"}
+
+
+def test_a_proxy_that_rewrites_host_works_once_its_name_is_allowed():
+    """nginx's default `proxy_pass` sends `Host: 127.0.0.1:8029`, and the
+    browser's `Origin` is the proxy's name: allowed with `--allow-host`, on
+    any scheme and port, and the page's reads go through as well."""
+    served, runner = agent()
+    status, body = send(served, "POST", "/rig/down", PROXIED)
+    assert status == 403 and body["code"] == "cross_site", body
+    served, runner = agent(allow_hosts=["rig.ts.net"])
+    assert send(served, "POST", "/rig/down", PROXIED)[0] == 200
+    assert send(served, "POST", "/rig/down", {**PROXIED, "Origin": "http://rig.ts.net:8443"})[0] == 200
+    assert send_raw(served, "GET", "/health", {"Host": "127.0.0.1:{port}", "Sec-Fetch-Site": "same-origin"})[0] == 200
+    assert runner.calls == [["down"], ["down"]]
+
+
+@pytest.mark.parametrize("headers", [
+    {**PROXIED, "Origin": "https://other.ts.net"},         # another name of the same tailnet
+    {**PROXIED, "Sec-Fetch-Site": "cross-site"},           # the browser says another site
+    {**PROXIED, "Origin": "http://localhost:3000"},        # another program's page on this machine
+    {**PROXIED, "Origin": "null"},
+], ids=["another name", "cross-site", "another local port", "null"])
+def test_behind_a_proxy_only_the_allowed_names_origin_is_trusted(headers):
+    served, runner = agent(allow_hosts=["rig.ts.net"])
+    status, body = send(served, "POST", "/rig/down", headers)
+    assert status == 403 and body["code"] == "cross_site", body
+    assert runner.calls == []
+
+
+def test_the_bound_name_is_not_trusted_as_an_origin_whatever_the_host():
+    """`--host` is the address the agent listens on, not a proxy's name."""
+    served, _ = agent(bound="rig.lan")
+    status, body = send(served, "POST", "/rig/down", {**PROXIED, "Origin": "http://rig.lan:8029"})
+    assert status == 403, body
+
+
+def test_a_proxy_that_passes_host_through_works_by_its_name():
+    served, runner = agent(allow_hosts=["rig.ts.net"])
+    assert send(served, "POST", "/rig/down", {"Host": "rig.ts.net", "Origin": "https://rig.ts.net",
+                                                "Sec-Fetch-Site": "same-origin"})[0] == 200
+
+
+# --- --allow-host takes a name alone (review of PR #174) ---------------------
+
+@pytest.mark.parametrize("value, why", [
+    ("rig.vpn:8029", "has a port"), ("http://rig.ts.net", "has a scheme"), ("https://rig.ts.net:443", "has a scheme"),
+    ("rig.ts.net/", "is not a host name"), ("rig ts", "is not a host name"), ("", "is not a host name"),
+    ("[::1]", "is not a host name"), ("-rig", "is not a host name"), ("rig..net", "is not a host name"),
+])
+def test_an_allowed_host_with_a_port_or_a_scheme_is_refused_not_ignored(value, why):
+    with pytest.raises(ValueError, match=why):
+        allowed_host_name(value)
+    with pytest.raises(AgentError, match=why):
+        Agent(describe=lambda: dict(DOWN), allow_hosts=[value])
+
+
+@pytest.mark.parametrize("value, name", [
+    ("Rig.TS.net.", "rig.ts.net"), ("rig", "rig"), ("rig_box.lan", "rig_box.lan"),
+    ("192.168.1.20", "192.168.1.20"), ("::1", "::1"),
+])
+def test_an_allowed_host_is_compared_as_the_guard_compares_names(value, name):
+    assert allowed_host_name(value) == name
+
+
+@pytest.mark.parametrize("value", ["rig.vpn:8029", "http://rig.ts.net"])
+def test_sushi_rig_agent_refuses_an_allowed_host_with_a_port_or_scheme(value, monkeypatch, capsys):
+    from sushi_rig import agent as agent_module
+    from sushi_rig import cli
+
+    monkeypatch.setattr(agent_module, "serve", lambda *a, **k: pytest.fail("served with a bad --allow-host"))
+    with pytest.raises(SystemExit) as exited:
+        cli.main(["agent", "--allow-host", value])
+    assert exited.value.code == 2
+    err = capsys.readouterr().err
+    assert "--allow-host" in err and value in err and "alone" in err, err
 
 
 # --- every route ------------------------------------------------------------
 
-def state_changing_routes(app):
-    """(method, path) for each registered route a POST, PUT, PATCH or DELETE
-    reaches, its placeholders filled: `*` stands for all of them."""
+def every_route(app):
+    """(method, path) for each registered route, its placeholders filled:
+    `*` stands for POST, a static folder for a file in it."""
     found = []
     for route in app.router.routes():
-        if route.method not in STATE_CHANGING and route.method != "*":
-            continue
-        path = re.sub(r"\{[^}]+\}", "x", route.resource.canonical)
+        resource = route.resource
+        path = re.sub(r"\{[^}]+\}", "x", resource.canonical)
+        if isinstance(resource, web.StaticResource):
+            path += "/app.js"
         found.append((route.method if route.method != "*" else "POST", path))
     return found
 
 
-def test_every_registered_state_changing_route_is_behind_the_guard():
+def test_every_registered_route_is_behind_the_guard():
     """Walks the app as the agent builds it, so a route added later is
-    covered or this fails: each one, sent another site's request and a
-    rebound name's, answers the guard's 403 and runs nothing."""
+    covered or this fails. Every route of every method, GET and HEAD
+    included, sent a request by a rebound name, with a browser's headers or
+    none, answers the guard's 403; every POST, PUT, PATCH and DELETE also
+    refuses another site's page. Nothing runs."""
     served, runner = agent()
-    routes = state_changing_routes(served.app())
-    paths = {path for _, path in routes}
+    routes = every_route(served.app())
+    writes = [(m, p) for m, p in routes if m in STATE_CHANGING]
+    paths = {path for _, path in writes}
     # Not vacuous: the routes #160 and #162 guarded by hand, and others.
     assert {"/rigs/x/delete", "/rigs/x/restore", "/rig/channels/x/save-as", "/rig/channels/x/load",
             "/rig/up", "/rig/down", "/live/parameter", "/rig/save", "/record/start"} <= paths, paths
-    assert len(routes) >= 24, routes  # as of #161
+    assert len(writes) >= 24, writes  # as of #161
+    assert {("GET", "/health"), ("HEAD", "/health"), ("GET", "/"), ("GET", "/ui/app.js")} <= set(routes)
 
     async def go():
         async with TestClient(TestServer(served.app())) as client:
             port = client.server.port
+            rebound = {
+                "rebound fetch": {"Host": f"rebound.example:{port}", "Origin": f"http://rebound.example:{port}",
+                                  "Sec-Fetch-Site": "same-origin"},
+                "rebound page load": {"Host": f"rebound.example:{port}", "Sec-Fetch-Mode": "navigate",
+                                      "Sec-Fetch-Dest": "document", "Sec-Fetch-Site": "none"},
+                # What Chromium sends a plain-http name on a GET: Host alone.
+                "rebound, Host alone": {"Host": f"rebound.example:{port}"},
+            }
+            cross_site = {
+                "cross-site": {"Sec-Fetch-Site": "cross-site"},
+                "origin": {"Origin": "https://example.invalid"},
+            }
             answers = {}
             for method, path in routes:
-                for case, headers in {
-                    "cross-site": {"Sec-Fetch-Site": "cross-site"},
-                    "origin": {"Origin": "https://example.invalid"},
-                    "rebound": {"Host": f"rebound.example:{port}", "Origin": f"http://rebound.example:{port}",
-                                "Sec-Fetch-Site": "same-origin"},
-                }.items():
-                    response = await client.request(method, path, json={}, headers=headers)
-                    answers[(method, path, case)] = (response.status, (await response.json()).get("code"))
+                cases = {**rebound, **cross_site} if method in STATE_CHANGING else rebound
+                for case, headers in cases.items():
+                    kwargs = {"json": {}} if method in STATE_CHANGING else {}
+                    response = await client.request(method, path, headers=headers, **kwargs)
+                    code = None if method == "HEAD" else (await response.json()).get("code")
+                    answers[(method, path, case)] = (response.status, code if method != "HEAD" else "cross_site")
             return answers
 
     answers = asyncio.run(go())
     unguarded = {key: said for key, said in answers.items() if said != (403, "cross_site")}
     assert unguarded == {}, unguarded
     assert runner.calls == []
+
+
+# Every GET route as of #161, each read only. A GET is held to the rebinding
+# check alone: another site's page may still send one (it cannot read the
+# answer). A route that changes something must not be a GET.
+GET_ROUTES = {
+    "/", "/ui", "/ui/", "/ui/app.js", "/health", "/rig", "/doctor", "/live", "/live/log", "/library",
+    "/profiles", "/live/plugins", "/rigs", "/rig/load", "/amp", "/amp/models", "/record", "/takes",
+    "/machine/roles", "/rigs/x/channels", "/rigs/x/saves", "/rigs/bin", "/presets",
+}
+
+
+def test_the_get_routes_are_the_ones_reviewed_as_changing_nothing():
+    """A new GET fails this until it is added above, after checking that it
+    reads only: the cross-site check is not in front of a GET."""
+    served, _ = agent()
+    gets = {path for method, path in every_route(served.app()) if method == "GET"}
+    assert gets == GET_ROUTES, (gets - GET_ROUTES, GET_ROUTES - gets)
 
 
 def test_no_route_guards_itself_any_longer():
@@ -299,22 +483,19 @@ def test_a_fully_qualified_hostname_gives_its_short_name_and_local_name_too(monk
     (f"{HOSTNAME}:8029", True), (f"{HOSTNAME}.local:8029", True),
     ("rebound.example:8029", False), ("sub.localhost:8029", False), ("127.0.0.1.nip.io", False),
     ("127.0.0.1@rebound.example", False), ("rebound.example@127.0.0.1", False),
-    ("rebound.example/127.0.0.1", False), ("[::1", False), ("", False), (None, False),
+    ("rebound.example/127.0.0.1", False), ("[::1", False), ("", False),
 ])
-def test_a_browser_is_allowed_only_a_host_this_agent_answers_to(host, allowed):
-    browser = {"Origin": "http://anything", "Sec-Fetch-Site": "same-origin"}
-    assert (rebinding_refusal(browser, host, own_names()) is None) is allowed
+def test_only_a_host_this_agent_answers_to_is_allowed(host, allowed):
+    assert (rebinding_refusal(host, own_names()) is None) is allowed
 
 
-def test_with_no_browser_headers_the_host_is_not_read():
-    """curl may be pointed at any name (`--resolve`, /etc/hosts); only a
-    browser can be made to send a request it did not mean to."""
-    assert rebinding_refusal({}, "rebound.example:8029", own_names()) is None
-    assert rebinding_refusal({}, None, own_names()) is None
+def test_a_request_with_no_host_at_all_is_no_browsers():
+    """HTTP/1.0 with no Host: a browser always sends one, so it is not read."""
+    assert rebinding_refusal(None, own_names()) is None
 
 
 def test_the_refusal_says_how_to_allow_a_name_of_the_operators():
-    reason = rebinding_refusal({"Origin": "http://rig.vpn:8029"}, "rig.vpn:8029", own_names())
+    reason = rebinding_refusal("rig.vpn:8029", own_names())
     assert reason.startswith("refused") and "--allow-host rig.vpn" in reason, reason
 
 
@@ -322,8 +503,7 @@ def test_cross_site_refusal_is_unchanged_by_the_host_check():
     """Still pure over Origin, Sec-Fetch-Site and Host: whether the name is
     this agent's is `rebinding_refusal`'s, the middleware asks both."""
     assert cross_site_refusal({"Origin": "http://rebound.example:8029"}, "rebound.example:8029") is None
-    assert rebinding_refusal({"Origin": "http://rebound.example:8029"}, "rebound.example:8029",
-                             own_names()) is not None
+    assert rebinding_refusal("rebound.example:8029", own_names()) is not None
 
 
 def test_sushi_rig_agent_passes_each_allowed_name_to_the_agent(monkeypatch):

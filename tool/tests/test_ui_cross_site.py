@@ -8,7 +8,9 @@ mapping three names to 127.0.0.1, which is what DNS does for each in life:
 - `rig-box.local`, this machine's mDNS name (the hostname is set to
   `rig-box` for the test), as a phone on the LAN would load the page;
 - `rebound.example`, an attacker's name after DNS rebinding: the page the
-  browser holds is of that name, and its requests reach the agent;
+  browser holds is of that name, and its requests reach the agent (here the
+  agent's own refusal stands in for the attacker's page, loaded before the
+  name was rebound: it is a document of that origin all the same);
 - `attacker.example`, a page of another site, served on another port.
 
 What stands in for what: the names are the resolver rules, not DNS or
@@ -57,6 +59,14 @@ def post_from(page, path):
     }""", path)
 
 
+def get_from(page, path):
+    """GET `path` from the page as the web UI's polls do. (status, JSON)."""
+    return page.evaluate("""async (path) => {
+        const response = await fetch(path, {cache: "no-store"});
+        return [response.status, await response.json()];
+    }""", path)
+
+
 def port_of(served):  # noqa: F811
     return int(served.url.rsplit(":", 1)[1])
 
@@ -73,23 +83,38 @@ def test_the_agents_own_page_by_ip_may_change_the_rig(mapped, served):  # noqa: 
 def test_the_agents_own_page_by_the_machines_local_name_may_change_the_rig(mapped, served):  # noqa: F811
     """A phone on the LAN that loads http://rig-box.local:8029/."""
     page = mapped.new_page()
-    page.goto(f"http://{HOSTNAME}.local:{port_of(served)}/#stage")
+    assert page.goto(f"http://{HOSTNAME}.local:{port_of(served)}/#stage").status == 200
+    assert get_from(page, "/health")[0] == 200
     status, body = post_from(page, "/rig/down")
     assert status == 200, body
     assert served.lifecycle.calls == [["down"]]
     page.close()
 
 
-def test_a_page_of_a_rebound_name_is_served_but_may_change_nothing(mapped, served):  # noqa: F811
-    """The page loads (a GET is not guarded, and it has no CORS header for
-    another site to read it by), but Chromium sends the rebound name as
-    Host and Origin, `Sec-Fetch-Site: same-origin`, and every write is 403."""
+def test_the_agents_own_page_by_localhost_loads_and_reads(mapped, served):  # noqa: F811
     page = mapped.new_page()
-    page.goto(f"http://rebound.example:{port_of(served)}/#stage")
+    assert page.goto(f"http://localhost:{port_of(served)}/#stage").status == 200
+    for path in ("/health", "/rigs", "/presets"):
+        assert get_from(page, path)[0] == 200, path
+    page.close()
+
+
+def test_a_page_of_a_rebound_name_can_neither_read_nor_change_anything(mapped, served):  # noqa: F811
+    """Chromium sends the rebound name as Host and, to a plain-http name
+    other than localhost, no `Sec-Fetch-*`, and no `Origin` on a GET or a
+    page load: nothing else to tell it by (review of PR #174: these were
+    read). The page load itself, every read and every write are the guard's
+    403."""
+    page = mapped.new_page()
+    loaded = page.goto(f"http://rebound.example:{port_of(served)}/#stage")
+    assert loaded.status == 403 and loaded.json()["code"] == "cross_site"
+    for path in ("/health", "/rigs", "/doctor", "/live/log", "/takes", "/presets", "/ui/app.js"):
+        status, body = get_from(page, path)
+        assert status == 403 and body["code"] == "cross_site", (path, body)
+        assert "rebound.example" in body["reason"], body
     for path in ("/rig/down", "/live/undo", "/rigs/electric_board/delete", "/rig/save"):
         status, body = post_from(page, path)
         assert status == 403 and body["code"] == "cross_site", (path, body)
-        assert "rebound.example" in body["reason"], body
     assert served.lifecycle.calls == []
     page.close()
 
