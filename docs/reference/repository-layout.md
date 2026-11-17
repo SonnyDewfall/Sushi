@@ -22,7 +22,8 @@ then.
 │   ├── archive/                  auto-written version snapshots of v1 configs,
 │   │                             config/archive/<name>/vX.Y.json
 │   └── retired/                  hand-retired configs (incl. empty.json), kept
-│                                 for recovery only
+│                                 for recovery only; a retired rig of channels is
+│                                 in retired/rigs/, its references in retired/sound/
 ├── Patchbay/                   qpwgraph sessions
 │   ├── rig.qpwgraph              the v1 layout's routing; generated from
 │   │                             config/src/guitar_vocal.yaml, held by a test.

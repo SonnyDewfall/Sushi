@@ -7,13 +7,13 @@ measured:
   peak_dbfs: -14.5264
   rms_dbfs: -27.3443
   channel_rms_dbfs:
-  - -27.3445
-  - -27.3442
+  - -27.3444
+  - -27.3441
   delay_samples: 19440
   bands:
   - low_hz: 20.0
     high_hz: 80.0
-    level_dbfs: -41.1358
+    level_dbfs: -41.1357
   - low_hz: 80.0
     high_hz: 250.0
     level_dbfs: -33.4545
@@ -37,5 +37,5 @@ tolerance:
     file is written at'
 made_from:
   rig: electric-delay.yaml
-  hash: e152478dd8542cad8fbcbf61a416c52e276a8485c277add0c066bd596d2c3424
+  hash: 040d168533305129e23a4c7b3af578537510cad9c28bb0ced401c70b80f09a7d
   hash_rule: 2

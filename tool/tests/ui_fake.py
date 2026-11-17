@@ -12,7 +12,9 @@ docs/guide/img/ are made by tests/guide_shots.py, over the same fake).
 What is observed and what is invented (docs/design/principles.md, principle 1: a fixture is a
 captured artefact). Observed: every plugin parameter's name and range, read
 here from the repository's captured plugin data -- the overdrive's from
-`fixtures/probe_gxts9.json` (lilv on the real bundle), the delays' from
+`fixtures/probe_gxts9.json` (lilv on the real bundle), a hall's, which a
+test can add (`test_ui_mix.py`), from `fixtures/probe_MaGigaverb.json`
+(likewise), the delays' from
 `fixtures/lv2/mda.lv2/Delay.ttl` and the octave's from
 `fixtures/lv2/rubberband.lv2/lv2-rubberband.ttl`, each port's `lv2:name`,
 minimum, maximum and default. A track's gain, pan and mute and a send's gain,
@@ -124,6 +126,7 @@ LV2 = "http://lv2plug.in/ns/lv2core#"
 RDF_TYPE = "http://www.w3.org/1999/02/22-rdf-syntax-ns#type"
 
 GXTS9 = "http://guitarix.sourceforge.net/plugins/gxts9#ts9sim"
+MAGIGAVERB = "http://distrho.sf.net/plugins/MaGigaverb"
 MDA_DELAY = "http://drobilla.net/plugins/mda/Delay"
 RUBBERBAND = "http://breakfastquay.com/rdf/lv2-rubberband#mono"
 
@@ -195,6 +198,7 @@ def send(level_db: float) -> dict[str, dict]:
 # captured (see the module's docstring). Anything else comes in with none.
 PORTS = {
     GXTS9: lambda: probe_ports(FIXTURES / "probe_gxts9.json"),
+    MAGIGAVERB: lambda: probe_ports(FIXTURES / "probe_MaGigaverb.json"),
     MDA_DELAY: lambda: ttl_ports(FIXTURES / "lv2" / "mda.lv2" / "Delay.ttl", MDA_DELAY),
     RUBBERBAND: lambda: ttl_ports(FIXTURES / "lv2" / "rubberband.lv2" / "lv2-rubberband.ttl", RUBBERBAND),
 }
@@ -566,7 +570,7 @@ class UiSave:
     follows. `compiled` records each rig compiled; `refuse_compile`, when
     set, is the reason the next compile fails. Headless, with no amp."""
 
-    def __init__(self, lifecycle: "UiLifecycle", record: bool = False):
+    def __init__(self, lifecycle: "UiLifecycle", record: bool = False, rig_file: str | None = None):
         import socket
         import subprocess
         import tempfile
@@ -576,7 +580,7 @@ class UiSave:
         self.root = Path(self._dir.name)
         rigs = self.root / "config" / "rigs"
         rigs.mkdir(parents=True)
-        (rigs / "electric_board.yaml").write_text(RIG_FILE)
+        (rigs / "electric_board.yaml").write_text(rig_file or RIG_FILE)
         profiles = self.root / "tool" / "examples" / "profiles"
         profiles.parent.mkdir(parents=True)
         profiles.symlink_to(checkout_root() / "tool" / "examples" / "profiles", target_is_directory=True)
@@ -834,7 +838,7 @@ class Served:
 
     def __init__(self, rig: UiRig | None = None, port: int = 0, describe=None, root: Path | None = None,
                  lifecycle: UiLifecycle | None = None, amp: bool = False, save: bool = False,
-                 record: bool = False, library=None):
+                 record: bool = False, library=None, rig_file: str | None = None):
         if amp and (save or record):
             raise ValueError("the fake has an amp or a rig file to save (and record), not both yet")
         self.rig = rig or UiRig()
@@ -844,7 +848,9 @@ class Served:
         # The amp (`UiAmp`), when asked for: the rig then has a Carla.
         self.amp = UiAmp(self.lifecycle) if amp else None
         # A rig file to save into (`UiSave`), when asked for.
-        self.save = UiSave(self.lifecycle, record=record) if save or record else None
+        # `rig_file`: the rig file a save writes into, when the test's rig is
+        # not `UiRig`'s own (`RIG_FILE`).
+        self.save = UiSave(self.lifecycle, record=record, rig_file=rig_file) if save or record else None
         if self.save:
             self.save.rig = self.rig
         # The recorder (`UiRecorder`), when asked for, beside the checkout.

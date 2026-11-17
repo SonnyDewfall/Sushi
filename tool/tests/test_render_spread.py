@@ -65,7 +65,7 @@ import yaml
 np = pytest.importorskip("numpy")
 
 import spread_table  # noqa: E402
-from rig_fixtures import FROZEN_SOUND, committed_that, frozen  # noqa: E402
+from rig_fixtures import FROZEN_SOUND, committed_that, frozen, frozen_v1  # noqa: E402
 from sushi_rig import rigfile  # noqa: E402
 from sushi_rig.analysis import first_non_finite  # noqa: E402
 from sushi_rig.nulltest import compare, fingerprint, from_dict  # noqa: E402
@@ -83,8 +83,11 @@ SUSHI = ROOT / "sushi"
 # chain as this file is imported, so on the committed file a save that renamed
 # a plugin would stop the whole suite at collection. The rigs are priced
 # against the frozen rigs' own references (rig_fixtures.FROZEN_SOUND, #144),
-# which do not follow the committed rigs; the v1 config against config/sound/'s
-# `.v1-mono`, the one reference of a v1 config there is.
+# which do not follow the committed rigs: the committed electric_board lost
+# its octave pair (#152), and electric-octave-up is retired. Its v1 config is
+# read from the frozen copy too, and priced against its `.v1-mono` in
+# config/retired/sound/, where it went with it (no frozen copy of a v1
+# config's reference is kept).
 OCTAVE_UP = frozen("electric-octave-up")
 BOARD = frozen("electric_board")
 
@@ -118,8 +121,7 @@ def _as_nulltest(path) -> tuple[str, dict]:
     return channel.name, channel.config
 
 
-def _v1(stem: str) -> tuple[str, dict]:
-    path = ROOT / "config" / f"{stem}.json"
+def _v1(path) -> tuple[str, dict]:
     (channel,) = channels_of(json.loads(path.read_text()), path)
     return channel.name, channel.config
 
@@ -149,6 +151,9 @@ def _just_under() -> tuple[str, dict]:
     return _compiled(raw)
 
 
+# Where electric-octave-up's references went when it was retired (#152).
+RETIRED_SOUND = ROOT / "config" / "retired" / "sound"
+
 SECTION_CONFIGS = "the configs, as the null tests render them"
 SECTION_ALONE = "each plugin of electric-octave-up's chain alone, its settings, not bypassed"
 SECTION_CANDIDATE = "a candidate setting, priced against the reference"
@@ -159,8 +164,8 @@ def _targets() -> list[tuple[str, str, object, str | None]]:
     found = [
         (SECTION_CONFIGS, "electric-octave-up (rig)", lambda: _as_nulltest(OCTAVE_UP),
          FROZEN_SOUND / "electric-octave-up.yaml"),
-        (SECTION_CONFIGS, "electric-octave-up.json (v1)", lambda: _v1("electric-octave-up"),
-         ROOT / "config" / "sound" / "electric-octave-up.v1-mono.yaml"),
+        (SECTION_CONFIGS, "electric-octave-up.json (v1)", lambda: _v1(frozen_v1("electric-octave-up")),
+         RETIRED_SOUND / "electric-octave-up.v1-mono.yaml"),
         (SECTION_CONFIGS, "electric_board (rig)", lambda: _as_nulltest(BOARD), FROZEN_SOUND / "electric_board.yaml"),
     ]
     for entry in _raw(OCTAVE_UP)["channels"][0]["chain"]:

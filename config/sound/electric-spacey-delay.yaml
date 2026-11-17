@@ -5,15 +5,15 @@ sample_rate: 48000
 frames: 240000
 measured:
   peak_dbfs: -6.967
-  rms_dbfs: -21.5427
+  rms_dbfs: -21.5426
   channel_rms_dbfs:
-  - -21.5963
-  - -21.4897
+  - -21.5962
+  - -21.4896
   delay_samples: 0
   bands:
   - low_hz: 20.0
     high_hz: 80.0
-    level_dbfs: -37.5032
+    level_dbfs: -37.5031
   - low_hz: 80.0
     high_hz: 250.0
     level_dbfs: -28.6702
@@ -37,5 +37,5 @@ tolerance:
     file is written at'
 made_from:
   rig: electric-spacey-delay.yaml
-  hash: 4ac36e895ce6e51bde6fdcda780e3fe9214bc24348a4abecfbf337575698bf50
+  hash: 6071480c9d5f0a9a0b5538a4a424e602833c7f804b64137d840132240eb17bb4
   hash_rule: 2

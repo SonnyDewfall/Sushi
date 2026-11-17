@@ -57,7 +57,17 @@ A rig with one channel still has two tabs: the channel's and **Master**.
 Some controls are switches, which you click, and some are lists, which you pick
 from.
 
-Values are shown in each plugin's own range. A plugin
+Values are shown in each plugin's own range. Each reverb has a **Mix**: how
+much reverb you hear against the dry guitar. The room's runs from 0 (dry) to 1
+(only the room). The hall's runs from 0 % to 100 % and moves three of the
+plugin's own levels together; **Undo** takes a turn of it back as it does any
+knob's. Even at 100 % the hall keeps a smeared copy of the guitar, which the
+plugin has no control for. A hall saved before Mix existed may not be on its
+curve: Mix shows the nearest setting, nothing changes until you turn it, and
+then each level moves on from where it was, reaching the curve's own levels
+at 0 % and 100 %.
+
+A plugin
 that says **no profile: every parameter** under its name has not been tidied up
 for the page yet: it shows every control it has, in a plain list.
 

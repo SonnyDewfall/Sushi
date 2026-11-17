@@ -116,6 +116,16 @@ Allowed values, enforced by the validator:
 - `control`: knob, fader, toggle, selector
 - `provenance`: draft, reviewed, fact
 
+### One knob for several parameters: `controls`
+
+When the control a player wants is not one port but several moved together (a reverb's Mix that is really a dry level against two wet ones), give the profile a `controls` entry instead of exposing the ports. Each has an `id` (not a parameter's name), the judgements a parameter has except `scale` (its travel is always 0 to 100 %, drawn as a knob or a fader), and `drives`, a judgement whose value lists `{parameter, curve, at_0, at_1}`: the parameter by the name Sushi uses, its real value at 0 % and at 100 %, and the curve between them (`linear`; `sine` for a level fading in; `cosine` for one fading out; a `cosine` from 1 to 0 beside `sine`s from 0 is an equal-power crossfade). `tool/examples/profiles/magigaverb.yaml` is the example.
+
+- Hide the parameters a control drives. The validator warns (`driven-and-shown`) when one is left showing: two knobs that move the same thing.
+- What a control drives is a judgement: `drives` is `draft`, never `fact`. The validator checks only that each parameter is real, takes a number (not a toggle, an enumeration or a whole number), and that both ends are inside its range.
+- Choose the ends from a render, not from the range: what level at 100 % keeps the loudness of 0 % depends on the plugin. Say in the hand-back what was rendered.
+- The page sets a control with one `POST /live/parameters` of all it drives a step: all or none, one change in the log, one Undo, saved as any parameter is. It only reads them to show where it is (the nearest point of its curve for a rig saved off it), sends nothing on load, and from off the curve moves each level from where it is to the curve's ends.
+- Drives that never move (`at_0` equal to `at_1`) are refused, and so is a control of only those.
+
 ### Provenance: use `fact` sparingly
 
 `fact` means "mechanically derivable, and the validator will re-derive it". It is not a confidence rating, and claiming it where it does not hold fails the file. In practice only two judgements qualify:
