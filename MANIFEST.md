@@ -4905,3 +4905,37 @@ than before the merge: electric-octave-up's committed rig, and the cases
 over it, are retired). **Not run here:** the rest of the slow suite, the
 container job and its annotation, the rig.
 *(2026-11-17)*
+
+**Channel presets, step 1 of 6: the file (#127).** A channel's sound, saved
+by name apart from any rig: `config/channels/<name>.yaml`, read and written
+by `tool/src/sushi_rig/presets.py`. It holds `kind: channel`,
+`schema_version: 1`, its `name`, the chain with each plugin's settings and
+bypass (entries as a rig file writes them), the channel's `level` when not
+unity, the `width` it prefers, and two optional lines of where it came from
+(`saved_from: {rig, channel}`, and `heard_through_amp`, the model the amp in
+front of it played, since the amp is not part of a preset). **No input.**
+Written by `write_rig`'s rules through yamlmerge (in place, comments kept;
+fresh under a header saying what it is). The validator is two layers:
+`parse_preset` for the shape (unknown keys refused, `input:` among them; a
+`_to_stereo` name refused, as in a rig file; a plugin twice; no URI), and
+`check_preset`, which compiles the chain as a one-channel rig with the real
+compiler and the committed port table, so the amp, a plugin missing from
+`plugin-ports.txt` and a name that becomes the compiler's own are refused in
+its words. **Names are per channel**: a preset stores base names (the
+channel's prefix taken off, `guitar_compressor` on `guitar` is
+`compressor`; none taken off where that would make two names one), and a
+load names each for the channel it lands on (`lead_compressor`), so two
+channels from one preset compile with distinct processors (tested; #125's
+copy of a rig's channel, unrenamed, is still refused for the duplicates).
+Also pure and tested here, for the steps after: what a load does to a MIDI
+map (a mapping follows the same plugin, by URI, under its new name, or is
+orphaned and said with why), and when to say a channel has no amp. Decided:
+the preset carries no amp and records the one it was heard through, rather
+than an amp section, since the amp is one Carla instance (an amp per
+channel is out of scope); a preset's identity is its file name; a level at
+unity is written nowhere, as in rig files. Tested against every channel of
+every frozen rig (`tests/test_presets.py`, 53 tests), and the checkout's
+`config/channels/` (empty today) is held to the same validity, assuming
+nothing of what is there. **Not tried on the rig**: nothing here touches
+Sushi; no preset has been saved or loaded on the rig machine.
+*(2026-11-17)*
