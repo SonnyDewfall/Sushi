@@ -65,7 +65,8 @@ knob's. Even at 100 % the hall keeps a smeared copy of the guitar, which the
 plugin has no control for. A hall saved before Mix existed may not be on its
 curve: Mix shows the nearest setting, nothing changes until you turn it, and
 then each level moves on from where it was, reaching the curve's own levels
-at 0 % and 100 %.
+at 0 % and 100 %. The shimmer reverb and the tape echo have a Mix too, of
+their own kind: see [Tremolo, flanger, tape echo and shimmer](effects.md).
 
 A plugin
 that says **no profile: every parameter** under its name has not been tidied up

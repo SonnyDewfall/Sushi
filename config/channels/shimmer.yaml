@@ -1,0 +1,27 @@
+# Channel preset shimmer: Gxshimmizita alone (#165), to try the pedal. Load it
+# onto a channel, or start a channel or a rig from it (docs/guide/effects.md).
+# Settings are Sushi's normalised 0 to 1: Mix 50 % (Dry/Wet 0.15), Shift 2,
+# Pitch mix 0.7, Decay 4 and Low decay 3, no modulation.
+
+kind: channel
+schema_version: 1
+name: shimmer
+description: Gxshimmizita — a reverb whose tail climbs in pitch
+width: mono
+chain:
+- name: shimmer
+  uri: http://guitarix.sourceforge.net/plugins/gx_shimmizita_#_shimmizita_
+  bypassed: false
+  parameters:
+    CONTROL: 0.5
+    DEPTH: 0.0
+    DRYWET: 0.15
+    ENVELOPE: 0.310345
+    F1: 0.157895
+    F2: 0.20436
+    MODE: 0.5
+    PSDRYWET: 0.7
+    SHIFT: 0.666667
+    SPEED: 0.0
+    T60DS: 0.285714
+    T60M: 0.428571

@@ -1,0 +1,24 @@
+# Channel preset tape-echo: GxEchoCat alone (#165), to try the pedal. Load it
+# onto a channel, or start a channel or a rig from it (docs/guide/effects.md).
+# Settings are Sushi's normalised 0 to 1: head 1 (an eighth note at 120 BPM,
+# 250 ms), Repeats 0.35, Mix 40 % (Swell 0.4), and Level 67 % (Output 1.17),
+# where the guitar comes out as loud as it went in.
+
+kind: channel
+schema_version: 1
+name: tape-echo
+description: GxEchoCat — a tape echo, one head, an eighth note at 120 BPM
+width: mono
+chain:
+- name: echo
+  uri: http://guitarix.sourceforge.net/plugins/gxechocat#echocat
+  bypassed: false
+  parameters:
+    Input: 0.25
+    Swell: 0.4
+    Sustain: 0.35
+    Output: 0.2925
+    BPM: 0.285714
+    Head 1: 1.0
+    Head 2: 0.0
+    Head 3: 0.0
