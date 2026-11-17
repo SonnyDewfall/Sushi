@@ -42,6 +42,7 @@ and the two things worth reading about a rig, served over HTTP on localhost.
     POST /rigs/{name}/delete    {"dry_run"?} -- into config/rigs/.deleted/ (#129); refused (409) for the running rig
     POST /rigs/{name}/restore   {"entry"?} -- Undo: back from the bin; refused if a file of that name is there
     GET  /rigs/bin      the bin, newest first, and which agent's it is (the page checks a kept Undo against it)
+    GET  /help/         the user guide, docs/guide/, as HTML (#167); /help/{page}, /help/img/{name}
 
 ## A fixed command set, never a shell
 
@@ -1854,6 +1855,7 @@ class Agent:
         self._revert_routes(app)  # revert to a previous save: see its block
         self._bin_routes(app)  # deleting a rig file into the bin, and Undo (#129): see its block
         self._preset_routes(app)  # channel presets (#127): see its block
+        self._help_routes(app)  # the user guide at /help/ (#167): see its block
         return app
 
     async def health(self, request):
@@ -6416,6 +6418,71 @@ class Agent:
 
     # ======================================================================= #
     # (end of recording from the web UI)
+    # ======================================================================= #
+    # ======================================================================= #
+    # The user guide (#167): GET /help/, /help/{page}, /help/img/{name}
+    # ======================================================================= #
+    #
+    # docs/guide/ as HTML, rendered by `guide.py`, which says what is read,
+    # how, and what can be served. Kept in one block so it merges past other
+    # work on this file; outside it only the call in `app`. GETs only, and
+    # nothing here reads or changes the rig.
+
+    # The guide's folder; None is the checkout's docs/guide/ (`guide.guide_dir`).
+    # A test points it at a folder of its own.
+    guide_dir: Path | None = None
+
+    def _help_routes(self, app) -> None:
+        app.router.add_get("/help", self.help_redirect)
+        app.router.add_get("/help/", self.help_page)
+        app.router.add_get("/help/img/{name}", self.help_image)
+        app.router.add_get("/help/{page}", self.help_page)
+
+    def _guide(self) -> Path:
+        from . import guide
+
+        return self.guide_dir or guide.guide_dir()
+
+    async def help_redirect(self, request):
+        """/help is the guide's folder: send the browser to its front page,
+        keeping where it was opened from. 302, as /ui is."""
+        raise web.HTTPFound("/help/" + (f"?{request.query_string}" if request.query_string else ""))
+
+    async def help_page(self, request):
+        """A page of the guide as HTML (`guide.render_page`), read now, off
+        the loop. `?from=` is the screen it was opened from, for the way back
+        (`guide.back_from`: anything else is ignored). A page the guide has
+        not is an HTML 404 with the way back, not the JSON one, since a
+        person reads it."""
+        from . import guide
+
+        name = request.match_info.get("page")
+        back = guide.back_from(request.query.get("from"))
+        if name is None:
+            name = guide.INDEX
+        elif (page := guide.canonical(name)) is not None:
+            # A page's file name (README.md, recording.md) or another case of
+            # its name, typed by hand or copied from the checkout.
+            raise web.HTTPFound(guide.page_href(page, back))
+        folder = self._guide()
+        made = await asyncio.to_thread(guide.render_page, folder, name, back)
+        status = 200
+        if made is None:
+            made, status = await asyncio.to_thread(guide.not_found, folder, name, back), 404
+        return web.Response(text=made, status=status, content_type="text/html", charset="utf-8",
+                            headers={"Cache-Control": UI_CACHE_CONTROL})
+
+    async def help_image(self, request):
+        """A picture of the guide's img/ (`guide.image_file`), or 404."""
+        from . import guide
+
+        path = await asyncio.to_thread(guide.image_file, self._guide(), request.match_info["name"])
+        if path is None:
+            raise web.HTTPNotFound(reason="the guide has no such picture")
+        return web.FileResponse(path, headers={"Cache-Control": UI_CACHE_CONTROL})
+
+    # ======================================================================= #
+    # (end of the user guide)
     # ======================================================================= #
 
 

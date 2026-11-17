@@ -2,7 +2,8 @@
 
 How to play, shape, save and record with the rig, one guide for each thing you
 do with it. Each takes a few minutes to read. Start with the first; after that,
-read whichever you need.
+read whichever you need. On the rig's page, **Help** opens them, served by
+the rig itself, so they work without the internet, on a phone too.
 
 A few words used throughout:
 

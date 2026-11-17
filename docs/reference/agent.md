@@ -14,6 +14,7 @@ curl localhost:8029/health           # the agent and the rig in one answer, cras
 curl localhost:8029/rig              # `status` as data
 curl localhost:8029/doctor           # `doctor` as data
 curl localhost:8029/                 # the web UI (its files are under /ui/)
+curl localhost:8029/help/            # the user guide, docs/guide/, as HTML (#167); pages at /help/<name>, pictures at /help/img/
 curl localhost:8029/rigs             # the rigs of config/rigs/ a start or switch can name, and which is the running rig's
 curl localhost:8029/rig/load         # one pw-top sample of the rig's nodes: load, xruns, the block budget
 curl -X POST localhost:8029/rig/up -d '{"config_name": "guitar_vocal", "rig": true, "headless": true}'

@@ -1240,6 +1240,7 @@ function rigsRegion(el, { newRig = false, deletes = false } = {}) {
     // The New rig screen, from the rack's picker only: making a rig is not a
     // stage action, so the stage's picker does not offer it.
     newRig ? h("a", { class: "rig-act new-rig", href: "#new-rig" }, "New rig…") : null,
+    helpAnchor(state.screen === "stage" ? "stageRigs" : "rigs"),
   ]);
   if (rebuilt && state.bin.focus) {
     const target = el.querySelector(state.bin.focus);
@@ -1482,6 +1483,7 @@ function ampRegion(el) {
           h("p", {}, `Load ${chosen.label}? ${view.picker.warning}`),
           h("button", { class: "rig-act danger", onclick: () => changeAmpModel(chosen.model) }, `Load ${chosen.label}`),
           h("button", { class: "rig-act", onclick: () => { state.ampChoice = null; render(); } }, "Cancel")) : null),
+      helpAnchor("amp"),
     ];
   });
 }
@@ -1619,6 +1621,14 @@ function channelVolume(track, where, updaters) {
 
 // ---------------------------------------------------------------- the rack (S1)
 
+// A link into the user guide (#167): feature `which` of R.HELP, from this
+// screen, so the guide's way back returns here. Same tab: the guide's bar
+// says "Back to the rig", and the browser's own Back works as well.
+function helpAnchor(which, cls = "help-link") {
+  const link = R.helpLink(which, state.screen);
+  return link ? h("a", { class: cls, href: link.href, "aria-label": link.aria, "data-help": which }, link.label) : null;
+}
+
 function rackFrame() {
   const regions = {
     title: h("h1", { class: "rig-name" }),
@@ -1645,7 +1655,7 @@ function rackFrame() {
   regions.header = h("header", { class: "bar" },
     h("svg", { width: 28, height: 28, viewBox: "0 0 28 28", "aria-hidden": "true", class: "mark" }, h("path", { d: "M5 18a9 9 0 0 1 18 0" }), h("path", { d: "M10 18a4 4 0 0 1 8 0" })),
     regions.title, masterFader("rack"), regions.status,
-    h("span", { class: "spacer" }), regions.tiles, h("a", { class: "go", href: "#stage" }, "Stage"), regions.lock);
+    h("span", { class: "spacer" }), regions.tiles, h("a", { class: "go", href: "#stage" }, "Stage"), helpAnchor("guide", "go help"), regions.lock);
   // The open tab's panel (#135): the amp first, in the tab of the channel it
   // is in front of (between the guitar and the board), then that chain.
   regions.panel.append(regions.amp, regions.rack);
@@ -2719,6 +2729,7 @@ function saveRegion(el, unsaved) {
         result.action ? h("button", { class: "rig-act danger", onclick: result.action.run }, result.action.label) : null,
         h("button", { class: "dismiss", "aria-label": "Dismiss", onclick: () => { state.saveResult = null; render(); } }, "×")) : null,
       last ? h("p", { class: "sub last-save" }, `Last saved ${last.time} to `, h("code", {}, last.file), `, ${last.then}.`) : null,
+      helpAnchor("save"),
     ];
   });
   drawSaveDot(el, dot);
@@ -2894,7 +2905,7 @@ function recordRegion(el) {
       h("div", { class: "record-head" },
         h("span", { class: "rec-dot", "aria-hidden": "true" }),
         h("h2", {}, view.title), h("span", { class: "spacer" }),
-        recording ? h("span", { class: "record-elapsed", role: "timer", "aria-label": "Elapsed" }) : null),
+        recording ? h("span", { class: "record-elapsed", role: "timer", "aria-label": "Elapsed" }) : helpAnchor("record")),
       recording
         ? h("div", { class: "take-now" }, h("span", { class: "k" }, "Take name"), h("span", { class: "v" }, view.name))
         : view.state === "idle" ? nameField(view) : null,
@@ -3081,6 +3092,7 @@ function takesRegion(el) {
       h("span", { class: "note" }, r.note)))) : (view.dir && !view.problem ? h("p", { class: "sub" }, "No takes yet.") : null),
     view.more ? h("p", { class: "sub" }, `and ${view.more} older, not listed`) : null,
     view.archived ? h("p", { class: "sub" }, `${view.archived} earlier take${view.archived === 1 ? "" : "s"} kept in _archive/`) : null,
+    helpAnchor("takes"),
   ]);
 }
 
@@ -3102,7 +3114,8 @@ function stageFrame() {
   // fader under the rig's state keeps a drag and its focus through a poll.
   regions.header = h("header", { class: "stage-head" }, regions.row, regions.detail, masterFader("stage"), regions.tiles);
   const frame = h("div", { class: "screen stage-screen" }, regions.header, regions.problems, regions.record, regions.levels, regions.amp, regions.cards, regions.rigs,
-    h("nav", { class: "stage-nav" }, h("a", { href: "#stage", class: "here", "aria-current": "page" }, "Stage"), h("a", { href: "#rack" }, "Rack")));
+    h("nav", { class: "stage-nav" }, h("a", { href: "#stage", class: "here", "aria-current": "page" }, "Stage"), h("a", { href: "#rack" }, "Rack"),
+      helpAnchor("stage", "help")));
   return { frame, regions };
 }
 
@@ -3296,7 +3309,7 @@ function renderNewRig(regions, status) {
   patch(regions.header, JSON.stringify([status]), () => [
     h("svg", { width: 28, height: 28, viewBox: "0 0 28 28", "aria-hidden": "true", class: "mark" }, h("path", { d: "M5 18a9 9 0 0 1 18 0" }), h("path", { d: "M10 18a4 4 0 0 1 8 0" })),
     h("h1", { class: "rig-name" }, "New rig"), statusLine(status),
-    h("span", { class: "spacer" }), h("a", { class: "go", href: "#rack" }, "Back to the rack"),
+    h("span", { class: "spacer" }), helpAnchor("newRig", "go help"), h("a", { class: "go", href: "#rack" }, "Back to the rack"),
   ]);
   problemsRegion(regions.problems);
   const nr = state.newRig;
@@ -3650,7 +3663,8 @@ function presetPanel(view, c) {
         onclick: () => (result.offer.replace ? savePreset(c.name, true, result.name)
           : loadPreset(c.name, result.name, result.offer)) }, result.offer.label) : null,
       h("button", { class: "dismiss", "aria-label": "Dismiss", onclick: () => { pu.result = null; render(); } }, "×")) : null,
-    h("button", { type: "button", class: "save-act preset-close", onclick: () => { pu.channel = null; render(); } }, "Close"));
+    h("button", { type: "button", class: "save-act preset-close", onclick: () => { pu.channel = null; render(); } }, "Close"),
+    helpAnchor("presets"));
 }
 
 // The name's hint and Save's state, drawn in place from what is typed.
