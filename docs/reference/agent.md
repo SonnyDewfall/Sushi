@@ -52,6 +52,10 @@ curl -X POST localhost:8029/rigs/electric-delay/delete -d '{"dry_run": true}'   
 curl -X POST localhost:8029/rigs/electric-delay/delete                           # into config/rigs/.deleted/ (#129); never the running rig
 curl -X POST localhost:8029/rigs/electric-delay/restore -d '{"entry": "electric-delay-20261116T101502Z.yaml"}'   # Undo; no entry: the newest
 curl localhost:8029/rigs/bin             # what is in the bin, newest first, and which agent's bin it is
+curl localhost:8029/presets              # the channel presets of config/channels/ (#127), and why one cannot load
+curl -X POST localhost:8029/rig/channels/board/save-as -d '{"name": "crunch"}'   # Save channel as…; "replace": true to update one
+curl -X POST localhost:8029/rig/channels/vocal/load -d '{"preset": "crunch"}'     # writes the rig file, then plays it live where it can
+curl -X POST localhost:8029/rigs/new -d '{"name": "duo", "channels": [{"name": "a", "input": "guitar-in", "from": {"preset": "crunch"}}, {"name": "b", "input": "vocal-in", "from": {"preset": "crunch"}}]}'
 
 curl localhost:8029/health | jq .agent.midi   # the pedals: listening, or why not, and what was last heard
 ```
@@ -694,6 +698,77 @@ none), and offers one only once `GET /rigs/bin` says its file is still there
 and its rig is not back. A revert's saves (`.sushi-rig/saves/<name>/`) are
 not touched by a delete, so a rig made later with the same name lists them.
 Nothing of this is recorded as run on the rig machine.
+
+## Channel presets
+
+A channel's sound saved by name, apart from any rig (#127): its chain, each
+plugin's settings and bypass, its `level` and a preferred width, and no
+input, in `config/channels/<name>.yaml` ([the rig file](rig-file.md#channel-presets)
+has the format). The file, its names and what a load does to a chain and to
+a MIDI map are `presets.py`'s; whether a rig with a preset in it is valid is,
+as always, the compiler's (`rig.compile_rig_draft`).
+
+- **`GET /presets`** lists config/channels/ (that folder only, names the
+  naming rule allows): each preset's `width`, `level`, `plugins` (base
+  names), `heard_through_amp`, `saved_from`, and `ok`, or the `problem`
+  that keeps it from loading (its shape, then the compiler: a plugin
+  missing from `plugin-ports.txt`, the amp, a name that becomes the
+  compiler's own).
+- **`POST /rig/channels/<channel>/save-as {"name", "replace"?}`**, Save
+  channel as…: the running rig captured and folded exactly as `POST
+  /rig/save` folds it (under the live lock, with the log's adds and
+  removes), and that channel's entry of the fold written as the preset,
+  **never a `_to_stereo` copy**. Each plugin is stored under its base
+  name, the channel's prefix taken off (`guitar_compressor` on `guitar` is
+  `compressor`; none is taken off where that would make two names one).
+  `heard_through_amp` is the amp's model when the channel plays from
+  `guitar-in` with the amp running. Not logged, and the unsaved count is
+  untouched: the rig is unchanged. Refused as a save is (`no_rig`,
+  `panel`, `v1`, `changed`, `not_saved`), and `no_channel`,
+  `preset_problem`, and `taken` unless `"replace": true`, which updates the
+  file in place keeping its comments and its `description`. Not committed.
+- **`POST /rig/channels/<channel>/load {"preset", "discard"?,
+  "drop_midi"?}`**: the channel's chain and level replaced by the preset's,
+  each plugin named for the channel (`processor_name`: `lead_compressor` on
+  `lead`), its input, width and strip its own. Like a revert: **the rig
+  file is written** (in place, comments kept, the old chain and the
+  comments inside it replaced whole, `write_rig(replace_chains=...)`, with
+  [the provenance line](rig-file.md#channel-presets) above it), the file as
+  it was is first kept as a revert point unless a save already keeps it
+  (`kept_before`), and then **the running rig is switched to its file** by
+  the live switch: live where `rigfile.diff` can do it, by restart where
+  not, the answer saying `how` and `why`. Its `op: "rig"` entry carries
+  `args.preset` and is the baseline: nothing is unsaved after it and undo
+  stops there. Refused, each before anything is written: `no_rig`, `panel`,
+  `v1`, `no_preset`, `preset_problem`, `no_channel`, `name`, `rig_problem`
+  (the compiler's words, a name another channel has among them), `unsaved`
+  while the rig holds live work no save has written (unless `"discard":
+  true`), and **`midi`**. A mapping of the rig's `midi:` onto that channel's
+  plugins is kept where the new chain has the same plugin (by URI) under
+  the same name, **follows** it to its new name where it has it under the
+  same base name (`followed`), and is otherwise orphaned: the load is
+  refused with each mapping and why (`mappings`), or with `"drop_midi":
+  true` they are taken out of the file and said (`dropped`). A knob's
+  mapping is Sushi's `cc_mappings`, loaded only with the config, so one
+  followed or dropped makes the load a restart; a pedal's bypass is the
+  agent's, and stays live. The answer's `amp` says whether the amp is in
+  front of the channel, and `width` when the preset was saved from another
+  width.
+- **A channel from a preset**: `from: {"preset": <name>}` in `POST
+  /rigs/new` and `POST /rigs/<rig>/channels/add`, beside #125's `{"rig",
+  "channel"}` (below). The chain is copied as a load copies it, named for
+  the new channel, so **two channels from one preset compile**, each with
+  processors of its own; with no `width` in the request the preset's
+  preferred one is taken, and the patchbay still refuses a width the input
+  cannot give (`rig_problem`). The answer's `from.amp` says when the channel
+  has no amp: **a second guitar on another input is told**.
+
+**The amp is not part of a preset.** It is one Carla instance patched in
+front of `guitar-in` (`amp.amp_patchbay`), so it is in front of every
+channel on that input in a rig with an amp, and of nothing else; an amp per
+channel is not built. **Not run against a live Sushi**: shown against
+`test_agent.RigLive` loaded from the real compile, and the real live switch
+(`tests/test_agent_presets.py`).
 
 ## Recording from the web UI
 

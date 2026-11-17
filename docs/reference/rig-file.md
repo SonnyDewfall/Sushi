@@ -156,6 +156,52 @@ sushi-rig patchbay generate config/rigs/guitar_vocal.yaml -o /tmp/rig.qpwgraph
 sushi-rig probes config/rigs/guitar_vocal.yaml --amp
 ```
 
+## Channel presets
+
+A channel's sound can be kept apart from any rig, as a channel preset
+(`config/channels/<name>.yaml`, #127), written by the web UI's Save channel
+as… and read by its loads ([Channel presets](../guide/channel-presets.md),
+[the agent](agent.md#channel-presets)):
+
+```yaml
+kind: channel
+schema_version: 1
+name: crunch
+description: ...                # optional
+width: mono                     # the width it prefers: what it was saved from
+level: -3.0                     # optional, dB; unity writes nothing
+heard_through_amp: amp/models/Neve 2.nam   # optional: the amp was in front of it
+saved_from: {rig: electric_board, channel: board}   # optional
+chain:
+  - name: compressor            # a base name: a load prefixes the channel's
+    uri: http://guitarix.sourceforge.net/plugins/gx_compressor#_compressor
+    bypassed: false
+    parameters: {RATIO: 0.07}
+```
+
+It names **no input**, which is chosen when it is loaded, and never a
+compiler's `_to_stereo` copy. Its chain entries are a rig file's, under base
+names: a load names each for the channel it lands on (`lead_compressor` on
+`lead`), so one preset can be on two channels of one rig. It does not carry
+the amp, which is the rig's. It is checked as a rig file is, by the
+compiler, with its chain compiled as a one-channel rig. A copy into a rig
+file is a copy, not a reference, and says where it came from in a comment
+directly above the channel's `chain:`, which the next load onto that channel
+replaces:
+
+```yaml
+  - name: lead
+    input: vocal-in
+    width: mono
+    # From channel preset crunch (config/channels/crunch.yaml), 2026-11-17: its chain and level were
+    #   copied, so editing the preset later changes nothing here.
+    chain:
+      - name: lead_compressor
+```
+
+A comment, not a key, so the rig file's schema, the compiler and a sound
+reference's `made_from` are unchanged by it.
+
 ## Rigs converted from v1 configs
 
 Every tone in `config/*.json` has a rig of the same name, first written by

@@ -5088,3 +5088,19 @@ so the rig file's schema, the compiler and a sound reference's `made_from`
 (a hash of the parsed channels) are untouched. Tested on every channel of
 every frozen rig (placed, replaced, still mergeable) and through the agent's
 three routes. **Not tried on the rig.** *(2026-11-17)*
+
+**Channel presets, step 6: the documentation (#127).** A guide of its own,
+[Channel presets](docs/guide/channel-presets.md) (save a channel, load one
+onto a channel, start a channel or a rig from one, and what may surprise:
+the names per channel, a copy and not a link, the amp, the width, pedals
+following their plugin, Undo stopping at a load and Revert going back, and
+nothing committed), linked from the guides' index, the README's table and
+Building a rig (whose note on two channels copied from one chain now says a
+preset can). The agent's routes and rules under [the agent's Channel
+presets](docs/reference/agent.md#channel-presets) and its route list; the
+file's format and the provenance comment under [the rig
+file's](docs/reference/rig-file.md#channel-presets); the panel and "Start
+from" in [the web UI](docs/reference/web-ui.md), with what has not run on
+the rig; `config/channels/` in the repository's layout. **Not done:** the
+guides' screenshots (`docs/guide/img/`, `guide_shots.py`) are not retaken
+and show no Preset… button; `docs/ui/rack.png` likewise. *(2026-11-17)*

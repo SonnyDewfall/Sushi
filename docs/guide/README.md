@@ -35,6 +35,7 @@ The page's messages use a few names of their own:
 | [Mixing](mixing.md) | Each channel's volume, and the master |
 | [Saving and going back](saving.md) | Save, Save as, Revert |
 | [Building a rig](building-a-rig.md) | A new rig, adding a channel, changing an input, deleting a rig |
+| [Channel presets](channel-presets.md) | A channel's sound saved by name, and put on any input |
 | [Recording](recording.md) | Takes, what is in a take's folder, names |
 | [The audio interface](audio-interface.md) | The iD14's volume fix, and what to do if one side goes quiet |
 | [When something's wrong](troubleshooting.md) | No sound, restarting the agent after an update, `doctor` |
