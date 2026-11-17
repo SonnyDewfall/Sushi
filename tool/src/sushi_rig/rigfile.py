@@ -1666,8 +1666,6 @@ RESTART_REASONS = {
     "drifted": "the running rig is no longer what its config says, so a plan made from it would be wrong",
     "stereo": "a plugin has a copy to stereo in one rig and not the other (plugin-ports.txt changed between them)",
     "stereo_missing": "the running rig was compiled before the copies to stereo existed, so a restart adds them",
-    "discarded": "unsaved work being discarded set a value the live switch cannot put back (its value before is "
-                 "not known), so a restart reloads the file",
 }
 
 # The settings of the compiler's own processors that the next rig may leave

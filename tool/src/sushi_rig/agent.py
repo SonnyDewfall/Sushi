@@ -6623,7 +6623,8 @@ def discard_plan(plan: "rigfile.SwitchPlan", discarded: list[dict[str, Any]], up
     sets it already or the rig (`reading`) holds that value; a processor the
     next rig does not have is left to the plan, which removes it. A value
     whose before Sushi did not report cannot be put back live: that is a
-    restart (`discarded`). A discarded add, remove or move leaves chains the
+    restart (`discarded`, the agent's reason like `failed` and `unverified`,
+    not one of `rigfile.diff`'s, so not in `RESTART_REASONS`). A discarded add, remove or move leaves chains the
     running config does not have, which `diff` against the rig refuses as
     `drifted` before this is reached, so it restarts, and the restart reloads
     the file. The steps go last, parameters then bypasses, marked
