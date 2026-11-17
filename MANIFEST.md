@@ -5177,3 +5177,79 @@ the fix taken out. The counts of the review's fixes before this: the fast
 suite 4873 passed, 33 skipped on 1114d07; `test_ui_presets.py`, `test_ui.py`
 and `test_ui_tabs.py` (264 tests) 5 of 5 in a loop. **Not tried on the
 rig.** *(2026-11-17)*
+
+**Four pedals: tremolo, flanger, shimmer reverb, tape echo (#165).** From
+#155's shortlist, all guitarix-lv2 43.0, which CI already installs:
+GxTremolo, GxFlanger, Gxshimmizita, GxEchoCat. Their four lines in
+`plugin-manifest.txt` (now 59 URIs) and `plugin-ports.txt` (1 1, 1 1, 2 2,
+1 1, as lilv reads them); a profile each (`tool/examples/profiles/gx*.yaml`,
+validated against `probe` over `plugins/` and over `/usr/lib/lv2`, whose
+output is frozen as `tests/fixtures/probe_gx*.json`); a channel preset each
+(`config/channels/tremolo`, `flanger`, `tape-echo`, `shimmer`); a guide,
+`docs/guide/effects.md`. No visual read: this machine has no Carla and no
+jackd, so no profile has a `face`. **Measured** (the bench host of #155, and
+Sushi 1.3.0's offline frontend as the compiler builds a one-plugin mono
+channel, on #155's synthetic guitar): GxTremolo's Depth swings 5 dB at 0.5,
+11 at 0.7, 24 at 1 (Dry/Wet 100, 5 Hz); its Dry/Wet 50 default makes every
+dip shallower. GxFlanger's WIDTH 0 stops the sweep; its MIX (-1 to 1) moves
+the sweep only a little and its role is not documented. Gxshimmizita's
+DRYWET is a straight linear crossfade to a wet about 17 dB over the guitar
+(13 dB on a noise burst); its PSDRYWET is how much of the tail goes through
+the shifter (at SHIFT 2 and PSDRYWET 1 a 440 Hz tail is 5 semitones up at
+1.5 s, at 0 not at all); MODE changes the output even at DEPTH 0, CONTROL
+and ENVELOPE only above it; F1, F2, T60DS and T60M have zita-rev1's ranges
+and defaults. GxEchoCat's Swell is the echoes' level and leaves the dry as
+it is; heads 1 to 3 are an eighth, a quarter and a dotted quarter at BPM
+(250, 500, 750 ms at 120); no head on, no echo; its Output is about 27 dB a
+unit, so 1.5 is +13 dB on 1 and 4 is +78. **Decided:** the shimmer's
+**Mix** drives DRYWET 0 to 0.3 (linear): past 0.3 the wet only gets louder;
+rendered through Sushi, Mix 0, 25, 50, 75, 100 % gave +0.0, +1.3, +3.4,
++5.5, +7.3 dB on the left (+0.0 to +8.0 right). The echo's **Mix** drives
+Swell 0 to 1; its Output is hidden, and an advanced **Level** drives it from
+0.725 to 1.39: -12.3 to +5.9 dB of the guitar bypassed, level with it at
+1.17 (67 %). A first try lowered Output along Mix's travel to hold the level
+(within 0.5 dB through Sushi), and was dropped: the plugin's own settings
+(Swell 0, Output 1.0) are off that curve, and rig.js's anchored turn
+(`mixPath`) keeps them off it while the knob keeps its start (in Chromium:
+up to 100 % and back to 0 % left Output at 1.0, not 1.17), so an echo added
+from the library would stay about 5 dB under the guitar; a one-parameter
+Level puts the default on its travel (41 %). Hidden:
+the tremolo's Reset (a trigger), the shimmer's DRYWET, the echo's Swell and
+Output. **Presets, not a rig:** a rig in `config/rigs/` with the shimmer in
+it fails `test_stereo.py`'s `test_each_plugin_compiled_alone_is_balanced`
+(L -14.23, R -11.23 dBFS, tried here with a scratch rig and the shimmer
+bypassed, then deleted), and with it on, `nulltest` too (3.35 dB apart on
+the sweep at the preset's settings); the bench host gives 1.4 to 3.5 dB on
+the sweep at every setting tried, and about 1 dB on the guitar. It is a
+stereo reverb, not a lost channel; whether such a plugin should be held to
+`BALANCE_DB` is left open, and the guide says a committed rig with it fails
+CI. So no sound reference was made: the #158 references are for rigs.
+**Tests:** `tests/test_pedals.py` (the inventory, each profile clean and
+canonical against its frozen probe, the panels' primaries, the Mixes and
+Level; slow: each pedal alone in Sushi is finite, two-sided, well above
+silence, the mono ones balanced, and at least -20 dB away from the same
+channel bypassed; checked by hand that the flanger with WET 0 fails it, at
+-174 dB), `tests/test_ui_pedals.py` (Chromium: each card's groups, More,
+summary, the echo's heads as whole-number knobs, the controls' targets as
+profile.py's, the echo's own defaults on its Mix and Level),
+`test_agent_edits.py`'s library route (the manifest's count, and the four
+profiles by URI). `sushi-rig verify` of a rig made from the four presets'
+chains: ok (every parameter name real, every value applied). **Found on the
+way, fixed:** two renders at once on one machine (another worktree's slow
+tests) made Sushi's gRPC server fail to bind 51051; Sushi then exits 0 with
+a WAV header and no audio, and prints its bind error with raw bytes, which
+`render_offline`'s strict decode turned into a UnicodeDecodeError. Now the
+streams decode with replacement and an empty render is a `RenderError` that
+names the port (two tests in `test_render.py`; the first fails without its
+fix). The library's tests held the manifest at 55 (`test_library.py`
+twice, `test_ui_library.py` twice, `test_agent_edits.py`); they now count
+it. **Counts, here:** the fast suite with Chromium (Playwright's browser at
+`/opt/pw-browsers`), 4927 passed, 5 skipped (`test_probe.py`'s five that
+want the rig machine's `~/Sushi/plugins`); before the count fixes, 3 of
+them failed at 55. Slow, against Sushi 1.3.0 and a `plugins/` assembled
+from this machine's packages: `test_pedals.py` 4 passed; `test_stereo.py`
+101 passed in a clean run, while other worktrees' Sushis held port 51051
+one or two renders a run failed, now as a `RenderError` naming the port or
+as Sushi aborting in gRPC (exit -6), never on a pedal. **Not run:** the
+rest of the slow suite; the container job; anything on the rig; nothing
+heard; a phone or the touch screen. *(2026-11-17)*
