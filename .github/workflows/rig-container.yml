@@ -17,6 +17,7 @@ on:
   pull_request:
     paths:
       - ci/**
+      - scripts/**
       - .github/workflows/rig-container.yml
       - plugin-manifest.txt
       - plugin-ports.txt
@@ -161,7 +162,9 @@ jobs:
             grep -m1 "model name" /proc/cpuinfo
             dpkg-query -W -f="\${Package} \${Version}\n" guitarix-lv2 mda-lv2 \
                 dpf-plugins-lv2 x42-plugins zynaddsubfx-lv2 rubberband-lv2 swh-lv2 \
-                ardour-lv2-plugins libc6'
+                ardour-lv2-plugins libc6 libfftw3-double3 libsamplerate0
+            # plugins/ has Rubber Band 4.0.0, built (#164), not the package above.
+            cat /rig/plugins/rubberband.lv2/BUILT-FROM'
           # Made here, so the runner owns it; nulltest writes a candidate into
           # it for each STALE channel (`--candidates`), and only for those.
           mkdir -p stale-candidates

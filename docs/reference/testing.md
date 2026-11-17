@@ -63,7 +63,11 @@ workflows because no single runner has everything:
   or `./sushi` skip there — expected, and not a pass.
 - `rig-container.yml` builds `ci/Dockerfile` (system lilv, the distro plugins,
   a real Sushi 1.3.0) and runs the **whole** suite in it, failing the job on any
-  `SKIPPED`. That is what makes the first workflow's skips safe.
+  `SKIPPED`. That is what makes the first workflow's skips safe. Its
+  plugins include Rubber Band 4.0, built by `scripts/build-rubberband4.sh`,
+  and `tests/test_octave.py` checks there that `plugins/` holds that build and
+  that the octave it plays under Sushi is in tune and finite; its numbers
+  (cents per note, the lag) are printed at the end of the run.
 - The same job runs `nulltest --all`, so **a change in the code or a plugin
   that alters the sound fails the build**. References are calibrated in that
   container, for every v1 config (`config/sound/<name>.v1-mono.yaml`), every

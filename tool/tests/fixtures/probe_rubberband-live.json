@@ -1,0 +1,70 @@
+{
+  "uri": "http://breakfastquay.com/rdf/lv2-rubberband#livemono",
+  "name": "Rubber Band Live Mono Pitch Shifter",
+  "class": "Plugin",
+  "bundle": "/home/user/worktrees/octave-rb4/plugins/rubberband.lv2",
+  "audio_in": 1,
+  "audio_out": 1,
+  "atom_ports": 0,
+  "patch_writables": [],
+  "state_interface": false,
+  "config_drivable": true,
+  "parameters": [
+    {
+      "symbol": "cents",
+      "name": "Cents",
+      "min": -100.0,
+      "max": 100.0,
+      "default": 0.0,
+      "toggled": false,
+      "integer": true,
+      "enumeration": false,
+      "logarithmic": false
+    },
+    {
+      "symbol": "semitones",
+      "name": "Semitones",
+      "min": -12.0,
+      "max": 12.0,
+      "default": 0.0,
+      "toggled": false,
+      "integer": true,
+      "enumeration": false,
+      "logarithmic": false
+    },
+    {
+      "symbol": "octaves",
+      "name": "Octaves",
+      "min": -2.0,
+      "max": 2.0,
+      "default": 0.0,
+      "toggled": false,
+      "integer": true,
+      "enumeration": false,
+      "logarithmic": false
+    },
+    {
+      "symbol": "formant",
+      "name": "Formant Preserving",
+      "min": 0.0,
+      "max": 1.0,
+      "default": 0.0,
+      "toggled": true,
+      "integer": true,
+      "enumeration": false,
+      "logarithmic": false
+    },
+    {
+      "symbol": "wetdry",
+      "name": "Wet-Dry Mix",
+      "min": 0.0,
+      "max": 1.0,
+      "default": 0.0,
+      "toggled": false,
+      "integer": false,
+      "enumeration": false,
+      "logarithmic": false
+    }
+  ],
+  "version": "6.1"
+}

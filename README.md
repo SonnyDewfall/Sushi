@@ -30,7 +30,8 @@ phone.
 - An audio interface, described in `machines/<hostname>.yaml`. The rig's own is
   an Audient iD14, which needs [a one-time volume fix](docs/guide/audio-interface.md).
 - Sushi 1.3.0, as `./sushi` at the root of this checkout, and the plugins in
-  `plugins/`. Neither is tracked here.
+  `plugins/`. Neither is tracked here. One plugin, the octave's Rubber Band
+  4.0, is built from source by `scripts/build-rubberband4.sh`.
 - For the amp, Carla and the neural amp modeler's LV2 plugin; qpwgraph for the
   connections; fmit for the tuner.
 - Python 3.11 or later.

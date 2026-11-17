@@ -11,7 +11,8 @@
 # gRPC's ProcessorInfo), so they are kept here.
 #
 # Written from lilv 0.24.22 over Ubuntu 24.04's packages, the ones CI's image
-# installs. CI checks every line against lilv over plugins/ (tests/test_stereo.py
+# installs, and Rubber Band 4.0.0's bundle, which it builds
+# (scripts/build-rubberband4.sh): the #livemono line, 2026-11-17. CI checks every line against lilv over plugins/ (tests/test_stereo.py
 # `test_the_port_table_is_what_lilv_reads`), so a package update that changes a
 # plugin's ports fails the build rather than the right channel.
 #
@@ -21,6 +22,7 @@
 #
 # To add a plugin: `sushi-rig probe <uri>` prints "audio N in / M out"; add
 # "N M <uri>" here, beside its line in plugin-manifest.txt.
+1 1 http://breakfastquay.com/rdf/lv2-rubberband#livemono
 1 1 http://breakfastquay.com/rdf/lv2-rubberband#mono
 1 1 http://breakfastquay.com/rdf/lv2-rubberband#r3mono
 2 2 http://breakfastquay.com/rdf/lv2-rubberband#r3stereo

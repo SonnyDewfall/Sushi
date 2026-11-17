@@ -268,7 +268,7 @@ def test_the_drawer_lists_the_library_by_kind_and_the_search_narrows_it_in_place
         ["x42-comp - Dynamic Compressor Mono", "x42-comp - Dynamic Compressor Stereo"])
     expect(p.locator('.lib-group[data-kind="eq"] .lib-name')).to_have_text(["3 Band EQ"])
     # Every other plugin of the manifest: no kind its bundle declares, or no bundle read.
-    expect(p.locator('.lib-group[data-kind="other"] .lib-entry')).to_have_count(55 - 7)
+    expect(p.locator('.lib-group[data-kind="other"] .lib-entry')).to_have_count(56 - 7)
     # Its bundle, and the mono badge with the rack's own tooltip.
     ts = entry(p, GXTS9)
     expect(ts.locator(".lib-bundle")).to_have_text("gxts9.lv2")
@@ -294,7 +294,7 @@ def test_the_drawer_lists_the_library_by_kind_and_the_search_narrows_it_in_place
     search.fill("nothing like this")
     expect(p.locator(".lib-nothing")).to_be_visible()
     search.fill("")
-    expect(p.locator(".lib-entry:visible")).to_have_count(55)
+    expect(p.locator(".lib-entry:visible")).to_have_count(56)
     assert first.evaluate("(e) => e.isConnected"), "the list was not rebuilt by the search"
     # Escape closes it and gives the focus back to the place it was opened from.
     p.keyboard.press("Escape")

@@ -156,10 +156,11 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   own bundle's LV2 class (`library.KINDS`: a reverb is lv2:ReverbPlugin, a
   compressor lv2:CompressorPlugin), never a guess from its name: a plugin
   whose bundle declares none of the six (a pitch shifter, an instrument, a
-  filter) or was not read is under Other. Of the manifest's 55, 27 are under
+  filter) or was not read is under Other. Of the manifest's 55, 27 were under
   Other over Ubuntu 24.04's packages as installed where this was written, the
   amp and the four Rubber Band shifters among them (zynaddsubfx's chorus was
-  not installed there, so is counted as Other unread). Each entry shows its
+  not installed there, so is counted as Other unread); the Live shifter the
+  octave added (#164) declares no kind either, and is a 28th. Each entry shows its
   name, its bundle and a **mono** badge where `plugin-ports.txt` gives it one
   output, with the rack's own tooltip; the amp is listed, off, with the
   library's reason. **The add** (`POST /live/add`) sends `after` the plugin
