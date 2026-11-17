@@ -5262,7 +5262,7 @@ dip that brings an old rig's master down to 0 dB says so**: `dip.capped` and
 `master_capped` in the edit's answer, stderr, and `agent.master_capped` in
 `/health` until a lifecycle command works; the behaviour is kept. Also a
 `write_rig` round trip: a file at `level: 4.5` saves as `level: 0.0` and
-nothing else. The fast suite: FASTCOUNT. The slow limiter tests, three runs
+nothing else. The fast suite, after merging #168: 5046 passed, 5 skipped, 1 failed, `test_live_close.py`'s count of a real elkpy connection's descriptors (16 against 12, the batch before -4), which passed alone 7 times in 8 and touches nothing here. The slow limiter tests, three runs
 in a private network namespace (another session's Sushi held port 51051):
 every test passed at least twice, the rest Sushi's gRPC start-up crash.
 **Not run:** the rig. *(2026-11-17)*
