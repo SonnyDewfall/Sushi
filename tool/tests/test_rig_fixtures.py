@@ -229,7 +229,8 @@ def test_every_frozen_rig_is_still_a_rig(name, frozen_root, tmp_path):
     _wired(out["patchbay"].read_text(), channels, path.name)
 
 
-# sha256 of every file of the frozen set, as each was at c494625. A frozen
+# sha256 of every file of the frozen set, as each was at c494625 (the sound
+# references: below, where each came from). A frozen
 # file is changed on purpose or not at all: with the code that reads it, in
 # the same commit, and with its line here.
 CHECKSUMS = {
@@ -259,6 +260,26 @@ CHECKSUMS = {
     "v1/src/electric_board.yaml": "8447844a055ca5043beac7d4cb00a49fce5ad0d6c12331c2b468033fdf7457c3",
     "v1/src/electric_stereo.yaml": "9741960288a45bbd51cebadd705ee697562d52dc25b92a0d8ba6ac5eb7af35e7",
     "v1/src/guitar_vocal.yaml": "113f13cde244aaaaf53ba8f063279a13467b31d36a04e0764a7ae1ffad9526b6",
+    # The frozen rigs' sound references (#144), not of c494625. Each is
+    # config/sound/'s file of the same name at 155e6c8, where CI run
+    # 43891871551 found every one of them "sounds the same" and each
+    # committed rig compiled to the very channel its frozen copy does; and
+    # electric-chorus-2's is config/sound/electric-chorus-2.yaml as it was
+    # before 8c9bb76 renamed it to the two-channel rig's `.board`, which
+    # differs from it in its `config:` line alone. Each sha256 here is that
+    # git blob's, so `git show <commit>:<path> | sha256sum` says the same.
+    "sound/accustomed.yaml": "dea3c2aefb4ccc16026abc247561249b4eb37ee1b47f3f13aab8f2d7014be0dc",
+    "sound/electric-chorus-2.yaml": "7d6469d1840ee606d7976f00247d3880c80212d494403000466f6281525bbc3b",
+    "sound/electric-chorus-hall.yaml": "008d130a8209e96fb8130af04eaf6c31e60eb6cddbbeef773618a70b1c34a117",
+    "sound/electric-chorus.yaml": "d2a184db1b92133090bfc4b65e23fa7290696f93ff538f714ae7cbbd33f7c440",
+    "sound/electric-clean.yaml": "ed29336ee65a8934a76a9a76edc39a56a91387ba7fa2bcb67c74c76aa5152f9e",
+    "sound/electric-delay.yaml": "7129f5082354ce061a143b48c1c6d44f07e0fcdb9073771d245b41a9a91bf925",
+    "sound/electric-octave-up.yaml": "c5346663244708688cf79c760ff0640b63c02ccc1088e3d14cd4a28deeb48853",
+    "sound/electric-spacey-delay.yaml": "456b672f1d6614bae2a5ebd6b8cd8146d38e0249c87498e1590721a07cff8692",
+    "sound/electric_board.yaml": "968c4a08de97fa7d9ca44f135655ef7df286de44081629c3ea871b88ff10ae8a",
+    "sound/guitar_vocal.guitar.yaml": "722da50c8de79c51eee0853bc0063a610912fc6bba415843f7995f3f0215abfc",
+    "sound/guitar_vocal.vocal.yaml": "2a0d60051d4b4ae4438d2f785224b20b963663c3d9ec05347596f77a34226f61",
+    "sound/hard-feelings.yaml": "45b54cecf78e87b7a7253b8e6347fa08c3a0c1d2a08b3ba99fbee1c97ed61a30",
 }
 
 

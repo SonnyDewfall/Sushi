@@ -1,0 +1,37 @@
+schema_version: 2
+config: electric-chorus
+stimulus: log_sweep 20-20000Hz 5s -20dBFS 2ch
+sample_rate: 48000
+frames: 240000
+measured:
+  peak_dbfs: -14.0452
+  rms_dbfs: -24.7908
+  channel_rms_dbfs:
+  - -24.7921
+  - -24.7894
+  delay_samples: 0
+  bands:
+  - low_hz: 20.0
+    high_hz: 80.0
+    level_dbfs: -44.6007
+  - low_hz: 80.0
+    high_hz: 250.0
+    level_dbfs: -32.6587
+  - low_hz: 250.0
+    high_hz: 800.0
+    level_dbfs: -26.6047
+  - low_hz: 800.0
+    high_hz: 2500.0
+    level_dbfs: -27.0772
+  - low_hz: 2500.0
+    high_hz: 8000.0
+    level_dbfs: -36.2726
+  - low_hz: 8000.0
+    high_hz: 20000.0
+    level_dbfs: -57.0121
+tolerance:
+  band_db: 0.0001
+  level_db: 0.0001
+  delay_samples: 0
+  note: 'measured: two renders of this config were identical to the 0.0001 dB this
+    file is written at'

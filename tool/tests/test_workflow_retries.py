@@ -27,14 +27,16 @@ TESTS = Path(__file__).parent
 
 
 def _patterns() -> list[str]:
-    """Every pattern the workflow greps a log with for retries."""
+    """Every pattern the workflow counts a log's lines with."""
     return re.findall(r"grep -c '([^']*)' (?:suite|nulltest)\.log", WORKFLOW.read_text())
 
 
 def test_the_workflow_counts_only_the_prefixed_lines():
-    patterns = _patterns()
-    assert len(patterns) == 2, "one count for the suite's log, one for nulltest's"
-    assert set(patterns) == {f"^{RETRIED_PREFIX} "}
+    """Retries: one count for the suite's log, one for nulltest's. And
+    nulltest's two warnings (#144, test_sound_refs.py), once each."""
+    from sushi_rig.nulltest import ORPHAN_PREFIX, STALE_PREFIX
+
+    assert sorted(_patterns()) == sorted([f"^{RETRIED_PREFIX} "] * 2 + [f"^{STALE_PREFIX} ", f"^{ORPHAN_PREFIX} "])
     assert "grep -q 'retried after a NaN'" not in WORKFLOW.read_text()
 
 
@@ -64,7 +66,7 @@ def test_a_pytest_log_with_retries_in_tracebacks_counts_only_the_summary():
         f"    note = f\"{{config.name}}: {{RETRIED}} ({{what}})\"",
         *reporter.lines,
     ])
-    (pattern,) = set(_patterns())
+    (pattern,) = {p for p in _patterns() if RETRIED_PREFIX in p}  # the warnings are test_sound_refs.py's
     assert len(re.findall(pattern, log, flags=re.MULTILINE)) == 2
 
 

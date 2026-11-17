@@ -35,3 +35,7 @@ tolerance:
   delay_samples: 0
   note: 'measured: two renders of this config were identical to the 0.0001 dB this
     file is written at'
+made_from:
+  rig: electric-delay.yaml
+  hash: 040d168533305129e23a4c7b3af578537510cad9c28bb0ced401c70b80f09a7d
+  hash_rule: 2

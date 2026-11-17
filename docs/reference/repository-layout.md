@@ -17,8 +17,8 @@ then.
 │   │                             electric_stereo, guitar_vocal; the built
 │   │                             electric_stereo.json is in retired/)
 │   ├── sound/                    nulltest references: what each rig (`<name>.yaml`, or
-│   │                             `<name>.<channel>.yaml`) and v1 config
-│   │                             (`<name>.v1-mono.yaml`) sounds like
+│   │                             `<name>.<channel>.yaml`, with the rig it was made
+│   │                             from) and v1 config (`<name>.v1-mono.yaml`) sounds like
 │   ├── archive/                  auto-written version snapshots of v1 configs,
 │   │                             config/archive/<name>/vX.Y.json
 │   └── retired/                  hand-retired configs (incl. empty.json), kept
@@ -63,7 +63,8 @@ then.
 │   │                             stereo, cli
 │   │   └── ui/static/            the web UI: index.html, app.js, rig.js, style.css
 │   ├── tests/                    fast suite; fixtures/ holds captured artefacts, and the
-│   │                             rigs, v1 configs and machine file the tests name, frozen
+│   │                             rigs, v1 configs and machine file the tests name, frozen,
+│   │                             with the frozen rigs' sound references (sound/)
 │   ├── examples/
 │   │   ├── rig.example.yaml       annotated v1 rig spec (real plugins)
 │   │   ├── dump.example.json      real --dump-plugins output, test fixture

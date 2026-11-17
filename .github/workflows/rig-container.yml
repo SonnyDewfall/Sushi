@@ -1,7 +1,8 @@
 # Builds the "dummy rig" image (ci/Dockerfile) and runs, inside it, the checks
 # that need a real Sushi or a system lilv: the WHOLE pytest suite,
 # `sushi-rig verify --all`, and `sushi-rig nulltest --all` against the sound
-# references in config/sound/. ci.yml runs the fast suite on a bare runner, where
+# references in config/sound/ and tool/tests/fixtures/sound/ (the frozen rigs',
+# #144). ci.yml runs the fast suite on a bare runner, where
 # the lilv- and Sushi-guarded tests skip; this job is the only place they run.
 # Between the two workflows every test must run somewhere
 # (docs/reference/testing.md), so a test that skips here is a failure, not a
@@ -124,6 +125,18 @@ jobs:
       # cannot run protects nothing -- so a reference describes this image's
       # plugin set, and the rig machine's own sound is selftest's to cover.
       #
+      # #144: what fails and what only warns. The frozen rigs' references
+      # (tool/tests/fixtures/sound/) and the v1 configs' (`.v1-mono`) are held
+      # exactly: a change of sound, a missing reference or an orphan fails. A
+      # committed rig (config/rigs/, the owner's, saved from the page) is
+      # compared exactly while its reference was made from the rig as it is
+      # (`made_from` in the reference, a hash of the parsed rig file); one
+      # that has changed, or has no reference, is STALE: rendered and held to
+      # being finite, two-sided and balanced, and then a warning, with its
+      # candidate reference attached, not a failure. A committed rig's
+      # orphaned reference is a warning too. Any rig whose render is NaN,
+      # silent or one-sided fails, whatever its reference says.
+      #
       # It fingerprints Sushi's chain only. The neural amp runs in Carla outside
       # Sushi and is not in this image, so a config's `_amp` section is never
       # rendered here.
@@ -149,14 +162,46 @@ jobs:
             dpkg-query -W -f="\${Package} \${Version}\n" guitarix-lv2 mda-lv2 \
                 dpf-plugins-lv2 x42-plugins zynaddsubfx-lv2 rubberband-lv2 swh-lv2 \
                 ardour-lv2-plugins libc6'
+          # Made here, so the runner owns it; nulltest writes a candidate into
+          # it for each STALE channel (`--candidates`), and only for those.
+          mkdir -p stale-candidates
           status=0
-          docker run --rm -w /rig sushi-rig-ci sushi-rig nulltest --all --sushi ./sushi 2>&1 \
+          docker run --rm -w /rig -v "$PWD/stale-candidates:/candidates" sushi-rig-ci \
+              sushi-rig nulltest --all --sushi ./sushi --candidates /candidates 2>&1 \
               | tee nulltest.log || status=$?
           # nulltest's summary prints one `RETRIED-NAN:` line per retry, and
           # only the summary does; the lines beside each channel are not counted.
           retries="$(grep -c '^RETRIED-NAN: ' nulltest.log || true)"
           if [ "$retries" -gt 0 ]; then
             echo "::warning title=nulltest: ${retries} render(s) retried after a NaN::$(grep '^RETRIED-NAN: ' nulltest.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
+          fi
+          # The warnings, each a line of the summary alone (`nulltest.STALE_PREFIX`,
+          # `ORPHAN_PREFIX`). A STALE one names the channel, says why, and
+          # carries the candidate to commit as config/sound/<name>.yaml: in
+          # the annotation, printed below, and in the stale-sound-references
+          # artifact. Committing it is the same deliberate act as running
+          # `nulltest --calibrate` by hand: read it first.
+          stale="$(grep -c '^STALE-REFERENCE: ' nulltest.log || true)"
+          if [ "$stale" -gt 0 ]; then
+            body="$(grep '^STALE-REFERENCE: ' nulltest.log
+                    for f in stale-candidates/*.yaml; do
+                      [ -e "$f" ] || continue
+                      echo "===== BEGIN config/sound/${f#stale-candidates/} ====="
+                      cat "$f"
+                      echo "===== END config/sound/${f#stale-candidates/} ====="
+                    done)"
+            printf '%s\n' "$body"
+            names="$(grep '^STALE-REFERENCE: ' nulltest.log | cut -d' ' -f2 | tr -d ':' | tr '\n' ' ')"
+            # The names go in the message, not the title: a workflow command's
+            # properties are split on `,` and end at `::`, so a title holds
+            # neither (review of PR #158; test_sound_refs.py parses it so).
+            body="$(printf 'Held to the generic checks only, with no reference made from the rig as it is: %s\n%s' \
+                "$names" "$body")"
+            echo "::warning title=${stale} rig channel(s) STALE::$(printf '%s\n' "$body" | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
+          fi
+          orphans="$(grep -c '^ORPHANED-REFERENCE: ' nulltest.log || true)"
+          if [ "$orphans" -gt 0 ]; then
+            echo "::warning title=${orphans} orphaned reference(s) of committed rigs::$(grep '^ORPHANED-REFERENCE: ' nulltest.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
           fi
           if [ "$status" != 0 ]; then
             # Neutral on purpose: this fails on a changed sound, a missing
@@ -165,6 +210,14 @@ jobs:
             echo "::error title=nulltest --all failed::$(tail -n 40 nulltest.log | sed 's/%/%25/g' | awk '{printf "%s%%0A", $0}')"
             exit 1
           fi
+
+      - name: Upload the stale rigs' candidate references
+        if: ${{ !cancelled() && hashFiles('stale-candidates/*.yaml') != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: stale-sound-references
+          path: stale-candidates/
+          if-no-files-found: ignore
 
       # Only when the check above failed. Calibrates every config afresh and
       # hands the result back, so the person fixing the failure has the numbers
@@ -185,6 +238,12 @@ jobs:
           # directory here used to throw those away: committing the candidates
           # put the non-deterministic configs back to failing at random.
           cp config/sound/*.yaml sound-candidates/ 2>/dev/null || true
+          # The frozen rigs' too (#144), beside them: if a change to the code or
+          # a plugin moved a frozen rig's sound ON PURPOSE, these are its new
+          # references, committed under tool/tests/fixtures/sound/ with their
+          # new sha256 in test_rig_fixtures.py's CHECKSUMS, in the same commit.
+          mkdir -p sound-candidates/frozen
+          cp tool/tests/fixtures/sound/*.yaml sound-candidates/frozen/ 2>/dev/null || true
           echo "These are candidates for a change in sound that was MEANT. If"
           echo "nulltest reported CANNOT CHECK or NO LONGER RENDERABLE, or if this"
           echo "PR changed no config, they are not the fix: read nulltest's output."
@@ -193,9 +252,10 @@ jobs:
           # step there, and the candidates for every other config went with it.
           status=0
           docker run --rm -w /rig -v "$PWD/sound-candidates:/rig/config/sound" \
+              -v "$PWD/sound-candidates/frozen:/rig/tool/tests/fixtures/sound" \
               sushi-rig-ci sushi-rig nulltest --all --calibrate --sushi ./sushi 2>&1 \
               | tee calibrate.log || status=$?
-          for f in sound-candidates/*.yaml; do
+          for f in sound-candidates/*.yaml sound-candidates/frozen/*.yaml; do
             [ -e "$f" ] || continue
             echo "===== BEGIN ${f#sound-candidates/} ====="
             cat "$f"

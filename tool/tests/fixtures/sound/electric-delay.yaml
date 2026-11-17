@@ -1,0 +1,37 @@
+schema_version: 2
+config: electric-delay
+stimulus: log_sweep 20-20000Hz 5s -20dBFS 2ch
+sample_rate: 48000
+frames: 240000
+measured:
+  peak_dbfs: -14.5264
+  rms_dbfs: -27.3443
+  channel_rms_dbfs:
+  - -27.3445
+  - -27.3442
+  delay_samples: 19440
+  bands:
+  - low_hz: 20.0
+    high_hz: 80.0
+    level_dbfs: -41.1358
+  - low_hz: 80.0
+    high_hz: 250.0
+    level_dbfs: -33.4545
+  - low_hz: 250.0
+    high_hz: 800.0
+    level_dbfs: -29.6251
+  - low_hz: 800.0
+    high_hz: 2500.0
+    level_dbfs: -31.2351
+  - low_hz: 2500.0
+    high_hz: 8000.0
+    level_dbfs: -42.1583
+  - low_hz: 8000.0
+    high_hz: 20000.0
+    level_dbfs: -65.0311
+tolerance:
+  band_db: 0.0001
+  level_db: 0.0001
+  delay_samples: 0
+  note: 'measured: two renders of this config were identical to the 0.0001 dB this
+    file is written at'

@@ -4636,3 +4636,169 @@ a phone, the container job. *(2026-11-16)*
 - **Tests:** `test_a_batched_master_change_that_fails_part_way_leaves_a_master_left_down_still_down`, `test_a_batched_master_change_that_works_puts_a_master_left_down_right`, and `test_a_batch_whose_set_does_not_answer_puts_nothing_back_through_the_stuck_connection`. The first and third fail without the fix.
 - **Not run:** the rig.
 *(2026-11-17)*
+**A saved rig no longer turns CI red for want of a sound reference (#144).**
+The sound check did two jobs, catching a change of code or plugin that alters
+the sound and pinning the sound of files the owner is meant to edit; it now
+does the first with rigs the owner cannot touch. (1) **The frozen rigs carry
+the pinned references**: `tool/tests/fixtures/sound/`, twelve, one for each
+channel of the eleven frozen rigs, checked exactly by `nulltest --all` (as
+"frozen <rig>.yaml") and by the new slow
+`test_every_frozen_rig_sounds_like_its_reference`; a reference missing, a
+sound changed or an orphan there fails. Eleven are config/sound/'s files of the
+same name at 155e6c8, byte for byte, where each committed rig compiled to the
+very channel config its frozen copy does (checked here, for all twelve
+channels of the frozen set) and CI run 43891871551, on that commit, found
+every reference "sounds the same". electric-chorus-2's is
+`config/sound/electric-chorus-2.yaml` from before 8c9bb76, which renamed it
+to the two-channel rig's `.board`: the two differ in their `config:` line
+alone, and the frozen rig's channel differs from the board's in its
+`_wiring` metadata alone, which no render reads. Each is pinned by sha256 in
+`test_rig_fixtures.py`'s CHECKSUMS, the git blob's, with where it came from;
+no other pin changed. (2) **A committed rig's reference records which rig it
+was made from**: `made_from: {rig, hash, hash_rule}`, the hash a sha256 of the
+rig file as parsed (`yaml.safe_load`, as `load_rig` reads it), its mappings in
+key order, every whole number written as an int (so `1.0` and `1`, `-0.0`
+and `0`, `1.000e+2` and `100` hash alike), compact json, with the rule's
+number inside what is hashed (`nulltest.rig_hash`, `RIG_HASH_RULE = 1`).
+Comments, layout, quoting and key order change nothing; a value, a key, a
+list's order or a bool against a number does; and a compiler change makes no
+reference stale. The sixteen rig references in `config/sound/` were stamped
+with their rigs' hashes as of 155e6c8 (four lines appended to each, the rest
+untouched), on the same evidence: CI run 43891871551 compared every one of
+them with its rig at that commit, and none of `config/rigs/` has changed
+since. (3) **The rule** (`cli._nulltest`): a committed rig whose reference
+was made from it is compared exactly, as before, and a difference fails; one
+changed since, with a reference that records no rig, or with none, is
+rendered and held to `heard_findings` alone (two sides, neither silent,
+within `BALANCE_DB`, 1 dB, test_stereo's guarantee and now its constant; NaN
+was already refused by `measure`), and is then **STALE**, a warning: beside
+the channel, and as one `STALE-REFERENCE:` line in the summary.
+`--candidates DIR` calibrates each stale channel (two renders) and writes its
+candidate there with its `made_from`. A committed rig's orphaned reference is
+a warning (`ORPHANED-REFERENCE:`); a v1 config's or a frozen rig's still
+fails. Every rig render, stale, compared or calibrated, fails on NaN,
+silence, one side or more than 1 dB between them whatever its reference says,
+and `--calibrate` writes no reference for such a render. A fingerprint of a
+render whose left side is silent now records no delay, rather than raising
+"no correlation" from `estimate_delay`, so that the finding is the silence.
+The v1 configs are as they were. **The job** (`rig-container.yml`) runs
+`nulltest --all --candidates`, turns the STALE lines into one warning
+annotation that names each channel and holds each candidate, prints them in
+the log, uploads them as `stale-sound-references`, and warns on the orphans;
+its exit is nulltest's, so warnings alone leave it green. The failure-path
+calibration now also calibrates the frozen references, into `frozen/` of
+`sound-reference-candidates`. `test_every_v2_rig_sounds_like_its_reference`
+holds each committed rig to the generic checks, and to its reference only when
+that was made from it, warning otherwise. Tests (`tests/test_sound_refs.py`,
+49): the hash's stability and its changes, staleness, the generic checks,
+and through `cli.main` on a temporary checkout with a passthrough for Sushi:
+an unchanged rig compared exactly and a code-made change failing, a rig
+rewritten with its numbers written otherwise still compared, a changed rig
+STALE with its candidate (which, committed, passes), a new rig, a reference
+from before the record, a broken `made_from`, NaN, silence, either side alone
+and imbalance failing with and without a reference, a one-sided reference
+failing the exact compare too, calibration refused, the orphan warning, and
+the frozen rigs failing by name; and the workflow's own warning shell, run
+in bash on nulltest's real output. The two orphan tests of test_render.py now
+name `.v1-mono` references, which still fail; test_workflow_retries.py counts
+the two new greps. Docs: `testing.md` (a table of what fails and what warns),
+`rig-file.md`, `repository-layout.md`, and the guide, `saving.md`'s "When you
+push a saved rig", with a line in `building-a-rig.md`. **Run here:** the fast
+suite, 4646 passed and 35 skipped (4585 and 35 on 155e6c8 here); `nulltest --all` over this checkout with a passthrough
+for Sushi (`--sushi`, a shell script that copies its input): all 40 checks
+found their references, 12 v1, 16 committed (compared exactly, none stale) and
+12 frozen, with no orphan, and each failed as a passthrough must. **Not run
+here:** Sushi (there is none on this machine; `lv2apply` is, but renders one
+plugin and not Sushi's graph, so it would check nothing these references
+describe), the slow tests, the rig, and the container job, which is the first
+real render of the frozen references from their new place and of the
+warning annotation. Step 4 of the issue, the job committing candidates
+itself, is not done. *(2026-11-16)*
+
+**#144, PR #158: the review's five findings.** (1) **A silent v1 render could
+be calibrated and then pass for good.** The guard that let a render with a
+silent left side be fingerprinted (no delay, rather than "no correlation")
+took away the one thing that had stopped a silent v1 render: v1 configs are
+not held to `heard_findings`, and `compare` passes a side silent in both. So
+a plugin update that silenced a v1 config failed `--all`, and the failure
+path's `--calibrate` wrote a silent candidate that, once committed, passed
+every silent render after it. Now every render is held to what it plays
+(`nulltest.played_findings`): a rig to `heard_findings`, a v1 config to
+`v1_findings`, its left side not silent (its right may be). That is added to
+every exact comparison, and `render.calibrate(refuse=...)` raises `Unplayable`
+on either of its two renders, so no reference is written of one by
+`--calibrate`, `--calibrate --missing`, `--candidates` or the job's failure
+path; a recalibration leaves the committed reference as it was. (2) **The
+hash covered what the render never uses.** Rule 2 (`RIG_HASH_RULE`) hashes
+`rendered_part`: `schema_version`, `host`, and the channels and master less
+their machine roles (`nulltest.RENDERED`). Read off the compiler, not
+assumed: `compile_rig` takes the tracks from the channels' names, widths,
+chains, levels and strips and the master's chain and level, and `host` as
+`host_config`; `name`, `description` and `meta` go to `_meta`, the amp to
+`_amp`, the roles to `_wiring`, all of which Sushi ignores, and a render
+compiles without a controller, so the MIDI map reaches nothing (its blends
+act only on captured state, which a render has none of). Then shown: on all
+eleven frozen rigs, changing the amp's levels, taking the amp off, the
+description, `meta`, adding a MIDI map, every channel's input, the master's
+output and the rig's name leaves Sushi's part of every rendered config, and
+the hash, as they were; a level, the master's level, `host` or a plugin
+taken out changes both. A key added to the rig format fails a test until it
+is placed. The sixteen committed references are re-stamped under rule 2, on
+the evidence the first stamps had (CI run 43891871551 on 155e6c8, and
+`config/rigs/` unchanged since, checked again). (3) **The STALE annotation's
+title lost its names at the comma**: a workflow command's properties are
+split on `,`. The title is now `N rig channel(s) STALE`, with no comma or
+colon, and the names open the message. The test reads the job's output as
+the runner does, properties split on `,` and ended at `::`, and checks the
+title whole. (4) The rule test patches `RIG_HASH_RULE` and sees the hash
+change; an unchanged rig compared exactly fails on silence and on a silent
+right side (the earlier "with its reference" case was stale, as the review
+said); the workflow's shell runs as GitHub runs a step, `bash --noprofile
+--norc -eo pipefail`, with and without warnings to give. (5)
+`test_render_spread.py` prices the frozen rigs against
+`rig_fixtures.FROZEN_SOUND`; its v1 row still reads config/sound/'s
+`.v1-mono`, the only reference of a v1 config there is, so when
+`claude/plugin-update` retires electric-octave-up that row needs its path
+then. Docs: `testing.md`, `rig-file.md`, `saving.md`. Merged master's #157
+(a spike), MANIFEST kept both. **Run here:** the fast suite, 4683 passed and 35 skipped. **Not
+run here:** Sushi, the slow tests, the spread table, the container job.
+*(2026-11-16)*
+
+**#144 after #152: master's octave removal merged, every reference stamped,
+and all of it rendered.** ebc7db0 (PR #159) merged into `claude/sound-refs`.
+MANIFEST kept both sides. `config/sound/` takes #159's four re-recorded
+references as they are on master, byte for byte (electric_board,
+electric-delay, electric-spacey-delay, hard-feelings-record.board); the merge
+had put this branch's rule-1 stamp, of the rig before the removal, under
+three of them. The retired electric-octave-up's two references keep the
+`made_from` they had, which is of the retired rig file, unchanged by the
+retiring. `test_render_spread.py` prices both rigs against the frozen
+references, electric_board too (master had priced it against nothing, the
+committed board having lost its pair), and the v1 row reads the frozen v1
+config and `config/retired/sound/`'s `.v1-mono`, as master does. Then every
+committed reference was stamped with the rule-2 hash of the merged rig file:
+seven re-stamped (the other channels of the rigs #152 changed), four stamped
+for the first time (#159's re-recordings), and four already current
+(electric-chorus, electric-clean and guitar_vocal's two, which #152 did not
+touch). **Rendered
+here, before committing**: Sushi 1.3.0's release AppImage (git
+08f24e9cd47ce2f95c827db19350593b023cebe9, the build options vst3, lv2, jack,
+rpc control, ableton link), over a `plugins/` assembled from this machine's
+Ubuntu 24.04 packages (`plugins assemble` and `check`, 54 URIs; guitarix-lv2
+0.46.0, the CI image's set), `nulltest --all --candidates`: all 38 checks
+"sounds the same", the 11 v1 configs, the 15 committed rig channels compared
+exactly against their new stamps (none STALE, so no candidate was written),
+and the 12 frozen references, which is their first render from their new
+place, electric-chorus-2's old reference among them; no orphan, no retried
+render, exit 0. So each stamp is of a reference that matches its rig as it
+now is. The slow tests of `test_convert.py` and `test_sound_refs.py` with that
+Sushi: 23 passed (11 frozen, 12 committed rigs, no warning). The spread
+table's priced rows (`SUSHI_RIG_SPREAD=1`): the frozen octave up 0 of 38
+finite renders outside its frozen reference, the v1 config 0 of 39 against
+the retired `.v1-mono`, the frozen board 0 of 40 against its frozen
+reference; 7 passed. `./sushi` and `plugins/` were a link and a folder made
+for this and removed after. The fast suite: 4664 passed, 33 skipped (fewer
+than before the merge: electric-octave-up's committed rig, and the cases
+over it, are retired). **Not run here:** the rest of the slow suite, the
+container job and its annotation, the rig.
+*(2026-11-17)*

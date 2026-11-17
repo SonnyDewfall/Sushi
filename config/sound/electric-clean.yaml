@@ -35,3 +35,7 @@ tolerance:
   delay_samples: 0
   note: 'measured: two renders of this config were identical to the 0.0001 dB this
     file is written at'
+made_from:
+  rig: electric-clean.yaml
+  hash: 597c2e1b04e3cdb87c89e04795ef76cb8181c20fa78e0005c3ea7bccfea81b6a
+  hash_rule: 2

@@ -37,3 +37,7 @@ tolerance:
     Sushi 1.3.0), after the octave pair was taken out (#152): in each of three calibrations,
     two renders of this config were identical to the 0.0001 dB this file is written
     at'
+made_from:
+  rig: electric_board.yaml
+  hash: 3c0355497a93418d9832c05a5a87ef4d8b1e2fba5441ef0fd661b638892c4b93
+  hash_rule: 2

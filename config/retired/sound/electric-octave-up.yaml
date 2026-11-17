@@ -39,3 +39,7 @@ tolerance:
     up to 0.0021 dB in peak level). Not fitted to this config''s own spread: a tolerance
     fitted to three calibrations was overtaken by the fourth by five times, so this
     is set well above all of it instead'
+made_from:
+  rig: electric-octave-up.yaml
+  hash: 6804e286153a89c35e0e9392427b95e55cee480a8b5e1bd0b6deee0223ce0e17
+  hash_rule: 2

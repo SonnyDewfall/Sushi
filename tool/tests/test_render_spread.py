@@ -65,7 +65,7 @@ import yaml
 np = pytest.importorskip("numpy")
 
 import spread_table  # noqa: E402
-from rig_fixtures import committed_that, frozen, frozen_v1  # noqa: E402
+from rig_fixtures import FROZEN_SOUND, committed_that, frozen, frozen_v1  # noqa: E402
 from sushi_rig import rigfile  # noqa: E402
 from sushi_rig.analysis import first_non_finite  # noqa: E402
 from sushi_rig.nulltest import compare, fingerprint, from_dict  # noqa: E402
@@ -81,12 +81,13 @@ SUSHI = ROOT / "sushi"
 # The frozen copies (rig_fixtures.py), which are these two rigs as they were
 # when this was measured: the targets below are built from electric-octave-up's
 # chain as this file is imported, so on the committed file a save that renamed
-# a plugin would stop the whole suite at collection. electric-octave-up is
-# retired (#152): its v1 config is read from the frozen copy too, and its
-# references from config/retired/sound/, where they went with it. The
-# committed electric_board lost its octave pair in the same change, so its
-# reference no longer describes the frozen rig, and that target is priced
-# against nothing.
+# a plugin would stop the whole suite at collection. The rigs are priced
+# against the frozen rigs' own references (rig_fixtures.FROZEN_SOUND, #144),
+# which do not follow the committed rigs: the committed electric_board lost
+# its octave pair (#152), and electric-octave-up is retired. Its v1 config is
+# read from the frozen copy too, and priced against its `.v1-mono` in
+# config/retired/sound/, where it went with it (no frozen copy of a v1
+# config's reference is kept).
 OCTAVE_UP = frozen("electric-octave-up")
 BOARD = frozen("electric_board")
 
@@ -159,20 +160,20 @@ SECTION_CANDIDATE = "a candidate setting, priced against the reference"
 
 
 def _targets() -> list[tuple[str, str, object, str | None]]:
-    """(section, what, a builder of (name, config), the reference to compare against)."""
+    """(section, what, a builder of (name, config), the reference file to compare against)."""
     found = [
         (SECTION_CONFIGS, "electric-octave-up (rig)", lambda: _as_nulltest(OCTAVE_UP),
-         RETIRED_SOUND / "electric-octave-up.yaml"),
+         FROZEN_SOUND / "electric-octave-up.yaml"),
         (SECTION_CONFIGS, "electric-octave-up.json (v1)", lambda: _v1(frozen_v1("electric-octave-up")),
          RETIRED_SOUND / "electric-octave-up.v1-mono.yaml"),
-        (SECTION_CONFIGS, "electric_board (rig)", lambda: _as_nulltest(BOARD), None),
+        (SECTION_CONFIGS, "electric_board (rig)", lambda: _as_nulltest(BOARD), FROZEN_SOUND / "electric_board.yaml"),
     ]
     for entry in _raw(OCTAVE_UP)["channels"][0]["chain"]:
         plugin = entry["uri"].rsplit("/", 1)[-1].split("#")[0].rsplit(":", 1)[-1]
         label = f"{plugin} [{entry['name']}]"
         found.append((SECTION_ALONE, label, (lambda e=entry: _alone(e)), None))
     found.append((SECTION_CANDIDATE, f"electric-octave-up, octave_up DETUNE {JUST_UNDER_AN_OCTAVE}",
-                  _just_under, RETIRED_SOUND / "electric-octave-up.yaml"))
+                  _just_under, FROZEN_SOUND / "electric-octave-up.yaml"))
     return found
 
 
@@ -222,7 +223,7 @@ def _measure(section, what, build, reference, renders, tmp_path, request):
         against = [compare(expected, fp, tolerance) for fp in prints]
         outside = sum(1 for found in against if found)
         worst = max(against, key=len)
-        note = (f"against {reference.name}: {outside} of {len(prints)} finite renders outside its tolerance"
+        note = (f"against {reference.relative_to(ROOT)}: {outside} of {len(prints)} finite renders outside its tolerance"
                 + (f"; the worst: {'; '.join(str(f) for f in worst[:3])}"
                    + (f"; and {len(worst) - 3} more" if len(worst) > 3 else "") if worst else ""))
 
