@@ -163,6 +163,46 @@ prints as it always printed them. The agent binds to localhost; `--host 0.0.0.0`
 opens it to the LAN, and until the local/remote permission split in #29 exists
 that is your call, not a default.
 
+### Writes refuse another site's page
+
+One guard, a middleware (`Agent._same_site_only`, #161), stands in front of
+every `POST`, `PUT`, `PATCH` and `DELETE`, the routes above and any added
+later, and answers `403` with `code: "cross_site"` before the route reads
+anything. It exists because any web page open in a browser on the rig
+machine, or on a phone that can reach the agent, can send
+`fetch("http://localhost:8029/rig/down", {method: "POST", mode: "no-cors"})`
+with no preflight. It refuses:
+
+- **another site's page**: `Sec-Fetch-Site: cross-site`, or an `Origin` that
+  is not the agent's own scheme, host and port (a page of another port on
+  this machine, `Origin: null` from a sandboxed or file page);
+  `cross_site_refusal`.
+- **a name the agent does not answer to** (DNS rebinding): a page of an
+  attacker's name whose DNS is then pointed at this machine is same-origin
+  to the browser, which sends that name as both `Host` and `Origin`. So a
+  request a browser sent (one with `Origin` or `Sec-Fetch-Site`) must carry
+  a `Host` that is an IP address, `localhost`, this machine's hostname (and
+  its first label), that label with `.local`, the `--host` it was bound to,
+  or a name given with `sushi-rig agent --allow-host NAME` (repeatable: a
+  tunnel's or a VPN's name for the machine); `rebinding_refusal`. An IP is
+  always allowed because a page loaded by IP has no name to rebind. Binding
+  to localhost does not stop rebinding, since localhost is what the name is
+  rebound to.
+
+It allows a request with neither `Origin` nor `Sec-Fetch-Site`, whatever its
+`Host`: curl, the CLI (`agent_client`, urllib), scripts. The pedals' MIDI
+listener runs inside the agent and sends no request at all. The agent's own
+page is allowed from this machine and from a phone on the LAN, by the rig's
+IP or its `.local` name: its `fetch` calls are same-origin, relative paths.
+Reads (`GET`) are not guarded; they change nothing, and another site's page
+cannot read their answers, which carry no CORS header.
+
+Not covered: a device on the LAN that sends no `Origin`, which is anything
+that is not a browser. Stopping that needs authentication, #29's
+local/remote split. Shown in Chromium against the agent over the UI's fake
+(`test_ui_cross_site.py`, with the names mapped by the resolver rules, not
+DNS); **not tried on the rig, from a real phone, or with a pedal.**
+
 ## Live operations
 
 Live operations (`/live`) read and change the rig that is running, by name,
@@ -659,13 +699,9 @@ committed is then gone for good.
   a bin entry that is one, or that resolves outside `config/rigs/` (or the
   bin), is refused, and `GET /rigs/bin` lists a bin that is a link as empty,
   with `problem`.
-- **Only this agent's page, or no browser at all** (`403`): both routes refuse
-  a request a browser says came from another site, `Sec-Fetch-Site:
-  cross-site` or an `Origin` that is not the agent's own scheme, host and
-  port (`cross_site_refusal`, pure, for a middleware over every POST route
-  to call later: the others are open to the same thing). Without either
-  header (curl, the CLI) a request is allowed, as is the page the agent
-  serves, on this machine or a phone on the LAN.
+- **Only this agent's page, or no browser at all** (`403 cross_site`): as
+  every write is, by the guard in front of them all ([Writes refuse another
+  site's page](#writes-refuse-another-sites-page)).
 - **The answer** has `binned` (`entry`, the bin file's name, and `file`),
   `undo` (the restore call that puts it back), `agent` (which bin this is,
   as `GET /rigs/bin` says), `committed: false`, `git` (whether HEAD has the
@@ -768,8 +804,9 @@ as always, the compiler's (`rig.compile_rig_draft`).
   A load whose switch fails is remembered in `/health` as the load
   (`command: ["load", ...]`), and its answer's `midi_note` says the pedals
   follow the rig as it runs (its compiled config), not the file. Both
-  writes refuse a request from another site's page (`403`, #129's
-  `cross_site_refusal`), as the rig bin's routes do.
+  writes refuse a request from another site's page (`403 cross_site`), as
+  every write does ([Writes refuse another site's
+  page](#writes-refuse-another-sites-page)).
 - **A channel from a preset**: `from: {"preset": <name>}` in `POST
   /rigs/new` and `POST /rigs/<rig>/channels/add`, beside #125's `{"rig",
   "channel"}` (below). The chain is copied as a load copies it, named for

@@ -5177,3 +5177,44 @@ the fix taken out. The counts of the review's fixes before this: the fast
 suite 4873 passed, 33 skipped on 1114d07; `test_ui_presets.py`, `test_ui.py`
 and `test_ui_tabs.py` (264 tests) 5 of 5 in a loop. **Not tried on the
 rig.** *(2026-11-17)*
+
+**One cross-site guard in front of every write, and DNS rebinding closed
+(#161).** Every POST route acted on a request from any web page open in a
+browser on the rig machine or a phone on the LAN (`fetch(url, {method:
+"POST", mode: "no-cors"})` needs no preflight); #160 and #162 had guarded
+four routes by hand. Now one aiohttp middleware, `Agent._same_site_only`,
+stands in front of every POST, PUT, PATCH and DELETE, before the router's
+404 and 405, and answers `403` with `code: "cross_site"`: (1) for
+`Sec-Fetch-Site: cross-site`, an `Origin` that is not the agent's own
+scheme, host and port, or `Origin: null` (`cross_site_refusal`, unchanged);
+(2) for a browser's request (one with `Origin` or `Sec-Fetch-Site`) whose
+`Host` is not an IP, `localhost`, the machine's hostname, its first label,
+that label with `.local`, the bound `--host`, or a name given with the new
+`sushi-rig agent --allow-host NAME` (`rebinding_refusal`, `own_names`).
+**Decided: the Host check belongs here**, as the issue's comment asks,
+because without it the guard is passed by DNS rebinding (the attacker's
+name is both `Host` and `Origin`), and binding to localhost does not help.
+Any IP is allowed rather than a list of this machine's addresses, since a
+page loaded by IP has no name to rebind and DHCP changes the list; the Host
+is not read of a request with neither browser header, since curl or the CLI
+can send any Host it likes and pointing one at the agent by another name is
+no attack. Allowed, then: curl, the CLI (`agent_client.ask`, urllib, no
+Origin), the agent's own page by IP or `.local` name. The pedals' MIDI
+listener runs in the agent and sends no request; the web UI's `request`
+fetches relative paths, same-origin. The four `_same_origin_only` calls are
+gone. Tests: `test_agent_cross_site.py` (59: each refusal, each allowed
+case, PUT/PATCH/DELETE, a walk of every registered state-changing route,
+24 today, each sent three hostile requests, and `agent_client` through the
+guard) and `test_ui_cross_site.py` (4, Chromium with
+`--host-resolver-rules`: the page by IP and by `rig-box.local` may write, a
+page of a rebound name loads but every write is 403, another site's no-cors
+fetch and form reach the agent and are 403), each shown failing with the
+guard, or its Host half, taken out. Writing the CLI test found
+`--allow-host` stored under the wrong name, fixed before commit. The fast
+suite 4938 passed, 33 skipped (4874 passed and one fd-count flake in
+`test_live_close.py`, passing alone, on f6303f5); the eight `test_ui_*.py`
+files with `test_agent_cross_site.py` (460 tests) 3 of 3 in a loop. Not
+covered: a device on the LAN that sends no `Origin`, which needs
+authentication (#29). **Not tried on the rig, from a real
+phone, with a pedal or MIDI hardware;** the names were resolver rules, not
+DNS or mDNS. *(2026-11-17)*

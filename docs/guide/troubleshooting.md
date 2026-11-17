@@ -73,6 +73,17 @@ on. The rig itself may still be playing.
 - On a phone, check you are on the same network as the laptop, and that the
   agent was started with `--host 0.0.0.0`.
 
+## Every change says "refused: … is not a name this agent answers to"
+
+The page shows the rig, but nothing you change takes. The agent only takes
+changes from a page opened by the laptop's address (`http://192.168.1.20:8029/`),
+`localhost`, the laptop's name, or its name with `.local`. This stops a web
+page elsewhere from changing your rig.
+
+- Open the page by the laptop's address instead (`hostname -I` prints it).
+- If you reach the laptop by another name, such as a VPN's, start the agent
+  with that name allowed: `sushi-rig agent --host 0.0.0.0 --allow-host <that name>`.
+
 ## A part of the rig has stopped
 
 The rig is several programs working together: the effects engine, the amp, the

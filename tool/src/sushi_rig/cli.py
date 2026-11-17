@@ -1266,6 +1266,12 @@ def _main(argv: list[str] | None = None) -> int:
     p.add_argument("--host", default=DEFAULT_HOST,
                    help=f"bind address [default: {DEFAULT_HOST}; 0.0.0.0 opens it to the LAN]")
     p.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"[default: {DEFAULT_PORT}]")
+    p.add_argument(
+        "--allow-host", action="append", default=[], metavar="NAME", dest="allow_hosts",
+        help="a name a browser may reach the agent by, beside any IP, localhost, this machine's "
+        "hostname and its .local name (a tunnel's or a VPN's name for it); repeatable. A page "
+        "of any other name may not change the rig, which is what stops DNS rebinding (#161)",
+    )
     agent_sub = p.add_subparsers(dest="agent_command")
     agent_sub.add_parser(
         "install-service",
@@ -1592,7 +1598,7 @@ def _main(argv: list[str] | None = None) -> int:
         from .agent import AgentError, serve
 
         try:
-            return serve(args.host, args.port)
+            return serve(args.host, args.port, allow_hosts=args.allow_hosts)
         except AgentError as exc:
             sys.exit(str(exc))
     elif args.command in ("up", "down", "status", "restart"):
