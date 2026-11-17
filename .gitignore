@@ -60,3 +60,7 @@ squashfs-root/
 # sushi-rig's own state beside the checkout: the snapshots each save keeps for
 # Revert (tool/src/sushi_rig/saves.py). The directory also ignores itself.
 .sushi-rig/
+
+# The rig bin: rig files deleted from the web UI, kept for Undo
+# (tool/src/sushi_rig/rigbin.py). The directory also ignores itself.
+config/rigs/.deleted/

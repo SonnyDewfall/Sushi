@@ -1,7 +1,7 @@
 # Building a rig
 
-This is how you make a new rig, add a channel to the one that is playing, and
-change which input a channel listens to.
+This is how you make a new rig, add a channel to the one that is playing,
+change which input a channel listens to, and delete a rig you no longer play.
 
 A **rig** is one saved setup. A **channel** is one input with its own effects: a
 guitar, a microphone. A rig has between one and three channels, and they all mix
@@ -60,6 +60,26 @@ rig is. **Back to the rack**, at the top right, leaves the screen.
 4. Click **Apply to** and the channel's name, or **Cancel**.
 5. Click **Restart … to play it**, then **Restart now**.
 
+## Delete a rig
+
+1. On the rack, under **RIGS** on the right, click **Delete** beside the rig.
+   The rig that is playing has its **Delete** greyed out, with the reason under
+   the list: switch to another rig, or stop it, first.
+2. A box asks whether to delete the rig's file, `config/rigs/<name>.yaml`. It
+   says what happens to the file,
+   whether git can bring it back too, and, if your pedal's program numbers
+   change, which rigs move, such as "electric-delay moves from program 6 to 5".
+3. Click **Delete** and the rig's name, or **Cancel**.
+
+A box headed **Deleted** says where the file went, and under it **Undo: put
+back** and the rig's name. Undo is still there after you reload the page, for
+each of the last few rigs you deleted, until you use it or forget it with
+**×** beside it.
+
+The file is not gone: it is moved into `config/rigs/.deleted/`, a folder the
+page, the pedal numbers and git all leave alone. If the rig was committed to
+git, `git checkout` brings it back too; the box gives you the exact command.
+
 ## Things that may surprise you
 
 - **Adding a channel or changing an input needs the rig to restart**, which is
@@ -84,15 +104,33 @@ rig is. **Back to the rack**, at the top right, leaves the screen.
   program change from a pedal, the rigs are numbered in name order, so a new
   name can shift the ones after it. The **Made** box shows a table of which
   moved.
-- The page has no way to rename or delete a rig. A rig is one file in the
-  project's `config/rigs/` folder.
+- **Deleting a rig moves the pedal numbers of the rigs after it** down by one,
+  as a new rig moves them up. The box before you delete lists which.
+- **Undo is refused if a rig of that name has been made since**, so a new file
+  is never replaced; the box says so once. The deleted file stays in
+  `config/rigs/.deleted/`, to move back by hand if you want it. Undo is not
+  offered at all once the deleted file has been removed from there.
+- **`git clean -x` empties `config/rigs/.deleted/`**, because git is told to
+  ignore it. A deleted rig that was never committed is then gone for good.
+- **Undo is kept in this browser only.** Another phone or laptop does not offer
+  it, but the file is in `config/rigs/.deleted/` for anyone to move back.
+- The page has no way to rename a rig. A rig is one file in the project's
+  `config/rigs/` folder.
 - Adding a channel from the page and restarting to play it has been done on the
   rig: a vocal channel was added to a guitar rig that way. Making a whole new
-  rig on the **New rig** screen, and **Change input**, are not yet recorded as
-  tried on the rig.
+  rig on the **New rig** screen, **Change input** and **Delete** are not yet
+  recorded as tried on the rig.
 
 ## If something goes wrong
 
+- **"… cannot be deleted"** in the delete box. It is the rig that is playing,
+  usually because it was switched to from another page or a pedal meanwhile.
+  Switch away, then try again.
+- **A box headed "Not put back".** It gives the reason: a rig of that name is
+  there again (the deleted one is still in `config/rigs/.deleted/`), or the
+  deleted file is no longer there.
+- **"… cannot be deleted now"** with **Try again**: the agent was busy with
+  another command, such as a rig starting. Click **Try again**.
 - **A box headed "Not made", "Not added" or "Not changed".** The agent checks
   that the rig would really run before it writes anything, and refused. The box
   gives the reason, and nothing was written.

@@ -39,6 +39,9 @@ and the two things worth reading about a rig, served over HTTP on localhost.
     POST /rigs/new      {"name", "channels": [{"name", "input", "width", "from"?}]} -- a new rig file
     POST /rigs/{name}/channels/add              {"name", "input", "width", "from"?}
     POST /rigs/{name}/channels/{channel}/input  {"input"?, "width"?} -- each written, never committed
+    POST /rigs/{name}/delete    {"dry_run"?} -- into config/rigs/.deleted/ (#129); refused (409) for the running rig
+    POST /rigs/{name}/restore   {"entry"?} -- Undo: back from the bin; refused if a file of that name is there
+    GET  /rigs/bin      the bin, newest first, and which agent's it is (the page checks a kept Undo against it)
 
 ## A fixed command set, never a shell
 
@@ -561,6 +564,56 @@ def is_local(remote: str | None) -> bool:
     if not remote:
         return False
     return remote == "::1" or remote.startswith("127.") or remote.startswith("::ffff:127.")
+
+
+def cross_site_refusal(headers: Any, host: str | None) -> str | None:
+    """Why a request a browser sent from another site must be refused, or
+    None. Pure over the request's headers and its `Host`, so a middleware
+    over every POST route can call it as the rig bin's routes do (review of
+    PR #160; every other POST route is open to the same thing, its own
+    issue).
+
+    Any web page open on the rig machine (or on a phone that can reach the
+    agent) can POST to it: `fetch(url, {method: "POST", mode: "no-cors"})`
+    needs no preflight. A browser says where such a request came from:
+    `Sec-Fetch-Site: cross-site`, and an `Origin` that is not the agent's own
+    scheme, host and port (a page of another port on this machine is
+    "same-site" but not this origin). Refused: either of those, and `Origin:
+    null` (a sandboxed or file page). Allowed: neither header (curl, the
+    CLI, `agent_client`) and this origin (the page the agent serves, from
+    this machine or a phone on the LAN). **Not a defence against DNS
+    rebinding**: a page of an attacker's name that then resolves to this
+    machine sends that name as both `Host` and `Origin`, and passes. Binding
+    to localhost does not stop it either, since localhost is what the name
+    is rebound to. Closing that needs a `Host` allowlist (#161)."""
+    site = (headers.get("Sec-Fetch-Site") or "").strip().lower()
+    if site == "cross-site":
+        return "refused: a page of another site sent this (Sec-Fetch-Site: cross-site)"
+    origin = headers.get("Origin")
+    if origin is None:
+        return None
+    origin = origin.strip()
+    if origin.lower() == "null":
+        return "refused: a page with no origin (Origin: null) sent this"
+
+    def where(scheme: str, netloc: str) -> tuple[str, int | None]:
+        from urllib.parse import urlsplit
+
+        parts = urlsplit(f"{scheme}://{netloc}")
+        try:
+            port = parts.port
+        except ValueError:
+            return (netloc.lower(), None)
+        return ((parts.hostname or "").lower(), port or {"http": 80, "https": 443}.get(scheme))
+
+    from urllib.parse import urlsplit
+
+    sent = urlsplit(origin)
+    if sent.scheme not in ("http", "https") or not sent.netloc or not host:
+        return f"refused: Origin {origin!r} is not this agent's"
+    if where(sent.scheme, sent.netloc) != where(sent.scheme, host):
+        return f"refused: a page of {origin} sent this, not a page of this agent ({host})"
+    return None
 
 
 def lifecycle_arguments(
@@ -1741,6 +1794,7 @@ class Agent:
         self._record_routes(app)  # recording from the web UI (S7): see its block
         self._rigfile_routes(app)  # the New rig screen's rig files: see its block
         self._revert_routes(app)  # revert to a previous save: see its block
+        self._bin_routes(app)  # deleting a rig file into the bin, and Undo (#129): see its block
         return app
 
     async def health(self, request):
@@ -3137,11 +3191,18 @@ class Agent:
         raise web.HTTPFound("/")
 
     async def rigs_route(self, request):
-        """`{"rigs": [names]}`: config/rigs/*.yaml by name, sorted as a Program
-        Change counts them, read now (off the loop: it lists a folder). Which
-        is up is /health's to say; the page reads it there."""
-        rigs = await asyncio.to_thread(midi_listener.program_order, self._midi_root())
-        return web.json_response({"ok": True, "rigs": rigs})
+        """`{"rigs": [names], "running"}`: config/rigs/*.yaml by name, sorted
+        as a Program Change counts them, read now (off the loop: it lists a
+        folder), and which of them is the running rig's file
+        (`running_rig_listed`, the rig the bin refuses to delete), or null.
+        Whether a rig is up, and its state, is /health's to say."""
+        root = self._midi_root()
+        rigs = await asyncio.to_thread(midi_listener.program_order, root)
+        try:
+            running = running_rig_listed(await self._rigfile_run(), root, rigs)
+        except Exception:  # noqa: BLE001 -- the list is still worth giving; null is "not known" here
+            running = None
+        return web.json_response({"ok": True, "rigs": rigs, "running": running})
 
     async def _pw_top_sample(self) -> str:
         """One pw-top run's output, shared: a request while one runs waits
@@ -5072,6 +5133,215 @@ class Agent:
     # ======================================================================= #
 
     # ======================================================================= #
+    # The rig bin (#129): POST /rigs/{name}/delete, POST /rigs/{name}/restore
+    # ======================================================================= #
+    #
+    # Kept in one block, as the rig files' is, and taking the same lifecycle
+    # lock through `_rigfile_locked` (`busy: "rig file edit"`), so no start,
+    # switch, save-as or revert comes between reading which rig runs and the
+    # move. The names and the moves are rigbin.py's; whether a rig may be
+    # deleted is `bin_refusal`'s, below with the rig files' pure decisions.
+    # Nothing here is a git action: what git holds of the file is read, never
+    # written, outside the lock and within `SAVE_TIMEOUT`, as a save's is.
+
+    def _bin_routes(self, app) -> None:
+        app.router.add_get("/rigs/bin", self.bin_route)
+        app.router.add_post("/rigs/{name}/delete", self.delete_rig_route)
+        app.router.add_post("/rigs/{name}/restore", self.restore_rig_route)
+
+    def _same_origin_only(self, request) -> None:
+        """403 for a request a browser sent from another site
+        (`cross_site_refusal`), before anything is read or moved."""
+        reason = cross_site_refusal(request.headers, request.host)
+        if reason is not None:
+            raise web.HTTPForbidden(reason=reason)
+
+    def _bin_agent(self) -> str:
+        """Which rig machine's bin this is, for the page to keep its Undo
+        under: two agents served at one origin (a tunnel, a port reused) are
+        two bins. This machine's name and the checkout's path, hashed: the
+        same across the agent's restarts, and nothing private in the page's
+        storage."""
+        import hashlib
+        import socket
+
+        seed = f"{socket.gethostname()}\0{Path(self._midi_root()).resolve()}"
+        return hashlib.sha256(seed.encode()).hexdigest()[:16]
+
+    async def bin_route(self, request):
+        """`GET /rigs/bin`: what is in the bin, newest first, read only:
+        each entry's `rig`, `entry` (the name a restore takes), `file`,
+        `deleted_at` (from its stamp) and `back` (a rig of that name is in
+        config/rigs/ again, so a restore would be refused `taken`); and
+        `agent`, which bin this is (`_bin_agent`). The page asks it before it
+        offers a kept Undo. A bin that is a symbolic link is listed as empty,
+        with `problem` saying why."""
+        from . import rigbin
+
+        root = self._midi_root()
+
+        def read() -> tuple[list[dict], list[str], str | None]:
+            try:
+                found = rigbin.listing(root)
+            except rigbin.BinRefused as exc:
+                return [], [], str(exc)
+            return found, midi_listener.program_order(root), None
+
+        found, listed, problem = await asyncio.to_thread(read)
+        return web.json_response({
+            "ok": True, "agent": self._bin_agent(), "problem": problem,
+            "entries": [{"rig": e["rig"], "entry": e["entry"], "file": f"config/rigs/{rigbin.BIN}/{e['entry']}",
+                         "deleted_at": datetime.strptime(e["stamp"], rigbin.STAMP).replace(
+                             tzinfo=timezone.utc).isoformat(), "back": e["rig"] in listed} for e in found],
+        })
+
+    async def _bin_body(self, request, keys: dict[str, type]) -> dict[str, Any]:
+        """The body, `{}` for none; 400 for one that is not an object, a key
+        nobody reads or a value of the wrong type."""
+        body = await self._json_body(request)
+        if body is None:
+            return {}
+        if not isinstance(body, dict):
+            raise web.HTTPBadRequest(reason="the body must be a JSON object")
+        unknown = sorted(set(body) - set(keys))
+        if unknown:
+            raise web.HTTPBadRequest(reason=f"nobody reads {', '.join(unknown)}: the keys are {', '.join(keys) or 'none'}")
+        for key, kind in keys.items():
+            if key in body and not isinstance(body[key], kind):
+                raise web.HTTPBadRequest(reason=f"{key} must be {'true or false' if kind is bool else 'text'}")
+        return body
+
+    def _bin_name(self, request) -> str:
+        from . import rigbin
+
+        name = request.match_info["name"]
+        try:
+            return rigbin.plain(name)
+        except rigbin.BinRefused as exc:
+            raise _conflict(str(exc), exc.code)
+
+    async def _bin_git(self, root: Path, path: Path, now_at: Path | None = None) -> tuple[dict | None, str | None]:
+        """`rigbin.committed_copy`, off the loop and within `SAVE_TIMEOUT`:
+        `(git, None)`, or `(None, why)` when it is not known."""
+        from . import rigbin
+
+        try:
+            found = await asyncio.wait_for(asyncio.to_thread(rigbin.committed_copy, root, path, now_at), SAVE_TIMEOUT)
+        except asyncio.TimeoutError:
+            return None, f"git did not answer within {SAVE_TIMEOUT:g}s, so what it holds of {self._save_shown(path)} is not known"
+        if found is None:
+            return None, f"git could not be read here, so whether {self._save_shown(path)} is committed is not known"
+        return found, None
+
+    async def delete_rig_route(self, request):
+        """`POST /rigs/{name}/delete {"dry_run"?}`: move rig `name`'s file
+        into the bin, `config/rigs/.deleted/<name>-<stamp>.yaml`, out of
+        `/rigs`, the picker and the Program Change numbers (rigbin.py).
+
+        Refused (409) for the running rig (`running`: the rig `/health`
+        names, the state file's, which a restart and the next save would
+        write; switch away first) and for a name that is not plain (`name`:
+        no `/`, no `..`, no leading dot); 404 for a rig `/rigs` does not
+        list. `{"dry_run": true}` is the page's confirm: the same refusals
+        and the same answer, with nothing moved and no lock taken.
+
+        200 with `file`, `how` ("deleted" or "dry_run"), `binned` (`entry`,
+        the bin file's name, and `file`), `undo` (the restore call that puts
+        it back), `committed: false` (nothing is ever committed), `git`
+        (`rigbin.committed_copy`: whether HEAD has the file, whether the
+        bytes binned are HEAD's, and the `git checkout` that brings HEAD's
+        back) or `git_note` saying why not known, `programs` when a Program
+        Change number moves (`programs_deleted`), and `note`."""
+        from . import rigbin
+
+        self._same_origin_only(request)
+        body = await self._bin_body(request, {"dry_run": bool})
+        name = self._bin_name(request)
+        root = self._midi_root()
+        path = rigbin.rig_path(root, name)
+        if name not in await asyncio.to_thread(midi_listener.program_order, root):
+            raise web.HTTPNotFound(reason=f"there is no rig called {name!r} in config/rigs/")
+        if body.get("dry_run"):
+            run = await self._rigfile_run()
+            refusal = bin_refusal(run, path, root)
+            if refusal is not None:
+                raise _conflict(*refusal)
+            before = await asyncio.to_thread(midi_listener.program_order, root)
+            answer = {"ok": True, "rig": name, "file": self._save_shown(path), "how": "dry_run", "committed": False,
+                      "programs": programs_deleted(before, [r for r in before if r != name], name)}
+            answer["git"], note = await self._bin_git(root, path)
+        else:
+            def work(run: dict[str, Any]) -> dict[str, Any]:
+                refusal = bin_refusal(run, path, root)
+                if refusal is not None:
+                    raise RigFileRefused(*refusal)
+                before = midi_listener.program_order(root)
+                try:
+                    binned = rigbin.move_to_bin(root, name)
+                except rigbin.BinRefused as exc:
+                    raise RigFileRefused(str(exc), exc.code) from exc
+                return {"binned": binned,
+                        "programs": programs_deleted(before, midi_listener.program_order(root), name)}
+
+            done = await self._rigfile_locked(
+                request, lambda run: self._rigfile_thread(request, path, lambda: work(run)))
+            binned = done["binned"]
+            answer = {"ok": True, "rig": name, "file": self._save_shown(path), "how": "deleted", "committed": False,
+                      "binned": {"entry": binned.name, "file": self._save_shown(binned)},
+                      "undo": {"path": f"/rigs/{name}/restore", "json": {"entry": binned.name}},
+                      "programs": done["programs"]}
+            answer["git"], note = await self._bin_git(root, path, binned)
+        if note:
+            answer["git_note"] = note
+        answer["agent"] = self._bin_agent()
+        if answer["programs"] is None:
+            del answer["programs"]
+        answer["note"] = bin_note(answer)
+        return web.json_response(answer)
+
+    async def restore_rig_route(self, request):
+        """`POST /rigs/{name}/restore {"entry"?}`: put rig `name`'s file
+        back from the bin: `entry` (the bin file's name a delete answered
+        with), or with none the newest of `name`'s there. What survives a
+        reload is the bin itself: the page keeps the entry it was given, and
+        a restore needs nothing else of the agent.
+
+        Refused (409): `taken` (a file of that name is there again; it is
+        never replaced, and the binned one stays), `gone` (the bin file is
+        not there, or there is nothing of `name`'s), `entry` (an entry that
+        is not `name`'s), `name` (not a plain name). 200 with `file`, `how:
+        "restored"`, `from` (the bin file it was), `committed: false`,
+        `programs` when a number moves (`programs_moved`), and `note`."""
+        from . import rigbin
+
+        self._same_origin_only(request)
+        body = await self._bin_body(request, {"entry": str})
+        name = self._bin_name(request)
+        root = self._midi_root()
+        path = rigbin.rig_path(root, name)
+
+        def work() -> dict[str, Any]:
+            before = midi_listener.program_order(root)
+            try:
+                was, _ = rigbin.restore(root, name, body.get("entry"))
+            except rigbin.BinRefused as exc:
+                raise RigFileRefused(str(exc), exc.code) from exc
+            return {"was": was, "programs": programs_moved(before, midi_listener.program_order(root), name)}
+
+        done = await self._rigfile_locked(request, lambda run: self._rigfile_thread(request, path, work))
+        answer = {"ok": True, "rig": name, "file": self._save_shown(path), "how": "restored", "committed": False,
+                  "from": self._save_shown(done["was"])}
+        if done["programs"]:
+            answer["programs"] = done["programs"]
+        answer["note"] = (f"{answer['file']} is back from {answer['from']}, as it was when deleted; nothing was "
+                          "committed. It is listed in /rigs and the Program Change numbers again")
+        return web.json_response(answer)
+
+    # ======================================================================= #
+    # (end of the rig bin)
+    # ======================================================================= #
+
+    # ======================================================================= #
     # Revert to a previous save (2026-11-06): GET /rigs/{name}/saves,
     # POST /rigs/{name}/revert
     # ======================================================================= #
@@ -6266,6 +6536,85 @@ def programs_moved(before: list[str], after: list[str], made: str) -> dict[str, 
                  f"{first['from']}, which was {first['rig']}, is now {after[first['from']]}. A pedal preset set for "
                  "a number now selects the rig listed against it after"),
     }
+
+
+def programs_deleted(before: list[str], after: list[str], deleted: str) -> dict[str, Any] | None:
+    """What deleting rig `deleted` does to the Program Change numbers, or
+    None when nothing moves (it sorted last): `programs_moved`'s shape,
+    each rig after it one down. Pure."""
+    moved = [{"rig": rig, "from": n, "to": after.index(rig)}
+             for n, rig in enumerate(before) if rig in after and after.index(rig) != n]
+    if not moved:
+        return None
+    first = moved[0]
+    return {
+        "moved": moved,
+        "before": midi_listener.programs_table(before), "after": midi_listener.programs_table(after),
+        "note": (f"Program Change numbers follow config/rigs by file name, so deleting {deleted} (program "
+                 f"{before.index(deleted)}) moves {len(moved)} rig{'s' if len(moved) != 1 else ''} down one: "
+                 f"{first['rig']} moves from program {first['from']} to {first['to']}. A pedal preset set for a "
+                 "number then selects the rig listed against it after"),
+    }
+
+
+def running_rig_file(run: dict[str, Any], root: Path) -> Path | None:
+    """The running rig's file, as `/health` names it (`describe_rig`'s
+    `rig`, the state file's), or None with no rig of channels up. The one
+    notion of "the running rig" the bin refuses and `/rigs` marks."""
+    described = run["described"]
+    rig = described.get("rig") or run["state"].get("rig")
+    if not described.get("running") or not isinstance(rig, str) or not rig:
+        return None
+    return rig_file_of({"rig": rig}, root)
+
+
+def running_rig_listed(run: dict[str, Any], root: Path, rigs: list[str]) -> str | None:
+    """Which of `rigs` (config/rigs/ by name) is the running rig's file,
+    or None: what `/rigs` gives as `running`, so the page marks the row the
+    agent would refuse to delete, never a guess from a basename."""
+    running = running_rig_file(run, root)
+    if running is None:
+        return None
+    folder = (Path(root) / "config" / "rigs").resolve()
+    try:
+        resolved = running.resolve()
+    except OSError:
+        return None
+    if resolved.parent != folder or resolved.suffix != ".yaml" or resolved.stem not in rigs:
+        return None
+    return resolved.stem
+
+
+def bin_refusal(run: dict[str, Any], path: Path, root: Path) -> tuple[str, str] | None:
+    """Why rig file `path` may not be deleted now, as `(reason, code)`, or
+    None. The running rig's file is refused (`running`): the rig `/health`
+    names (`describe_rig`'s `rig`, the state file's), whose file a restart
+    reloads and the next save writes. With no rig running, any rig may go."""
+    running = running_rig_file(run, root)
+    if running is None or running.resolve() != Path(path).resolve():
+        return None
+    return (f"{path.stem} is the running rig: a restart reloads its file and the next save writes it, so it "
+            "cannot be deleted while it runs. Switch to another rig, or stop it, first", "running")
+
+
+def bin_note(answer: dict[str, Any]) -> str:
+    """What a delete's answer (or its dry run) says, in a sentence or two."""
+    shown, name = answer["file"], answer["rig"]
+    if answer["how"] == "dry_run":
+        said = (f"Deleting {name} moves {shown} into config/rigs/.deleted/, out of /rigs, the picker and the "
+                "Program Change numbers; Undo puts it back. Nothing is committed.")
+    else:
+        said = (f"{shown} is now {answer['binned']['file']}: out of /rigs, the picker and the Program Change "
+                f"numbers. Nothing was committed; POST {answer['undo']['path']} puts it back.")
+    git = answer.get("git")
+    if git is None:
+        said += f" {answer.get('git_note') or 'What git holds of it is not known'}."
+    elif not git["committed"]:
+        said += " It is not committed, so the bin holds the only copy."
+    else:
+        said += f" It is committed, so `{git['restore']}` also brings back the committed version"
+        said += (", without the changes made since, which only the bin keeps." if git["same"] is False else ".")
+    return said
 
 
 def describe_change(entry: dict[str, Any]) -> str:
