@@ -5253,3 +5253,41 @@ one or two renders a run failed, now as a `RenderError` naming the port or
 as Sushi aborting in gRPC (exit -6), never on a pedal. **Not run:** the
 rest of the slow suite; the container job; anything on the rig; nothing
 heard; a phone or the touch screen. *(2026-11-17)*
+
+**Four pedals: the review of PR #173 (#165).** (1) **The echo could get past
+its Level.** Input, under More, raised the dry and the echoes together
+(+11.6 dB at 1; +17.5 with Level at its top), and with Repeats, Mix and all
+three heads up the page reached +8.9 dBFS peaks from a -20 dBFS sweep. Now
+Input is hidden (the presets keep the plugin's 0.25), Repeats is a control
+(Sustain 0 to 0.3), Mix is Swell 0 to 0.7 and Level is Output 0.725 to 1.17
+(-12 dB to level with the guitar). Measured through Sushi on a 3 s, -20
+dBFS sweep, every tempo step and head combination at those tops: at worst
++3.1 dB RMS and +10.9 dB peak over the guitar bypassed (all heads, 360
+BPM); the guide promises 4 and 12. Sustain's top is where three heads stop
+ringing on: at 0.4 the slowest tempo held -35 dBFS for twenty seconds after
+a one-second sweep, at 0.35 it fell to -47, at 0.3 to -78. (2) **A shimmer
+added from the library was past its Mix**: the plugin's own Dry/Wet is 0.5
+and Mix stopped at 0.3. Mix now runs to 0.5 on `cosine` (half way is
+0.146, where the preset is), so the default is Mix 100 %: +10.6 dB RMS and
++19.1 dB peak on the sweep, said in the guide. (3) The library tests and
+the Dockerfile no longer write a manifest count. (4) **Nothing outside the
+page bounds a parameter** (a preset or rig with the echo's Output at 1.0
+loads): **not done**, and said in the guide and the web UI reference. A
+limit the agent enforces needs each live set to know its processor's
+plugin, which only Sushi's session says (`live._session_plugins`, a save of
+the whole session, kept off the per-knob path on purpose), so a cache with
+its own invalidation, plus checks in the preset loader, save-as, the rig
+loader and the page: past a contained change, so stopped and reported.
+(5) **Offline renders pass `--no-grpc`**: nothing talks to one, and the
+port clash and the gRPC aborts are gone (three slow runs of test_stereo.py
+and test_pedals.py beside another worktree's renders, 105 passed each); the
+empty-render error stays. (6) Slow tests hold the echo at its loudest at
+two tempos, its repeats dying away at 24 BPM, Level's two ends (-12.5 and
+-0.2 dB) and the shimmer at Mix 100 % against its own defaults, each with
+settings from the profile's curves; widening Repeats to 0.35, Mix to 0.8,
+Level to 1.2 or the shimmer's Mix to 0.6 each failed at least one (tried,
+then put back). (7) The presets are read under `committed_presets`: each
+plugin with controls must sit on each control's curve and inside its
+travel, in Python and in rig.js (`mixPosition`), and each preset of the four
+renders in Sushi. **Not run:** the rig, by ear, a phone, the container job.
+*(2026-11-17)*
