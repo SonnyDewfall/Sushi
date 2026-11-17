@@ -40,8 +40,18 @@ OPTIONS=(-Dfft=fftw -Dresampler=libsamplerate -Dlv2=enabled -Dladspa=disabled
 
 out=$(realpath -m "${1:?usage: build-rubberband4.sh DIR (DIR/rubberband.lv2 is made)}")
 mkdir -p "$out"
+# The new bundle is staged inside DIR, so the swap below is two renames on one
+# filesystem, but one level down, in a folder with no manifest.ttl of its
+# own: lilv looks for bundles only at DIR's top level, so a staging folder
+# left by a run that died (power, kill -9) is never loaded as a second
+# Rubber Band beside the real one. A leftover is removed here, and this run's
+# on any exit: an error, Ctrl-C or a kill.
+stage="$out/.rubberband4-staging"
+rm -rf "$stage"
 work=$(mktemp -d)
-trap 'rm -rf "$work"' EXIT
+trap 'rm -rf "$work" "$stage"' EXIT
+trap 'exit 130' INT
+trap 'exit 143' TERM
 
 git -c advice.detachedHead=false clone -q --depth 1 --branch "$TAG" "$REPO" "$work/src"
 got=$(git -C "$work/src" rev-parse HEAD)
@@ -64,9 +74,16 @@ grep -q 'rubberband:livemono' "$bundle/manifest.ttl" || {
 printf 'Rubber Band %s, commit %s, from %s\nmeson %s\n' \
     "$TAG" "$COMMIT" "$REPO" "${OPTIONS[*]}" > "$bundle/BUILT-FROM"
 
-# Replace, not merge: a bundle left from another build must not survive in part.
-rm -rf "$out/rubberband.lv2.new"
-cp -r "$bundle" "$out/rubberband.lv2.new"
-rm -rf "$out/rubberband.lv2"
-mv "$out/rubberband.lv2.new" "$out/rubberband.lv2"
+# Replace, not merge: a bundle left from another build must not survive in
+# part. The old bundle is renamed into the staging folder, then the new one
+# into place: DIR is without a rubberband.lv2 only between two renames.
+mkdir "$stage"
+# Declares nothing, so even a leftover folder is quiet in lilv's log, as
+# plugins/archive/ is (sushi_rig/plugins.py, ARCHIVE_MANIFEST).
+echo '# Rubber Band staging: declares nothing (scripts/build-rubberband4.sh).' > "$stage/manifest.ttl"
+cp -r "$bundle" "$stage/rubberband.lv2"
+if [ -e "$out/rubberband.lv2" ]; then
+    mv "$out/rubberband.lv2" "$stage/old.lv2"
+fi
+mv "$stage/rubberband.lv2" "$out/rubberband.lv2"
 echo "built $out/rubberband.lv2 (Rubber Band $TAG, $COMMIT)"

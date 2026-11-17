@@ -2,7 +2,7 @@
   "uri": "http://breakfastquay.com/rdf/lv2-rubberband#livemono",
   "name": "Rubber Band Live Mono Pitch Shifter",
   "class": "Plugin",
-  "bundle": "/home/user/worktrees/octave-rb4/plugins/rubberband.lv2",
+  "bundle": "plugins/rubberband.lv2",
   "audio_in": 1,
   "audio_out": 1,
   "atom_ports": 0,

@@ -24,8 +24,10 @@ of distinct `lv2:port` objects. It does not follow `owl:imports`, read
 `lv2:extensionData`, or infer anything; lilv does none of that for a name either.
 
 Checked against lilv 0.24.22 on every bundle of a `plugins/` assembled from
-Ubuntu 24.04's packages (54 of the manifest's 55 URIs; the amp is not packaged):
-every name and port count agreed (2026-11-02). `test_library.py` repeats the
+Ubuntu 24.04's packages (54 of the 55 URIs the manifest had then; the amp is
+not packaged): every name and port count agreed (2026-11-02). The manifest's
+56th, Rubber Band 4.0's Live shifter (#164), is built rather than packaged
+(docs/reference/plugins.md). `test_library.py` repeats the
 comparison wherever lilv and `plugins/` are both present.
 
 Where a name cannot be read -- the bundle is not in `plugins/`, a data file is

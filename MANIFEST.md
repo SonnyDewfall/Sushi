@@ -5237,3 +5237,38 @@ wrapper (not committed). The octave's check on the rig is therefore run with
 the rig down. **Not done:** installed on the rig, heard, or
 played; the octave's level against the board is from the files, not the ear;
 the amp in front of two channels was read in the code, not run. *(2026-11-17)*
+
+**The octave: the review of PR #171 (#164).** (1) **The amp's probe plan
+refused electric-octave** ("tracks 'board', 'octave' all take 'guitar-in', so
+which one the amp sits in front of is not decided"), though
+`amp.amp_patchbay` already feeds `NAM:Output` into both channels' inputs.
+`probes.plan_probes` now probes the amp once and each channel on the
+guitar's role through it, as the patchbay wires them; a channel there that
+can never be heard is still refused by name. `test_probes`'s two-guitar test
+asks for both "via amp" probes, and its helper over every committed rig
+(`_plan_with_the_amp`) now plans with the amp for any rig with a guitar and
+requires each such channel probed through the amp or said not to be; both
+fail on the old plan (shown). (2) **`build-rubberband4.sh` stages the new
+bundle one level down**, in `DIR/.rubberband4-staging/`, whose own
+`manifest.ttl` declares nothing, so lilv never loads a staged or leftover
+copy as a second Rubber Band (checked: lilv sees no plugin with only that
+folder present); it is removed at the start of a run and on any exit (an
+error, Ctrl-C, a kill: TERM and INT now run the cleanup), and the swap is two
+renames. Shown: a leftover folder removed, a rerun leaving only
+`rubberband.lv2`, a TERM mid-build leaving nothing behind. (3) **A
+`plugins/` still on 3.3.0**, as on the rig until the build, now fails
+`test_plugins_holds_rubber_band_4_and_only_it` saying which URI is missing
+and the command to run, not with a KeyError; a render that cannot load the
+plugin says the same. *Decided:* that test and
+`test_rig_fixtures.test_every_parameter_a_committed_rig_names_is_one_its_plugin_has`
+are marked `slow`, as `test_stereo`'s port-table test already was: they ask
+what this machine's `plugins/` holds. Run on a `plugins/` assembled from
+3.3.0, the fast suite was red on the second of them alone (Sushi's "Failed
+to load tracks" for electric-octave), which now also names the plugin
+`plugins/` lacks. They skip only with no `plugins/` or no Sushi at all, as
+before; the container job runs both, and the rig's install steps run the
+octave's file. (4) **The rig's steps** in `docs/reference/plugins.md` now
+stop the rig first, build, check, run the octave's tests and start the rig
+with `sushi-rig up --rig electric-octave` (`restart` brings back only what
+was running). Nits: `library.py`'s count, and the probe fixture's bundle
+path made `plugins/rubberband.lv2`. *(2026-11-17)*

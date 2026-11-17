@@ -88,27 +88,32 @@ gx_detune_ was (about 65 ms).
 ```bash
 sudo apt install git meson ninja-build g++ pkg-config libfftw3-dev libsamplerate0-dev lv2-dev
 cd ~/Sushi
+sushi-rig down
 scripts/build-rubberband4.sh ~/Sushi/plugins
 sushi-rig plugins check
-sushi-rig restart
+(cd tool && .venv/bin/python -m pytest tests/test_octave.py -rs)
+sushi-rig up --rig electric-octave
 ```
 
-The script builds in a temporary folder (under a minute, with network to
-github.com) and replaces `plugins/rubberband.lv2` with 4.0.0's: everything
-else in `plugins/`, the amp included, is left alone. `plugins check` then
-fails if the Live shifter does not resolve from `plugins/`; `sushi-rig
-restart` is only needed if the rig was running. To confirm the octave plays
-in tune under this machine's Sushi, with the rig down (each render starts a
-Sushi of its own, on the gRPC port a running rig's Sushi holds, and one of the
-two aborts):
+In order:
 
-```bash
-sushi-rig down
-cd ~/Sushi/tool && .venv/bin/python -m pytest tests/test_octave.py -rs
-```
-
-which prints, at the end, each note's error in cents and the octave's lag. It
-needs numpy (the `audio` extra, [Environment](environment.md)).
+- `down` stops a running rig, so no Sushi has the old bundle loaded and the
+  check two steps on can start Sushis of its own: each render starts one, on
+  the gRPC port a running rig's Sushi holds, and one of the two aborts. With
+  no rig running it says so and does nothing.
+- The script builds in a temporary folder (under a minute, with network to
+  github.com) and replaces `plugins/rubberband.lv2` with 4.0.0's. Everything
+  else in `plugins/`, the amp included, is left alone.
+- `plugins check` fails if the Live shifter does not resolve from `plugins/`.
+- The tests render the octave under this machine's Sushi and print, at the
+  end, each note's error in cents and the octave's lag. They need numpy
+  (the `audio` extra, [Environment](environment.md)). Until the build has
+  run, the first of them fails saying to run it; the fast suite
+  (`-m "not slow"`) does not include them, so pulling this before building
+  leaves it green.
+- `up --rig electric-octave` starts the octave's rig. Starting it from the
+  web UI's rig list does the same; `sushi-rig restart` would only bring back
+  what was running before `down`.
 
 **The URI clash.** Ubuntu's 3.3.0 bundle and 4.0.0's are both called
 `rubberband.lv2` and both declare `#mono`, `#stereo`, `#r3mono` and

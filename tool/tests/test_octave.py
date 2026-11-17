@@ -160,21 +160,37 @@ def test_the_manifest_lists_the_live_shifter():
     assert LIVE in read_manifest((ROOT / "plugin-manifest.txt").read_text())
 
 
+BUILD_IT = (f"run scripts/build-rubberband4.sh {PLUGINS} "
+            "(docs/reference/plugins.md, Rubber Band 4.0, built for the octave)")
+
+
 @needs_lilv
+@pytest.mark.slow
 def test_plugins_holds_rubber_band_4_and_only_it():
     """Ubuntu's rubberband-lv2 3.3.0 declares the same URIs under a bundle of
     the same name. plugins/ must hold 4.0.0's, the pinned build, for every
-    one of them: one Rubber Band, not a mixture."""
+    one of them: one Rubber Band, not a mixture.
+
+    Slow, as `test_stereo.test_the_port_table_is_what_lilv_reads` is: both
+    ask what this machine's plugins/ holds, not what the code does. A
+    checkout that has pulled #164 and not yet built Rubber Band (the rig, the
+    moment it pulls) keeps a green fast suite, and this fails there, saying
+    what to run, wherever the slow tests are: the container job runs them
+    all, and the rig's step after the build runs this file. It skips only
+    where there is no plugins/ at all, as test_probe and test_library do."""
     from sushi_rig.plugins import plugins_on
 
     found = plugins_on(str(PLUGINS))
     ours = [u for u in read_manifest((ROOT / "plugin-manifest.txt").read_text()) if u.startswith(RUBBER_BAND)]
     assert LIVE in ours
+    missing = [u for u in ours if u not in found]
+    assert not missing, f"{PLUGINS} has no {', '.join(missing)}: its Rubber Band is not 4.0.0; {BUILD_IT}"
     bundles = {found[u] for u in ours}
-    assert bundles == {PLUGINS / "rubberband.lv2"}, bundles
-    built = (PLUGINS / "rubberband.lv2" / "BUILT-FROM").read_text()
+    assert bundles == {PLUGINS / "rubberband.lv2"}, f"Rubber Band's URIs come from {sorted(map(str, bundles))}; {BUILD_IT}"
+    stamp = PLUGINS / "rubberband.lv2" / "BUILT-FROM"
+    built = stamp.read_text() if stamp.is_file() else ""
     assert f"Rubber Band v4.0.0, commit {pinned_commit()}" in built, \
-        "plugins/rubberband.lv2 is not the pinned build: run scripts/build-rubberband4.sh (docs/reference/plugins.md)"
+        f"{PLUGINS / 'rubberband.lv2'} is not the pinned build; {BUILD_IT}"
 
 
 # --- under Sushi ------------------------------------------------------------
@@ -205,7 +221,8 @@ def _render(np, tmp_path, name: str, params: dict, mono) -> "np.ndarray":
         sushi_argv(work / "config.json", work / "in.wav", work / "out.wav", str(SUSHI)),
         cwd=ROOT, env=sushi_env(ROOT), capture_output=True, text=True, timeout=120,
     )
-    assert result.returncode == 0, (result.stdout + result.stderr).strip()
+    assert result.returncode == 0, \
+        f"{(result.stdout + result.stderr).strip()}\n(if plugins/ has no Live shifter: {BUILD_IT})"
     out = signals.read_wav(work / "out.wav").samples
     assert check_finite(out) is None, f"{name}: {check_finite(out)}"
     return out[:, 0]
