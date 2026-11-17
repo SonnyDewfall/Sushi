@@ -299,7 +299,11 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   stops at **0 dB** (`rig.js` `MASTER_VOLUME_MAX_DB`; a channel's keeps +6):
   Sushi applies the master's gain after the master's limiter, so above unity
   it would lift what the limiter let through. A value typed over it is held
-  to 0 dB, and the agent refuses one sent past it (400). The limiter, last on
+  to 0 dB, and the agent refuses one sent past it (400). On a rig started
+  before the cap, a master over 0 dB says "over the top": a step up (wheel,
+  arrows, Page Up, End) sends nothing, and a step down goes to 0 dB
+  (`volumeStepped`'s `unchanged` and `hard`, `overTopNote`); a channel over
+  its +6 likewise sends nothing on a step up. The limiter, last on
   the master (`/live/plugins` role "limiter"), is never a unit: the **Master**
   tab ends with one read-only line saying what it is and where its threshold
   sits (`limiterLine`, from the Thresh Sushi reports), with nothing offered

@@ -58,7 +58,9 @@ unity it would lift what the limiter let through. A file that says more (one
 written before the cap) still loads: it is compiled at 0 dB, and the next save
 writes `level: 0.0`, so the file comes to say what plays. The agent refuses a
 master volume above 0 dB (`400`), as it refuses any value outside a
-parameter's range, and the web UI's master fader stops there.
+parameter's range, and the web UI's master fader stops there. The master's
+pan is held at the centre for the same reason (Sushi's pan law lifts a
+panned side by up to 3 dB, after the limiter); a rig file has no key for it.
 
 ## What `emit` makes of it
 

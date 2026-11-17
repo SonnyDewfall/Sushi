@@ -1531,6 +1531,12 @@ function volumeFader({ where, processor, label, aria, control, updaters, blended
     sender.change(key, v, (x) => ({ path: "/live/parameter", json: { processor, parameter: "gain", value: x } }));
     draw(v);
   };
+  // A wheel notch or an arrow: nothing sent where it would not move (up from
+  // over the top, #137), and the master's hard top on the way down.
+  const step = (steps, fine) => {
+    const next = R.volumeStepped(dbNow(), steps, fine, null, maxDb, maxDb < R.VOLUME_MAX_DB);
+    if (!next.unchanged) set(next.db);
+  };
   const field = valueField(`${aria} value`, (text) => {
     if (!live) return { ok: false, why: "No rig is up to set it on." };
     if (driven) return { ok: false, why: `Driven by ${driven}: the pedal sets it.` };
@@ -1552,8 +1558,10 @@ function volumeFader({ where, processor, label, aria, control, updaters, blended
     const failed = state.failed.get(key);
     el.classList.toggle("failed", !!failed);
     el.classList.toggle("is-driven", !!driven);
-    note.textContent = driven ? `driven by ${driven}` : "";
+    const over = live && !driven ? R.overTopNote(db, maxDb) : null;
+    note.textContent = driven ? `driven by ${driven}` : over ? "over the top" : "";
     el.title = failed ? `refused: ${failed}`
+      : over ? `${over[0].toUpperCase()}${over.slice(1)}.`
       : driven ? `Driven by ${driven}, a MIDI blend: it follows the pedal, so it is not set from here (and a save does not write it).`
         : live ? `-∞, then -60 to ${maxDb > 0 ? "+" + maxDb : maxDb} dB: drag, scroll or type. Saved as its level.${maxDb < R.VOLUME_MAX_DB ? " The master stops at 0 dB: its gain comes after the limiter." : ""}` : "No rig is up.";
   };
@@ -1570,13 +1578,13 @@ function volumeFader({ where, processor, label, aria, control, updaters, blended
     field.release();
     const { notches, rest } = R.wheelNotches(wheelRest, event.deltaY, event.deltaMode);
     wheelRest = rest;
-    if (notches) set(R.volumeStepped(dbNow(), notches, event.shiftKey, null, maxDb).db);
+    if (notches) step(notches, event.shiftKey);
   });
   input.addEventListener("keydown", (event) => {
     const steps = { ArrowUp: 1, ArrowRight: 1, ArrowDown: -1, ArrowLeft: -1, PageUp: 10, PageDown: -10 };
-    if (event.key in steps) set(R.volumeStepped(dbNow(), steps[event.key], event.shiftKey, null, maxDb).db);
+    if (event.key in steps) step(steps[event.key], event.shiftKey);
     else if (event.key === "Home") set(-Infinity);
-    else if (event.key === "End") set(maxDb);
+    else if (event.key === "End") { if (!(dbNow() > maxDb)) set(maxDb); }  // the top, never down to it
     else return;
     event.preventDefault();
   });

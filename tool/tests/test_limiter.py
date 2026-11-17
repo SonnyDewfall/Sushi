@@ -153,6 +153,37 @@ def test_a_rig_file_over_the_top_still_loads_and_plays_at_unity():
     assert saved["master"]["level"] == 0.0
 
 
+RIG_TEXT = """\
+# A rig written before the cap (#137): its master over 0 dB.
+kind: rig
+schema_version: 1
+name: safety
+channels:
+  - name: board
+    input: guitar-in   # the guitar
+    width: mono
+    chain: []
+master:
+  output: monitor-out
+  chain: []
+  level: 4.5           # hot, from before
+"""
+
+
+def test_a_file_over_the_top_saves_as_unity_and_nothing_else_changes(tmp_path):
+    """Through `write_rig`, as the agent's Save writes: the one line changes."""
+    import yaml
+
+    path = tmp_path / "safety.yaml"
+    path.write_text(RIG_TEXT)
+    raw = yaml.safe_load(RIG_TEXT)
+    captured = {"processors": {"master": {"parameters": {"gain": MASTER_GAIN_MAX, "pan": 0.5, "mute": 0.0}},
+                               LIMITER: {"parameters": dict(LIMITER_SETTINGS["parameters"])}},
+                "tracks": {"master": ["master_return", LIMITER], "board": ["board_send"]}}
+    rigfile.write_rig(path, fold_state(raw, captured))
+    assert path.read_text() == RIG_TEXT.replace("level: 4.5", "level: 0.0")
+
+
 def test_a_level_under_the_top_is_untouched():
     config = emit_rig(parse_rig(rig(level=-3.0)))
     assert state_of(config)["master"]["parameters"]["gain"] == pytest.approx(level_to_gain(-3.0))
@@ -200,6 +231,25 @@ def test_the_master_gain_is_refused_over_unity_and_nothing_under_it():
     assert master_gain_problem(1.0) is not None
     for shape in (True, "0.9", None, float("nan")):
         assert master_gain_problem(shape) is None, "the request's own check refuses a bad shape"
+
+
+def test_the_master_pan_stays_at_the_centre():
+    """Sushi pans after the plugins, and its pan law lifts the side panned to
+    by up to 3 dB (PR #172's review, measured in Sushi): every pan but the
+    centre lifts a side over unity, so only the centre is allowed."""
+    assert rigfile.MASTER_PAN == 0.5
+    assert rigfile.master_pan_problem(0.5) is None and rigfile.master_pan_problem(0.5 + 5e-7) is None
+    for off in (0.0, 0.49, 0.51, 1.0):
+        assert rigfile.master_pan_problem(off).startswith("the master's pan stays at the centre"), off
+    for shape in (True, None, "0.5", float("nan")):
+        assert rigfile.master_pan_problem(shape) is None
+
+
+def test_a_captured_master_pan_off_the_centre_is_put_back_in_the_config():
+    off = {"processors": {"master": {"parameters": {"pan": 0.0}}}}
+    config = emit_rig(parse_rig(rig()), off)
+    assert state_of(config)["master"]["parameters"]["pan"] == 0.5
+    assert fold_state(rig(), off)["master"] == rig()["master"], "a rig file has no key for it"
 
 
 def test_the_limiters_settings_are_fixed_and_it_is_never_bypassed():
@@ -280,11 +330,25 @@ def test_a_switch_never_adds_behind_the_limiter():
     assert decided.expected == ["master_return", "room", "delay", LIMITER]
 
 
+def test_the_compilers_names_cannot_be_added_live():
+    """On a rig from before the limiter, an add named `master_limiter` used to
+    go in, and then could be neither removed, bypassed nor saved (PR #172)."""
+    library = {"plugins": [{"uri": "http://drobilla.net/plugins/mda/Delay", "name": "MDA Delay",
+                            "audio": {"in": 2, "out": 2}}]}
+    for name in ("master", "master_return", LIMITER):
+        with pytest.raises(agent.AgentError, match="a name the compiler gives the master track"):
+            agent.add_request({"track": "master", "uri": "http://drobilla.net/plugins/mda/Delay", "name": name},
+                              library)
+    assert agent.add_request({"track": "master", "uri": "http://drobilla.net/plugins/mda/Delay",
+                              "name": "delay"}, library).name == "delay"
+
+
 def test_the_set_paths_refuse_the_top_and_the_limiter():
-    agent._refuse_fixed("master", {"gain": MASTER_GAIN_MAX})
+    agent._refuse_fixed("master", {"gain": MASTER_GAIN_MAX, "pan": 0.5})
+    agent._refuse_fixed("board", {"pan": 0.0})
     agent._refuse_fixed(LIMITER, dict(LIMITER_SETTINGS["parameters"]))
     agent._refuse_fixed("room", {"Room": 1.0})
-    for processor, values in (("master", {"gain": 1.0}), (LIMITER, {"Thresh": 0.5}),
+    for processor, values in (("master", {"gain": 1.0}), ("master", {"pan": 0.0}), (LIMITER, {"Thresh": 0.5}),
                               (LIMITER, {"Output": 0.5, "Attack": 1.0})):
         with pytest.raises(agent.AgentError):
             agent._refuse_fixed(processor, values)
@@ -415,7 +479,7 @@ def test_the_route_refuses_the_master_over_unity_and_sends_nothing():
 def test_the_batch_route_refuses_the_master_over_unity_too():
     made, fake = limiter_agent()
     status, body = call(made, "POST", "/live/parameters",
-                        json={"processor": "master", "parameters": {"gain": 1.0, "pan": 0.5}})
+                        json={"processor": "master", "parameters": {"mute": 0.0, "gain": 1.0}})
     assert status == 400 and "stops at 0 dB" in body["reason"], body
     assert fake.writes() == []
 
@@ -496,3 +560,61 @@ def test_the_dip_puts_back_no_more_than_unity():
     sets = [c for c in fake.calls if c[:3] == ("set_parameter", "master", "gain")]
     assert [c[3] for c in sets] == [0.0, MASTER_GAIN_MAX]
     assert gain(fake) == MASTER_GAIN_MAX
+
+
+def old_rig_agent():
+    """The limiter agent, but its master as a rig started before #137: no
+    limiter on it."""
+    made, fake = limiter_agent()
+    fake.chains["master"].remove(LIMITER)
+    return made, fake
+
+
+def test_on_a_rig_from_before_the_limiter_it_cannot_be_added_live():
+    made, fake = old_rig_agent()
+    status, body = call(made, "POST", "/live/add",
+                        json={"track": "master", "uri": edits.DELAY, "name": LIMITER})
+    assert status == 400 and "a name the compiler gives" in body["reason"], body
+    assert fake.writes() == [] and LIMITER not in fake.chains["master"]
+
+
+@pytest.mark.parametrize("path, sent", [
+    ("/live/parameter", {"processor": "master", "parameter": "pan", "value": 0.0}),
+    ("/live/parameters", {"processor": "master", "parameters": {"gain": 0.5, "pan": 1.0}}),
+])
+def test_the_routes_refuse_the_master_pan_off_the_centre(path, sent):
+    made, fake = limiter_agent()
+    fake.values_of["master"]["parameters"]["pan"] = 0.5
+    status, body = call(made, "POST", path, json=sent)
+    assert status == 400 and "the master's pan stays at the centre" in body["reason"], body
+    assert fake.writes() == []
+
+
+def test_an_undo_back_to_a_master_pan_off_the_centre_is_refused():
+    made, fake = limiter_agent()
+    fake.values_of["master"]["parameters"]["pan"] = 0.0  # set beside the agent
+    status, body = call(made, "POST", "/live/parameter",
+                        json={"processor": "master", "parameter": "pan", "value": 0.5})
+    assert status == 200, body
+    status, body = undo(made)
+    assert status in (400, 409) and "stays at the centre" in body["reason"], body
+    assert fake.values_of["master"]["parameters"]["pan"] == 0.5
+
+
+def test_the_dip_that_brings_an_old_master_down_says_so_in_the_answer_and_health():
+    made, fake = limiter_agent()
+
+    async def no_wait(seconds):
+        return None
+
+    made.sleep = no_wait
+    fake.values_of["master"]["parameters"]["gain"] = level_to_gain(6.0)
+    status, body = call(made, "POST", "/live/add", json={"track": "guitar", "uri": edits.DELAY, "name": "delay"})
+    assert status == 200, body
+    assert body["dip"]["capped"]["from_db"] == 6.0 and body["dip"]["capped"]["to_db"] == 0.0
+    assert body["master_capped"].startswith("the master volume was at +6 dB, over the 0 dB it now stops at")
+    status, health = call(made, "GET", "/health")
+    assert health["agent"]["master_capped"]["from_db"] == 6.0, health["agent"]
+    # A master already at or under the top says nothing of it.
+    status, body = call(made, "POST", "/live/add", json={"track": "guitar", "uri": edits.DELAY, "name": "delay2"})
+    assert status == 200 and "master_capped" not in body and "capped" not in body["dip"], body

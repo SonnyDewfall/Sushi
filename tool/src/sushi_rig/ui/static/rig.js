@@ -2018,6 +2018,15 @@ export function volumeValueOf(ctrl, db) {
   return db === -Infinity ? 0 : normalisedOf(ctrl, clampTo(db, ctrl.min, ctrl.max));
 }
 
+// What a fader says of a level above its top (#137: a master from before
+// the cap, at what its file said), or null: it is not set from here, and
+// only coming down moves it.
+export function overTopNote(db, max) {
+  if (!isNumber(db) || db <= max + 1e-6) return null;
+  return `at ${volumeText(db)}, over the ${volumeText(max)} it now stops at (the rig was started before the cap): ` +
+    `up does nothing, and any move down brings it to ${volumeText(max)} or below`;
+}
+
 export function volumeText(db) {
   if (db === null || db === undefined) return "—";
   if (db === -Infinity) return "−∞ dB";
@@ -2052,14 +2061,22 @@ export function volumeSticky(db, held = null) {
 // went to -∞). Inside -60 .. +6 it moves by VOLUME_STEP_DB, sticky to whole
 // dB, and down from -60 is -∞, up from -∞ is -60. Outside the range (a file
 // may hold +10 or -80) it steps toward the range, and away from it not at
-// all, except down below -60, which is -∞. `{db, held}`.
-export function volumeStepped(db, steps, fine = false, held = null, max = VOLUME_MAX_DB) {
+// all, except down below -60, which is -∞. `{db, held}`, and `unchanged`
+// where a step up from above the range leaves it where it is: then nothing
+// is sent (review of PR #172: one notch up sent the clamped top, and a master
+// at +6 dB from before the cap dropped 6 dB on a scroll up). With `hard`, a
+// top nothing above may be set (the master's 0 dB, #137), a step down from
+// above it goes to the top, the first level the agent will take.
+export function volumeStepped(db, steps, fine = false, held = null, max = VOLUME_MAX_DB, hard = false) {
   if (db === -Infinity || db === null || db === undefined) {
     return steps > 0 ? { db: VOLUME_MIN_DB, held: null } : { db: -Infinity, held: null };
   }
   const size = VOLUME_STEP_DB / (fine ? FINE_DIVISOR : 1);
   const next = db + steps * size;
-  if (db > max) return { db: steps > 0 ? db : next, held: null };
+  if (db > max) {
+    if (steps > 0) return { db, held: null, unchanged: true };
+    return { db: hard ? max : next, held: null };
+  }
   if (db < VOLUME_MIN_DB) return steps > 0 ? { db: next, held: null } : { db: -Infinity, held: null };
   if (next < VOLUME_MIN_DB - 1e-9) return { db: -Infinity, held: null };
   const kept = clampTo(next, VOLUME_MIN_DB, max);

@@ -58,11 +58,16 @@ Every rig's master ends with a **limiter**, a safety net the rig always has:
 below −1 dBFS it does not touch the sound at all, and above it, it pulls a
 sudden loud peak (a feedback squeal, a pedal stamped on at full) back toward
 full scale. It is not a wall: something very loud still gets through, louder
-than full scale, just much less of it. You cannot turn it off, move it or
+than full scale, and at extreme levels it may not turn it down at all (it can
+even come out louder than it went in). It is a net for an accident, not a
+reason to play into it. You cannot turn it off, move it or
 change it from the page; the **Master** tab shows it as one line, at the end.
 That is also why **MASTER stops at 0.0 dB**: it comes after the limiter, so
 turning it up past 0 would turn up what the limiter let through. To make the
-mix louder, raise the channels' volumes instead.
+mix louder, raise the channels' volumes instead. A rig started before the
+limiter came in may still have **MASTER** above 0 dB: its fader says "over the
+top", scrolling or pressing up does nothing, and the first move down, or any
+add, removal or move of a plugin, brings it to 0 dB.
 
 The strip at the bottom of the left column, **master**, is the mix itself. It
 says how many plugins are on the master's own chain; click its name to open

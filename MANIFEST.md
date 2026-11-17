@@ -5239,4 +5239,30 @@ master: four in `test_rigfile.py`, two in `test_ui_library.py`, one each in
 unchanged with the limiter on the master. The fast suite: 4946 passed, 5 skipped, 175 deselected. The slow tests touched (`test_limiter_sushi.py`, `test_stereo.py`, `test_send_return.py`, `test_convert.py`, `test_rigfile.py`, `test_rigfile_live.py`, `test_configs.py`) each passed here, but this machine's Sushi crashed now and then starting its gRPC server (`server_cc.cc:241`), a different render each run and on clean master the same, so no one run of them was clean; `nulltest --all` was. **Not run:** the rig, by ear
 or at all (no pop, no squeal caught, no fader on the touch screen), a live
 Sushi under the agent, the container job, and the guide's screenshots were not
-remade. *(2026-11-17)*
+remade.
+
+**PR #172's review, fixed in the same entry.** (1) **The master's pan gets
+round the cap**: Sushi pans after the plugins, and its pan law lifts the side
+panned to (a +12 dBFS sine came out at +2.0 dBFS left at pan 0.0, -1.0 at the
+centre; the reviewer's render, reproduced in `test_limiter_sushi.py`). Every
+pan but the centre lifts one side above unity, so *decided:* the master's pan
+is held at the centre (`rigfile.MASTER_PAN`), refused otherwise (400) on the
+route, `/live/parameters`, undo and a switch's step, put back in a compiled
+config from a capture; a rig file has no key for it and the page no control.
+(2) **The compiler's names are refused on a live add** (`master`,
+`master_return`, `master_limiter`): on a rig from before the limiter, one
+added as `master_limiter` could be neither removed, bypassed nor saved.
+(3) rigfile.py's comments give Sushi's figures, not lv2apply's. (4) The guide
+says at extreme levels the limiter may not turn a sound down at all.
+(5) **A step up on a master over 0 dB sends nothing** (a rig from before the
+cap at +6: one notch up used to send 0 dB); a step down goes to 0 dB, the
+fader says "over the top" and why; a channel over its +6 sends nothing on a
+step up too. A browser test, shown failing with the fix taken out. (6) **A
+dip that brings an old rig's master down to 0 dB says so**: `dip.capped` and
+`master_capped` in the edit's answer, stderr, and `agent.master_capped` in
+`/health` until a lifecycle command works; the behaviour is kept. Also a
+`write_rig` round trip: a file at `level: 4.5` saves as `level: 0.0` and
+nothing else. The fast suite: FASTCOUNT. The slow limiter tests, three runs
+in a private network namespace (another session's Sushi held port 51051):
+every test passed at least twice, the rest Sushi's gRPC start-up crash.
+**Not run:** the rig. *(2026-11-17)*

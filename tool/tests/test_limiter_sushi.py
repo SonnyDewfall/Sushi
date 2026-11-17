@@ -184,3 +184,22 @@ def test_each_committed_rigs_master_plays_through_the_limiter_and_catches_a_hot_
     for stimulus in (sweep(HOT_DBFS - SEND_DB), sine(HOT_DBFS - SEND_DB)):
         assert_caught(f"{rig.stem} [{stimulus.kind}]",
                       render(tmp_path, f"{rig.stem}-{stimulus.kind}", hot_master(config), stimulus))
+
+
+def test_a_panned_master_would_lift_a_side_past_the_limiter(tmp_path):
+    """Why the master's pan is held at the centre (PR #172's review): Sushi
+    pans the master with its gain, after its plugins, and its pan law lifts
+    the side panned to. The agent refuses such a pan; this renders it to show
+    what it would do."""
+    heard = {}
+    for pan in (0.5, 0.0):
+        view = hot_master(EMPTY)
+        view["initial_state"] = [e for e in view["initial_state"] if e["processor"] != "master"] + [
+            {"processor": "master", "parameters": {"pan": pan}}]
+        path = tmp_path / f"pan{pan}.json"
+        path.write_text(json.dumps(view))
+        out = render_offline(path, ROOT, tmp_path / f"out{pan}", stimulus=sine(HOT_DBFS - SEND_DB),
+                             sushi_bin=str(SUSHI))["rendered"]
+        heard[pan] = db(out[int(SETTLED_S * 48000):, 0])
+    assert heard[0.5] < FULL_SCALE_DBFS
+    assert heard[0.0] > FULL_SCALE_DBFS and heard[0.0] - heard[0.5] > 2.5, heard

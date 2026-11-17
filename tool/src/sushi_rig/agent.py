@@ -485,7 +485,9 @@ from .midi_listener import MidiError
 from .rig import describe_rig, restart_arguments
 from .supervisor import Outcome, Supervisor
 from . import rigfile  # the live switch (#93)
-from .rigfile import limiter_problem, master_gain, master_gain_problem  # the limiter and the top (#137)
+from .rigfile import (  # the limiter, the top and the centred pan (#137)
+    limiter_problem, master_gain, master_gain_problem, master_pan_problem,
+)
 from .rig import RigError, compile_named_rig
 from .state import read_state, write_state
 from .verify import diff_state
@@ -830,12 +832,15 @@ def check_parameter(reading: dict[str, Any], processor: str, parameter: str) -> 
 
 def _refuse_fixed(processor: str, values: dict[str, Any]) -> None:
     """`AgentError` (400) for a set the rig must never take (#137): the
-    master's gain above the master volume's top, or the master's limiter
-    set to anything but its fixed settings. Pure."""
+    master's gain above the master volume's top, its pan anywhere but the
+    centre (Sushi's pan law lifts the side panned to past the limiter), or
+    the master's limiter set to anything but its fixed settings. Pure."""
     for parameter, value in values.items():
         why = limiter_problem(processor, parameter, value)
         if why is None and (processor, parameter) == (ramp.MASTER, ramp.GAIN):
             why = master_gain_problem(value)
+        if why is None and (processor, parameter) == (ramp.MASTER, "pan"):
+            why = master_pan_problem(value)
         if why:
             raise AgentError(why)
 
@@ -1258,6 +1263,14 @@ def add_request(body: Any, library: dict[str, Any]) -> AddRequest:
     reserved = stereo.reserved_problem("processor", name)
     if reserved:
         raise AgentError(reserved)
+    if name in (rigfile.MASTER, rigfile.RETURN, rigfile.LIMITER):
+        # The compiler's names, refused as `check_rig` refuses them (#137,
+        # PR #172's review): on a rig from before the limiter, a plugin added
+        # as `master_limiter` would be protected by its name, so it could not
+        # be removed or bypassed, and a save could not write it.
+        raise AgentError(
+            f"{name!r} is a name the compiler gives the master track, its return or its limiter: "
+            "give the plugin another name")
     after = body.get("after")
     if after is not None and (not isinstance(after, str) or not after):
         raise AgentError(f"'after' must name a processor on the track, or be left out, not {after!r}")
@@ -1500,6 +1513,10 @@ def _dip_answer(request: Any) -> dict[str, Any]:
     answer: dict[str, Any] = {"dip": dict(said)}
     if said.get("restored") is False:
         answer["warning"] = said["why"]
+    elif said.get("capped"):
+        # The master came back quieter than it went down (#137): said beside
+        # the edit's answer, not only inside `dip`.
+        answer["master_capped"] = said["capped"]["message"]
     return answer
 
 
@@ -1788,6 +1805,11 @@ class Agent:
         # agent, or a lifecycle command succeeds. `{"at", "message", "level"}`,
         # `level` the one the dip meant to put back, which a save writes.
         self._master_down: dict[str, Any] | None = None
+        # The last time a dip brought a master over the master volume's top
+        # down to it (#137, PR #172's review): `{"at", "from_db", "message"}`,
+        # in /health until a lifecycle command works (a rig started from a
+        # file is at 0 dB at most).
+        self._master_capped: dict[str, Any] | None = None
         # The rig's block as pw-top last measured it, in seconds, for the
         # dip's wait (`ramp.settle`); kept from every sample read, since a
         # sample itself is dropped after an add (`_load_last`).
@@ -1849,6 +1871,8 @@ class Agent:
                 "last_error": self.last_error,
                 # A master a dip could not put back (#137): until it is put right.
                 "master_down": self._master_down,
+                # A master over 0 dB a dip brought down to it (#137).
+                "master_capped": self._master_capped,
                 "midi": self._midi_status(),
                 # The rig this agent holds, and its children that exited with
                 # no `down` asking them to: what a phone reads after a crash.
@@ -1987,6 +2011,7 @@ class Agent:
             # A rig started or stopped afresh: no master is left down by a
             # dip, and the block pw-top measured belonged to the run before.
             self._master_back()
+            self._master_capped = None
             self._block_s = None
         if outcome.ok and (self.last_error or {}).get("kind") == "lifecycle":
             # A later success supersedes the old failure: left in place,
@@ -2389,9 +2414,13 @@ class Agent:
             said["why"] = "the master is already at its floor"
             yield said
             return
-        # Never more than the master volume's top put back (#137): a level
-        # over it was set beside the agent, and is brought down to it here.
-        level = master_gain(float(level))
+        # Never more than the master volume's top put back (#137). A level over
+        # it is a rig started before the cap from a file that said more (by
+        # design: the file's level was its gain), or one set beside the agent;
+        # either way it is brought down to the top here, and said so once it
+        # is (`_undip`, `capped`).
+        asked = float(level)
+        level = master_gain(asked)
         self._dipping = level
         self._dips += 1
         started = self.clock()
@@ -2405,7 +2434,7 @@ class Agent:
             await self.sleep(wait)
             yield said
         except BaseException as exc:
-            problem = await self._undip(request, controller, level, said, started)
+            problem = await self._undip(request, controller, level, said, started, asked=asked)
             if problem and isinstance(exc, web.HTTPException):
                 # The edit's failure and the master's both, in one answer: a
                 # silent master after a failed add must not read as the add's
@@ -2421,15 +2450,20 @@ class Agent:
                 raise combined from exc
             raise
         else:
-            await self._undip(request, controller, level, said, started)
+            await self._undip(request, controller, level, said, started, asked=asked)
         finally:
             self._dipping = None
 
-    async def _undip(self, request, controller, level: float, said: dict[str, Any], started: float) -> str | None:
+    async def _undip(self, request, controller, level: float, said: dict[str, Any], started: float,
+                     *, asked: float | None = None) -> str | None:
         """Read the master's gain again and put `level` back, unless someone
         else set it during the dip (`ramp.restore_to`). Never raises: returns
         what went wrong, or None, and says it in `said`, on stderr and in
-        /health, since a master left down is a silent rig."""
+        /health, since a master left down is a silent rig. A master that was
+        over the master volume's top before the dip (`asked`), or was set over
+        it during one, comes back at the top, and that is said too, in `said`
+        (`capped`), on stderr and in /health (`master_capped`): the player
+        hears the rig get quieter, and must be told why (#137)."""
         now = None
         try:
             reading = await self._sushi(
@@ -2466,6 +2500,19 @@ class Agent:
         self._master_back()
         self._dip_left = target
         said["ms"] = round((self.clock() - started) * 1000, 1)
+        over = max((v for v in (asked, now) if isinstance(v, (int, float)) and not isinstance(v, bool)
+                    and math.isfinite(v)), default=None)
+        if over is not None and over > rigfile.MASTER_GAIN_MAX + rigfile.MASTER_GAIN_SLACK \
+                and abs(target - rigfile.MASTER_GAIN_MAX) <= rigfile.MASTER_GAIN_SLACK:
+            from_db = rigfile.gain_to_level(over)
+            message = (f"the master volume was at {from_db:+g} dB, over the 0 dB it now stops at, and the "
+                       "dip around this edit brought it back at 0 dB: the master's gain comes after its "
+                       "limiter, so above unity it would lift what the limiter let through (#137). The rig "
+                       "was most likely started before the cap, from a file whose master level was above 0")
+            said["capped"] = {"from_db": from_db, "to_db": 0.0, "message": message}
+            self._master_capped = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                                   "from_db": from_db, "message": message}
+            print(f"sushi-rig agent: {message}", file=sys.stderr, flush=True)
         return None
 
     def _master_back(self) -> None:

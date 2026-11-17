@@ -45,8 +45,11 @@ module adds no second path to Sushi.
   the compiler's as the sends are: never in a rig file, never saved into one,
   never moved, removed, bypassed or retuned through the agent. A soft safety
   net, not a ceiling: below -1 dBFS it passes the signal bit for bit, so no
-  sound reference changes; a very loud input still gets out at about +2.6 dBFS
-  (+20 dBFS in), which is known and accepted (`tool/spikes/master_limiter/`).
+  sound reference changes. A very loud input still gets out: in Sushi 1.3.0,
+  +20 dBFS of noise came out at between -0.4 and +4.7 dBFS depending on how it
+  arrived, +26 dBFS at about +12, and at +40 dBFS it can come out louder than it
+  went in. Known and accepted (`tool/spikes/master_limiter/`,
+  `tests/test_limiter_sushi.py`).
 - **The master volume stops at 0 dB** (`MASTER_LEVEL_MAX`). Sushi applies a
   track's gain after its plugins, so the master's gain comes after the limiter
   and anything above unity would lift what the limiter let through. A file that
@@ -119,11 +122,15 @@ MASTER_BUS = 0
 # is +2 dB), so every setting is stated and the compiler's always win over a
 # capture (`merged_state`). From mdaLimiter.cpp, hard knee: the threshold is
 # 10^(2*Thresh - 2), so 0.975 is -1 dBFS; the trim 10^(2*Output - 1); the
-# attack step 10^(-2*Attack), 0.15 its default. Rendered with lv2apply
-# (tool/spikes/master_limiter/README.md): a +20 dBFS sweep or noise comes out
-# at +2.6 dBFS, a +12 dBFS one at about 0; it watches the sum of the two
-# sides, so a signal in opposite phase passes, and at +34 dBFS and over it can
-# come out louder than it went in. A soft safety net, as chosen; x42's dpl is
+# attack step 10^(-2*Attack), 0.15 its default. Rendered in Sushi 1.3.0
+# (2026-11-17, tests/test_limiter_sushi.py): +12 dBFS of sweep or sine comes
+# out at about -0.9 dBFS; +20 dBFS of noise at between -0.4 and +4.7 dBFS,
+# depending on how it arrived (its overshoot is chaotic there); +26 dBFS at
+# about +12; at +40 dBFS it can come out louder than it went in. It watches
+# the sum of the two sides, so a signal in opposite phase passes; an infinity
+# leaves its gain NaN, and the master silent, until the rig restarts. (The
+# spike's lv2apply figures, +2.6 dBFS at +20 in, are not what Sushi gives.)
+# A soft safety net, as chosen; x42's dpl is
 # the upgrade if this is not enough (its look-ahead would change every
 # reference's delay).
 LIMITER = "master_limiter"
@@ -582,6 +589,15 @@ def gain_to_level(gain: float) -> float:
 # +24 range a send has, derived rather than written twice.
 UNITY_STRIP = {"gain": level_to_gain(0.0), "pan": 0.5, "mute": 0.0}
 
+# The master's pan, held at the centre (#137, PR #172's review): Sushi applies
+# a track's pan with its gain, after its plugins, and its pan law lifts the side
+# panned to by up to +3 dB (a +12 dBFS sine through the limiter came out at
+# +2.0 dBFS on the left with the master's pan at 0.0, -1.0 at the centre). Every
+# pan but the centre lifts one side above unity, so "a pan whose louder side is
+# not above unity" and "the centre" are the same rule; the centre is the one
+# stated. A rig file has no key for the master's pan, and the page no control.
+MASTER_PAN = UNITY_STRIP["pan"]
+
 # The master volume's top, normalised as the agent and Sushi hold the master
 # track's gain (#137): 0 dB is 120/144.
 MASTER_GAIN_MAX = level_to_gain(MASTER_LEVEL_MAX)
@@ -613,6 +629,19 @@ def master_gain_problem(value: Any) -> str | None:
         return (f"the master volume stops at {MASTER_LEVEL_MAX:g} dB ({MASTER_GAIN_MAX:.6f} normalised), and "
                 f"{value!r} is {gain_to_level(value):+g} dB: the master's gain comes after its limiter, so "
                 "above unity it would lift what the limiter let through (#137)")
+    return None
+
+
+def master_pan_problem(value: Any) -> str | None:
+    """Why `value`, a normalised pan for the master track, is refused: any pan
+    but the centre (`MASTER_PAN`), which would lift one side of the mix past
+    the limiter by up to 3 dB; or None. Refused as the top is (400). Pure."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return None  # the shape is the request's to refuse, not this
+    if abs(value - MASTER_PAN) > MASTER_GAIN_SLACK:
+        return (f"the master's pan stays at the centre ({MASTER_PAN:g} normalised), and {value!r} is not it: "
+                "Sushi pans after the master's limiter, and its pan law lifts the side panned to by up to "
+                "3 dB, past what the limiter let through (#137)")
     return None
 
 
@@ -1312,6 +1341,11 @@ def merged_state(
         # Nor a master volume over the top, captured from a rig that let one
         # be set: held to it, as a file's level is (#137).
         processors[MASTER]["parameters"]["gain"] = MASTER_GAIN_MAX
+    pan = ((processors.get(MASTER) or {}).get("parameters") or {}).get("pan")
+    if isinstance(pan, (int, float)) and not isinstance(pan, bool) and master_pan_problem(pan):
+        # Nor a master pan off the centre, which lifts a side past the
+        # limiter (#137): back to the centre, as a restart would have it.
+        processors[MASTER]["parameters"]["pan"] = MASTER_PAN
     merged["processors"] = processors
     return merged
 

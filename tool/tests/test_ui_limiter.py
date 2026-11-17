@@ -39,6 +39,21 @@ def test_the_master_stops_at_unity_and_a_channel_still_reaches_plus_six(blank):
     assert out["steps"] == [0, 0, 2.5, 3, 0.5]
 
 
+def test_over_the_masters_top_a_step_up_sends_nothing_and_a_step_down_goes_to_the_top(blank):
+    """A rig started before the cap, its master at +6 dB (PR #172's review:
+    one notch up used to send the clamped top, 6 dB down)."""
+    out = rigjs(blank, """
+      const max = R.MASTER_VOLUME_MAX_DB;
+      return {up: R.volumeStepped(6, 1, false, null, max, true), down: R.volumeStepped(6, -1, false, null, max, true),
+        fine: R.volumeStepped(6, -1, true, null, max, true), at: R.volumeStepped(0, 1, false, null, max, true),
+        channel: R.volumeStepped(10, 1), note: R.overTopNote(6, max), none: R.overTopNote(0, max)};""")
+    assert out["up"] == {"db": 6, "held": None, "unchanged": True}
+    assert out["down"]["db"] == 0 and out["fine"]["db"] == 0 and "unchanged" not in out["down"]
+    assert out["at"]["db"] == 0 and "unchanged" not in out["at"], "at the top, a step up is the top"
+    assert out["channel"]["unchanged"] is True, "a channel over its range alike sends nothing going up"
+    assert out["note"].startswith("at 6.0 dB, over the 0.0 dB it now stops at") and out["none"] is None
+
+
 def test_the_limiter_is_its_own_line_never_a_unit(blank):
     out = rigjs(blank, """
       const live = {tracks: {board: ['comp', 'board_send'], master: ['master_return', 'room', 'master_limiter']},
@@ -91,4 +106,35 @@ def test_the_master_tab_shows_the_limiter_and_the_master_fader_stops_at_unity(br
         fader.focus()
         p.keyboard.press("End")
         until(lambda: abs(served.rig.info["master"]["gain"]["value"] - MASTER_GAIN_MAX) < 1e-6)
+        page.close()
+
+
+def test_a_master_over_the_top_is_not_turned_down_by_a_step_up(browser):
+    hot = level_to_gain(6.0)
+    with Served() as served:
+        served.rig.info["master"]["gain"]["value"] = hot
+        page = rack_page(browser, served)
+        p = page.page
+        master = p.locator("header.bar").get_by_role("group", name="Master volume")
+        field = master.get_by_role("textbox", name="Master volume value")
+        expect(field).to_have_value("6.0 dB")
+        expect(master).to_contain_text("over the top")
+        assert "up does nothing" in master.get_attribute("title")
+        fader = master.get_by_role("slider", name="Master volume")
+        fader.focus()
+        for key in ("ArrowUp", "PageUp", "End"):
+            p.keyboard.press(key)
+        box = fader.bounding_box()
+        p.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+        p.wait_for_timeout(600)  # the wheel waits for a resting pointer
+        p.mouse.wheel(0, -100)
+        p.wait_for_timeout(800)
+        assert served.rig.info["master"]["gain"]["value"] == hot, "nothing was sent"
+        assert not [c for c in served.rig.calls if "set_parameter" in str(c[:1]) and "master" in str(c)], \
+            served.rig.calls
+        fader.focus()
+        p.keyboard.press("ArrowDown")
+        until(lambda: abs(served.rig.info["master"]["gain"]["value"] - MASTER_GAIN_MAX) < 1e-6)
+        expect(field).to_have_value("0.0 dB")
+        expect(master).not_to_contain_text("over the top")
         page.close()
