@@ -430,6 +430,31 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   is there again is said once and the Undo goes (the binned file stays in
   `config/rigs/.deleted/`); one that may pass keeps it. The restored rig's
   row has the focus.
+- **Channel presets (#127).** Each strip's input line has **Preset…** beside
+  Change input, which opens a panel in the strip (a group, "Presets for
+  board"): **Save board as** a name, checked by the naming rule before it is
+  sent (a name a preset has already is said, and the agent's `taken` refusal
+  offers **Replace crunch**, which updates the file in place); and **Load
+  onto board**, a picker of `GET /presets` (one that cannot be loaded is
+  listed off, its reason as its title) and **Load crunch onto board**. Save
+  works locked, as Save does; Load is behind the lock, as an add or a remove
+  is (`lockRefusal(…, "load_preset")`), since it changes the rig's
+  structure. The answer is shown in the panel: live, or the restart and its
+  reasons; and as notes, the amp ("vocal has no amp: …"), another width, a
+  MIDI mapping that followed its plugin, one dropped, and that the file as it
+  was is kept for Revert…. A refusal a second tap answers offers it, keeping
+  any yes already given: **Load anyway, dropping the unsaved changes**
+  (`discard`), **Load, dropping N MIDI mappings** (`drop_midi`, each mapping
+  listed with what it did and why it would do nothing). After a load the
+  page reads the rig's file again; the chain itself follows `/live` as it
+  always does. "Start from" on Add channel and the New rig screen lists the
+  presets first, as "Channel presets", and choosing one sets the width to the
+  preset's preferred one (`presetWidth`), which the form refuses, with the
+  patchbay's reason, on an input that cannot give it. The decisions are
+  rig.js's (`presetChoices`, `sourceChoices`, `sourceValue`, `sourceFrom`,
+  `presetWidth`, `checkPresetName`, `presetSaveCall`, `presetLoadCall`,
+  `presetOutcome`), tested on their own and through the page in
+  `tool/tests/test_ui_presets.py`.
 - **Record (S7, S8).** A record bar on the stage screen, as the canvas's Record
   frame has it: a take name, a big Record and a big Stop, and while a take
   runs its name and elapsed time in red. Both work locked (recording is a stage
@@ -557,6 +582,14 @@ Not run on the rig (2026-11-16): deleting a rig from the picker and its Undo
 real files in a temporary checkout; no Program Change has been sent from a
 pedal after a delete, and the Undo kept across a reload is Playwright's
 reload in one browser context.
+
+Not run on the rig (2026-11-17): channel presets (#127), the strip's
+Preset… panel and a preset as "Start from". Tested in headless Chromium
+against the agent's real routes writing real presets and rig files in a
+temporary checkout, over the fake rig, whose live switch into a loaded file
+is the fake's own (`ui_fake.UiSave.switched`); the real switch is driven in
+`test_agent_presets.py` against a fake Sushi. No preset has been loaded and
+heard, nor the panel opened on a phone or the touch screen.
 
 Not run on the rig (2026-11-16): the master's dip around an add, a remove or
 a move, and the load check before an add (#137), tested against the fakes

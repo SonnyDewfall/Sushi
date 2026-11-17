@@ -4905,3 +4905,275 @@ than before the merge: electric-octave-up's committed rig, and the cases
 over it, are retired). **Not run here:** the rest of the slow suite, the
 container job and its annotation, the rig.
 *(2026-11-17)*
+
+**Channel presets, step 1 of 6: the file (#127).** A channel's sound, saved
+by name apart from any rig: `config/channels/<name>.yaml`, read and written
+by `tool/src/sushi_rig/presets.py`. It holds `kind: channel`,
+`schema_version: 1`, its `name`, the chain with each plugin's settings and
+bypass (entries as a rig file writes them), the channel's `level` when not
+unity, the `width` it prefers, and two optional lines of where it came from
+(`saved_from: {rig, channel}`, and `heard_through_amp`, the model the amp in
+front of it played, since the amp is not part of a preset). **No input.**
+Written by `write_rig`'s rules through yamlmerge (in place, comments kept;
+fresh under a header saying what it is). The validator is two layers:
+`parse_preset` for the shape (unknown keys refused, `input:` among them; a
+`_to_stereo` name refused, as in a rig file; a plugin twice; no URI), and
+`check_preset`, which compiles the chain as a one-channel rig with the real
+compiler and the committed port table, so the amp, a plugin missing from
+`plugin-ports.txt` and a name that becomes the compiler's own are refused in
+its words. **Names are per channel**: a preset stores base names (the
+channel's prefix taken off, `guitar_compressor` on `guitar` is
+`compressor`; none taken off where that would make two names one), and a
+load names each for the channel it lands on (`lead_compressor`), so two
+channels from one preset compile with distinct processors (tested; #125's
+copy of a rig's channel, unrenamed, is still refused for the duplicates).
+Also pure and tested here, for the steps after: what a load does to a MIDI
+map (a mapping follows the same plugin, by URI, under its new name, or is
+orphaned and said with why), and when to say a channel has no amp. Decided:
+the preset carries no amp and records the one it was heard through, rather
+than an amp section, since the amp is one Carla instance (an amp per
+channel is out of scope); a preset's identity is its file name; a level at
+unity is written nowhere, as in rig files. Tested against every channel of
+every frozen rig (`tests/test_presets.py`, 53 tests), and the checkout's
+`config/channels/` (empty today) is held to the same validity, assuming
+nothing of what is there. **Not tried on the rig**: nothing here touches
+Sushi; no preset has been saved or loaded on the rig machine.
+*(2026-11-17)*
+
+**Channel presets, step 2: Save channel as… (#127), the agent's half.**
+`POST /rig/channels/<channel>/save-as {"name", "replace"?}` writes the
+running rig's channel as it plays into `config/channels/<name>.yaml`, not
+committed. The capture is a save's, under the live lock with the log's adds
+and removes (`live_edits` over `_chain_log`, #156), folded by
+`rigfile.fold_state` exactly as `POST /rig/save` folds it, and the channel's
+entry of that fold is the preset: so a preset holds what a save of the rig
+would write for that channel, and **never a `_to_stereo` copy** (a fold
+never writes one; `from_channel` drops any name ending so as well). Its
+plugins are stored under base names, its width as the preferred width, and
+`heard_through_amp` when it plays from `guitar-in` with the amp running
+(`running_amp`: none for `--no-amp`). Refused as a save is (`no_rig`,
+`panel`, `v1`, `changed`, `not_saved` for a capture of another rig), and
+`no_channel`, `taken` (a preset of that name, unless `"replace": true`,
+which updates the file in place keeping its comments and its
+`description`), `preset_problem` (a chain that would not compile as a
+preset). `GET /presets` lists config/channels/ with each preset's width,
+level, plugins, amp and origin, or why it cannot be loaded. Decided: a
+channel save is **not logged** and does not touch the unsaved count, since
+the rig is unchanged; it takes the live lock (as a save in place does), not
+the lifecycle lock. Tested (`tests/test_agent_presets.py`) on a temporary
+checkout of the frozen rigs, against `test_agent.RigLive` loaded from the
+real compile, whose chains hold the compiler's copies. **Not tried on the
+rig.** *(2026-11-17)*
+
+**Channel presets, step 3: loading one onto a channel of the running rig
+(#127), the agent's half.** `POST /rig/channels/<channel>/load {"preset",
+"discard"?, "drop_midi"?}` replaces the channel's chain with the preset's
+and its level with the preset's (its input, width and strip stay), each
+plugin named for the channel (`lead_compressor`), **writes the rig file**
+in place, and then plays it through the live switch (#112), as a revert
+does (`_revert_switch`, now taking a `mark` and its words): live where
+`rigfile.diff` can do it (removes, adds, moves, parameters, bypass, the
+send's level), by restart where not, with `why`. The switch's `op: "rig"`
+entry is the baseline, carrying `args.preset`, so nothing is unsaved after
+it and Undo stops there, as after a revert. **Refused while there is unsaved
+live work** (409 `unsaved`, `load_refusal`) unless `"discard": true`. The
+file as it was is kept as a revert point first (`saves.keep`, `how:
+"before loading channel preset X onto Y"`) unless a save already keeps it,
+so Revert… goes back. **Every refusal before anything is written**:
+`no_preset`, `preset_problem`, `no_channel`, `name` (a made name past the
+naming rule), `rig_problem` (the compiler's own words, e.g. a name another
+channel has), and **`midi`**: a mapping onto that channel's old plugins
+**follows** the same plugin (by URI, under the same base name) to its new
+name, and one that would point at nothing (no such plugin, or a plugin of
+that name that is another plugin) is refused with each mapping and why
+(`mappings`), or with `"drop_midi": true` dropped and said (`dropped`).
+**Found and fixed on the way:** a chain replaced whole could not be written
+by a plain merge into a flow-style chain (guitar_vocal's): ruamel folded the
+new entries' parameters across lines mid-key and the read-back refused it,
+so `write_rig` gains `replace_chains`, which takes the old chain out with
+its comments and writes the new one as new entries (block style). **Found,
+not fixed (it is not this issue's, and fixing it changes how saves write
+rig files):** the same folding makes `POST /rig/save` of a rig whose chain
+entries are flow style and carry no `parameters` (the committed
+guitar_vocal) write a file the next save refuses as a layout it cannot
+reproduce; shown on a frozen copy here, and not reported by any earlier
+test because none saves twice into a flow-style chain. Decided: the
+channel keeps its width (it is its input's; the answer says when the preset
+was saved from another width); the chain's own comments go with the chain;
+a bypass binding's change is live (the agent serves it), a knob's is a
+restart (Sushi's `cc_mappings`). One more restart the switch's own rules
+give: loading an all-stereo chain where it leaves the rig with no copy to
+stereo anywhere, then loading back a mono one, reads as `stereo_missing`.
+Tested (24 tests): a guitar's sound loaded live onto the vocal's input with
+distinct names and the copies, the same preset onto its own channel setting
+only what differs, unsaved, the snapshot and Revert back, every refusal
+leaving the file's bytes as they were, a name clash, a mapping orphaned and
+dropped, a mapping followed through a rename into a restart, the amp's note,
+another width. **Not tried on the rig**: no load has been heard.
+*(2026-11-17)*
+
+**Channel presets, step 4: a channel from a preset, on Add channel and New
+rig (#127), the agent's half.** #125's `from` takes `{"preset": <name>}`
+beside `{"rig", "channel"}`, in `POST /rigs/new` and `POST
+/rigs/<rig>/channels/add` alike (`rigedit.channel_request`,
+`Agent._preset_copy`): the preset's chain is copied as a load copies it,
+each plugin named for the new channel, with its level; a request with no
+`width` takes the preset's preferred one. So **two channels from one preset
+on two inputs compile**, with distinct processors (tested: `left_compressor`
+and `right_compressor` in one new rig, compiled by `compile_named_rig`).
+The answer's `from` carries `amp` (`presets.amp_note`): **a second guitar,
+on an input the amp is not in front of, is told it has no amp** ("second
+has no amp: guitar was saved with the amp (Neve 2) in front of it, and
+second plays from vocal-in, and the rig's one amp is patched in front of
+guitar-in only. An amp per channel is not built"); on `guitar-in` of a rig
+with an amp nothing is said, and a new rig (which has no amp) says it of
+every preset heard through one. The new rig's header names the preset each
+channel came from. Refusals as before, before anything is written: the
+width a preset prefers is the compiler's to refuse on its input
+(`rig_problem`, stereo on one port without `mono_to_stereo`, with the
+patchbay's words, tested), and `no_preset`, `preset_problem`, `name`.
+Decided: what is in front of a channel is read from the rig file's `amp`
+for an add (the file is what the next start plays), from the run for a
+load. **Not tried on the rig.** *(2026-11-17)*
+
+**Channel presets, steps 2 to 4, the page's half (#127).** Each strip's
+input line on the rack has **Preset…** beside Change input, which opens a
+panel in the strip (`presetPanel`, a group "Presets for <channel>"):
+**Save <channel> as** a name (checked by the naming rule before sending; a
+name a preset has already says Save will offer to replace it, and the
+agent's `taken` refusal offers **Replace <name>**, which updates the file in
+place), and **Load onto <channel>**, a picker of config/channels/ (a preset
+that cannot be loaded is listed off, with why) and **Load <preset> onto
+<channel>**. The answer is shown in the panel: a load says live or the
+restart's reasons, and notes the amp ("vocal has no amp: …"), another width,
+a MIDI mapping that followed its plugin, one dropped, and that the file as it
+was is kept for Revert…. A refusal a second tap answers offers it, keeping
+the first yes: **Load anyway, dropping the unsaved changes**, and **Load,
+dropping N MIDI mapping(s)**, each mapping listed with what it was and why.
+Decided: **Save channel as… works locked** (it changes nothing of the rig,
+as Save does); **Load is behind the lock** (`lockRefusal(…, "load_preset")`:
+it changes the rig's structure, as an add or a remove does). "Start from" on
+Add channel and the New rig screen lists the presets first, as a group of
+their own (`sourceChoices(…, presets)`, `sourceValue`/`sourceFrom`), and
+choosing one sets the channel's width to the preset's preferred one
+(`presetWidth`), which the form's own hint refuses on an input that cannot
+give it, before anything is sent; the agent's answer on a new channel says
+when it has no amp. The page reads `GET /presets` when a panel, Add channel
+or the New rig screen opens, and after a save. `ui_fake.UiSave.switched`
+makes the fake rig take the file's chains after a switch into its own file,
+so a load is seen on the page. Tested (`tests/test_ui_presets.py`, 8 tests,
+run 5 times in a loop: 5 of 5 passed): the decisions, pure; a save, its
+refusal and replace; a load onto the other channel, locked then unlocked,
+its plugins drawn and its copies not; unsaved work dropped on the second
+tap; a channel added from a preset on a chosen input; a new rig of two
+channels from one preset. test_ui.py, test_ui_tabs, test_ui_rigbin,
+test_ui_library, test_ui_mix and test_ui_knobs pass with it (389). **Not
+tried on the rig, a phone or the touch screen.** The guides' screenshots are
+not retaken. *(2026-11-17)*
+
+**Channel presets, step 5: the provenance line (#127).** A copy from a
+preset says so in the rig file, as a comment directly above the channel's
+`chain:` key: `# From channel preset crunch (config/channels/crunch.yaml),
+2026-11-17: its chain and level were copied, so editing the preset later
+changes nothing here.` Written by a load, an Add channel and a New rig from a
+preset (`write_rig(..., provenance=...)`, `rigfile.with_provenance`),
+folded within the 100 columns the files are written to (continuation lines
+`#   `), so a long name never widens the layout an update measures; a later
+load onto the same channel replaces it rather than stacking a second.
+Comments only: it is checked that the file reads back as the same document
+and that `yamlmerge.merged` still gives it back unchanged, and a channel that
+cannot carry it (a flow-style channel) is left without it and said
+(`provenance_note`), never written wrongly. Decided: a comment, not a key,
+so the rig file's schema, the compiler and a sound reference's `made_from`
+(a hash of the parsed channels) are untouched. Tested on every channel of
+every frozen rig (placed, replaced, still mergeable) and through the agent's
+three routes. **Not tried on the rig.** *(2026-11-17)*
+
+**Channel presets, step 6: the documentation (#127).** A guide of its own,
+[Channel presets](docs/guide/channel-presets.md) (save a channel, load one
+onto a channel, start a channel or a rig from one, and what may surprise:
+the names per channel, a copy and not a link, the amp, the width, pedals
+following their plugin, Undo stopping at a load and Revert going back, and
+nothing committed), linked from the guides' index, the README's table and
+Building a rig (whose note on two channels copied from one chain now says a
+preset can). The agent's routes and rules under [the agent's Channel
+presets](docs/reference/agent.md#channel-presets) and its route list; the
+file's format and the provenance comment under [the rig
+file's](docs/reference/rig-file.md#channel-presets); the panel and "Start
+from" in [the web UI](docs/reference/web-ui.md), with what has not run on
+the rig; `config/channels/` in the repository's layout. **Not done:** the
+guides' screenshots (`docs/guide/img/`, `guide_shots.py`) are not retaken
+and show no Preset… button; `docs/ui/rack.png` likewise. *(2026-11-17)*
+
+**Channel presets (#127): the counts on the branch's head.** The fast suite
+on 5bb5dec: 4855 passed, 33 skipped (4751 passed on master, dc9c050, before
+this). `tests/test_ui_presets.py` in a loop of 5 after a container restart:
+5 of 5 passed (8 tests a run); test_ui.py, test_ui_tabs, test_ui_rigbin,
+test_ui_library, test_ui_mix and test_ui_knobs, which share the fake and the
+"Start from" picker this changed, passed once each (389), not looped. **Not
+run:** the slow tests and the container job; anything on the rig machine;
+WebKit, a phone or the touch screen; the guides' screenshots.
+*(2026-11-17)*
+
+**Channel presets: the review of PR #162 (#127).** Eight findings, each with
+a test (`tests/test_agent_presets.py`, `tests/test_presets.py` unless said),
+and the two of (1) and (5) shown failing against the code before the fix.
+(1) **A load or a revert with `discard` left the discarded work playing**
+where the switch changed nothing: `rigfile.diff` sets what the two configs
+differ in and leaves a value neither states as the rig has it, so a knob
+turned on the vocal stayed turned after loading onto the guitar, under a
+baseline that said nothing was unsaved. Fixed in the shared path:
+`_switch_held` and `_switch_live` take the entries being discarded, and
+`agent.discard_plan` adds a step for each parameter and bypass they set,
+to the next config's value or, where it states none, the value before the
+first of them (a value Sushi did not report is a restart, code
+`discarded`); a discarded add, remove or move leaves chains the running
+config lacks, which the switch already refuses as `drifted`, so it
+restarts from the file. The answer's `discard` says which, with the values
+put back. Tested on a channel the load and the revert leave alone, and the
+structural case. (2) **Save channel as… and load refuse another site's
+page** (`_same_origin_only`, #160's guard): 403 for `Sec-Fetch-Site:
+cross-site` and a foreign `Origin`, allowed with no header and from the
+agent's own page. (3) **Names one-to-one**: `processor_name` now always puts
+the channel's name in front (`eq` and `guitar_eq` become `guitar_eq` and
+`guitar_guitar_eq`, where both had been `guitar_eq` and the load back of
+such a channel was a duplicate), and `check_preset` compiles on the channel
+a preset was saved from, so `GET /presets` says `ok` only of one that loads
+back there; the round trip is tested. (4) **A MIDI mapping follows its
+plugin by URI** (the one plugin of that URI, or among several the same base
+name, then the same place), so two plugins trading names keep their pedals;
+and an orphan's reason compares like with like and names what the new chain
+holds there (it had compared `overdrive` with `board_overdrive` on an
+unprefixed rig and said there was none). (5) **A comment directly above a
+channel's `chain:` survives a load** (`rigfile.comments_above_chain`,
+`put_above_chain`; refused rather than lost if it cannot be put back), as
+two loads in a row show. (6) A load whose switch fails is in `/health` as
+`["load", ...]`, not `["revert", ...]` (and a revert's failed restart is now
+remembered too); its answer's `midi_note` says the pedals follow the rig as
+it runs: the agent's bindings are planned from the compiled config the state
+file names, never from the file, which the test shows by a bypass binding
+still naming the processor Sushi has after the file renamed it. (7) **The
+#133 guard covers config/channels/** (`rig_fixtures.COMMITTED_PRESETS`,
+marker `committed_presets`, in pyproject.toml and conftest.py); the test
+over the owner's presets is marked, and a test shows an unmarked read
+caught. (8) **The revert point a load keeps is kept only once the write has
+happened**; a refused write leaves none. The page shows the `discard` and
+`midi_note` notes; `ui_fake`'s switch stand-in takes the new argument. Not
+fixed here: the flow-style save bug, which is #163. **Not tried on the
+rig.** *(2026-11-17)*
+
+**Channel presets: the re-review of PR #162 (#127).** `discard_plan` (a load
+or revert with `discard`) set a processor the plan replaces (removed, then
+added fresh under the same name, because the next rig leaves a value the
+running one set unstated) to the value the old instance had before the
+discarded turn, so the switch reported ok while playing what a restart from
+the file would not give, and with another plugin under that name sent it a
+parameter not its own. (a) A processor the plan adds, or its copy to stereo,
+is now left to the plan. (b) The restored values went after the plan's
+closing bypass-offs, so a pedal the plan brings in was heard a moment with
+the discarded value; they now go in front of them, as diff's step 7 has it.
+Two tests, on `discard_plan` directly, each shown failing with its half of
+the fix taken out. The counts of the review's fixes before this: the fast
+suite 4873 passed, 33 skipped on 1114d07; `test_ui_presets.py`, `test_ui.py`
+and `test_ui_tabs.py` (264 tests) 5 of 5 in a loop. **Not tried on the
+rig.** *(2026-11-17)*

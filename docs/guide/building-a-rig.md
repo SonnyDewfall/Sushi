@@ -26,7 +26,8 @@ These screens are on the rack only, and work whether or not the page is locked.
      channel says why.
    - **Start from**: leave it at **Nothing: an empty chain** for a channel with
      no effects, or pick a channel of another rig to copy its effects and its
-     volume.
+     volume, or a channel preset, listed first
+     ([Channel presets](channel-presets.md)).
 4. For another channel, click **Add channel** and fill it in the same way.
    Each channel then has a button to take it out again, **Remove channel 1**,
    **Remove channel 2** and so on. The count beside **CHANNELS** shows
@@ -87,9 +88,12 @@ git, `git checkout` brings it back too; the box gives you the exact command.
 - **A new channel with an empty chain has no effects.** Add them on the rack
   once the rig is running ([Shaping a sound](shaping-a-sound.md#add-a-plugin)),
   or use **Start from** to copy another channel's chain.
-- **Two channels in one rig cannot both be copied from the same chain.** Every
-  plugin in a rig needs a name of its own, and a second copy would repeat the
-  first's names. The page refuses it and says so.
+- **Two channels in one rig cannot both be copied from the same rig's
+  channel.** Every plugin in a rig needs a name of its own, and a second copy
+  would repeat the first's names. The page refuses it and says so. Two
+  channels can start from the same **channel preset**: a preset's plugins are
+  named for each channel they land on
+  ([Channel presets](channel-presets.md)).
 - **Three channels is the most a rig can have.** Asking for a fourth is refused
   with the reason.
 - **The inputs on offer come from the machine's own file**, which lists the

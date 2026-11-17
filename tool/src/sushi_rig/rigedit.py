@@ -43,6 +43,7 @@ from .rigfile import KIND, SCHEMA_VERSION, Channel, Master, Rig, check_rig
 
 _CHANNEL_KEYS = ("name", "input", "width", "from")
 _FROM_KEYS = ("rig", "channel")
+_PRESET_KEYS = ("preset",)
 _NEW_KEYS = ("name", "channels")
 _INPUT_KEYS = ("input", "width")
 _PROBE = "probe"
@@ -76,15 +77,23 @@ def _only(body: Any, keys: tuple[str, ...], where: str) -> dict[str, Any]:
 
 def channel_request(body: Any, where: str = "the channel") -> dict[str, Any]:
     """`{"name", "input", "width", "from"}` from one channel of a request,
-    `from` None or `{"rig", "channel"}`; `EditRequestError` for a shape that
-    is wrong. Values are not judged: "wide" is text, and the compiler says
-    what a width may be."""
+    `from` None, `{"rig", "channel"}` (a rig's channel) or `{"preset"}` (a
+    channel preset of config/channels/, #127); `EditRequestError` for a
+    shape that is wrong. Values are not judged: "wide" is text, and the
+    compiler says what a width may be. With a preset to start from, the
+    width may be left out (None here): the preset's preferred width is
+    taken, and the compiler still decides whether the input can give it."""
     body = _only(body, _CHANNEL_KEYS, where)
-    out = {key: _text(body, key, where) for key in ("name", "input", "width")}
     source = body.get("from")
-    if source is not None:
+    if isinstance(source, dict) and "preset" in source:
+        source = _only(source, _PRESET_KEYS, f"{where}: from")
+        source = {"preset": _text(source, "preset", f"{where}: from")}
+    elif source is not None:
         source = _only(source, _FROM_KEYS, f"{where}: from")
         source = {key: _text(source, key, f"{where}: from") for key in _FROM_KEYS}
+    keys = ("name", "input") if source and "preset" in source and "width" not in body else ("name", "input", "width")
+    out: dict[str, Any] = {key: _text(body, key, where) for key in keys}
+    out.setdefault("width", None)
     out["from"] = source
     return out
 

@@ -50,6 +50,7 @@ markers = [
     "slow: starts a real Sushi and takes seconds, not milliseconds",
     "spread: the 520-render investigation of 2026-11-03 (test_render_spread.py); deselected unless SUSHI_RIG_SPREAD=1",
     "committed_rigs: reads the checkout's config/rigs/ on purpose, every rig and nothing assumed of them (tests/rig_fixtures.py); any other test that reads it fails",
+    "committed_presets: reads the checkout's config/channels/ on purpose, every channel preset and nothing assumed of them (tests/rig_fixtures.py); any other test that reads it fails",
 ]
 # A misspelt marker (`@pytest.mark.slwo`) is otherwise a warning on a test that
 # then runs in the fast suite, or is excluded from the slow one, unnoticed.
