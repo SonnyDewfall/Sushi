@@ -5104,3 +5104,13 @@ from" in [the web UI](docs/reference/web-ui.md), with what has not run on
 the rig; `config/channels/` in the repository's layout. **Not done:** the
 guides' screenshots (`docs/guide/img/`, `guide_shots.py`) are not retaken
 and show no Preset… button; `docs/ui/rack.png` likewise. *(2026-11-17)*
+
+**Channel presets (#127): the counts on the branch's head.** The fast suite
+on 5bb5dec: 4855 passed, 33 skipped (4751 passed on master, dc9c050, before
+this). `tests/test_ui_presets.py` in a loop of 5 after a container restart:
+5 of 5 passed (8 tests a run); test_ui.py, test_ui_tabs, test_ui_rigbin,
+test_ui_library, test_ui_mix and test_ui_knobs, which share the fake and the
+"Start from" picker this changed, passed once each (389), not looped. **Not
+run:** the slow tests and the container job; anything on the rig machine;
+WebKit, a phone or the touch screen; the guides' screenshots.
+*(2026-11-17)*
