@@ -121,15 +121,21 @@ That single path is deliberate and complete, as above. Do not add
 `plugins/` doesn't carry, which is exactly the silent portability break the
 layout exists to prevent.
 
-## Known issue: electric-octave-up can go silent mid-set
+## Known issue: gx_detune_ can go silent an octave up
 
-Its octave up (gx_detune_ at +12) has a plugin bug: on one or two loads in a
-hundred it starts putting out NaN some seconds in, and keeps doing so until it
-is loaded again. What you hear is the rig going silent, or a burst of noise,
-with nothing reported as wrong. **Run `sushi-rig restart`** (or the agent's
-`/rig/restart`): a fresh load clears it, and it is unlikely to return in the
-same set. Bypassing the octave is not expected to help, since the NaN is held
-in the plugin's state and in the reverb after it; that, like the bug on the
-rig at all, has not been tried, only measured offline (MANIFEST, 2026-11-03;
-`tool/spikes/gx_detune_nan/`). electric_board runs the same plugin at no shift,
-which the bug cannot reach.
+No rig runs it any more. The octave pair (gx_detune_, as `octave_down` and
+`octave_up`) was taken out of every rig in `config/rigs/` on 2026-11-16 (#152),
+and electric-octave-up, which existed for its octave up, was retired to
+`config/retired/`. The plugin stays in `plugin-manifest.txt` while what
+replaces it is decided. Only the v1 config `electric_board.json` (and its
+source, `config/src/electric_board.yaml`) still runs it, at no shift.
+
+What was found, for whoever puts it back: an octave up (gx_detune_ at +12)
+has a plugin bug: on one or two loads in a hundred it starts putting out NaN
+some seconds in, and keeps doing so until it is loaded again. What you hear
+is the rig going silent, or a burst of noise, with nothing reported as wrong.
+A fresh load (`sushi-rig restart`) clears it. Bypassing it is not expected to
+help, since the NaN is held in the plugin's state and in any reverb after it;
+that, like the bug on the rig at all, was never tried, only measured offline
+(MANIFEST, 2026-11-03; `tool/spikes/gx_detune_nan/`). At no shift the bug
+cannot reach the output.

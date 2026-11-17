@@ -251,10 +251,12 @@ def test_the_amp_is_listed_but_cannot_be_added_and_says_why():
     assert all(e["addable"] is True and "why_not" not in e for e in others)
 
 
-def test_the_one_profile_gives_its_plugin_groups():
+def test_a_profile_gives_its_plugin_groups():
+    # Not how many profiles there are: tool/examples/profiles/ grows (#154
+    # added the room's and the hall's). The Tube Screamer's is the one known.
     profiles, problems = load_profiles(PROFILES)
     assert problems == []
-    assert set(profiles) == {GXTS9}
+    assert GXTS9 in profiles
     entries = {e["uri"]: e for e in build_library(MANIFEST, {}, profiles)["plugins"]}
     assert entries[GXTS9]["profile"] is True
     assert entries[GXTS9]["groups"] == [
@@ -264,7 +266,8 @@ def test_the_one_profile_gives_its_plugin_groups():
     assert (entries[GXTS9]["name"], entries[GXTS9]["name_from"]) == ("GxTubeScreamer", "profile"), \
         "with no bundle to read, the profile's restated name is the next best"
     assert all(e["profile"] is False and e["groups"] is None
-               for u, e in entries.items() if u != GXTS9)
+               for u, e in entries.items() if u not in profiles)
+    assert all(e["profile"] is True for u, e in entries.items() if u in profiles)
 
 
 def test_a_profile_for_a_plugin_the_manifest_lacks_is_a_problem(tmp_path):

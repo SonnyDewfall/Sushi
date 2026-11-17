@@ -35,3 +35,7 @@ tolerance:
   delay_samples: 0
   note: 'measured: two renders of this config were identical to the 0.0001 dB this
     file is written at'
+made_from:
+  rig: guitar_vocal.yaml
+  hash: f0c8e44f7cddd3c9146f8f3e18a96cf6597106e8f95a684a01b2caba2851faae
+  hash_rule: 2

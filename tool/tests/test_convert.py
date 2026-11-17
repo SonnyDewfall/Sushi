@@ -25,7 +25,7 @@ import json
 
 import pytest
 import yaml
-from rig_fixtures import FROZEN_V1, compiled_to_render, frozen, frozen_names, frozen_v1, valid_committed
+from rig_fixtures import FROZEN_SOUND, FROZEN_V1, compiled_to_render, frozen, frozen_names, frozen_v1, valid_committed
 
 from sushi_rig import rigfile
 from sushi_rig.convert import ConvertError, Input, convert, differences, parse_input, to_rig
@@ -244,12 +244,53 @@ SUSHI = ROOT / "sushi"
 RIGS = valid_committed()
 
 
+def _rendered(name, view, tmp_path, request):
+    """`view` rendered and fingerprinted, its retries listed at the end of the
+    run (conftest, spread_table.RETRIES), every time one happens."""
+    import spread_table
+
+    from sushi_rig.render import measure
+
+    source = tmp_path / f"{name}.json"
+    source.write_text(json.dumps(view, indent=2))
+    return measure(source, ROOT, tmp_path / name, sushi_bin=str(SUSHI), retried=spread_table.retries(request.config))
+
+
 @pytest.mark.skipif(not SUSHI.exists(), reason="needs the Sushi binary")
 @pytest.mark.slow
+@pytest.mark.parametrize("name", frozen_names())
+def test_every_frozen_rig_sounds_like_its_reference(name, tmp_path, request):
+    """What pins the rig's sound (#144): each frozen rig, through the master,
+    matches its reference under fixtures/sound/ within that reference's own
+    tolerance, and is finite, two-sided and balanced. Neither the rigs nor
+    the references are the owner's to change, so a failure here is a change
+    in the compiler, Sushi or a plugin, by the rig's name."""
+    pytest.importorskip("numpy")
+    from sushi_rig.nulltest import compare, from_dict, heard_findings
+
+    for channel, view in rigfile.heard(compiled_to_render(frozen(name))):
+        reference = FROZEN_SOUND / f"{channel}.yaml"
+        assert reference.is_file(), f"no reference for the frozen {channel}"
+        expected, tolerance = from_dict(yaml.safe_load(reference.read_text()))
+        fp = _rendered(channel, view, tmp_path, request)
+        found = compare(expected, fp, tolerance) + heard_findings(fp)
+        assert found == [], f"frozen {channel}: " + "; ".join(str(f) for f in found)
+
+
+@pytest.mark.skipif(not SUSHI.exists(), reason="needs the Sushi binary")
+@pytest.mark.slow
+@pytest.mark.committed_rigs  # reads each rig file for its hash, and assumes nothing of what it holds
 @pytest.mark.parametrize("rig", RIGS, ids=lambda p: p.stem)
 def test_every_v2_rig_sounds_like_its_reference(rig, tmp_path, request):
-    """Rendered through the master, each v2 rig matches its own reference,
-    within that reference's own tolerance.
+    """Rendered through the master, each committed rig is finite, two-sided
+    and balanced, whatever its reference says; and where its reference was
+    made from the rig as it is (`nulltest.staleness`), it matches it within
+    that reference's own tolerance.
+
+    A rig with no reference, or one made from another version of it, passes
+    with a warning (#144): its owner saved it, and a save is not a failure
+    of the sound. `nulltest --all` reports it STALE in the container job,
+    with the candidate to commit. The frozen rigs above are held exactly.
 
     This was #30's done-means, each v2 rig against the reference its v1
     config was calibrated to. Since 2026-11-02 the two do not sound alike:
@@ -258,22 +299,25 @@ def test_every_v2_rig_sounds_like_its_reference(rig, tmp_path, request):
     v1 config's reference is `<name>.v1-mono.yaml` and a rig's `<name>.yaml`
     (`render.V1_REFERENCE_SUFFIX`); `nulltest --all` checks both."""
     pytest.importorskip("numpy")
-    from sushi_rig.nulltest import compare, from_dict
-    from sushi_rig.render import measure
+    import warnings
 
+    from sushi_rig.nulltest import compare, from_dict, heard_findings, made_from_of, staleness
+    from sushi_rig.render import rig_file_hash
+
+    current = rig_file_hash(rig)
     config = compiled_to_render(rig)  # emit_rig, but for a MIDI map, which no render plays
     for name, view in rigfile.heard(config):
+        fp = _rendered(name, view, tmp_path, request)
+        problems = heard_findings(fp)
+        assert problems == [], f"{name}: " + "; ".join(str(f) for f in problems)
         reference = ROOT / "config" / "sound" / f"{name}.yaml"
-        assert reference.exists(), f"no reference for {name}"
-        source = tmp_path / f"{name}.json"
-        source.write_text(json.dumps(view, indent=2))
-        expected, tolerance = from_dict(yaml.safe_load(reference.read_text()))
-        # A render retried after gx_detune_'s known NaN is listed at the end of
-        # the run (conftest, spread_table.RETRIES), every time it happens.
-        import spread_table
-        retried = spread_table.retries(request.config)
-        found = compare(expected, measure(source, ROOT, tmp_path / name, sushi_bin=str(SUSHI),
-                                          retried=retried), tolerance)
+        raw = yaml.safe_load(reference.read_text()) if reference.exists() else None
+        expected, tolerance = from_dict(raw) if raw is not None else (None, None)
+        why = "it has no reference yet" if raw is None else staleness(made_from_of(raw), current)
+        if why is not None:
+            warnings.warn(f"{name}: STALE — {why}; held to the generic checks alone", stacklevel=1)
+            continue
+        found = compare(expected, fp, tolerance)
         assert found == [], f"{name}: " + "; ".join(str(f) for f in found)
 
 

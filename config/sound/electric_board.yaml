@@ -4,41 +4,40 @@ stimulus: log_sweep 20-20000Hz 5s -20dBFS 2ch
 sample_rate: 48000
 frames: 240000
 measured:
-  peak_dbfs: -10.7691
-  rms_dbfs: -25.601
+  peak_dbfs: -10.4488
+  rms_dbfs: -25.4036
   channel_rms_dbfs:
-  - -25.559
-  - -25.6434
-  delay_samples: 4163
+  - -25.4027
+  - -25.4046
+  delay_samples: 1
   bands:
   - low_hz: 20.0
     high_hz: 80.0
-    level_dbfs: -34.8527
+    level_dbfs: -35.0482
   - low_hz: 80.0
     high_hz: 250.0
-    level_dbfs: -26.9984
+    level_dbfs: -27.6374
   - low_hz: 250.0
     high_hz: 800.0
-    level_dbfs: -27.6397
+    level_dbfs: -27.3226
   - low_hz: 800.0
     high_hz: 2500.0
-    level_dbfs: -35.7098
+    level_dbfs: -35.1726
   - low_hz: 2500.0
     high_hz: 8000.0
-    level_dbfs: -51.1397
+    level_dbfs: -49.6825
   - low_hz: 8000.0
     high_hz: 20000.0
-    level_dbfs: -82.7561
+    level_dbfs: -70.7157
 tolerance:
-  band_db: 0.01
-  level_db: 0.01
+  band_db: 0.0001
+  level_db: 0.0001
   delay_samples: 0
-  note: 'set by hand, 2026-10-30: 0.01 dB, four times the largest difference any of
-    four calibrations in the CI container showed for this config or for the other
-    non-deterministic one (electric_board, up to 0.0025 dB in a band; electric-octave-up,
-    up to 0.0021 dB in peak level). Not fitted to this config''s own spread: a tolerance
-    fitted to three calibrations was overtaken by the fourth by five times, so this
-    is set well above all of it instead. Its delay_samples of 4163 is the strongest
-    path through the chain, where every other config measures 0; most likely the delay
-    pedal''s echo outweighing the dry signal, which is unverified, and it would fail
-    this reference on delay alone if the two ever traded places'
+  note: 'measured 2026-11-16 outside the CI container (Ubuntu 24.04, its plugin packages,
+    Sushi 1.3.0), after the octave pair was taken out (#152): in each of three calibrations,
+    two renders of this config were identical to the 0.0001 dB this file is written
+    at'
+made_from:
+  rig: electric_board.yaml
+  hash: 3c0355497a93418d9832c05a5a87ef4d8b1e2fba5441ef0fd661b638892c4b93
+  hash_rule: 2

@@ -972,13 +972,17 @@ def test_a_multi_track_config_gets_a_reference_per_channel(tmp_path, monkeypatch
 
 def test_a_reference_nothing_produces_any_more_fails_the_full_run(tmp_path, monkeypatch, capsys):
     """A config or track renamed leaves a reference that checks nothing and
-    fails nothing, which reads as coverage that is not there."""
+    fails nothing, which reads as coverage that is not there. A v1 config's
+    fails; a committed rig's is a warning (#144, test_a_committed_rigs_orphan_
+    is_a_warning)."""
     cli, config = _rig(tmp_path, monkeypatch)
     assert cli.main(["nulltest", "--all", "--calibrate"]) == 0
-    stale = tmp_path / "config" / "sound" / "renamed-away.yaml"
+    stale = tmp_path / "config" / "sound" / "renamed-away.v1-mono.yaml"
     stale.write_text((tmp_path / "config" / "sound" / "electric-clean.v1-mono.yaml").read_text())
     assert cli.main(["nulltest", "--all"]) == 1
-    assert "renamed-away.yaml: ORPHANED REFERENCE" in capsys.readouterr().err
+    err = capsys.readouterr().err
+    assert "renamed-away.v1-mono.yaml: ORPHANED REFERENCE —" in err
+    assert "ORPHANED-REFERENCE:" not in err, "not one of the warnings"
 
 
 def test_a_config_that_cannot_be_split_keeps_its_references_out_of_the_orphan_check(
@@ -1086,7 +1090,7 @@ def test_orphans_count_as_checks_so_the_summary_adds_up(tmp_path, monkeypatch, c
     assert cli.main(["nulltest", "--all", "--calibrate"]) == 0
     sound = tmp_path / "config" / "sound"
     for name in ("a", "b", "c"):
-        (sound / f"{name}.yaml").write_text((sound / "electric-clean.v1-mono.yaml").read_text())
+        (sound / f"{name}.v1-mono.yaml").write_text((sound / "electric-clean.v1-mono.yaml").read_text())
     assert cli.main(["nulltest", "--all"]) == 1
     assert "3 of 4 check(s) could not be confirmed" in capsys.readouterr().err
 

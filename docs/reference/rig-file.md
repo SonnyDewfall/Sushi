@@ -92,7 +92,8 @@ with the lesser of its own ports and the track's channels, and then
 the first mono plugin on, the right channel is silent; bypassing the plugin
 changes nothing, since a bypassed plugin keeps its channel count. Every
 guitar chain here starts with the Guitarix compressor, which is mono, as are
-the Tube Screamer and both octavers. Measured in CI's container (2026-11-02): seven of
+the Tube Screamer and the octavers (gx_oc_2_, and the gx_detune_ pair every
+rig had until #152 took it out). Measured in CI's container (2026-11-02): seven of
 the eleven rigs had nothing on the right at all, and the other four only
 what a later reverb or delay fed across, 5 to 18 dB down. That is "I only get
 the left channel out."
@@ -176,7 +177,11 @@ plugin's output on both channels and the v1 config does not (see
 [A mono plugin on a stereo channel](#a-mono-plugin-on-a-stereo-channel)), so
 each has a sound reference of its own, the rig's `config/sound/<name>.yaml`
 (`<name>.<channel>.yaml` for a rig of more than one channel) and the v1
-config's `<name>.v1-mono.yaml`.
+config's `<name>.v1-mono.yaml`. A rig's reference records the rig file it was
+made from (`made_from`, a hash of the part of the file the render is made
+from: the channels, the master and `host`, not the amp, the MIDI map or the
+description), so a rig saved with a setting changed is reported stale, with
+a new reference to commit, and does not fail CI ([Tests and CI](testing.md#ci)).
 
 Rig files keep their comments when the tool rewrites them: `write_rig` updates
 the file in place (comments, blank lines and key order stay), and `convert

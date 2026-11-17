@@ -1,0 +1,212 @@
+# sushi-rig component profile (schema 1).
+# Machine-written and canonical: edit by hand if you like, but comments
+# do not survive the next rewrite. Facts are checked against `sushi-rig
+# probe`; judgements carry provenance (draft / reviewed / fact).
+# Check with:  sushi-rig profile validate <this file>
+schema_version: 1
+
+plugin:
+  uri: http://distrho.sf.net/plugins/MaGigaverb
+  version: '1.0'
+  name: MaGigaverb
+kind: effect
+host: sushi-lv2
+
+ports:
+  audio_in: 2
+  audio_out: 2
+  config_drivable: true
+
+groups:
+  - id: mix
+    label: Mix
+    provenance: draft
+  - id: space
+    label: Space
+    provenance: draft
+  - id: tone
+    label: Tone
+    provenance: draft
+
+parameters:
+  - name: roomsize
+    symbol: roomsize
+    facts:
+      min: 0.10000000149011612
+      max: 300.0
+      default: 75.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: primary, provenance: draft}
+    group: {value: space, provenance: draft}
+    order: {value: 1, provenance: draft}
+    label: {value: Room size, provenance: draft}
+    description:
+      value: Size of the room; the range suggests metres, but the plugin declares no unit.
+      provenance: draft
+    scale: {value: log, provenance: draft}
+    control: {value: knob, provenance: draft}
+    phone: {value: 2, provenance: draft}
+
+  - name: revtime
+    symbol: revtime
+    facts:
+      min: 0.10000000149011612
+      max: 360.0
+      default: 11.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: primary, provenance: draft}
+    group: {value: space, provenance: draft}
+    order: {value: 2, provenance: draft}
+    label: {value: Reverb time, provenance: draft}
+    description:
+      value: How long the tail rings; the range suggests seconds, but no unit is declared.
+      provenance: draft
+    scale: {value: log, provenance: draft}
+    control: {value: knob, provenance: draft}
+    phone: {value: 3, provenance: draft}
+
+  - name: damping
+    symbol: damping
+    facts:
+      min: 0.0
+      max: 1.0
+      default: 0.699999988079071
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: advanced, provenance: draft}
+    group: {value: tone, provenance: draft}
+    order: {value: 1, provenance: draft}
+    label: {value: Damping, provenance: draft}
+    description:
+      value: How quickly the tail's highs fall away.
+      provenance: draft
+    scale: {value: linear, provenance: draft}
+    control: {value: knob, provenance: draft}
+
+  - name: bandwidth
+    symbol: bandwidth
+    facts:
+      min: 0.0
+      max: 1.0
+      default: 0.5
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: advanced, provenance: draft}
+    group: {value: tone, provenance: draft}
+    order: {value: 2, provenance: draft}
+    label: {value: Bandwidth, provenance: draft}
+    description:
+      value: A low-pass on what enters the reverb.
+      provenance: draft
+    scale: {value: linear, provenance: draft}
+    control: {value: knob, provenance: draft}
+
+  - name: spread
+    symbol: spread
+    facts:
+      min: 0.0
+      max: 100.0
+      default: 23.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: advanced, provenance: draft}
+    group: {value: tone, provenance: draft}
+    order: {value: 3, provenance: draft}
+    label: {value: Spread, provenance: draft}
+    description:
+      value: Stereo width of the reflections; 0 is the same on both sides.
+      provenance: draft
+    scale: {value: linear, provenance: draft}
+    control: {value: knob, provenance: draft}
+
+  - name: dry
+    symbol: dry
+    facts:
+      min: 0.0
+      max: 1.0
+      default: 1.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: hidden, provenance: draft}
+    label: {value: Dry, provenance: draft}
+    description:
+      value: The direct signal's level. Set by Mix.
+      provenance: draft
+    scale: {value: linear, provenance: draft}
+    control: {value: knob, provenance: draft}
+
+  - name: early
+    symbol: early
+    facts:
+      min: 0.0
+      max: 1.0
+      default: 0.25
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: hidden, provenance: draft}
+    label: {value: Early, provenance: draft}
+    description:
+      value: The early reflections' level. Set by Mix.
+      provenance: draft
+    scale: {value: linear, provenance: draft}
+    control: {value: knob, provenance: draft}
+
+  - name: tail
+    symbol: tail
+    facts:
+      min: 0.0
+      max: 1.0
+      default: 0.25
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: hidden, provenance: draft}
+    label: {value: Tail, provenance: draft}
+    description:
+      value: The reverb tail's level. Set by Mix.
+      provenance: draft
+    scale: {value: linear, provenance: draft}
+    control: {value: knob, provenance: draft}
+
+controls:
+  - id: mix
+    drives:
+      value:
+        - {parameter: dry, curve: cosine, at_0: 1.0, at_1: 0.0}
+        - {parameter: early, curve: sine, at_0: 0.0, at_1: 0.8}
+        - {parameter: tail, curve: sine, at_0: 0.0, at_1: 0.4}
+      provenance: draft
+    visibility: {value: primary, provenance: draft}
+    group: {value: mix, provenance: draft}
+    order: {value: 1, provenance: draft}
+    label: {value: Mix, provenance: draft}
+    description:
+      value: Dry against early and tail, equal power; 100 % keeps the plugin's own diffused copy of the input.
+      provenance: draft
+    control: {value: knob, provenance: draft}
+    phone: {value: 1, provenance: draft}

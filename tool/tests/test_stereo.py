@@ -61,7 +61,7 @@ import pytest
 np = pytest.importorskip("numpy")
 
 import stereo_table  # noqa: E402
-from sushi_rig import rigfile, stereo  # noqa: E402
+from sushi_rig import nulltest, rigfile, stereo  # noqa: E402
 from sushi_rig.analysis import channel_balance, check_finite  # noqa: E402
 from sushi_rig.paths import checkout_root  # noqa: E402
 from rig_fixtures import committed_that, compiled_to_render, valid_committed  # noqa: E402
@@ -85,8 +85,9 @@ MONO_SUMMING = "sushi.testing.mono_summing"
 # How far apart left and right may be for a mono source, as compiled. A
 # centred mono chain is exactly balanced; a stereo reverb or chorus after it
 # is not, by a little (measured: within 0.3 dB on every rig). A silent side
-# is -inf, and fails by any margin.
-BALANCE_DB = 1.0
+# is -inf, and fails by any margin. One number with the null test's generic
+# check of a rig with no reference to compare against (#144), which is it.
+BALANCE_DB = nulltest.BALANCE_DB
 
 needs_sushi = pytest.mark.skipif(not SUSHI.exists(), reason="needs the Sushi binary")
 

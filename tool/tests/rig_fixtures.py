@@ -26,6 +26,12 @@ held at c494625 (2026-11-07):
 - `machines/sonny-dewfall-XPS-9320.yaml`: the machine file (`FROZEN_MACHINE`)
   the frozen rigs are wired against, with the pw-dump capture it describes
   (fixtures/pw-dump-rig.json, there before this).
+- `sound/*.yaml` (#144, 2026-11-16): the sound reference of each frozen rig's
+  channels (`FROZEN_SOUND`, `render.FROZEN_SOUND`), which `nulltest --all`
+  and test_convert.py's slow test hold the frozen rigs to exactly. Not of
+  c494625: each is the reference its rig's channel had in config/sound/ when
+  the committed rig compiled to the same channel as the frozen one, byte for
+  byte, as test_rig_fixtures.py's CHECKSUMS says where each came from.
 
 `frozen_checkout` lays them out as a checkout. Two things a frozen rig still
 takes from the real one, and why: `plugin-ports.txt`, which is the compiler's
@@ -87,6 +93,7 @@ FROZEN = FIXTURES / "rigs"
 FROZEN_V1 = FIXTURES / "v1"
 FROZEN_SRC = FROZEN_V1 / "src"
 FROZEN_MACHINE = FIXTURES / "machines" / "sonny-dewfall-XPS-9320.yaml"
+FROZEN_SOUND = FIXTURES / "sound"
 COMMITTED = checkout_root() / "config" / "rigs"
 # The machine file the committed rigs are wired against: the rig machine's.
 COMMITTED_MACHINE = checkout_root() / "machines" / "sonny-dewfall-XPS-9320.yaml"
@@ -119,7 +126,8 @@ def frozen_v1(name: str) -> Path:
 
 def frozen_files() -> list[Path]:
     """Every file of the frozen set, for the checksums."""
-    return sorted([*FROZEN.glob("*.yaml"), *FROZEN_V1.glob("*.json"), *FROZEN_SRC.glob("*.yaml"), FROZEN_MACHINE])
+    return sorted([*FROZEN.glob("*.yaml"), *FROZEN_V1.glob("*.json"), *FROZEN_SRC.glob("*.yaml"), FROZEN_MACHINE,
+                   *FROZEN_SOUND.glob("*.yaml")])
 
 
 def frozen_checkout(folder: Path) -> Path:

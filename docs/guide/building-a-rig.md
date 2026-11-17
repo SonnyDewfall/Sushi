@@ -97,7 +97,9 @@ git, `git checkout` brings it back too; the box gives you the exact command.
   rig needs an input it does not list, the page shows the lines to add to it by
   hand ([The machine file](../reference/machine-file.md)).
 - **Nothing here is committed to git.** Each box tells you what git thinks of
-  the file; the commit is yours to make.
+  the file; the commit is yours to make. Pushing a new rig leaves the checks
+  green, with a warning and a sound reference for it to commit
+  ([Saving](saving.md#when-you-push-a-saved-rig)).
 - **A new rig can move the other rigs' pedal numbers.** If you switch rigs by
   program change from a pedal, the rigs are numbered in name order, so a new
   name can shift the ones after it. The **Made** box shows a table of which

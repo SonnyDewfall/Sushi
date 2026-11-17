@@ -42,6 +42,9 @@ tidier than reality -- a number that looks like a measurement and is not.
 
 from __future__ import annotations
 
+import hashlib
+import json
+import math
 from dataclasses import dataclass
 from typing import Any, Sequence
 
@@ -136,7 +139,11 @@ def fingerprint(
     arr = np.asarray(rendered)
 
     delay = None
-    if stimulus_samples is not None:
+    left = arr[:, 0] if arr.ndim > 1 else arr
+    # A silent left side has no delay to measure, and `estimate_delay` would
+    # raise "no correlation" over it: a message about the measurement, where
+    # the finding is the silence, which `heard_findings` names (#144).
+    if stimulus_samples is not None and _audible(float(rms_dbfs(left))):
         # Both reduced to their first channel, because `estimate_delay` refuses
         # multichannel input rather than silently reducing it -- and every real
         # render is at least stereo, so without this the delay could never be
@@ -383,8 +390,11 @@ def keep_wider(measured: Tolerance, committed: Tolerance | None) -> Tolerance:
                      committed.note if kept else measured.note)
 
 
-def to_dict(fp: Fingerprint, tolerance: Tolerance) -> dict[str, Any]:
-    """The reference as it is written to disk: readable, diffable, ordered."""
+def to_dict(fp: Fingerprint, tolerance: Tolerance, made: "MadeFrom | None" = None) -> dict[str, Any]:
+    """The reference as it is written to disk: readable, diffable, ordered.
+
+    `made` is the committed rig the reference was rendered from (`MadeFrom`),
+    written last, so a reference without one reads as it always has."""
     return {
         "schema_version": SCHEMA_VERSION,
         "config": fp.config,
@@ -412,6 +422,8 @@ def to_dict(fp: Fingerprint, tolerance: Tolerance) -> dict[str, Any]:
             "delay_samples": tolerance.delay_samples,
             "note": tolerance.note,
         },
+        **({"made_from": {"rig": made.rig, "hash": made.hash, "hash_rule": made.rule}}
+           if made is not None else {}),
     }
 
 
@@ -451,3 +463,213 @@ def from_dict(raw: dict[str, Any]) -> tuple[Fingerprint, Tolerance]:
         delay_samples=int(t["delay_samples"]),
         note=str(t.get("note", "")),
     )
+
+
+# --- which rig a reference was made from (#144) ------------------------------
+#
+# A rig in config/rigs/ is the owner's: saved from the web UI and pushed. Its
+# reference pins its sound, and used to fail CI the moment a setting changed,
+# because the rig no longer sounded like the reference of the rig it had been.
+# So a committed rig's reference records the rig it was rendered from, and the
+# null test compares exactly only while the rig is still that rig. A rig that
+# has changed, or has no reference yet, is held to `heard_findings` alone and
+# reported as stale, with a candidate reference for it.
+#
+# The record is a hash of the rig file as parsed, not of the config it compiles
+# to: a change to the compiler must still be compared against every reference,
+# not make every one look stale at once. It is of the part of the file the
+# rendered graph is made from (`RENDERED`), so that a change the render cannot
+# hear (the amp's levels saved from the page, the MIDI map, the description)
+# does not make a reference stale and open a window in which a change of sound
+# by the code would pass as the owner's. And the numbers in it are normalised,
+# so that a save writing `1` where the file said `1.0` is not a change (the
+# web UI's Save did exactly that once, 2c36874; the compiled config is the same
+# either way, since `emit` writes every parameter as a float).
+
+# Bumped when what `rig_hash` reads changes: every reference made under another
+# rule is then stale, which is said, and is what a change of rule must mean.
+# 1 hashed the whole file; 2 the part of it the render is made from (review of
+# PR #158).
+RIG_HASH_RULE = 2
+
+# What of a rig file `render.rig_channels` renders, read off the compiler
+# (`rigfile.compile_rig`, `emit_compiled`, `heard`) rather than assumed, by key
+# of the file, the channel and the master. Every key the format has is in one
+# of the two (test_sound_refs.py fails on a key added to `rigfile` until it is
+# placed), and changing any key outside RENDERED leaves the rendered configs,
+# Sushi's part of them, as they were (tried on every frozen rig, the same test).
+#
+# - `schema_version` says what the rest means. `host` is the config's
+#   `host_config`. `channels` and `master` are the tracks, their chains, levels
+#   and strips, in order: a channel's place decides its engine channels.
+# - Not rendered: `kind` (always "rig"); `name`, which names the references and
+#   the config's `_meta`, and no sound (a renamed rig has references of other
+#   names); `description` and `meta` (`_meta`); `amp` (`_amp`: the amp runs in
+#   Carla, outside Sushi and outside any render); `midi`, which a render
+#   compiles without (no controller); a channel's `input` and the master's
+#   `output`, which are machine roles, written to `_wiring` for the patchbay
+#   and never to Sushi. Sushi ignores an underscored key.
+RENDERED = {
+    "rig": ("schema_version", "host", "channels", "master"),
+    "channel": ("name", "width", "strip", "chain", "level"),
+    "master": ("chain", "level"),
+}
+NOT_RENDERED = {
+    "rig": ("kind", "name", "description", "meta", "amp", "midi"),
+    "channel": ("input",),
+    "master": ("output",),
+}
+
+# What starts each line of `nulltest`'s summary that reports a warning, and
+# only those lines: the container job counts them and makes its annotation of
+# them (.github/workflows/rig-container.yml), as it does `render.RETRIED_PREFIX`.
+STALE_PREFIX = "STALE-REFERENCE:"
+ORPHAN_PREFIX = "ORPHANED-REFERENCE:"
+
+
+@dataclass(frozen=True)
+class MadeFrom:
+    """The committed rig a reference was rendered from: the file's name, and
+    `rig_hash` of it under `rule`."""
+
+    rig: str
+    hash: str
+    rule: int = RIG_HASH_RULE
+
+
+def _canonical(value: Any) -> Any:
+    """`value` with every number that is a whole number written as an int, a
+    mapping's keys as strings, and nothing else changed. A bool stays a bool
+    (it is an int to Python, and `true` is not `1` in a rig). A float that is
+    not whole stays as it is, which json writes as its shortest round-trip
+    form: `0.50` and `.5` parse to the same float, so they hash the same."""
+    if value is None or isinstance(value, (bool, str)):
+        return value
+    if isinstance(value, int):
+        return value
+    if isinstance(value, float):
+        if math.isfinite(value) and value == math.floor(value):
+            return int(value)  # 1.0 is 1, -0.0 is 0
+        return value
+    if isinstance(value, dict):
+        return {str(key): _canonical(item) for key, item in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [_canonical(item) for item in value]
+    # Anything else YAML can produce (a date, say) is no part of a rig's
+    # format, but hashing it by its text keeps it a change when it changes.
+    return f"{type(value).__name__}:{value}"
+
+
+def _kept(entry: Any, keys: tuple[str, ...]) -> Any:
+    """Of a mapping, the `keys` it has; anything else as it is, so a file
+    the compiler would refuse still hashes, and differently."""
+    if not isinstance(entry, dict):
+        return entry
+    return {key: entry[key] for key in keys if key in entry}
+
+
+def rendered_part(raw: Any) -> Any:
+    """The part of a parsed rig file the render is made from (`RENDERED`)."""
+    if not isinstance(raw, dict):
+        return raw
+    part = _kept(raw, RENDERED["rig"])
+    if isinstance(part.get("channels"), list):
+        part["channels"] = [_kept(channel, RENDERED["channel"]) for channel in part["channels"]]
+    if "master" in part:
+        part["master"] = _kept(part["master"], RENDERED["master"])
+    return part
+
+
+def rig_hash(raw: Any) -> str:
+    """sha256, in hex, of the part of a rig file the render is made from
+    (`rendered_part`), as parsed (`yaml.safe_load`, as `rigfile.load_rig`
+    reads it): its mappings in key order, every whole number as an int,
+    compact json, UTF-8. So key order, comments, quoting, layout, `1.0`
+    against `1`, and any key outside `RENDERED` do not change it; any value,
+    key or list order inside it does. The rule's number is part of what is
+    hashed, so two rules never share a hash."""
+    text = json.dumps(
+        {"rig_hash_rule": RIG_HASH_RULE, "rendered": _canonical(rendered_part(raw))},
+        sort_keys=True, separators=(",", ":"), ensure_ascii=False, allow_nan=True,
+    )
+    return hashlib.sha256(text.encode("utf-8")).hexdigest()
+
+
+def made_from_of(raw: Any) -> MadeFrom | None:
+    """The `made_from` of a reference as read from its file, or None when it
+    has none (a v1 config's, a frozen rig's, or one made before #144). A
+    `made_from` that is not one is a ValueError: a hand-edited reference must
+    not pass as made from any rig at all, or from the one it names."""
+    if not isinstance(raw, dict) or raw.get("made_from") is None:
+        return None
+    made = raw["made_from"]
+    if not isinstance(made, dict) or not isinstance(made.get("hash"), str) \
+            or not isinstance(made.get("rig"), str) or type(made.get("hash_rule")) is not int:
+        raise ValueError(f"made_from is {made!r}: expected rig, hash and hash_rule")
+    return MadeFrom(made["rig"], made["hash"], made["hash_rule"])
+
+
+def staleness(made: MadeFrom | None, current: str) -> str | None:
+    """Why a committed rig's reference no longer says how the rig sounds, or
+    None when it was made from the rig as it is (`current`, its `rig_hash`).
+    A reference with no record of its rig is stale: nothing says it is of
+    this one."""
+    if made is None:
+        return "its reference does not say which version of the rig it was made from"
+    if made.rule != RIG_HASH_RULE:
+        return (f"its reference was made under rig hash rule {made.rule}, and this tool's is "
+                f"{RIG_HASH_RULE}")
+    if made.hash != current:
+        return "the rig has changed since its reference was made"
+    return None
+
+
+# How far apart a rig's two sides may be for the null test's stimulus, which
+# feeds both sides the same sweep. A centred chain is exactly balanced; a
+# stereo reverb or chorus is not, by a little: every rig reference committed on
+# 2026-11-16 has its sides within 0.11 dB, and test_stereo.py has held every
+# committed rig to this since 2026-11-02. A silent side fails by any margin.
+BALANCE_DB = 1.0
+
+
+def heard_findings(fp: Fingerprint) -> list[Finding]:
+    """What a rig must sound like with no reference to compare against: two
+    sides, neither silent (`SILENCE_FLOOR_DBFS`), within `BALANCE_DB` of
+    each other. That the render is finite is `render.measure`'s, which
+    refuses one that is not before it is fingerprinted.
+
+    For the rigs of channels only. A v1 config plays its left side alone,
+    on purpose (`render.V1_REFERENCE_SUFFIX`), and has no such rule."""
+    levels = fp.channel_rms_dbfs
+    if levels is None or len(levels) != 2:
+        return [Finding("not-two-sides", f"the render has {len(levels) if levels else 'no'} channel level(s), "
+                                         "where a rig's master has a left and a right")]
+    left, right = levels
+    if not _audible(left) and not _audible(right):
+        return [Finding("silent", f"both sides are silent (L {left:.1f}, R {right:.1f} dBFS)")]
+    for which, level in (("left", left), ("right", right)):
+        if not _audible(level):
+            return [Finding("one-sided", f"the {which} side is silent (L {left:.1f}, R {right:.1f} dBFS)")]
+    if abs(left - right) > BALANCE_DB:
+        return [Finding("unbalanced", f"L {left:.2f} and R {right:.2f} dBFS, more than {BALANCE_DB} dB apart")]
+    return []
+
+
+def v1_findings(fp: Fingerprint) -> list[Finding]:
+    """What a v1 config's render must be, whatever its reference says: its
+    left side, the one it plays (`render.V1_REFERENCE_SUFFIX`), not silent.
+    Its right side may be: every v1 config whose chain starts with a mono
+    plugin leaves it so. Without this a silent render calibrated into a
+    reference compared equal to every silent render after it (review of PR
+    #158), since `compare` passes a side silent in both."""
+    levels = fp.channel_rms_dbfs
+    if not levels:
+        return [Finding("not-measured", "the render has no channel levels to check")]
+    if not _audible(levels[0]):
+        return [Finding("silent", f"the left side, the one a v1 config plays, is silent ({levels[0]:.1f} dBFS)")]
+    return []
+
+
+def played_findings(fp: Fingerprint, is_rig: bool) -> list[Finding]:
+    """`heard_findings` for a rig of channels, `v1_findings` for a v1 config."""
+    return heard_findings(fp) if is_rig else v1_findings(fp)

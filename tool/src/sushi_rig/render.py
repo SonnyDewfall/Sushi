@@ -60,6 +60,17 @@ class RenderError(Exception):
     """Something about the render the user needs to fix."""
 
 
+class Unplayable(RenderError):
+    """A render that is finite but is no rig's sound: silent, or silent on a
+    side it plays (`nulltest.played_findings`). Raised by `calibrate`, so
+    that no reference is ever written from one."""
+
+    def __init__(self, config: str, findings: list):
+        self.findings = list(findings)
+        super().__init__(f"{config} rendered what no reference may be made of: "
+                         + "; ".join(str(f) for f in self.findings))
+
+
 @dataclass(frozen=True)
 class Stimulus:
     """What gets pushed through the graph.
@@ -506,6 +517,45 @@ def rigs_to_check(root: Path) -> list[Path]:
     return sorted((root / "config" / "rigs").glob("*.yaml"))
 
 
+# The frozen rigs (#133): eleven rigs as master held them at c494625, kept as
+# test data and pinned by sha256 (tests/test_rig_fixtures.py), and their sound
+# references beside them (#144). The owner cannot change them by saving a rig,
+# so a change in how one sounds is a change in the code or the plugins, and
+# fails: these, not the committed rigs, are what pin the rig's sound.
+FROZEN_RIGS = Path("tool") / "tests" / "fixtures" / "rigs"
+FROZEN_SOUND = Path("tool") / "tests" / "fixtures" / "sound"
+
+
+def frozen_rigs_to_check(root: Path) -> list[Path]:
+    """Every frozen rig: `tool/tests/fixtures/rigs/*.yaml`, none in a
+    checkout that has no tool/ beside its config/."""
+    return sorted((root / FROZEN_RIGS).glob("*.yaml"))
+
+
+def frozen_reference_path(root: Path, name: str) -> Path:
+    """The reference for the frozen rig's channel called `name`."""
+    return root / FROZEN_SOUND / f"{name}.yaml"
+
+
+def is_frozen(root: Path, path: Path) -> bool:
+    """Whether `path` is one of the frozen rigs."""
+    try:
+        Path(path).resolve().relative_to((root / FROZEN_RIGS).resolve())
+    except ValueError:
+        return False
+    return True
+
+
+def rig_file_hash(path: Path) -> str:
+    """`nulltest.rig_hash` of the rig file at `path`, read as
+    `rigfile.load_rig` reads it."""
+    import yaml
+
+    from .nulltest import rig_hash
+
+    return rig_hash(yaml.safe_load(Path(path).read_text()))
+
+
 # --- the one NaN this tolerates once: gx_detune_'s ---------------------------
 #
 # guitarix 0.46.0's gx_detune_ (src/LV2/gx_detune.lv2/detune.cc, smbPitchShift)
@@ -701,8 +751,15 @@ def calibrate(
     stimulus: Stimulus | None = None,
     sushi_bin: str = "./sushi",
     retried: list[str] | None = None,
+    refuse=None,
 ) -> tuple[Any, Any]:
     """Render `config` twice and measure how far apart two identical runs are.
+
+    `refuse`, when given, is asked of each of the two fingerprints for the
+    findings that mean no reference may be made of it
+    (`nulltest.played_findings`), and any it finds raise `Unplayable`: of
+    either render, since a floor measured between a silent run and a sounding
+    one would be a tolerance wide enough to pass anything.
 
     The second fingerprint is the one kept, arbitrarily -- if the two differ by
     more than the floor they establish, there is no "right" one of the pair, and
@@ -719,4 +776,9 @@ def calibrate(
                     retried=retried)
     second = measure(config, root, work / "run-2", stimulus=stimulus, sushi_bin=sushi_bin,
                      retried=retried)
+    if refuse is not None:
+        for fp in (first, second):
+            found = refuse(fp)
+            if found:
+                raise Unplayable(config.name, found)
     return second, floor_between(first, second)
