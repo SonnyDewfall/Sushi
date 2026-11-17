@@ -5177,3 +5177,32 @@ the fix taken out. The counts of the review's fixes before this: the fast
 suite 4873 passed, 33 skipped on 1114d07; `test_ui_presets.py`, `test_ui.py`
 and `test_ui_tabs.py` (264 tests) 5 of 5 in a loop. **Not tried on the
 rig.** *(2026-11-17)*
+
+**Help: the user guide, served by the agent (#167).** The page had no way to
+the guides in `docs/guide/`. The agent now serves them itself at `/help/`
+(`guide.py`): each page rendered to HTML on request, its pictures at
+`/help/img/`, nothing fetched from the network, so they open at a venue and
+from a phone. Read from `docs/guide/` of the checkout the package runs from,
+which is how the rig runs it (an editable install in the checkout's
+`tool/.venv`, started by the systemd unit from the checkout); an agent
+installed any other way says where it looked. **No new dependency**: the
+Markdown is rendered by a small renderer covering what the guide uses
+(headings with GitHub's anchors, nested lists, fenced code, tables, links,
+images and inline `<img>`); any other HTML is shown as text. Links between
+pages are rewritten to `/help/<page>` and carry `?from=` the screen the guide
+was opened from, so **Back to the rig**, sticky at the top of every page,
+returns there; a link into `docs/reference/` is shown as its path, since only
+the guide is served. Only a page name (`[a-z0-9-]+`, a `.md` there) or a
+picture's file name in `img/` is served, resolved and checked to be inside
+the folder; nineteen ways of writing a way out, symlinks out included, are
+refused in the tests, sent raw over a socket as well as through a client.
+**Help** is in the rack's header and, narrower than the two tabs, at the end
+of the stage's nav (to *Playing live*); quiet links go from the record bar
+and takes to `recording.md`, a channel's presets to `channel-presets.md`,
+Save to `saving.md`, the rigs, the amp card, the lock note and the New rig
+screen to theirs (`HELP` in `rig.js`). Tests: the renderer, the routes and
+path safety (`test_guide.py`, which also crawls the served guide from its
+front page and follows every link, picture and anchor), and the links on
+both screens and back, at a phone's width on the stage (`test_ui_help.py`).
+**Not tried on the rig, or on a real phone**: the phone is Chromium at 390
+by 844. *(2026-11-17)*

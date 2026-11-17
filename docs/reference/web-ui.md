@@ -536,6 +536,20 @@ MASTER fader does not flick to −∞ and back. Each
 change is sent as it happens. A change the agent refuses shows the agent's
 reason on screen, beside the knob; nothing is put back without saying why.
 
+## The Help links
+
+**Help**, in the rack's header and at the end of the stage's nav, opens the
+user guides of [docs/guide/](../guide/README.md), which the agent serves
+itself at `/help/` (`sushi_rig/guide.py`, #167): no network is needed, so they
+open at a venue and from a phone. A feature with a guide of its own has a
+quiet link to it: the record bar, takes, Save, a channel's presets, the rigs,
+the amp card, the lock note and the New rig screen (`HELP` in `rig.js`).
+Each page has **Back to the rig** at the top, kept there while reading, which
+returns to the screen the guide was opened from (`?from=`). The Markdown is
+rendered by a small renderer of the project's own, for what the guide uses;
+a link out of `docs/guide/` (into the reference) is shown as the file's
+path, since only the guide is served.
+
 ## Not built yet
 
 Not done yet, and said on screen where it shows: the sound (nothing measures

@@ -2754,3 +2754,43 @@ export function presetOutcome(op, channel, name, answer, asked = {}) {
     text: `${how} Wrote ${body.file} in place, with ${name}'s chain under ${channel}'s own names; not committed. `
       + "Undo stops here, as after a switch." };
 }
+
+// ---------------------------------------------------------------- the user guide (#167)
+// The agent serves docs/guide/ at /help/ (sushi_rig/guide.py). A Help link
+// on each screen opens it, and a feature with a guide of its own links to
+// that guide, or to the heading in it: page and anchor as docs/guide/ names
+// them (the anchor GitHub gives the heading), which test_guide.py holds to
+// the guide as served. `from` is the screen the link is on, so the guide's
+// "Back to the rig" comes back to it.
+
+export const HELP = {
+  guide: { page: "README", label: "Help" },
+  stage: { page: "playing-live", label: "Help" },
+  lock: { page: "playing-live", anchor: "the-lock", label: "About the lock" },
+  stageRigs: { page: "playing-live", anchor: "switch-to-another-rig", label: "About switching rigs" },
+  rigs: { page: "building-a-rig", label: "About rigs" },
+  newRig: { page: "building-a-rig", anchor: "make-a-new-rig", label: "Help" },
+  record: { page: "recording", label: "About recording" },
+  takes: { page: "recording", anchor: "find-your-takes", label: "About takes" },
+  save: { page: "saving", label: "About saving" },
+  presets: { page: "channel-presets", label: "About presets" },
+  amp: { page: "shaping-a-sound", anchor: "set-the-amp", label: "About the amp" },
+};
+
+// The screens the guide can go back to, by the page's screen (`currentScreen`).
+const HELP_FROM = { stage: "stage", rack: "rack", newrig: "new-rig" };
+
+// Where feature `which` of HELP is served, opened from `screen`, and what
+// the link says: `{href, label, aria}`. The README is the guide's front
+// page, /help/. Unknown features and screens are a mistake to see, not a
+// link to guess at: null.
+export function helpLink(which, screen) {
+  const entry = HELP[which];
+  if (!entry) return null;
+  const path = entry.page === "README" ? "/help/" : `/help/${encodeURIComponent(entry.page)}`;
+  const from = HELP_FROM[screen];
+  const href = `${path}${from ? `?from=${from}` : ""}${entry.anchor ? `#${entry.anchor}` : ""}`;
+  const aria = entry.label === "Help" ? (entry.page === "README" ? "Help: the user guide" : `Help: ${entry.page.replace(/-/g, " ")}`)
+    : `${entry.label}, in the user guide`;
+  return { href, label: entry.label, aria };
+}
