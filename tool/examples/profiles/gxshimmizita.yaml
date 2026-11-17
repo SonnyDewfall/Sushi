@@ -1,0 +1,302 @@
+# sushi-rig component profile (schema 1).
+# Machine-written and canonical: edit by hand if you like, but comments
+# do not survive the next rewrite. Facts are checked against `sushi-rig
+# probe`; judgements carry provenance (draft / reviewed / fact).
+# Check with:  sushi-rig profile validate <this file>
+schema_version: 1
+
+plugin:
+  uri: http://guitarix.sourceforge.net/plugins/gx_shimmizita_#_shimmizita_
+  version: '43.0'
+  name: Gxshimmizita
+kind: effect
+host: sushi-lv2
+
+ports:
+  audio_in: 2
+  audio_out: 2
+  config_drivable: true
+
+groups:
+  - id: mix
+    label: Mix
+    provenance: draft
+  - id: shimmer
+    label: Shimmer
+    provenance: draft
+  - id: space
+    label: Space
+    provenance: draft
+  - id: modulation
+    label: Modulation
+    provenance: draft
+
+parameters:
+  - name: DRYWET
+    symbol: DRYWET
+    facts:
+      min: 0.0
+      max: 1.0
+      default: 0.5
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: hidden, provenance: draft}
+    label: {value: Dry/Wet, provenance: draft}
+    description:
+      value: The plugin's own dry against wet, a straight crossfade. Set by Mix, which stops at 0.3.
+      provenance: draft
+    scale: {value: linear, provenance: fact}
+    control: {value: knob, provenance: draft}
+
+  - name: SHIFT
+    symbol: SHIFT
+    facts:
+      min: -6.0
+      max: 6.0
+      default: 0.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: primary, provenance: draft}
+    group: {value: shimmer, provenance: draft}
+    order: {value: 1, provenance: draft}
+    label: {value: Shift, provenance: draft}
+    description:
+      value: Which way, and how fast, the tail climbs in pitch; 0 is a plain reverb. No unit declared.
+      provenance: draft
+    scale: {value: linear, provenance: fact}
+    control: {value: knob, provenance: draft}
+    phone: {value: 2, provenance: draft}
+
+  - name: PSDRYWET
+    symbol: PSDRYWET
+    facts:
+      min: 0.0
+      max: 1.0
+      default: 0.5
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: primary, provenance: draft}
+    group: {value: shimmer, provenance: draft}
+    order: {value: 2, provenance: draft}
+    label: {value: Pitch mix, provenance: draft}
+    description:
+      value: 'How much of the tail goes round through the shifter: 0 is no shimmer, 1 climbs fastest.'
+      provenance: draft
+    scale: {value: linear, provenance: fact}
+    control: {value: knob, provenance: draft}
+    phone: {value: 3, provenance: draft}
+
+  - name: T60M
+    symbol: T60M
+    facts:
+      min: 1.0
+      max: 8.0
+      default: 2.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: primary, provenance: draft}
+    group: {value: space, provenance: draft}
+    order: {value: 1, provenance: draft}
+    label: {value: Decay, provenance: draft}
+    description:
+      value: How long the tail rings above the crossover; the range suggests seconds, none declared.
+      provenance: draft
+    scale: {value: linear, provenance: fact}
+    control: {value: knob, provenance: draft}
+    phone: {value: 4, provenance: draft}
+
+  - name: T60DS
+    symbol: T60DS
+    facts:
+      min: 1.0
+      max: 8.0
+      default: 3.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: advanced, provenance: draft}
+    group: {value: space, provenance: draft}
+    order: {value: 2, provenance: draft}
+    label: {value: Low decay, provenance: draft}
+    description:
+      value: How long the lows ring, below the crossover; the range suggests seconds.
+      provenance: draft
+    scale: {value: linear, provenance: fact}
+    control: {value: knob, provenance: draft}
+
+  - name: F1
+    symbol: F1
+    facts:
+      min: 50.0
+      max: 1000.0
+      default: 200.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: advanced, provenance: draft}
+    group: {value: space, provenance: draft}
+    order: {value: 3, provenance: draft}
+    label: {value: Crossover, provenance: draft}
+    description:
+      value: Where Low decay hands over to Decay; the range suggests Hz, none declared.
+      provenance: draft
+    scale: {value: log, provenance: draft}
+    control: {value: knob, provenance: draft}
+
+  - name: F2
+    symbol: F2
+    facts:
+      min: 1500.0
+      max: 23520.0
+      default: 6000.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: advanced, provenance: draft}
+    group: {value: space, provenance: draft}
+    order: {value: 4, provenance: draft}
+    label: {value: Damping, provenance: draft}
+    description:
+      value: Above this the tail darkens as it rings; the range suggests Hz, none declared.
+      provenance: draft
+    scale: {value: log, provenance: draft}
+    control: {value: knob, provenance: draft}
+
+  - name: DEPTH
+    symbol: DEPTH
+    facts:
+      min: 0.0
+      max: 1.0
+      default: 0.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: advanced, provenance: draft}
+    group: {value: modulation, provenance: draft}
+    order: {value: 1, provenance: draft}
+    label: {value: Mod depth, provenance: draft}
+    description:
+      value: How much the shift is modulated; at 0, Mod speed, Control and Envelope change nothing (measured).
+      provenance: draft
+    scale: {value: linear, provenance: fact}
+    control: {value: knob, provenance: draft}
+
+  - name: SPEED
+    symbol: SPEED
+    facts:
+      min: 0.10000000149011612
+      max: 10.0
+      default: 0.10000000149011612
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: advanced, provenance: draft}
+    group: {value: modulation, provenance: draft}
+    order: {value: 2, provenance: draft}
+    label: {value: Mod speed, provenance: draft}
+    description:
+      value: The modulation's rate; the range suggests Hz, none declared.
+      provenance: draft
+    scale: {value: log, provenance: draft}
+    control: {value: knob, provenance: draft}
+
+  - name: MODE
+    symbol: MODE
+    facts:
+      min: -3.0
+      max: 3.0
+      default: 0.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: advanced, provenance: draft}
+    group: {value: modulation, provenance: draft}
+    order: {value: 3, provenance: draft}
+    label: {value: Mode, provenance: draft}
+    description:
+      value: 'Not documented; -3 to 3. Measured: changes the shifted tail even at Mod depth 0.'
+      provenance: draft
+    scale: {value: linear, provenance: fact}
+    control: {value: knob, provenance: draft}
+
+  - name: CONTROL
+    symbol: CONTROL
+    facts:
+      min: 0.0
+      max: 1.0
+      default: 0.5
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: advanced, provenance: draft}
+    group: {value: modulation, provenance: draft}
+    order: {value: 4, provenance: draft}
+    label: {value: Control, provenance: draft}
+    description:
+      value: Not documented; measured to matter only with Mod depth above 0.
+      provenance: draft
+    scale: {value: linear, provenance: fact}
+    control: {value: knob, provenance: draft}
+
+  - name: ENVELOPE
+    symbol: ENVELOPE
+    facts:
+      min: 0.10000000149011612
+      max: 3.0
+      default: 1.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: advanced, provenance: draft}
+    group: {value: modulation, provenance: draft}
+    order: {value: 5, provenance: draft}
+    label: {value: Envelope, provenance: draft}
+    description:
+      value: Not documented; the range suggests seconds. Measured to matter only with Mod depth above 0.
+      provenance: draft
+    scale: {value: linear, provenance: fact}
+    control: {value: knob, provenance: draft}
+
+controls:
+  - id: mix
+    drives:
+      value:
+        - {parameter: DRYWET, curve: linear, at_0: 0.0, at_1: 0.3}
+      provenance: draft
+    visibility: {value: primary, provenance: draft}
+    group: {value: mix, provenance: draft}
+    order: {value: 1, provenance: draft}
+    label: {value: Mix, provenance: draft}
+    description:
+      value: 'Dry to wet, Dry/Wet 0 to 0.3: past that the wet, 17 dB over the guitar (measured), only gets louder.'
+      provenance: draft
+    control: {value: knob, provenance: draft}
+    phone: {value: 1, provenance: draft}

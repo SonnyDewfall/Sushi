@@ -32,7 +32,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # --- system packages --------------------------------------------------------
 #
 # The first group is the plugin set: together these packages provide every URI
-# in plugin-manifest.txt (55) except the neural amp's, which is waived below. swh-lv2 and ardour-lv2-plugins are there for
+# in plugin-manifest.txt (59) except the neural amp's, which is waived below. swh-lv2 and ardour-lv2-plugins are there for
 # `lcrDelay` and `urn:ardour:a-reverb`, which the configs load. Checked with
 # `sushi-rig plugins check` against a real Ubuntu 24.04 LV2 tree, not assumed.
 #

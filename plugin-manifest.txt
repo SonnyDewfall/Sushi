@@ -48,7 +48,11 @@ http://guitarix.sourceforge.net/plugins/gx_chorus_stereo#_chorus_stereo
 http://guitarix.sourceforge.net/plugins/gx_compressor#_compressor
 http://guitarix.sourceforge.net/plugins/gx_detune_#_detune_
 http://guitarix.sourceforge.net/plugins/gx_echo_stereo#_echo_stereo
+http://guitarix.sourceforge.net/plugins/gx_flanger#_flanger
 http://guitarix.sourceforge.net/plugins/gx_oc_2_#_oc_2_
+http://guitarix.sourceforge.net/plugins/gx_shimmizita_#_shimmizita_
+http://guitarix.sourceforge.net/plugins/gx_tremolo#_tremolo
+http://guitarix.sourceforge.net/plugins/gxechocat#echocat
 http://guitarix.sourceforge.net/plugins/gxts9#ts9sim
 http://plugin.org.uk/swh-plugins/lcrDelay
 http://zynaddsubfx.sourceforge.net/fx#Chorus

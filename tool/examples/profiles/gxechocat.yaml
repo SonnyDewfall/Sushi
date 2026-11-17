@@ -1,0 +1,231 @@
+# sushi-rig component profile (schema 1).
+# Machine-written and canonical: edit by hand if you like, but comments
+# do not survive the next rewrite. Facts are checked against `sushi-rig
+# probe`; judgements carry provenance (draft / reviewed / fact).
+# Check with:  sushi-rig profile validate <this file>
+schema_version: 1
+
+plugin:
+  uri: http://guitarix.sourceforge.net/plugins/gxechocat#echocat
+  version: '43.0'
+  name: GxEchoCat
+kind: effect
+host: sushi-lv2
+
+ports:
+  audio_in: 1
+  audio_out: 1
+  config_drivable: true
+
+groups:
+  - id: mix
+    label: Mix
+    provenance: draft
+  - id: echo
+    label: Echo
+    provenance: draft
+  - id: heads
+    label: Heads
+    provenance: draft
+  - id: tape
+    label: Tape
+    provenance: draft
+
+parameters:
+  - name: Swell
+    symbol: swell
+    facts:
+      min: 0.0
+      max: 1.0
+      default: 0.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: hidden, provenance: draft}
+    label: {value: Swell, provenance: fact}
+    description:
+      value: The echoes' level (no echo at 0, measured); the dry stays put. Set by Mix.
+      provenance: draft
+    scale: {value: linear, provenance: fact}
+    control: {value: knob, provenance: draft}
+
+  - name: Output
+    symbol: output
+    facts:
+      min: 0.0
+      max: 4.0
+      default: 1.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: hidden, provenance: draft}
+    label: {value: Output, provenance: fact}
+    description:
+      value: 'Output gain, about 27 dB a unit (measured): 1.5 is +13 dB on 1, 4 is +78. Set by Level.'
+      provenance: draft
+    scale: {value: linear, provenance: fact}
+    control: {value: knob, provenance: draft}
+
+  - name: Sustain
+    symbol: sustain
+    facts:
+      min: 0.0
+      max: 1.0
+      default: 0.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: primary, provenance: draft}
+    group: {value: echo, provenance: draft}
+    order: {value: 1, provenance: draft}
+    label: {value: Repeats, provenance: draft}
+    description:
+      value: 'How much of each echo is fed back: more is more repeats.'
+      provenance: draft
+    scale: {value: linear, provenance: fact}
+    control: {value: knob, provenance: draft}
+    phone: {value: 2, provenance: draft}
+
+  - name: BPM
+    symbol: bpm
+    facts:
+      min: 24.0
+      max: 360.0
+      default: 120.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: primary, provenance: draft}
+    group: {value: echo, provenance: draft}
+    order: {value: 2, provenance: draft}
+    label: {value: Tempo, provenance: draft}
+    description:
+      value: 'The echo time as a tempo, not synced: head 1 is an eighth note (250 ms at 120, measured).'
+      provenance: draft
+    scale: {value: linear, provenance: fact}
+    control: {value: knob, provenance: draft}
+    phone: {value: 3, provenance: draft}
+
+  - name: Head 1
+    symbol: head1
+    facts:
+      min: 0.0
+      max: 1.0
+      default: 0.0
+      toggled: false
+      integer: true
+      enumeration: true
+      logarithmic: false
+      settable: true
+    visibility: {value: primary, provenance: draft}
+    group: {value: heads, provenance: draft}
+    order: {value: 1, provenance: draft}
+    label: {value: Head 1, provenance: fact}
+    description:
+      value: '0 off, 1 on: an echo an eighth note later. With no head on there is no echo at all.'
+      provenance: draft
+    scale: {value: enum, provenance: fact}
+    control: {value: selector, provenance: draft}
+    phone: {value: 4, provenance: draft}
+
+  - name: Head 2
+    symbol: head2
+    facts:
+      min: 0.0
+      max: 1.0
+      default: 0.0
+      toggled: false
+      integer: true
+      enumeration: true
+      logarithmic: false
+      settable: true
+    visibility: {value: primary, provenance: draft}
+    group: {value: heads, provenance: draft}
+    order: {value: 2, provenance: draft}
+    label: {value: Head 2, provenance: fact}
+    description:
+      value: '0 off, 1 on: an echo a quarter note later (500 ms at 120, measured).'
+      provenance: draft
+    scale: {value: enum, provenance: fact}
+    control: {value: selector, provenance: draft}
+
+  - name: Head 3
+    symbol: head3
+    facts:
+      min: 0.0
+      max: 1.0
+      default: 0.0
+      toggled: false
+      integer: true
+      enumeration: true
+      logarithmic: false
+      settable: true
+    visibility: {value: primary, provenance: draft}
+    group: {value: heads, provenance: draft}
+    order: {value: 3, provenance: draft}
+    label: {value: Head 3, provenance: fact}
+    description:
+      value: '0 off, 1 on: an echo a dotted quarter later (750 ms at 120, measured).'
+      provenance: draft
+    scale: {value: enum, provenance: fact}
+    control: {value: selector, provenance: draft}
+
+  - name: Input
+    symbol: input
+    facts:
+      min: 0.0
+      max: 1.0
+      default: 0.25
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: advanced, provenance: draft}
+    group: {value: tape, provenance: draft}
+    order: {value: 1, provenance: draft}
+    label: {value: Input, provenance: fact}
+    description:
+      value: 'Level into the tape: dry and echoes alike, about +6 dB from the default 0.25 to 0.5 (measured).'
+      provenance: draft
+    scale: {value: linear, provenance: fact}
+    control: {value: knob, provenance: draft}
+
+controls:
+  - id: mix
+    drives:
+      value:
+        - {parameter: Swell, curve: linear, at_0: 0.0, at_1: 1.0}
+      provenance: draft
+    visibility: {value: primary, provenance: draft}
+    group: {value: mix, provenance: draft}
+    order: {value: 1, provenance: draft}
+    label: {value: Mix, provenance: draft}
+    description:
+      value: How loud the echoes are; the guitar itself stays where it is (Swell, measured).
+      provenance: draft
+    control: {value: knob, provenance: draft}
+    phone: {value: 1, provenance: draft}
+
+  - id: level
+    drives:
+      value:
+        - {parameter: Output, curve: linear, at_0: 0.725, at_1: 1.39}
+      provenance: draft
+    visibility: {value: advanced, provenance: draft}
+    group: {value: tape, provenance: draft}
+    order: {value: 2, provenance: draft}
+    label: {value: Level, provenance: draft}
+    description:
+      value: 'Output, kept to about -12 to +6 dB of the guitar''s level: Output 1.17 (67 %) is level with it.'
+      provenance: draft
+    control: {value: knob, provenance: draft}
+    phone: {value: 5, provenance: draft}

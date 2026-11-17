@@ -476,13 +476,19 @@ def test_the_library_lists_the_manifest_with_the_one_profile_and_its_groups():
     status, body = call(agent, "GET", "/library")
     assert status == 200 and body["ok"] is True
     entries = {e["uri"]: e for e in body["plugins"]}
-    assert len(body["plugins"]) == 55
+    from sushi_rig.plugins import read_manifest
+
+    # Every URI in the manifest, however many it has (55 until #165 added four).
+    assert len(body["plugins"]) == len(read_manifest((ROOT / "plugin-manifest.txt").read_text())) == 59
     assert entries[GXTS9]["profile"] is True
     assert [g["id"] for g in entries[GXTS9]["groups"]] == ["dirt", "output"]
     assert entries[GXTS9]["name"] == "GxTubeScreamer"
-    # The examples' profiles, by URI (#154 added the room's and the hall's);
-    # not a count, which grows with the folder.
-    for uri in (GXTS9, "urn:ardour:a-reverb", "http://distrho.sf.net/plugins/MaGigaverb"):
+    # The examples' profiles, by URI (#154 added the room's and the hall's,
+    # #165 the four pedals'); not a count, which grows with the folder.
+    gx = "http://guitarix.sourceforge.net/plugins/"
+    for uri in (GXTS9, "urn:ardour:a-reverb", "http://distrho.sf.net/plugins/MaGigaverb",
+                gx + "gx_tremolo#_tremolo", gx + "gx_flanger#_flanger",
+                gx + "gx_shimmizita_#_shimmizita_", gx + "gxechocat#echocat"):
         assert entries[uri]["profile"] is True, uri
     assert entries["http://distrho.sf.net/plugins/MVerb"]["profile"] is False, "MVerb has none"
     assert entries[NAM]["addable"] is False
