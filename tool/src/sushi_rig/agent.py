@@ -6627,8 +6627,10 @@ def discard_plan(plan: "rigfile.SwitchPlan", discarded: list[dict[str, Any]], up
     not one of `rigfile.diff`'s, so not in `RESTART_REASONS`). A discarded add, remove or move leaves chains the
     running config does not have, which `diff` against the rig refuses as
     `drifted` before this is reached, so it restarts, and the restart reloads
-    the file. The steps go last, parameters then bypasses, marked
-    `"restores": "discarded"`."""
+    the file. A processor the plan adds (a replace: removed, then added
+    fresh) is left to the plan, since the value from before belongs to the
+    instance removed. The steps go in front of the plan's closing
+    bypass-offs, parameters then bypasses, marked `"restores": "discarded"`."""
     values, bypasses, _ = _touched(discarded)
     stated: dict[str, dict[str, Any]] = {}
     for entry in upcoming.get("initial_state") or []:
@@ -6638,10 +6640,15 @@ def discard_plan(plan: "rigfile.SwitchPlan", discarded: list[dict[str, Any]], up
     names |= {t.get("name") for t in upcoming.get("tracks") or []}
     planned_values = {(s.args.get("processor"), s.args.get("parameter")) for s in plan.steps if s.op == "parameter"}
     planned_bypass = {s.args.get("processor") for s in plan.steps if s.op == "bypass"}
+    # A processor the plan adds is a fresh instance, at the plugin's
+    # defaults and then the next config's values: what the old one had
+    # before the discarded work is not its to take (re-review of #162).
+    added = {s.args.get("name") for s in plan.steps if s.op == "add"}
+    added |= {s.args.get("copy") for s in plan.steps if s.op == "add" and s.args.get("copy")}
     live = reading.get("processors") or {}
     extra_values, extra_bypass, unknown = [], [], []
     for (processor, parameter), before in sorted(values.items()):
-        if processor not in names or (processor, parameter) in planned_values:
+        if processor not in names or processor in added or (processor, parameter) in planned_values:
             continue
         target = ((stated.get(processor) or {}).get("parameters") or {}).get(parameter, before)
         if not isinstance(target, (int, float)) or isinstance(target, bool):
@@ -6653,7 +6660,7 @@ def discard_plan(plan: "rigfile.SwitchPlan", discarded: list[dict[str, Any]], up
         extra_values.append(rigfile.SwitchStep("parameter", {"processor": processor, "parameter": parameter,
                                                              "value": float(target), "restores": "discarded"}))
     for processor, before in sorted(bypasses.items()):
-        if processor not in names or processor in planned_bypass:
+        if processor not in names or processor in added or processor in planned_bypass:
             continue
         target = (stated.get(processor) or {}).get("bypassed", before)
         if not isinstance(target, bool):
@@ -6667,7 +6674,13 @@ def discard_plan(plan: "rigfile.SwitchPlan", discarded: list[dict[str, Any]], up
         return rigfile.NeedsRestart((rigfile.RestartReason(
             "discarded", f"the unsaved work being dropped set {', '.join(unknown)}, whose value before it Sushi "
                          "did not report"),))
-    return rigfile.SwitchPlan(tuple(plan.steps) + tuple(extra_values) + tuple(extra_bypass))
+    # In front of the plan's closing bypass-offs (diff's step 7): a pedal
+    # comes in only once its parameters are what it plays with.
+    steps = list(plan.steps)
+    cut = len(steps)
+    while cut > 0 and steps[cut - 1].op == "bypass" and steps[cut - 1].args.get("bypassed") is False:
+        cut -= 1
+    return rigfile.SwitchPlan(tuple(steps[:cut]) + tuple(extra_values) + tuple(extra_bypass) + tuple(steps[cut:]))
 
 
 def discard_said(discarded: list[dict[str, Any]], answer: dict[str, Any]) -> dict[str, Any] | None:

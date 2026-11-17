@@ -810,3 +810,48 @@ def test_no_revert_point_is_kept_for_a_load_whose_write_is_refused(root, monkeyp
     assert rig_file(root, "guitar_vocal").read_bytes() == before
     assert saves.snapshots(root, "guitar_vocal")[0] == [], "no point for a load that never happened"
     assert fake.writes() == []
+
+
+def test_a_processor_the_plan_replaces_is_not_given_the_old_instances_value():
+    """Re-review of #162: the next rig has guitar_delay but states no
+    `time`, so the switch removes it and adds it fresh, at the plugin's
+    default; the value from before the discarded turn was the old
+    instance's, and is not set on the new one."""
+    from sushi_rig.agent import discard_plan
+
+    step = rigfile.SwitchStep
+    plan = rigfile.SwitchPlan((
+        step("remove", {"processor": "guitar_delay"}),
+        step("add", {"track": "guitar", "name": "guitar_delay", "uri": "urn:x:delay", "before": None}),
+        step("bypass", {"processor": "guitar_delay", "bypassed": True}),
+        step("bypass", {"processor": "guitar_delay", "bypassed": False}),
+    ))
+    discarded = [{"op": "parameter", "args": {"processor": "guitar_delay", "parameter": "time", "value": 0.8},
+                  "previous": 0.5},
+                 {"op": "bypass", "args": {"processor": "guitar_delay", "bypassed": True}, "previous": False}]
+    upcoming = {"tracks": [{"name": "guitar", "plugins": [{"name": "guitar_delay"}]}], "initial_state": []}
+    reading = {"processors": {"guitar_delay": {"parameters": {"time": 0.8}, "bypassed": True}}}
+    out = discard_plan(plan, discarded, upcoming, reading)
+    assert out.steps == plan.steps, "nothing restored onto the fresh instance"
+
+
+def test_restored_values_come_before_the_plans_bypass_offs():
+    """A pedal the plan brings in comes in with its parameters set (diff's
+    step 7): the restored values go in front of the closing bypass-offs."""
+    from sushi_rig.agent import discard_plan
+
+    step = rigfile.SwitchStep
+    plan = rigfile.SwitchPlan((
+        step("bypass", {"processor": "drive", "bypassed": True}),
+        step("parameter", {"processor": "room", "parameter": "Blend", "value": 0.2}),
+        step("bypass", {"processor": "drive", "bypassed": False}),
+        step("bypass", {"processor": "room", "bypassed": False}),
+    ))
+    discarded = [{"op": "parameter", "args": {"processor": "drive", "parameter": "Drive", "value": 0.9},
+                  "previous": 0.3}]
+    upcoming = {"tracks": [{"name": "guitar", "plugins": [{"name": "drive"}, {"name": "room"}]}], "initial_state": []}
+    reading = {"processors": {"drive": {"parameters": {"Drive": 0.9}}, "room": {"parameters": {"Blend": 0.5}}}}
+    out = discard_plan(plan, discarded, upcoming, reading)
+    ops = [(s.op, s.args.get("processor"), s.args.get("bypassed", s.args.get("value"))) for s in out.steps]
+    assert ops == [("bypass", "drive", True), ("parameter", "room", 0.2), ("parameter", "drive", 0.3),
+                   ("bypass", "drive", False), ("bypass", "room", False)]

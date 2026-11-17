@@ -5161,3 +5161,19 @@ happened**; a refused write leaves none. The page shows the `discard` and
 `midi_note` notes; `ui_fake`'s switch stand-in takes the new argument. Not
 fixed here: the flow-style save bug, which is #163. **Not tried on the
 rig.** *(2026-11-17)*
+
+**Channel presets: the re-review of PR #162 (#127).** `discard_plan` (a load
+or revert with `discard`) set a processor the plan replaces (removed, then
+added fresh under the same name, because the next rig leaves a value the
+running one set unstated) to the value the old instance had before the
+discarded turn, so the switch reported ok while playing what a restart from
+the file would not give, and with another plugin under that name sent it a
+parameter not its own. (a) A processor the plan adds, or its copy to stereo,
+is now left to the plan. (b) The restored values went after the plan's
+closing bypass-offs, so a pedal the plan brings in was heard a moment with
+the discarded value; they now go in front of them, as diff's step 7 has it.
+Two tests, on `discard_plan` directly, each shown failing with its half of
+the fix taken out. The counts of the review's fixes before this: the fast
+suite 4873 passed, 33 skipped on 1114d07; `test_ui_presets.py`, `test_ui.py`
+and `test_ui_tabs.py` (264 tests) 5 of 5 in a loop. **Not tried on the
+rig.** *(2026-11-17)*
