@@ -5011,3 +5011,27 @@ leaving the file's bytes as they were, a name clash, a mapping orphaned and
 dropped, a mapping followed through a rename into a restart, the amp's note,
 another width. **Not tried on the rig**: no load has been heard.
 *(2026-11-17)*
+
+**Channel presets, step 4: a channel from a preset, on Add channel and New
+rig (#127), the agent's half.** #125's `from` takes `{"preset": <name>}`
+beside `{"rig", "channel"}`, in `POST /rigs/new` and `POST
+/rigs/<rig>/channels/add` alike (`rigedit.channel_request`,
+`Agent._preset_copy`): the preset's chain is copied as a load copies it,
+each plugin named for the new channel, with its level; a request with no
+`width` takes the preset's preferred one. So **two channels from one preset
+on two inputs compile**, with distinct processors (tested: `left_compressor`
+and `right_compressor` in one new rig, compiled by `compile_named_rig`).
+The answer's `from` carries `amp` (`presets.amp_note`): **a second guitar,
+on an input the amp is not in front of, is told it has no amp** ("second
+has no amp: guitar was saved with the amp (Neve 2) in front of it, and
+second plays from vocal-in, and the rig's one amp is patched in front of
+guitar-in only. An amp per channel is not built"); on `guitar-in` of a rig
+with an amp nothing is said, and a new rig (which has no amp) says it of
+every preset heard through one. The new rig's header names the preset each
+channel came from. Refusals as before, before anything is written: the
+width a preset prefers is the compiler's to refuse on its input
+(`rig_problem`, stereo on one port without `mono_to_stereo`, with the
+patchbay's words, tested), and `no_preset`, `preset_problem`, `name`.
+Decided: what is in front of a channel is read from the rig file's `amp`
+for an add (the file is what the next start plays), from the run for a
+load. **Not tried on the rig.** *(2026-11-17)*

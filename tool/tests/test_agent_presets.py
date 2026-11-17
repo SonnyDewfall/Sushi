@@ -510,3 +510,82 @@ def test_a_load_refuses_a_rig_that_is_not_one_of_channels_and_a_busy_agent(root)
 
     status, body = asyncio.run(held())
     assert status == 409 and body["code"] == "busy", body
+
+
+# --------------------------------------------------------------------------- #
+# A channel from a preset: Add channel and New rig (#125's machinery)
+# --------------------------------------------------------------------------- #
+
+def test_a_new_rig_of_two_channels_from_one_preset_compiles_with_names_of_their_own(root):
+    agent, world, fake, _ = make_agent(root)
+    save_as(agent, "guitar", "gv-guitar")
+    status, body = call(agent, "POST", "/rigs/new", json={"name": "two-guitars", "channels": [
+        {"name": "left", "input": "guitar-in", "from": {"preset": "gv-guitar"}},
+        {"name": "right", "input": "vocal-in", "width": "mono", "from": {"preset": "gv-guitar"}}]})
+    assert status == 200, body
+    raw = yaml.safe_load(rig_file(root, "two-guitars").read_text())
+    left, right = raw["channels"]
+    assert left["width"] == "mono", "the preset's preferred width, the request having none"
+    assert [p["name"] for p in left["chain"]][:2] == ["left_compressor", "left_overdrive"]
+    assert [p["name"] for p in right["chain"]][:2] == ["right_compressor", "right_overdrive"]
+    assert "input" not in yaml.safe_load(preset_file(root, "gv-guitar").read_text())
+    compile_named_rig("two-guitars", root, root / MACHINE)
+    text = rig_file(root, "two-guitars").read_text()
+    assert "# left: its chain and level copied from channel preset gv-guitar (config/channels/gv-guitar.yaml)." in text
+    said = {c["name"]: c["from"] for c in body["channels"]}
+    assert said["left"]["preset"] == "gv-guitar" and said["left"]["amp"]["in_front"] is False
+
+
+def test_the_second_guitar_is_told_it_has_no_amp(root):
+    amp = yaml.safe_load(rig_file(root, "electric-chorus-2").read_text())["amp"]
+    raw = yaml.safe_load(rig_file(root, "guitar_vocal").read_text())
+    rigfile.write_rig(rig_file(root, "guitar_vocal"), {**raw, "amp": amp})
+    agent, world, fake, _ = make_agent(root, amp=True)
+    save_as(agent, "guitar", "guitar")
+    # A rig of one guitar on guitar-in, with the amp, gains a second guitar on vocal-in.
+    raw = yaml.safe_load(rig_file(root, "electric-chorus-2").read_text())
+    status, body = call(agent, "POST", "/rigs/electric-chorus-2/channels/add",
+                        json={"name": "second", "input": "vocal-in", "from": {"preset": "guitar"}})
+    assert status == 200, body
+    note = body["change"]["from"]["amp"]
+    assert note["in_front"] is False and "second has no amp" in note["note"] and "guitar-in only" in note["note"]
+    written = yaml.safe_load(rig_file(root, "electric-chorus-2").read_text())
+    assert written["channels"][0] == raw["channels"][0]
+    assert written["channels"][1]["name"] == "second" and written["channels"][1]["chain"][0]["name"] == "second_compressor"
+    # On guitar-in itself the amp is in front of it, and nothing is said.
+    status, body = call(agent, "POST", "/rigs/electric-chorus-hall/channels/add",
+                        json={"name": "first", "input": "guitar-in", "from": {"preset": "guitar"}})
+    assert status == 200, body
+    assert body["change"]["from"]["amp"] == {"in_front": True, "saved_with": "amp/models/Neve 2.nam", "note": None}
+
+
+def test_the_width_refusal_applies_to_a_preset_as_to_any_channel(root):
+    agent, world, fake, _ = make_agent(root)
+    save_as(agent, "vocal", "voice")
+    doc = yaml.safe_load(preset_file(root, "voice").read_text())
+    presets.write_preset(preset_file(root, "voice"), {**doc, "width": "stereo"})
+    machine = root / MACHINE
+    machine.write_text(machine.read_text().replace("    mono_to_stereo: true\n", "", 1))  # guitar-in: one port, no fan-out
+    world.state["machine"] = str(machine)
+    status, body = call(agent, "POST", "/rigs/new", json={"name": "wide", "channels": [
+        {"name": "keys", "input": "guitar-in", "from": {"preset": "voice"}}]})
+    assert status == 409 and body["code"] == "rig_problem" and "mono_to_stereo" in body["reason"], body
+    assert not rig_file(root, "wide").exists()
+
+
+def test_a_preset_that_is_not_there_or_will_not_load_is_refused_for_a_new_channel(root):
+    agent, world, fake, _ = make_agent(root)
+    before = rig_file(root, "electric_board").read_bytes()
+    status, body = call(agent, "POST", "/rigs/electric_board/channels/add",
+                        json={"name": "keys", "input": "vocal-in", "width": "mono", "from": {"preset": "nothing"}})
+    assert status == 409 and body["code"] == "no_preset", body
+    status, body = call(agent, "POST", "/rigs/electric_board/channels/add",
+                        json={"name": "keys", "input": "vocal-in", "from": {"preset": "Bad/name"}})
+    assert status == 409 and body["code"] == "no_preset", body
+    status, body = call(agent, "POST", "/rigs/electric_board/channels/add",
+                        json={"name": "keys", "input": "vocal-in", "from": {"preset": "x", "rig": "y"}})
+    assert status == 400, body
+    status, body = call(agent, "POST", "/rigs/electric_board/channels/add",
+                        json={"name": "keys", "input": "vocal-in", "from": {"rig": "electric_board", "channel": "board"}})
+    assert status == 400, "a rig's channel still needs its width"
+    assert rig_file(root, "electric_board").read_bytes() == before

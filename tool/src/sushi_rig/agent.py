@@ -4853,7 +4853,8 @@ class Agent:
         path = self._rigfile_path(request.match_info["name"])
 
         def edit(raw: dict[str, Any], run: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
-            copied, source = self._rigfile_copy(change)
+            amp = raw.get("amp") if isinstance(raw.get("amp"), dict) else None
+            copied, source = self._rigfile_copy(change, (amp or {}).get("model"))
             return rigedit.with_channel(raw, rigedit.channel_entry(change, copied)), {
                 "op": "add_channel", "channel": change["name"], "input": change["input"],
                 "width": change["width"], "from": source}
@@ -4914,13 +4915,21 @@ class Agent:
         await self._rigfile_git_after(answer, answer["path"])
         return {k: v for k, v in answer.items() if k not in ("run", "path")}
 
-    def _rigfile_copy(self, change: dict[str, Any]) -> tuple[dict[str, Any] | None, str | None]:
+    def _rigfile_copy(self, change: dict[str, Any], rig_amp: str | None = None,
+                      ) -> tuple[dict[str, Any] | None, dict[str, Any] | None]:
         """`(copied, said)` for a channel's `from`: its chain and level from
         that rig of config/rigs as the file is now, and where it came from,
         or `(None, None)`. Read from the file as it stands, not from git's
         commit of it: a tone saved and not yet committed is the one the
         player hears, and copying an older one would be the silent kind of
-        wrong. What git says of that file is in the answer (`from`)."""
+        wrong. What git says of that file is in the answer (`from`).
+
+        A channel preset (`{"preset"}`, #127) is copied as a load copies
+        it: each plugin named for the new channel, so two channels may start
+        from one preset; its preferred width fills a width the request left
+        out; and `said["amp"]` says whether the amp (`rig_amp`, the rig's)
+        is in front of the channel, and what to say when a preset heard
+        through it lands where it is not."""
         from . import rigedit
         from .save import file_git_state
 
@@ -4928,6 +4937,8 @@ class Agent:
         if not source:
             return None, None
         root = self._midi_root()
+        if "preset" in source:
+            return self._preset_copy(change, source["preset"], rig_amp)
         if source["rig"] not in midi_listener.program_order(root):
             raise RigFileRefused(f"there is no rig called {source['rig']!r} in config/rigs/ to start "
                                  f"{change['name']} from", "no_source")
@@ -5021,7 +5032,9 @@ class Agent:
                 copied, source = self._rigfile_copy(change)
                 entries.append(rigedit.channel_entry(change, copied))
                 sources.append(source)
-                if source:
+                if source and "preset" in source:
+                    said[change["name"]] = f"channel preset {source['preset']} ({source['file']})"
+                elif source:
                     said[change["name"]] = f"{source['file']}'s {source['channel']}"
             raw = rigedit.new_rig(name, entries, MONITOR_ROLE)
             self._rigfile_compile(raw, run)
@@ -5828,6 +5841,33 @@ class Agent:
         except rigfile.RigFileError as exc:
             raise RigFileRefused("nothing was written: " + "; ".join(exc.problems), "rig_problem") from exc
         return said
+
+    def _preset_copy(self, change: dict[str, Any], name: str, rig_amp: str | None,
+                     ) -> tuple[dict[str, Any], dict[str, Any]]:
+        """`_rigfile_copy`'s answer for a channel that starts from preset
+        `name`, for Add channel and New rig (#125's machinery): the preset's
+        chain named for `change["name"]`, its level, its width where the
+        request gave none, and what to say of it."""
+        from . import presets
+        from .save import SaveError, file_git_state
+
+        try:
+            preset = self._read_preset(name)
+        except SaveError as exc:
+            raise RigFileRefused(str(exc), "no_preset") from exc
+        if change.get("width") is None:
+            change["width"] = preset.width
+        bad = presets.name_problems(change["name"], preset)
+        if bad:
+            raise RigFileRefused(f"nothing was written: {'; '.join(bad)}", "name")
+        copied: dict[str, Any] = {"chain": presets.loaded_chain(preset, change["name"])}
+        if preset.level:
+            copied["level"] = preset.level
+        path = presets.preset_path(self._midi_root(), name)
+        state = file_git_state(self._midi_root(), path) or {}
+        return copied, {"preset": name, "file": self._save_shown(path), "plugins": len(preset.chain),
+                        "width": preset.width, "git": state.get("file"),
+                        "amp": presets.amp_note(preset, change["name"], change["input"], rig_amp)}
 
     def _read_preset(self, name: str) -> Any:
         """Preset `name` of config/channels/, checked by the compiler, or the
