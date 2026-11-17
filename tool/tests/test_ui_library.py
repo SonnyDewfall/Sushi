@@ -31,7 +31,7 @@ from ui_fake import GXTS9, MDA_DELAY, Served, UiRig, fixture_library  # noqa: E4
 from sushi_rig.paths import checkout_root  # noqa: E402
 from sushi_rig.plugins import read_manifest  # noqa: E402
 
-# Every URI in the manifest, which the fake's library lists (55 until #165 added four).
+# Every URI in the manifest, which the fake's library lists.
 LISTED = len(read_manifest((checkout_root() / "plugin-manifest.txt").read_text()))
 
 MVERB = "http://distrho.sf.net/plugins/MVerb"

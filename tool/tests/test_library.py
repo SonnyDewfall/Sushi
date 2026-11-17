@@ -221,7 +221,7 @@ def test_only_the_folder_given_is_scanned(tmp_path):
 def test_every_manifest_uri_is_listed_once_in_manifest_order():
     entries = build_library(MANIFEST, {}, {})["plugins"]
     assert [e["uri"] for e in entries] == MANIFEST
-    assert len(entries) == len(MANIFEST) == 59  # 55 until #165 added four
+    assert len(entries) == len(MANIFEST)
 
 
 def test_a_name_read_from_the_bundle_is_marked_as_such():

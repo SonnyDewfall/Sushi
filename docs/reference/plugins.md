@@ -19,9 +19,10 @@ fallback. That is the whole point: a missing or renamed plugin now fails loudly
 at startup instead of silently resolving against the system copy and hiding the
 fact that the rig is not actually self-contained.
 
-`plugin-manifest.txt` means **every LV2 URI this rig can load** — 59 of them,
-counted by URI — and it must include every plugin a config in `config/`
-uses; `sushi-rig plugins check` fails if one is missing. Since Sushi addresses
+`plugin-manifest.txt` means **every LV2 URI this rig can load**, one a line
+(`grep -c . plugin-manifest.txt` counts them), and it must include every
+plugin a config in `config/` uses; `sushi-rig plugins check` fails if one is
+missing. Since Sushi addresses
 plugins by URI and never by path, that manifest plus those bundles is the whole
 dependency set.
 
