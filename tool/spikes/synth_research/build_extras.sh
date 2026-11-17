@@ -28,12 +28,25 @@ here=$(cd "$(dirname "$0")" && pwd)
 out=$(realpath -m "${1:?usage: build_extras.sh DIR}")
 mkdir -p "$out/src" "$out/lv2" "$out/obj"
 
-# --- string-machine (BSL-1.0), at 7050cb1 (2022-02-19), DPF at its submodule commit
+# --- string-machine at 7050cb1 (2022-02-19), DPF at the commit 7050cb1 records.
+# The repository is BSL-1.0; the chorus plugin declares GPL-2.0-or-later
+# (its DistrhoPluginInfo.h).
 sm="$out/src/string-machine"
 if [ ! -d "$sm" ]; then
-    git clone -q --recursive --shallow-submodules https://github.com/jpcima/string-machine "$sm"
+    git clone -q https://github.com/jpcima/string-machine "$sm"
 fi
 git -C "$sm" checkout -q 7050cb1
+# A submodule cloned shallow may not hold the recorded commit: unshallow and retry.
+if ! git -C "$sm" submodule update -q --init --recursive; then
+    git -C "$sm/dpf" fetch -q --unshallow
+    git -C "$sm" submodule update -q --init --recursive
+fi
+want=$(git -C "$sm" ls-tree 7050cb1 dpf | awk '{print $3}')
+have=$(git -C "$sm/dpf" rev-parse HEAD)
+if [ "$want" != "$have" ]; then
+    echo "DPF is at $have, but string-machine 7050cb1 records $want" >&2
+    exit 1
+fi
 dpf="$sm/dpf"
 CXXFLAGS="-O2 -fPIC -std=gnu++17 -DNDEBUG -DDISTRHO_PLUGIN_TARGET_LV2 -fvisibility=hidden -ffast-math"
 
@@ -90,12 +103,14 @@ gm="$out/src/guitarmidi_3.2_ubuntu2404_amd64.deb"
 if [ ! -f "$gm" ]; then
     curl -sSL -o "$gm" https://github.com/geraldmwangi/GuitarMidi-LV2/releases/download/v3.2/guitarmidi-lv2_3.2_ubuntu2404_amd64.deb
 fi
+# the sha256 of the package as downloaded for this spike, 2026-11-17
+echo "8a34077dc06ddd13f111d65c450e74258df21df0c185d9ba9341af4e79fa1d78  $gm" | sha256sum -c --quiet
 rm -rf "$out/obj/gm" && mkdir -p "$out/obj/gm"
 dpkg-deb -x "$gm" "$out/obj/gm"
 rm -rf "$out/lv2/guitarmidi.lv2"
 cp -r "$out/obj/gm/usr/lib/lv2/guitarmidi.lv2" "$out/lv2/"
 
-# --- the spike's own two plugins: a mono tracker and a MIDI-to-audio probe
+# --- the spike's own three plugins: a mono tracker, a MIDI-to-audio probe and a pacer
 for name in pitch2midi midiprobe pacer; do
     bundle="$out/lv2/spike-$name.lv2"
     mkdir -p "$bundle"
