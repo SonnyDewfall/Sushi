@@ -220,6 +220,9 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 .track { display: flex; flex-direction: column; gap: 6px; margin-bottom: 14px; }
 .track-head { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; min-height: 28px; }
 .track-head .hint { margin-left: auto; font-size: 12px; color: var(--muted); }
+/* The master's limiter (#137): the compiler's, one read-only line after the chain. */
+.track .limiter { margin: 10px 0 0; padding: 8px 10px; border-left: 3px solid var(--muted); font-size: 13px; color: var(--muted); overflow-wrap: anywhere; }
+.track .limiter.warn { border-left-color: var(--refused); color: var(--refused); }
 .chain { display: flex; flex-direction: column; gap: 6px; }
 
 /* The tabs (#135): one chain at a time. A tab is a thumb high, and as wide

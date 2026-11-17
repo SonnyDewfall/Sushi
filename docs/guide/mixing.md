@@ -36,7 +36,8 @@ its fader does not.
      and Page Down for 5 dB, Home for silence and End for the top.
 
 The fader runs from **−∞** (silent) at the bottom, then from −60 dB up to
-+6 dB. At **0.0 dB** nothing is added or taken away.
++6 dB for a channel, and up to **0.0 dB for MASTER**. At **0.0 dB** nothing is
+added or taken away.
 
 The volumes work while the page is **Locked**, and never ask you to confirm:
 they are meant to be reached for while you play.
@@ -53,8 +54,15 @@ hundredths of a second, and brings it back to where **MASTER** was; the fader
 does not move. If you move **MASTER** during the dip, your level wins. See
 [Shaping a sound](shaping-a-sound.md#the-short-dip-when-the-chain-changes).
 
-There is no limiter on the master yet: nothing holds the mix under full scale
-except the faders. One is planned, and is waiting on a choice of plugin.
+Every rig's master ends with a **limiter**, a safety net the rig always has:
+below −1 dBFS it does not touch the sound at all, and above it, it pulls a
+sudden loud peak (a feedback squeal, a pedal stamped on at full) back toward
+full scale. It is not a wall: something very loud still gets through, louder
+than full scale, just much less of it. You cannot turn it off, move it or
+change it from the page; the **Master** tab shows it as one line, at the end.
+That is also why **MASTER stops at 0.0 dB**: it comes after the limiter, so
+turning it up past 0 would turn up what the limiter let through. To make the
+mix louder, raise the channels' volumes instead.
 
 The strip at the bottom of the left column, **master**, is the mix itself. It
 says how many plugins are on the master's own chain; click its name to open

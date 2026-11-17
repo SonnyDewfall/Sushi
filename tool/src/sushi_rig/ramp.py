@@ -72,6 +72,10 @@ A master volume set while the dip is under way is not lost:
   or exactly the level it started at, which reads as its own.
 
 A master already at the floor is not dipped: there is nothing to hear.
+
+Nor is more than the master volume's top put back (#137, `rigfile.MASTER_GAIN_MAX`,
+0 dB): the master's gain comes after its limiter, so a level read over it, which
+only something beside the agent can have set, is brought down to it (`Agent._dip`).
 """
 
 from __future__ import annotations

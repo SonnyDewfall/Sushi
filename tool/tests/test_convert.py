@@ -230,7 +230,7 @@ def test_what_is_heard_offline_is_the_master_alone():
     assert [t["name"] for t in vocal["tracks"]] == ["vocal", "master"]
     assert vocal["tracks"][0]["outputs"] == []
     assert {e["engine_channel"] for e in vocal["tracks"][0]["inputs"]} == {0}
-    assert [e["processor"] for e in vocal["initial_state"]] == ["vocal_send"]
+    assert [e["processor"] for e in vocal["initial_state"]] == ["vocal_send", "master_limiter"]
 
 
 # --------------------------------------------------------------------------- #

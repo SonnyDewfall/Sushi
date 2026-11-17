@@ -265,6 +265,36 @@ type from Sushi's saved session, its `copy`, the chain before as `units`
 uids), and its `parameters` and `bypassed`, read just before the remove (a remove whose values cannot be read
 is `502` and removes nothing).
 
+### The master's limiter and the master volume's top
+
+Every compiled rig's master ends with `master_limiter`, mda/Limiter at fixed
+settings (#137, option 2; [the rig file](rig-file.md#the-masters-limiter-137)).
+The agent treats it as the compiler's, by the one rule a send and the return
+go by (`live.protected_processor`): a remove of it is `409`, a move of it or
+past it is refused, an add with no place, or after the master's last plugin,
+goes in front of it, and one `after` it is `409` (`live.is_tail`); a live
+switch never adds behind it. It is never bypassed, and none of its
+parameters is set to anything but its fixed value (`400`,
+`rigfile.limiter_problem`), through `POST /live/parameter`,
+`/live/parameters`, `/live/bypass`, an undo or a switch's step; setting it to
+its own value, or bypass off, is allowed, since that puts it right, and is
+what a live switch does when Sushi had it otherwise. `GET /live/plugins`
+gives it the role `"limiter"`.
+
+**The master volume stops at 0 dB**, because Sushi applies the master's gain
+after its plugins, the limiter included. A set of the master's `gain` above
+`rigfile.MASTER_GAIN_MAX` (120/144 normalised, a float32's worth of slack)
+is refused with `400`, as a value outside 0 to 1 is, rather than clamped: a
+fader asked for +3 dB that played 0 dB would say one thing and do another.
+That holds for the route, `/live/parameters`, an undo (an undo back to a
+level over 0 dB, from a rig started before the cap, is refused) and a
+switch's step. The dip below never puts more than 0 dB back, and a level
+over it set beside the agent is brought down to it by the next dip. A save
+writes no more than `level: 0.0`, and a rig file that says more still
+loads, compiled at 0 dB. **Not run against a live Sushi**: the refusals are
+shown against the fakes; the limiter's sound in Sushi's offline renders
+(`tests/test_limiter_sushi.py`).
+
 ### The dip around a chain edit
 
 An add, a remove and a move change Sushi's graph while it plays, which can pop

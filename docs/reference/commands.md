@@ -105,7 +105,9 @@ Sushi loads a compiled config, never the YAML, so a rig file from `config/rigs/`
 is compiled first, for this machine and the way `up --rig <name>` compiles it,
 and that is what is checked; the compiled file's path is printed. A YAML file
 from anywhere else, or a file that is not JSON, is refused with a sentence
-saying what to pass, not a traceback.
+saying what to pass, not a traceback. A compiled rig is also held to ending
+with the master's limiter at the compiler's settings (#137,
+`verify.limiter_problems`), and the deep check then shows Sushi applied them.
 
 The deep check loads the config into a throwaway Sushi — `--dummy`, so no audio
 hardware, no JACK — and compares the running rig against the file, naming every

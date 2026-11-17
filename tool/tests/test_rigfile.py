@@ -84,15 +84,20 @@ def test_every_channel_ends_in_a_send_to_the_master_and_the_master_is_last():
         last = track["plugins"][-1]
         assert last == {"name": f"{track['name']}_send", "type": "internal", "uid": rigfile.SEND_UID}
     assert config["tracks"][-1]["plugins"][0]["uid"] == rigfile.RETURN_UID
+    # And the master ends with the compiler's limiter (#137), at its fixed settings.
+    assert config["tracks"][-1]["plugins"][-1] == {
+        "name": "master_limiter", "type": "lv2", "uri": "http://drobilla.net/plugins/mda/Limiter"}
     assert config["initial_state"] == [
         {"processor": "guitar_send", "properties": {"destination_name": "master_return"}},
         {"processor": "vocal_send", "properties": {"destination_name": "master_return"}},
+        {"processor": "master_limiter", "bypassed": False,
+         "parameters": {"Thresh": 0.975, "Output": 0.5, "Release": 0.5, "Attack": 0.15, "Knee": 0.0}},
     ]
 
 
-def test_the_master_chain_follows_the_return():
+def test_the_master_chain_follows_the_return_and_the_limiter_follows_it():
     raw = rig_yaml(channel("guitar"), {"output": "monitor-out", "chain": [{"name": "ceiling", "uri": "http://drobilla.net/plugins/mda/Limiter"}]})
-    assert [p["name"] for p in tracks(raw)["master"]["plugins"]] == ["master_return", "ceiling"]
+    assert [p["name"] for p in tracks(raw)["master"]["plugins"]] == ["master_return", "ceiling", "master_limiter"]
 
 
 def test_roles_are_carried_for_the_patchbay():
@@ -204,7 +209,7 @@ def test_a_capture_keeps_its_values_but_not_a_moved_send_or_return():
     config = emit_rig(parse_rig(raw), captured)
     by_name = {t["name"]: t for t in config["tracks"]}
     assert [p["name"] for p in by_name["guitar"]["plugins"]] == ["guitar_delay", "guitar_room", "guitar_send"]
-    assert [p["name"] for p in by_name["master"]["plugins"]] == ["master_return", "ceiling"]
+    assert [p["name"] for p in by_name["master"]["plugins"]] == ["master_return", "ceiling", "master_limiter"]
     state = {e["processor"]: e for e in config["initial_state"]}
     assert state["guitar_send"]["properties"] == {"destination_name": "master_return"}
     assert state["guitar_send"]["parameters"] == {"gain": 0.4}
@@ -223,7 +228,7 @@ def test_a_plugin_added_after_a_capture_still_comes_before_the_send():
 def test_a_state_file_with_null_properties_is_read(tmp_path):
     config = emit_rig(parse_rig(rig_yaml(channel("guitar"))),
                       {"processors": {"guitar_send": {"properties": None}}})
-    (entry,) = config["initial_state"]
+    (entry,) = [e for e in config["initial_state"] if e["processor"] == "guitar_send"]
     assert entry["properties"] == {"destination_name": "master_return"}
 
 

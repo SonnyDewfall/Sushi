@@ -29,7 +29,7 @@ channels:
 master:
   output: monitor-out           # a role in the machine file
   chain: []
-  level: -3.0                   # optional, dB: the master volume
+  level: -3.0                   # optional, dB: the master volume, 0 at most
 midi: ...                       # optional: see the MIDI page
 ```
 
@@ -38,7 +38,7 @@ A chain entry carries its settings (`bypassed`, `program`, `parameters`,
 `amp`. A channel's name becomes its track's, its stem's file name in a take and
 its send's prefix, so it follows the naming rule takes and rigs share
 (lowercase letters, digits, `-` and `_`); `master`, `master_return` and
-`<channel>_send` belong to the compiler. The roles are the
+`<channel>_send` belong to the compiler, and so does `master_limiter` (#137). The roles are the
 [machine file](machine-file.md)'s; the `midi:` section is in [MIDI](midi.md).
 
 ## Levels
@@ -52,6 +52,13 @@ as dB to a thousandth.
 
 The master's volume is `level:` on `master`, in dB, compiled to the master
 track's own gain as a channel's `level:` is to its send's. Unity writes nothing.
+**It stops at 0 dB** (#137, `rigfile.MASTER_LEVEL_MAX`): Sushi applies a track's
+gain after its plugins, so the master's gain comes after the limiter, and above
+unity it would lift what the limiter let through. A file that says more (one
+written before the cap) still loads: it is compiled at 0 dB, and the next save
+writes `level: 0.0`, so the file comes to say what plays. The agent refuses a
+master volume above 0 dB (`400`), as it refuses any value outside a
+parameter's range, and the web UI's master fader stops there.
 
 ## What `emit` makes of it
 
@@ -63,13 +70,7 @@ sushi-rig emit config/rigs/guitar_vocal.yaml -o /tmp/gv.json
 engine input per mono channel (feeding both halves of its stereo chain), each
 channel's own output for its stem, a send at the end of each chain, and a
 master track — last, on output bus 0, with its own chain — that
-is all the monitors hear. **No limiter is compiled onto the master yet** (#137):
-the one limiter in `plugin-manifest.txt`, mda/Limiter, holds no ceiling (at
-its default attack, +20 dBFS in comes out at +2.6 dBFS) and at +40 dBFS comes
-out louder than it went in, and the one on the
-machine that holds a ceiling, x42's dpl, looks 64 samples ahead, which would
-change every sound reference. What was found is in
-`tool/spikes/master_limiter/README.md`; which to do is the owner's call. A rig has at most three channels, because the master
+is all the monitors hear, ending with [the master's limiter](#the-masters-limiter-137). A rig has at most three channels, because the master
 and three stereo stems fill Sushi's eight outputs; more is refused with the
 arithmetic.
 
@@ -79,6 +80,41 @@ input, from the web UI's New rig screen and the rack
 comments, and only once the rig compiles and wires against the machine file
 as `up --rig` would compile and wire it; the machine file itself is never
 written, and a role it lacks is said with what to add.
+
+## The master's limiter (#137)
+
+Every compiled rig's master ends with `master_limiter`, mda/Limiter, placed by
+the compiler after the master's own chain, as it places the sends and the
+return: it is never written in a rig file (a plugin of that name is refused),
+never saved into one, and the agent never moves, removes, bypasses or retunes
+it. A plugin added to the end of the master goes in front of it. Chosen
+2026-11-17 (option 2): a **soft safety net**, not a ceiling.
+
+| Setting | Value | What it means (mdaLimiter.cpp) |
+|---|---|---|
+| Thresh | 0.975 | threshold 10^(2·0.975 − 2): **−1 dBFS** |
+| Output | 0.5 | output trim 10^(2·0.5 − 1): exactly 1 |
+| Attack | 0.15 | its default |
+| Release | 0.5 | its default |
+| Knee | 0 | hard |
+
+Below −1 dBFS it passes the signal **bit for bit** (its gain is held at exactly
+1.0 there), and it has no latency, so no sound reference changed when it went
+in: the loudest peaks at −1.69 dBFS. Above it, it catches a hot input: in
+Sushi 1.3.0, +12 dBFS of sweep or sine comes out at about −0.9 dBFS. **What it
+does not do**, measured (`tool/spikes/master_limiter/README.md`, and
+`tests/test_limiter_sushi.py`'s docstring): very loud input still gets out
+(+20 dBFS of noise at between −0.4 and +4.7 dBFS in Sushi, +2.6 in lv2apply;
++26 dBFS at about +12; +40 dBFS can come out louder than it went in); a
+signal in opposite phase on the two sides passes, since it watches their sum;
+and an infinity reaching it leaves the master NaN until the rig restarts (a
+NaN passes, and it recovers). x42's dpl, which holds a ceiling and looks
+1.33 ms ahead, is the upgrade if this is not enough. Its own defaults are not
+transparent (a −16 dBFS threshold, +2 dB of trim), so every setting is stated
+in the compiled config, and the compiler's win over any capture.
+
+A rig started before the limiter has none until it restarts: a live switch
+from it says so (`protected`) and restarts, and the Master tab says it.
 
 ## A mono plugin on a stereo channel
 
