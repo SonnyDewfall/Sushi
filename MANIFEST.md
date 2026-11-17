@@ -4939,3 +4939,75 @@ every frozen rig (`tests/test_presets.py`, 53 tests), and the checkout's
 nothing of what is there. **Not tried on the rig**: nothing here touches
 Sushi; no preset has been saved or loaded on the rig machine.
 *(2026-11-17)*
+
+**Channel presets, step 2: Save channel as… (#127), the agent's half.**
+`POST /rig/channels/<channel>/save-as {"name", "replace"?}` writes the
+running rig's channel as it plays into `config/channels/<name>.yaml`, not
+committed. The capture is a save's, under the live lock with the log's adds
+and removes (`live_edits` over `_chain_log`, #156), folded by
+`rigfile.fold_state` exactly as `POST /rig/save` folds it, and the channel's
+entry of that fold is the preset: so a preset holds what a save of the rig
+would write for that channel, and **never a `_to_stereo` copy** (a fold
+never writes one; `from_channel` drops any name ending so as well). Its
+plugins are stored under base names, its width as the preferred width, and
+`heard_through_amp` when it plays from `guitar-in` with the amp running
+(`running_amp`: none for `--no-amp`). Refused as a save is (`no_rig`,
+`panel`, `v1`, `changed`, `not_saved` for a capture of another rig), and
+`no_channel`, `taken` (a preset of that name, unless `"replace": true`,
+which updates the file in place keeping its comments and its
+`description`), `preset_problem` (a chain that would not compile as a
+preset). `GET /presets` lists config/channels/ with each preset's width,
+level, plugins, amp and origin, or why it cannot be loaded. Decided: a
+channel save is **not logged** and does not touch the unsaved count, since
+the rig is unchanged; it takes the live lock (as a save in place does), not
+the lifecycle lock. Tested (`tests/test_agent_presets.py`) on a temporary
+checkout of the frozen rigs, against `test_agent.RigLive` loaded from the
+real compile, whose chains hold the compiler's copies. **Not tried on the
+rig.** *(2026-11-17)*
+
+**Channel presets, step 3: loading one onto a channel of the running rig
+(#127), the agent's half.** `POST /rig/channels/<channel>/load {"preset",
+"discard"?, "drop_midi"?}` replaces the channel's chain with the preset's
+and its level with the preset's (its input, width and strip stay), each
+plugin named for the channel (`lead_compressor`), **writes the rig file**
+in place, and then plays it through the live switch (#112), as a revert
+does (`_revert_switch`, now taking a `mark` and its words): live where
+`rigfile.diff` can do it (removes, adds, moves, parameters, bypass, the
+send's level), by restart where not, with `why`. The switch's `op: "rig"`
+entry is the baseline, carrying `args.preset`, so nothing is unsaved after
+it and Undo stops there, as after a revert. **Refused while there is unsaved
+live work** (409 `unsaved`, `load_refusal`) unless `"discard": true`. The
+file as it was is kept as a revert point first (`saves.keep`, `how:
+"before loading channel preset X onto Y"`) unless a save already keeps it,
+so Revert… goes back. **Every refusal before anything is written**:
+`no_preset`, `preset_problem`, `no_channel`, `name` (a made name past the
+naming rule), `rig_problem` (the compiler's own words, e.g. a name another
+channel has), and **`midi`**: a mapping onto that channel's old plugins
+**follows** the same plugin (by URI, under the same base name) to its new
+name, and one that would point at nothing (no such plugin, or a plugin of
+that name that is another plugin) is refused with each mapping and why
+(`mappings`), or with `"drop_midi": true` dropped and said (`dropped`).
+**Found and fixed on the way:** a chain replaced whole could not be written
+by a plain merge into a flow-style chain (guitar_vocal's): ruamel folded the
+new entries' parameters across lines mid-key and the read-back refused it,
+so `write_rig` gains `replace_chains`, which takes the old chain out with
+its comments and writes the new one as new entries (block style). **Found,
+not fixed (it is not this issue's, and fixing it changes how saves write
+rig files):** the same folding makes `POST /rig/save` of a rig whose chain
+entries are flow style and carry no `parameters` (the committed
+guitar_vocal) write a file the next save refuses as a layout it cannot
+reproduce; shown on a frozen copy here, and not reported by any earlier
+test because none saves twice into a flow-style chain. Decided: the
+channel keeps its width (it is its input's; the answer says when the preset
+was saved from another width); the chain's own comments go with the chain;
+a bypass binding's change is live (the agent serves it), a knob's is a
+restart (Sushi's `cc_mappings`). One more restart the switch's own rules
+give: loading an all-stereo chain where it leaves the rig with no copy to
+stereo anywhere, then loading back a mono one, reads as `stereo_missing`.
+Tested (24 tests): a guitar's sound loaded live onto the vocal's input with
+distinct names and the copies, the same preset onto its own channel setting
+only what differs, unsaved, the snapshot and Revert back, every refusal
+leaving the file's bytes as they were, a name clash, a mapping orphaned and
+dropped, a mapping followed through a rename into a restart, the amp's note,
+another width. **Not tried on the rig**: no load has been heard.
+*(2026-11-17)*

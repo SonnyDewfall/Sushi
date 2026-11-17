@@ -215,7 +215,8 @@ _HEADER = (
 )
 
 
-def write_rig(path: Path, rig: dict, *, source: str | None = None, header: str | None = None) -> None:
+def write_rig(path: Path, rig: dict, *, source: str | None = None, header: str | None = None,
+              replace_chains: tuple[str, ...] = ()) -> None:
     """Write `rig` (the dict `parse_rig` reads) to `path`, keeping what a person wrote.
 
     A file already there is updated in place to hold `rig` — changed values set,
@@ -232,7 +233,15 @@ def write_rig(path: Path, rig: dict, *, source: str | None = None, header: str |
     `parse_rig` accepts, when the file there is not YAML or not a mapping or
     holds a comment or a layout that cannot be kept, or when the text would not
     read back as `rig` (yamlmerge checks that). The file is replaced whole or
-    not at all, with its permissions."""
+    not at all, with its permissions.
+
+    `replace_chains` names channels whose chain `rig` replaces whole (a
+    channel preset loaded onto it, #127): their old chain is taken out
+    first, with the comments inside it, and the new one written as a new
+    key, so its entries are laid out as new entries are (block style, one
+    setting a line) rather than matched to the old ones by name or URI and
+    folded into their layout. Every other line of the file is kept as an
+    update keeps it."""
     import os
     import shutil
 
@@ -243,6 +252,12 @@ def write_rig(path: Path, rig: dict, *, source: str | None = None, header: str |
     existing = path.read_text() if path.exists() else ""
     try:
         if existing.strip():
+            if replace_chains:
+                first = copy.deepcopy(rig)
+                for channel in first.get("channels") or []:
+                    if isinstance(channel, dict) and channel.get("name") in replace_chains:
+                        channel.pop("chain", None)
+                existing = yamlmerge.merged(existing, first)
             text = yamlmerge.merged(existing, rig)
         else:
             text = yamlmerge.fresh(rig, _HEADER.format(source=source) if source else header or "")

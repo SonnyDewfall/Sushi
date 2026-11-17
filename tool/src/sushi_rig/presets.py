@@ -365,6 +365,16 @@ def loaded_chain(preset: Preset, channel: str) -> list[dict[str, Any]]:
     return out
 
 
+def name_problems(channel: str, preset: Preset) -> list[str]:
+    """Why a name a load would make on `channel` cannot be a processor's:
+    each must match `save.NAME_PATTERN`, as every name a rig saves does (a
+    long channel name and a long base name can make one past 64
+    characters). Uniqueness across the rig is the compiler's to say."""
+    return [f"{channel}: {name!r} would be the name of {entry['name']} there, and a processor's name must match "
+            f"{NAME_PATTERN.pattern}" for entry in preset.chain
+            for name in [processor_name(channel, str(entry["name"]))] if not NAME_PATTERN.fullmatch(name)]
+
+
 def loaded_channel(entry: dict[str, Any], preset: Preset) -> dict[str, Any]:
     """Channel `entry` of a rig file with the preset loaded onto it: its
     chain replaced by the preset's and its level set to the preset's (none
