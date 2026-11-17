@@ -4628,3 +4628,11 @@ Mix sweep, rendered again through Sushi: as before (-32.92 to -33.36 dBFS).
 Docs: the guide, `web-ui.md`, `agent.md` (the route) and the skill. Merged
 origin/master (#156, #157) first. **Not tried on the rig:** nothing heard,
 a phone, the container job. *(2026-11-16)*
+
+**#154, PR #159: the re-review's two findings on the batched route (`POST /live/parameters`).**
+- **A master left down could be cleared too early.** The route cleared `master_down` as soon as the master's gain was set. A batch whose next parameter then failed put the gain back to the floor with the warning already gone, and a save afterwards wrote the floor as the rig's volume. Now `_master_back` runs only once every parameter is set.
+- **Put-backs went through a stuck connection.** After a 504, the route went on putting back the parameters already set, through the connection a call was still stuck in and under the live lock. Each put-back waited `LIVE_TIMEOUT` again, and only the first stuck call was kept, so the connection could be closed under a later one. Now nothing more is sent after a call that did not answer, or after a put-back that did not answer. The answer names each parameter that was not tried, and keeps the `pending` of the call that is stuck.
+- **What is still not covered:** what such a failure leaves changed is not logged. The answer says to read `/live`.
+- **Tests:** `test_a_batched_master_change_that_fails_part_way_leaves_a_master_left_down_still_down`, `test_a_batched_master_change_that_works_puts_a_master_left_down_right`, and `test_a_batch_whose_set_does_not_answer_puts_nothing_back_through_the_stuck_connection`. The first and third fail without the fix.
+- **Not run:** the rig.
+*(2026-11-17)*

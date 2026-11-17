@@ -1493,3 +1493,28 @@ def test_an_add_made_first_says_so_in_the_log():
     assert status == 200 and body["args"]["first"] is True and body["args"]["after"] is None
     status, body = call(agent, "POST", "/live/add", json={"track": "guitar", "uri": DELAY, "name": "ts2"})
     assert "first" not in body["args"]
+
+
+def test_a_batch_whose_set_does_not_answer_puts_nothing_back_through_the_stuck_connection(monkeypatch):
+    """Re-review of PR #159: after a 504 the batched route went on putting
+    back the parameters already set, through the connection with a call
+    still stuck in it and under the live lock, each waiting LIVE_TIMEOUT
+    again; and the connection could be closed under a put-back's own stuck
+    call. Now nothing more is sent, the answer says so, and the connection
+    is closed only once the stuck call returns."""
+    from sushi_rig import agent as agent_module
+
+    monkeypatch.setattr(agent_module, "LIVE_TIMEOUT", 0.3)
+    agent, fake = edit_agent()
+    fake.hang_on = "set_parameter"
+    fake.only = lambda name, args: args[:2] == ("comp", "KNEE")
+    out, closed_before, entries = _hung(
+        agent, fake, [("/live/parameters", {"processor": "comp", "parameters": {"RATIO": 0.3, "KNEE": 0.9}})],
+        settled=lambda: 1 in fake.closed)
+    status, body = out[0]
+    assert status == 504, body
+    assert "RATIO (not tried: Sushi did not answer)" in body["reason"]
+    sets = [c for c in fake.calls if c[0] == "set_parameter" and c[1] == "comp"]
+    assert [c[2] for c in sets] == ["RATIO", "KNEE"], "nothing sent after the call that hung"
+    assert entries == [], "nothing logged"
+    assert 1 not in closed_before and 1 in fake.closed

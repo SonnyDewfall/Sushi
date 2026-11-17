@@ -2416,7 +2416,9 @@ class Agent:
         the error is raised in its own class (502, or 504 with its
         `pending`), saying what was put back; one that cannot be put back is
         said too. One that did not answer may or may not have been applied,
-        and is left as it is, said."""
+        and is left as it is, said; after one, nothing more is sent through
+        the stuck connection. What is left changed this way is not logged,
+        and the answer says to read /live."""
         previous: dict[str, float] = {}
         for parameter in values:
             reading = await self._sushi(
@@ -2433,13 +2435,31 @@ class Agent:
                     request, self.live.set_parameter, controller, processor, parameter, value, reading=False)
             except web.HTTPException as exc:
                 back, stuck = [], []
-                for name in reversed(done):
-                    try:
-                        await self._sushi(request, self.live.set_parameter, controller, processor, name,
-                                          previous[name], reading=False)
-                        back.append(name)
-                    except web.HTTPException as again:
-                        stuck.append(f"{name} ({again.reason})")
+                pending = getattr(exc, "pending", None)
+                if pending is not None:
+                    # A call still running on this connection: putting back
+                    # through it would queue behind the stuck call and hold
+                    # the live lock for another LIVE_TIMEOUT a parameter,
+                    # which `_sushi` releases a 504 to avoid (re-review of
+                    # PR #159). Nothing is put back; the player reads /live.
+                    stuck = [f"{name} (not tried: Sushi did not answer)" for name in reversed(done)]
+                else:
+                    undo_order = list(reversed(done))
+                    for index, name in enumerate(undo_order):
+                        try:
+                            await self._sushi(request, self.live.set_parameter, controller, processor, name,
+                                              previous[name], reading=False)
+                            back.append(name)
+                        except web.HTTPException as again:
+                            stuck.append(f"{name} ({again.reason})")
+                            pending = getattr(again, "pending", None)
+                            if pending is not None:
+                                # This put-back is the stuck call now: the
+                                # rest are not tried, and the connection is
+                                # held until it returns.
+                                stuck += [f"{rest} (not tried: Sushi did not answer)"
+                                          for rest in undo_order[index + 1:]]
+                                break
                 said = [f"{processor} {parameter}: {exc.reason}"]
                 if back:
                     said.append(f"put back {', '.join(reversed(back))} as {'it was' if len(back) == 1 else 'they were'}")
@@ -2448,12 +2468,15 @@ class Agent:
                 if not done:
                     said.append("nothing else had been set")
                 raised = type(exc)(reason="; ".join(said))
-                if hasattr(exc, "pending"):
-                    raised.pending = exc.pending
+                if pending is not None:
+                    raised.pending = pending
                 raise raised from exc
             done.append(parameter)
-            if (processor, parameter) == (ramp.MASTER, ramp.GAIN):
-                self._master_back()
+        if (ramp.MASTER, ramp.GAIN) in {(processor, name) for name in values}:
+            # Only once every one is set: a batch that fails part-way puts the
+            # master back where it was, and a master a dip left down is still
+            # down (re-review of PR #159).
+            self._master_back()
         return previous
 
     async def _apply_bypass(
