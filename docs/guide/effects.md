@@ -68,28 +68,36 @@ the plugin's own range.
 **Tape echo** (GxEchoCat): an old tape machine with three playback heads.
 
 - **Mix**: how loud the echoes are. The guitar itself stays where it is, so
-  the whole sound gets louder as the echoes come up: about 1 dB at 40 %, 6 dB
-  at 100 % with Repeats at 0.35.
-- **Repeats**: how many times each echo comes back.
+  the whole sound gets a little louder as the echoes come up.
+- **Repeats**: how many times each echo comes back. It stops short of where
+  the echoes would ring on by themselves: with all three heads on, the
+  plugin's own knob a third further on keeps going for twenty seconds and
+  more after you stop playing.
 - **Tempo**: the echo time, as a tempo in BPM. It does not follow any clock.
 - **Head 1**, **Head 2**, **Head 3**: each is 0 (off) or 1 (on). Head 1 echoes
   an eighth note later (250 ms at 120 BPM), Head 2 a quarter note and Head 3
   a dotted quarter. With every head at 0 there is no echo at all.
-- **More**: **Input**, how hard the tape is driven. Raising it makes
-  everything louder, the guitar too, about 6 dB from 0.25 to 0.5. And
-  **Level**, the echo's output: at 67 % the guitar comes out as loud as it
-  went in, and the knob runs from about 12 dB quieter (0 %) to 6 dB louder
-  (100 %).
+- **More**: **Level**, the echo's output: from about 12 dB quieter than the
+  guitar (0 %) to as loud as it (100 %).
 
-The plugin's own **Output** knob is not shown; Level sets it, inside that
-safe range. Shown as itself it would be dangerous: at its top it is about
-78 dB louder than at 1.
+**How loud it can get.** Every knob the page shows is bounded so that, with
+all three heads on and Mix, Repeats and Level at 100 %, the echo is at most
+4 dB louder than the guitar with the echo switched off, and its peaks at
+most 12 dB higher (measured on a test sweep: +3.1 dB and +10.9 dB). The
+plugin's own **Output** and **Input** knobs are not shown, and nothing on
+the page goes past them: Output reaches about 78 dB louder at its top, and
+Input raises the guitar and the echoes together (about 12 dB at its top).
+Those limits are the page's only. A preset or rig file typed by hand can
+still set them to anything, and nothing stops it yet.
 
 **Shimmer** (Gxshimmizita): a reverb whose tail rises (or falls) in pitch.
 
-- **Mix**: how much reverb against the dry guitar. It stops short of "all
-  reverb" on purpose: the reverb is much louder than the guitar, so even
-  this range gets about 8 dB louder from 0 % to 100 %. Start low.
+- **Mix**: how much reverb against the dry guitar. It moves slowly at
+  first. 100 % is where the plugin itself starts (and where it is when added
+  from the Library), not "all reverb": the reverb is much louder than the
+  guitar, and at 100 % the whole sound is about 11 dB louder than the guitar
+  alone, with peaks about 19 dB higher. At 50 %, where the preset has it,
+  it is about 3 dB louder. Start low.
 - **Shift**: which way the tail moves in pitch, and how fast. 0 is a plain
   reverb; at 2, with Pitch mix at 1, a note's tail climbs about five
   semitones in a second and a half.
@@ -114,10 +122,13 @@ safe range. Shown as itself it would be dangerous: at its top it is about
   is one reason the four come as presets and not as a committed rig. Whether
   a stereo reverb should be held to 1 dB is an open question (#165).
 - **The tape echo, added from the Library, has no echoes and is quieter.**
-  At the plugin's own settings every head is off, Mix is at 0 % and Level at
-  41 %, about 5 dB under the guitar. Turn **Head 1** to 1, raise **Mix**,
-  and under **More** turn **Level** to 67 %. Its preset already has Head 1
-  on, Mix at 40 % and Level at 67 %.
+  At the plugin's own settings every head is off, Mix and Repeats are at
+  0 % and Level at 62 %, about 5 dB under the guitar. Turn **Head 1** to 1,
+  raise **Mix** and **Repeats**, and under **More** turn **Level** to 100 %.
+  Its preset already has Head 1 on, Mix at 50 %, Repeats and Level at 100 %.
+- **The shimmer, added from the Library, is loud.** It starts at the
+  plugin's own settings, which is Mix at 100 %: about 11 dB louder than the
+  guitar. Turn Mix down first. Its preset has Mix at 50 %.
 
 For the files behind this: the presets are `config/channels/tremolo.yaml`,
 `flanger.yaml`, `tape-echo.yaml` and `shimmer.yaml`, and the knob layouts are

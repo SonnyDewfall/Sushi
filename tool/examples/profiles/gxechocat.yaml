@@ -46,7 +46,7 @@ parameters:
     visibility: {value: hidden, provenance: draft}
     label: {value: Swell, provenance: fact}
     description:
-      value: The echoes' level (no echo at 0, measured); the dry stays put. Set by Mix.
+      value: The echoes' level (no echo at 0, measured); the dry stays put. Set by Mix, to 0.7.
       provenance: draft
     scale: {value: linear, provenance: fact}
     control: {value: knob, provenance: draft}
@@ -81,16 +81,13 @@ parameters:
       enumeration: false
       logarithmic: false
       settable: true
-    visibility: {value: primary, provenance: draft}
-    group: {value: echo, provenance: draft}
-    order: {value: 1, provenance: draft}
-    label: {value: Repeats, provenance: draft}
+    visibility: {value: hidden, provenance: draft}
+    label: {value: Sustain, provenance: fact}
     description:
-      value: 'How much of each echo is fed back: more is more repeats.'
+      value: How much of each echo is fed back; at 0.4 three heads ring on (measured). Set by Repeats, to 0.3.
       provenance: draft
     scale: {value: linear, provenance: fact}
     control: {value: knob, provenance: draft}
-    phone: {value: 2, provenance: draft}
 
   - name: BPM
     symbol: bpm
@@ -189,12 +186,10 @@ parameters:
       enumeration: false
       logarithmic: false
       settable: true
-    visibility: {value: advanced, provenance: draft}
-    group: {value: tape, provenance: draft}
-    order: {value: 1, provenance: draft}
+    visibility: {value: hidden, provenance: draft}
     label: {value: Input, provenance: fact}
     description:
-      value: 'Level into the tape: dry and echoes alike, about +6 dB from the default 0.25 to 0.5 (measured).'
+      value: 'Level into the tape, dry and echoes alike (+11.6 dB at 1, measured): past Level''s reach, so hidden.'
       provenance: draft
     scale: {value: linear, provenance: fact}
     control: {value: knob, provenance: draft}
@@ -203,29 +198,44 @@ controls:
   - id: mix
     drives:
       value:
-        - {parameter: Swell, curve: linear, at_0: 0.0, at_1: 1.0}
+        - {parameter: Swell, curve: linear, at_0: 0.0, at_1: 0.7}
       provenance: draft
     visibility: {value: primary, provenance: draft}
     group: {value: mix, provenance: draft}
     order: {value: 1, provenance: draft}
     label: {value: Mix, provenance: draft}
     description:
-      value: How loud the echoes are; the guitar itself stays where it is (Swell, measured).
+      value: How loud the echoes are; the guitar stays where it is. Swell 0 to 0.7.
       provenance: draft
     control: {value: knob, provenance: draft}
     phone: {value: 1, provenance: draft}
 
+  - id: repeats
+    drives:
+      value:
+        - {parameter: Sustain, curve: linear, at_0: 0.0, at_1: 0.3}
+      provenance: draft
+    visibility: {value: primary, provenance: draft}
+    group: {value: echo, provenance: draft}
+    order: {value: 1, provenance: draft}
+    label: {value: Repeats, provenance: draft}
+    description:
+      value: 'How many times each echo comes back. Sustain 0 to 0.3: three heads ring on at 0.4.'
+      provenance: draft
+    control: {value: knob, provenance: draft}
+    phone: {value: 2, provenance: draft}
+
   - id: level
     drives:
       value:
-        - {parameter: Output, curve: linear, at_0: 0.725, at_1: 1.39}
+        - {parameter: Output, curve: linear, at_0: 0.725, at_1: 1.17}
       provenance: draft
     visibility: {value: advanced, provenance: draft}
     group: {value: tape, provenance: draft}
-    order: {value: 2, provenance: draft}
+    order: {value: 1, provenance: draft}
     label: {value: Level, provenance: draft}
     description:
-      value: 'Output, kept to about -12 to +6 dB of the guitar''s level: Output 1.17 (67 %) is level with it.'
+      value: Output, from about 12 dB under the guitar (0 %) to level with it (100 %).
       provenance: draft
     control: {value: knob, provenance: draft}
     phone: {value: 5, provenance: draft}

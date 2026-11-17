@@ -46,7 +46,7 @@ parameters:
     visibility: {value: hidden, provenance: draft}
     label: {value: Dry/Wet, provenance: draft}
     description:
-      value: The plugin's own dry against wet, a straight crossfade. Set by Mix, which stops at 0.3.
+      value: The plugin's own dry against wet, a straight crossfade to a loud wet. Set by Mix.
       provenance: draft
     scale: {value: linear, provenance: fact}
     control: {value: knob, provenance: draft}
@@ -289,14 +289,14 @@ controls:
   - id: mix
     drives:
       value:
-        - {parameter: DRYWET, curve: linear, at_0: 0.0, at_1: 0.3}
+        - {parameter: DRYWET, curve: cosine, at_0: 0.0, at_1: 0.5}
       provenance: draft
     visibility: {value: primary, provenance: draft}
     group: {value: mix, provenance: draft}
     order: {value: 1, provenance: draft}
     label: {value: Mix, provenance: draft}
     description:
-      value: 'Dry to wet, Dry/Wet 0 to 0.3: past that the wet, 17 dB over the guitar (measured), only gets louder.'
+      value: 'Dry to wet, slow at first: Dry/Wet 0 to 0.5, the plugin''s own setting, 17 dB loud (measured).'
       provenance: draft
     control: {value: knob, provenance: draft}
     phone: {value: 1, provenance: draft}
