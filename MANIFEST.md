@@ -5227,3 +5227,43 @@ every entry, as on the rig.
 **Not done:** a folded file an old save left behind (a revert point from
 before this) is still one no save can update; its entries need writing in
 block style by hand. **Not tried on the rig.** *(2026-11-17)*
+
+**Help: the user guide, served by the agent (#167).** The page had no way to
+the guides in `docs/guide/`. The agent now serves them itself at `/help/`
+(`guide.py`): each page rendered to HTML on request, its pictures at
+`/help/img/`, nothing fetched from the network, so they open at a venue and
+from a phone. Read from `docs/guide/` of the checkout the package runs from,
+which is how the rig runs it (an editable install in the checkout's
+`tool/.venv`, started by the systemd unit from the checkout). **Installed
+any other way there is no guide**: the Help links stay, and each opens a 404
+page saying where it looked (`<venv>/lib/docs/guide`) and that the guide
+comes with `pip install -e`; a test installs a copy into a venv's
+site-packages and runs it to show that. **No new dependency**: the
+Markdown is rendered by a small renderer covering what the guide uses
+(headings with GitHub's anchors, nested lists, fenced code, tables, links
+with CommonMark's balanced parentheses, images and inline `<img>`); any
+other HTML is shown as text, a NUL as U+FFFD (one had hung the restore of
+held HTML), and only a picture of the guide's own `img/` is shown: one on
+the web is a link, never fetched, and counted missing like a bad `src`. Links between
+pages are rewritten to `/help/<page>` and carry `?from=` the screen the guide
+was opened from, so **Back to the rig**, sticky at the top of every page,
+returns there; a link into `docs/reference/` is shown as its path, since only
+the guide is served. Only a page name (`[a-z0-9-]+`, a `.md` there) or a
+picture's file name in `img/` is served, resolved and checked to be inside
+the folder; nineteen ways of writing a way out, symlinks out included, are
+refused in the tests, sent raw over a socket as well as through a client.
+`README.md`, `recording.md` and other cases of a name redirect to the page.
+**Help** is in the rack's header and, narrower than the two tabs, at the end
+of the stage's nav (to *Playing live*); quiet links go from the record bar
+and takes to `recording.md`, a channel's presets to `channel-presets.md`,
+Save to `saving.md`, the rigs, the amp card and the New rig screen to
+theirs (`HELP` in `rig.js`). None moves the stage: the review of PR #168
+measured the lock note's link squeezing its text (82 to 114 px tall at 390)
+and the record head's growing it 18 px, so the note has none and the head's
+keeps its 44 px with negative margins; browser tests measure both at 320 and
+390. Tests: the renderer, the routes and
+path safety (`test_guide.py`, which also crawls the served guide from its
+front page and follows every link, picture and anchor), and the links on
+both screens and back, at a phone's width on the stage (`test_ui_help.py`).
+**Not tried on the rig, or on a real phone**: the phone is Chromium at 390
+by 844. *(2026-11-17)*
