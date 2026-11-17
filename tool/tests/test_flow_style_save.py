@@ -25,7 +25,7 @@ pytest.importorskip("aiohttp")
 
 from sushi_rig import rigfile, yamlmerge  # noqa: E402
 
-from rig_fixtures import frozen  # noqa: E402
+from rig_fixtures import FROZEN, frozen  # noqa: E402
 from test_agent_presets import call, make_agent, rig_file, root  # noqa: E402,F401
 
 
@@ -37,6 +37,30 @@ def reproducible(text: str) -> bool:
     """Whether the next update can be made to this text: an update that
     changes nothing gives it back byte for byte."""
     return yamlmerge.merged(text, yaml.safe_load(text)) == text
+
+
+# The vocal chain's plugins as the rig has them: each with parameters, so a
+# save gives every vocal entry some, as it gives the guitar's. `test_agent`'s
+# fake knows none of these plugins' (no frozen rig sets them). MVerb's and
+# 3BandEQ's names are their Turtle's (tests/fixtures/lv2/); the mda ones'
+# are not in any fixture and are written as the plugins name them, unchecked
+# here. Spaces and a slash in a name are the point: a fold can land inside one.
+VOCAL_PARAMETERS = {
+    "vocal_dynamics": {"Thresh": 0.6, "Ratio": 0.4, "Output": 0.5, "Attack": 0.18, "Release": 0.55,
+                       "Limiter": 1.0, "Gate Thr": 0.123456, "Gate Att": 0.1, "Gate Rel": 0.5, "Mix": 1.0},
+    "vocal_deess": {"Thresh": 0.15, "Freq": 0.6, "HF Drive": 0.5},
+    "vocal_eq": {"Low": 0.0, "Mid": -3.5, "High": 2.0, "Master": 0.0, "Low-Mid Freq": 440.0,
+                 "Mid-High Freq": 2000.0},
+    "vocal_reverb": {"Damping": 0.5, "Density": 0.5, "Bandwidth": 0.5, "Decay": 0.5, "Predelay": 0.0001,
+                     "Size": 0.75, "Gain": 1.0, "Mix": 0.15, "Early/Late Mix": 0.5},
+    "vocal_limiter": {"Thresh": 0.6, "Output": 0.7, "Attack": 0.15, "Release": 0.5, "Knee": 0.0},
+}
+
+
+def knowing_the_vocal(fake):
+    for name, values in VOCAL_PARAMETERS.items():
+        fake.values[name] = dict(values)
+    return fake
 
 
 def set_value(agent, fake, processor, value):
@@ -52,8 +76,11 @@ def test_a_flow_style_rig_saves_again_and_again_and_each_save_can_be_updated_by_
     assert before == frozen("guitar_vocal").read_text()
     assert "      - {name: guitar_delay, uri:" in before, "the case: flow-style entries with no parameters"
     agent, world, fake, runner = make_agent(root)
+    knowing_the_vocal(fake)
 
-    # As it plays: every captured parameter is written into entries that had none.
+    # As it plays: every captured parameter is written into entries that had none,
+    # all eleven of them (review of PR #169: one entry moved while another was
+    # still folded inside a key was blamed on the move, and the save refused).
     status, body = call(agent, "POST", "/rig/save", json={})
     assert status == 200, body
     once = rig_file(root, "guitar_vocal").read_text()
@@ -88,9 +115,9 @@ def test_a_flow_style_rig_saves_again_and_again_and_each_save_can_be_updated_by_
     # as every other rig file writes one, its quotes as the person wrote them.
     assert ('      - name: guitar_delay\n        uri: "http://plugin.org.uk/swh-plugins/lcrDelay"\n'
             "        parameters:\n") in thrice
-    assert "{name: guitar_" not in thrice
-    # One that gained none (the fake knows no parameters of mda's) is left as written.
-    assert '      - {name: vocal_dynamics, uri: "http://drobilla.net/plugins/mda/Dynamics"}\n' in thrice
+    assert "{name: " not in thrice
+    assert ('      - name: vocal_reverb\n        uri: "http://distrho.sf.net/plugins/MVerb"\n'
+            "        parameters:\n") in thrice and "          Early/Late Mix: 0.5\n" in thrice
     # Everything outside the chains is as it was.
     head, tail = before.index("channels:"), before.index("master:")
     assert thrice[:head] == before[:head] and thrice.endswith(before[tail:])
@@ -168,7 +195,10 @@ def test_a_save_reverted_and_saved_again_saves_twice(root):
         save_twice(agent, fake, root)
 
 
-def test_a_new_rig_and_a_channel_copied_from_a_flow_style_rig_save_twice(root):
+def test_a_new_rig_and_a_channel_copied_from_a_flow_style_rig_are_block_style_and_write_twice(root):
+    """A guard, not a regression test: rig new and a copied channel write
+    block style throughout, so they were never folded (this passes on
+    f6303f5). It keeps them so."""
     agent, world, fake, runner = make_agent(root)
     status, body = call(agent, "POST", "/rigs/new", json={"name": "gv-copy", "channels": [
         {"name": "lead", "input": "guitar-in", "width": "mono", "from": {"rig": "guitar_vocal", "channel": "guitar"}}]})
@@ -266,3 +296,72 @@ def test_inline_parameters_that_outgrow_the_line_are_a_block_not_folded_inside_a
     out = updated(text, lambda d: d["chain"][0]["parameters"].update({f"L delay {i} (ms)": 0.25 for i in range(6)}))
     assert out.startswith('chain:\n  - name: a\n    uri: "http://plugin.org.uk/swh-plugins/lcrDelay"\n'
                           "    parameters:\n      C delay (ms): 0.5\n      L delay 0 (ms): 0.25\n")
+
+
+def test_every_entry_of_guitar_vocal_gaining_parameters_is_written_at_once():
+    # The reviewer's probe, as a test: values of every length, so folds land
+    # everywhere, inside keys too, on a first save of the whole rig. 3 of 60
+    # were refused before (review of PR #169).
+    import random
+
+    known = {}
+    for path in sorted(FROZEN.glob("*.yaml")):
+        for channel in yaml.safe_load(path.read_text()).get("channels") or []:
+            for entry in channel.get("chain") or []:
+                if entry.get("parameters"):
+                    known.setdefault(entry["uri"], list(entry["parameters"]))
+    text = frozen("guitar_vocal").read_text()
+    names = {e["name"]: list(VOCAL_PARAMETERS[e["name"]]) for e in yaml.safe_load(text)["channels"][1]["chain"]}
+    lengths = [0.5, 0.25, -12.0, 0.123456, 1, 0, 440.0, -3.5, 0.0001, 20000.0, True]
+    chosen = random.Random(169)
+    for _ in range(40):
+        def change(d):
+            for entry in d["channels"][0]["chain"]:
+                entry["parameters"] = {k: chosen.choice(lengths) for k in known[entry["uri"]]}
+            for entry in d["channels"][1]["chain"]:
+                entry["parameters"] = {k: chosen.choice(lengths) for k in names[entry["name"]]}
+
+        out = updated(text, change)
+        assert "{name: " not in out and comments(out) == comments(text)
+
+
+def test_a_flow_list_that_outgrows_its_line_is_folded_as_before_when_that_can_be_reproduced():
+    # `_to_block` moves mappings only; a flow list it cannot move is written
+    # folded, as before #163, when the next update can make that file
+    # (review of PR #169: it was refused).
+    text = "chain:\n  - name: a\n    ports: [1, 2]\n"
+    out = updated(text, lambda d: d["chain"][0]["ports"].extend(range(3, 40)))
+    assert out.startswith("chain:\n  - name: a\n    ports: [1, 2, 3,") and len(out.splitlines()) > 3
+    # Inside a flow entry it goes with the entry, into block style.
+    text = "chain:\n  - {name: a, uri: u, ports: [1, 2]}\n"
+    out = updated(text, lambda d: d["chain"][0]["ports"].extend(range(3, 40)))
+    assert out.startswith("chain:\n  - name: a\n    uri: u\n    ports:\n    - 1\n") or \
+        out.startswith("chain:\n  - name: a\n    uri: u\n    ports:\n      - 1\n"), out
+
+
+def test_a_flow_mapping_under_a_key_with_a_trailing_comment_is_folded_as_before():
+    # A mapping under a key has no line of its own for its trailing comment,
+    # so it is not moved; folded, the file still reproduces, so it is written.
+    text = "kind: rig\nmeta: {version: '1.0', status: wip}  # meta note\nx: 1\n"
+    out = updated(text, lambda d: d["meta"].update(status="w" * 100))
+    assert out.startswith("kind: rig\nmeta: {version: '1.0', status:") and "# meta note" in out
+
+
+def test_an_entry_after_a_trailing_commented_flow_entry_is_written_folded_when_that_reproduces():
+    # Where block style comes out wrongly (after `a`'s trailing comment, in a
+    # list with other comments), `b` stays in flow style, folded as before
+    # #163, and is written when that file reproduces (review of PR #169).
+    # Where the fold falls inside a key (`Knob 3`) the text does not read
+    # back, and the save is refused, as it was before, now saying why.
+    text = (
+        "# head\nchannels:\n  - name: guitar\n    chain:\n      # above a\n"
+        '      - {name: a, uri: "http://x.org/p#frag"}   # about a\n'
+        '      # above b\n      - {name: b, uri: "urn:b"}\n      - {name: c, uri: "urn:c"}  # about c (last)\n'
+        "      # end of chain list\n    # end of channel\n  # end of channels\n\n# end of document\n")
+    out = updated(text, lambda d: d["channels"][0]["chain"][1].update(parameters={f"Knob{i}": 0.5 for i in range(6)}))
+    assert '      # above b\n      - {name: b, uri: "urn:b", parameters: {Knob0: 0.5,' in out
+    assert len(out.splitlines()) == len(text.splitlines()) + 1, "folded once"
+    data = yaml.safe_load(text)
+    data["channels"][0]["chain"][1]["parameters"] = {f"Knob {i}": 0.5 for i in range(6)}
+    with pytest.raises(yamlmerge.MergeError, match="left in flow style.*entry 'b'.*trailing comment"):
+        yamlmerge.merged(text, data)

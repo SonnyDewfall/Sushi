@@ -1257,29 +1257,47 @@ def _to_block(container: Any, key: Any, lines: list[str]) -> str | None:
 
 def _undo_of(container: Any, key: Any):
     """A function that puts back what `_to_block(container, key, ...)`
-    changes: the comment slots of the container and of every collection in
-    the entry, the text of the tokens in them, the container's end comments
-    and each collection's style."""
+    changes: the container's slot for that entry and its end comments, the
+    comment slots of every collection in the entry, the text of the tokens
+    in them, and each one's style. Nothing of the container's other entries,
+    so moves of two entries of one list are undone apart."""
     from ruamel.yaml.tokens import CommentToken
 
-    held = []
-    for c in [container] + _within(container[key]):
-        items = {k: list(v) for k, v in c.ca.items.items()}
-        tokens = [(s, s.value) for v in items.values() for s in v if isinstance(s, CommentToken)]
-        held.append((c, items, tokens, c.fa.flow_style()))
+    def tokens(slots: Any) -> list[Any]:
+        return [(s, s.value) for s in (slots or []) if isinstance(s, CommentToken)]
+
+    slot = list(container.ca.items[key]) if key in container.ca.items else None
     end = list(container.ca.end) if getattr(container.ca, "end", None) is not None else None
+    held = []
+    for c in _within(container[key]):
+        items = {k: list(v) for k, v in c.ca.items.items()}
+        held.append((c, items, [t for v in items.values() for t in tokens(v)], c.fa.flow_style()))
+    texts = tokens(slot) + tokens(end)
 
     def undo() -> None:
-        for c, items, tokens, style in held:
-            c.ca.items.clear()
-            c.ca.items.update(items)
-            for token, value in tokens:
-                token.value = value
-            c.fa.set_flow_style() if style is True else c.fa.set_block_style() if style is False else None
+        if slot is None:
+            container.ca.items.pop(key, None)
+        else:
+            container.ca.items[key] = list(slot)
         if end is not None:
             container.ca.end[:] = end
+        for c, items, _, style in held:
+            c.ca.items.clear()
+            c.ca.items.update({k: list(v) for k, v in items.items()})
+            c.fa.set_flow_style() if style is True else c.fa.set_block_style() if style is False else None
+        for token, value in texts + [t for *_, ts, _ in held for t in ts]:
+            token.value = value
 
     return undo
+
+
+def _after_trailing_comment(container: Any, key: Any) -> bool:
+    """Whether list entry `key` comes right after a flow entry with a
+    trailing comment of its own: where ruamel.yaml 0.19 can write a block
+    entry with its keys run together (`_outgrown_to_block`)."""
+    if _is_map(container) or not isinstance(key, int) or key == 0 or not _is_flow(container[key - 1]):
+        return False
+    return bool(_split(_get_after(container, key - 1))[0].strip())
 
 
 def _where(container: Any, key: Any) -> str:
@@ -1288,7 +1306,7 @@ def _where(container: Any, key: Any) -> str:
     return f"entry {name!r}" if name is not None else f"entry {key!r}"
 
 
-def _outgrown_to_block(y: Any, doc: Any, update: _Update, lines: list[str], data: Any) -> None:
+def _outgrown_to_block(y: Any, doc: Any, update: _Update, lines: list[str], data: Any) -> list[str]:
     """Write in block style each flow mapping this update grew past its line.
 
     ruamel.yaml folds a flow collection that is wider than the dumper's
@@ -1308,61 +1326,83 @@ def _outgrown_to_block(y: Any, doc: Any, update: _Update, lines: list[str], data
       (a `bypassed: true` added to an entry already near the width) is
       written in block style too.
 
-    A flow collection the update did not touch is left as it is, however it
-    is written. ruamel.yaml writes some block entries wrongly: in 0.19 one
-    right after a flow entry with its own trailing comment, in a list
-    holding other comments, comes out with its keys run together on one
-    line (seen 2026-11-17; such a file is refused unchanged too). So each
-    move is checked, not assumed: an entry that gained settings and cannot
-    be moved stays in flow style, and one that would be folded and cannot
-    be moved is a `MergeError`, as is one `_to_block` cannot move at all.
+    All of them are moved before anything is checked: while one is still in
+    flow style its fold can break the reading of the whole text, and would
+    be blamed on another (review of PR #169). The result is then read back
+    once. A flow collection the update did not touch is left as it is, and
+    so is one `_to_block` cannot move (a flow list, a mapping under a key
+    with a trailing comment): folded, it may still be a file the next update
+    can make, which `merged` checks, as it did before #163.
 
-    `lines` are the file's own, for the gap before a trailing comment;
-    `data` is what the document now holds, as PyYAML must read it back."""
+    ruamel.yaml writes some block entries wrongly: in 0.19 one right after a
+    flow entry with its own trailing comment, in a list holding other
+    comments, comes out with its keys run together on one line (seen
+    2026-11-17; such a file is refused unchanged too). So when the read
+    back fails, each moved entry in that place goes back to flow style, as
+    it was before #163, for `merged`'s checks to judge.
+
+    Returns what was left in flow style and why, for `merged` to say if
+    the result is refused. `lines` are the file's own, for the gap before a
+    trailing comment; `data` is what the document now holds, as PyYAML
+    must read it back."""
     import yaml
     from ruamel.yaml import YAMLError
 
-    def written_right() -> bool:
-        try:
-            return yaml.safe_load(_dump_aside(y, doc)) == data
-        except yaml.YAMLError:
-            return False
+    if not update.flowed:
+        return []  # no flow collection written into: nothing here can have grown
+    moved: list[tuple[Any, Any, Any]] = []  # (container, key, undo), in the order moved
+    left: dict[int, str] = {}  # id of an entry not moved: why, said
 
-    # Gained settings: block style where ruamel.yaml can write it, else left
-    # in flow style, as before #163, for the fold check below to judge.
+    def move(container: Any, key: Any) -> None:
+        undo = _undo_of(container, key)
+        why = _to_block(container, key, lines)
+        if why is None:
+            moved.append((container, key, undo))
+        else:
+            left[id(container[key])] = f"{_where(container, key)}: {why}"
+
     for container, key in _top_flows(doc):
         if any(id(n) in update.grown for n in _within(container[key])):
-            undo = _undo_of(container, key)
-            if _to_block(container, key, lines) is None and not written_right():
-                undo()
+            move(container, key)
     while True:
-        tops = _top_flows(doc)
+        tops = [(c, k) for c, k in _top_flows(doc) if id(c[k]) not in left]
+        if not tops:
+            break
         try:
             spans = _flow_spans(_dump_aside(y, doc))
         except YAMLError:
             # A fold inside a key makes text that does not scan at all, and
             # does not say which entry it is in: each one changed may be it.
-            spans = [(0, 1)] * len(tops)
-        if len(spans) != len(tops):
-            return  # not the document it was; `merged`'s last check says so if it matters
-        moved = False
-        for (container, key), (first, last) in zip(tops, spans):
-            if last > first and any(id(n) in update.flowed for n in _within(container[key])):
-                why = _to_block(container, key, lines)
-                if why is not None:
-                    raise MergeError(
-                        f"{_where(container, key)} no longer fits on its line and would be folded across "
-                        f"lines, which the next update could not reproduce, but cannot be written in block "
-                        f"style: {why}; nothing was written. Write it in block style by hand, then retry")
-                if not written_right():
-                    raise MergeError(
-                        f"{_where(container, key)} no longer fits on its line and had to be written in "
-                        "block style, one setting a line, which ruamel.yaml writes wrongly where it is (as "
-                        "it does after a flow entry with its own trailing comment); nothing was written. "
-                        "Move that comment to the line above its entry, then retry")
-                moved = True
-        if not moved:
-            return
+            spans = None
+        if spans is not None:
+            every = _top_flows(doc)
+            if len(spans) != len(every):
+                break  # not the document it was; `merged`'s checks say so if it matters
+            folded = {id(c[k]) for (c, k), (first, last) in zip(every, spans) if last > first}
+        else:
+            folded = {id(c[k]) for c, k in tops}
+        due = [(c, k) for c, k in tops
+               if id(c[k]) in folded and any(id(n) in update.flowed for n in _within(c[k]))]
+        if not due:
+            break
+        for container, key in due:
+            move(container, key)
+
+    if not moved:
+        return list(left.values())
+    try:
+        right = yaml.safe_load(_dump_aside(y, doc)) == data
+    except yaml.YAMLError:
+        right = False
+    if not right:
+        for container, key, undo in reversed(moved):
+            if _after_trailing_comment(container, key):
+                undo()
+                left[id(container[key])] = (
+                    f"{_where(container, key)}: ruamel.yaml writes it wrongly in block style right after "
+                    "a flow entry with its own trailing comment (move that comment to the line above its "
+                    "entry)")
+    return list(left.values())
 
 
 # --------------------------------------------------------------------------- #
@@ -1396,7 +1436,7 @@ def merged(text: str, data: dict) -> str:
         raise MergeError(layout_problem)
     update = _Update()
     update.map(doc, _prepare(data))
-    _outgrown_to_block(y, doc, update, text.splitlines(), data)
+    left = _outgrown_to_block(y, doc, update, text.splitlines(), data)
     out = _dump(y, doc)
     expected = before - Counter(update.gone)
     after = Counter(_comments(out, True))
@@ -1405,10 +1445,15 @@ def merged(text: str, data: dict) -> str:
         what = (f"{sum(extra.values())} comment(s) written more than once, first {next(iter(extra))!r}"
                 if extra else f"{sum(missing.values())} comment(s) lost, first {next(iter(missing))!r}")
         raise MergeError(f"the update would leave {what}; nothing was written")
-    _read_back(out, data)
+    why = ("; left in flow style, and folded across lines, since it could not be written in block style: "
+           + "; ".join(left)) if left else ""
+    try:
+        _read_back(out, data)
+    except MergeError as exc:
+        raise MergeError(f"{exc}{why}") from exc
     # Each update must leave a file the next can make (#163): one this
     # cannot reproduce would be refused by the next save, with nothing said now.
     _, _, problem = _choose(out)
     if problem:
-        raise MergeError(f"the update would write a file the next update could not make: {problem}")
+        raise MergeError(f"the update would write a file the next update could not make: {problem}{why}")
     return out
