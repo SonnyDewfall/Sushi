@@ -90,6 +90,13 @@ config compiled again from the file, and a channel the file gained since
 coming up as an empty track with its send on `UiRig`, which is how the
 compiler builds one; plugins a copied chain brings are not put on it).
 
+Channel presets (#127, `Served(save=True)` again): the agent's real
+/presets, save-as and load routes over `UiSave`'s checkout, writing real
+presets to its config/channels/ and the real rig file. Invented: what the
+live switch a load makes does (`UiLifecycle.switch_held` says "live", and
+`UiSave.switched` then gives each track whose plugins the file changed the
+file's chain, as `rig_of` lays it out, at its captured defaults).
+
 A rig file's own rig (`rig_of`, #135): `UiRig` holding the tracks the real
 compiler lays out for a rig file (`rigfile.compile_rig`: each channel's
 plugins in order, each mono plugin's copy to stereo, the sends, the master
@@ -610,6 +617,7 @@ class UiSave:
         self.rig: "UiRig | None" = None  # `Served` hands over its rig, for a restart to add tracks to
         self.config = self.compile_running()
         lifecycle.on_restart = self.restarted
+        lifecycle.on_switch = self.switched
         # Recording (`UiRecorder`): a machine file and the config `up --rig`
         # compiles, at real paths the state file names, and a recorder.
         self.recorder = UiRecorder(self.root, self.state) if record else None
@@ -638,6 +646,43 @@ class UiSave:
     def write_state(self, state):
         self.state = copy.deepcopy(state)
         self.lifecycle.rig = state["config_name"]
+
+    def switched(self, name):
+        """A switch into the running rig's own file as it now stands (a
+        channel preset loaded, #127; a revert): each track whose chain the
+        file has changed takes the file's, as `rig_of` lays a rig file out
+        (the compiler's names and copies to stereo, every plugin at its
+        captured defaults or with no parameters), with each plugin's bypass
+        as the file says. Invented, as `rig_of` is: the values; and that a
+        switch lands whole, which the agent's live switch checks on a real
+        Sushi and this does not."""
+        import yaml
+
+        if self.rig is None or name != self.state["config_name"]:
+            return
+        path = self.root / self.state["rig"]
+        fresh = rig_of(path)
+        bypass = {p["name"]: bool(p.get("bypassed")) for c in yaml.safe_load(path.read_text())["channels"]
+                  for p in c.get("chain") or []}
+        rig = self.rig
+        with rig.lock:
+            def plugins(chain):
+                return [n for n in chain if not n.endswith("_to_stereo")]
+
+            for track, chain in fresh.chains.items():
+                # The fake's own tracks have no copies to stereo, which the
+                # compile has: a track is the file's when its plugins are.
+                if track not in rig.chains or plugins(rig.chains[track]) == plugins(chain):
+                    continue
+                for gone in set(rig.chains[track]) - set(chain):
+                    for held in (rig.info, rig.bypassed, rig.classes, rig._id_of):
+                        held.pop(gone, None)
+                for came in chain:
+                    if came not in rig.info:
+                        rig.info[came], rig.classes[came] = fresh.info[came], fresh.classes[came]
+                    rig.bypassed[came] = bypass.get(came, rig.bypassed.get(came, False))
+                rig.chains[track] = list(chain)
+        self.config = self.compile_running()
 
     def compile(self, name, root, machine):
         self.compiled.append(name)
@@ -782,6 +827,7 @@ class UiLifecycle:
         self.calls: list = []
         self.agent: Agent | None = None
         self.on_restart = None  # `UiSave.restarted`, when there is a rig file
+        self.on_switch = None  # `UiSave.switched`, likewise
 
     def describe(self):
         if self.rig is None:
@@ -827,6 +873,8 @@ class UiLifecycle:
             answer.update(how="restart", why=why, command=["up", name, "--rig", "--headless"], output="")
             entry = self.agent._record("rig", {"rig": name, "how": "restart", "why": [w["code"] for w in why]}, previous)
         self.rig = name
+        if self.on_switch:
+            self.on_switch(name)
         return {**answer, "entry": entry, "state": self.describe()}
 
 

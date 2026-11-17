@@ -5035,3 +5035,56 @@ patchbay's words, tested), and `no_preset`, `preset_problem`, `name`.
 Decided: what is in front of a channel is read from the rig file's `amp`
 for an add (the file is what the next start plays), from the run for a
 load. **Not tried on the rig.** *(2026-11-17)*
+
+**Channel presets, steps 2 to 4, the page's half (#127).** Each strip's
+input line on the rack has **Preset…** beside Change input, which opens a
+panel in the strip (`presetPanel`, a group "Presets for <channel>"):
+**Save <channel> as** a name (checked by the naming rule before sending; a
+name a preset has already says Save will offer to replace it, and the
+agent's `taken` refusal offers **Replace <name>**, which updates the file in
+place), and **Load onto <channel>**, a picker of config/channels/ (a preset
+that cannot be loaded is listed off, with why) and **Load <preset> onto
+<channel>**. The answer is shown in the panel: a load says live or the
+restart's reasons, and notes the amp ("vocal has no amp: …"), another width,
+a MIDI mapping that followed its plugin, one dropped, and that the file as it
+was is kept for Revert…. A refusal a second tap answers offers it, keeping
+the first yes: **Load anyway, dropping the unsaved changes**, and **Load,
+dropping N MIDI mapping(s)**, each mapping listed with what it was and why.
+Decided: **Save channel as… works locked** (it changes nothing of the rig,
+as Save does); **Load is behind the lock** (`lockRefusal(…, "load_preset")`:
+it changes the rig's structure, as an add or a remove does). "Start from" on
+Add channel and the New rig screen lists the presets first, as a group of
+their own (`sourceChoices(…, presets)`, `sourceValue`/`sourceFrom`), and
+choosing one sets the channel's width to the preset's preferred one
+(`presetWidth`), which the form's own hint refuses on an input that cannot
+give it, before anything is sent; the agent's answer on a new channel says
+when it has no amp. The page reads `GET /presets` when a panel, Add channel
+or the New rig screen opens, and after a save. `ui_fake.UiSave.switched`
+makes the fake rig take the file's chains after a switch into its own file,
+so a load is seen on the page. Tested (`tests/test_ui_presets.py`, 8 tests,
+run 5 times in a loop: 5 of 5 passed): the decisions, pure; a save, its
+refusal and replace; a load onto the other channel, locked then unlocked,
+its plugins drawn and its copies not; unsaved work dropped on the second
+tap; a channel added from a preset on a chosen input; a new rig of two
+channels from one preset. test_ui.py, test_ui_tabs, test_ui_rigbin,
+test_ui_library, test_ui_mix and test_ui_knobs pass with it (389). **Not
+tried on the rig, a phone or the touch screen.** The guides' screenshots are
+not retaken. *(2026-11-17)*
+
+**Channel presets, step 5: the provenance line (#127).** A copy from a
+preset says so in the rig file, as a comment directly above the channel's
+`chain:` key: `# From channel preset crunch (config/channels/crunch.yaml),
+2026-11-17: its chain and level were copied, so editing the preset later
+changes nothing here.` Written by a load, an Add channel and a New rig from a
+preset (`write_rig(..., provenance=...)`, `rigfile.with_provenance`),
+folded within the 100 columns the files are written to (continuation lines
+`#   `), so a long name never widens the layout an update measures; a later
+load onto the same channel replaces it rather than stacking a second.
+Comments only: it is checked that the file reads back as the same document
+and that `yamlmerge.merged` still gives it back unchanged, and a channel that
+cannot carry it (a flow-style channel) is left without it and said
+(`provenance_note`), never written wrongly. Decided: a comment, not a key,
+so the rig file's schema, the compiler and a sound reference's `made_from`
+(a hash of the parsed channels) are untouched. Tested on every channel of
+every frozen rig (placed, replaced, still mergeable) and through the agent's
+three routes. **Not tried on the rig.** *(2026-11-17)*

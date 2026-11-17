@@ -4855,9 +4855,11 @@ class Agent:
         def edit(raw: dict[str, Any], run: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
             amp = raw.get("amp") if isinstance(raw.get("amp"), dict) else None
             copied, source = self._rigfile_copy(change, (amp or {}).get("model"))
-            return rigedit.with_channel(raw, rigedit.channel_entry(change, copied)), {
-                "op": "add_channel", "channel": change["name"], "input": change["input"],
-                "width": change["width"], "from": source}
+            said = {"op": "add_channel", "channel": change["name"], "input": change["input"],
+                    "width": change["width"], "from": source}
+            if source and "preset" in source:
+                said["_provenance"] = {change["name"]: self._provenance(source["preset"])}
+            return rigedit.with_channel(raw, rigedit.channel_entry(change, copied)), said
 
         answer = await self._rigfile_locked(request, lambda run: self._write_edit(request, run, path, edit))
         return web.json_response(await self._rigfile_answer(answer))
@@ -5027,13 +5029,14 @@ class Agent:
                 raise RigFileRefused(f"a rig called {name} already exists ({self._save_shown(path)}): "
                                      "choose another name, or add channels to that one", "taken")
             programs_before = midi_listener.program_order(root)
-            entries, sources, said = [], [], {}
+            entries, sources, said, provenance = [], [], {}, {}
             for change in channels:
                 copied, source = self._rigfile_copy(change)
                 entries.append(rigedit.channel_entry(change, copied))
                 sources.append(source)
                 if source and "preset" in source:
                     said[change["name"]] = f"channel preset {source['preset']} ({source['file']})"
+                    provenance[change["name"]] = self._provenance(source["preset"])
                 elif source:
                     said[change["name"]] = f"{source['file']}'s {source['channel']}"
             raw = rigedit.new_rig(name, entries, MONITOR_ROLE)
@@ -5049,11 +5052,11 @@ class Agent:
                                      "choose another name", "taken") from exc
             try:
                 when = datetime.now(timezone.utc).date().isoformat()
-                write_rig(path, raw, header=rigedit.new_rig_header(when, said))
+                problems = write_rig(path, raw, header=rigedit.new_rig_header(when, said), provenance=provenance)
             except BaseException:
                 path.unlink(missing_ok=True)
                 raise
-            return {"sources": sources,
+            return {"sources": sources, "provenance_note": "; ".join(problems) or None,
                     "programs": programs_moved(programs_before, midi_listener.program_order(root), name)}
 
         try:
@@ -5062,6 +5065,7 @@ class Agent:
             raise RigFileRefused("nothing was written: " + "; ".join(exc.problems), "rig_problem") from exc
         return {"ok": True, "rig": name, "file": self._save_shown(path), "how": "new", "committed": False,
                 "running": False, "path": path, **({"programs": done["programs"]} if done["programs"] else {}),
+                **({"provenance_note": done["provenance_note"]} if done["provenance_note"] else {}),
                 "channels": [{"name": c["name"], "input": c["input"], "width": c["width"], "from": source}
                              for c, source in zip(channels, done["sources"])]}
 
@@ -5082,11 +5086,14 @@ class Agent:
             if not isinstance(raw, dict):
                 raise RigFileRefused(f"{path.name} is not a rig file", "rig_problem")
             edited, change = edit(raw, run)
+            provenance = change.pop("_provenance", None)
             compiled = self._rigfile_compile(edited, run)
             try:
-                write_rig(path, edited)
+                problems = write_rig(path, edited, provenance=provenance)
             except RigFileError as exc:
                 raise RigFileRefused("nothing was written: " + "; ".join(exc.problems), "rig_problem") from exc
+            if problems:
+                change["provenance_note"] = "; ".join(problems)
             return {"change": change, "compiled": compiled}
 
         if running:
@@ -5746,7 +5753,8 @@ class Agent:
                     "written": True, "discarded": dropped_work,
                     "names": planned["names"], "followed": planned["followed"], "dropped": planned["dropped"],
                     "amp": planned["amp"], "width": planned["width"], "kept_before": kept,
-                    **({"provenance": planned["provenance"]} if planned.get("provenance") else {}),
+                    **({"provenance_note": "; ".join(planned["provenance_problems"])}
+                       if planned.get("provenance_problems") else {}),
                 }
                 said = {"id": f"preset:{name}", "what": f"with channel preset {name} loaded onto {channel}"}
 
@@ -5837,7 +5845,9 @@ class Agent:
         else:
             said = {"id": kept_as, "how": "kept by that save already"}
         try:
-            rigfile.write_rig(path, planned["raw"], replace_chains=(planned["channel"],))
+            planned["provenance_problems"] = rigfile.write_rig(
+                path, planned["raw"], replace_chains=(planned["channel"],),
+                provenance={planned["channel"]: self._provenance(planned["name"])})
         except rigfile.RigFileError as exc:
             raise RigFileRefused("nothing was written: " + "; ".join(exc.problems), "rig_problem") from exc
         return said
@@ -5868,6 +5878,14 @@ class Agent:
         return copied, {"preset": name, "file": self._save_shown(path), "plugins": len(preset.chain),
                         "width": preset.width, "git": state.get("file"),
                         "amp": presets.amp_note(preset, change["name"], change["input"], rig_amp)}
+
+    def _provenance(self, name: str) -> str:
+        """The provenance comment a copy of preset `name` leaves above the
+        channel's chain in the rig file (#127, `rigfile.provenance_line`)."""
+        from . import presets
+
+        return rigfile.provenance_line(name, (presets.PRESETS_DIR / f"{name}.yaml").as_posix(),
+                                       datetime.now(timezone.utc).date().isoformat())
 
     def _read_preset(self, name: str) -> Any:
         """Preset `name` of config/channels/, checked by the compiler, or the

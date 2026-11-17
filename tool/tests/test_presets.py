@@ -314,3 +314,39 @@ def test_every_committed_preset_is_one_that_can_be_loaded():
 
     for listed in presets.listing(checkout_root()):
         assert listed["ok"], f"{listed['file']}: {listed['problem']}"
+
+
+# --------------------------------------------------------------------------- #
+# The provenance line (rigfile.with_provenance)
+# --------------------------------------------------------------------------- #
+
+@pytest.mark.parametrize(("rig", "channel", "raw", "entry"), CHANNELS, ids=IDS)
+def test_the_provenance_line_goes_above_the_chain_and_a_second_replaces_the_first(rig, channel, raw, entry):
+    from sushi_rig import rigfile, yamlmerge
+
+    text = frozen(rig).read_text()
+    first, problems = rigfile.with_provenance(
+        text, {channel: rigfile.provenance_line("crunch", "config/channels/crunch.yaml", "2026-11-17")})
+    assert problems == []
+    assert yaml.safe_load(first) == yaml.safe_load(text), "comments only"
+    lines = first.splitlines()
+    at = next(i for i, line in enumerate(lines) if line.lstrip().startswith(rigfile.PROVENANCE))
+    assert "crunch" in lines[at]
+    after = next(line for line in lines[at + 1:] if not line.lstrip().startswith("#"))
+    assert after.strip() == "chain:", "directly above the chain"
+    assert all(len(line) <= 100 for line in lines[at:at + 4] if line.lstrip().startswith("#"))
+    long = "a-preset-with-a-name-long-enough-to-fold-over-two-lines-x"
+    second, problems = rigfile.with_provenance(
+        first, {channel: rigfile.provenance_line(long, f"config/channels/{long}.yaml", "2026-11-18")})
+    assert problems == [] and "crunch" not in second and second.count(rigfile.PROVENANCE) == 1
+    assert yamlmerge.merged(second, yaml.safe_load(second)) == second, "the file can still be updated in place"
+    assert all(len(line) <= 100 for line in second.splitlines() if line.lstrip().startswith("#"))
+
+
+def test_a_channel_that_cannot_carry_the_line_is_said_and_left_as_it_was():
+    from sushi_rig import rigfile
+
+    text = ("kind: rig\nschema_version: 1\nname: x\nchannels:\n"
+            "- {name: a, input: guitar-in, width: mono, chain: []}\nmaster: {output: monitor-out, chain: []}\n")
+    out, problems = rigfile.with_provenance(text, {"a": "From channel preset p.", "nope": "From channel preset p."})
+    assert out == text and len(problems) == 2

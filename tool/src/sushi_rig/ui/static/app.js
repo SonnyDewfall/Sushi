@@ -116,6 +116,9 @@ const state = {
   rigChannels: {},           // GET /rigs/<rig>/channels, by rig: "start from", and the running rig's inputs
   newRig: { name: "", channels: [], touched: false, pending: false, result: null, addRefused: null },
   wiring: freshWiring(),     // the rack's channel edits: see freshWiring
+  // Channel presets (#127): GET /presets, and a strip's Preset… panel.
+  presets: null, presetsAt: 0,
+  presetUi: { channel: null, name: "", choice: "", pending: null, result: null, rig: null },
   open: new Set(),           // units opened, by name
   // The rack's tabs and rows (#135):
   tab: { rig: null, id: null },  // the tab the player chose (or the one remembered), and the rig it is for
@@ -353,6 +356,16 @@ async function refreshRigChannels(name, force = false) {
   if (!force && had && (had.ok || Date.now() - had.at < RETRY_MS)) return false;
   const answer = await request("GET", `/rigs/${encodeURIComponent(name)}/channels`);
   state.rigChannels[name] = { ...answer, at: Date.now() };
+  return true;
+}
+
+// config/channels/'s presets (#127), for "start from" and a strip's
+// Preset… panel: read when either opens, and again after a save.
+async function refreshPresets(force = false) {
+  if (!force && state.presets && state.presets.ok) return false;
+  if (!force && state.presetsAt && Date.now() - state.presetsAt < RETRY_MS) return false;
+  state.presets = await request("GET", "/presets");
+  state.presetsAt = Date.now();
   return true;
 }
 
@@ -3216,13 +3229,10 @@ function pickersThenReasons([width, reasons], source) {
 function sourcePicker(sources, from, onChange, label) {
   const select = h("select", { "aria-label": label },
     h("option", { value: "" }, "Nothing: an empty chain"),
-    sources.map((g) => h("optgroup", { label: g.problem ? `${g.rig} (could not be read)` : g.rig },
-      g.options.map((o) => h("option", { value: o.value }, o.label)))));
-  select.value = from ? `${from.rig}\u0000${from.channel}` : "";
-  select.addEventListener("change", () => {
-    const [rig, channel] = select.value ? select.value.split("\u0000") : [];
-    onChange(rig ? { rig, channel } : null);
-  });
+    sources.map((g) => h("optgroup", { label: g.label || g.rig },
+      g.options.map((o) => h("option", { value: o.value, disabled: !!o.disabled, title: o.title || null }, o.label)))));
+  select.value = R.sourceValue(from);
+  select.addEventListener("change", () => onChange(R.sourceFrom(select.value)));
   return h("label", { class: "selector" }, h("span", { class: "label" }, "Start from"), select);
 }
 
@@ -3291,7 +3301,7 @@ function newRigView() {
 function newRigRegion(el) {
   const nr = state.newRig;
   const view = newRigView();
-  const sources = R.sourceChoices(state.rigs, state.rigChannels);
+  const sources = R.sourceChoices(state.rigs, state.rigChannels, state.presets);
   const focus = focusedName(el);
   // Keyed without what is typed: the names' checks are drawn by `drawNewRigChecks`.
   const key = JSON.stringify([nr.channels.map((c) => [c.input, c.width, c.from]), view.choices, view.channels.map((c) => c.widths),
@@ -3326,7 +3336,9 @@ function channelDraft(el, c, i, view, sources) {
     textField(`Channel ${i + 1} name`, `ch-name-${i}`, c.name, (v) => { c.name = v; touch(); drawNewRigChecks(el); }, "e.g. guitar"),
     inputPicker(view.choices, c.input, (v) => { c.input = v; fitWidth(view.choices, c); touch(); render(); }, `Channel ${i + 1} input`),
     ...pickersThenReasons(widthPicker(view.channels[i].widths, c.width, (v) => { c.width = v; touch(); render(); }, `Channel ${i + 1} width`),
-      sourcePicker(sources, c.from, (from) => { c.from = from; touch(); render(); }, `Channel ${i + 1} starts from`)),
+      sourcePicker(sources, c.from, (from) => {
+        c.from = from; c.width = R.presetWidth(state.presets, from, c.width); touch(); render();
+      }, `Channel ${i + 1} starts from`)),
     h("p", { class: "save-check", "data-check": `ch-name-${i}` }),
     nr.channels.length > 1 ? h("button", { type: "button", class: "save-act remove",
       onclick: () => { nr.channels.splice(i, 1); touch(); render(); } }, `Remove channel ${i + 1}`) : null);
@@ -3507,17 +3519,21 @@ function stripsRegion(el, model, unsaved) {
     const c = ready ? filed.find((x) => x.name === name) || null : undefined;
     const editing = w.editing === name;
     const focus = focusedName(slot);
+    const pu = state.presetUi;
+    const presetsOpen = pu.channel === name && pu.rig === view.rig;
     const rebuilt = patch(slot, JSON.stringify([view.blocked ? "blocked" : c === undefined ? "reading" : c, editing,
-      editing ? [w.change, choices] : null, !!w.pending, view.rig || null]), () => (
+      editing ? [w.change, choices] : null, !!w.pending, view.rig || null,
+      presetsOpen ? [pu.choice, pu.pending, pu.result, state.presets, state.locked, !!state.pending] : null]), () => (
       view.blocked ? null
         : c === undefined ? h("p", { class: "sub strip-input" }, "Reading the rig's file…")
           : c === null ? h("p", { class: "sub strip-input" }, "Not in the running rig's file.")
-            : wiringRow(view, c, choices)));
+            : [wiringRow(view, c, choices), presetsOpen ? presetPanel(view, c) : null]));
+    if (presetsOpen) drawPresetCheck(slot, name);
     if (rebuilt) refocus(slot, focus);
   }
 
   if (view.blocked) { patch(parts.foot, "blocked", () => []); return; }
-  const sources = w.adding && filesReady() ? R.sourceChoices(state.rigs, state.rigChannels) : null;
+  const sources = w.adding && filesReady() ? R.sourceChoices(state.rigs, state.rigChannels, state.presets) : null;
   const busy = state.health && state.health.ok ? (state.health.body.agent || {}).busy || null : null;
   const focus = focusedName(parts.foot);
   const rebuilt = patch(parts.foot, JSON.stringify([ready, view.rig, view.channels.map((c) => c.name), choices,
@@ -3527,7 +3543,11 @@ function stripsRegion(el, model, unsaved) {
       : w.adding && !sources ? h("p", { class: "sub" }, "Reading the rigs' channels, to start from…")
         : w.adding ? addChannelForm(parts.foot, view, choices, sources)
           : h("button", { class: "save-act add-channel", disabled: !!w.pending,
-            onclick: () => { w.adding = R.newChannel(choices, view.channels); w.result = null; render(); inBackground("rig channels", refreshAllRigChannels); } }, "Add channel"),
+            onclick: () => {
+              w.adding = R.newChannel(choices, view.channels); w.result = null; render();
+              inBackground("rig channels", refreshAllRigChannels);
+              inBackground("presets", () => refreshPresets(true));
+            } }, "Add channel"),
     h("p", { class: "warn" }, view.unsaved),
     w.result ? rigFileResult(w.result, () => { w.result = null; render(); }, () => { w.restartConfirm = true; render(); }) : null,
     w.restartConfirm ? h("div", { class: "confirm", role: "group", "aria-label": "Confirm the restart" },
@@ -3547,6 +3567,15 @@ function wiringRow(view, c, choices) {
   if (!editing) {
     row.append(h("button", { class: "rig-act small", disabled: !!w.pending, "aria-label": `Change ${c.name}'s input`,
       onclick: () => { w.editing = c.name; w.change = { input: c.input, width: c.width }; w.result = null; render(); } }, "Change input"));
+    const pu = state.presetUi;
+    const open = pu.channel === c.name && pu.rig === view.rig;
+    row.append(h("button", { class: "rig-act small presets-toggle", "aria-expanded": open ? "true" : "false",
+      "aria-label": `Presets for ${c.name}`,
+      onclick: () => {
+        Object.assign(state.presetUi, open ? { channel: null } : { channel: c.name, rig: view.rig, name: "", choice: "", result: null });
+        render();
+        if (!open) inBackground("presets", () => refreshPresets(true));
+      } }, "Preset…"));
     return row;
   }
   const change = {};
@@ -3562,6 +3591,102 @@ function wiringRow(view, c, choices) {
   return row;
 }
 
+// A strip's Preset… panel (#127): Save the channel as a preset, by name,
+// and Load a preset onto it. A save writes config/channels/<name>.yaml and
+// changes nothing of the rig, so it is allowed while locked, as Save is; a
+// load writes the rig's file and plays it (live where it can be), so it is
+// behind the lock, as a structural edit is. What each said is shown in the
+// panel, with the second tap a refusal offers: replace a preset of that
+// name, drop unsaved changes, drop MIDI mappings the load would orphan.
+function presetPanel(view, c) {
+  const pu = state.presetUi;
+  const choices = R.presetChoices(state.presets);
+  const locked = R.lockRefusal(state.locked, "load_preset");
+  const loading = !state.presets;
+  const chosen = choices.find((p) => p.name === pu.choice) || null;
+  const select = h("select", { "aria-label": `Preset to load onto ${c.name}`, disabled: loading || !choices.length },
+    h("option", { value: "" }, loading ? "Reading the presets…" : choices.length ? "Choose a preset…" : "No presets yet"),
+    choices.map((p) => h("option", { value: p.name, disabled: !p.ok, title: p.problem }, p.label)));
+  select.value = pu.choice;
+  select.addEventListener("change", () => { pu.choice = select.value; pu.result = null; render(); });
+  const result = pu.result;
+  return h("div", { class: "preset-panel", role: "group", "aria-label": `Presets for ${c.name}` },
+    h("form", { class: "preset-save", onsubmit: (event) => { event.preventDefault(); savePreset(c.name, false); } },
+      textField(`Save ${c.name} as`, `preset-name-${c.name}`, pu.name, (v) => { pu.name = v; drawPresetCheck(document, c.name); }, "e.g. crunch"),
+      h("p", { class: "save-check", "data-check": `preset-name-${c.name}` }),
+      h("button", { type: "submit", class: "save-act preset-save-go" }, "Save")),
+    h("div", { class: "preset-load" },
+      h("label", { class: "selector" }, h("span", { class: "label" }, `Load onto ${c.name}`), select),
+      h("button", { type: "button", class: "save-act primary preset-load-go", title: locked,
+        disabled: !!pu.pending || !!state.pending || !!locked || !chosen || !chosen.ok,
+        onclick: () => loadPreset(c.name, pu.choice, {}) },
+      pu.pending === "load" ? "Loading…" : chosen ? `Load ${chosen.name} onto ${c.name}` : "Load"),
+      locked ? h("p", { class: "sub" }, locked) : null,
+      h("p", { class: "sub" }, `Loading replaces ${c.name}'s chain and level with the preset's and writes ${view.rig}'s file; `
+        + "with unsaved changes, save first.")),
+    result ? h("div", { class: `save-result preset-result ${result.ok ? "ok" : "refused"}`, role: result.ok ? "status" : "alert" },
+      h("strong", {}, result.title),
+      h("span", { class: "said" }, result.ok ? result.text : result.reason),
+      result.notes.length ? h("ul", { class: "preset-notes" }, result.notes.map((n) => h("li", {}, n))) : null,
+      result.offer ? h("button", { class: "rig-act offer", disabled: !!pu.pending || (!!locked && !result.offer.replace),
+        onclick: () => (result.offer.replace ? savePreset(c.name, true, result.name)
+          : loadPreset(c.name, result.name, result.offer)) }, result.offer.label) : null,
+      h("button", { class: "dismiss", "aria-label": "Dismiss", onclick: () => { pu.result = null; render(); } }, "×")) : null,
+    h("button", { type: "button", class: "save-act preset-close", onclick: () => { pu.channel = null; render(); } }, "Close"));
+}
+
+// The name's hint and Save's state, drawn in place from what is typed.
+function drawPresetCheck(el, channel) {
+  const pu = state.presetUi;
+  const p = el.querySelector(`[data-check="preset-name-${CSS.escape(channel)}"]`);
+  const button = el.querySelector(".preset-save-go");
+  if (!p || !button) return;
+  const check = pu.name ? R.checkPresetName(pu.name, state.presets) : { problem: null, taken: false };
+  p.textContent = check.problem || (check.taken ? `${pu.name} is a preset already: Save offers to replace it.` : pu.name ? `Writes config/channels/${pu.name}.yaml.` : "");
+  p.classList.toggle("bad", !!check.problem);
+  button.disabled = !!pu.pending || !pu.name || !!check.problem;
+  button.textContent = pu.pending === "save" ? "Saving…" : pu.name && !check.problem ? `Save ${channel} as ${pu.name}` : "Save";
+}
+
+async function savePreset(channel, replace, name = null) {
+  const pu = state.presetUi;
+  const preset = name || pu.name;
+  if (pu.pending || !preset || R.checkPresetName(preset, state.presets).problem) return;
+  pu.pending = "save";
+  render();
+  let answer;
+  try {
+    answer = await request("POST", R.presetSaveCall(channel, preset, replace).path, R.presetSaveCall(channel, preset, replace).json);
+  } finally {
+    pu.pending = null;
+  }
+  pu.result = { ...R.presetOutcome("save", channel, preset, answer), name: preset };
+  if (answer.ok) pu.name = "";
+  render();
+  if (answer.ok) refreshPresets(true).then(render);
+}
+
+async function loadPreset(channel, preset, asked) {
+  const pu = state.presetUi;
+  if (pu.pending || !preset || R.lockRefusal(state.locked, "load_preset")) return;
+  pu.pending = "load";
+  render();
+  const call = R.presetLoadCall(channel, preset, asked);
+  let answer;
+  try {
+    answer = await request("POST", call.path, call.json);
+  } finally {
+    pu.pending = null;
+  }
+  pu.result = { ...R.presetOutcome("load", channel, preset, answer, asked), name: preset };
+  render();
+  if (answer.ok || (answer.body || {}).written) {
+    const rig = state.health && state.health.ok ? state.health.body.rig || {} : {};
+    if (rig.config_name) refreshRigChannels(rig.config_name, true).then(render);
+    kick();
+  }
+}
+
 function addChannelForm(el, view, choices, sources) {
   const w = state.wiring;
   const draft = w.adding;
@@ -3571,7 +3696,9 @@ function addChannelForm(el, view, choices, sources) {
     h("p", { class: "save-check", "data-check": "add-channel-name" }),
     inputPicker(choices, draft.input, (v) => { draft.input = v; fitWidth(choices, draft); render(); }, "New channel input"),
     ...pickersThenReasons(widthPicker(R.widthOptions(choices, draft.input), draft.width, (v) => { draft.width = v; render(); }, "New channel width"),
-      sourcePicker(sources, draft.from, (from) => { draft.from = from; render(); }, "New channel starts from")),
+      sourcePicker(sources, draft.from, (from) => {
+        draft.from = from; draft.width = R.presetWidth(state.presets, from, draft.width); render();
+      }, "New channel starts from")),
     h("div", { class: "save-acts" },
       h("button", { type: "submit", class: "save-act primary add" }, "Add"),
       h("button", { type: "button", class: "save-act", onclick: () => { w.adding = null; render(); } }, "Cancel")));
@@ -3659,6 +3786,7 @@ function render() {
       if (screen === "newrig") {
         inBackground("roles", refreshRoles);
         inBackground("rig channels", () => refreshAllRigChannels(true));
+        inBackground("presets", () => refreshPresets(true));
       }
     }
     settleEdits();

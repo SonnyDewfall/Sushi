@@ -2049,7 +2049,8 @@ export function parseVolume(text) {
 // move) is refused, with the reason (the UX doc's rule 4). This is the page's
 // lock: the agent has no performance lock yet (#29), so another client is
 // not held by it.
-const STRUCTURAL = { move: "reordering", add: "adding a plugin", remove: "removing a plugin" };
+const STRUCTURAL = { move: "reordering", add: "adding a plugin", remove: "removing a plugin",
+  load_preset: "loading a channel preset" };
 
 export function lockRefusal(locked, op) {
   if (locked && op === "amp_model") {
@@ -2511,24 +2512,34 @@ export function newRigView(draft, rolesAnswer, rigsAnswer, health, pending) {
 
 // "Start from": every channel of every rig of config/rigs, as GET
 // /rigs/<rig>/channels gave them (`byRig`: rig -> that answer).
-export function sourceChoices(rigsAnswer, byRig) {
+// And the channel presets of config/channels/ (#127, `presetsAnswer`, GET
+// /presets), first, as a group of their own; one that cannot be loaded is
+// there and off, with why.
+export function sourceChoices(rigsAnswer, byRig, presetsAnswer = null) {
   const rigs = rigsAnswer && rigsAnswer.ok ? rigsAnswer.body.rigs : [];
-  return rigs.map((rig) => {
+  const groups = rigs.map((rig) => {
     const answer = byRig[rig];
     const channels = answer && answer.ok ? answer.body.channels : [];
     return {
-      rig, problem: answer && !answer.ok ? answer.reason : null,
+      rig, label: answer && !answer.ok ? `${rig} (could not be read)` : rig,
+      problem: answer && !answer.ok ? answer.reason : null,
       options: channels.map((c) => ({
-        rig, channel: c.name, value: `${rig}\u0000${c.name}`,
+        rig, channel: c.name, value: `${rig}\u0000${c.name}`, disabled: false, title: null,
         label: `${rig} · ${c.name} (${c.plugins.length} plugin${c.plugins.length === 1 ? "" : "s"})`,
       })),
     };
   });
+  const presets = presetChoices(presetsAnswer);
+  if (!presets.length) return groups;
+  return [{ rig: null, label: "Channel presets", problem: null,
+    options: presets.map((p) => ({ preset: p.name, value: sourceValue({ preset: p.name }), label: `preset ${p.label}`,
+      disabled: !p.ok, title: p.problem })) }, ...groups];
 }
 
 function channelJson(c) {
   const out = { name: c.name, input: c.input, width: c.width };
-  if (c.from) out.from = { rig: c.from.rig, channel: c.from.channel };
+  if (c.from && c.from.preset) out.from = { preset: c.from.preset };
+  else if (c.from) out.from = { rig: c.from.rig, channel: c.from.channel };
   return out;
 }
 
@@ -2549,6 +2560,13 @@ export function inputCall(rig, channel, change) {
 // for a role the machine file lacks, the lines it says to add. `offer` is
 // the lifecycle gesture that plays the change: start or switch to a new
 // rig, restart the running one after an edit of its file.
+// What the agent said of the amp for each channel a preset started (#127):
+// a second guitar on another input is told it has no amp.
+function ampNotes(sources) {
+  const notes = (sources || []).map((f) => f && f.amp && f.amp.note).filter(Boolean);
+  return notes.length ? ` ${notes.map((n) => `${n}.`).join(" ")}` : "";
+}
+
 export function rigFileOutcome(op, what, answer) {
   const body = answer.body || {};
   const titles = {
@@ -2560,8 +2578,10 @@ export function rigFileOutcome(op, what, answer) {
   let text, offer = null;
   if (op === "new") {
     text = `Wrote ${body.file}, a new rig with ${(body.channels || []).length} channel${(body.channels || []).length === 1 ? "" : "s"}.`;
-    const copied = (body.channels || []).filter((c) => c.from).map((c) => `${c.name} from ${c.from.rig} · ${c.from.channel}`);
+    const copied = (body.channels || []).filter((c) => c.from).map((c) => (c.from.preset
+      ? `${c.name} from preset ${c.from.preset}` : `${c.name} from ${c.from.rig} · ${c.from.channel}`));
     if (copied.length) text += ` Chains copied: ${copied.join(", ")}.`;
+    text += ampNotes((body.channels || []).map((c) => c.from));
     offer = { op: body.offer === "switch" ? "switch" : "start", name: body.rig,
       label: body.offer === "switch" ? `Switch to ${body.rig}` : `Start ${body.rig}` };
     // A new file can move every later rig's Program Change number: said,
@@ -2572,6 +2592,9 @@ export function rigFileOutcome(op, what, answer) {
     }
   } else {
     text = `Wrote ${body.file} in place, keeping its comments.`;
+    if (body.change && body.change.from && body.change.from.preset) {
+      text += ` Its chain and level are channel preset ${body.change.from.preset}'s.` + ampNotes([body.change.from]);
+    }
     if (body.running) {
       const why = (body.why || []).map((r) => r.detail).join("; ");
       text += ` ${body.rig} keeps playing as it was until it restarts${why ? ` (${why})` : ""}.`;
@@ -2615,4 +2638,117 @@ export function wiringView(health, channelsAnswer, unsaved) {
     // restart that plays an edit would drop it.
     unsaved: `An edit takes effect at a restart, which reloads the file: with unsaved changes on ${name}, save first.`,
   };
+}
+
+// ---------------------------------------------------------------- channel presets (#127)
+// A channel's sound saved by name in config/channels/ (GET /presets), for
+// "Start from" (Add channel, New rig) and a strip's Preset… panel: Save
+// channel as…, and Load onto a channel of the running rig.
+
+// The presets as the pickers offer them: each with a label of its own, and
+// one that cannot be loaded (it does not parse or compile) offered off, its
+// reason as its title.
+export function presetChoices(answer) {
+  const list = answer && answer.ok ? answer.body.presets || [] : [];
+  return list.map((p) => {
+    const plugins = p.plugins || [];
+    return {
+      name: p.name, ok: !!p.ok, problem: p.problem || null, width: p.width || null, plugins,
+      amp: p.heard_through_amp || null,
+      label: p.ok ? `${p.name} (${plugins.length} plugin${plugins.length === 1 ? "" : "s"}, ${p.width})`
+        : `${p.name} (cannot be loaded)`,
+    };
+  });
+}
+
+// "Start from"'s value for a preset: a rig's channel is `rig\u0000channel`,
+// and no rig's name starts with \u0001.
+export const PRESET_MARK = "\u0001";
+
+export function sourceValue(from) {
+  if (!from) return "";
+  if (from.preset) return `${PRESET_MARK}${from.preset}`;
+  return `${from.rig}\u0000${from.channel}`;
+}
+
+export function sourceFrom(value) {
+  if (!value) return null;
+  if (value.startsWith(PRESET_MARK)) return { preset: value.slice(PRESET_MARK.length) };
+  const [rig, channel] = value.split("\u0000");
+  return { rig, channel };
+}
+
+// The width a channel takes from the preset it starts from: the preset's
+// preferred one. Where the input cannot give it, the form says why and
+// Create (or Add) waits, as for any width (the compiler's refusal, said
+// before anything is written).
+export function presetWidth(presetsAnswer, from, width) {
+  if (!from || !from.preset) return width;
+  const found = presetChoices(presetsAnswer).find((p) => p.name === from.preset);
+  return found && found.width ? found.width : width;
+}
+
+// Why a preset's name will not do, as a hint (the agent decides), and
+// whether a preset has it already, which Save channel as… replaces only
+// when asked.
+export function checkPresetName(name, presetsAnswer) {
+  const n = typeof name === "string" ? name : "";
+  if (!n) return { problem: "Name the preset: it is the file config/channels/<name>.yaml.", taken: false };
+  if (!NAME_RE.test(n)) return { problem: "A preset's name is lowercase letters, digits, '-' and '_', starting with a letter or digit.", taken: false };
+  const taken = presetChoices(presetsAnswer).some((p) => p.name === n);
+  return { problem: null, taken };
+}
+
+export function presetSaveCall(channel, name, replace = false) {
+  return { path: `/rig/channels/${encodeURIComponent(channel)}/save-as`, json: replace ? { name, replace: true } : { name } };
+}
+
+export function presetLoadCall(channel, preset, { discard = false, dropMidi = false } = {}) {
+  const json = { preset };
+  if (discard) json.discard = true;
+  if (dropMidi) json.drop_midi = true;
+  return { path: `/rig/channels/${encodeURIComponent(channel)}/load`, json };
+}
+
+// What a save or a load said: `{ok, title, text, notes, offer}`, the
+// agent's reason as it gave it. A refusal that a second tap answers offers
+// it: a name taken (replace it), unsaved work (drop it), MIDI mappings a load
+// would orphan (drop them, each named). `asked` is what the call already
+// said yes to, so a second refusal keeps the first answer's yes.
+export function presetOutcome(op, channel, name, answer, asked = {}) {
+  const body = answer.body || {};
+  if (op === "save") {
+    if (!answer.ok) {
+      return { ok: false, title: `Not saved: ${channel} as ${name}`, reason: answer.reason, notes: [],
+        offer: answer.code === "taken" ? { label: `Replace ${name}`, replace: true } : null };
+    }
+    const p = body.preset || {};
+    const notes = [];
+    if (p.heard_through_amp) notes.push(`Saved with the amp in front of it; the preset does not carry the amp, and says so where it is loaded without one.`);
+    return { ok: true, title: `Saved ${channel} as ${name}`, notes, offer: null,
+      text: `Wrote ${body.file}${body.how === "updated" ? " in place, keeping its comments" : ""}: ${channel} as it plays now, `
+        + `${(p.plugins || []).length} plugin${(p.plugins || []).length === 1 ? "" : "s"}. The rig is unchanged, and nothing is committed.` };
+  }
+  if (!answer.ok) {
+    const out = { ok: false, title: `Not loaded: ${name} onto ${channel}`, reason: answer.reason, notes: [], offer: null };
+    if (answer.code === "unsaved") out.offer = { ...asked, label: "Load anyway, dropping the unsaved changes", discard: true };
+    if (answer.code === "midi") {
+      const mappings = body.mappings || [];
+      out.notes = mappings.map((m) => `${m.control}: ${m.binding} ${m.target}. ${m.why}.`);
+      out.offer = { ...asked, label: `Load, dropping ${mappings.length} MIDI mapping${mappings.length === 1 ? "" : "s"}`, dropMidi: true };
+    }
+    return out;
+  }
+  const notes = [];
+  if (body.amp && body.amp.note) notes.push(`${body.amp.note}.`);
+  if (body.width) notes.push(`${body.width}.`);
+  for (const f of body.followed || []) notes.push(`MIDI ${f.control} follows its plugin: ${f.from} is now ${f.to}.`);
+  for (const d of body.dropped || []) notes.push(`Dropped MIDI ${d.control} (${d.binding} ${d.target}).`);
+  if (body.kept_before && body.kept_before.id) notes.push("The rig's file as it was before is kept: Revert… goes back to it.");
+  if (body.provenance_note) notes.push(`Where the chain came from is not written in the file: ${body.provenance_note}.`);
+  const how = body.how === "live" ? "Played live, without a restart."
+    : `Played by a restart${(body.why || []).length ? ` (${body.why.map((r) => r.detail).join("; ")})` : ""}.`;
+  return { ok: true, title: `Loaded ${name} onto ${channel}`, notes, offer: null,
+    text: `${how} Wrote ${body.file} in place, with ${name}'s chain under ${channel}'s own names; not committed. `
+      + "Undo stops here, as after a switch." };
 }

@@ -589,3 +589,41 @@ def test_a_preset_that_is_not_there_or_will_not_load_is_refused_for_a_new_channe
                         json={"name": "keys", "input": "vocal-in", "from": {"rig": "electric_board", "channel": "board"}})
     assert status == 400, "a rig's channel still needs its width"
     assert rig_file(root, "electric_board").read_bytes() == before
+
+
+# --------------------------------------------------------------------------- #
+# The provenance line in the rig file
+# --------------------------------------------------------------------------- #
+
+def provenance_of(root, rig, channel):
+    lines = rig_file(root, rig).read_text().splitlines()
+    name = next(i for i, line in enumerate(lines) if line.strip() in (f"- name: {channel}", f"name: {channel}"))
+    chain = next(i for i in range(name, len(lines)) if lines[i].strip().startswith("chain:"))
+    return [line.strip() for line in lines[name:chain] if line.strip().startswith("#")]
+
+
+def test_every_copy_from_a_preset_names_it_above_the_chain(root):
+    agent, world, fake, _ = make_agent(root)
+    save_as(agent, "guitar", "gv-guitar")
+    save_as(agent, "vocal", "voice")
+    status, body = load(agent, "vocal", "gv-guitar")
+    assert status == 200 and "provenance_note" not in body, body
+    said = provenance_of(root, "guitar_vocal", "vocal")
+    assert said[0].startswith("# From channel preset gv-guitar (config/channels/gv-guitar.yaml), 20"), said
+    status, body = load(agent, "vocal", "voice")
+    assert status == 200, body
+    said = provenance_of(root, "guitar_vocal", "vocal")
+    assert said[0].startswith("# From channel preset voice ") and not any("gv-guitar" in s for s in said), \
+        "the next load replaces the line, never stacks it"
+    assert provenance_of(root, "guitar_vocal", "guitar") == [], "the other channel says nothing"
+    status, body = call(agent, "POST", "/rigs/electric_board/channels/add",
+                        json={"name": "keys", "input": "vocal-in", "from": {"preset": "voice"}})
+    assert status == 200 and "provenance_note" not in body["change"], body
+    assert provenance_of(root, "electric_board", "keys")[0].startswith("# From channel preset voice ")
+    status, body = call(agent, "POST", "/rigs/new", json={"name": "duo", "channels": [
+        {"name": "a", "input": "guitar-in", "from": {"preset": "voice"}},
+        {"name": "b", "input": "vocal-in", "width": "mono"}]})
+    assert status == 200, body
+    assert provenance_of(root, "duo", "a")[0].startswith("# From channel preset voice ")
+    assert provenance_of(root, "duo", "b") == []
+    compile_named_rig("duo", root, root / MACHINE)

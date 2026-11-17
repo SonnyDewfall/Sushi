@@ -215,8 +215,82 @@ _HEADER = (
 )
 
 
+# The comment a channel preset's copy leaves above a channel's chain (#127):
+# its first line starts so, and any more are its continuation ("#   ...").
+# Replaced by the next load, never stacked.
+PROVENANCE = "# From channel preset "
+_PROVENANCE_MORE = "#   "
+
+
+def provenance_line(preset: str, file: str, when: str) -> str:
+    """What the provenance comment says, for a channel whose chain and level
+    were copied from channel preset `preset` (in `file`) on `when`."""
+    return (f"{PROVENANCE[2:]}{preset} ({file}), {when}: its chain and level were copied, so editing the "
+            "preset later changes nothing here.")
+
+
+def _comment_lines(said: str, column: int) -> list[str]:
+    """`said` as comment lines at `column`, folded inside the 100 columns
+    the rig files are written to (yamlmerge.FRESH_WIDTH), so a long name
+    never widens the layout an update measures."""
+    import textwrap
+
+    room = max(40, 100 - column - len(_PROVENANCE_MORE))
+    parts = textwrap.wrap(said, room, break_long_words=False, break_on_hyphens=False)
+    return [" " * column + ("# " if i == 0 else _PROVENANCE_MORE) + part + "\n" for i, part in enumerate(parts)]
+
+
+def with_provenance(text: str, lines: dict[str, str]) -> tuple[str, list[str]]:
+    """`text` (a rig file) with a comment directly above each named channel's
+    `chain:` key, `lines` being `{channel: what it says}`
+    (`provenance_line`), and any earlier provenance comment of that
+    channel's taken out, so a channel loaded twice says only where its chain
+    now comes from. Comments only: the document reads back the same, which
+    is checked, as is that the file can still be updated in place
+    (`yamlmerge.merged` gives it back unchanged). `(text, problems)`: a
+    channel that cannot carry the line (a flow-style channel, no chain key, a
+    check that fails) is left as it was and said in `problems`, never
+    written wrongly."""
+    import yaml
+    from ruamel.yaml import YAML
+
+    from . import yamlmerge
+
+    problems: list[str] = []
+    for channel, said in lines.items():
+        try:
+            doc = YAML().load(text)
+            entry = next((c for c in doc.get("channels") or [] if isinstance(c, dict) and c.get("name") == channel),
+                         None)
+            if entry is None or "chain" not in entry or entry.fa.flow_style():
+                problems.append(f"{channel}: the provenance line was not written (its chain is not a key of a "
+                                "block-style channel)")
+                continue
+            start = entry.lc.line
+            line, column = entry.lc.key("chain")
+            rows = text.splitlines(keepends=True)
+            gone: set[int] = set()
+            for i in range(start, line):
+                if rows[i].lstrip().startswith(PROVENANCE):
+                    gone.add(i)
+                    j = i + 1
+                    while j < line and rows[j].lstrip().startswith(_PROVENANCE_MORE):
+                        gone.add(j)
+                        j += 1
+            kept = [r for i, r in enumerate(rows) if i not in gone]
+            line -= len(gone)
+            candidate = "".join(kept[:line] + _comment_lines(said, column) + kept[line:])
+            data = yaml.safe_load(text)
+            if yaml.safe_load(candidate) != data or yamlmerge.merged(candidate, data) != candidate:
+                raise ValueError("the file with it would not read back or update the same")
+            text = candidate
+        except Exception as exc:  # noqa: BLE001 -- said, and the line is left out, never written wrongly
+            problems.append(f"{channel}: the provenance line was not written ({type(exc).__name__}: {exc})")
+    return text, problems
+
+
 def write_rig(path: Path, rig: dict, *, source: str | None = None, header: str | None = None,
-              replace_chains: tuple[str, ...] = ()) -> None:
+              replace_chains: tuple[str, ...] = (), provenance: dict[str, str] | None = None) -> list[str]:
     """Write `rig` (the dict `parse_rig` reads) to `path`, keeping what a person wrote.
 
     A file already there is updated in place to hold `rig` — changed values set,
@@ -241,7 +315,12 @@ def write_rig(path: Path, rig: dict, *, source: str | None = None, header: str |
     key, so its entries are laid out as new entries are (block style, one
     setting a line) rather than matched to the old ones by name or URI and
     folded into their layout. Every other line of the file is kept as an
-    update keeps it."""
+    update keeps it.
+
+    `provenance` is `{channel: comment}`: the line naming the channel preset
+    a channel's chain was copied from (#127, `with_provenance`), put above
+    its `chain:`. What could not be put there is returned, as problems to
+    say; the rig is written either way."""
     import os
     import shutil
 
@@ -263,6 +342,9 @@ def write_rig(path: Path, rig: dict, *, source: str | None = None, header: str |
             text = yamlmerge.fresh(rig, _HEADER.format(source=source) if source else header or "")
     except yamlmerge.MergeError as exc:
         raise RigFileError([f"{path}: {exc}"]) from exc
+    problems: list[str] = []
+    if provenance:
+        text, problems = with_provenance(text, provenance)
     path.parent.mkdir(parents=True, exist_ok=True)
     scratch = path.with_name(path.name + ".tmp")
     try:
@@ -273,6 +355,7 @@ def write_rig(path: Path, rig: dict, *, source: str | None = None, header: str |
     except BaseException:
         scratch.unlink(missing_ok=True)
         raise
+    return problems
 
 
 def load_any(path: Path) -> "Rig | RigSpec":
