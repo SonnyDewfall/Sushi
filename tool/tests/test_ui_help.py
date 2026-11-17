@@ -48,8 +48,8 @@ def test_each_help_link_names_a_page_and_heading_the_served_guide_has(blank):
     assert out["links"]["stage"] == {"href": "/help/playing-live?from=stage", "label": "Help", "aria": "Help: playing live"}
     assert out["links"]["record"]["href"] == "/help/recording?from=stage"
     assert out["links"]["presets"]["href"] == "/help/channel-presets?from=stage"
-    assert out["links"]["lock"] == {"href": "/help/playing-live?from=stage#the-lock", "label": "About the lock",
-                                    "aria": "About the lock, in the user guide"}
+    assert out["links"]["takes"] == {"href": "/help/recording?from=stage#find-your-takes", "label": "About takes",
+                                     "aria": "About takes, in the user guide"}
     assert out["rack"]["href"] == "/help/recording?from=rack"
     assert out["newrig"]["href"] == "/help/building-a-rig?from=new-rig#make-a-new-rig"
     assert out["none"]["href"] == "/help/recording", "a screen the guide cannot go back to is not carried"
@@ -120,7 +120,6 @@ def test_the_stages_help_at_a_phones_width_is_small_opens_its_guide_and_comes_ba
     # The record bar's link sits in its head, where the clock goes while recording.
     record = p.locator('section.record-bar [data-help="record"]')
     expect(record).to_have_attribute("href", "/help/recording?from=stage")
-    expect(p.locator('.lock-note [data-help="lock"]')).to_have_attribute("href", "/help/playing-live?from=stage#the-lock")
     help_link.click()
     expect(p.locator("main.guide h1")).to_have_text("Playing live")
     # Readable on a phone: the page itself does not scroll sideways, the
@@ -137,6 +136,85 @@ def test_the_stages_help_at_a_phones_width_is_small_opens_its_guide_and_comes_ba
     p.wait_for_selector(".stage-screen .card")
     assert p.url.endswith("/#stage")
     assert page.errors == [], page.errors
+    page.close()
+
+
+# The stage's layout, at a phone's widths (review of PR #168): a Help link
+# must not move what a thumb is reaching for.
+
+def record_layout(p, hide_help=False):
+    """The record head's height and the top of Stop, with the head's help
+    link taken out of the layout for the measure if `hide_help`, and put back."""
+    return p.evaluate("""(hide) => {
+      const head = document.querySelector('.record-head');
+      const link = head.querySelector('.help-link');
+      if (hide && link) link.style.display = 'none';
+      const said = {head: head.getBoundingClientRect().height,
+                    stop: document.querySelector('.record-act.stop').getBoundingClientRect().y};
+      if (link) link.style.display = '';
+      return said;
+    }""", hide_help)
+
+
+@pytest.mark.parametrize("width", [320, 390])
+def test_the_record_heads_help_link_makes_it_no_taller_and_record_moves_nothing_up(browser, width):
+    with Served(record=True) as served:
+        page = Watched(browser, served, "/#stage", width=width, height=844)
+        p = page.page
+        bar = p.locator(".record-bar")
+        expect(bar.locator("h2")).to_have_text("Record")
+        link = bar.locator('.record-head [data-help="record"]')
+        expect(link).to_be_visible()
+        assert link.bounding_box()["height"] >= 44, "a thumb's height to tap"
+        idle, bare = record_layout(p), record_layout(p, hide_help=True)
+        assert idle == bare, f"the link moves the record bar at {width}px: {idle} with it, {bare} without"
+        p.get_by_role("button", name="Record", exact=True).click()
+        expect(bar).to_have_class(re.compile(r"\brecording\b"))
+        expect(bar.locator(".record-elapsed")).to_be_visible()
+        expect(link).to_have_count(0)
+        recording = record_layout(p)
+        # The clock in the link's place: the head is no shorter recording than
+        # idle, so the link never makes Record pull what is under it upwards.
+        # (The bar's body changes as well, the name field giving way to the
+        # take's name, and moves Stop more than the head does, as it did
+        # before the link: that is measured above against the bar without it.)
+        assert recording["head"] >= idle["head"], (idle, recording)
+        p.get_by_role("button", name="Stop", exact=True).click()
+        expect(bar.locator("h2")).to_have_text("Record")
+        assert record_layout(p)["head"] == idle["head"]
+        assert page.errors == [], page.errors
+        page.close()
+
+
+@pytest.mark.parametrize("width", [320, 390])
+@pytest.mark.parametrize("locked", [True, False])
+def test_the_lock_note_is_as_tall_as_its_words_alone(browser, served, width, locked):
+    """Nothing beside the lock note's words takes their width: a link there
+    pushed every card down (82 to 114 px at 390). Measured against a copy of
+    the note with only its icon and words, beside it."""
+    page = Watched(browser, served, "/#stage", width=width, height=844)
+    p = page.page
+    p.wait_for_selector(".card")
+    if not locked:
+        lock = p.locator("button.lock")
+        lock.click()
+        lock.click()
+        expect(lock).to_have_text("Lock off · editing")
+    note = p.locator(".lock-note")
+    expect(note).to_have_class(re.compile(r"\blocked\b") if locked else re.compile(r"^lock-note$"))
+    expect(note.locator("a, button")).to_have_count(0)
+    heights = note.evaluate("""(el) => {
+      const copy = document.createElement('p');
+      copy.className = el.className;
+      for (const child of el.childNodes) {
+        if (child.nodeType === Node.TEXT_NODE || child.tagName.toLowerCase() === 'svg') copy.append(child.cloneNode(true));
+      }
+      el.after(copy);
+      const both = [el.getBoundingClientRect().height, copy.getBoundingClientRect().height];
+      copy.remove();
+      return both;
+    }""")
+    assert heights[0] == heights[1], heights
     page.close()
 
 

@@ -96,7 +96,49 @@ def test_a_link_or_picture_the_guide_does_not_have_is_text_and_listed_as_missing
     r = render("[Gone](gone.md) and ![No such](img/nope.png) and [abs](/etc/passwd) and [run](javascript:alert(1))")
     assert "<a " not in r.html and "<img" not in r.html and "javascript" not in r.html
     assert "Gone" in r.html and '<span class="missing-image">[No such]</span>' in r.html
-    assert r.missing == ["gone.md", "img/nope.png", "/etc/passwd", "javascript:alert(1"]
+    assert r.missing == ["gone.md", "img/nope.png", "/etc/passwd", "javascript:alert(1)"]
+
+
+def test_a_destination_s_parentheses_balance_as_commonmark_has_them():
+    r = render("[Foo](https://x/Foo_(bar)) then [b](https://x/a_(b_(c))) then (see [Save](saving.md)) "
+               "then [esc](https://x/a\\)b) then [t](saving.md \"Save\") then [angle](<https://x/a b>) "
+               "then [open](https://x/(unclosed) end")
+    hrefs = re.findall(r'href="([^"]+)"', r.html)
+    assert hrefs == ["https://x/Foo_(bar)", "https://x/a_(b_(c))", "/help/saving", "https://x/a)b",
+                     "/help/saving", "https://x/a b"]
+    assert "(see <a" in r.html and "</a>) then" in r.html, "the parenthesis around a link is the text's"
+    assert "[open](https://x/(unclosed) end" in r.html, "unbalanced: not a link, left as written"
+
+
+@pytest.mark.parametrize("text", ["a \x00 b", "a \x007\x00 b", "\x000\x00", "[x](\x00) `\x00` **\x00**"])
+def test_a_nul_in_a_page_is_shown_as_a_replacement_character_never_a_hang_or_a_crash(text):
+    """A NUL once stood for a held piece of HTML: one in the page made the
+    restore loop for good (in the agent's executor, which doctor, pw-top and
+    the MIDI plan share) or look up a piece that was not there. Run in a
+    daemon thread here, so a hang fails the test instead of stopping the
+    suite."""
+    import threading
+
+    done: list = []
+    worker = threading.Thread(target=lambda: done.append(render(text)), daemon=True)
+    worker.start()
+    worker.join(5)
+    assert done, "the render did not return (or raised: see the thread's traceback above)"
+    r = done[0]
+    assert "\x00" not in r.html and "\ufffd" in r.html
+    assert guide.Renderer(set(), set())._restore("a \x003\x00 b") == "a  b", "a slot never held is dropped"
+
+
+def test_a_picture_is_the_guide_s_own_or_it_is_missing_and_one_on_the_web_is_never_fetched():
+    r = render("<img src='img/rack.png' alt='single'> <img src=img/rack.png alt=bare width=3> "
+               "<img alt=\"no src\"> <img src=\"\" alt=\"empty\"> <img src=\"#top\" alt=\"anchor\">\n\n"
+               "![web](https://example.org/a.png) and ![](HTTP://example.org/b.png) and ![page](saving.md)")
+    assert r.html.count('src="/help/img/rack.png"') == 2 and 'width="3"' in r.html
+    assert 'src="#"' not in r.html and "example.org/a.png\"" not in r.html.replace('href="https://example.org/a.png"', "")
+    assert "<img" not in r.html.split("<img src=\"/help/img/rack.png\" alt=\"bare\" width=\"3\" loading=\"lazy\">")[1]
+    assert '<a class="remote-image" href="https://example.org/a.png">[web]</a>' in r.html
+    assert '<span class="missing-image">[no src]</span>' in r.html and '<span class="missing-image">[page]</span>' in r.html
+    assert r.missing == ["", "", "#top", "https://example.org/a.png", "HTTP://example.org/b.png", "saving.md"]
 
 
 def test_inline_img_keeps_its_size_and_alt_loses_everything_else_and_other_html_is_text():
@@ -248,6 +290,28 @@ def test_help_and_a_pages_file_name_send_the_browser_to_the_page(small):
     assert (md, mh["Location"]) == (302, "/help/recording?from=rack")
 
 
+@pytest.mark.parametrize("asked, sent", [
+    ("/help/README.md", "/help/"), ("/help/README", "/help/"), ("/help/readme.md?from=stage", "/help/?from=stage"),
+    ("/help/Readme.MD", "/help/"), ("/help/Recording.md", "/help/recording"), ("/help/RECORDING", "/help/recording"),
+    ("/help/Channel-Presets.Md?from=rack", "/help/channel-presets?from=rack"), ("/help/nothing.md", "/help/nothing"),
+])
+def test_a_page_asked_for_by_its_file_name_or_in_another_case_is_sent_to_the_page(small, asked, sent):
+    [(status, headers, _)] = fetch(agent(small), asked)
+    assert (status, headers.get("Location")) == (302, sent)
+
+
+@pytest.mark.parametrize("asked", ["/help/recording", "/help/", "/help/x_y.md", "/help/..md", "/help/a%20b.md"])
+def test_a_page_as_served_or_no_page_s_name_is_not_sent_anywhere(small, asked):
+    [(status, _, _)] = fetch(agent(small), asked)
+    assert status in (200, 404)
+
+
+def test_canonical_names_only_pages():
+    assert [guide.canonical(n) for n in ("README.md", "README", "readme", "recording", "Recording.md", "x.y.md",
+                                         "../a.md", "", ".md")] == [
+        "README", "README", "README", None, "recording", None, None, None, None]
+
+
 def test_a_picture_is_served_as_itself(small):
     [(status, headers, body)] = fetch(agent(small), "/help/img/bar.png")
     assert status == 200 and headers["Content-Type"] == "image/png" and body == PNG
@@ -274,7 +338,14 @@ def test_a_guide_that_is_not_there_says_where_it_was_looked_for(tmp_path):
     "/help/img/%2fetc%2fpasswd", "/help/%2fetc%2fpasswd", "/help/img/..\\..\\secret.png",
 ])
 def test_nothing_outside_the_guide_is_served_however_the_path_is_written(small, path):
-    for status, _, body in fetch(agent(small), path, raw=True) + fetch(agent(small), path):
+    for status, headers, body in fetch(agent(small), path, raw=True) + fetch(agent(small), path):
+        if status == 302:
+            # Another case of a page's name (/help/SECRET) is sent to that
+            # name, lowercased: only ever to a page's name under /help/, which
+            # is then refused like any other.
+            where = headers["Location"]
+            assert re.fullmatch(r"/help/[a-z0-9-]+", where), (path, where)
+            [(status, _, body)] = fetch(agent(small), where)
         assert status in (400, 403, 404), (path, status)
         assert KEPT_OUT.encode() not in body and b"root:" not in body, path
 
@@ -298,12 +369,63 @@ def test_the_names_that_are_files_of_the_guide_are_found(small):
 
 def test_the_rigs_own_agent_reads_the_guide_of_the_checkout_it_runs_from():
     """The rig runs the agent from an editable install in the checkout
-    (systemd/sushi-rig-agent.service: tool/.venv in the checkout), so the
-    package's checkout has docs/guide/; a test of the default, not of a
-    folder handed in."""
-    assert guide.guide_dir() == GUIDE and (GUIDE / "README.md").is_file()
+    (systemd/sushi-rig-agent.service: tool/.venv in the checkout), where the
+    package is the checkout's own tool/src/sushi_rig: its guide is the
+    checkout's, and served with no folder handed in."""
+    unit = (checkout_root() / "systemd" / "sushi-rig-agent.service").read_text(encoding="utf-8")
+    assert "ExecStart=@CHECKOUT@/tool/.venv/bin/sushi-rig agent" in unit
+    assert Path(guide.__file__).resolve() == checkout_root() / "tool" / "src" / "sushi_rig" / "guide.py"
     [(status, _, body)] = fetch(agent(), "/help/")
-    assert status == 200 and b"<h1" in body
+    assert status == 200 and b"<h1>User guides</h1>" in body.replace(b' id="user-guides"', b"")
+
+
+def test_installed_without_the_checkout_every_help_page_says_where_it_looked_and_why(tmp_path):
+    """The package installed as a wheel would install it: a copy in a
+    venv's site-packages, with no checkout around it, run in a fresh
+    interpreter that sees only that copy. Its guide is <venv>/lib/docs/guide,
+    which is not there, and every Help link's page says so (guide.py: the
+    links are kept, not hidden)."""
+    import json
+    import shutil
+    import subprocess
+    import sys
+
+    site = tmp_path / "venv" / "lib" / f"python{sys.version_info[0]}.{sys.version_info[1]}" / "site-packages"
+    shutil.copytree(checkout_root() / "tool" / "src" / "sushi_rig", site / "sushi_rig",
+                    ignore=shutil.ignore_patterns("__pycache__"))
+    script = f"""
+import asyncio, json, sys
+sys.path.insert(0, {str(site)!r})
+from aiohttp.test_utils import TestClient, TestServer
+import sushi_rig.guide as guide
+from sushi_rig.agent import Agent
+
+async def go():
+    made = Agent(describe=lambda: {{"running": False}})
+    out = {{"file": guide.__file__, "guide_dir": str(guide.guide_dir()), "pages": {{}}}}
+    async with TestClient(TestServer(made.app())) as client:
+        for path in ("/help/?from=stage", "/help/recording?from=rack", "/help/img/rack.png", "/"):
+            r = await client.get(path, allow_redirects=False)
+            out["pages"][path] = [r.status, (await r.read()).decode("utf-8", "replace")]
+    made._executor.shutdown(wait=True, cancel_futures=True)
+    return out
+
+print(json.dumps(asyncio.run(go())))
+"""
+    done = subprocess.run([sys.executable, "-I", "-c", script], capture_output=True, text=True, timeout=60,
+                          cwd=tmp_path)
+    assert done.returncode == 0, done.stderr
+    said = json.loads(done.stdout.strip().splitlines()[-1])
+    assert said["file"] == str(site / "sushi_rig" / "guide.py"), "the copy ran, not the checkout"
+    assert said["guide_dir"] == str(tmp_path / "venv" / "lib" / "docs" / "guide")
+    for path, back in (("/help/?from=stage", "/#stage"), ("/help/recording?from=rack", "/#rack")):
+        status, body = said["pages"][path]
+        assert status == 404, path
+        assert "not beside this agent" in body and str(tmp_path / "venv" / "lib" / "docs" / "guide") in body
+        assert "pip install -e" in body and f'href="{back}"' in body, path
+    assert said["pages"]["/help/img/rack.png"][0] == 404
+    status, body = said["pages"]["/"]
+    assert status == 200 and 'src="/ui/app.js"' in body, "the page itself, and its Help links, are still served"
 
 
 # --------------------------------------------------------------------------- #

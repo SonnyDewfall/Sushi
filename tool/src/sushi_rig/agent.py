@@ -6356,11 +6356,14 @@ class Agent:
         person reads it."""
         from . import guide
 
-        name = request.match_info.get("page", guide.INDEX)
+        name = request.match_info.get("page")
         back = guide.back_from(request.query.get("from"))
-        if name.endswith(".md") and guide.PAGE_NAME.match(name[:-3]):
-            # A page's file name typed by hand, or copied from the checkout.
-            raise web.HTTPFound(guide.page_href(name[:-3], back))
+        if name is None:
+            name = guide.INDEX
+        elif (page := guide.canonical(name)) is not None:
+            # A page's file name (README.md, recording.md) or another case of
+            # its name, typed by hand or copied from the checkout.
+            raise web.HTTPFound(guide.page_href(page, back))
         folder = self._guide()
         made = await asyncio.to_thread(guide.render_page, folder, name, back)
         status = 200

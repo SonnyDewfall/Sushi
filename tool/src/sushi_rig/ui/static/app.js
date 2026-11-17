@@ -3139,8 +3139,7 @@ function renderStage(regions, model, status) {
   const lockNote = () => h("p", { class: `lock-note${state.locked ? " locked" : ""}` }, state.locked ? lockIcon() : null,
     state.locked
       ? "Add, remove and reorder are off while locked, and start, stop and switch are hidden. Knobs and bypass still work. This is the page's lock: the agent does not enforce one yet."
-      : "Lock off: the rack can reorder the rig, and the rig can be started, stopped or switched below.",
-    " ", helpAnchor("lock"));
+      : "Lock off: the rack can reorder the rig, and the rig can be started, stopped or switched below.");
   patch(regions.cards, structure, () => {
     state.updaters = [];
     if (!model) {

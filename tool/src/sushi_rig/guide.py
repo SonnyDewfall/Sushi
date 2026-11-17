@@ -5,11 +5,21 @@
 
 `docs/guide/` of the checkout this package runs from (`paths.checkout_root`),
 which is how the rig runs the agent: an editable install in the checkout's
-own `tool/.venv`, started by the systemd unit from the checkout
-(`systemd/sushi-rig-agent.service`). A wheel installed anywhere else carries
-no `docs/`, and the agent then says where it looked instead of serving a
-page. Read on every request, as `/profiles` is: a `git pull` shows on a
-reload, without restarting the agent.
+own `tool/.venv` (`pip install -e`, docs/reference/environment.md), started by
+the systemd unit from the checkout (`systemd/sushi-rig-agent.service`). Read
+on every request, as `/profiles` is: a `git pull` shows on a reload, without
+restarting the agent.
+
+**Installed any other way, there is no guide.** A wheel carries no `docs/`,
+and `checkout_root` is then the folder three above the installed package
+(`<venv>/lib/docs/guide` for `<venv>/lib/pythonX.Y/site-packages`), which
+is not there. The page's Help links stay, and each leads to a 404 page that
+says the guide is not beside this agent, where it was looked for, and that
+it comes with an editable install of the checkout (`not_found`;
+test_guide.py installs the package that way to show it). They are not
+hidden: the page would have to ask the agent first, for an install the rig
+does not use, and a link that says why it has nothing is plainer than one
+that is missing.
 
 ## A small renderer, no dependency
 
@@ -31,7 +41,11 @@ to `/help/saving#x`, `README.md` to `/help/`, `img/rack.png` to
 `/help/img/rack.png`. A link out of the guide (`../reference/agent.md`) is
 not served, since only `docs/guide/` is, so it is shown as its text and the
 file's place in the checkout, not as a link that leads nowhere. Links out to
-the web are kept as they are.
+the web are kept as they are (http, https and mailto; no other scheme).
+A picture is shown only from the guide's own img/: one on the web would be
+fetched, and the guide must work offline, so it is a link to it instead;
+that, and a picture with no usable `src`, is listed in `Renderer.missing`,
+which test_guide.py requires empty for every page.
 
 Every link to a page carries `?from=`, the screen the guide was opened from
 (`stage`, `rack` or `new-rig`), so "Back to the rig" goes back to that
@@ -68,6 +82,19 @@ IMAGE_NAME = re.compile(r"^[A-Za-z0-9][A-Za-z0-9_-]*(?:\.[A-Za-z0-9_-]+)*\.(png|
 
 # The screens "Back to the rig" can go back to, by `from`, and where each is.
 BACK = {"stage": "/#stage", "rack": "/#rack", "new-rig": "/#new-rig"}
+
+
+def canonical(name: str) -> str | None:
+    """The page a name asked for differently means, to send the browser to:
+    `recording.md` and `Recording` are `recording`, and `README`,
+    `README.md` and `readme` the front page (`INDEX`, at /help/). None for a
+    name already as served, or one that is no page's name at all. Pure."""
+    stem = name[:-3] if name.lower().endswith(".md") else name
+    lower = stem.lower()
+    page = INDEX if lower == INDEX.lower() else lower if PAGE_NAME.match(lower) else None
+    if page is None or (name == page and page != INDEX):
+        return None
+    return page
 
 
 def guide_dir() -> Path:
@@ -154,10 +181,68 @@ _TABLE_RULE = re.compile(r"^\s*\|?\s*:?-+:?\s*(\|\s*:?-+:?\s*)*\|?\s*$")
 _QUOTE = re.compile(r"^ {0,3}> ?(.*)$")
 _EXTERNAL = re.compile(r"^[a-z][a-z0-9+.-]*:", re.IGNORECASE)
 _WEB = re.compile(r"^(https?|mailto):", re.IGNORECASE)  # the only schemes a link keeps
-_LINK = re.compile(r"(!?)\[((?:[^\[\]]|\[[^\[\]]*\])*)\]\(\s*<?([^)\s>]+)>?(?:\s+\"[^\"]*\")?\s*\)")
+# A link's or image's text, up to the `(` its destination follows
+# (`_destination` reads the rest, parentheses balanced).
+_LINK_OPEN = re.compile(r"(!?)\[((?:[^\[\]]|\[[^\[\]]*\])*)\]\(")
 _AUTOLINK = re.compile(r"<((?:https?|mailto):[^\s<>]+)>", re.IGNORECASE)
 _IMG_TAG = re.compile(r"<img\b([^<>]*?)/?>", re.IGNORECASE)
-_ATTR = re.compile(r"([A-Za-z-]+)\s*=\s*\"([^\"]*)\"")
+_ATTR = re.compile(r"""([A-Za-z-]+)\s*=\s*(?:"([^"]*)"|'([^']*)'|([^\s"'=<>`]+))""")
+_ESCAPED = re.compile(r"\\([!-/:-@\[-`{-~])")
+# Where a held piece of HTML stands in the text until the end (`_hold`). The
+# input can hold none of it: `render` replaces every NUL first.
+_SLOT = re.compile("\x00(\\d+)\x00")
+# Deeper than this, a destination's parentheses are not read as one.
+_PAREN_DEPTH = 32
+
+
+def _destination(text: str, i: int) -> tuple[str, int] | None:
+    """The destination of a link whose `(` ends just before `i`, and where
+    the link ends, or None if what follows is not one. As CommonMark reads
+    it: `<...>`, or a run with no space whose parentheses balance (so
+    `Foo_(bar)` is whole), a backslash escaping the next character; then an
+    optional title in quotes or parentheses, then `)`. Pure."""
+    n = len(text)
+    while i < n and text[i] in " \t\n":
+        i += 1
+    if i < n and text[i] == "<":
+        j = text.find(">", i + 1)
+        if j < 0 or "\n" in text[i + 1:j] or "<" in text[i + 1:j]:
+            return None
+        dest, i = text[i + 1:j], j + 1
+    else:
+        start, depth = i, 0
+        while i < n:
+            c = text[i]
+            if c == "\\" and i + 1 < n:
+                i += 2
+                continue
+            if c.isspace() or ord(c) < 0x20:
+                break
+            if c == "(":
+                depth += 1
+                if depth > _PAREN_DEPTH:
+                    return None
+            elif c == ")":
+                if depth == 0:
+                    break
+                depth -= 1
+            i += 1
+        if depth:
+            return None
+        dest = text[start:i]
+    j = i
+    while j < n and text[j] in " \t\n":
+        j += 1
+    if j < n and j > i and text[j] in "\"'(":
+        k = text.find({"(": ")"}.get(text[j], text[j]), j + 1)
+        if k < 0:
+            return None
+        j = k + 1
+        while j < n and text[j] in " \t\n":
+            j += 1
+    if j < n and text[j] == ")":
+        return _ESCAPED.sub(r"\1", dest), j + 1
+    return None
 
 
 class Renderer:
@@ -183,6 +268,8 @@ class Renderer:
         """("href", the URL to use) for a link the page can follow, or
         ("outside", the file's path in the checkout) for one out of the
         guide, or ("missing", what it named)."""
+        if not raw.strip():
+            return "missing", raw
         if _EXTERNAL.match(raw):
             return ("href", raw) if _WEB.match(raw) else ("missing", raw)
         path, _, anchor = raw.partition("#")
@@ -210,14 +297,30 @@ class Renderer:
         self._held.append(made)
         return f"\x00{len(self._held) - 1}\x00"
 
-    def _restore(self, text: str) -> str:
-        while "\x00" in text:
-            text = re.sub(r"\x00(\d+)\x00", lambda m: self._held[int(m.group(1))], text)
-        return text
+    def _restore(self, text: str, below: int | None = None) -> str:
+        """`text` with each held piece put back. A piece only ever holds
+        pieces held before it, so each is restored with only lower slots
+        allowed: this cannot loop, and a slot that is not one (which `render`
+        makes impossible) is dropped, not looked up."""
+        limit = len(self._held) if below is None else below
+
+        def put(m: re.Match) -> str:
+            n = int(m.group(1))
+            return self._restore(self._held[n], n) if n < limit else ""
+
+        return _SLOT.sub(put, text)
 
     def _image(self, src: str, alt: str, extra: dict[str, str] | None = None) -> str:
+        """A picture of the guide's img/, or, for anything else, its alt
+        text, listed as missing. A picture on the web is never fetched (the
+        guide must work offline): it is a link to it, and missing too."""
+        src = src.strip()
+        if re.match(r"^https?:", src, re.IGNORECASE):
+            self.missing.append(src)
+            return (f'<a class="remote-image" href="{html.escape(src, quote=True)}">'
+                    f"[{html.escape(alt or 'a picture on the web')}]</a>")
         kind, where = self.target(src)
-        if kind != "href":
+        if kind != "href" or not where.startswith(PREFIX + "img/"):
             self.missing.append(src)
             return f'<span class="missing-image">[{html.escape(alt)}]</span>'
         attrs = {"src": where, "alt": alt, **(extra or {})}
@@ -225,12 +328,30 @@ class Renderer:
         return "<img " + " ".join(f'{k}="{html.escape(v, quote=True)}"' for k, v in attrs.items()) + ">"
 
     def _img_tag(self, match: re.Match) -> str:
-        attrs = {k.lower(): html.unescape(v) for k, v in _ATTR.findall(match.group(1))}
+        attrs = {k.lower(): html.unescape(a or b or c) for k, a, b, c in _ATTR.findall(match.group(1))}
         extra = {k: attrs[k] for k in ("width", "height") if k in attrs and attrs[k].isdigit()}
         return self._hold(self._image(attrs.get("src", ""), attrs.get("alt", ""), extra))
 
-    def _link(self, match: re.Match) -> str:
-        image, text, raw = match.group(1), match.group(2), match.group(3)
+    def _links(self, text: str) -> str:
+        """Every `[text](destination)` and `![alt](destination)` in `text`,
+        held as HTML; a `[` that does not start one is left as it is."""
+        out, pos = [], 0
+        while True:
+            m = _LINK_OPEN.search(text, pos)
+            if not m:
+                break
+            found = _destination(text, m.end())
+            if found is None:
+                out.append(text[pos:m.start() + 1])
+                pos = m.start() + 1
+                continue
+            out.append(text[pos:m.start()])
+            out.append(self._link(m.group(1), m.group(2), found[0]))
+            pos = found[1]
+        out.append(text[pos:])
+        return "".join(out)
+
+    def _link(self, image: str, text: str, raw: str) -> str:
         if image:
             # Its code spans are already held: restored, then as plain text.
             alt = html.unescape(re.sub(r"<[^>]+>", "", self._restore(text)))
@@ -255,7 +376,7 @@ class Renderer:
         text = _IMG_TAG.sub(self._img_tag, text)
         text = _AUTOLINK.sub(lambda m: self._hold(
             f'<a href="{html.escape(m.group(1), quote=True)}">{html.escape(m.group(1))}</a>'), text)
-        text = _LINK.sub(self._link, text)
+        text = self._links(text)
         text = html.escape(text, quote=False)
         text = re.sub(r"\*\*(?=\S)(.+?)(?<=\S)\*\*", r"<strong>\1</strong>", text, flags=re.DOTALL)
         text = re.sub(r"(?<![*\w])\*(?=[^\s*])(.+?)(?<=[^\s*])\*(?![*\w])", r"<em>\1</em>", text, flags=re.DOTALL)
@@ -264,8 +385,10 @@ class Renderer:
     # -- blocks ---------------------------------------------------------------
 
     def render(self, text: str) -> str:
-        """The page as HTML; `title` is its first heading's text after."""
-        return self.blocks(text.expandtabs(4).splitlines())
+        """The page as HTML; `title` is its first heading's text after. A
+        NUL becomes U+FFFD, as CommonMark has it, so the text can never hold
+        what stands for a held piece (`_SLOT`)."""
+        return self.blocks(text.replace("\x00", "\ufffd").expandtabs(4).splitlines())
 
     def blocks(self, lines: list[str]) -> str:
         out: list[str] = []
@@ -481,8 +604,11 @@ def not_found(folder: Path, name: str, back: str | None = None) -> str:
     """The page for a guide page there is not, or a guide not there at all."""
     if not folder.is_dir():
         said = (f"<p>The guide is not beside this agent: it is read from <code>{html.escape(str(folder))}</code>, "
-                "which is not there. The agent serves the guide from the checkout it runs from; "
-                "an agent installed some other way has none.</p>")
+                "which is not there.</p>\n<p>The agent serves the guide from the checkout it was installed "
+                "from, with <code>pip install -e</code> in the checkout's <code>tool/</code> "
+                "(docs/reference/environment.md). Installed any other way it has no guide, and every "
+                "Help link leads here. The guide is also in the checkout itself, in "
+                "<code>docs/guide/</code>.</p>")
     else:
         said = f"<p>The guide has no page called <code>{html.escape(name)}</code>.</p>"
     return page(f"<h1>Not in the guide</h1>\n{said}", "Not in the guide", back=back, index=False)

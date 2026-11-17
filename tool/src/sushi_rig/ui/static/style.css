@@ -661,11 +661,18 @@ button.strip-name:focus-visible { outline: 2px solid var(--accent); outline-offs
 /* ---------------------------------------------------------------- the user guide (#167)
    Links into /help/: "Help" in the rack's header and the New rig screen's,
    a narrow one at the end of the stage's nav, and a quiet line under a
-   feature with a guide of its own. Each stays a thumb's height to tap. */
+   feature with a guide of its own. Each stays a thumb's height to tap.
+   None is in the stage's lock note: beside its text it squeezed the text
+   into more lines and pushed every card down (review of PR #168); the
+   stage's Help opens Playing live, which has the lock. */
 .go.help { color: var(--muted); }
 .stage-nav a.help { flex: 0 0 auto; padding: 0 16px; }
 .help-link { align-self: flex-start; display: inline-flex; align-items: center; min-height: 44px; font-size: 12px;
   color: var(--muted); text-decoration: underline; text-decoration-style: dotted; text-underline-offset: 3px; }
 .help-link:hover, .help-link:focus-visible { color: var(--accent-soft); }
-.record-head .help-link { margin-left: auto; }
-.lock-note .help-link { margin-left: auto; flex: none; }
+/* In the record head, where the clock goes while recording: the full
+   44 px to tap, but no taller in the row than the heading beside it (the
+   negative margins), so the head is the height it was without the link, and
+   Record moves nothing below it more than the clock always did. One line,
+   so it never takes the heading's width. */
+.record-head .help-link { margin: -10px 0 -10px auto; white-space: nowrap; flex: none; }

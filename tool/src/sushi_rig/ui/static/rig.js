@@ -2766,7 +2766,6 @@ export function presetOutcome(op, channel, name, answer, asked = {}) {
 export const HELP = {
   guide: { page: "README", label: "Help" },
   stage: { page: "playing-live", label: "Help" },
-  lock: { page: "playing-live", anchor: "the-lock", label: "About the lock" },
   stageRigs: { page: "playing-live", anchor: "switch-to-another-rig", label: "About switching rigs" },
   rigs: { page: "building-a-rig", label: "About rigs" },
   newRig: { page: "building-a-rig", anchor: "make-a-new-rig", label: "Help" },
