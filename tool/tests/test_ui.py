@@ -243,7 +243,8 @@ def test_the_ui_files_are_in_the_package_data_a_wheel_carries():
     globs = config["tool"]["setuptools"]["package-data"]["sushi_rig"]
     package = UI_DIR.parent.parent
     files = [path.relative_to(package).as_posix() for path in UI_DIR.iterdir() if path.is_file()]
-    assert sorted(files) == ["ui/static/app.js", "ui/static/index.html", "ui/static/rig.js", "ui/static/style.css"]
+    assert sorted(files) == ["ui/static/app.js", "ui/static/guide.css", "ui/static/index.html", "ui/static/rig.js",
+                            "ui/static/style.css"]
     assert [f for f in files if not any(fnmatch.fnmatch(f, g) for g in globs)] == []
 
 
