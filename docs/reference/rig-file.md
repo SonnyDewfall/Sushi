@@ -92,7 +92,8 @@ with the lesser of its own ports and the track's channels, and then
 the first mono plugin on, the right channel is silent; bypassing the plugin
 changes nothing, since a bypassed plugin keeps its channel count. Every
 guitar chain here starts with the Guitarix compressor, which is mono, as are
-the Tube Screamer and both octavers. Measured in CI's container (2026-11-02): seven of
+the Tube Screamer and the octavers (gx_oc_2_, and the gx_detune_ pair every
+rig had until #152 took it out). Measured in CI's container (2026-11-02): seven of
 the eleven rigs had nothing on the right at all, and the other four only
 what a later reverb or delay fed across, 5 to 18 dB down. That is "I only get
 the left channel out."

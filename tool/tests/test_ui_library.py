@@ -287,8 +287,9 @@ def test_the_drawer_lists_the_library_by_kind_and_the_search_narrows_it_in_place
     expect(p.locator(".lib-group:visible h3")).to_have_text(["Dynamics", "Other"])
     search.fill("reverb")
     # MVerb by its kind, a-reverb by its name: its bundle is not captured, so
-    # it is under Other, not called a reverb for its name.
-    expect(p.locator(".lib-entry:visible .lib-name")).to_have_text(["MVerb", "a-reverb"])
+    # it is under Other, not called a reverb for its name. The name is its
+    # profile's restated one (#154), the next best to its bundle's.
+    expect(p.locator(".lib-entry:visible .lib-name")).to_have_text(["MVerb", "ACE Reverb"])
     expect(p.locator(".lib-group:visible h3")).to_have_text(["Reverb", "Other"])
     search.fill("nothing like this")
     expect(p.locator(".lib-nothing")).to_be_visible()

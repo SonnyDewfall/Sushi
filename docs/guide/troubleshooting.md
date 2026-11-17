@@ -30,11 +30,6 @@ Work down this list. Stop at the first thing that is wrong.
    and read that line.
 7. **Ask the rig.** Run `sushi-rig doctor` (below).
 
-One rig has a known fault: **electric-octave-up** can go silent, or make a burst
-of noise, some seconds after starting, because of a bug in its octave plugin.
-Stopping and starting the rig clears it. This was measured away from the rig, on
-one or two starts in a hundred; it has not been seen on the rig itself.
-
 ## After an update
 
 When the project is updated (after a `git pull`), **the agent keeps running the

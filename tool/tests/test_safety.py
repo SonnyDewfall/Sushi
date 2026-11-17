@@ -800,3 +800,35 @@ def test_a_failed_switch_puts_the_level_back_and_only_then_restarts():
     assert failed_add < back < down, "the add fails, the level comes back, then the restart"
     assert fake.calls[back - 1] == ("parameter", "master", "gain"), "read again, then put back"
     assert fake.values["master"]["gain"] == level
+
+
+def test_a_batched_master_change_that_fails_part_way_leaves_a_master_left_down_still_down():
+    """Re-review of PR #159: the batched route cleared `master_down` as soon
+    as the master's gain was set, so a batch whose next parameter failed put
+    the gain back to the floor with the warning gone, and a save then wrote
+    the floor as the rig's volume."""
+    from sushi_rig.live import LiveError
+
+    agent, fake = dip_agent()
+    fake.values_of["master"]["parameters"]["pan"] = 0.5
+    _down_and_stuck(agent, fake)
+    assert master_gain(fake) == 0.0
+    fake.fail, fake.fail_on = LiveError("Sushi would not set it"), "set_parameter"
+    fake.only = lambda name, args: args[:2] == ("master", "pan")
+    status, body = call(agent, "POST", "/live/parameters",
+                        json={"processor": "master", "parameters": {"gain": 0.7, "pan": 0.4}})
+    fake.fail = fake.only = None
+    assert status == 502, body
+    assert master_gain(fake) == 0.0, "the gain put back where it was"
+    health = call(agent, "GET", "/health")[1]["agent"]
+    assert health["master_down"] is not None and health["master_down"]["level"] == MASTER_LEVEL
+
+
+def test_a_batched_master_change_that_works_puts_a_master_left_down_right():
+    agent, fake = dip_agent()
+    fake.values_of["master"]["parameters"]["pan"] = 0.5
+    _down_and_stuck(agent, fake)
+    status, body = call(agent, "POST", "/live/parameters",
+                        json={"processor": "master", "parameters": {"gain": 0.7, "pan": 0.4}})
+    assert status == 200, body
+    assert call(agent, "GET", "/health")[1]["agent"]["master_down"] is None

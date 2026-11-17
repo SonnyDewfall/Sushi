@@ -1,0 +1,87 @@
+# sushi-rig component profile (schema 1).
+# Machine-written and canonical: edit by hand if you like, but comments
+# do not survive the next rewrite. Facts are checked against `sushi-rig
+# probe`; judgements carry provenance (draft / reviewed / fact).
+# Check with:  sushi-rig profile validate <this file>
+schema_version: 1
+
+plugin:
+  uri: urn:ardour:a-reverb
+  version: '2.4'
+  name: ACE Reverb
+kind: effect
+host: sushi-lv2
+
+ports:
+  audio_in: 2
+  audio_out: 2
+  config_drivable: true
+
+groups:
+  - id: reverb
+    label: Reverb
+    provenance: draft
+
+parameters:
+  - name: Blend
+    symbol: blend
+    facts:
+      min: 0.0
+      max: 1.0
+      default: 0.30000001192092896
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: primary, provenance: draft}
+    group: {value: reverb, provenance: draft}
+    order: {value: 1, provenance: draft}
+    label: {value: Mix, provenance: draft}
+    description:
+      value: 'Dry against wet, a straight crossfade: 0 is dry only, 1 wet only (rendered).'
+      provenance: draft
+    scale: {value: linear, provenance: draft}
+    control: {value: knob, provenance: draft}
+    phone: {value: 1, provenance: draft}
+
+  - name: Room Size
+    symbol: roomsz
+    facts:
+      min: 0.5
+      max: 1.0
+      default: 0.5
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: primary, provenance: draft}
+    group: {value: reverb, provenance: draft}
+    order: {value: 2, provenance: draft}
+    label: {value: Room size, provenance: draft}
+    description:
+      value: The size of the room; the plugin declares no unit.
+      provenance: draft
+    scale: {value: linear, provenance: draft}
+    control: {value: knob, provenance: draft}
+    phone: {value: 2, provenance: draft}
+
+  - name: Enable
+    symbol: enable
+    facts:
+      min: 0.0
+      max: 1.0
+      default: 1.0
+      toggled: true
+      integer: true
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: hidden, provenance: draft}
+    label: {value: Enable, provenance: draft}
+    description:
+      value: The plugin's own on/off; the rig bypasses through Sushi instead.
+      provenance: draft
+    scale: {value: toggle, provenance: fact}
+    control: {value: toggle, provenance: draft}

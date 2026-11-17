@@ -1,0 +1,48 @@
+{
+  "uri": "urn:ardour:a-reverb",
+  "name": "ACE Reverb",
+  "class": "Reverb Plugin",
+  "bundle": "/usr/lib/lv2/a-reverb.lv2",
+  "audio_in": 2,
+  "audio_out": 2,
+  "atom_ports": 0,
+  "patch_writables": [],
+  "state_interface": false,
+  "config_drivable": true,
+  "parameters": [
+    {
+      "symbol": "blend",
+      "name": "Blend",
+      "min": 0.0,
+      "max": 1.0,
+      "default": 0.30000001192092896,
+      "toggled": false,
+      "integer": false,
+      "enumeration": false,
+      "logarithmic": false
+    },
+    {
+      "symbol": "roomsz",
+      "name": "Room Size",
+      "min": 0.5,
+      "max": 1.0,
+      "default": 0.5,
+      "toggled": false,
+      "integer": false,
+      "enumeration": false,
+      "logarithmic": false
+    },
+    {
+      "symbol": "enable",
+      "name": "Enable",
+      "min": 0.0,
+      "max": 1.0,
+      "default": 1.0,
+      "toggled": true,
+      "integer": true,
+      "enumeration": false,
+      "logarithmic": false
+    }
+  ],
+  "version": "2.4"
+}

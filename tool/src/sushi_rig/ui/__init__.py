@@ -164,6 +164,8 @@ from __future__ import annotations
 from pathlib import Path
 from typing import Any
 
+from ..profile import CURVES
+
 #: The folder the agent serves: the page's files and nothing else, so this
 #: module's own source is not among them.
 UI_DIR = Path(__file__).parent / "static"
@@ -175,6 +177,9 @@ UI_DIR = Path(__file__).parent / "static"
 _JUDGEMENTS = ("visibility", "group", "order", "label", "description", "scale", "control", "phone")
 _SENT = ("label", "group", "visibility", "scale", "control", "phone", "description")
 _FACTS = ("unit", "integer", "toggled", "scale_points")
+# A control's (profile.py, "Controls"): what it sets and how it is shown.
+_CONTROL_SENT = ("label", "group", "visibility", "control", "phone", "description")
+_DRIVE_KEYS = ("parameter", "curve", "at_0", "at_1")
 
 
 class PanelError(ValueError):
@@ -197,6 +202,13 @@ def panel_profile(profile: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     "control", "phone", "description", "unit", "integer", "toggled",
     "scale_points"}`, sorted as the panel lays them out: by their group's
     place in `groups` (ungrouped last), then `order`, then the file's order.
+    A profile's controls (one knob driving several parameters, profile.py)
+    are laid out among them by the same rule, after the parameters where the
+    two tie, each as `{"name": <its id>, "label", "group", "visibility",
+    "control", "phone", "description", "drives": [{"parameter", "curve",
+    "at_0", "at_1"}]}`: `drives` is what tells the browser it is one. A
+    control whose drives are not a list of such mappings is left out and
+    named in the problems.
     `name` is the one Sushi uses for the parameter (the profile's `name` is the
     port's `lv2:name`, which is how Sushi addresses it: profile.py). No range:
     see `_FACTS`.
@@ -214,9 +226,12 @@ def panel_profile(profile: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
     problems: list[str] = []
     plugin = profile.get("plugin") if isinstance(profile.get("plugin"), dict) else {}
     where = profile.get("_file") or plugin.get("uri") or "a profile"
-    for key in ("groups", "parameters"):
+    for key in ("groups", "parameters", "controls"):
         if profile.get(key) is not None and not isinstance(profile.get(key), list):
             raise PanelError(f"{where}: {key} is not a list: {profile.get(key)!r}")
+    for position, entry in enumerate(profile.get("controls") or []):
+        if not isinstance(entry, dict):
+            raise PanelError(f"{where}: control {position + 1} is not a mapping: {entry!r}")
     groups = []
     for group in profile.get("groups") or []:
         if isinstance(group, dict) and isinstance(group.get("id"), str):
@@ -247,6 +262,20 @@ def panel_profile(profile: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
         order = judged["order"]
         order = order if isinstance(order, (int, float)) and not isinstance(order, bool) else float("inf")
         placed.append((group, order, position, flat))
+    for position, entry in enumerate(profile.get("controls") or []):
+        flat = _panel_control(entry, where, position, problems)
+        if flat is None:
+            continue
+        group = flat["group"]
+        if group is not None and not isinstance(group, str):
+            raise PanelError(f"{where}: control {flat['name']}'s group is not a name: {group!r}")
+        if group is not None and group not in rank:
+            problems.append(f"{where}: control {flat['name']} names group {group!r}, which groups does not define")
+            groups.append({"id": group, "label": group})
+            rank[group] = len(groups) - 1
+        order = _judged(entry, "order")
+        order = order if isinstance(order, (int, float)) and not isinstance(order, bool) else float("inf")
+        placed.append((group, order, len(profile.get("parameters") or []) + position, flat))
     # Ranked once every group is known: an undefined one met later extends
     # `groups`, and the ungrouped go after all of them.
     placed.sort(key=lambda p: (rank[p[0]] if p[0] is not None else len(groups), p[1], p[2]))
@@ -257,6 +286,30 @@ def panel_profile(profile: dict[str, Any]) -> tuple[dict[str, Any], list[str]]:
         "groups": groups,
         "parameters": [flat for *_, flat in placed],
     }, problems
+
+
+def _panel_control(entry: Any, where: str, position: int, problems: list[str]) -> dict[str, Any] | None:
+    """One of a profile's controls as the browser draws it, or None (and a
+    problem said) when it cannot be: no id, or drives that are not a
+    non-empty list of {parameter, curve, at_0, at_1} with numbers at the
+    ends and a curve `profile.CURVES` names. Loaded unvalidated, as the
+    parameters are."""
+    if not isinstance(entry, dict) or not isinstance(entry.get("id"), str) or not entry["id"]:
+        problems.append(f"{where}: control {position + 1} has no id and is left out")
+        return None
+    drives = _judged(entry, "drives")
+    ok = isinstance(drives, list) and drives and all(
+        isinstance(d, dict) and isinstance(d.get("parameter"), str) and d.get("curve") in CURVES
+        and all(isinstance(d.get(k), (int, float)) and not isinstance(d.get(k), bool) for k in ("at_0", "at_1"))
+        for d in drives)
+    if not ok:
+        problems.append(f"{where}: control {entry['id']} has no drives the panel can follow and is left out")
+        return None
+    flat: dict[str, Any] = {"name": entry["id"], **{key: _judged(entry, key) for key in _CONTROL_SENT}}
+    flat["label"] = flat["label"] or entry["id"]
+    flat["visibility"] = flat["visibility"] or "primary"
+    flat["drives"] = [{key: d[key] for key in _DRIVE_KEYS} for d in drives]
+    return flat
 
 
 def panel_profiles(profiles: dict[str, dict[str, Any]], problems: list[str]) -> dict[str, Any]:

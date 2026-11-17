@@ -16,6 +16,8 @@ and the two things worth reading about a rig, served over HTTP on localhost.
     POST /rig/switch    {"config_name" (required)} -- to a rig of config/rigs, live where it can be (#93)
     GET  /live          the running rig's parameters, bypass and chains, with each parameter's range
     POST /live/parameter  {"processor", "parameter", "value"}   value is normalised, 0 to 1
+    POST /live/parameters {"processor", "parameters": {name: value, ...}} -- several of one
+                        processor's at once, all or none, one log entry, one undo (#154)
     POST /live/bypass   {"processor", "bypassed"}
     POST /live/move     {"processor", "direction": "up" | "down"}
     GET  /live/log      the changes made through /live, newest last (the last 500), and
@@ -680,6 +682,29 @@ def parameter_request(body: Any) -> tuple[str, str, float]:
     return processor, parameter, float(value)
 
 
+#: The most parameters one POST /live/parameters sets: a profile's control
+#: drives a handful, and the walk back on a failure is one set each.
+MAX_PARAMETERS = 16
+
+
+def parameters_request(body: Any) -> tuple[str, dict[str, float]]:
+    """`(processor, {parameter: value})` from a request body, or `AgentError`:
+    one processor and from one to `MAX_PARAMETERS` of its parameters, each
+    value as `parameter_request` takes one, in the order given."""
+    body = _object(body)
+    processor = _name(body, "processor")
+    values = body.get("parameters")
+    if not isinstance(values, dict) or not values:
+        raise AgentError("'parameters' is required: an object of parameter names and values from 0 to 1")
+    if len(values) > MAX_PARAMETERS:
+        raise AgentError(f"'parameters' names {len(values)}; at most {MAX_PARAMETERS} in one change")
+    out: dict[str, float] = {}
+    for name, value in values.items():
+        _, parameter, number = parameter_request({"processor": processor, "parameter": name, "value": value})
+        out[parameter] = number
+    return processor, out
+
+
 def bypass_request(body: Any) -> tuple[str, bool]:
     body = _object(body)
     processor = _name(body, "processor")
@@ -899,7 +924,7 @@ def undo_inverse(entry: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     undo is `remove`; the undo's log entry names the op it undid (`of`).
     """
     op, args, previous = entry["op"], entry["args"], entry["previous"]
-    if op not in ("parameter", "bypass", "move", "add", "remove"):
+    if op not in ("parameter", "parameters", "bypass", "move", "add", "remove"):
         raise AgentError(f"cannot undo an entry of op {op!r}")
     if op == "add":
         return "remove", {"processor": args["name"]}
@@ -917,6 +942,14 @@ def undo_inverse(entry: dict[str, Any]) -> tuple[str, dict[str, Any]]:
             f"{args['processor']} was before it, so there is nothing to put back")
     if op == "parameter":
         return op, {"processor": args["processor"], "parameter": args["parameter"], "value": previous}
+    if op == "parameters":
+        unknown = sorted(k for k in args["parameters"] if not isinstance((previous or {}).get(k), (int, float)))
+        if not isinstance(previous, dict) or unknown:
+            raise StaleUndo(
+                f"cannot undo the change of {args['processor']!r}: Sushi did not say what "
+                f"{', '.join(unknown) or 'its parameters'} were before it, so there is nothing to put back")
+        return op, {"processor": args["processor"],
+                    "parameters": {k: previous[k] for k in args["parameters"]}}
     if op == "bypass":
         return op, {"processor": args["processor"], "bypassed": previous}
     return op, {"processor": args["processor"], "direction": OPPOSITE[args["direction"]]}
@@ -953,10 +986,14 @@ def check_undo_state(entry: dict[str, Any], current: Any) -> None:
     reach first. A value Sushi would not say (None) cannot be confirmed, and is
     refused rather than assumed."""
     args = entry["args"]
-    if entry["op"] == "parameter":
+    close = lambda now, left: (isinstance(now, (int, float)) and not isinstance(now, bool)  # noqa: E731
+                               and math.isclose(now, left, rel_tol=0.0, abs_tol=PARAMETER_TOLERANCE))
+    if entry["op"] == "parameters":
+        left = args["parameters"]
+        same = isinstance(current, dict) and all(close(current.get(k), v) for k, v in left.items())
+    elif entry["op"] == "parameter":
         left = args["value"]
-        same = (isinstance(current, (int, float)) and not isinstance(current, bool)
-                and math.isclose(current, left, rel_tol=0.0, abs_tol=PARAMETER_TOLERANCE))
+        same = close(current, left)
     else:
         left = args["bypassed"]
         same = isinstance(current, bool) and current == left
@@ -1692,6 +1729,7 @@ class Agent:
         app.router.add_get("/live", self.live_state)
         app.router.add_get("/live/log", self.live_log)
         app.router.add_post("/live/parameter", self.live_parameter)
+        app.router.add_post("/live/parameters", self.live_parameters)
         app.router.add_post("/live/bypass", self.live_bypass)
         app.router.add_post("/live/move", self.live_move)
         app.router.add_post("/live/undo", self.live_undo)
@@ -2366,6 +2404,81 @@ class Agent:
                 self._master_back()
         return previous
 
+    async def _apply_parameters(
+        self, request, controller, processor: str, values: dict[str, float],
+        *, expect: Callable[[Any], None] | None = None, dry_run: bool = False,
+    ) -> dict[str, float]:
+        """Set several of one processor's parameters, all or none, and return
+        the values they replaced. Every one is read and checked before any
+        is set, so a name the plugin lacks or a read-only one is refused
+        with nothing changed. If Sushi then refuses one, or does not answer,
+        the ones already set are put back to what they were, in reverse, and
+        the error is raised in its own class (502, or 504 with its
+        `pending`), saying what was put back; one that cannot be put back is
+        said too. One that did not answer may or may not have been applied,
+        and is left as it is, said; after one, nothing more is sent through
+        the stuck connection. What is left changed this way is not logged,
+        and the answer says to read /live."""
+        previous: dict[str, float] = {}
+        for parameter in values:
+            reading = await self._sushi(
+                request, self.live.parameter, controller, processor, parameter, reading=True)
+            previous[parameter] = check_parameter(reading, processor, parameter)
+        if expect:
+            expect(previous)
+        if dry_run:
+            return previous
+        done: list[str] = []
+        for parameter, value in values.items():
+            try:
+                await self._sushi(
+                    request, self.live.set_parameter, controller, processor, parameter, value, reading=False)
+            except web.HTTPException as exc:
+                back, stuck = [], []
+                pending = getattr(exc, "pending", None)
+                if pending is not None:
+                    # A call still running on this connection: putting back
+                    # through it would queue behind the stuck call and hold
+                    # the live lock for another LIVE_TIMEOUT a parameter,
+                    # which `_sushi` releases a 504 to avoid (re-review of
+                    # PR #159). Nothing is put back; the player reads /live.
+                    stuck = [f"{name} (not tried: Sushi did not answer)" for name in reversed(done)]
+                else:
+                    undo_order = list(reversed(done))
+                    for index, name in enumerate(undo_order):
+                        try:
+                            await self._sushi(request, self.live.set_parameter, controller, processor, name,
+                                              previous[name], reading=False)
+                            back.append(name)
+                        except web.HTTPException as again:
+                            stuck.append(f"{name} ({again.reason})")
+                            pending = getattr(again, "pending", None)
+                            if pending is not None:
+                                # This put-back is the stuck call now: the
+                                # rest are not tried, and the connection is
+                                # held until it returns.
+                                stuck += [f"{rest} (not tried: Sushi did not answer)"
+                                          for rest in undo_order[index + 1:]]
+                                break
+                said = [f"{processor} {parameter}: {exc.reason}"]
+                if back:
+                    said.append(f"put back {', '.join(reversed(back))} as {'it was' if len(back) == 1 else 'they were'}")
+                if stuck:
+                    said.append(f"could not put back {', '.join(stuck)}: read /live")
+                if not done:
+                    said.append("nothing else had been set")
+                raised = type(exc)(reason="; ".join(said))
+                if pending is not None:
+                    raised.pending = pending
+                raise raised from exc
+            done.append(parameter)
+        if (ramp.MASTER, ramp.GAIN) in {(processor, name) for name in values}:
+            # Only once every one is set: a batch that fails part-way puts the
+            # master back where it was, and a master a dip left down is still
+            # down (re-review of PR #159).
+            self._master_back()
+        return previous
+
     async def _apply_bypass(
         self, request, controller, processor: str, bypassed: bool,
         *, expect: Callable[[Any], None] | None = None, dry_run: bool = False,
@@ -2426,6 +2539,25 @@ class Agent:
             )
         return web.json_response({"ok": True, **entry})
 
+    async def live_parameters(self, request):
+        """Set several of one processor's parameters as one change (#154): a
+        profile's control that drives several, such as the hall's Mix. All or
+        none (`_apply_parameters`), one log entry (`op: "parameters"`, its
+        `previous` each value it replaced), undone as one, and saved as any
+        parameter is, from what Sushi holds. Refusals as POST /live/parameter's.
+        """
+        try:
+            processor, values = parameters_request(await self._json_body(request))
+        except AgentError as exc:
+            raise web.HTTPBadRequest(reason=str(exc))
+        async with self._connected_for_a_change(request) as controller:
+            try:
+                previous = await self._apply_parameters(request, controller, processor, values)
+            except AgentError as exc:
+                raise web.HTTPBadRequest(reason=str(exc))
+            entry = self._record("parameters", {"processor": processor, "parameters": values}, previous)
+        return web.json_response({"ok": True, **entry})
+
     async def live_bypass(self, request):
         """Bypass or un-bypass one processor (not a track) by name."""
         try:
@@ -2470,6 +2602,12 @@ class Agent:
     async def _undo_parameter(self, request, controller, undone, args, dry_run):
         previous = await self._apply_parameter(
             request, controller, args["processor"], args["parameter"], args["value"],
+            expect=lambda current: check_undo_state(undone, current), dry_run=dry_run)
+        return previous, args
+
+    async def _undo_parameters(self, request, controller, undone, args, dry_run):
+        previous = await self._apply_parameters(
+            request, controller, args["processor"], args["parameters"],
             expect=lambda current: check_undo_state(undone, current), dry_run=dry_run)
         return previous, args
 
@@ -2642,7 +2780,8 @@ class Agent:
             try:
                 _, args = undo_inverse(undone)
                 previous, state = await {
-                    "parameter": self._undo_parameter, "bypass": self._undo_bypass,
+                    "parameter": self._undo_parameter, "parameters": self._undo_parameters,
+                    "bypass": self._undo_bypass,
                     "move": self._undo_move, "add": self._undo_add, "remove": self._undo_remove,
                 }[undone["op"]](request, controller, undone, args, skip)
             except AgentError as exc:
@@ -6134,6 +6273,8 @@ def describe_change(entry: dict[str, Any]) -> str:
     op, args = entry.get("op"), entry.get("args") or {}
     if op == "parameter":
         return f"{args.get('processor')} {args.get('parameter')}"
+    if op == "parameters":
+        return f"{args.get('processor')} {', '.join(args.get('parameters') or {})}"
     if op == "bypass":
         return f"bypass {args.get('processor')}"
     if op == "move":
