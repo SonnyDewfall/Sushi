@@ -422,6 +422,11 @@ def render_offline(
             env=sushi_env(root),
             capture_output=True,
             text=True,
+            # Not every byte Sushi prints is UTF-8. A second Sushi holding the
+            # gRPC port (51051) makes gRPC print its bind error with a few raw
+            # bytes in it, and a strict decode raised UnicodeDecodeError out of
+            # a render that had worked (seen 2026-11-17, two renders at once).
+            errors="replace",
             check=False,
             timeout=timeout,
         )
@@ -455,6 +460,17 @@ def render_offline(
         raise RenderError(
             f"rendered {config.name} at {came_back.sample_rate} Hz, expected "
             f"{sample_rate} Hz — a rate change moves every band"
+        )
+    if came_back.samples.shape[0] == 0:
+        # Seen 2026-11-17 with two renders at once: when its gRPC server
+        # cannot bind (another Sushi holds the port), Sushi 1.3.0 exits 0
+        # having written a WAV header and no audio. Every measure of that is
+        # NaN or "silent", which says nothing about the config.
+        held = "51051" in (result.stdout or "") + (result.stderr or "")
+        raise RenderError(
+            f"Sushi exited 0 but wrote no audio to {out_wav.name} for {config.name}"
+            + ("; its gRPC server could not bind port 51051, which another Sushi "
+               "holds: render one at a time" if held else "")
         )
 
     return {
