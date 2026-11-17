@@ -37,6 +37,12 @@ def test_the_offline_frontend_is_selected():
     assert argv[0] == "./sushi", "the rig keeps its own Sushi, not one on PATH"
 
 
+def test_an_offline_render_starts_no_grpc_server():
+    """Nothing talks to it, and two at once fought over port 51051 (exit 0
+    with no audio, or an abort in gRPC)."""
+    assert "--no-grpc" in sushi_argv(Path("c.json"), Path("in.wav"), Path("out.wav"))
+
+
 def test_the_input_and_output_flags_differ_in_case():
     """Sushi's own asymmetry: lowercase -i in, uppercase -O out. Easy to 'tidy'
     into matching and then wonder why nothing is written."""

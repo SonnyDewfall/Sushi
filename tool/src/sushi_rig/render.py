@@ -338,6 +338,13 @@ def sushi_argv(
     silently produces nothing. `-o` selects the offline frontend; `-i` and `-O`
     are its input and output files. Note the asymmetry in case: that is Sushi's,
     not a typo here.
+
+    `--no-grpc`: nothing talks to an offline render (render_offline only
+    reads the file it writes), and with its gRPC server on, two renders at
+    once on one machine fight over port 51051: the second either exits 0
+    with no audio or aborts inside gRPC (exit -6, "Check failed:
+    grpc_server_request_registered_call"), both seen 2026-11-17. Sushi
+    1.3.0's own flag: "Disable gRPC Control completely".
     """
     return [
         sushi_bin,
@@ -345,6 +352,7 @@ def sushi_argv(
         "-i", str(stimulus_wav),
         "-O", str(out_wav),
         "-c", str(config),
+        "--no-grpc",
     ]
 
 
