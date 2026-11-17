@@ -5114,3 +5114,50 @@ test_ui_library, test_ui_mix and test_ui_knobs, which share the fake and the
 run:** the slow tests and the container job; anything on the rig machine;
 WebKit, a phone or the touch screen; the guides' screenshots.
 *(2026-11-17)*
+
+**Channel presets: the review of PR #162 (#127).** Eight findings, each with
+a test (`tests/test_agent_presets.py`, `tests/test_presets.py` unless said),
+and the two of (1) and (5) shown failing against the code before the fix.
+(1) **A load or a revert with `discard` left the discarded work playing**
+where the switch changed nothing: `rigfile.diff` sets what the two configs
+differ in and leaves a value neither states as the rig has it, so a knob
+turned on the vocal stayed turned after loading onto the guitar, under a
+baseline that said nothing was unsaved. Fixed in the shared path:
+`_switch_held` and `_switch_live` take the entries being discarded, and
+`agent.discard_plan` adds a step for each parameter and bypass they set,
+to the next config's value or, where it states none, the value before the
+first of them (a value Sushi did not report is a restart, code
+`discarded`); a discarded add, remove or move leaves chains the running
+config lacks, which the switch already refuses as `drifted`, so it
+restarts from the file. The answer's `discard` says which, with the values
+put back. Tested on a channel the load and the revert leave alone, and the
+structural case. (2) **Save channel as… and load refuse another site's
+page** (`_same_origin_only`, #160's guard): 403 for `Sec-Fetch-Site:
+cross-site` and a foreign `Origin`, allowed with no header and from the
+agent's own page. (3) **Names one-to-one**: `processor_name` now always puts
+the channel's name in front (`eq` and `guitar_eq` become `guitar_eq` and
+`guitar_guitar_eq`, where both had been `guitar_eq` and the load back of
+such a channel was a duplicate), and `check_preset` compiles on the channel
+a preset was saved from, so `GET /presets` says `ok` only of one that loads
+back there; the round trip is tested. (4) **A MIDI mapping follows its
+plugin by URI** (the one plugin of that URI, or among several the same base
+name, then the same place), so two plugins trading names keep their pedals;
+and an orphan's reason compares like with like and names what the new chain
+holds there (it had compared `overdrive` with `board_overdrive` on an
+unprefixed rig and said there was none). (5) **A comment directly above a
+channel's `chain:` survives a load** (`rigfile.comments_above_chain`,
+`put_above_chain`; refused rather than lost if it cannot be put back), as
+two loads in a row show. (6) A load whose switch fails is in `/health` as
+`["load", ...]`, not `["revert", ...]` (and a revert's failed restart is now
+remembered too); its answer's `midi_note` says the pedals follow the rig as
+it runs: the agent's bindings are planned from the compiled config the state
+file names, never from the file, which the test shows by a bypass binding
+still naming the processor Sushi has after the file renamed it. (7) **The
+#133 guard covers config/channels/** (`rig_fixtures.COMMITTED_PRESETS`,
+marker `committed_presets`, in pyproject.toml and conftest.py); the test
+over the owner's presets is marked, and a test shows an unmarked read
+caught. (8) **The revert point a load keeps is kept only once the write has
+happened**; a refused write leaves none. The page shows the `discard` and
+`midi_note` notes; `ui_fake`'s switch stand-in takes the new argument. Not
+fixed here: the flow-style save bug, which is #163. **Not tried on the
+rig.** *(2026-11-17)*

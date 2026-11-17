@@ -31,8 +31,10 @@ therefore stores each plugin under its **base name**, with the channel's
 prefix taken off when it is saved (`guitar_compressor` on the channel
 `guitar` is stored as `compressor`, `base_names`), and loading names each
 plugin for the channel it lands on (`processor_name`: `lead_compressor` on
-`lead`). A base name that already starts with the channel's prefix is not
-given a second one. Whether the names that result are acceptable -- unique
+`lead`), always, whatever the base name already starts with, so the naming
+is one-to-one: two base names never become one name (a base name that kept
+the channel's prefix, `guitar_eq` beside `eq`, becomes `guitar_guitar_eq`
+beside `guitar_eq`, review of #162). Whether the names that result are acceptable -- unique
 across the rig, not the compiler's own (`<channel>_send`, `_to_stereo`) --
 is the compiler's to say when the rig is compiled, as for any rig file.
 
@@ -118,9 +120,10 @@ class Preset:
 
 def processor_name(channel: str, base: str) -> str:
     """What a preset's plugin `base` is called on channel `channel`: the
-    channel's name, `_`, and the base, unless the base already starts so."""
-    prefix = f"{channel}_"
-    return base if base.startswith(prefix) else prefix + base
+    channel's name, `_`, and the base. Always both, so distinct base names
+    give distinct names (one-to-one by construction): skipping the prefix for
+    a base that already had it made `eq` and `guitar_eq` one `guitar_eq`."""
+    return f"{channel}_{base}"
 
 
 def base_names(channel: str, names: list[str]) -> dict[str, str]:
@@ -208,29 +211,37 @@ def load_preset(path: Path) -> Preset:
     return parse_preset(raw)
 
 
-def check_preset(preset: Preset, ports: dict[str, Any] | None = None) -> list[str]:
+def check_preset(preset: Preset, ports: dict[str, Any] | None = None, channel: str | None = None) -> list[str]:
     """Why `preset` would not compile onto a channel, in the compiler's
     words, or nothing: its chain compiled as a one-channel rig, each plugin
     named as a load names it (`processor_name`), with the copies to stereo
     (`ports`, the committed `plugin-ports.txt` unless given), so a plugin
     the port table lacks, the amp, a plugin with no output and a base name
     that becomes the compiler's own (`send`) are all said here, as `up`
-    would say them. A name that clashes with another channel's is a
-    question for the rig it is loaded into, and is the compiler's there."""
+    would say them. `channel` is the channel it is compiled on, the one it
+    was saved from by default (`saved_from`), so what `GET /presets` says can
+    load is what loads back where it came from; a probe channel otherwise.
+    A name that clashes with another channel's is a question for the rig it
+    is loaded into, and is the compiler's there."""
     from .rigfile import RigFileError, compile_rig, parse_rig
+    from .save import NAME_PATTERN as _NAME
 
+    on = channel or (preset.saved_from or {}).get("channel") or _PROBE_CHANNEL
+    if not _NAME.fullmatch(on) or on == "master":
+        on = _PROBE_CHANNEL
+    problems = name_problems(on, preset)
     raw = {
         "kind": "rig", "schema_version": 1, "name": "preset-check",
-        "channels": [{"name": _PROBE_CHANNEL, "input": "probe-in", "width": preset.width,
-                      "chain": loaded_chain(preset, _PROBE_CHANNEL)}],
+        "channels": [{"name": on, "input": "probe-in", "width": preset.width,
+                      "chain": loaded_chain(preset, on)}],
         "master": {"output": "probe-out", "chain": []},
     }
     try:
         compile_rig(parse_rig(raw), ports=ports)
     except RigFileError as exc:
-        prefix = f"channel {_PROBE_CHANNEL!r}: "
-        return [p.replace(prefix, "", 1) for p in exc.problems]
-    return []
+        prefix = f"channel {on!r}: "
+        problems += [p.replace(prefix, "", 1) for p in exc.problems]
+    return problems
 
 
 def preset_path(root: Path, name: str) -> Path:
@@ -416,20 +427,27 @@ def midi_after_load(midi: Any, channel: str, old_chain: list[dict[str, Any]],
     `midi` is left as it is.
 
     A control that binds a plugin of that channel (`parameter:
-    channel/plugin/parameter`, `bypass: channel/plugin`) is kept where the
-    new chain has the same plugin under the same name (same URI); it
-    **follows** where the new chain has the same plugin (by URI) under the
-    same base name, renamed (`followed`: `{"control", "from", "to"}`); and
-    it is **orphaned** otherwise -- no plugin of that name, or one of that
-    name that is another plugin, whose parameters are not known to match --
-    (`orphaned`: `{"control", "binding", "target", "why"}`), and left in the
-    returned section as it was, for the caller to refuse or drop
-    (`drop_orphaned`). Blends and mutes name channels, which a load does not
-    change, and are left alone."""
+    channel/plugin/parameter`, `bypass: channel/plugin`) **follows its
+    plugin**, known by what it is (its URI), never by its name alone, since a
+    load renames and two plugins can swap names (review of #162):
+
+    1. kept where the new chain has the same plugin under the same name;
+    2. else moved to the one plugin of the new chain with that URI, when
+       only one has it (`followed`: `{"control", "from", "to"}`);
+    3. else, among several of that URI, to the one under the same base name,
+       or failing that to the one in the same place among them (the second
+       delay to the second delay);
+    4. else **orphaned** (`{"control", "binding", "target", "why"}`, the why
+       naming what the new chain holds there), and left in the returned
+       section as it was, for the caller to refuse or drop
+       (`drop_orphaned`).
+
+    Blends and mutes name channels, which a load does not change, and are
+    left alone."""
     if not isinstance(midi, dict) or not isinstance(midi.get("controls"), list):
         return copy.deepcopy(midi), [], []
     old = {e.get("name"): e for e in old_chain if isinstance(e, dict)}
-    new = {e.get("name"): e for e in new_chain if isinstance(e, dict)}
+    new = {e.get("name"): e for e in new_chain if isinstance(e, dict) and isinstance(e.get("name"), str)}
     prefix = f"{channel}_"
 
     def base(name: str) -> str:
@@ -437,6 +455,22 @@ def midi_after_load(midi: Any, channel: str, old_chain: list[dict[str, Any]],
 
     def which(entry: dict[str, Any] | None) -> Any:
         return None if entry is None else entry.get("uri") or entry.get("path") or entry.get("uid")
+
+    def same_plugin(plugin: str) -> str | None:
+        was = which(old.get(plugin))
+        if was is None:
+            return None
+        if plugin in new and which(new[plugin]) == was:
+            return plugin
+        alike = [n for n, e in new.items() if which(e) == was]
+        if len(alike) == 1:
+            return alike[0]
+        named = [n for n in alike if base(n) == base(plugin) or base(n) == plugin]
+        if len(named) == 1:
+            return named[0]
+        olds = [n for n, e in old.items() if which(e) == was]
+        place = olds.index(plugin) if plugin in olds else None
+        return alike[place] if place is not None and place < len(alike) else None
 
     out = copy.deepcopy(midi)
     followed, orphaned = [], []
@@ -451,21 +485,22 @@ def midi_after_load(midi: Any, channel: str, old_chain: list[dict[str, Any]],
         if len(parts) < 2 or parts[0] != channel:
             continue
         plugin = parts[1]
-        was = which(old.get(plugin))
-        if plugin in new and which(new[plugin]) == was and was is not None:
+        match = same_plugin(plugin)
+        if match == plugin:
             continue
-        match = next((n for n, e in new.items() if isinstance(n, str) and base(n) == base(plugin)
-                      and which(e) == was and was is not None), None)
         if match is not None:
             renamed = "/".join([channel, match, *parts[2:]])
             control[binding] = renamed
             followed.append({"control": control.get("control"), "from": target, "to": renamed})
             continue
-        if plugin in new:
-            why = (f"the preset's chain has a {plugin}, but it is another plugin ({which(new[plugin])}, "
+        was = which(old.get(plugin))
+        there = next((n for n in new if n == plugin or base(n) == base(plugin)), None)
+        if there is not None:
+            why = (f"the preset's chain has {there} in its place, but it is another plugin ({which(new[there])}, "
                    f"not {was}), whose parameters are not known to match")
         else:
-            why = f"the preset's chain has no {plugin} (nor the same plugin under another name)"
+            held = ", ".join(new) or "nothing"
+            why = f"the preset's chain has no plugin like {plugin} ({was}): it holds {held}"
         orphaned.append({"control": control.get("control"), "binding": binding, "target": target, "why": why})
     return out, followed, orphaned
 

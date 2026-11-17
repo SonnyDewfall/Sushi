@@ -341,18 +341,75 @@ def test_a_preset_loaded_back_onto_its_channel_sets_what_differs(root):
 
 
 def test_a_load_with_unsaved_work_is_refused_and_allowed_with_discard(root):
+    """Discarded means gone, on a channel the load leaves alone too (review
+    of #162): the knob turned on the vocal is put back to what the file
+    gives it, by the switch's own steps, not left playing under a baseline
+    that says nothing is unsaved."""
     agent, world, fake, _ = make_agent(root)
     save_as(agent, "vocal", "voice")
     before = rig_file(root, "guitar_vocal").read_bytes()
-    call(agent, "POST", "/live/parameter", json={"processor": "guitar_send", "parameter": "gain",
-                                                  "value": rigfile.level_to_gain(-3)})
+    was = fake.values["vocal_eq"]["High"]
+    for body in ({"processor": "vocal_eq", "parameter": "High", "value": 0.987},
+                 {"processor": "guitar_send", "parameter": "gain", "value": rigfile.level_to_gain(-3)}):
+        status, said = call(agent, "POST", "/live/parameter", json=body)
+        assert status == 200, said
+    status, body = call(agent, "POST", "/live/bypass", json={"processor": "vocal_deess", "bypassed": True})
+    assert status == 200, body
     status, body = load(agent, "guitar", "voice")
-    assert status == 409 and body["code"] == "unsaved" and "guitar_send gain" in body["reason"], body
+    assert status == 409 and body["code"] == "unsaved" and "vocal_deess" in body["reason"], body
     assert rig_file(root, "guitar_vocal").read_bytes() == before, "nothing was written"
     status, body = load(agent, "guitar", "voice", discard=True)
-    assert status == 200 and body["discarded"] is True, body
+    assert status == 200 and body["discarded"] is True and body["how"] == "live", body
     assert plugins_of(fake, "guitar") == ["guitar_dynamics", "guitar_deess", "guitar_eq", "guitar_reverb",
                                           "guitar_limiter"]
+    assert fake.values["vocal_eq"]["High"] == pytest.approx(was), "the discarded knob is put back"
+    assert fake.bypassed["vocal_deess"] is False, "and the discarded bypass"
+    # The bypass the diff puts back itself (a bypass neither file states is
+    # un-bypassed); the knob neither states only the discard does.
+    restored = {(s["processor"], s.get("parameter", "bypass")) for s in body["discard"]["restored"]}
+    assert restored == {("vocal_eq", "High")}
+    assert body["discard"]["changes"] == 3 and "put back each value" in body["discard"]["note"]
+    status, health = call(agent, "GET", "/health")
+    assert status == 200
+
+
+def test_a_revert_with_discard_puts_back_what_was_dropped_on_a_channel_it_leaves_alone(root):
+    """The committed file states no value for the vocal's EQ, so the diff
+    alone would leave the knob where the discarded work put it."""
+    agent, world, fake, _ = make_agent(root)
+    was = fake.values["vocal_eq"]["High"]
+    call(agent, "POST", "/live/parameter", json={"processor": "vocal_eq", "parameter": "High", "value": 0.987})
+    sha = git(root, "rev-parse", "HEAD").strip()
+    status, body = call(agent, "POST", "/rigs/guitar_vocal/revert", json={"save": f"commit:{sha}", "discard": True})
+    assert status == 200 and body["how"] == "live", body
+    assert fake.values["vocal_eq"]["High"] == pytest.approx(was)
+    assert body["discard"]["restored"][0]["processor"] == "vocal_eq"
+
+
+def test_a_discarded_structural_edit_is_a_restart_that_says_so(root):
+    agent, world, fake, runner = make_agent(root)
+    save_as(agent, "vocal", "voice")
+    fake.chains["guitar"].remove("guitar_delay")  # removed live, and logged as the route logs it
+    agent._record("remove", {"processor": "guitar_delay"}, {"track": "guitar", "chain": []})
+    status, body = load(agent, "vocal", "voice", discard=True)
+    assert status == 200, body
+    assert body["how"] == "restart" and "drifted" in [w["code"] for w in body["why"]], body
+    assert body["discard"]["structural"] is True and "restarted from its file" in body["discard"]["note"]
+    assert runner.calls and runner.calls[0][0] == "down"
+
+
+def test_a_discarded_value_sushi_did_not_report_is_a_restart():
+    from sushi_rig.agent import discard_plan
+
+    plan = rigfile.SwitchPlan(())
+    entries = [{"op": "parameter", "args": {"processor": "eq", "parameter": "High", "value": 0.9}, "previous": None}]
+    upcoming = {"tracks": [{"name": "a", "plugins": [{"name": "eq"}]}], "initial_state": []}
+    out = discard_plan(plan, entries, upcoming, {"processors": {"eq": {"parameters": {"High": 0.9}}}})
+    assert isinstance(out, rigfile.NeedsRestart) and out.reasons[0].code == "discarded"
+    stated = {**upcoming, "initial_state": [{"processor": "eq", "parameters": {"High": 0.25}}]}
+    out = discard_plan(plan, entries, stated, {"processors": {"eq": {"parameters": {"High": 0.9}}}})
+    assert [s.args for s in out.steps] == [
+        {"processor": "eq", "parameter": "High", "value": 0.25, "restores": "discarded"}]
 
 
 def test_the_file_as_it_was_is_kept_for_revert(root):
@@ -408,13 +465,13 @@ def test_what_cannot_be_loaded_is_refused_before_anything_is_written(root):
 def test_a_name_another_channel_has_is_the_compilers_refusal(root):
     raw = yaml.safe_load(rig_file(root, "guitar_vocal").read_text())
     raw["name"] = "clash"
-    raw["channels"][0]["chain"][4]["name"] = "vocal_delay"   # the guitar's delay, named as a vocal's would be
+    raw["channels"][0]["chain"][4]["name"] = "vocal_room"   # the guitar's delay, named as a vocal's room would be
     rigfile.write_rig(rig_file(root, "clash"), raw)
     agent, world, fake, _ = make_agent(root, rig="clash")
     save_as(agent, "guitar", "with-delay")
     before = rig_file(root, "clash").read_bytes()
     status, body = load(agent, "vocal", "with-delay")
-    assert status == 409 and body["code"] == "rig_problem" and "vocal_delay" in body["reason"], body
+    assert status == 409 and body["code"] == "rig_problem" and "vocal_room" in body["reason"], body
     assert rig_file(root, "clash").read_bytes() == before
 
 
@@ -436,8 +493,9 @@ def test_a_load_that_would_orphan_a_mapping_is_refused_or_drops_it_saying_what_i
     assert status == 409 and body["code"] == "midi", body
     assert "pad1 (bypass guitar/guitar_overdrive)" in body["reason"]
     assert body["mappings"] == [{"control": "pad1", "binding": "bypass", "target": "guitar/guitar_overdrive",
-                                 "why": "the preset's chain has no guitar_overdrive (nor the same plugin under "
-                                        "another name)"}]
+                                 "why": "the preset's chain has no plugin like guitar_overdrive "
+                                        "(http://guitarix.sourceforge.net/plugins/gxts9#ts9sim): it holds "
+                                        "guitar_dynamics, guitar_deess, guitar_eq, guitar_reverb, guitar_limiter"}]
     assert rig_file(root, "guitar_vocal").read_bytes() == before
     status, body = load(agent, "guitar", "voice", drop_midi=True)
     assert status == 200, body
@@ -627,3 +685,128 @@ def test_every_copy_from_a_preset_names_it_above_the_chain(root):
     assert provenance_of(root, "duo", "a")[0].startswith("# From channel preset voice ")
     assert provenance_of(root, "duo", "b") == []
     compile_named_rig("duo", root, root / MACHINE)
+
+
+# --------------------------------------------------------------------------- #
+# Writes refuse another site's page (#160's guard)
+# --------------------------------------------------------------------------- #
+
+def guarded(agent, path, body, headers, own_origin=False):
+    async def go():
+        async with TestClient(TestServer(agent.app())) as client:
+            sent = dict(headers)
+            if own_origin:
+                sent["Origin"] = f"http://127.0.0.1:{client.server.port}"
+            response = await client.post(path, json=body, headers=sent)
+            return response.status, await response.json()
+
+    return asyncio.run(go())
+
+
+@pytest.mark.parametrize("headers", [{"Sec-Fetch-Site": "cross-site"}, {"Origin": "https://example.invalid"},
+                                     {"Origin": "http://127.0.0.1:1"}, {"Origin": "null"}])
+def test_a_save_or_a_load_from_another_site_is_refused_with_nothing_written(root, headers):
+    agent, world, fake, _ = make_agent(root)
+    save_as(agent, "vocal", "voice")
+    before = (rig_file(root, "guitar_vocal").read_bytes(), preset_file(root, "voice").read_bytes())
+    for path, body in (("/rig/channels/guitar/save-as", {"name": "stolen"}),
+                       ("/rig/channels/guitar/load", {"preset": "voice"})):
+        status, said = guarded(agent, path, body, headers)
+        assert status == 403 and said["reason"].startswith("refused"), said
+    assert (rig_file(root, "guitar_vocal").read_bytes(), preset_file(root, "voice").read_bytes()) == before
+    assert not preset_file(root, "stolen").exists() and fake.writes() == []
+
+
+@pytest.mark.parametrize("headers, own", [({}, False), ({"Sec-Fetch-Site": "same-origin"}, True)])
+def test_curl_and_the_agents_own_page_may_save_and_load(root, headers, own):
+    agent, world, fake, _ = make_agent(root)
+    status, body = guarded(agent, "/rig/channels/vocal/save-as", {"name": "voice"}, headers, own)
+    assert status == 200, body
+    status, body = guarded(agent, "/rig/channels/guitar/load", {"preset": "voice"}, headers, own)
+    assert status == 200, body
+
+
+def test_a_channel_whose_names_keep_their_prefix_saves_and_loads_back(root):
+    """`eq` beside `guitar_eq` on the guitar: taking the prefixes off would
+    make two names one, so none is taken off, and a load prefixes every
+    one, so the two stay two (review of #162: `guitar_eq` was not prefixed
+    again, `eq` became `guitar_eq`, and the load back was a duplicate)."""
+    raw = yaml.safe_load(rig_file(root, "guitar_vocal").read_text())
+    raw["channels"][0]["chain"][3]["name"] = "eq"   # the chorus, named so
+    rigfile.write_rig(rig_file(root, "guitar_vocal"), raw)
+    agent, world, fake, _ = make_agent(root)
+    body = save_as(agent, "guitar", "both")
+    assert body["preset"]["ok"] is True, body
+    assert presets.load_preset(preset_file(root, "both")).plugins[2:4] == ["guitar_eq", "eq"]
+    status, body = load(agent, "guitar", "both")
+    assert status == 200, body
+    names = [p["name"] for p in yaml.safe_load(rig_file(root, "guitar_vocal").read_text())["channels"][0]["chain"]]
+    assert names[2:4] == ["guitar_guitar_eq", "guitar_eq"] and len(set(names)) == len(names)
+    assert names[0] == "guitar_guitar_compressor"
+
+
+def test_a_comment_directly_above_a_channels_chain_survives_a_load(root):
+    """The comment is the channel's, not the chain's (review of #162: the
+    whole-chain replace dropped it with the chain)."""
+    path = rig_file(root, "electric_board")
+    text = path.read_text()
+    assert "\n  chain:\n" in text
+    path.write_text(text.replace("\n  chain:\n", "\n  # The board: keep this note.\n  chain:\n", 1))
+    agent, world, fake, _ = make_agent(root, rig="electric_board")
+    save_as(agent, "board", "board")
+    for _ in range(2):
+        status, body = load(agent, "board", "board")
+        assert status == 200, body
+        said = provenance_of(root, "electric_board", "board")
+        assert said[0] == "# The board: keep this note.", said
+        assert sum(s.startswith("# From channel preset board ") for s in said) == 1, said
+
+
+def test_a_load_whose_switch_fails_says_so_as_a_load_and_the_pedals_follow_what_runs(root):
+    """The file is written and the rig would not play it (the live switch
+    finds the rig changed under it, and the restart fails): /health names
+    the load, not a revert, and the pedals are planned from the compiled
+    config the state file names, which is the rig still running, not from
+    the file just written (review of #162)."""
+    from sushi_rig.rigfile import AGENT_BINDINGS
+    from sushi_rig.supervisor import Outcome
+
+    with_midi(root, "electric_board", [{"control": "pad1", "bypass": "board/overdrive"}])
+    agent, world, fake, runner = make_agent(root, rig="electric_board")
+    planned = []
+
+    def plan(described, root):
+        bindings = world.configs[described["config"]].get(AGENT_BINDINGS) or []
+        planned.append([b.get("bypass") for b in bindings])
+        return midi_listener.Off("recorded by the test")
+
+    agent._midi_world = midi_listener.World(plan=plan)
+    save_as(agent, "board", "board")
+    runner.outcome = Outcome(False, 1, "", "error: the test's restart fails\n")
+    fake.drift = lambda rig: rig.chains["board"].remove("delay")
+    status, body = load(agent, "board", "board")
+    assert status == 409 and body["code"] == "not_switched" and body["written"] is True, body
+    assert "midi_note" in body and "not the file just written" in body["midi_note"]
+    assert planned and planned[-1] == ["board/overdrive"], planned
+    assert "overdrive" in fake.chains["board"], "the processor the pedal names is the one Sushi has"
+    status, health = call(agent, "GET", "/health")
+    error = health["agent"]["last_error"]
+    assert error and error["command"][0] == "load" and "revert" not in error["command"], error
+
+
+def test_no_revert_point_is_kept_for_a_load_whose_write_is_refused(root, monkeypatch):
+    from sushi_rig import agent as agent_module, saves
+
+    agent, world, fake, _ = make_agent(root)
+    save_as(agent, "vocal", "voice")
+    before = rig_file(root, "guitar_vocal").read_bytes()
+
+    def refuse(*args, **kwargs):
+        raise rigfile.RigFileError(["refused by the test"])
+
+    monkeypatch.setattr(agent_module.rigfile, "write_rig", refuse)
+    status, body = load(agent, "guitar", "voice")
+    assert status == 409 and body["code"] == "rig_problem" and "refused by the test" in body["reason"], body
+    assert rig_file(root, "guitar_vocal").read_bytes() == before
+    assert saves.snapshots(root, "guitar_vocal")[0] == [], "no point for a load that never happened"
+    assert fake.writes() == []

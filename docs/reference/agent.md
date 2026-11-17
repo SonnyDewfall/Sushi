@@ -730,12 +730,14 @@ as always, the compiler's (`rig.compile_rig_draft`).
 - **`POST /rig/channels/<channel>/load {"preset", "discard"?,
   "drop_midi"?}`**: the channel's chain and level replaced by the preset's,
   each plugin named for the channel (`processor_name`: `lead_compressor` on
-  `lead`), its input, width and strip its own. Like a revert: **the rig
-  file is written** (in place, comments kept, the old chain and the
-  comments inside it replaced whole, `write_rig(replace_chains=...)`, with
-  [the provenance line](rig-file.md#channel-presets) above it), the file as
-  it was is first kept as a revert point unless a save already keeps it
-  (`kept_before`), and then **the running rig is switched to its file** by
+  `lead`, always the channel's name and `_` in front, so two base names
+  never become one name), its input, width and strip its own. Like a
+  revert: **the rig file is written** (in place, comments kept, the old
+  chain and the comments inside it replaced whole,
+  `write_rig(replace_chains=...)`, the comments directly above its `chain:`
+  kept, with [the provenance line](rig-file.md#channel-presets) above it),
+  the file as it was is kept as a revert point once the write has happened,
+  unless a save already keeps it (`kept_before`), and then **the running rig is switched to its file** by
   the live switch: live where `rigfile.diff` can do it, by restart where
   not, the answer saying `how` and `why`. Its `op: "rig"` entry carries
   `args.preset` and is the baseline: nothing is unsaved after it and undo
@@ -744,16 +746,30 @@ as always, the compiler's (`rig.compile_rig_draft`).
   (the compiler's words, a name another channel has among them), `unsaved`
   while the rig holds live work no save has written (unless `"discard":
   true`), and **`midi`**. A mapping of the rig's `midi:` onto that channel's
-  plugins is kept where the new chain has the same plugin (by URI) under
-  the same name, **follows** it to its new name where it has it under the
-  same base name (`followed`), and is otherwise orphaned: the load is
-  refused with each mapping and why (`mappings`), or with `"drop_midi":
-  true` they are taken out of the file and said (`dropped`). A knob's
+  plugins **follows its plugin**, known by its URI: kept where the new chain
+  has it under the same name, moved to its new name where it is the one
+  plugin of that URI (`followed`; so two plugins that trade names keep
+  their pedals), among several of one URI to the one of the same base name
+  or else the one in the same place, and otherwise orphaned: the load is
+  refused with each mapping and why, naming what the new chain holds there
+  (`mappings`), or with `"drop_midi": true` they are taken out of the file
+  and said (`dropped`). A knob's
   mapping is Sushi's `cc_mappings`, loaded only with the config, so one
   followed or dropped makes the load a restart; a pedal's bypass is the
   agent's, and stays live. The answer's `amp` says whether the amp is in
   front of the channel, and `width` when the preset was saved from another
-  width.
+  width. **Discarded work is put back** (`discard_plan`, shared with a
+  revert with `discard`): the switch's diff sets only what the two configs
+  differ in, so each parameter and bypass the dropped entries set is also
+  set, to the file's value or, where the file states none, to the value it
+  had before them; a discarded add, remove or move leaves chains the
+  running config lacks, which the switch refuses as `drifted`, so that is a
+  restart, and the answer's `discard` says which, with what was put back.
+  A load whose switch fails is remembered in `/health` as the load
+  (`command: ["load", ...]`), and its answer's `midi_note` says the pedals
+  follow the rig as it runs (its compiled config), not the file. Both
+  writes refuse a request from another site's page (`403`, #129's
+  `cross_site_refusal`), as the rig bin's routes do.
 - **A channel from a preset**: `from: {"preset": <name>}` in `POST
   /rigs/new` and `POST /rigs/<rig>/channels/add`, beside #125's `{"rig",
   "channel"}` (below). The chain is copied as a load copies it, named for

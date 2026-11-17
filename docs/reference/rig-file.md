@@ -181,8 +181,9 @@ chain:
 
 It names **no input**, which is chosen when it is loaded, and never a
 compiler's `_to_stereo` copy. Its chain entries are a rig file's, under base
-names: a load names each for the channel it lands on (`lead_compressor` on
-`lead`), so one preset can be on two channels of one rig. It does not carry
+names: a load names each for the channel it lands on, always with the
+channel's name in front (`lead_compressor` on `lead`; a base name that kept
+a prefix, `lead_eq` beside `eq`, becomes `lead_lead_eq`), so one preset can be on two channels of one rig. It does not carry
 the amp, which is the rig's. It is checked as a rig file is, by the
 compiler, with its chain compiled as a one-channel rig. A copy into a rig
 file is a copy, not a reference, and says where it came from in a comment

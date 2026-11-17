@@ -144,7 +144,9 @@ def test_level_and_width_and_the_amp_are_kept_and_the_input_and_strip_are_not():
 
 def test_names_are_per_channel():
     assert presets.processor_name("lead", "drive") == "lead_drive"
-    assert presets.processor_name("lead", "lead_drive") == "lead_drive"
+    assert presets.processor_name("lead", "lead_drive") == "lead_lead_drive", "always prefixed: one-to-one"
+    bases = ["eq", "lead_eq", "lead_lead_eq", "x", "lead_x"]
+    assert len({presets.processor_name("lead", b) for b in bases}) == len(bases)
     assert presets.base_names("guitar", ["guitar_eq", "room", "guitar_"]) == {
         "guitar_eq": "eq", "room": "room", "guitar_": "guitar_"}
     # Taking the prefix off would make two names one: none is taken off.
@@ -272,15 +274,51 @@ def test_a_mapping_follows_the_same_plugin_under_its_new_name():
 def test_a_mapping_onto_a_plugin_the_preset_lacks_or_replaces_is_orphaned():
     old = [{"name": "lead_drive", "uri": GXTS9}, {"name": "lead_comp", "uri": COMP}]
     new = [{"name": "lead_drive", "uri": COMP}, {"name": "lead_eq", "uri": "http://distrho.sf.net/plugins/3BandEQ"}]
-    section = midi({"control": "exp", "parameter": "lead/lead_drive/Drive"}, {"control": "fs1", "bypass": "lead/lead_comp"},
-                   {"control": "fs2", "bypass": "lead/lead_eq"})
+    section = midi({"control": "exp", "parameter": "lead/lead_drive/Drive"}, {"control": "fs1", "bypass": "lead/lead_comp"})
     out, followed, orphaned = presets.midi_after_load(section, "lead", old, new)
-    assert followed == []
-    assert [o["control"] for o in orphaned] == ["exp", "fs1", "fs2"]
-    assert "another plugin" in orphaned[0]["why"] and "has no lead_comp" in orphaned[1]["why"]
+    # The compressor is still there, under the drive's old name: it follows.
+    assert followed == [{"control": "fs1", "from": "lead/lead_comp", "to": "lead/lead_drive"}]
+    assert [o["control"] for o in orphaned] == ["exp"]
+    assert orphaned[0]["why"] == (f"the preset's chain has lead_drive in its place, but it is another plugin ({COMP}, "
+                                  f"not {GXTS9}), whose parameters are not known to match")
     assert "exp (parameter lead/lead_drive/Drive)" in presets.mapping_said(orphaned[0])
     dropped = presets.drop_orphaned(out, orphaned)
-    assert dropped == {"controller": "pedal", "controls": []}
+    assert dropped == {"controller": "pedal", "controls": [{"control": "fs1", "bypass": "lead/lead_drive"}]}
+
+
+def test_a_mapping_follows_its_plugin_when_two_names_swap():
+    """The two plugins trade names: each pedal follows the plugin it worked,
+    by its URI, not the name it had (review of #162)."""
+    old = [{"name": "lead_a", "uri": GXTS9}, {"name": "lead_b", "uri": COMP}]
+    new = [{"name": "lead_a", "uri": COMP}, {"name": "lead_b", "uri": GXTS9}]
+    section = midi({"control": "fs1", "bypass": "lead/lead_a"}, {"control": "exp", "parameter": "lead/lead_b/RATIO"})
+    out, followed, orphaned = presets.midi_after_load(section, "lead", old, new)
+    assert orphaned == []
+    assert [c.get("bypass") or c.get("parameter") for c in out["controls"]] == ["lead/lead_b", "lead/lead_a/RATIO"]
+
+
+def test_two_of_one_plugin_follow_by_name_then_by_place():
+    delay = "http://drobilla.net/plugins/mda/Delay"
+    old = [{"name": "slap", "uri": delay}, {"name": "echo", "uri": delay}]
+    new = [{"name": "board_slap", "uri": delay}, {"name": "board_echo", "uri": delay}]
+    out, followed, _ = presets.midi_after_load(midi({"control": "fs", "bypass": "board/echo"}), "board", old, new)
+    assert out["controls"][0]["bypass"] == "board/board_echo", "by the same base name"
+    renamed = [{"name": "board_one", "uri": delay}, {"name": "board_two", "uri": delay}]
+    out, _, _ = presets.midi_after_load(midi({"control": "fs", "bypass": "board/echo"}), "board", old, renamed)
+    assert out["controls"][0]["bypass"] == "board/board_two", "the second of them to the second"
+
+
+def test_an_unprefixed_rig_is_told_what_is_really_there():
+    """electric_board names its plugins without the channel: the reason
+    compares like with like (review of #162: it compared `overdrive` with
+    `board_overdrive` and said there was none)."""
+    old = [{"name": "overdrive", "uri": GXTS9}]
+    there = [{"name": "board_overdrive", "uri": COMP}]
+    _, _, orphaned = presets.midi_after_load(midi({"control": "fs", "bypass": "board/overdrive"}), "board", old, there)
+    assert orphaned[0]["why"].startswith("the preset's chain has board_overdrive in its place, but it is another plugin")
+    gone = [{"name": "board_eq", "uri": "http://distrho.sf.net/plugins/3BandEQ"}]
+    _, _, orphaned = presets.midi_after_load(midi({"control": "fs", "bypass": "board/overdrive"}), "board", old, gone)
+    assert orphaned[0]["why"] == f"the preset's chain has no plugin like overdrive ({GXTS9}): it holds board_eq"
 
 
 def test_a_mapping_kept_where_the_same_plugin_keeps_its_name():
@@ -306,14 +344,34 @@ def test_the_amp_is_said_where_a_guitar_preset_lands_without_it():
     assert presets.amp_note(vocal, "voice", "vocal-in", None)["note"] is None
 
 
+@pytest.mark.committed_presets
 def test_every_committed_preset_is_one_that_can_be_loaded():
     """The checkout's config/channels/, whatever it holds (none, today, or the
     owner's saves): each parses and compiles, as config/rigs/'s rigs are held
-    to (rig_fixtures.py's rule: nothing is assumed of what is there)."""
+    to (rig_fixtures.py's rule: nothing is assumed of what is there, not even
+    that there are any). Marked, since the folder is guarded as config/rigs/
+    is (review of #162)."""
     from sushi_rig.paths import checkout_root
 
     for listed in presets.listing(checkout_root()):
         assert listed["ok"], f"{listed['file']}: {listed['problem']}"
+
+
+def test_the_guard_sees_config_channels_read_unmarked():
+    import os
+
+    import rig_fixtures
+
+    before = len(rig_fixtures.STRAY)
+    try:
+        sorted(rig_fixtures.COMMITTED_PRESETS.glob("*.yaml"))
+        (rig_fixtures.COMMITTED_PRESETS / "not-there.yaml").read_text()
+    except OSError:
+        pass
+    made = rig_fixtures.STRAY[before:]
+    del rig_fixtures.STRAY[before:]  # this test's own, made to try it
+    assert made and all(path.startswith(os.path.realpath(rig_fixtures.COMMITTED_PRESETS)) for _, path, _ in made)
+    assert "config/channels/ was read by a test that does not say" in rig_fixtures.said(made)
 
 
 # --------------------------------------------------------------------------- #
@@ -350,3 +408,13 @@ def test_a_channel_that_cannot_carry_the_line_is_said_and_left_as_it_was():
             "- {name: a, input: guitar-in, width: mono, chain: []}\nmaster: {output: monitor-out, chain: []}\n")
     out, problems = rigfile.with_provenance(text, {"a": "From channel preset p.", "nope": "From channel preset p."})
     assert out == text and len(problems) == 2
+
+
+def test_what_the_listing_calls_loadable_loads_back_on_the_channel_it_came_from(tmp_path):
+    """Checked on the channel it was saved from (review of #162): a base
+    name that becomes the compiler's own there is said, not listed ok."""
+    folder = tmp_path / "config" / "channels"
+    presets.write_preset(folder / "p.yaml", preset_doc(name="p", saved_from={"rig": "r", "channel": "lead"},
+                                                       chain=[{"name": "send", "uri": GXTS9}]))
+    listed = presets.listing(tmp_path)[0]
+    assert listed["ok"] is False and "lead_send" in listed["problem"]

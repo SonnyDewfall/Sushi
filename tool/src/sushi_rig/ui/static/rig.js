@@ -2731,6 +2731,7 @@ export function presetOutcome(op, channel, name, answer, asked = {}) {
   }
   if (!answer.ok) {
     const out = { ok: false, title: `Not loaded: ${name} onto ${channel}`, reason: answer.reason, notes: [], offer: null };
+    if (body.midi_note) out.notes.push(`${body.midi_note}.`);
     if (answer.code === "unsaved") out.offer = { ...asked, label: "Load anyway, dropping the unsaved changes", discard: true };
     if (answer.code === "midi") {
       const mappings = body.mappings || [];
@@ -2746,6 +2747,7 @@ export function presetOutcome(op, channel, name, answer, asked = {}) {
   for (const d of body.dropped || []) notes.push(`Dropped MIDI ${d.control} (${d.binding} ${d.target}).`);
   if (body.kept_before && body.kept_before.id) notes.push("The rig's file as it was before is kept: Revert… goes back to it.");
   if (body.provenance_note) notes.push(`Where the chain came from is not written in the file: ${body.provenance_note}.`);
+  if (body.discard && body.discard.note) notes.push(`${body.discard.note}.`);
   const how = body.how === "live" ? "Played live, without a restart."
     : `Played by a restart${(body.why || []).length ? ` (${body.why.map((r) => r.detail).join("; ")})` : ""}.`;
   return { ok: true, title: `Loaded ${name} onto ${channel}`, notes, offer: null,

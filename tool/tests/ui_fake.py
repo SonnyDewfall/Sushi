@@ -858,7 +858,10 @@ class UiLifecycle:
             return Outcome(True, 0, f"{self.rig} restarted (headless mode)\n", "")
         return Outcome(False, 2, "", f"error: the fake does not know {args[0]!r}\n")
 
-    async def switch_held(self, origin, name, program, mark):
+    async def switch_held(self, origin, name, program, mark, discarded=None):
+        # `discarded`: the unsaved work a revert or a load drops, which the
+        # agent's real switch puts back (`agent.discard_plan`); this stand-in
+        # changes no value, so it has nothing to put back.
         self.calls.append(["switch", name])
         await asyncio.sleep(self.delay)
         previous = self.rig

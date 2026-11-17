@@ -62,6 +62,9 @@ the preset. Nothing is committed to git.
 Loading replaces what is playing with the rig's file, so changes you have not
 saved would be lost. The page refuses the load and says so. Either click
 **Save** first, or click **Load anyway, dropping the unsaved changes**.
+Dropped means gone, on every channel: each knob and switch you changed goes
+back to what the rig's file says. If you had added, removed or moved a
+plugin, the rig restarts from its file to put that back, and the box says so.
 
 ## Start a channel, or a whole rig, from a preset
 

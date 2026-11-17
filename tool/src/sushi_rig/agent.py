@@ -3763,7 +3763,8 @@ class Agent:
                 self.busy = None
                 await self._midi_sync()
 
-    async def _switch_held(self, origin, name, program, mark) -> dict[str, Any]:
+    async def _switch_held(self, origin, name, program, mark, discarded: list[dict[str, Any]] | None = None,
+                           ) -> dict[str, Any]:
         started = self.clock()
         described = self.describe()
         if not described.get("running"):
@@ -3809,7 +3810,7 @@ class Agent:
         if take is not None:
             answer["take"] = take
         if isinstance(decided, rigfile.SwitchPlan):
-            tried = await self._switch_live(origin, name, running, upcoming, state)
+            tried = await self._switch_live(origin, name, running, upcoming, state, discarded)
             failure = tried.pop("failed", None)  # a RestartReason, said under `why` below
             answer.update(tried)
             if tried["ok"]:
@@ -3862,6 +3863,7 @@ class Agent:
 
     async def _switch_live(
         self, origin, name: str, running: dict[str, Any], upcoming: dict[str, Any], state: dict[str, Any],
+        discarded: list[dict[str, Any]] | None = None,
     ) -> dict[str, Any]:
         """Apply the plan and verify it; `{"ok", "plan", "applied", "counts"}`,
         and `failed` (a `RestartReason`) when it did not go through. Never
@@ -3889,6 +3891,11 @@ class Agent:
                     before = await self._sushi(origin, self.live.snapshot, controller, reading=True)
                     plan = rigfile.diff(running, upcoming, {**before, "amp": {"parameters": amp.sent()}},
                                         root=self._amp_root(), amp_off=amp_off)
+                    if isinstance(plan, rigfile.SwitchPlan) and discarded:
+                        # Work dropped on purpose (a revert or a load with
+                        # discard): what it touched goes back too, where
+                        # the diff alone would leave it (#127, review).
+                        plan = discard_plan(plan, discarded, upcoming, before)
                     if isinstance(plan, rigfile.NeedsRestart):
                         reason = plan.reasons[0]
                         detail = "; ".join(f"{r.code}: {r.detail}" for r in plan.reasons)
@@ -5494,11 +5501,14 @@ class Agent:
                     raise web.HTTPGatewayTimeout(reason=f"{point} was not read within {SAVE_TIMEOUT:g}s")
                 try:
                     await self._rigfile_thread(request, path, lambda: self._revert_compile(data, run))
+                    discarded: list[dict[str, Any]] = []
                     if running:
                         async with self._live_lock:
                             refusal = revert_refusal(run["state"], self.log)
                             if refusal is not None and not discard:
                                 raise RigFileRefused(*refusal)
+                            if discard:
+                                discarded = unsaved_entries(self.log, since=run["state"].get("started_at"))
                             await self._rigfile_thread(request, path, lambda: saves.restore(path, data))
                     else:
                         await self._rigfile_thread(request, path, lambda: saves.restore(path, data))
@@ -5514,7 +5524,9 @@ class Agent:
                     answer["note"] = (f"{shown} is {said['what']} again; {name} is not the running rig, so it "
                                       "plays as reverted when it is next started or switched to")
                 else:
-                    answer.update(await self._revert_switch(request, name, said))
+                    answer.update(await self._revert_switch(request, name, said, discarded=discarded))
+                    if discarded:
+                        answer["discard"] = discard_said(discarded, answer)
             finally:
                 self.busy = None
                 if running:
@@ -5554,7 +5566,8 @@ class Agent:
 
     async def _revert_switch(self, request, name: str, said: dict[str, Any], *,
                              mark: Callable[[dict[str, Any]], None] | None = None,
-                             done: str = "reverted") -> dict[str, Any]:
+                             done: str = "reverted", discarded: list[dict[str, Any]] | None = None,
+                             command: list[str] | None = None) -> dict[str, Any]:
         """The running rig into its reverted file, by the live switch, held
         under the lifecycle lock the caller holds. What it says, as a
         switch's answer does, and `ok: false` with `code: "not_switched"`
@@ -5566,7 +5579,7 @@ class Agent:
                 entry["args"]["revert"] = said["id"]
 
         try:
-            switched = await self._switch_held(request, name, None, mark)
+            switched = await self._switch_held(request, name, None, mark, discarded)
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 -- the file is written whatever went wrong: said, with `written`
@@ -5577,14 +5590,17 @@ class Agent:
             reason = " ".join((f"{name}'s file was {done} ({said['what']}), but the rig was not switched to it: "
                                f"{why}. It keeps playing as it was, unless the switch got part-way; restart it to play "
                                "the file as it is now").split())
-            self._remember(["revert", name], reason, kind="lifecycle")
+            self._remember(command or ["revert", name], reason, kind="lifecycle")
             return {"ok": False, "code": "not_switched", "reason": reason, "written": True}
         out = {k: switched.get(k) for k in ("how", "why", "seconds", "plan", "applied", "counts", "entry",
                                             "state", "take", "abandoned", "half_switched") if k in switched}
         if not switched.get("ok"):
-            reason = (f"{name}'s file was {done} ({said['what']}), but the rig did not come up playing it: "
-                      f"{switched.get('reason')}")
-            return {**out, "ok": False, "code": "not_switched", "reason": " ".join(reason.split())}
+            reason = " ".join((f"{name}'s file was {done} ({said['what']}), but the rig did not come up "
+                               f"playing it: {switched.get('reason')}").split())
+            # In /health as what was asked (a revert, a load), over the
+            # restart's own failure, which is said within it.
+            self._remember(command or ["revert", name], reason, kind="lifecycle")
+            return {**out, "ok": False, "code": "not_switched", "reason": reason}
         return out
 
     # ======================================================================= #
@@ -5646,6 +5662,7 @@ class Agent:
         lists one), `committed: false` and `library`."""
         from . import presets
 
+        self._same_origin_only(request)  # a write: as #129's routes, not from another site's page
         try:
             name, replace = preset_save_request(await self._json_body(request))
         except AgentError as exc:
@@ -5717,6 +5734,7 @@ class Agent:
         the rig could not be made to play it, `written: true`.
 
         Not run against a live Sushi: shown against the fakes of the tests."""
+        self._same_origin_only(request)  # a write: as #129's routes, not from another site's page
         try:
             name, discard, drop_midi = preset_load_request(await self._json_body(request))
         except AgentError as exc:
@@ -5741,6 +5759,8 @@ class Agent:
                         if refusal is not None and not discard:
                             raise RigFileRefused(*refusal)
                         dropped_work = refusal is not None
+                        discarded = (unsaved_entries(self.log, since=run["state"].get("started_at"))
+                                     if dropped_work else [])
                         kept = await self._rigfile_thread(request, path, lambda: self._write_load(path, planned))
                 except RigFileRefused as exc:
                     error = _conflict(" ".join(str(exc).split()), exc.code)
@@ -5761,7 +5781,18 @@ class Agent:
                 def mark(entry: dict[str, Any]) -> None:
                     entry["args"]["preset"] = {"name": name, "channel": channel}
 
-                answer.update(await self._preset_switch(request, path.stem, said, mark))
+                answer.update(await self._preset_switch(request, path.stem, said, mark, discarded,
+                                                        ["load", f"{name} onto {path.stem}'s {channel}"]))
+                if discarded:
+                    answer["discard"] = discard_said(discarded, answer)
+                if not answer.get("ok"):
+                    # The file is the preset's and the rig may not be: the
+                    # pedals are served from the compiled config the state
+                    # file names, which is what is running, never the file.
+                    answer["midi_note"] = (
+                        "the pedals' bindings follow the rig as it runs (its compiled config, "
+                        f"{run['described'].get('config')}), not the file just written: restart the rig to "
+                        "play the file, and its pedals with it")
             finally:
                 self.busy = None
                 if path is not None:
@@ -5826,9 +5857,11 @@ class Agent:
         }
 
     def _write_load(self, path: Path, planned: dict[str, Any]) -> dict[str, Any] | None:
-        """Write a planned load into the rig file, after keeping the file as
-        it was for Revert… when no save keeps it already; what was kept, or
-        None. Off the loop, under the live lock."""
+        """Write a planned load into the rig file, and keep the file as it was
+        for Revert… when no save keeps it already, only once the write has
+        happened (review of #162: a point kept before a write that then
+        refused was a revert point for a load that never was); what was
+        kept, or None. Off the loop, under the live lock."""
         from . import saves
 
         root = self._midi_root()
@@ -5836,21 +5869,23 @@ class Agent:
         before = path.read_bytes()
         kept, _ = saves.snapshots(root, rig)
         kept_as = saves.kept_as(before, kept, lambda sid: saves.snapshot_bytes(root, rig, sid))
-        said = None
-        if kept_as is None:
-            meta = saves.keep(root, rig, before, {
-                "file": self._save_shown(path),
-                "how": f"before loading channel preset {planned['name']} onto {planned['channel']}"})
-            said = {"id": meta["id"], "at": meta["at"], "how": meta["how"]}
-        else:
-            said = {"id": kept_as, "how": "kept by that save already"}
         try:
             planned["provenance_problems"] = rigfile.write_rig(
                 path, planned["raw"], replace_chains=(planned["channel"],),
                 provenance={planned["channel"]: self._provenance(planned["name"])})
         except rigfile.RigFileError as exc:
             raise RigFileRefused("nothing was written: " + "; ".join(exc.problems), "rig_problem") from exc
-        return said
+        if kept_as is not None:
+            return {"id": kept_as, "how": "kept by that save already"}
+        how = f"before loading channel preset {planned['name']} onto {planned['channel']}"
+        try:
+            meta = saves.keep(root, rig, before, {"file": self._save_shown(path), "how": how})
+        except Exception as exc:  # noqa: BLE001 -- the load is written; said, as a save's lost snapshot is
+            why = " ".join(f"the load was written, but the file as it was could not be kept for Revert: "
+                           f"{type(exc).__name__}: {exc}".split())
+            print(f"sushi-rig agent: {why}", file=sys.stderr, flush=True)
+            return {"kept": False, "how": how, "why": why}
+        return {"id": meta["id"], "at": meta["at"], "how": meta["how"]}
 
     def _preset_copy(self, change: dict[str, Any], name: str, rig_amp: str | None,
                      ) -> tuple[dict[str, Any], dict[str, Any]]:
@@ -5909,10 +5944,13 @@ class Agent:
                                  + "; ".join(problems), "preset_problem")
         return preset
 
-    async def _preset_switch(self, request, rig: str, said: dict[str, Any], mark) -> dict[str, Any]:
+    async def _preset_switch(self, request, rig: str, said: dict[str, Any], mark,
+                             discarded: list[dict[str, Any]], command: list[str]) -> dict[str, Any]:
         """The running rig into its file with a preset loaded, by the live
-        switch, as a revert's (`_revert_switch`, in a load's words)."""
-        return await self._revert_switch(request, rig, said, mark=mark, done="written with the preset loaded")
+        switch, as a revert's (`_revert_switch`, in a load's words, and
+        remembered in /health as the load it is)."""
+        return await self._revert_switch(request, rig, said, mark=mark, done="written with the preset loaded",
+                                         discarded=discarded, command=command)
 
     def _write_preset(self, path: Path, name: str, replace: bool, source: Path, channel: str,
                       captured: Any, edits: dict[str, Any], state: dict[str, Any]) -> dict[str, Any]:
@@ -6543,6 +6581,109 @@ def save_request(body: Any) -> str | None:
         return validate_name(name)
     except SaveError as exc:
         raise AgentError(str(exc)) from exc
+
+
+def _touched(entries: list[dict[str, Any]]) -> tuple[dict[tuple[str, str], Any], dict[str, Any], bool]:
+    """What log entries set, each with the value it had before the first of
+    them: `(values, bypasses, structural)`, `values` keyed by `(processor,
+    parameter)` and `bypasses` by processor, the earliest `previous` (None
+    where Sushi did not say), and whether any of them added, removed or
+    moved a plugin. An undo counts as what it applied. Pure."""
+    values: dict[tuple[str, str], Any] = {}
+    bypasses: dict[str, Any] = {}
+    structural = False
+    for entry in entries:
+        op, args, previous = entry.get("op"), entry.get("args") or {}, entry.get("previous")
+        if op == "undo":
+            op = args.get("of")
+        if op in ("add", "remove", "move"):
+            structural = True
+        elif op == "parameter" and isinstance(args.get("processor"), str) and isinstance(args.get("parameter"), str):
+            values.setdefault((args["processor"], args["parameter"]), previous)
+        elif op == "parameters" and isinstance(args.get("processor"), str) and isinstance(args.get("parameters"), dict):
+            for name in args["parameters"]:
+                values.setdefault((args["processor"], name),
+                                  previous.get(name) if isinstance(previous, dict) else None)
+        elif op == "bypass" and isinstance(args.get("processor"), str):
+            bypasses.setdefault(args["processor"], previous)
+    return values, bypasses, structural
+
+
+def discard_plan(plan: "rigfile.SwitchPlan", discarded: list[dict[str, Any]], upcoming: dict[str, Any],
+                 reading: dict[str, Any]) -> "rigfile.SwitchPlan | rigfile.NeedsRestart":
+    """`plan`, a live switch into a rig file, with the unsaved work being
+    discarded put back (#127, review): `rigfile.diff` sets only what differs
+    between the two configs, and leaves a value neither states as the rig has
+    it, so a knob turned and then discarded on a channel the switch does not
+    change kept playing, and the switch's baseline hid it. Pure.
+
+    Each parameter and bypass the `discarded` entries set (`_touched`) is set
+    to the next config's value where it states one, else to the value it had
+    before the first of them (the rig's as its file gave it), unless the plan
+    sets it already or the rig (`reading`) holds that value; a processor the
+    next rig does not have is left to the plan, which removes it. A value
+    whose before Sushi did not report cannot be put back live: that is a
+    restart (`discarded`). A discarded add, remove or move leaves chains the
+    running config does not have, which `diff` against the rig refuses as
+    `drifted` before this is reached, so it restarts, and the restart reloads
+    the file. The steps go last, parameters then bypasses, marked
+    `"restores": "discarded"`."""
+    values, bypasses, _ = _touched(discarded)
+    stated: dict[str, dict[str, Any]] = {}
+    for entry in upcoming.get("initial_state") or []:
+        if isinstance(entry, dict) and isinstance(entry.get("processor"), str):
+            stated[entry["processor"]] = entry
+    names = {p.get("name") for t in upcoming.get("tracks") or [] for p in t.get("plugins") or []}
+    names |= {t.get("name") for t in upcoming.get("tracks") or []}
+    planned_values = {(s.args.get("processor"), s.args.get("parameter")) for s in plan.steps if s.op == "parameter"}
+    planned_bypass = {s.args.get("processor") for s in plan.steps if s.op == "bypass"}
+    live = reading.get("processors") or {}
+    extra_values, extra_bypass, unknown = [], [], []
+    for (processor, parameter), before in sorted(values.items()):
+        if processor not in names or (processor, parameter) in planned_values:
+            continue
+        target = ((stated.get(processor) or {}).get("parameters") or {}).get(parameter, before)
+        if not isinstance(target, (int, float)) or isinstance(target, bool):
+            unknown.append(f"{processor}'s {parameter}")
+            continue
+        now = ((live.get(processor) or {}).get("parameters") or {}).get(parameter)
+        if isinstance(now, (int, float)) and abs(now - target) <= rigfile.APPLIED_TOLERANCE:
+            continue
+        extra_values.append(rigfile.SwitchStep("parameter", {"processor": processor, "parameter": parameter,
+                                                             "value": float(target), "restores": "discarded"}))
+    for processor, before in sorted(bypasses.items()):
+        if processor not in names or processor in planned_bypass:
+            continue
+        target = (stated.get(processor) or {}).get("bypassed", before)
+        if not isinstance(target, bool):
+            unknown.append(f"{processor}'s bypass")
+            continue
+        if (live.get(processor) or {}).get("bypassed") == target:
+            continue
+        extra_bypass.append(rigfile.SwitchStep("bypass", {"processor": processor, "bypassed": target,
+                                                          "restores": "discarded"}))
+    if unknown:
+        return rigfile.NeedsRestart((rigfile.RestartReason(
+            "discarded", f"the unsaved work being dropped set {', '.join(unknown)}, whose value before it Sushi "
+                         "did not report"),))
+    return rigfile.SwitchPlan(tuple(plan.steps) + tuple(extra_values) + tuple(extra_bypass))
+
+
+def discard_said(discarded: list[dict[str, Any]], answer: dict[str, Any]) -> dict[str, Any] | None:
+    """What became of the unsaved work a revert or a load dropped, for the
+    answer: how many changes, whether any was structural, how the switch put
+    it back (`live`: the values it set, by the switch's own steps; or a
+    restart, which reloads the file), and the values it set. Pure."""
+    if not discarded:
+        return None
+    _, _, structural = _touched(discarded)
+    restored = [s for s in answer.get("plan") or [] if isinstance(s, dict) and s.get("restores") == "discarded"]
+    how = answer.get("how")
+    return {"changes": len(discarded), "structural": structural, "how": how, "restored": restored,
+            "note": (f"{len(discarded)} unsaved change{'s' if len(discarded) != 1 else ''} dropped: "
+                     + ("the live switch put back each value they set" if how == "live" else
+                        "the rig restarted from its file, which drops them"
+                        + (" (a plugin added, removed or moved cannot be put back live)" if structural else "")))}
 
 
 def preset_save_request(body: Any) -> tuple[str, bool]:

@@ -134,6 +134,10 @@ def test_what_a_save_and_a_load_say_and_the_second_tap_each_refusal_offers(blank
         restarted: R.presetOutcome('load', 'vocal', 'crunch', ok({file: 'f', how: 'restart',
           why: [{code: 'midi', detail: 'the cc_mappings differ'}], followed: [], dropped: [], amp: {note: null}})).text,
         unsaved: R.presetOutcome('load', 'vocal', 'crunch', no('unsaved', 'r is running with 1 change')),
+        dropped: R.presetOutcome('load', 'vocal', 'crunch', ok({file: 'f', how: 'live', why: [], followed: [], dropped: [],
+          discard: {note: '2 unsaved changes dropped: the live switch put back each value they set'}})).notes,
+        unswitched: R.presetOutcome('load', 'vocal', 'crunch', no('not_switched', 'the file was written',
+          {midi_note: 'the pedals follow the rig as it runs'})).notes,
         midi: R.presetOutcome('load', 'vocal', 'crunch', no('midi', 'would orphan', {mappings}), {discard: true, label: 'old'}),
         locked: R.lockRefusal(true, 'load_preset'),
         unlocked: R.lockRefusal(false, 'load_preset'),
@@ -150,6 +154,8 @@ def test_what_a_save_and_a_load_say_and_the_second_tap_each_refusal_offers(blank
         "The rig's file as it was before is kept: Revert… goes back to it."]
     assert out["restarted"].startswith("Played by a restart (the cc_mappings differ).")
     assert out["unsaved"]["offer"] == {"label": "Load anyway, dropping the unsaved changes", "discard": True}
+    assert out["dropped"] == ["2 unsaved changes dropped: the live switch put back each value they set."]
+    assert out["unswitched"] == ["the pedals follow the rig as it runs."]
     assert out["midi"]["notes"] == ["pad1: bypass board/overdrive. the preset's chain has no overdrive."]
     assert out["midi"]["offer"] == {"label": "Load, dropping 1 MIDI mapping", "discard": True, "dropMidi": True}, \
         "the first yes (discard) is kept, and the label is this refusal's"

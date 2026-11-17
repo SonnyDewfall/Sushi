@@ -1,3 +1,4 @@
+import contextlib
 import json
 from pathlib import Path
 
@@ -33,9 +34,20 @@ def _config_rigs_is_read_only_on_purpose(request):
     marked `committed_rigs` (rig_fixtures.py, the guard): from its fixtures'
     set-up to its last line. First of the autouse fixtures, so it is around
     the others."""
-    if request.node.get_closest_marker(rig_fixtures.MARKER):
-        with rig_fixtures.reading_committed():
+    rigs = request.node.get_closest_marker(rig_fixtures.MARKER)
+    channels = request.node.get_closest_marker(rig_fixtures.PRESETS_MARKER)
+    if rigs or channels:
+        with contextlib.ExitStack() as reading:
+            if rigs:
+                reading.enter_context(rig_fixtures.reading_committed())
+            if channels:
+                reading.enter_context(rig_fixtures.reading_presets())
+            before = len(rig_fixtures.STRAY)
             yield
+            stray = rig_fixtures.STRAY[before:]
+            del rig_fixtures.STRAY[before:]
+        if stray:
+            pytest.fail(rig_fixtures.said(stray), pytrace=False)
         return
     before = len(rig_fixtures.STRAY)
     yield
