@@ -314,6 +314,20 @@ def _emit_any(path: Path, state: dict | None, machine_file: Path | None = None) 
     return config
 
 
+def _agent_host(phone: bool, host: str) -> str:
+    """The address `sushi-rig agent` binds: `--phone` is `--host 0.0.0.0`
+    (#181), and with another `--host` beside it the two disagree, which is
+    refused rather than one of them quietly ignored."""
+    from .agent_client import DEFAULT_HOST
+
+    if not phone:
+        return host
+    if host not in (DEFAULT_HOST, "0.0.0.0"):
+        sys.exit(f"sushi-rig: --phone listens on every address (0.0.0.0), and --host {host} says one; "
+                 "give one or the other")
+    return "0.0.0.0"
+
+
 def _convert(args: argparse.Namespace) -> int:
     from .convert import ConvertError, convert, parse_inputs
     from .paths import checkout_root
@@ -1263,15 +1277,33 @@ def _main(argv: list[str] | None = None) -> int:
     # which looks for the agent there, does not import asyncio for two numbers.
     from .agent_client import DEFAULT_HOST, DEFAULT_PORT
 
+    # #181: what `--host 0.0.0.0` is for, said as what it is for, and the
+    # URLs to open printed once it listens. Opt-in: the default stays local.
+    p.add_argument(
+        "--phone", action="store_true",
+        help="listen on the network (--host 0.0.0.0) so a phone can open the page, and print "
+        "the address to open on it for each Wi-Fi or ethernet interface. No password: use it "
+        "on a network you trust",
+    )
     p.add_argument("--host", default=DEFAULT_HOST,
                    help=f"bind address [default: {DEFAULT_HOST}; 0.0.0.0 opens it to the LAN]")
     p.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"[default: {DEFAULT_PORT}]")
     agent_sub = p.add_subparsers(dest="agent_command")
-    agent_sub.add_parser(
+    service_p = agent_sub.add_parser(
         "install-service",
         help="write the agent's systemd user unit to ~/.config/systemd/user/ and enable it; "
         "prints the systemctl commands to start it rather than running them",
     )
+    # Their own dests: a subcommand's defaults would otherwise overwrite what
+    # `sushi-rig agent --phone install-service` gave the agent's own.
+    service_p.add_argument(
+        "--phone", action="store_true", dest="service_phone",
+        help="the service listens on the network, as `sushi-rig agent --phone` (#181)",
+    )
+    service_p.add_argument("--host", dest="service_host", metavar="HOST",
+                           help=f"the address the service listens on [default: {DEFAULT_HOST}]")
+    service_p.add_argument("--port", type=int, dest="service_port", metavar="PORT",
+                           help=f"the port the service listens on [default: {DEFAULT_PORT}]")
     p = sub.add_parser(
         "restart",
         help="stop the running rig and bring the same one back — same config, same mode, same amp and tuner choices",
@@ -1579,12 +1611,16 @@ def _main(argv: list[str] | None = None) -> int:
 
         return top(args.interval, args.once)
     elif args.command == "agent":
+        args.host = _agent_host(args.phone, args.host)
         if args.agent_command == "install-service":
             from .paths import checkout_root
-            from .service import ServiceError, install
+            from .service import ServiceError, install, listen_args
 
             try:
-                lines = install(checkout_root())
+                lines = install(checkout_root(), listen=listen_args(
+                    phone=args.service_phone or args.phone,
+                    host=args.service_host or args.host, port=args.service_port or args.port,
+                ))
             except ServiceError as exc:
                 sys.exit(f"the service was not installed: {exc}")
             print("\n".join(lines))

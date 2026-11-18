@@ -62,6 +62,7 @@ For playing the rig. Plain steps, a few minutes each.
 |---|---|
 | [Getting started](docs/guide/getting-started.md) | Start the agent, open the page, start a rig |
 | [Playing live](docs/guide/playing-live.md) | The stage screen, switching rigs, the lock, pedals |
+| [Playing out](docs/guide/playing-out.md) | The phone at home or on its hotspot, when it cannot reach the laptop, the lid closed |
 | [Shaping a sound](docs/guide/shaping-a-sound.md) | Plugins, knobs, bypass, the amp, undo |
 | [Mixing](docs/guide/mixing.md) | Channel volumes and the master |
 | [Saving and going back](docs/guide/saving.md) | Save, Save as, Revert |

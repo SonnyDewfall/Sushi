@@ -903,3 +903,71 @@ def test_doctor_says_a_child_in_the_supervisors_own_words():
     assert f"{child_label('fmit')} {how_it_ended(record)}" in message
     assert how_it_ended(record) in crash_message(record)
     assert record["label"] == child_label("fmit") and record["means"] == "sound is unaffected; there is no tuner"
+
+
+# --------------------------------------------------------------------------- #
+# Playing with the lid closed (#181): what the lid does, Wi-Fi power saving.
+# Never a fault; what logind and iw answer is written out from their
+# documentation, not captured on a real laptop.
+# --------------------------------------------------------------------------- #
+
+def test_a_lid_that_suspends_is_said_with_where_to_read_how_to_keep_playing_never_a_fault():
+    check = doctor.check_lid(environment(lid_actions=(("HandleLidSwitch", "suspend"),
+                                                      ("HandleLidSwitchExternalPower", "suspend"))))
+    assert check.state == OK
+    assert "closing the lid suspends this machine, which stops the rig" in check.message
+    assert "HandleLidSwitch=suspend" in check.message
+    assert "playing-out.md" in check.remedy and "With the lid closed" in check.remedy
+
+
+def test_a_lid_set_to_ignore_leaves_the_rig_playing_and_an_unset_external_power_follows_the_lid():
+    check = doctor.check_lid(environment(lid_actions=(("HandleLidSwitch", "ignore"),
+                                                      ("HandleLidSwitchExternalPower", "ignore"))))
+    assert (check.state, check.remedy) == (OK, "")
+    assert "leaves the rig playing" in check.message
+    # On mains power only: still stops it when the laptop is plugged in.
+    plugged = doctor.check_lid(environment(lid_actions=(("HandleLidSwitch", "ignore"),
+                                                        ("HandleLidSwitchExternalPower", "suspend"))))
+    assert "stops the rig" in plugged.message
+    unset = doctor.check_lid(environment(lid_actions=(("HandleLidSwitch", "suspend"),
+                                                      ("HandleLidSwitchExternalPower", ""))))
+    assert "HandleLidSwitchExternalPower=suspend" in unset.message
+
+
+def test_a_logind_that_cannot_be_asked_is_unchecked_with_the_command_to_ask_it():
+    check = doctor.check_lid(environment(lid_actions=None))
+    assert check.state == UNCHECKED
+    assert "busctl get-property org.freedesktop.login1" in check.remedy
+
+
+def test_busctl_and_iw_are_read_as_they_print():
+    assert doctor.busctl_string('s "suspend"\n') == "suspend"
+    assert doctor.busctl_string('s ""') == ""
+    assert doctor.busctl_string("b true") is None
+    assert doctor.power_save_from("Power save: on\n") is True
+    assert doctor.power_save_from("Power save: off\n") is False
+    assert doctor.power_save_from("command failed: No such device (-19)\n") is None
+
+
+def test_wifi_power_saving_on_is_said_with_the_command_that_turns_it_off():
+    check = doctor.check_wifi_power_save(environment(wifi_power_save=(("wlp0s20f3", True),)))
+    assert check.state == OK and "on for wlp0s20f3" in check.message
+    assert "sudo iw dev wlp0s20f3 set power_save off" in check.remedy
+    off = doctor.check_wifi_power_save(environment(wifi_power_save=(("wlp0s20f3", False),)))
+    assert (off.state, off.remedy) == (OK, "") and "off" in off.message
+    assert doctor.check_wifi_power_save(environment(wifi_power_save=())).message == "no Wi-Fi interface"
+    assert doctor.check_wifi_power_save(environment(wifi_power_save=None)).state == UNCHECKED
+    assert doctor.check_wifi_power_save(environment(wifi_power_save=(("wlan0", None),))).state == UNCHECKED
+
+
+def test_wifi_is_found_by_sys_and_no_iw_is_not_said_as_power_saving_off(tmp_path, monkeypatch):
+    (tmp_path / "eth0").mkdir()
+    assert doctor._wifi_power_save(tmp_path) == ()
+    (tmp_path / "wlp0s20f3" / "wireless").mkdir(parents=True)
+    monkeypatch.setattr(doctor.shutil, "which", lambda name: None)
+    assert doctor._wifi_power_save(tmp_path) is None
+
+
+def test_the_lid_and_wifi_checks_are_run_with_the_rest():
+    names = [c.name for c in doctor.environment_checks(environment())]
+    assert names[-2:] == ["lid", "wifi-power-save"]

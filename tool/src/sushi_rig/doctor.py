@@ -668,6 +668,14 @@ class Environment:
     take_stems: int = 2
     take_rig: str = ""
     models: tuple["ModelInfo", ...] = ()
+    # What closing the lid does, by logind property (HandleLidSwitch,
+    # HandleLidSwitchExternalPower); None when logind could not be asked.
+    # The defaults are a laptop set up for playing with the lid closed.
+    lid_actions: tuple[tuple[str, str], ...] | None = (
+        ("HandleLidSwitch", "ignore"), ("HandleLidSwitchExternalPower", "ignore"))
+    # Each Wi-Fi interface and whether power saving is on (None: `iw` could
+    # not say); None for the whole when `iw` is not there to ask.
+    wifi_power_save: tuple[tuple[str, bool | None], ...] | None = ()
 
 
 class ModelInfo(NamedTuple):
@@ -854,6 +862,64 @@ def check_models(environment: Environment, expected: int = EXPECTED_RATE) -> Che
     return Check("amp-models", OK, f"{len(models)} model(s), all trained at {expected} Hz")
 
 
+# What logind may do on the lid closing that stops the rig (logind.conf(5)'s
+# HandleLidSwitch= values); `ignore`, `lock` and `factory-reset` leave it
+# playing.
+LID_STOPS = frozenset({"suspend", "hibernate", "hybrid-sleep", "suspend-then-hibernate", "sleep",
+                       "poweroff", "reboot", "halt", "kexec"})
+LID_GUIDE = "docs/guide/playing-out.md, \"With the lid closed\""
+
+
+def check_lid(environment: Environment) -> Check:
+    """Whether closing the lid stops the rig (#181). Never a fault: a lid that
+    suspends is a laptop's default and fine for playing with it open; the
+    check says so, and where to read how to play with it closed. NOT YET
+    SEEN on a real laptop: what logind answers is from its documentation."""
+    actions = environment.lid_actions
+    if actions is None:
+        return Check(
+            "lid", UNCHECKED, "logind could not be asked what closing the lid does",
+            "ask it by hand: busctl get-property org.freedesktop.login1 /org/freedesktop/login1 "
+            "org.freedesktop.login1.Manager HandleLidSwitch",
+        )
+    # An unset HandleLidSwitchExternalPower is said by some logind releases
+    # as "": it then does what HandleLidSwitch does.
+    first = actions[0][1] if actions else ""
+    actions = tuple((name, value or first) for name, value in actions)
+    said = ", ".join(f"{name}={value}" for name, value in actions)
+    if any(value in LID_STOPS for _, value in actions):
+        return Check(
+            "lid", OK, f"closing the lid suspends this machine, which stops the rig ({said}): "
+            "on a laptop, keep it open while playing",
+            f"to play with the lid closed, see {LID_GUIDE}",
+        )
+    return Check("lid", OK, f"closing the lid leaves the rig playing ({said})")
+
+
+def check_wifi_power_save(environment: Environment) -> Check:
+    """Whether Wi-Fi power saving is on (#181): it can hold a phone's changes
+    back by a beat or drop the page's connection while it dozes. Never a
+    fault, for the reason `check_lid` gives. NOT YET SEEN on a real laptop."""
+    found = environment.wifi_power_save
+    if found is None:
+        return Check("wifi-power-save", UNCHECKED, "`iw` is not installed, so Wi-Fi power saving could not be read",
+                     "sudo apt install iw, then run doctor again")
+    if not found:
+        return Check("wifi-power-save", OK, "no Wi-Fi interface")
+    on = [name for name, value in found if value]
+    unknown = [name for name, value in found if value is None]
+    if on:
+        return Check(
+            "wifi-power-save", OK,
+            f"Wi-Fi power saving is on for {', '.join(on)}: the phone's changes can arrive late",
+            f"for this session: sudo iw dev {on[0]} set power_save off; for good, see {LID_GUIDE}",
+        )
+    if unknown:
+        return Check("wifi-power-save", UNCHECKED, f"`iw` did not say whether power saving is on for {', '.join(unknown)}",
+                     f"iw dev {unknown[0]} get power_save")
+    return Check("wifi-power-save", OK, f"Wi-Fi power saving is off ({', '.join(n for n, _ in found)})")
+
+
 def environment_checks(environment: Environment) -> list[Check]:
     return [
         check_pw_jack(environment),
@@ -862,6 +928,8 @@ def environment_checks(environment: Environment) -> list[Check]:
         check_fuse(environment),
         check_disk(environment),
         check_models(environment),
+        check_lid(environment),
+        check_wifi_power_save(environment),
     ]
 
 
@@ -889,6 +957,67 @@ def _jackd_pids() -> tuple[int, ...] | None:
     return tuple(
         int(line) for line in result.stdout.split() if line.strip().isdigit()
     )
+
+
+def _lid_actions() -> tuple[tuple[str, str], ...] | None:
+    """What logind does on the lid closing, by `busctl get-property` (which
+    prints `s "suspend"`), or None when it cannot be asked."""
+    found = []
+    for name in ("HandleLidSwitch", "HandleLidSwitchExternalPower"):
+        try:
+            result = subprocess.run(
+                ["busctl", "get-property", "org.freedesktop.login1", "/org/freedesktop/login1",
+                 "org.freedesktop.login1.Manager", name],
+                capture_output=True, text=True, check=False, timeout=5.0,
+            )
+        except (OSError, subprocess.SubprocessError):
+            return None
+        value = busctl_string(result.stdout) if result.returncode == 0 else None
+        if value is None:
+            return None
+        found.append((name, value))
+    return tuple(found)
+
+
+def busctl_string(text: str) -> str | None:
+    """The string of `busctl get-property`'s `s "suspend"`. Pure."""
+    kind, _, value = text.strip().partition(" ")
+    if kind != "s" or len(value) < 2 or not (value[0] == value[-1] == '"'):
+        return None
+    return value[1:-1]
+
+
+def _wifi_power_save(sys_net: Path = Path("/sys/class/net")) -> tuple[tuple[str, bool | None], ...] | None:
+    """Each Wi-Fi interface (by /sys/class/net/<if>/wireless) and whether
+    `iw dev <if> get power_save` says power saving is on. `()` with no Wi-Fi;
+    None when there is Wi-Fi and no `iw` to ask."""
+    try:
+        names = sorted(p.name for p in sys_net.iterdir() if (p / "wireless").exists() or (p / "phy80211").exists())
+    except OSError:
+        return ()
+    if not names:
+        return ()
+    if shutil.which("iw") is None:
+        return None
+    found = []
+    for name in names:
+        try:
+            result = subprocess.run(["iw", "dev", name, "get", "power_save"],
+                                    capture_output=True, text=True, check=False, timeout=5.0)
+        except (OSError, subprocess.SubprocessError):
+            found.append((name, None))
+            continue
+        found.append((name, power_save_from(result.stdout)))
+    return tuple(found)
+
+
+def power_save_from(text: str) -> bool | None:
+    """`Power save: on` from `iw dev <if> get power_save`. Pure."""
+    for line in text.splitlines():
+        key, _, value = line.partition(":")
+        if key.strip().lower() == "power save":
+            return {"on": True, "off": False}.get(value.strip().lower())
+    return None
 
 
 def _is_appimage(path: Path) -> bool | None:
@@ -1025,6 +1154,8 @@ def gather_environment(root: Path) -> Environment:
         take_stems=stems,
         take_rig=rig,
         models=_models(root),
+        lid_actions=_lid_actions(),
+        wifi_power_save=_wifi_power_save(),
     )
 
 
