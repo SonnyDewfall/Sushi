@@ -5481,4 +5481,8 @@ flanger off. `config/sound/pedals.yaml` was calibrated here (band and level
 the echo's and the shimmer's sound, and `test_stereo.py` holds all four
 compiled alone. Here: `test_stereo.py`, `test_rig_fixtures.py`,
 `test_sound_refs.py`, `test_pedals.py` and `test_presets.py`, slow ones
-included, 410 passed. `nulltest --all`: 39 "sounds the same", exit 0. *(2026-11-18)*
+included, 410 passed. `nulltest --all`: 39 "sounds the same", exit 0, before
+and after merging #172's master limiter. The limiter holds a full-scale
+input's +20 dBFS down. The shimmer's runaway test, which took its channel
+through the master, then read that as non-linear and failed. It now renders
+the plugin alone on a stereo track, and passes. *(2026-11-18)*

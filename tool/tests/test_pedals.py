@@ -430,14 +430,28 @@ def test_the_shimmer_does_not_run_away_at_its_longest_and_most_shifted(shift, tm
     from sushi_rig.analysis import check_finite
     from sushi_rig.render import PreparedStimulus, Stimulus
 
+    from sushi_rig.render import render_offline
+
     settings = at(SHIMMER, {"mix": 1.0}, {"T60M": 8.0, "T60DS": 8.0, "PSDRYWET": 1.0, "SHIFT": shift})
+    # The plugin alone on a stereo track, not a compiled channel: the master
+    # limiter (#172) holds a full-scale input's +20 dBFS down, which is its
+    # job and would read here as the shimmer being non-linear.
+    alone = tmp_path / "alone.json"
+    alone.write_text(json.dumps({
+        "host_config": {"samplerate": 48000},
+        "tracks": [{"name": "channel", "channels": 2,
+                    "inputs": [{"engine_channel": 0, "track_channel": 0}, {"engine_channel": 1, "track_channel": 1}],
+                    "outputs": [{"engine_bus": 0, "track_bus": 0}],
+                    "plugins": [{"name": "shimmer", "type": "lv2", "uri": SHIMMER}]}],
+        "initial_state": [{"processor": "shimmer", "parameters": settings}],
+    }))
     peaks, tails = [], []
     for scale in (1.0, 0.1):
         fed = _stress(scale)
         wav = tmp_path / f"stress-{scale}.wav"
         signals.write_wav(wav, fed, 48000, subtype="float32")
-        out = _render(tmp_path, _chain(SHIMMER, settings), f"stress-{scale}",
-                      prepared=PreparedStimulus(wav, fed, Stimulus(), 48000))
+        out = render_offline(alone, ROOT, tmp_path / f"stress-{scale}", sushi_bin=str(SUSHI),
+                             prepared=PreparedStimulus(wav, fed, Stimulus(), 48000))["rendered"]
         assert out.shape[0] == fed.shape[0] and check_finite(out) is None
         silence = fed.shape[0] - 10 * 48000
         peaks.append(_peak(out))
