@@ -5479,6 +5479,55 @@ The comment saying the staging folder has no `manifest.ttl` was wrong (it has
 one that declares nothing); it is invisible because lilv reads each top-level
 entry's `manifest.ttl` and does not recurse. *(2026-11-18)*
 
+**One guard in front of every route: another site's writes, and DNS
+rebinding (#161, review of PR #174).** Every POST route acted on a request
+from any web page open in a browser on the rig machine or a phone on the
+LAN (`fetch(url, {method: "POST", mode: "no-cors"})` needs no preflight);
+#160 and #162 had guarded four routes by hand, and their `_same_origin_only`
+calls are gone. One aiohttp middleware, `Agent._same_site_only`, before the
+router's 404 and 405, answers `403 cross_site`: (1) for a POST, PUT, PATCH
+or DELETE with `Sec-Fetch-Site: cross-site`, an `Origin` that is not the
+agent's own scheme, host and port, or `Origin: null` (`cross_site_refusal`);
+(2) for any request, GETs and page loads included, whose `Host` is not an
+IP, `localhost`, the hostname, its first label, that label with `.local`,
+the bound `--host`, or a name given with the new `sushi-rig agent
+--allow-host NAME` (`rebinding_refusal`). **Decided: the Host check belongs
+here**, since without it the guard is passed by rebinding (the attacker's
+name is both `Host` and `Origin`); any IP is allowed rather than a list of
+the machine's addresses, because a page loaded by IP has no name to rebind.
+**Found in the review: the check must not wait for a browser's headers.**
+The first version read `Host` only of writes, and the review asked for it
+on any request with `Origin` or a `Sec-Fetch-*` header; captured from
+Chromium 153, a plain-http name other than localhost (a rebound one, a
+phone's `.local`) gets no `Sec-Fetch-*` at all, and a GET or page load no
+`Origin`, so a rebound page's reads carried only `Host`, and the gated
+check let them through (`test_ui_cross_site.py` fails with it). So curl
+and the CLI are held to the names too, and pass by the ones they use (the
+CLI asks at the address the agent wrote); curl by another name needs
+`--allow-host`. Also from the review: an `--allow-host` name is trusted as
+an `Origin` whatever `Host` says, on any scheme and port, so a reverse proxy
+that rewrites `Host` to 127.0.0.1 works (what does and does not, behind a
+proxy, is in docs/reference/agent.md); a value with a scheme, port or path
+(or an IP, always allowed, which would be trusted on every port) is refused
+at the command line and in `Agent` rather than kept and never matched. A GET from another site is still allowed (a link to the page is
+one; its answer has no CORS header), and a test lists the GET routes, the
+help link's `/help/` included, so a new one is reviewed. Tests:
+`test_agent_cross_site.py` (169: each refusal and allowance, reads by each
+kind of browser request, proxies, `--allow-host`, a walk of every route of
+every method) and `test_ui_cross_site.py` (5, Chromium with
+`--host-resolver-rules`: the page by IP, localhost and `rig-box.local` loads,
+reads and writes; a rebound name's page load, reads and writes are 403;
+another site's no-cors fetch and form reach the agent and are 403), each
+half shown failing with its fix taken out. With master merged at 9bb1053:
+the fast suite 5288 passed, 21 skipped; every `test_ui_*.py` file with
+`test_agent_cross_site.py` (589 tests) 2 of 3 in a loop, the first failing
+once in `test_ui_tabs.py`'s amp-card drag, a test of timed waits that
+passed 5 of 5 alone and in the next two loops. Not covered: a device on the LAN that sends no `Origin`, or a
+browser too old to send one on a POST, which needs authentication (#29).
+**Not tried on the rig, from a real phone, behind a real proxy, with a
+pedal or MIDI hardware;** the names were resolver rules, not DNS or mDNS.
+*(2026-11-17)*
+
 **The visualiser: a screensaver that moves with the guitar (#176).** After a
 spell with no pointer, touch or key on the page (10 s, set on the page from 3
 to 600), while a rig is running and the window is at least 900 px wide, a
