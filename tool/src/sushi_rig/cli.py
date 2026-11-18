@@ -1266,6 +1266,25 @@ def _main(argv: list[str] | None = None) -> int:
     p.add_argument("--host", default=DEFAULT_HOST,
                    help=f"bind address [default: {DEFAULT_HOST}; 0.0.0.0 opens it to the LAN]")
     p.add_argument("--port", type=int, default=DEFAULT_PORT, help=f"[default: {DEFAULT_PORT}]")
+    def allow_host(value: str) -> str:
+        # Refused here, not reduced to its name (review of PR #174): a port
+        # given would read as if only that port were allowed, and none is
+        # checked. agent.py's own check, imported only when the flag is given.
+        from .agent import allowed_host_name
+
+        try:
+            return allowed_host_name(value)
+        except ValueError as exc:
+            raise argparse.ArgumentTypeError(str(exc)) from exc
+
+    p.add_argument(
+        "--allow-host", action="append", default=[], metavar="NAME", dest="allow_hosts",
+        type=allow_host,
+        help="a host name a browser may reach the agent by, beside any IP, localhost, this "
+        "machine's hostname and its .local name: a tunnel's, a VPN's or a reverse proxy's name "
+        "for it, with no scheme or port (it is allowed on every one); repeatable. A request by "
+        "any other name is refused, a read too, which is what stops DNS rebinding (#161)",
+    )
     agent_sub = p.add_subparsers(dest="agent_command")
     agent_sub.add_parser(
         "install-service",
@@ -1592,7 +1611,7 @@ def _main(argv: list[str] | None = None) -> int:
         from .agent import AgentError, serve
 
         try:
-            return serve(args.host, args.port)
+            return serve(args.host, args.port, allow_hosts=args.allow_hosts)
         except AgentError as exc:
             sys.exit(str(exc))
     elif args.command in ("up", "down", "status", "restart"):
