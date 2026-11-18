@@ -393,8 +393,22 @@ shows the level it will put back while one is under way. A `POST /live/add`
 first reads the load the page's LOAD tile reads, from the same shared pw-top
 sample, and is refused (409 `over_budget`, the figure in the reason) over
 `top.ADD_BUDGET` of the block; a load that cannot be read is said in the
-answer and refuses nothing (`top.add_budget`). The master limiter #137 also
-asks for is not built: `tool/spikes/master_limiter/README.md` says why.
+answer and refuses nothing (`top.add_budget`).
+
+## Safety (#137, option 2): the master's limiter and the master volume's top
+
+Every compiled rig's master ends with `master_limiter`, mda/Limiter at the
+compiler's fixed settings (`rigfile.LIMITER`). It is the compiler's as a send
+is (`live.protected_processor`): never removed or moved, nothing is moved past
+it, and an add with no place, or after the master's last plugin, goes in front
+of it (`live.is_tail`), never after. It is never bypassed, and its parameters
+are never set to anything but what they are fixed at (`rigfile.limiter_problem`,
+400), by any path: the routes, an undo, a switch's step. `/live/plugins` gives
+it the role "limiter", which the page shows as one read-only line. The master
+volume stops at 0 dB, since Sushi applies the master's gain after the limiter:
+a set of the master's gain above it is refused (400, `rigfile.master_gain_problem`),
+as a value outside 0 to 1 is, through the route, `/live/parameters`, an undo
+and a switch's step; and the dip never puts back more than 0 dB.
 
 ## The web UI (#31)
 
@@ -465,13 +479,16 @@ from . import amp_live  # the amp: GET /amp, POST /amp/parameter and /amp/model
 from . import stereo  # the compiler's copy to stereo after a mono plugin
 from . import ramp  # the master's dip around a live structural edit (#137)
 from .live import DEFAULT_GRPC_ADDRESS, ElkpyMissing, LiveError, Move
-from .live import is_send, protected_processor
+from .live import is_send, is_tail, protected_processor
 from .rig import describe_rig
 from .save import NAME_PATTERN
 from .midi_listener import MidiError
 from .rig import describe_rig, restart_arguments
 from .supervisor import Outcome, Supervisor
 from . import rigfile  # the live switch (#93)
+from .rigfile import (  # the limiter, the top and the centred pan (#137)
+    limiter_problem, master_gain, master_gain_problem, master_pan_problem,
+)
 from .rig import RigError, compile_named_rig
 from .state import read_state, write_state
 from .verify import diff_state
@@ -812,6 +829,21 @@ def check_parameter(reading: dict[str, Any], processor: str, parameter: str) -> 
     if not parameters[parameter].get("automatable", True):
         raise AgentError(f"{processor!r} parameter {parameter!r} is read-only")
     return reading["value"]
+
+
+def _refuse_fixed(processor: str, values: dict[str, Any]) -> None:
+    """`AgentError` (400) for a set the rig must never take (#137): the
+    master's gain above the master volume's top, its pan anywhere but the
+    centre (Sushi's pan law lifts the side panned to past the limiter), or
+    the master's limiter set to anything but its fixed settings. Pure."""
+    for parameter, value in values.items():
+        why = limiter_problem(processor, parameter, value)
+        if why is None and (processor, parameter) == (ramp.MASTER, ramp.GAIN):
+            why = master_gain_problem(value)
+        if why is None and (processor, parameter) == (ramp.MASTER, "pan"):
+            why = master_pan_problem(value)
+        if why:
+            raise AgentError(why)
 
 
 def check_bypass(reading: dict[str, Any], processor: str) -> bool | None:
@@ -1232,6 +1264,14 @@ def add_request(body: Any, library: dict[str, Any]) -> AddRequest:
     reserved = stereo.reserved_problem("processor", name)
     if reserved:
         raise AgentError(reserved)
+    if name in (rigfile.MASTER, rigfile.RETURN, rigfile.LIMITER):
+        # The compiler's names, refused as `check_rig` refuses them (#137,
+        # PR #172's review): on a rig from before the limiter, a plugin added
+        # as `master_limiter` would be protected by its name, so it could not
+        # be removed or bypassed, and a save could not write it.
+        raise AgentError(
+            f"{name!r} is a name the compiler gives the master track, its return or its limiter: "
+            "give the plugin another name")
     after = body.get("after")
     if after is not None and (not isinstance(after, str) or not after):
         raise AgentError(f"'after' must name a processor on the track, or be left out, not {after!r}")
@@ -1302,9 +1342,10 @@ def check_add(reading: dict[str, Any], request: AddRequest) -> Addition:
     heard (found by review). The name must
     be free across the whole rig -- Sushi's processor names are one namespace,
     tracks included. With no `after` it goes last, but in front of the
-    track's send when it has one; `after` the send is refused, because the
-    send carries the channel to the master and whatever follows it is not
-    heard. The master's return is first on its track and stays first: an add
+    track's send when it has one, or the master's limiter (#137); `after` the
+    send is refused, because the send carries the channel to the master and
+    whatever follows it is not heard, and after the limiter, which stays the
+    last thing the monitors' signal passes. The master's return is first on its track and stays first: an add
     is always after something or at the back, and one asked to go `first`
     goes in front of the first processor that is not the return, which on a
     channel is its first plugin, or its send when it has none.
@@ -1323,19 +1364,26 @@ def check_add(reading: dict[str, Any], request: AddRequest) -> Addition:
     if request.copy is not None and (request.copy in chains or _track_of(chains, request.copy) is not None):
         raise Conflict(f"{request.copy!r}, the name of {name!r}'s copy to stereo, is already on the rig", "name_taken")
     chain = list(chains[track])
-    sends = [index for index, held in enumerate(chain) if is_send(track, held, uids.get(held))]
+    # What ends the chain and stays last: a channel's send, or the master's
+    # limiter (#137, `live.is_tail`).
+    sends = [index for index, held in enumerate(chain) if is_tail(track, held, uids.get(held))]
     if after is not None:
         if after not in chain:
             raise Conflict(f"there is no processor {after!r} on track {track!r}: it has {chain}")
         if chain.index(after) in sends:
+            if is_send(track, after, uids.get(after)):
+                raise Conflict(
+                    f"nothing goes after {after!r}: the send must stay last, since it is what "
+                    "carries the channel to the master")
             raise Conflict(
-                f"nothing goes after {after!r}: the send must stay last, since it is what "
-                "carries the channel to the master")
+                f"nothing goes after {after!r}: the master's limiter stays last, since it is the "
+                "safety net on what the monitors hear (#137)")
         index = _unit_end(chain, after, uids)
     elif request.first:
         # Past the processors at the head that are the compiler's and not a
-        # send: the master's return (`protected_processor`). A send is last,
-        # and on a track with no plugins the add goes in front of it.
+        # tail: the master's return (`protected_processor`). A send or the
+        # limiter is last, and on a track with no plugins the add goes in
+        # front of it.
         index = 0
         while (index < len(chain) and index not in sends
                and protected_processor(track, chain[index], uids.get(chain[index])) is not None):
@@ -1466,6 +1514,10 @@ def _dip_answer(request: Any) -> dict[str, Any]:
     answer: dict[str, Any] = {"dip": dict(said)}
     if said.get("restored") is False:
         answer["warning"] = said["why"]
+    elif said.get("capped"):
+        # The master came back quieter than it went down (#137): said beside
+        # the edit's answer, not only inside `dip`.
+        answer["master_capped"] = said["capped"]["message"]
     return answer
 
 
@@ -1754,6 +1806,11 @@ class Agent:
         # agent, or a lifecycle command succeeds. `{"at", "message", "level"}`,
         # `level` the one the dip meant to put back, which a save writes.
         self._master_down: dict[str, Any] | None = None
+        # The last time a dip brought a master over the master volume's top
+        # down to it (#137, PR #172's review): `{"at", "from_db", "message"}`,
+        # in /health until a lifecycle command works (a rig started from a
+        # file is at 0 dB at most).
+        self._master_capped: dict[str, Any] | None = None
         # The rig's block as pw-top last measured it, in seconds, for the
         # dip's wait (`ramp.settle`); kept from every sample read, since a
         # sample itself is dropped after an add (`_load_last`).
@@ -1816,6 +1873,8 @@ class Agent:
                 "last_error": self.last_error,
                 # A master a dip could not put back (#137): until it is put right.
                 "master_down": self._master_down,
+                # A master over 0 dB a dip brought down to it (#137).
+                "master_capped": self._master_capped,
                 "midi": self._midi_status(),
                 # The rig this agent holds, and its children that exited with
                 # no `down` asking them to: what a phone reads after a crash.
@@ -1954,6 +2013,7 @@ class Agent:
             # A rig started or stopped afresh: no master is left down by a
             # dip, and the block pw-top measured belonged to the run before.
             self._master_back()
+            self._master_capped = None
             self._block_s = None
         if outcome.ok and (self.last_error or {}).get("kind") == "lifecycle":
             # A later success supersedes the old failure: left in place,
@@ -2356,7 +2416,13 @@ class Agent:
             said["why"] = "the master is already at its floor"
             yield said
             return
-        level = float(level)
+        # Never more than the master volume's top put back (#137). A level over
+        # it is a rig started before the cap from a file that said more (by
+        # design: the file's level was its gain), or one set beside the agent;
+        # either way it is brought down to the top here, and said so once it
+        # is (`_undip`, `capped`).
+        asked = float(level)
+        level = master_gain(asked)
         self._dipping = level
         self._dips += 1
         started = self.clock()
@@ -2370,7 +2436,7 @@ class Agent:
             await self.sleep(wait)
             yield said
         except BaseException as exc:
-            problem = await self._undip(request, controller, level, said, started)
+            problem = await self._undip(request, controller, level, said, started, asked=asked)
             if problem and isinstance(exc, web.HTTPException):
                 # The edit's failure and the master's both, in one answer: a
                 # silent master after a failed add must not read as the add's
@@ -2386,15 +2452,20 @@ class Agent:
                 raise combined from exc
             raise
         else:
-            await self._undip(request, controller, level, said, started)
+            await self._undip(request, controller, level, said, started, asked=asked)
         finally:
             self._dipping = None
 
-    async def _undip(self, request, controller, level: float, said: dict[str, Any], started: float) -> str | None:
+    async def _undip(self, request, controller, level: float, said: dict[str, Any], started: float,
+                     *, asked: float | None = None) -> str | None:
         """Read the master's gain again and put `level` back, unless someone
         else set it during the dip (`ramp.restore_to`). Never raises: returns
         what went wrong, or None, and says it in `said`, on stderr and in
-        /health, since a master left down is a silent rig."""
+        /health, since a master left down is a silent rig. A master that was
+        over the master volume's top before the dip (`asked`), or was set over
+        it during one, comes back at the top, and that is said too, in `said`
+        (`capped`), on stderr and in /health (`master_capped`): the player
+        hears the rig get quieter, and must be told why (#137)."""
         now = None
         try:
             reading = await self._sushi(
@@ -2403,6 +2474,10 @@ class Agent:
         except web.HTTPException as exc:
             _keep_pending(request, exc)
         target = ramp.restore_to(level, now)
+        if target is None and isinstance(now, (int, float)) and now > rigfile.MASTER_GAIN_MAX:
+            # Someone's level, but over the master volume's top (#137): it
+            # is brought down to it rather than kept.
+            target = rigfile.MASTER_GAIN_MAX
         if target is None:
             said["kept"] = now
             said["ms"] = round((self.clock() - started) * 1000, 1)
@@ -2427,6 +2502,19 @@ class Agent:
         self._master_back()
         self._dip_left = target
         said["ms"] = round((self.clock() - started) * 1000, 1)
+        over = max((v for v in (asked, now) if isinstance(v, (int, float)) and not isinstance(v, bool)
+                    and math.isfinite(v)), default=None)
+        if over is not None and over > rigfile.MASTER_GAIN_MAX + rigfile.MASTER_GAIN_SLACK \
+                and abs(target - rigfile.MASTER_GAIN_MAX) <= rigfile.MASTER_GAIN_SLACK:
+            from_db = rigfile.gain_to_level(over)
+            message = (f"the master volume was at {from_db:+g} dB, over the 0 dB it now stops at, and the "
+                       "dip around this edit brought it back at 0 dB: the master's gain comes after its "
+                       "limiter, so above unity it would lift what the limiter let through (#137). The rig "
+                       "was most likely started before the cap, from a file whose master level was above 0")
+            said["capped"] = {"from_db": from_db, "to_db": 0.0, "message": message}
+            self._master_capped = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+                                   "from_db": from_db, "message": message}
+            print(f"sushi-rig agent: {message}", file=sys.stderr, flush=True)
         return None
 
     def _master_back(self) -> None:
@@ -2447,7 +2535,11 @@ class Agent:
         self, request, controller, processor: str, parameter: str, value: float,
         *, expect: Callable[[Any], None] | None = None, dry_run: bool = False,
     ) -> float:
-        """Set one parameter and return the value it replaced."""
+        """Set one parameter and return the value it replaced. The master
+        volume's top and the limiter's fixed settings (#137) are refused
+        here, before Sushi is asked anything, so that every path that sets a
+        parameter (the routes, an undo, a switch's step) is held to them."""
+        _refuse_fixed(processor, {parameter: value})
         reading = await self._sushi(
             request, self.live.parameter, controller, processor, parameter, reading=True)
         previous = check_parameter(reading, processor, parameter)
@@ -2476,7 +2568,9 @@ class Agent:
         said too. One that did not answer may or may not have been applied,
         and is left as it is, said; after one, nothing more is sent through
         the stuck connection. What is left changed this way is not logged,
-        and the answer says to read /live."""
+        and the answer says to read /live. Held to the master volume's top and
+        the limiter's settings as `_apply_parameter` is (#137)."""
+        _refuse_fixed(processor, values)
         previous: dict[str, float] = {}
         for parameter in values:
             reading = await self._sushi(
@@ -2541,7 +2635,12 @@ class Agent:
         self, request, controller, processor: str, bypassed: bool,
         *, expect: Callable[[Any], None] | None = None, dry_run: bool = False,
     ) -> bool | None:
-        """Bypass or un-bypass one processor and return the state it replaced."""
+        """Bypass or un-bypass one processor and return the state it replaced.
+        The master's limiter is never bypassed (#137); un-bypassing it is
+        allowed, since that puts it right."""
+        why = limiter_problem(processor, bypassed=bypassed)
+        if why:
+            raise AgentError(why)
         reading = await self._sushi(request, self.live.bypass, controller, processor, reading=True)
         previous = check_bypass(reading, processor)
         if expect:
@@ -3323,8 +3422,8 @@ class Agent:
 
     async def live_plugins(self, request):
         """Which plugin each processor on the rig is, from Sushi's session
-        (`live.read_live_plugins`), with `role` "send" or "return" for the
-        compiler's (`live.protected_processor`, the one rule for them) and None
+        (`live.read_live_plugins`), with `role` "send", "return" or "limiter"
+        (#137) for the compiler's (`live.protected_processor`, the one rule for them) and None
         for a plugin. A read: busy, 503 and 502 as `/live` answers them, and
         no live lock. 501 from a `Live` that cannot say, rather than an answer
         the page would take for a rig of unknown plugins."""
@@ -3352,7 +3451,8 @@ class Agent:
             if stereo.is_copy(name, plugin.get("uid")):
                 role = "stereo"  # the compiler's copy to stereo: the page does not show it
             elif protected_processor(track, name, plugin.get("uid")):
-                role = "send" if is_send(track, name, plugin.get("uid")) else "return"
+                role = ("send" if is_send(track, name, plugin.get("uid"))
+                        else "limiter" if is_tail(track, name, plugin.get("uid")) else "return")
             processors[name] = {**plugin, "role": role, "width": plugin_width(plugin, ports)}
         return web.json_response({"ok": True, "processors": processors, "ports_note": ports_note})
 
@@ -6562,6 +6662,8 @@ def place_switch_add(
     if before is None:
         if any(is_send(track, held, uids.get(held)) for held in chain):
             raise Conflict(f"{name!r} would go behind {track!r}'s send, where it is not heard")
+        if any(is_tail(track, held, uids.get(held)) for held in chain):
+            raise Conflict(f"{name!r} would go behind the master's limiter, which stays last (#137)")
         index = len(chain)
     elif before not in chain:
         raise Conflict(f"{before!r}, which {name!r} goes in front of, is not on {track!r}: it has {chain}")
@@ -6572,7 +6674,7 @@ def place_switch_add(
     # ahead of it, a processor would get no channel's signal (found by review:
     # `before: "master_return"` was accepted).
     for held in chain[index:]:
-        if (protected_processor(track, held, uids.get(held)) and not is_send(track, held, uids.get(held))
+        if (protected_processor(track, held, uids.get(held)) and not is_tail(track, held, uids.get(held))
                 and not stereo.is_copy(held, uids.get(held))):
             raise Conflict(f"{name!r} would go in front of {held!r}, the master's return, which stays first")
     if copy is not None and (copy in chains or _track_of(chains, copy) is not None):
