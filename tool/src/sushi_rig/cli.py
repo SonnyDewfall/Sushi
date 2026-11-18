@@ -480,8 +480,8 @@ def _nulltest(args: argparse.Namespace) -> int:
     import yaml
 
     from .nulltest import (
-        ORPHAN_PREFIX, STALE_PREFIX, MadeFrom, balance_db_of, compare, from_dict, keep_wider, made_from_of,
-        played_findings, reverbs_bypassed, staleness, to_dict, without_reverbs_findings,
+        ORPHAN_PREFIX, STALE_PREFIX, MadeFrom, compare, from_dict, keep_wider, made_from_of,
+        played_findings, rig_findings, staleness, to_dict,
     )
     from .paths import checkout_root
     from .render import (
@@ -629,21 +629,21 @@ def _nulltest(args: argparse.Namespace) -> int:
                     # A stereo reverb's 4 dB is its own: the channel is also
                     # rendered with its stereo reverbs bypassed, once, and that
                     # render held to 1 dB (re-review of PR #173).
-                    without = reverbs_bypassed(channel.config) if is_rig else None
-                    rest: list = []
+                    rendered_without: list = []  # once per channel, however often asked
 
-                    def played(fp, is_rig=is_rig, balance_db=balance_db_of(channel.config),
-                               without=without, rest=rest, work=work):
-                        found = played_findings(fp, is_rig, balance_db)
-                        if without is not None:
-                            if not rest:
-                                work.mkdir(parents=True, exist_ok=True)
-                                bypassed = work / "reverbs-bypassed.json"
-                                bypassed.write_text(json.dumps(without, indent=2) + "\n")
-                                rest.append(without_reverbs_findings(measure(
-                                    bypassed, root, work / "reverbs-bypassed", sushi_bin=sushi, retried=retried)))
-                            found = found + rest[0]
-                        return found
+                    def render_without(without, work=work, rendered_without=rendered_without):
+                        if not rendered_without:
+                            work.mkdir(parents=True, exist_ok=True)
+                            bypassed = work / "reverbs-bypassed.json"
+                            bypassed.write_text(json.dumps(without, indent=2) + "\n")
+                            rendered_without.append(measure(bypassed, root, work / "reverbs-bypassed",
+                                                            sushi_bin=sushi, retried=retried))
+                        return rendered_without[0]
+
+                    def played(fp, is_rig=is_rig, config=channel.config, render_without=render_without):
+                        if not is_rig:
+                            return played_findings(fp, is_rig)
+                        return rig_findings(fp, config, render_without)
 
                     if args.calibrate:
                         try:

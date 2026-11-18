@@ -730,13 +730,18 @@ def test_every_frozen_rigs_channel_has_a_reference_and_nothing_else_is_there():
 
     from sushi_rig import rigfile
 
-    channels = sorted(name for rig in frozen_names() for name, _ in rigfile.heard(compiled_to_render(frozen(rig))))
+    views = {name: view for rig in frozen_names() for name, view in rigfile.heard(compiled_to_render(frozen(rig)))}
+    channels = sorted(views)
     assert channels == sorted(path.stem for path in FROZEN_SOUND.glob("*.yaml"))
     for name in channels:
         raw = yaml.safe_load((FROZEN_SOUND / f"{name}.yaml").read_text())
         fingerprint, _ = from_dict(raw)
         assert fingerprint.config == name and made_from_of(raw) is None
-        assert heard_findings(fingerprint) == [], f"{name}: a frozen reference any rig would fail"
+        # The reference's own levels, at the allowance its channel gets; the
+        # reverbs-bypassed half of the rule needs a render, which
+        # test_convert.py's frozen test makes.
+        assert heard_findings(fingerprint, nulltest.balance_db_of(views[name])) == [], \
+            f"{name}: a frozen reference any rig would fail"
 
 
 # --------------------------------------------------------------------------- #

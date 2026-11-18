@@ -5703,3 +5703,25 @@ The shimmer's corner test stays at exactly its promise of +6 dB RMS
 reference, the frozen ones calibrated in CI included, matches at 0.0001 dB.
 The comment that said the limits were held "a little inside" now says that
 is the echo's only. *(2026-11-18)*
+
+**CI's slow job on 7779b5e: two failures (PR #173).** (1)
+`test_convert.py`'s `test_every_v2_rig_sounds_like_its_reference[pedals]`
+called `heard_findings` at the 1 dB default and failed the shimmer's
+3.35 dB. The whole rule is now one function, `nulltest.rig_findings(fp,
+config, render_without)`: the reverb's allowance, and the render with its
+stereo reverbs bypassed at 1 dB. The CLI and both of `test_convert.py`'s
+rig tests call it. Every other caller of `heard_findings`, `_balanced` and
+`BALANCE_DB` now applies the same rule: `test_stereo.py`'s rig test,
+`test_limiter_sushi.py`'s `render` (its own reverbs-bypassed render), and
+`test_sound_refs.py`'s frozen-reference check (at the channel's allowance;
+the render half is `test_convert.py`'s). `test_pedals.py`'s 1 dB is the
+mono pedals' alone. Slow here: `test_convert`, `test_stereo`,
+`test_sound_refs`, `test_limiter_sushi` and `test_pedals`, 189 passed. (2)
+`test_ui.py`'s `test_the_stage_fits_a_phone_and_every_target_takes_a_thumb`
+is a race in the test, and master has it too. Its fixture waits for the
+first `.card`; each row is rebuilt when its profile arrives after that
+first draw, and a box read in between can be None. Under full CPU load the
+old read failed 4 of 25 here and 5 of 25 on master (9bb1053, a scratch
+worktree, since removed). The test now waits until the overdrive's summary
+is in its profile's labels and its bypass button is visible, then measures:
+25 of 25 under the same load. *(2026-11-18)*

@@ -702,6 +702,19 @@ def without_reverbs_findings(fp: Fingerprint) -> list[Finding]:
     return [Finding(f.check, f"with its stereo reverbs bypassed, {f.message}") for f in heard_findings(fp)]
 
 
+def rig_findings(fp: Fingerprint, config: Any, render_without) -> list[Finding]:
+    """The whole rule for a render of a rig's `config`, in one place for
+    every caller (the CLI, test_convert.py): `heard_findings` at
+    `balance_db_of(config)`, and where that is a reverb's allowance, the same
+    config with its stereo reverbs bypassed, rendered by `render_without`
+    (config -> Fingerprint), held to `BALANCE_DB`."""
+    found = heard_findings(fp, balance_db_of(config))
+    without = reverbs_bypassed(config)
+    if without is not None:
+        found = found + without_reverbs_findings(render_without(without))
+    return found
+
+
 def heard_findings(fp: Fingerprint, balance_db: float = BALANCE_DB) -> list[Finding]:
     """What a rig must sound like with no reference to compare against: two
     sides, neither silent (`SILENCE_FLOOR_DBFS`), within `balance_db` of
