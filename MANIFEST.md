@@ -5366,3 +5366,30 @@ tenth, with Shift at 0, +6 and -6. It asks that the peaks differ by
 20 ± 0.5 dB and that the tail falls 30 dB in eight seconds of silence. An
 echo that rings on (three heads, Sustain 0.6) fails both: 13.9 dB apart,
 and a flat tail. *(2026-11-18)*
+
+**Stereo reverbs may be 4 dB apart, and a committed rig of the pedals (#165,
+PR #173).** The owner decided the balance question: a stereo reverb's two
+sides may be up to 4 dB apart, and everything else keeps 1 dB.
+`nulltest.REVERB_BALANCE_DB` is 4.0. `nulltest.STEREO_REVERBS` is an
+explicit list: MaGigaverb, MVerb, mda Ambience, Gxshimmizita and a-reverb.
+That is every manifest plugin whose own bundle declares `lv2:ReverbPlugin`
+and has two outputs in `plugin-ports.txt`. `test_stereo.py` checks it is
+still exactly that wherever `plugins/` is present, so a new reverb has to
+be added by hand. `balance_db_of(config)` gives 4 dB to a render with one
+of them playing, not bypassed. It is applied by `nulltest`
+(`heard_findings`/`played_findings`, through the CLI) and by
+`test_stereo.py`'s rig and compiled-alone checks. A silent or one-sided
+render still fails. Tests in `test_sound_refs.py`: the shimmer at 3 dB
+passes and at 5 dB fails; each reverb at 4 dB still fails silent or
+one-sided; a chorus, an EQ and a bypassed shimmer at 3 dB fail. **The
+shimmer is not inside 4 dB at every setting.** On the bench host's sweep,
+Dry/Wet 0.2 with both decays at 1 gave 4.08 dB, and the guide says so; the
+preset's settings gave 3.31, its defaults 2.86. **A committed rig, as well
+as the presets:** `config/rigs/pedals.yaml` has the four after the amp, the
+echo and the shimmer on at their presets' settings, the tremolo and the
+flanger off. `config/sound/pedals.yaml` was calibrated here (band and level
+0.0001 dB, sides 3.34 dB apart, `made_from` hash rule 2), so CI now pins
+the echo's and the shimmer's sound, and `test_stereo.py` holds all four
+compiled alone. Here: `test_stereo.py`, `test_rig_fixtures.py`,
+`test_sound_refs.py`, `test_pedals.py` and `test_presets.py`, slow ones
+included, 410 passed. `nulltest --all`: 39 "sounds the same", exit 0. *(2026-11-18)*
