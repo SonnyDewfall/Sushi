@@ -210,6 +210,14 @@ def test_the_issues_case_says_the_localhost_agent_holds_it_and_why_the_phone_can
     assert "which is why a phone cannot reach it" in message
     assert "\n  kill 4242\n" in message
     assert message.endswith("  sushi-rig agent --phone")
+    other = reach.port_in_use_message("0.0.0.0", 8030, [Holder("127.0.0.1", 4242, agent=True)])
+    assert other.endswith("  sushi-rig agent --phone --port 8030"), "the port it was asked for, again"
+
+
+def test_the_default_port_here_is_the_agents():
+    from sushi_rig.agent_client import DEFAULT_PORT
+
+    assert reach.DEFAULT_PORT == DEFAULT_PORT
 
 
 def test_the_service_holding_it_is_named_with_the_systemctl_that_stops_it_or_opens_it():

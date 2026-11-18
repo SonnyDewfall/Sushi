@@ -48,6 +48,7 @@ from pathlib import Path
 from typing import Callable, Iterable
 
 UNIT_NAME = "sushi-rig-agent.service"
+DEFAULT_PORT = 8029  # agent_client.DEFAULT_PORT, not imported so this stays a leaf module
 
 # Names of interfaces that are not a network a phone is on: containers and
 # VMs' bridges, VPN tunnels, traffic shapers. Checked as well as /sys's
@@ -318,7 +319,8 @@ def port_in_use_message(host: str, port: int, holders: list[Holder], *,
                 "To have the service listen on the network instead (the unit is written to",
                 "leave the rig playing across the restart):",
                 "",
-                "  sushi-rig agent install-service --phone",
+                "  sushi-rig agent install-service --phone"
+                + ("" if port == DEFAULT_PORT else f" --port {port}"),
                 "  systemctl --user daemon-reload",
                 f"  systemctl --user restart {UNIT_NAME}",
                 "",
@@ -335,7 +337,8 @@ def port_in_use_message(host: str, port: int, holders: list[Holder], *,
             f"  kill {holder.pid}",
         ]
         if is_network(host) and local_only:
-            lines += ["", "and then start it again for the phone:", "", "  sushi-rig agent --phone"]
+            again = "" if port == DEFAULT_PORT else f" --port {port}"
+            lines += ["", "and then start it again for the phone:", "", f"  sushi-rig agent --phone{again}"]
     elif holder is not None and holder.pid is not None:
         lines += [
             "If it is yours to stop:",

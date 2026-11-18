@@ -273,6 +273,7 @@ def test_the_issue_replayed_a_localhost_agent_then_phone_is_told_who_and_how(env
     assert f"Another sushi-rig agent has it (pid {first.pid}), listening on 127.0.0.1." in second.stderr
     assert "which is why a phone cannot reach it" in second.stderr
     assert f"\n  kill {first.pid}\n" in second.stderr
+    assert second.stderr.rstrip().endswith(f"  sushi-rig agent --phone --port {port}")
     assert "Only this machine can open it. For a phone as well: sushi-rig agent --phone" in out
 
 
