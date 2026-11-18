@@ -41,15 +41,33 @@ OPTIONS=(-Dfft=fftw -Dresampler=libsamplerate -Dlv2=enabled -Dladspa=disabled
 out=$(realpath -m "${1:?usage: build-rubberband4.sh DIR (DIR/rubberband.lv2 is made)}")
 mkdir -p "$out"
 # The new bundle is staged inside DIR, so the swap below is two renames on one
-# filesystem, but one level down, in a folder with no manifest.ttl of its
-# own: lilv looks for bundles only at DIR's top level, so a staging folder
-# left by a run that died (power, kill -9) is never loaded as a second
-# Rubber Band beside the real one. A leftover is removed here, and this run's
-# on any exit: an error, Ctrl-C or a kill.
+# filesystem, but one level down: lilv reads <entry>/manifest.ttl for each
+# entry at DIR's top level and does not recurse, so it reads the staging
+# folder's own manifest (which declares nothing) and never the bundles inside
+# it. A staging folder left by a run that died (power, kill -9) is therefore
+# never loaded as a second Rubber Band beside the real one.
+#
+# Cleaning up, at the start for a leftover and on any exit of this run (an
+# error, Ctrl-C or a kill), never loses the bundle DIR had: if the old one was
+# moved aside and the new one is not in its place, the old one is moved back
+# first, and if that fails the staging folder is kept, with it inside.
 stage="$out/.rubberband4-staging"
-rm -rf "$stage"
+work=""
+restore_and_clean() {
+    [ -n "$work" ] && rm -rf "$work"
+    if [ -d "$stage/old.lv2" ] && [ ! -e "$out/rubberband.lv2" ]; then
+        if ! mv "$stage/old.lv2" "$out/rubberband.lv2"; then
+            echo "build-rubberband4.sh: could not put the previous bundle back; it is" \
+                 "$stage/old.lv2: move it to $out/rubberband.lv2 by hand" >&2
+            return
+        fi
+        echo "build-rubberband4.sh: put the previous $out/rubberband.lv2 back" >&2
+    fi
+    rm -rf "$stage"
+}
+restore_and_clean
 work=$(mktemp -d)
-trap 'rm -rf "$work" "$stage"' EXIT
+trap restore_and_clean EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
@@ -76,7 +94,8 @@ printf 'Rubber Band %s, commit %s, from %s\nmeson %s\n' \
 
 # Replace, not merge: a bundle left from another build must not survive in
 # part. The old bundle is renamed into the staging folder, then the new one
-# into place: DIR is without a rubberband.lv2 only between two renames.
+# into place: DIR is without a rubberband.lv2 only between two renames, and a
+# run that fails or is stopped there puts the old one back (restore_and_clean).
 mkdir "$stage"
 # Declares nothing, so even a leftover folder is quiet in lilv's log, as
 # plugins/archive/ is (sushi_rig/plugins.py, ARCHIVE_MANIFEST).

@@ -5410,3 +5410,18 @@ stop the rig first, build, check, run the octave's tests and start the rig
 with `sushi-rig up --rig electric-octave` (`restart` brings back only what
 was running). Nits: `library.py`'s count, and the probe fixture's bundle
 path made `plugins/rubberband.lv2`. *(2026-11-17)*
+
+**The octave: the re-review of `build-rubberband4.sh` (#164, PR #171).** The
+swap could delete the bundle `plugins/` had: once the old one was renamed into
+the staging folder, a failed second rename, or a Ctrl-C or TERM between the
+two, sent the exit's cleanup to remove the staging folder with the old bundle
+in it, leaving no Rubber Band at all. The cleanup (`restore_and_clean`, also
+run at the start for a leftover) now moves the old bundle back first when the
+new one is not in place, and keeps the staging folder if that fails, saying
+where the bundle is. Shown with a stand-in `mv` on `PATH`: a TERM between the
+renames and a failed second rename each leave the old bundle in place; a
+leftover from a kill between them is put back by the next run; a failed move
+back keeps it staged and says so; a clean run still lands the pinned build.
+The comment saying the staging folder has no `manifest.ttl` was wrong (it has
+one that declares nothing); it is invisible because lilv reads each top-level
+entry's `manifest.ttl` and does not recurse. *(2026-11-18)*
