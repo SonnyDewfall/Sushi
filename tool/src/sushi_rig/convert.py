@@ -36,7 +36,7 @@ from .stereo import COPY_UID
 from .patchbay import GUITAR_ROLE, MONITOR_ROLE
 from .rigfile import (
     _CHANNEL_KEYS,
-    _PLUGIN_KEYS, _SETTING_KEYS, KIND, MASTER, RETURN, SCHEMA_VERSION, SEND_SUFFIX,
+    _PLUGIN_KEYS, _SETTING_KEYS, KIND, LIMITER, LIMITER_SETTINGS, MASTER, RETURN, SCHEMA_VERSION, SEND_SUFFIX,
     UNITY_STRIP, WIDTHS, emit_rig, parse_rig,
 )
 
@@ -228,7 +228,8 @@ def differences(v1: dict[str, Any], compiled: dict[str, Any]) -> list[str]:
     """Everything the compiled rig holds differently from the config it replaces.
 
     Routing is expected to differ — that is the point — and so are the sends,
-    the return and the master track the compiler adds. Everything else must
+    the return, the limiter (#137) and the master track the compiler adds,
+    the limiter only as the compiler makes it. Everything else must
     match exactly: each track's plugins in order, every initial_state entry, the
     host, the amp and the config's name and description.
     """
@@ -238,8 +239,8 @@ def differences(v1: dict[str, Any], compiled: dict[str, Any]) -> list[str]:
     for name in sorted(set(tracks) - v1_names - {MASTER}):
         found.append(f"track {name!r} is in the rig and not in the config")
     master = tracks.get(MASTER)
-    if master is not None and [p["name"] for p in master["plugins"]] != [RETURN]:
-        found.append(f"the master carries {[p['name'] for p in master['plugins'][1:]]!r}, which the config had no place for")
+    if master is not None and [p["name"] for p in master["plugins"]] != [RETURN, LIMITER]:
+        found.append(f"the master carries {[p['name'] for p in master['plugins'][1:-1]]!r}, which the config had no place for")
     for track in v1.get("tracks", []):
         got = tracks.get(track["name"])
         if got is None:
@@ -260,6 +261,10 @@ def differences(v1: dict[str, Any], compiled: dict[str, Any]) -> list[str]:
     sends = {n + SEND_SUFFIX for n in tracks if n != MASTER}
     state = {e["processor"]: e for e in compiled.get("initial_state", [])
              if e["processor"] not in sends}
+    # The limiter's settings are the compiler's (#137), and must be exactly them.
+    limiter = state.pop(LIMITER, None)
+    if master is not None and limiter != {"processor": LIMITER, **LIMITER_SETTINGS}:
+        found.append(f"initial_state for {LIMITER!r}: {limiter!r}, not the compiler's {LIMITER_SETTINGS!r}")
     was = {e["processor"]: e for e in v1.get("initial_state", [])}
     for name in sorted(set(state) | set(was)):
         if state.get(name) != was.get(name):

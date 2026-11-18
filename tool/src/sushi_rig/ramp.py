@@ -72,6 +72,14 @@ A master volume set while the dip is under way is not lost:
   or exactly the level it started at, which reads as its own.
 
 A master already at the floor is not dipped: there is nothing to hear.
+
+Nor is more than the master volume's top put back (#137, `rigfile.MASTER_GAIN_MAX`,
+0 dB): the master's gain comes after its limiter. A level read over it is there
+by design on a rig started before the cap from a file whose master level was
+above 0 (its compiled gain), or was set beside the agent; either way the dip
+brings it back at the top, and says so in the edit's answer (`master_capped`,
+and `dip.capped`), on stderr and in /health (`agent.master_capped`), since the
+player hears the rig get quieter (`Agent._undip`).
 """
 
 from __future__ import annotations

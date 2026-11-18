@@ -121,6 +121,22 @@ workflows because no single runner has everything:
   is on the second — is checked one channel at a time, each with its own
   reference (`config/sound/<config>.<channel>.v1-mono.yaml`). To add a reference
   without re-baselining the rest, `nulltest <config> --calibrate --missing`.
+- **The master's limiter (#137)** is the compiler's, never written in a rig
+  file, so `rig_hash` does not see it and no reference went STALE when it
+  went in: every reference, frozen, committed and v1, is still compared
+  exactly against renders that now run through it, and all of them still
+  match (`nulltest --all`, 2026-11-17, Sushi 1.3.0 here), which is the
+  evidence that it is transparent below its −1 dBFS threshold. A hash that
+  left it out on purpose was not needed: it was never in what the hash reads.
+  Had it been written into the rig files, every reference would have gone
+  stale and the code's sound been unchecked until each was remade. The
+  limiter's own checks are `tests/test_limiter_sushi.py` (slow, in the
+  container): sample for sample the same below the threshold, a +12 dBFS
+  sweep and sine caught under full scale with it and not without, a NaN let
+  through and recovered from, and each committed rig's master, as compiled,
+  catching a hot input; every render there must be finite, two-sided and
+  balanced. Its fast half, and the agent's refusals, are `tests/test_limiter.py`
+  and `tests/test_ui_limiter.py`.
 - **One config does not render the same twice**: the v1 config
   `electric_board.json`, the only one that still runs gx_detune_ unbypassed
   (no rig in `config/rigs/` has it since #152; electric-octave-up, which had

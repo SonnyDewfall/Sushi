@@ -18,7 +18,9 @@ Every change is heard at once. None of it is kept until you save: see
 
 The middle of the rack shows one channel's chain at a time. Above it is a row
 of tabs: one for each channel, named as the channel is, then **Master**, the
-chain the finished mix passes through.
+chain the finished mix passes through. **Master** ends with a line about the
+rig's limiter, which is always last: anything you add to the master goes in
+front of it (see [Mixing](mixing.md#what-each-one-changes)).
 
 - Click a tab to see that channel's plugins. Nothing from another channel is
   on the screen with them.

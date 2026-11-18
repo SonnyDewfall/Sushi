@@ -184,7 +184,8 @@ def test_a_tracks_parameters_are_not_checked_against_the_plugin_dump():
 
 def _rig_with_sends():
     """What the compiler writes for one channel and a master: the send on the
-    channel names the master's return, and the dump lists neither plugin's
+    channel names the master's return, the master ends with its limiter at
+    the compiler's settings (#137), and the dump lists no plugin's
     properties, because `--dump-plugins` never does."""
     return {
         "tracks": [
@@ -194,11 +195,14 @@ def _rig_with_sends():
             ]},
             {"name": "master", "plugins": [
                 {"name": "master_return", "uid": "sushi.testing.return", "type": "internal"},
+                {"name": "master_limiter", "type": "lv2", "uri": "http://drobilla.net/plugins/mda/Limiter"},
             ]},
         ],
         "initial_state": [
             {"processor": "eq", "parameters": {"Low": 0.41}},
             {"processor": "board_send", "properties": {"destination_name": "master_return"}},
+            {"processor": "master_limiter", "bypassed": False,
+             "parameters": {"Thresh": 0.975, "Output": 0.5, "Release": 0.5, "Attack": 0.15, "Knee": 0.0}},
         ],
     }
 
@@ -207,6 +211,8 @@ SENDS_DUMP = {"plugins": [
     {"name": "eq", "parameters": [{"name": "Low"}, {"name": "Mid"}, {"name": "High"}]},
     {"name": "board_send", "parameters": [{"name": "gain"}, {"name": "channel_count"}]},
     {"name": "master_return", "parameters": []},
+    # mda/Limiter's parameters by lv2:name, as Sushi names them (lv2info, mda-lv2 1.2.10).
+    {"name": "master_limiter", "parameters": [{"name": n} for n in ("Thresh", "Output", "Release", "Attack", "Knee")]},
 ]}
 
 
