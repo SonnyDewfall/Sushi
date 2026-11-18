@@ -1,0 +1,41 @@
+schema_version: 2
+config: electric-octave.board
+stimulus: log_sweep 20-20000Hz 5s -20dBFS 2ch
+sample_rate: 48000
+frames: 240000
+measured:
+  peak_dbfs: -5.6317
+  rms_dbfs: -19.5987
+  channel_rms_dbfs:
+  - -19.6035
+  - -19.5939
+  delay_samples: 0
+  bands:
+  - low_hz: 20.0
+    high_hz: 80.0
+    level_dbfs: -36.8312
+  - low_hz: 80.0
+    high_hz: 250.0
+    level_dbfs: -26.7584
+  - low_hz: 250.0
+    high_hz: 800.0
+    level_dbfs: -21.3148
+  - low_hz: 800.0
+    high_hz: 2500.0
+    level_dbfs: -22.0709
+  - low_hz: 2500.0
+    high_hz: 8000.0
+    level_dbfs: -31.6682
+  - low_hz: 8000.0
+    high_hz: 20000.0
+    level_dbfs: -53.3289
+tolerance:
+  band_db: 0.0001
+  level_db: 0.0001
+  delay_samples: 0
+  note: 'measured: two renders of this config were identical to the 0.0001 dB this
+    file is written at'
+made_from:
+  rig: electric-octave.yaml
+  hash: 2818b01ede0e4b5762bcf2e8f4202f30e291b7c7bce99b2fcb3a29fef1a2c30e
+  hash_rule: 2

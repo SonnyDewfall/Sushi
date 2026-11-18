@@ -76,6 +76,18 @@ is all the monitors hear, ending with [the master's limiter](#the-masters-limite
 and three stereo stems fill Sushi's eight outputs; more is refused with the
 arithmetic.
 
+Two channels may take the same input. `electric-octave` (#164) plays the
+guitar through its board and, beside it, through an octave on a channel of
+its own, and the blend is the two channels' levels: the octave's plugin can
+mix in the dry signal itself, but delays it to match, which would make the
+whole guitar late ([Plugins](plugins.md#rubber-band-40-built-for-the-octave)).
+Each channel gets an engine input of its own, the patchbay links the role's
+port to both, and the amp, when it runs, is put in front of every link from
+that port into Sushi, so both channels hear it (`amp.amp_patchbay`), and
+`sushi-rig probes --amp` plans the amp's probe once and each channel through
+it. Not yet run with the amp. Processor names are the whole rig's, so the second
+channel's plugins carry its name (`octave_compressor`, `octave_hall`).
+
 A rig of channels can be made, and a channel added or moved to another
 input, from the web UI's New rig screen and the rack
 ([the agent](agent.md#new-rigs-and-channel-edits)). Those write these files, in place and keeping their

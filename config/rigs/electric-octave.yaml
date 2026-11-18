@@ -1,0 +1,174 @@
+# The octave pedal (#164). electric-octave-up's board (config/retired/), with its
+# octave up played by Rubber Band 4.0's Live shifter instead of gx_detune_, and
+# on a channel of its own: the shifter's Wet-Dry Mix delays its dry signal to
+# line up with the octave, so mixing there would put the whole guitar about
+# 45 ms late. Here the board is heard on time and the octave about 67 ms behind
+# it, as electric-octave-up's was; the blend is the octave channel's level.
+#
+# The octave channel runs what the octave up heard in electric-octave-up: the same
+# compressor and EQ in front of it, the same chorus and hall after it. Its
+# -4.4 dB is that rig's WET 44 against DRY 73. Set from the files, not by ear.
+#
+# Octaves 0.75 is +1 octave (Sushi normalises -2 to 2 onto 0 to 1); Semitones
+# and Cents 0.5 are no shift; Wet-Dry Mix 0 is the octave alone.
+
+kind: rig
+schema_version: 1
+name: electric-octave
+description: Electric guitar with an octave up beside it — the board of electric-octave-up, its octave
+  on a channel of its own
+meta:
+  version: '1.0'
+  status: draft
+  source: config/retired/rigs/electric-octave-up.yaml
+host:
+  samplerate: 48000
+amp:
+  plugin: nam
+  model: amp/models/Neve 2.nam
+  parameters:
+    Input Lvl: 0.0
+    Output Lvl: -0.4
+    Quality: 1.0
+channels:
+- name: board
+  input: guitar-in
+  width: mono
+  strip:
+    gain: 0.833333
+    pan: 0.5
+    mute: 0.0
+  chain:
+  - name: compressor
+    uri: http://guitarix.sourceforge.net/plugins/gx_compressor#_compressor
+    bypassed: false
+    parameters:
+      RATIO: 0.07
+      KNEE: 0.1
+      THRESHOLD: 0.74
+      RELEASE: 0.05
+      ATTACK: 0.002
+      BYPASS: 1.0
+  - name: eq
+    uri: http://distrho.sf.net/plugins/3BandEQ
+    bypassed: false
+    parameters:
+      Low: 0.41
+      Mid: 0.56
+      High: 0.26
+      Master: 0.5
+      Low-Mid Freq: 0.48
+      Mid-High Freq: 0.06
+  - name: overdrive
+    uri: http://guitarix.sourceforge.net/plugins/gxts9#ts9sim
+    bypassed: true
+    parameters:
+      Level: 0.93
+      Tone: 0.13
+      Drive: 0.0
+      BYPASS: 1.0
+  - name: chorus
+    uri: http://guitarix.sourceforge.net/plugins/gx_chorus_stereo#_chorus_stereo
+    bypassed: false
+    parameters:
+      Level: 0.91
+      Delay: 0.5
+      Depth: 0.03
+      Freq: 0.08
+      BYPASS: 1.0
+  - name: delay
+    uri: http://plugin.org.uk/swh-plugins/lcrDelay
+    bypassed: true
+    parameters:
+      L delay (ms): 0.15
+      L level: 0.5
+      C delay (ms): 0.15
+      C level: 0.63
+      R delay (ms): 0.15
+      R level: 0.5
+      Feedback: 0.87
+      High damp (%): 0.22
+      Low damp (%): 0.5
+      Spread: 0.5
+      Dry/Wet level: 0.61
+  - name: room
+    uri: urn:ardour:a-reverb
+    bypassed: true
+    parameters:
+      Blend: 0.2
+      Room Size: 0.41
+      Enable: 1.0
+  - name: hall
+    uri: http://distrho.sf.net/plugins/MaGigaverb
+    bypassed: false
+    parameters:
+      damping: 0.0
+      revtime: 0.01
+      roomsize: 0.29
+      spread: 0.01
+      bandwidth: 0.62
+      tail: 0.09
+      dry: 0.81
+      early: 0.16
+- name: octave
+  input: guitar-in
+  width: mono
+  strip:
+    gain: 0.833333
+    pan: 0.5
+    mute: 0.0
+  chain:
+  - name: octave_compressor
+    uri: http://guitarix.sourceforge.net/plugins/gx_compressor#_compressor
+    bypassed: false
+    parameters:
+      RATIO: 0.07
+      KNEE: 0.1
+      THRESHOLD: 0.74
+      RELEASE: 0.05
+      ATTACK: 0.002
+      BYPASS: 1.0
+  - name: octave_eq
+    uri: http://distrho.sf.net/plugins/3BandEQ
+    bypassed: false
+    parameters:
+      Low: 0.41
+      Mid: 0.56
+      High: 0.26
+      Master: 0.5
+      Low-Mid Freq: 0.48
+      Mid-High Freq: 0.06
+  - name: octave_up
+    uri: http://breakfastquay.com/rdf/lv2-rubberband#livemono
+    bypassed: false
+    parameters:
+      Cents: 0.5
+      Semitones: 0.5
+      Octaves: 0.75
+      Formant Preserving: 0.0
+      Wet-Dry Mix: 0.0
+  - name: octave_chorus
+    uri: http://guitarix.sourceforge.net/plugins/gx_chorus_stereo#_chorus_stereo
+    bypassed: false
+    parameters:
+      Level: 0.91
+      Delay: 0.5
+      Depth: 0.03
+      Freq: 0.08
+      BYPASS: 1.0
+  - name: octave_hall
+    uri: http://distrho.sf.net/plugins/MaGigaverb
+    bypassed: false
+    parameters:
+      damping: 0.0
+      revtime: 0.01
+      roomsize: 0.29
+      spread: 0.01
+      bandwidth: 0.62
+      tail: 0.09
+      dry: 0.81
+      early: 0.16
+  level: -4.4
+master:
+  output: monitor-out
+  chain: []

@@ -7,8 +7,9 @@
 #   docker build -f ci/Dockerfile -t sushi-rig-ci .
 #
 # What this reproduces from docs/reference/ (environment.md, plugins.md), and how:
-#   plugins/   assembled from distro packages and string-machine chorus (built
-#              by scripts/build-string-machine-chorus.sh, as on the rig) by
+#   plugins/   assembled from distro packages, Rubber Band 4.0.0 (built by
+#              scripts/build-rubberband4.sh) and string-machine chorus (built by
+#              scripts/build-string-machine-chorus.sh), each as on the rig, by
 #              `sushi-rig plugins assemble`, then proven self-contained by
 #              `sushi-rig plugins check` (which runs with LV2_PATH set to
 #              plugins/ alone, as the rig does)
@@ -26,6 +27,26 @@
 # VERIFIED: CI (.github/workflows/rig-container.yml) builds this image with the
 # real Sushi 1.3.0, then runs the full suite and `sushi-rig verify --all` in
 # it. It also builds locally with a stand-in in place of the Sushi AppImage.
+
+# --- Rubber Band 4.0.0, built (#164) -----------------------------------------
+#
+# The octave pedal is Rubber Band 4.0's Live shifter
+# (http://breakfastquay.com/rdf/lv2-rubberband#livemono), and Ubuntu 24.04
+# packages only 3.3.0, which has none. It is built here by the same script, at
+# the same pinned tag and commit, that builds it on the rig machine
+# (scripts/build-rubberband4.sh; docs/reference/plugins.md), in a stage of its
+# own so the compiler stays out of the image. Its bundle goes into plugins/
+# below, through `plugins assemble`; the system's /usr/lib/lv2 keeps Ubuntu's
+# 3.3.0 bundle, which lilv's default path and the tests that probe installed
+# plugins read, and which plugins/ never holds.
+FROM ubuntu:24.04 AS rubberband
+ENV DEBIAN_FRONTEND=noninteractive
+RUN apt-get update && apt-get install -y --no-install-recommends \
+        ca-certificates git meson ninja-build g++ pkg-config \
+        libfftw3-dev libsamplerate0-dev lv2-dev \
+    && rm -rf /var/lib/apt/lists/*
+COPY scripts/build-rubberband4.sh /build/build-rubberband4.sh
+RUN /build/build-rubberband4.sh /opt/rubberband-4.0.0/lv2
 
 # --- string-machine chorus, built (#177) ------------------------------------
 #
@@ -50,8 +71,10 @@ ENV DEBIAN_FRONTEND=noninteractive
 # --- system packages --------------------------------------------------------
 #
 # The first group is the plugin set: together these packages provide every URI
-# in plugin-manifest.txt (60) except the neural amp's, which is waived below,
-# and string-machine chorus, which is built above. swh-lv2 and ardour-lv2-plugins are there for
+# in plugin-manifest.txt (61) except the neural amp's, which is waived below,
+# and the two plugins built above: Rubber Band 4.0's Live shifter and
+# string-machine chorus. libfftw3-double3 and libsamplerate0 are what the
+# Rubber Band build links at run time. swh-lv2 and ardour-lv2-plugins are there for
 # `lcrDelay` and `urn:ardour:a-reverb`, which the configs load; calf-plugins
 # and abgate for Calf's Envelope Filter and abGate (#177). Checked with
 # `sushi-rig plugins check` against a real Ubuntu 24.04 LV2 tree, not assumed.
@@ -63,6 +86,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 RUN apt-get update && apt-get install -y --no-install-recommends \
         guitarix-lv2 mda-lv2 dpf-plugins-lv2 x42-plugins zynaddsubfx-lv2 \
         rubberband-lv2 swh-lv2 ardour-lv2-plugins calf-plugins abgate \
+        libfftw3-double3 libsamplerate0 \
         # Sushi is built with JACK and ALSA support and links those libraries
         # dynamically, and AppImages usually leave them out. With them, the
         # real Sushi starts here (CI); without them it would likely not.
@@ -164,15 +188,27 @@ RUN ln -s /opt/sushi/squashfs-root/AppRun /rig/sushi
 # The consequence for this image: it has no amp, so the container cannot run
 # the rig's amped path. That was already true; it is now stated.
 #
-# string-machine chorus comes from the stage above, and no package declares its
+# Rubber Band's directory comes first, and both trees hold a rubberband.lv2
+# declaring the same URIs. lilv takes the higher lv2:minorVersion for each URI
+# (4.0.0's 6 against 3.3.0's 4) and ignores the older bundle, so every Rubber
+# Band URI resolves to 4.0.0's; were it ever split between the two, `assemble`
+# would refuse the two bundles of one name, and `check` fails a plugins/ whose
+# Rubber Band has no Live shifter. tests/test_octave.py checks plugins/ holds
+# the pinned build and renders it under Sushi.
+#
+# string-machine chorus comes from its stage too, and no package declares its
 # URI, so `assemble` takes it from there and `check` fails a plugins/ without
 # it. tests/test_string_machine.py checks plugins/ holds the pinned build and
 # renders it under Sushi.
 ARG NAM_URI=http://github.com/mikeoliphant/neural-amp-modeler-lv2
+COPY --from=rubberband /opt/rubberband-4.0.0/lv2 /opt/rubberband-4.0.0/lv2
 COPY --from=string-machine-chorus /opt/string-machine-chorus/lv2 /opt/string-machine-chorus/lv2
-RUN sushi-rig plugins assemble --from /opt/string-machine-chorus/lv2 --from /usr/lib/lv2 \
+RUN sushi-rig plugins assemble --from /opt/rubberband-4.0.0/lv2 \
+        --from /opt/string-machine-chorus/lv2 --from /usr/lib/lv2 \
         --to /rig/plugins --waive "$NAM_URI" \
     && sushi-rig plugins check /rig/plugins --waive "$NAM_URI" \
+    && grep -q 'Rubber Band v4.0.0' /rig/plugins/rubberband.lv2/BUILT-FROM \
+    && ! ldd /rig/plugins/rubberband.lv2/lv2-rubberband.so | grep 'not found' \
     && grep -q 'string-machine commit 7050cb1516fbaf5aaaa2c6cc9999fe5ac100d746' \
         /rig/plugins/string-machine-chorus.lv2/BUILT-FROM \
     && ! ldd /rig/plugins/string-machine-chorus.lv2/string-machine-chorus.so | grep 'not found'

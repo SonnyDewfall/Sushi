@@ -5368,3 +5368,113 @@ front page and follows every link, picture and anchor), and the links on
 both screens and back, at a phone's width on the stage (`test_ui_help.py`).
 **Not tried on the rig, or on a real phone**: the phone is Chromium at 390
 by 844. *(2026-11-17)*
+
+**The octave pedal, on Rubber Band 4.0's Live shifter (#164).** Decided
+2026-11-17 from #153's research. (1) **The build**:
+`scripts/build-rubberband4.sh DIR` clones breakfastquay/rubberband at the tag
+`v4.0.0`, refuses it unless it is commit `1d95888bec3a…`, builds the LV2
+bundle alone with #153's options (FFTW, libsamplerate; Rubber Band linked in
+statically) and leaves `DIR/rubberband.lv2`, with a `BUILT-FROM` note. The
+same script builds it in a stage of `ci/Dockerfile` (the compiler stays out of
+the image) and on the rig, straight into `plugins/`
+(`scripts/build-rubberband4.sh ~/Sushi/plugins`, the exact commands in
+`docs/reference/plugins.md`). (2) **The URI clash**: Ubuntu's rubberband-lv2
+3.3.0 has a bundle of the same name declaring the same four URIs. Sushi reads
+`plugins/` alone, which holds one `rubberband.lv2`; `plugin-manifest.txt` now
+lists `#livemono` (56 URIs), so `plugins check` fails on 3.3.0's, and
+`test_octave.py` checks every Rubber Band URI resolves to the pinned build.
+The system's 3.3.0 stays in `/usr/lib/lv2` (lilv's default path, and the
+tests that probe installed plugins). *Settled*: with both trees on one
+`LV2_PATH`, in either order, lilv 0.24.22 takes 4.0.0's bundle for every URI
+(its `lv2:minorVersion` 6 against 4) and ignores 3.3.0's; CI's `assemble`
+lists 4.0.0's directory first anyway. 4.0.0 also makes `#r3mono` load (rendered
+under Sushi). (3) **Found: the plugin's own Wet-Dry Mix is no blend.** It
+delays the dry to line up with the octave (its source reads the dry from a
+delay line of the shifter's start delay): at Mix 1, the dry alone, the guitar
+came out 2,144 samples (44.7 ms) late under Sushi. So (4) **the rig**,
+`config/rigs/electric-octave.yaml`, is electric-octave-up's board without the
+gx_detune_ pair, and a second channel `octave` on the same `guitar-in`: the
+same compressor and EQ, the Live shifter fully wet at +1 octave (Octaves 0.75
+normalised), the same chorus and hall, at -4.4 dB (the retired WET 44 against
+DRY 73), so the board is on time and the octave behind it as before. The first
+committed rig with two channels on one input: each gets an engine input and
+the patchbay links the port to both. Its references,
+`config/sound/electric-octave.board.yaml` and `.octave.yaml`, are
+`made_from` it (hash rule 2), calibrated in this session's container, and
+matched exactly by `nulltest --all` in a local build of `ci/Dockerfile`
+(below); the octave's
+`delay_samples` is the sweep's cross-correlation against a shifted signal, a
+number, not a lag. (5) **The profile**, `tool/examples/profiles/rubberband-live.yaml`,
+from probe output committed as `tests/fixtures/probe_rubberband-live.json`
+(0 errors, 0 warnings): Octave the one primary; Semitones, Cents, Formant and
+Mix advanced, Mix saying its dry is late. No `face`: the bundle has no GUI. (6)
+**Measured under Sushi 1.3.0** (`tool/tests/test_octave.py`, slow, which the
+container job runs; its table prints at the end of the run): up and down
+within 0.01 cent on E2 to A4, finite, the note itself 77 to 113 dB under the
+octave up; the octave 3,202 samples (66.7 ms) after the note. Fast suite
+counts pinned to the manifest's 55 now say 56. (7) **`ci/Dockerfile` was built
+here**, through a copy that only pointed apt at https and trusted this
+sandbox's proxy, and left out Playwright's browser download: the Rubber Band
+stage built from the pin, `assemble` took 4.0.0's bundle and ignored
+3.3.0's, `check`, the `BUILT-FROM` grep and the `ldd` check passed, and in
+the image the whole suite less the browser tests, `nulltest --all` (40 of
+40) and `verify --all` passed, but for three renders that Sushi aborted (next).
+Sushi sometimes aborts at start with `Check failed:
+grpc_server_request_registered_call`: seen here under load in renders of rigs
+without the octave, inside the image too, and passing when run again; and
+two Sushis at once on this machine, other sessions' among them, did it to 53
+renders in a row until offline renders were given `--no-grpc` in a local
+wrapper (not committed). The octave's check on the rig is therefore run with
+the rig down. **Not done:** installed on the rig, heard, or
+played; the octave's level against the board is from the files, not the ear;
+the amp in front of two channels was read in the code, not run. *(2026-11-17)*
+
+**The octave: the review of PR #171 (#164).** (1) **The amp's probe plan
+refused electric-octave** ("tracks 'board', 'octave' all take 'guitar-in', so
+which one the amp sits in front of is not decided"), though
+`amp.amp_patchbay` already feeds `NAM:Output` into both channels' inputs.
+`probes.plan_probes` now probes the amp once and each channel on the
+guitar's role through it, as the patchbay wires them; a channel there that
+can never be heard is still refused by name. `test_probes`'s two-guitar test
+asks for both "via amp" probes, and its helper over every committed rig
+(`_plan_with_the_amp`) now plans with the amp for any rig with a guitar and
+requires each such channel probed through the amp or said not to be; both
+fail on the old plan (shown). (2) **`build-rubberband4.sh` stages the new
+bundle one level down**, in `DIR/.rubberband4-staging/`, whose own
+`manifest.ttl` declares nothing, so lilv never loads a staged or leftover
+copy as a second Rubber Band (checked: lilv sees no plugin with only that
+folder present); it is removed at the start of a run and on any exit (an
+error, Ctrl-C, a kill: TERM and INT now run the cleanup), and the swap is two
+renames. Shown: a leftover folder removed, a rerun leaving only
+`rubberband.lv2`, a TERM mid-build leaving nothing behind. (3) **A
+`plugins/` still on 3.3.0**, as on the rig until the build, now fails
+`test_plugins_holds_rubber_band_4_and_only_it` saying which URI is missing
+and the command to run, not with a KeyError; a render that cannot load the
+plugin says the same. *Decided:* that test and
+`test_rig_fixtures.test_every_parameter_a_committed_rig_names_is_one_its_plugin_has`
+are marked `slow`, as `test_stereo`'s port-table test already was: they ask
+what this machine's `plugins/` holds. Run on a `plugins/` assembled from
+3.3.0, the fast suite was red on the second of them alone (Sushi's "Failed
+to load tracks" for electric-octave), which now also names the plugin
+`plugins/` lacks. They skip only with no `plugins/` or no Sushi at all, as
+before; the container job runs both, and the rig's install steps run the
+octave's file. (4) **The rig's steps** in `docs/reference/plugins.md` now
+stop the rig first, build, check, run the octave's tests and start the rig
+with `sushi-rig up --rig electric-octave` (`restart` brings back only what
+was running). Nits: `library.py`'s count, and the probe fixture's bundle
+path made `plugins/rubberband.lv2`. *(2026-11-17)*
+
+**The octave: the re-review of `build-rubberband4.sh` (#164, PR #171).** The
+swap could delete the bundle `plugins/` had: once the old one was renamed into
+the staging folder, a failed second rename, or a Ctrl-C or TERM between the
+two, sent the exit's cleanup to remove the staging folder with the old bundle
+in it, leaving no Rubber Band at all. The cleanup (`restore_and_clean`, also
+run at the start for a leftover) now moves the old bundle back first when the
+new one is not in place, and keeps the staging folder if that fails, saying
+where the bundle is. Shown with a stand-in `mv` on `PATH`: a TERM between the
+renames and a failed second rename each leave the old bundle in place; a
+leftover from a kill between them is put back by the next run; a failed move
+back keeps it staged and says so; a clean run still lands the pinned build.
+The comment saying the staging folder has no `manifest.ttl` was wrong (it has
+one that declares nothing); it is invisible because lilv reads each top-level
+entry's `manifest.ttl` and does not recurse. *(2026-11-18)*
