@@ -5187,6 +5187,59 @@ suite 4873 passed, 33 skipped on 1114d07; `test_ui_presets.py`, `test_ui.py`
 and `test_ui_tabs.py` (264 tests) 5 of 5 in a loop. **Not tried on the
 rig.** *(2026-11-17)*
 
+**A second save of a flow-style rig is no longer refused (#163).** `POST
+/rig/save` of guitar_vocal, whose chain entries are `- {name: ..., uri:
+"..."}` with no parameters, wrote the capture's parameters inside those flow
+entries, and ruamel.yaml folded each across lines at the width the file was
+read at (109 columns, its widest line, the chorus entry). Where a fold fell
+between two values the file read back, but its widest line was now 121, so
+the next save's `_choose` never tried 109 and refused the file, "layout cannot
+be reproduced"; where it fell inside a key with a space in it (`C delay
+(ms)`), the first save was itself refused as text that would not read back.
+Which of the two turns on how long the values are. **Older than #127:** a key
+new to a flow entry has been written in flow style since `write_rig` first
+kept layouts (290f462, 2026-10-31), SAVE has folded captures into rigs of
+channels since 52d2e1e (2026-11-01), and guitar_vocal has been flow style
+since #30 (e05663e). #127 found it because a loaded preset met the same
+fold; no test had saved twice into a flow chain, and the one that saved once
+used a capture with no parameters. **Fixed in yamlmerge**, which `write_rig`
+and `presets.write_preset` share: an entry that gains a nested mapping or
+list is rewritten in block style, one setting a line, as the other rigs
+write one; any other flow entry an update changes that would not fit its
+line (`bypassed: true` on the 107-column chorus line) is too; an entry
+nobody changed is left as written. Its comments stay: a trailing one on its
+first line with the gap it had, the lines after it below its last line. And
+an update's result is held to the layout test the next update applies, or
+nothing is written. Every entry due to move is moved before the result is
+read back, once: checked one at a time, an entry still folded inside a key
+was blamed on the one just moved, and 3 in 60 first saves of guitar_vocal
+with every entry gaining parameters were refused (review of PR #169). What
+cannot move (a flow list, a mapping under a key with a trailing comment) is
+written folded, as before, when the next update can make that file, and
+refused, saying what was left in flow style and why, when it cannot. Found
+on the way, in ruamel.yaml 0.19: it writes a block entry wrongly right after
+a flow entry with its own trailing comment in a list holding other comments
+(keys run together; such a file was already refused untouched), so when
+the read-back fails, a moved entry in that place goes back to flow style;
+and a dump is not free of effects (it re-adds the end comments and marks
+comments above entries as written), so the extra dumps leave the document
+as they found it (`_dump_aside`). **The other
+writers, round-tripped** on the frozen guitar_vocal: channel save-as, and
+save-as over itself; a load onto the vocal (`replace_chains`), then two
+saves; a revert to the commit and to a save's snapshot, each then saved
+twice; rig new from guitar_vocal's guitar and a channel added from its
+vocal, then written twice (both write block style and were never affected:
+a guard, not a regression test). `tests/test_flow_style_save.py`, 15 tests,
+10 shown failing on f6303f5, 4 on the first version of this fix (115f684)
+and 1 on the second (c8254d9, where putting one entry back in flow style
+wrote the list's end comments back too, after the last entry had moved
+them, and the save was refused as writing them twice);
+the agent's fake now knows the vocal plugins' parameters, so a save grows
+every entry, as on the rig.
+**Not done:** a folded file an old save left behind (a revert point from
+before this) is still one no save can update; its entries need writing in
+block style by hand. **Not tried on the rig.** *(2026-11-17)*
+
 **The master limiter and the master volume's top (#137, option 2).** Sonny
 chose option 2 on 2026-11-17. **Built:** every compiled rig's master ends with
 `master_limiter`, mda/Limiter, placed by the compiler (`rigfile.compile_rig`,
