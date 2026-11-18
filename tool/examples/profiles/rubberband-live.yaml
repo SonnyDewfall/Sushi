@@ -1,0 +1,133 @@
+# sushi-rig component profile (schema 1).
+# Machine-written and canonical: edit by hand if you like, but comments
+# do not survive the next rewrite. Facts are checked against `sushi-rig
+# probe`; judgements carry provenance (draft / reviewed / fact).
+# Check with:  sushi-rig profile validate <this file>
+schema_version: 1
+
+plugin:
+  uri: http://breakfastquay.com/rdf/lv2-rubberband#livemono
+  version: '6.1'
+  name: Rubber Band Live Mono Pitch Shifter
+kind: effect
+host: sushi-lv2
+
+ports:
+  audio_in: 1
+  audio_out: 1
+  config_drivable: true
+
+groups:
+  - id: shift
+    label: Shift
+    provenance: draft
+  - id: mix
+    label: Mix
+    provenance: draft
+
+parameters:
+  - name: Octaves
+    symbol: octaves
+    facts:
+      min: -2.0
+      max: 2.0
+      default: 0.0
+      toggled: false
+      integer: true
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: primary, provenance: draft}
+    group: {value: shift, provenance: draft}
+    order: {value: 1, provenance: draft}
+    label: {value: Octave, provenance: draft}
+    description:
+      value: Whole octaves up or down; +1 is an octave up. The shifted sound lags about 67 ms.
+      provenance: draft
+    scale: {value: linear, provenance: draft}
+    control: {value: knob, provenance: draft}
+    phone: {value: 1, provenance: draft}
+
+  - name: Semitones
+    symbol: semitones
+    facts:
+      min: -12.0
+      max: 12.0
+      default: 0.0
+      toggled: false
+      integer: true
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: advanced, provenance: draft}
+    group: {value: shift, provenance: draft}
+    order: {value: 2, provenance: draft}
+    label: {value: Semitones, provenance: fact}
+    description:
+      value: Semitones on top of the octave; 0 for a pure octave, 7 for a fifth.
+      provenance: draft
+    scale: {value: linear, provenance: draft}
+    control: {value: knob, provenance: draft}
+
+  - name: Cents
+    symbol: cents
+    facts:
+      min: -100.0
+      max: 100.0
+      default: 0.0
+      toggled: false
+      integer: true
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: advanced, provenance: draft}
+    group: {value: shift, provenance: draft}
+    order: {value: 3, provenance: draft}
+    label: {value: Cents, provenance: fact}
+    description:
+      value: Fine tuning of the shift; 0 keeps it in tune.
+      provenance: draft
+    scale: {value: linear, provenance: draft}
+    control: {value: knob, provenance: draft}
+
+  - name: Formant Preserving
+    symbol: formant
+    facts:
+      min: 0.0
+      max: 1.0
+      default: 0.0
+      toggled: true
+      integer: true
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: advanced, provenance: draft}
+    group: {value: shift, provenance: draft}
+    order: {value: 4, provenance: draft}
+    label: {value: Formant, provenance: draft}
+    description:
+      value: Keeps the tone's resonances where they were; off is a plain shift. Not measured.
+      provenance: draft
+    scale: {value: toggle, provenance: fact}
+    control: {value: toggle, provenance: draft}
+
+  - name: Wet-Dry Mix
+    symbol: wetdry
+    facts:
+      min: 0.0
+      max: 1.0
+      default: 0.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: advanced, provenance: draft}
+    group: {value: mix, provenance: draft}
+    order: {value: 1, provenance: draft}
+    label: {value: Mix, provenance: draft}
+    description:
+      value: '0 is the octave alone. Its dry is 45 ms late too: blend with a channel''s level.'
+      provenance: draft
+    scale: {value: linear, provenance: draft}
+    control: {value: knob, provenance: draft}

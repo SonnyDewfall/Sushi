@@ -28,6 +28,12 @@ It knows nothing about rigs. rigfile.write_rig is the rig-shaped caller.
   written.
 - A new list item is written in flow style (`- {name: x, uri: y}`) when the
   entry beside it is, and an empty mapping or list always is (`[]`).
+- A flow entry that gains a nested mapping or list (`parameters`, on a
+  save of guitar_vocal's `- {name: ..., uri: ...}`), or that an update
+  pushes past the width, is rewritten in block style, one setting a line,
+  its comments kept where a block entry keeps them (`_outgrown_to_block`,
+  #163). Left in flow style, ruamel.yaml folds it across lines at a width
+  the next update cannot find, which then refuses the file.
 - The layout and fold width of the file (indent, where dashes sit, 100 columns
   or its widest line) are found by reproducing the unchanged file with them
   (`_choose`), so an update to one value does not re-indent or re-fold others.
@@ -86,7 +92,9 @@ dropped only with the entry it was written above or beside. The edges:
 - A file whose layout they cannot reproduce: if dumping the unchanged document
   does not give the file back exactly (a flow entry a person wrapped by hand,
   mixed indents), an update would re-lay-out lines nobody asked to touch, so
-  it is refused with the first line that would move.
+  it is refused with the first line that would move. And an update that
+  would *write* such a file, which the next update would refuse (#163): the
+  result is held to the same test before it is returned.
 """
 
 from __future__ import annotations
@@ -790,10 +798,28 @@ def _split_gap(text: str) -> tuple[str, str]:
 
 
 class _Update:
-    """One in-place update of a loaded document, and the comments it meant to drop."""
+    """One in-place update of a loaded document, and the comments it meant to drop.
+
+    It also notes the flow-style collections it writes into, `flowed`, and,
+    `grown`, those it gives a nested mapping or list that is not empty (a
+    flow entry gaining `parameters`), for `_outgrown_to_block`. Keyed by `id`, the node
+    kept as the value so that the id cannot be another node's later."""
 
     def __init__(self) -> None:
         self.gone: list[str] = []
+        self.flowed: dict[int, Any] = {}
+        self.grown: dict[int, Any] = {}
+
+    def _wrote(self, container: Any, node: Any = None) -> None:
+        """Note an update to `container`, and `node`, new data put in it."""
+        if _is_flow(container):
+            self.flowed[id(container)] = container
+            if _is_collection(node) and len(node):
+                self.grown[id(container)] = container
+        if _is_flow(node):
+            self.flowed[id(node)] = node
+            if any(_is_collection(v) and len(v) for v in (node.values() if _is_map(node) else node)):
+                self.grown[id(node)] = node
 
     def remove(self, container: Any, ident: Any, parent: tuple[Any, Any] | None = None) -> None:
         """Delete one entry; its comments go, the next entry's stay.
@@ -835,6 +861,7 @@ class _Update:
                     f"cannot remove {ident!r}, the first key of a mapping, while comments sit below it: "
                     "this mapping has nowhere to keep them. Move or delete the comments, then retry")
         self.gone += _subtract(removed, _comments(rest))
+        self._wrote(container)
         # Delete first: the entry before it may now be the list's last, and what
         # follows a list's last entry is stored differently (see _set_after).
         del container[ident]
@@ -963,6 +990,7 @@ class _Update:
         for j, i in enumerate(pairs):
             if i is None:
                 old.insert(j, _build(new[j], _flow_near(old, j)))
+                self._wrote(old, old[j])
         for j, i in enumerate(pairs):
             if i in slots:
                 old.ca.items[j] = slots[i]
@@ -1012,8 +1040,10 @@ class _Update:
         elif not isinstance(new, (dict, list)) and not isinstance(old, (CommentedMap, CommentedSeq)):
             if not _same(old, new):
                 container[ident] = _quoted_like(old, new)
+                self._wrote(container)
         else:
             container[ident] = _build(new, flow or _is_flow(old))
+            self._wrote(container, container[ident])
 
     def map(self, old: Any, new: dict, parent: tuple[Any, Any] | None = None) -> None:
         flow = _is_flow(old)
@@ -1026,6 +1056,7 @@ class _Update:
             else:
                 pos = _keys(old).index(previous) + 1 if previous is not None else 0
                 self.insert(old, pos, key, _build(value, flow), parent)
+                self._wrote(old, old[key])
             previous = key
 
     def item(self, seq: Any, i: int, new: Any) -> None:
@@ -1033,6 +1064,7 @@ class _Update:
 
     def add(self, seq: Any, pos: int, new: Any) -> None:
         self.insert(seq, pos, pos, _build(new, _flow_near(seq, pos)))
+        self._wrote(seq, seq[pos])
 
     def seq(self, old: Any, new: list, parent: tuple[Any, Any] | None = None) -> None:
         import difflib
@@ -1078,6 +1110,308 @@ class _Update:
 
 
 # --------------------------------------------------------------------------- #
+# A flow entry that outgrows its line (#163)
+
+def _top_flows(node: Any) -> list[tuple[Any, Any]]:
+    """`(container, key)` of each flow-style collection in `node` that is not
+    inside another, in the order they are written. An empty one counts: it
+    is written `{}` or `[]` whatever its style says."""
+    found: list[tuple[Any, Any]] = []
+    for key in _keys(node):
+        child = node[key]
+        if not _is_collection(child):
+            continue
+        if _is_flow(child) or len(child) == 0:
+            found.append((node, key))
+        else:
+            found += _top_flows(child)
+    return found
+
+
+def _flow_spans(text: str) -> list[tuple[int, int]]:
+    """`(first line, last line)` of each flow collection in `text` that is not
+    inside another, in order: from ruamel.yaml's own scan of it."""
+    from ruamel.yaml import YAML
+    from ruamel.yaml.tokens import (FlowMappingEndToken, FlowMappingStartToken, FlowSequenceEndToken,
+                                    FlowSequenceStartToken)
+
+    spans, depth, start = [], 0, 0
+    for token in YAML().scan(text):
+        if isinstance(token, (FlowMappingStartToken, FlowSequenceStartToken)):
+            if depth == 0:
+                start = token.start_mark.line
+            depth += 1
+        elif isinstance(token, (FlowMappingEndToken, FlowSequenceEndToken)):
+            depth -= 1
+            if depth == 0:
+                spans.append((start, token.end_mark.line))
+    return spans
+
+
+def _dump_aside(y: Any, doc: Any) -> str:
+    """`doc` dumped, leaving it as it was. A dump of ruamel.yaml 0.19 is not
+    free of effects (seen 2026-11-17): it adds the document's end comments
+    to its comment list again, and marks each comment it writes above an
+    entry as written (`pre_done`), which a later dump then leaves out. So a
+    document dumped once more than `merged` dumps it would lose comments or
+    write them twice; every comment list, and each token's mark, is put back."""
+    from ruamel.yaml.tokens import CommentToken
+
+    def tokens(value: Any) -> list[Any]:
+        if isinstance(value, CommentToken):
+            return [value]
+        if isinstance(value, list):
+            return [t for v in value for t in tokens(v)]
+        return []
+
+    held, marks = [], {}
+    for c in _within(doc):
+        comment = list(c.ca.comment) if c.ca.comment is not None else None
+        end = list(c.ca.end) if getattr(c.ca, "end", None) is not None else None
+        held.append((c, comment, end))
+        for token in tokens(comment) + tokens(end) + tokens(list(c.ca.items.values())):
+            marks[id(token)] = (token, getattr(token, "pre_done", None))
+    try:
+        return _dump(y, doc)
+    finally:
+        for c, comment, end in held:
+            c.ca.comment = comment
+            if end is not None:
+                c.ca.end[:] = end
+        for token, mark in marks.values():
+            if mark is None:
+                if hasattr(token, "pre_done"):
+                    delattr(token, "pre_done")
+            else:
+                token.pre_done = mark
+
+
+def _within(node: Any) -> list[Any]:
+    """`node` and every collection inside it."""
+    found = [node]
+    for key in _keys(node):
+        if _is_collection(node[key]):
+            found += _within(node[key])
+    return found
+
+
+def _set_block(node: Any) -> None:
+    """`node`, and every collection in it that is not empty, in block style."""
+    node.fa.set_block_style()
+    for key in _keys(node):
+        if _is_collection(node[key]) and len(node[key]):
+            _set_block(node[key])
+
+
+def _eol_column(container: Any, key: Any, lines: list[str]) -> int:
+    """Where the trailing comment of flow entry `container[key]` goes once
+    the entry is a block: after its first line (`- name: x`) by the gap it
+    had after the entry's `}` in the file (`lines`). 0, one space, for one
+    the file does not say."""
+    from ruamel.yaml.comments import CommentedMap
+
+    node = container[key]
+    slots = container.ca.items.get(key)
+    token = slots[_after_index(container)] if slots else None
+    mark = getattr(token, "start_mark", None)
+    position = getattr(node, "lc", None)
+    if mark is None or position is None or position.col is None or not 0 <= mark.line < len(lines):
+        return 0
+    gap = mark.column - len(lines[mark.line][:mark.column].rstrip())
+    first = next(iter(node))
+    y = _yaml(2, 2, 0, 10 ** 6)
+    return position.col + len(_dump(y, CommentedMap([(first, node[first])])).rstrip("\n")) + max(gap, 1)
+
+
+def _to_block(container: Any, key: Any, lines: list[str]) -> str | None:
+    """Write `container[key]`, a flow mapping, in block style, one entry a
+    line, moving what was written after it to where a block entry keeps it
+    (`_get_after`): the lines below it go below its last line, and its
+    trailing comment stays on its first line, after the first key, by the
+    gap it had. None if done; else why it cannot be, with nothing changed:
+    a trailing comment on a mapping that is a key's value rather than a
+    list's entry, or on one whose first key holds a collection."""
+    from ruamel.yaml.error import CommentMark
+    from ruamel.yaml.tokens import CommentToken
+
+    node = container[key]
+    if not _is_map(node) or not len(node):
+        return "it is not a mapping"
+    first = next(iter(node))
+    eol, rest = _split(_get_after(container, key))
+    if eol and _is_map(container):
+        return f"its trailing comment {eol.strip()!r} would have no line of its own to stay on"
+    if eol and _is_collection(node[first]):
+        return f"its trailing comment {eol.strip()!r} would land on a line of {first!r}'s"
+    column = _eol_column(container, key, lines) if eol else 0
+    _set_after(container, key, None)
+    _set_block(node)
+    if eol and _leaf(container, key) == (node, first):
+        _set_after(container, key, _join(eol, rest))
+        return None
+    if eol:
+        node.ca.items[first] = [None, None, CommentToken(eol + "\n", CommentMark(column)), None]
+    _set_after(container, key, _join("", rest))
+    return None
+
+
+def _undo_of(container: Any, key: Any):
+    """A function that puts back what `_to_block(container, key, ...)`
+    changes: the container's slot for that entry and its end comments, the
+    comment slots of every collection in the entry, the text of the tokens
+    in them, and each one's style. Nothing of the container's other entries,
+    so moves of two entries of one list are undone apart, in any order: no
+    two of them touch the same slot."""
+    from ruamel.yaml.tokens import CommentToken
+
+    def tokens(slots: Any) -> list[Any]:
+        return [(s, s.value) for s in (slots or []) if isinstance(s, CommentToken)]
+
+    slot = list(container.ca.items[key]) if key in container.ca.items else None
+    # A list's end comments are its last entry's to move (`_set_after`), and
+    # only that entry's undo puts them back: another's, writing back what it
+    # saw, would leave them twice once the last entry moved too (re-review
+    # of PR #169).
+    last = _is_last_of_list(container, key) and getattr(container.ca, "end", None) is not None
+    end = list(container.ca.end) if last else None
+    held = []
+    for c in _within(container[key]):
+        items = {k: list(v) for k, v in c.ca.items.items()}
+        held.append((c, items, [t for v in items.values() for t in tokens(v)], c.fa.flow_style()))
+    texts = tokens(slot) + tokens(end)
+
+    def undo() -> None:
+        if slot is None:
+            container.ca.items.pop(key, None)
+        else:
+            container.ca.items[key] = list(slot)
+        if end is not None:
+            container.ca.end[:] = end
+        for c, items, _, style in held:
+            c.ca.items.clear()
+            c.ca.items.update({k: list(v) for k, v in items.items()})
+            c.fa.set_flow_style() if style is True else c.fa.set_block_style() if style is False else None
+        for token, value in texts + [t for *_, ts, _ in held for t in ts]:
+            token.value = value
+
+    return undo
+
+
+def _after_trailing_comment(container: Any, key: Any) -> bool:
+    """Whether list entry `key` comes right after a flow entry with a
+    trailing comment of its own: where ruamel.yaml 0.19 can write a block
+    entry with its keys run together (`_outgrown_to_block`)."""
+    if _is_map(container) or not isinstance(key, int) or key == 0 or not _is_flow(container[key - 1]):
+        return False
+    return bool(_split(_get_after(container, key - 1))[0].strip())
+
+
+def _where(container: Any, key: Any) -> str:
+    entry = container[key]
+    name = entry.get("name") if _is_map(entry) else None
+    return f"entry {name!r}" if name is not None else f"entry {key!r}"
+
+
+def _outgrown_to_block(y: Any, doc: Any, update: _Update, lines: list[str], data: Any) -> list[str]:
+    """Write in block style each flow mapping this update grew past its line.
+
+    ruamel.yaml folds a flow collection that is wider than the dumper's
+    width onto the next lines, wherever the width falls: inside a key with
+    a space in it, which then does not read back, or between two values,
+    with a trailing space and an indent of its own. Either way the file
+    after it has another widest line, so the next update cannot find the
+    width that reproduces it and refuses the file (#163, a second save of
+    guitar_vocal, whose chain entries are `- {name: ..., uri: ...}`). So:
+
+    - an entry the update gave a nested mapping or list that is not empty
+      (a flow entry gaining `parameters`, or a new entry beside flow ones
+      that has some) is written in block style, nested collections too, as
+      a rig file writes an entry with settings, so its style does not turn
+      on how long its values happen to be;
+    - any other flow entry the update changed that would not fit its line
+      (a `bypassed: true` added to an entry already near the width) is
+      written in block style too.
+
+    All of them are moved before anything is checked: while one is still in
+    flow style its fold can break the reading of the whole text, and would
+    be blamed on another (review of PR #169). The result is then read back
+    once. A flow collection the update did not touch is left as it is, and
+    so is one `_to_block` cannot move (a flow list, a mapping under a key
+    with a trailing comment): folded, it may still be a file the next update
+    can make, which `merged` checks, as it did before #163.
+
+    ruamel.yaml writes some block entries wrongly: in 0.19 one right after a
+    flow entry with its own trailing comment, in a list holding other
+    comments, comes out with its keys run together on one line (seen
+    2026-11-17; such a file is refused unchanged too). So when the read
+    back fails, each moved entry in that place goes back to flow style, as
+    it was before #163, for `merged`'s checks to judge.
+
+    Returns what was left in flow style and why, for `merged` to say if
+    the result is refused. `lines` are the file's own, for the gap before a
+    trailing comment; `data` is what the document now holds, as PyYAML
+    must read it back."""
+    import yaml
+    from ruamel.yaml import YAMLError
+
+    if not update.flowed:
+        return []  # no flow collection written into: nothing here can have grown
+    moved: list[tuple[Any, Any, Any]] = []  # (container, key, undo), in the order moved
+    left: dict[int, str] = {}  # id of an entry not moved: why, said
+
+    def move(container: Any, key: Any) -> None:
+        undo = _undo_of(container, key)
+        why = _to_block(container, key, lines)
+        if why is None:
+            moved.append((container, key, undo))
+        else:
+            left[id(container[key])] = f"{_where(container, key)}: {why}"
+
+    for container, key in _top_flows(doc):
+        if any(id(n) in update.grown for n in _within(container[key])):
+            move(container, key)
+    while True:
+        tops = [(c, k) for c, k in _top_flows(doc) if id(c[k]) not in left]
+        if not tops:
+            break
+        try:
+            spans = _flow_spans(_dump_aside(y, doc))
+        except YAMLError:
+            # A fold inside a key makes text that does not scan at all, and
+            # does not say which entry it is in: each one changed may be it.
+            spans = None
+        if spans is not None:
+            every = _top_flows(doc)
+            if len(spans) != len(every):
+                break  # not the document it was; `merged`'s checks say so if it matters
+            folded = {id(c[k]) for (c, k), (first, last) in zip(every, spans) if last > first}
+        else:
+            folded = {id(c[k]) for c, k in tops}
+        due = [(c, k) for c, k in tops
+               if id(c[k]) in folded and any(id(n) in update.flowed for n in _within(c[k]))]
+        if not due:
+            break
+        for container, key in due:
+            move(container, key)
+
+    if not moved:
+        return list(left.values())
+    try:
+        right = yaml.safe_load(_dump_aside(y, doc)) == data
+    except yaml.YAMLError:
+        right = False
+    if not right:
+        for container, key, undo in reversed(moved):
+            if _after_trailing_comment(container, key):
+                undo()
+                left[id(container[key])] = (
+                    f"{_where(container, key)}: ruamel.yaml writes it wrongly in block style right after "
+                    "a flow entry with its own trailing comment (move that comment to the line above its "
+                    "entry)")
+    return list(left.values())
+
+
+# --------------------------------------------------------------------------- #
 
 def merged(text: str, data: dict) -> str:
     """`text` (a YAML mapping) updated to hold `data`, comments and layout kept.
@@ -1108,6 +1442,7 @@ def merged(text: str, data: dict) -> str:
         raise MergeError(layout_problem)
     update = _Update()
     update.map(doc, _prepare(data))
+    left = _outgrown_to_block(y, doc, update, text.splitlines(), data)
     out = _dump(y, doc)
     expected = before - Counter(update.gone)
     after = Counter(_comments(out, True))
@@ -1116,4 +1451,15 @@ def merged(text: str, data: dict) -> str:
         what = (f"{sum(extra.values())} comment(s) written more than once, first {next(iter(extra))!r}"
                 if extra else f"{sum(missing.values())} comment(s) lost, first {next(iter(missing))!r}")
         raise MergeError(f"the update would leave {what}; nothing was written")
-    return _read_back(out, data)
+    why = ("; left in flow style, and folded across lines, since it could not be written in block style: "
+           + "; ".join(left)) if left else ""
+    try:
+        _read_back(out, data)
+    except MergeError as exc:
+        raise MergeError(f"{exc}{why}") from exc
+    # Each update must leave a file the next can make (#163): one this
+    # cannot reproduce would be refused by the next save, with nothing said now.
+    _, _, problem = _choose(out)
+    if problem:
+        raise MergeError(f"the update would write a file the next update could not make: {problem}{why}")
+    return out

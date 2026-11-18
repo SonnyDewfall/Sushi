@@ -478,13 +478,15 @@ def test_the_library_lists_the_manifest_with_the_one_profile_and_its_groups():
     status, body = call(agent, "GET", "/library")
     assert status == 200 and body["ok"] is True
     entries = {e["uri"]: e for e in body["plugins"]}
-    assert len(body["plugins"]) == 55
+    assert len(body["plugins"]) == 56
     assert entries[GXTS9]["profile"] is True
     assert [g["id"] for g in entries[GXTS9]["groups"]] == ["dirt", "output"]
     assert entries[GXTS9]["name"] == "GxTubeScreamer"
-    # The examples' profiles, by URI (#154 added the room's and the hall's);
+    # The examples' profiles, by URI (#154 added the room's and the hall's, #164
+    # the octave's);
     # not a count, which grows with the folder.
-    for uri in (GXTS9, "urn:ardour:a-reverb", "http://distrho.sf.net/plugins/MaGigaverb"):
+    for uri in (GXTS9, "urn:ardour:a-reverb", "http://distrho.sf.net/plugins/MaGigaverb",
+                "http://breakfastquay.com/rdf/lv2-rubberband#livemono"):
         assert entries[uri]["profile"] is True, uri
     assert entries["http://distrho.sf.net/plugins/MVerb"]["profile"] is False, "MVerb has none"
     assert entries[NAM]["addable"] is False
