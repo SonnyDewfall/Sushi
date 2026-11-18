@@ -13,7 +13,8 @@ same engine the rig runs, with a made-up guitar signal, and every setting is a
 guess to turn from.
 
 To start one: on the rack, under **RIGS**, pick **string-machine** and click
-**Start** or **Switch to**. It needs a plugin built on the rig machine first (see the reference's
+**Start** or **Switch to**. It needs a plugin built, and four installed, on
+the rig machine first (see the reference's
 [Plugins](../reference/plugins.md#string-machine-chorus-built-for-the-string-machine)).
 
 ## string-machine
@@ -38,15 +39,16 @@ because the swells are off.
   plain strings; push it up for an organ-like stack, or mute it to hear the
   ensemble on your guitar alone.
 - **The ensemble's Depth** (on **ensemble** and **octave_ensemble**): how far
-  it swirls. 100 % is the string machine; lower is a gentler chorus; 0 % is a
-  still, slightly hollow copy.
+  it swirls. 100 % is the string machine; lower is a gentler chorus; 0 %
+  stops the swirl.
 - **The ensemble's Mix**: 100 % is the ensemble alone, as the rig starts.
   Turn it down to bring the plain guitar in under it, up to as loud as the
-  ensemble at 0 %. The pick gets more defined; the strings less so.
+  ensemble at 0 %: the attack of each pick should stand out more.
 - **The hall's Size** (on **hall** and **octave_hall**): how long it rings,
   1 to 8 s. It starts at 5 s (57 %).
 - **The hall's Mix**: 0 % is no hall, 50 % the guitar and the hall equal,
-  100 % the hall alone, a wash with no attack at all. It starts at 35 %.
+  100 % the hall alone, with none of the guitar's own sound in it. It
+  starts at 35 %.
 - **Swells**: click the round button on **swell** and **octave_swell** to
   switch them on. A note played after a gap then fades in over about half a
   second, like a bowed string. A note played while the last one still rings
