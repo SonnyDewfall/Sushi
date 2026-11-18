@@ -218,6 +218,14 @@ def test_each_rig_through_the_master(rig, variant, tmp_path, request):
                           f"{name} [{variant}]", "", _render(tmp_path, name, view))
         if variant == "as compiled":
             _balanced(name, balance, nulltest.balance_db_of(view))
+            # A stereo reverb's 4 dB is its own (re-review of PR #173): the
+            # rest of the channel, its reverbs bypassed, is held to 1 dB.
+            without = nulltest.reverbs_bypassed(view)
+            if without is not None:
+                _balanced(f"{name}, its stereo reverbs bypassed",
+                          _record(request, "each committed rig through the master (rigfile.heard)",
+                                  f"{name} [stereo reverbs bypassed]", "",
+                                  _render(tmp_path, name + "-reverbs-bypassed", without)))
 
 
 @needs_sushi

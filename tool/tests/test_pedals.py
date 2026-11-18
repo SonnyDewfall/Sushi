@@ -54,13 +54,16 @@ PEDALS = {
 IDS = {uri: name.split(".")[0] for uri, (name, _, _) in PEDALS.items()}
 
 # What the guide promises (docs/guide/effects.md), over the guitar bypassed
-# on the sweep, and what is asserted: a little inside, so a curve widened
-# fails before the promise does. Measured here: the echo at the loudest its
-# page allows, +3.1 dB RMS and +10.9 dB peak (2026-11-17); the shimmer at its
-# loudest corner (Mix 100 %, Dry/Wet 0.15, both decays 8, Pitch mix 0),
-# +5.9 and +16.2 (2026-11-18). The shimmer's promise is the coordinator's
-# +6 dB RMS window itself, since its corner sits just inside it: Mix at 0.2
-# measured about +7.5.
+# on the sweep, and what is asserted. Measured here: the echo at the loudest
+# its page allows, +3.1 dB RMS and +10.9 dB peak (2026-11-17), asserted a
+# little inside its promise, so a curve widened fails before the promise
+# does; the shimmer at its loudest corner (Mix 100 %, Dry/Wet 0.15, both
+# decays 8, Pitch mix 0), +5.88 and +16.24 (2026-11-18), asserted at its
+# promise itself, the coordinator's +6 dB RMS window: Mix at 0.2 gave +7.7.
+# 0.12 dB is margin enough because these renders are the same bits in CI as
+# here: the same Sushi 1.3.0 and Ubuntu 24.04's packages, and every sound
+# reference, frozen ones calibrated in CI among them, matches across the
+# two to the 0.0001 dB they are written at.
 ECHO_PROMISE = {"rms": 4.0, "peak": 12.0}
 ECHO_HELD = {"rms": 3.5, "peak": 11.0}
 SHIMMER_PROMISE = {"rms": 6.0, "peak": 17.0}

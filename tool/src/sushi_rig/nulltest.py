@@ -637,6 +637,10 @@ BALANCE_DB = 1.0
 # owner (PR #173, 2026-11-18): a render with one of these playing, not
 # bypassed, may have its sides up to `REVERB_BALANCE_DB` apart; everything
 # else keeps `BALANCE_DB`, and a silent or one-sided render fails either way.
+# The allowance is the reverb's alone (re-review of PR #173): such a render
+# is rendered a second time with its stereo reverbs bypassed
+# (`reverbs_bypassed`), and that one is held to `BALANCE_DB`, so a chorus
+# gone lopsided beside a reverb still fails.
 REVERB_BALANCE_DB = 4.0
 
 #: The stereo reverbs, by URI: an explicit list, not a guess from a name.
@@ -669,6 +673,33 @@ def balance_db_of(config: Any) -> float:
                     and plugin.get("name") not in bypassed):
                 return REVERB_BALANCE_DB
     return BALANCE_DB
+
+
+def reverbs_bypassed(config: Any) -> dict | None:
+    """`config` with every stereo reverb playing in it bypassed, or None when
+    none is (`balance_db_of` is then `BALANCE_DB` already). What the rest of
+    the chain is held to 1 dB on: a bypassed reverb passes its input, so this
+    is the render without the one thing allowed to be wider."""
+    if balance_db_of(config) == BALANCE_DB:
+        return None
+    out = json.loads(json.dumps(config))
+    state = out.setdefault("initial_state", [])
+    for track in out.get("tracks") or []:
+        for plugin in track.get("plugins") or []:
+            if isinstance(plugin, dict) and plugin.get("uri") in STEREO_REVERBS:
+                entry = next((e for e in state if isinstance(e, dict) and e.get("processor") == plugin.get("name")),
+                             None)
+                if entry is None:
+                    state.append({"processor": plugin.get("name"), "bypassed": True})
+                else:
+                    entry["bypassed"] = True
+    return out
+
+
+def without_reverbs_findings(fp: Fingerprint) -> list[Finding]:
+    """`heard_findings` at `BALANCE_DB` for the render of `reverbs_bypassed`,
+    each said to be of that render."""
+    return [Finding(f.check, f"with its stereo reverbs bypassed, {f.message}") for f in heard_findings(fp)]
 
 
 def heard_findings(fp: Fingerprint, balance_db: float = BALANCE_DB) -> list[Finding]:

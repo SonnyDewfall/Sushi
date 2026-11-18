@@ -5676,3 +5676,30 @@ plugin back; a take-back if one is refused; a profile field for the values
 drawer's add sending it, normalised, with tests at each step. That is
 beyond a small change, so the exception stays and the guide says why.
 *(2026-11-18)*
+
+**A reverb's 4 dB is the reverb's alone (re-review of PR #173).**
+`balance_db_of` gave 4 dB to a whole render once one stereo reverb played
+in it. That covered all 18 renders of the 15 committed rigs, so a chorus or
+`lcrDelay` 3 dB lopsided beside a-reverb or MaGigaverb would have passed and
+been calibrated. Now a render with a stereo reverb playing is rendered a
+second time with its stereo reverbs bypassed (`nulltest.reverbs_bypassed`),
+and that render is held to 1 dB (`without_reverbs_findings`). Its findings
+say so ("with its stereo reverbs bypassed, ..."). This runs once per
+channel, in every rig path of `nulltest`: compare, STALE, `--candidates`
+and `--calibrate`, which then makes no reference of it.
+`test_stereo.py`'s rig test does the same. A rig with no stereo reverb is
+still rendered once (tested). I chose the second render over an allowance
+worked out per plugin, because a reverb mixes its input across both sides,
+so what the chain before it did cannot be told apart in the first render.
+Tests in `test_sound_refs.py`, through the CLI with a stand-in Sushi: a
+rig of a chorus and a reverb 3 dB apart both ways fails, and no reference
+is made of it; the reverb alone 3 dB apart, with the rest balanced, passes;
+at 5 dB it fails; the no-reverb rig is rendered once. The first fails with
+`reverbs_bypassed` returning nothing (tried). Every committed rig, its
+reverbs bypassed, measured within 1 dB here (`test_stereo.py`, 144 passed
+with `test_pedals.py`), and `nulltest --all` gives 41 "sounds the same".
+The shimmer's corner test stays at exactly its promise of +6 dB RMS
+(measured +5.88). Those renders are bit-identical in CI and here: every
+reference, the frozen ones calibrated in CI included, matches at 0.0001 dB.
+The comment that said the limits were held "a little inside" now says that
+is the echo's only. *(2026-11-18)*

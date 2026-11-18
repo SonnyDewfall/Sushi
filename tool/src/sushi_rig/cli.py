@@ -481,7 +481,7 @@ def _nulltest(args: argparse.Namespace) -> int:
 
     from .nulltest import (
         ORPHAN_PREFIX, STALE_PREFIX, MadeFrom, balance_db_of, compare, from_dict, keep_wider, made_from_of,
-        played_findings, staleness, to_dict,
+        played_findings, reverbs_bypassed, staleness, to_dict, without_reverbs_findings,
     )
     from .paths import checkout_root
     from .render import (
@@ -626,8 +626,24 @@ def _nulltest(args: argparse.Namespace) -> int:
                     # says, and what no reference is made of: two sides,
                     # neither silent, balanced, for a rig; the left side not
                     # silent for a v1 config, which plays that side alone.
-                    def played(fp, is_rig=is_rig, balance_db=balance_db_of(channel.config)):
-                        return played_findings(fp, is_rig, balance_db)
+                    # A stereo reverb's 4 dB is its own: the channel is also
+                    # rendered with its stereo reverbs bypassed, once, and that
+                    # render held to 1 dB (re-review of PR #173).
+                    without = reverbs_bypassed(channel.config) if is_rig else None
+                    rest: list = []
+
+                    def played(fp, is_rig=is_rig, balance_db=balance_db_of(channel.config),
+                               without=without, rest=rest, work=work):
+                        found = played_findings(fp, is_rig, balance_db)
+                        if without is not None:
+                            if not rest:
+                                work.mkdir(parents=True, exist_ok=True)
+                                bypassed = work / "reverbs-bypassed.json"
+                                bypassed.write_text(json.dumps(without, indent=2) + "\n")
+                                rest.append(without_reverbs_findings(measure(
+                                    bypassed, root, work / "reverbs-bypassed", sushi_bin=sushi, retried=retried)))
+                            found = found + rest[0]
+                        return found
 
                     if args.calibrate:
                         try:
