@@ -573,6 +573,72 @@ The guide is read from the checkout the agent was installed from with
 installed any other way has no guide: the Help links stay, and each opens a
 page saying so and where it looked (`guide.py` says why they are not hidden).
 
+## The visualiser
+
+A screensaver for the laptop (#176): after a spell with no pointer, touch or
+key on the page (10 s unless set otherwise), a MilkDrop visualisation fills
+the window and moves with the guitar. Any input puts the page back at once,
+and that input reaches nothing under it. Its settings are a line at the foot
+of the page, kept in this browser (`sushi-rig.visualiser` in localStorage):
+on or off, the idle time (3 to 600 s), the input and its channel, and **Show
+now**. The line says why it will not start when it will not, and what it
+heard last.
+
+**Where the sound comes from.** The browser's own capture of the guitar's
+input (`getUserMedia`), through PipeWire's PulseAudio server, not the agent:
+nothing new is in Sushi's path, and the agent carries no audio. That server
+copies each block into a buffer of its own and the browser reads it from
+there, so a browser that falls behind drops its own samples; it cannot hold
+up the graph Sushi runs in. Which input: one chosen on the line; otherwise
+the machine file's `guitar-in` port, by name (the browser lists
+`Audient iD14 Multichannel` for the JACK client `Audient iD14`), on the
+channel of that port (PipeWire gives the browser a multichannel input's first
+two channels as left and right, so `capture_AUX0` is the left); otherwise the
+browser's default input, both channels. Chromium's context plays nowhere
+(`sinkId: {type: "none"}`), so it adds no output stream; Firefox has no such
+option and opens one to the default output, silent. The capture is opened when
+the visualiser starts and let go when it goes.
+
+**When it starts.** Only while `/health` says a rig is running (app.js tells
+`screensaver.js` after each poll); only in a window at least 900 px wide, so
+never on a phone (a phone reaches the agent over plain HTTP on the LAN, which
+is not a secure context, so it could not capture anything anyway, and what it
+could hear is its own microphone, not the rig); only at `http://localhost` or
+`http://127.0.0.1` on the laptop, for the same reason; never under
+`prefers-reduced-motion`; never on a software WebGL renderer (SwiftShader,
+llvmpipe), which took 1.6 of four cores at 640 by 360 when measured; and
+not while the tab is hidden. The decisions are `visualiserGate` and its
+neighbours in `rig.js`.
+
+**What it costs.** Nothing until it first starts: the page loads
+`screensaver.js` (the timer and the line) and not the drawing;
+`visualiser.js`, its presets and butterchurn (192 KB) are loaded on the first
+start, and kept for the next. It draws at most 30 frames a second into a
+buffer of at most 1280 by 800, scaled to the window, and stops drawing when
+the tab is hidden. Measured in a container (no GPU, PipeWire 1.0.5, Chromium
+153, a JACK stand-in for Sushi at 256 frames): the capture alone costs
+PipeWire's PulseAudio server 1.6% of a core and Chromium about 5%, and left
+the graph's quantum at 256 (`tool/spikes/visualiser_audio/README.md` has the
+figures and how to run them again). Not measured: a GPU's load, or any of it
+on the rig.
+
+**Dismissing.** While it is up, a listener on the window takes every press,
+release, click, key, wheel and move before the page does, and the
+visualiser itself stays over the page, invisible, until no button or key is
+held and 350 ms have passed with no press, so the release and click of the
+press that dismissed it land on it too. A pointer that keeps moving does not
+hold it there.
+
+**The library.** [butterchurn](https://github.com/jberg/butterchurn) 2.6.7,
+MIT, vendored byte for byte under `ui/static/vendor/butterchurn-2.6.7/` with
+its licence and `SOURCE.txt` (where it came from, its checksums, what loading
+it adds to `window` and `Math`). Chosen over audioMotion-analyzer (AGPL-3.0)
+and Wave.js (MIT, but a set of 2D canvas bars, lines and circles rather than a
+visualisation to leave running).
+No preset pack: butterchurn-presets is labelled MIT, but its presets are
+MilkDrop authors' work with no licence from them. The three presets shown,
+`visualiser-presets.js`, were written for the rig.
+
 ## Not built yet
 
 Not done yet, and said on screen where it shows: the sound (nothing measures

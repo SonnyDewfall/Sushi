@@ -5315,3 +5315,52 @@ front page and follows every link, picture and anchor), and the links on
 both screens and back, at a phone's width on the stage (`test_ui_help.py`).
 **Not tried on the rig, or on a real phone**: the phone is Chromium at 390
 by 844. *(2026-11-17)*
+
+**The visualiser: a screensaver that moves with the guitar (#176).** After a
+spell with no pointer, touch or key on the page (10 s, set on the page from 3
+to 600), while a rig is running and the window is at least 900 px wide, a
+MilkDrop visualisation fills the window; any input puts the page back, and
+that input reaches nothing under it. **The sound is the browser's own capture
+of the guitar's input** (`getUserMedia`, through PipeWire's PulseAudio
+server), chosen over the agent streaming a tap to the page: both go through
+that server, which buffers each client apart from the graph, so neither can
+hold up Sushi's cycle, and they cost about the same (`parec` and a reader
+2.4% of a core; Chromium's capture 1.6% in the server and about 5% in
+Chromium), but the agent's way puts a stream through its one event loop. A
+JACK or `pw-record` tap was not tried: it is a node of Sushi's cycle (no
+`node.async` in PipeWire 1.0.5). Settled by measuring in a container on the
+rig's PipeWire 1.0.5, with a JACK stand-in for Sushi at 256 frames
+(`tool/spikes/visualiser_audio/`): **Chromium does not list monitor
+sources**, so it cannot hear what the rig plays; it does list the
+interface's 10-channel input, and gets its first two channels as left and
+right (AUX0, the guitar, on the left); its stream asked for 1024 frames and
+the graph stayed at 256. So the page listens to the machine file's
+`guitar-in` port, found by name among the browser's inputs, on its channel,
+with an input and channel chosen on the page winning; nothing to set in
+PipeWire. Chromium's context plays nowhere (`sinkId: {type: "none"}`, no
+output node in `pw-top`); the capture is opened on each start and let go on
+each dismissal. **Never on a software WebGL renderer** (SwiftShader drew
+butterchurn with 1.6 of the four cores), under reduced motion, on a phone
+(plain HTTP on the LAN is not a secure context, and a phone would hear its
+own microphone), or in a hidden tab (drawing stops, the context is
+suspended). At most 30 frames a second, into at most 1280 by 800. **Library:
+butterchurn 2.6.7, MIT**, vendored byte for byte with its licence and a
+`SOURCE.txt` of where it came from and its checksums, which a test holds;
+lazy, with `visualiser.js` and the presets, so the page loads only
+`screensaver.js` until it first starts. audioMotion-analyzer is AGPL-3.0;
+Wave.js (MIT) is a set of canvas bars and lines. **No preset pack**: butterchurn-presets is labelled
+MIT, but its presets are MilkDrop authors' work with no licence from them,
+so three presets were written for the rig. `app.js` changes by one line (it
+tells `screensaver.js` after each poll whether a rig runs). Tests
+(`test_ui_visualiser.py`): the vendored files and their checksums, the
+routes, rig.js's decisions, and in Chromium the idle timing, lazy loading,
+the off switch kept, the idle time set from the page, a click, a tap, Enter
+and Space each putting the page back and reaching nothing (shown failing
+with the swallowing taken out, and the click and tap with the wait for the
+release taken out), reduced motion, a narrow window, a rig stopping, a
+software renderer refused, a hidden tab and polling carrying on under it.
+They run on Chromium's fake input with its renderer renamed, since
+SwiftShader is refused. The fast suite: 5058 passed, 33 skipped (none of them these). **Not run:** the rig, its GPU, its real
+PipeWire graph with Sushi and the iD14, the permission prompt (answered by a
+Chromium switch in the tests), Firefox, a phone, and anyone looking at what
+it draws on a real screen. *(2026-11-18)*

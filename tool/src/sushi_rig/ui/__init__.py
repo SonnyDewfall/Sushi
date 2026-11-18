@@ -58,6 +58,8 @@ Decisions are pure and tested (principle 1), in two places:
                        recording, its name and elapsed time, or why recording is off
     GET /takes         every 10 s, and at once when a take starts or stops: the takes
                        and `take check`'s verdict on each
+    GET /machine/roles also when the visualiser first starts (screensaver.js): which
+                       input is the guitar's
 
 and sends POST /live/parameter, /live/bypass, /live/move and /live/undo as
 they happen, POST /amp/parameter from the amp's faders, POST /amp/model from
@@ -66,6 +68,17 @@ POST /rig/save from the rack's Save and Save as…, and POST /record/start and
 /record/stop from the record bar. A
 refusal's `reason` is shown on screen; nothing is reverted without saying
 why.
+
+## The visualiser (#176)
+
+A screensaver on the laptop, `static/screensaver.js`, loaded beside app.js
+and apart from it: after a spell with no input on the page, while a rig runs
+(app.js says so after each poll, as a "sushi-rig:health" event) and the
+window is wide enough, butterchurn fills the window, hearing the guitar
+through the browser's own capture. Only it, the presets and butterchurn
+(`static/vendor/`, the one file here not written for the rig) are loaded on
+its first start, never with the page. Its decisions are rig.js's; the
+reference (docs/reference/web-ui.md) says why each is what it is.
 
 ## The amp
 

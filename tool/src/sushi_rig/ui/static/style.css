@@ -679,3 +679,29 @@ button.strip-name:focus-visible { outline: 2px solid var(--accent); outline-offs
    Record moves nothing below it more than the clock always did. One line,
    so it never takes the heading's width. */
 .record-head .help-link { margin: -10px 0 -10px auto; white-space: nowrap; flex: none; }
+
+/* ---------------------------------------------------------------- the visualiser (#176) */
+
+/* Over everything, the drawer included, and catching every press until
+   screensaver.js lets go of it: nothing under it is given the press that
+   puts the page back. Black at once, so the page is gone before the first
+   frame; the drawing fades in over it. */
+.visualiser { position: fixed; inset: 0; z-index: 2147483000; background: #000; opacity: 0; transition: opacity 600ms ease; cursor: none; touch-action: none; user-select: none; }
+.visualiser.showing, .visualiser.in { opacity: 1; }
+.visualiser.closing { opacity: 0; transition-duration: 150ms; }
+.visualiser canvas { display: block; width: 100%; height: 100%; opacity: 0; transition: opacity 600ms ease; }
+.visualiser.in canvas { opacity: 1; }
+.visualiser-hint { position: absolute; left: 0; right: 0; bottom: 28px; margin: 0; text-align: center; font-size: 14px; color: rgba(236, 236, 239, 0.55); animation: visualiser-hint 5s ease forwards; }
+@keyframes visualiser-hint { 0%, 60% { opacity: 1; } 100% { opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .visualiser, .visualiser canvas { transition: none; } .visualiser-hint { animation: none; } }
+
+.visualiser-settings { max-width: 1280px; margin: 0 auto; padding: 14px 20px 22px; display: flex; flex-wrap: wrap; align-items: center; gap: 8px 14px; border-top: 1px solid var(--line); font-size: 13px; color: var(--muted); }
+.visualiser-settings label { display: inline-flex; align-items: center; gap: 6px; min-height: 44px; }
+.visualiser-settings input[type=checkbox] { width: 20px; height: 20px; accent-color: var(--accent); }
+.visualiser-settings input[type=number] { width: 5em; min-height: 36px; padding: 0 8px; border-radius: 8px; background: var(--card); border: 1px solid var(--edge); color: var(--text); font-family: var(--mono); }
+.visualiser-settings select { min-height: 36px; max-width: 22em; border-radius: 8px; background: var(--card); border: 1px solid var(--edge); padding: 0 8px; }
+.visualiser-now { min-height: 36px; padding: 0 12px; border-radius: 8px; background: transparent; border: 1px solid var(--edge); cursor: pointer; }
+.visualiser-note { flex: 1 1 100%; line-height: 1.4; }
+/* Phones and narrow windows never get it (rig.js VISUALISER.minWidth), so
+   they get no line about it either. */
+@media (max-width: 899px) { .visualiser-settings { display: none; } }

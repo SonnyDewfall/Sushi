@@ -453,6 +453,8 @@ async function poll() {
     state.log = logBody;
     state.switches = switches;
     state.seq = seq;
+    // The visualiser (screensaver.js, #176) runs only while a rig is up.
+    document.dispatchEvent(new CustomEvent("sushi-rig:health", { detail: { running: R.visualiserRigRunning(health) } }));
     if (another) {
       Object.assign(state, { plugins: null, pluginsError: null, pluginsFor: null, pluginsRig: due.rig });
       state.reading = { rig: due.rig, since: Date.now() };
