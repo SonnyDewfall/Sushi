@@ -1,0 +1,28 @@
+@prefix lv2:  <http://lv2plug.in/ns/lv2core#> .
+@prefix atom: <http://lv2plug.in/ns/ext/atom#> .
+@prefix midi: <http://lv2plug.in/ns/ext/midi#> .
+@prefix urid: <http://lv2plug.in/ns/ext/urid#> .
+@prefix doap: <http://usefulinc.com/ns/doap#> .
+
+<urn:sushi-rig:spike:pitch2midi>
+    a lv2:Plugin, lv2:AnalyserPlugin ;
+    doap:name "Spike pitch-to-MIDI (mono)" ;
+    lv2:requiredFeature urid:map ;
+    lv2:optionalFeature lv2:hardRTCapable ;
+    lv2:port [
+        a lv2:AudioPort, lv2:InputPort ; lv2:index 0 ; lv2:symbol "in" ; lv2:name "In"
+    ] , [
+        a lv2:AudioPort, lv2:OutputPort ; lv2:index 1 ; lv2:symbol "out" ; lv2:name "Out"
+    ] , [
+        a atom:AtomPort, lv2:OutputPort ; atom:bufferType atom:Sequence ; atom:supports midi:MidiEvent ;
+        lv2:index 2 ; lv2:symbol "midi_out" ; lv2:name "MIDI out"
+    ] , [
+        a lv2:ControlPort, lv2:InputPort ; lv2:index 3 ; lv2:symbol "threshold" ; lv2:name "Threshold (dB)" ;
+        lv2:default -40.0 ; lv2:minimum -70.0 ; lv2:maximum 0.0
+    ] , [
+        a lv2:ControlPort, lv2:InputPort ; lv2:index 4 ; lv2:symbol "transpose" ; lv2:name "Transpose" ;
+        lv2:default 0.0 ; lv2:minimum -24.0 ; lv2:maximum 24.0 ; lv2:portProperty lv2:integer
+    ] , [
+        a lv2:ControlPort, lv2:OutputPort ; lv2:index 5 ; lv2:symbol "note" ; lv2:name "Note" ;
+        lv2:default -1.0 ; lv2:minimum -1.0 ; lv2:maximum 127.0
+    ] .
