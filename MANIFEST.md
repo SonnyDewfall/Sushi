@@ -5527,3 +5527,54 @@ browser too old to send one on a POST, which needs authentication (#29).
 **Not tried on the rig, from a real phone, behind a real proxy, with a
 pedal or MIDI hardware;** the names were resolver rules, not DNS or mDNS.
 *(2026-11-17)*
+
+**The stage for a phone: the lock holds the volumes, 0.5 dB steps, a rig
+dropdown (#182).** Asked for on 2026-11-18 after using the stage on a phone.
+(1) **Locked, no stage volume moves**: the master's and each channel's
+(`volumeFader` with `where` "stage", `R.lockRefusal` "stage_volume") take no
+drag, tap or key (the fader is disabled), no wheel (left to the page), no
+typed value (read-only, and a commit is refused) and no step; each shows the
+Lock button's icon and says why. Knobs, bypass and Record still work locked.
+*Decided:* the rack's volumes stay usable locked, as before: the rack's lock
+already leaves Stop and Switch to usable, so the two screens' locks were not
+alike before this either, and the stage is where a thumb knocks one.
+(2) **−0.5 and +0.5 buttons on every stage volume**, either side of the
+fader, the value above (`R.volumeNudged`): a tap is exactly half a dB, never
+held to whole dB as a wheel notch is (−6.3 goes to −5.8; a notch gives −6);
+held 400 ms it repeats every 100 ms until let go. The ends are
+`volumeStepped`'s: the master stops at 0 dB, and over it (#137) + sends
+nothing and − goes to 0; a channel stops at +6. *Decided:* a press steps on
+its release (a tap) or once it is a hold, not on touching down, so a scroll
+that starts on a button moves nothing (pointercancel). 52 by 44 px each.
+(3) **A native `<select>` of `config/rigs/` replaces the stage's list of
+rigs**, the list removed, in the header under the rig's state rather than
+below every card: the running rig selected (else the one chosen, else
+"Choose a rig…"), shown but off while locked, while a command runs or with
+no agent (`R.rigSelect`). Choosing another rig switches through the same
+`lifecycle("switch")` the list's Switch to used: live or by restart, the
+same notices, busy line and refusals (`R.rigSelected`); with no rig up it
+chooses the rig for Start. Start, and Stop with its confirm, are under it
+only unlocked, as they were. The rack's picker is unchanged.
+**Tests:** `test_ui_stage.py`, 24: the decisions, and in Chromium at 320,
+390 and 1280 px every way into a locked volume (nothing sent), exact half-dB
+steps with both tops and a master over its top, a held button repeating in
+whole steps and stopping when let go, a cancelled press moving nothing, the
+dropdown off locked and switching live and by restart once unlocked, busy
+while a switch runs, a down rig chosen and started and Stop still asking,
+and no sideways scroll with every button, link, select and fader at least 44
+px, locked and unlocked. The lock and hold tests were shown failing with the
+lock and the repeat taken out. Changed for the new behaviour: two stage tests
+in `test_ui.py` and one in `test_ui_rigbin.py` (the list is a dropdown), and
+`test_ui_knobs.py`'s stage volumes, which now unlock first and scroll the
+channel's fader clear of the sticky nav (the header is taller). Guide
+pictures remade: `stage-phone.png` and `recording.png` (both show the
+header); `docs/ui/stage.png`, taken by hand, is not, and its alt text says
+so. The fast suite on clean master here (9bb1053): 5114 passed, 21 skipped,
+210 deselected; on this branch with master merged at 1b39df9: 5311 passed, 21
+skipped, 210 deselected, 1 failed, `test_live_close.py`'s count of a real
+elkpy connection's descriptors (16 against 12, as on 2026-11-17), which
+failed alone 2 runs in 3 on this loaded machine and touches nothing here.
+**Not tried on a real phone or any touch screen**: the phone is Chromium at
+320 and 390 wide with a mouse, so a thumb's hold, a scroll starting on a
+step button, and the phone's own picker for the select are untested; nor on
+the rig. *(2026-11-18)*
