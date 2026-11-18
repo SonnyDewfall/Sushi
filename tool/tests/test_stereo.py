@@ -193,11 +193,14 @@ def _without_copies(view: dict) -> dict:
     return view
 
 
-def _balanced(what, balance):
+def _balanced(what, balance, limit=BALANCE_DB):
+    """Neither side silent, by any margin, and the two within `limit`:
+    `BALANCE_DB`, or `nulltest.balance_db_of` the config, which gives a
+    stereo reverb playing in it `REVERB_BALANCE_DB` (PR #173)."""
     assert balance.left_dbfs > float("-inf") and balance.right_dbfs > float("-inf"), \
         f"{what}: a channel is silent (L {balance.left_dbfs}, R {balance.right_dbfs} dBFS)"
-    assert abs(balance.left_dbfs - balance.right_dbfs) <= BALANCE_DB, \
-        f"{what}: L {balance.left_dbfs:.2f} and R {balance.right_dbfs:.2f} dBFS, more than {BALANCE_DB} dB apart"
+    assert abs(balance.left_dbfs - balance.right_dbfs) <= limit, \
+        f"{what}: L {balance.left_dbfs:.2f} and R {balance.right_dbfs:.2f} dBFS, more than {limit} dB apart"
 
 
 @needs_sushi
@@ -214,7 +217,7 @@ def test_each_rig_through_the_master(rig, variant, tmp_path, request):
         balance = _record(request, "each committed rig through the master (rigfile.heard)",
                           f"{name} [{variant}]", "", _render(tmp_path, name, view))
         if variant == "as compiled":
-            _balanced(name, balance)
+            _balanced(name, balance, nulltest.balance_db_of(view))
 
 
 @needs_sushi
@@ -233,7 +236,23 @@ def test_each_plugin_compiled_alone_is_balanced(uri, tmp_path, request, lilv_por
     ins, outs = lilv_ports[uri]
     what = f"{uri.rsplit('/', 1)[-1]} [compiled]"
     _balanced(what, _record(request, "each plugin compiled alone on a mono channel, through the master",
-                            what, f"{ins}/{outs}", _render(tmp_path, "compiled", view)))
+                            what, f"{ins}/{outs}", _render(tmp_path, "compiled", view)),
+              nulltest.balance_db_of(view))
+
+
+def test_the_stereo_reverbs_are_the_manifests_reverbs_with_two_outputs():
+    """`nulltest.STEREO_REVERBS` is written out by hand; it must be every
+    plugin of the manifest whose own bundle says `lv2:ReverbPlugin`
+    (`library.kind_of`) and whose port table entry has two outputs, and
+    nothing else. Needs plugins/, which CI's container has."""
+    from sushi_rig.library import read_library
+
+    if not (ROOT / "plugins").is_dir():
+        pytest.skip("the rig's plugins/ folder is not present (it is untracked)")
+    ports = stereo.load_ports(ROOT)
+    found = {e["uri"] for e in read_library(ROOT)["plugins"]
+             if e.get("kind") == "reverb" and e["uri"] in ports and ports[e["uri"]].outputs == 2}
+    assert found == set(nulltest.STEREO_REVERBS)
 
 
 @pytest.mark.slow

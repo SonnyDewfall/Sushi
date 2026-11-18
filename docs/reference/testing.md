@@ -81,7 +81,7 @@ workflows because no single runner has everything:
   | sound differs from the reference | **fails** | **fails**, if the reference was made from the rig as it is: the code changed the sound |
   | rig changed since its reference, or no reference | **fails** (no reference) | **STALE**, a warning, with a candidate reference attached |
   | orphaned reference | **fails** | a warning |
-  | render NaN, silent, or one side only (or the sides more than 1 dB apart) | **fails**, a frozen rig on any of them, a v1 config if its left side, the one it plays, is silent | **fails**, whatever its reference says |
+  | render NaN, silent, or one side only (or the sides more than 1 dB apart; 4 dB with a stereo reverb playing, `nulltest.STEREO_REVERBS`) | **fails**, a frozen rig on any of them, a v1 config if its left side, the one it plays, is silent | **fails**, whatever its reference says |
 
   No reference is ever written of such a render, by `--calibrate`,
   `--calibrate --missing`, `--candidates` or the job's failure path: of

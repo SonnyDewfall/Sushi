@@ -480,7 +480,7 @@ def _nulltest(args: argparse.Namespace) -> int:
     import yaml
 
     from .nulltest import (
-        ORPHAN_PREFIX, STALE_PREFIX, MadeFrom, compare, from_dict, keep_wider, made_from_of,
+        ORPHAN_PREFIX, STALE_PREFIX, MadeFrom, balance_db_of, compare, from_dict, keep_wider, made_from_of,
         played_findings, staleness, to_dict,
     )
     from .paths import checkout_root
@@ -626,8 +626,8 @@ def _nulltest(args: argparse.Namespace) -> int:
                     # says, and what no reference is made of: two sides,
                     # neither silent, balanced, for a rig; the left side not
                     # silent for a v1 config, which plays that side alone.
-                    def played(fp, is_rig=is_rig):
-                        return played_findings(fp, is_rig)
+                    def played(fp, is_rig=is_rig, balance_db=balance_db_of(channel.config)):
+                        return played_findings(fp, is_rig, balance_db)
 
                     if args.calibrate:
                         try:

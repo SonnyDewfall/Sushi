@@ -270,6 +270,54 @@ def test_silence_one_side_and_imbalance_are_each_found(left, right, check):
     assert found.check == check
 
 
+# Stereo reverbs may be 4 dB apart (#165, the owner's decision on PR #173).
+
+SHIMMER = "http://guitarix.sourceforge.net/plugins/gx_shimmizita_#_shimmizita_"
+
+
+def _compiled(uri, bypassed=False):
+    """A compiled one-plugin channel through the master, as nulltest renders one."""
+    from sushi_rig import rigfile
+
+    raw = {"kind": "rig", "schema_version": 1, "name": "r",
+           "channels": [{"name": "board", "input": "guitar-in", "width": "mono",
+                         "chain": [{"name": "fx", "uri": uri, "bypassed": bypassed}]}],
+           "master": {"output": "monitor-out", "chain": []}}
+    ((_, view),) = rigfile.heard(rigfile.emit_rig(rigfile.parse_rig(raw)))
+    return view
+
+
+def _apart(db):
+    return _a_fingerprint(1.0, 10 ** (-db / 20))
+
+
+def test_the_shimmer_playing_passes_3_db_apart_and_a_reverb_5_db_apart_fails():
+    limit = nulltest.balance_db_of(_compiled(SHIMMER))
+    assert limit == nulltest.REVERB_BALANCE_DB == 4.0
+    assert heard_findings(_apart(3.0), limit) == [], "the shimmer measured 3.0 to 3.5 dB apart"
+    (found,) = heard_findings(_apart(5.0), limit)
+    assert found.check == "unbalanced" and "more than 4.0 dB apart" in found.message
+
+
+@pytest.mark.parametrize("uri", sorted(nulltest.STEREO_REVERBS))
+def test_every_stereo_reverb_gets_4_db_and_still_fails_silent_or_one_sided(uri):
+    limit = nulltest.balance_db_of(_compiled(uri))
+    assert limit == 4.0
+    assert [f.check for f in heard_findings(_a_fingerprint(1.0, 0.0), limit)] == ["one-sided"]
+    assert [f.check for f in heard_findings(_a_fingerprint(0.0, 1.0), limit)] == ["one-sided"]
+    assert [f.check for f in heard_findings(_a_fingerprint(0.0, 0.0), limit)] == ["silent"]
+
+
+def test_everything_else_keeps_1_db_and_a_bypassed_reverb_earns_nothing():
+    for view in (_compiled("http://guitarix.sourceforge.net/plugins/gx_chorus_stereo#_chorus_stereo"),
+                 _compiled("http://distrho.sf.net/plugins/3BandEQ"), _compiled(SHIMMER, bypassed=True)):
+        limit = nulltest.balance_db_of(view)
+        assert limit == BALANCE_DB == 1.0
+        (found,) = heard_findings(_apart(3.0), limit)
+        assert found.check == "unbalanced"
+    assert nulltest.balance_db_of(None) == nulltest.balance_db_of({}) == BALANCE_DB
+
+
 # --------------------------------------------------------------------------- #
 # The command, on a temporary checkout
 # --------------------------------------------------------------------------- #
@@ -456,7 +504,7 @@ def test_one_side_fails_a_rig_compared_exactly_too(tmp_path, monkeypatch, capsys
     checks are added to it, so it fails all the same."""
     nulltest_, _ = _checkout(tmp_path, monkeypatch, chain=_left_only)
     with monkeypatch.context() as allowed:
-        allowed.setattr(nulltest, "heard_findings", lambda fp: [])  # a reference --calibrate would refuse
+        allowed.setattr(nulltest, "heard_findings", lambda fp, balance_db=None: [])  # a reference --calibrate would refuse
         assert nulltest_("--all", "--calibrate") == 0
     capsys.readouterr()
     assert nulltest_("--all") == 1
