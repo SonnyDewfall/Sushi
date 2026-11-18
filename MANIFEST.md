@@ -5486,3 +5486,30 @@ and after merging #172's master limiter. The limiter holds a full-scale
 input's +20 dBFS down. The shimmer's runaway test, which took its channel
 through the master, then read that as non-linear and failed. It now renders
 the plugin alone on a stereo track, and passes. *(2026-11-18)*
+
+**The shimmer's Mix stops at Dry/Wet 0.15 (#165, PR #173).** Coordinator's
+choice B. The page's loudest shimmer corner was +14.9 dB RMS. With Mix
+running to the plugin's own Dry/Wet 0.5 it could not come under +6: at 0.5
+even the shortest decays in the grid gave +10.4. Mix is now Dry/Wet 0 to
+0.15, linear. The loudest corner (both decays 8, Pitch mix 0) is +5.9 dB
+RMS and +16.2 dB peak over the guitar bypassed; the guide promises 6 and 17,
+and the slow test holds exactly that. Widening Mix to 0.2 fails it (+7.7,
+tried and put back). At the plugin's own decays Mix 100 % is +3.5 dB. On
+the bench host's sweep the sides stay within 3.8 dB anywhere on Mix. The
+preset and the pedals rig are re-placed at Mix 100 % (0.15, from 0.146),
+and `config/sound/pedals.yaml` is recalibrated (sides 3.35 dB apart).
+**Documented exception:** the plugin's own Dry/Wet 0.5 is past Mix's top,
+and a shimmer added from the library has it. The page shows it at 100 %,
+off the curve (tested in Chromium), and a turn down brings it to 0. The
+slow test of the plugin's own settings holds it at +10 to +11.5 dB RMS and
+at least 5 dB over Mix 100 %. The runaway test now runs at that 0.5, the
+wettest a library add reaches. **Starting values on a library add: not
+done.** `add_request` takes no parameters on this branch or on master. The
+log, undo and save of an add record only where it went and the plugin's
+defaults. It would take: an optional `parameters` in `add_request`; the add
+made bypassed, those set, then un-bypassed, as `_undo_remove` already puts a
+plugin back; a take-back if one is refused; a profile field for the values
+(validated against probe); the panel flattening carrying it; and the
+drawer's add sending it, normalised, with tests at each step. That is
+beyond a small change, so the exception stays and the guide says why.
+*(2026-11-18)*

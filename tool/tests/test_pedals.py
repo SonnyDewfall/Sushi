@@ -11,8 +11,8 @@ shimmer safe end where the guide says they do.
 The slow half loads each in a real Sushi 1.3.0, alone on a mono channel as the
 compiler builds one, through the master, and holds the levels the guide
 promises: the echo at the loudest its page allows, its repeats dying away,
-its Level's two ends, and the shimmer at Mix 100 %, which is the plugin's own
-setting. Settings are worked out from the profiles' own curves, so a curve
+its Level's two ends, and the shimmer at its loudest corner and at the
+plugin's own settings, which a library add gives it. Settings are worked out from the profiles' own curves, so a curve
 widened fails here. A level is the render's against the same channel with the
 pedal bypassed, on a -20 dBFS sweep: RMS, and peak against peak.
 
@@ -55,18 +55,19 @@ IDS = {uri: name.split(".")[0] for uri, (name, _, _) in PEDALS.items()}
 
 # What the guide promises (docs/guide/effects.md), over the guitar bypassed
 # on the sweep, and what is asserted: a little inside, so a curve widened
-# fails before the promise does. Measured here, 2026-11-17: the echo at the
-# loudest its page allows, +3.1 dB RMS and +10.9 dB peak; the shimmer at Mix
-# 100 % and its other knobs where the plugin starts them, +10.6 and +19.1,
-# and at its loudest corner (Mix 100 %, both decays 8, Pitch mix 0), +14.9
-# and +25.7.
+# fails before the promise does. Measured here: the echo at the loudest its
+# page allows, +3.1 dB RMS and +10.9 dB peak (2026-11-17); the shimmer at its
+# loudest corner (Mix 100 %, Dry/Wet 0.15, both decays 8, Pitch mix 0),
+# +5.9 and +16.2 (2026-11-18). The shimmer's promise is the coordinator's
+# +6 dB RMS window itself, since its corner sits just inside it: Mix at 0.2
+# measured about +7.5.
 ECHO_PROMISE = {"rms": 4.0, "peak": 12.0}
 ECHO_HELD = {"rms": 3.5, "peak": 11.0}
-SHIMMER_OWN_PROMISE = {"rms": 12.0, "peak": 20.0}
-SHIMMER_OWN_HELD = {"rms": 11.0, "peak": 19.5}
-SHIMMER_PROMISE = {"rms": 16.0, "peak": 27.0}
-SHIMMER_HELD = {"rms": 15.3, "peak": 26.2}
+SHIMMER_PROMISE = {"rms": 6.0, "peak": 17.0}
 SHIMMER_LOUDEST = {"T60M": 8.0, "T60DS": 8.0, "PSDRYWET": 0.0}
+# The one setting the page cannot reach but a library add can: the plugin's
+# own Dry/Wet, 0.5, past Mix's top (an add cannot set starting values).
+SHIMMER_OWN = {"DRYWET": 0.5}
 
 
 def facts(uri: str) -> dict:
@@ -198,16 +199,17 @@ def test_the_echo_at_the_plugins_own_settings_is_on_its_controls_travel():
         assert min(d["at_0"], d["at_1"]) <= default <= max(d["at_0"], d["at_1"]), (cid, default)
 
 
-def test_the_shimmers_mix_tops_out_at_the_plugins_own_setting():
+def test_the_shimmers_mix_stops_at_0_15_and_its_own_setting_is_the_one_exception():
     """Dry/Wet is a straight crossfade to a wet about 17 dB over the guitar
-    (measured), so Mix stops at the plugin's own 0.5, and a shimmer added from
-    the library is at Mix 100 %, not past it (review of PR #173). It is slow at
-    first (`cosine`): half way is Dry/Wet 0.146."""
+    (measured), so Mix stops at 0.15, where the loudest the page allows is
+    +6 dB RMS (the coordinator's window, PR #173). The documented exception:
+    the plugin's own Dry/Wet is 0.5, past Mix's top, and a shimmer added from
+    the library has it, since an add cannot set starting values. The page
+    shows it at 100 %, off the curve, and turning Mix down brings it back."""
     ((drive),) = drives(profile(SHIMMER), "mix")
+    assert (drive["parameter"], drive["curve"], drive["at_0"], drive["at_1"]) == ("DRYWET", "linear", 0.0, 0.15)
     default = by_name(profile(SHIMMER))["DRYWET"]["facts"]["default"]
-    assert (drive["parameter"], drive["curve"], drive["at_0"], drive["at_1"]) == ("DRYWET", "cosine", 0.0, default)
-    assert default == 0.5 and driven_value(drive, 1) == pytest.approx(default)
-    assert driven_value(drive, 0.5) == pytest.approx(0.5 * (1 - math.cos(math.pi / 4)))
+    assert default == SHIMMER_OWN["DRYWET"] == 0.5 and default > drive["at_1"]
 
 
 # --- the committed presets ----------------------------------------------------
@@ -379,12 +381,14 @@ def test_the_echos_level_runs_from_12_db_under_the_guitar_to_level_with_it(tmp_p
 
 @needs_sushi
 @pytest.mark.slow
-def test_the_shimmer_at_mix_100_is_its_own_setting_and_inside_the_guides_window(tmp_path):
-    full = _over_bypassed(tmp_path, SHIMMER, at(SHIMMER, {"mix": 1.0}), "mix100")
+def test_the_shimmer_at_its_own_settings_is_the_louder_exception_the_guide_names(tmp_path):
+    """Added from the library: the plugin's own settings, past Mix's top.
+    About 11 dB over the guitar (the guide says so); and it is louder than
+    Mix at 100 % with the same other knobs, which is why Mix stops short."""
     own = _over_bypassed(tmp_path, SHIMMER, {}, "defaults")
-    assert full == pytest.approx(own, abs=0.01), "added from the library, it is at Mix 100 %"
-    assert full["rms"] <= SHIMMER_OWN_HELD["rms"] < SHIMMER_OWN_PROMISE["rms"], full
-    assert full["peak"] <= SHIMMER_OWN_HELD["peak"] < SHIMMER_OWN_PROMISE["peak"], full
+    full = _over_bypassed(tmp_path, SHIMMER, at(SHIMMER, {"mix": 1.0}), "mix100")
+    assert 10.0 <= own["rms"] <= 11.5, own
+    assert full["rms"] <= own["rms"] - 5, (full, own)
 
 
 @needs_sushi
@@ -393,8 +397,8 @@ def test_the_shimmer_at_its_loudest_corner_stays_inside_the_guides_window(tmp_pa
     """Its decays at their longest and Pitch mix at 0: the loudest of a grid
     of its knobs (Pitch mix, Shift, Crossover, Damping, the decays), measured."""
     level = _over_bypassed(tmp_path, SHIMMER, at(SHIMMER, {"mix": 1.0}, SHIMMER_LOUDEST), "loudest")
-    assert level["rms"] <= SHIMMER_HELD["rms"] < SHIMMER_PROMISE["rms"], level
-    assert level["peak"] <= SHIMMER_HELD["peak"] < SHIMMER_PROMISE["peak"], level
+    assert level["rms"] <= SHIMMER_PROMISE["rms"], level
+    assert level["peak"] <= SHIMMER_PROMISE["peak"], level
 
 
 def _stress(scale: float):
@@ -423,8 +427,8 @@ def test_the_shimmer_does_not_run_away_at_its_longest_and_most_shifted(shift, tm
     is full scale. Measured on that signal (2026-11-17): a tenth of the
     input gave exactly a tenth of the output, and in the silence after it
     the tail fell 48 dB in eight seconds at its longest. Held here at every
-    knob that feeds the shifter back at its top (Mix 100 %, both decays 8,
-    Pitch mix 1) and Shift at 0 and both ends: the output scales with the
+    knob that feeds the shifter back at its top (the plugin's own Dry/Wet
+    0.5, both decays 8, Pitch mix 1) and Shift at 0 and both ends: the output scales with the
     input, and the tail dies away."""
     from sushi_rig import signals
     from sushi_rig.analysis import check_finite
@@ -432,7 +436,9 @@ def test_the_shimmer_does_not_run_away_at_its_longest_and_most_shifted(shift, tm
 
     from sushi_rig.render import render_offline
 
-    settings = at(SHIMMER, {"mix": 1.0}, {"T60M": 8.0, "T60DS": 8.0, "PSDRYWET": 1.0, "SHIFT": shift})
+    # The plugin's own Dry/Wet, the wettest a library add reaches, and not
+    # the page's Mix: feedback is in the wet, which this makes loudest.
+    settings = at(SHIMMER, {}, {**SHIMMER_OWN, "T60M": 8.0, "T60DS": 8.0, "PSDRYWET": 1.0, "SHIFT": shift})
     # The plugin alone on a stereo track, not a compiled channel: the master
     # limiter (#172) holds a full-scale input's +20 dBFS down, which is its
     # job and would read here as the shimmer being non-linear.

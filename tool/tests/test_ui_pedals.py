@@ -131,11 +131,21 @@ def test_the_echo_at_the_plugins_own_settings_is_on_its_mix_and_level(blank):
     assert out["level"]["v"] == pytest.approx((1.0 - 0.725) / (1.17 - 0.725), abs=1e-3) and out["level"]["off"] < 1e-6
 
 
-def test_the_shimmer_at_the_plugins_own_settings_is_on_its_mix_at_100(blank):
-    """Added from the library, the shimmer has Dry/Wet 0.5, the top of its
-    Mix: shown at 100 %, on the curve, not past it (review of PR #173)."""
-    out = positions(blank, SHIMMER, info(SHIMMER, {}))
-    assert out["mix"]["v"] == pytest.approx(1, abs=1e-6) and out["mix"]["off"] < 1e-6
+def test_the_shimmer_at_the_plugins_own_settings_is_past_its_mix_and_turns_down_from_there(blank):
+    """The documented exception (PR #173): added from the library, the
+    shimmer has Dry/Wet 0.5, past Mix's top of 0.15, since an add cannot set
+    starting values. The page shows it at 100 %, off the curve and saying so,
+    and a turn down takes Dry/Wet from where it is to 0, never up."""
+    out = rigjs(blank, """
+      const profile = (await (await fetch('/profiles')).json()).profiles[arg.uri];
+      const mix = R.makeMix(profile.parameters.find((p) => p.name === 'mix'), arg.info);
+      const values = {DRYWET: arg.info.DRYWET.value};
+      const anchor = R.mixAnchor(mix, values);
+      return {at: R.mixPosition(mix, values), limit: R.MIX_OFF_CURVE,
+              down: [0.75, 0.5, 0].map((m) => R.mixPath(mix, anchor, m)[0].value)};""",
+                {"uri": SHIMMER, "info": info(SHIMMER, {})})
+    assert out["at"]["v"] == pytest.approx(1, abs=1e-6) and out["at"]["off"] > out["limit"]
+    assert 0.5 > out["down"][0] > out["down"][1] > out["down"][2] == pytest.approx(0, abs=1e-9)
 
 
 @pytest.mark.committed_presets

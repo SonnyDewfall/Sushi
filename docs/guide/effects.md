@@ -98,17 +98,14 @@ still set them to anything, and nothing stops it yet.
 
 **Shimmer** (Gxshimmizita): a reverb whose tail rises (or falls) in pitch.
 
-- **Mix**: how much reverb against the dry guitar. It moves slowly at
-  first. 100 % is where the plugin itself starts (and where it is when added
-  from the Library), not "all reverb": the reverb is much louder than the
-  guitar, and at 100 % the whole sound is about 11 dB louder than the guitar
-  alone, with peaks about 19 dB higher. At 50 %, where the preset has it,
-  it is about 3 dB louder. Start low. Longer decays make it louder still:
-  with **Decay** and **Low decay** at their longest, the page allows at most
-  16 dB louder than the guitar, with peaks at most 27 dB higher (measured
-  on a test sweep: +14.9 dB and +25.7 dB). It does not run
-  away: however long the decay or high the Pitch mix, the tail dies away
-  once you stop playing.
+- **Mix**: how much reverb against the dry guitar. 100 % is not "all
+  reverb": the reverb is much louder than the guitar, so Mix stops where the
+  whole sound is at most 6 dB louder than the guitar alone, whatever the
+  other knobs say (peaks at most 17 dB higher; measured on a test sweep,
+  with both decays at their longest: +5.9 dB and +16.2 dB). At the plugin's
+  own decays, Mix 100 % is about 3.5 dB louder. The preset has Mix at
+  100 %. It does not run away: however long the decay or high the Pitch
+  mix, the tail dies away once you stop playing.
 - **Shift**: which way the tail moves in pitch, and how fast. 0 is a plain
   reverb; at 2, with Pitch mix at 1, a note's tail climbs about five
   semitones in a second and a half.
@@ -126,19 +123,24 @@ still set them to anything, and nothing stops it yet.
   test sweep its right side comes out about 3 dB louder than its left
   (about 1 dB with the guitar signal). The rig's own checks allow a stereo
   reverb's two sides to be up to 4 dB apart, and every other plugin 1 dB, so
-  a rig you save and commit with the shimmer in it passes them, at most
-  settings. Not at all: with both decays at their shortest (1) and Mix about
-  three quarters of the way up, the sides measured 4.1 dB apart, and a
-  committed rig saved like that fails the check, which says so. A side that
-  goes silent still fails, reverb or not.
+  a rig you save and commit with the shimmer in it passes them: anywhere on
+  its Mix the sides measured at most 3.8 dB apart. One way past it: a
+  shimmer added from the Library starts beyond Mix (below), and turned part
+  way down from there, with both decays at their shortest, its sides
+  measured 4.1 dB apart; a committed rig saved like that fails the check,
+  which says so. A side that goes silent still fails, reverb or not.
 - **The tape echo, added from the Library, has no echoes and is quieter.**
   At the plugin's own settings every head is off, Mix and Repeats are at
   0 % and Level at 62 %, about 5 dB under the guitar. Turn **Head 1** to 1,
   raise **Mix** and **Repeats**, and under **More** turn **Level** to 100 %.
   Its preset already has Head 1 on, Mix at 50 %, Repeats and Level at 100 %.
 - **The shimmer, added from the Library, is loud.** It starts at the
-  plugin's own settings, which is Mix at 100 %: about 11 dB louder than the
-  guitar. Turn Mix down first. Its preset has Mix at 50 %.
+  plugin's own settings, which are wetter than Mix's 100 %: about 11 dB
+  louder than the guitar. Mix shows 100 % with a note that it is off its
+  curve. Turn Mix down first: from there it comes down to the dry guitar,
+  and once it is back on its curve it stays inside the 6 dB. Or start from
+  its preset, which has Mix at 100 %. (The Library cannot yet set a plugin's
+  starting values; that is why.)
 
 For the files behind this: the rig is `config/rigs/pedals.yaml`, with its
 sound reference `config/sound/pedals.yaml`; the presets are
