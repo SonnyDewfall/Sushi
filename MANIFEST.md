@@ -5572,7 +5572,7 @@ with the swallowing taken out, and the click and tap with the wait for the
 release taken out), reduced motion, a narrow window, a rig stopping, a
 software renderer refused, a hidden tab and polling carrying on under it.
 They run on Chromium's fake input with its renderer renamed, since
-SwiftShader is refused. The fast suite: 5058 passed, 33 skipped (none of them these). **Not run:** the rig, its GPU, its real
+SwiftShader is refused. The fast suite, after merging #174: 5347 passed, 21 skipped (none of them these). **Not run:** the rig, its GPU, its real
 PipeWire graph with Sushi and the iD14, the permission prompt (answered by a
 Chromium switch in the tests), Firefox, a phone, and anyone looking at what
 it draws on a real screen. *(2026-11-18)*
