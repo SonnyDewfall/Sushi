@@ -13,7 +13,13 @@ with a made-up guitar signal.
 
 ## Try one
 
-The quickest way is a rig of its own, started from the pedal's preset:
+The quickest way to hear all four: under **RIGS**, pick the rig **pedals**
+and click **Start** or **Switch to**. It has the four in a row on the guitar,
+after the amp: the tape echo and the shimmer on, the tremolo and the flanger
+off. Click a pedal's round button to bring it in or take it out.
+
+To hear one on its own, make a rig of its own, started from the pedal's
+preset:
 
 1. On the rack, under **RIGS**, click **New rig…**.
 2. Type a name, such as `try-shimmer`.
@@ -116,16 +122,15 @@ still set them to anything, and nothing stops it yet.
 
 ## Things that may surprise you
 
-- **The shimmer is wider on one side.** It is a stereo reverb, and with a
-  test sweep its right side comes out about 3 dB louder than its left (about 1 dB
-  with the guitar signal). The rig's own checks treat sides more
-  than 1 dB apart as a fault, so **a rig file in `config/rigs/` with the
-  shimmer in it fails the test suite** (`tests/test_stereo.py`, one of the
-  slow tests the CI build runs), even with the shimmer switched off, and
-  with it on the sound check (`nulltest`) fails too. Trying it, and saving
-  it, are fine: it is the tests that object, once the rig is committed. That
-  is one reason the four come as presets and not as a committed rig. Whether
-  a stereo reverb should be held to 1 dB is an open question (#165).
+- **The shimmer is louder on one side.** It is a stereo reverb, and with a
+  test sweep its right side comes out about 3 dB louder than its left
+  (about 1 dB with the guitar signal). The rig's own checks allow a stereo
+  reverb's two sides to be up to 4 dB apart, and every other plugin 1 dB, so
+  a rig you save and commit with the shimmer in it passes them, at most
+  settings. Not at all: with both decays at their shortest (1) and Mix about
+  three quarters of the way up, the sides measured 4.1 dB apart, and a
+  committed rig saved like that fails the check, which says so. A side that
+  goes silent still fails, reverb or not.
 - **The tape echo, added from the Library, has no echoes and is quieter.**
   At the plugin's own settings every head is off, Mix and Repeats are at
   0 % and Level at 62 %, about 5 dB under the guitar. Turn **Head 1** to 1,
@@ -135,7 +140,9 @@ still set them to anything, and nothing stops it yet.
   plugin's own settings, which is Mix at 100 %: about 11 dB louder than the
   guitar. Turn Mix down first. Its preset has Mix at 50 %.
 
-For the files behind this: the presets are `config/channels/tremolo.yaml`,
-`flanger.yaml`, `tape-echo.yaml` and `shimmer.yaml`, and the knob layouts are
+For the files behind this: the rig is `config/rigs/pedals.yaml`, with its
+sound reference `config/sound/pedals.yaml`; the presets are
+`config/channels/tremolo.yaml`, `flanger.yaml`, `tape-echo.yaml` and
+`shimmer.yaml`; and the knob layouts are
 the profiles under `tool/examples/profiles/` ([Plugins and
 portability](../reference/plugins.md)).

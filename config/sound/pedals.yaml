@@ -1,0 +1,41 @@
+schema_version: 2
+config: pedals
+stimulus: log_sweep 20-20000Hz 5s -20dBFS 2ch
+sample_rate: 48000
+frames: 240000
+measured:
+  peak_dbfs: -7.7621
+  rms_dbfs: -19.2484
+  channel_rms_dbfs:
+  - -21.2303
+  - -17.8926
+  delay_samples: 3
+  bands:
+  - low_hz: 20.0
+    high_hz: 80.0
+    level_dbfs: -36.5324
+  - low_hz: 80.0
+    high_hz: 250.0
+    level_dbfs: -25.9184
+  - low_hz: 250.0
+    high_hz: 800.0
+    level_dbfs: -22.5712
+  - low_hz: 800.0
+    high_hz: 2500.0
+    level_dbfs: -23.9352
+  - low_hz: 2500.0
+    high_hz: 8000.0
+    level_dbfs: -30.5087
+  - low_hz: 8000.0
+    high_hz: 20000.0
+    level_dbfs: -47.2175
+tolerance:
+  band_db: 0.0001
+  level_db: 0.0001
+  delay_samples: 0
+  note: 'measured: two renders of this config were identical to the 0.0001 dB this
+    file is written at'
+made_from:
+  rig: pedals.yaml
+  hash: ce78d2a97c5f9c330774e74870702ab0f6c2a3e82423c203326147b4de078911
+  hash_rule: 2

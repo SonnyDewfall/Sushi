@@ -1,0 +1,79 @@
+# The four pedals of #165 on one guitar channel, to try them side by side: the
+# tape echo and the shimmer are on, the tremolo and the flanger off. Click a
+# pedal's round button on the rack to bring it in (docs/guide/effects.md).
+# Settings are Sushi's normalised 0 to 1, the same as the channel presets in
+# config/channels/: the echo at Mix 50 %, Repeats and Level 100 %, head 1 at
+# 120 BPM; the shimmer at Mix 50 %, Shift 2, Pitch mix 0.7, Decay 4.
+
+kind: rig
+schema_version: 1
+name: pedals
+description: Electric guitar — tremolo, flanger, a tape echo and a shimmer reverb
+host:
+  samplerate: 48000
+amp:
+  plugin: nam
+  model: amp/models/Neve 2.nam
+  parameters:
+    Input Lvl: 0.0
+    Output Lvl: -0.4
+    Quality: 1.0
+channels:
+- name: board
+  input: guitar-in
+  width: mono
+  strip:
+    gain: 0.833333
+    pan: 0.5
+    mute: 0.0
+  chain:
+  - name: tremolo
+    uri: http://guitarix.sourceforge.net/plugins/gx_tremolo#_tremolo
+    bypassed: true
+    parameters:
+      Dry/Wet: 1.0
+      Mode: 1.0
+      Depth: 0.6
+      Freq: 0.098196
+      Reset: 0.0
+  - name: flanger
+    uri: http://guitarix.sourceforge.net/plugins/gx_flanger#_flanger
+    bypassed: true
+    parameters:
+      DEPTH: 0.1
+      WIDTH: 0.5
+      FREQ: 0.015075
+      FEEDBACK: 0.142929
+      WET: 1.0
+      MIX: 0.5
+  - name: echo
+    uri: http://guitarix.sourceforge.net/plugins/gxechocat#echocat
+    bypassed: false
+    parameters:
+      Input: 0.25
+      Swell: 0.35
+      Sustain: 0.3
+      Output: 0.2925
+      BPM: 0.285714
+      Head 1: 1.0
+      Head 2: 0.0
+      Head 3: 0.0
+  - name: shimmer
+    uri: http://guitarix.sourceforge.net/plugins/gx_shimmizita_#_shimmizita_
+    bypassed: false
+    parameters:
+      CONTROL: 0.5
+      DEPTH: 0.0
+      DRYWET: 0.146447
+      ENVELOPE: 0.310345
+      F1: 0.157895
+      F2: 0.20436
+      MODE: 0.5
+      PSDRYWET: 0.7
+      SHIFT: 0.666667
+      SPEED: 0.0
+      T60DS: 0.285714
+      T60M: 0.428571
+master:
+  output: monitor-out
+  chain: []
