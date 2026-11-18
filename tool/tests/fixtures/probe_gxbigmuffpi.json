@@ -1,0 +1,48 @@
+{
+  "uri": "http://guitarix.sourceforge.net/plugins/gx_bmp_#_bmp_",
+  "name": "GxBigMuffPi",
+  "class": "Distortion Plugin",
+  "bundle": "/usr/lib/lv2/gx_bmp.lv2",
+  "audio_in": 1,
+  "audio_out": 1,
+  "atom_ports": 0,
+  "patch_writables": [],
+  "state_interface": false,
+  "config_drivable": true,
+  "parameters": [
+    {
+      "symbol": "SUSTAIN",
+      "name": "SUSTAIN",
+      "min": 0.0,
+      "max": 1.0,
+      "default": 0.5,
+      "toggled": false,
+      "integer": false,
+      "enumeration": false,
+      "logarithmic": false
+    },
+    {
+      "symbol": "TONE",
+      "name": "TONE",
+      "min": 0.0,
+      "max": 1.0,
+      "default": 0.5,
+      "toggled": false,
+      "integer": false,
+      "enumeration": false,
+      "logarithmic": false
+    },
+    {
+      "symbol": "VOLUME",
+      "name": "VOLUME",
+      "min": 0.0,
+      "max": 1.0,
+      "default": 0.5,
+      "toggled": false,
+      "integer": false,
+      "enumeration": false,
+      "logarithmic": false
+    }
+  ],
+  "version": "43.0"
+}

@@ -1,0 +1,90 @@
+# sushi-rig component profile (schema 1).
+# Machine-written and canonical: edit by hand if you like, but comments
+# do not survive the next rewrite. Facts are checked against `sushi-rig
+# probe`; judgements carry provenance (draft / reviewed / fact).
+# Check with:  sushi-rig profile validate <this file>
+schema_version: 1
+
+plugin:
+  uri: http://guitarix.sourceforge.net/plugins/gx_bmp_#_bmp_
+  version: '43.0'
+  name: GxBigMuffPi
+kind: effect
+host: sushi-lv2
+
+ports:
+  audio_in: 1
+  audio_out: 1
+  config_drivable: true
+
+groups:
+  - id: fuzz
+    label: Fuzz
+    provenance: draft
+
+parameters:
+  - name: SUSTAIN
+    symbol: SUSTAIN
+    facts:
+      min: 0.0
+      max: 1.0
+      default: 0.5
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: primary, provenance: draft}
+    group: {value: fuzz, provenance: draft}
+    order: {value: 1, provenance: draft}
+    label: {value: Sustain, provenance: draft}
+    description:
+      value: 'How much fuzz: more is squarer, and longer before a note dies away.'
+      provenance: draft
+    scale: {value: linear, provenance: draft}
+    control: {value: knob, provenance: draft}
+    phone: {value: 1, provenance: draft}
+
+  - name: TONE
+    symbol: TONE
+    facts:
+      min: 0.0
+      max: 1.0
+      default: 0.5
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: primary, provenance: draft}
+    group: {value: fuzz, provenance: draft}
+    order: {value: 2, provenance: draft}
+    label: {value: Tone, provenance: draft}
+    description:
+      value: Dark to bright.
+      provenance: draft
+    scale: {value: linear, provenance: draft}
+    control: {value: knob, provenance: draft}
+    phone: {value: 2, provenance: draft}
+
+  - name: VOLUME
+    symbol: VOLUME
+    facts:
+      min: 0.0
+      max: 1.0
+      default: 0.5
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: primary, provenance: draft}
+    group: {value: fuzz, provenance: draft}
+    order: {value: 3, provenance: draft}
+    label: {value: Volume, provenance: draft}
+    description:
+      value: 0 is silent; 0.5, its default, about 4 dB over the guitar (measured).
+      provenance: draft
+    scale: {value: linear, provenance: draft}
+    control: {value: knob, provenance: draft}
+    phone: {value: 3, provenance: draft}

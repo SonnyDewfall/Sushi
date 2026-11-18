@@ -1,0 +1,155 @@
+# sushi-rig component profile (schema 1).
+# Machine-written and canonical: edit by hand if you like, but comments
+# do not survive the next rewrite. Facts are checked against `sushi-rig
+# probe`; judgements carry provenance (draft / reviewed / fact).
+# Check with:  sushi-rig profile validate <this file>
+schema_version: 1
+
+plugin:
+  uri: http://hippie.lt/lv2/gate
+  version: 1.2.0
+  name: abGate
+kind: effect
+host: sushi-lv2
+
+ports:
+  audio_in: 1
+  audio_out: 1
+  config_drivable: true
+
+groups:
+  - id: swell
+    label: Swell
+    provenance: draft
+  - id: gate
+    label: Gate
+    provenance: draft
+
+parameters:
+  - name: Attack
+    symbol: attack
+    facts:
+      min: 0.10000000149011612
+      max: 500.0
+      default: 30.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: primary, provenance: draft}
+    group: {value: swell, provenance: draft}
+    order: {value: 1, provenance: draft}
+    label: {value: Swell, provenance: draft}
+    description:
+      value: 'How slowly it opens, ms (suggested by the range): 500 swells a note out of silence.'
+      provenance: draft
+    scale: {value: linear, provenance: draft}
+    control: {value: knob, provenance: draft}
+    phone: {value: 1, provenance: draft}
+
+  - name: Threshold
+    symbol: threshold
+    facts:
+      min: -70.0
+      max: 12.0
+      default: -70.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: primary, provenance: draft}
+    group: {value: gate, provenance: draft}
+    order: {value: 1, provenance: draft}
+    label: {value: Threshold, provenance: fact}
+    description:
+      value: Under this it is shut; the range suggests dB. Above your pickups' hiss, -45 or so.
+      provenance: draft
+    scale: {value: linear, provenance: draft}
+    control: {value: knob, provenance: draft}
+    phone: {value: 2, provenance: draft}
+
+  - name: Decay
+    symbol: decay
+    facts:
+      min: 5.0
+      max: 4000.0
+      default: 1000.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: advanced, provenance: draft}
+    group: {value: gate, provenance: draft}
+    order: {value: 2, provenance: draft}
+    label: {value: Close, provenance: draft}
+    description:
+      value: How slowly it shuts once a note falls under the threshold; the range suggests ms.
+      provenance: draft
+    scale: {value: linear, provenance: draft}
+    control: {value: knob, provenance: draft}
+
+  - name: Hold
+    symbol: hold
+    facts:
+      min: 5.0
+      max: 3000.0
+      default: 500.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: advanced, provenance: draft}
+    group: {value: gate, provenance: draft}
+    order: {value: 3, provenance: draft}
+    label: {value: Hold, provenance: fact}
+    description:
+      value: How long it stays open after the note falls under the threshold; suggests ms.
+      provenance: draft
+    scale: {value: linear, provenance: draft}
+    control: {value: knob, provenance: draft}
+
+  - name: Range
+    symbol: gaterange
+    facts:
+      min: -90.0
+      max: -20.0
+      default: -90.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: advanced, provenance: draft}
+    group: {value: gate, provenance: draft}
+    order: {value: 4, provenance: draft}
+    label: {value: Range, provenance: fact}
+    description:
+      value: How far down it shuts; the range suggests dB.
+      provenance: draft
+    scale: {value: linear, provenance: draft}
+    control: {value: knob, provenance: draft}
+
+  - name: Switch
+    symbol: switch
+    facts:
+      min: 0.0
+      max: 1.0
+      default: 0.0
+      toggled: true
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: advanced, provenance: draft}
+    group: {value: gate, provenance: draft}
+    order: {value: 5, provenance: draft}
+    label: {value: Gate on, provenance: draft}
+    description:
+      value: 'Its own on switch. Off, its default, passes everything (measured): keep it on.'
+      provenance: draft
+    scale: {value: toggle, provenance: fact}
+    control: {value: toggle, provenance: draft}
