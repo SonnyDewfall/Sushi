@@ -221,7 +221,7 @@ def test_only_the_folder_given_is_scanned(tmp_path):
 def test_every_manifest_uri_is_listed_once_in_manifest_order():
     entries = build_library(MANIFEST, {}, {})["plugins"]
     assert [e["uri"] for e in entries] == MANIFEST
-    assert len(entries) == 56
+    assert len(entries) == len(MANIFEST)
 
 
 def test_a_name_read_from_the_bundle_is_marked_as_such():
@@ -285,7 +285,7 @@ def test_read_library_against_the_real_manifest_and_profile(tmp_path):
     machine may have no plugins/ (it is untracked)."""
     result = read_library(ROOT, plugins_dir=FIXTURES)
     entries = {e["uri"]: e for e in result["plugins"]}
-    assert len(entries) == 56
+    assert len(entries) == len(MANIFEST)
     assert entries[GXTS9]["name"] == "GxTubeScreamer" and entries[GXTS9]["name_from"] == "plugin"
     assert entries[GXTS9]["groups"][0]["id"] == "dirt"
     assert result["sources"]["plugins_dir"] == str(FIXTURES)

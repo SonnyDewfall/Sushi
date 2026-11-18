@@ -1,0 +1,61 @@
+# Channel preset string-ensemble: the string machine's own channel (#177),
+# config/rigs/string-machine.yaml's `strings`, to put on any channel. A
+# compressor, a swell (abGate, bypassed: switch it on to fade notes in from
+# silence), the Solina-style ensemble and a long hall. Settings are Sushi's
+# normalised 0 to 1, as in the rig; what to try is in
+# docs/guide/string-machine.md.
+
+kind: channel
+schema_version: 1
+name: string-ensemble
+description: A string machine — compressor, a swell (off), the Solina ensemble and a long hall
+width: mono
+chain:
+- name: compressor
+  uri: http://guitarix.sourceforge.net/plugins/gx_compressor#_compressor
+  bypassed: false
+  parameters:
+    RATIO: 0.157895
+    KNEE: 0.15
+    THRESHOLD: 0.622642
+    RELEASE: 0.03
+    ATTACK: 0.005
+    BYPASS: 1.0
+- name: swell
+  uri: http://hippie.lt/lv2/gate
+  bypassed: true
+  parameters:
+    Switch: 1.0
+    Threshold: 0.304878
+    Attack: 1.0
+    Hold: 0.015025
+    Decay: 0.098874
+    Range: 0.0
+- name: ensemble
+  uri: http://jpcima.sdf1.org/lv2/string-machine-chorus
+  bypassed: false
+  parameters:
+    Enabled: 1.0
+    Chorus global depth: 1.0
+    Chorus rate 1: 0.472433
+    Chorus depth 1: 0.3071
+    Chorus rate 2: 0.4725
+    Chorus depth 2: 0.9055
+    Chorus model: 1.0
+    Wet gain: 0.7125
+    Dry gain: 0.0
+- name: hall
+  uri: http://guitarix.sourceforge.net/plugins/gx_zita_rev1_stereo#_zita_rev1_stereo
+  bypassed: false
+  parameters:
+    LEVEL: 0.9375
+    EQ2_FREQ: 0.136179
+    EQ1_LEVEL: 0.5
+    EQ1_FREQ: 0.111789
+    IN_DELAY: 0.25
+    LOW_RT60: 0.571429
+    LF_X: 0.157895
+    HF_DAMPING: 0.20436
+    MID_RT60: 0.571429
+    DRY_WET_MIX: 0.35
+    EQ2_LEVEL: 0.5

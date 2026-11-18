@@ -10,6 +10,7 @@ which lilv does not need in order to list a plugin.
 from __future__ import annotations
 
 import importlib.util
+import os
 from pathlib import Path
 
 import pytest
@@ -217,6 +218,25 @@ def test_copy_keeps_symlinks_as_links(tmp_path):
     (src / "link.so").symlink_to("real.so")
     copy_bundles([src], tmp_path / "plugins")
     assert (tmp_path / "plugins" / "a.lv2" / "link.so").is_symlink()
+
+
+def test_copy_points_a_relative_link_out_of_its_bundle_at_what_it_led_to(tmp_path):
+    """Ubuntu's calf.lv2/calf.so is `../../x86_64-linux-gnu/calf/calf.so`;
+    kept relative in plugins/, it leads nowhere (#177). A link inside the
+    bundle stays relative, and so means the copy's own file."""
+    lib = tmp_path / "usr" / "lib" / "x86_64-linux-gnu" / "calf"
+    lib.mkdir(parents=True)
+    (lib / "calf.so").write_text("the library")
+    src = tmp_path / "usr" / "lib" / "lv2" / "calf.lv2"
+    src.mkdir(parents=True)
+    (src / "calf.so").symlink_to("../../x86_64-linux-gnu/calf/calf.so")
+    (src / "real.ttl").write_text("turtle")
+    (src / "inside.ttl").symlink_to("real.ttl")
+    copy_bundles([src], tmp_path / "plugins")
+    copy = tmp_path / "plugins" / "calf.lv2"
+    assert (copy / "calf.so").read_text() == "the library"
+    assert os.readlink(copy / "calf.so") == str((lib / "calf.so").resolve())
+    assert os.readlink(copy / "inside.ttl") == "real.ttl"
 
 
 # --- against real lilv, on synthetic bundles -------------------------------

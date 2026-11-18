@@ -199,7 +199,9 @@ RUN ln -s /opt/sushi/squashfs-root/AppRun /rig/sushi
 # string-machine chorus comes from its stage too, and no package declares its
 # URI, so `assemble` takes it from there and `check` fails a plugins/ without
 # it. tests/test_string_machine.py checks plugins/ holds the pinned build and
-# renders it under Sushi.
+# renders it under Sushi. calf.lv2's binary is a relative link out of its bundle in
+# Ubuntu's package, which `assemble` makes absolute (plugins.copy_bundles);
+# `check` reads only the Turtle, so the last line checks the link leads to a file.
 ARG NAM_URI=http://github.com/mikeoliphant/neural-amp-modeler-lv2
 COPY --from=rubberband /opt/rubberband-4.0.0/lv2 /opt/rubberband-4.0.0/lv2
 COPY --from=string-machine-chorus /opt/string-machine-chorus/lv2 /opt/string-machine-chorus/lv2
@@ -211,7 +213,8 @@ RUN sushi-rig plugins assemble --from /opt/rubberband-4.0.0/lv2 \
     && ! ldd /rig/plugins/rubberband.lv2/lv2-rubberband.so | grep 'not found' \
     && grep -q 'string-machine commit 7050cb1516fbaf5aaaa2c6cc9999fe5ac100d746' \
         /rig/plugins/string-machine-chorus.lv2/BUILT-FROM \
-    && ! ldd /rig/plugins/string-machine-chorus.lv2/string-machine-chorus.so | grep 'not found'
+    && ! ldd /rig/plugins/string-machine-chorus.lv2/string-machine-chorus.so | grep 'not found' \
+    && test -e /rig/plugins/calf.lv2/calf.so
 
 # --- the rig machine's layout, for tests/test_probe.py ----------------------
 #

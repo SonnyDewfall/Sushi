@@ -67,7 +67,10 @@ workflows because no single runner has everything:
   plugins include Rubber Band 4.0, built by `scripts/build-rubberband4.sh`,
   and `tests/test_octave.py` checks there that `plugins/` holds that build and
   that the octave it plays under Sushi is in tune and finite; its numbers
-  (cents per note, the lag) are printed at the end of the run.
+  (cents per note, the lag) are printed at the end of the run. They include
+  string-machine chorus too, built by `scripts/build-string-machine-chorus.sh`,
+  and `tests/test_string_machine.py` checks the build and what the string
+  machine's plugins do under Sushi.
 - The same job runs `nulltest --all`, so **a change in the code or a plugin
   that alters the sound fails the build**. References are calibrated in that
   container, for every v1 config (`config/sound/<name>.v1-mono.yaml`), every

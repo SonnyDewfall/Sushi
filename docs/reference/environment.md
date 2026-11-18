@@ -8,7 +8,7 @@ Verified on the rig machine (`sonny-dewfall-XPS-9320`):
 | | Status |
 |---|---|
 | Sushi 1.3.0 | ✅ built with `vst3, lv2, jack, rpc control, ableton link` |
-| LV2 plugins discoverable | ✅ every URI in `plugin-manifest.txt` (55 of today's 56), from the bundles in `plugins/`; `sushi-rig plugins check` is the test. The 56th, Rubber Band 4.0's Live shifter (#164), is built, not packaged, and has not been installed there yet: [Plugins](plugins.md#rubber-band-40-built-for-the-octave) |
+| LV2 plugins discoverable | ✅ every URI in `plugin-manifest.txt` but six, from the bundles in `plugins/`; `sushi-rig plugins check` is the test. Not installed there yet: Rubber Band 4.0's Live shifter (#164) and string-machine chorus (#177), which are built, not packaged ([Plugins](plugins.md#rubber-band-40-built-for-the-octave)), and the packaged Calf Envelope Filter, abGate, GxBigMuffPi and GxZita_rev1-Stereo (#177, [Plugins](plugins.md#string-machine-chorus-built-for-the-string-machine)) |
 | PipeWire / JACK, qpwgraph, fmit | ✅ |
 | `lilv` Python bindings (system) | ✅ `python3-lilv` + `liblilv-dev` |
 | `elkpy` (in `tool/.venv`) | ✅ imports cleanly on Python 3.14 |

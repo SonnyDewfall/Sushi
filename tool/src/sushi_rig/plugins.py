@@ -272,15 +272,42 @@ def copy_bundles(bundles: list[Path], to: Path) -> None:
     """Copy `bundles` into `to` and lay out `archive/`.
 
     Symlinks are kept as links: some bundles are made of them, and following
-    them would copy a shared library once per bundle that points at it.
+    them would copy a shared library once per bundle that points at it. A
+    relative link that leads out of its bundle would lead nowhere from the
+    copy, so it is made absolute, to what it led to (`_relink_outside`):
+    Ubuntu's calf-plugins ships `calf.lv2/calf.so` as
+    `../../x86_64-linux-gnu/calf/calf.so`, and copied as it is, every Calf
+    plugin's binary is missing from plugins/ although `check`, which reads only
+    the Turtle, passes (#177, found rendering Calf's Envelope Filter).
     """
     to.mkdir(parents=True, exist_ok=True)
     for bundle in bundles:
         shutil.copytree(bundle, to / bundle.name, symlinks=True)
+        _relink_outside(bundle, to / bundle.name)
     archive = to / ARCHIVE_DIR
     archive.mkdir(exist_ok=True)
     (archive / "manifest.ttl").write_text(ARCHIVE_MANIFEST)
 
+
+
+def _relink_outside(source: Path, copy: Path) -> None:
+    """Each relative symlink in `copy` (a copy of bundle `source`) whose target
+    lies outside `source`, re-pointed at that target by its absolute path.
+    A link inside the bundle stays relative, so it goes on meaning the copy's
+    own file; a dangling one is left as it was."""
+    root = source.resolve()
+    for link in sorted(copy.rglob("*")):
+        if not link.is_symlink():
+            continue
+        target = os.readlink(link)
+        if os.path.isabs(target):
+            continue
+        original = source / link.relative_to(copy)
+        resolved = (original.parent / target).resolve()
+        if not resolved.exists() or resolved == root or root in resolved.parents:
+            continue
+        link.unlink()
+        link.symlink_to(resolved)
 
 def assemble(
     manifest: list[str],

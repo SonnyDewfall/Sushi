@@ -43,13 +43,29 @@ out=$(realpath -m "${1:?usage: build-string-machine-chorus.sh DIR (DIR/$NAME.lv2
 mkdir -p "$out"
 # Staged inside DIR, one level down in a folder whose manifest declares
 # nothing, so the swap below is two renames on one filesystem and a folder
-# left by a run that died is never loaded as a second bundle (as
-# build-rubberband4.sh does). A leftover is removed here, and this run's on
-# any exit.
+# left by a run that died is never loaded as a second bundle: lilv reads
+# <entry>/manifest.ttl for each entry at DIR's top level and does not recurse
+# (as build-rubberband4.sh does). Cleaning up, at the start for a leftover and
+# on any exit of this run, never loses the bundle DIR had: if the old one was
+# moved aside and the new one is not in its place, it is moved back first,
+# and if that fails the staging folder is kept, with it inside.
 stage="$out/.$NAME-staging"
-rm -rf "$stage"
+work=""
+restore_and_clean() {
+    [ -n "$work" ] && rm -rf "$work"
+    if [ -d "$stage/old.lv2" ] && [ ! -e "$out/$NAME.lv2" ]; then
+        if ! mv "$stage/old.lv2" "$out/$NAME.lv2"; then
+            echo "build-string-machine-chorus.sh: could not put the previous bundle back; it is" \
+                 "$stage/old.lv2: move it to $out/$NAME.lv2 by hand" >&2
+            return
+        fi
+        echo "build-string-machine-chorus.sh: put the previous $out/$NAME.lv2 back" >&2
+    fi
+    rm -rf "$stage"
+}
+restore_and_clean
 work=$(mktemp -d)
-trap 'rm -rf "$work" "$stage"' EXIT
+trap restore_and_clean EXIT
 trap 'exit 130' INT
 trap 'exit 143' TERM
 
@@ -106,7 +122,8 @@ printf 'string-machine chorus, string-machine commit %s, from %s\nDPF commit %s,
     "$SM_COMMIT" "$SM_REPO" "$DPF_COMMIT" "$DPF_REPO" "${CXXFLAGS[*]}" > "$bundle/BUILT-FROM"
 
 # Replace, not merge: the old bundle is renamed into the staging folder, then
-# the new one into place.
+# the new one into place; DIR is without the bundle only between two renames,
+# and a run stopped there puts the old one back (restore_and_clean).
 mkdir "$stage"
 echo "# string-machine chorus staging: declares nothing (scripts/build-string-machine-chorus.sh)." \
     > "$stage/manifest.ttl"

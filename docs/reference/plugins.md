@@ -19,9 +19,10 @@ fallback. That is the whole point: a missing or renamed plugin now fails loudly
 at startup instead of silently resolving against the system copy and hiding the
 fact that the rig is not actually self-contained.
 
-`plugin-manifest.txt` means **every LV2 URI this rig can load** — 56 of them,
-counted by URI — and it must include every plugin a config in `config/`
-uses; `sushi-rig plugins check` fails if one is missing. Since Sushi addresses
+`plugin-manifest.txt` means **every LV2 URI this rig can load**, one a line
+(`grep -c . plugin-manifest.txt` counts them), and it must include every
+plugin a config in `config/` uses; `sushi-rig plugins check` fails if one is
+missing. Since Sushi addresses
 plugins by URI and never by path, that manifest plus those bundles is the whole
 dependency set.
 
@@ -34,13 +35,16 @@ it on every startup, while a comment-only file parses cleanly and stays quiet �
 which keeps a real plugin-loading error visible instead of buried in known
 noise.
 
-To rebuild `plugins/` from distro packages and the one plugin built here
-(Rubber Band 4.0, [below](#rubber-band-40-built-for-the-octave)), and to prove
-it is self-contained:
+To rebuild `plugins/` from distro packages and the two plugins built here
+(Rubber Band 4.0, [below](#rubber-band-40-built-for-the-octave), and
+string-machine chorus, [below](#string-machine-chorus-built-for-the-string-machine)),
+and to prove it is self-contained:
 
 ```bash
 scripts/build-rubberband4.sh ~/rubberband-4.0.0/lv2
-sushi-rig plugins assemble --from ~/rubberband-4.0.0/lv2 --from /usr/lib/lv2 --to plugins \
+scripts/build-string-machine-chorus.sh ~/string-machine-chorus/lv2
+sushi-rig plugins assemble --from ~/rubberband-4.0.0/lv2 --from ~/string-machine-chorus/lv2 \
+    --from /usr/lib/lv2 --to plugins \
     --waive http://github.com/mikeoliphant/neural-amp-modeler-lv2
 sushi-rig plugins check --waive http://github.com/mikeoliphant/neural-amp-modeler-lv2
                                    # every other URI resolves with LV2_PATH = plugins/ alone
@@ -138,6 +142,68 @@ Rubber Band itself is in the bundle, statically. A side effect: 4.0.0 fixes
 `#r3mono` and `#r3stereo`, which 3.3.0 lists and cannot instantiate
 (`tool/spikes/plugin_research/README.md`), now load: `#r3mono` rendered
 under Sushi 1.3.0 from the built bundle, 2026-11-17.
+
+## string-machine chorus, built for the string machine
+
+The string-machine rig (`config/rigs/string-machine.yaml`, #177) runs
+string-machine chorus, `http://jpcima.sdf1.org/lv2/string-machine-chorus`, on
+each of its channels: the Solina-style ensemble out of jpcima's string-machine
+synth, one input and two outputs (`plugin-ports.txt` says `1 2`). No
+distribution packages it, so `scripts/build-string-machine-chorus.sh` builds
+it: string-machine at commit `7050cb1516fbaf5aaaa2c6cc9999fe5ac100d746` and
+DPF at `f24e5317cd7b57c8ab36b0987ec29a5579cd5dd2`, the commit that
+string-machine commit records for it, both fetched by commit and checked. Only
+the plugin's DSP is compiled, with g++ and the flags #166 measured it with
+(`tool/spikes/synth_research/build_extras.sh`); its own Makefile would also
+build an OpenGL interface the rig cannot show. The bundle links nothing but
+the C++ runtime, and gets a `BUILT-FROM` file as Rubber Band's does. The same
+script builds it in CI's image. Licences: the repository is BSL-1.0, the
+chorus plugin GPL-2.0-or-later, DPF ISC.
+
+The rig needs four packaged plugins that `plugins/` did not hold before:
+Calf's Envelope Filter (`calf-plugins`, whose `calf.lv2` bundle holds all of
+Calf), abGate (`abgate`), and GxBigMuffPi and GxZita_rev1-Stereo
+(`guitarix-lv2`, already installed). The synth-lead rig uses the first and the
+third, and GxEchoCat (#165).
+
+Measured under Sushi 1.3.0 here (2026-11-18, offline, in a container, not on
+the rig): the chorus adds about 4 ms (169 to 222 samples), treats a chord
+exactly as the sum of its notes, and costs about 1.4 % of a core per channel.
+
+**On the rig machine**, once, and again whenever `plugins/` is rebuilt:
+
+```bash
+sudo apt install git gcc g++ calf-plugins abgate guitarix-lv2
+cd ~/Sushi
+sushi-rig down
+scripts/build-string-machine-chorus.sh ~/Sushi/plugins
+for b in calf abGate gx_bmp gx_zita_rev1 gxechocat; do
+    rm -rf "plugins/$b.lv2" && cp -rL "/usr/lib/lv2/$b.lv2" plugins/
+done
+sushi-rig plugins check
+(cd tool && .venv/bin/python -m pytest tests/test_string_machine.py tests/test_synth_lead.py -rs)
+sushi-rig up --rig string-machine
+```
+
+In order:
+
+- `down`, for the reason it comes first for Rubber Band (above).
+- The script builds in a temporary folder (seconds, with network to
+  github.com) and replaces `plugins/string-machine-chorus.lv2`. Nothing else
+  in `plugins/` is touched.
+- The loop copies the packaged bundles into `plugins/`, replacing any copy
+  already there; `gxechocat` is the pedals' (#165), and is copied again
+  harmlessly if it is there. `-L` matters: Ubuntu's `calf.lv2/calf.so` is a
+  relative link out of the bundle (`../../x86_64-linux-gnu/calf/calf.so`),
+  which a plain `cp -r` copies as a link to nothing, and `plugins check`
+  would still pass, since it reads only the Turtle. `sushi-rig plugins
+  assemble` makes such a link absolute instead (#177).
+- `plugins check` fails if any URI the manifest lists does not resolve from
+  `plugins/`.
+- The tests check `plugins/` holds the pinned build and render each new
+  plugin under this machine's Sushi; they need numpy, as the octave's do.
+  The fast suite does not include them.
+- `up --rig string-machine` starts it; `--rig synth-lead` starts the other.
 
 ## Choosing a plugin
 

@@ -12,7 +12,9 @@
 #
 # Written from lilv 0.24.22 over Ubuntu 24.04's packages, the ones CI's image
 # installs, and Rubber Band 4.0.0's bundle, which it builds
-# (scripts/build-rubberband4.sh): the #livemono line, 2026-11-17. CI checks every line against lilv over plugins/ (tests/test_stereo.py
+# (scripts/build-rubberband4.sh): the #livemono line, 2026-11-17; and
+# string-machine chorus's, built by scripts/build-string-machine-chorus.sh,
+# 2026-11-18. CI checks every line against lilv over plugins/ (tests/test_stereo.py
 # `test_the_port_table_is_what_lilv_reads`), so a package update that changes a
 # plugin's ports fails the build rather than the right channel.
 #

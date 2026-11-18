@@ -478,7 +478,10 @@ def test_the_library_lists_the_manifest_with_the_one_profile_and_its_groups():
     status, body = call(agent, "GET", "/library")
     assert status == 200 and body["ok"] is True
     entries = {e["uri"]: e for e in body["plugins"]}
-    assert len(body["plugins"]) == 56
+    from sushi_rig.plugins import read_manifest
+
+    # Every URI in the manifest, however many it has.
+    assert len(body["plugins"]) == len(read_manifest((ROOT / "plugin-manifest.txt").read_text()))
     assert entries[GXTS9]["profile"] is True
     assert [g["id"] for g in entries[GXTS9]["groups"]] == ["dirt", "output"]
     assert entries[GXTS9]["name"] == "GxTubeScreamer"
