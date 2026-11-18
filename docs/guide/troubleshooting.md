@@ -81,10 +81,11 @@ agent only answers a page opened by the laptop's address
 with `.local`. This stops a web page elsewhere from reading or changing your
 rig.
 
-- Open the page by the laptop's address instead (`hostname -I` prints it).
+- Open the page by the laptop's address instead: `sushi-rig agent --phone`
+  prints it, and the rack page shows it.
 - If you reach the laptop by another name, such as a VPN's or a proxy's,
   start the agent with that name allowed, the name alone with no `http://`
-  or port: `sushi-rig agent --host 0.0.0.0 --allow-host <that name>`.
+  or port: `sushi-rig agent --phone --allow-host <that name>`.
 
 ## A part of the rig has stopped
 

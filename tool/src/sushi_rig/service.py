@@ -55,10 +55,12 @@ def unit_text(template: str, root: Path) -> str:
 HOST_PATTERN = re.compile(r"^[A-Za-z0-9.:-]+$")
 
 
-def listen_args(*, phone: bool = False, host: str | None = None, port: int | None = None) -> list[str]:
+def listen_args(*, phone: bool = False, host: str | None = None, port: int | None = None,
+                allow_hosts: list[str] | tuple[str, ...] = ()) -> list[str]:
     """What `sushi-rig agent` is given in ExecStart for `install-service
-    --phone`, `--host` and `--port` (#181): nothing for the defaults, so a
-    plain install writes the committed unit as it is. Pure."""
+    --phone`, `--host`, `--port` and `--allow-host` (#181, #161): nothing
+    for the defaults, so a plain install writes the committed unit as it is.
+    Pure."""
     from .agent_client import DEFAULT_HOST, DEFAULT_PORT
 
     args: list[str] = []
@@ -76,6 +78,16 @@ def listen_args(*, phone: bool = False, host: str | None = None, port: int | Non
         if not 0 < port < 65536:
             raise ServiceError(f"--port {port} is not a port")
         args += ["--port", str(port)]
+    seen: list[str] = []
+    for name in allow_hosts:
+        # As `sushi-rig agent --allow-host` takes it (the CLI has checked it
+        # already); refused here too, so a caller of this cannot write a
+        # word systemd would read as more than one.
+        if not HOST_PATTERN.match(name) or ":" in name:
+            raise ServiceError(f"--allow-host {name!r} is not a host name")
+        if name not in seen:
+            seen.append(name)
+            args += ["--allow-host", name]
     return args
 
 
@@ -222,6 +234,7 @@ def phone_lines(listen: list[str], found: list | None = None) -> list[str]:
     from . import reach
 
     host, port = where(listen)
+    names = [listen[i + 1] for i, word in enumerate(listen) if word == "--allow-host"]
     if not reach.is_network(host):
         return [
             "It listens on this machine only. For a phone as well, install it with:",
@@ -234,4 +247,7 @@ def phone_lines(listen: list[str], found: list | None = None) -> list[str]:
     lines = ["It listens on the network. Once it is up, open on the phone, on the same network:", ""]
     lines += [f"  {u['url']}   {reach.describe(u)}".rstrip() for u in urls] or \
         ["  (no network address yet: join Wi-Fi or the phone's hotspot; the rack page shows it then)"]
+    if names:
+        lines += ["", f"A browser may reach it by {', '.join(names)} as well (--allow-host), "
+                  "beside any of these addresses."]
     return lines + ["", reach.NO_PASSWORD]

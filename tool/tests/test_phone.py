@@ -21,6 +21,7 @@ import socket
 import subprocess
 import sys
 import time
+import urllib.error
 import urllib.request
 from pathlib import Path
 
@@ -30,7 +31,7 @@ aiohttp = pytest.importorskip("aiohttp")
 from aiohttp.test_utils import TestClient, TestServer  # noqa: E402
 
 from sushi_rig import cli, reach, service  # noqa: E402
-from sushi_rig.agent import Agent, AgentError, serve  # noqa: E402
+from sushi_rig.agent import Agent, AgentError, cross_site_refusal, own_names, rebinding_refusal, serve  # noqa: E402
 from sushi_rig.paths import checkout_root  # noqa: E402
 from sushi_rig.reach import Interface  # noqa: E402
 
@@ -124,6 +125,53 @@ def test_a_page_opened_by_the_laptops_address_may_change_the_rig(root, address):
     bin's routes. A dry run, so nothing is moved."""
     status, body = as_phone(bin_agent(root, rig=None), address)
     assert status == 200 and body["how"] == "dry_run", body
+
+
+# Every address a phone is told to open: the issue's laptop, the phone's
+# hotspot (Android's as the issue had it, an iPhone's) and the laptop's own.
+PRINTED = LAPTOP + [Interface("wlp0s20f3", "10.40.226.17", "Wi-Fi"), Interface("wlp0s20f3", "172.20.10.2", "Wi-Fi"),
+                    Interface("wlp0s20f3", "10.42.0.1", "Wi-Fi")]
+
+
+@pytest.mark.parametrize("allowed", [(), ("rig.ts.net",)])
+def test_every_url_printed_for_the_phone_passes_the_guard_with_or_without_allow_host(allowed):
+    """#161's guard (PR #174) over each URL `--phone` prints: the Host a
+    phone's browser sends for it, and the Origin its page then sends."""
+    for entry in reach.phone_urls("0.0.0.0", 8029, PRINTED):
+        netloc = entry["url"].split("/")[2]
+        origin = entry["url"].rstrip("/")
+        assert rebinding_refusal(netloc, own_names((*allowed, "0.0.0.0"))) is None, entry
+        assert cross_site_refusal({"Origin": origin, "Sec-Fetch-Site": "same-origin"}, netloc, allowed) is None, entry
+
+
+def ask(agent, *requests):
+    async def go():
+        async with TestClient(TestServer(agent.app())) as client:
+            out = []
+            for method, path, headers in requests:
+                response = await client.request(method, path, headers=headers,
+                                                json={} if method == "POST" else None)
+                out.append(response.status)
+            return out
+
+    return asyncio.run(go())
+
+
+def test_an_agent_bound_for_the_phone_answers_its_urls_and_allowed_names_and_refuses_others():
+    agent = Agent(describe=lambda: {"running": False}, bound="0.0.0.0", allow_hosts=("rig.ts.net",))
+    requests = []
+    for entry in reach.phone_urls("0.0.0.0", 8029, PRINTED):
+        netloc = entry["url"].split("/")[2]
+        requests += [("GET", "/health", {"Host": netloc}),
+                     # The page's POST: past the guard to the route, which refuses an empty up (400).
+                     ("POST", "/rig/up", {"Host": netloc, "Origin": f"http://{netloc}", "Sec-Fetch-Site": "same-origin"})]
+    requests += [("GET", "/health", {"Host": "rig.ts.net:8029"}),
+                 ("POST", "/rig/up", {"Host": "rig.ts.net:8029", "Origin": "http://rig.ts.net:8029"}),
+                 ("GET", "/health", {"Host": "evil.example:8029"}),
+                 ("POST", "/rig/up", {"Host": "192.168.1.150:8029", "Origin": "http://evil.example"})]
+    said = ask(agent, *requests)
+    assert said[:-4] == [200, 400] * len(PRINTED)
+    assert said[-4:] == [200, 400, 403, 403]
 
 
 def test_another_sites_page_is_still_refused_from_the_phone(root):
@@ -247,6 +295,38 @@ def test_agent_phone_listens_on_the_network_and_prints_where_to_open_it(env):
     assert not any("127.0.0.1" in u["url"] for u in listen["urls"])
 
 
+def test_each_printed_url_opens_the_page_on_a_real_agent_and_allow_host_names_too(env):
+    """The URLs as printed, fetched for real from this machine's own
+    addresses, past #161's guard: the page, and the page's POST (an empty
+    `up`, refused by the route as 400, not by the guard as 403). A name
+    given with `--allow-host` beside `--phone` passes; another does not."""
+    port = free_port()
+    agent = run_agent(env, "--phone", "--port", str(port), "--allow-host", "rig.test")
+    opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
+
+    def status(url, method="GET", headers=None):
+        request = urllib.request.Request(url, method=method, headers=headers or {},
+                                         data=b"{}" if method == "POST" else None)
+        try:
+            with opener.open(request, timeout=10) as answer:
+                return answer.status
+        except urllib.error.HTTPError as exc:
+            return exc.code
+
+    try:
+        said = wait_for(port, agent)
+        urls = [u["url"] for u in said["agent"]["listen"]["urls"]]
+        got = [(status(url), status(url + "rig/up", "POST", {"Origin": url.rstrip("/"), "Sec-Fetch-Site": "same-origin",
+                                                              "Content-Type": "application/json"}))
+               for url in urls]
+        named = status(f"http://127.0.0.1:{port}/health", headers={"Host": f"rig.test:{port}"})
+        other = status(f"http://127.0.0.1:{port}/health", headers={"Host": f"evil.example:{port}"})
+    finally:
+        stop(agent)
+    assert got == [(200, 400)] * len(urls)
+    assert (named, other) == (200, 403)
+
+
 # --------------------------------------------------------------------------- #
 # install-service --phone
 # --------------------------------------------------------------------------- #
@@ -295,18 +375,32 @@ def test_listen_args_are_nothing_for_the_defaults(given, args):
     assert service.listen_args(**given) == args
 
 
+def test_install_service_phone_carries_allow_host_into_the_unit(checkout, tmp_path):
+    home = tmp_path / "home"
+    listen = service.listen_args(phone=True, allow_hosts=["rig.ts.net", "rig.ts.net", "rig.local"])
+    assert listen == ["--phone", "--allow-host", "rig.ts.net", "--allow-host", "rig.local"]
+    lines = service.install(checkout, env={}, home=home, listen=listen, found=LAPTOP)
+    unit = (home / ".config" / "systemd" / "user" / service.UNIT_NAME).read_text()
+    assert (f"\nExecStart={checkout}/tool/.venv/bin/sushi-rig agent --phone --allow-host rig.ts.net "
+            "--allow-host rig.local\n") in unit
+    assert any("rig.ts.net, rig.local as well (--allow-host)" in line for line in lines)
+
+
 @pytest.mark.parametrize("given", [{"phone": True, "host": "192.168.1.150"}, {"host": "a b"},
-                                   {"host": "%h"}, {"port": 70000}])
+                                   {"host": "%h"}, {"port": 70000}, {"allow_hosts": ["a b"]},
+                                   {"allow_hosts": ["rig:8029"]}, {"allow_hosts": ["%H"]}])
 def test_listen_args_that_disagree_or_systemd_would_expand_are_refused(given):
     with pytest.raises(service.ServiceError):
         service.listen_args(**given)
 
 
-@pytest.mark.parametrize("argv", [
-    ["agent", "install-service", "--phone"],
-    ["agent", "--phone", "install-service"],
+@pytest.mark.parametrize("argv, listen", [
+    (["agent", "install-service", "--phone"], ["--phone"]),
+    (["agent", "--phone", "install-service"], ["--phone"]),
+    (["agent", "--allow-host", "rig.ts.net", "install-service", "--phone"], ["--phone", "--allow-host", "rig.ts.net"]),
+    (["agent", "install-service", "--phone", "--allow-host", "Rig.TS.net."], ["--phone", "--allow-host", "rig.ts.net"]),
 ])
-def test_install_service_phone_reaches_the_unit_either_way_round(argv, monkeypatch, capsys, checkout):
+def test_install_service_phone_reaches_the_unit_either_way_round(argv, listen, monkeypatch, capsys, checkout):
     seen = {}
 
     def install(root, **kwargs):
@@ -316,7 +410,14 @@ def test_install_service_phone_reaches_the_unit_either_way_round(argv, monkeypat
     monkeypatch.setattr(service, "install", install)
     monkeypatch.setattr("sushi_rig.paths.checkout_root", lambda: checkout)
     assert cli.main(argv) == 0
-    assert seen["listen"] == ["--phone"]
+    assert seen["listen"] == listen
+
+
+def test_install_service_refuses_an_allow_host_the_agent_would_refuse(capsys):
+    with pytest.raises(SystemExit) as refused:
+        cli.main(["agent", "install-service", "--phone", "--allow-host", "rig.ts.net:8029"])
+    assert refused.value.code == 2
+    assert "has a port" in capsys.readouterr().err
 
 
 # --------------------------------------------------------------------------- #

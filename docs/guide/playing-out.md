@@ -71,7 +71,9 @@ systemctl --user restart sushi-rig-agent.service
 ```
 
 It prints the phone's addresses when it is done. Use `start` instead of
-`restart` the first time. `sushi-rig agent install-service` without `--phone`
+`restart` the first time. If you reach the laptop by a name of its own, such
+as a VPN's, add `--allow-host <that name>` after `--phone`, as for the agent
+itself. `sushi-rig agent install-service` without `--phone`
 puts it back to this laptop only. The service is not yet recorded as run on a
 real machine.
 
@@ -196,6 +198,10 @@ and if the browser warns that the site is not secure, choose to continue.
   on the VPN app's **local network** or **LAN** access setting if it has one.
 - **A VPN on the laptop** can do the same in the other direction, and some
   block the local network outright. Turn it off while playing.
+- **Opening the page by the VPN's name** for the laptop, rather than an
+  address, is refused until the agent is told that name:
+  `sushi-rig agent --phone --allow-host <that name>`. An address, like every
+  one `--phone` prints, always works.
 - **iCloud Private Relay** on an iPhone should leave local addresses alone. If
   Safari still will not open the page, turn off **Limit IP Address Tracking**
   for that Wi-Fi network (Settings, Wi-Fi, the (i) beside it) to rule it out.

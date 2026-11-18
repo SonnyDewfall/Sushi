@@ -1323,6 +1323,11 @@ def _main(argv: list[str] | None = None) -> int:
                            help=f"the address the service listens on [default: {DEFAULT_HOST}]")
     service_p.add_argument("--port", type=int, dest="service_port", metavar="PORT",
                            help=f"the port the service listens on [default: {DEFAULT_PORT}]")
+    service_p.add_argument(
+        "--allow-host", action="append", default=[], metavar="NAME", dest="service_allow_hosts",
+        type=allow_host, help="a host name the service's agent answers a browser to, as "
+        "`sushi-rig agent --allow-host`; repeatable",
+    )
     p = sub.add_parser(
         "restart",
         help="stop the running rig and bring the same one back — same config, same mode, same amp and tuner choices",
@@ -1639,6 +1644,7 @@ def _main(argv: list[str] | None = None) -> int:
                 lines = install(checkout_root(), listen=listen_args(
                     phone=args.service_phone or args.phone,
                     host=args.service_host or args.host, port=args.service_port or args.port,
+                    allow_hosts=[*args.allow_hosts, *args.service_allow_hosts],
                 ))
             except ServiceError as exc:
                 sys.exit(f"the service was not installed: {exc}")
