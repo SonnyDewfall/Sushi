@@ -212,7 +212,8 @@ GETS = {
     "a fetch with Origin": {"Origin": "http://{name}:{port}", "Sec-Fetch-Mode": "cors"},
     "a script": {"Sec-Fetch-Dest": "script"},
 }
-READS = ["/health", "/rigs", "/doctor", "/live/log", "/takes", "/presets", "/rig", "/", "/ui/app.js"]
+READS = ["/health", "/rigs", "/doctor", "/live/log", "/takes", "/presets", "/rig", "/", "/ui/app.js",
+         "/help/", "/help/recording", "/help/img/rack.png"]
 
 
 @pytest.mark.parametrize("kind", GETS, ids=GETS.keys())
@@ -231,7 +232,7 @@ def test_a_rebound_page_can_read_nothing(path, kind):
 @pytest.mark.parametrize("kind", GETS, ids=GETS.keys())
 def test_the_agents_own_page_loads_and_reads_by_any_name_it_answers_to(name, kind):
     served, _ = agent()
-    for path in ("/", "/ui/app.js", "/health", "/rig"):
+    for path in ("/", "/ui/app.js", "/health", "/rig", "/help/", "/help/recording"):
         headers = {k: v.replace("{name}", name) for k, v in GETS[kind].items()}
         status, _ = send_raw(served, "GET", path, {"Host": f"{name}:{{port}}", **headers})
         assert status == 200, (path, status)
@@ -330,7 +331,8 @@ def test_a_proxy_that_passes_host_through_works_by_its_name():
 @pytest.mark.parametrize("value, why", [
     ("rig.vpn:8029", "has a port"), ("http://rig.ts.net", "has a scheme"), ("https://rig.ts.net:443", "has a scheme"),
     ("rig.ts.net/", "is not a host name"), ("rig ts", "is not a host name"), ("", "is not a host name"),
-    ("[::1]", "is not a host name"), ("-rig", "is not a host name"), ("rig..net", "is not a host name"),
+    ("[::1]", "is an IP address"), ("192.168.1.20", "is an IP address"), ("::1", "is an IP address"),
+    ("-rig", "is not a host name"), ("rig..net", "is not a host name"),
 ])
 def test_an_allowed_host_with_a_port_or_a_scheme_is_refused_not_ignored(value, why):
     with pytest.raises(ValueError, match=why):
@@ -340,8 +342,7 @@ def test_an_allowed_host_with_a_port_or_a_scheme_is_refused_not_ignored(value, w
 
 
 @pytest.mark.parametrize("value, name", [
-    ("Rig.TS.net.", "rig.ts.net"), ("rig", "rig"), ("rig_box.lan", "rig_box.lan"),
-    ("192.168.1.20", "192.168.1.20"), ("::1", "::1"),
+    ("Rig.TS.net.", "rig.ts.net"), ("rig", "rig"), ("rig_box.lan", "rig_box.lan"), (" rig.vpn ", "rig.vpn"),
 ])
 def test_an_allowed_host_is_compared_as_the_guard_compares_names(value, name):
     assert allowed_host_name(value) == name
@@ -429,6 +430,7 @@ GET_ROUTES = {
     "/", "/ui", "/ui/", "/ui/app.js", "/health", "/rig", "/doctor", "/live", "/live/log", "/library",
     "/profiles", "/live/plugins", "/rigs", "/rig/load", "/amp", "/amp/models", "/record", "/takes",
     "/machine/roles", "/rigs/x/channels", "/rigs/x/saves", "/rigs/bin", "/presets",
+    "/help", "/help/", "/help/x", "/help/img/x",  # the user guide (#167)
 }
 
 

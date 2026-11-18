@@ -1,0 +1,74 @@
+/* The user guide's pages (#167), served by the agent at /help/ from
+   docs/guide/ (sushi_rig/guide.py). The rack's colours and type (style.css),
+   restated for prose: a column that reads at a phone's width, the way back
+   to the rig always at the top, and nothing fetched from the network. */
+
+:root {
+  --ground: #0F1012;
+  --panel: #141519;
+  --card: #1C1D22;
+  --line: #26272E;
+  --edge: #2C2E36;
+  --text: #ECECEF;
+  --muted: #A1A3AD;
+  --accent-soft: #FFD38A;
+  --display: Newsreader, Georgia, "Times New Roman", serif;
+  --body: "Instrument Sans", system-ui, -apple-system, "Segoe UI", Roboto, sans-serif;
+  --mono: "Geist Mono", ui-monospace, "SFMono-Regular", Menlo, Consolas, monospace;
+  color-scheme: dark;
+}
+
+* { box-sizing: border-box; }
+html { -webkit-text-size-adjust: 100%; text-size-adjust: 100%; }
+html, body { margin: 0; background: var(--ground); color: var(--text); font-family: var(--body); }
+body { font-size: 17px; line-height: 1.6; }
+a { color: var(--accent-soft); }
+
+/* The way back: at the top of every page, and kept there while reading. */
+.guide-bar, .guide-foot { display: flex; flex-wrap: wrap; align-items: center; gap: 8px 12px; padding: 8px 16px;
+  background: var(--panel); }
+.guide-bar { position: sticky; top: 0; z-index: 1; border-bottom: 1px solid var(--line); }
+.guide-foot { border-top: 1px solid var(--line); margin-top: 32px; padding-bottom: 20px; }
+.guide-bar a, .guide-foot a, .guide-bar .here { min-height: 44px; display: inline-flex; align-items: center;
+  padding: 0 14px; border-radius: 10px; font-size: 15px; text-decoration: none; }
+.guide-bar a, .guide-foot a { border: 1px solid var(--edge); color: var(--text); }
+.guide-bar a.to-rig, .guide-foot a.to-rig { border-color: var(--accent-soft); color: var(--accent-soft); font-weight: 600; }
+.guide-bar .here { color: var(--muted); }
+
+.guide { max-width: 44rem; margin: 0 auto; padding: 8px 16px 0; overflow-wrap: break-word; }
+.guide h1, .guide h2, .guide h3 { font-family: var(--display); font-weight: 600; line-height: 1.25;
+  scroll-margin-top: 72px; }
+.guide h1 { font-size: 30px; margin: 20px 0 12px; }
+.guide h2 { font-size: 23px; margin: 32px 0 8px; padding-top: 12px; border-top: 1px solid var(--line); }
+.guide h3 { font-size: 19px; margin: 24px 0 6px; }
+.guide p { margin: 10px 0; }
+.guide ul, .guide ol { padding-left: 1.5em; margin: 10px 0; }
+.guide li { margin: 6px 0; }
+.guide li > p { margin: 0; }
+.guide li > p + p, .guide li > pre, .guide li > p + ul, .guide li > p + ol { margin-top: 8px; }
+.guide strong { color: #FFFFFF; font-weight: 600; }
+.guide code { font-family: var(--mono); font-size: 0.88em; background: var(--card); padding: 1px 5px;
+  border-radius: 5px; overflow-wrap: anywhere; }
+.guide pre { background: var(--card); border: 1px solid var(--edge); border-radius: 10px; padding: 10px 14px;
+  overflow-x: auto; }
+.guide pre code { background: none; padding: 0; overflow-wrap: normal; }
+.guide img { max-width: 100%; height: auto; border-radius: 10px; border: 1px solid var(--edge); display: block;
+  margin: 12px 0; }
+.guide .missing-image { color: var(--muted); }
+.guide .elsewhere { color: var(--muted); font-size: 0.92em; }
+.guide blockquote { margin: 12px 0; padding: 2px 14px; border-left: 3px solid var(--edge); color: var(--muted); }
+.guide hr { border: 0; border-top: 1px solid var(--line); margin: 24px 0; }
+
+/* A table scrolls on its own, never the page. */
+.guide .table-wrap { overflow-x: auto; margin: 12px 0; }
+.guide table { border-collapse: collapse; font-size: 15px; line-height: 1.45; }
+.guide th, .guide td { text-align: left; vertical-align: top; padding: 8px 10px; border-bottom: 1px solid var(--line); }
+.guide th { color: var(--muted); font-weight: 600; }
+
+@media (max-width: 640px) {
+  body { font-size: 16px; }
+  .guide h1 { font-size: 26px; }
+  .guide h2 { font-size: 21px; }
+  .guide table { font-size: 14px; }
+  .guide th, .guide td { padding: 6px 8px; min-width: 7em; }
+}

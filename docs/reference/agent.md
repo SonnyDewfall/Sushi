@@ -14,6 +14,7 @@ curl localhost:8029/health           # the agent and the rig in one answer, cras
 curl localhost:8029/rig              # `status` as data
 curl localhost:8029/doctor           # `doctor` as data
 curl localhost:8029/                 # the web UI (its files are under /ui/)
+curl localhost:8029/help/            # the user guide, docs/guide/, as HTML (#167); pages at /help/<name>, pictures at /help/img/
 curl localhost:8029/rigs             # the rigs of config/rigs/ a start or switch can name, and which is the running rig's
 curl localhost:8029/rig/load         # one pw-top sample of the rig's nodes: load, xruns, the block budget
 curl -X POST localhost:8029/rig/up -d '{"config_name": "guitar_vocal", "rig": true, "headless": true}'
@@ -187,8 +188,8 @@ with no preflight. It refuses:
   read every answer and send every write. The `Host` must be an IP
   address, `localhost`, this machine's hostname (and its first label), that
   label with `.local`, the `--host` it was bound to, or a name given with
-  `sushi-rig agent --allow-host NAME` (repeatable; a name alone, with no
-  scheme or port, which is refused at the command line); `rebinding_refusal`.
+  `sushi-rig agent --allow-host NAME` (repeatable; a name alone: a scheme,
+  a port or an IP is refused at the command line); `rebinding_refusal`.
   An IP is always allowed because a page loaded by IP has no name to rebind.
   Binding to localhost does not stop rebinding, since localhost is what the
   name is rebound to. The check does not wait for a browser's headers,

@@ -5178,43 +5178,88 @@ suite 4873 passed, 33 skipped on 1114d07; `test_ui_presets.py`, `test_ui.py`
 and `test_ui_tabs.py` (264 tests) 5 of 5 in a loop. **Not tried on the
 rig.** *(2026-11-17)*
 
-**One cross-site guard in front of every write, and DNS rebinding closed
-(#161).** Every POST route acted on a request from any web page open in a
-browser on the rig machine or a phone on the LAN (`fetch(url, {method:
-"POST", mode: "no-cors"})` needs no preflight); #160 and #162 had guarded
-four routes by hand. Now one aiohttp middleware, `Agent._same_site_only`,
-stands in front of every POST, PUT, PATCH and DELETE, before the router's
-404 and 405, and answers `403` with `code: "cross_site"`: (1) for
-`Sec-Fetch-Site: cross-site`, an `Origin` that is not the agent's own
-scheme, host and port, or `Origin: null` (`cross_site_refusal`, unchanged);
-(2) for a browser's request (one with `Origin` or `Sec-Fetch-Site`) whose
-`Host` is not an IP, `localhost`, the machine's hostname, its first label,
-that label with `.local`, the bound `--host`, or a name given with the new
-`sushi-rig agent --allow-host NAME` (`rebinding_refusal`, `own_names`).
-**Decided: the Host check belongs here**, as the issue's comment asks,
-because without it the guard is passed by DNS rebinding (the attacker's
-name is both `Host` and `Origin`), and binding to localhost does not help.
-Any IP is allowed rather than a list of this machine's addresses, since a
-page loaded by IP has no name to rebind and DHCP changes the list; the Host
-is not read of a request with neither browser header, since curl or the CLI
-can send any Host it likes and pointing one at the agent by another name is
-no attack. Allowed, then: curl, the CLI (`agent_client.ask`, urllib, no
-Origin), the agent's own page by IP or `.local` name. The pedals' MIDI
-listener runs in the agent and sends no request; the web UI's `request`
-fetches relative paths, same-origin. The four `_same_origin_only` calls are
-gone. Tests: `test_agent_cross_site.py` (59: each refusal, each allowed
-case, PUT/PATCH/DELETE, a walk of every registered state-changing route,
-24 today, each sent three hostile requests, and `agent_client` through the
-guard) and `test_ui_cross_site.py` (4, Chromium with
-`--host-resolver-rules`: the page by IP and by `rig-box.local` may write, a
-page of a rebound name loads but every write is 403, another site's no-cors
-fetch and form reach the agent and are 403), each shown failing with the
-guard, or its Host half, taken out. Writing the CLI test found
-`--allow-host` stored under the wrong name, fixed before commit. The fast
-suite 4938 passed, 33 skipped (4874 passed and one fd-count flake in
-`test_live_close.py`, passing alone, on f6303f5); the eight `test_ui_*.py`
-files with `test_agent_cross_site.py` (460 tests) 3 of 3 in a loop. Not
-covered: a device on the LAN that sends no `Origin`, which needs
-authentication (#29). **Not tried on the rig, from a real
-phone, with a pedal or MIDI hardware;** the names were resolver rules, not
-DNS or mDNS. *(2026-11-17)*
+**Help: the user guide, served by the agent (#167).** The page had no way to
+the guides in `docs/guide/`. The agent now serves them itself at `/help/`
+(`guide.py`): each page rendered to HTML on request, its pictures at
+`/help/img/`, nothing fetched from the network, so they open at a venue and
+from a phone. Read from `docs/guide/` of the checkout the package runs from,
+which is how the rig runs it (an editable install in the checkout's
+`tool/.venv`, started by the systemd unit from the checkout). **Installed
+any other way there is no guide**: the Help links stay, and each opens a 404
+page saying where it looked (`<venv>/lib/docs/guide`) and that the guide
+comes with `pip install -e`; a test installs a copy into a venv's
+site-packages and runs it to show that. **No new dependency**: the
+Markdown is rendered by a small renderer covering what the guide uses
+(headings with GitHub's anchors, nested lists, fenced code, tables, links
+with CommonMark's balanced parentheses, images and inline `<img>`); any
+other HTML is shown as text, a NUL as U+FFFD (one had hung the restore of
+held HTML), and only a picture of the guide's own `img/` is shown: one on
+the web is a link, never fetched, and counted missing like a bad `src`. Links between
+pages are rewritten to `/help/<page>` and carry `?from=` the screen the guide
+was opened from, so **Back to the rig**, sticky at the top of every page,
+returns there; a link into `docs/reference/` is shown as its path, since only
+the guide is served. Only a page name (`[a-z0-9-]+`, a `.md` there) or a
+picture's file name in `img/` is served, resolved and checked to be inside
+the folder; nineteen ways of writing a way out, symlinks out included, are
+refused in the tests, sent raw over a socket as well as through a client.
+`README.md`, `recording.md` and other cases of a name redirect to the page.
+**Help** is in the rack's header and, narrower than the two tabs, at the end
+of the stage's nav (to *Playing live*); quiet links go from the record bar
+and takes to `recording.md`, a channel's presets to `channel-presets.md`,
+Save to `saving.md`, the rigs, the amp card and the New rig screen to
+theirs (`HELP` in `rig.js`). None moves the stage: the review of PR #168
+measured the lock note's link squeezing its text (82 to 114 px tall at 390)
+and the record head's growing it 18 px, so the note has none and the head's
+keeps its 44 px with negative margins; browser tests measure both at 320 and
+390. Tests: the renderer, the routes and
+path safety (`test_guide.py`, which also crawls the served guide from its
+front page and follows every link, picture and anchor), and the links on
+both screens and back, at a phone's width on the stage (`test_ui_help.py`).
+**Not tried on the rig, or on a real phone**: the phone is Chromium at 390
+by 844. *(2026-11-17)*
+
+**One guard in front of every route: another site's writes, and DNS
+rebinding (#161, review of PR #174).** Every POST route acted on a request
+from any web page open in a browser on the rig machine or a phone on the
+LAN (`fetch(url, {method: "POST", mode: "no-cors"})` needs no preflight);
+#160 and #162 had guarded four routes by hand, and their `_same_origin_only`
+calls are gone. One aiohttp middleware, `Agent._same_site_only`, before the
+router's 404 and 405, answers `403 cross_site`: (1) for a POST, PUT, PATCH
+or DELETE with `Sec-Fetch-Site: cross-site`, an `Origin` that is not the
+agent's own scheme, host and port, or `Origin: null` (`cross_site_refusal`);
+(2) for any request, GETs and page loads included, whose `Host` is not an
+IP, `localhost`, the hostname, its first label, that label with `.local`,
+the bound `--host`, or a name given with the new `sushi-rig agent
+--allow-host NAME` (`rebinding_refusal`). **Decided: the Host check belongs
+here**, since without it the guard is passed by rebinding (the attacker's
+name is both `Host` and `Origin`); any IP is allowed rather than a list of
+the machine's addresses, because a page loaded by IP has no name to rebind.
+**Found in the review: the check must not wait for a browser's headers.**
+The first version read `Host` only of writes, and the review asked for it
+on any request with `Origin` or a `Sec-Fetch-*` header; captured from
+Chromium 153, a plain-http name other than localhost (a rebound one, a
+phone's `.local`) gets no `Sec-Fetch-*` at all, and a GET or page load no
+`Origin`, so a rebound page's reads carried only `Host`, and the gated
+check let them through (`test_ui_cross_site.py` fails with it). So curl
+and the CLI are held to the names too, and pass by the ones they use (the
+CLI asks at the address the agent wrote); curl by another name needs
+`--allow-host`. Also from the review: an `--allow-host` name is trusted as
+an `Origin` whatever `Host` says, on any scheme and port, so a reverse proxy
+that rewrites `Host` to 127.0.0.1 works (what does and does not, behind a
+proxy, is in docs/reference/agent.md); a value with a scheme, port or path
+(or an IP, always allowed, which would be trusted on every port) is refused
+at the command line and in `Agent` rather than kept and never matched. A GET from another site is still allowed (a link to the page is
+one; its answer has no CORS header), and a test lists the GET routes, the
+help link's `/help/` included, so a new one is reviewed. Tests:
+`test_agent_cross_site.py` (169: each refusal and allowance, reads by each
+kind of browser request, proxies, `--allow-host`, a walk of every route of
+every method) and `test_ui_cross_site.py` (5, Chromium with
+`--host-resolver-rules`: the page by IP, localhost and `rig-box.local` loads,
+reads and writes; a rebound name's page load, reads and writes are 403;
+another site's no-cors fetch and form reach the agent and are 403), each
+half shown failing with its fix taken out. Counts are in the commit that
+merges #168. Not covered: a device on the LAN that sends no `Origin`, or a
+browser too old to send one on a POST, which needs authentication (#29).
+**Not tried on the rig, from a real phone, behind a real proxy, with a
+pedal or MIDI hardware;** the names were resolver rules, not DNS or mDNS.
+*(2026-11-17)*

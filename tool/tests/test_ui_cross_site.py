@@ -85,6 +85,9 @@ def test_the_agents_own_page_by_the_machines_local_name_may_change_the_rig(mappe
     page = mapped.new_page()
     assert page.goto(f"http://{HOSTNAME}.local:{port_of(served)}/#stage").status == 200
     assert get_from(page, "/health")[0] == 200
+    guide = mapped.new_page()  # the help link (#167): the guide by the same name
+    assert guide.goto(f"http://{HOSTNAME}.local:{port_of(served)}/help/recording").status == 200
+    guide.close()
     status, body = post_from(page, "/rig/down")
     assert status == 200, body
     assert served.lifecycle.calls == [["down"]]
@@ -108,7 +111,7 @@ def test_a_page_of_a_rebound_name_can_neither_read_nor_change_anything(mapped, s
     page = mapped.new_page()
     loaded = page.goto(f"http://rebound.example:{port_of(served)}/#stage")
     assert loaded.status == 403 and loaded.json()["code"] == "cross_site"
-    for path in ("/health", "/rigs", "/doctor", "/live/log", "/takes", "/presets", "/ui/app.js"):
+    for path in ("/health", "/rigs", "/doctor", "/live/log", "/takes", "/presets", "/ui/app.js", "/help/"):
         status, body = get_from(page, path)
         assert status == 403 and body["code"] == "cross_site", (path, body)
         assert "rebound.example" in body["reason"], body
