@@ -415,8 +415,13 @@ def write_rig(path: Path, rig: dict, *, source: str | None = None, header: str |
     new keys added, absent keys removed, chain entries matched by name — and
     written back with its comments, blank lines, key order and layout intact,
     so an unchanged rig is an unchanged file (yamlmerge.py has the rules, and
-    what it will not do). A file not there is written from nothing, in block
-    style with keys in `rig`'s order, under the header saying where it came
+    what it will not do). A chain entry written in flow style
+    (`- {name: x, uri: y}`, as guitar_vocal's are) stays so until it gains
+    settings (`parameters`, say, on a save) or outgrows its line, and is
+    then written in block style, one setting a line, so that each write
+    leaves a file the next can update (#163). A file not there is written
+    from nothing, in block style with keys in `rig`'s order, under the
+    header saying where it came
     from if `source` is given, or under `header` (comment lines, as written)
     for a rig made some other way: the web UI's new rig says there what made
     it and where each channel's chain came from, so the file explains itself.
