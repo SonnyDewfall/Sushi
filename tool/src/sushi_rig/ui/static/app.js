@@ -1501,7 +1501,8 @@ function stageAmpRegion(el) {
 
 // ---------------------------------------------------------------- volume: the master's and each channel's (2026-11-06)
 
-// A volume fader: in dB from -∞ to +6 (R.volumeSlider), the value as a text
+// A volume fader: in dB from -∞ to +6, or to 0 for the master (#137:
+// `maxDb`, R.MASTER_VOLUME_MAX_DB), (R.volumeSlider), the value as a text
 // field, the wheel, the keys and a drag that holds whole dB, all on one
 // processor's `gain` through POST /live/parameter, so it is logged, undone
 // and saved as any knob is. The master's on both headers (`processor`
@@ -1511,10 +1512,10 @@ function stageAmpRegion(el) {
 // holds it; with no rig up it is there, off, and says so. `blended(ctx)` is
 // the MIDI control that drives this gain, or null: then the fader follows
 // the pedal and is not settable (R.blendedBy says why).
-function volumeFader({ where, processor, label, aria, control, updaters, blended = () => null }) {
+function volumeFader({ where, processor, label, aria, control, updaters, blended = () => null, maxDb = R.VOLUME_MAX_DB }) {
   const key = `p\u0000${processor}\u0000gain`;
   const input = h("input", {
-    type: "range", min: R.VOLUME_OFF_SLIDER, max: R.VOLUME_MAX_DB, step: 0.1, "aria-label": aria,
+    type: "range", min: R.VOLUME_OFF_SLIDER, max: maxDb, step: 0.1, "aria-label": aria,
     name: `volume-${processor}`,  // so a region rebuilt around it can give the focus back (`refocus`)
   });
   let ctrl = control(null);
@@ -1526,16 +1527,22 @@ function volumeFader({ where, processor, label, aria, control, updaters, blended
   const dbNow = () => R.volumeDb(ctrl, current);
   const set = (db) => {
     if (!settable()) return;
-    const kept = R.volumeClamp(db);
+    const kept = R.volumeClamp(db, maxDb);
     if (kept === null) return;
     const v = R.volumeValueOf(ctrl, kept);
     sender.change(key, v, (x) => ({ path: "/live/parameter", json: { processor, parameter: "gain", value: x } }));
     draw(v);
   };
+  // A wheel notch or an arrow: nothing sent where it would not move (up from
+  // over the top, #137), and the master's hard top on the way down.
+  const step = (steps, fine) => {
+    const next = R.volumeStepped(dbNow(), steps, fine, null, maxDb, maxDb < R.VOLUME_MAX_DB);
+    if (!next.unchanged) set(next.db);
+  };
   const field = valueField(`${aria} value`, (text) => {
     if (!live) return { ok: false, why: "No rig is up to set it on." };
     if (driven) return { ok: false, why: `Driven by ${driven}: the pedal sets it.` };
-    const said = R.parseVolume(text);
+    const said = R.parseVolume(text, maxDb);
     if (!said.ok) return said;
     set(said.db);
     return { ok: true, text: R.volumeText(said.db) };
@@ -1546,20 +1553,22 @@ function volumeFader({ where, processor, label, aria, control, updaters, blended
   const draw = (v) => {
     current = v;
     const db = dbNow();
-    if (document.activeElement !== input || !sender.busy(key)) input.value = String(R.volumeSlider(db));
+    if (document.activeElement !== input || !sender.busy(key)) input.value = String(R.volumeSlider(db, maxDb));
     const text = live ? R.volumeText(db) : "—";
     field.show(text);
     input.setAttribute("aria-valuetext", text);
     const failed = state.failed.get(key);
     el.classList.toggle("failed", !!failed);
     el.classList.toggle("is-driven", !!driven);
-    note.textContent = driven ? `driven by ${driven}` : "";
+    const over = live && !driven ? R.overTopNote(db, maxDb) : null;
+    note.textContent = driven ? `driven by ${driven}` : over ? "over the top" : "";
     el.title = failed ? `refused: ${failed}`
+      : over ? `${over[0].toUpperCase()}${over.slice(1)}.`
       : driven ? `Driven by ${driven}, a MIDI blend: it follows the pedal, so it is not set from here (and a save does not write it).`
-        : live ? "-∞, then -60 to +6 dB: drag, scroll or type. Saved as its level." : "No rig is up.";
+        : live ? `-∞, then -60 to ${maxDb > 0 ? "+" + maxDb : maxDb} dB: drag, scroll or type. Saved as its level.${maxDb < R.VOLUME_MAX_DB ? " The master stops at 0 dB: its gain comes after the limiter." : ""}` : "No rig is up.";
   };
   input.addEventListener("input", () => {
-    const snapped = R.volumeSticky(R.volumeOfSlider(Number(input.value)), held);
+    const snapped = R.volumeSticky(R.volumeOfSlider(Number(input.value), maxDb), held);
     held = snapped.held;
     set(snapped.db);
   });
@@ -1571,13 +1580,13 @@ function volumeFader({ where, processor, label, aria, control, updaters, blended
     field.release();
     const { notches, rest } = R.wheelNotches(wheelRest, event.deltaY, event.deltaMode);
     wheelRest = rest;
-    if (notches) set(R.volumeStepped(dbNow(), notches, event.shiftKey).db);
+    if (notches) step(notches, event.shiftKey);
   });
   input.addEventListener("keydown", (event) => {
     const steps = { ArrowUp: 1, ArrowRight: 1, ArrowDown: -1, ArrowLeft: -1, PageUp: 10, PageDown: -10 };
-    if (event.key in steps) set(R.volumeStepped(dbNow(), steps[event.key], event.shiftKey).db);
+    if (event.key in steps) step(steps[event.key], event.shiftKey);
     else if (event.key === "Home") set(-Infinity);
-    else if (event.key === "End") set(R.VOLUME_MAX_DB);
+    else if (event.key === "End") { if (!(dbNow() > maxDb)) set(maxDb); }  // the top, never down to it
     else return;
     event.preventDefault();
   });
@@ -1594,7 +1603,7 @@ function volumeFader({ where, processor, label, aria, control, updaters, blended
 
 function masterFader(where) {
   return volumeFader({ where, processor: R.MASTER, label: "MASTER", aria: "Master volume",
-    control: (live) => R.masterControl(live), updaters: state.masterUpdaters });
+    control: (live) => R.masterControl(live), updaters: state.masterUpdaters, maxDb: R.MASTER_VOLUME_MAX_DB });
 }
 
 // The MIDI control driving a channel's send, from the running rig's file.
@@ -2210,7 +2219,7 @@ function chainRegion(regions, model, status, open) {
   patch(regions.rack, JSON.stringify(track ? ["chain", track.name] : waiting ? ["waiting"] : ["none", !!model, status.tone]), () => {
     state.unitUpdaters = new Map();
     parts.slots = new Map();
-    parts.chain = parts.hint = null;
+    parts.chain = parts.hint = parts.limiter = null;
     parts.start = null;
     parts.order = [];
     // The rows they were drawn on are gone: a confirm left armed or a line
@@ -2238,12 +2247,21 @@ function chainRegion(regions, model, status, open) {
     // The place at the start of the chain (#130): in front of the first
     // plugin, which no "after" can say.
     parts.start = addSlotParts(track.name, R.addSlots(track)[0]);
+    // The Master tab ends with the limiter's line (#137): read-only, after
+    // the last place to add, since nothing goes after it.
+    parts.limiter = track.isMaster ? h("p", { class: "limiter", role: "note" }) : null;
     // A channel's volume is its strip's, in the left column, and its name is
     // its tab's: the chain's own head is only what it holds.
     return h("section", { class: "track", id: `t-${track.name}` }, h("div", { class: "track-head" }, parts.hint),
-      parts.start.el, parts.chain);
+      parts.start.el, parts.chain, parts.limiter);
   });
   if (!track) return;
+  if (parts.limiter) {
+    const line = R.limiterLine(track, liveBody());
+    const text = line ? line.text : "";
+    if (parts.limiter.textContent !== text) parts.limiter.textContent = text;
+    parts.limiter.classList.toggle("warn", !!line && (!line.present || line.bypassed));
+  }
   const slots = R.addSlots(track);
   drawAddSlot(parts.start, track, slots[0]);
   const count = track.units.length;

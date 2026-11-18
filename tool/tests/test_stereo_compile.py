@@ -77,7 +77,7 @@ def test_a_copy_follows_each_mono_plugin_and_no_stereo_one():
     )))
     assert chains_of(config) == {
         "board": ["comp", "comp_to_stereo", "eq", "ts", "ts_to_stereo", "board_send"],
-        "master": ["master_return", "ceiling", "ceiling_to_stereo"],
+        "master": ["master_return", "ceiling", "ceiling_to_stereo", "master_limiter"],
     }
     copies = [p for t in config["tracks"] for p in t["plugins"] if p["name"].endswith("_to_stereo")]
     assert all(p == {"name": p["name"], "type": "internal", "uid": COPY_UID} for p in copies)
