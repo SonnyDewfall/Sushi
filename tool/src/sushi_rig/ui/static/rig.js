@@ -10,6 +10,9 @@
 // that could not read it, the same name rule live.protected_processor applies.
 export const MASTER = "master";
 export const RETURN = "master_return";
+// The master's limiter (#137, rigfile.LIMITER): last on the master, the
+// compiler's safety net, shown as one read-only line and never as a unit.
+export const LIMITER = "master_limiter";
 export const SEND_SUFFIX = "_send";
 // The compiler's copy to stereo after a mono plugin (stereo.py: COPY_SUFFIX),
 // a name nothing else may end in. Not shown: it goes with its plugin.
@@ -27,7 +30,8 @@ export const TOLERANCE = 1e-4;
 const SEND_GAIN = { name: "gain", label: "Level", unit: "dB", scale: "linear", visibility: "primary" };
 
 // A processor's role: "stereo" for the compiler's copy to stereo, "send" or
-// "return" for the compiler's monitor path, null for a player's plugin. A
+// "return" for the compiler's monitor path, "limiter" for the master's
+// limiter (#137), null for a player's plugin. A
 // copy is recognised by whatever says so first -- its uid, the reserved
 // suffix no other name may carry (stereo.reserved_problem), or a role of
 // "stereo" -- before any role /live/plugins gives: on the rig (2026-11-06)
@@ -42,6 +46,7 @@ export function roleOf(track, name, plugin) {
   if (plugin && "role" in plugin) return plugin.role || null;
   if (name === track + SEND_SUFFIX) return "send";
   if (track === MASTER && name === RETURN) return "return";
+  if (track === MASTER && name === LIMITER) return "limiter";
   return null;
 }
 
@@ -586,9 +591,9 @@ export function primaryControls(panel) {
 }
 
 // The rack: one entry per track in Sushi's order, each with its chain's
-// plugins as units and its send and return apart, since those are the
-// compiler's, not the player's (they cannot be moved, removed or bypassed
-// from here). A mono plugin's copy to stereo (role "stereo") is the
+// plugins as units and its send, return and limiter apart, since those are
+// the compiler's, not the player's (they cannot be moved, removed, bypassed
+// or retuned from here). A mono plugin's copy to stereo (role "stereo") is the
 // compiler's too and is not shown at all: the agent moves and removes it
 // with its plugin, so a unit's neighbours here are the neighbours a move
 // steps past. `chain` keeps Sushi's whole chain, copies included, because
@@ -599,7 +604,7 @@ export function rackModel(live, plugins, profiles) {
   const tracks = [];
   for (const [track, chain] of Object.entries((live && live.tracks) || {})) {
     const units = [];
-    let send = null, ret = null;
+    let send = null, ret = null, limiter = null;
     for (const name of chain) {
       const plugin = plugins ? plugins[name] || null : null;
       const role = roleOf(track, name, plugin);
@@ -619,10 +624,11 @@ export function rackModel(live, plugins, profiles) {
       };
       if (role === "send") send = unit;
       else if (role === "return") ret = unit;
+      else if (role === "limiter") limiter = unit;
       else units.push(unit);
     }
     units.forEach((u, i) => { u.monoNote = monoNote(units, i); });
-    tracks.push({ name: track, isMaster: track === MASTER, units, send, ret, chain: [...chain] });
+    tracks.push({ name: track, isMaster: track === MASTER, units, send, ret, limiter, chain: [...chain] });
   }
   return { tracks };
 }
@@ -650,6 +656,29 @@ export function summaryOf(unit, live, count = 3) {
   }
   return controls.slice(0, count)
     .map((c) => `${c.label} ${formatValue(c, c.kind === "mix" ? mixValueOf(live, unit.name, c) : valueOf(live, unit.name, c.name))}`).join(" · ");
+}
+
+// The master's limiter (#137) as the Master tab's one line about it: what it
+// is and that it is fixed, from what Sushi holds. Null where the master has
+// none (a rig running from before it, or a v1 run): then the line says that
+// a restart puts it in, since every compiled rig has one.
+export const LIMITER_CEILING_DBFS = -1;
+export function limiterLine(track, live) {
+  if (!track || !track.isMaster) return null;
+  if (!track.limiter) {
+    return { present: false, text: "No limiter on this master: the rig was started before every rig had one. Restart it to put the limiter in." };
+  }
+  const bypassed = track.limiter.bypassed === true;
+  const thresh = valueOf(live, track.limiter.name, "Thresh");
+  // mda/Limiter's threshold is 10^(2*Thresh - 2): 0.975 is -1 dBFS.
+  const at = isNumber(thresh) ? 20 * (2 * thresh - 2) : null;
+  const where = at === null ? `${LIMITER_CEILING_DBFS} dBFS` : `${minus(at.toFixed(1))} dBFS`;
+  return {
+    present: true, bypassed,
+    text: bypassed
+      ? `Limiter: bypassed in Sushi, which the rig never does. Restart the rig to put it right.`
+      : `Limiter: mda Limiter at ${where}, last on the master. A safety net the rig always has: it does not change the sound below ${where}, and is not set from here.`,
+  };
 }
 
 export function channelLevels(model, live) {
@@ -1926,13 +1955,18 @@ export function saveOutcome(name, answer) {
 // of a switch, not a restart.
 //
 // Its range is clamped to what is safe to reach from a phone in the dark:
-// -60 to +6 dB, and below that one notch of -∞, which is the gain's own
+// -60 to +6 dB for a channel and -60 to 0 dB for the master (#137: its gain
+// comes after the limiter), and below that one notch of -∞, which is the gain's own
 // floor (-120 dB on the -120 to +24 range a track's gain and a send's
 // have: 10^-6, below hearing), not a mute parameter, so one parameter is
 // the volume, one undo puts it back and one line of the file holds it.
 
 export const VOLUME_MIN_DB = -60;
 export const VOLUME_MAX_DB = 6;
+// The master's top (#137, rigfile.MASTER_LEVEL_MAX): unity. Sushi applies the
+// master's gain after its limiter, so above 0 dB it would lift what the
+// limiter let through; the agent refuses more. A channel's volume keeps +6.
+export const MASTER_VOLUME_MAX_DB = 0;
 // The fader's bottom notch, below VOLUME_MIN_DB: -∞.
 export const VOLUME_OFF_SLIDER = VOLUME_MIN_DB - 1;
 // One wheel notch or arrow key: half a dB, a tenth of that with shift.
@@ -1971,16 +2005,26 @@ export function volumeDb(ctrl, v) {
   return db <= ctrl.min + 1e-3 ? -Infinity : db;
 }
 
-// A dB value as the fader may hold it: clamped to -60 .. +6, or -∞.
-export function volumeClamp(db) {
+// A dB value as the fader may hold it: clamped to -60 .. `max` (+6, or the
+// master's 0), or -∞.
+export function volumeClamp(db, max = VOLUME_MAX_DB) {
   if (db === -Infinity) return -Infinity;
   if (!isNumber(db)) return null;
-  return clampTo(db, VOLUME_MIN_DB, VOLUME_MAX_DB);
+  return clampTo(db, VOLUME_MIN_DB, max);
 }
 
 // The normalised value that sets the master to `db` (-∞ is the floor).
 export function volumeValueOf(ctrl, db) {
   return db === -Infinity ? 0 : normalisedOf(ctrl, clampTo(db, ctrl.min, ctrl.max));
+}
+
+// What a fader says of a level above its top (#137: a master from before
+// the cap, at what its file said), or null: it is not set from here, and
+// only coming down moves it.
+export function overTopNote(db, max) {
+  if (!isNumber(db) || db <= max + 1e-6) return null;
+  return `at ${volumeText(db)}, over the ${volumeText(max)} it now stops at (the rig was started before the cap): ` +
+    `up does nothing, and any move down brings it to ${volumeText(max)} or below`;
 }
 
 export function volumeText(db) {
@@ -1994,13 +2038,13 @@ export function volumeText(db) {
 // The fader's position for a dB value, and back: one notch below the range
 // is -∞, and only -∞; a value outside the range (a file may hold -80 or +10)
 // sits at that end of it, its text saying what it is.
-export function volumeSlider(db) {
+export function volumeSlider(db, max = VOLUME_MAX_DB) {
   if (db === null || db === undefined || db === -Infinity) return VOLUME_OFF_SLIDER;
-  return clampTo(db, VOLUME_MIN_DB, VOLUME_MAX_DB);
+  return clampTo(db, VOLUME_MIN_DB, max);
 }
 
-export function volumeOfSlider(x) {
-  return x < VOLUME_MIN_DB - 0.5 ? -Infinity : clampTo(x, VOLUME_MIN_DB, VOLUME_MAX_DB);
+export function volumeOfSlider(x, max = VOLUME_MAX_DB) {
+  return x < VOLUME_MIN_DB - 0.5 ? -Infinity : clampTo(x, VOLUME_MIN_DB, max);
 }
 
 // A dragged fader's dB, held to whole dB as a knob's are (`sticky`): `{db, held}`.
@@ -2017,30 +2061,38 @@ export function volumeSticky(db, held = null) {
 // went to -∞). Inside -60 .. +6 it moves by VOLUME_STEP_DB, sticky to whole
 // dB, and down from -60 is -∞, up from -∞ is -60. Outside the range (a file
 // may hold +10 or -80) it steps toward the range, and away from it not at
-// all, except down below -60, which is -∞. `{db, held}`.
-export function volumeStepped(db, steps, fine = false, held = null) {
+// all, except down below -60, which is -∞. `{db, held}`, and `unchanged`
+// where a step up from above the range leaves it where it is: then nothing
+// is sent (review of PR #172: one notch up sent the clamped top, and a master
+// at +6 dB from before the cap dropped 6 dB on a scroll up). With `hard`, a
+// top nothing above may be set (the master's 0 dB, #137), a step down from
+// above it goes to the top, the first level the agent will take.
+export function volumeStepped(db, steps, fine = false, held = null, max = VOLUME_MAX_DB, hard = false) {
   if (db === -Infinity || db === null || db === undefined) {
     return steps > 0 ? { db: VOLUME_MIN_DB, held: null } : { db: -Infinity, held: null };
   }
   const size = VOLUME_STEP_DB / (fine ? FINE_DIVISOR : 1);
   const next = db + steps * size;
-  if (db > VOLUME_MAX_DB) return { db: steps > 0 ? db : next, held: null };
+  if (db > max) {
+    if (steps > 0) return { db, held: null, unchanged: true };
+    return { db: hard ? max : next, held: null };
+  }
   if (db < VOLUME_MIN_DB) return steps > 0 ? { db: next, held: null } : { db: -Infinity, held: null };
   if (next < VOLUME_MIN_DB - 1e-9) return { db: -Infinity, held: null };
-  const kept = clampTo(next, VOLUME_MIN_DB, VOLUME_MAX_DB);
+  const kept = clampTo(next, VOLUME_MIN_DB, max);
   return fine ? { db: kept, held: null } : volumeSticky(kept, held);  // fine is for the values between
 }
 
 // What is typed into the master's field: a number of dB (with or without
-// the unit), or -∞ as "-inf", "−∞", "mute" or "off"; clamped to -60 .. +6.
-// Exact, never snapped.
-export function parseVolume(text) {
+// the unit), or -∞ as "-inf", "−∞", "mute" or "off"; clamped to -60 .. `max`
+// (+6, or the master's 0). Exact, never snapped.
+export function parseVolume(text, max = VOLUME_MAX_DB) {
   const raw = String(text ?? "").trim();
   const t = raw.replace(/[−–]/g, "-").replace(/,/g, ".").replace(/\s+/g, "").replace(/db$/i, "");
   if (/^(-(inf|infinity|∞)|mute|off)$/i.test(t)) return { ok: true, db: -Infinity, clamped: false };
   if (!/^[+-]?(\d+\.?\d*|\.\d+)$/.test(t)) return { ok: false, why: raw ? `“${raw}” is not a level in dB` : "Type a level in dB." };
   const db = Number(t);
-  const kept = volumeClamp(db);
+  const kept = volumeClamp(db, max);
   return { ok: true, db: kept, clamped: kept !== db };
 }
 

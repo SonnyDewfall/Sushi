@@ -146,8 +146,12 @@ master track that has no inputs: it is fed by each channel's send. The probe
 for that path is a probe track carrying the channel's chain and then the
 master's, out of outputs moved from the master's own — the send and return
 between them are the part a copy cannot hold (above). With the master's chain
-empty, as in every committed rig, that track would be the channel's own probe
-again, so it is listed as not probed rather than measured twice — and with the
+empty of the player's plugins, as in every committed rig, that track would be
+the channel's own probe again, so it is listed as not probed rather than
+measured twice. The master's limiter (#137) does not count: it is the
+compiler's, on every master, and passes a probe's level untouched; a probe
+through a master that has plugins of the player's copies it with them, as the
+monitors hear it — and with the
 amp on, the amp to the monitors is listed by name too; a channel with
 no output of its own is probed this way all the same, since it is its only
 probe. The master is found by the compiler's names, not by any return: a
@@ -193,6 +197,7 @@ from .patchbay import (
 )
 from .qpwgraph import listed_links
 from .rigfile import (
+    LIMITER,
     MASTER,
     MAX_FRONTEND_CHANNELS,
     RETURN,
@@ -663,8 +668,10 @@ def _copyable(track: Any) -> list[Any]:
 
 
 def _copied(track: Any) -> bool:
-    """Whether a copy of `track`'s chain would carry anything."""
-    return bool(_copyable(track))
+    """Whether a copy of `track`'s chain would carry anything of the
+    player's: the master's limiter (#137), on every master and transparent
+    at a probe's level, is not counted."""
+    return any(not (track.name == MASTER and p.name == LIMITER) for p in _copyable(track))
 
 
 def _sends_to_master(track: Any) -> bool:

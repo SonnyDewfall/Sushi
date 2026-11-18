@@ -649,8 +649,10 @@ def test_a_master_with_a_chain_is_probed_on_a_copy_of_both(tmp_path):
     points = by_name(plan_probes(spec, amp=True))
     through = points["guitar through the master (sushi:audio_output_4)"]
     assert through.track.copy_of == ("guitar", "master")
-    # The return is left off with the send: on a copy nothing feeds it.
-    assert [c.source for c in through.track.plugins] == ["limiter"]
+    # The return is left off with the send: on a copy nothing feeds it. The
+    # compiler's limiter (#137) is copied after the player's chain, as the
+    # monitors hear it.
+    assert [c.source for c in through.track.plugins] == ["limiter", "master_limiter"]
     assert through.inject == ("sushi:audio_input_1",)
     via = points["guitar via amp and the master (sushi:audio_output_5)"]
     assert via.links == (("NAM:Output", "sushi:audio_input_1"),) and via.nonlinear

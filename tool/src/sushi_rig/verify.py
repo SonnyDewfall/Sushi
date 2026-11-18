@@ -193,6 +193,31 @@ def _unknown(kind: str, name: str, available: set[str] | frozenset[str]) -> str:
     return f"no {kind} named {name!r}{hint}"
 
 
+def limiter_problems(config: dict[str, Any]) -> list[Problem]:
+    """A compiled rig of channels whose master does not end with the
+    compiler's limiter at its fixed settings (#137), or none. A config is a
+    compiled rig when its master track carries the compiler's return; a v1
+    config has no master, and is held to nothing here. Pure: that Sushi then
+    applies the settings is `diff_state`'s, from the running rig."""
+    from .rigfile import LIMITER, LIMITER_SETTINGS, LIMITER_URI, MASTER
+
+    master = next((t for t in config.get("tracks") or []
+                   if isinstance(t, dict) and t.get("name") == MASTER), None)
+    plugins = [p for p in (master or {}).get("plugins") or [] if isinstance(p, dict)]
+    if not any(p.get("uid") == RETURN_UID for p in plugins):
+        return []
+    last = plugins[-1]
+    if last.get("name") != LIMITER or last.get("uri") != LIMITER_URI:
+        return [Problem(MASTER, f"does not end with the limiter ({LIMITER}, {LIMITER_URI}): it ends with "
+                                f"{last.get('name')!r}. Every compiled rig has one; recompile it")]
+    state = next((e for e in config.get("initial_state") or []
+                  if isinstance(e, dict) and e.get("processor") == LIMITER), {})
+    want = {"processor": LIMITER, **LIMITER_SETTINGS}
+    if state != want:
+        return [Problem(LIMITER, f"its settings are {state!r}, not the compiler's fixed {LIMITER_SETTINGS!r}")]
+    return []
+
+
 def check_names(config: dict[str, Any], dump: Any) -> list[Problem]:
     """Every parameter named in `initial_state` exists on its processor, and
     every property named on an internal plugin is one it has.
@@ -448,7 +473,7 @@ def verify(config: Path, sushi_bin: str = "sushi", quick: bool = False) -> list[
     # along with a near miss.
     dump = dump_plugins(_without_state(config), sushi_bin, env=sushi_env(root))
 
-    problems = check_names(parsed, dump)
+    problems = limiter_problems(parsed) + check_names(parsed, dump)
     # A config that names something wrong will not load: Sushi exits 7 and
     # names nothing. Running it anyway would raise out of `capture_headless`
     # and lose the names just found, which is the whole answer.

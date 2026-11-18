@@ -993,7 +993,7 @@ def one_track(name, plugins, master=False):
     rig = UiRig()
     rig.chains = {name: plugins + ([f"{name}_send"] if master else [])}
     if master:
-        rig.chains["master"] = ["master_return"]
+        rig.chains["master"] = ["master_return", "master_limiter"]  # as compiled (#137)
         rig.info[f"{name}_send"] = rig.info["board_send"]
         rig.classes[f"{name}_send"] = rig.classes["board_send"]
         rig.bypassed[f"{name}_send"] = False

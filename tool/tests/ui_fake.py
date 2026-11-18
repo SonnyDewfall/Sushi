@@ -2,7 +2,8 @@
 
 `UiRig` is a Sushi in the shape of `agent.Live`, holding a small rig in
 memory: two channels and a master, as the compiler builds them (a send at the
-end of each channel, the master's return first on the master). It changes as
+end of each channel, the master's return first on the master and its limiter
+last, #137). It changes as
 it is asked, so a browser driving the agent sees its own changes come back on
 the next poll. `Served` runs a real agent over it on a real port, for
 Playwright; run this file to serve it by hand (`python tests/ui_fake.py`),
@@ -124,7 +125,7 @@ from sushi_rig.supervisor import AmpRestart
 from sushi_rig.library import IRI, Literal, parse_turtle
 from sushi_rig.live import LiveError, decide_move
 from sushi_rig.paths import checkout_root
-from sushi_rig.rigfile import LEVEL_RANGE, RETURN_UID, SEND_UID, level_to_gain
+from sushi_rig.rigfile import LEVEL_RANGE, LIMITER, LIMITER_SETTINGS, LIMITER_URI, RETURN_UID, SEND_UID, level_to_gain
 from sushi_rig.stereo import COPY_UID
 from sushi_rig.supervisor import Outcome
 
@@ -234,7 +235,7 @@ class UiRig:
         self.chains = {
             "board": ["overdrive", "octave", "delay", "board_send"],
             "vocal": ["vocal_delay", "vocal_send"],
-            "master": ["master_return"],
+            "master": ["master_return", LIMITER],
         }
         self.info = {
             "board": strip(), "vocal": strip(), "master": strip(),
@@ -244,9 +245,13 @@ class UiRig:
             "vocal_delay": info_of(delay),
             "board_send": send(0.0), "vocal_send": send(-6.0),
             "master_return": {},
+            # mda/Limiter's five controls, each 0 to 1 (lv2info on mda-lv2
+            # 1.2.10, 2026-11-17), at the compiler's settings.
+            LIMITER: {name: {"automatable": True, "value": value, "min_domain_value": 0.0, "max_domain_value": 1.0}
+                      for name, value in LIMITER_SETTINGS["parameters"].items()},
         }
         self.bypassed = {"overdrive": False, "octave": True, "delay": False, "vocal_delay": False,
-                         "board_send": False, "vocal_send": False, "master_return": False}
+                         "board_send": False, "vocal_send": False, "master_return": False, LIMITER: False}
         self.classes = {
             "overdrive": {"uri": GXTS9, "uid": None, "type": "lv2"},
             "octave": {"uri": RUBBERBAND, "uid": None, "type": "lv2"},
@@ -255,6 +260,7 @@ class UiRig:
             "board_send": {"uri": None, "uid": SEND_UID, "type": "internal"},
             "vocal_send": {"uri": None, "uid": SEND_UID, "type": "internal"},
             "master_return": {"uri": None, "uid": RETURN_UID, "type": "internal"},
+            LIMITER: {"uri": LIMITER_URI, "uid": None, "type": "lv2"},
         }
         self.refuse: dict = {}
         # How long `plugins` (GET /live/plugins) takes to answer: a test

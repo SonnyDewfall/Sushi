@@ -18,8 +18,8 @@ the UI never means editing a bus number.
           - {name: guitar_compressor, uri: http://...}
     master:
       output: monitor-out       # a role in the machine file
-      chain: []                 # where #29's limiter goes
-      level: -3.0               # optional, dB: the master track's own gain
+      chain: []                 # the player's; the compiler's limiter follows it
+      level: -3.0               # optional, dB: the master track's own gain, 0 at most
 
 A rig compiles to a `RigSpec`, so everything downstream — `emit`, `verify`, the
 patchbay, the null tests — keeps working on what it already understands. This
@@ -39,6 +39,21 @@ module adds no second path to Sushi.
   thing a person has to know.
 - **The master is on engine bus 0**, the stems after it. Bus 0 is the one bus
   Sushi's offline frontend has, so what you hear is what can be rendered.
+- **The master ends with the limiter** (#137, option 2, chosen 2026-11-17):
+  `master_limiter`, mda/Limiter at fixed settings (`LIMITER_SETTINGS`), last on
+  the master's chain after the player's plugins, as the return is first. It is
+  the compiler's as the sends are: never in a rig file, never saved into one,
+  never moved, removed, bypassed or retuned through the agent. A soft safety
+  net, not a ceiling: below -1 dBFS it passes the signal bit for bit, so no
+  sound reference changes. A very loud input still gets out: in Sushi 1.3.0,
+  +20 dBFS of noise came out at between -0.4 and +4.7 dBFS depending on how it
+  arrived, +26 dBFS at about +12, and at +40 dBFS it can come out louder than it
+  went in. Known and accepted (`tool/spikes/master_limiter/`,
+  `tests/test_limiter_sushi.py`).
+- **The master volume stops at 0 dB** (`MASTER_LEVEL_MAX`). Sushi applies a
+  track's gain after its plugins, so the master's gain comes after the limiter
+  and anything above unity would lift what the limiter let through. A file that
+  says more still loads, and compiles at 0 dB; the next save writes 0.
 - **A mono input feeds both halves of its channel** from one engine channel.
   Today the patchbay duplicates the physical port into two engine channels to
   do the same; doing it inside Sushi spends one input instead of two.
@@ -62,13 +77,15 @@ load tracks".
 
 A channel's name becomes its track's, its stem's file name in a take, and its
 send's prefix, so it follows the rule takes and configs already use
-(`save.NAME_PATTERN`). `master`, `master_return` and `<channel>_send` belong to
-the compiler; a name that would collide with one is refused by name.
+(`save.NAME_PATTERN`). `master`, `master_return`, `master_limiter` and
+`<channel>_send` belong to the compiler; a name that would collide with one is
+refused by name.
 """
 
 from __future__ import annotations
 
 import copy
+import math
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -96,6 +113,39 @@ WIRING = "_wiring"
 SEND_UID = "sushi.testing.send"
 RETURN_UID = "sushi.testing.return"
 MASTER_BUS = 0
+
+# The master's limiter (#137, option 2): last on the master, the compiler's.
+# mda/Limiter, the manifest's one limiter: stereo (plugin-ports.txt), no
+# latency, and transparent below its threshold, bit for bit (its gain is held
+# at exactly 1.0 there and its output trim is exactly 1 at Output 0.5). Its
+# own defaults are not transparent (Thresh 0.6 is about -16 dBFS, Output 0.6
+# is +2 dB), so every setting is stated and the compiler's always win over a
+# capture (`merged_state`). From mdaLimiter.cpp, hard knee: the threshold is
+# 10^(2*Thresh - 2), so 0.975 is -1 dBFS; the trim 10^(2*Output - 1); the
+# attack step 10^(-2*Attack), 0.15 its default. Rendered in Sushi 1.3.0
+# (2026-11-17, tests/test_limiter_sushi.py): +12 dBFS of sweep or sine comes
+# out at about -0.9 dBFS; +20 dBFS of noise at between -0.4 and +4.7 dBFS,
+# depending on how it arrived (its overshoot is chaotic there); +26 dBFS at
+# about +12; at +40 dBFS it can come out louder than it went in. It watches
+# the sum of the two sides, so a signal in opposite phase passes; an infinity
+# leaves its gain NaN, and the master silent, until the rig restarts. (The
+# spike's lv2apply figures, +2.6 dBFS at +20 in, are not what Sushi gives.)
+# A soft safety net, as chosen; x42's dpl is
+# the upgrade if this is not enough (its look-ahead would change every
+# reference's delay).
+LIMITER = "master_limiter"
+LIMITER_URI = "http://drobilla.net/plugins/mda/Limiter"
+LIMITER_CEILING_DBFS = -1.0
+LIMITER_SETTINGS: dict[str, Any] = {
+    "bypassed": False,
+    "parameters": {"Thresh": 0.975, "Output": 0.5, "Release": 0.5, "Attack": 0.15, "Knee": 0.0},
+}
+
+# The master volume's top (#137): unity. Sushi 1.3.0 applies a track's gain
+# after its plugins (`Track::process_audio`: `_process_plugins`, then
+# `_apply_pan_and_gain`), so the master's gain is after the limiter, and a
+# master at +6 dB would put its ceiling at +5 dBFS.
+MASTER_LEVEL_MAX = 0.0
 
 _KEYS = ("kind", "schema_version", "name", "description", "meta", "host", "amp",
          "channels", "master", "midi")
@@ -145,7 +195,9 @@ class Master:
     # (transport.py: "what reached the monitors"), never on a channel's
     # stem. On the -120 to +24 dB range a track's gain has, as a send's does
     # (`LEVEL_RANGE`; `UNITY_STRIP` relies on the same). 0 is unity, and
-    # unity is written nowhere.
+    # unity is written nowhere. As the file says it: a file written before
+    # the cap (#137) may say more than `MASTER_LEVEL_MAX`, and still loads;
+    # the compiler caps it (`master_level`), and a save writes the cap.
     level: float = 0.0
 
 
@@ -537,6 +589,86 @@ def gain_to_level(gain: float) -> float:
 # +24 range a send has, derived rather than written twice.
 UNITY_STRIP = {"gain": level_to_gain(0.0), "pan": 0.5, "mute": 0.0}
 
+# The master's pan, held at the centre (#137, PR #172's review): Sushi applies
+# a track's pan with its gain, after its plugins, and its pan law lifts the side
+# panned to by up to +3 dB (a +12 dBFS sine through the limiter came out at
+# +2.0 dBFS on the left with the master's pan at 0.0, -1.0 at the centre). Every
+# pan but the centre lifts one side above unity, so "a pan whose louder side is
+# not above unity" and "the centre" are the same rule; the centre is the one
+# stated. A rig file has no key for the master's pan, and the page no control.
+MASTER_PAN = UNITY_STRIP["pan"]
+
+# The master volume's top, normalised as the agent and Sushi hold the master
+# track's gain (#137): 0 dB is 120/144.
+MASTER_GAIN_MAX = level_to_gain(MASTER_LEVEL_MAX)
+# How far over it a normalised value may be and still be the top: a float32's
+# worth, what Sushi hands back of a value it was given (`ramp.SAME`).
+MASTER_GAIN_SLACK = 1e-6
+
+
+def master_level(level: float) -> float:
+    """The master's level as it is compiled and saved: `level`, but never
+    above `MASTER_LEVEL_MAX`. Pure."""
+    return min(float(level), MASTER_LEVEL_MAX)
+
+
+def master_gain(gain: float) -> float:
+    """A master gain, normalised, held to `MASTER_GAIN_MAX`. Pure."""
+    return min(float(gain), MASTER_GAIN_MAX)
+
+
+def master_gain_problem(value: Any) -> str | None:
+    """Why `value`, a normalised gain for the master track, is refused: above
+    the master volume's top, unity (#137); or None. The agent refuses it as it
+    refuses any value outside a parameter's range (400), rather than clamping
+    it: a fader asked for +3 dB that played 0 dB would say one thing and do
+    another. Pure."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return None  # the shape is the request's to refuse, not this
+    if value > MASTER_GAIN_MAX + MASTER_GAIN_SLACK:
+        return (f"the master volume stops at {MASTER_LEVEL_MAX:g} dB ({MASTER_GAIN_MAX:.6f} normalised), and "
+                f"{value!r} is {gain_to_level(value):+g} dB: the master's gain comes after its limiter, so "
+                "above unity it would lift what the limiter let through (#137)")
+    return None
+
+
+def master_pan_problem(value: Any) -> str | None:
+    """Why `value`, a normalised pan for the master track, is refused: any pan
+    but the centre (`MASTER_PAN`), which would lift one side of the mix past
+    the limiter by up to 3 dB; or None. Refused as the top is (400). Pure."""
+    if isinstance(value, bool) or not isinstance(value, (int, float)) or not math.isfinite(value):
+        return None  # the shape is the request's to refuse, not this
+    if abs(value - MASTER_PAN) > MASTER_GAIN_SLACK:
+        return (f"the master's pan stays at the centre ({MASTER_PAN:g} normalised), and {value!r} is not it: "
+                "Sushi pans after the master's limiter, and its pan law lifts the side panned to by up to "
+                "3 dB, past what the limiter let through (#137)")
+    return None
+
+
+def limiter_problem(processor: str, parameter: str | None = None, value: Any = None,
+                    bypassed: bool | None = None) -> str | None:
+    """Why a change to the master's limiter is refused, or None: its settings
+    are fixed (`LIMITER_SETTINGS`) and it is never bypassed. Setting one to
+    the value it is fixed at, or bypass off, is allowed: that is the limiter
+    put right (a live switch does it when Sushi had it otherwise), and
+    changes nothing it should not. Pure; by name, which Sushi keeps unique
+    across the rig."""
+    if processor != LIMITER:
+        return None
+    if bypassed is not None:
+        if bypassed:
+            return (f"{LIMITER!r} is the master's limiter, the compiler's safety net: it is never bypassed "
+                    "(#137)")
+        return None
+    fixed = LIMITER_SETTINGS["parameters"]
+    if parameter not in fixed:
+        return None  # a parameter it lacks: check_parameter's to say
+    if isinstance(value, (int, float)) and not isinstance(value, bool) and abs(value - fixed[parameter]) <= 1e-6:
+        return None
+    return (f"{LIMITER!r} is the master's limiter, the compiler's safety net: its settings are fixed "
+            f"({parameter} {fixed[parameter]:g}, a ceiling of {LIMITER_CEILING_DBFS:g} dBFS) and not set "
+            "live (#137)")
+
 
 def _strip_problems(where: str, strip: dict[str, Any]) -> list[str]:
     """A strip anywhere but unity changes the stem and not the monitors.
@@ -790,7 +922,7 @@ def check_rig(rig: Rig) -> list[str]:
         if type(count) is not int or count < 0:
             problems.append(f"host.midi_inputs must be a whole number, 0 or more (got {count!r})")
     seen: set[str] = set()
-    reserved = {MASTER, RETURN} | {c.name + SEND_SUFFIX for c in rig.channels}
+    reserved = {MASTER, RETURN, LIMITER} | {c.name + SEND_SUFFIX for c in rig.channels}
     for channel in rig.channels:
         if not _is_width(channel.width):
             problems.append(
@@ -805,7 +937,7 @@ def check_rig(rig: Rig) -> list[str]:
         if channel.name in reserved:
             problems.append(
                 f"channel {channel.name!r}: a name the compiler gives the master track, "
-                "its return or a channel's send; rename it"
+                "its return or limiter, or a channel's send; rename it"
             )
         if channel.name in seen:
             problems.append(f"channel {channel.name!r} appears twice")
@@ -819,7 +951,7 @@ def check_rig(rig: Rig) -> list[str]:
             if plugin.name in reserved:
                 problems.append(
                     f"{owner}: plugin {plugin.name!r} has a name the compiler gives its "
-                    "own send, return or master track; rename it"
+                    "own send, return, limiter or master track; rename it"
                 )
             problems += [f"{owner}: {p}" for p in [stereo.reserved_problem("plugin", plugin.name)] if p]
 
@@ -1076,18 +1208,25 @@ def compile_rig(
             # and every existing rig compiles exactly as before.
             processors[send]["parameters"] = {"gain": level_to_gain(channel.level)}  # emit rounds
         next_input += channel.inputs_used
-    if rig.master.level != 0.0:
+    level = master_level(rig.master.level)
+    if level != 0.0:
         # The master's level is its track's own gain, set as a channel's
         # strip would be (keyed by the track's name); unity writes nothing,
         # so every rig without a master level compiles exactly as before.
-        processors[MASTER] = {"parameters": {"gain": level_to_gain(rig.master.level)}}  # emit rounds
+        # Never above unity (#137): a file that says more plays at 0 dB.
+        processors[MASTER] = {"parameters": {"gain": level_to_gain(level)}}  # emit rounds
+    # The limiter, last on the master (#137), whatever the file's chain: it
+    # is stereo, so it needs no copy. Its settings are all stated, since its
+    # own defaults are not transparent.
+    processors[LIMITER] = copy.deepcopy(LIMITER_SETTINGS)
     # Last, always: see the module docstring.
     tracks.append(TrackSpec(
         name=MASTER,
         channels=2,
         inputs=[],
         outputs=[{"engine_bus": MASTER_BUS, "track_bus": 0}],
-        plugins=[PluginSpec(name=RETURN, uid=RETURN_UID, type="internal")] + master_chain,
+        plugins=[PluginSpec(name=RETURN, uid=RETURN_UID, type="internal")] + master_chain
+                + [limiter_plugin()],
         sink=rig.master.output,
     ))
     spec = RigSpec(
@@ -1107,6 +1246,11 @@ def compile_rig(
         # writes them into the config for the agent.
         fixed["agent"] = agent_bindings
     return spec, fixed
+
+
+def limiter_plugin() -> PluginSpec:
+    """The master's limiter as a chain entry (#137): see `LIMITER`."""
+    return PluginSpec(name=LIMITER, uri=LIMITER_URI, type="lv2")
 
 
 def blended_channels(rig: Rig) -> frozenset[str]:
@@ -1187,6 +1331,21 @@ def merged_state(
                 **(processors[name].get("properties") or {}),
                 "destination_name": values["properties"]["destination_name"],
             }
+    if LIMITER in fixed["processors"]:
+        # The limiter's settings are the compiler's (#137), as a send's
+        # destination is: a capture that read it bypassed or retuned (set
+        # beside the agent, through Sushi itself) is not baked in.
+        processors[LIMITER] = copy.deepcopy(fixed["processors"][LIMITER])
+    gain = ((processors.get(MASTER) or {}).get("parameters") or {}).get("gain")
+    if isinstance(gain, (int, float)) and not isinstance(gain, bool) and gain > MASTER_GAIN_MAX:
+        # Nor a master volume over the top, captured from a rig that let one
+        # be set: held to it, as a file's level is (#137).
+        processors[MASTER]["parameters"]["gain"] = MASTER_GAIN_MAX
+    pan = ((processors.get(MASTER) or {}).get("parameters") or {}).get("pan")
+    if isinstance(pan, (int, float)) and not isinstance(pan, bool) and master_pan_problem(pan):
+        # Nor a master pan off the centre, which lifts a side past the
+        # limiter (#137): back to the centre, as a restart would have it.
+        processors[MASTER]["parameters"]["pan"] = MASTER_PAN
     merged["processors"] = processors
     return merged
 
@@ -1314,7 +1473,7 @@ def fold_state(
     files = {p.name: (ch.name, p) for ch in rig.channels for p in ch.chain}
     files |= {p.name: (MASTER, p) for p in rig.master.chain}
     known = set(files) | {ch.name for ch in rig.channels} | {MASTER}
-    internal = {ch.name + SEND_SUFFIX for ch in rig.channels} | {RETURN}
+    internal = {ch.name + SEND_SUFFIX for ch in rig.channels} | {RETURN, LIMITER}
     named = set(processors) | {n for order in orders.values() for n in (order or [])}
 
     def captured_on(name: str) -> str | None:
@@ -1466,14 +1625,18 @@ def fold_state(
         strip = processors.get(MASTER) or {}
         gain = (strip.get("parameters") or {}).get("gain") if isinstance(strip, dict) else None
         if isinstance(gain, (int, float)) and not isinstance(gain, bool):
-            level = gain_to_level(gain)
+            # Never above the master volume's top (#137): a gain read over it
+            # (set beside the agent) is saved as the top, which is what the
+            # file would compile to anyway.
+            level = master_level(gain_to_level(gain))
             if level != master.get("level", 0.0):
                 master["level"] = level
     return out
 
 
 def pin_monitor_path(config: dict[str, Any]) -> dict[str, Any]:
-    """Each send last in its chain and the return first in the master.
+    """Each send last in its chain, and the return first in the master and
+    the limiter last (#137).
 
     The panel can move any processor and a capture saves the order it finds,
     and `emit` appends a plugin the capture does not mention at the end of its
@@ -1490,7 +1653,9 @@ def pin_monitor_path(config: dict[str, Any]) -> dict[str, Any]:
         plugins = track["plugins"] = stereo.pin_copies(track["plugins"])
         if track["name"] == MASTER:
             track["plugins"] = (
-                [p for p in plugins if p["name"] == RETURN] + [p for p in plugins if p["name"] != RETURN]
+                [p for p in plugins if p["name"] == RETURN]
+                + [p for p in plugins if p["name"] not in (RETURN, LIMITER)]
+                + [p for p in plugins if p["name"] == LIMITER]
             )
         else:
             send = track["name"] + SEND_SUFFIX
@@ -1657,7 +1822,8 @@ RESTART_REASONS = {
     "track_removed": "a track would be removed: the live operations remove no tracks",
     "track_order": "the tracks are in another order, which Sushi takes only at load",
     "track": "a track's channels, inputs or outputs differ, which Sushi takes only at load",
-    "protected": "a send or the master's return would have to be added, removed or replaced",
+    "protected": "a send, the master's return or its limiter would have to be added, removed or replaced "
+                 "(a rig running from before the limiter, #137, gets it on a restart)",
     "plugin_type": "a plugin to add is not LV2, the only kind the live add makes",
     "program": "a program would have to be set, and no live operation sets one",
     "properties": "a property would have to be set, and no live operation sets one",

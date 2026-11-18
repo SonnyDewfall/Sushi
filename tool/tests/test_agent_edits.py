@@ -205,7 +205,9 @@ def test_after_names_the_processor_it_follows(track, after, expected, command):
     ({"after": "limiter"}, r"no processor 'limiter' on track 'guitar': it has \['comp', 'drive', 'guitar_send'\]"),
     ({"name": "drive"}, "'drive' is already on the rig, on track 'guitar'"),
     ({"name": "limiter"}, "already on the rig, on track 'master'"),
-    ({"name": "master"}, "'master' is a track"),
+    # A track's name ("master" itself is refused before this, as the
+    # compiler's: test_limiter.py).
+    ({"name": "aux"}, "'aux' is a track"),
 ])
 def test_an_add_the_rig_cannot_take_is_a_conflict(kwargs, why):
     with pytest.raises(Conflict, match=why):
