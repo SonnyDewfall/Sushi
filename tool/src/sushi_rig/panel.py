@@ -483,8 +483,13 @@ def build_osc_panel(
     ordered = [name for name in live_info if name in parameter_info]
     ordered += [name for name in parameter_info if name not in ordered]
     # The compiler's copies to stereo after mono plugins (stereo.py) have no
-    # parameters and are not the player's: no empty tab for each.
-    ordered = [name for name in ordered if not is_copy(name)]
+    # parameters and are not the player's: no empty tab for each. Nor the
+    # master's limiter (#137), whose settings are fixed: the panel sets
+    # parameters through Sushi's own OSC, past the agent's refusal, so a tab
+    # of it would be the one way left to retune it from a phone.
+    from .rigfile import LIMITER
+
+    ordered = [name for name in ordered if not is_copy(name) and name != LIMITER]
 
     for processor in ordered:
         params = parameter_info[processor]

@@ -355,11 +355,11 @@ def test_each_place_sends_its_after_and_the_start_sends_first_through_the_page(b
     tab(p, "Master").click()
     slot(p, "Add at the start…").click()
     entry(p, MDA_DELAY).click()
-    until(lambda: lib.rig.chains["master"] == ["master_return", "mda_delay_2"])
+    until(lambda: lib.rig.chains["master"] == ["master_return", "mda_delay_2", "master_limiter"])
     expect(p.locator("#t-master .unit button.name")).to_have_text(["mda_delay_2"])
     slot(p, "Add after mda_delay_2…").click()
     entry(p, MVERB).click()
-    until(lambda: lib.rig.chains["master"] == ["master_return", "mda_delay_2", "mverb_2"])
+    until(lambda: lib.rig.chains["master"] == ["master_return", "mda_delay_2", "mverb_2", "master_limiter"])
     assert sent == [
         {"track": "board", "uri": MDA_DELAY, "first": True},
         {"track": "board", "uri": MVERB, "after": "delay"},
@@ -609,10 +609,10 @@ def test_moves_work_on_every_unit_shown_and_never_part_a_mono_plugin_from_its_co
     entry(p, MDA_DELAY).click()
     slot(p, "Add after mda_delay…").click()
     entry(p, MVERB).click()
-    until(lambda: lib.rig.chains["master"] == ["master_return", "mda_delay", "mverb"])
+    until(lambda: lib.rig.chains["master"] == ["master_return", "mda_delay", "mverb", "master_limiter"])
     expect(p.get_by_role("button", name="Move mda_delay up", exact=True)).to_be_disabled()
     p.get_by_role("button", name="Move mverb up", exact=True).click()
-    until(lambda: lib.rig.chains["master"] == ["master_return", "mverb", "mda_delay"])
+    until(lambda: lib.rig.chains["master"] == ["master_return", "mverb", "mda_delay", "master_limiter"])
     for chain in lib.rig.chains.values():
         for i, name in enumerate(chain):
             if name.endswith("_to_stereo"):

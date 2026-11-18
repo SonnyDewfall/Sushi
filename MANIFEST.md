@@ -5240,6 +5240,95 @@ every entry, as on the rig.
 before this) is still one no save can update; its entries need writing in
 block style by hand. **Not tried on the rig.** *(2026-11-17)*
 
+**The master limiter and the master volume's top (#137, option 2).** Sonny
+chose option 2 on 2026-11-17. **Built:** every compiled rig's master ends with
+`master_limiter`, mda/Limiter, placed by the compiler (`rigfile.compile_rig`,
+after the master's own chain, as it places the sends and the return), at the
+spike's settings (`rigfile.LIMITER_SETTINGS`: Thresh 0.975, a -1 dBFS
+threshold; Output 0.5, a trim of exactly 1; Attack 0.15; Release 0.5; hard
+knee), all stated because its own defaults are a -16 dBFS threshold and +2 dB.
+No rig file was edited: the limiter is never in one (its name is reserved),
+never saved into one (`fold_state`), and a capture cannot bypass, retune or
+move it (`merged_state`, `pin_monitor_path`). The agent treats it by the rule
+the sends go by (`live.protected_processor`, `live.is_tail`): not removed,
+moved or moved past, an add with no place goes in front of it, none after it,
+a switch never adds behind it; never bypassed and never set to anything but
+its settings (`rigfile.limiter_problem`, 400), on every path that sets a
+parameter; setting it to its own value is allowed, which is how a switch puts
+right one changed beside the agent. `/live/plugins` gives it the role
+`limiter`; the page's Master tab shows one read-only line for it, and the v1
+panel no tab. **The master volume stops at 0 dB** (`rigfile.MASTER_LEVEL_MAX`),
+since Sushi applies the master's gain after the limiter. *Decided:* a set above
+it is **refused** (400), as the agent refuses any value outside a parameter's
+range, not clamped, in `_apply_parameter(s)`, so the route,
+`/live/parameters`, an undo and a switch's step are all held to it; the page's
+master fader stops at 0 dB (a typed value over it is held to 0, channels keep
++6); the dip never puts back more than 0 dB; a save writes no more than 0.
+*Decided:* a rig file that says more **still loads**, read as written and
+compiled at 0 dB, and the next save writes `level: 0.0`. A rig running from
+before the limiter gets it only by a restart: a live switch from one says
+`protected` and restarts, and the Master tab says so. `verify` holds a
+compiled rig to ending with it (`verify.limiter_problems`); `convert` and the
+probes (`_copied` does not count it) know it.
+
+**The sound references:** none remade, no hash rule changed. `rig_hash` reads
+the rig file, and the limiter is compiled, not written, so no reference went
+STALE; all of them are compared exactly against renders that now go through
+it, and `nulltest --all` here, with Sushi 1.3.0 over Ubuntu 24.04's mda-lv2
+1.2.10, said "sounds the same" for every v1, committed and frozen reference.
+Writing it into the files would have made all of them stale and left the
+code's sound unchecked until each was remade.
+
+**Measured in Sushi 1.3.0 here** (offline renders; nothing heard):
+transparent below the threshold sample for sample (a -6 dBFS sweep with and
+without it); +12 dBFS of sweep or sine out at about -0.9 dBFS; +20 dBFS of
+noise out at +4.7 dBFS arriving through a send at +24 dB and at -0.4 dBFS from
+a file that loud (lv2apply's +2.6 is not what Sushi gives sample for sample;
+the overshoot is chaotic near where it fails), +26 dBFS at about +12, +40
+dBFS louder than it went in. An **infinity** reaching it leaves the master NaN
+until the rig restarts (verified); a NaN passes and it recovers. The deep
+`verify` of a compiled frozen rig shows Sushi applied the settings.
+
+**Tests:** `test_limiter.py` (40, fast), `test_ui_limiter.py` (3),
+`test_limiter_sushi.py` (slow, Sushi: transparency, a hot input caught with it
+and not without, the settings applied, NaN recovery, and each committed rig's
+master as compiled catching +12 dBFS, every render finite and two-sided).
+Changed for the compiled form, each to expect the limiter last on the
+master: four in `test_rigfile.py`, two in `test_ui_library.py`, one each in
+`test_convert.py`, `test_stereo_compile.py`, `test_probes.py` and
+`test_ui.py` (its roles), and `test_verify.py`'s hand-made compiled rig;
+`ui_fake`'s master, and `test_ui_tabs.one_track`'s, end with the limiter. Channel presets: their loads and saves pass
+unchanged with the limiter on the master. The fast suite: 4946 passed, 5 skipped, 175 deselected. The slow tests touched (`test_limiter_sushi.py`, `test_stereo.py`, `test_send_return.py`, `test_convert.py`, `test_rigfile.py`, `test_rigfile_live.py`, `test_configs.py`) each passed here, but this machine's Sushi crashed now and then starting its gRPC server (`server_cc.cc:241`), a different render each run and on clean master the same, so no one run of them was clean; `nulltest --all` was. **Not run:** the rig, by ear
+or at all (no pop, no squeal caught, no fader on the touch screen), a live
+Sushi under the agent, the container job, and the guide's screenshots were not
+remade.
+
+**PR #172's review, fixed in the same entry.** (1) **The master's pan gets
+round the cap**: Sushi pans after the plugins, and its pan law lifts the side
+panned to (a +12 dBFS sine came out at +2.0 dBFS left at pan 0.0, -1.0 at the
+centre; the reviewer's render, reproduced in `test_limiter_sushi.py`). Every
+pan but the centre lifts one side above unity, so *decided:* the master's pan
+is held at the centre (`rigfile.MASTER_PAN`), refused otherwise (400) on the
+route, `/live/parameters`, undo and a switch's step, put back in a compiled
+config from a capture; a rig file has no key for it and the page no control.
+(2) **The compiler's names are refused on a live add** (`master`,
+`master_return`, `master_limiter`): on a rig from before the limiter, one
+added as `master_limiter` could be neither removed, bypassed nor saved.
+(3) rigfile.py's comments give Sushi's figures, not lv2apply's. (4) The guide
+says at extreme levels the limiter may not turn a sound down at all.
+(5) **A step up on a master over 0 dB sends nothing** (a rig from before the
+cap at +6: one notch up used to send 0 dB); a step down goes to 0 dB, the
+fader says "over the top" and why; a channel over its +6 sends nothing on a
+step up too. A browser test, shown failing with the fix taken out. (6) **A
+dip that brings an old rig's master down to 0 dB says so**: `dip.capped` and
+`master_capped` in the edit's answer, stderr, and `agent.master_capped` in
+`/health` until a lifecycle command works; the behaviour is kept. Also a
+`write_rig` round trip: a file at `level: 4.5` saves as `level: 0.0` and
+nothing else. The fast suite, after merging #168: 5046 passed, 5 skipped, 1 failed, `test_live_close.py`'s count of a real elkpy connection's descriptors (16 against 12, the batch before -4), which passed alone 7 times in 8 and touches nothing here. The slow limiter tests, three runs
+in a private network namespace (another session's Sushi held port 51051):
+every test passed at least twice, the rest Sushi's gRPC start-up crash.
+**Not run:** the rig. *(2026-11-17)*
+
 **Help: the user guide, served by the agent (#167).** The page had no way to
 the guides in `docs/guide/`. The agent now serves them itself at `/help/`
 (`guide.py`): each page rendered to HTML on request, its pictures at

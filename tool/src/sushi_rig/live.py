@@ -932,7 +932,9 @@ def protected_processor(track: str, processor: str, uid: str | None = None) -> s
     Sushi reports with the send's uid; the master's return is `master_return`
     on `master`, or the return's uid. The uid is the stronger of the two -- a
     send renamed by hand is still the send -- and the name serves where no uid
-    was read. Pure.
+    was read. The master's limiter (#137) is `master_limiter` on `master`, by
+    name alone: it is an LV2 plugin, whose uid is its URI, and a player may
+    put the same plugin anywhere else. Pure.
     """
     # Here, not at the top: rigfile imports save, which imports this module.
     from .rigfile import MASTER, RETURN, RETURN_UID
@@ -941,6 +943,8 @@ def protected_processor(track: str, processor: str, uid: str | None = None) -> s
         return f"{processor!r} is {track!r}'s send"
     if uid == RETURN_UID or (track == MASTER and processor == RETURN):
         return f"{processor!r} is the master's return"
+    if is_limiter(track, processor):
+        return f"{processor!r} is the master's limiter"
     if stereo.is_copy(processor, uid):
         # The compiler's copy to stereo after a mono plugin (stereo.py): it
         # goes, moves and is removed with its plugin, never on its own.
@@ -955,6 +959,21 @@ def is_send(track: str, processor: str, uid: str | None = None) -> bool:
     from .rigfile import SEND_SUFFIX, SEND_UID
 
     return uid == SEND_UID or processor == track + SEND_SUFFIX
+
+
+def is_limiter(track: str, processor: str) -> bool:
+    """Whether `processor` on `track` is the master's limiter (#137), which
+    stays last on the master as a send stays last on its channel."""
+    from .rigfile import LIMITER, MASTER
+
+    return track == MASTER and processor == LIMITER
+
+
+def is_tail(track: str, processor: str, uid: str | None = None) -> bool:
+    """Whether `processor` is what ends its track's chain and stays there: a
+    channel's send, or the master's limiter. What an add with no place goes
+    in front of, and what nothing may be added after."""
+    return is_send(track, processor, uid) or is_limiter(track, processor)
 
 
 def read_live_chains(

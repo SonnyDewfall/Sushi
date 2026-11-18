@@ -266,7 +266,7 @@ def test_which_plugin_each_processor_is_comes_with_the_compilers_roles():
     assert processors["overdrive"] == {"track": "board", "uri": GXTS9, "uid": None, "type": "lv2", "role": None,
                                        "width": "mono"}  # 1 1 in plugin-ports.txt
     assert {n: p["role"] for n, p in processors.items() if p["role"]} == {
-        "board_send": "send", "vocal_send": "send", "master_return": "return"}
+        "board_send": "send", "vocal_send": "send", "master_return": "return", "master_limiter": "limiter"}
 
 
 def test_a_mono_plugins_copy_to_stereo_has_the_role_stereo_by_its_uid():

@@ -1,6 +1,18 @@
 # The master limiter: mda/Limiter cannot be the safety limiter (#137)
 
-Written 2026-11-16 for #137's master limiter, which is **not built**: the one
+**Decided 2026-11-17, option 2, and built**: mda/Limiter as a soft safety net
+on every rig's master, at the settings below (`rigfile.LIMITER_SETTINGS`), with
+the master volume capped at 0 dB; dpl stays the upgrade. See
+`docs/reference/rig-file.md` ("The master's limiter"). Rendered in Sushi 1.3.0
+since (`tests/test_limiter_sushi.py`, and by hand on 2026-11-17): below
+-1 dBFS bit for bit the same; +12 dBFS of sweep or sine out at about
+-0.9 dBFS; +20 dBFS of noise out at +4.7 dBFS when it arrived through a send
+at +24 dB and at -0.4 dBFS when the file itself was that loud, so the table
+below, lv2apply's, is not what Sushi gives sample for sample (the gain's
+overshoot is chaotic near where it fails); an infinity leaves the master NaN
+until a restart, and a NaN does not. What follows is the research as it was.
+
+Written 2026-11-16 for #137's master limiter, which was then **not built**: the one
 limiter in `plugin-manifest.txt` does not hold a ceiling, and the one on the
 machine that does would change every sound reference. Which to do is
 Sonny's call. Nothing here was heard on the rig, and nothing ran in Sushi:
