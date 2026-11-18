@@ -1260,14 +1260,20 @@ def _undo_of(container: Any, key: Any):
     changes: the container's slot for that entry and its end comments, the
     comment slots of every collection in the entry, the text of the tokens
     in them, and each one's style. Nothing of the container's other entries,
-    so moves of two entries of one list are undone apart."""
+    so moves of two entries of one list are undone apart, in any order: no
+    two of them touch the same slot."""
     from ruamel.yaml.tokens import CommentToken
 
     def tokens(slots: Any) -> list[Any]:
         return [(s, s.value) for s in (slots or []) if isinstance(s, CommentToken)]
 
     slot = list(container.ca.items[key]) if key in container.ca.items else None
-    end = list(container.ca.end) if getattr(container.ca, "end", None) is not None else None
+    # A list's end comments are its last entry's to move (`_set_after`), and
+    # only that entry's undo puts them back: another's, writing back what it
+    # saw, would leave them twice once the last entry moved too (re-review
+    # of PR #169).
+    last = _is_last_of_list(container, key) and getattr(container.ca, "end", None) is not None
+    end = list(container.ca.end) if last else None
     held = []
     for c in _within(container[key]):
         items = {k: list(v) for k, v in c.ca.items.items()}

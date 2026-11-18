@@ -365,3 +365,19 @@ def test_an_entry_after_a_trailing_commented_flow_entry_is_written_folded_when_t
     data["channels"][0]["chain"][1]["parameters"] = {f"Knob {i}": 0.5 for i in range(6)}
     with pytest.raises(yamlmerge.MergeError, match="left in flow style.*entry 'b'.*trailing comment"):
         yamlmerge.merged(text, data)
+
+
+def test_an_entry_put_back_in_flow_style_leaves_the_last_entrys_end_comments_where_it_moved_them():
+    # Re-review of PR #169: `b` cannot be a block after `a`'s trailing comment
+    # and goes back to flow style; `c`, the last, moved and took the comments
+    # after the list with it. `b`'s undo wrote those back to the list's end
+    # as well, so they came out twice and the save was refused.
+    text = (
+        "channels:\n  - name: guitar\n    chain:\n      # above a\n"
+        '      - {name: a, uri: "http://x.org/p#frag"}   # about a\n'
+        '      # above b\n      - {name: b, uri: "urn:b"}\n      - {name: c, uri: "urn:c"}\n'
+        "      # end of chain list\n    # end of channel\nx: 1\n")
+    out = updated(text, lambda d: [d["channels"][0]["chain"][i].update(parameters={"g": 1}) for i in (1, 2)])
+    assert out.count("# end of chain list") == 1 and comments(out) == comments(text)
+    assert '      - {name: b, uri: "urn:b", parameters: {g: 1}}\n' in out
+    assert '      - name: c\n        uri: "urn:c"\n        parameters:\n          g: 1\n      # end of chain list\n' in out

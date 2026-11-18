@@ -5220,8 +5220,11 @@ save-as over itself; a load onto the vocal (`replace_chains`), then two
 saves; a revert to the commit and to a save's snapshot, each then saved
 twice; rig new from guitar_vocal's guitar and a channel added from its
 vocal, then written twice (both write block style and were never affected:
-a guard, not a regression test). `tests/test_flow_style_save.py`, 14 tests,
-10 shown failing on f6303f5 and 4 on the first version of this fix (115f684);
+a guard, not a regression test). `tests/test_flow_style_save.py`, 15 tests,
+10 shown failing on f6303f5, 4 on the first version of this fix (115f684)
+and 1 on the second (c8254d9, where putting one entry back in flow style
+wrote the list's end comments back too, after the last entry had moved
+them, and the save was refused as writing them twice);
 the agent's fake now knows the vocal plugins' parameters, so a save grows
 every entry, as on the rig.
 **Not done:** a folded file an old save left behind (a revert point from
