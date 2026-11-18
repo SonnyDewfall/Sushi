@@ -4426,6 +4426,15 @@ docstring now says an add that waited reads the load again under the live
 lock. **Not run:** the rig, a live Sushi.
 *(2026-11-16)*
 
+**Synth research: thick, synth-like and string-machine sounds (#166).** A
+spike, `tool/spikes/synth_research/` (its README has the numbers and the
+ranking); no rig file, tool code or config changed. Rendered in Sushi 1.3.0's
+own offline frontend. *Found:* Sushi routes an LV2 plugin's MIDI output to
+the next processor on its track, through internal plugins only; GuitarMidi-LV2
+tracks chords when run at real time; Rubber Band 4.0's `wetdry` delays the
+dry by 2,142 samples. **Not run:** the rig, anything heard.
+*(2026-11-17)*
+
 **Plugin research: an octave that works (#153) and pedals to add (#155).**
 A spike, `tool/spikes/plugin_research/`; no rig file, tool code or manifest
 changed. Renders are offline, in a bench host (`host.c`) that offers exactly
