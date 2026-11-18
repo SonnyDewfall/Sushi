@@ -164,7 +164,7 @@ def test_an_amp_in_front_of_nothing_is_refused(tmp_path):
         plan_probes(spec, amp=True)
 
 
-def test_two_tracks_claiming_the_guitar_are_refused(tmp_path):
+def test_two_tracks_on_the_guitar_both_have_the_amp_in_front(tmp_path):
     spec = rig(tmp_path, """\
         - name: a
           channels: 2
@@ -177,10 +177,20 @@ def test_two_tracks_claiming_the_guitar_are_refused(tmp_path):
           inputs: [{engine_bus: 1, track_bus: 0}]
           outputs: [{engine_bus: 1, track_bus: 0}]
         """)
-    with pytest.raises(ProbeError, match="tracks 'a', 'b' all take 'guitar-in'"):
-        plan_probes(spec, amp=True)
     # Without the amp, two guitars are nobody's problem.
     assert len(plan_probes(spec, amp=False).points) == 4
+    # With it, the amp is in front of both, as `amp.amp_patchbay` wires it
+    # (every link from the guitar's port into Sushi goes through the amp):
+    # one probe of the amp, and each track's own through it (#164's
+    # electric-octave, a board and an octave on one input).
+    points = plan_probes(spec, amp=True).points
+    names = [p.name for p in points]
+    assert names.count("amp") == 1
+    for track in ("a", "b"):
+        via = [p for p in points if p.name.startswith(f"{track} via amp")]
+        assert via, f"no probe of {track} through the amp: {names}"
+        assert all(p.inject == ("NAM:Input",) and p.nonlinear for p in via)
+        assert all(link[0] == "NAM:Output" for p in via for link in p.links)
 
 
 def test_an_amp_in_front_of_a_guitar_with_no_outputs_says_so(tmp_path):
@@ -525,16 +535,23 @@ def committed_rigs():
 
 def _plan_with_the_amp(spec):
     """The plan with the amp on, as these two tests ask for it. The amp sits
-    in front of the one track on the guitar's role; a rig with none (vocals
-    only) or two (two guitars) is a rig all the same, and asked for the amp
-    it refuses in a sentence, so its plan here is the one without."""
+    in front of every track on the guitar's role, as the patchbay wires it,
+    so each of them is probed through it or said not to be. A rig with none
+    (vocals only) is a rig all the same, and asked for the amp it refuses in
+    a sentence, so its plan here is the one without."""
     from sushi_rig.patchbay import GUITAR_ROLE
 
-    if len([t for t in spec.tracks if t.source == GUITAR_ROLE]) == 1:
-        return plan_probes(spec, amp=True)
-    with pytest.raises(ProbeError, match=GUITAR_ROLE):
-        plan_probes(spec, amp=True)
-    return plan_probes(spec, amp=False)
+    guitars = [t.name for t in spec.tracks if t.source == GUITAR_ROLE]
+    if not guitars:
+        with pytest.raises(ProbeError, match=GUITAR_ROLE):
+            plan_probes(spec, amp=True)
+        return plan_probes(spec, amp=False)
+    plan = plan_probes(spec, amp=True)
+    for name in guitars:
+        probed = any(p.name.startswith(f"{name} via amp") for p in plan.points)
+        said = any(line.startswith(f"{name} via amp") for line in plan.not_checked)
+        assert probed or said, f"{name} takes {GUITAR_ROLE} and the amp is in front of it, unprobed and unsaid"
+    return plan
 
 
 @pytest.mark.parametrize("name,spec", committed_rigs(), ids=lambda v: v if isinstance(v, str) else "")

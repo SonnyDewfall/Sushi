@@ -19,7 +19,7 @@ fallback. That is the whole point: a missing or renamed plugin now fails loudly
 at startup instead of silently resolving against the system copy and hiding the
 fact that the rig is not actually self-contained.
 
-`plugin-manifest.txt` means **every LV2 URI this rig can load** — 55 of them,
+`plugin-manifest.txt` means **every LV2 URI this rig can load** — 56 of them,
 counted by URI — and it must include every plugin a config in `config/`
 uses; `sushi-rig plugins check` fails if one is missing. Since Sushi addresses
 plugins by URI and never by path, that manifest plus those bundles is the whole
@@ -34,10 +34,13 @@ it on every startup, while a comment-only file parses cleanly and stays quiet �
 which keeps a real plugin-loading error visible instead of buried in known
 noise.
 
-To rebuild `plugins/` from distro packages, and to prove it is self-contained:
+To rebuild `plugins/` from distro packages and the one plugin built here
+(Rubber Band 4.0, [below](#rubber-band-40-built-for-the-octave)), and to prove
+it is self-contained:
 
 ```bash
-sushi-rig plugins assemble --from /usr/lib/lv2 --to plugins \
+scripts/build-rubberband4.sh ~/rubberband-4.0.0/lv2
+sushi-rig plugins assemble --from ~/rubberband-4.0.0/lv2 --from /usr/lib/lv2 --to plugins \
     --waive http://github.com/mikeoliphant/neural-amp-modeler-lv2
 sushi-rig plugins check --waive http://github.com/mikeoliphant/neural-amp-modeler-lv2
                                    # every other URI resolves with LV2_PATH = plugins/ alone
@@ -57,6 +60,84 @@ manifest can fall behind them; both commands say which URIs it is missing. A URI
 packages cannot provide can be accepted by name with `--waive URI`, and is
 reported on every run. `ci/Dockerfile` does this inside a container with a real
 Sushi, so the whole test suite can run without the rig machine.
+
+## Rubber Band 4.0, built for the octave
+
+The octave pedal (`config/rigs/electric-octave.yaml`, #164) is Rubber Band
+4.0's Live shifter, `http://breakfastquay.com/rdf/lv2-rubberband#livemono`.
+Ubuntu 24.04 packages Rubber Band 3.3.0 (`rubberband-lv2`), which has no Live
+shifter, so 4.0.0 is built from source by `scripts/build-rubberband4.sh`, from
+the tag `v4.0.0` of breakfastquay/rubberband, which must be the commit
+`1d95888bec3ae0a17c0c4af791810d5a63f6bc35` or the script refuses to build it.
+The same script builds it in CI's image (`ci/Dockerfile`).
+
+Measured under Sushi 1.3.0 with the built bundle (`tool/tests/test_octave.py`,
+2026-11-17, in a container, not on the rig): an octave up and down within
+0.01 cent on notes from E2 to A4, finite throughout; the octave comes out
+3,202 samples (66.7 ms) after the note. Sushi reads a plugin's latency port
+and does not compensate for it. **Its own Wet-Dry Mix is not a blend**: the
+plugin delays its dry signal to line up with the shifted one, so at Mix 1,
+the dry alone, the guitar comes out 2,144 samples (44.7 ms) late. That is why
+`electric-octave` puts the octave on a second channel from the same input
+and blends with the channel's level ([The rig file](rig-file.md)), keeping
+the board on time and the octave behind it, as electric-octave-up's
+gx_detune_ was (about 65 ms).
+
+**On the rig machine**, once, and again whenever `plugins/` is rebuilt:
+
+```bash
+sudo apt install git meson ninja-build g++ pkg-config libfftw3-dev libsamplerate0-dev lv2-dev
+cd ~/Sushi
+sushi-rig down
+scripts/build-rubberband4.sh ~/Sushi/plugins
+sushi-rig plugins check
+(cd tool && .venv/bin/python -m pytest tests/test_octave.py -rs)
+sushi-rig up --rig electric-octave
+```
+
+In order:
+
+- `down` stops a running rig, so no Sushi has the old bundle loaded and the
+  check two steps on can start Sushis of its own: each render starts one, on
+  the gRPC port a running rig's Sushi holds, and one of the two aborts. With
+  no rig running it says so and does nothing.
+- The script builds in a temporary folder (under a minute, with network to
+  github.com) and replaces `plugins/rubberband.lv2` with 4.0.0's. Everything
+  else in `plugins/`, the amp included, is left alone.
+- `plugins check` fails if the Live shifter does not resolve from `plugins/`.
+- The tests render the octave under this machine's Sushi and print, at the
+  end, each note's error in cents and the octave's lag. They need numpy
+  (the `audio` extra, [Environment](environment.md)). Until the build has
+  run, the first of them fails saying to run it; the fast suite
+  (`-m "not slow"`) does not include them, so pulling this before building
+  leaves it green.
+- `up --rig electric-octave` starts the octave's rig. Starting it from the
+  web UI's rig list does the same; `sushi-rig restart` would only bring back
+  what was running before `down`.
+
+**The URI clash.** Ubuntu's 3.3.0 bundle and 4.0.0's are both called
+`rubberband.lv2` and both declare `#mono`, `#stereo`, `#r3mono` and
+`#r3stereo` (4.0.0 adds `#livemono` and `#livestereo`). Exactly one is what
+Sushi sees: `plugins/` is flat, so it holds one `rubberband.lv2`, and Sushi
+reads `plugins/` alone. That one must be 4.0.0's: `plugins check` fails
+without the Live shifter, which the manifest lists, and
+`tool/tests/test_octave.py` checks every Rubber Band URI resolves to the
+pinned build (the `BUILT-FROM` file the script leaves in the bundle). The
+system's own `/usr/lib/lv2` keeps 3.3.0 if it is installed, which is what
+`lv2ls` and lilv's default path see; the script installs nothing outside the
+folder it is given. When `assemble` reads both trees, lilv takes the higher
+`lv2:minorVersion` for each URI (4.0.0 declares 6, 3.3.0 declares 4) and
+ignores the older bundle whichever comes first on the path (checked with lilv
+0.24.22, 2026-11-17); a split between the two would be refused as two
+bundles of one name.
+
+What the build links at run time is `libfftw3.so.3` and `libsamplerate.so.0`
+(`libfftw3-double3` and `libsamplerate0`, which the `-dev` packages bring);
+Rubber Band itself is in the bundle, statically. A side effect: 4.0.0 fixes
+3.3.0's R3 URIs ("Fix incorrect URIs in LV2 plugins"), so the manifest's
+`#r3mono` and `#r3stereo`, which 3.3.0 lists and cannot instantiate
+(`tool/spikes/plugin_research/README.md`), now load: `#r3mono` rendered
+under Sushi 1.3.0 from the built bundle, 2026-11-17.
 
 ## Choosing a plugin
 
@@ -126,8 +207,9 @@ layout exists to prevent.
 No rig runs it any more. The octave pair (gx_detune_, as `octave_down` and
 `octave_up`) was taken out of every rig in `config/rigs/` on 2026-11-16 (#152),
 and electric-octave-up, which existed for its octave up, was retired to
-`config/retired/`. The plugin stays in `plugin-manifest.txt` while what
-replaces it is decided. Only the v1 config `electric_board.json` (and its
+`config/retired/`. Its replacement is `electric-octave`, on Rubber Band 4.0
+([above](#rubber-band-40-built-for-the-octave)). gx_detune_ stays in
+`plugin-manifest.txt` for the v1 config below and the frozen rigs. Only the v1 config `electric_board.json` (and its
 source, `config/src/electric_board.yaml`) still runs it, at no shift.
 
 What was found, for whoever puts it back: an octave up (gx_detune_ at +12)

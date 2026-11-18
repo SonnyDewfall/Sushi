@@ -8,7 +8,7 @@ Verified on the rig machine (`sonny-dewfall-XPS-9320`):
 | | Status |
 |---|---|
 | Sushi 1.3.0 | ✅ built with `vst3, lv2, jack, rpc control, ableton link` |
-| LV2 plugins discoverable | ✅ every URI in `plugin-manifest.txt` (55), from the bundles in `plugins/`; `sushi-rig plugins check` is the test |
+| LV2 plugins discoverable | ✅ every URI in `plugin-manifest.txt` (55 of today's 56), from the bundles in `plugins/`; `sushi-rig plugins check` is the test. The 56th, Rubber Band 4.0's Live shifter (#164), is built, not packaged, and has not been installed there yet: [Plugins](plugins.md#rubber-band-40-built-for-the-octave) |
 | PipeWire / JACK, qpwgraph, fmit | ✅ |
 | `lilv` Python bindings (system) | ✅ `python3-lilv` + `liblilv-dev` |
 | `elkpy` (in `tool/.venv`) | ✅ imports cleanly on Python 3.14 |
@@ -59,7 +59,8 @@ After a pull that adds a dependency, run the `pip install -e` line again.
 
 Untracked but required at run time: Sushi 1.3.0 itself, as `./sushi` at the
 repository root (the AppImage, or a symlink to it), and `plugins/`
-([Plugins and portability](plugins.md)). The amp needs Carla and the neural amp
+([Plugins and portability](plugins.md)), which needs Rubber Band 4.0 built
+into it for the octave ([the commands](plugins.md#rubber-band-40-built-for-the-octave)). The amp needs Carla and the neural amp
 modeler's LV2 plugin, the patchbay needs qpwgraph, and the tuner is fmit.
 The Audient iD14 needs its volume fix once per machine:
 [The audio interface](../guide/audio-interface.md).
