@@ -213,7 +213,14 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 .channel .s, .channels .agent { font-size: 12px; color: var(--muted); line-height: 1.5; }
 .channels .agent { margin-top: auto; }
 .channel-list { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; flex: 1; }
-.stage-rigs { padding: 0 16px 14px; }
+/* The stage's rig dropdown (#182), in its header: shown off while locked,
+   with the lock's icon beside it; Start, Stop and the confirm under it. */
+.stage-rigs { gap: 8px; }
+.rig-pick { display: flex; align-items: center; gap: 10px; min-width: 0; }
+.rig-pick .k { font-size: 12px; color: var(--muted); letter-spacing: .08em; }
+.rig-pick select { flex: 1 1 auto; width: 100%; min-width: 0; min-height: 48px; padding: 0 12px; border-radius: 12px; background: var(--card); border: 1px solid var(--edge); font-size: 15px; }
+.rig-pick select:disabled { opacity: .7; cursor: default; }
+.rig-lock { display: inline-flex; color: var(--accent-soft); }
 
 .rack-main { flex: 999 1 560px; min-width: 0; padding: 14px 20px 24px; }
 .rack { display: flex; flex-direction: column; gap: 6px; }
@@ -502,11 +509,22 @@ a.rig-act { display: inline-flex; align-items: center; justify-content: center; 
 .volume .driven:empty { display: none; }
 .volume.is-driven input[type=range] { opacity: .6; }
 .volume.failed { border-color: var(--refused); }
-.volume-stage { display: flex; flex: 1; min-width: 0; }
-.volume-stage input[type=range] { flex: 1; width: auto; min-width: 0; }
-.levels .level { flex: 1 1 100%; padding-left: 10px; }
-.levels .level .n { width: 4.5em; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.levels .level .volume { border: none; background: transparent; padding: 0; }
+/* On the stage (#182): the value on top, the fader between −0.5 and +0.5
+   under it, each a thumb's width; locked, the lock's icon and a dim fader. */
+.volume-stage { display: flex; flex-direction: column; align-items: stretch; gap: 2px; flex: 1; min-width: 0; padding: 4px 8px 6px 12px; border-radius: 14px; }
+.volume-stage .vol-top { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 32px; }
+.volume-stage .vol-top .value-field { margin-left: auto; }
+.volume-stage .vol-row { display: flex; align-items: center; gap: 8px; }
+.volume-stage input[type=range] { flex: 1; width: auto; min-width: 0; min-height: 44px; }
+.vol-step { flex: none; width: 52px; min-height: 44px; border-radius: 12px; background: var(--ground); border: 1px solid var(--edge); font-family: var(--mono); font-size: 13px; cursor: pointer;
+  touch-action: manipulation; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
+.vol-step:disabled { opacity: .35; cursor: default; }
+.volume .vol-lock { display: none; color: var(--accent-soft); }
+.volume.is-locked .vol-lock { display: inline-flex; }
+.volume.is-locked input[type=range] { opacity: .4; }
+.levels .level { flex: 1 1 100%; padding-left: 0; }
+.levels .level .n { max-width: 7em; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.levels .level .volume { border: none; background: transparent; }
 
 /* The count of unsaved changes on Save: a box of fixed width, always there. */
 .save-main { display: inline-flex; align-items: center; justify-content: center; gap: 8px; }

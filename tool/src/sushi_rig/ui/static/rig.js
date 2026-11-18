@@ -1500,6 +1500,41 @@ export function rigPicker(health, rigsAnswer, chosen, pending) {
   return view;
 }
 
+// The stage's rig dropdown (#182), in place of its list: the picker's rows
+// (`rigPicker`'s `view`) as a native select's options, the running rig
+// selected, else the one chosen to start, else a prompt (also what a rig
+// running from outside config/rigs/ shows). Off while locked, while a
+// command runs (this page's or another's), with no agent or with no rigs.
+// The actions shown under it are the picker's less "Switch to", which
+// choosing in the dropdown does (`rigSelected`).
+export function rigSelect(view, health, locked) {
+  const agentUp = !!(health && health.ok);
+  const rig = agentUp ? health.body.rig || {} : {};
+  const running = rig.running ? rig.config_name || null : null;
+  const listed = !!running && view.rows.some((r) => r.name === running);
+  const chosen = view.rows.find((r) => r.chosen);
+  const value = listed ? running : !running && chosen ? chosen.name : "";
+  const why = locked ? lockRefusal(true, "stage_switch") : !agentUp ? view.problem : view.busy ? `${view.busy}: wait for it to finish.` : null;
+  return {
+    value,
+    running,
+    prompt: value ? null : running ? `${running} (not in config/rigs/)` : "Choose a rig…",
+    options: view.rows.map((r) => ({ value: r.name, label: r.up ? `${r.name} · up now` : r.name })),
+    disabled: locked || !agentUp || !!view.busy || !view.rows.length,
+    why,
+    actions: view.actions.filter((a) => a.op !== "switch"),
+  };
+}
+
+// What choosing `name` in the dropdown does: switch to it, with a rig up
+// (the picker's Switch: live where it can, a restart where it must), or,
+// with none, choose it for Start. Nothing for the rig already shown, or
+// while the dropdown is off.
+export function rigSelected(select, name) {
+  if (!name || select.disabled || name === select.value) return null;
+  return select.running ? { op: "switch", name } : { op: "choose", name };
+}
+
 // What a lifecycle answer says, for the page to show: {ok, title, text} for
 // a notice, or {ok: false, title, reason} for a failure, the agent's reason
 // as it gave it. A switch says how it was made and, for a restart, why.
@@ -2096,6 +2131,28 @@ export function parseVolume(text, max = VOLUME_MAX_DB) {
   return { ok: true, db: kept, clamped: kept !== db };
 }
 
+// The stage's −0.5 dB and +0.5 dB buttons (#182), for a phone, where the
+// fader is hard to move by half a dB. One press is one step of exactly
+// VOLUME_STEP_DB, never held to whole dB as a wheel notch is; held, it
+// repeats every VOLUME_REPEAT_MS once held VOLUME_HOLD_MS. The ends are
+// `volumeStepped`'s: up from -∞ is -60, down from -60 is -∞, the top
+// (`max`) is never passed, and over it (#137) up does nothing and down goes
+// to the top (`hard`, the master) or a step toward it (a channel).
+// `{db, unchanged}`: with `unchanged`, nothing is to be sent.
+export const VOLUME_HOLD_MS = 400;
+export const VOLUME_REPEAT_MS = 100;
+export function volumeNudged(db, direction, max = VOLUME_MAX_DB, hard = false) {
+  if (db === null || db === undefined) return { db: null, unchanged: true };
+  const edge = volumeStepped(db, direction, false, null, max, hard);
+  let out = edge.db;
+  if (!edge.unchanged && isNumber(db) && db >= VOLUME_MIN_DB && db <= max) {
+    const next = Number((db + Math.sign(direction) * VOLUME_STEP_DB).toFixed(6));
+    out = next < VOLUME_MIN_DB - 1e-9 ? -Infinity : Math.min(max, next);
+  }
+  const same = out === db || (isNumber(out) && isNumber(db) && Math.abs(out - db) < 1e-9);
+  return { db: out, unchanged: !!edge.unchanged || same };
+}
+
 // ---------------------------------------------------------------- the lock
 // Sound changes (a knob, a bypass) are allowed locked; structure (add, remove,
 // move) is refused, with the reason (the UX doc's rule 4). This is the page's
@@ -2108,6 +2165,10 @@ export function lockRefusal(locked, op) {
   if (locked && op === "amp_model") {
     return "Locked: changing the amp's model cuts the sound while the amp restarts, which the lock refuses. Unlock to change it.";
   }
+  // The stage's own (#182): its volumes and its rig dropdown, which a thumb
+  // knocks mid-song. The rack's volumes and picker are not behind the lock.
+  if (locked && op === "stage_volume") return "Locked: the stage's volumes do not move while locked, so a stray thumb cannot change them. Unlock to set them.";
+  if (locked && op === "stage_switch") return "Locked: switching rigs is off while locked. Unlock to switch.";
   if (!locked || !(op in STRUCTURAL)) return null;
   return `Locked: ${STRUCTURAL[op]} changes the rig's structure, which the lock refuses. Unlock to edit it.`;
 }
