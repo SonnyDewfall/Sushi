@@ -55,12 +55,18 @@ IDS = {uri: name.split(".")[0] for uri, (name, _, _) in PEDALS.items()}
 
 # What the guide promises (docs/guide/effects.md), over the guitar bypassed
 # on the sweep, and what is asserted: a little inside, so a curve widened
-# fails before the promise does. Measured here, 2026-11-17, at the loudest:
-# the echo +3.1 dB RMS and +10.9 dB peak, the shimmer +10.6 and +19.1.
+# fails before the promise does. Measured here, 2026-11-17: the echo at the
+# loudest its page allows, +3.1 dB RMS and +10.9 dB peak; the shimmer at Mix
+# 100 % and its other knobs where the plugin starts them, +10.6 and +19.1,
+# and at its loudest corner (Mix 100 %, both decays 8, Pitch mix 0), +14.9
+# and +25.7.
 ECHO_PROMISE = {"rms": 4.0, "peak": 12.0}
 ECHO_HELD = {"rms": 3.5, "peak": 11.0}
-SHIMMER_PROMISE = {"rms": 12.0, "peak": 20.0}
-SHIMMER_HELD = {"rms": 11.0, "peak": 19.5}
+SHIMMER_OWN_PROMISE = {"rms": 12.0, "peak": 20.0}
+SHIMMER_OWN_HELD = {"rms": 11.0, "peak": 19.5}
+SHIMMER_PROMISE = {"rms": 16.0, "peak": 27.0}
+SHIMMER_HELD = {"rms": 15.3, "peak": 26.2}
+SHIMMER_LOUDEST = {"T60M": 8.0, "T60DS": 8.0, "PSDRYWET": 0.0}
 
 
 def facts(uri: str) -> dict:
@@ -377,8 +383,68 @@ def test_the_shimmer_at_mix_100_is_its_own_setting_and_inside_the_guides_window(
     full = _over_bypassed(tmp_path, SHIMMER, at(SHIMMER, {"mix": 1.0}), "mix100")
     own = _over_bypassed(tmp_path, SHIMMER, {}, "defaults")
     assert full == pytest.approx(own, abs=0.01), "added from the library, it is at Mix 100 %"
-    assert full["rms"] <= SHIMMER_HELD["rms"] < SHIMMER_PROMISE["rms"], full
-    assert full["peak"] <= SHIMMER_HELD["peak"] < SHIMMER_PROMISE["peak"], full
+    assert full["rms"] <= SHIMMER_OWN_HELD["rms"] < SHIMMER_OWN_PROMISE["rms"], full
+    assert full["peak"] <= SHIMMER_OWN_HELD["peak"] < SHIMMER_OWN_PROMISE["peak"], full
+
+
+@needs_sushi
+@pytest.mark.slow
+def test_the_shimmer_at_its_loudest_corner_stays_inside_the_guides_window(tmp_path):
+    """Its decays at their longest and Pitch mix at 0: the loudest of a grid
+    of its knobs (Pitch mix, Shift, Crossover, Damping, the decays), measured."""
+    level = _over_bypassed(tmp_path, SHIMMER, at(SHIMMER, {"mix": 1.0}, SHIMMER_LOUDEST), "loudest")
+    assert level["rms"] <= SHIMMER_HELD["rms"] < SHIMMER_PROMISE["rms"], level
+    assert level["peak"] <= SHIMMER_HELD["peak"] < SHIMMER_PROMISE["peak"], level
+
+
+def _stress(scale: float):
+    """After #166's stress signal (`tool/spikes/synth_research/measures.py`),
+    without its guitar: a full-scale sweep, full-scale noise, a DC step, a
+    full-scale 30 Hz sine, and ten seconds of silence, times `scale`."""
+    np = pytest.importorskip("numpy")
+    from sushi_rig import signals
+
+    sr = 48000
+    rng = np.random.default_rng(3)
+    sweep = signals.log_sweep(sr, 5.0, f_start_hz=20.0, f_end_hz=20000.0, level_dbfs=-1.0, channels=1)
+    parts = [np.asarray(sweep).reshape(-1), rng.standard_normal(2 * sr) * 0.7,
+             np.concatenate([np.full(sr, 0.5), np.zeros(sr)]),
+             0.99 * np.sin(2 * np.pi * 30 * np.arange(2 * sr) / sr), np.zeros(10 * sr)]
+    mono = np.clip(np.concatenate(parts), -1, 1) * scale
+    return np.stack([mono, mono], axis=1).astype(np.float32)
+
+
+@needs_sushi
+@pytest.mark.slow
+@pytest.mark.parametrize("shift", [0.0, 6.0, -6.0])
+def test_the_shimmer_does_not_run_away_at_its_longest_and_most_shifted(shift, tmp_path):
+    """#166's stress signal took Gxshimmizita to +20 dBFS. That is its gain,
+    not feedback: the wet is 15 to 25 dB over the input, and the input there
+    is full scale. Measured on that signal (2026-11-17): a tenth of the
+    input gave exactly a tenth of the output, and in the silence after it
+    the tail fell 48 dB in eight seconds at its longest. Held here at every
+    knob that feeds the shifter back at its top (Mix 100 %, both decays 8,
+    Pitch mix 1) and Shift at 0 and both ends: the output scales with the
+    input, and the tail dies away."""
+    from sushi_rig import signals
+    from sushi_rig.analysis import check_finite
+    from sushi_rig.render import PreparedStimulus, Stimulus
+
+    settings = at(SHIMMER, {"mix": 1.0}, {"T60M": 8.0, "T60DS": 8.0, "PSDRYWET": 1.0, "SHIFT": shift})
+    peaks, tails = [], []
+    for scale in (1.0, 0.1):
+        fed = _stress(scale)
+        wav = tmp_path / f"stress-{scale}.wav"
+        signals.write_wav(wav, fed, 48000, subtype="float32")
+        out = _render(tmp_path, _chain(SHIMMER, settings), f"stress-{scale}",
+                      prepared=PreparedStimulus(wav, fed, Stimulus(), 48000))
+        assert out.shape[0] == fed.shape[0] and check_finite(out) is None
+        silence = fed.shape[0] - 10 * 48000
+        peaks.append(_peak(out))
+        tails.append((_db(out[silence:silence + 48000]), _db(out[silence + 8 * 48000:silence + 9 * 48000])))
+    assert peaks[0] - peaks[1] == pytest.approx(20.0, abs=0.5), f"not linear: peaks {peaks}"
+    for first, last in tails:
+        assert last <= first - 30, f"the tail went from {first:.1f} to {last:.1f} dBFS in eight seconds"
 
 
 @needs_sushi

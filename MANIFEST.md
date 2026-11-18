@@ -5331,3 +5331,29 @@ plugin with controls must sit on each control's curve and inside its
 travel, in Python and in rig.js (`mixPosition`), and each preset of the four
 renders in Sushi. **Not run:** the rig, by ear, a phone, the container job.
 *(2026-11-17)*
+
+**The shimmer on #166's stress signal (#165, PR #173).** #166's survey
+(`tool/spikes/synth_research/`, branch claude/synth-research) saw
+Gxshimmizita reach +20 dBFS on its 70 s stress signal (the guitar three
+times, full-scale noise, a DC step, a full-scale 30 Hz sine, ten seconds of
+silence). Rebuilt here from its `measures.stress()` and rendered through
+Sushi at the preset, at Mix 100 % with the preset's other knobs, at the
+plugin's own settings, at #166's own (Shift 2, both decays 6, Dry/Wet 0.5),
+and at the page's longest and most shifted (both decays 8, Pitch mix 1,
+Shift 0, +6 and -6): **it does not run away.** Peaks +9.8, +18.4, +17.7,
++20.0 and up to +23.8 dBFS. Every one was exactly 20 dB lower with the input
+at a tenth, so this is the wet's gain on a full-scale input, not feedback.
+In the silence the tail always fell: from about 0 dBFS to -86 in eight
+seconds at #166's settings, and by 48 dB at the longest decays. So nothing
+was capped. The level the guide gave was only for the plugin's own decays,
+though. On the sweep the shimmer's loudest corner (Mix 100 %, both decays 8,
+Pitch mix 0, found on a grid of Pitch mix, Shift, Crossover, Damping and the
+decays) is +14.9 dB RMS and +25.7 dB peak over the guitar bypassed. The
+guide now promises at most 16 and 27. Slow tests:
+`test_the_shimmer_at_its_loudest_corner_stays_inside_the_guides_window`,
+and `test_the_shimmer_does_not_run_away_at_its_longest_and_most_shifted`.
+The second runs #166's signal without the guitar, at full scale and at a
+tenth, with Shift at 0, +6 and -6. It asks that the peaks differ by
+20 ± 0.5 dB and that the tail falls 30 dB in eight seconds of silence. An
+echo that rings on (three heads, Sustain 0.6) fails both: 13.9 dB apart,
+and a flat tail. *(2026-11-18)*

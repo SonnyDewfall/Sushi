@@ -97,7 +97,12 @@ still set them to anything, and nothing stops it yet.
   from the Library), not "all reverb": the reverb is much louder than the
   guitar, and at 100 % the whole sound is about 11 dB louder than the guitar
   alone, with peaks about 19 dB higher. At 50 %, where the preset has it,
-  it is about 3 dB louder. Start low.
+  it is about 3 dB louder. Start low. Longer decays make it louder still:
+  with **Decay** and **Low decay** at their longest, the page allows at most
+  16 dB louder than the guitar, with peaks at most 27 dB higher (measured
+  on a test sweep: +14.9 dB and +25.7 dB). It does not run
+  away: however long the decay or high the Pitch mix, the tail dies away
+  once you stop playing.
 - **Shift**: which way the tail moves in pitch, and how fast. 0 is a plain
   reverb; at 2, with Pitch mix at 1, a note's tail climbs about five
   semitones in a second and a half.
