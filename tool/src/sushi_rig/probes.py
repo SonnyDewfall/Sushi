@@ -123,6 +123,11 @@ With the amp in the rig, two probes cover it:
   shape, `NAM:Output -> sushi:audio_input_7`, was made with the rig up and was
   still there 15 seconds later.
 
+Two channels on the guitar's role (electric-octave's board and octave, #164)
+both have the amp in front of them, since the patchbay puts it in front of
+every link from the guitar's port into Sushi: the amp is probed once, and
+each channel through it.
+
 The amp is not copied. It runs in Carla, not Sushi, and a second Carla would
 pass while the running one is dead — which is #49's own failure. So both amp
 probes inject into the amp the guitar is linked into, and each says so
@@ -300,9 +305,9 @@ def plan_probes(rig: Any, *, amp: bool, sushi_node: str = SUSHI_NODE) -> ProbePl
     """Every probe point in `rig`, or `ProbeError` naming everything wrong.
 
     `amp` is whether the amp runs for this rig: a config with an `_amp` model,
-    or `up --amp-model`, and not `--no-amp`. With it, the track the guitar role
-    feeds is the one the amp sits in front of — the role, not input 0, for the
-    reason `amp.amp_patchbay` gives.
+    or `up --amp-model`, and not `--no-amp`. With it, the tracks the guitar role
+    feeds are the ones the amp sits in front of — the role, not input 0, for the
+    reason `amp.amp_patchbay` gives, and every one of them, as it wires them.
     """
     points: list[ProbePoint] = []
     not_checked: list[str] = []
@@ -382,13 +387,15 @@ def plan_probes(rig: Any, *, amp: bool, sushi_node: str = SUSHI_NODE) -> ProbePl
                     "the send and return between them are not probed (`verify` reads "
                     "each send's destination back)"
                 )
-                amped = [t.name for t, _, _ in guitar] if amp and len(guitar) == 1 else []
-                if amped and amped[0] in again and twins.get(amped[0], [None])[0] is not None:
+                amped = [t.name for t, _, _ in guitar] if amp else []
+                for name in amped:
+                    if name not in again or twins.get(name, [None])[0] is None:
+                        continue
                     # Named on its own: the amp heard in the monitors is what the
                     # amp is for, and a reader looking for it must find it said.
                     not_checked.append(
-                        f"{amped[0]} via amp and the {master.name}: the {master.name}'s "
-                        f"chain is empty, so the amp to the monitors is \"{amped[0]} via "
+                        f"{name} via amp and the {master.name}: the {master.name}'s "
+                        f"chain is empty, so the amp to the monitors is \"{name} via "
                         "amp\" again and is probed as that; the send and return into "
                         f"the {master.name} are not probed"
                     )
@@ -411,44 +418,48 @@ def plan_probes(rig: Any, *, amp: bool, sushi_node: str = SUSHI_NODE) -> ProbePl
                 f"the amp is on but no track takes {GUITAR_ROLE!r}, so it is in front "
                 "of nothing; the amp follows that role"
             )
-        elif len(guitar) > 1:
-            problems.append(
-                f"tracks {', '.join(repr(t.name) for t, _, _ in guitar)} all take "
-                f"{GUITAR_ROLE!r}, so which one the amp sits in front of is not decided"
-            )
-        else:
-            (track, captures, sends), = guitar
+        # Several tracks on the guitar's role (electric-octave's board and
+        # octave) all have the amp in front of them: `amp.amp_patchbay` puts
+        # it in front of every link from the guitar's port into Sushi, so
+        # NAM:Output feeds each of their inputs. One amp probe, then each
+        # track's "via amp" as for one.
+        heard = False
+        for track, captures, sends in guitar:
             monitors = sends and master is not None and bool(master_ports)
             if captures is not None and not captures and not monitors:
                 problems.append(
                     f"the amp is in front of {track.name!r}, which has no outputs on Sushi "
                     "and no master to send to, so what the amp does can never be heard"
                 )
-            elif captures is not None:
+                continue
+            if captures is None:
+                continue
+            if not heard:
                 points.append(ProbePoint(
                     "amp", (AMP_INPUT,), AMP_OUTPUT, nonlinear=True, beside=GUITAR_ROLE,
                 ))
-                own, through = twins.get(track.name, [None, None])
-                if own is None and through is None:
-                    cause = (through_why.get(track.name) or own_why.get(track.name)
-                             or f"{track.name} has no probe track")
-                    not_checked.append(
-                        f"{track.name} via amp: {cause}, so whether the amp's output "
-                        "reaches Sushi is not probed"
-                    )
-                for twin, name in [(own, f"{track.name} via amp"),
-                                   (through, f"{track.name} via amp and the {MASTER}")]:
-                    if twin is None:
-                        continue
-                    # The amp's output into the probe track, as the patchbay
-                    # links it into the guitar's own: what the monitors hear
-                    # of the amp is the point of the second of these.
-                    links = tuple((AMP_OUTPUT, port) for port in twin.input_ports)
-                    points += [
-                        replace(point, inject=(AMP_INPUT,), links=links, nonlinear=True,
-                                beside=GUITAR_ROLE)
-                        for point in _through(twin, name, sushi_node)
-                    ]
+                heard = True
+            own, through = twins.get(track.name, [None, None])
+            if own is None and through is None:
+                cause = (through_why.get(track.name) or own_why.get(track.name)
+                         or f"{track.name} has no probe track")
+                not_checked.append(
+                    f"{track.name} via amp: {cause}, so whether the amp's output "
+                    "reaches Sushi is not probed"
+                )
+            for twin, name in [(own, f"{track.name} via amp"),
+                               (through, f"{track.name} via amp and the {MASTER}")]:
+                if twin is None:
+                    continue
+                # The amp's output into the probe track, as the patchbay
+                # links it into the guitar's own: what the monitors hear
+                # of the amp is the point of the second of these.
+                links = tuple((AMP_OUTPUT, port) for port in twin.input_ports)
+                points += [
+                    replace(point, inject=(AMP_INPUT,), links=links, nonlinear=True,
+                            beside=GUITAR_ROLE)
+                    for point in _through(twin, name, sushi_node)
+                ]
     if problems:
         raise ProbeError(problems)
     if any(point.track is not None for point in points):

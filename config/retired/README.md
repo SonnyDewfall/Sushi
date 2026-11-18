@@ -28,6 +28,10 @@ To bring it back, move each to the same place under `config/`. `nulltest
 --all` fails on a reference whose config is gone, which is why the references
 moved with it.
 
+Its successor is `config/rigs/electric-octave.yaml` (2026-11-17, #164): the
+same board, with the octave up on Rubber Band 4.0's Live shifter, on a channel
+of its own (`docs/reference/plugins.md`).
+
 Note this directory is distinct from `config/archive/`, which is written
 automatically by `sushi-rig listen` to snapshot previous versions of a config
 when you re-save over its name. Nothing writes here; it is hand-curated.

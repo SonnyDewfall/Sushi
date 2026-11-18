@@ -108,10 +108,12 @@ def pytest_collection_modifyitems(config, items):
 
 
 def pytest_terminal_summary(terminalreporter):
-    """Print the stereo renders' table (test_stereo.py) and the repeated
-    renders' (test_render_spread.py), when any ran: the CI container's log is
+    """Print the stereo renders' table (test_stereo.py), the repeated
+    renders' (test_render_spread.py) and the octave's (test_octave.py), when
+    any ran: the CI container's log is
     the only place those numbers can be read. Then every render the null tests
     retried after a NaN, with a count, on every run that had one."""
+    import octave_table
     import spread_table
     import stereo_table
 
@@ -129,6 +131,11 @@ def pytest_terminal_summary(terminalreporter):
     if spread:
         terminalreporter.section(spread_table.TITLE)
         for line in spread_table.lines(spread):
+            terminalreporter.write_line(line)
+    octave = stash.get(octave_table.ROWS, [])
+    if octave:
+        terminalreporter.section(octave_table.TITLE)
+        for line in octave_table.lines(octave):
             terminalreporter.write_line(line)
     retried = stash.get(spread_table.RETRIES, [])
     if retried:

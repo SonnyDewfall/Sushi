@@ -115,19 +115,51 @@ def test_every_committed_rig_parses_compiles_and_wires(path):
 
 
 @needs_sushi
+@pytest.mark.slow
 @pytest.mark.parametrize("path", valid_committed(), ids=lambda p: p.stem)
 def test_every_parameter_a_committed_rig_names_is_one_its_plugin_has(path, tmp_path):
     """`verify`'s names check, against Sushi's own list of each plugin's
     parameters: the half of validity no file here can answer. A rig is
     compiled as a run loads it and given to `verify` as the config it is,
     since `verify --all` reads config/*.json and a rig file given to it is
-    compiled for this host's machine file, which the container has none of."""
+    compiled for this host's machine file, which the container has none of.
+
+    Slow, as `test_stereo.test_the_port_table_is_what_lilv_reads` is: it
+    loads every committed rig into this machine's Sushi from this machine's
+    plugins/, so it asks what plugins/ holds as much as what the rig names.
+    In the fast suite it went red on a checkout that had pulled a rig needing
+    a plugin not yet built there (#164's octave, before
+    scripts/build-rubberband4.sh). The container job runs it with the rest;
+    a plugin plugins/ lacks fails it naming the plugin."""
     from sushi_rig.verify import verify
 
     config = tmp_path / f"{path.stem}.json"
-    config.write_text(json.dumps(compiled(path), indent=2))
-    problems = verify(config, str(SUSHI), quick=True)
+    compiled_rig = compiled(path)
+    config.write_text(json.dumps(compiled_rig, indent=2))
+    try:
+        problems = verify(config, str(SUSHI), quick=True)
+    except SystemExit as exc:
+        pytest.fail(f"{path.name}: {exc}{_absent_from_plugins(compiled_rig)}")
     assert not problems, f"{path.name}:\n" + "\n".join(f"  {p}" for p in problems)
+
+
+def _absent_from_plugins(config: dict) -> str:
+    """Which of a compiled rig's plugins plugins/ does not provide, said
+    beside Sushi's "Failed to load tracks", which names none."""
+    import importlib.util
+
+    if importlib.util.find_spec("lilv") is None:
+        return ""
+    from sushi_rig.plugins import plugins_on
+
+    # The tracks' plugins alone: the amp runs in Carla, not in this Sushi.
+    uris = {p["uri"] for t in config.get("tracks", []) for p in t.get("plugins", []) if p.get("uri")}
+    absent = sorted(uris - plugins_on(str(ROOT / "plugins")).keys())
+    if not absent:
+        return ""
+    return ("\nplugins/ provides none of: " + ", ".join(absent)
+            + "\n(`sushi-rig plugins check` says the same; Rubber Band 4.0's Live shifter is built by "
+            "scripts/build-rubberband4.sh, docs/reference/plugins.md)")
 
 
 def test_the_committed_machine_file_is_a_machine_file():

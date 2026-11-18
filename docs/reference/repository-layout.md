@@ -44,6 +44,9 @@ then.
 │   ├── design/                   why it is built this way; the original brief
 │   └── ui/                       the two screenshots the web UI reference shows
 ├── ci/                         Dockerfile for the container the full suite runs in
+├── scripts/                    build-rubberband4.sh: the one plugin built from source
+│                               (Rubber Band 4.0, the octave's), for plugins/ on the rig
+│                               and in ci/Dockerfile alike (see Plugins and portability)
 ├── systemd/                    the agent's user unit; `sushi-rig agent install-service` installs it
 ├── .github/workflows/          ci.yml (fast suite), rig-container.yml (everything)
 ├── .claude/skills/             plugin-profile: how a component profile is written

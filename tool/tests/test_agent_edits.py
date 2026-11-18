@@ -486,11 +486,13 @@ def test_the_library_lists_the_manifest_with_the_one_profile_and_its_groups():
     assert [g["id"] for g in entries[GXTS9]["groups"]] == ["dirt", "output"]
     assert entries[GXTS9]["name"] == "GxTubeScreamer"
     # The examples' profiles, by URI (#154 added the room's and the hall's,
-    # #165 the four pedals'); not a count, which grows with the folder.
+    # #164 the octave's, #165 the four pedals'); not a count, which grows with
+    # the folder.
     gx = "http://guitarix.sourceforge.net/plugins/"
     for uri in (GXTS9, "urn:ardour:a-reverb", "http://distrho.sf.net/plugins/MaGigaverb",
                 gx + "gx_tremolo#_tremolo", gx + "gx_flanger#_flanger",
-                gx + "gx_shimmizita_#_shimmizita_", gx + "gxechocat#echocat"):
+                gx + "gx_shimmizita_#_shimmizita_", gx + "gxechocat#echocat",
+                "http://breakfastquay.com/rdf/lv2-rubberband#livemono"):
         assert entries[uri]["profile"] is True, uri
     assert entries["http://distrho.sf.net/plugins/MVerb"]["profile"] is False, "MVerb has none"
     assert entries[NAM]["addable"] is False
