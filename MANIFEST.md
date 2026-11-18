@@ -5518,9 +5518,11 @@ every method) and `test_ui_cross_site.py` (5, Chromium with
 `--host-resolver-rules`: the page by IP, localhost and `rig-box.local` loads,
 reads and writes; a rebound name's page load, reads and writes are 403;
 another site's no-cors fetch and form reach the agent and are 403), each
-half shown failing with its fix taken out. With #168 and #175 merged: the
-fast suite 5139 passed, 33 skipped; every `test_ui_*.py` file with
-`test_agent_cross_site.py` (584 tests) 3 of 3 in a loop. Not covered: a device on the LAN that sends no `Origin`, or a
+half shown failing with its fix taken out. With master merged at 9bb1053:
+the fast suite 5288 passed, 21 skipped; every `test_ui_*.py` file with
+`test_agent_cross_site.py` (589 tests) 2 of 3 in a loop, the first failing
+once in `test_ui_tabs.py`'s amp-card drag, a test of timed waits that
+passed 5 of 5 alone and in the next two loops. Not covered: a device on the LAN that sends no `Origin`, or a
 browser too old to send one on a POST, which needs authentication (#29).
 **Not tried on the rig, from a real phone, behind a real proxy, with a
 pedal or MIDI hardware;** the names were resolver rules, not DNS or mDNS.
