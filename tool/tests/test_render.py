@@ -37,6 +37,12 @@ def test_the_offline_frontend_is_selected():
     assert argv[0] == "./sushi", "the rig keeps its own Sushi, not one on PATH"
 
 
+def test_an_offline_render_starts_no_grpc_server():
+    """Nothing talks to it, and two at once fought over port 51051 (exit 0
+    with no audio, or an abort in gRPC)."""
+    assert "--no-grpc" in sushi_argv(Path("c.json"), Path("in.wav"), Path("out.wav"))
+
+
 def test_the_input_and_output_flags_differ_in_case():
     """Sushi's own asymmetry: lowercase -i in, uppercase -O out. Easy to 'tidy'
     into matching and then wonder why nothing is written."""
@@ -231,6 +237,57 @@ def test_a_hung_render_times_out_rather_than_blocking_ci(tmp_path, monkeypatch):
         render.render_offline(
             Path("config/x.json"), tmp_path, tmp_path / "work",
             stimulus=Stimulus(duration_s=0.1), timeout=1.0,
+        )
+
+
+def test_bytes_on_stderr_that_are_not_utf8_do_not_fail_a_render_that_worked(tmp_path):
+    """A real process, not the monkeypatch: what decodes the streams is
+    subprocess itself. gRPC's bind error, when a second Sushi holds port
+    51051, carries raw bytes (b"\\x00\\xc7k..."), and the strict decode raised
+    UnicodeDecodeError out of a render that had written its file."""
+    import shutil
+    import stat
+    import sys
+
+    fake = tmp_path / "sushi"
+    fake.write_text(
+        f"#!{sys.executable}\n"
+        "import shutil, sys\n"
+        "a = sys.argv\n"
+        "shutil.copyfile(a[a.index('-i') + 1], a[a.index('-O') + 1])\n"
+        "sys.stderr.buffer.write(b'Error in bind \\x00\\xc7k\\x00 Address already in use\\n')\n"
+    )
+    fake.chmod(fake.stat().st_mode | stat.S_IXUSR)
+    assert shutil.which(str(fake))
+    out = render.render_offline(
+        Path("config/x.json"), tmp_path, tmp_path / "work",
+        stimulus=Stimulus(duration_s=0.1), sushi_bin=str(fake),
+    )
+    assert out["rendered"].shape == (SR // 10, 2)
+
+
+def test_exiting_zero_with_an_empty_file_is_an_error_that_names_the_port(tmp_path, monkeypatch):
+    """Sushi 1.3.0 whose gRPC server cannot bind, because another Sushi holds
+    51051, exits 0 with a WAV header and no audio (seen 2026-11-17, every
+    time, with two renders at once). Measured, that is NaN or silence."""
+    import struct
+
+    def run(argv, **kwargs):
+        out = Path(argv[argv.index("-O") + 1])
+        signals.write_wav(out, np.zeros((1, 2)), SR, subtype="float32")
+        whole = out.read_bytes()  # the one frame cut off: a header and no audio
+        head = whole[:whole.index(b"data") + 4] + struct.pack("<I", 0)
+        out.write_bytes(head[:4] + struct.pack("<I", len(head) - 8) + head[8:])
+        assert signals.read_wav(out).samples.shape == (0, 2)
+        return SimpleNamespace(returncode=0, stdout="", stderr=(
+            "Error in bind for address '0.0.0.0:51051': Address already in use\n"
+            "Failure starting gRPC server on address [::]:51051\n"))
+
+    monkeypatch.setattr(render.subprocess, "run", run)
+    with pytest.raises(RenderError, match="wrote no audio.*51051"):
+        render.render_offline(
+            Path("config/x.json"), tmp_path, tmp_path / "work",
+            stimulus=Stimulus(duration_s=0.1),
         )
 
 

@@ -1,0 +1,157 @@
+# sushi-rig component profile (schema 1).
+# Machine-written and canonical: edit by hand if you like, but comments
+# do not survive the next rewrite. Facts are checked against `sushi-rig
+# probe`; judgements carry provenance (draft / reviewed / fact).
+# Check with:  sushi-rig profile validate <this file>
+schema_version: 1
+
+plugin:
+  uri: http://guitarix.sourceforge.net/plugins/gx_flanger#_flanger
+  version: '43.0'
+  name: GxFlanger
+kind: effect
+host: sushi-lv2
+
+ports:
+  audio_in: 1
+  audio_out: 1
+  config_drivable: true
+
+groups:
+  - id: sweep
+    label: Sweep
+    provenance: draft
+  - id: mix
+    label: Mix
+    provenance: draft
+
+parameters:
+  - name: FREQ
+    symbol: freq
+    facts:
+      min: 0.05000000074505806
+      max: 10.0
+      default: 0.20000000298023224
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: primary, provenance: draft}
+    group: {value: sweep, provenance: draft}
+    order: {value: 1, provenance: draft}
+    label: {value: Speed, provenance: draft}
+    description:
+      value: How fast the sweep goes up and down, in Hz (declared).
+      provenance: draft
+    scale: {value: log, provenance: draft}
+    control: {value: knob, provenance: draft}
+    phone: {value: 1, provenance: draft}
+
+  - name: WIDTH
+    symbol: width
+    facts:
+      min: 0.0
+      max: 10.0
+      default: 5.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: primary, provenance: draft}
+    group: {value: sweep, provenance: draft}
+    order: {value: 2, provenance: draft}
+    label: {value: Width, provenance: draft}
+    description:
+      value: How far the sweep travels; 0 stops it (measured). The range suggests ms, no unit declared.
+      provenance: draft
+    scale: {value: linear, provenance: fact}
+    control: {value: knob, provenance: draft}
+    phone: {value: 2, provenance: draft}
+
+  - name: FEEDBACK
+    symbol: feedback
+    facts:
+      min: -0.9900000095367432
+      max: 0.9900000095367432
+      default: -0.7070000171661377
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: primary, provenance: draft}
+    group: {value: sweep, provenance: draft}
+    order: {value: 3, provenance: draft}
+    label: {value: Feedback, provenance: draft}
+    description:
+      value: 'How much of the output goes round again: more is a sharper, ringing sweep; the sign flips it.'
+      provenance: draft
+    scale: {value: linear, provenance: fact}
+    control: {value: knob, provenance: draft}
+    phone: {value: 3, provenance: draft}
+
+  - name: DEPTH
+    symbol: depth
+    facts:
+      min: 0.0
+      max: 5.0
+      default: 0.5
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: advanced, provenance: draft}
+    group: {value: sweep, provenance: draft}
+    order: {value: 4, provenance: draft}
+    label: {value: Delay, provenance: draft}
+    description:
+      value: Where the sweep sits (its GUI says Depth); the range suggests ms of delay, none declared.
+      provenance: draft
+    scale: {value: linear, provenance: fact}
+    control: {value: knob, provenance: draft}
+
+  - name: WET
+    symbol: dry_wet
+    facts:
+      min: 0.0
+      max: 100.0
+      default: 100.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: primary, provenance: draft}
+    group: {value: mix, provenance: draft}
+    order: {value: 1, provenance: draft}
+    label: {value: Dry/Wet, provenance: draft}
+    description:
+      value: 0 is the guitar alone; the default 100 is the flanger as it is. Its GUI calls it Dry/Wet.
+      provenance: draft
+    scale: {value: linear, provenance: fact}
+    control: {value: knob, provenance: draft}
+    phone: {value: 4, provenance: draft}
+
+  - name: MIX
+    symbol: mix
+    facts:
+      min: -1.0
+      max: 1.0
+      default: 0.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: advanced, provenance: draft}
+    group: {value: mix, provenance: draft}
+    order: {value: 2, provenance: draft}
+    label: {value: Mix, provenance: draft}
+    description:
+      value: 'Its GUI''s Mix, -1 to 1; what it does is not documented. Measured: a little deeper at either end.'
+      provenance: draft
+    scale: {value: linear, provenance: fact}
+    control: {value: knob, provenance: draft}

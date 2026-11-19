@@ -631,12 +631,96 @@ def staleness(made: MadeFrom | None, current: str) -> str | None:
 # committed rig to this since 2026-11-02. A silent side fails by any margin.
 BALANCE_DB = 1.0
 
+# A stereo reverb is not balanced for a sweep, and is not meant to be:
+# Gxshimmizita (#165) came out 3.0 to 3.5 dB louder on the right on every
+# sweep tried, about 1 dB on a guitar, with no side lost. Decided by the
+# owner (PR #173, 2026-11-18): a render with one of these playing, not
+# bypassed, may have its sides up to `REVERB_BALANCE_DB` apart; everything
+# else keeps `BALANCE_DB`, and a silent or one-sided render fails either way.
+# The allowance is the reverb's alone (re-review of PR #173): such a render
+# is rendered a second time with its stereo reverbs bypassed
+# (`reverbs_bypassed`), and that one is held to `BALANCE_DB`, so a chorus
+# gone lopsided beside a reverb still fails.
+REVERB_BALANCE_DB = 4.0
 
-def heard_findings(fp: Fingerprint) -> list[Finding]:
+#: The stereo reverbs, by URI: an explicit list, not a guess from a name.
+#: It is every plugin in plugin-manifest.txt whose own bundle declares it an
+#: `lv2:ReverbPlugin` (`library.kind_of`) and whose port table entry has two
+#: outputs (plugin-ports.txt), read 2026-11-18; test_stereo.py checks it is
+#: still exactly that wherever plugins/ is present, so a reverb added to the
+#: manifest must be added here, by hand, or fails there.
+STEREO_REVERBS = frozenset({
+    "http://distrho.sf.net/plugins/MaGigaverb",
+    "http://distrho.sf.net/plugins/MVerb",
+    "http://drobilla.net/plugins/mda/Ambience",
+    "http://guitarix.sourceforge.net/plugins/gx_shimmizita_#_shimmizita_",
+    "urn:ardour:a-reverb",
+})
+
+
+def balance_db_of(config: Any) -> float:
+    """How far apart a render of `config` (a compiled Sushi config) may have
+    its two sides: `REVERB_BALANCE_DB` if a stereo reverb plays in it, not
+    bypassed (its `initial_state`), else `BALANCE_DB`. A bypassed reverb
+    passes its input through, so it earns nothing."""
+    if not isinstance(config, dict):
+        return BALANCE_DB
+    bypassed = {e.get("processor") for e in config.get("initial_state") or []
+                if isinstance(e, dict) and e.get("bypassed") is True}
+    for track in config.get("tracks") or []:
+        for plugin in (track.get("plugins") or []) if isinstance(track, dict) else []:
+            if (isinstance(plugin, dict) and plugin.get("uri") in STEREO_REVERBS
+                    and plugin.get("name") not in bypassed):
+                return REVERB_BALANCE_DB
+    return BALANCE_DB
+
+
+def reverbs_bypassed(config: Any) -> dict | None:
+    """`config` with every stereo reverb playing in it bypassed, or None when
+    none is (`balance_db_of` is then `BALANCE_DB` already). What the rest of
+    the chain is held to 1 dB on: a bypassed reverb passes its input, so this
+    is the render without the one thing allowed to be wider."""
+    if balance_db_of(config) == BALANCE_DB:
+        return None
+    out = json.loads(json.dumps(config))
+    state = out.setdefault("initial_state", [])
+    for track in out.get("tracks") or []:
+        for plugin in track.get("plugins") or []:
+            if isinstance(plugin, dict) and plugin.get("uri") in STEREO_REVERBS:
+                entry = next((e for e in state if isinstance(e, dict) and e.get("processor") == plugin.get("name")),
+                             None)
+                if entry is None:
+                    state.append({"processor": plugin.get("name"), "bypassed": True})
+                else:
+                    entry["bypassed"] = True
+    return out
+
+
+def without_reverbs_findings(fp: Fingerprint) -> list[Finding]:
+    """`heard_findings` at `BALANCE_DB` for the render of `reverbs_bypassed`,
+    each said to be of that render."""
+    return [Finding(f.check, f"with its stereo reverbs bypassed, {f.message}") for f in heard_findings(fp)]
+
+
+def rig_findings(fp: Fingerprint, config: Any, render_without) -> list[Finding]:
+    """The whole rule for a render of a rig's `config`, in one place for
+    every caller (the CLI, test_convert.py): `heard_findings` at
+    `balance_db_of(config)`, and where that is a reverb's allowance, the same
+    config with its stereo reverbs bypassed, rendered by `render_without`
+    (config -> Fingerprint), held to `BALANCE_DB`."""
+    found = heard_findings(fp, balance_db_of(config))
+    without = reverbs_bypassed(config)
+    if without is not None:
+        found = found + without_reverbs_findings(render_without(without))
+    return found
+
+
+def heard_findings(fp: Fingerprint, balance_db: float = BALANCE_DB) -> list[Finding]:
     """What a rig must sound like with no reference to compare against: two
-    sides, neither silent (`SILENCE_FLOOR_DBFS`), within `BALANCE_DB` of
-    each other. That the render is finite is `render.measure`'s, which
-    refuses one that is not before it is fingerprinted.
+    sides, neither silent (`SILENCE_FLOOR_DBFS`), within `balance_db` of
+    each other (`BALANCE_DB`, or `balance_db_of` the config rendered). That
+    the render is finite is `render.measure`'s, which refuses one that is not
+    before it is fingerprinted.
 
     For the rigs of channels only. A v1 config plays its left side alone,
     on purpose (`render.V1_REFERENCE_SUFFIX`), and has no such rule."""
@@ -650,8 +734,8 @@ def heard_findings(fp: Fingerprint) -> list[Finding]:
     for which, level in (("left", left), ("right", right)):
         if not _audible(level):
             return [Finding("one-sided", f"the {which} side is silent (L {left:.1f}, R {right:.1f} dBFS)")]
-    if abs(left - right) > BALANCE_DB:
-        return [Finding("unbalanced", f"L {left:.2f} and R {right:.2f} dBFS, more than {BALANCE_DB} dB apart")]
+    if abs(left - right) > balance_db:
+        return [Finding("unbalanced", f"L {left:.2f} and R {right:.2f} dBFS, more than {balance_db} dB apart")]
     return []
 
 
@@ -670,6 +754,6 @@ def v1_findings(fp: Fingerprint) -> list[Finding]:
     return []
 
 
-def played_findings(fp: Fingerprint, is_rig: bool) -> list[Finding]:
+def played_findings(fp: Fingerprint, is_rig: bool, balance_db: float = BALANCE_DB) -> list[Finding]:
     """`heard_findings` for a rig of channels, `v1_findings` for a v1 config."""
-    return heard_findings(fp) if is_rig else v1_findings(fp)
+    return heard_findings(fp, balance_db) if is_rig else v1_findings(fp)

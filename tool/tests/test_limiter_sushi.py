@@ -46,7 +46,7 @@ np = pytest.importorskip("numpy")
 from rig_fixtures import compiled_to_render, valid_committed  # noqa: E402
 from sushi_rig import rigfile, signals  # noqa: E402
 from sushi_rig.analysis import channel_balance, check_finite  # noqa: E402
-from sushi_rig.nulltest import BALANCE_DB  # noqa: E402
+from sushi_rig.nulltest import balance_db_of, reverbs_bypassed  # noqa: E402
 from sushi_rig.paths import checkout_root  # noqa: E402
 from sushi_rig.render import PreparedStimulus, Stimulus, render_offline  # noqa: E402
 from sushi_rig.rigfile import LIMITER, LIMITER_SETTINGS  # noqa: E402
@@ -96,13 +96,20 @@ def without_limiter(view: dict) -> dict:
 
 
 def render(tmp_path, name, view, stimulus):
+    """Rendered, finite, two-sided and balanced as nulltest holds a rig: a
+    stereo reverb playing gets its 4 dB, and the same view with its stereo
+    reverbs bypassed is rendered too and held to 1 dB (PR #173)."""
     path = tmp_path / f"{name}.json"
     path.write_text(json.dumps(view, indent=2))
     rendered = render_offline(path, ROOT, tmp_path / name, stimulus=stimulus, sushi_bin=str(SUSHI))["rendered"]
     assert check_finite(rendered) is None, f"{name}: the render is not finite"
     balance = channel_balance(rendered)
     assert balance.left_dbfs > -120 and balance.right_dbfs > -120, f"{name}: a side is silent ({balance})"
-    assert abs(balance.left_dbfs - balance.right_dbfs) <= BALANCE_DB, f"{name}: one-sided ({balance})"
+    limit = balance_db_of(view)
+    assert abs(balance.left_dbfs - balance.right_dbfs) <= limit, f"{name}: one-sided ({balance})"
+    without = reverbs_bypassed(view)
+    if without is not None:
+        render(tmp_path, f"{name}-reverbs-bypassed", without, stimulus)
     return rendered
 
 
