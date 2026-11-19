@@ -27,6 +27,8 @@ from synth_renders import HERE, PLUGINS, ROOT, SUSHI, compiled, normalised, padd
 PROFILES = HERE.parent / "examples" / "profiles"
 FUZZ = "http://guitarix.sourceforge.net/plugins/gx_bmp_#_bmp_"
 FILTER = "http://calf.sourceforge.net/plugins/EnvelopeFilter"
+COMPRESSOR = "http://guitarix.sourceforge.net/plugins/gx_compressor#_compressor"
+ECHO = "http://guitarix.sourceforge.net/plugins/gxechocat#echocat"
 
 needs_sushi = pytest.mark.skipif(not SUSHI.exists() or not PLUGINS.is_dir(),
                                  reason="needs the Sushi binary and the rig's plugins")
@@ -101,3 +103,36 @@ def test_the_fuzzs_volume_runs_from_silence(tmp_path):
     half = render(np, tmp_path, "half", compiled(_fuzz(0.5)), x)
     assert np.max(np.abs(silent)) < 1e-6
     assert rms_db(np, half) > rms_db(np, x) - 6, "Volume 0.5 is far quieter than the guitar"
+
+
+def _lead() -> list[dict]:
+    """#166's synth lead with GxBigMuffPi for its fuzz, at the settings the
+    guide describes: the compressor at ratio 4 and -30 dB, the fuzz at 0.8,
+    0.4 and 0.4, the filter a 24 dB low-pass swept from 300 Hz to 2.5 kHz,
+    Activation 8, Resonance 4, Output Gain 0.4, and the tape-echo preset's
+    echo (head 1 at 120 BPM, Mix 50 %, Repeats and Level 100 %)."""
+    compressor = {"name": "compressor", "uri": COMPRESSOR, "parameters": {
+        "RATIO": 0.157895, "KNEE": 0.15, "THRESHOLD": 0.622642, "RELEASE": 0.03, "ATTACK": 0.005, "BYPASS": 1.0}}
+    echo = {"name": "echo", "uri": ECHO, "parameters": {
+        "Input": 0.25, "Swell": 0.35, "Sustain": 0.3, "Output": 0.2925, "BPM": 0.285714,
+        "Head 1": 1.0, "Head 2": 0.0, "Head 3": 0.0}}
+    return [compressor, *_fuzz(0.4), *_filter(Upper=2500.0, Resonance=4.0, Mode=1, **{"Output Gain": 0.4}), echo]
+
+
+@needs_sushi
+@pytest.mark.slow
+def test_the_lead_is_about_as_loud_as_the_guitar_and_echoes(tmp_path):
+    """The chain whole, through the master: finite, its two sides the same
+    (everything in it is mono), within 6 dB of the note that went in
+    (measured 2026-11-18: -4.4 dB on this G3, -5.9 on a low E and +0.1 on a
+    high E, +1.6 on #153's guitar), well under the master's limiter, and
+    still sounding after the note, which is the echo. #166's band-pass, which
+    this low-pass replaced, had the G3 18 dB down and a low E 25."""
+    np = pytest.importorskip("numpy")
+    x = padded(np, string(np, 196.0, seconds=1.0), after=2.0)
+    y = render(np, tmp_path, "lead", compiled(_lead()), x)
+    assert np.max(np.abs(y[:, 0] - y[:, 1])) < 1e-6
+    assert abs(rms_db(np, y[:, 0]) - rms_db(np, x)) < 6.0, f"{rms_db(np, y[:, 0]) - rms_db(np, x):+.1f} dB"
+    assert 20 * np.log10(np.max(np.abs(y))) < -3.0
+    after = slice(int(1.6 * 48000), int(2.4 * 48000))  # from 0.1 s after the note's end
+    assert rms_db(np, y[after, 0]) > rms_db(np, x[after]) + 40, "nothing after the note: no echo"

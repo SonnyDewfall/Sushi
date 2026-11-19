@@ -163,12 +163,18 @@ chorus plugin GPL-2.0-or-later, DPF ISC.
 The rig needs four packaged plugins that `plugins/` did not hold before:
 Calf's Envelope Filter (`calf-plugins`, whose `calf.lv2` bundle holds all of
 Calf), abGate (`abgate`), and GxBigMuffPi and GxZita_rev1-Stereo
-(`guitarix-lv2`, already installed). The synth-lead rig uses the first and the
-third, and GxEchoCat (#165).
+(`guitarix-lv2`, already installed). The synth-lead rig
+(`config/rigs/synth-lead.yaml`) uses the first and the third, and GxEchoCat
+(#165).
 
 Measured under Sushi 1.3.0 here (2026-11-18, offline, in a container, not on
-the rig): the chorus adds about 4 ms (169 to 222 samples), treats a chord
-exactly as the sum of its notes, and costs about 1.4 % of a core per channel.
+the rig): the chorus treats a chord exactly as the sum of its strings (a
+residual under -100 dB, `tests/test_string_machine.py`) and costs 1.4 to
+2.3 % of a core per channel; the string machine's `strings` channel answers
+a 500 Hz burst 169 samples (3.5 ms) late, its `octave` 3,376 (70 ms).
+Calf's Envelope Filter is one plugin `probe` calls not drivable (two atom
+ports, for MIDI and Calf's own messages) though Sushi sets all its controls
+(`tests/test_synth_lead.py`), so it has no profile; see the guide.
 
 **On the rig machine**, once, and again whenever `plugins/` is rebuilt:
 

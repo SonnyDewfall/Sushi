@@ -5774,3 +5774,118 @@ old read failed 4 of 25 here and 5 of 25 on master (9bb1053, a scratch
 worktree, since removed). The test now waits until the overdrive's summary
 is in its profile's labels and its bypass button is visible, then measures:
 25 of 25 under the same load. *(2026-11-18)*
+
+**The string machine and the synth lead, as rigs to play with (#177).** Asked
+for 2026-11-18, from #166's research: "something that lets me play
+polyphonic picked parts with a string like sound". Two rigs, their channels
+as presets, and a guide page (`docs/guide/string-machine.md`) of what to try
+on each.
+
+(1) **The build.** `scripts/build-string-machine-chorus.sh DIR` fetches
+jpcima/string-machine at commit `7050cb1516fb…` and DPF at `f24e5317cd7b…`,
+each by commit, refuses unless string-machine records that DPF for its
+submodule, compiles the chorus's DSP alone with g++ and #166's flags, writes
+the Turtle with DPF's own generator, and leaves `DIR/string-machine-chorus.lv2`
+with a `BUILT-FROM` note, staged and swapped as `build-rubberband4.sh` does
+(the old bundle put back on any failed exit). Seven seconds here; it links
+only the C++ runtime. `ci/Dockerfile` builds it in a stage of its own and
+assembles it into `plugins/`, installing `calf-plugins` and `abgate` beside
+the other packages. **Built here**: the chorus stage in a clean ubuntu:24.04
+(identical Turtle to the local build), and a copy of the image down to
+`plugins check` (59 URIs, before #171 merged), in a local dockerd, through a
+copy of the Dockerfile that trusted this sandbox's proxy; the whole image was
+not built.
+
+(2) **The inventory**: string-machine chorus (`1 2`), Calf Envelope Filter
+(`4 2`: two sides and two optional side-chains; the track feeds the first
+two), abGate, GxBigMuffPi and GxZita_rev1-Stereo, in the manifest and the port
+table. The library tests count the manifest, as #173 does.
+
+(3) **Found: an assembled `plugins/` had no Calf binary.** Ubuntu's
+`calf.lv2/calf.so` is a relative link, `../../x86_64-linux-gnu/calf/calf.so`;
+`copy_bundles` keeps links as links, so the copy led nowhere, and `plugins
+check`, which reads only the Turtle, passed. Sushi then refused the rig
+("Failed to load tracks"). `copy_bundles` now makes a relative link that
+leads out of its bundle absolute, to what it led to (`_relink_outside`; a test
+with the package's own layout, failing without it); CI's image checks the link
+leads to a file; the rig's steps copy with `cp -rL`.
+
+(4) **Profiles**, from probes frozen in `tests/fixtures/` (every judgement
+`draft`, none with a `face`): string-machine chorus (Depth; Mix, the dry
+under the ensemble, -3 dB at 0 % to the plugin's own -60 at 100 %, cosine;
+Level, Model, the two rates and depths under More; its own Enabled hidden),
+GxZita_rev1 (Mix, dry/wet -1 to 1, the plugin's 0 at 50 %; Size, both decays
+1 to 8 s together; pre-delay, level, damping and EQ under More), abGate (Swell,
+its attack; Threshold; Close, Hold, Range and its own switch under More: the
+switch is off by default, and off it passes everything, measured, so hiding it
+would make an abGate from the library a gate that never closes), and
+GxBigMuffPi (Sustain, Tone, Volume). 0 errors; abGate's one warning is its
+unverifiable version (lilv reads none; the pin is the package's 1.2.0).
+**Calf's Envelope Filter has none**: probe counts its two atom ports (MIDI and
+property events, connection-optional) and calls it not drivable, and the
+validator then refuses any parameter or control. *Measured:* Sushi sets every
+control the synth lead uses (an Upper of 500 against 8,000 Hz changes the
+render by more than 6 dB; Mix 0 is the dry note), so probe is cautious here.
+*Left to the owner:* whether probe's rule should pass atom ports a plugin
+declares no `patch:writable` or state for; until then the rack shows the
+filter's 13 knobs as Sushi reports them. Sushi's brickworks fuzz, #166's,
+was not used: probe and the profiles know LV2 plugins only, and the agent's
+undo of a remove refuses a non-LV2 plugin; GxBigMuffPi is #166's second
+(junk -33.7 dB on notes, 0.6 % CPU).
+
+(5) **`string-machine`** (`config/rigs/string-machine.yaml`): two channels on
+`guitar-in`, as electric-octave's. `strings`: GxCompressor (ratio 4, -30 dB),
+abGate (bypassed; its own switch on, 500 ms, -45 dB), the chorus (wet -3 dB,
+no dry) and GxZita_rev1 (5 s, dry/wet -0.3, 40 ms pre-delay). `octave`: the
+same with Rubber Band 4.0 an octave up, fully wet, after the compressor, at
+-3 dB, #166's balance. Two halls and two ensembles where #166 had one of each
+after a send and return, which a rig file cannot say. *Measured* (Sushi 1.3.0
+offline, #153's synthetic guitar, each channel rendered through the master
+as `rigfile.heard` gives it): the rig 2.4 dB under the guitar, peak -13 dBFS,
+the sides within 0.2 dB; `strings` answers a burst 169 samples (3.5 ms) late
+and rises 11.5 ms from silence (the dry guitar 5), so the pick comes
+through; the octave 3,376 samples (70 ms), rising in 81. Swells on: 534 ms
+from silence, 20 ms legato, as #166 found. CPU, three runs each on this
+2.1 GHz Xeon: `strings` 2.4 to 3.2 % of a core, `octave` 6.0 to 6.4 %
+(Rubber Band 3.7 to 3.9 of it), about 8.5 to 9.5 % for the rig, against
+#166's 6 % for its one-track chain. Chords: the ensemble is linear (residual
+under -100 dB, tested); the octave up is Rubber Band's (#166: junk -27 dB on
+chords).
+
+(6) **`synth-lead`** (`config/rigs/synth-lead.yaml`): GxCompressor,
+GxBigMuffPi (Sustain 0.8, Tone 0.4, Volume 0.4), Calf's Envelope Filter and
+GxEchoCat at the tape-echo preset's settings. **Changed from #166:** its
+12 dB band-pass made the lead 29 dB quieter on a low E than a high E (G3
+-18 dB against the guitar); a 24 dB low-pass, Resonance 4, the sweep still
+300 Hz to 2.5 kHz, is within 6 dB across the neck, at Output Gain 0.4.
+*Measured:* +1.6 dB against the guitar, peak -14.9 dBFS, 46 samples late,
+rising in 8 ms; 3.1 to 4.9 % of a core (the echo about half).
+
+(7) **Presets** `config/channels/string-ensemble`, `string-octave` (level -3)
+and `synth-lead`, each a rig's channel. **References** `config/sound/
+string-machine.strings`, `.octave` and `synth-lead`, calibrated here and
+`made_from` the rigs (hash rule 2); `nulltest --all`: 44 of 44 sound the same.
+GxZita_rev1-Stereo joins `nulltest.STEREO_REVERBS` (#173's rule: every
+manifest reverb with two outputs), measured 2.0 dB apart on a note at its
+own dry/wet 0; the string machine's sweeps are within 0.25 dB.
+
+(8) **Tests**: `test_string_machine.py` (13 fast; 5 slow: plugins/ holds the
+pinned build, and under Sushi the ensemble's spread, lag and balance on a
+sweep, its linearity on an E major chord, abGate on and off, the hall's two
+ends) and `test_synth_lead.py` (4 fast; 3 slow: Sushi sets Calf's controls,
+the fuzz's Volume from silence, the whole lead's level, balance and echo);
+`synth_renders.py` compiles each one-channel chain as the compiler does. No
+test reads a rig or a preset by name (#133). *Found on the way:* a single
+plucked note through the chorus is 3.4 dB louder on the right, every note
+tried, since each render starts the slow LFO in one place; a sweep is
+balanced. The fast suite: 5629 passed, 5 skipped. The slow tests of the files touched
+passed; the whole slow suite passed here but for the twelve that need gRPC
+on loopback, run in a private network namespace with no loopback, which
+then passed outside it.
+
+**Not done:** nothing was heard, on the rig or anywhere; the guitar is
+synthetic and every setting a guess. Not installed on the rig: the rig needs
+the steps in `docs/reference/plugins.md` first. The whole CI image was not
+built (no Sushi AppImage context, no browser download); the two stages that
+are new were, as above. CPU is this container's, not the XPS 9320's. The
+rigs' amp (NAM) in front of the two channels was not run. *(2026-11-19)*

@@ -1,20 +1,22 @@
 # String machine and synth lead
 
-A rig for playing with synth-like sounds from the guitar, made from the
+Two rigs for playing with synth-like sounds from the guitar, made from the
 research of #166:
 
 - **string-machine**: play chords, picked, and each one comes out as a
   string ensemble, the swirling sound of a 1970s string machine, with an
   octave up underneath and a long hall around it.
+- **synth-lead**: single notes through a fuzz and an envelope filter into a
+  tape echo, for a synth lead.
 
 These are places to start, not finished sounds. Nothing here has been heard on
 the rig yet. Every figure below comes from renders on a computer, through the
 same engine the rig runs, with a made-up guitar signal, and every setting is a
 guess to turn from.
 
-To start one: on the rack, under **RIGS**, pick **string-machine** and click
-**Start** or **Switch to**. It needs a plugin built, and four installed, on
-the rig machine first (see the reference's
+To start one: on the rack, under **RIGS**, pick **string-machine** or
+**synth-lead** and click **Start** or **Switch to**. They need a plugin
+built, and five installed, on the rig machine first (see the reference's
 [Plugins](../reference/plugins.md#string-machine-chorus-built-for-the-string-machine)).
 
 ## string-machine
@@ -66,3 +68,45 @@ apart on purpose (a longer hall on the octave, say).
 Each channel is also a preset, **string-ensemble** and **string-octave**, to
 put on any rig ([Channel presets](channel-presets.md)). The octave preset is
 meant beside a channel of the plain guitar on the same input.
+
+## synth-lead
+
+One channel: a **compressor**, a **fuzz** (GxBigMuffPi), an envelope **filter**
+(Calf's Envelope Filter) and an **echo** (GxEchoCat, the tape echo of
+[the pedals](effects.md)). Pick single notes: a fuzz turns a chord into a
+buzzing mess, which can be fun, but it is not a chord any more. Its attack
+is the pick's: the renders put it under 10 ms behind the guitar.
+
+### What to try
+
+- **Fuzz**: **Sustain** is how much fuzz, **Tone** dark to bright, and
+  **Volume** how loud: at 0 it is silent.
+- **Filter**: it opens with each pick and closes as the note dies, the
+  "wow". Its knobs have no profile yet, so they all show, in the plugin's
+  own names (see the note below):
+  - **Activation**: how hard the pick pushes it open. Higher opens it
+    further on softer playing.
+  - **Lower** and **Upper**: where the sweep starts and ends, in Hz. 300 to
+    2,500 in the rig; try a higher Upper for a brighter top.
+  - **Resonance**: the peak on the sweep. Higher is more vocal and more
+    synth-like. The rig has 4.
+  - **Attack** and **Release**: how fast it opens and closes.
+  - **Mode**: the filter's shape. The rig has a 24 dB low-pass, the classic
+    synth filter. A band-pass (#166's choice) is more vocal, but much
+    quieter on the low strings: in the renders a low E came out 29 dB under a
+    high E, against 6 dB with the low-pass.
+  - **Output Gain**: its level. The rig has it at 0.4, which brings the lead
+    to about the guitar's own level. Raise it after switching to a band-pass.
+- **Echo**: **Tempo** and the heads set the echo's timing, **Mix** how loud
+  the echoes are and **Repeats** how many come back (see
+  [the tape echo](effects.md)).
+
+The channel is also the preset **synth-lead**.
+
+**A note on the filter's knobs.** The rig's plugin checker counts Calf's two
+event ports and calls the plugin one the rig cannot set from its files, so it
+has no profile, and the rack shows all 13 of its knobs as Sushi reports
+them: in their own ranges, but with no units, no names for the modes (Mode
+1 is the 24 dB low-pass, 7 the plugin's own band-pass) and no grouping. The
+checker is cautious there: every knob the filter has is an ordinary
+control, and the renders show Sushi setting them.

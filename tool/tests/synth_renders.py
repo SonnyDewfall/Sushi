@@ -69,8 +69,6 @@ def render(np, tmp_path: Path, name: str, config: dict, mono):
     (work / "config.json").write_text(json.dumps(config))
     signals.write_wav(work / "in.wav", np.stack([mono, mono], axis=1), SR, subtype="float32")
     argv = sushi_argv(work / "config.json", work / "in.wav", work / "out.wav", str(SUSHI))
-    if "--no-grpc" not in argv:
-        argv.append("--no-grpc")  # another Sushi may hold gRPC's port; a render needs none
     result = subprocess.run(argv, cwd=ROOT, env=sushi_env(ROOT), capture_output=True, text=True,
                             errors="replace", timeout=300)
     assert result.returncode == 0 and (work / "out.wav").is_file(), (result.stdout + result.stderr).strip()[-2000:]
