@@ -1,0 +1,136 @@
+# sushi-rig component profile (schema 1).
+# Machine-written and canonical: edit by hand if you like, but comments
+# do not survive the next rewrite. Facts are checked against `sushi-rig
+# probe`; judgements carry provenance (draft / reviewed / fact).
+# Check with:  sushi-rig profile validate <this file>
+schema_version: 1
+
+plugin:
+  uri: http://guitarix.sourceforge.net/plugins/gx_tremolo#_tremolo
+  version: '43.0'
+  name: GxTremolo
+kind: effect
+host: sushi-lv2
+
+ports:
+  audio_in: 1
+  audio_out: 1
+  config_drivable: true
+
+groups:
+  - id: tremolo
+    label: Tremolo
+    provenance: draft
+  - id: mix
+    label: Mix
+    provenance: draft
+
+parameters:
+  - name: Freq
+    symbol: freq
+    facts:
+      min: 0.10000000149011612
+      max: 50.0
+      default: 5.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: primary, provenance: draft}
+    group: {value: tremolo, provenance: draft}
+    order: {value: 1, provenance: draft}
+    label: {value: Speed, provenance: draft}
+    description:
+      value: How fast the level pulses, in Hz (declared); a guitar tremolo sits at about 2 to 10.
+      provenance: draft
+    scale: {value: log, provenance: draft}
+    control: {value: knob, provenance: draft}
+    phone: {value: 1, provenance: draft}
+
+  - name: Depth
+    symbol: depth
+    facts:
+      min: 0.0
+      max: 1.0
+      default: 0.5
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: primary, provenance: draft}
+    group: {value: tremolo, provenance: draft}
+    order: {value: 2, provenance: draft}
+    label: {value: Depth, provenance: fact}
+    description:
+      value: 'How far each pulse dips. Measured, Dry/Wet 100: 5 dB of swing at 0.5, 11 at 0.7, 24 at 1.'
+      provenance: draft
+    scale: {value: linear, provenance: fact}
+    control: {value: knob, provenance: draft}
+    phone: {value: 2, provenance: draft}
+
+  - name: Mode
+    symbol: mode
+    facts:
+      min: 0.0
+      max: 1.0
+      default: 0.0
+      toggled: false
+      integer: true
+      enumeration: true
+      logarithmic: false
+      scale_points:
+        - {value: 0.0, label: triangle}
+        - {value: 1.0, label: sine}
+      settable: true
+    visibility: {value: advanced, provenance: draft}
+    group: {value: tremolo, provenance: draft}
+    order: {value: 3, provenance: draft}
+    label: {value: Wave, provenance: draft}
+    description:
+      value: 'The pulse''s shape: triangle or sine. Sine dips a little deeper at the same Depth.'
+      provenance: draft
+    scale: {value: enum, provenance: fact}
+    control: {value: selector, provenance: draft}
+
+  - name: Dry/Wet
+    symbol: dry_wet
+    facts:
+      min: 0.0
+      max: 100.0
+      default: 50.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: primary, provenance: draft}
+    group: {value: mix, provenance: draft}
+    order: {value: 1, provenance: draft}
+    label: {value: Dry/Wet, provenance: fact}
+    description:
+      value: 0 is the guitar alone, 100 the tremolo alone; the default 50 halves the swing. No unit declared.
+      provenance: draft
+    scale: {value: linear, provenance: fact}
+    control: {value: knob, provenance: draft}
+    phone: {value: 3, provenance: draft}
+
+  - name: Reset
+    symbol: reset
+    facts:
+      min: 0.0
+      max: 1.0
+      default: 0.0
+      toggled: false
+      integer: true
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: hidden, provenance: draft}
+    label: {value: Reset, provenance: fact}
+    description:
+      value: Declared a trigger, not a setting (its TTL marks it pprop:trigger); nothing to keep in a rig.
+      provenance: draft
+    scale: {value: linear, provenance: fact}
+    control: {value: knob, provenance: draft}

@@ -1176,6 +1176,13 @@ def test_one_glance_says_which_rig_whether_it_is_up_and_what_is_not_measured(sta
 
 
 def test_the_stage_fits_a_phone_and_every_target_takes_a_thumb(stage):
+    # Measured once the page has settled: the cards are drawn before the
+    # profiles arrive, and each row is rebuilt when its profile does, so a
+    # size read in between can be of a row being replaced (CI on PR #173: the
+    # bypass button's box was None). The overdrive's summary in its profile's
+    # labels is the sign its profile has been applied.
+    expect(stage.locator('.card[data-unit="overdrive"] .vals')).to_have_text("Drive 0.62 · Level −3.0 · Tone 480")
+    expect(stage.get_by_role("button", name="Bypass overdrive")).to_be_visible()
     width = stage.evaluate("() => [document.documentElement.scrollWidth, innerWidth]")
     assert width[0] <= width[1], "no sideways scrolling at phone width"
     sizes = stage.evaluate("""() => [...document.querySelectorAll('.stage-screen button, .stage-screen a')]

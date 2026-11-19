@@ -76,8 +76,12 @@
 1 1 http://guitarix.sourceforge.net/plugins/gx_compressor#_compressor
 1 1 http://guitarix.sourceforge.net/plugins/gx_detune_#_detune_
 2 2 http://guitarix.sourceforge.net/plugins/gx_echo_stereo#_echo_stereo
+1 1 http://guitarix.sourceforge.net/plugins/gx_flanger#_flanger
 1 1 http://guitarix.sourceforge.net/plugins/gx_oc_2_#_oc_2_
+2 2 http://guitarix.sourceforge.net/plugins/gx_shimmizita_#_shimmizita_
+1 1 http://guitarix.sourceforge.net/plugins/gx_tremolo#_tremolo
 2 2 http://guitarix.sourceforge.net/plugins/gx_zita_rev1_stereo#_zita_rev1_stereo
+1 1 http://guitarix.sourceforge.net/plugins/gxechocat#echocat
 1 1 http://guitarix.sourceforge.net/plugins/gxts9#ts9sim
 1 1 http://hippie.lt/lv2/gate
 1 2 http://jpcima.sdf1.org/lv2/string-machine-chorus

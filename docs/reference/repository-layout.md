@@ -74,10 +74,8 @@ then.
 │   ├── examples/
 │   │   ├── rig.example.yaml       annotated v1 rig spec (real plugins)
 │   │   ├── dump.example.json      real --dump-plugins output, test fixture
-│   │   └── profiles/            component profiles: gxts9, a-reverb, magigaverb,
-│   │                              rubberband-live (the octave's Live shifter), and
-│   │                              string-machine-chorus, abgate, gxzita-rev1 and
-│   │                              gxbigmuffpi (the string machine's and the synth lead's)
+│   │   └── profiles/             component profiles, one per plugin (gxts9.yaml is the
+│   │                             reference for the format)
 │   └── spikes/                   experiments, kept as dated records with their
 │                                 findings: virtual_ui/ (headless plugin GUI, #28),
 │                                 live_rig/ (the capture engine, the live paths, the

@@ -1,0 +1,103 @@
+{
+  "uri": "http://guitarix.sourceforge.net/plugins/gxechocat#echocat",
+  "name": "GxEchoCat",
+  "class": "Delay Plugin",
+  "bundle": "/usr/lib/lv2/gxechocat.lv2",
+  "audio_in": 1,
+  "audio_out": 1,
+  "atom_ports": 0,
+  "patch_writables": [],
+  "state_interface": false,
+  "config_drivable": true,
+  "parameters": [
+    {
+      "symbol": "input",
+      "name": "Input",
+      "min": 0.0,
+      "max": 1.0,
+      "default": 0.25,
+      "toggled": false,
+      "integer": false,
+      "enumeration": false,
+      "logarithmic": false
+    },
+    {
+      "symbol": "swell",
+      "name": "Swell",
+      "min": 0.0,
+      "max": 1.0,
+      "default": 0.0,
+      "toggled": false,
+      "integer": false,
+      "enumeration": false,
+      "logarithmic": false
+    },
+    {
+      "symbol": "sustain",
+      "name": "Sustain",
+      "min": 0.0,
+      "max": 1.0,
+      "default": 0.0,
+      "toggled": false,
+      "integer": false,
+      "enumeration": false,
+      "logarithmic": false
+    },
+    {
+      "symbol": "output",
+      "name": "Output",
+      "min": 0.0,
+      "max": 4.0,
+      "default": 1.0,
+      "toggled": false,
+      "integer": false,
+      "enumeration": false,
+      "logarithmic": false
+    },
+    {
+      "symbol": "bpm",
+      "name": "BPM",
+      "min": 24.0,
+      "max": 360.0,
+      "default": 120.0,
+      "toggled": false,
+      "integer": false,
+      "enumeration": false,
+      "logarithmic": false
+    },
+    {
+      "symbol": "head1",
+      "name": "Head 1",
+      "min": 0.0,
+      "max": 1.0,
+      "default": 0.0,
+      "toggled": false,
+      "integer": true,
+      "enumeration": true,
+      "logarithmic": false
+    },
+    {
+      "symbol": "head2",
+      "name": "Head 2",
+      "min": 0.0,
+      "max": 1.0,
+      "default": 0.0,
+      "toggled": false,
+      "integer": true,
+      "enumeration": true,
+      "logarithmic": false
+    },
+    {
+      "symbol": "head3",
+      "name": "Head 3",
+      "min": 0.0,
+      "max": 1.0,
+      "default": 0.0,
+      "toggled": false,
+      "integer": true,
+      "enumeration": true,
+      "logarithmic": false
+    }
+  ],
+  "version": "43.0"
+}

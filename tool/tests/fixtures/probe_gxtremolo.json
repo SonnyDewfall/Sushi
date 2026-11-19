@@ -1,0 +1,81 @@
+{
+  "uri": "http://guitarix.sourceforge.net/plugins/gx_tremolo#_tremolo",
+  "name": "GxTremolo",
+  "class": "Modulator Plugin",
+  "bundle": "/usr/lib/lv2/gx_tremolo.lv2",
+  "audio_in": 1,
+  "audio_out": 1,
+  "atom_ports": 0,
+  "patch_writables": [],
+  "state_interface": false,
+  "config_drivable": true,
+  "parameters": [
+    {
+      "symbol": "dry_wet",
+      "name": "Dry/Wet",
+      "min": 0.0,
+      "max": 100.0,
+      "default": 50.0,
+      "toggled": false,
+      "integer": false,
+      "enumeration": false,
+      "logarithmic": false
+    },
+    {
+      "symbol": "mode",
+      "name": "Mode",
+      "min": 0.0,
+      "max": 1.0,
+      "default": 0.0,
+      "toggled": false,
+      "integer": true,
+      "enumeration": true,
+      "logarithmic": false,
+      "scale_points": [
+        {
+          "value": 0.0,
+          "label": "triangle"
+        },
+        {
+          "value": 1.0,
+          "label": "sine"
+        }
+      ]
+    },
+    {
+      "symbol": "depth",
+      "name": "Depth",
+      "min": 0.0,
+      "max": 1.0,
+      "default": 0.5,
+      "toggled": false,
+      "integer": false,
+      "enumeration": false,
+      "logarithmic": false
+    },
+    {
+      "symbol": "freq",
+      "name": "Freq",
+      "min": 0.10000000149011612,
+      "max": 50.0,
+      "default": 5.0,
+      "toggled": false,
+      "integer": false,
+      "enumeration": false,
+      "logarithmic": false,
+      "unit": "Hz"
+    },
+    {
+      "symbol": "reset",
+      "name": "Reset",
+      "min": 0.0,
+      "max": 1.0,
+      "default": 0.0,
+      "toggled": false,
+      "integer": true,
+      "enumeration": false,
+      "logarithmic": false
+    }
+  ],
+  "version": "43.0"
+}
