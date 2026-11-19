@@ -56,23 +56,29 @@ The agent normally answers only to the laptop it runs on. To reach it from a
 phone:
 
 1. If the agent is already running, press Ctrl+C in its terminal to stop it.
-   The rig keeps playing. Then start the agent with this instead:
+   The rig keeps playing. Then start it with this instead:
 
    ```bash
-   sushi-rig agent --host 0.0.0.0
+   sushi-rig agent --phone
    ```
 
-2. Find the laptop's address on your network (`hostname -I` prints it).
-3. On the phone, on the same network, open `http://<that address>:8029/`.
+2. It prints the address to open, one for each network the laptop is on
+   (Wi-Fi, ethernet), such as `http://192.168.1.150:8029/`. The rack page on
+   the laptop shows it too, at the bottom of its right-hand column.
+3. On the phone, on the same network, open that address, starting `http://`.
+
+If the agent you forgot to stop is still running, step 1 says so, and gives
+the command that stops it.
 
 A phone-sized screen opens on the **stage** screen, which is made for playing:
 see [Playing live](playing-live.md). Every device shows the same rig, and a
 change on one appears on the others within a second.
 
-This is not yet recorded as tried from a real phone. The stage screen has been
-checked at a phone's width in a desktop browser, and the page has been used on
-the rig's laptop; nothing in the project's log records a phone's own browser
-opening it.
+If the phone cannot open it, or you are playing away from home, read
+[Playing out](playing-out.md): the phone's hotspot, a router that keeps Wi-Fi
+devices apart, the firewall, and playing with the lid closed. The first phone
+to reach the rig (2026-11-18) did so on the phone's own hotspot, after the
+home router would not let it reach the laptop.
 
 Started this way, anyone on the same network can open the page and change the
 rig. There is no password. Use it on a network you trust.

@@ -48,7 +48,7 @@ To restart cleanly:
    sushi-rig agent
    ```
 
-   (Add `--host 0.0.0.0` if you use your phone, as in
+   (Use `sushi-rig agent --phone` if you use your phone, as in
    [Getting started](getting-started.md#use-your-phone-as-well).)
 4. Reload the page, and start the rig again.
 
@@ -71,7 +71,7 @@ on. The rig itself may still be playing.
 
 - On the laptop, start the agent again: `sushi-rig agent`.
 - On a phone, check you are on the same network as the laptop, and that the
-  agent was started with `--host 0.0.0.0`.
+  agent was started with `--phone`. Then see [Playing out](playing-out.md#if-the-phone-cannot-reach-the-laptop).
 
 ## The page says "refused: … is not a name this agent answers to"
 
@@ -81,10 +81,11 @@ agent only answers a page opened by the laptop's address
 with `.local`. This stops a web page elsewhere from reading or changing your
 rig.
 
-- Open the page by the laptop's address instead (`hostname -I` prints it).
+- Open the page by the laptop's address instead: `sushi-rig agent --phone`
+  prints it, and the rack page shows it.
 - If you reach the laptop by another name, such as a VPN's or a proxy's,
   start the agent with that name allowed, the name alone with no `http://`
-  or port: `sushi-rig agent --host 0.0.0.0 --allow-host <that name>`.
+  or port: `sushi-rig agent --phone --allow-host <that name>`.
 
 ## A part of the rig has stopped
 

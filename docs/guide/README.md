@@ -32,6 +32,7 @@ The page's messages use a few names of their own:
 |---|---|
 | [Getting started](getting-started.md) | Start the agent, open the page, start a rig, reach it from a phone |
 | [Playing live](playing-live.md) | The stage screen, switching rigs, the lock, pedals |
+| [Playing out](playing-out.md) | The phone at home, on its hotspot or the laptop's, when it cannot reach the laptop, the lid closed |
 | [Shaping a sound](shaping-a-sound.md) | Plugins, knobs, bypass, the amp, undo |
 | [Mixing](mixing.md) | Each channel's volume, and the master |
 | [Saving and going back](saving.md) | Save, Save as, Revert |
