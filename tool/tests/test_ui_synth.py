@@ -76,7 +76,7 @@ def test_the_filter_at_the_synth_leads_settings_sits_on_its_controls(blank):
     out = positions(blank, FILTER, LEAD)
     assert out["sensitivity"]["v"] == pytest.approx(0.449, abs=0.002)
     assert out["resonance"]["v"] == pytest.approx(0.499, abs=0.002)
-    assert out["level"]["v"] == pytest.approx(0.387, abs=0.002)
+    assert out["level"]["v"] == pytest.approx(0.7, abs=0.002)
     assert all(at["off"] < 1e-6 for at in out.values()), out
 
 

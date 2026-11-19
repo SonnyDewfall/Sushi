@@ -81,7 +81,7 @@ parameters:
     visibility: {value: hidden, provenance: draft}
     label: {value: Output Gain, provenance: fact}
     description:
-      value: Out of it, 1/64 to 64 times (+36 dB), linear. Set by Level, 0.05 to 2.
+      value: Out of it, 1/64 to 64 times (+36 dB), linear. Set by Level, 0.05 to 0.55.
       provenance: draft
     scale: {value: linear, provenance: draft}
     control: {value: knob, provenance: draft}
@@ -345,14 +345,14 @@ controls:
   - id: level
     drives:
       value:
-        - {parameter: Output Gain, curve: cosine, at_0: 0.05, at_1: 2.0}
+        - {parameter: Output Gain, curve: linear, at_0: 0.05, at_1: 0.55}
       provenance: draft
     visibility: {value: primary, provenance: draft}
     group: {value: mix, provenance: draft}
     order: {value: 1, provenance: draft}
     label: {value: Level, provenance: draft}
     description:
-      value: 'Its output, 0.05 to its own 2 (+15 dB over 0.4, measured): 0.4 (39 %) in the synth lead.'
+      value: 'Output Gain 0.05 to 0.55, at most about the guitar''s level: 0.4 (70 %) in the synth lead.'
       provenance: draft
     control: {value: knob, provenance: draft}
     phone: {value: 6, provenance: draft}

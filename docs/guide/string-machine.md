@@ -94,11 +94,13 @@ is the pick's: the renders put it under 10 ms behind the guitar.
     synth filter. A band-pass (#166's choice, and the plugin's own) is more
     vocal, but much quieter on the low strings: in the renders a low E came
     out 29 dB under a high E, against 6 dB with the low-pass.
-  - **Level**: its output, at 39 % in the rig, which is about the guitar's
-    own level with the low-pass. Its top is the plugin's own setting, about
-    15 dB louder. For more than that, after switching to a band-pass say,
-    raise the fuzz's **Volume** or the channel's fader instead: the filter's
-    own gain knobs reach 64 times, and are not on the card.
+  - **Level**: its output, at 70 % in the rig. At 100 % the lead is about as
+    loud as the guitar across the neck (4 dB over it on the renders' guitar).
+    For more than that, after switching to a band-pass say, raise the fuzz's
+    **Volume** or the channel's fader instead: the filter's own gain knobs
+    reach 64 times, and are not on the card. A filter added from the
+    Library starts past Level's top, at the plugin's own setting, about
+    10 dB louder: turn Level down to bring it onto the knob.
   - Under **More**: **Attack** and **Release**, how fast it opens and closes;
     **Response**, the sweep's curve; and **Mix**, the filter against the
     plain fuzz.

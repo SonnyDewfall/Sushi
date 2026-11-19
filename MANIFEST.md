@@ -5944,3 +5944,26 @@ loop as RuntimeError; it now gives the copy, and the refusal for the other
 two. **Not run:** the rig; `plugins add` against the rig's own `plugins/`
 (rehearsed on a copy of this machine's, without five bundles: it added
 those five, `check` passed, and a second run added nothing). *(2026-11-19)*
+
+**The string machine: the re-review of PR #186 (#177).** (1) **The filter's
+Level tops out near the guitar's level**, as #173's echo does: Output Gain
+0.05 to 0.55, linear, the synth lead's 0.4 at 70 %. *Measured* in Sushi
+through the whole lead: 0.55 is +4.3 dB on #153's guitar and -0.5 dB on eight
+plucked notes from the low E to the top E (0.6 +0.2, 0.7 +1.5, the plugin's
+own 2 +9.7). A slow test renders Level's top, read from the profile's own
+curve, on those eight notes and fails above 0 dB, so a Level widened past
+about 0.6 fails it. The plugin's own 2 is now past the top, as the shimmer's
+Dry/Wet is past its Mix: a filter added from the library shows there and
+turns down onto the knob (the guide says so). (2) **`plugins add` no longer
+takes a bundle in `plugins/` that is a link to one elsewhere for one to
+add**: it judged by the resolved path's parent, so `plugins/nam.lv2 ->
+/opt/…/nam.lv2` clashed with itself and the rig's `add && …` step stopped.
+It now goes by where `decide` took each bundle from. A test with a linked
+bundle, shown failing on the old code. (3) **`assemble`'s swap cannot lose
+the old `plugins/`**: a failure between its two renames puts the old folder
+back, and a run that died there (no `plugins/`, `.plugins.previous` beside
+it) is recovered by the next, which renames `.plugins.previous` back before
+anything else and then goes on as for any `plugins/` that is there (refusing
+without `--replace`, saying it put it back). `.plugins.previous` is deleted
+only once a `plugins/` is in place. Two tests: a rename that fails, and the
+state a kill between the renames leaves. *(2026-11-19)*

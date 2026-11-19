@@ -67,7 +67,10 @@ Sushi, so the whole test suite can run without the rig machine.
 
 `assemble` builds the new folder beside `plugins/` and renames it into place
 only once every bundle is copied and every link in it leads to a file, so a
-copy that fails leaves `plugins/` as it was, `--replace` or not. A link is
+copy that fails leaves `plugins/` as it was, `--replace` or not. The swap is
+two renames (the old folder aside to `.plugins.previous`, the new one in);
+should a run die between them, the next puts the old folder back before
+anything else, and never deletes it while `plugins/` is missing. A link is
 pointed where it led from the package: into the copy of whichever bundle it
 led into, if that bundle is copied too, and at the file by its absolute path
 otherwise. One that leads nowhere, or round in a loop, is refused, naming the

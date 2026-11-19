@@ -67,9 +67,11 @@ def test_the_filter_is_drivable_and_its_profile_is_clean_and_canonical():
 def test_the_filters_gains_are_hidden_and_its_level_is_bounded():
     """Input and Output Gain run linear from 1/64 to 64: the synth lead's 0.4
     is 0.6 % of the knob and 10 % of it is +24 dB (review of PR #186). Both
-    are hidden; Level drives Output Gain from 0.05 to the plugin's own 2,
-    which measured +15 dB over the synth lead's 0.4. Activation and
-    Resonance are linear too, and are bounded the same way."""
+    are hidden; Level drives Output Gain from 0.05 to 0.55, where the lead
+    is about as loud as the guitar (the slow test below holds it there; the
+    plugin's own 2 measured +14.8 dB on #153's guitar, 0.55 +4.3, as #173
+    keeps the echo's top near the guitar's level). Activation and Resonance
+    are linear too, and are bounded the same way."""
     prof = load_profile(PROFILES / "calf-envelope-filter.yaml")
     hidden = {p["name"] for p in prof["parameters"] if p["visibility"]["value"] == "hidden"}
     assert {"Input Gain", "Output Gain", "Activation", "Resonance", "Bypass", "Sidechain"} == hidden
@@ -77,9 +79,9 @@ def test_the_filters_gains_are_hidden_and_its_level_is_bounded():
               for c in prof["controls"]}
     assert drives == {"sensitivity": [("Activation", "cosine", 0.5, 32.0)],
                       "resonance": [("Resonance", "cosine", 0.708, 12.0)],
-                      "level": [("Output Gain", "cosine", 0.05, 2.0)]}
+                      "level": [("Output Gain", "linear", 0.05, 0.55)]}
     default = next(p["facts"]["default"] for p in prof["parameters"] if p["name"] == "Output Gain")
-    assert default == 2.0, "a filter added from the library is at Level 100 %, not past it"
+    assert default == 2.0 > 0.55, "added from the library it is past Level's top, as the shimmer is past Mix's"
 
 
 # --- under Sushi --------------------------------------------------------------
@@ -160,3 +162,28 @@ def test_the_lead_is_about_as_loud_as_the_guitar_and_echoes(tmp_path):
     assert 20 * np.log10(np.max(np.abs(y))) < -3.0
     after = slice(int(1.6 * 48000), int(2.4 * 48000))  # from 0.1 s after the note's end
     assert rms_db(np, y[after, 0]) > rms_db(np, x[after]) + 40, "nothing after the note: no echo"
+
+
+@needs_sushi
+@pytest.mark.slow
+def test_the_filters_level_at_100_is_no_louder_than_the_guitar(tmp_path):
+    """Level's top, worked out from the profile's own curve, on eight notes
+    from the low E to the top E through the whole lead: no louder than the
+    notes that went in (measured 2026-11-19: -0.5 dB at 0.55, +0.2 at 0.6,
+    +1.5 at 0.7, +9.7 at the plugin's own 2), so a Level widened past about
+    0.6 fails here (review of PR #186)."""
+    from sushi_rig.profile import driven_value
+
+    np = pytest.importorskip("numpy")
+    prof = load_profile(PROFILES / "calf-envelope-filter.yaml")
+    (level,) = [c for c in prof["controls"] if c["id"] == "level"]
+    (drive,) = level["drives"]["value"]
+    top = driven_value(drive, 1.0)
+    chain = _lead()
+    (filter_,) = [e for e in chain if e["name"] == "filter"]
+    filter_["parameters"]["Output Gain"] = normalised(probe("calf-envelope-filter"), {"Output Gain": top})["Output Gain"]
+    notes = np.concatenate([padded(np, string(np, f, seconds=0.8), before=0.2, after=0.2)
+                            for f in (82.41, 110.0, 146.83, 196.0, 246.94, 329.63, 440.0, 659.26)])
+    y = render(np, tmp_path, "top", compiled(chain), notes)
+    over = rms_db(np, y[:, 0]) - rms_db(np, notes)
+    assert over <= 0.0, f"Level at 100 % (Output Gain {top}) is {over:+.1f} dB over the guitar"

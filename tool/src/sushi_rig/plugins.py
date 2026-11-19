@@ -380,7 +380,11 @@ def assemble(
     `plugins/` that looks plausible is worse than none. The copy is built
     beside `to`, in a folder of its own, and only renamed into place once it
     is whole, so a copy that fails (a link that leads nowhere, a full disk)
-    leaves `to` as it was, `--replace` or not.
+    leaves `to` as it was, `--replace` or not. The swap is two renames, the
+    old `to` aside to `.<name>.previous`, then the new one into place; a
+    failure between them puts the old one back, and a run that died there
+    (power, kill -9) leaves it to the next run, which puts it back before
+    anything else and then goes on as for any `to` that is there.
 
     Refuses to write into a non-empty `to` unless `replace`, because the target
     is a folder someone may have put things in by hand, and deleting it on a
@@ -390,17 +394,27 @@ def assemble(
     if not plan.ok:
         raise PluginsError(describe_failure(plan, ", ".join(map(str, from_dirs))))
 
+    staging = to.parent / f".{to.name}.assembling"
+    previous = to.parent / f".{to.name}.previous"
+    restored = ""
+    if previous.exists() and not to.exists():
+        # A run stopped between its two renames (power, kill -9): `previous`
+        # is the plugins/ it was replacing, and the only copy of it. Put it
+        # back before anything else, never delete it (review of PR #186).
+        previous.rename(to)
+        restored = (f" (it was {previous}, left by a run that stopped while swapping folders, "
+                    "and has been put back)")
     full = to.exists() and any(to.iterdir())
     if full and not replace:
         raise PluginsError(
-            f"{to} already exists and is not empty. Pass --replace to delete "
+            f"{to} already exists and is not empty{restored}. Pass --replace to delete "
             "it and rebuild, or choose another --to."
         )
-    staging = to.parent / f".{to.name}.assembling"
-    previous = to.parent / f".{to.name}.previous"
-    for leftover in (staging, previous):
-        if leftover.exists():
-            shutil.rmtree(leftover)
+    if staging.exists():
+        shutil.rmtree(staging)  # a copy that never finished: never anyone's only copy
+    if previous.exists():
+        # `to` exists, so this is what a finished swap had left to delete.
+        shutil.rmtree(previous)
     try:
         copy_bundles(plan.bundles, staging)
     except BaseException:
@@ -408,7 +422,13 @@ def assemble(
         raise
     if to.exists():
         to.rename(previous)
-    staging.rename(to)
+    try:
+        staging.rename(to)
+    except BaseException:
+        if previous.exists() and not to.exists():
+            previous.rename(to)
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
     shutil.rmtree(previous, ignore_errors=True)
     return plan
 
@@ -442,8 +462,11 @@ def add(
     plan = decide(manifest, used, providers, waived)
     if not plan.ok:
         raise PluginsError(describe_failure(plan, f"{plugins_dir} and {', '.join(map(str, from_dirs))}"))
-    here = plugins_dir.resolve()
-    new = [b for b in plan.bundles if b.resolve().parent != here]
+    # By where `decide` took each from, not by resolving its path: a bundle in
+    # plugins/ may be a link to one elsewhere (the amp, say), and resolved it
+    # would look like one to add, and clash with itself (review of PR #186).
+    already = set(present.values())
+    new = [b for b in plan.bundles if b not in already]
     taken = [b for b in new if (plugins_dir / b.name).exists()]
     if taken:
         raise PluginsError(

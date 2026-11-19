@@ -437,6 +437,64 @@ def test_assemble_leaves_plugins_as_it_was_when_a_copy_fails(system, tmp_path):
 
 
 @needs_lilv
+def test_a_swap_that_fails_between_its_two_renames_puts_plugins_back(system, tmp_path, monkeypatch):
+    """The old plugins/ is renamed aside, then the new one into place: a
+    failure of the second puts the first back (review of PR #186)."""
+    to = tmp_path / "plugins"
+    assemble([A], set(), [system], to)
+    (to / "mine.txt").write_text("the old plugins/")
+    rename = Path.rename
+
+    def fails_into_place(self, target):
+        if Path(target) == to and self.name == ".plugins.assembling":
+            raise OSError("the power went")
+        return rename(self, target)
+
+    monkeypatch.setattr(Path, "rename", fails_into_place)
+    with pytest.raises(OSError, match="power"):
+        assemble([A, C], set(), [system], to, replace=True)
+    assert (to / "mine.txt").read_text() == "the old plugins/"
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["plugins", "system"]
+
+
+@needs_lilv
+def test_a_run_that_died_between_the_renames_gets_plugins_back_and_deletes_nothing(system, tmp_path):
+    """What a kill -9 between the two renames leaves: no plugins/, the old
+    one as .plugins.previous and a whole new copy as .plugins.assembling.
+    The next run puts the old one back first: without --replace it then
+    refuses, as for any plugins/ that is there, saying what it did; with it,
+    it rebuilds (review of PR #186)."""
+    to = tmp_path / "plugins"
+    previous = tmp_path / ".plugins.previous"
+    assemble([A], set(), [system], previous)
+    (previous / "mine.txt").write_text("the only copy of the old plugins/")
+    assemble([A, C], set(), [system], tmp_path / ".plugins.assembling")
+    with pytest.raises(PluginsError, match="put back"):
+        assemble([A, C], set(), [system], to)
+    assert (to / "mine.txt").read_text() == "the only copy of the old plugins/"
+    assert not previous.exists()
+    assemble([A, C], set(), [system], to, replace=True)
+    assert sorted(p.name for p in to.iterdir()) == ["ab.lv2", "archive", "c.lv2"]
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["plugins", "system"]
+
+
+@needs_lilv
+def test_add_leaves_a_bundle_that_is_a_link_to_elsewhere_alone(system, tmp_path):
+    """plugins/nam.lv2 may be a link to the amp built in /opt: it is in
+    plugins/, and add must not take it for one to add and refuse it as a
+    clash with itself (review of PR #186)."""
+    to = tmp_path / "plugins"
+    assemble([A], set(), [system], to)
+    elsewhere = tmp_path / "opt"
+    _bundle(elsewhere, "nam", "urn:t:nam")
+    (to / "nam.lv2").symlink_to(elsewhere / "nam.lv2")
+    plan = add([A, C, "urn:t:nam"], set(), [system], to)
+    assert [b.name for b in plan.bundles] == ["c.lv2"]
+    assert (to / "nam.lv2").is_symlink()
+    check([A, C, "urn:t:nam"], set(), to)
+
+
+@needs_lilv
 def test_check_fails_on_a_link_that_leads_nowhere_but_not_in_the_archive(system, tmp_path):
     to = tmp_path / "plugins"
     assemble([A], set(), [system], to)
