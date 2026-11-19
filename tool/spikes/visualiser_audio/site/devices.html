@@ -1,0 +1,31 @@
+<!doctype html><meta charset="utf-8"><title>spike</title><p>spike</p>
+<script>
+const raw = {echoCancellation: false, noiseSuppression: false, autoGainControl: false};
+window.listDevices = async () => {
+  const s = await navigator.mediaDevices.getUserMedia({audio: raw});
+  const first = s.getAudioTracks()[0];
+  const out = {defaultLabel: first.label, defaultSettings: first.getSettings()};
+  s.getTracks().forEach((t) => t.stop());
+  out.devices = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'audioinput').map((d) => ({id: d.deviceId, label: d.label, group: d.groupId}));
+  return out;
+};
+window.levels = async (deviceId, ms = 1500, extra = {}) => {
+  const s = await navigator.mediaDevices.getUserMedia({audio: {...raw, deviceId: {exact: deviceId}, ...extra}});
+  const ctx = new AudioContext();
+  const src = ctx.createMediaStreamSource(s);
+  const n = src.channelCount;
+  const split = ctx.createChannelSplitter(2);
+  src.connect(split);
+  const an = [0, 1].map((i) => { const a = ctx.createAnalyser(); a.fftSize = 2048; split.connect(a, i); return a; });
+  const peaks = [0, 0], buf = new Float32Array(2048);
+  const t0 = performance.now();
+  while (performance.now() - t0 < ms) {
+    await new Promise((r) => setTimeout(r, 50));
+    an.forEach((a, i) => { a.getFloatTimeDomainData(buf); for (const v of buf) peaks[i] = Math.max(peaks[i], Math.abs(v)); });
+  }
+  const settings = s.getAudioTracks()[0].getSettings();
+  window._keep = {s, ctx};
+  return {settings, srcChannels: n, peaks, ctxRate: ctx.sampleRate, baseLatency: ctx.baseLatency};
+};
+window.stopAll = () => { if (window._keep) { window._keep.s.getTracks().forEach((t) => t.stop()); window._keep.ctx.close(); window._keep = null; } };
+</script>

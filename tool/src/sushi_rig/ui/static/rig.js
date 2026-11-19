@@ -2921,6 +2921,172 @@ export function helpLink(which, screen) {
   return { href, label: entry.label, aria };
 }
 
+// ---------------------------------------------------------------- the visualiser (#176)
+// A screensaver on the laptop: after a while with no pointer, touch or key
+// on the page, a MilkDrop visualisation (butterchurn, vendored) fills the
+// window and moves with the guitar. The browser hears the guitar itself,
+// through PipeWire's PulseAudio server (getUserMedia): nothing is added to
+// the signal's path, though the server's capture stream does a little work
+// in Sushi's cycle (visualiser.js says what that risks, and what watches
+// it). screensaver.js is the DOM, visualiser.js the drawing; these are its
+// decisions.
+
+export const VISUALISER = {
+  idleDefault: 10,     // seconds without input before it starts
+  idleMin: 3,
+  idleMax: 600,
+  minWidth: 900,       // CSS px: a phone's stage screen is never covered
+  fps: 30,             // a frame at most this often: the GPU is shared with nothing, the CPU with Sushi
+  maxPixels: 1280 * 800,  // the drawing buffer at most this big, scaled up to the window
+  // The machine file's role the guitar comes in on: patchbay.GUITAR_ROLE,
+  // held to it by test_ui_visualiser.py.
+  guitarRole: "guitar-in",
+};
+
+// The idle time a field was given, in whole seconds within the bounds, or
+// null for anything that is not a number.
+export function visualiserIdle(value) {
+  const n = typeof value === "number" ? value : typeof value === "string" && value.trim() !== "" ? Number(value) : NaN;
+  if (!Number.isFinite(n)) return null;
+  return Math.min(VISUALISER.idleMax, Math.max(VISUALISER.idleMin, Math.round(n)));
+}
+
+// The settings kept in this browser (localStorage), from what was kept:
+// `{on, idle, input: {deviceId, label} | null, channel: 0 | 1 | null}`.
+// On unless turned off; anything unreadable is the default, never a throw.
+export function visualiserSettings(text) {
+  const out = { on: true, idle: VISUALISER.idleDefault, input: null, channel: null };
+  let kept = null;
+  try { kept = JSON.parse(text); } catch { return out; }
+  if (!kept || typeof kept !== "object" || Array.isArray(kept)) return out;
+  if (kept.on === false) out.on = false;
+  out.idle = visualiserIdle(kept.idle) ?? out.idle;
+  if (kept.input && typeof kept.input.deviceId === "string" && kept.input.deviceId)
+    out.input = { deviceId: kept.input.deviceId, label: typeof kept.input.label === "string" ? kept.input.label : "" };
+  if (kept.channel === 0 || kept.channel === 1) out.channel = kept.channel;
+  return out;
+}
+
+// Whether /health says a rig is running: the visualiser runs only then.
+export function visualiserRigRunning(health) {
+  return !!(health && health.ok && health.body && (health.body.rig || {}).running);
+}
+
+// A WebGL renderer's name that is software: drawing in it takes the CPU,
+// which Sushi needs. Measured 2026-11-18 in Chromium on SwiftShader: 1.6 cores
+// of four at 640 by 360, 30 frames a second (tool/spikes/visualiser_audio/).
+export function softwareRenderer(name) {
+  return typeof name === "string" && /swiftshader|llvmpipe|softpipe|software|basic render/i.test(name);
+}
+
+// Whether the visualiser may start now, and if not, why, in words for the
+// settings line: `{ok, why}`. `why` is null only when ok. The order is what
+// the player can do least about first.
+export function visualiserGate(s) {
+  const no = (why) => ({ ok: false, why });
+  if (!s.on) return no("Off.");
+  if (s.stopped) return no(s.stopped);
+  if (s.reducedMotion) return no("Off while the system asks for reduced motion.");
+  if (!s.secure || !s.media)
+    return no("Only on the rig's own laptop, at http://localhost: a browser elsewhere cannot hear the rig.");
+  if (s.webgl === false) return no("This browser has no WebGL 2, which the visualiser draws with.");
+  if (softwareRenderer(s.renderer))
+    return no(`This browser draws WebGL in software (${s.renderer}), which would take the CPU Sushi needs.`);
+  if (s.permission === "denied")
+    return no("The browser was told not to let this page hear its inputs: allow the microphone for this page in the browser's site settings.");
+  if (!(s.width >= VISUALISER.minWidth)) return no(`Only in a window at least ${VISUALISER.minWidth} px wide.`);
+  if (!s.running) return no("Starts only while a rig is running.");
+  return { ok: true, why: null };
+}
+
+// Whether the rig's xruns rose while the visualiser listened: `base` is the
+// page's count when the capture was opened, `seen` the latest, each
+// `{count, run}` (app.js's, from pw-top; `run` is the rig run they count
+// for). The reason to stop, in words for the line; "rebase" when `base`
+// cannot be compared (none yet, or another run); null when nothing rose.
+// Any rise counts, whatever its cause: the capture stream is in Sushi's
+// cycle, and a glitch while it is there is not worth a second.
+export function visualiserTripped(base, seen) {
+  if (!seen || typeof seen.count !== "number") return null;
+  if (!base || typeof base.count !== "number" || base.run !== seen.run) return "rebase";
+  if (seen.count <= base.count) return null;
+  return `Stopped: the rig glitched while the visualiser was listening (xruns went from ${base.count} to ${seen.count}). `
+    + "It stays off until this page is reloaded or the Visualiser box is ticked again.";
+}
+
+// Whether `idle` seconds have passed since the last input at `last` (ms).
+export function idleDue(last, now, idle) {
+  return now - last >= idle * 1000;
+}
+
+// Whether a frame is due at `now`, the last having been drawn at `last` (ms),
+// at most `fps` a second. A small allowance, so a 60 Hz display's frames at
+// 16.7 ms land on every other one rather than drifting.
+export function frameDue(last, now, fps = VISUALISER.fps) {
+  return last == null || now - last >= 1000 / fps - 2;
+}
+
+// The drawing buffer for a window of `width` by `height` CSS px: the window
+// itself, or scaled down to `maxPixels`, whole pixels, never under 1.
+export function drawSize(width, height, maxPixels = VISUALISER.maxPixels) {
+  const w = Math.max(1, Math.round(width)), h = Math.max(1, Math.round(height));
+  const scale = Math.min(1, Math.sqrt(maxPixels / (w * h)));
+  return { width: Math.max(1, Math.floor(w * scale)), height: Math.max(1, Math.floor(h * scale)) };
+}
+
+// Where the guitar is, from GET /machine/roles's roles: the device as the
+// browser names it and which of the two channels the browser is given.
+// `{device, channel, port}`, or null. The browser's capture is stereo, and
+// PipeWire hands it a multichannel input's first two channels in order
+// (measured 2026-11-18 on PipeWire 1.0.5: AUX0 left, AUX1 right), so AUX0
+// or FL is 0, AUX1 or FR is 1; any other is null, both channels heard.
+export function guitarInput(roles) {
+  const role = Array.isArray(roles) ? roles.find((r) => r && r.name === VISUALISER.guitarRole) : null;
+  const port = role && Array.isArray(role.ports) && typeof role.ports[0] === "string" ? role.ports[0] : null;
+  const at = port ? port.lastIndexOf(":") : -1;
+  if (at <= 0) return null;
+  const name = port.slice(at + 1).replace(/^(capture|input)_/, "").toUpperCase();
+  const channel = name === "AUX0" || name === "FL" ? 0 : name === "AUX1" || name === "FR" ? 1 : null;
+  return { device: port.slice(0, at), channel, port };
+}
+
+// Which input to listen to, from the browser's inputs (enumerateDevices'
+// `audioinput`s: `{deviceId, label}`), the one chosen here before
+// (`settings.input`, `settings.channel`) and the guitar's (`guitarInput`):
+// `{deviceId, label, channel, how}`. A choice made here wins while that
+// input is there; then the guitar's device by name (its label, or its label
+// with more after a space, as PipeWire's "Audient iD14 Multichannel" is the
+// JACK client "Audient iD14"; never a "Monitor of"); then the browser's
+// default, both channels. `how` says which, for the settings line.
+export function pickInput(devices, settings, guitar) {
+  const inputs = (devices || []).filter((d) => d && typeof d.deviceId === "string" && d.deviceId);
+  const kept = settings && settings.input ? inputs.find((d) => d.deviceId === settings.input.deviceId) : null;
+  if (kept) return { deviceId: kept.deviceId, label: kept.label || settings.input.label, channel: settings.channel ?? null, how: "chosen" };
+  if (guitar && guitar.device) {
+    const named = inputs.find((d) => typeof d.label === "string" && !/^monitor of /i.test(d.label)
+      && (d.label === guitar.device || d.label.startsWith(`${guitar.device} `)));
+    if (named) return { deviceId: named.deviceId, label: named.label, channel: guitar.channel, how: "guitar" };
+  }
+  const first = inputs.find((d) => d.deviceId === "default") || inputs[0] || null;
+  return { deviceId: first ? first.deviceId : null, label: first ? first.label : "", channel: null, how: "default" };
+}
+
+// How an input is said on the settings line.
+export function inputWords(pick) {
+  if (!pick || !pick.deviceId) return "no input yet";
+  const label = pick.label || (pick.deviceId === "default" ? "the browser's default input" : "an input");
+  const side = pick.channel === 0 ? ", left channel" : pick.channel === 1 ? ", right channel" : "";
+  const how = pick.how === "guitar" ? ` (the machine file's ${VISUALISER.guitarRole})` : pick.how === "default" ? " (the browser's choice)" : "";
+  return `${label}${side}${how}`;
+}
+
+// Whether a pointer move is a move: the same place again is not (a browser
+// may send one when what is under a still pointer changes, as the
+// visualiser appearing does).
+export function pointerMoved(before, now) {
+  return !before || before.x !== now.x || before.y !== now.y;
+}
+
 // ---------------------------------------------------------------- where a phone opens it (#181)
 
 // The rack's "Agent on …" line: where a phone opens the page when the agent

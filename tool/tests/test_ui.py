@@ -242,9 +242,12 @@ def test_the_ui_files_are_in_the_package_data_a_wheel_carries():
     config = tomllib.loads((checkout_root() / "tool" / "pyproject.toml").read_text(encoding="utf-8"))
     globs = config["tool"]["setuptools"]["package-data"]["sushi_rig"]
     package = UI_DIR.parent.parent
-    files = [path.relative_to(package).as_posix() for path in UI_DIR.iterdir() if path.is_file()]
+    files = [path.relative_to(package).as_posix() for path in UI_DIR.rglob("*") if path.is_file()]
     assert sorted(files) == ["ui/static/app.js", "ui/static/guide.css", "ui/static/index.html", "ui/static/rig.js",
-                            "ui/static/style.css"]
+                            "ui/static/screensaver.js", "ui/static/style.css",
+                            "ui/static/vendor/butterchurn-2.6.7/LICENSE", "ui/static/vendor/butterchurn-2.6.7/SOURCE.txt",
+                            "ui/static/vendor/butterchurn-2.6.7/butterchurn.min.js",
+                            "ui/static/visualiser-presets.js", "ui/static/visualiser.js"]
     assert [f for f in files if not any(fnmatch.fnmatch(f, g) for g in globs)] == []
 
 
@@ -331,13 +334,19 @@ def test_the_session_is_read_for_each_processors_plugin_and_track():
 def test_the_ui_files_are_plain_and_need_no_build():
     """The UI runs from a checkout (sushi_rig/ui/__init__.py): no bundler's
     imports, nothing fetched from the network."""
-    for name in ("index.html", "app.js", "rig.js", "style.css"):
-        text = (UI_DIR / name).read_text(encoding="utf-8")
+    # The visualiser's own files too (#176); its vendored butterchurn is
+    # test_ui_visualiser.py's to check. Its line about where it runs names
+    # http://localhost in words, which fetches nothing.
+    own = ("index.html", "app.js", "rig.js", "style.css", "screensaver.js", "visualiser.js", "visualiser-presets.js")
+    for name in own:
+        text = (UI_DIR / name).read_text(encoding="utf-8").replace("at http://localhost:", "")
         assert "http://" not in text.replace("http://www.w3.org/2000/svg", "") and "https://" not in text, name
-    for name in ("app.js", "rig.js"):
+    for name in own[1:]:
+        if not name.endswith(".js"):
+            continue
         for line in (UI_DIR / name).read_text(encoding="utf-8").splitlines():
             if line.startswith("import "):
-                assert line.endswith('from "./rig.js";'), line
+                assert line.endswith(('from "./rig.js";', 'from "./visualiser-presets.js";')), line
 
 
 # --------------------------------------------------------------------------- #
