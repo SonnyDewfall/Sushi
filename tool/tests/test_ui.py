@@ -1940,6 +1940,41 @@ def test_an_amp_fader_is_sent_to_carla_marked_unsaved_and_undone(browser, amp_se
     page.close()
 
 
+def test_the_model_list_arriving_rebuilds_no_fader_under_the_hand(browser, amp_served):
+    """GET /amp/models answers a poll after the card is drawn. Its first
+    answer rebuilt the whole card, so a fader pressed or focused before it
+    came was replaced: the drag and the next key went nowhere (CI on master
+    58dd382, the fader's ArrowRight never reaching Carla). It is the
+    picker's to redraw, not the faders'."""
+    page = Page.__new__(Page)
+    page.page = browser.new_page(viewport={"width": 1280, "height": 900})
+    page.errors = []
+    p = page.page
+    p.on("pageerror", lambda error: page.errors.append(str(error)))
+    held = []
+    p.route("**/amp/models", lambda route: held.append(route))
+    p.goto(amp_served.url + "/#rack")
+    p.wait_for_selector(".amp-card .fader")
+    fader = p.get_by_role("slider", name="amp Output Lvl")
+    handle = fader.element_handle()
+    box = fader.bounding_box()
+    y = box["y"] + box["height"] / 2
+    p.mouse.move(box["x"] + box["width"] * 0.3, y)
+    p.mouse.down()
+    until(lambda: "Output Lvl" in amp_served.amp.carla.values())
+    pressed = amp_served.amp.carla.values()["Output Lvl"]
+    expect(p.locator(".amp-picker option")).to_have_count(1)  # "Choose another model…": the list is still out
+    assert len(held) == 1, "the list was asked for, and is held back"
+    held[0].continue_()
+    expect(p.locator(".amp-picker option")).to_have_count(4)
+    assert handle.evaluate("(e) => e.isConnected && document.activeElement === e"), "the fader under the hand is the same one"
+    p.mouse.move(box["x"] + box["width"] * 0.8, y, steps=5)
+    p.mouse.up()
+    until(lambda: amp_served.amp.carla.values()["Output Lvl"] > pressed + 5)
+    assert p.evaluate("() => window.sushiRigUpdaters()")["amp"] == 2
+    page.close()
+
+
 def test_an_amp_change_carla_does_not_answer_shows_the_agents_reason(browser, amp_served):
     page = amp_rack(browser, amp_served)
     p = page.page
@@ -2051,6 +2086,11 @@ def test_the_updaters_stay_flat_as_the_amp_region_is_rebuilt(browser, amp_served
     lock.click()
     picker = p.get_by_role("combobox", name="Amp model")
     expect(picker).to_be_enabled()
+    # Counted once the chain is drawn with its profiles: the card is drawn
+    # before them, and a count taken while the chain still read "Reading the
+    # rig…" was {'rack': 0}, against the 18 its rows then held (CI on the
+    # string machine's branch, Python 3.11: the rows, not a leak).
+    expect(p.locator('.unit[data-unit="overdrive"]')).to_contain_text("GxTubeScreamer · profile")
     first = p.evaluate("() => window.sushiRigUpdaters()")
     assert first["amp"] == 2, "one per fader"
     for _ in range(5):
