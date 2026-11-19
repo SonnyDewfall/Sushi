@@ -381,6 +381,6 @@ def test_the_stage_picker_has_no_delete(browser, bin_served):
     p = page.page
     p.locator("button.lock").click()
     p.locator("button.lock").click()
-    p.wait_for_selector(".stage-rigs .rig")
+    expect(p.locator(".stage-head select")).to_be_enabled()
     expect(p.locator(".stage-rigs .rig-del")).to_have_count(0)
     page.close()

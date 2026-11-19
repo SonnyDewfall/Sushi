@@ -505,29 +505,39 @@ def test_the_master_volume_is_on_the_racks_header_and_saved_as_the_masters_level
         page.close()
 
 
-def test_the_master_and_each_channels_volume_work_on_the_stage_while_locked(browser, served):
+def test_the_master_and_each_channels_volume_work_on_the_stage_once_unlocked(browser, served):
+    # Until #182 they worked locked; the lock now holds the stage's volumes
+    # (test_ui_stage.py tries every way in), so they are set unlocked here.
     page = Page(browser, served.url + "/#stage", width=390, height=844)
     p = page.page
     p.wait_for_selector(".card")
-    expect(p.locator("button.lock")).to_have_text("Locked")
+    lock = p.locator("button.lock")
+    expect(lock).to_have_text("Locked")
     master = p.locator("header.stage-head").get_by_role("group", name="Master volume")
     expect(master).to_be_visible()
     field = master.get_by_role("textbox", name="Master volume value")
+    expect(field).not_to_be_editable()
+    expect(master.get_by_role("slider", name="Master volume")).to_be_disabled()
+    lock.click()
+    lock.click()
+    expect(lock).to_have_text("Lock off · editing")
     field.click()
     p.keyboard.type("-3")
     p.keyboard.press("Enter")
     until(lambda: abs(served.rig.info["master"]["gain"]["value"] - 117 / 144) < 1e-6)
     vocal = p.get_by_role("textbox", name="vocal volume value")
     expect(vocal).to_have_value("−6.0 dB")
-    rest_on(p, p.locator(".levels").get_by_role("slider", name="vocal volume").bounding_box())
+    fader = p.locator(".levels").get_by_role("slider", name="vocal volume")
+    # The header is taller since #182, putting it under the sticky nav at 844.
+    fader.evaluate("(e) => e.scrollIntoView({block: 'center'})")
+    rest_on(p, fader.bounding_box())
     p.mouse.wheel(0, 100)
     until(lambda: abs(served.rig.info["vocal_send"]["gain"]["value"] - 113.5 / 144) < 1e-6)
     expect(vocal).to_have_value("−6.5 dB")
     width = p.evaluate("() => [document.documentElement.scrollWidth, innerWidth]")
     assert width[0] <= width[1], "it fits a phone"
-    # No confirm was asked for, and the lock is still on.
+    # No confirm was asked for.
     expect(p.locator(".confirm")).to_have_count(0)
-    expect(p.locator("button.lock")).to_have_text("Locked")
     page.close()
 
 
