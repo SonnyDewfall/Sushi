@@ -2,8 +2,8 @@
 
 The **stage** screen is the page for playing: everything you might reach for
 mid-song is big, and everything that could cut the sound by accident is put out
-of reach. This guide covers that screen, switching between rigs, the lock, and
-pedals.
+of reach. This guide covers that screen, switching between rigs, the lock,
+pedals, and the visualiser.
 
 A screen as narrow as a phone's opens the stage screen by default. To reach it
 from a phone, see
@@ -102,6 +102,54 @@ If a pedal is fading a channel, that channel's **VOLUME** says
 Not yet tried on the rig: none of the saved rigs has a pedal set up, and nothing
 has been played through a real pedal. Only the pad controller's own messages
 have been checked.
+
+## The visualiser
+
+Leave the laptop alone for a few seconds while a rig is running and the page
+turns into a visualisation that moves with your playing, like a screensaver.
+Touch the screen, move the mouse or press a key and the page comes straight
+back. That touch or key does nothing else: it will not press the button under
+your finger.
+
+It only runs on the rig's own laptop, in a browser open at
+`http://localhost:8029/` (or `http://127.0.0.1:8029/`), in a window at least
+900 pixels wide. Phones do not get it: they are for working the rig.
+
+**The first time it starts, the browser asks to use the microphone.** That is
+how the page hears your guitar: it listens to the guitar's input on the audio
+interface beside the rig, so it adds no delay to your sound. It is not quite
+nothing to the rig, though: while it listens, PipeWire does a little work for
+it in the same moment as the rig's own (see below). Choose **Allow**: if the browser offers to allow it only
+this time, choose the one that keeps it for this site instead, and in Firefox
+tick **Remember this decision** first. Then it will not ask again. Whatever input the question offers, the page then
+picks the guitar's own, from the rig's machine file.
+
+The line at the very bottom of the page holds its settings:
+
+- **Visualiser**: untick it to turn it off. This browser remembers.
+- **after … s without a touch**: how long to wait, 3 to 600 seconds. 10 to start with.
+- **listening to**: **automatic** (the guitar's input) or another input, and
+  which channel of it.
+- **Show now**: try it straight away.
+
+If it does not start, the same line says why: no rig running, the window too
+narrow, the browser told not to use the microphone (allow it again in the
+browser's site settings for this page), the computer asking for reduced
+motion, or a browser that would draw it without the graphics card. That last
+would take the processor the rig needs, so it stays off.
+
+**If the rig glitches while it is up, it stops.** If XRUNS rises while the
+visualiser is listening, it goes, and the line says "Stopped: the rig
+glitched while the visualiser was listening". It stays off until you reload
+the page or tick **Visualiser** again. The glitch may not have been its
+doing, but it is not worth finding out on stage.
+
+**Check once that PipeWire can keep up with it.** Run `sushi-rig doctor` and
+look for `pulse-realtime`. "pipewire-pulse runs realtime" is what you want. If it
+says pipewire-pulse runs no thread at realtime priority, either keep the
+visualiser off while you play or do what the line under it says. You can
+check by hand too: `ps -L -o tid,cls,rtprio,comm -p "$(pgrep -x pipewire-pulse)"`
+should show a thread (`pw-data-loop`) with `FF` in the `CLS` column.
 
 ## If something goes wrong
 

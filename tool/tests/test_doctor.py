@@ -318,6 +318,9 @@ def environment(**changes) -> Environment:
         "takes_free_bytes": 10 ** 12, "takes_dir": "/home/me/sushi-rig-takes",
         "take_stems": 4, "take_rig": "guitar_vocal",
         "models": (doctor.ModelInfo("Neve 1.nam", 48000),),
+        # As /proc showed PipeWire 1.0.5's pipewire-pulse on 2026-11-18, in a container, as root
+        # (`ps -L`: pw-data-loop FF 83). Not read on the rig.
+        "pulse_threads": {4242: (("pipewire-pulse", 0, 0), ("pw-data-loop", 1, 83))},
     }
     return Environment(**{**base, **changes})
 
@@ -903,6 +906,44 @@ def test_doctor_says_a_child_in_the_supervisors_own_words():
     assert f"{child_label('fmit')} {how_it_ended(record)}" in message
     assert how_it_ended(record) in crash_message(record)
     assert record["label"] == child_label("fmit") and record["means"] == "sound is unaffected; there is no tuner"
+
+
+# --------------------------------------------------------------------------- #
+# pipewire-pulse's priority, for the visualiser (#176)
+# --------------------------------------------------------------------------- #
+
+def test_a_realtime_pipewire_pulse_is_said_with_its_thread():
+    check = doctor.check_pulse_realtime(environment())
+    assert (check.state, check.remedy) == (OK, "")
+    assert "pw-data-loop (SCHED_FIFO 83)" in check.message
+
+
+def test_a_pipewire_pulse_without_realtime_is_said_with_what_to_do_and_never_a_fault():
+    check = doctor.check_pulse_realtime(environment(pulse_threads={7: (("pipewire-pulse", 0, 0), ("pw-data-loop", 0, 0))}))
+    assert check.state == OK, "the rig itself does not need it"
+    assert "visualiser" in check.message and "rtkit" in check.remedy and "restart" in check.remedy
+
+
+@pytest.mark.parametrize("threads, said", [(None, "could not look"), ({}, "not running")])
+def test_a_pipewire_pulse_not_seen_is_unchecked(threads, said):
+    check = doctor.check_pulse_realtime(environment(pulse_threads=threads))
+    assert check.state == UNCHECKED and said in check.message
+
+
+def test_pipewire_pulses_threads_are_read_from_proc(monkeypatch, tmp_path):
+    """The parse, against stat lines shaped as the kernel writes them (a name
+    with a space and parentheses in it, as a thread's can have)."""
+    import subprocess as sp
+
+    rest = " ".join(["S"] + ["0"] * 36 + ["20", "1"] + ["0"] * 10)  # fields 3 to 39, then rt_priority (40), policy (41)
+    task = tmp_path / "proc" / "99" / "task"
+    for tid, name in ((99, "pipewire-pulse"), (100, "data (loop) 0")):
+        (task / str(tid)).mkdir(parents=True)
+        (task / str(tid) / "stat").write_text(f"{tid} ({name}) {rest}\n")
+    real = Path
+    monkeypatch.setattr(doctor, "Path", lambda p: real(str(p).replace("/proc", str(tmp_path / "proc"), 1)))
+    monkeypatch.setattr(doctor.subprocess, "run", lambda *a, **k: sp.CompletedProcess(a, 0, "99\n", ""))
+    assert doctor._pulse_threads() == {99: (("pipewire-pulse", 1, 20), ("data (loop) 0", 1, 20))}
 
 
 # --------------------------------------------------------------------------- #

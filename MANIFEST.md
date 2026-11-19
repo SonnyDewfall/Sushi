@@ -5774,3 +5774,108 @@ old read failed 4 of 25 here and 5 of 25 on master (9bb1053, a scratch
 worktree, since removed). The test now waits until the overdrive's summary
 is in its profile's labels and its bypass button is visible, then measures:
 25 of 25 under the same load. *(2026-11-18)*
+
+**The visualiser: a screensaver that moves with the guitar (#176).** After a
+spell with no pointer, touch or key on the page (10 s, set on the page from 3
+to 600), while a rig is running and the window is at least 900 px wide, a
+MilkDrop visualisation fills the window; any input puts the page back, and
+that input reaches nothing under it. **The sound is the browser's own capture
+of the guitar's input** (`getUserMedia`, through PipeWire's PulseAudio
+server), chosen over the agent streaming a tap to the page: both go through
+that server, which buffers each client apart from the graph (though not
+its own capture stream, which works in Sushi's cycle: corrected below), and
+they cost about the same (`parec` and a reader
+2.4% of a core; Chromium's capture 1.6% in the server and about 5% in
+Chromium), but the agent's way puts a stream through its one event loop. A
+JACK or `pw-record` tap was not tried: it is a node of Sushi's cycle (no
+`node.async` in PipeWire 1.0.5). Settled by measuring in a container on the
+rig's PipeWire 1.0.5, with a JACK stand-in for Sushi at 256 frames
+(`tool/spikes/visualiser_audio/`): **Chromium does not list monitor
+sources**, so it cannot hear what the rig plays; it does list the
+interface's 10-channel input, and gets its first two channels as left and
+right (AUX0, the guitar, on the left); its stream asked for 1024 frames and
+the graph stayed at 256. So the page listens to the machine file's
+`guitar-in` port, found by name among the browser's inputs, on its channel,
+with an input and channel chosen on the page winning; nothing to set in
+PipeWire. Chromium's context plays nowhere (`sinkId: {type: "none"}`, no
+output node in `pw-top`); the capture is opened on each start and let go on
+each dismissal. **Never on a software WebGL renderer** (SwiftShader drew
+butterchurn with 1.6 of the four cores), under reduced motion, on a phone
+(plain HTTP on the LAN is not a secure context, and a phone would hear its
+own microphone), or in a hidden tab (drawing stops, the context is
+suspended). At most 30 frames a second, into at most 1280 by 800. **Library:
+butterchurn 2.6.7, MIT**, vendored byte for byte with its licence and a
+`SOURCE.txt` of where it came from and its checksums, which a test holds;
+lazy, with `visualiser.js` and the presets, so the page loads only
+`screensaver.js` until it first starts. audioMotion-analyzer is AGPL-3.0;
+Wave.js (MIT) is a set of canvas bars and lines. **No preset pack**: butterchurn-presets is labelled
+MIT, but its presets are MilkDrop authors' work with no licence from them,
+so three presets were written for the rig. `app.js` changes by one line (it
+tells `screensaver.js` after each poll whether a rig runs). Tests
+(`test_ui_visualiser.py`): the vendored files and their checksums, the
+routes, rig.js's decisions, and in Chromium the idle timing, lazy loading,
+the off switch kept, the idle time set from the page, a click, a tap, Enter
+and Space each putting the page back and reaching nothing (shown failing
+with the swallowing taken out, and the click and tap with the wait for the
+release taken out), reduced motion, a narrow window, a rig stopping, a
+software renderer refused, a hidden tab and polling carrying on under it.
+They run on Chromium's fake input with its renderer renamed, since
+SwiftShader is refused. The fast suite, after merging #174: 5347 passed, 21 skipped (none of them these). **Not run:** the rig, its GPU, its real
+PipeWire graph with Sushi and the iD14, the permission prompt (answered by a
+Chromium switch in the tests), Firefox, a phone, and anyone looking at what
+it draws on a real screen. *(2026-11-18)*
+
+**The visualiser, after the review of PR #183 (#176).** Seven findings, all
+fixed. (1) **A key whose release went elsewhere left the invisible
+visualiser taking every click until a reload**: Control (or Alt+Tab, Ctrl+T,
+Super) put the page back, its keyup went to another window, and the
+`closing` overlay waited for it for ever. What is held is now forgotten on
+`blur`, on the tab being hidden and on `lostpointercapture`, and `closing`
+never outlasts 1.5 s whatever is held. (2) **Put back while the
+AudioContext was resuming, butterchurn drew on, unseen, at 30 fps**: a run
+now checks after its `await` that no stop came, and suspends the context
+again if it is the latest. (3) **The safety claim was overstated.** The
+browser is kept apart from Sushi by pipewire-pulse's buffer, but
+pipewire-pulse's capture stream is a node in Sushi's cycle (a follower of
+the interface, BUSY about 17 to 22 µs in `pw-top`), so a late pipewire-pulse
+data thread can xrun the rig; the guide, the reference, the spike README and
+the code say so now, and that a `pw-record` tap would be no safer. Two
+safeguards: while it listens, the page watches XRUNS (pw-top's, sent by
+app.js after each sample) and on any rise stops the capture and the
+visualiser, says "Stopped: the rig glitched while the visualiser was
+listening" and stays off until a reload or the box is ticked again; and
+`sushi-rig doctor` has `pulse-realtime`, which reads pipewire-pulse's
+threads' scheduling policy from `/proc/<pid>/task/*/stat` (never a fault:
+the rig does not use it), checked here against a running pipewire-pulse
+(`pw-data-loop`, SCHED_FIFO 83, as `ps -L` showed). (4) **A visualiser that
+could not be made leaked its AudioContext** and was tried every idle spell:
+the context is closed and it is not tried again until a reload or the box
+is ticked; a lost WebGL context stops it, is said, and it starts afresh on a
+new canvas, a second loss leaving it off. (5) **A hidden tab now lets go of
+the capture**, and hears again when shown. (6) **The timing tests are
+deterministic**: the idle timer runs on Playwright's fake clock (not at 2.9 s,
+by 3.5 s), and "never starts" is a condition (the timer was due and the gate
+said no), not a sleep. (7) The cross-site tests list the presets file and
+/machine/roles, and SOURCE.txt names `window.log10`. Each new test was shown
+failing with its fix taken out (the blur and hidden cases fail only with the
+ceiling taken out too, since the ceiling alone also ends it). The visualiser's tests: 48 (was 39). The fast suite, with #173 merged: 5488 passed, 22 skipped, 0 failed.
+**Not run:** the rig, its GPU, its PipeWire graph with Sushi, Firefox, a
+phone; whether pipewire-pulse runs realtime on the rig is for `doctor` to
+say there. *(2026-11-19)*
+
+**The visualiser's lost-context test failed in CI on Python 3.13 (#176, PR
+#183).** It read `phase` off, `lost` 1 and no `error`. The page set the
+error and went off together, but after a WebGL context loss it started again
+on its next half-second check, since the page had been left long before,
+and a start clears the error: the line's "context lost" lasted under half a
+second, and `off()` could read a state from after it. The state CI saw is
+reachable only if that restart then ended with no error of its own (as a
+start that cannot be made does: `broken` set, `error` cleared); this was not
+reproduced here, so whether CI's restart failed that way is not known. Fixed
+in the page: a lost context waits another idle spell before it starts again,
+as any failed start does, so what happened stays on the line meanwhile; and
+the test waits for the whole condition (off, `lost` 1, no session, "context
+lost" in the error and on the line), then for the next showing, whose wait
+reports the state if it does not come. The test, 20 runs with all four cores
+kept busy: 20 passed. The fast suite, with #185 merged: 5588 passed, 22 skipped,
+0 failed. *(2026-11-19)*

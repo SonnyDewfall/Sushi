@@ -580,6 +580,109 @@ The guide is read from the checkout the agent was installed from with
 installed any other way has no guide: the Help links stay, and each opens a
 page saying so and where it looked (`guide.py` says why they are not hidden).
 
+## The visualiser
+
+A screensaver for the laptop (#176): after a spell with no pointer, touch or
+key on the page (10 s unless set otherwise), a MilkDrop visualisation fills
+the window and moves with the guitar. Any input puts the page back at once,
+and that input reaches nothing under it. Its settings are a line at the foot
+of the page, kept in this browser (`sushi-rig.visualiser` in localStorage):
+on or off, the idle time (3 to 600 s), the input and its channel, and **Show
+now**. The line says why it will not start when it will not, and what it
+heard last.
+
+**Where the sound comes from.** The browser's own capture of the guitar's
+input (`getUserMedia`), through PipeWire's PulseAudio server
+(pipewire-pulse), not the agent, which carries no audio. Nothing is added to
+the signal's path: Sushi's input and output are as they were, and no delay
+is added. What is and is not kept apart from Sushi (review of PR #183):
+
+- **Kept apart: the browser.** pipewire-pulse keeps a buffer of its own and
+  the browser reads from it over a socket, so a browser that stalls only
+  loses its own samples.
+- **Not kept apart: pipewire-pulse's capture stream.** It is a node in the
+  graph Sushi's driver runs, a follower of the interface, doing a small copy
+  every cycle in pipewire-pulse's data thread (`pw-top` shows it, BUSY about
+  17 to 22 µs at the rig's 256 frames). If that thread is late (no realtime
+  priority, or preempted), the cycle is late, and Sushi can xrun. This is the
+  same exposure as any other client of the graph, the tuner included. A
+  `pw-record` or JACK tap would be a node in the cycle in the same way, with
+  its own process doing the work (and `pw-record` writing a file from it),
+  so it would not be safer, only not via pipewire-pulse.
+
+So two safeguards. `sushi-rig doctor`'s `pulse-realtime` says whether
+pipewire-pulse runs a thread at realtime priority (from
+`/proc/<pid>/task/*/stat`; it is never a fault, since the rig itself does
+not use it). And while the visualiser listens, the page watches the XRUNS
+count (pw-top's, as the tile reads it, sent to `screensaver.js` as a
+"sushi-rig:xruns" event after each sample, about every 2 s): if it rises, the
+capture and the visualiser stop and the line says why ("Stopped: the rig
+glitched while the visualiser was listening"), and it stays off until the
+page is reloaded or **Visualiser** is ticked again. Any rise counts, whatever
+caused it. Which input: one chosen on the line; otherwise
+the machine file's `guitar-in` port, by name (the browser lists
+`Audient iD14 Multichannel` for the JACK client `Audient iD14`), on the
+channel of that port (PipeWire gives the browser a multichannel input's first
+two channels as left and right, so `capture_AUX0` is the left); otherwise the
+browser's default input, both channels. Chromium's context plays nowhere
+(`sinkId: {type: "none"}`), so it adds no output stream; Firefox has no such
+option and opens one to the default output, silent. The capture is opened when
+the visualiser starts and let go when it goes, and while the tab is hidden it
+is let go too (drawing stops and the context is suspended) and opened again
+when the tab is shown.
+
+**When it starts.** Only while `/health` says a rig is running (app.js tells
+`screensaver.js` after each poll); only in a window at least 900 px wide, so
+never on a phone (a phone reaches the agent over plain HTTP on the LAN, which
+is not a secure context, so it could not capture anything anyway, and what it
+could hear is its own microphone, not the rig); only at `http://localhost` or
+`http://127.0.0.1` on the laptop, for the same reason; never under
+`prefers-reduced-motion`; never on a software WebGL renderer (SwiftShader,
+llvmpipe), which took 1.6 of four cores at 640 by 360 when measured; and
+not while the tab is hidden. The decisions are `visualiserGate` and its
+neighbours in `rig.js`.
+
+**What it costs.** Nothing until it first starts: the page loads
+`screensaver.js` (the timer and the line) and not the drawing;
+`visualiser.js`, its presets and butterchurn (192 KB) are loaded on the first
+start, and kept for the next. It draws at most 30 frames a second into a
+buffer of at most 1280 by 800, scaled to the window, and stops drawing when
+the tab is hidden. Measured in a container (no GPU, PipeWire 1.0.5, Chromium
+153, a JACK stand-in for Sushi at 256 frames): the capture alone costs
+PipeWire's PulseAudio server 1.6% of a core and Chromium about 5%, and left
+the graph's quantum at 256 (`tool/spikes/visualiser_audio/README.md` has the
+figures and how to run them again). Not measured: a GPU's load, or any of it
+on the rig.
+
+**Dismissing.** While it is up, a listener on the window takes every press,
+release, click, key, wheel and move before the page does, and the
+visualiser itself stays over the page, invisible, until no button or key is
+held and 350 ms have passed with no press, so the release and click of the
+press that dismissed it land on it too. A pointer that keeps moving does not
+hold it there, and nothing holds it longer than 1.5 s: what is held is
+forgotten when the window loses focus or the tab is hidden (a key whose
+release went to another window, as with Alt+Tab or Ctrl+T, is never seen to
+come up), and a ceiling ends it whatever is held. Found in review: without
+both, the invisible visualiser took every click until a reload.
+
+**When it cannot run.** If butterchurn cannot be made (no WebGL on its
+canvas, say), its AudioContext is closed and it is not tried again until the
+page is reloaded or **Visualiser** is ticked again; the line says why. If the
+browser takes the WebGL context away (`webglcontextlost`), it stops, says so,
+and starts afresh on a new canvas next time; a second loss leaves it off
+until a reload. A stop that comes while the context is still resuming wins:
+nothing is drawn after it.
+
+**The library.** [butterchurn](https://github.com/jberg/butterchurn) 2.6.7,
+MIT, vendored byte for byte under `ui/static/vendor/butterchurn-2.6.7/` with
+its licence and `SOURCE.txt` (where it came from, its checksums, what loading
+it adds to `window` and `Math`). Chosen over audioMotion-analyzer (AGPL-3.0)
+and Wave.js (MIT, but a set of 2D canvas bars, lines and circles rather than a
+visualisation to leave running).
+No preset pack: butterchurn-presets is labelled MIT, but its presets are
+MilkDrop authors' work with no licence from them. The three presets shown,
+`visualiser-presets.js`, were written for the rig.
+
 ## Not built yet
 
 Not done yet, and said on screen where it shows: the sound (nothing measures
