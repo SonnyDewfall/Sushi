@@ -121,7 +121,7 @@ from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 from sushi_rig import midi_listener
-from sushi_rig.agent import Agent, Switching
+from sushi_rig.agent import Agent, Switching, SwitchRefused
 from sushi_rig.supervisor import AmpRestart
 from sushi_rig.library import IRI, Literal, parse_turtle
 from sushi_rig.live import LiveError, decide_move
@@ -842,7 +842,8 @@ class UiLifecycle:
     runner: `up` brings rig `args[1]` up unless `refuse_up` says why not, and
     `down` takes it down. `switch_held` stands in the body of a switch, after
     the agent has taken its lock and set `busy`: `how` (rig name to "live"
-    or ("restart", [why...])) decides each one, live by default. `delay`
+    or ("restart", [why...])) decides each one, live by default, unless
+    `refuse_switch` refuses it as the real one refuses (`SwitchRefused`). `delay`
     holds every command that long, so a page can be seen busy. Its methods
     run on the agent's loop."""
 
@@ -850,6 +851,7 @@ class UiLifecycle:
         self.rig = up
         self.started = datetime.now(timezone.utc).replace(microsecond=0) - timedelta(minutes=12)
         self.refuse_up: str | None = None
+        self.refuse_switch: tuple[str, str] | None = None  # (reason, code), as `SwitchRefused` takes them
         self.how: dict = {}
         self.delay = 0.0
         self.calls: list = []
@@ -892,6 +894,8 @@ class UiLifecycle:
         # changes no value, so it has nothing to put back.
         self.calls.append(["switch", name])
         await asyncio.sleep(self.delay)
+        if self.refuse_switch:
+            raise SwitchRefused(*self.refuse_switch)
         previous = self.rig
         how = self.how.get(name, "live")
         answer = {"ok": True, "rig": name, "previous": previous, "seconds": 0.4 if how == "live" else 6.2}

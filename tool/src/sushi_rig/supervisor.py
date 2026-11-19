@@ -1058,7 +1058,7 @@ def _rig_env(launch: "rig_module.Launch") -> dict[str, str]:
     lacks fails loudly instead of resolving against a system copy. One
     function, so Carla restarted alone gets the environment `up` gave it."""
     env = dict(os.environ)
-    env["LV2_PATH"] = str(launch.root / "plugins")
+    env["LV2_PATH"] = str(rig_module.plugins_folder(launch.root))
     return env
 
 

@@ -26,8 +26,11 @@ from sushi_rig.plugins import (
     config_uris,
     copy_bundles,
     decide,
+    default_sources,
     describe_failure,
     discover,
+    preflight,
+    preflight_refusal,
     read_manifest,
 )
 
@@ -35,6 +38,25 @@ needs_lilv = pytest.mark.skipif(
     importlib.util.find_spec("lilv") is None,
     reason="lilv is a system package (python3-lilv)",
 )
+
+
+@pytest.fixture(autouse=True)
+def lv2_system(tmp_path_factory, monkeypatch):
+    """The system's LV2 folders, as this file's tests see them: empty folders
+    of their own for /usr/lib, /usr/local/lib and the home folder, and the
+    triplet x86_64-linux-gnu, so no test reads or depends on what this
+    machine has installed. A test lays bundles out under them as it needs."""
+    from sushi_rig import plugins
+
+    # Not under `tmp_path`, which some tests list.
+    system = tmp_path_factory.mktemp("lv2-system")
+    for folder in ("usr/lib", "usr/local/lib", "home"):
+        (system / folder).mkdir(parents=True)
+    monkeypatch.setattr(plugins, "USR_LIB", system / "usr" / "lib")
+    monkeypatch.setattr(plugins, "USR_LOCAL_LIB", system / "usr" / "local" / "lib")
+    monkeypatch.setattr(plugins, "_multiarch", lambda: "x86_64-linux-gnu")
+    monkeypatch.setenv("HOME", str(system / "home"))
+    return system
 
 SYS = Path("/usr/lib/lv2")
 A, B, C = "urn:t:a", "urn:t:b", "urn:t:c"
@@ -616,3 +638,236 @@ def test_cli_add_adds_what_is_missing_and_says_which(system, tmp_path, capsys):
     assert main(["plugins", "add", "--from", str(system), str(to), *common]) == 0
     assert "c.lv2" in capsys.readouterr().out
     assert main(["plugins", "check", str(to), *common]) == 0
+
+
+
+# --- the default sources (#188) ----------------------------------------------
+#
+# Ubuntu's calf-plugins puts calf.lv2 in /usr/lib/x86_64-linux-gnu/lv2 (the
+# owner's laptop, 2026-11-19), and `add` searched /usr/lib/lv2 alone: the rig
+# then failed inside Sushi. `lv2_system` stands a folder in for /usr/lib.
+
+CALF = "http://calf.sourceforge.net/plugins/EnvelopeFilter"
+MULTIARCH = Path("x86_64-linux-gnu") / "lv2"
+
+
+def test_the_default_sources_are_usr_lib_lv2_then_the_multiarch_folder(lv2_system):
+    usr_lib = lv2_system / "usr" / "lib"
+    assert default_sources() == [usr_lib / "lv2"], "neither there: /usr/lib/lv2, for discover to refuse"
+    (usr_lib / MULTIARCH).mkdir(parents=True)
+    assert default_sources() == [usr_lib / MULTIARCH], "only what exists"
+    (usr_lib / "lv2").mkdir()
+    assert default_sources() == [usr_lib / "lv2", usr_lib / MULTIARCH]
+
+
+def test_a_multiarch_folder_that_is_a_link_to_usr_lib_lv2_is_searched_once(lv2_system):
+    usr_lib = lv2_system / "usr" / "lib"
+    (usr_lib / "lv2").mkdir()
+    (usr_lib / "x86_64-linux-gnu").mkdir()
+    (usr_lib / MULTIARCH).symlink_to(usr_lib / "lv2", target_is_directory=True)
+    assert default_sources() == [usr_lib / "lv2"]
+
+
+def test_without_a_triplet_from_python_the_multiarch_folder_is_globbed(lv2_system, monkeypatch):
+    """A Python built without MULTIARCH: the /usr/lib/*-linux-gnu/lv2 there,
+    this machine's architecture's only when it has one, since an i386
+    folder beside it holds binaries Sushi cannot load."""
+    import platform
+
+    from sushi_rig import plugins
+
+    usr_lib = lv2_system / "usr" / "lib"
+    monkeypatch.setattr(plugins, "_multiarch", lambda: None)
+    monkeypatch.setattr(platform, "machine", lambda: "x86_64")
+    (usr_lib / "i386-linux-gnu" / "lv2").mkdir(parents=True)
+    assert default_sources() == [usr_lib / "i386-linux-gnu" / "lv2"], "the only one there"
+    (usr_lib / MULTIARCH).mkdir(parents=True)
+    assert default_sources() == [usr_lib / MULTIARCH]
+
+
+def _requirement(tmp_path, *uris):
+    """`--manifest` and `--config-dir` arguments requiring `uris`."""
+    manifest = tmp_path / "manifest.txt"
+    manifest.write_text("".join(f"{u}\n" for u in uris))
+    configs = tmp_path / "no-configs"
+    configs.mkdir(exist_ok=True)
+    return ["--manifest", str(manifest), "--config-dir", str(configs)]
+
+
+@needs_lilv
+def test_add_with_no_from_finds_a_bundle_only_in_the_multiarch_folder(lv2_system, tmp_path, capsys):
+    """The laptop's case: abGate in /usr/lib/lv2, Calf only in the multiarch
+    folder, and `sushi-rig plugins add` with no --from."""
+    from sushi_rig.cli import main
+
+    usr_lib = lv2_system / "usr" / "lib"
+    _bundle(usr_lib / "lv2", "abGate", A)
+    _bundle(usr_lib / MULTIARCH, "calf", CALF)
+    to = tmp_path / "plugins"
+    to.mkdir()
+    assert main(["plugins", "add", str(to), *_requirement(tmp_path, A, CALF)]) == 0
+    assert "abGate.lv2, calf.lv2" in capsys.readouterr().out
+    check([A, CALF], set(), to)
+
+
+@needs_lilv
+def test_the_same_bundle_in_both_default_sources_is_copied_once_from_usr_lib_lv2(lv2_system, tmp_path):
+    usr_lib = lv2_system / "usr" / "lib"
+    _bundle(usr_lib / "lv2", "calf", CALF)
+    _bundle(usr_lib / MULTIARCH, "calf", CALF)
+    (usr_lib / MULTIARCH / "calf.lv2" / "from-multiarch").write_text("")
+    to = tmp_path / "plugins"
+    to.mkdir()
+    plan = add([CALF], set(), default_sources(), to)
+    assert plan.bundles == [usr_lib / "lv2" / "calf.lv2"]
+    assert not (to / "calf.lv2" / "from-multiarch").exists()
+
+
+@needs_lilv
+def test_two_bundles_of_one_name_split_between_the_sources_are_refused_naming_both(lv2_system, tmp_path):
+    """An old calf.lv2 left in /usr/lib/lv2 beside a newer one in the
+    multiarch folder that declares one more plugin: the rig needs a URI from
+    each, plugins/ can hold one calf.lv2, and nothing is copied."""
+    usr_lib = lv2_system / "usr" / "lib"
+    _bundle(usr_lib / "lv2", "calf", CALF)
+    _bundle(usr_lib / MULTIARCH, "calf", CALF, B)
+    to = tmp_path / "plugins"
+    to.mkdir()
+    with pytest.raises(PluginsError) as err:
+        add([CALF, B], set(), default_sources(), to)
+    said = str(err.value)
+    assert str(usr_lib / "lv2" / "calf.lv2") in said and str(usr_lib / MULTIARCH / "calf.lv2") in said
+    assert "--from" in said
+    assert list(to.iterdir()) == []
+
+
+# --- what a missing URI is said with (#188) ----------------------------------
+
+
+@needs_lilv
+def test_a_missing_uri_installed_in_another_lv2_folder_names_it_and_the_from_to_add(lv2_system, tmp_path):
+    usr_lib = lv2_system / "usr" / "lib"
+    _bundle(usr_lib / "lv2", "ab", A)
+    home_lv2 = lv2_system / "home" / ".lv2"
+    _bundle(home_lv2, "c", C)
+    to = tmp_path / "plugins"
+    to.mkdir()
+    with pytest.raises(PluginsError) as err:
+        add([A, C], set(), default_sources(), to)
+    said = str(err.value)
+    assert f"{C}: installed in {home_lv2}, which was not searched" in said
+    assert f"--from {usr_lib / 'lv2'} --from {home_lv2}" in said
+
+
+@needs_lilv
+def test_the_multiarch_folder_left_out_by_from_is_named_for_a_uri_it_holds(lv2_system, tmp_path):
+    """The workaround the laptop needed, said by the refusal itself: --from
+    /usr/lib/lv2 alone, and Calf in the multiarch folder."""
+    usr_lib = lv2_system / "usr" / "lib"
+    _bundle(usr_lib / "lv2", "ab", A)
+    _bundle(usr_lib / MULTIARCH, "calf", CALF)
+    to = tmp_path / "plugins"
+    with pytest.raises(PluginsError) as err:
+        assemble([A, CALF], set(), [usr_lib / "lv2"], to)
+    said = str(err.value)
+    assert f"{CALF}: installed in {usr_lib / MULTIARCH}" in said
+    assert f"--from {usr_lib / 'lv2'} --from {usr_lib / MULTIARCH}" in said
+
+
+@needs_lilv
+def test_a_missing_built_plugin_names_its_build_script_and_one_nowhere_says_install(lv2_system, tmp_path):
+    usr_lib = lv2_system / "usr" / "lib"
+    _bundle(usr_lib / "lv2", "ab", A)
+    chorus = "http://jpcima.sdf1.org/lv2/string-machine-chorus"
+    octave = "http://breakfastquay.com/rdf/lv2-rubberband#livemono"
+    to = tmp_path / "plugins"
+    to.mkdir()
+    with pytest.raises(PluginsError) as err:
+        add([A, chorus, octave, C], set(), default_sources(), to)
+    said = str(err.value)
+    assert f"{chorus}: built here, not packaged: scripts/build-string-machine-chorus.sh {to} builds it" in said
+    assert f"{octave}: built here, not packaged: scripts/build-rubberband4.sh {to} builds it" in said
+    assert f"{C}: in no standard LV2 folder: install the package that provides it" in said
+
+
+# --- before a start (#188) ---------------------------------------------------
+
+
+def _declaring(folder: Path, name: str, *uris: str) -> Path:
+    """A bundle `preflight` reads: a manifest declaring `uris`. No lilv."""
+    bundle = folder / f"{name}.lv2"
+    bundle.mkdir(parents=True)
+    (bundle / "manifest.ttl").write_text(
+        "@prefix lv2: <http://lv2plug.in/ns/lv2core#> .\n"
+        + "".join(f"<{u}> a lv2:Plugin .\n" for u in uris))
+    return bundle
+
+
+def test_preflight_names_what_the_chain_lacks_and_keeps_the_amp_apart(tmp_path):
+    plugins = tmp_path / "plugins"
+    _declaring(plugins, "ab", A, B)
+    config = {"tracks": [{"plugins": [{"uri": A}, {"uri": C}]}],
+              "_amp": {"plugin": "nam", "model": "amp/models/x.nam"}}
+    assert preflight(config, plugins) == ([C], [NAM_URI])
+    assert preflight(config, plugins, amp=False) == ([C], []), "no amp is started, so none is needed"
+    _declaring(plugins, "c", C)
+    _declaring(plugins, "nam", NAM_URI)
+    assert preflight(config, plugins) == ([], [])
+
+
+@needs_lilv
+def test_preflight_asks_lilv_before_it_calls_a_plugin_missing(tmp_path, monkeypatch):
+    """A manifest the Turtle reader could not read declares nothing to it;
+    lilv, which Sushi loads plugins through, still finds the plugin, and a
+    rig that would play is not refused for it."""
+    from sushi_rig import library
+
+    plugins = tmp_path / "plugins"
+    _bundle(plugins, "ab", A)
+    monkeypatch.setattr(library, "declared_plugins", lambda folder: {})
+    config = {"tracks": [{"plugins": [{"uri": A}, {"uri": B}]}]}
+    assert preflight(config, plugins) == ([B], [])
+
+
+def test_preflight_of_a_plugins_folder_that_is_not_there_lacks_everything(tmp_path):
+    config = {"tracks": [{"plugins": [{"uri": A}]}]}
+    assert preflight(config, tmp_path / "plugins") == ([A], [])
+
+
+def test_the_refusal_says_each_uri_and_the_commands_in_the_order_to_run_them(lv2_system, tmp_path):
+    """synth-lead on the laptop: Calf packaged but in the multiarch folder,
+    the chorus built, abGate in ~/.lv2. The script first, since `plugins add`
+    copies nothing while anything is still missing."""
+    usr_lib = lv2_system / "usr" / "lib"
+    _declaring(usr_lib / "lv2", "gx", A)
+    _declaring(usr_lib / MULTIARCH, "calf", CALF)
+    home_lv2 = lv2_system / "home" / ".lv2"
+    _declaring(home_lv2, "abGate", "http://hippie.lt/lv2/gate")
+    chorus = "http://jpcima.sdf1.org/lv2/string-machine-chorus"
+    plugins = tmp_path / "Sushi" / "plugins"
+    plugins.mkdir(parents=True)
+    root = tmp_path / "Sushi"
+    said = preflight_refusal("synth-lead", sorted([A, CALF, chorus, "http://hippie.lt/lv2/gate"]), plugins, root)
+    lines = said.splitlines()
+    assert lines[0].startswith(f"synth-lead was not started: 4 plugin(s) it loads are not in {plugins}")
+    assert f"  {CALF}: installed in {usr_lib / MULTIARCH}, which `sushi-rig plugins add` copies from" in lines
+    assert f"  {A}: installed in {usr_lib / 'lv2'}, which `sushi-rig plugins add` copies from" in lines
+    assert f"  http://hippie.lt/lv2/gate: installed in {home_lv2}, which was not searched" in lines
+    assert any(line.startswith(f"  {chorus}: built here") for line in lines)
+    assert lines[-3].startswith("Nothing was started. To fix it, run these, in order")
+    assert lines[-2:] == [
+        f"  {root / 'scripts/build-string-machine-chorus.sh'} {plugins}",
+        f"  sushi-rig plugins add --from {usr_lib / 'lv2'} --from {usr_lib / MULTIARCH} --from {home_lv2}",
+    ]
+
+
+def test_the_refusal_for_packaged_plugins_alone_is_plugins_add(lv2_system, tmp_path):
+    usr_lib = lv2_system / "usr" / "lib"
+    _declaring(usr_lib / MULTIARCH, "calf", CALF)
+    plugins = tmp_path / "plugins"
+    plugins.mkdir()
+    said = preflight_refusal("synth-lead", [CALF], plugins, tmp_path)
+    assert said.splitlines()[-2:] == [
+        "Nothing was started. To fix it, run this, then start the rig again:",
+        "  sushi-rig plugins add",
+    ]

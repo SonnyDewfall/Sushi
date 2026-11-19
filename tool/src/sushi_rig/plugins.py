@@ -58,8 +58,23 @@ from typing import Any, Iterator
 
 from .amp import CONFIG_KEY as AMP_KEY, PLUGIN_URIS as AMP_PLUGIN_URIS
 
-# Where distro packages put LV2 bundles. The default source for `assemble`.
-SYSTEM_LV2_DIR = Path("/usr/lib/lv2")
+# Where distro packages put LV2 bundles: `/usr/lib/lv2`, and on Debian and
+# Ubuntu also the multiarch folder `/usr/lib/<triplet>/lv2`, where Ubuntu's
+# calf-plugins puts calf.lv2 on the owner's laptop (2026-11-19). Both are
+# the default sources of `assemble` and `add` (`default_sources`). Module
+# names, so a test stands a folder of its own in for `/usr/lib`.
+USR_LIB = Path("/usr/lib")
+USR_LOCAL_LIB = Path("/usr/local/lib")
+SYSTEM_LV2_DIR = USR_LIB / "lv2"
+
+# Plugins this repository builds because no distribution packages them (or
+# packages a version without them): the script that builds each, given the
+# folder to leave its bundle in (docs/reference/plugins.md).
+BUILT = {
+    "http://jpcima.sdf1.org/lv2/string-machine-chorus": "scripts/build-string-machine-chorus.sh",
+    "http://breakfastquay.com/rdf/lv2-rubberband#livemono": "scripts/build-rubberband4.sh",
+    "http://breakfastquay.com/rdf/lv2-rubberband#livestereo": "scripts/build-rubberband4.sh",
+}
 
 # The one file lilv needs to find in `archive/` to stop logging about it.
 #
@@ -207,18 +222,165 @@ def decide(
     )
 
 
-def describe_failure(plan: Plan, where: str) -> str:
-    """The message for a plan that is not ok — every problem, not the first."""
+def describe_failure(
+    plan: Plan, where: str, notes: dict[str, str] | None = None, then: list[str] | None = None,
+) -> str:
+    """The message for a plan that is not ok — every problem, not the first.
+
+    `notes` says, beside a missing URI, where it is instead or how it is
+    made (`advise`); `then` follows the list, the commands that would fix it."""
+    notes = notes or {}
     lines = []
     if plan.missing:
         lines.append(
             f"{len(plan.missing)} required plugin URI(s) have no provider in {where}:"
         )
-        lines += [f"  {uri}" for uri in plan.missing]
+        lines += [f"  {uri}" + (f": {notes[uri]}" if uri in notes else "") for uri in plan.missing]
+        lines += then or []
     for name, paths in plan.collisions.items():
         lines.append(f"{name} is provided by more than one bundle:")
         lines += [f"  {p}" for p in paths]
+    if plan.collisions:
+        # Two bundles of one name, each providing something the rig needs:
+        # two installs of one package, an old copy left beside a new one.
+        # lilv takes the higher version of a URI both declare, and the
+        # earlier folder only between equal ones, so the order of --from
+        # cannot always settle it; leaving the stale folder out does.
+        lines.append(
+            "plugins/ is flat, so only one bundle of a name can be copied. Pass --from with only "
+            "the folders to take bundles from, leaving out the one whose copy is not wanted, or "
+            "remove the stale copy."
+        )
     return "\n".join(lines)
+
+
+# --- where bundles are looked for -------------------------------------------
+
+
+def _multiarch() -> str | None:
+    """This system's multiarch triplet (`x86_64-linux-gnu`), as the Python
+    running this was built for it; None where it was built without one."""
+    import sysconfig
+
+    return sysconfig.get_config_var("MULTIARCH") or None
+
+
+def multiarch_lv2_dirs() -> list[Path]:
+    """`/usr/lib/<triplet>/lv2` for this system's triplet, where it exists.
+
+    The triplet comes from Python (`_multiarch`). A Python built without one
+    (some built from source) falls back to the `/usr/lib/*-linux-gnu/lv2`
+    that exist, in name order, and of those only this machine's
+    architecture's when any is: an i386 folder beside an x86_64 one holds
+    binaries Sushi cannot load."""
+    import platform
+
+    triplet = _multiarch()
+    if triplet:
+        candidates = [USR_LIB / triplet / "lv2"]
+    else:
+        candidates = sorted(USR_LIB.glob("*-linux-gnu/lv2"))
+        own = [c for c in candidates if c.parent.name.startswith(f"{platform.machine()}-")]
+        candidates = own or candidates
+    return [c for c in candidates if c.is_dir()]
+
+
+def _distinct(folders: list[Path]) -> list[Path]:
+    """`folders` in order, each once, by where it really is: a multiarch
+    folder that is a link to `/usr/lib/lv2` is the same folder."""
+    seen: set[Path] = set()
+    kept = []
+    for folder in folders:
+        key = folder.resolve()
+        if key not in seen:
+            seen.add(key)
+            kept.append(folder)
+    return kept
+
+
+def default_sources() -> list[Path]:
+    """Where `assemble` and `add` take bundles from when no `--from` is
+    given, in this order: `/usr/lib/lv2`, then the multiarch folder
+    (`multiarch_lv2_dirs`), each only where it exists. `--from` replaces
+    them all.
+
+    The order is that of an `LV2_PATH`, which is how they are searched
+    (`discover`): for a URI both declare, lilv takes the higher
+    `lv2:minorVersion`/`lv2:microVersion`, and between equal versions the
+    earlier folder, `/usr/lib/lv2`. The same bundle in both is therefore
+    copied once, from `/usr/lib/lv2`; two bundles of one name that each
+    provide something the rig needs are refused, naming both (`decide`).
+
+    With neither folder there, `/usr/lib/lv2` alone, for `discover` to say
+    it does not exist."""
+    found = [d for d in _distinct([USR_LIB / "lv2", *multiarch_lv2_dirs()]) if d.is_dir()]
+    return found or [USR_LIB / "lv2"]
+
+
+def standard_lv2_dirs() -> list[Path]:
+    """The folders an LV2 plugin is installed in on Linux, where they exist:
+    lilv's own default path (`~/.lv2`, `/usr/local/lib/lv2`, `/usr/lib/lv2`)
+    and the multiarch folder. Where a URI the rig lacks is looked for, to
+    say where it is (`advise`); never a source unless named with `--from`."""
+    folders = [Path.home() / ".lv2", USR_LOCAL_LIB / "lv2", USR_LIB / "lv2", *multiarch_lv2_dirs()]
+    return [d for d in _distinct(folders) if d.is_dir()]
+
+
+def locate(uris: list[str] | set[str], folders: list[Path]) -> dict[str, Path]:
+    """`{uri: folder}` for each of `uris` a bundle in one of `folders`
+    declares, the first folder's where several do. Read from the bundles'
+    manifests, without lilv (`library.declared_plugins`)."""
+    from .library import declared_plugins
+
+    where: dict[str, Path] = {}
+    wanted = set(uris)
+    for folder in folders:
+        if not wanted - where.keys():
+            break
+        for uri in declared_plugins(folder).keys() & wanted:
+            where.setdefault(uri, folder)
+    return where
+
+
+def _from_flags(folders: list[Path]) -> str:
+    return " ".join(f"--from {folder}" for folder in folders)
+
+
+def advise(missing: list[str], searched: list[Path], build_into: str) -> tuple[dict[str, str], list[str]]:
+    """For URIs the rig needs and `searched` did not provide: what to say
+    beside each (`{uri: note}`), and the lines after the list that say what
+    would fix them. A URI in another standard LV2 folder (`~/.lv2`, the
+    multiarch folder when `--from` left it out) names the folder and the
+    `--from`s that would take it from there; one this repository builds
+    names its script, run with `build_into`; the amp says it is carried by
+    hand; anything else is not installed."""
+    searched_at = {folder.resolve() for folder in searched}
+    others = [d for d in standard_lv2_dirs() if d.resolve() not in searched_at]
+    elsewhere = locate(missing, others)
+    notes: dict[str, str] = {}
+    for uri in missing:
+        if uri in elsewhere:
+            notes[uri] = f"installed in {elsewhere[uri]}, which was not searched"
+        elif uri in BUILT:
+            notes[uri] = f"built here, not packaged: {BUILT[uri]} {build_into} builds it"
+        elif uri in AMP_PLUGIN_URIS.values():
+            notes[uri] = ("the neural amp, which no distribution packages: build it from "
+                          "mikeoliphant/neural-amp-modeler-lv2 and put its bundle in plugins/ by hand, "
+                          "or --waive it (docs/reference/plugins.md)")
+        else:
+            notes[uri] = "in no standard LV2 folder: install the package that provides it"
+    then = []
+    if any(uri not in elsewhere and uri not in BUILT and uri not in AMP_PLUGIN_URIS.values()
+           for uri in missing):
+        looked = _distinct([*searched, *others])
+        then.append(f"Looked in {', '.join(map(str, looked))}.")
+    extra = [d for d in others if d in set(elsewhere.values())]
+    if extra:
+        then.append(
+            f"To take {'it' if len(elsewhere) == 1 else 'them'} from {', '.join(map(str, extra))} as well, "
+            f"pass {_from_flags([*searched, *extra])} (every folder: --from replaces the defaults)."
+        )
+    return notes, then
 
 
 # --- effects: lilv and the filesystem ---------------------------------------
@@ -392,7 +554,8 @@ def assemble(
     """
     plan = decide(manifest, used, discover(from_dirs), waived)
     if not plan.ok:
-        raise PluginsError(describe_failure(plan, ", ".join(map(str, from_dirs))))
+        notes, then = advise(plan.missing, from_dirs, "DIR (then --from DIR)")
+        raise PluginsError(describe_failure(plan, ", ".join(map(str, from_dirs)), notes, then))
 
     staging = to.parent / f".{to.name}.assembling"
     previous = to.parent / f".{to.name}.previous"
@@ -461,7 +624,9 @@ def add(
     providers = {**found, **present}
     plan = decide(manifest, used, providers, waived)
     if not plan.ok:
-        raise PluginsError(describe_failure(plan, f"{plugins_dir} and {', '.join(map(str, from_dirs))}"))
+        notes, then = advise(plan.missing, from_dirs, str(plugins_dir))
+        raise PluginsError(describe_failure(plan, f"{plugins_dir} and {', '.join(map(str, from_dirs))}",
+                                            notes, then))
     # By where `decide` took each from, not by resolving its path: a bundle in
     # plugins/ may be a link to one elsewhere (the amp, say), and resolved it
     # would look like one to add, and clash with itself (review of PR #186).
@@ -541,3 +706,101 @@ def broken_files(plugins_dir: Path, binaries: dict[str, Path | None]) -> list[st
         elif not binary.is_file():
             problems.append(f"{uri}: its binary {binary} is not a file")
     return problems
+
+
+# --- before a start -----------------------------------------------------------
+
+
+def preflight(config: dict[str, Any], plugins_dir: Path, amp: bool = True) -> tuple[list[str], list[str]]:
+    """What a start of `config` would miss in `plugins_dir`, the only folder
+    on the rig's `LV2_PATH`: `(the URIs Sushi would load that no bundle there
+    declares, the amp's URI if it is missing and the amp will start)`.
+
+    Sushi given a chain it cannot build quits with "Failed to load tracks
+    from the Json config file" and nothing else, naming no plugin (the
+    synth-lead start on the owner's laptop, 2026-11-19); asked first, the
+    rig can name every one and say how to get it. The amp is kept apart
+    because Carla, not Sushi, loads it: without it the rig plays, dry, as it
+    does when Carla exits (`rig.startup_exit_problem`).
+
+    Read from the bundles' manifests, without lilv (`library.declared_plugins`),
+    so it costs a fraction of a second and runs where lilv is not
+    installed. What that finds missing is asked of lilv where lilv is
+    installed, and only what lilv cannot find either is missing: a manifest
+    the reader cannot parse must not stop a rig Sushi would load. It checks
+    that each URI is declared, not that its binary loads: that is `check`'s."""
+    import importlib.util
+
+    from .library import declared_plugins
+
+    chain = config_uris({key: value for key, value in config.items() if key != AMP_KEY})
+    amp_uris = config_uris(config) - chain if amp else set()
+    absent = (chain | amp_uris) - declared_plugins(plugins_dir).keys()
+    if absent and plugins_dir.is_dir() and importlib.util.find_spec("lilv") is not None:
+        absent -= plugins_on(str(plugins_dir)).keys()
+    return sorted(chain & absent), sorted(amp_uris & absent)
+
+
+def preflight_refusal(
+    name: str, missing: list[str], plugins_dir: Path, root: Path, *, switch_from: str | None = None,
+) -> str:
+    """Why rig `name` is not started, for `missing` (`preflight`'s first
+    list, not empty): each URI with where it is or how it is made, then the
+    commands that put them all in `plugins_dir`, in the order to run them.
+    The build scripts come before `plugins add`, which refuses, copying
+    nothing, while anything the rig needs is still missing. `switch_from`,
+    the rig playing, words it as a switch to `name` that was not made."""
+    sources = default_sources()
+    packaged = locate(missing, sources)
+    notes, _ = advise([uri for uri in missing if uri not in packaged], sources, str(plugins_dir))
+    heading = f"Not switched to {name}" if switch_from is not None else f"{name} was not started"
+    nothing = (f"Nothing was changed: {switch_from} plays on." if switch_from is not None
+               else "Nothing was started.")
+    again = "switch to it again" if switch_from is not None else "start the rig again"
+    lines = [
+        f"{heading}: {len(missing)} plugin(s) it loads are not in {plugins_dir}, "
+        "the only folder Sushi loads plugins from (LV2_PATH), so Sushi would quit at startup "
+        "saying only \"Failed to load tracks from the Json config file\":",
+    ]
+    for uri in missing:
+        if uri in packaged:
+            lines.append(f"  {uri}: installed in {packaged[uri]}, which `sushi-rig plugins add` copies from")
+        else:
+            lines.append(f"  {uri}: {notes[uri]}")
+    if not plugins_dir.is_dir():
+        lines.append(f"{plugins_dir} does not exist. Build it as docs/reference/plugins.md says "
+                     f"(`sushi-rig plugins assemble`, with the plugins built here), then {again}.")
+        return "\n".join(lines)
+    searched_at = {folder.resolve() for folder in sources}
+    others = [d for d in standard_lv2_dirs() if d.resolve() not in searched_at]
+    elsewhere = locate([uri for uri in missing if uri not in packaged], others)
+    fix = []
+    for script in dict.fromkeys(BUILT[uri] for uri in missing if uri in BUILT and uri not in packaged
+                                and uri not in elsewhere):
+        fix.append(f"{root / script} {plugins_dir}")
+    uninstalled = any(uri not in packaged and uri not in elsewhere and uri not in BUILT
+                      and uri not in AMP_PLUGIN_URIS.values() for uri in missing)
+    extra = [d for d in others if d in set(elsewhere.values())]
+    if extra:
+        fix.append(f"sushi-rig plugins add {_from_flags([*sources, *extra])}")
+    else:
+        fix.append("sushi-rig plugins add")
+    lines.append(
+        f"{nothing} To fix it, "
+        + ("install the package that provides each one in no standard LV2 folder, then " if uninstalled else "")
+        + ("run these, in order" if len(fix) > 1 else "run this") + f", then {again}:"
+    )
+    lines += [f"  {command}" for command in fix]
+    return "\n".join(lines)
+
+
+def preflight_amp_warning(missing: list[str], plugins_dir: Path) -> str:
+    """The warning for the amp's URI missing from `plugins_dir` (`preflight`'s
+    second list, not empty). A warning, not a refusal: a rig with no amp
+    still plays, which `up` has always preferred to no rig."""
+    return (
+        f"the amp's plugin ({', '.join(missing)}) is not in {plugins_dir}, so Carla cannot load it "
+        "and the rig will have NO AMP: the guitar runs dry. No distribution packages it: it is built "
+        "from mikeoliphant/neural-amp-modeler-lv2 and put in plugins/ by hand "
+        "(docs/reference/plugins.md). --no-amp starts the rig without one"
+    )

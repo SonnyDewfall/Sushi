@@ -148,6 +148,12 @@ itself: that is why the page always says **sound not measured**.
 
 - **A box starting "Not changed:", "Not moved:", "Not saved", "Not started:" or
   "Not switched to".** The agent refused. The reason follows, in the box.
+- **"Not started" or "Not switched to", saying plugins "are not in" a plugins
+  folder.** The rig loads a plugin the rig's own plugins folder does not
+  have yet, so it was not started (whatever was playing keeps playing). The
+  box names each one and says what to run, usually `sushi-rig plugins add`
+  in a terminal on the rig machine, or a script under `scripts/` for a
+  plugin no package has. Run it, then start or switch again.
 - **"busy", or a line saying something "is running".** The rig is in the middle
   of starting, stopping or switching. Wait for it to finish.
 - **The middle of the rack reads "The rig is changing".** The same: wait.

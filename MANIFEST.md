@@ -6240,3 +6240,60 @@ test `test_at_phone_width_the_header_is_as_tall_whatever_its_tiles_read`
 the header's height; it fails without the fix (294 against 334 px). Every
 `test_ui_*` file passed: 520, then the four with font cases again, 160.
 *(2026-11-19)*
+
+**`plugins add` missed Calf in the multiarch folder, and `up` said only that
+Sushi exited (#188).** On the owner's laptop (Ubuntu, XPS 9320, 2026-11-19)
+`sushi-rig up --rig synth-lead` printed "Sushi exited during startup", and
+`sushi.log` "Failed to load tracks from the Json config file". Ubuntu's
+`calf-plugins` there installs `calf.lv2` into `/usr/lib/x86_64-linux-gnu/lv2`;
+`plugins add` searched `/usr/lib/lv2` alone, so it found no Calf, and being
+all or nothing it copied none of the eight bundles the rig lacked, guitarix's
+and abGate's included. `--from /usr/lib/lv2 --from /usr/lib/x86_64-linux-gnu/lv2`
+fixed it there. Now: (1) **`add` and `assemble` search `/usr/lib/lv2`, then
+the multiarch folder `/usr/lib/<triplet>/lv2`, each where it exists**
+(`plugins.default_sources`; the triplet is `sysconfig`'s `MULTIARCH`, else a
+glob of `/usr/lib/*-linux-gnu/lv2`, this machine's architecture's first). In
+`LV2_PATH` order: of two bundles declaring one URI lilv takes the higher
+version and, between equal ones, the earlier folder (checked with lilv
+0.24.22: a duplicate URI warns and keeps the first), so the same bundle in
+both is copied once, from `/usr/lib/lv2`, and a split between two bundles of
+one name is refused naming both, as before, now saying to leave one folder
+out with `--from`. A multiarch folder that is a link to `/usr/lib/lv2` is
+searched once. `--from` still replaces them. `add`'s choice of what is new
+(by where `decide` took it from, #186) and its name-clash refusal see one
+bundle per name either way. (2) **A URI with no provider says where it is
+instead**: in another standard folder (`~/.lv2`, `/usr/local/lib/lv2`, the
+multiarch folder when `--from` left it out), with the `--from`s that would
+take it; built here, with its script (string-machine chorus, Rubber Band 4's
+Live shifter); or nowhere, to install it. (3) **`up` checks first**
+(`rig.check_plugins`, in `prepare_launch`, so the agent's start and
+`restart` check too): each plugin the chain loads must be declared by a
+bundle in `plugins/`, read from the manifests without lilv
+(`library.declared_plugins`, which agreed with lilv on all 693 URIs of this
+machine's 274-bundle `/usr/lib/lv2`, in 0.2 s against 4.5 s; what it
+finds missing is asked of lilv too where lilv is installed, so a manifest it
+cannot parse refuses nothing). Otherwise
+nothing starts, the message names each URI, where it is and the commands in
+order (the build scripts before `plugins add`, which copies nothing while
+anything is missing), and `up` exits 1. The amp is a warning, not a refusal:
+Carla loads it, and a rig with no amp plays. `up` already exited 1 after
+"Sushi exited during startup", directly (`RigError` to `sys.exit`) and
+through the agent (409, `lifecycle_result`'s 1); a test now pins it. (4) **A
+rig switch is refused the same way** (`409 plugins_missing`), after the
+compile and before anything is touched, live or by restart, for `POST
+/rig/switch` (the picker and the stage's dropdown, #184), a Program Change,
+and a revert or preset load; the page shows the reason as it does any
+refusal, so app.js is unchanged. The plugins folder is `rig.plugins_folder`
+for the check and `LV2_PATH` alike, and `Switching.plugins` for a switch.
+Tests supply one: a stand-in bundle declaring every URI the manifest and the
+frozen rigs name (`rig_fixtures.stand_in_plugins`), in `frozen_checkout`,
+`up_world` and the switch worlds, so the check runs for real everywhere and
+nothing skips it. New tests: the defaults and their order, the link, the
+glob; Calf only in a fake multiarch folder found by `add` with no `--from`;
+the same bundle in both; a split; each kind of "no provider" note; the
+preflight and its refusal; `up` refusing through the CLI, exit 1, nothing
+forked; the agent's `/rig/up` and `/rig/switch` refusals; the page's Start
+and the stage dropdown showing them. NOT tested: a real Ubuntu multiarch
+layout (this machine has no `/usr/lib/*-linux-gnu/lv2`), and Carla with
+the amp missing from `plugins/` (the warning says it cannot load it, which
+is inferred, not watched). *(2026-11-19)*

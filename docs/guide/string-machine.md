@@ -16,8 +16,23 @@ guess to turn from.
 
 To start one: on the rack, under **RIGS**, pick **string-machine** or
 **synth-lead** and click **Start** or **Switch to**. They need a plugin
-built, and five installed, on the rig machine first (see the reference's
-[Plugins](../reference/plugins.md#string-machine-chorus-built-for-the-string-machine)).
+built, and five installed, on the rig machine first, then copied into the
+rig's own plugins folder. Once, in a terminal on the rig machine:
+
+```bash
+sudo apt install git gcc g++ calf-plugins abgate guitarix-lv2
+cd ~/Sushi
+scripts/build-string-machine-chorus.sh ~/Sushi/plugins
+sushi-rig plugins add
+```
+
+The first line installs the plugins, the third builds the one no package has
+(the ensemble), and the last copies the installed ones into the rig's plugins
+folder, from wherever Ubuntu put them. The reference's
+[Plugins](../reference/plugins.md#string-machine-chorus-built-for-the-string-machine)
+has the whole of it, with the checks to run after. Until they are there, a
+start or a switch to either rig is refused: the box says which plugin is
+missing and what to run, and whatever was playing keeps playing.
 
 ## string-machine
 

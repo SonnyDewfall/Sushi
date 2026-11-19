@@ -119,6 +119,52 @@ class RigError(Exception):
     """Something the user needs to fix, reported without a traceback."""
 
 
+def plugins_folder(root: Path) -> Path:
+    """The rig's plugins: the one folder on its `LV2_PATH`
+    (docs/reference/plugins.md), checked before a start (`check_plugins`)
+    and handed to every child (`_supervise`, `supervisor._rig_env`)."""
+    return root / "plugins"
+
+
+def plugins_refusal(
+    config: dict[str, Any], root: Path, name: str, *, amp: bool, switch_from: str | None = None,
+    folder: Path | None = None,
+) -> tuple[str | None, str | None]:
+    """`(why rig `name` must not start, the amp warning)` for the compiled
+    `config`, each None when there is nothing to say: whether every plugin
+    Sushi would load is in `folder`, `plugins_folder(root)` unless given
+    (`plugins.preflight`).
+    Shared by `up`, the agent's start (both through `prepare_launch`) and
+    its rig switch (`switch_from`, the rig playing, words it as one), so all
+    three refuse in the same words."""
+    from .plugins import PluginsError, preflight, preflight_amp_warning, preflight_refusal
+
+    folder = folder if folder is not None else plugins_folder(root)
+    try:
+        missing, amp_missing = preflight(config, folder, amp=amp)
+    except PluginsError as exc:
+        said = f"Not switched to {name}" if switch_from is not None else f"{name} was not started"
+        return f"{said}: {exc}", None
+    refusal = preflight_refusal(name, missing, folder, root, switch_from=switch_from) if missing else None
+    return refusal, preflight_amp_warning(amp_missing, folder) if amp_missing else None
+
+
+def check_plugins(
+    config_path: Path, root: Path, name: str, *, amp: bool, warn: Callable[[str], None],
+) -> None:
+    """`plugins_refusal` for the config file `up` would start: `RigError`
+    for a refusal, `warn` for the amp."""
+    try:
+        config = json.loads(config_path.read_text())
+    except (OSError, ValueError) as exc:
+        raise RigError(f"{name} was not started: its config {config_path} cannot be read: {exc}") from exc
+    refusal, amp_warning = plugins_refusal(config if isinstance(config, dict) else {}, root, name, amp=amp)
+    if refusal:
+        raise RigError(refusal)
+    if amp_warning:
+        warn(amp_warning)
+
+
 # --- paths ------------------------------------------------------------------
 
 
@@ -953,7 +999,7 @@ def _supervise(launch: "Launch", *, ready_w: int) -> None:
     # exactly the bundles this rig uses, so a missing or renamed plugin fails
     # loudly instead of silently resolving against a system copy and hiding a
     # portability break.
-    env["LV2_PATH"] = str(root / "plugins")
+    env["LV2_PATH"] = str(plugins_folder(root))
 
     def report(message: str) -> None:
         os.write(ready_w, (message + "\n").encode())
@@ -1251,6 +1297,10 @@ def prepare_launch(
         rig_machine = prepared_rig["machine"]
         for warning in prepared_rig["warnings"]:
             warn(warning)
+
+    # Before anything is started, and before the amp is prepared: a chain
+    # whose plugins are not all in plugins/ is one Sushi cannot build.
+    check_plugins(config, root, config_name, amp=amp, warn=warn)
 
     rig_yaml = resolve_rig_yaml(config, root)
     if not headless:

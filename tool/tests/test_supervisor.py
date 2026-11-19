@@ -299,6 +299,57 @@ def test_a_second_up_is_refused_by_the_state_file_the_agent_wrote(world, monkeyp
     assert not second.ok and "a rig is already running" in second.reason
 
 
+def test_an_up_through_the_agent_whose_plugins_are_not_all_in_plugins_is_refused_in_ups_words(
+        world, monkeypatch, tmp_path):
+    """#188, through the agent's own route with the real supervisor and the
+    real `prepare_launch`: the page's Start and `sushi-rig up` with an agent
+    running both come this way. Refused before anything starts (409), the
+    reason the one `up --direct` prints, and the CLI exits 1 with it."""
+    pytest.importorskip("aiohttp")
+    import json
+
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from rig_fixtures import declaring, fake_lv2_system
+    from sushi_rig import agent_client
+    from sushi_rig.agent import Agent
+
+    calf = "http://calf.sourceforge.net/plugins/EnvelopeFilter"
+    gate = "http://hippie.lt/lv2/gate"
+    (world.root / "config" / "t.json").write_text(json.dumps(
+        {"tracks": [{"name": "lead", "plugins": [{"name": "gate", "uri": gate}, {"name": "filter", "uri": calf}]}]}))
+    declaring(world.root / "plugins", "abGate", gate)
+    multiarch = fake_lv2_system(tmp_path, monkeypatch)
+    declaring(multiarch, "calf", calf)
+    world.world = dataclasses.replace(world.world, prepare=rig.prepare_launch)
+    monkeypatch.setattr(rig, "checkout_root", lambda: world.root)
+    agent = Agent(supervisor=Supervisor(world.world, say=lambda m: None))
+
+    async def go():
+        async with TestClient(TestServer(agent.app())) as client:
+            up = await client.post("/rig/up", json={"config_name": "t", "headless": True, "tuner": False,
+                                                    "amp": False})
+            answer = up.status, await up.json()
+            agent._executor.shutdown(wait=True)
+            return answer
+
+    status, body = run(go())
+    assert status == 409 and body["ok"] is False, body
+    plugins = world.root / "plugins"
+    assert body["reason"].splitlines() == [
+        f"t was not started: 1 plugin(s) it loads are not in {plugins}, the only folder Sushi loads plugins "
+        "from (LV2_PATH), so Sushi would quit at startup saying only \"Failed to load tracks from the Json "
+        "config file\":",
+        f"  {calf}: installed in {multiarch}, which `sushi-rig plugins add` copies from",
+        "Nothing was started. To fix it, run this, then start the rig again:",
+        "  sushi-rig plugins add",
+    ]
+    assert world.spawner.asked == [], "nothing was started, not even the holder"
+    assert state_file.read_state() is None
+    code, _, said = agent_client.lifecycle_result(status, body)
+    assert code == 1 and calf in said
+
+
 # --------------------------------------------------------------------------- #
 # A crash is noticed and said, and nothing is restarted
 # --------------------------------------------------------------------------- #

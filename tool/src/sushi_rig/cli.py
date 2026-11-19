@@ -78,12 +78,21 @@ def _amp_parameters(pairs: list[str]) -> dict[str, float]:
     return values
 
 
+_FROM_HELP = (
+    "LV2 directory to take bundles from. Repeatable; searched in order, as an LV2_PATH is: "
+    "of two bundles declaring one URI, lilv takes the higher version, and the earlier "
+    "directory between equal ones. Replaces the defaults, so name every directory to search "
+    "[default: /usr/lib/lv2, then the multiarch /usr/lib/<triplet>/lv2 (Debian, Ubuntu), "
+    "each where it exists]"
+)
+
+
 def _plugins(args: argparse.Namespace) -> int:
     """`plugins assemble`, `add` and `check`, which share how they find what the
     rig requires and differ only in what they do with it."""
     from .paths import checkout_root
     from .plugins import (
-        SYSTEM_LV2_DIR, PluginsError, add, assemble, check, config_uris, read_manifest,
+        PluginsError, add, assemble, check, config_uris, default_sources, read_manifest,
     )
     from .verify import configs_to_check
 
@@ -107,13 +116,13 @@ def _plugins(args: argparse.Namespace) -> int:
         if args.plugins_command == "assemble":
             to = args.to or root / "plugins"
             plan = assemble(
-                manifest, used, args.from_dirs or [SYSTEM_LV2_DIR], to, waived,
+                manifest, used, args.from_dirs or default_sources(), to, waived,
                 args.replace,
             )
             print(f"copied {len(plan.bundles)} bundle(s) into {to}")
         elif args.plugins_command == "add":
             plugins_dir = args.plugins_dir or root / "plugins"
-            plan = add(manifest, used, args.from_dirs or [SYSTEM_LV2_DIR], plugins_dir, waived)
+            plan = add(manifest, used, args.from_dirs or default_sources(), plugins_dir, waived)
             names = ", ".join(b.name for b in plan.bundles) or "nothing: it had everything"
             print(f"added to {plugins_dir}: {names}")
         else:
@@ -1169,8 +1178,7 @@ def _main(argv: list[str] | None = None) -> int:
     )
     q.add_argument(
         "--from", dest="from_dirs", type=Path, action="append", metavar="DIR",
-        help="LV2 directory to take bundles from. Repeatable, earlier wins "
-        "[default: /usr/lib/lv2]",
+        help=_FROM_HELP,
     )
     q.add_argument(
         "--to", type=Path,
@@ -1189,8 +1197,7 @@ def _main(argv: list[str] | None = None) -> int:
     )
     q.add_argument(
         "--from", dest="from_dirs", type=Path, action="append", metavar="DIR",
-        help="LV2 directory to take bundles from. Repeatable, earlier wins "
-        "[default: /usr/lib/lv2]",
+        help=_FROM_HELP,
     )
     q.add_argument(
         "plugins_dir", type=Path, nargs="?",

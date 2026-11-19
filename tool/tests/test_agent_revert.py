@@ -31,6 +31,8 @@ from sushi_rig import midi_listener, rigfile, saves  # noqa: E402
 from sushi_rig.agent import Agent, AgentError, Switching, revert_refusal, revert_request  # noqa: E402
 from sushi_rig.rig import compile_named_rig  # noqa: E402
 
+from rig_fixtures import whole_plugins  # noqa: E402
+
 from test_agent import FakeRunner, RigLive  # noqa: E402
 from ui_fake import MACHINE_FILE, RIG_FILE  # noqa: E402
 
@@ -90,7 +92,7 @@ class World:
     def switching(self):
         return Switching(read_state=lambda: copy.deepcopy(self.state), write_state=self.write_state,
                          read_config=lambda path: copy.deepcopy(self.configs[path]),
-                         write_config=self.write_config)
+                         write_config=self.write_config, plugins=whole_plugins)
 
 
 @pytest.fixture

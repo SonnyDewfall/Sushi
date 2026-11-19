@@ -493,7 +493,7 @@ from . import rigfile  # the live switch (#93)
 from .rigfile import (  # the limiter, the top and the centred pan (#137)
     limiter_problem, master_gain, master_gain_problem, master_pan_problem,
 )
-from .rig import RigError, compile_named_rig
+from .rig import RigError, compile_named_rig, plugins_folder, plugins_refusal
 from .state import read_state, write_state
 from .verify import diff_state
 from .recorder_process import (  # recording from the web UI (S7)
@@ -4104,6 +4104,20 @@ class Agent:
             self._remember(["switch", name], reason, kind="lifecycle")
             raise SwitchRefused(reason, "rig_problem") from exc
         previous = switching_from(state, described)
+        # Every plugin the next rig loads must be in plugins/, live or by
+        # restart: a live switch would fail at the first it lacks, and a
+        # restart would take the rig down for an `up` that refuses it. Asked
+        # here, before anything is touched, in the words `up` uses. The amp
+        # is the restart's `up` to warn of, as it is for any start.
+        root = self._midi_root()
+        refusal, _ = await asyncio.to_thread(
+            plugins_refusal, upcoming, root, name, amp=False, switch_from=previous or "the rig",
+            folder=world.plugins(root))
+        if refusal:
+            # One line: an HTTP reason cannot carry a newline.
+            reason = " ".join(refusal.split())
+            self._remember(["switch", name], reason, kind="lifecycle")
+            raise SwitchRefused(reason, "plugins_missing")
         try:
             running = await asyncio.to_thread(world.read_config, described.get("config"))
             # As the live attempt will see the amp: none at all for a run
@@ -6765,8 +6779,8 @@ def _absolute_machine(machine: Any) -> str | None:
 
 class SwitchRefused(AgentError):
     """A switch not made, with the running rig left as it was: answered 409
-    with `code` (`no_rig`, `rig_problem`) by the route, and said in /health
-    by the Program Change path."""
+    with `code` (`no_rig`, `rig_problem`, `plugins_missing`) by the route,
+    and said in /health by the Program Change path."""
 
     def __init__(self, reason: str, code: str):
         super().__init__(reason)
@@ -6911,7 +6925,9 @@ class Switching:
     """What a switch reaches outside the agent and Sushi, so its tests can
     stand each in: compiling the next rig (`RigError` with the reason),
     reading the running rig's compiled config by the path the state file
-    gives, writing the next one's where `up` would, and the state file. The
+    gives, writing the next one's where `up` would, the state file, and
+    where the rig's plugins are, which the next rig's must all be in
+    (`rig.plugins_refusal`): the folder `up` gives Sushi, under the root. The
     one seam for the state file and for compiling a rig to switch to, for the
     route and the Program Change alike: `midi_listener.World` no longer has
     its own (found by review: a test's `World(read_state=...)` had stopped
@@ -6923,6 +6939,7 @@ class Switching:
     write_config: Callable[[str, dict[str, Any]], Any] = _write_compiled
     read_state: Callable[[], "dict[str, Any] | None"] = read_state
     write_state: Callable[[dict[str, Any]], None] = write_state
+    plugins: Callable[[Path], Path] = plugins_folder
 
 # =========================================================================== #
 # Saving the running rig (S4): the decisions, pure
