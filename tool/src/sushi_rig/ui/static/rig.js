@@ -2850,9 +2850,11 @@ export function helpLink(which, screen) {
 // A screensaver on the laptop: after a while with no pointer, touch or key
 // on the page, a MilkDrop visualisation (butterchurn, vendored) fills the
 // window and moves with the guitar. The browser hears the guitar itself,
-// through PipeWire's PulseAudio server (getUserMedia), so nothing new is in
-// Sushi's path. screensaver.js is the DOM, visualiser.js the drawing; these
-// are its decisions.
+// through PipeWire's PulseAudio server (getUserMedia): nothing is added to
+// the signal's path, though the server's capture stream does a little work
+// in Sushi's cycle (visualiser.js says what that risks, and what watches
+// it). screensaver.js is the DOM, visualiser.js the drawing; these are its
+// decisions.
 
 export const VISUALISER = {
   idleDefault: 10,     // seconds without input before it starts
@@ -2908,6 +2910,7 @@ export function softwareRenderer(name) {
 export function visualiserGate(s) {
   const no = (why) => ({ ok: false, why });
   if (!s.on) return no("Off.");
+  if (s.stopped) return no(s.stopped);
   if (s.reducedMotion) return no("Off while the system asks for reduced motion.");
   if (!s.secure || !s.media)
     return no("Only on the rig's own laptop, at http://localhost: a browser elsewhere cannot hear the rig.");
@@ -2919,6 +2922,21 @@ export function visualiserGate(s) {
   if (!(s.width >= VISUALISER.minWidth)) return no(`Only in a window at least ${VISUALISER.minWidth} px wide.`);
   if (!s.running) return no("Starts only while a rig is running.");
   return { ok: true, why: null };
+}
+
+// Whether the rig's xruns rose while the visualiser listened: `base` is the
+// page's count when the capture was opened, `seen` the latest, each
+// `{count, run}` (app.js's, from pw-top; `run` is the rig run they count
+// for). The reason to stop, in words for the line; "rebase" when `base`
+// cannot be compared (none yet, or another run); null when nothing rose.
+// Any rise counts, whatever its cause: the capture stream is in Sushi's
+// cycle, and a glitch while it is there is not worth a second.
+export function visualiserTripped(base, seen) {
+  if (!seen || typeof seen.count !== "number") return null;
+  if (!base || typeof base.count !== "number" || base.run !== seen.run) return "rebase";
+  if (seen.count <= base.count) return null;
+  return `Stopped: the rig glitched while the visualiser was listening (xruns went from ${base.count} to ${seen.count}). `
+    + "It stays off until this page is reloaded or the Visualiser box is ticked again.";
 }
 
 // Whether `idle` seconds have passed since the last input at `last` (ms).

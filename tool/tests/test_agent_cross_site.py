@@ -215,8 +215,8 @@ GETS = {
 READS = ["/health", "/rigs", "/doctor", "/live/log", "/takes", "/presets", "/rig", "/", "/ui/app.js",
          "/help/", "/help/recording", "/help/img/rack.png",
          # The visualiser's files (#176): the static route's, as app.js is.
-         "/ui/screensaver.js", "/ui/visualiser.js", "/ui/vendor/butterchurn-2.6.7/butterchurn.min.js",
-         "/machine/roles"]
+         "/ui/screensaver.js", "/ui/visualiser.js", "/ui/visualiser-presets.js",
+         "/ui/vendor/butterchurn-2.6.7/butterchurn.min.js", "/machine/roles"]
 
 
 @pytest.mark.parametrize("kind", GETS, ids=GETS.keys())
@@ -236,10 +236,13 @@ def test_a_rebound_page_can_read_nothing(path, kind):
 def test_the_agents_own_page_loads_and_reads_by_any_name_it_answers_to(name, kind):
     served, _ = agent()
     for path in ("/", "/ui/app.js", "/health", "/rig", "/help/", "/help/recording",
-                 "/ui/screensaver.js", "/ui/visualiser.js", "/ui/vendor/butterchurn-2.6.7/butterchurn.min.js"):
+                 "/ui/screensaver.js", "/ui/visualiser.js", "/ui/visualiser-presets.js",
+                 "/ui/vendor/butterchurn-2.6.7/butterchurn.min.js", "/machine/roles"):
         headers = {k: v.replace("{name}", name) for k, v in GETS[kind].items()}
         status, _ = send_raw(served, "GET", path, {"Host": f"{name}:{{port}}", **headers})
-        assert status == 200, (path, status)
+        # /machine/roles answers 409 here, past the guard: this agent has no
+        # machine file to read (the visualiser then uses the browser's input).
+        assert status == (409 if path == "/machine/roles" else 200), (path, status)
 
 
 def test_curl_and_the_cli_by_a_name_the_agent_answers_to_and_no_other():

@@ -668,6 +668,10 @@ class Environment:
     take_stems: int = 2
     take_rig: str = ""
     models: tuple["ModelInfo", ...] = ()
+    # pipewire-pulse's threads, by pid: each `(name, policy, rt_priority)` as
+    # /proc/<pid>/task/*/stat gives them. `{}` when none is running, None when
+    # that could not be looked for.
+    pulse_threads: dict[int, tuple[tuple[str, int, int], ...]] | None = None
 
 
 class ModelInfo(NamedTuple):
@@ -854,6 +858,44 @@ def check_models(environment: Environment, expected: int = EXPECTED_RATE) -> Che
     return Check("amp-models", OK, f"{len(models)} model(s), all trained at {expected} Hz")
 
 
+# The scheduling policies /proc reports that are realtime: SCHED_FIFO, SCHED_RR.
+REALTIME_POLICIES = {1: "SCHED_FIFO", 2: "SCHED_RR"}
+
+
+def check_pulse_realtime(environment: Environment) -> Check:
+    """Whether PipeWire's PulseAudio server runs a thread at realtime priority.
+
+    For the web page's visualiser (#176), and nothing else in the rig: the
+    browser hears the guitar through pipewire-pulse, whose capture stream is
+    a node in the graph Sushi's driver runs, doing a small copy each cycle in
+    pipewire-pulse's data thread. Without realtime priority that thread can be
+    late, and so can the cycle. Never a fault, since the rig does not need it:
+    `ok` either way, with what to do when it is not realtime."""
+    threads = environment.pulse_threads
+    if threads is None:
+        return Check("pulse-realtime", UNCHECKED,
+                     "could not look for pipewire-pulse (pgrep or /proc could not be read)",
+                     "check by hand: ps -L -o tid,cls,rtprio,comm -p \"$(pgrep -x pipewire-pulse)\"")
+    if not threads:
+        return Check("pulse-realtime", UNCHECKED,
+                     "pipewire-pulse is not running, so no browser can hear an input: the visualiser cannot "
+                     "start (nothing else in the rig uses it)")
+    realtime = [(pid, name, REALTIME_POLICIES[policy], prio)
+                for pid, found in sorted(threads.items()) for name, policy, prio in found if policy in REALTIME_POLICIES]
+    if realtime:
+        shown = ", ".join(f"{name} ({policy} {prio})" for _, name, policy, prio in realtime)
+        return Check("pulse-realtime", OK, f"pipewire-pulse runs realtime: {shown}")
+    return Check(
+        "pulse-realtime", OK,
+        "pipewire-pulse runs no thread at realtime priority. Nothing in the rig needs it, but the web "
+        "page's visualiser hears the guitar through it, inside Sushi's cycle, where a late thread can "
+        "make the cycle late",
+        "turn the visualiser off on the page while playing, or give PipeWire realtime priority (on "
+        "Ubuntu it gets it through rtkit: sudo apt install rtkit), then, with the rig down, "
+        "systemctl --user restart pipewire pipewire-pulse",
+    )
+
+
 def environment_checks(environment: Environment) -> list[Check]:
     return [
         check_pw_jack(environment),
@@ -862,6 +904,7 @@ def environment_checks(environment: Environment) -> list[Check]:
         check_fuse(environment),
         check_disk(environment),
         check_models(environment),
+        check_pulse_realtime(environment),
     ]
 
 
@@ -889,6 +932,32 @@ def _jackd_pids() -> tuple[int, ...] | None:
     return tuple(
         int(line) for line in result.stdout.split() if line.strip().isdigit()
     )
+
+
+def _pulse_threads() -> dict[int, tuple[tuple[str, int, int], ...]] | None:
+    """pipewire-pulse's threads, by pid, as `(name, policy, rt_priority)`:
+    fields 2, 41 and 40 of each /proc/<pid>/task/<tid>/stat. `pgrep -x`, for
+    the reason `_jackd_pids` gives. None when pgrep could not be run."""
+    try:
+        result = subprocess.run(["pgrep", "-x", "pipewire-pulse"], capture_output=True, text=True,
+                                check=False, timeout=5.0)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    found: dict[int, tuple[tuple[str, int, int], ...]] = {}
+    for pid in (int(line) for line in result.stdout.split() if line.strip().isdigit()):
+        threads = []
+        for stat in sorted(Path(f"/proc/{pid}/task").glob("*/stat"), key=lambda p: (len(p.parent.name), p.parent.name)):
+            try:
+                text = stat.read_text()
+            except OSError:
+                continue
+            name = text[text.find("(") + 1:text.rfind(")")]
+            fields = text[text.rfind(")") + 2:].split()
+            # After the name, field 3 is first: policy is field 41, rt_priority 40.
+            if len(fields) > 38:
+                threads.append((name, int(fields[38]), int(fields[37])))
+        found[pid] = tuple(threads)
+    return found
 
 
 def _is_appimage(path: Path) -> bool | None:
@@ -1025,6 +1094,7 @@ def gather_environment(root: Path) -> Environment:
         take_stems=stems,
         take_rig=rig,
         models=_models(root),
+        pulse_threads=_pulse_threads(),
     )
 
 

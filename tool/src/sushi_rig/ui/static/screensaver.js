@@ -6,9 +6,10 @@
 // kept in this browser.
 //
 // Loaded beside app.js and apart from it: app.js only tells it, after each
-// poll, whether a rig is running (the "sushi-rig:health" event). The
-// drawing (visualiser.js and butterchurn) is loaded the first time it
-// starts. The decisions are rig.js's.
+// poll, whether a rig is running (the "sushi-rig:health" event), and after
+// each pw-top sample how many xruns the rig has had (the "sushi-rig:xruns"
+// event). The drawing (visualiser.js and butterchurn) is loaded the first
+// time it starts. The decisions are rig.js's.
 
 import * as R from "./rig.js";
 
@@ -19,8 +20,11 @@ const CHECK_MS = 500;
 // given anything until no button or key is held and this long has passed
 // with no press: the press's own release and click land on the visualiser.
 const QUIET_MS = 350;
-// The fade in. None at all under reduced motion, which never shows it.
-const FADE_MS = 600;
+// And never longer than this after it went, whatever is held: a key whose
+// release went to another window (Alt+Tab, Ctrl+T, Super) is never seen to
+// come up, and the invisible visualiser would otherwise take every click
+// until a reload (found in review).
+const CLOSING_MAX_MS = 1500;
 
 function readSettings() {
   try { return R.visualiserSettings(localStorage.getItem(KEY)); } catch { return R.visualiserSettings(null); }
@@ -39,6 +43,7 @@ const state = {
   phase: "off",            // off | starting | shown | closing
   held: new Set(),         // buttons and keys down while it is shown or closing
   quietTimer: null,
+  closingSince: null,      // when it last went, for CLOSING_MAX_MS
   probe: null,             // {webgl, renderer}, once asked
   permission: null,        // the microphone's permission state, once asked
   roles: null,             // GET /machine/roles's roles, once answered
@@ -48,6 +53,13 @@ const state = {
   pick: null,
   error: null,
   generation: 0,           // a start is abandoned when this moves on
+  due: 0,                  // how often the timer found the page left long enough: for the tests
+  attempts: 0,             // how often the gate was asked because it was due: for the tests
+  xruns: null,             // the last sample's {count, run}, from app.js
+  base: null,              // that, when the capture was opened: {count, run}
+  tripped: null,           // why it stopped itself, until reloaded or switched on again
+  broken: null,            // why it cannot be made here, the same
+  lost: 0,                 // WebGL contexts the browser took away
 };
 
 // ---------------------------------------------------------------- what the page is
@@ -83,8 +95,8 @@ async function permission() {
 async function gate(full) {
   const p = full ? probe() : state.probe || {};
   return R.visualiserGate({
-    on: state.settings.on, reducedMotion: reduced.matches, running: state.running,
-    width: window.innerWidth, secure: window.isSecureContext,
+    on: state.settings.on, stopped: state.tripped || state.broken, reducedMotion: reduced.matches,
+    running: state.running, width: window.innerWidth, secure: window.isSecureContext,
     media: !!(navigator.mediaDevices && navigator.mediaDevices.getUserMedia),
     webgl: p.webgl, renderer: p.renderer,
     permission: full ? await permission() : state.permission,
@@ -108,20 +120,54 @@ const overlay = document.createElement("div");
 overlay.className = "visualiser";
 overlay.hidden = true;
 overlay.setAttribute("aria-hidden", "true");
-const canvas = document.createElement("canvas");
+let canvas = document.createElement("canvas");
 const hint = document.createElement("p");
 hint.className = "visualiser-hint";
 hint.textContent = "Touch, move or press a key to come back";
 overlay.append(canvas, hint);
 
+// The browser took the drawing away (WebGL context lost): the session has
+// disposed of itself. The next start makes another on a fresh canvas; a
+// second loss in the page's life leaves it off until a reload.
+function lostContext() {
+  state.session = null;
+  state.lost += 1;
+  const fresh = document.createElement("canvas");
+  canvas.replaceWith(fresh);
+  canvas = fresh;
+  if (state.lost >= 2) {
+    state.broken = "Off: the browser took the visualiser's graphics away twice (WebGL context lost). Reload the page to try again.";
+  } else {
+    state.error = "The browser took the visualiser's graphics away (WebGL context lost): it starts afresh next time.";
+  }
+  close(true);
+  refreshWhy();
+}
+
+// Hear the input and draw, for start and for a tab shown again. False if
+// the visualiser went meanwhile (the stream is let go then).
+async function listenAndRun(V, generation) {
+  const opened = await V.listen(state.settings, await guitar());
+  if (generation !== state.generation || !state.session) {
+    for (const t of opened.stream.getTracks()) t.stop();
+    return false;
+  }
+  state.pick = opened.pick;
+  state.permission = "granted";
+  state.session.attach(opened);
+  state.base = state.xruns;
+  await state.session.run();
+  return generation === state.generation;
+}
+
 async function start(now = false) {
   if (state.phase !== "off") return;
   const g = await gate(true);
   state.why = g.why;
-  if (!g.ok || state.phase !== "off" || (!now && !R.idleDue(state.last, performance.now(), state.settings.idle))) {
-    drawSettings();
-    return;
-  }
+  if (state.phase !== "off") return;
+  if (!now && !R.idleDue(state.last, performance.now(), state.settings.idle)) { drawSettings(); return; }
+  state.attempts += 1;
+  if (!g.ok) { drawSettings(); return; }
   const generation = ++state.generation;
   state.phase = "starting";
   state.error = null;
@@ -134,41 +180,37 @@ async function start(now = false) {
     const V = await import("./visualiser.js");
     state.loaded = true;
     if (generation !== state.generation) return;
-    if (!state.session) state.session = await V.create(canvas);
+    if (!state.session) state.session = await V.create(canvas, lostContext);
     if (generation !== state.generation) return;
-    const opened = await V.listen(state.settings, await guitar());
-    if (generation !== state.generation) {
-      for (const t of opened.stream.getTracks()) t.stop();
-      return;
-    }
-    state.pick = opened.pick;
-    state.permission = "granted";
-    state.session.attach(opened);
     state.session.resize(window.innerWidth, window.innerHeight);
     state.phase = "shown";
-    if (!document.hidden) await state.session.run();
-    requestAnimationFrame(() => overlay.classList.add("in"));
+    if (!document.hidden && !(await listenAndRun(V, generation))) return;
+    requestAnimationFrame(() => { if (generation === state.generation) overlay.classList.add("in"); });
   } catch (error) {
     // Said on the line, and not tried again until the page has been left
     // for another idle spell: a refused permission is not asked for every
-    // half second.
+    // half second. One that cannot be made here at all is not tried again
+    // until a reload or the box is ticked again.
     state.error = `The visualiser could not start: ${error && error.name ? `${error.name}: ` : ""}${error && error.message || error}`;
     if (error && error.name === "NotAllowedError") state.permission = "denied";
+    if (error && error.hard) { state.broken = `Off: ${error.message}. Reload the page, or tick the box again, to try again.`; state.error = null; }
     state.last = performance.now();
     await close(true);
+    refreshWhy();
   }
   drawSettings();
 }
 
-// Put the page back. `at_once`: no press to wait out.
+// Put the page back. `atOnce`: no press to wait out.
 async function close(atOnce = false) {
   state.generation += 1;
   if (state.phase === "off") return;
+  if (state.phase !== "closing") state.closingSince = performance.now();
   state.phase = "closing";
   overlay.classList.remove("in", "showing");
   overlay.classList.add("closing");
-  if (state.session) await state.session.stop();
   if (atOnce) finish(); else quiet();
+  if (state.session) await state.session.stop();
 }
 
 function finish() {
@@ -179,6 +221,7 @@ function finish() {
   overlay.classList.remove("closing");
   state.phase = "off";
   state.held.clear();
+  state.closingSince = null;
   catchAll(false);
   drawSettings();
 }
@@ -186,14 +229,15 @@ function finish() {
 function quiet() {
   clearTimeout(state.quietTimer);
   state.quietTimer = setTimeout(() => {
-    if (state.held.size === 0) finish(); else quiet();
+    const ceiling = state.closingSince != null && performance.now() - state.closingSince >= CLOSING_MAX_MS - QUIET_MS;
+    if (state.held.size === 0 || ceiling) finish(); else quiet();
   }, QUIET_MS);
 }
 
 // ---------------------------------------------------------------- input
 
 const PRESSES = ["pointerdown", "mousedown", "touchstart", "keydown"];
-const RELEASES = ["pointerup", "pointercancel", "mouseup", "touchend", "touchcancel", "keyup"];
+const RELEASES = ["pointerup", "pointercancel", "mouseup", "touchend", "touchcancel", "keyup", "lostpointercapture"];
 const AFTER = ["click", "dblclick", "auxclick", "contextmenu", "keypress", "wheel", "pointermove", "mousemove", "touchmove"];
 const ACTIVITY = ["pointerdown", "pointermove", "keydown", "wheel", "touchstart"];
 
@@ -257,13 +301,32 @@ function catchAll(on) {
   }
 }
 
+// Whatever was held, its release will not come here: the window lost the
+// keyboard and pointer, or the tab went.
+function letGo() {
+  state.held.clear();
+  if (state.phase === "closing") quiet();
+}
+window.addEventListener("blur", letGo);
+
 setInterval(() => {
-  if (state.phase === "off" && !document.hidden && R.idleDue(state.last, performance.now(), state.settings.idle)) start();
+  if (state.phase === "off" && !document.hidden && R.idleDue(state.last, performance.now(), state.settings.idle)) {
+    state.due += 1;
+    start();
+  }
 }, CHECK_MS);
 
+// A hidden tab draws nothing and hears nothing: the capture is let go, and
+// opened again when the tab is shown.
 document.addEventListener("visibilitychange", () => {
+  if (document.hidden) letGo();
   if (!state.session || state.phase !== "shown") return;
-  if (document.hidden) state.session.pause(); else state.session.run();
+  if (document.hidden) { state.session.stop(); return; }
+  const generation = state.generation;
+  import("./visualiser.js").then((V) => listenAndRun(V, generation)).catch((error) => {
+    state.error = `The visualiser could not hear the input again: ${error && error.message || error}`;
+    close(true);
+  });
 });
 
 window.addEventListener("resize", () => {
@@ -279,6 +342,23 @@ document.addEventListener("sushi-rig:health", (event) => {
   if (running !== state.running) {
     state.running = running;
     if (!running) close(true);
+    refreshWhy();
+  }
+});
+
+// The rig's xruns, after each pw-top sample. If they rise while the capture
+// is open, the capture and the visualiser stop and stay stopped: the
+// capture stream is a node in Sushi's cycle (visualiser.js says how), so a
+// glitch while it listens is taken as its doing, whether or not it was.
+document.addEventListener("sushi-rig:xruns", (event) => {
+  const seen = event.detail && typeof event.detail.count === "number" ? { count: event.detail.count, run: event.detail.run } : null;
+  state.xruns = seen;
+  if (!seen || !(state.phase === "shown" || state.phase === "starting") || !state.session || !state.session.stats().listening) return;
+  const why = R.visualiserTripped(state.base, seen);
+  if (why === "rebase") { state.base = seen; return; }
+  if (why) {
+    state.tripped = why;
+    close(true);
     refreshWhy();
   }
 });
@@ -357,7 +437,12 @@ function changed(update) {
   refreshWhy();
 }
 
-onBox.addEventListener("change", () => { changed({ on: onBox.checked }); if (!onBox.checked) close(true); });
+onBox.addEventListener("change", () => {
+  // Ticked again: what stopped it is forgiven, as a reload would.
+  if (onBox.checked) { state.tripped = null; state.broken = null; state.lost = 0; }
+  changed({ on: onBox.checked });
+  if (!onBox.checked) close(true);
+});
 idleBox.addEventListener("change", () => {
   const idle = R.visualiserIdle(idleBox.value);
   if (idle != null) changed({ idle }); else drawSettings();
@@ -379,5 +464,6 @@ refreshWhy();
 window.sushiRigVisualiser = () => ({
   phase: state.phase, why: state.why, error: state.error, loaded: state.loaded, running: state.running,
   idle: state.settings.idle, on: state.settings.on, pick: state.pick, held: [...state.held],
+  due: state.due, attempts: state.attempts, tripped: state.tripped, broken: state.broken, lost: state.lost,
   session: state.session ? state.session.stats() : null,
 });

@@ -22,9 +22,10 @@ What the bundle carries
   the bundle defines Math.clamp, Math.scale, Math.fscale, Math.radians,
   Math.degrees, Math.DEG_PER_RAD and Math.RAD_PER_DEG, and the globals
   sqr, sqrt, sign, rand, randint, bnot, pow, div, mod, bitor, bitand,
-  sigmoid, bor, band, equal, above, below, ifcond and memcpy on window,
-  for MilkDrop's preset equations. None of the page's own code uses those
-  names, and the bundle is loaded only when the visualiser first starts.
+  sigmoid, bor, band, equal, above, below, ifcond, memcpy and log10 on
+  window, for MilkDrop's preset equations. None of the page's own code
+  uses those names, and the bundle is loaded only when the visualiser
+  first starts.
   It fetches nothing: there is no URL in it.
 
 What is not here

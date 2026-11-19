@@ -172,6 +172,23 @@ def test_the_gate_says_why_in_the_order_the_player_can_do_least_about(blank):
     assert out["unasked"] is True, "what has not been asked yet does not stop it"
 
 
+def test_what_stopped_it_is_said_before_anything_but_off(blank):
+    out = rigjs(blank, """const ok = {on: true, secure: true, media: true, width: 1280, running: true};
+      return [R.visualiserGate({...ok, stopped: 'Stopped: glitched.', running: false}).why,
+              R.visualiserGate({...ok, on: false, stopped: 'Stopped: glitched.'}).why];""")
+    assert out == ["Stopped: glitched.", "Off."]
+
+
+def test_a_rise_in_xruns_while_it_listens_is_a_reason_to_stop(blank):
+    out = rigjs(blank, """const t = R.visualiserTripped;
+      return [t({count: 2, run: 'a'}, {count: 2, run: 'a'}), t({count: 2, run: 'a'}, {count: 3, run: 'a'}),
+              t(null, {count: 3, run: 'a'}), t({count: 9, run: 'a'}, {count: 0, run: 'b'}), t({count: 1, run: 'a'}, null),
+              t({count: 1, run: 'a'}, {count: null, run: 'a'})];""")
+    assert out[0] is None and out[4] is None and out[5] is None
+    assert out[1].startswith("Stopped: the rig glitched") and "from 2 to 3" in out[1] and "ticked again" in out[1]
+    assert out[2] == out[3] == "rebase", "none yet, or another run: the count is taken again, not compared"
+
+
 def test_idle_and_frames_are_timed_as_said(blank):
     out = rigjs(blank, """return [R.idleDue(0, 9999, 10), R.idleDue(0, 10000, 10), R.idleDue(5000, 7999, 3),
       R.frameDue(null, 5), R.frameDue(0, 16.7), R.frameDue(0, 33.4), R.frameDue(0, 31.5), R.frameDue(0, 30, 60)];""")
@@ -258,35 +275,78 @@ def media_browser(browser):
 
 
 class VPage:
-    """The rig's page, its settings for the visualiser set before it loads."""
+    """The rig's page, its settings for the visualiser set before it loads.
 
-    def __init__(self, browser, served, width=1200, height=800, gpu=True, settings=None, reduced=None, touch=False, url="/"):
+    `clock`: Playwright's fake clock, installed before the page loads, so the
+    idle timer runs only as a test moves it (`advance`), never by the wall
+    clock. Its timers, `performance.now` and animation frames are fake; the
+    network, the audio and promises are not, so what follows a timer is
+    waited for by condition (`until`)."""
+
+    def __init__(self, browser, served, width=1200, height=800, gpu=True, settings=None, reduced=None, touch=False,
+                 url="/", clock=False, init=()):
         options = {"viewport": {"width": width, "height": height}, "has_touch": touch}
         if reduced:
             options["reduced_motion"] = reduced
         self.context = browser.new_context(**options)
+        self.clock = clock
+        if clock:
+            self.context.clock.install()
         if gpu:
             self.context.add_init_script(GPU)
+        for script in init:
+            self.context.add_init_script(script)
         kept = {"idle": 3, **(settings or {})}
         self.context.add_init_script(f"if (!sessionStorage.getItem('set')) {{ localStorage.setItem('sushi-rig.visualiser', {json.dumps(json.dumps(kept))}); sessionStorage.setItem('set', '1'); }}")
         self.page = self.context.new_page()
         self.errors = []
+        self.requested = []
         self.page.on("pageerror", lambda error: self.errors.append(str(error)))
+        self.page.on("request", lambda request: self.requested.append(request.url))
         self.page.goto(served.url + url)
-        self.page.wait_for_function("() => window.sushiRigVisualiser && window.sushiRigVisualiser().running")
+        self.until("() => window.sushiRigVisualiser && window.sushiRigVisualiser().running")
 
     def state(self):
         return self.page.evaluate("sushiRigVisualiser()")
 
     def loaded(self):
-        return self.page.evaluate("performance.getEntriesByType('resource').map((r) => r.name.split('/').pop())")
+        """The file names the page has asked for (requests seen from here:
+        the fake clock leaves the page's resource timing empty)."""
+        return [url.split("?")[0].split("/")[-1] for url in self.requested]
 
-    def shown(self, timeout=8000):
-        self.page.wait_for_function("() => sushiRigVisualiser().phase === 'shown' && sushiRigVisualiser().session.frames > 2", timeout=timeout)
+    def advance(self, ms):
+        self.page.clock.run_for(ms)
+
+    def until(self, condition, timeout=15000):
+        """Until `condition` (a function's source) holds in the page: polled
+        from here, so it works with the fake clock, which moves on 50 ms
+        while it waits. A generous ceiling: what decides is the condition."""
+        deadline = time.monotonic() + timeout / 1000
+        while True:
+            if self.page.evaluate(f"({condition})()"):
+                return
+            if time.monotonic() > deadline:
+                raise AssertionError(f"not within {timeout} ms: {condition}; {self.state()}")
+            if self.clock:
+                self.advance(50)
+            self.page.wait_for_timeout(20)
+
+    def shown(self):
+        """Until it is up, hearing, and has drawn three frames more than when
+        asked (a session's count goes on across showings)."""
+        before = (self.state()["session"] or {}).get("frames", 0)
+        self.until(f"""() => {{ const v = sushiRigVisualiser(); const s = v.session;
+          return v.phase === 'shown' && s && s.listening && s.drawing && s.frames > {before + 2}; }}""")
         return self.state()
 
-    def off(self, timeout=3000):
-        self.page.wait_for_function("() => sushiRigVisualiser().phase === 'off'", timeout=timeout)
+    def off(self):
+        self.until("() => sushiRigVisualiser().phase === 'off'")
+        return self.state()
+
+    def refused(self, after=0):
+        """Until the idle timer has found the page left and the gate said no
+        (more than `after` times): then it was due, and did not start."""
+        self.until(f"() => sushiRigVisualiser().attempts > {after} && sushiRigVisualiser().phase === 'off'")
         return self.state()
 
     def close(self):
@@ -311,19 +371,25 @@ def down(served):
     served.state["describe"] = lambda: {"verdict": "absent", "running": False, "message": "No rig is running."}
 
 
+def stage_link(p):
+    box = p.locator("a.go", has_text="Stage").bounding_box()
+    return box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+
+
 def test_it_starts_after_the_idle_time_and_only_then_loads_the_drawing(opened):
-    v = opened()
+    """On the fake clock: not at 2.9 s after the last input, and by 3.5 s
+    (the timer looks every 0.5 s)."""
+    v = opened(clock=True)
     p = v.page
     p.mouse.move(100, 100)
     p.mouse.move(120, 110)
-    began = time.monotonic()
-    time.sleep(2)
-    assert v.state()["phase"] == "off"
+    v.advance(2900)
+    assert v.state()["due"] == 0 and v.state()["phase"] == "off"
     assert not any(name in v.loaded() for name in LAZY), "the normal page has not paid for it"
+    v.advance(600)
+    assert v.state()["due"] >= 1
     state = v.shown()
-    waited = time.monotonic() - began
-    assert 3 <= waited < 7, waited
-    assert all(name in v.loaded() for name in LAZY)
+    assert all(name in v.loaded() for name in LAZY), v.loaded()
     session = state["session"]
     assert session["listening"] and session["drawing"] and session["context"] == "running"
     assert (session["width"], session["height"]) == (1200, 800)
@@ -331,11 +397,13 @@ def test_it_starts_after_the_idle_time_and_only_then_loads_the_drawing(opened):
 
 
 def test_input_keeps_it_away(opened):
-    v = opened()
-    for i in range(6):
+    v = opened(clock=True)
+    for i in range(8):
         v.page.mouse.move(200 + 10 * i, 200)
-        time.sleep(0.8)
-    assert v.state()["phase"] == "off" and not v.state()["loaded"]
+        v.advance(2500)
+    assert v.state()["due"] == 0 and v.state()["phase"] == "off" and not v.state()["loaded"]
+    v.advance(3100)
+    assert v.state()["due"] >= 1, "and without input it is due"
 
 
 def test_a_click_that_puts_the_page_back_reaches_nothing_under_it(opened):
@@ -344,9 +412,7 @@ def test_a_click_that_puts_the_page_back_reaches_nothing_under_it(opened):
     p.evaluate("""() => { window.clicks = 0; window.downs = 0;
       document.getElementById('app').addEventListener('click', () => window.clicks++);
       document.getElementById('app').addEventListener('pointerdown', () => window.downs++); }""")
-    stage = p.locator("a.go", has_text="Stage")
-    box = stage.bounding_box()
-    x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+    x, y = stage_link(p)
     p.mouse.move(x, y)
     v.shown()
     p.mouse.click(x, y)
@@ -361,8 +427,7 @@ def test_a_tap_that_puts_the_page_back_reaches_nothing_under_it(opened):
     v = opened(touch=True)
     p = v.page
     p.evaluate("() => { window.clicks = 0; document.getElementById('app').addEventListener('click', () => window.clicks++); }")
-    box = p.locator("a.go", has_text="Stage").bounding_box()
-    x, y = box["x"] + box["width"] / 2, box["y"] + box["height"] / 2
+    x, y = stage_link(p)
     v.shown()
     p.touchscreen.tap(x, y)
     v.off()
@@ -384,6 +449,44 @@ def test_a_key_that_puts_the_page_back_reaches_nothing_under_it(opened, key):
     assert v.state()["on"] is True
 
 
+@pytest.mark.parametrize("lost", ["blur", "hidden"])
+def test_a_key_whose_release_goes_elsewhere_does_not_leave_it_catching(opened, lost):
+    """Control down puts the page back; its release goes to another window
+    (Ctrl+T, Alt+Tab), so it is never seen. Found in review: the invisible
+    visualiser then took every click until a reload."""
+    v = opened()
+    p = v.page
+    x, y = stage_link(p)
+    v.shown()
+    p.keyboard.down("Control")
+    v.until("() => sushiRigVisualiser().phase === 'closing' && sushiRigVisualiser().held.length === 1")
+    if lost == "blur":
+        p.evaluate("() => window.dispatchEvent(new Event('blur'))")
+    else:
+        p.evaluate("""() => { Object.defineProperty(document, 'hidden', {configurable: true, get: () => true});
+          document.dispatchEvent(new Event('visibilitychange')); delete document.hidden; }""")
+    v.off()
+    p.keyboard.up("Control")
+    p.mouse.click(x, y)
+    p.wait_for_function("location.hash === '#stage'")
+
+
+def test_it_lets_go_of_the_page_within_its_ceiling_whatever_is_held(opened):
+    """A release that never comes and no blur either: it still goes, by the
+    ceiling, and the next click is the page's."""
+    v = opened()
+    p = v.page
+    x, y = stage_link(p)
+    v.shown()
+    p.keyboard.down("Shift")
+    v.until("() => sushiRigVisualiser().phase === 'closing'")
+    v.until("() => sushiRigVisualiser().phase === 'off'", timeout=5000)
+    # Let go only now (a click with Shift held opens the link in a new window).
+    p.keyboard.up("Shift")
+    p.mouse.click(x, y)
+    p.wait_for_function("location.hash === '#stage'")
+
+
 def test_moving_the_pointer_puts_the_page_back(opened):
     v = opened()
     v.page.mouse.move(300, 300)
@@ -392,33 +495,98 @@ def test_moving_the_pointer_puts_the_page_back(opened):
     assert v.off()["session"]["drawing"] is False
 
 
+# The context's resume held back until the test lets it go (window.letResume).
+SLOW_RESUME = """(() => { const real = AudioContext.prototype.resume;
+  AudioContext.prototype.resume = function () {
+    if (!window.slowResume) return real.call(this);
+    return new Promise((done) => { window.letResume = () => real.call(this).then(() => { window.resumed = true; done(); }); });
+  }; })();"""
+
+
+def test_a_stop_while_the_audio_resumes_leaves_nothing_drawing(opened):
+    """Found in review: put back while `resume()` was pending, it went on
+    drawing, unseen, at 30 frames a second."""
+    v = opened(init=[SLOW_RESUME])
+    p = v.page
+    v.shown()
+    p.mouse.move(5, 5)
+    assert v.off()["session"]["context"] == "suspended"
+    p.evaluate("() => { window.slowResume = true; }")
+    v.until("() => sushiRigVisualiser().phase === 'shown' && typeof window.letResume === 'function'")
+    p.mouse.move(50, 50)
+    v.off()
+    p.evaluate("() => window.letResume()")
+    v.until("() => window.resumed === true && sushiRigVisualiser().session.context === 'suspended'")
+    assert v.state()["session"]["drawing"] is False
+
+
+# The visualiser's own canvas gets no WebGL, so butterchurn cannot be made;
+# every AudioContext made and closed is counted.
+NO_GL = """(() => { const real = HTMLCanvasElement.prototype.getContext;
+  HTMLCanvasElement.prototype.getContext = function (kind, ...rest) {
+    return kind === 'webgl2' && this.closest('.visualiser') ? null : real.call(this, kind, ...rest); };
+  window.made = 0; window.unmade = 0; const Real = window.AudioContext;
+  window.AudioContext = class extends Real { constructor(...a) { super(...a); window.made++; }
+    close() { window.unmade++; return super.close(); } }; })();"""
+
+
+def test_a_visualiser_that_cannot_be_made_closes_its_audio_and_is_not_tried_again(opened):
+    v = opened(init=[NO_GL])
+    p = v.page
+    v.until("() => sushiRigVisualiser().broken !== null && sushiRigVisualiser().phase === 'off'")
+    assert p.evaluate("[window.made, window.unmade]") == [1, 1], "no AudioContext is left open"
+    assert "Reload the page" in p.locator(".visualiser-note").inner_text()
+    before = v.state()["attempts"]
+    state = v.refused(after=before)
+    assert state["why"].startswith("Off: butterchurn could not draw here")
+    assert p.evaluate("window.made") == 1, "not tried again"
+    p.locator("#visualiser-on").uncheck()
+    p.locator("#visualiser-on").check()
+    v.until("() => window.made === 2 && window.unmade === 2")
+
+
+def test_a_lost_context_stops_it_and_it_starts_afresh_once(opened):
+    v = opened()
+    p = v.page
+    lose = "() => document.querySelector('.visualiser canvas').getContext('webgl2').getExtension('WEBGL_lose_context').loseContext()"
+    v.shown()
+    p.evaluate(lose)
+    state = v.off()
+    assert state["lost"] == 1 and "context lost" in state["error"] and state["session"] is None
+    v.shown()
+    p.evaluate(lose)
+    v.until("() => sushiRigVisualiser().broken !== null && sushiRigVisualiser().phase === 'off'")
+    assert "twice" in v.refused(after=v.state()["attempts"])["why"]
+
+
 def test_the_off_switch_is_kept_in_this_browser(opened):
     v = opened()
     p = v.page
     p.locator("#visualiser-on").uncheck()
     assert json.loads(p.evaluate("localStorage.getItem('sushi-rig.visualiser')"))["on"] is False
     p.reload()
-    p.wait_for_function("() => window.sushiRigVisualiser && window.sushiRigVisualiser().running")
+    v.until("() => window.sushiRigVisualiser && window.sushiRigVisualiser().running")
     assert not p.locator("#visualiser-on").is_checked()
-    time.sleep(4.5)
-    state = v.state()
-    assert state["phase"] == "off" and state["why"] == "Off." and not state["loaded"]
+    state = v.refused()
+    assert state["why"] == "Off." and not state["loaded"]
     assert "Off." in p.locator(".visualiser-note").inner_text()
     p.locator("#visualiser-on").check()
     v.shown()
 
 
 def test_the_idle_time_is_set_from_the_page(opened):
-    v = opened(settings={"idle": 600})
+    v = opened(settings={"idle": 600}, clock=True)
     p = v.page
     field = p.locator("#visualiser-idle")
     assert field.input_value() == "600"
     field.fill("4")
     field.press("Tab")
     assert json.loads(p.evaluate("localStorage.getItem('sushi-rig.visualiser')"))["idle"] == 4
-    began = time.monotonic()
+    v.advance(3900)
+    assert v.state()["due"] == 0
+    v.advance(600)
+    assert v.state()["due"] >= 1
     v.shown()
-    assert time.monotonic() - began >= 3.5
     p.mouse.move(5, 5)
     v.off()
     field.fill("1")
@@ -427,17 +595,14 @@ def test_the_idle_time_is_set_from_the_page(opened):
 
 
 def test_reduced_motion_never_starts_it(opened):
-    v = opened(reduced="reduce")
-    time.sleep(4.5)
-    state = v.state()
-    assert state["phase"] == "off" and "reduced motion" in state["why"] and not state["loaded"]
+    state = opened(reduced="reduce").refused()
+    assert "reduced motion" in state["why"] and not state["loaded"]
 
 
 def test_a_narrow_window_never_starts_it_and_has_no_line_about_it(opened):
     v = opened(width=800)
-    time.sleep(4.5)
-    state = v.state()
-    assert state["phase"] == "off" and "900 px" in state["why"] and not state["loaded"]
+    state = v.refused()
+    assert "900 px" in state["why"] and not state["loaded"]
     assert not v.page.locator(".visualiser-settings").is_visible()
 
 
@@ -445,34 +610,33 @@ def test_it_starts_only_while_a_rig_is_running_and_goes_when_it_stops(opened, se
     v = opened()
     v.shown()
     down(served)
-    v.page.wait_for_function("() => !sushiRigVisualiser().running")
-    assert v.off()["session"]["listening"] is False
-    time.sleep(4)
-    state = v.state()
-    assert state["phase"] == "off" and state["why"] == "Starts only while a rig is running."
+    v.until("() => !sushiRigVisualiser().running")
+    state = v.off()
+    assert state["session"]["listening"] is False
+    state = v.refused(after=state["attempts"])
+    assert state["why"] == "Starts only while a rig is running."
 
 
 def test_a_software_renderer_is_refused(opened):
     v = opened(gpu=False)
-    time.sleep(4.5)
-    state = v.state()
-    assert state["phase"] == "off" and "software" in state["why"] and not state["loaded"]
+    state = v.refused()
+    assert "software" in state["why"] and not state["loaded"]
     assert "software" in v.page.locator(".visualiser-note").inner_text()
 
 
-def test_a_hidden_tab_stops_drawing_and_a_shown_one_draws_again(opened):
+def test_a_hidden_tab_lets_go_of_the_input_and_a_shown_one_hears_and_draws_again(opened):
     v = opened()
     v.shown()
     hide = """(hidden) => { Object.defineProperty(document, 'hidden', {configurable: true, get: () => hidden});
       Object.defineProperty(document, 'visibilityState', {configurable: true, get: () => hidden ? 'hidden' : 'visible'});
       document.dispatchEvent(new Event('visibilitychange')); }"""
     v.page.evaluate(hide, True)
-    v.page.wait_for_function("() => !sushiRigVisualiser().session.drawing && sushiRigVisualiser().session.context === 'suspended'")
+    v.until("""() => { const s = sushiRigVisualiser().session;
+      return !s.drawing && !s.listening && s.context === 'suspended'; }""")
+    assert v.state()["phase"] == "shown"
     frames = v.state()["session"]["frames"]
-    time.sleep(1)
-    assert v.state()["session"]["frames"] == frames and v.state()["phase"] == "shown"
     v.page.evaluate(hide, False)
-    v.page.wait_for_function(f"() => sushiRigVisualiser().session.frames > {frames + 3}")
+    v.until(f"() => sushiRigVisualiser().session.listening && sushiRigVisualiser().session.frames > {frames + 3}")
 
 
 def test_the_page_keeps_polling_under_it(opened):
@@ -480,9 +644,29 @@ def test_the_page_keeps_polling_under_it(opened):
     v.shown()
     count = "performance.getEntriesByType('resource').filter((r) => r.name.endsWith('/health')).length"
     before = v.page.evaluate(count)
-    time.sleep(3)
-    assert v.page.evaluate(count) >= before + 2
+    v.until(f"() => {count} >= {before + 2}")
     assert v.state()["phase"] == "shown"
+
+
+def test_xruns_rising_while_it_listens_stop_it_until_it_is_switched_on_again(opened, served):
+    """The capture stream is in Sushi's cycle, so a glitch while it listens
+    stops it, said on the line, and it does not start again by itself. The
+    xruns are pw-top's, as the XRUNS tile reads them: here the fake's sample
+    of `pw-top -b -n 2` with sushi's ERR raised."""
+    v = opened()
+    p = v.page
+    v.shown()
+    v.until("() => sushiRigVisualiser().session.listening")
+    served.pw_top_output = re.sub(r"^(R\s+130(?:\s+\S+){6}\s+)0(\s+\+ sushi)$", r"\g<1>5\2", served.pw_top_output, flags=re.M)
+    assert [line.split()[8] for line in served.pw_top_output.splitlines() if line.endswith("+ sushi")] == ["5", "5"]
+    state = v.off()
+    assert "glitched" in state["tripped"] and "from 0 to 5" in state["tripped"]
+    assert state["session"]["listening"] is False
+    state = v.refused(after=state["attempts"])
+    assert state["why"] == state["tripped"] and "glitched" in p.locator(".visualiser-note").inner_text()
+    p.locator("#visualiser-on").uncheck()
+    p.locator("#visualiser-on").check()
+    assert v.shown()["tripped"] is None
 
 
 def test_what_it_heard_is_said_on_the_line(opened):

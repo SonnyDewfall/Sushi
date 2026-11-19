@@ -586,11 +586,34 @@ now**. The line says why it will not start when it will not, and what it
 heard last.
 
 **Where the sound comes from.** The browser's own capture of the guitar's
-input (`getUserMedia`), through PipeWire's PulseAudio server, not the agent:
-nothing new is in Sushi's path, and the agent carries no audio. That server
-copies each block into a buffer of its own and the browser reads it from
-there, so a browser that falls behind drops its own samples; it cannot hold
-up the graph Sushi runs in. Which input: one chosen on the line; otherwise
+input (`getUserMedia`), through PipeWire's PulseAudio server
+(pipewire-pulse), not the agent, which carries no audio. Nothing is added to
+the signal's path: Sushi's input and output are as they were, and no delay
+is added. What is and is not kept apart from Sushi (review of PR #183):
+
+- **Kept apart: the browser.** pipewire-pulse keeps a buffer of its own and
+  the browser reads from it over a socket, so a browser that stalls only
+  loses its own samples.
+- **Not kept apart: pipewire-pulse's capture stream.** It is a node in the
+  graph Sushi's driver runs, a follower of the interface, doing a small copy
+  every cycle in pipewire-pulse's data thread (`pw-top` shows it, BUSY about
+  17 to 22 µs at the rig's 256 frames). If that thread is late (no realtime
+  priority, or preempted), the cycle is late, and Sushi can xrun. This is the
+  same exposure as any other client of the graph, the tuner included. A
+  `pw-record` or JACK tap would be a node in the cycle in the same way, with
+  its own process doing the work (and `pw-record` writing a file from it),
+  so it would not be safer, only not via pipewire-pulse.
+
+So two safeguards. `sushi-rig doctor`'s `pulse-realtime` says whether
+pipewire-pulse runs a thread at realtime priority (from
+`/proc/<pid>/task/*/stat`; it is never a fault, since the rig itself does
+not use it). And while the visualiser listens, the page watches the XRUNS
+count (pw-top's, as the tile reads it, sent to `screensaver.js` as a
+"sushi-rig:xruns" event after each sample, about every 2 s): if it rises, the
+capture and the visualiser stop and the line says why ("Stopped: the rig
+glitched while the visualiser was listening"), and it stays off until the
+page is reloaded or **Visualiser** is ticked again. Any rise counts, whatever
+caused it. Which input: one chosen on the line; otherwise
 the machine file's `guitar-in` port, by name (the browser lists
 `Audient iD14 Multichannel` for the JACK client `Audient iD14`), on the
 channel of that port (PipeWire gives the browser a multichannel input's first
@@ -598,7 +621,9 @@ two channels as left and right, so `capture_AUX0` is the left); otherwise the
 browser's default input, both channels. Chromium's context plays nowhere
 (`sinkId: {type: "none"}`), so it adds no output stream; Firefox has no such
 option and opens one to the default output, silent. The capture is opened when
-the visualiser starts and let go when it goes.
+the visualiser starts and let go when it goes, and while the tab is hidden it
+is let go too (drawing stops and the context is suspended) and opened again
+when the tab is shown.
 
 **When it starts.** Only while `/health` says a rig is running (app.js tells
 `screensaver.js` after each poll); only in a window at least 900 px wide, so
@@ -628,7 +653,19 @@ release, click, key, wheel and move before the page does, and the
 visualiser itself stays over the page, invisible, until no button or key is
 held and 350 ms have passed with no press, so the release and click of the
 press that dismissed it land on it too. A pointer that keeps moving does not
-hold it there.
+hold it there, and nothing holds it longer than 1.5 s: what is held is
+forgotten when the window loses focus or the tab is hidden (a key whose
+release went to another window, as with Alt+Tab or Ctrl+T, is never seen to
+come up), and a ceiling ends it whatever is held. Found in review: without
+both, the invisible visualiser took every click until a reload.
+
+**When it cannot run.** If butterchurn cannot be made (no WebGL on its
+canvas, say), its AudioContext is closed and it is not tried again until the
+page is reloaded or **Visualiser** is ticked again; the line says why. If the
+browser takes the WebGL context away (`webglcontextlost`), it stops, says so,
+and starts afresh on a new canvas next time; a second loss leaves it off
+until a reload. A stop that comes while the context is still resuming wins:
+nothing is drawn after it.
 
 **The library.** [butterchurn](https://github.com/jberg/butterchurn) 2.6.7,
 MIT, vendored byte for byte under `ui/static/vendor/butterchurn-2.6.7/` with

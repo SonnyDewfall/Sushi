@@ -4,12 +4,16 @@
 // What to listen to and when to draw are rig.js's decisions.
 //
 // The sound is the browser's own capture of an input, through PipeWire's
-// PulseAudio server: the guitar's input, beside Sushi rather than in front
-// of it. That server copies each block into a buffer of its own and the
-// browser reads it from there, so a browser that falls behind loses samples
-// of its own; it cannot hold up the graph Sushi is in. Nothing is played:
-// the audio goes to butterchurn's analysers, and where the browser can (a
-// Chromium) the context has no output device at all.
+// PulseAudio server (pipewire-pulse): the guitar's input, beside Sushi,
+// adding nothing to the signal's path. What that does and does not keep apart from
+// Sushi: the browser reads from a buffer the server keeps, so a browser that
+// stalls only loses its own samples. But the server's capture stream is a
+// node in the graph Sushi's driver runs, doing a small copy every cycle, so
+// if pipewire-pulse is late (no realtime priority, or preempted) the cycle
+// can be late too: `sushi-rig doctor` says whether it runs realtime, and
+// screensaver.js stops the capture if the rig's xruns rise while it listens.
+// Nothing is played: the audio goes to butterchurn's analysers, and where
+// the browser can (a Chromium) the context has no output device at all.
 
 import * as R from "./rig.js";
 import { PRESETS, PRESET_SECONDS, BLEND_SECONDS } from "./visualiser-presets.js";
@@ -92,21 +96,38 @@ export { audioInputs };
 // One visualiser for the page's life, drawing on `canvas`: its WebGL
 // context and its AudioContext are made once and kept (made again each time,
 // butterchurn's textures would pile up over an evening), and only the
-// capture is opened and closed with each showing.
-export async function create(canvas) {
+// capture is opened and closed with each showing. `onLost` is called if the
+// browser takes the WebGL context away; the session is then of no more use,
+// and is disposed. A visualiser that cannot be made at all closes its
+// AudioContext and throws an error marked `hard`: trying again will not help.
+export async function create(canvas, onLost = () => {}) {
   const B = await butterchurn();
   const context = silentContext();
   const size = R.drawSize(window.innerWidth, window.innerHeight);
   canvas.width = size.width;
   canvas.height = size.height;
-  const viz = B.createVisualizer(context, canvas, {
-    width: size.width, height: size.height, pixelRatio: 1, textureRatio: 1, meshWidth: 32, meshHeight: 24,
-  });
+  let viz;
+  try {
+    viz = B.createVisualizer(context, canvas, {
+      width: size.width, height: size.height, pixelRatio: 1, textureRatio: 1, meshWidth: 32, meshHeight: 24,
+    });
+  } catch (error) {
+    try { await context.close(); } catch { /* closed already */ }
+    const hard = new Error(`butterchurn could not draw here: ${error && error.message || error}`);
+    hard.name = "VisualiserError";
+    hard.hard = true;
+    throw hard;
+  }
   let preset = 0;
   viz.loadPreset(PRESETS[preset], 0);
   let presetAt = performance.now();
   let source = null, mixer = null, splitter = null, stream = null;
   let raf = null, last = null, frames = 0;
+  // Moved on by every stop: a run whose resume finishes after a stop does
+  // not start drawing (found in review: it drew on, unseen, at 30 fps).
+  let runs = 0;
+  let calls = 0;  // run()s asked for, the latest of which owns the context's state
+  let lost = false, disposed = false;
 
   function frame(now) {
     raf = requestAnimationFrame(frame);
@@ -128,10 +149,31 @@ export async function create(canvas) {
     stream = null;
   }
 
+  async function stop() {
+    runs += 1;
+    if (raf != null) cancelAnimationFrame(raf);
+    raf = null;
+    detach();
+    if (context.state === "running") await context.suspend();
+  }
+
+  async function dispose() {
+    await stop();
+    disposed = true;
+    try { await context.close(); } catch { /* closed already */ }
+  }
+
+  canvas.addEventListener("webglcontextlost", (event) => {
+    event.preventDefault();
+    lost = true;
+    dispose().finally(() => onLost());
+  });
+
   return {
     // Hear `opened` (listen's answer): its channel, or both mixed to one.
     attach(opened) {
       detach();
+      if (disposed) { stopStream(opened.stream); return; }
       stream = opened.stream;
       source = context.createMediaStreamSource(stream);
       mixer = context.createGain();
@@ -148,32 +190,32 @@ export async function create(canvas) {
       viz.connectAudio(mixer);
     },
     resize(width, height) {
+      if (disposed) return;
       const s = R.drawSize(width, height);
       canvas.width = s.width;
       canvas.height = s.height;
       viz.setRendererSize(s.width, s.height);
     },
     async run() {
+      if (disposed) return;
+      const mine = runs;
+      const call = ++calls;
       if (context.state !== "running") await context.resume();
+      if (mine !== runs || disposed) {
+        // Stopped while it resumed: the stop's suspend came first, so again,
+        // unless a later run is under way and wants it running.
+        if (!disposed && call === calls && raf == null && context.state === "running") await context.suspend();
+        return;
+      }
       if (raf == null) { last = null; raf = requestAnimationFrame(frame); }
     },
-    // Drawing stops and the context is suspended (hidden tab): the capture
-    // stays open, to carry on where it was.
-    async pause() {
-      if (raf != null) cancelAnimationFrame(raf);
-      raf = null;
-      if (context.state === "running") await context.suspend();
-    },
     // Stopped and the input let go: the browser's capture leaves the graph.
-    async stop() {
-      if (raf != null) cancelAnimationFrame(raf);
-      raf = null;
-      detach();
-      if (context.state === "running") await context.suspend();
-    },
+    // A hidden tab is the same: nothing is heard while nothing is drawn.
+    stop,
+    dispose,
     stats() {
       return { frames, drawing: raf != null, context: context.state, preset: PRESETS[preset].name,
-        width: canvas.width, height: canvas.height, listening: !!stream };
+        width: canvas.width, height: canvas.height, listening: !!stream, lost, disposed };
     },
   };
 }

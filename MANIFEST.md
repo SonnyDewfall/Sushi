@@ -5535,8 +5535,9 @@ MilkDrop visualisation fills the window; any input puts the page back, and
 that input reaches nothing under it. **The sound is the browser's own capture
 of the guitar's input** (`getUserMedia`, through PipeWire's PulseAudio
 server), chosen over the agent streaming a tap to the page: both go through
-that server, which buffers each client apart from the graph, so neither can
-hold up Sushi's cycle, and they cost about the same (`parec` and a reader
+that server, which buffers each client apart from the graph (though not
+its own capture stream, which works in Sushi's cycle: corrected below), and
+they cost about the same (`parec` and a reader
 2.4% of a core; Chromium's capture 1.6% in the server and about 5% in
 Chromium), but the agent's way puts a stream through its one event loop. A
 JACK or `pw-record` tap was not tried: it is a node of Sushi's cycle (no
@@ -5576,3 +5577,41 @@ SwiftShader is refused. The fast suite, after merging #174: 5347 passed, 21 skip
 PipeWire graph with Sushi and the iD14, the permission prompt (answered by a
 Chromium switch in the tests), Firefox, a phone, and anyone looking at what
 it draws on a real screen. *(2026-11-18)*
+
+**The visualiser, after the review of PR #183 (#176).** Seven findings, all
+fixed. (1) **A key whose release went elsewhere left the invisible
+visualiser taking every click until a reload**: Control (or Alt+Tab, Ctrl+T,
+Super) put the page back, its keyup went to another window, and the
+`closing` overlay waited for it for ever. What is held is now forgotten on
+`blur`, on the tab being hidden and on `lostpointercapture`, and `closing`
+never outlasts 1.5 s whatever is held. (2) **Put back while the
+AudioContext was resuming, butterchurn drew on, unseen, at 30 fps**: a run
+now checks after its `await` that no stop came, and suspends the context
+again if it is the latest. (3) **The safety claim was overstated.** The
+browser is kept apart from Sushi by pipewire-pulse's buffer, but
+pipewire-pulse's capture stream is a node in Sushi's cycle (a follower of
+the interface, BUSY about 17 to 22 µs in `pw-top`), so a late pipewire-pulse
+data thread can xrun the rig; the guide, the reference, the spike README and
+the code say so now, and that a `pw-record` tap would be no safer. Two
+safeguards: while it listens, the page watches XRUNS (pw-top's, sent by
+app.js after each sample) and on any rise stops the capture and the
+visualiser, says "Stopped: the rig glitched while the visualiser was
+listening" and stays off until a reload or the box is ticked again; and
+`sushi-rig doctor` has `pulse-realtime`, which reads pipewire-pulse's
+threads' scheduling policy from `/proc/<pid>/task/*/stat` (never a fault:
+the rig does not use it), checked here against a running pipewire-pulse
+(`pw-data-loop`, SCHED_FIFO 83, as `ps -L` showed). (4) **A visualiser that
+could not be made leaked its AudioContext** and was tried every idle spell:
+the context is closed and it is not tried again until a reload or the box
+is ticked; a lost WebGL context stops it, is said, and it starts afresh on a
+new canvas, a second loss leaving it off. (5) **A hidden tab now lets go of
+the capture**, and hears again when shown. (6) **The timing tests are
+deterministic**: the idle timer runs on Playwright's fake clock (not at 2.9 s,
+by 3.5 s), and "never starts" is a condition (the timer was due and the gate
+said no), not a sleep. (7) The cross-site tests list the presets file and
+/machine/roles, and SOURCE.txt names `window.log10`. Each new test was shown
+failing with its fix taken out (the blur and hidden cases fail only with the
+ceiling taken out too, since the ceiling alone also ends it). COUNTS2
+**Not run:** the rig, its GPU, its PipeWire graph with Sushi, Firefox, a
+phone; whether pipewire-pulse runs realtime on the rig is for `doctor` to
+say there. *(2026-11-19)*
