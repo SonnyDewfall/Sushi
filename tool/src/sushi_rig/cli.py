@@ -79,11 +79,11 @@ def _amp_parameters(pairs: list[str]) -> dict[str, float]:
 
 
 def _plugins(args: argparse.Namespace) -> int:
-    """`plugins assemble` and `plugins check`, which share how they find what the
+    """`plugins assemble`, `add` and `check`, which share how they find what the
     rig requires and differ only in what they do with it."""
     from .paths import checkout_root
     from .plugins import (
-        SYSTEM_LV2_DIR, PluginsError, assemble, check, config_uris, read_manifest,
+        SYSTEM_LV2_DIR, PluginsError, add, assemble, check, config_uris, read_manifest,
     )
     from .verify import configs_to_check
 
@@ -111,6 +111,11 @@ def _plugins(args: argparse.Namespace) -> int:
                 args.replace,
             )
             print(f"copied {len(plan.bundles)} bundle(s) into {to}")
+        elif args.plugins_command == "add":
+            plugins_dir = args.plugins_dir or root / "plugins"
+            plan = add(manifest, used, args.from_dirs or [SYSTEM_LV2_DIR], plugins_dir, waived)
+            names = ", ".join(b.name for b in plan.bundles) or "nothing: it had everything"
+            print(f"added to {plugins_dir}: {names}")
         else:
             plugins_dir = args.plugins_dir or root / "plugins"
             plan = check(manifest, used, plugins_dir, waived)
@@ -1178,8 +1183,25 @@ def _main(argv: list[str] | None = None) -> int:
     add_requirement_args(q)
 
     q = plugins_sub.add_parser(
+        "add",
+        help="copy into plugins/, as it is, only the bundles the rig needs and it lacks "
+        "(the amp and built bundles there are left alone); all or nothing",
+    )
+    q.add_argument(
+        "--from", dest="from_dirs", type=Path, action="append", metavar="DIR",
+        help="LV2 directory to take bundles from. Repeatable, earlier wins "
+        "[default: /usr/lib/lv2]",
+    )
+    q.add_argument(
+        "plugins_dir", type=Path, nargs="?",
+        help="folder to add to [default: plugins/ at the repo root]",
+    )
+    add_requirement_args(q)
+
+    q = plugins_sub.add_parser(
         "check",
-        help="every required plugin URI resolves with LV2_PATH set to plugins/ alone",
+        help="every required plugin URI resolves with LV2_PATH set to plugins/ alone, "
+        "every link in it leads to a file, and every required plugin's binary is there",
     )
     q.add_argument(
         "plugins_dir", type=Path, nargs="?",
@@ -1540,8 +1562,9 @@ def _main(argv: list[str] | None = None) -> int:
                 print("  config  drivable — all state lives in control ports")
             else:
                 reasons = []
-                if d["atom_ports"]:
-                    reasons.append(f"{d['atom_ports']} atom port(s)")
+                required = d["atom_ports"] - d.get("optional_atom_ports", 0)
+                if required:
+                    reasons.append(f"{required} atom port(s) it needs connected")
                 if d["patch_writables"]:
                     reasons.append(f"{len(d['patch_writables'])} patch:writable")
                 if d["state_interface"]:

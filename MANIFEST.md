@@ -5891,3 +5891,56 @@ the steps in `docs/reference/plugins.md` first. The whole CI image was not
 built (no Sushi AppImage context, no browser download); its plugins half
 was, as above. CPU is this container's, not the XPS 9320's. The
 rigs' amp (NAM) in front of the two channels was not run. *(2026-11-19)*
+
+**The string machine: the review of PR #186 (#177).** (1) **The rig's steps
+no longer delete a bundle before copying it**, nor run on past a failure.
+The hand-run `rm -rf … && cp -rL …` loop is gone: **`sushi-rig plugins add`**
+copies into `plugins/`, as it is, only the bundles the rig needs and it
+lacks, and never touches one already there (the amp, the built bundles,
+GxEchoCat from the pedals' steps). All or nothing: each is copied into a
+staging folder inside `plugins/` whose manifest declares nothing, its links
+checked, and then all are renamed into place; it refuses, copying nothing, a
+bundle whose name is already taken by one that provides something else. The
+steps in `docs/reference/plugins.md` are joined with `&&`, so the first that
+fails stops the rest. (2) **A link loop no longer escapes as RuntimeError**
+(Python 3.12's `Path.resolve`; 3.13's is OSError): every link is resolved
+strictly, and a loop or a link to nothing is a `PluginsError` naming the
+bundle and the link. **`assemble` builds beside `plugins/`** and renames the
+copy in only when it is whole, so a failed copy leaves `plugins/` as it was,
+`--replace` or not; it used to delete it first. (3) **A link into another
+bundle being copied now means the copy** (`a.lv2/lib.so -> ../b.lv2/lib.so`
+stays relative when b.lv2 is copied too; one into a bundle not copied points
+at the package's file). (4) **`plugins check` fails on a link in `plugins/`
+that leads nowhere** (`archive/` aside, being off the path) **and on a
+required plugin whose `lv2:binary` is not a file**, which is what a `cp -r` of
+Calf leaves and what lilv, reading only the Turtle, cannot see; CI's
+Calf-only `test -e` is gone. The synthetic bundles of `test_plugins.py` now
+have their binary and a non-empty Turtle (lilv logs "Error loading file" for
+an empty one once `check` reads the plugin's data). (5) **Calf's Envelope
+Filter has a profile.** Its two atom ports are both `lv2:connectionOptional`,
+so `probe.is_config_drivable` no longer counts them (`optional_atom_ports`,
+in probe's output); a `patch:writable` or `state:interface` still makes a
+plugin not drivable. Over the manifest, it is the only plugin that changes
+(mda's DX10, EPiano, JX10 and Piano have a required MIDI port and stay not
+drivable). The profile hides Input and Output Gain (linear, 1/64 to 64: the
+rig's 0.4 was 0.6 % of the knob, 10 % of it +24 dB) and shows Level (Output
+Gain 0.05 to the plugin's own 2, cosine; the rig's 0.4 at 39 %; 2 measured
++14.8 dB against the guitar, 0.4 +1.6), Sensitivity (Activation 0.5 to 32,
+the rig's 8 at 45 %) and Resonance (0.708 to 12, the rig's 4 at 50 %), with
+Lower, Upper and Mode; the guide says to raise the fuzz's Volume or the
+fader for more. No rig setting changed. The ensemble's Wet gain, to +20 dB,
+is hidden behind a Level of -24 to 0 dB. (6) **The rack's cards are tested**
+(`test_ui_synth.py`: the filter and the ensemble drawn by `unitPanel` with no
+note, no missing control and no page error, Mode a selector reading "24dB/oct
+Lowpass", each control on its curve at the rigs' settings), and the Sushi
+test of the filter covers Mode (low-pass against band-pass on a low E, more
+than 10 dB apart). (7) **The build script's pins are tested by running
+it**, with a `git` that answers as the sources would: a string-machine that
+is not the pin, one that records another DPF, and a DPF fetched as another
+commit each exit non-zero, saying so, and leave DIR's bundle as it was.
+Shown failing: the reviewer's script (`relink_t.py`) gave a sibling link
+pointed at the source, a dangling link and a loop kept, and under 3.12 the
+loop as RuntimeError; it now gives the copy, and the refusal for the other
+two. **Not run:** the rig; `plugins add` against the rig's own `plugins/`
+(rehearsed on a copy of this machine's, without five bundles: it added
+those five, `check` passed, and a second run added nothing). *(2026-11-19)*

@@ -57,9 +57,10 @@ because the swells are off.
   is not swelled: the gate is already open. **Swell** sets how slowly it
   opens, and **Threshold** how quiet the guitar has to get before the next
   note fades in again. If notes cut off early, lower the threshold.
-- **More** on the ensemble: **Model** switches its delay to a plain digital
-  one, at a fifth of the CPU, and the **Fast** and **Slow** rates and depths
-  shape the swirl itself.
+- **More** on the ensemble: **Level**, its own level from -24 to 0 dB (88 %,
+  -3 dB, in the rig); **Model**, which switches its delay to a plain digital
+  one at a fifth of the CPU; and the **Fast** and **Slow** rates and depths,
+  which shape the swirl itself.
 
 The two channels' plugins have the same names but for `octave_` in front, and
 each has its own knobs: turn both to keep the two halves alike, or set them
@@ -82,31 +83,27 @@ is the pick's: the renders put it under 10 ms behind the guitar.
 - **Fuzz**: **Sustain** is how much fuzz, **Tone** dark to bright, and
   **Volume** how loud: at 0 it is silent.
 - **Filter**: it opens with each pick and closes as the note dies, the
-  "wow". Its knobs have no profile yet, so they all show, in the plugin's
-  own names (see the note below):
-  - **Activation**: how hard the pick pushes it open. Higher opens it
-    further on softer playing.
+  "wow".
+  - **Sensitivity**: how far your playing opens it. Higher opens it further
+    on softer playing. 45 % in the rig.
   - **Lower** and **Upper**: where the sweep starts and ends, in Hz. 300 to
     2,500 in the rig; try a higher Upper for a brighter top.
   - **Resonance**: the peak on the sweep. Higher is more vocal and more
-    synth-like. The rig has 4.
-  - **Attack** and **Release**: how fast it opens and closes.
+    synth-like. 50 % in the rig.
   - **Mode**: the filter's shape. The rig has a 24 dB low-pass, the classic
-    synth filter. A band-pass (#166's choice) is more vocal, but much
-    quieter on the low strings: in the renders a low E came out 29 dB under a
-    high E, against 6 dB with the low-pass.
-  - **Output Gain**: its level. The rig has it at 0.4, which brings the lead
-    to about the guitar's own level. Raise it after switching to a band-pass.
+    synth filter. A band-pass (#166's choice, and the plugin's own) is more
+    vocal, but much quieter on the low strings: in the renders a low E came
+    out 29 dB under a high E, against 6 dB with the low-pass.
+  - **Level**: its output, at 39 % in the rig, which is about the guitar's
+    own level with the low-pass. Its top is the plugin's own setting, about
+    15 dB louder. For more than that, after switching to a band-pass say,
+    raise the fuzz's **Volume** or the channel's fader instead: the filter's
+    own gain knobs reach 64 times, and are not on the card.
+  - Under **More**: **Attack** and **Release**, how fast it opens and closes;
+    **Response**, the sweep's curve; and **Mix**, the filter against the
+    plain fuzz.
 - **Echo**: **Tempo** and the heads set the echo's timing, **Mix** how loud
   the echoes are and **Repeats** how many come back (see
   [the tape echo](effects.md)).
 
 The channel is also the preset **synth-lead**.
-
-**A note on the filter's knobs.** The rig's plugin checker counts Calf's two
-event ports and calls the plugin one the rig cannot set from its files, so it
-has no profile, and the rack shows all 13 of its knobs as Sushi reports
-them: in their own ranges, but with no units, no names for the modes (Mode
-1 is the 24 dB low-pass, 7 the plugin's own band-pass) and no grouping. The
-checker is cautious there: every knob the filter has is an ordinary
-control, and the renders show Sushi setting them.

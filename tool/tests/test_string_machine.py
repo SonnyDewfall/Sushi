@@ -97,6 +97,70 @@ def test_the_build_pins_string_machine_and_the_dpf_it_records():
     assert "BUILT-FROM" in text
 
 
+# A `git` that answers as the script's three sources would, without the
+# network: `rev-parse HEAD` in string-machine's checkout or DPF's (its `dpf/`)
+# gives STUB_SM_HEAD or STUB_DPF_HEAD, and `ls-tree HEAD dpf` the commit
+# string-machine records for DPF, STUB_DPF_RECORDED. Everything else (init,
+# fetch, checkout) succeeds and does nothing.
+GIT_STUB = """#!/usr/bin/env bash
+dir=""
+args=()
+while [ $# -gt 0 ]; do
+    case "$1" in
+        -C) dir="$2"; shift 2 ;;
+        -c) shift 2 ;;
+        *) args+=("$1"); shift ;;
+    esac
+done
+case "${args[0]}" in
+    init) mkdir -p "${args[-1]}" ;;
+    rev-parse) case "$dir" in */dpf) echo "$STUB_DPF_HEAD" ;; *) echo "$STUB_SM_HEAD" ;; esac ;;
+    ls-tree) echo "160000 commit $STUB_DPF_RECORDED	dpf" ;;
+esac
+exit 0
+"""
+
+
+def _run_build(tmp_path, sm_head: str, dpf_recorded: str, dpf_head: str):
+    import os
+    import subprocess
+
+    stub = tmp_path / "bin"
+    stub.mkdir()
+    (stub / "git").write_text(GIT_STUB)
+    (stub / "git").chmod(0o755)
+    env = {**os.environ, "PATH": f"{stub}{os.pathsep}{os.environ['PATH']}", "STUB_SM_HEAD": sm_head,
+           "STUB_DPF_RECORDED": dpf_recorded, "STUB_DPF_HEAD": dpf_head}
+    out = tmp_path / "lv2"
+    out.mkdir()
+    (out / "string-machine-chorus.lv2").mkdir()
+    (out / "string-machine-chorus.lv2" / "manifest.ttl").write_text("# the bundle there before\n")
+    done = subprocess.run(["bash", str(BUILD_SCRIPT), str(out)], env=env, capture_output=True, text=True,
+                          timeout=60)
+    return done, out
+
+
+OTHER = "0123456789abcdef0123456789abcdef01234567"
+
+
+@pytest.mark.parametrize("which", ["string-machine", "dpf-recorded", "dpf-fetched"])
+def test_the_build_refuses_a_source_that_is_not_its_pin_and_keeps_the_bundle_it_had(tmp_path, which):
+    """The script's own checks, run: a string-machine that is not the pinned
+    commit, one that records another DPF, and a DPF fetched as something
+    else each stop it, non-zero and saying which, before anything is
+    compiled, and the bundle already in DIR is left as it was."""
+    pins = pinned()
+    sm, dpf = pins["SM_COMMIT"], pins["DPF_COMMIT"]
+    done, out = _run_build(tmp_path, sm_head=OTHER if which == "string-machine" else sm,
+                           dpf_recorded=OTHER if which == "dpf-recorded" else dpf,
+                           dpf_head=OTHER if which == "dpf-fetched" else dpf)
+    assert done.returncode != 0, done.stdout + done.stderr
+    assert OTHER in done.stderr, done.stderr
+    assert ("refusing to build" in done.stderr) if which == "dpf-recorded" else ("not the pinned" in done.stderr)
+    assert sorted(p.name for p in out.iterdir()) == ["string-machine-chorus.lv2"], "staging left behind"
+    assert (out / "string-machine-chorus.lv2" / "manifest.ttl").read_text() == "# the bundle there before\n"
+
+
 # --- the inventory ------------------------------------------------------------
 
 @pytest.mark.parametrize("uri", PLUGINS_OF, ids=IDS.get)
@@ -148,6 +212,15 @@ def test_the_ensembles_mix_brings_the_plain_guitar_in_under_it():
     assert default(prof, "Dry gain") == -60.0
     assert driven_value(drive, 1.0) == pytest.approx(-60.0)
     assert driven_value(drive, 0.5) == pytest.approx(-19.7, abs=0.1)
+
+
+def test_the_ensembles_level_stops_at_0_db():
+    """Wet gain runs to +20 dB (review of PR #186): hidden, and set by Level,
+    -24 to 0 dB, the rig's -3 at 88 % and the plugin's own -6 at 75 %."""
+    prof = profile(CHORUS)
+    assert drives(prof, "level") == [("Wet gain", "linear", -24.0, 0.0)]
+    assert controls(prof)["level"]["visibility"]["value"] == "advanced"
+    assert next(p for p in prof["parameters"] if p["name"] == "Wet gain")["visibility"]["value"] == "hidden"
 
 
 def test_the_halls_size_moves_both_decays_and_its_mix_runs_dry_to_wet():

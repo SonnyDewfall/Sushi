@@ -2,14 +2,12 @@
 GxEchoCat (whose profile and tests are the pedals', #165, test_pedals.py).
 
 The fast half needs nothing installed: GxBigMuffPi and Calf's Envelope Filter
-are in the inventory with the ports lilv reads; GxBigMuffPi's profile is clean
-against its probe; and Calf's Envelope Filter has no profile, because probe,
-frozen in `fixtures/probe_calf-envelope-filter.json`, calls it not drivable
-from a config (two atom ports) and the validator then refuses any control.
+are in the inventory with the ports lilv reads; both profiles are clean
+against their probes, frozen in `fixtures/`; and the filter's gains, linear to
+x64, are hidden behind bounded controls.
 
-The slow half, under Sushi, shows probe's call is cautious here: every
-setting the synth lead gives the filter is an ordinary control port, and
-Sushi applies them. The fuzz's Volume is a level from silence up. The rig
+The slow half, under Sushi: every setting the synth lead gives the filter,
+its Mode included, is an ordinary control port, and Sushi applies them. The fuzz's Volume is a level from silence up. The rig
 itself is not read (the #133 rule): the chains are written out below.
 """
 
@@ -18,7 +16,6 @@ from __future__ import annotations
 import pytest
 
 from sushi_rig import stereo
-from sushi_rig.library import load_profiles
 from sushi_rig.plugins import read_manifest
 from sushi_rig.profile import dump_profile, load_profile, validate
 
@@ -52,17 +49,37 @@ def test_the_fuzzs_profile_is_clean_canonical_and_shows_its_three_knobs():
         ["Sustain", "Tone", "Volume"]
 
 
-def test_the_filter_has_no_profile_because_probe_calls_it_not_drivable():
-    """The validator refuses any parameter or control for a plugin probe says
-    a config cannot drive, so a profile of it could only hide its knobs. The
-    rack shows every one of them instead. Should probe's rule change, this is
-    the test that says a profile can be written."""
+def test_the_filter_is_drivable_and_its_profile_is_clean_and_canonical():
+    """Probe used to call it not drivable for its two atom ports; both are
+    lv2:connectionOptional, which no longer counts (probe.is_config_drivable,
+    review of PR #186), and Sushi sets its every control (below). Its one
+    warning is its version, which lilv does not read (the pin is the
+    package's)."""
     facts = probe("calf-envelope-filter")
     assert facts["uri"] == FILTER
-    assert (facts["config_drivable"], facts["atom_ports"], facts["patch_writables"], facts["state_interface"]) == \
-        (False, 2, [], False)
-    profiles, problems = load_profiles(PROFILES)
-    assert problems == [] and FILTER not in profiles
+    assert (facts["config_drivable"], facts["atom_ports"], facts["optional_atom_ports"]) == (True, 2, 2)
+    path = PROFILES / "calf-envelope-filter.yaml"
+    prof = load_profile(path)
+    assert [f.code for f in validate(prof, facts)] == ["unverified-version"]
+    assert dump_profile(prof) == path.read_text()
+
+
+def test_the_filters_gains_are_hidden_and_its_level_is_bounded():
+    """Input and Output Gain run linear from 1/64 to 64: the synth lead's 0.4
+    is 0.6 % of the knob and 10 % of it is +24 dB (review of PR #186). Both
+    are hidden; Level drives Output Gain from 0.05 to the plugin's own 2,
+    which measured +15 dB over the synth lead's 0.4. Activation and
+    Resonance are linear too, and are bounded the same way."""
+    prof = load_profile(PROFILES / "calf-envelope-filter.yaml")
+    hidden = {p["name"] for p in prof["parameters"] if p["visibility"]["value"] == "hidden"}
+    assert {"Input Gain", "Output Gain", "Activation", "Resonance", "Bypass", "Sidechain"} == hidden
+    drives = {c["id"]: [(d["parameter"], d["curve"], d["at_0"], d["at_1"]) for d in c["drives"]["value"]]
+              for c in prof["controls"]}
+    assert drives == {"sensitivity": [("Activation", "cosine", 0.5, 32.0)],
+                      "resonance": [("Resonance", "cosine", 0.708, 12.0)],
+                      "level": [("Output Gain", "cosine", 0.05, 2.0)]}
+    default = next(p["facts"]["default"] for p in prof["parameters"] if p["name"] == "Output Gain")
+    assert default == 2.0, "a filter added from the library is at Level 100 %, not past it"
 
 
 # --- under Sushi --------------------------------------------------------------
@@ -87,6 +104,13 @@ def test_sushi_sets_the_filters_controls(tmp_path):
     assert abs(rms_db(np, low) - rms_db(np, high)) > 6, "Upper and Lower did nothing"
     dry = render(np, tmp_path, "dry", compiled(_filter(Mix=0.0, **{"Output Gain": 1.0})), x)[:, 0]
     assert rms_db(np, dry - x) < rms_db(np, x) - 60, "Mix 0 is not the dry note"
+    # Mode: the synth lead's 24 dB low-pass against the plugin's own band-pass,
+    # on a low E, where the two differ most (measured on the whole lead: 25
+    # dB apart).
+    low_e = padded(np, string(np, 82.41))
+    lowpass = render(np, tmp_path, "lowpass", compiled(_filter(Mode=1.0)), low_e)[:, 0]
+    bandpass = render(np, tmp_path, "bandpass", compiled(_filter(Mode=7.0)), low_e)[:, 0]
+    assert rms_db(np, lowpass) - rms_db(np, bandpass) > 10, "Mode did nothing"
 
 
 def _fuzz(volume: float) -> list[dict]:

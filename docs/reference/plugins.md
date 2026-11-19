@@ -65,6 +65,18 @@ packages cannot provide can be accepted by name with `--waive URI`, and is
 reported on every run. `ci/Dockerfile` does this inside a container with a real
 Sushi, so the whole test suite can run without the rig machine.
 
+`assemble` builds the new folder beside `plugins/` and renames it into place
+only once every bundle is copied and every link in it leads to a file, so a
+copy that fails leaves `plugins/` as it was, `--replace` or not. A link is
+pointed where it led from the package: into the copy of whichever bundle it
+led into, if that bundle is copied too, and at the file by its absolute path
+otherwise. One that leads nowhere, or round in a loop, is refused, naming the
+bundle and the link. `plugins add` does the same for the bundles a
+`plugins/` lacks, leaving everything already in it alone (#177). `check`
+also fails a `plugins/` with a link that leads nowhere (`archive/` aside) or
+a required plugin whose `lv2:binary` is not a file: lilv reads only the
+Turtle, so neither shows otherwise.
+
 ## Rubber Band 4.0, built for the octave
 
 The octave pedal (`config/rigs/electric-octave.yaml`, #164) is Rubber Band
@@ -172,22 +184,25 @@ the rig): the chorus treats a chord exactly as the sum of its strings (a
 residual under -100 dB, `tests/test_string_machine.py`) and costs 1.4 to
 2.3 % of a core per channel; the string machine's `strings` channel answers
 a 500 Hz burst 169 samples (3.5 ms) late, its `octave` 3,376 (70 ms).
-Calf's Envelope Filter is one plugin `probe` calls not drivable (two atom
-ports, for MIDI and Calf's own messages) though Sushi sets all its controls
-(`tests/test_synth_lead.py`), so it has no profile; see the guide.
+Calf's Envelope Filter has two atom ports, for MIDI and Calf's own
+messages, both `lv2:connectionOptional`; `probe` no longer counts an optional
+one against a plugin (`probe.is_config_drivable`, review of PR #186), and
+Sushi sets every one of its controls (`tests/test_synth_lead.py`). Its
+profile hides its Input and Output Gain, linear from 1/64 to 64, behind a
+bounded Level.
 
-**On the rig machine**, once, and again whenever `plugins/` is rebuilt:
+**On the rig machine**, once, and again whenever `plugins/` is rebuilt. Each
+line runs only if the one before it worked (`&&`), so the first that fails
+stops the rest, with its own message as the last thing on the screen:
 
 ```bash
-sudo apt install git gcc g++ calf-plugins abgate guitarix-lv2
-cd ~/Sushi
-sushi-rig down
-scripts/build-string-machine-chorus.sh ~/Sushi/plugins
-for b in calf abGate gx_bmp gx_zita_rev1 gxechocat; do
-    rm -rf "plugins/$b.lv2" && cp -rL "/usr/lib/lv2/$b.lv2" plugins/
-done
-sushi-rig plugins check
-(cd tool && .venv/bin/python -m pytest tests/test_string_machine.py tests/test_synth_lead.py -rs)
+sudo apt install git gcc g++ calf-plugins abgate guitarix-lv2 &&
+cd ~/Sushi &&
+sushi-rig down &&
+scripts/build-string-machine-chorus.sh ~/Sushi/plugins &&
+sushi-rig plugins add &&
+sushi-rig plugins check &&
+(cd tool && .venv/bin/python -m pytest tests/test_string_machine.py tests/test_synth_lead.py -rs) &&
 sushi-rig up --rig string-machine
 ```
 
@@ -195,17 +210,24 @@ In order:
 
 - `down`, for the reason it comes first for Rubber Band (above).
 - The script builds in a temporary folder (seconds, with network to
-  github.com) and replaces `plugins/string-machine-chorus.lv2`. Nothing else
-  in `plugins/` is touched.
-- The loop copies the packaged bundles into `plugins/`, replacing any copy
-  already there; `gxechocat` is the pedals' (#165), and is copied again
-  harmlessly if it is there. `-L` matters: Ubuntu's `calf.lv2/calf.so` is a
-  relative link out of the bundle (`../../x86_64-linux-gnu/calf/calf.so`),
-  which a plain `cp -r` copies as a link to nothing, and `plugins check`
-  would still pass, since it reads only the Turtle. `sushi-rig plugins
-  assemble` makes such a link absolute instead (#177).
+  github.com) and replaces `plugins/string-machine-chorus.lv2`, putting the
+  old one back if it fails. Nothing else in `plugins/` is touched.
+- `plugins add` copies from `/usr/lib/lv2` only the bundles the manifest
+  needs and `plugins/` lacks (here Calf's, abGate's, GxBigMuffPi's and
+  GxZita_rev1's, and GxEchoCat's if the pedals' steps have not put it there);
+  a bundle already in `plugins/`, the amp and the built ones among them, is
+  never touched. It is all or nothing: every bundle is copied into a staging
+  folder inside `plugins/` that lilv cannot see, its links checked, and only
+  then are they renamed into place. It refuses, copying nothing, if a bundle
+  it would add has the name of one already there that provides something
+  else, or if a link in one leads nowhere. Links are what make the copy
+  matter: Ubuntu's `calf.lv2/calf.so` is a relative link out of its bundle
+  (`../../x86_64-linux-gnu/calf/calf.so`), which a plain `cp -r` copies as a
+  link to nothing; `add` and `assemble` point it at the file (#177).
 - `plugins check` fails if any URI the manifest lists does not resolve from
-  `plugins/`.
+  `plugins/`, if any link in `plugins/` (but `archive/`) leads nowhere, or if
+  a required plugin's binary is not a file, which is what a `cp -r` of Calf
+  would leave.
 - The tests check `plugins/` holds the pinned build and render each new
   plugin under this machine's Sushi; they need numpy, as the octave's do.
   The fast suite does not include them.

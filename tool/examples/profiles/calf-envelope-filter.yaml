@@ -1,0 +1,358 @@
+# sushi-rig component profile (schema 1).
+# Machine-written and canonical: edit by hand if you like, but comments
+# do not survive the next rewrite. Facts are checked against `sushi-rig
+# probe`; judgements carry provenance (draft / reviewed / fact).
+# Check with:  sushi-rig profile validate <this file>
+schema_version: 1
+
+plugin:
+  uri: http://calf.sourceforge.net/plugins/EnvelopeFilter
+  version: 0.90.3
+  name: Calf Envelope Filter
+kind: effect
+host: sushi-lv2
+
+ports:
+  audio_in: 4
+  audio_out: 2
+  config_drivable: true
+
+groups:
+  - id: sweep
+    label: Sweep
+    provenance: draft
+  - id: filter
+    label: Filter
+    provenance: draft
+  - id: mix
+    label: Mix
+    provenance: draft
+
+parameters:
+  - name: Bypass
+    symbol: bypass
+    facts:
+      min: 0.0
+      max: 1.0
+      default: 0.0
+      toggled: true
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: hidden, provenance: draft}
+    label: {value: Bypass, provenance: fact}
+    description:
+      value: 'The plugin''s own bypass: left off, since the rack''s bypass is the one to use.'
+      provenance: draft
+    scale: {value: toggle, provenance: fact}
+    control: {value: toggle, provenance: draft}
+
+  - name: Input Gain
+    symbol: level_in
+    facts:
+      min: 0.015625
+      max: 64.0
+      default: 1.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: hidden, provenance: draft}
+    label: {value: Input Gain, provenance: fact}
+    description:
+      value: 'Into the filter, 1/64 to 64 times, linear: left at 1, its default.'
+      provenance: draft
+    scale: {value: linear, provenance: draft}
+    control: {value: knob, provenance: draft}
+
+  - name: Output Gain
+    symbol: level_out
+    facts:
+      min: 0.015625
+      max: 64.0
+      default: 2.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: hidden, provenance: draft}
+    label: {value: Output Gain, provenance: fact}
+    description:
+      value: Out of it, 1/64 to 64 times (+36 dB), linear. Set by Level, 0.05 to 2.
+      provenance: draft
+    scale: {value: linear, provenance: draft}
+    control: {value: knob, provenance: draft}
+
+  - name: Activation
+    symbol: gain
+    facts:
+      min: 0.015625
+      max: 64.0
+      default: 1.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: hidden, provenance: draft}
+    label: {value: Activation, provenance: fact}
+    description:
+      value: How hard the playing pushes the sweep, 1/64 to 64. Set by Sensitivity, 0.5 to 32.
+      provenance: draft
+    scale: {value: linear, provenance: draft}
+    control: {value: knob, provenance: draft}
+
+  - name: Resonance
+    symbol: res
+    facts:
+      min: 0.7070000171661377
+      max: 32.0
+      default: 2.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: hidden, provenance: draft}
+    label: {value: Resonance, provenance: fact}
+    description:
+      value: The peak at the filter's corner, 0.707 to 32. Set by the control of the same name, to 12.
+      provenance: draft
+    scale: {value: linear, provenance: draft}
+    control: {value: knob, provenance: draft}
+
+  - name: Lower
+    symbol: lower
+    facts:
+      min: 10.0
+      max: 20000.0
+      default: 80.0
+      unit: Hz
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: true
+      settable: true
+    visibility: {value: primary, provenance: draft}
+    group: {value: sweep, provenance: draft}
+    order: {value: 2, provenance: draft}
+    label: {value: Lower, provenance: fact}
+    description:
+      value: 'Where the sweep starts, Hz, as the note dies: 300 in the synth lead.'
+      provenance: draft
+    scale: {value: log, provenance: draft}
+    control: {value: knob, provenance: draft}
+    phone: {value: 3, provenance: draft}
+
+  - name: Upper
+    symbol: upper
+    facts:
+      min: 10.0
+      max: 20000.0
+      default: 3000.0
+      unit: Hz
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: true
+      settable: true
+    visibility: {value: primary, provenance: draft}
+    group: {value: sweep, provenance: draft}
+    order: {value: 3, provenance: draft}
+    label: {value: Upper, provenance: fact}
+    description:
+      value: 'Where the sweep ends, Hz, on a hard pick: 2,500 in the synth lead.'
+      provenance: draft
+    scale: {value: log, provenance: draft}
+    control: {value: knob, provenance: draft}
+    phone: {value: 4, provenance: draft}
+
+  - name: Attack
+    symbol: attack
+    facts:
+      min: 1.0
+      max: 500.0
+      default: 20.0
+      unit: ms
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: true
+      settable: true
+    visibility: {value: advanced, provenance: draft}
+    group: {value: sweep, provenance: draft}
+    order: {value: 4, provenance: draft}
+    label: {value: Attack, provenance: fact}
+    description:
+      value: How fast it opens, ms.
+      provenance: draft
+    scale: {value: log, provenance: draft}
+    control: {value: knob, provenance: draft}
+
+  - name: Release
+    symbol: release
+    facts:
+      min: 10.0
+      max: 5000.0
+      default: 200.0
+      unit: ms
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: true
+      settable: true
+    visibility: {value: advanced, provenance: draft}
+    group: {value: sweep, provenance: draft}
+    order: {value: 5, provenance: draft}
+    label: {value: Release, provenance: fact}
+    description:
+      value: How fast it closes, ms.
+      provenance: draft
+    scale: {value: log, provenance: draft}
+    control: {value: knob, provenance: draft}
+
+  - name: Response
+    symbol: response
+    facts:
+      min: -1.0
+      max: 1.0
+      default: 0.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: advanced, provenance: draft}
+    group: {value: sweep, provenance: draft}
+    order: {value: 6, provenance: draft}
+    label: {value: Response, provenance: fact}
+    description:
+      value: The sweep's curve, -1 to 1; 0, its default, is straight.
+      provenance: draft
+    scale: {value: linear, provenance: draft}
+    control: {value: knob, provenance: draft}
+
+  - name: Mode
+    symbol: mode
+    facts:
+      min: 0.0
+      max: 12.0
+      default: 7.0
+      toggled: false
+      integer: true
+      enumeration: true
+      logarithmic: false
+      scale_points:
+        - {value: 0.0, label: 12dB/oct Lowpass}
+        - {value: 1.0, label: 24dB/oct Lowpass}
+        - {value: 2.0, label: 36dB/oct Lowpass}
+        - {value: 3.0, label: 12dB/oct Highpass}
+        - {value: 4.0, label: 24dB/oct Highpass}
+        - {value: 5.0, label: 36dB/oct Highpass}
+        - {value: 6.0, label: 6dB/oct Bandpass}
+        - {value: 7.0, label: 12dB/oct Bandpass}
+        - {value: 8.0, label: 18dB/oct Bandpass}
+        - {value: 9.0, label: 6dB/oct Bandreject}
+        - {value: 10.0, label: 12dB/oct Bandreject}
+        - {value: 11.0, label: 18dB/oct Bandreject}
+        - {value: 12.0, label: Allpass}
+      settable: true
+    visibility: {value: primary, provenance: draft}
+    group: {value: filter, provenance: draft}
+    order: {value: 2, provenance: draft}
+    label: {value: Mode, provenance: fact}
+    description:
+      value: 'The filter''s shape: a 24 dB low-pass in the synth lead, a band-pass by default.'
+      provenance: draft
+    scale: {value: enum, provenance: fact}
+    control: {value: selector, provenance: draft}
+    phone: {value: 5, provenance: draft}
+
+  - name: Mix
+    symbol: mix
+    facts:
+      min: 0.0
+      max: 1.0
+      default: 0.8500000238418579
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: advanced, provenance: draft}
+    group: {value: mix, provenance: draft}
+    order: {value: 2, provenance: draft}
+    label: {value: Mix, provenance: fact}
+    description:
+      value: 'The filter against the dry sound: 1 is all filter, as in the synth lead.'
+      provenance: draft
+    scale: {value: linear, provenance: draft}
+    control: {value: knob, provenance: draft}
+
+  - name: Sidechain
+    symbol: sidechain_enable
+    facts:
+      min: 0.0
+      max: 1.0
+      default: 0.0
+      toggled: true
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: hidden, provenance: draft}
+    label: {value: Sidechain, provenance: fact}
+    description:
+      value: 'Sweep from its side-chain inputs, which a rig''s channel leaves unconnected: left off.'
+      provenance: draft
+    scale: {value: toggle, provenance: fact}
+    control: {value: toggle, provenance: draft}
+
+controls:
+  - id: sensitivity
+    drives:
+      value:
+        - {parameter: Activation, curve: cosine, at_0: 0.5, at_1: 32.0}
+      provenance: draft
+    visibility: {value: primary, provenance: draft}
+    group: {value: sweep, provenance: draft}
+    order: {value: 1, provenance: draft}
+    label: {value: Sensitivity, provenance: draft}
+    description:
+      value: 'How far your playing opens it: Activation 0.5 to 32, 8 (45 %) in the synth lead.'
+      provenance: draft
+    control: {value: knob, provenance: draft}
+    phone: {value: 1, provenance: draft}
+
+  - id: resonance
+    drives:
+      value:
+        - {parameter: Resonance, curve: cosine, at_0: 0.708, at_1: 12.0}
+      provenance: draft
+    visibility: {value: primary, provenance: draft}
+    group: {value: filter, provenance: draft}
+    order: {value: 1, provenance: draft}
+    label: {value: Resonance, provenance: draft}
+    description:
+      value: 'The peak at the corner, 0.71 to 12: 4 (50 %) in the synth lead. Higher is more vocal.'
+      provenance: draft
+    control: {value: knob, provenance: draft}
+    phone: {value: 2, provenance: draft}
+
+  - id: level
+    drives:
+      value:
+        - {parameter: Output Gain, curve: cosine, at_0: 0.05, at_1: 2.0}
+      provenance: draft
+    visibility: {value: primary, provenance: draft}
+    group: {value: mix, provenance: draft}
+    order: {value: 1, provenance: draft}
+    label: {value: Level, provenance: draft}
+    description:
+      value: 'Its output, 0.05 to its own 2 (+15 dB over 0.4, measured): 0.4 (39 %) in the synth lead.'
+      provenance: draft
+    control: {value: knob, provenance: draft}
+    phone: {value: 6, provenance: draft}

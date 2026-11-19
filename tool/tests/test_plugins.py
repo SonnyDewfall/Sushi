@@ -20,6 +20,7 @@ from sushi_rig.plugins import (
     ARCHIVE_MANIFEST,
     Plan,
     PluginsError,
+    add,
     assemble,
     check,
     config_uris,
@@ -239,6 +240,70 @@ def test_copy_points_a_relative_link_out_of_its_bundle_at_what_it_led_to(tmp_pat
     assert os.readlink(copy / "inside.ttl") == "real.ttl"
 
 
+def test_copy_keeps_a_link_into_a_sibling_bundle_it_copies_inside_the_copy(tmp_path):
+    """`a.lv2/lib.so -> ../b.lv2/lib.so` with b.lv2 copied too means the copy
+    of b, not the source tree's (review of PR #186)."""
+    lv2 = tmp_path / "usr" / "lib" / "lv2"
+    a, b = lv2 / "a.lv2", lv2 / "b.lv2"
+    a.mkdir(parents=True)
+    b.mkdir()
+    (b / "lib.so").write_text("b's")
+    (a / "lib.so").symlink_to("../b.lv2/lib.so")
+    copy_bundles([a, b], tmp_path / "plugins")
+    link = tmp_path / "plugins" / "a.lv2" / "lib.so"
+    assert os.readlink(link) == "../b.lv2/lib.so"
+    assert link.resolve() == (tmp_path / "plugins" / "b.lv2" / "lib.so").resolve()
+
+
+def test_copy_points_a_link_into_a_bundle_it_does_not_copy_at_the_source(tmp_path):
+    lv2 = tmp_path / "usr" / "lib" / "lv2"
+    a, b = lv2 / "a.lv2", lv2 / "b.lv2"
+    a.mkdir(parents=True)
+    b.mkdir()
+    (b / "lib.so").write_text("b's")
+    (a / "lib.so").symlink_to("../b.lv2/lib.so")
+    copy_bundles([a], tmp_path / "plugins")
+    assert os.readlink(tmp_path / "plugins" / "a.lv2" / "lib.so") == str((b / "lib.so").resolve())
+
+
+def test_copy_refuses_a_link_that_leads_nowhere_naming_the_bundle_and_the_link(tmp_path):
+    a = tmp_path / "usr" / "lib" / "lv2" / "a.lv2"
+    a.mkdir(parents=True)
+    (a / "x.so").symlink_to("../../x86_64-linux-gnu/missing.so")
+    with pytest.raises(PluginsError) as err:
+        copy_bundles([a], tmp_path / "plugins")
+    assert str(a) in str(err.value) and "x.so" in str(err.value) and "leads to nothing" in str(err.value)
+
+
+def test_copy_refuses_a_link_loop_naming_the_bundle_and_the_link(tmp_path):
+    a = tmp_path / "usr" / "lib" / "lv2" / "a.lv2"
+    a.mkdir(parents=True)
+    (a / "p").symlink_to("q")
+    (a / "q").symlink_to("p")
+    with pytest.raises(PluginsError) as err:
+        copy_bundles([a], tmp_path / "plugins")
+    assert str(a) in str(err.value) and "loop" in str(err.value)
+
+
+def test_a_loop_is_refused_as_python_3_12_reports_it_too(tmp_path, monkeypatch):
+    """3.12's `Path.resolve` raises RuntimeError on a loop (3.13 OSError);
+    CI and the rig run 3.12, this suite may not."""
+    a = tmp_path / "a.lv2"
+    a.mkdir()
+    (a / "p").symlink_to("q")
+
+    resolve = Path.resolve
+
+    def loops(self, strict=False):
+        if strict:  # how the links are resolved; the bundles themselves are not links
+            raise RuntimeError(f"Symlink loop from {self!r}")
+        return resolve(self)
+
+    monkeypatch.setattr(Path, "resolve", loops)
+    with pytest.raises(PluginsError, match="loop"):
+        copy_bundles([a], tmp_path / "plugins")
+
+
 # --- against real lilv, on synthetic bundles -------------------------------
 
 
@@ -253,7 +318,11 @@ def _bundle(root: Path, name: str, *uris: str) -> Path:
         "@prefix lv2: <http://lv2plug.in/ns/lv2core#> .\n"
         "@prefix rdfs: <http://www.w3.org/2000/01/rdf-schema#> .\n" + declarations
     )
-    (bundle / f"{name}.ttl").write_text("")
+    # Not empty: `check` reads each plugin's data for its lv2:binary, and lilv
+    # (serd 0.32) logs "Error loading file" for a zero-byte one.
+    (bundle / f"{name}.ttl").write_text("# nothing more to say\n")
+    # The binary its lv2:binary names: `check` requires the file (#177).
+    (bundle / f"{name}.so").write_text("")
     return bundle
 
 
@@ -353,6 +422,76 @@ def test_assemble_refuses_a_non_empty_target_unless_told_to_replace(system, tmp_
 
 
 @needs_lilv
+def test_assemble_leaves_plugins_as_it_was_when_a_copy_fails(system, tmp_path):
+    """The copy is built beside plugins/ and renamed in only when whole, so a
+    link that leads nowhere fails it with plugins/ untouched, --replace or
+    not, and nothing of the attempt left (review of PR #186)."""
+    to = tmp_path / "plugins"
+    assemble([A, C], set(), [system], to)
+    before = sorted(p.name for p in to.iterdir())
+    (system / "c.lv2" / "lib.so").symlink_to("../../nowhere.so")
+    with pytest.raises(PluginsError, match="leads to nothing"):
+        assemble([A, C], set(), [system], to, replace=True)
+    assert sorted(p.name for p in to.iterdir()) == before
+    assert sorted(p.name for p in tmp_path.iterdir()) == ["plugins", "system"]
+
+
+@needs_lilv
+def test_check_fails_on_a_link_that_leads_nowhere_but_not_in_the_archive(system, tmp_path):
+    to = tmp_path / "plugins"
+    assemble([A], set(), [system], to)
+    (to / "archive" / "parked.so").symlink_to("../../gone.so")
+    check([A], set(), to)
+    (to / "ab.lv2" / "extra.so").symlink_to("../../x86_64-linux-gnu/calf/calf.so")
+    with pytest.raises(PluginsError) as err:
+        check([A], set(), to)
+    assert "extra.so" in str(err.value) and "leads to nothing" in str(err.value)
+
+
+@needs_lilv
+def test_check_fails_on_a_required_plugin_whose_binary_is_not_a_file(system, tmp_path):
+    """What Calf's bundle copied with `cp -r` looked like: lilv finds every
+    URI, and Sushi then cannot load the plugin (#177)."""
+    to = tmp_path / "plugins"
+    assemble([A, C], set(), [system], to)
+    (to / "c.lv2" / "c.so").unlink()
+    with pytest.raises(PluginsError) as err:
+        check([A, C], set(), to)
+    assert C in str(err.value) and "c.so" in str(err.value) and A not in str(err.value)
+
+
+@needs_lilv
+def test_add_copies_only_what_plugins_lacks_and_touches_nothing_else(system, tmp_path):
+    to = tmp_path / "plugins"
+    assemble([A], set(), [system], to)
+    (to / "amp.lv2").mkdir()
+    (to / "amp.lv2" / "carried-by-hand").write_text("the amp")
+    plan = add([A, C], set(), [system], to)
+    assert [b.name for b in plan.bundles] == ["c.lv2"]
+    assert sorted(p.name for p in to.iterdir()) == ["ab.lv2", "amp.lv2", "archive", "c.lv2"]
+    assert (to / "amp.lv2" / "carried-by-hand").read_text() == "the amp"
+    check([A, C], set(), to)
+    assert add([A, C], set(), [system], to).bundles == [], "a second run has nothing to do"
+
+
+@needs_lilv
+def test_add_copies_nothing_when_one_bundle_fails_or_its_name_is_taken(system, tmp_path):
+    to = tmp_path / "plugins"
+    assemble([A], set(), [system], to)
+    other = tmp_path / "other"
+    _bundle(other, "d", "urn:t:d")
+    (other / "d.lv2" / "lib.so").symlink_to("../../nowhere.so")
+    with pytest.raises(PluginsError, match="leads to nothing"):
+        add([A, C, "urn:t:d"], set(), [system, other], to)
+    assert sorted(p.name for p in to.iterdir()) == ["ab.lv2", "archive"], "c.lv2 was added alone"
+    (to / "c.lv2").mkdir()
+    (to / "c.lv2" / "manifest.ttl").write_text("# something else of the same name\n")
+    with pytest.raises(PluginsError, match="same name"):
+        add([A, C], set(), [system], to)
+    assert sorted(p.name for p in (to / "c.lv2").iterdir()) == ["manifest.ttl"]
+
+
+@needs_lilv
 def test_the_assembled_archive_is_silent_to_lilv(system, tmp_path, capfd):
     """lilv reports an unreadable manifest on stderr and carries on, so only
     watching stderr catches it."""
@@ -403,3 +542,19 @@ def test_cli_check_exits_nonzero_naming_the_missing_uri(system, tmp_path):
         main(["plugins", "check", str(to), "--manifest", str(manifest),
               "--config-dir", str(configs)])
     assert C in str(exit_info.value.code)
+
+
+@needs_lilv
+def test_cli_add_adds_what_is_missing_and_says_which(system, tmp_path, capsys):
+    from sushi_rig.cli import main
+
+    manifest = tmp_path / "manifest.txt"
+    manifest.write_text(f"{A}\n{C}\n")
+    configs = tmp_path / "none"
+    configs.mkdir()
+    to = tmp_path / "plugins"
+    assemble([A], set(), [system], to)
+    common = ["--manifest", str(manifest), "--config-dir", str(configs)]
+    assert main(["plugins", "add", "--from", str(system), str(to), *common]) == 0
+    assert "c.lv2" in capsys.readouterr().out
+    assert main(["plugins", "check", str(to), *common]) == 0

@@ -6,9 +6,10 @@
   "audio_in": 4,
   "audio_out": 2,
   "atom_ports": 2,
+  "optional_atom_ports": 2,
   "patch_writables": [],
   "state_interface": false,
-  "config_drivable": false,
+  "config_drivable": true,
   "parameters": [
     {
       "symbol": "bypass",
