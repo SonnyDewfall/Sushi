@@ -87,6 +87,7 @@ const state = {
   amp: null,                 // GET /amp, with /live: what the agent last sent Carla
   ampModels: null, ampModelsAt: 0,  // GET /amp/models: kept once it answers, read again after a model change
   ampChoice: null,           // the model picked in the amp card, awaiting its confirm
+  ampPicker: null,           // the amp card's picker, patched on its own key: see ampRegion
   ampPending: null,          // the model change in flight
   ampUpdaters: [],           // the amp region's own, emptied whenever it is rebuilt
   masterUpdaters: [],        // the master fader's, made once with each screen's header
@@ -1483,20 +1484,22 @@ function ampFader(f) {
 
 // The rack's amp card: the model and what it declares, the panel's faders,
 // Quality shown and not on a fader, and the model picker with its warning.
+// The picker is patched on its own key, inside the card: the model list's
+// first answer comes a poll after the card is drawn, and a model chosen or
+// cancelled is the picker's alone, so neither rebuilds the faders under a
+// hand. Keyed whole, the list arriving replaced a fader just focused or
+// pressed, and the key or the drag went nowhere (CI on master 58dd382).
 function ampRegion(el) {
   const view = R.ampCard(state.amp, state.ampModels, { locked: state.locked, pending: state.ampPending });
-  patch(el, JSON.stringify([view, state.ampChoice]), () => {
+  const { picker, listProblem, ...card } = view;
+  patch(el, JSON.stringify(card), () => {
     state.ampUpdaters = [];
+    state.ampPicker = null;
     if (view.state === "hidden") return [];
     if (view.state !== "up") {
       return [h("h2", {}, "AMP"), h("p", { class: view.state === "failed" ? "missing" : "amp-none" }, view.why)];
     }
-    const chosen = state.ampChoice && view.picker.options.find((o) => o.model === state.ampChoice);
-    const select = h("select", { "aria-label": "Amp model", disabled: !view.picker.canChange },
-      h("option", { value: "" }, "Choose another model…"),
-      view.picker.options.map((o) => h("option", { value: o.model, disabled: !o.usable, title: o.why || (o.declared ? `It calls itself ${o.declared}` : null) }, o.label)));
-    select.value = chosen ? chosen.model : "";
-    select.addEventListener("change", () => { state.ampChoice = select.value || null; render(); });
+    state.ampPicker = h("div", { class: "amp-picker" });
     return [
       h("div", { class: "amp-head" },
         h("span", { class: "swatch", style: "background:#E07A73" }),
@@ -1511,16 +1514,30 @@ function ampRegion(el) {
       h("div", { class: "faders" }, view.faders.map(ampFader),
         view.shown.map((p) => h("div", { class: "shown", title: p.note }, h("span", { class: "label" }, p.name), h("span", { class: "value" }, p.text),
           p.note ? h("span", { class: "note" }, p.note) : null))),
-      h("div", { class: "amp-picker" },
-        h("label", { class: "selector" }, h("span", { class: "label" }, "Model"), select),
-        // The warning is said once: under the picker, or in the confirm.
-        view.picker.why ? h("p", { class: "sub" }, view.picker.why)
-          : !(chosen && view.picker.canChange) ? h("p", { class: "sub" }, view.picker.warning) : null,
-        chosen && view.picker.canChange ? h("div", { class: "confirm", role: "group", "aria-label": "Confirm the model change" },
-          h("p", {}, `Load ${chosen.label}? ${view.picker.warning}`),
-          h("button", { class: "rig-act danger", onclick: () => changeAmpModel(chosen.model) }, `Load ${chosen.label}`),
-          h("button", { class: "rig-act", onclick: () => { state.ampChoice = null; render(); } }, "Cancel")) : null),
+      state.ampPicker,
       helpAnchor("amp"),
+    ];
+  });
+  if (state.ampPicker) ampPickerRegion(state.ampPicker, picker);
+}
+
+function ampPickerRegion(el, picker) {
+  patch(el, JSON.stringify([picker, state.ampChoice]), () => {
+    const chosen = state.ampChoice && picker.options.find((o) => o.model === state.ampChoice);
+    const select = h("select", { "aria-label": "Amp model", disabled: !picker.canChange },
+      h("option", { value: "" }, "Choose another model…"),
+      picker.options.map((o) => h("option", { value: o.model, disabled: !o.usable, title: o.why || (o.declared ? `It calls itself ${o.declared}` : null) }, o.label)));
+    select.value = chosen ? chosen.model : "";
+    select.addEventListener("change", () => { state.ampChoice = select.value || null; render(); });
+    return [
+      h("label", { class: "selector" }, h("span", { class: "label" }, "Model"), select),
+      // The warning is said once: under the picker, or in the confirm.
+      picker.why ? h("p", { class: "sub" }, picker.why)
+        : !(chosen && picker.canChange) ? h("p", { class: "sub" }, picker.warning) : null,
+      chosen && picker.canChange ? h("div", { class: "confirm", role: "group", "aria-label": "Confirm the model change" },
+        h("p", {}, `Load ${chosen.label}? ${picker.warning}`),
+        h("button", { class: "rig-act danger", onclick: () => changeAmpModel(chosen.model) }, `Load ${chosen.label}`),
+        h("button", { class: "rig-act", onclick: () => { state.ampChoice = null; render(); } }, "Cancel")) : null,
     ];
   });
 }
