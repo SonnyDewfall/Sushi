@@ -5994,3 +5994,35 @@ loosened. `test_ui_stage.py` ran 10 times in a row, 33 passed each time,
 with four CPU-bound processes beside it (load average about 8 on 4 cores).
 Master merged at e7fbed9 (#185, phone access) with no conflicts; the fast
 suite: 5543 passed, 22 skipped, 249 deselected. *(2026-11-19)*
+
+**The stage for a phone: CI again on PR #184 (#182), and the visualiser.**
+The 320 by 568 test measured the locked header at 244 px in CI, 234 here.
+Reproduced here by keeping Inter from Chromium (a fontconfig file rejecting
+it, so the sans-serif is DejaVu Sans, as in CI): 244 exactly, all of it the
+XRUNS tile's "since opened" taking two lines at 320. Master's header that
+way is 250, and its first channel at 581, below the first screen; this
+branch's 565. *Decided:* (b), the header's sizes held in CSS pixels, not
+(a): master's layout cannot be measured from this branch's page. The detail
+line and each tile line have a fixed height, and a tile's lines never wrap,
+cut short with an ellipsis (the tile's title has it all); the header is
+234 px in either font. The test now measures the locked header in the page's
+fonts and in four others (monospace, serif, Courier New, cursive), all
+equal and at most 240, which fails here without the fixed heights (244 in
+monospace, as CI had). *Changed:* "the first channel within one screen" is
+checked as nothing added between the header and the channels (the problems,
+the record bar, then CHANNELS and the first volume, each gap at most 16 px)
+rather than as a pixel count: the record bar's wrapped text, untouched by
+#182, moves with the font, and master fails the count in CI's fonts. The
+unlocked header still moves with the font (292 to 346 px here: the Lock's
+label and the Start and Stop row wrap). The other pixel checks in the stage
+tests are on fixed CSS sizes (44 px targets, the 46 px volume row, the
+select, the faders' travel between fixed-width cells). **The visualiser
+(#183), merged at b34bf88**: a new test at a laptop's width on its fake
+clock, idle 3 s, presses a step button 2.5 s after the last input; the
+visualiser is not due during the hold's twelve steps nor 2.9 s after the
+press, comes when left, and the press that puts the page back on the same
+button steps nothing. The stage's header and volume rows are unchanged with
+the screensaver loaded (234 px locked at 320 by 568). `test_ui_stage.py`
+and `test_ui_visualiser.py` three times, 82 passed each; the stage tests
+with DejaVu Sans for Inter, 34 passed; the fast suite 5622 passed, 22
+skipped, 249 deselected. *(2026-11-19)*

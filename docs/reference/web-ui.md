@@ -356,7 +356,10 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   a command runs, or with no agent. Start and Stop (with its confirm) and
   the guide's link are one row under the tiles, only unlocked; the busy line
   and any problem there too. The locked header is no taller than before
-  #182 (238 px at 320 by 568, against 240). Tested in Chromium at 320 (and
+  #182 (234 px at 320 by 568, against 240), and the same in any font: its
+  lines have fixed heights and a tile's lines never wrap, cut short with an
+  ellipsis instead (with DejaVu Sans in place of Inter, as in CI, master's
+  was 250 and the first draft's 244). Tested in Chromium at 320 (and
   320 by 568), 390 and 1280 px (`test_ui_stage.py`); not on a real phone or
   a touch screen.
 - **Start, stop and switch (v0.1, #111).** The rigs of `config/rigs/` in a

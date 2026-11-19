@@ -356,6 +356,16 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 .stage-head .tiles { display: flex; gap: 8px; }
 .stage-head .tile { flex: 1; flex-direction: column; gap: 2px; border-radius: 10px; padding: 8px 10px; min-width: 0; }
 .stage-head .tile .v { font-size: 15px; overflow-wrap: anywhere; }
+/* The header's height in CSS pixels, not in whatever font the device falls
+   back to (CI on PR #184: with DejaVu Sans for Inter, "since opened" took two
+   lines at 320 px and the header grew 10 px): each line of it a fixed
+   height, and a tile's lines one line each, cut short with an ellipsis
+   (the tile's title says it all). */
+.stage-head .detail-line { line-height: 16px; }
+.stage-head .tile .k, .stage-head .tile .v, .stage-head .tile .s { display: block; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.stage-head .tile .k { line-height: 15px; }
+.stage-head .tile .v { line-height: 18px; }
+.stage-head .tile .s { line-height: 14px; }
 .stage-screen .problems { padding: 12px 16px 0; }
 .levels { display: flex; flex-wrap: wrap; align-items: center; gap: 8px; padding: 12px 16px 0; }
 .levels:empty { display: none; }

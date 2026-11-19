@@ -21,6 +21,7 @@ pytest.importorskip("aiohttp")
 
 from test_ui import Page, blank, browser, expect, rigjs, until  # noqa: E402,F401
 from test_ui_knobs import rest_on  # noqa: E402
+from test_ui_visualiser import VPage, media_browser  # noqa: E402,F401
 from ui_fake import Served, UiLifecycle  # noqa: E402
 
 from sushi_rig.rigfile import level_to_gain  # noqa: E402
@@ -579,19 +580,46 @@ def test_the_stage_does_not_scroll_sideways_and_every_target_takes_a_thumb(brows
 @pytest.mark.parametrize("locked", [True, False])
 def test_on_a_small_phone_the_header_is_no_taller_and_the_channels_are_on_the_first_screen(browser, served, locked):
     """320 by 568, an iPhone SE: before #182 the header was 240 px and the
-    first channel's volume began at 551. Two rows for the dropdown and the
-    master pushed it to 659 locked (review of PR #184)."""
+    first channel's volume began at 551 here. Two rows for the dropdown and
+    the master pushed it to 659 locked (review of PR #184).
+
+    The locked header's height is held in CSS pixels, so it is the same in any font
+    (CI on PR #184 had 244 here, where Inter is missing: with DejaVu Sans a
+    tile's last line took two lines; master's header was 250 that way). It is
+    measured here in the page's fonts and again in four others, wider and
+    narrower. Below it, what #182 left alone: the record
+    bar, whose wrapped text is the one part that still moves with the font,
+    then the channels. In this machine's fonts the first channel is on the
+    first screen (545 px); with DejaVu Sans it is at 565 and master's at 581,
+    which is why that is checked as nothing added above it rather than as a
+    number of pixels."""
     page = stage_at(browser, served, 320, 568)
     p = page.page
     if not locked:
         unlock(p)
         expect(p.get_by_role("button", name="Stop electric_board")).to_be_visible()
-    head = p.locator("header.stage-head").bounding_box()["height"]
-    first = p.locator(".levels .volume").first.bounding_box()["y"]
+    head_of = "() => document.querySelector('header.stage-head').getBoundingClientRect().height"
+    head = p.evaluate(head_of)
+    fonts = []
+    for family in ("monospace", "serif", "'Courier New', monospace", "cursive"):
+        style = p.add_style_tag(content=f".stage-head, .stage-head * {{ font-family: {family} !important; }}")
+        fonts.append((family, p.evaluate(head_of)))
+        style.evaluate("(e) => e.remove()")
     if locked:
-        # Locked is how the stage is played: unlocked, Start and Stop add a row.
+        # Locked is how the stage is played. Unlocked, Start and Stop add a
+        # row, and the Lock's label and that row wrap as the font is wide
+        # (292 to 346 px here), which the locked header never does.
+        assert all(h == head for _, h in fonts), (head, fonts)
         assert head <= 240, head
-        assert first < 568, f"the first channel's volume is below the first screen: {first}"
+    # Nothing new between the header and the channels: the problems (none
+    # here), the record bar, then CHANNELS and the first channel's volume.
+    order = p.evaluate("""() => [...document.querySelector('.stage-screen').children].map((e) => e.className.split(' ')[0])""")
+    assert order[:4] == ["stage-head", "problems", "record-bar", "levels"], order
+    record = p.locator("section.record-bar").bounding_box()
+    levels = p.locator(".levels").bounding_box()
+    first = p.locator(".levels .volume").first.bounding_box()
+    assert record["y"] - head <= 16 and levels["y"] - (record["y"] + record["height"]) <= 16, (head, record, levels)
+    assert first["y"] - levels["y"] <= 48, "the first channel straight under CHANNELS"
     # The master is one row, the height of its buttons.
     master = volume(p, "Master volume").bounding_box()["height"]
     assert master <= 48, master
@@ -600,3 +628,40 @@ def test_on_a_small_phone_the_header_is_no_taller_and_the_channels_are_on_the_fi
     assert rig.bounding_box()["height"] <= 48
     assert rig.evaluate("(e) => getComputedStyle(e).whiteSpace") == "nowrap"
     page.close()
+
+
+# --------------------------------------------------------------------------- #
+# Beside the visualiser (#176): a laptop's stage can be covered when left
+# --------------------------------------------------------------------------- #
+
+def test_a_hold_keeps_the_visualiser_away_and_its_dismissal_steps_nothing(media_browser, served):
+    """On the visualiser's fake clock (`VPage`), at a laptop's width, its idle
+    time 3 s. A press on a step button 2.5 s after the last input resets the
+    idle time, so the visualiser is not due while the hold repeats nor for 3
+    s after the press; then, left alone, it comes. The press that puts the
+    page back, on the same button, steps nothing. The phone's stage is never
+    covered (`R.VISUALISER.minWidth`)."""
+    v = VPage(media_browser, served, width=1200, height=800, url="/#stage", clock=True)
+    p = v.page
+    v.until("() => document.querySelector('.card') !== null")
+    unlock(p)
+    button = volume(p, "vocal volume").get_by_role("button", name="vocal volume down 0.5 dB")
+    box = centred(button)
+    p.mouse.move(box["x"] + box["width"] / 2, box["y"] + box["height"] / 2)
+    v.advance(2500)
+    assert v.state()["due"] == 0
+    p.mouse.down()
+    v.advance(1600)  # the hold: 0.4 s, then its twelve steps
+    until(lambda: vocal_db(served) == -12.0)
+    assert v.state()["due"] == 0 and v.state()["phase"] == "off", "a hold is input: 4.1 s since the move, none since the press"
+    p.mouse.up()
+    v.advance(1300)  # 2.9 s since the press
+    assert v.state()["due"] == 0
+    v.shown()  # left alone, it comes
+    sent = len(gain_sets(served))
+    p.mouse.down()
+    p.mouse.up()
+    v.off()
+    v.advance(1000)
+    assert len(gain_sets(served)) == sent and vocal_db(served) == -12.0, "the press that put the page back stepped nothing"
+    v.close()
