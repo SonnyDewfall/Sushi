@@ -597,6 +597,33 @@ def test_at_phone_width_the_desk_stacks_strips_then_chains_then_files(browser, s
     page.close()
 
 
+@pytest.mark.parametrize("font", ["", "* { font-family: 'DejaVu Sans', 'Liberation Sans', sans-serif !important; letter-spacing: .08em; }"],
+                         ids=["page fonts", "a wider fallback font"])
+def test_at_phone_width_the_header_is_as_tall_whatever_its_tiles_read(browser, served, font):
+    """The tiles' values change while the page draws and every 2 s after:
+    sized by them, the header rewrapped when the first reading came in
+    ("LOAD — reading" to "LOAD 26% of 21.3 ms") and moved 8 px, so the test
+    above, measuring the rack in three steps, found the chains running into
+    the files (CI on PR #186, the wider font). Each tile is a third of a row
+    of its own now, its lines one each at a fixed height."""
+    page = Page(browser, served.url + "/#rack", width=390, height=844)
+    p = page.page
+    p.wait_for_selector(".strip .volume")
+    if font:
+        p.add_style_tag(content=font)
+    readings = [["—", "reading", "—", "reading", "none"], ["100%", "of 21.3 ms", "12345", "since opened",
+                                                         "a much longer amp model name than any"]]
+    heights = p.evaluate("""(readings) => readings.map((r) => {
+        const tiles = [...document.querySelectorAll('header.bar .tile')];
+        const set = (tile, v, s) => { tile.querySelector('.v').textContent = v; const e = tile.querySelector('.s'); if (e && s !== null) e.textContent = s; };
+        set(tiles[0], r[0], r[1]); set(tiles[1], r[2], r[3]); set(tiles[2], r[4], null);
+        return [document.querySelector('header.bar').getBoundingClientRect().height,
+                document.querySelector('nav.channels').getBoundingClientRect().top];
+    })""", readings)
+    assert heights[0] == heights[1], heights
+    page.close()
+
+
 def test_a_channel_a_blend_drives_says_so_and_does_not_fight_the_pedal(browser):
     with Served(save=True) as served:
         path = served.save.root / "config" / "rigs" / "electric_board.yaml"

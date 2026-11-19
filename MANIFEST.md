@@ -6219,3 +6219,24 @@ anything else and then goes on as for any `plugins/` that is there (refusing
 without `--replace`, saying it put it back). `.plugins.previous` is deleted
 only once a `plugins/` is in place. Two tests: a rename that fails, and the
 state a kill between the renames leaves. *(2026-11-19)*
+
+**The rack's header moved when a load reading came in (#177, CI on PR #186).**
+`test_at_phone_width_the_desk_stacks_strips_then_chains_then_files[a wider
+fallback font]` failed in the container job: the chains' bottom 7 px below the
+files' top. Reproduced here by sampling the layout every 20 ms after the
+strips appear: the header was 293 px tall, then 285, as the first pw-top
+reading replaced "LOAD — reading" with "LOAD 26% of 21.3 ms". The tiles are
+sized by their values and the header wraps, so a wider LOAD tile pushed XRUNS
+to the next row and pulled Lock up beside Stage and Help. The test measures
+the rack in three steps, so a header shrinking between them read as an
+overlap. A layout bug any rig can meet; this branch only changed the timing
+(its larger `/profiles` and library). *Fixed at the root*, as #184 fixed the
+stage's header: at phone width the tiles are a row of their own, a third of
+it each, every line of each one line at a fixed height and cut short with an
+ellipsis (the tile's title says it all). Sampled again, the header stays at
+268 px from the first frame, and nothing above the chains ever shrinks. New
+test `test_at_phone_width_the_header_is_as_tall_whatever_its_tiles_read`
+(both fonts) sets the tiles to the readings' shortest and longest and holds
+the header's height; it fails without the fix (294 against 334 px). Every
+`test_ui_*` file passed: 520, then the four with font cases again, 160.
+*(2026-11-19)*
