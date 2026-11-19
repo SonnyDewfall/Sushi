@@ -5528,6 +5528,253 @@ browser too old to send one on a POST, which needs authentication (#29).
 pedal or MIDI hardware;** the names were resolver rules, not DNS or mDNS.
 *(2026-11-17)*
 
+**Four pedals: tremolo, flanger, shimmer reverb, tape echo (#165).** From
+#155's shortlist, all guitarix-lv2 43.0, which CI already installs:
+GxTremolo, GxFlanger, Gxshimmizita, GxEchoCat. Their four lines in
+`plugin-manifest.txt` (now 59 URIs) and `plugin-ports.txt` (1 1, 1 1, 2 2,
+1 1, as lilv reads them); a profile each (`tool/examples/profiles/gx*.yaml`,
+validated against `probe` over `plugins/` and over `/usr/lib/lv2`, whose
+output is frozen as `tests/fixtures/probe_gx*.json`); a channel preset each
+(`config/channels/tremolo`, `flanger`, `tape-echo`, `shimmer`); a guide,
+`docs/guide/effects.md`. No visual read: this machine has no Carla and no
+jackd, so no profile has a `face`. **Measured** (the bench host of #155, and
+Sushi 1.3.0's offline frontend as the compiler builds a one-plugin mono
+channel, on #155's synthetic guitar): GxTremolo's Depth swings 5 dB at 0.5,
+11 at 0.7, 24 at 1 (Dry/Wet 100, 5 Hz); its Dry/Wet 50 default makes every
+dip shallower. GxFlanger's WIDTH 0 stops the sweep; its MIX (-1 to 1) moves
+the sweep only a little and its role is not documented. Gxshimmizita's
+DRYWET is a straight linear crossfade to a wet about 17 dB over the guitar
+(13 dB on a noise burst); its PSDRYWET is how much of the tail goes through
+the shifter (at SHIFT 2 and PSDRYWET 1 a 440 Hz tail is 5 semitones up at
+1.5 s, at 0 not at all); MODE changes the output even at DEPTH 0, CONTROL
+and ENVELOPE only above it; F1, F2, T60DS and T60M have zita-rev1's ranges
+and defaults. GxEchoCat's Swell is the echoes' level and leaves the dry as
+it is; heads 1 to 3 are an eighth, a quarter and a dotted quarter at BPM
+(250, 500, 750 ms at 120); no head on, no echo; its Output is about 27 dB a
+unit, so 1.5 is +13 dB on 1 and 4 is +78. **Decided:** the shimmer's
+**Mix** drives DRYWET 0 to 0.3 (linear): past 0.3 the wet only gets louder;
+rendered through Sushi, Mix 0, 25, 50, 75, 100 % gave +0.0, +1.3, +3.4,
++5.5, +7.3 dB on the left (+0.0 to +8.0 right). The echo's **Mix** drives
+Swell 0 to 1; its Output is hidden, and an advanced **Level** drives it from
+0.725 to 1.39: -12.3 to +5.9 dB of the guitar bypassed, level with it at
+1.17 (67 %). A first try lowered Output along Mix's travel to hold the level
+(within 0.5 dB through Sushi), and was dropped: the plugin's own settings
+(Swell 0, Output 1.0) are off that curve, and rig.js's anchored turn
+(`mixPath`) keeps them off it while the knob keeps its start (in Chromium:
+up to 100 % and back to 0 % left Output at 1.0, not 1.17), so an echo added
+from the library would stay about 5 dB under the guitar; a one-parameter
+Level puts the default on its travel (41 %). Hidden:
+the tremolo's Reset (a trigger), the shimmer's DRYWET, the echo's Swell and
+Output. **Presets, not a rig:** a rig in `config/rigs/` with the shimmer in
+it fails `test_stereo.py`'s `test_each_plugin_compiled_alone_is_balanced`
+(L -14.23, R -11.23 dBFS, tried here with a scratch rig and the shimmer
+bypassed, then deleted), and with it on, `nulltest` too (3.35 dB apart on
+the sweep at the preset's settings); the bench host gives 1.4 to 3.5 dB on
+the sweep at every setting tried, and about 1 dB on the guitar. It is a
+stereo reverb, not a lost channel; whether such a plugin should be held to
+`BALANCE_DB` is left open, and the guide says a committed rig with it fails
+CI. So no sound reference was made: the #158 references are for rigs.
+**Tests:** `tests/test_pedals.py` (the inventory, each profile clean and
+canonical against its frozen probe, the panels' primaries, the Mixes and
+Level; slow: each pedal alone in Sushi is finite, two-sided, well above
+silence, the mono ones balanced, and at least -20 dB away from the same
+channel bypassed; checked by hand that the flanger with WET 0 fails it, at
+-174 dB), `tests/test_ui_pedals.py` (Chromium: each card's groups, More,
+summary, the echo's heads as whole-number knobs, the controls' targets as
+profile.py's, the echo's own defaults on its Mix and Level),
+`test_agent_edits.py`'s library route (the manifest's count, and the four
+profiles by URI). `sushi-rig verify` of a rig made from the four presets'
+chains: ok (every parameter name real, every value applied). **Found on the
+way, fixed:** two renders at once on one machine (another worktree's slow
+tests) made Sushi's gRPC server fail to bind 51051; Sushi then exits 0 with
+a WAV header and no audio, and prints its bind error with raw bytes, which
+`render_offline`'s strict decode turned into a UnicodeDecodeError. Now the
+streams decode with replacement and an empty render is a `RenderError` that
+names the port (two tests in `test_render.py`; the first fails without its
+fix). The library's tests held the manifest at 55 (`test_library.py`
+twice, `test_ui_library.py` twice, `test_agent_edits.py`); they now count
+it. **Counts, here:** the fast suite with Chromium (Playwright's browser at
+`/opt/pw-browsers`), 4927 passed, 5 skipped (`test_probe.py`'s five that
+want the rig machine's `~/Sushi/plugins`); before the count fixes, 3 of
+them failed at 55. Slow, against Sushi 1.3.0 and a `plugins/` assembled
+from this machine's packages: `test_pedals.py` 4 passed; `test_stereo.py`
+101 passed in a clean run, while other worktrees' Sushis held port 51051
+one or two renders a run failed, now as a `RenderError` naming the port or
+as Sushi aborting in gRPC (exit -6), never on a pedal. **Not run:** the
+rest of the slow suite; the container job; anything on the rig; nothing
+heard; a phone or the touch screen. *(2026-11-17)*
+
+**Four pedals: the review of PR #173 (#165).** (1) **The echo could get past
+its Level.** Input, under More, raised the dry and the echoes together
+(+11.6 dB at 1; +17.5 with Level at its top), and with Repeats, Mix and all
+three heads up the page reached +8.9 dBFS peaks from a -20 dBFS sweep. Now
+Input is hidden (the presets keep the plugin's 0.25), Repeats is a control
+(Sustain 0 to 0.3), Mix is Swell 0 to 0.7 and Level is Output 0.725 to 1.17
+(-12 dB to level with the guitar). Measured through Sushi on a 3 s, -20
+dBFS sweep, every tempo step and head combination at those tops: at worst
++3.1 dB RMS and +10.9 dB peak over the guitar bypassed (all heads, 360
+BPM); the guide promises 4 and 12. Sustain's top is where three heads stop
+ringing on: at 0.4 the slowest tempo held -35 dBFS for twenty seconds after
+a one-second sweep, at 0.35 it fell to -47, at 0.3 to -78. (2) **A shimmer
+added from the library was past its Mix**: the plugin's own Dry/Wet is 0.5
+and Mix stopped at 0.3. Mix now runs to 0.5 on `cosine` (half way is
+0.146, where the preset is), so the default is Mix 100 %: +10.6 dB RMS and
++19.1 dB peak on the sweep, said in the guide. (3) The library tests and
+the Dockerfile no longer write a manifest count. (4) **Nothing outside the
+page bounds a parameter** (a preset or rig with the echo's Output at 1.0
+loads): **not done**, and said in the guide and the web UI reference. A
+limit the agent enforces needs each live set to know its processor's
+plugin, which only Sushi's session says (`live._session_plugins`, a save of
+the whole session, kept off the per-knob path on purpose), so a cache with
+its own invalidation, plus checks in the preset loader, save-as, the rig
+loader and the page: past a contained change, so stopped and reported.
+(5) **Offline renders pass `--no-grpc`**: nothing talks to one, and the
+port clash and the gRPC aborts are gone (three slow runs of test_stereo.py
+and test_pedals.py beside another worktree's renders, 105 passed each); the
+empty-render error stays. (6) Slow tests hold the echo at its loudest at
+two tempos, its repeats dying away at 24 BPM, Level's two ends (-12.5 and
+-0.2 dB) and the shimmer at Mix 100 % against its own defaults, each with
+settings from the profile's curves; widening Repeats to 0.35, Mix to 0.8,
+Level to 1.2 or the shimmer's Mix to 0.6 each failed at least one (tried,
+then put back). (7) The presets are read under `committed_presets`: each
+plugin with controls must sit on each control's curve and inside its
+travel, in Python and in rig.js (`mixPosition`), and each preset of the four
+renders in Sushi. **Not run:** the rig, by ear, a phone, the container job.
+*(2026-11-17)*
+
+**The shimmer on #166's stress signal (#165, PR #173).** #166's survey
+(`tool/spikes/synth_research/`, branch claude/synth-research) saw
+Gxshimmizita reach +20 dBFS on its 70 s stress signal (the guitar three
+times, full-scale noise, a DC step, a full-scale 30 Hz sine, ten seconds of
+silence). Rebuilt here from its `measures.stress()` and rendered through
+Sushi at the preset, at Mix 100 % with the preset's other knobs, at the
+plugin's own settings, at #166's own (Shift 2, both decays 6, Dry/Wet 0.5),
+and at the page's longest and most shifted (both decays 8, Pitch mix 1,
+Shift 0, +6 and -6): **it does not run away.** Peaks +9.8, +18.4, +17.7,
++20.0 and up to +23.8 dBFS. Every one was exactly 20 dB lower with the input
+at a tenth, so this is the wet's gain on a full-scale input, not feedback.
+In the silence the tail always fell: from about 0 dBFS to -86 in eight
+seconds at #166's settings, and by 48 dB at the longest decays. So nothing
+was capped. The level the guide gave was only for the plugin's own decays,
+though. On the sweep the shimmer's loudest corner (Mix 100 %, both decays 8,
+Pitch mix 0, found on a grid of Pitch mix, Shift, Crossover, Damping and the
+decays) is +14.9 dB RMS and +25.7 dB peak over the guitar bypassed. The
+guide now promises at most 16 and 27. Slow tests:
+`test_the_shimmer_at_its_loudest_corner_stays_inside_the_guides_window`,
+and `test_the_shimmer_does_not_run_away_at_its_longest_and_most_shifted`.
+The second runs #166's signal without the guitar, at full scale and at a
+tenth, with Shift at 0, +6 and -6. It asks that the peaks differ by
+20 ± 0.5 dB and that the tail falls 30 dB in eight seconds of silence. An
+echo that rings on (three heads, Sustain 0.6) fails both: 13.9 dB apart,
+and a flat tail. *(2026-11-18)*
+
+**Stereo reverbs may be 4 dB apart, and a committed rig of the pedals (#165,
+PR #173).** The owner decided the balance question: a stereo reverb's two
+sides may be up to 4 dB apart, and everything else keeps 1 dB.
+`nulltest.REVERB_BALANCE_DB` is 4.0. `nulltest.STEREO_REVERBS` is an
+explicit list: MaGigaverb, MVerb, mda Ambience, Gxshimmizita and a-reverb.
+That is every manifest plugin whose own bundle declares `lv2:ReverbPlugin`
+and has two outputs in `plugin-ports.txt`. `test_stereo.py` checks it is
+still exactly that wherever `plugins/` is present, so a new reverb has to
+be added by hand. `balance_db_of(config)` gives 4 dB to a render with one
+of them playing, not bypassed. It is applied by `nulltest`
+(`heard_findings`/`played_findings`, through the CLI) and by
+`test_stereo.py`'s rig and compiled-alone checks. A silent or one-sided
+render still fails. Tests in `test_sound_refs.py`: the shimmer at 3 dB
+passes and at 5 dB fails; each reverb at 4 dB still fails silent or
+one-sided; a chorus, an EQ and a bypassed shimmer at 3 dB fail. **The
+shimmer is not inside 4 dB at every setting.** On the bench host's sweep,
+Dry/Wet 0.2 with both decays at 1 gave 4.08 dB, and the guide says so; the
+preset's settings gave 3.31, its defaults 2.86. **A committed rig, as well
+as the presets:** `config/rigs/pedals.yaml` has the four after the amp, the
+echo and the shimmer on at their presets' settings, the tremolo and the
+flanger off. `config/sound/pedals.yaml` was calibrated here (band and level
+0.0001 dB, sides 3.34 dB apart, `made_from` hash rule 2), so CI now pins
+the echo's and the shimmer's sound, and `test_stereo.py` holds all four
+compiled alone. Here: `test_stereo.py`, `test_rig_fixtures.py`,
+`test_sound_refs.py`, `test_pedals.py` and `test_presets.py`, slow ones
+included, 410 passed. `nulltest --all`: 39 "sounds the same", exit 0, before
+and after merging #172's master limiter. The limiter holds a full-scale
+input's +20 dBFS down. The shimmer's runaway test, which took its channel
+through the master, then read that as non-linear and failed. It now renders
+the plugin alone on a stereo track, and passes. *(2026-11-18)*
+
+**The shimmer's Mix stops at Dry/Wet 0.15 (#165, PR #173).** Coordinator's
+choice B. The page's loudest shimmer corner was +14.9 dB RMS. With Mix
+running to the plugin's own Dry/Wet 0.5 it could not come under +6: at 0.5
+even the shortest decays in the grid gave +10.4. Mix is now Dry/Wet 0 to
+0.15, linear. The loudest corner (both decays 8, Pitch mix 0) is +5.9 dB
+RMS and +16.2 dB peak over the guitar bypassed; the guide promises 6 and 17,
+and the slow test holds exactly that. Widening Mix to 0.2 fails it (+7.7,
+tried and put back). At the plugin's own decays Mix 100 % is +3.5 dB. On
+the bench host's sweep the sides stay within 3.8 dB anywhere on Mix. The
+preset and the pedals rig are re-placed at Mix 100 % (0.15, from 0.146),
+and `config/sound/pedals.yaml` is recalibrated (sides 3.35 dB apart).
+**Documented exception:** the plugin's own Dry/Wet 0.5 is past Mix's top,
+and a shimmer added from the library has it. The page shows it at 100 %,
+off the curve (tested in Chromium), and a turn down brings it to 0. The
+slow test of the plugin's own settings holds it at +10 to +11.5 dB RMS and
+at least 5 dB over Mix 100 %. The runaway test now runs at that 0.5, the
+wettest a library add reaches. **Starting values on a library add: not
+done.** `add_request` takes no parameters on this branch or on master. The
+log, undo and save of an add record only where it went and the plugin's
+defaults. It would take: an optional `parameters` in `add_request`; the add
+made bypassed, those set, then un-bypassed, as `_undo_remove` already puts a
+plugin back; a take-back if one is refused; a profile field for the values
+(validated against probe); the panel flattening carrying it; and the
+drawer's add sending it, normalised, with tests at each step. That is
+beyond a small change, so the exception stays and the guide says why.
+*(2026-11-18)*
+
+**A reverb's 4 dB is the reverb's alone (re-review of PR #173).**
+`balance_db_of` gave 4 dB to a whole render once one stereo reverb played
+in it. That covered all 18 renders of the 15 committed rigs, so a chorus or
+`lcrDelay` 3 dB lopsided beside a-reverb or MaGigaverb would have passed and
+been calibrated. Now a render with a stereo reverb playing is rendered a
+second time with its stereo reverbs bypassed (`nulltest.reverbs_bypassed`),
+and that render is held to 1 dB (`without_reverbs_findings`). Its findings
+say so ("with its stereo reverbs bypassed, ..."). This runs once per
+channel, in every rig path of `nulltest`: compare, STALE, `--candidates`
+and `--calibrate`, which then makes no reference of it.
+`test_stereo.py`'s rig test does the same. A rig with no stereo reverb is
+still rendered once (tested). I chose the second render over an allowance
+worked out per plugin, because a reverb mixes its input across both sides,
+so what the chain before it did cannot be told apart in the first render.
+Tests in `test_sound_refs.py`, through the CLI with a stand-in Sushi: a
+rig of a chorus and a reverb 3 dB apart both ways fails, and no reference
+is made of it; the reverb alone 3 dB apart, with the rest balanced, passes;
+at 5 dB it fails; the no-reverb rig is rendered once. The first fails with
+`reverbs_bypassed` returning nothing (tried). Every committed rig, its
+reverbs bypassed, measured within 1 dB here (`test_stereo.py`, 144 passed
+with `test_pedals.py`), and `nulltest --all` gives 41 "sounds the same".
+The shimmer's corner test stays at exactly its promise of +6 dB RMS
+(measured +5.88). Those renders are bit-identical in CI and here: every
+reference, the frozen ones calibrated in CI included, matches at 0.0001 dB.
+The comment that said the limits were held "a little inside" now says that
+is the echo's only. *(2026-11-18)*
+
+**CI's slow job on 7779b5e: two failures (PR #173).** (1)
+`test_convert.py`'s `test_every_v2_rig_sounds_like_its_reference[pedals]`
+called `heard_findings` at the 1 dB default and failed the shimmer's
+3.35 dB. The whole rule is now one function, `nulltest.rig_findings(fp,
+config, render_without)`: the reverb's allowance, and the render with its
+stereo reverbs bypassed at 1 dB. The CLI and both of `test_convert.py`'s
+rig tests call it. Every other caller of `heard_findings`, `_balanced` and
+`BALANCE_DB` now applies the same rule: `test_stereo.py`'s rig test,
+`test_limiter_sushi.py`'s `render` (its own reverbs-bypassed render), and
+`test_sound_refs.py`'s frozen-reference check (at the channel's allowance;
+the render half is `test_convert.py`'s). `test_pedals.py`'s 1 dB is the
+mono pedals' alone. Slow here: `test_convert`, `test_stereo`,
+`test_sound_refs`, `test_limiter_sushi` and `test_pedals`, 189 passed. (2)
+`test_ui.py`'s `test_the_stage_fits_a_phone_and_every_target_takes_a_thumb`
+is a race in the test, and master has it too. Its fixture waits for the
+first `.card`; each row is rebuilt when its profile arrives after that
+first draw, and a box read in between can be None. Under full CPU load the
+old read failed 4 of 25 here and 5 of 25 on master (9bb1053, a scratch
+worktree, since removed). The test now waits until the overdrive's summary
+is in its profile's labels and its bypass button is visible, then measures:
+25 of 25 under the same load. *(2026-11-18)*
+
 **The stage for a phone: the lock holds the volumes, 0.5 dB steps, a rig
 dropdown (#182).** Asked for on 2026-11-18 after using the stage on a phone.
 (1) **Locked, no stage volume moves**: the master's and each channel's

@@ -33,7 +33,13 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   own range, never 0 to 1. A turned knob is sent at once. A profile may also
   give a knob that sets several of the plugin's parameters at once (its
   `controls`, `profile.py`): the hall's **Mix**, 0 to 100 %, sets its dry
-  level, early reflections and tail along an equal-power curve. Each step
+  level, early reflections and tail along an equal-power curve. A control
+  may drive one parameter over part of its range instead: the shimmer's Mix
+  (its Dry/Wet, 0 to 0.15, short of the plugin's own 0.5) and the tape echo's
+  Mix (Swell, to 0.7), Repeats (Sustain, to 0.3) and Level (Output, 0.725 to
+  1.17, where the plugin's own knob reaches +78 dB). These bound the page
+  only: a preset or rig file can still set the parameters to anything; see
+  [the effects guide](../guide/effects.md). Each step
   of it is one `POST /live/parameters` of the three: all or none (a level
   Sushi refuses part-way puts back the ones already set), one change in the
   log, one Undo, and Save writes them as it writes any parameter. It is

@@ -266,14 +266,15 @@ def test_every_frozen_rig_sounds_like_its_reference(name, tmp_path, request):
     the references are the owner's to change, so a failure here is a change
     in the compiler, Sushi or a plugin, by the rig's name."""
     pytest.importorskip("numpy")
-    from sushi_rig.nulltest import compare, from_dict, heard_findings
+    from sushi_rig.nulltest import compare, from_dict, rig_findings
 
     for channel, view in rigfile.heard(compiled_to_render(frozen(name))):
         reference = FROZEN_SOUND / f"{channel}.yaml"
         assert reference.is_file(), f"no reference for the frozen {channel}"
         expected, tolerance = from_dict(yaml.safe_load(reference.read_text()))
         fp = _rendered(channel, view, tmp_path, request)
-        found = compare(expected, fp, tolerance) + heard_findings(fp)
+        found = compare(expected, fp, tolerance) + rig_findings(
+            fp, view, lambda without: _rendered(f"{channel}-reverbs-bypassed", without, tmp_path, request))
         assert found == [], f"frozen {channel}: " + "; ".join(str(f) for f in found)
 
 
@@ -301,14 +302,17 @@ def test_every_v2_rig_sounds_like_its_reference(rig, tmp_path, request):
     pytest.importorskip("numpy")
     import warnings
 
-    from sushi_rig.nulltest import compare, from_dict, heard_findings, made_from_of, staleness
+    from sushi_rig.nulltest import compare, from_dict, made_from_of, rig_findings, staleness
     from sushi_rig.render import rig_file_hash
 
     current = rig_file_hash(rig)
     config = compiled_to_render(rig)  # emit_rig, but for a MIDI map, which no render plays
     for name, view in rigfile.heard(config):
         fp = _rendered(name, view, tmp_path, request)
-        problems = heard_findings(fp)
+        # A stereo reverb's 4 dB, and the rest of the chain at 1 dB, as
+        # nulltest holds it (`nulltest.rig_findings`, PR #173).
+        problems = rig_findings(
+            fp, view, lambda without, name=name: _rendered(f"{name}-reverbs-bypassed", without, tmp_path, request))
         assert problems == [], f"{name}: " + "; ".join(str(f) for f in problems)
         reference = ROOT / "config" / "sound" / f"{name}.yaml"
         raw = yaml.safe_load(reference.read_text()) if reference.exists() else None
