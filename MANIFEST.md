@@ -5877,4 +5877,5 @@ as any failed start does, so what happened stays on the line meanwhile; and
 the test waits for the whole condition (off, `lost` 1, no session, "context
 lost" in the error and on the line), then for the next showing, whose wait
 reports the state if it does not come. The test, 20 runs with all four cores
-kept busy: 20 passed. *(2026-11-19)*
+kept busy: 20 passed. The fast suite, with #185 merged: 5588 passed, 22 skipped,
+0 failed. *(2026-11-19)*
