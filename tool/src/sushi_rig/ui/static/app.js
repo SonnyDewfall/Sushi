@@ -2786,10 +2786,21 @@ function renderRack(regions, model, unsaved, status) {
   ampRegion(regions.amp);
   rigsRegion(regions.rigs, { newRig: true, deletes: true });
   stripsRegion(regions.wiring, model, unsaved);
-  patch(regions.channels, "agent", () => h("p", { class: "agent" }, `Agent on ${location.host}. Phone and laptop see the same rig.`));
+  agentRegion(regions.channels);
   renderChanges(regions.changes);
   saveRegion(regions.save, unsaved);
   takesRegion(regions.takes);
+}
+
+// "Agent on …" (#181): the phone's URL when the agent listens on the
+// network, and that it is this machine's alone when not (R.agentLine).
+function agentRegion(el) {
+  const agent = state.health && state.health.ok ? state.health.body.agent || {} : {};
+  const line = R.agentLine(agent.listen ?? null, location.host);
+  patch(el, JSON.stringify(line), () => h("p", { class: "agent" }, line.text,
+    line.urls.flatMap((u, i) => [i ? (i === line.urls.length - 1 ? " or " : ", ") : " ",
+      h("a", { href: u.url, class: "phone-url" }, u.url), u.label ? ` (${u.label})` : ""]),
+    line.urls.length ? ". " : "", line.after));
 }
 
 // A time of today as the page shows one (the log's are to the second).
