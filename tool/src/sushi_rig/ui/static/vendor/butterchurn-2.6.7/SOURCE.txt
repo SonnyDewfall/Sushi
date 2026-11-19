@@ -1,0 +1,35 @@
+butterchurn 2.6.7, the MilkDrop visualiser in WebGL 2, by Jordan Berg.
+MIT licence: LICENSE, beside this file, as the package ships it.
+
+Where these files come from
+  The npm package butterchurn@2.6.7 (published 2019-03-12; its latest
+  stable release, the 3.0 line being still in beta), from
+  https://registry.npmjs.org/butterchurn/-/butterchurn-2.6.7.tgz
+  integrity sha512-BJiRA8L0L2+84uoG2SSfkp0kclBuN+vQKf217pK7pMlwEO2ZEg3MtO2/o+l8Qpr8Nbejg8tmL1ZHD1jmhiaaqg==
+  git head d90f271be02969d8f16a3ed6b6960c971da6eff9 of github.com/jberg/butterchurn
+
+  butterchurn.min.js  the package's lib/butterchurn.min.js, byte for byte
+                      sha256 4e67421bc18d48fac4a6ff4e69e2778f770737fbdd4e323438da154085b4818d
+  LICENSE             the package's LICENSE, byte for byte
+                      sha256 e5c204814d7119c939d9f111691e0c2008607d09c2f4679691e6dc5a10f24b98
+
+  The checksums are held by tests/test_ui_visualiser.py: a changed file
+  fails the suite until this note says what it is now.
+
+What the bundle carries
+  Its one bundled dependency is ecma-proposal-math-extensions 0.0.2 (Rick
+  Waldron, MIT by its package.json, which ships no licence file). Loading
+  the bundle defines Math.clamp, Math.scale, Math.fscale, Math.radians,
+  Math.degrees, Math.DEG_PER_RAD and Math.RAD_PER_DEG, and the globals
+  sqr, sqrt, sign, rand, randint, bnot, pow, div, mod, bitor, bitand,
+  sigmoid, bor, band, equal, above, below, ifcond, memcpy and log10 on
+  window, for MilkDrop's preset equations. None of the page's own code
+  uses those names, and the bundle is loaded only when the visualiser
+  first starts.
+  It fetches nothing: there is no URL in it.
+
+What is not here
+  No preset pack. butterchurn-presets is labelled MIT under Jordan Berg's
+  name, but its presets are other people's MilkDrop presets, converted,
+  with no licence from their authors. The presets the rig shows are its
+  own: ../../visualiser-presets.js.

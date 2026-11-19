@@ -1,0 +1,28 @@
+<!doctype html><meta charset="utf-8"><title>viz spike</title>
+<style>html,body{margin:0;background:#000}canvas{display:block}</style>
+<canvas id="c"></canvas>
+<script src="butterchurn.min.js"></script>
+<script>
+const preset = {baseVals: {decay: 0.96, wave_mode: 0, wave_scale: 1.2, zoom: 1.01, wave_a: 1, echo_zoom: 1.0, mv_a: 0},
+  shapes: [], waves: [], init_eqs_str: '', frame_eqs_str: 'a.zoom = 1.0 + 0.05*a.bass_att; a.wave_r = 0.5+0.5*Math.sin(a.time);', pixel_eqs_str: '', warp: '', comp: ''};
+window.state = {frames: 0, mode: 'none'};
+window.start = async (label, render, w, h) => {
+  const devs = (await navigator.mediaDevices.enumerateDevices()).filter((d) => d.kind === 'audioinput');
+  let dev = devs.find((d) => d.label === label);
+  if (!dev) { const s = await navigator.mediaDevices.getUserMedia({audio: true}); s.getTracks().forEach((t) => t.stop());
+    dev = (await navigator.mediaDevices.enumerateDevices()).find((d) => d.kind === 'audioinput' && d.label === label); }
+  const stream = await navigator.mediaDevices.getUserMedia({audio: {deviceId: {exact: dev.deviceId}, echoCancellation: false, noiseSuppression: false, autoGainControl: false}});
+  const ctx = new AudioContext();
+  const src = ctx.createMediaStreamSource(stream);
+  const split = ctx.createChannelSplitter(2); src.connect(split);
+  const guitar = ctx.createGain(); guitar.channelCount = 1; guitar.channelCountMode = 'explicit'; split.connect(guitar, 0);
+  const c = document.getElementById('c'); c.width = w; c.height = h;
+  window.state.mode = render ? 'render' : 'capture';
+  if (!render) { const an = ctx.createAnalyser(); guitar.connect(an); const buf = new Uint8Array(1024);
+    const tick = () => { an.getByteFrequencyData(buf); window.state.frames++; requestAnimationFrame(tick); }; tick(); return 'capture'; }
+  const B = butterchurn.default || butterchurn; const v = B.createVisualizer(ctx, c, {width: w, height: h, pixelRatio: 1, textureRatio: 1});
+  v.connectAudio(guitar); v.loadPreset(preset, 0);
+  const tick = () => { v.render(); window.state.frames++; requestAnimationFrame(tick); }; tick();
+  return 'render ' + (c.getContext('webgl2') ? 'webgl2' : '?');
+};
+</script>
