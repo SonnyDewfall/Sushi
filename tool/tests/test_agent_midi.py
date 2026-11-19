@@ -14,6 +14,7 @@ the thread to the event loop is exercised. Nothing here has heard a pedal.
 from __future__ import annotations
 
 import asyncio
+import json
 import queue
 import threading
 import time
@@ -847,5 +848,317 @@ def test_the_program_order_is_read_off_the_loop():
         await until(lambda: len(runner.calls) == 2)
         await settle(agent)
         assert len(reads) >= 2 and not set(reads) & loop_threads
+
+    served(agent, test)
+
+
+# --------------------------------------------------------------------------- #
+# The pedalboard (#191): A and B step rigs on every rig, a port per controller
+# --------------------------------------------------------------------------- #
+
+from sushi_rig import midi_listener  # noqa: E402
+from sushi_rig.midi_listener import Bindings, Feed  # noqa: E402
+
+FBV_PORT = "FBV Express Mk II:FBV Express Mk II MIDI 1"
+FBV = {
+    "port": FBV_PORT, "channel": 0, "type": "pedal",
+    "controls": {"a": ("cc", 20), "b": ("cc", 21), "c": ("cc", 22)},
+    "model": {
+        "a": {"kind": "switch", "behaviour": "momentary", "range": None, "job": "previous-rig"},
+        "b": {"kind": "switch", "behaviour": "momentary", "range": None, "job": "next-rig"},
+        "c": {"kind": "switch", "behaviour": "momentary", "range": None, "job": None},
+    },
+}
+MOMENTARY_MUTE = {"control": "c", "cc": 22, "channel": 0, "mute": "main", "switch": "momentary"}
+
+
+class PedalboardWorld(FakeWorld):
+    """The MPD218's map on its port, and the FBV's steps (and `fbv_raw`, its
+    own map's bindings) on another: two feeds, as `plan_for` makes them for
+    a rig mapped on the MPD218 on a machine with the FBV."""
+
+    def __init__(self, raw=None, fbv_raw=(), refuse_port=None):
+        super().__init__(raw=raw)
+        self.fbv_raw = list(fbv_raw)
+        self.refuse_port = refuse_port
+        self.named: dict[str, FakePort] = {}
+        self.compiling = threading.Event()
+        self.hold = None  # a threading.Event a compile waits on
+
+    def plan(self, described, root):
+        if not described.get("running"):
+            return Off("no rig is running")
+        fbv = Bindings(parse_bindings(self.fbv_raw).controls + midi_listener.step_bindings(FBV))
+        feeds = (Feed("mpd218", PORT_NAME, parse_bindings(self.raw)),) if self.raw else ()
+        return midi_listener.Plan(described.get("config_name"), feeds=feeds + (Feed("fbv", FBV_PORT, fbv),))
+
+    def open_port(self, name):
+        if name == self.refuse_port:
+            self.opened.append(name)
+            raise PortError(f"no MIDI port called {name!r}")
+        port = super().open_port(name)
+        self.named[name] = port
+        return port
+
+    def compile(self, name, root, machine):
+        self.compiling.set()
+        if self.hold is not None:
+            assert self.hold.wait(5), "the test never let the compile go"
+        return super().compile(name, root, machine)
+
+
+def press(port, number):
+    port.send(0xB0, number, 127)
+    port.send(0xB0, number, 0)
+
+
+def test_b_steps_to_the_next_rig_by_the_switch_path_and_is_logged_with_its_switch():
+    world = PedalboardWorld()
+    agent, fake, _, runner, rig = midi_agent(world)
+
+    async def test(client):
+        await agent.midi_adopt()
+        await until(lambda: FBV_PORT in world.named and agent._midi["state"] == "listening")
+        assert world.opened == [PORT_NAME, FBV_PORT], "a port for each controller"
+        press(world.named[FBV_PORT], 21)  # b, on guitar_vocal: the next is lead
+        await until(lambda: len(runner.calls) == 2)
+        await settle(agent)
+        assert runner.calls == [["down"], ["up", "lead", "--rig", "--headless", "--no-tuner"]]
+        (entry,) = await log(client)
+        assert entry["op"] == "rig" and entry["source"] == "midi" and entry["control"] == "b"
+        assert entry["args"]["rig"] == "lead" and "program" not in entry["args"]
+        await until(lambda: agent._midi["state"] == "listening" and agent._midi["rig"] == "lead")
+
+    served(agent, test)
+
+
+def test_a_step_past_either_end_is_refused_said_and_runs_nothing():
+    world = PedalboardWorld()
+    agent, fake, _, runner, rig = midi_agent(world, described=dict(RIG_UP, config_name="lead"))
+
+    async def test(client):
+        await agent.midi_adopt()
+        await until(lambda: FBV_PORT in world.named and agent._midi["state"] == "listening")
+        press(world.named[FBV_PORT], 21)  # b on the last rig
+        await until(lambda: agent._midi["last_error"])
+        await settle(agent)
+        assert "lead is the last rig" in (await health(client))["last_error"]["message"]
+        assert runner.calls == [], "no wrap round to the first rig"
+
+    served(agent, test)
+
+
+def test_a_press_while_a_switch_is_running_is_refused_not_queued():
+    """The second press arrives while the first switch is still compiling its
+    rig: it is refused and said, and once the first is done nothing else
+    runs. (Later in a switch the ports are closed, and a press is not heard.)"""
+    world = PedalboardWorld()
+    world.hold = threading.Event()
+    agent, fake, _, runner, rig = midi_agent(world)
+
+    async def test(client):
+        await agent.midi_adopt()
+        await until(lambda: FBV_PORT in world.named and agent._midi["state"] == "listening")
+        fbv = world.named[FBV_PORT]
+        press(fbv, 21)
+        await until(world.compiling.is_set)
+        press(fbv, 21)
+        await until(lambda: agent._midi["last_error"])
+        assert "still running" in agent._midi["last_error"]["message"]
+        world.hold.set()
+        await until(lambda: len(runner.calls) == 2)
+        await settle(agent)
+        await asyncio.sleep(0.1)
+        await settle(agent)
+        assert world.checked == ["lead"], "one switch: the second press was not queued behind it"
+        assert runner.calls == [["down"], ["up", "lead", "--rig", "--headless", "--no-tuner"]]
+
+    served(agent, test)
+
+
+def test_a_press_while_a_lifecycle_command_holds_the_rig_is_refused():
+    world = PedalboardWorld()
+    agent, fake, _, runner, rig = midi_agent(world)
+
+    async def test(client):
+        await agent.midi_adopt()
+        await until(lambda: FBV_PORT in world.named and agent._midi["state"] == "listening")
+        async with agent._lock:
+            agent.busy = "restart"
+            agent._midi_heard(agent._midi_generation, midi_listener.Message("cc", 0, 21, 127), feed=1)
+            agent.busy = None
+        assert "busy: 'restart'" in agent._midi["last_error"]["message"]
+        await settle(agent)
+        assert runner.calls == [] and world.checked == []
+
+    served(agent, test)
+
+
+def test_each_port_is_served_and_one_that_will_not_open_leaves_the_other():
+    world = PedalboardWorld(refuse_port=FBV_PORT)
+    agent, fake, _, runner, rig = midi_agent(world)
+
+    async def test(client):
+        await agent.midi_adopt()
+        await until(lambda: agent._midi["state"] == "failed" and PORT_NAME in world.named)
+        status = await health(client)
+        assert FBV_PORT in status["problem"] and "'fbv'" in status["problem"]
+        assert [(f["controller"], f["state"]) for f in status["feeds"]] in (
+            [("mpd218", "listening"), ("fbv", "failed")], [("mpd218", "opening"), ("fbv", "failed")])
+        await until(lambda: agent._midi["feeds"][0]["state"] == "listening")
+        world.named[PORT_NAME].send(0x90, 36, 100)  # the MPD218's pad still works
+        await until(lambda: fake.writes())
+        await settle(agent)
+        assert fake.writes() == [("set_bypass", "drive", False)]
+
+    served(agent, test)
+
+
+def test_a_momentary_footswitch_on_a_mute_toggles_it_on_each_press():
+    """Sushi's own CC mute would follow the value: muted while held."""
+    world = PedalboardWorld(raw=[], fbv_raw=[MOMENTARY_MUTE])
+    agent, fake, _, runner, rig = midi_agent(world)
+
+    async def test(client):
+        await agent.midi_adopt()
+        await until(lambda: FBV_PORT in world.named and agent._midi["state"] == "listening")
+        assert world.opened == [FBV_PORT]
+        fbv = world.named[FBV_PORT]
+        press(fbv, 22)
+        await until(lambda: fake.writes())
+        await settle(agent)
+        assert fake.writes() == [("set_parameter", "main", "mute", 1.0)], "the release did not unmute it"
+        fake.info["main"]["mute"]["value"] = 1.0
+        press(fbv, 22)
+        await until(lambda: len(fake.writes()) == 2)
+        await settle(agent)
+        assert fake.writes()[-1] == ("set_parameter", "main", "mute", 0.0)
+
+    served(agent, test)
+
+
+# The real plan, from real files: a rig with no midi: on a machine with the FBV.
+
+FBV_MACHINE = """\
+schema_version: 1
+roles:
+  guitar-in: {ports: ["Audient iD14:capture_AUX0"]}
+controllers:
+  fbv:
+    type: pedal
+    port: "FBV Express Mk II:FBV Express Mk II MIDI 1"
+    channel: 0
+    controls:
+      a: {cc: 20, kind: switch, behaviour: momentary, job: previous-rig}
+      b: {cc: 21, kind: switch, behaviour: momentary, job: next-rig}
+      c: {cc: 22, kind: switch, behaviour: momentary}
+      pedal: {cc: 7, kind: expression, range: [0, 127]}
+"""
+
+PLAIN_RIG = """\
+kind: rig
+schema_version: 1
+name: {name}
+channels:
+- {{name: main, input: guitar-in, width: mono, chain: [{{name: drive, uri: "http://drobilla.net/plugins/mda/Overdrive"}}]}}
+master: {{output: monitor-out, chain: []}}
+"""
+
+
+def pedal_files(root, midi=""):
+    (root / "config" / "rigs").mkdir(parents=True)
+    for name in RIGS:
+        (root / "config" / "rigs" / f"{name}.yaml").write_text(PLAIN_RIG.format(name=name) + midi)
+    (root / "machines").mkdir()
+    (root / "machines" / "box.yaml").write_text(FBV_MACHINE)
+    compiled = root / "run" / "rigs" / "guitar_vocal.json"
+    compiled.parent.mkdir(parents=True)
+    compiled.write_text(json.dumps({"tracks": []}))
+    return dict(RIG_UP, config=str(compiled), machine=str(root / "machines" / "box.yaml"))
+
+
+def test_a_rig_with_no_map_has_its_steps_served_and_the_listener_follows_the_lifecycle(tmp_path):
+    """A and B on every rig: the real `plan_for`, reading the machine file, on
+    a rig whose file has no midi:. The listener opens with the rig, closes
+    for `down`, opens again with `up`, and is replaced by `restart`."""
+    described = pedal_files(tmp_path)
+    world = FakeWorld()
+    rig = Rig(described)
+
+    class Runner(SwitchingRunner):
+        async def __call__(self, args):
+            outcome = await FakeRunner.__call__(self, args)
+            if outcome.ok and args[0] == "down":
+                self.rig.described = {"verdict": "absent", "running": False, "message": "No rig is running."}
+            elif outcome.ok and args[0] in ("up", "restart"):
+                self.rig.described = dict(described)
+            return outcome
+
+    runner = Runner(rig)
+    agent, fake, _, _, _ = midi_agent(world, runner=runner)
+    agent.describe = rig
+    agent.root = tmp_path
+    agent._midi_world = World(open_port=world.open_port, rigs=lambda root: list(RIGS))
+
+    async def test(client):
+        await agent.midi_adopt()
+        await until(lambda: agent._midi["state"] == "listening")
+        assert world.opened == [FBV_PORT]
+        assert agent._midi["controller"] == "fbv" and agent._midi["rig"] == "guitar_vocal"
+        assert (await client.post("/rig/down")).status == 200
+        assert world.ports[0].closed.is_set()
+        assert (await health(client))["state"] == "off"
+        r = await client.post("/rig/up", json={"config_name": "guitar_vocal", "rig": True})
+        assert r.status == 200
+        await until(lambda: len(world.ports) == 2 and agent._midi["state"] == "listening")
+        assert (await client.post("/rig/restart")).status == 200
+        await until(lambda: len(world.ports) == 3 and agent._midi["state"] == "listening")
+        assert world.ports[1].closed.is_set()
+        assert world.opened == [FBV_PORT] * 3
+
+    served(agent, test)
+
+
+def test_get_midi_gives_the_devices_what_each_control_may_take_and_the_rigs_assignments(tmp_path):
+    described = pedal_files(tmp_path, midi=(
+        "midi:\n  controller: fbv\n  controls:\n"
+        "  - {control: c, bypass: main/drive}\n"
+        "  - {control: pedal, volume: main}\n"))
+    agent, *_ = midi_agent(FakeWorld(plan=False), described=described)
+    agent.root = tmp_path
+
+    async def test(client):
+        r = await client.get("/midi")
+        assert r.status == 200
+        body = await r.json()
+        assert body["machine"] == "box.yaml" and body["machine_problem"] is None
+        (fbv,) = body["controllers"]
+        assert fbv["name"] == "fbv" and fbv["type"] == "pedal" and fbv["port"] == FBV_PORT
+        controls = {c["name"]: c for c in fbv["controls"]}
+        assert controls["a"] == {"name": "a", "sends": {"cc": 20}, "kind": "switch", "behaviour": "momentary",
+                                 "range": None, "job": "previous-rig", "takes": []}
+        assert controls["c"]["takes"] == ["bypass", "mute"]
+        assert controls["pedal"]["takes"] == ["volume", "parameter", "blend"]
+        assert controls["pedal"]["range"] == [0, 127]
+        assert body["targets"]["volume"] == "a channel name, not the master"
+        assert body["rig"] == "guitar_vocal"
+        assert body["assignments"] == {"controller": "fbv", "port": 0, "programs": None, "controls": [
+            {"control": "c", "bypass": "main/drive"}, {"control": "pedal", "volume": "main"}]}
+        assert body["rigs"] == RIGS
+
+    served(agent, test)
+
+
+def test_get_midi_with_no_rig_up_and_a_machine_file_that_will_not_read(tmp_path):
+    pedal_files(tmp_path)
+    (tmp_path / "machines" / "box.yaml").write_text(FBV_MACHINE.replace("kind: expression", "kind: knob"))
+    agent, *_ = midi_agent(FakeWorld(plan=False), described={
+        "verdict": "absent", "running": False, "machine": str(tmp_path / "machines" / "box.yaml")})
+    agent.root = tmp_path
+
+    async def test(client):
+        body = await (await client.get("/midi")).json()
+        assert body["controllers"] == [] and "kind must be switch or expression" in body["machine_problem"]
+        assert body["rig"] is None and body["assignments"] is None
 
     served(agent, test)

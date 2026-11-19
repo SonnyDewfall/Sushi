@@ -55,3 +55,29 @@ controllers:
       pad2: {note: 38}
       pad3: {note: 40}
       pad4: {note: 41}
+  # The Line 6 FBV Express MkII (#191). Every value in this entry is
+  # unverified: check with aseqdump when the pedal arrives. Nothing of the
+  # board has been seen on the rig: the port name is the Linux USB-MIDI
+  # driver's usual "<device> MIDI 1" form for its first USB Out port (Line 6:
+  # controls send on Out Port 1; FBV Control talks on Port 4, which is not
+  # this one); the channel is Line 6's default, MIDI channel 1, counted from
+  # 0 here; the switch CCs are placeholders (20 to 23 are undefined in the
+  # MIDI spec and clash with nothing), since the factory ones were not found;
+  # "momentary" is a guess, as FBV Control sets each switch to Single, Toggle
+  # or Momentary and the factory setting was not found (a Toggle switch is
+  # `behaviour: latching`); CC 7 for the pedal is from Line 6's Shortboard
+  # examples. Check it with `aseqdump -l` (the port's name) and
+  # `aseqdump -p "<that name>"` (each switch pressed once slowly, then
+  # twice; the pedal heel to toe): docs/reference/midi.md says how.
+  # A and B step to the previous and next rig on every rig (their job);
+  # C, D and the pedal are what a rig's midi: assigns.
+  fbv:                                                 # unverified: check with aseqdump when the pedal arrives
+    type: pedal
+    port: "FBV Express Mk II:FBV Express Mk II MIDI 1" # unverified: check with aseqdump when the pedal arrives
+    channel: 0                                         # unverified: check with aseqdump when the pedal arrives
+    controls:
+      a: {cc: 20, kind: switch, behaviour: momentary, job: previous-rig}  # unverified: check with aseqdump when the pedal arrives
+      b: {cc: 21, kind: switch, behaviour: momentary, job: next-rig}      # unverified: check with aseqdump when the pedal arrives
+      c: {cc: 22, kind: switch, behaviour: momentary}                     # unverified: check with aseqdump when the pedal arrives
+      d: {cc: 23, kind: switch, behaviour: momentary}                     # unverified: check with aseqdump when the pedal arrives
+      pedal: {cc: 7, kind: expression, range: [0, 127]}                   # unverified: check with aseqdump when the pedal arrives

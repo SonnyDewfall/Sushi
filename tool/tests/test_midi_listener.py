@@ -531,3 +531,164 @@ def test_a_rig_to_switch_to_is_checked_to_compile_from_its_files(tmp_path, monke
     monkeypatch.setattr(Path, "read_text", refuse)
     said = problem("lead")
     assert said is not None and said.startswith("lead.yaml: ") and "PermissionError" in said, said
+
+
+# --------------------------------------------------------------------------- #
+# The pedalboard (#191): momentary switches, rig stepping, more than one port
+# --------------------------------------------------------------------------- #
+
+# What `compile_midi` writes for a typed footswitch (test_rigfile.py's FBV).
+MOMENTARY_BYPASS = {"control": "c", "cc": 22, "channel": 0, "bypass": "lead/drive", "switch": "momentary"}
+MOMENTARY_MUTE = {"control": "d", "cc": 23, "channel": 0, "mute": "clean", "switch": "momentary"}
+LATCHING_BYPASS = {"control": "c", "cc": 22, "channel": 0, "bypass": "lead/drive", "switch": "latching"}
+
+# The machine file's FBV, as `MachineSpec.controller` describes it.
+FBV = {
+    "port": "FBV Express Mk II:FBV Express Mk II MIDI 1", "channel": 0, "type": "pedal",
+    "controls": {"a": ("cc", 20), "b": ("cc", 21), "c": ("cc", 22), "pedal": ("cc", 7)},
+    "model": {
+        "a": {"kind": "switch", "behaviour": "momentary", "range": None, "job": "previous-rig"},
+        "b": {"kind": "switch", "behaviour": "momentary", "range": None, "job": "next-rig"},
+        "c": {"kind": "switch", "behaviour": "momentary", "range": None, "job": None},
+        "pedal": {"kind": "expression", "behaviour": None, "range": [0, 127], "job": None},
+    },
+}
+
+
+def cc(control_value, number):
+    return Message("cc", 0, number, control_value)
+
+
+def test_a_momentary_switch_toggles_on_each_press_and_its_release_does_nothing():
+    """The fix for "on while held": 127 on press, 0 on release, and a press
+    is a toggle. A switch that sends one value a press (FBV Control's Single)
+    is a press every time, so no state is kept between them."""
+    parsed = parse_bindings([MOMENTARY_BYPASS, MOMENTARY_MUTE])
+    switches: dict = {}
+    seen = []
+    for value in (127, 0, 127, 0, 127, 127):
+        action, switches = dispatch(cc(value, 22), parsed, switches)
+        seen.append(action)
+    press = ToggleBypass("c", "drive")
+    assert seen == [press, None, press, None, press, press]
+    assert dispatch(cc(127, 23), parsed, {})[0] == ToggleMute("d", "clean")
+    assert dispatch(cc(0, 23), parsed, {})[0] is None
+
+
+def test_a_latching_switch_on_a_bypass_follows_its_value():
+    parsed = parse_bindings([LATCHING_BYPASS])
+    action, switches = dispatch(cc(127, 22), parsed, {})
+    assert action == SetBypass("c", "drive", bypassed=False)
+    action, switches = dispatch(cc(0, 22), parsed, switches)
+    assert action == SetBypass("c", "drive", bypassed=True)
+
+
+@pytest.mark.parametrize("raw, said", [
+    ([dict(MOMENTARY_BYPASS, switch="sticky")], "switch must be momentary or latching"),
+    ([dict(PAD_BYPASS, switch="momentary")], "on a cc"),
+    # A latching switch's mute is Sushi's own mapping; only a momentary one toggles.
+    ([dict(MOMENTARY_MUTE, switch="latching")], "Sushi's own cc_mappings"),
+])
+def test_a_switch_binding_in_a_shape_compile_midi_does_not_write_is_refused(raw, said):
+    with pytest.raises(BindingError, match=said):
+        parse_bindings(raw)
+
+
+def test_the_machine_files_rig_stepping_controls_are_bindings_of_their_own():
+    steps = ml.step_bindings(FBV)
+    assert steps == (
+        Binding("a", "cc", 20, 0, "step", "previous", "previous-rig", "momentary"),
+        Binding("b", "cc", 21, 0, "step", "next", "next-rig", "momentary"),
+    )
+    assert ml.step_bindings({"port": "x:y", "channel": "all", "controls": {"k": ("cc", 3)}}) == ()
+
+
+def test_a_step_press_is_a_step_and_its_release_nothing():
+    parsed = ml.Bindings(ml.step_bindings(FBV))
+    assert dispatch(cc(127, 21), parsed, {})[0] == ml.StepRig("b", "next")
+    assert dispatch(cc(0, 21), parsed, {})[0] is None
+    assert dispatch(cc(100, 20), parsed, {})[0] == ml.StepRig("a", "previous")
+
+
+def test_a_latching_step_switch_steps_on_every_change_of_its_value():
+    latching = ml.Bindings((Binding("b", "cc", 21, 0, "step", "next", "next-rig", "latching"),))
+    switches: dict = {}
+    seen = []
+    for value in (127, 127, 0, 127):
+        action, switches = dispatch(cc(value, 21), latching, switches)
+        seen.append(action)
+    step = ml.StepRig("b", "next")
+    assert seen == [step, None, step, step]
+
+
+def test_a_step_goes_one_rig_on_or_back_in_file_name_order():
+    assert ml.step_to(ml.StepRig("b", "next"), RIGS, "clean") == ml.StepTo("b", "next", 1, "guitar_vocal")
+    assert ml.step_to(ml.StepRig("a", "previous"), RIGS, "lead") == ml.StepTo("a", "previous", 1, "guitar_vocal")
+
+
+def test_a_step_stops_at_either_end_and_does_not_wrap_round():
+    last = ml.step_to(ml.StepRig("b", "next"), RIGS, "lead")
+    assert isinstance(last, Refused) and "lead is the last rig" in last.reason
+    first = ml.step_to(ml.StepRig("a", "previous"), RIGS, "clean")
+    assert isinstance(first, Refused) and "clean is the first rig" in first.reason
+    alone = ml.step_to(ml.StepRig("b", "next"), ["clean"], "clean")
+    assert isinstance(alone, Refused)
+
+
+def test_a_step_from_a_rig_outside_config_rigs_is_refused_and_said():
+    gone = ml.step_to(ml.StepRig("b", "next"), RIGS, "electric_board")
+    assert isinstance(gone, Refused) and "electric_board is not one of config/rigs/" in gone.reason
+
+
+FBV_MACHINE = MACHINE + """\
+  fbv:
+    type: pedal
+    port: "FBV Express Mk II:FBV Express Mk II MIDI 1"
+    channel: 0
+    controls:
+      a: {cc: 20, kind: switch, behaviour: momentary, job: previous-rig}
+      b: {cc: 21, kind: switch, behaviour: momentary, job: next-rig}
+      c: {cc: 22, kind: switch, behaviour: momentary}
+      pedal: {cc: 7, kind: expression}
+"""
+
+UNMAPPED_RIG = RIG[:RIG.index("midi:")]
+
+
+def test_a_rig_with_no_map_on_a_machine_with_a_stepping_pedal_listens_for_the_steps(tmp_path):
+    """A and B work on every rig: a rig with no midi: at all still has a
+    listener, on the stepping pedal's port, for its steps alone."""
+    described = rig_files(tmp_path, bindings_=False, machine=FBV_MACHINE, rig=UNMAPPED_RIG)
+    plan = plan_for(described, tmp_path)
+    assert plan.rig == "lead"
+    assert [(f.controller, f.port) for f in plan.feeds] == [("fbv", "FBV Express Mk II:FBV Express Mk II MIDI 1")]
+    assert [(b.control, b.action, b.target) for b in plan.feeds[0].bindings.controls] == [
+        ("a", "step", "previous"), ("b", "step", "next")]
+    assert not plan.programs
+
+
+def test_a_map_on_another_controller_is_a_second_port_beside_the_steps(tmp_path):
+    """The MPD218's map keeps working unchanged, and the FBV still steps:
+    two ports, the rig's own controller first."""
+    plan = plan_for(rig_files(tmp_path, machine=FBV_MACHINE), tmp_path)
+    assert [f.controller for f in plan.feeds] == ["mpd218", "fbv"]
+    assert plan.controller == "mpd218" and plan.port == "MPD218:MPD218 Port A"
+    assert [b.control for b in plan.feeds[0].bindings.controls] == ["pad1"]
+    assert [b.control for b in plan.feeds[1].bindings.controls] == ["a", "b"]
+    assert plan.programs
+
+
+def test_a_map_on_the_stepping_pedal_is_one_port_with_both(tmp_path):
+    rig = RIG.replace("controller: mpd218", "controller: fbv").replace("control: pad1", "control: c")
+    described = rig_files(tmp_path, machine=FBV_MACHINE, rig=rig,
+                          bindings_=[MOMENTARY_BYPASS, PROGRAMS])
+    plan = plan_for(described, tmp_path)
+    assert [f.controller for f in plan.feeds] == ["fbv"]
+    assert [b.control for b in plan.bindings.controls] == ["c", "a", "b"]
+
+
+def test_a_machine_file_that_does_not_validate_is_a_named_problem_not_silently_no_steps(tmp_path):
+    described = rig_files(tmp_path, bindings_=False, machine=FBV_MACHINE.replace("job: next-rig", "job: onwards"),
+                          rig=UNMAPPED_RIG)
+    with pytest.raises(MidiError, match="job must be previous-rig or next-rig"):
+        plan_for(described, tmp_path)

@@ -12,8 +12,16 @@ controller's port itself:
 - a CC on a bypass: a switch, on (the effect engaged) at 64 and above, off
   (bypassed) below, acting only when it crosses;
 - a note on a mute: each press toggles the track's `mute` parameter;
+- a momentary footswitch's CC (#191) on a bypass or a mute: each press (64 and
+  above) toggles it, since the release that follows must not undo it;
 - a Program Change: program n selects the nth rig in config/rigs/, sorted by
-  file name, brought up by the agent's lifecycle.
+  file name, brought up by the agent's lifecycle;
+- a footswitch whose job is `previous-rig` or `next-rig` (#191), from the
+  machine file rather than the rig's map, so on every rig: a press steps one
+  rig back or on through that same order, stopping at either end.
+
+A rig whose map names one controller, on a machine with another that steps
+rigs (the MPD218 and the FBV), is two ports: a `Plan` is a `Feed` per port.
 
 ## Shape
 
@@ -180,13 +188,18 @@ class Binding:
     kind: str  # "note" | "cc"
     number: int
     channel: int | None
-    action: str  # "bypass" | "mute"
-    target: str
+    action: str  # "bypass" | "mute" | "step"
+    target: str  # for a step, "previous" or "next"
     written: str
+    # A CC's switch behaviour (#191): "momentary" toggles on each press;
+    # "latching", and None (a binding written before the device model), follow
+    # the value. A note is a press either way.
+    switch: str | None = None
 
     def describe(self) -> str:
         on = "all channels" if self.channel is None else f"channel {self.channel}"
-        return f"{self.control}: {self.kind} {self.number} on {on}, {self.action} {self.written}"
+        how = f" ({self.switch})" if self.switch else ""
+        return f"{self.control}: {self.kind} {self.number} on {on}{how}, {self.action} {self.written}"
 
 
 @dataclass(frozen=True)
@@ -205,7 +218,8 @@ class Bindings:
     programs: Programs | None = None
 
 
-_CONTROL_KEYS = ("control", "note", "cc", "channel", "bypass", "mute")
+_CONTROL_KEYS = ("control", "note", "cc", "channel", "bypass", "mute", "switch")
+SWITCH_BEHAVIOURS = ("momentary", "latching")  # machine.BEHAVIOURS, which this must not import
 _PROGRAM_KEYS = ("programs", "port", "channel")
 
 
@@ -267,6 +281,10 @@ def parse_bindings(raw: Any) -> Bindings:
         if type(number) is not int or not 0 <= number <= MIDI_MAX:
             problems.append(f"{at}: {kind} must be 0 to 127 (got {number!r})")
             continue
+        switch = entry.get("switch")
+        if switch is not None and (switch not in SWITCH_BEHAVIOURS or kind != "cc"):
+            problems.append(f"{at}: switch must be momentary or latching, on a cc (got {switch!r} on a {kind})")
+            continue
         channel = _channel(entry.get("channel", "all"), at, problems)
         if action == "bypass":
             if not (isinstance(written, str) and written.count("/") == 1 and all(written.split("/"))):
@@ -274,10 +292,12 @@ def parse_bindings(raw: Any) -> Bindings:
                 continue
             target = written.split("/")[1]
         else:
-            if kind == "cc":
-                # compile_midi gives a CC on a mute to Sushi, which does it
-                # natively; one here is a config this listener did not come from.
-                problems.append(f"{at}: a CC on a mute is Sushi's own cc_mappings, not the agent's")
+            if kind == "cc" and switch != "momentary":
+                # compile_midi gives a latching CC on a mute to Sushi, which
+                # does it natively; one here is a config this listener did not
+                # come from. A momentary one toggles, which Sushi cannot.
+                problems.append(f"{at}: a CC on a mute is Sushi's own cc_mappings, not the agent's, "
+                                "unless it is a momentary switch")
                 continue
             if not isinstance(written, str) or not written:
                 problems.append(f"{at}: mute must be a channel name (got {written!r})")
@@ -289,10 +309,27 @@ def parse_bindings(raw: Any) -> Bindings:
             problems.append(f"{at}: {clash!r} and {name!r} both send {kind} {number} on overlapping channels")
             continue
         claimed.setdefault((kind, number), []).append((channel, name))
-        controls.append(Binding(name, kind, number, channel, action, target, written))
+        controls.append(Binding(name, kind, number, channel, action, target, written, switch))
     if problems:
         raise BindingError(problems)
     return Bindings(tuple(controls), programs)
+
+
+def step_bindings(controller: dict[str, Any]) -> tuple[Binding, ...]:
+    """The rig-stepping controls of `controller` (`MachineSpec.controller`'s
+    description, `model` and all), as bindings: the device's own job, read
+    from the machine file and not from any rig's map (#191)."""
+    channel = controller.get("channel", "all")
+    found = []
+    for control, model in sorted((controller.get("model") or {}).items()):
+        job = model.get("job")
+        if not job:
+            continue
+        kind, number = controller["controls"][control]
+        direction = "previous" if job == "previous-rig" else "next"
+        found.append(Binding(control, kind, number, None if channel == "all" else channel, "step",
+                             direction, job, model.get("behaviour") if kind == "cc" else None))
+    return tuple(found)
 
 
 # --------------------------------------------------------------------------- #
@@ -337,6 +374,31 @@ class SelectRig:
 
 
 @dataclass(frozen=True)
+class StepRig:
+    """A press of a rig-stepping footswitch (#191), before the order is read:
+    decided against config/rigs/ off the loop, by `step_to`."""
+
+    control: str
+    direction: str  # "previous" | "next"
+
+    def describe(self) -> str:
+        return f"{self.control}: step to the {self.direction} rig"
+
+
+@dataclass(frozen=True)
+class StepTo:
+    """A step decided: rig `rig`, number `index` in the order."""
+
+    control: str
+    direction: str
+    index: int
+    rig: str
+
+    def describe(self) -> str:
+        return f"{self.control}: the {self.direction} rig, {self.rig}"
+
+
+@dataclass(frozen=True)
 class Refused:
     """A message that was bound and cannot be acted on, and why: said, not dropped."""
 
@@ -348,7 +410,7 @@ class Refused:
 
 
 # What `dispatch` decides: one of these, or None for nothing to do.
-Action = Union[ToggleBypass, SetBypass, ToggleMute, SelectRig, Refused]
+Action = Union[ToggleBypass, SetBypass, ToggleMute, SelectRig, StepRig, StepTo, Refused]
 
 
 def _on(channel: int | None, message: Message) -> bool:
@@ -381,6 +443,15 @@ def dispatch(
     Change on a rig that does not switch by them. A Program Change past the
     last rig is `Refused`, because the player pressed something and should
     find out why nothing happened.
+
+    A CC switch's press (#191) depends on its behaviour. Momentary: every
+    value of 64 and above is a press and anything below a release, with no
+    state kept, so a switch that sends one value per press (FBV Control's
+    Single) works as one that sends press and release. Latching: each
+    crossing of 64 is a press, since the switch alternates its value.
+    A press of a bypass or a mute toggles; a press of a step is `StepRig`,
+    for the agent to decide against the order. A latching switch on a bypass,
+    and a CC bypass written before the device model, still follow the value.
     """
     if message is None:
         return None, switches
@@ -405,14 +476,44 @@ def dispatch(
         if kind == "note":
             if message.kind != "note_on":
                 return None, switches
-            if binding.action == "mute":
-                return ToggleMute(binding.control, binding.target), switches
-            return ToggleBypass(binding.control, binding.target), switches
+            return _press(binding), switches
         on = message.value >= SWITCH_ON
+        if binding.switch == "momentary":
+            return (_press(binding) if on else None), switches
         if switches.get(binding.control) == on:
             return None, switches
-        return SetBypass(binding.control, binding.target, bypassed=not on), {**switches, binding.control: on}
+        crossed = {**switches, binding.control: on}
+        if binding.action == "step":
+            return _press(binding), crossed
+        return SetBypass(binding.control, binding.target, bypassed=not on), crossed
     return None, switches
+
+
+def _press(binding: Binding) -> Action:
+    """What one press of a switch does: toggle its bypass or its mute, or
+    step rigs. The one place a press becomes an action, so a guard on presses
+    (a double tap, #191's later work) has one place to go."""
+    if binding.action == "step":
+        return StepRig(binding.control, binding.target)
+    if binding.action == "mute":
+        return ToggleMute(binding.control, binding.target)
+    return ToggleBypass(binding.control, binding.target)
+
+
+def step_to(step: StepRig, rigs: Sequence[str], current: str | None) -> StepTo | Refused:
+    """Where a step press goes, in the program order (`program_order`):
+    the rig before or after `current`, or `Refused` at either end -- it does
+    not wrap round, so a stray press on the last rig cannot jump to the first
+    -- and for a running rig the order does not hold."""
+    if current not in rigs:
+        return Refused(step.control, f"the running rig {current or '(unnamed)'} is not one of config/rigs/, "
+                                     "so it has no previous or next")
+    index = rigs.index(current) + (-1 if step.direction == "previous" else 1)
+    if index < 0:
+        return Refused(step.control, f"{current} is the first rig in config/rigs/; there is none before it")
+    if index >= len(rigs):
+        return Refused(step.control, f"{current} is the last rig in config/rigs/; there is none after it")
+    return StepTo(step.control, step.direction, index, rigs[index])
 
 
 def next_bypass(previous: bool | None, want: bool | None) -> bool:
@@ -467,28 +568,59 @@ class Off:
 
 
 @dataclass(frozen=True)
-class Plan:
-    """A listener to start: the rig, the controller its map is written for,
-    that controller's port as the machine file names it, and the bindings."""
+class Feed:
+    """One port to listen to: the controller, its port as the machine file
+    names it, and what its messages do."""
 
-    rig: str
     controller: str
     port: str
     bindings: Bindings
+
+
+@dataclass(frozen=True)
+class Plan:
+    """The listeners to start for rig `rig`: a `Feed` per port, the rig's
+    own map's controller first. Built with one feed's `controller`, `port`
+    and `bindings`, as before the device model, or with `feeds`."""
+
+    rig: str
+    controller: str = ""
+    port: str = ""
+    bindings: Bindings = Bindings()
+    feeds: tuple[Feed, ...] = ()
+
+    def __post_init__(self) -> None:
+        if not self.feeds:
+            object.__setattr__(self, "feeds", (Feed(self.controller, self.port, self.bindings),))
+        first = self.feeds[0]
+        object.__setattr__(self, "controller", first.controller)
+        object.__setattr__(self, "port", first.port)
+        object.__setattr__(self, "bindings", first.bindings)
+
+    @property
+    def programs(self) -> bool:
+        return any(feed.bindings.programs is not None for feed in self.feeds)
 
 
 def plan_for(described: dict[str, Any], root: Path) -> Plan | Off:
     """What the rig `described` (`describe_rig`'s answer) asks the listener to
     serve: `Off` when nothing, `MidiError` when its files cannot say.
 
-    The bindings are the compiled config's, as `up` wrote them. The port is
-    not in them -- `compile_midi` resolves each control to a note or CC and
-    keeps no port name -- so it comes from the controller the rig file's map
-    names, as the machine file the run was compiled against describes it.
+    Two sources, merged by controller into one `Feed` a port:
+
+    - the rig's map: the bindings are the compiled config's, as `up` wrote
+      them. The port is not in them -- `compile_midi` resolves each control to
+      a note or CC and keeps no port name -- so it comes from the controller
+      the rig file's map names, as the machine file the run was compiled
+      against describes it;
+    - the machine's rig-stepping controls (#191), on every running rig, with
+      or without a map, from that same machine file. A machine file that is
+      not there has none; one that will not read or validate is a
+      `MidiError`, since the pedals it describes would then be silently off.
     """
     import json
 
-    from .machine import MachineError, controller_for, machine_path
+    from .machine import MachineError, MachineSpec, machine_path
     from .rigfile import AGENT_BINDINGS, RigFileError, load_rig
 
     if not described.get("running"):
@@ -499,31 +631,55 @@ def plan_for(described: dict[str, Any], root: Path) -> Plan | Off:
     except (KeyError, TypeError, OSError, ValueError) as exc:
         raise MidiError(f"could not read the running rig's compiled config ({described.get('config')}): {exc}") from exc
     raw = config.get(AGENT_BINDINGS) if isinstance(config, dict) else None
-    if not raw:
-        return Off(f"{name} has no MIDI bindings for the agent")
-    bindings = parse_bindings(raw)
+    machine_file = Path(described["machine"]) if described.get("machine") else machine_path(Path(root))
+    source = described.get("rig") or ((config.get("_meta") or {}).get("source") if isinstance(config, dict) else None)
+    rig_name = Path(source).stem if isinstance(source, str) and source else name
 
-    source = described.get("rig") or (config.get("_meta") or {}).get("source")
-    if not isinstance(source, str) or not source:
-        raise MidiError(f"{name} carries MIDI bindings but names no rig file to say which controller")
-    try:
-        rig = load_rig(Path(root) / source)
-    except (OSError, RigFileError) as exc:
-        raise MidiError(f"could not read {source} for its controller: {exc}") from exc
-    if rig.midi is None:
-        raise MidiError(f"{source} has no midi: section now, though the running rig was compiled with one")
-    machine = Path(described["machine"]) if described.get("machine") else machine_path(Path(root))
-    try:
-        controller = controller_for(rig.midi.controller, machine)
-    except MachineError as exc:
-        raise MidiError(str(exc)) from exc
-    port = controller.get("port")
-    if not port:
-        raise MidiError(
-            f"{machine.name} gives controller {rig.midi.controller!r} no port, so the agent "
-            "cannot open it: add its ALSA name (`aseqdump -l`), e.g. port: \"MPD218:MPD218 Port A\""
-        )
-    return Plan(Path(source).stem, rig.midi.controller, port, bindings)
+    machine: MachineSpec | None = None
+
+    def load_machine() -> MachineSpec:
+        nonlocal machine
+        if machine is None:
+            try:
+                machine = MachineSpec.load(machine_file)
+            except MachineError as exc:
+                raise MidiError(f"the pedals need {machine_file.name}, which could not be read: {exc}") from exc
+            problems = machine.validate()
+            if problems:
+                raise MidiError(f"{machine_file.name}: " + "; ".join(problems))
+        return machine
+
+    feeds: dict[str, tuple[str, Bindings]] = {}
+    if raw:
+        bindings = parse_bindings(raw)
+        if not isinstance(source, str) or not source:
+            raise MidiError(f"{name} carries MIDI bindings but names no rig file to say which controller")
+        try:
+            rig = load_rig(Path(root) / source)
+        except (OSError, RigFileError) as exc:
+            raise MidiError(f"could not read {source} for its controller: {exc}") from exc
+        if rig.midi is None:
+            raise MidiError(f"{source} has no midi: section now, though the running rig was compiled with one")
+        try:
+            controller = load_machine().controller_for(rig.midi.controller)
+        except MachineError as exc:
+            raise MidiError(str(exc)) from exc
+        port = controller.get("port")
+        if not port:
+            raise MidiError(
+                f"{machine_file.name} gives controller {rig.midi.controller!r} no port, so the agent "
+                "cannot open it: add its ALSA name (`aseqdump -l`), e.g. port: \"MPD218:MPD218 Port A\""
+            )
+        feeds[rig.midi.controller] = (port, bindings)
+
+    steppers = load_machine().steppers() if machine_file.is_file() else {}
+    for controller_name, controller in steppers.items():
+        steps = step_bindings(controller)
+        port, bindings = feeds.get(controller_name, (controller["port"], Bindings()))
+        feeds[controller_name] = (port, Bindings(bindings.controls + steps, bindings.programs))
+    if not feeds:
+        return Off(f"{name} has no MIDI bindings for the agent")
+    return Plan(rig_name, feeds=tuple(Feed(c, port, b) for c, (port, b) in feeds.items()))
 
 
 # --------------------------------------------------------------------------- #

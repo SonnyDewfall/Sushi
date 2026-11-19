@@ -150,8 +150,24 @@ MASTER_LEVEL_MAX = 0.0
 _KEYS = ("kind", "schema_version", "name", "description", "meta", "host", "amp",
          "channels", "master", "midi")
 _MIDI_KEYS = ("controller", "port", "programs", "controls")
-_CONTROL_KEYS = ("control", "blend", "parameter", "mute", "bypass", "range")
-_BINDINGS = ("blend", "parameter", "mute", "bypass")
+_CONTROL_KEYS = ("control", "blend", "parameter", "mute", "bypass", "volume", "range")
+_BINDINGS = ("blend", "parameter", "mute", "bypass", "volume")
+# What a typed control (`machine.KINDS`, #191) may be bound to in a rig's map:
+# a footswitch turns something on or off, an expression pedal sweeps. A
+# control with a job (`machine.JOBS`) takes nothing: it steps rigs on every
+# rig. An untyped control takes what its message can: a cc anything, a note
+# what a press can do.
+TAKES = {"switch": ("bypass", "mute"), "expression": ("volume", "parameter", "blend")}
+UNTYPED_TAKES = {"cc": _BINDINGS, "note": ("bypass", "mute")}
+# Each binding's target, as the rig file writes it: for a page that assigns
+# them (#192), and in the parser's refusals.
+TARGET_SHAPES = {
+    "blend": "a list of two channel names",
+    "parameter": "channel/plugin/parameter",
+    "mute": "a channel name",
+    "bypass": "channel/plugin",
+    "volume": "a channel name, not the master",
+}
 _CHANNEL_KEYS = ("name", "input", "width", "strip", "chain", "level")
 _MASTER_KEYS = ("output", "chain", "level")
 _PLUGIN_KEYS = ("name", "uri", "path", "uid", "type")
@@ -746,12 +762,7 @@ def _parse_midi(raw: Any, problems: list[str]) -> MidiMap | None:
     if not isinstance(entries, list):
         problems.append(f"midi: controls must be a list (got {entries!r})")
         entries = []
-    shapes_said = {
-        "blend": "a list of two channel names",
-        "parameter": "channel/plugin/parameter",
-        "mute": "a channel name",
-        "bypass": "channel/plugin",
-    }
+    shapes_said = TARGET_SHAPES
     for index, entry in enumerate(entries):
         at = f"midi: control {index + 1}"
         if not isinstance(entry, dict):
@@ -783,6 +794,7 @@ def _parse_midi(raw: Any, problems: list[str]) -> MidiMap | None:
             "blend": isinstance(target, list) and len(target) == 2 and all(isinstance(t, str) for t in target),
             "parameter": isinstance(target, str) and target.count("/") == 2 and all(target.split("/")),
             "mute": isinstance(target, str) and bool(target),
+            "volume": isinstance(target, str) and bool(target),
             "bypass": isinstance(target, str) and target.count("/") == 1 and all(target.split("/")),
         }
         if not shapes[binding]:
@@ -1019,13 +1031,48 @@ def _midi_problems(rig: Rig) -> list[str]:
         elif control.binding == "mute":
             if control.target not in channels:
                 problems.append(f"{at}: mute names channel {control.target!r}, which the rig does not have")
+        elif control.binding == "volume":
+            if control.target == MASTER:
+                # #172: the master ends in the limiter, and its own gain comes
+                # after it and stops at 0 dB; a pedal riding it would be a
+                # second master volume beside the page's capped one.
+                problems.append(f"{at}: a pedal cannot drive the master's volume: the master's level is "
+                                "capped at 0 dB after its limiter (#172), and is set on the page; give the "
+                                "pedal a channel's volume instead")
+            elif control.target not in channels:
+                problems.append(f"{at}: volume names channel {control.target!r}, which the rig does not have")
         else:
             channel, plugin = control.target.split("/")[:2]
             if channel not in chains:
                 problems.append(f"{at}: {control.binding} names channel {channel!r}, which the rig does not have")
             elif plugin not in chains[channel]:
                 problems.append(f"{at}: {control.binding} names {plugin!r}, which is not in {channel}'s chain")
+    driven: dict[str, str] = {}
+    for control in rig.midi.controls:
+        for name in _sends_driven(control):
+            if name in driven and driven[name] != control.control:
+                problems.append(f"midi: {driven[name]} and {control.control} both drive {name}'s volume, "
+                                "so the two would fight over it")
+            driven.setdefault(name, control.control)
     return problems
+
+
+def _sends_driven(control: MidiControl) -> tuple[str, ...]:
+    """The channels whose send gain (their volume) `control` drives."""
+    if control.binding == "blend":
+        return tuple(control.target)
+    if control.binding == "volume":
+        return (control.target,)
+    return ()
+
+
+def takes(kind: str, model: dict[str, Any] | None) -> tuple[str, ...]:
+    """What a control may be bound to in a rig's map: by its model's kind
+    (`TAKES`) for a typed control, nothing for one with a job, and by what it
+    sends (`UNTYPED_TAKES`) for an untyped one."""
+    if model:
+        return () if model.get("job") else TAKES[model["kind"]]
+    return UNTYPED_TAKES[kind]
 
 
 def compile_midi(rig: Rig, controller: dict[str, Any]) -> tuple[dict[str, Any], list[dict[str, Any]]]:
@@ -1055,12 +1102,28 @@ def compile_midi(rig: Rig, controller: dict[str, Any]) -> tuple[dict[str, Any], 
       for the agent to serve over gRPC (a CC as a switch: on at 64 and above).
     - **programs**: a Program Change reaches a plugin's program in Sushi,
       not a rig, so rig switching is the agent's too (#93).
+    - **volume** (#191): one mapping on the channel's send, parameter
+      `gain`, from silence at the heel (0) to the channel's own level at the
+      toe, never above it. Sushi scales 0 to 127 and a pedal whose toe stops
+      short of 127 (its `range`) stops short of the level by as much: never
+      above it is the promise kept. The level is the rig file's, as compiled:
+      a level moved live is not the pedal's top until the rig is saved and
+      brought up again.
+
+    A controller with a type (#191) describes each control (`model`): a
+    control with a job (stepping rigs) is the device's on every rig and is
+    refused here; a switch takes a bypass or a mute, an expression pedal a
+    volume, a parameter or a blend (`TAKES`). A momentary switch toggles on
+    each press, which Sushi's mappings cannot do (they follow the value), so
+    a momentary switch's mute goes to the agent too, and its bypass is marked
+    `switch: momentary`; a latching switch's mute stays Sushi's own mapping.
 
     A note cannot sweep, so a control that sends a note may only bypass, or
     mute as a switch through the agent. `RigFileError` for a control the
     controller does not have, or a note bound to a sweep.
     """
     sends = controller["controls"]
+    model = controller.get("model") or {}
     channel = controller.get("channel", "all")
     port = rig.midi.port
     levels = {c.name: c.level for c in rig.channels}
@@ -1083,9 +1146,29 @@ def compile_midi(rig: Rig, controller: dict[str, Any]) -> tuple[dict[str, Any], 
             )
             continue
         kind, number = sends[control.control]
+        typed = model.get(control.control)
+        allowed = takes(kind, typed)
+        if typed and typed.get("job"):
+            problems.append(
+                f"midi: {control.control!r} is {rig.midi.controller}'s {typed['job']} on every rig (its job in "
+                "the machine file), so a rig cannot assign it")
+            continue
+        if typed and control.binding not in allowed:
+            what = "a switch" if typed["kind"] == "switch" else "an expression pedal"
+            problems.append(
+                f"midi: {control.control!r} is {what}, which can take {' or '.join(allowed)}, "
+                f"not a {control.binding}")
+            continue
+        behaviour = typed.get("behaviour") if typed else None
         if control.binding == "bypass":
             agent.append({"control": control.control, kind: number, "channel": channel,
-                          "bypass": control.target})
+                          "bypass": control.target,
+                          **({"switch": behaviour} if behaviour and kind == "cc" else {})})
+            continue
+        if control.binding == "mute" and kind == "cc" and behaviour == "momentary":
+            # Sushi's mapping would mute while held: a press toggles instead.
+            agent.append({"control": control.control, kind: number, "channel": channel,
+                          "mute": control.target, "switch": "momentary"})
             continue
         if kind == "note":
             if control.binding != "mute":
@@ -1099,6 +1182,9 @@ def compile_midi(rig: Rig, controller: dict[str, Any]) -> tuple[dict[str, Any], 
             mappings.append(mapping(plugin, parameter, *control.range, number))
         elif control.binding == "mute":
             mappings.append(mapping(control.target, "mute", 0.0, 1.0, number))
+        elif control.binding == "volume":
+            mappings.append(mapping(control.target + SEND_SUFFIX, "gain", 0.0,
+                                    level_to_gain(levels[control.target]), number))
         else:
             first, second = control.target
             mappings.append(mapping(first + SEND_SUFFIX, "gain", level_to_gain(levels[first]), 0.0, number))
@@ -1259,15 +1345,15 @@ def limiter_plugin() -> PluginSpec:
 
 
 def blended_channels(rig: Rig) -> frozenset[str]:
-    """The channels a blend drives. A blend moves their sends' gain with the
-    pedal, so a gain read off such a send is the pedal's position and not the
-    channel's level: neither `fold_state` nor `merged_state` may take it as
-    one. (Found by review, 2026-11-02: saved, the next blend is silent at
-    every position; emitted, the rig comes up with a channel silent until the
-    pedal first moves.)"""
+    """The channels a pedal drives the volume of: a blend's two, and a
+    `volume` binding's one (#191). The pedal moves their sends' gain, so a
+    gain read off such a send is the pedal's position and not the channel's
+    level: neither `fold_state` nor `merged_state` may take it as one.
+    (Found by review, 2026-11-02: saved, the next blend is silent at every
+    position; emitted, the rig comes up with a channel silent until the pedal
+    first moves.)"""
     return frozenset(
-        name for control in (rig.midi.controls if rig.midi else ())
-        if control.binding == "blend" for name in control.target
+        name for control in (rig.midi.controls if rig.midi else ()) for name in _sends_driven(control)
     )
 
 
@@ -1278,7 +1364,7 @@ def blend_controls(rig: Rig) -> dict[str, str]:
     not fight the pedal. Pure."""
     return {
         name: control.control for control in (rig.midi.controls if rig.midi else ())
-        if control.binding == "blend" for name in control.target
+        for name in _sends_driven(control)
     }
 
 
