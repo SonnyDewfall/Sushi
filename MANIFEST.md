@@ -5879,3 +5879,150 @@ lost" in the error and on the line), then for the next showing, whose wait
 reports the state if it does not come. The test, 20 runs with all four cores
 kept busy: 20 passed. The fast suite, with #185 merged: 5588 passed, 22 skipped,
 0 failed. *(2026-11-19)*
+
+**The stage for a phone: the lock holds the volumes, 0.5 dB steps, a rig
+dropdown (#182).** Asked for on 2026-11-18 after using the stage on a phone.
+(1) **Locked, no stage volume moves**: the master's and each channel's
+(`volumeFader` with `where` "stage", `R.lockRefusal` "stage_volume") take no
+drag, tap or key (the fader is disabled), no wheel (left to the page), no
+typed value (read-only, and a commit is refused) and no step; each shows the
+Lock button's icon and says why. Knobs, bypass and Record still work locked.
+*Decided:* the rack's volumes stay usable locked, as before: the rack's lock
+already leaves Stop and Switch to usable, so the two screens' locks were not
+alike before this either, and the stage is where a thumb knocks one.
+(2) **−0.5 and +0.5 buttons on every stage volume**, either side of the
+fader, the value above (`R.volumeNudged`): a tap is exactly half a dB, never
+held to whole dB as a wheel notch is (−6.3 goes to −5.8; a notch gives −6);
+held 400 ms it repeats every 100 ms until let go. The ends are
+`volumeStepped`'s: the master stops at 0 dB, and over it (#137) + sends
+nothing and − goes to 0; a channel stops at +6. *Decided:* a press steps on
+its release (a tap) or once it is a hold, not on touching down, so a scroll
+that starts on a button moves nothing (pointercancel). 52 by 44 px each.
+(3) **A native `<select>` of `config/rigs/` replaces the stage's list of
+rigs**, the list removed, in the header under the rig's state rather than
+below every card: the running rig selected (else the one chosen, else
+"Choose a rig…"), shown but off while locked, while a command runs or with
+no agent (`R.rigSelect`). Choosing another rig switches through the same
+`lifecycle("switch")` the list's Switch to used: live or by restart, the
+same notices, busy line and refusals (`R.rigSelected`); with no rig up it
+chooses the rig for Start. Start, and Stop with its confirm, are under it
+only unlocked, as they were. The rack's picker is unchanged.
+**Tests:** `test_ui_stage.py`, 24: the decisions, and in Chromium at 320,
+390 and 1280 px every way into a locked volume (nothing sent), exact half-dB
+steps with both tops and a master over its top, a held button repeating in
+whole steps and stopping when let go, a cancelled press moving nothing, the
+dropdown off locked and switching live and by restart once unlocked, busy
+while a switch runs, a down rig chosen and started and Stop still asking,
+and no sideways scroll with every button, link, select and fader at least 44
+px, locked and unlocked. The lock and hold tests were shown failing with the
+lock and the repeat taken out. Changed for the new behaviour: two stage tests
+in `test_ui.py` and one in `test_ui_rigbin.py` (the list is a dropdown), and
+`test_ui_knobs.py`'s stage volumes, which now unlock first and scroll the
+channel's fader clear of the sticky nav (the header is taller). Guide
+pictures remade: `stage-phone.png` and `recording.png` (both show the
+header); `docs/ui/stage.png`, taken by hand, is not, and its alt text says
+so. The fast suite on clean master here (9bb1053): 5114 passed, 21 skipped,
+210 deselected; on this branch with master merged at 1b39df9: 5311 passed, 21
+skipped, 210 deselected, 1 failed, `test_live_close.py`'s count of a real
+elkpy connection's descriptors (16 against 12, as on 2026-11-17), which
+failed alone 2 runs in 3 on this loaded machine and touches nothing here.
+**Not tried on a real phone or any touch screen**: the phone is Chromium at
+320 and 390 wide with a mouse, so a thumb's hold, a scroll starting on a
+step button, and the phone's own picker for the select are untested; nor on
+the rig. *(2026-11-18)*
+
+**The stage for a phone: the review of PR #184 (#182).** No way round the
+lock was found; six findings and one more, all fixed. (1) **The header pushed
+the channels off a small phone**: at 320 by 568 it was 348 px locked and 456
+unlocked against master's 240, the first channel's volume at 659 or 767
+against 551. The dropdown now stands in the rig's name's place, in the first
+row beside the Lock button, styled as the title (no border and no arrow
+while off); the `h1` stays for screen readers. Start, Stop with its confirm,
+the guide's link, the busy line and any problem are one row under the tiles,
+and only the busy line and a problem show locked. Each stage volume is one
+row: a cell with its name over its value, then −0.5, the fader and +0.5.
+Measured at 320 by 568: the header 234 px locked (340 unlocked, where Stop
+and the link take a row each), the first channel at 545. (2) **The typed
+values were 78 by 19 px**: the value field now fills its 44 px cell, the
+name drawn over its top; a knob's typed value on the stage is 44 px high as
+well. The 44 px test now takes every input, text fields included.
+(3) **A hold could outlive its press**: it also stops on `pointerleave`
+(the touch's implicit capture is let go, so sliding off is seen), the
+window's own blur, the page hidden, and after `VOLUME_REPEAT_MAX`, 12 steps
+(6 dB) a hold. (4) **Float32 at the master's top**: a step starts from the
+level rounded to 0.1 dB and anything within `VOLUME_SAME_DB` (1e-4 dB) of
+where it is sends nothing, so + at a master read back as −0.0000029 dB sends
+nothing and ten taps from −6.3 land on −1.3. The fake rig can hold its
+values as 32-bit floats (`UiRig.hold_as_float32`), and the stage's tests use
+it; the step tests fail with the old step and tolerance put back (shown).
+*Decided:* it is off by default: on for every test it failed eleven of them
+on the rounding alone (exact comparisons of what was sent with what is held,
+in `test_ui.py`, `test_ui_mix.py`, `test_ui_tabs.py` and `test_agent_save.py`).
+That 32-bit floats are what Sushi holds is the review's word, not checked
+here against Sushi. (5) **The hold test's fixed 0.3 s** is a wait until no
+new gain has come for 0.5 s (5 s ceiling), then a check that none follows.
+(6) **New safety tests**: a hold lost five ways (the window's blur, the page
+hidden, slid off, the lock engaged with the other hand, the region drawn
+again under it) each stops sending, shown failing with the new stops taken
+out (the lock is caught by `set` refusing as well); the lock engaged
+mid-drag stops the fader sending; a hold whose release is never heard stops
+at 6 dB. The forced clicks on disabled buttons and the keys pressed at a
+disabled fader are gone: a real click where a thumb lands, a check that the
+fader cannot take the focus, its key handler fed the keys directly, and a
+value forced into the read-only field and committed, refused with the
+lock's reason. (7) **The rig's name broke mid-word** (`electric_boar` / `d`
+at 390): as the select it is one line, cut short with an ellipsis, its
+title the whole name. Guide pictures remade: `stage-phone.png`,
+`recording.png`.
+`test_ui_stage.py` is 33 tests. The fast suite, with master merged at
+7a3b508 (#173): 5443 passed, 22 skipped, 249 deselected, none failed.
+**Not tried on a real phone or any touch screen**, as before: Chromium at
+320 and 390 with a mouse, so a thumb sliding off a held button, a scroll
+started on one and the phone's own picker are untested. *(2026-11-19)*
+
+**The stage for a phone: CI on PR #184 (#182).** The 320 by 568 test failed
+in both CI jobs: the rig dropdown had no box when measured. GET /rigs answers
+on its own, after the live answer the test waited for (`.card`), and the
+dropdown is drawn again when it comes, so the one measured had been taken
+off the page. Shown here with /rigs held 1.5 s in the browser: the select
+present at `.card` had one option and was gone from the page 2.5 s later.
+Every stage test now waits for the stage as it stays (`drawn`): the cards,
+config/rigs/ listed in the dropdown and the running rig selected, the load
+tile measured and the master's value shown; the down-rig test waits for
+the list, and the unlocked header for its Stop. No sleep added and nothing
+loosened. `test_ui_stage.py` ran 10 times in a row, 33 passed each time,
+with four CPU-bound processes beside it (load average about 8 on 4 cores).
+Master merged at e7fbed9 (#185, phone access) with no conflicts; the fast
+suite: 5543 passed, 22 skipped, 249 deselected. *(2026-11-19)*
+
+**The stage for a phone: CI again on PR #184 (#182), and the visualiser.**
+The 320 by 568 test measured the locked header at 244 px in CI, 234 here.
+Reproduced here by keeping Inter from Chromium (a fontconfig file rejecting
+it, so the sans-serif is DejaVu Sans, as in CI): 244 exactly, all of it the
+XRUNS tile's "since opened" taking two lines at 320. Master's header that
+way is 250, and its first channel at 581, below the first screen; this
+branch's 565. *Decided:* (b), the header's sizes held in CSS pixels, not
+(a): master's layout cannot be measured from this branch's page. The detail
+line and each tile line have a fixed height, and a tile's lines never wrap,
+cut short with an ellipsis (the tile's title has it all); the header is
+234 px in either font. The test now measures the locked header in the page's
+fonts and in four others (monospace, serif, Courier New, cursive), all
+equal and at most 240, which fails here without the fixed heights (244 in
+monospace, as CI had). *Changed:* "the first channel within one screen" is
+checked as nothing added between the header and the channels (the problems,
+the record bar, then CHANNELS and the first volume, each gap at most 16 px)
+rather than as a pixel count: the record bar's wrapped text, untouched by
+#182, moves with the font, and master fails the count in CI's fonts. The
+unlocked header still moves with the font (292 to 346 px here: the Lock's
+label and the Start and Stop row wrap). The other pixel checks in the stage
+tests are on fixed CSS sizes (44 px targets, the 46 px volume row, the
+select, the faders' travel between fixed-width cells). **The visualiser
+(#183), merged at b34bf88**: a new test at a laptop's width on its fake
+clock, idle 3 s, presses a step button 2.5 s after the last input; the
+visualiser is not due during the hold's twelve steps nor 2.9 s after the
+press, comes when left, and the press that puts the page back on the same
+button steps nothing. The stage's header and volume rows are unchanged with
+the screensaver loaded (234 px locked at 320 by 568). `test_ui_stage.py`
+and `test_ui_visualiser.py` three times, 82 passed each; the stage tests
+with DejaVu Sans for Inter, 34 passed; the fast suite 5622 passed, 22
+skipped, 249 deselected. *(2026-11-19)*

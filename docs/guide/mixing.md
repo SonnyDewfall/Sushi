@@ -39,8 +39,14 @@ The fader runs from **−∞** (silent) at the bottom, then from −60 dB up to
 +6 dB for a channel, and up to **0.0 dB for MASTER**. At **0.0 dB** nothing is
 added or taken away.
 
-The volumes work while the page is **Locked**, and never ask you to confirm:
-they are meant to be reached for while you play.
+On the stage screen each volume also has **−0.5** and **+0.5** buttons either
+side of its fader: a tap is half a dB, and holding one keeps stepping. See
+[Playing live](playing-live.md#what-is-on-the-stage-screen).
+
+The volumes never ask you to confirm: they are meant to be reached for while
+you play. On the rack they work while the page is **Locked**. On the stage
+screen the lock holds them, so a thumb that knocks one mid-song changes
+nothing: unlock to move them (see [The lock](playing-live.md#the-lock)).
 
 ## What each one changes
 

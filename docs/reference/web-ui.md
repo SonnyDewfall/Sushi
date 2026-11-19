@@ -11,7 +11,7 @@ sushi-rig agent                      # then open http://127.0.0.1:8029/ (the rac
 
 ![The rack as a mixing desk: the master volume in the header; on the left a strip per channel with its input and a volume fader, the board's marked as the open tab's, and the master's strip; in the middle the tabs board, vocal and Master, and under them the board's chain, the overdrive open with its profile's groups and each knob's value as a text field, the bypassed octave a slim row, and the delay; on the right the rigs of config/rigs, Undo, Save with a count of the unsaved changes, Save as, Revert, and the takes](../ui/rack.png)
 
-<img src="../ui/stage.png" alt="The stage screen at phone width: the rig's name and state, the master volume, load and xruns from pw-top, each channel's volume as a fader, one card per plugin with a big bypass switch, and the lock, with start, stop and switch hidden while it is on" width="300">
+<img src="../ui/stage.png" alt="The stage screen at phone width: the rig's name and state, the master volume, load and xruns from pw-top, each channel's volume as a fader, one card per plugin with a big bypass switch, and the lock, with start, stop and switch hidden while it is on (taken before #182: no rig dropdown or step buttons; docs/guide/img/stage-phone.png is current)" width="300">
 
 The agent serves the UI at `/`, from `tool/src/sushi_rig/ui/static/`: plain HTML, CSS
 and JavaScript with no build step and no framework, because the rig machine has
@@ -295,8 +295,9 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   it as a step, never a restart. **A channel's** is its send's gain, its
   `level:` (#101), at the top of its strip on the rack and in the stage's
   levels; it replaces the small "send to master" knob that ended each row, so
-  there is one control per channel. Both are **usable while locked**, with no
-  confirm: volume is a performance control. **A channel a MIDI blend drives**
+  there is one control per channel. On the rack both are **usable while
+  locked**, with no confirm: volume is a performance control. On the stage
+  the lock holds them (#182, below). **A channel a MIDI blend drives**
   says "driven by <control>" on its fader and cannot be set from here: the
   pedal's next move would undo it, and a save does not write a blended
   channel's gain as its level (`fold_state`), so a move would be neither kept
@@ -319,8 +320,51 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
 - **The stage screen (S5).** One glance: the rig, up or down, load and xruns,
   each channel's level, and the last error. One tap: a 56 px bypass per plugin,
   or a card opened for its knobs. Locked by default; unlocking takes two taps.
+- **The stage's volumes, its lock and its rig dropdown (#182, 2026-11-18).**
+  For a phone. **The lock holds every stage volume**, the master's and each
+  channel's (`volumeFader` with `where` "stage", `R.lockRefusal`
+  "stage_volume"): the fader is disabled (no drag, tap or key), the wheel is
+  left to the page, the value field is read-only and refuses a commit, and
+  the step buttons are off; each shows the lock's icon (`lockIcon`, the Lock
+  button's) and says why in its title. Knobs, bypass and Record are not held.
+  *Decided:* the rack's volumes are not behind the lock, as before: the rack's
+  lock already leaves Stop and Switch to usable, so it is not the stage's.
+  **−0.5 dB and +0.5 dB buttons** either side of each stage fader, on one
+  row with a cell holding the name over the value field, which fills the
+  cell so it is 44 px to tap (`R.volumeNudged`): a tap is exactly
+  `VOLUME_STEP_DB` from the level rounded to 0.1 dB (Sushi's 32-bit float
+  reads 0 dB back as −0.0000029, and a step from that drifted and, at the
+  master's top, sent a redundant request; `VOLUME_SAME_DB` is the tolerance),
+  never held to whole dB as a wheel notch is. Held `VOLUME_HOLD_MS` (400 ms)
+  it repeats every `VOLUME_REPEAT_MS` (100 ms), at most `VOLUME_REPEAT_MAX`
+  (12, so 6 dB) a hold, and stops on a release anywhere, `pointercancel`
+  (a press the browser takes for a scroll moves nothing), `pointerleave`,
+  the window's blur, the page hidden (`visibilitychange`), the lock, the
+  button drawn again, or an end. The ends are `volumeStepped`'s: the master
+  stops at 0 dB, and over it + sends nothing and − goes to 0 dB; a channel
+  stops at +6. 46 by 44 px each.
+  **The rig dropdown** (`rigsRegion` with `dropdown`, `R.rigSelect`,
+  `R.rigSelected`) replaces the stage's list of rigs, in the header's first
+  row in the rig's name's place, beside the Lock button: a native select of
+  `config/rigs/`, the running rig selected, else the one chosen, else the
+  screen's title ("Rig down", "Agent not answering"), styled as the title
+  and cut short with an ellipsis, its `title` the whole name (the `h1` is
+  kept for screen readers). Choosing another rig with one up switches to it
+  through `lifecycle("switch")`, as the list's Switch to did (live or by
+  restart, the same notices, busy and refusals); with none up it chooses
+  the rig for Start. Shown but off while locked (no border, no arrow), while
+  a command runs, or with no agent. Start and Stop (with its confirm) and
+  the guide's link are one row under the tiles, only unlocked; the busy line
+  and any problem there too. The locked header is no taller than before
+  #182 (234 px at 320 by 568, against 240), and the same in any font: its
+  lines have fixed heights and a tile's lines never wrap, cut short with an
+  ellipsis instead (with DejaVu Sans in place of Inter, as in CI, master's
+  was 250 and the first draft's 244). Tested in Chromium at 320 (and
+  320 by 568), 390 and 1280 px (`test_ui_stage.py`); not on a real phone or
+  a touch screen.
 - **Start, stop and switch (v0.1, #111).** The rigs of `config/rigs/` in a
-  list (the rack's right column; on the stage screen only while the lock is
+  list (the rack's right column; on the stage screen a dropdown since #182, and
+  Start and Stop there only while the lock is
   off): pick one and Start it (a rig of channels, headless, since the page
   replaces the panel), Switch to it, or Stop the one that is up, which takes a
   second tap because it cuts the sound. A switch says whether it was made live
@@ -333,7 +377,7 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   and a model picker that takes a confirm saying the sound cuts out for a
   moment, refused while locked. Values are labelled as what was last sent,
   never as read back. On the stage screen, only the model's name and the
-  output level, and only while the lock is off, as the rig picker is. With
+  output level, and only while the lock is off, as Start and Stop are. With
   the panel running, the faders and picker are off and say the panel owns the
   amp.
 - **Save (S4).** In the files column, under Undo: Save writes the

@@ -1203,13 +1203,54 @@ function armStop() {
 
 // The picker: config/rigs/ as a list, the running rig marked, one chosen, and
 // what can be done with it (`R.rigPicker`). The rack's left column, as the
-// mockups' S1 has it; on the stage, below the cards and only while unlocked.
-function rigsRegion(el, { newRig = false, deletes = false } = {}) {
+// mockups' S1 has it. On the stage (`dropdown`, the element to draw it in,
+// #182), a native select in its header instead of the list: shown locked
+// but off, and choosing a rig switches to it through the same `lifecycle`
+// as the list's Switch to.
+function rigsRegion(el, { newRig = false, deletes = false, dropdown = null, title = null } = {}) {
   const rig = state.health && state.health.ok ? state.health.body.rig || {} : {};
   const running = rig.running ? rig.config_name : null;
   const view = R.rigPicker(state.health, state.rigs, state.chosen ?? running, state.pending);
   const stop = view.actions.find((a) => a.op === "stop" && !a.disabled);
   const confirming = state.confirming && !!stop;
+  // Stop takes a second tap, because it cuts the sound; the rest are one.
+  const acts = (actions) => (confirming
+    ? h("div", { class: "confirm", role: "group", "aria-label": "Confirm stopping the rig" },
+      h("p", {}, `Stop ${stop.name || "the rig"}? The sound stops until a rig is started again.`),
+      h("button", { class: "rig-act danger", onclick: () => lifecycle("stop", stop.name) }, "Stop now"),
+      h("button", { class: "rig-act", onclick: () => { clearTimeout(state.confirmTimer); state.confirming = false; render(); } }, "Cancel"))
+    : h("div", { class: "rig-actions" }, actions.map((a) => h("button", {
+      class: `rig-act${a.primary ? " primary" : ""}`, disabled: a.disabled,
+      onclick: () => (a.op === "stop" ? armStop() : lifecycle(a.op, a.name)),
+    }, a.label))));
+  if (dropdown) {
+    // The select in the header's first row, beside the Lock button, in the
+    // rig's name's place: what it shows is the screen's title (the running
+    // rig, else the state's title, `title`). The rest under the master.
+    const sel = R.rigSelect(view, state.health, state.locked, title);
+    const locked = state.locked;
+    patch(dropdown, JSON.stringify(["dropdown", sel]), () => h("select", {
+      id: "stage-rig", name: "stage-rig", class: "rig-select", "aria-label": "Rig", disabled: sel.disabled, title: sel.title,
+      onchange: (event) => {
+        const said = R.rigSelected(sel, event.target.value);
+        if (!said) return;
+        state.confirming = false;
+        if (said.op === "switch") lifecycle("switch", said.name);
+        else { state.chosen = said.name; render(); }
+      },
+    },
+    sel.prompt ? h("option", { value: "", disabled: true, selected: true }, sel.prompt) : null,
+    sel.options.map((o) => h("option", { value: o.value, selected: o.value === sel.value }, o.label))));
+    patch(el, JSON.stringify(["dropdown", sel.actions, view.problem, view.busy, confirming && !locked, locked]), () => [
+      view.problem ? h("p", { class: "rig-problem" }, view.problem) : null,
+      view.busy ? h("p", { class: "rig-busy", role: "status" }, view.busy) : null,
+      // Start and Stop only unlocked, in one slim row with the guide's
+      // link: on stage a Stop within reach of a thumb is the mistake the
+      // lock is there to prevent.
+      locked ? null : h("div", { class: "rig-row-stage" }, acts(sel.actions), helpAnchor("stageRigs")),
+    ]);
+    return;
+  }
   // The rack's picker (the files panel) has a Delete on each row (#129); the
   // stage's does not: deleting a file is not a stage action.
   const dels = deletes ? view.rows.map((r) => R.deleteAction(r.name, R.runningListed(state.rigs), state.bin.pending)) : null;
@@ -1232,19 +1273,11 @@ function rigsRegion(el, { newRig = false, deletes = false } = {}) {
     bin && bin.said ? saidBox(bin.said) : null,
     bin && bin.offers.length ? offersBox(bin) : null,
     view.busy ? h("p", { class: "rig-busy", role: "status" }, view.busy) : null,
-    confirming
-      ? h("div", { class: "confirm", role: "group", "aria-label": "Confirm stopping the rig" },
-        h("p", {}, `Stop ${stop.name || "the rig"}? The sound stops until a rig is started again.`),
-        h("button", { class: "rig-act danger", onclick: () => lifecycle("stop", stop.name) }, "Stop now"),
-        h("button", { class: "rig-act", onclick: () => { clearTimeout(state.confirmTimer); state.confirming = false; render(); } }, "Cancel"))
-      : h("div", { class: "rig-actions" }, view.actions.map((a) => h("button", {
-        class: `rig-act${a.primary ? " primary" : ""}`, disabled: a.disabled,
-        onclick: () => (a.op === "stop" ? armStop() : lifecycle(a.op, a.name)),
-      }, a.label))),
+    acts(view.actions),
     // The New rig screen, from the rack's picker only: making a rig is not a
     // stage action, so the stage's picker does not offer it.
     newRig ? h("a", { class: "rig-act new-rig", href: "#new-rig" }, "New rig…") : null,
-    helpAnchor(state.screen === "stage" ? "stageRigs" : "rigs"),
+    helpAnchor("rigs"),
   ]);
   if (rebuilt && state.bin.focus) {
     const target = el.querySelector(state.bin.focus);
@@ -1516,7 +1549,12 @@ function stageAmpRegion(el) {
 // holds it; with no rig up it is there, off, and says so. `blended(ctx)` is
 // the MIDI control that drives this gain, or null: then the fader follows
 // the pedal and is not settable (R.blendedBy says why).
-function volumeFader({ where, processor, label, aria, control, updaters, blended = () => null, maxDb = R.VOLUME_MAX_DB }) {
+// On the stage (#182) it is behind the lock (`R.lockRefusal`
+// "stage_volume"): locked, no drag, tap, wheel, key or typed value moves
+// it, and it shows the lock's icon. And it has −0.5 dB and +0.5 dB buttons
+// either side of the fader (`R.volumeNudged`), the value above them; `name`
+// is the channel's, put before its label. The rack's is as it was.
+function volumeFader({ where, processor, label, aria, control, updaters, blended = () => null, maxDb = R.VOLUME_MAX_DB, name = null }) {
   const key = `p\u0000${processor}\u0000gain`;
   const input = h("input", {
     type: "range", min: R.VOLUME_OFF_SLIDER, max: maxDb, step: 0.1, "aria-label": aria,
@@ -1527,7 +1565,8 @@ function volumeFader({ where, processor, label, aria, control, updaters, blended
   let held = null;
   let live = false;
   let driven = null;
-  const settable = () => live && !driven;
+  const locked = () => (where === "stage" ? R.lockRefusal(state.locked, "stage_volume") : null);
+  const settable = () => live && !driven && !locked();
   const dbNow = () => R.volumeDb(ctrl, current);
   const set = (db) => {
     if (!settable()) return;
@@ -1545,6 +1584,7 @@ function volumeFader({ where, processor, label, aria, control, updaters, blended
   };
   const field = valueField(`${aria} value`, (text) => {
     if (!live) return { ok: false, why: "No rig is up to set it on." };
+    if (locked()) return { ok: false, why: locked() };
     if (driven) return { ok: false, why: `Driven by ${driven}: the pedal sets it.` };
     const said = R.parseVolume(text, maxDb);
     if (!said.ok) return said;
@@ -1552,8 +1592,78 @@ function volumeFader({ where, processor, label, aria, control, updaters, blended
     return { ok: true, text: R.volumeText(said.db) };
   }, `volume-${processor}-value`);
   const note = h("span", { class: "driven" });
-  const el = h("div", { class: `volume volume-${where}`, role: "group", "aria-label": aria, "data-control": key },
-    h("span", { class: "k" }, label), input, field.input, note);
+  const steps = where === "stage" ? [stepButton(-1), stepButton(1)] : null;
+  // On the stage, one row a thumb high (review of PR #184: two rows pushed
+  // the channels off a small phone): the name over the value, the value
+  // field the whole cell so it is 44 px to tap, then −0.5, the fader, +0.5.
+  const el = steps
+    ? h("div", { class: `volume volume-${where}`, role: "group", "aria-label": aria, "data-control": key },
+      h("span", { class: "vol-cell" },
+        h("span", { class: "vol-label", "aria-hidden": "true" }, name ? h("span", { class: "n" }, name) : h("span", { class: "k" }, label),
+          h("span", { class: "vol-lock" }, lockIcon())),
+        field.input),
+      steps[0], input, steps[1], note)
+    : h("div", { class: `volume volume-${where}`, role: "group", "aria-label": aria, "data-control": key },
+      h("span", { class: "k" }, label), input, field.input, note);
+  // A step button: a tap is one step; held, the step repeats at a steady
+  // rate (R.VOLUME_REPEAT_MS) once held R.VOLUME_HOLD_MS, at most
+  // R.VOLUME_REPEAT_MAX steps a hold. It stops when the press ends however
+  // it ends: let go anywhere, slid off the button, taken for a scroll
+  // (pointercancel), the window losing the focus or the page hidden, and
+  // when a step would not be sent (the lock on, the button drawn again and
+  // gone, the end reached). A scroll that starts on it moves nothing.
+  function stepButton(direction) {
+    const btn = h("button", { type: "button", class: `vol-step ${direction > 0 ? "up" : "down"}`,
+      "aria-label": `${aria} ${direction > 0 ? "up" : "down"} 0.5 dB` }, direction > 0 ? "+0.5" : "\u22120.5");
+    let hold = null, repeat = null, repeated = false, count = 0;
+    const nudge = () => {
+      if (!settable() || !btn.isConnected) return false;
+      const next = R.volumeNudged(dbNow(), direction, maxDb, maxDb < R.VOLUME_MAX_DB);
+      if (next.unchanged) return false;
+      set(next.db);
+      return true;
+    };
+    // The window's own blur only (not a control's, which does not bubble
+    // but a capturing listener would see), and the page hidden.
+    const ends = [[window, "pointerup", true], [window, "pointercancel", true], [window, "blur", false], [document, "visibilitychange", false]];
+    const ended = (event) => {
+      if (event.type === "blur" && event.target !== window) return;
+      if (event.type === "visibilitychange" && document.visibilityState !== "hidden") return;
+      stop();
+    };
+    function stop() {
+      clearTimeout(hold);
+      clearInterval(repeat);
+      hold = repeat = null;
+      for (const [target, type, capture] of ends) target.removeEventListener(type, ended, capture);
+    }
+    const tick = () => { count += 1; if (count > R.VOLUME_REPEAT_MAX || !nudge()) { stop(); return false; } return true; };
+    btn.addEventListener("pointerdown", (event) => {
+      if (event.button !== undefined && event.button > 0) return;
+      stop();
+      repeated = false;
+      count = 0;
+      field.release();
+      // A touch is captured by the button it lands on; let go of it, so
+      // sliding off the button is seen (pointerleave) and ends the hold.
+      try { if (btn.hasPointerCapture(event.pointerId)) btn.releasePointerCapture(event.pointerId); } catch { /* gone */ }
+      for (const [target, type, capture] of ends) target.addEventListener(type, ended, capture);
+      hold = setTimeout(() => {
+        hold = null;
+        repeated = true;
+        if (tick()) repeat = setInterval(tick, R.VOLUME_REPEAT_MS);
+      }, R.VOLUME_HOLD_MS);
+    });
+    for (const type of ["pointerup", "pointercancel", "pointerleave"]) btn.addEventListener(type, stop);
+    // A tap, Enter or Space: one step. After a hold its own steps were the
+    // press, and the click its release makes is not one more.
+    btn.addEventListener("click", (event) => {
+      if (repeated && event.detail !== 0) { repeated = false; return; }
+      nudge();
+    });
+    btn.addEventListener("contextmenu", (event) => event.preventDefault());  // a long press is a hold, not a menu
+    return btn;
+  }
   const draw = (v) => {
     current = v;
     const db = dbNow();
@@ -1564,9 +1674,11 @@ function volumeFader({ where, processor, label, aria, control, updaters, blended
     const failed = state.failed.get(key);
     el.classList.toggle("failed", !!failed);
     el.classList.toggle("is-driven", !!driven);
+    el.classList.toggle("is-locked", !!locked());
     const over = live && !driven ? R.overTopNote(db, maxDb) : null;
     note.textContent = driven ? `driven by ${driven}` : over ? "over the top" : "";
     el.title = failed ? `refused: ${failed}`
+      : locked() ? locked()
       : over ? `${over[0].toUpperCase()}${over.slice(1)}.`
       : driven ? `Driven by ${driven}, a MIDI blend: it follows the pedal, so it is not set from here (and a save does not write it).`
         : live ? `-∞, then -60 to ${maxDb > 0 ? "+" + maxDb : maxDb} dB: drag, scroll or type. Saved as its level.${maxDb < R.VOLUME_MAX_DB ? " The master stops at 0 dB: its gain comes after the limiter." : ""}` : "No rig is up.";
@@ -1599,6 +1711,7 @@ function volumeFader({ where, processor, label, aria, control, updaters, blended
     driven = live ? blended(ctx) : null;
     input.disabled = !settable();
     field.input.readOnly = !settable();
+    if (steps) for (const b of steps) b.disabled = !settable();
     if (ctx.live) ctrl = control(ctx.live);
     draw(ctx.live ? sender.displayed(key, R.valueOf(ctx.live, processor, "gain"), ctx.seq) : null);
   });
@@ -1620,7 +1733,8 @@ function blendOf(channel) {
 // at the top of its row and on the stage among the levels.
 function channelVolume(track, where, updaters) {
   return volumeFader({ where, processor: track.send.name, label: "VOLUME", aria: `${track.name} volume`,
-    control: (live) => R.gainControl(live, track.send.name), updaters, blended: () => blendOf(track.name) });
+    control: (live) => R.gainControl(live, track.send.name), updaters, blended: () => blendOf(track.name),
+    name: where === "stage" ? track.name : null });
 }
 
 // ---------------------------------------------------------------- the rack (S1)
@@ -3124,11 +3238,19 @@ function stageFrame() {
     cards: h("main", { class: "cards" }),
     tiles: h("div", { class: "tiles" }),
     rigs: h("section", { class: "rigs stage-rigs", "aria-label": "Rigs" }),
+    title: h("span", { class: "status-slot" }),
+    pick: h("span", { class: "pick-slot" }),
+    lock: h("span", { class: "lock-slot" }),
   };
+  // One row: the state's dot, the rig dropdown in the rig's name's place
+  // (the name itself kept for the screen readers' heading), and the Lock.
+  regions.row.append(regions.title, regions.pick, regions.lock);
   // Built once, its parts patched on their own, as the rack's is: the master
   // fader under the rig's state keeps a drag and its focus through a poll.
-  regions.header = h("header", { class: "stage-head" }, regions.row, regions.detail, masterFader("stage"), regions.tiles);
-  const frame = h("div", { class: "screen stage-screen" }, regions.header, regions.problems, regions.record, regions.levels, regions.amp, regions.cards, regions.rigs,
+  // Start, Stop and the busy line (#182) under the master and the tiles,
+  // so the header is no taller locked than it was before the dropdown.
+  regions.header = h("header", { class: "stage-head" }, regions.row, regions.detail, masterFader("stage"), regions.tiles, regions.rigs);
+  const frame = h("div", { class: "screen stage-screen" }, regions.header, regions.problems, regions.record, regions.levels, regions.amp, regions.cards,
     h("nav", { class: "stage-nav" }, h("a", { href: "#stage", class: "here", "aria-current": "page" }, "Stage"), h("a", { href: "#rack" }, "Rack"),
       helpAnchor("stage", "help")));
   return { frame, regions };
@@ -3150,9 +3272,9 @@ function card(unit) {
 }
 
 function renderStage(regions, model, status) {
-  patch(regions.row, JSON.stringify([status.tone, status.title, state.locked, state.armed]), () => [
-    h("span", { class: `dot tone-${status.tone}`, "aria-hidden": "true" }), h("h1", { class: "rig-name" }, status.title),
-    h("span", { class: "spacer" }), lockButton()]);
+  patch(regions.title, JSON.stringify([status.tone, status.title]), () => [
+    h("span", { class: `dot tone-${status.tone}`, "aria-hidden": "true" }), h("h1", { class: "rig-name sr-only" }, status.title)]);
+  patch(regions.lock, JSON.stringify([state.locked, state.armed]), () => lockButton());
   regions.detail.className = `detail-line tone-${status.tone}`;
   regions.detail.title = status.tone === "up" ? SOUND_NOTE : "";
   patch(regions.detail, status.detail, () => status.detail);
@@ -3166,13 +3288,13 @@ function renderStage(regions, model, status) {
   patch(regions.levels, JSON.stringify(sends.map((t) => [t.name, t.send.name, t.send.panel])), () => {
     state.levelUpdaters = [];
     return sends.length ? [h("span", { class: "k" }, "CHANNELS"), ...sends.map((t) => h("div", { class: "level" },
-      h("span", { class: "n" }, t.name), channelVolume(t, "stage", state.levelUpdaters)))] : [];
+      channelVolume(t, "stage", state.levelUpdaters)))] : [];
   });
   const structure = model ? JSON.stringify([model.tracks.map((t) => [t.name, t.chain, t.units.map((u) => [u.uri, u.profile, u.panel, u.monoNote])]), state.locked, [...state.open]]) : JSON.stringify(["none", status.tone, state.locked]);
   const lockNote = () => h("p", { class: `lock-note${state.locked ? " locked" : ""}` }, state.locked ? lockIcon() : null,
     state.locked
-      ? "Add, remove and reorder are off while locked, and start, stop and switch are hidden. Knobs and bypass still work. This is the page's lock: the agent does not enforce one yet."
-      : "Lock off: the rack can reorder the rig, and the rig can be started, stopped or switched below.");
+      ? "Add, remove and reorder are off while locked, the volumes and the rig dropdown are held, and start and stop are hidden. Knobs, bypass and Record still work. This is the page's lock: the agent does not enforce one yet."
+      : "Lock off: the volumes move, the rig can be switched, started or stopped at the top, and the rack can reorder the rig.");
   patch(regions.cards, structure, () => {
     state.updaters = [];
     if (!model) {
@@ -3185,10 +3307,8 @@ function renderStage(regions, model, status) {
     ];
   });
   stageAmpRegion(regions.amp);
-  // Hidden, not disabled, while locked: on stage a Stop within reach of a
-  // thumb is the mistake the lock is there to prevent.
-  if (state.locked) patch(regions.rigs, "locked", () => []);
-  else rigsRegion(regions.rigs);
+  // The dropdown is shown off while locked; Start and Stop are not there.
+  rigsRegion(regions.rigs, { dropdown: regions.pick, title: status.title });
 }
 
 // ---------------------------------------------------------------- rig files

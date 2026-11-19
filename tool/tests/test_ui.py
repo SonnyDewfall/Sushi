@@ -1205,8 +1205,9 @@ def test_the_stage_fits_a_phone_and_every_target_takes_a_thumb(stage):
 def test_on_stage_one_tap_bypasses_and_one_opens_the_knobs_lock_on(stage, served):
     expect(stage.locator("button.lock")).to_have_text("Locked")
     expect(stage.locator(".lock-note")).to_contain_text("Add, remove and reorder are off while locked")
-    # Start, stop and switch are not there to be tapped at all while locked.
-    expect(stage.locator(".stage-rigs")).to_be_hidden()
+    # Start and stop are not there to be tapped at all while locked; the rig
+    # dropdown is there, and off (#182).
+    expect(stage.get_by_role("combobox", name="Rig")).to_be_disabled()
     expect(stage.get_by_role("button", name=re.compile("^Stop "))).to_have_count(0)
     stage.get_by_role("button", name="Bypass delay").click()
     until(lambda: served.rig.bypassed["delay"] is True)
@@ -1698,16 +1699,21 @@ def test_a_switch_made_by_restart_says_why(browser, served):
     page.close()
 
 
-def test_on_stage_the_picker_is_there_only_once_unlocked(browser, served):
+def test_on_stage_the_picker_is_usable_only_once_unlocked(browser, served):
+    # Since #182 the stage's picker is a dropdown, shown off while locked
+    # (test_ui_stage.py has the rest); Stop is still there only unlocked.
     page = Watched(browser, served, "/", width=390, height=844)
     p = page.page
     p.wait_for_selector(".card")
-    expect(p.locator(".stage-rigs")).to_be_hidden()
+    rig = p.locator(".stage-head").get_by_role("combobox", name="Rig")
+    expect(rig).to_be_disabled()
+    expect(p.get_by_role("button", name="Stop electric_board")).to_have_count(0)
     lock = p.locator("button.lock")
     lock.click()
     lock.click()
     expect(lock).to_have_text("Lock off · editing")
-    expect(p.locator(".stage-rigs .rig")).not_to_have_count(0)
+    expect(rig).to_be_enabled()
+    expect(rig.locator("option")).not_to_have_count(0)
     expect(p.get_by_role("button", name="Stop electric_board")).to_be_visible()
     width = p.evaluate("() => [document.documentElement.scrollWidth, innerWidth]")
     assert width[0] <= width[1], "the picker fits a phone"
@@ -1715,7 +1721,8 @@ def test_on_stage_the_picker_is_there_only_once_unlocked(browser, served):
       .map((e) => [e.textContent.trim(), e.getBoundingClientRect().height]).filter((s) => s[1] < 44)""")
     assert small == [], small
     lock.click()
-    expect(p.locator(".stage-rigs")).to_be_hidden()
+    expect(rig).to_be_disabled()
+    expect(p.get_by_role("button", name="Stop electric_board")).to_have_count(0)
     page.close()
 
 
@@ -3487,7 +3494,7 @@ def test_the_stage_has_no_new_rig_and_no_channel_edits(browser, files_served):
     lock.click()
     lock.click()
     expect(lock).to_have_text("Lock off · editing")
-    expect(p.locator(".stage-rigs .rig").first).to_be_visible()
+    expect(p.locator(".stage-head select")).to_be_enabled()
     expect(p.get_by_role("link", name="New rig…")).to_have_count(0)
     expect(p.locator("section.wiring")).to_have_count(0)
     expect(p.get_by_role("button", name="Add channel")).to_have_count(0)
