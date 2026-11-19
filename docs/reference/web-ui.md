@@ -24,7 +24,7 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   strip for the master), **one chain at a time in the middle**, the widest
   part, behind a tab per channel and Master (below), and **the files on the
   right**: the rig picker, New rig…, Start, Stop and Switch, Undo, Save,
-  Save as…, Revert…, and the takes. The **master volume is in the header**,
+  Save as…, Revert…, and the takes folder. The **master volume is in the header**,
   not in a column. At phone width the columns stack in that order, strips
   first, since volume is what a hand reaches for. A chain is a row of
   plugin cards, each with its knobs: the profile's controls in its groups and
@@ -486,16 +486,23 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   agent not answering) offers **Try again** in place, which asks again.
   After a delete, a box under the list says where the file went, and below
   it each Undo offered, newest first: **Undo: put back** and the rig's name,
-  the newest with the focus, and **×** to forget one. **The Undos are kept
-  in this browser's storage** (`sushi-rig.binned`: at most five, under the
-  agent's own id from `GET /rigs/bin`, so another rig machine served at the
-  same address sees none), and one is offered only once `GET /rigs/bin`
-  (read with `/rigs`) says its file is still in the bin and its rig is not
-  back in the picker; one that is not is let go from storage too. Deleting a
-  second rig keeps the first's Undo. A refusal because a file of that name
-  is there again is said once and the Undo goes (the binned file stays in
-  `config/rigs/.deleted/`); one that may pass keeps it. The restored rig's
-  row has the focus.
+  the newest with the focus, and **×** to forget one. **They go by
+  themselves (#189)**: a delete's or an Undo's outcome that worked, and each
+  Undo, leave 15 s after they are shown (`NOTICE_MS`, `noticesLeft`, by a
+  timer set as each is shown), except the Undo in flight, which waits for its
+  answer; a refusal stays until its × is pressed. **The Undos are this
+  page's only** (at most five): until #189 they were kept in this browser's
+  storage across reloads (`sushi-rig.binned`), and the page now removes that
+  record as it loads and never reads it. One is offered only while `GET
+  /rigs/bin` (read with `/rigs`) says its file is still in the bin and its
+  rig is not back in the picker. Deleting a second rig keeps the first's
+  Undo. A refusal because a file of that name is there again is said and the
+  Undo goes (the binned file stays in `config/rigs/.deleted/`, which the
+  guide says how to move back by hand); one that may pass keeps it. The
+  restored rig's row has the focus. **The × beside an Undo did nothing until
+  #189**: its handler changed the copy of the picker's state that the
+  region's key was made from (`binKey`), not the state, so nothing changed
+  and the key, unchanged, redrew nothing.
 - **Channel presets (#127).** Each strip's input line has **Preset…** beside
   Change input, which opens a panel in the strip (a group, "Presets for
   board"): **Save board as** a name, checked by the naming rule before it is
@@ -566,9 +573,23 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   emulate one (`text-size-adjust` under phone emulation). A name
   already taken says the earlier take moves to `_archive/`. Why recording is
   off is said on the bar (no rig, the panel, a v1 run, no recorder, or the
-  recorder's own reason). The rack lists the takes beside Save, each with its
-  length and `take check`'s verdict: whole, or its first problem, a take cut
-  off saying so.
+  recorder's own reason). A stop's box names the take, its folder and `take
+  check`'s verdict: whole, or the number of problems and the first, a take
+  with problems in the refusal colour and as an alert (until #189 a take
+  with problems lost its verdict there: the box showed only a refusal's
+  reason). **The rack lists no takes, and nothing asks for `GET /takes`
+  (#189)**: the list stayed for ever, and the takes folder is where takes are
+  looked at. Beside Save, one line names the folder (`takesFolder`, from
+  `/health`'s `agent.takes`), and **Open folder** asks the agent to open it
+  in the desktop's file manager (`POST /takes/open`) where `/health` says
+  this request came from a loopback peer (`can_open`), the one peer that
+  route serves. So it is offered on the laptop at `localhost` or
+  `127.0.0.1`, not on a phone, which sees the path and no button, nor on the
+  laptop by its LAN address, whose requests do not come from loopback. What
+  an open said goes after 15 s if it worked and stays until dismissed if not:
+  "nothing here opens a folder" when neither `xdg-open` nor `gio` is
+  installed. **Not run on a desktop**: only a stand-in opener is in the
+  tests.
 - **A child of the rig that exits** (the tuner, the amp, Sushi, qpwgraph, the
   recorder) is on both screens, in the same box and colour as the agent's last
   error, from `agent.supervisor.crashed`: which process, how it ended, what it
@@ -739,7 +760,7 @@ canvas's Save, the commit (with its message), "throw all away" and the rig
 file shown on screen are not built; of its history, Revert is the whole of
 it, by the player's choice (2026-11-06). Of its Record, the
 meters (nothing measures levels yet), the free space and hours of takes left,
-and opening a take are not built. Broken and Pedals from the canvas are not built.
+and opening one take are not built; the takes folder opens on the laptop. Broken and Pedals from the canvas are not built.
 Of its Library, the drawer (above) is the whole: there is no screen of its own,
 no drag and drop into a chain (#32), and a plugin's profile groups, which
 `/library` gives, are not shown in it.

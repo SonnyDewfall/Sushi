@@ -26,16 +26,10 @@ const UNLOCK_MS = 4000;
 const LOCK_KEY = "sushi-rig.locked";
 // The rack's open tab, kept in this browser (#135): `R.tabToRemember`'s record.
 const TAB_KEY = "sushi-rig.tab";
-// The Undos of rigs deleted from this browser (#129), by agent: `R.offersToRemember`'s record.
-const BIN_KEY = "sushi-rig.binned";
 // amp/models is listed again this often while the page is open, so a model
 // copied in shows in the picker without a reload; a failed listing is asked
 // for again after RETRY_MS.
 const MODELS_MS = 30000;
-// GET /takes this often while the rack is shown (only the rack lists the
-// takes, and each answer checks takes on the machine playing the audio), and
-// at once when a take starts or stops, here or from another page.
-const TAKES_MS = 10000;
 // The running take's elapsed time is redrawn this often between polls.
 const TICK_MS = 250;
 // Colours for a unit's swatch, from the mockups; chosen by the plugin, so a
@@ -62,14 +56,11 @@ function writeTab(text) {
   try { localStorage.setItem(TAB_KEY, text); } catch { /* the page still works */ }
 }
 
-// The Undos of deletes are kept in this browser too, so a reload still
-// offers them: the bin is on the rig, and a restore needs only the entry
-// kept here. Kept by the agent they came from (`R.rememberedOffers`).
-function readOffers(agent) {
-  try { return R.rememberedOffers(localStorage.getItem(BIN_KEY), agent); } catch { return []; }
-}
-function writeOffers(agent, offers) {
-  try { localStorage.setItem(BIN_KEY, R.offersToRemember(localStorage.getItem(BIN_KEY), agent, offers)); } catch { /* the page still works: Undo lasts until a reload */ }
+// What this browser kept for the page once and no longer reads
+// (`R.RETIRED_KEYS`): the Undos of deletes, kept across reloads until #189.
+// Removed as the page loads, so an old record neither lingers nor comes back.
+for (const key of R.RETIRED_KEYS) {
+  try { localStorage.removeItem(key); } catch { /* storage refused: there is nothing of it to read either */ }
 }
 
 const state = {
@@ -96,9 +87,10 @@ const state = {
   chosen: null,              // the rig picked in the picker; null follows the running rig
   // Deleting a rig from the rack's picker (#129): the confirm open ({rig,
   // answer, refused}: the dry run's answer, null while asked), the delete in
-  // flight, GET /rigs/bin (`listing`, and which agent's bin it is), the Undos
-  // offered (checked against it), the last outcome, and the Undo in flight.
-  bin: { confirm: null, pending: false, listing: null, agent: null, offers: [], said: null, restoring: null, focus: null },
+  // flight, GET /rigs/bin (`listing`), the Undos offered (checked against
+  // it), the last outcome, and the Undo in flight. An outcome that worked and
+  // each Undo go after R.NOTICE_MS (#189); a refusal stays until dismissed.
+  bin: { confirm: null, pending: false, listing: null, offers: [], said: null, restoring: null, focus: null },
   rigsRunKey: null,          // the run GET /rigs was last read for (`R.runKeyOf`): its `running` follows the run
   pending: null,             // this page's lifecycle command in flight: {op, name}
   saving: null,              // this page's save in flight: {name}, null for the running rig's own file
@@ -107,8 +99,7 @@ const state = {
   revert: { open: false, rig: null, list: null, choice: null, pending: false },  // Revert…: GET /rigs/<rig>/saves, the point chosen
   confirming: false, confirmTimer: null,  // Stop's second tap
   record: null, recordBase: null,  // GET /record, with /live; and {elapsed, at} of the take running
-  takes: null, takesAt: 0,   // GET /takes, on the rack only: every TAKES_MS, and after a start or stop
-  takesOrder: new R.Latest(),  // so an older /takes answer never replaces a newer one
+  takesOpen: { pending: false, result: null },  // the rack's Open folder (#189): in flight, and what it said
   takeName: "",              // what the player typed in the record bar's name; "" while it shows the agent's default
   recordPending: null,       // "start" or "stop", from this page, in flight
   recordResult: null,        // what the last start or stop from this page said (R.recordOutcome)
@@ -295,18 +286,18 @@ async function refreshRigs(force = false) {
   return true;
 }
 
-// GET /rigs/bin, and the Undos kept in this browser for that agent checked
-// against it (#129): one whose file is gone from the bin, or whose rig is
-// in the picker again, is let go, here and in storage.
+// GET /rigs/bin, and the Undos offered checked against it (#129): one whose
+// file is gone from the bin, or whose rig is in the picker again, is let go.
+// Only the offers there when it was asked: one a delete added meanwhile is
+// newer than the listing, and is checked by the next.
 async function refreshBin() {
   const b = state.bin;
+  const asked = new Set(b.offers.map((o) => o.entry));
   const answer = await request("GET", "/rigs/bin");
   b.listing = answer;
   if (!answer.ok) return;
-  b.agent = answer.body.agent;
-  const kept = readOffers(b.agent);
-  b.offers = R.checkedOffers(kept, answer);
-  if (b.offers.length !== kept.length) writeOffers(b.agent, b.offers);
+  const still = new Set(R.checkedOffers(b.offers, answer).map((o) => o.entry));
+  b.offers = b.offers.filter((o) => !asked.has(o.entry) || still.has(o.entry));
 }
 
 // amp/models, for the amp card's picker: every MODELS_MS (a model copied in
@@ -471,7 +462,6 @@ async function poll() {
     inBackground("names", refreshNames);
     inBackground("rigs", refreshRigs);
     if (amp && amp.ok) inBackground("amp models", refreshAmpModels);
-    if (state.screen === "rack") inBackground("takes", refreshTakes);
     if (state.screen === "newrig") {
       inBackground("roles", refreshRoles);
       inBackground("rig channels", refreshAllRigChannels);
@@ -492,31 +482,11 @@ async function poll() {
   }
 }
 
-// GET /takes every TAKES_MS, or now (`force`) after a take starts or stops,
-// and only while the rack, which lists them, is shown. Requests can overlap
-// (a forced one while a periodic one is out), so each is numbered and an
-// answer older than one already shown is dropped.
-async function refreshTakes(force = false) {
-  if (state.screen !== "rack") return false;
-  if (!force && state.takesAt && Date.now() - state.takesAt < TAKES_MS) return false;
-  state.takesAt = Date.now();
-  const ticket = state.takesOrder.issue();
-  const answer = await request("GET", "/takes");
-  if (!state.takesOrder.accept(ticket)) return false;
-  state.takes = answer;
-  return true;
-}
-
 // GET /record's answer, and the base the elapsed time counts on from.
 function noteRecord(record) {
-  const was = state.recordBase ? state.recordBase.name : null;
   state.record = record;
   const body = record && record.ok ? record.body : null;
   state.recordBase = body && body.state === "recording" ? { elapsed: body.elapsed, at: Date.now(), name: body.name } : null;
-  // A take started or stopped, here or from another page: the list is
-  // read again now, so a take just stopped is not shown as unfinished.
-  const now = state.recordBase ? state.recordBase.name : null;
-  if (now !== was) refreshTakes(true).then((fetched) => { if (fetched) render(); });
 }
 
 // After a gesture that changes the rig's structure: read it now, not in a second.
@@ -1110,7 +1080,6 @@ async function recordStart() {
   if (answer.ok) { noteRecord(answer); state.takeName = ""; }
   render();
   kick();
-  refreshTakes(true).then(render);
 }
 
 async function recordStop() {
@@ -1127,7 +1096,6 @@ async function recordStop() {
   if (answer.body && answer.body.name) noteRecord(null);
   render();
   kick();
-  refreshTakes(true).then(render);
 }
 
 // The running take's elapsed time, redrawn in place between polls.
@@ -1324,18 +1292,41 @@ function saidBox(said) {
     h("button", { class: "dismiss", "aria-label": "Dismiss", onclick: () => { state.bin.said = null; render(); } }, "×"));
 }
 
-// The Undos offered, newest first: each a rig deleted from this browser
-// whose file the agent still has in its bin.
+// The Undos offered, newest first: each a rig deleted from this page whose
+// file the agent still has in its bin. `b` is what the region is drawn from
+// (`binKey`, a copy made for its key): what a press changes is state.bin's
+// own. Until #189 the × changed the copy, so state.bin, the key and the page
+// all stayed as they were, and the × did nothing.
 function offersBox(b) {
-  return h("ul", { class: "bin-offers", "aria-label": "Rigs deleted from this browser" }, b.offers.map((o) => h("li", { "data-entry": o.entry },
+  return h("ul", { class: "bin-offers", "aria-label": "Rigs deleted from this page" }, b.offers.map((o) => h("li", { "data-entry": o.entry },
     h("span", { class: "said" }, "Deleted ", h("strong", {}, o.rig), ": in ", h("code", {}, o.file)),
     h("button", { class: "rig-act undo-delete", "data-entry": o.entry, disabled: !!b.restoring, onclick: () => undoDelete(o) },
       b.restoring === o.entry ? "Putting it back…" : `Undo: put back ${o.rig}`),
     h("button", { class: "dismiss small", "aria-label": `Forget the Undo for ${o.rig}`, onclick: () => {
-      b.offers = R.dropOffer(b.offers, o.entry);
-      writeOffers(b.agent, b.offers);
+      state.bin.offers = R.dropOffer(state.bin.offers, o.entry);
       render();
     } }, "×"))));
+}
+
+// The rig picker's notices that worked, and the takes folder's, gone once
+// their R.NOTICE_MS is up (`R.noticesLeft`): looked at again that long after
+// each is shown, by a timer as the Stop confirm's is (`armStop`), and when an
+// Undo that was in flight has its answer.
+function expireNotices() {
+  const b = state.bin;
+  const now = Date.now();
+  const left = R.noticesLeft(b, now);
+  const open = state.takesOpen;
+  const openDone = R.noticeDone(open.result, now);
+  if (left.said === b.said && left.offers.length === b.offers.length && !openDone) return;
+  b.said = left.said;
+  b.offers = left.offers;
+  if (openDone) open.result = null;
+  render();
+}
+
+function noticeShown() {
+  setTimeout(expireNotices, R.NOTICE_MS);
 }
 
 async function askDelete(rig) {
@@ -1373,14 +1364,12 @@ async function deleteRig(rig) {
   } finally {
     b.pending = false;
   }
-  const said = R.deletedOutcome(rig, answer);
+  const said = { ...R.deletedOutcome(rig, answer), at: Date.now() };
   if (said.ok) {
-    const agent = said.agent || b.agent;
-    b.agent = agent;
-    b.offers = R.addOffer(b.offers, said.binned);
-    writeOffers(agent, R.addOffer(readOffers(agent), said.binned));
+    b.offers = R.addOffer(b.offers, { ...said.binned, at: said.at });
     Object.assign(b, { confirm: null, said, focus: `.undo-delete[data-entry="${CSS.escape(said.binned.entry)}"]` });
     if (state.chosen === rig) state.chosen = null;
+    noticeShown();
     await refreshRigs(true);
   } else if (b.confirm && b.confirm.rig === rig) {
     b.confirm.refused = said;
@@ -1400,13 +1389,13 @@ async function undoDelete(offer) {
   } finally {
     b.restoring = null;
   }
-  const said = R.restoreOutcome(offer.rig, answer);
+  const said = { ...R.restoreOutcome(offer.rig, answer), at: Date.now() };
   b.said = said;
-  if (said.ok || !said.keep) {
-    b.offers = R.dropOffer(b.offers, offer.entry);
-    writeOffers(b.agent, R.dropOffer(readOffers(b.agent), offer.entry));
-  }
+  if (said.ok || !said.keep) b.offers = R.dropOffer(b.offers, offer.entry);
   if (said.ok) b.focus = `.rig-row[data-rig="${CSS.escape(offer.rig)}"] .rig`;
+  noticeShown();
+  // An Undo kept through a refusal that may pass may have had its time while in flight.
+  expireNotices();
   await refreshRigs(true);
   render();
 }
@@ -3065,8 +3054,13 @@ function recordRegion(el) {
       h("div", { class: "record-acts" },
         h("button", { class: "record-act rec", disabled: view.record.disabled, onclick: recordStart }, view.record.label),
         h("button", { class: "record-act stop", disabled: view.stop.disabled, onclick: recordStop }, view.stop.label)),
+      // A stop names the take, its folder and `take check`'s verdict (#189),
+      // a take with problems in the refusal colour and as an alert, with
+      // the stop's own reason too when it failed.
       result ? h("div", { class: `record-result ${result.ok ? "ok" : "refused"}`, role: result.ok ? "status" : "alert" },
-        h("strong", {}, result.title), result.ok ? (result.text ? h("span", {}, result.text) : null) : h("span", {}, result.reason),
+        h("strong", {}, result.title), result.text ? h("span", {}, result.text) : null,
+        !result.ok && result.reason ? h("span", {}, result.reason) : null,
+        result.folder ? h("code", { class: "take-folder" }, result.folder) : null,
         h("button", { class: "dismiss", "aria-label": "Dismiss", onclick: () => { state.recordResult = null; render(); } }, "×")) : null,
     ];
   });
@@ -3224,22 +3218,38 @@ function nameField(view) {
   return h("label", { class: "take-name" }, h("span", {}, "Take name"), input);
 }
 
-// The rack's takes (S8): each take's name, length and `take check`'s verdict.
+// The rack's takes (S8, #189): one line naming the takes folder, which is
+// where the takes are looked at, and on the laptop itself Open folder, which
+// asks the agent to open it in the desktop's file manager. No list, and
+// nothing polled: a take's verdict is said when it stops (`R.recordOutcome`).
 function takesRegion(el) {
-  const body = state.record && state.record.ok ? state.record.body : null;
-  const recording = body && body.state === "recording" ? body.name : null;
-  const view = R.takeRows(state.takes, recording);
+  const view = R.takesFolder(state.health, state.takesOpen);
+  const result = view.result;
   patch(el, JSON.stringify(view), () => [
     h("h2", {}, "TAKES"),
-    view.dir ? h("p", { class: "sub" }, h("code", {}, view.dir)) : null,
-    view.problem ? h("p", { class: "sub" }, view.problem) : null,
-    view.rows.length ? h("ul", { class: "take-list", "aria-label": "Takes" }, view.rows.map((r) => h("li", { class: `take ${r.tone}`, title: r.title },
-      h("span", { class: "take-top" }, h("span", { class: "n" }, r.name), r.len ? h("span", { class: "len" }, r.len) : null),
-      h("span", { class: "note" }, r.note)))) : (view.dir && !view.problem ? h("p", { class: "sub" }, "No takes yet.") : null),
-    view.more ? h("p", { class: "sub" }, `and ${view.more} older, not listed`) : null,
-    view.archived ? h("p", { class: "sub" }, `${view.archived} earlier take${view.archived === 1 ? "" : "s"} kept in _archive/`) : null,
+    view.dir ? h("p", { class: "takes-dir" }, "Takes go in ", h("code", {}, view.dir)) : null,
+    view.button ? h("button", { class: "rig-act open-takes", disabled: view.button.disabled, onclick: openTakesFolder }, view.button.label) : null,
+    result ? h("div", { class: `save-result open-result ${result.ok ? "ok" : "refused"}`, role: result.ok ? "status" : "alert" },
+      h("strong", {}, result.title), h("span", { class: "said" }, result.ok ? result.text : result.reason),
+      h("button", { class: "dismiss", "aria-label": "Dismiss", onclick: () => { state.takesOpen.result = null; render(); } }, "×")) : null,
     helpAnchor("takes"),
   ]);
+}
+
+async function openTakesFolder() {
+  const open = state.takesOpen;
+  if (open.pending) return;
+  open.pending = true;
+  render();
+  let answer;
+  try {
+    answer = await request("POST", R.OPEN_FOLDER_CALL.path, R.OPEN_FOLDER_CALL.json);
+  } finally {
+    open.pending = false;
+  }
+  open.result = { ...R.openFolderOutcome(answer), at: Date.now() };
+  if (open.result.ok) noticeShown();
+  render();
 }
 
 // ---------------------------------------------------------------- the stage (S5)
@@ -3966,7 +3976,6 @@ function render() {
       const built = screen === "stage" ? stageFrame() : screen === "newrig" ? newRigFrame() : rackFrame();
       app.replaceChildren(built.frame);
       state.regions = built.regions;
-      if (screen === "rack") refreshTakes(true).then((fetched) => { if (fetched) render(); });
       if (screen === "newrig") {
         inBackground("roles", refreshRoles);
         inBackground("rig channels", () => refreshAllRigChannels(true));
