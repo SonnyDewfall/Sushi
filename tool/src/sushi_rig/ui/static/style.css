@@ -156,6 +156,8 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 .knob.failed .note { color: var(--refused); }
 .knob.failed .value-field { border-color: var(--refused); }
 .knob.inert { opacity: .7; }
+/* On the stage a knob's typed value is a thumb's target too (#182). */
+.stage-screen .knob .value-field { min-height: 44px; }
 .knob.inert .dial { cursor: default; }
 .knob.inert .arc { stroke: var(--muted); }
 
@@ -213,14 +215,27 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 .channel .s, .channels .agent { font-size: 12px; color: var(--muted); line-height: 1.5; }
 .channels .agent { margin-top: auto; }
 .channel-list { display: flex; flex-direction: column; gap: 8px; margin-top: 14px; flex: 1; }
-/* The stage's rig dropdown (#182), in its header: shown off while locked,
-   with the lock's icon beside it; Start, Stop and the confirm under it. */
-.stage-rigs { gap: 8px; }
-.rig-pick { display: flex; align-items: center; gap: 10px; min-width: 0; }
-.rig-pick .k { font-size: 12px; color: var(--muted); letter-spacing: .08em; }
-.rig-pick select { flex: 1 1 auto; width: 100%; min-width: 0; min-height: 48px; padding: 0 12px; border-radius: 12px; background: var(--card); border: 1px solid var(--edge); font-size: 15px; }
-.rig-pick select:disabled { opacity: .7; cursor: default; }
-.rig-lock { display: inline-flex; color: var(--accent-soft); }
+/* The stage's rig dropdown (#182): the header's title, beside the Lock
+   button, one line cut short with an ellipsis (its title has the whole
+   name), never broken inside a word. Off while locked: no border and its
+   arrow dimmed. Start, Stop and the confirm under the tiles, unlocked. */
+.sr-only { position: absolute; width: 1px; height: 1px; padding: 0; margin: -1px; overflow: hidden; clip: rect(0 0 0 0); white-space: nowrap; border: 0; }
+.stage-head .pick-slot { display: flex; flex: 1 1 auto; min-width: 0; }
+.rig-select {
+  flex: 1 1 auto; width: 100%; min-width: 0; min-height: 44px; padding: 0 30px 0 8px; margin-left: -8px;
+  border-radius: 12px; border: 1px solid var(--edge); background-color: transparent; color: var(--text);
+  font-family: var(--display); font-size: 24px; font-weight: 600; line-height: 1;
+  white-space: nowrap; overflow: hidden; text-overflow: ellipsis;
+  appearance: none; -webkit-appearance: none; cursor: pointer;
+  background-image: linear-gradient(45deg, transparent 50%, var(--muted) 50%), linear-gradient(135deg, var(--muted) 50%, transparent 50%);
+  background-position: right 15px center, right 10px center; background-size: 5px 5px; background-repeat: no-repeat;
+}
+.rig-select:disabled { opacity: 1; cursor: default; border-color: transparent; background-image: none; }
+.rig-select option { font-family: var(--body); font-size: 15px; font-weight: 400; }
+.stage-rigs:not(:empty) { gap: 8px; }
+.rig-row-stage { display: flex; flex-wrap: wrap; align-items: center; gap: 4px 12px; }
+.rig-row-stage .rig-actions, .rig-row-stage .confirm { flex: 1 1 auto; }
+.rig-row-stage .help-link { align-self: center; }
 
 .rack-main { flex: 999 1 560px; min-width: 0; padding: 14px 20px 24px; }
 .rack { display: flex; flex-direction: column; gap: 6px; }
@@ -509,21 +524,25 @@ a.rig-act { display: inline-flex; align-items: center; justify-content: center; 
 .volume .driven:empty { display: none; }
 .volume.is-driven input[type=range] { opacity: .6; }
 .volume.failed { border-color: var(--refused); }
-/* On the stage (#182): the value on top, the fader between −0.5 and +0.5
-   under it, each a thumb's width; locked, the lock's icon and a dim fader. */
-.volume-stage { display: flex; flex-direction: column; align-items: stretch; gap: 2px; flex: 1; min-width: 0; padding: 4px 8px 6px 12px; border-radius: 14px; }
-.volume-stage .vol-top { display: flex; align-items: center; gap: 8px; min-width: 0; min-height: 32px; }
-.volume-stage .vol-top .value-field { margin-left: auto; }
-.volume-stage .vol-row { display: flex; align-items: center; gap: 8px; }
-.volume-stage input[type=range] { flex: 1; width: auto; min-width: 0; min-height: 44px; }
-.vol-step { flex: none; width: 52px; min-height: 44px; border-radius: 12px; background: var(--ground); border: 1px solid var(--edge); font-family: var(--mono); font-size: 13px; cursor: pointer;
+/* On the stage (#182), one row a thumb high: a cell with the name over the
+   value, the value field filling it so it is 44 px to tap, then −0.5, the
+   fader and +0.5; locked, the lock's icon in the cell and a dim fader. A
+   note ("over the top", "driven by") takes a line of its own under it. */
+.volume-stage { display: flex; flex-wrap: wrap; align-items: center; gap: 0 6px; flex: 1; min-width: 0; padding: 0 6px; border-radius: 14px; }
+.vol-cell { position: relative; flex: none; width: 70px; height: 44px; }
+.vol-label { position: absolute; top: 5px; left: 5px; right: 2px; display: flex; align-items: center; gap: 4px; pointer-events: none; font-size: 10px; line-height: 1; white-space: nowrap; overflow: hidden; }
+.vol-label .k, .vol-label .n { font-size: 10px; letter-spacing: .08em; color: var(--muted); overflow: hidden; text-overflow: ellipsis; }
+.vol-label .icon { width: 11px; height: 11px; }
+.volume-stage .vol-cell .value-field { width: 100%; height: 44px; padding: 15px 4px 0 4px; font-size: 12px; text-align: left; }
+.volume-stage input[type=range] { flex: 1 1 0; width: auto; min-width: 0; min-height: 44px; margin: 0; }
+.volume-stage .driven { flex: 1 0 100%; padding: 0 0 6px 5px; }
+.vol-step { flex: none; width: 46px; min-height: 44px; border-radius: 12px; background: var(--ground); border: 1px solid var(--edge); font-family: var(--mono); font-size: 13px; cursor: pointer;
   touch-action: manipulation; user-select: none; -webkit-user-select: none; -webkit-touch-callout: none; }
 .vol-step:disabled { opacity: .35; cursor: default; }
 .volume .vol-lock { display: none; color: var(--accent-soft); }
 .volume.is-locked .vol-lock { display: inline-flex; }
 .volume.is-locked input[type=range] { opacity: .4; }
-.levels .level { flex: 1 1 100%; padding-left: 0; }
-.levels .level .n { max-width: 7em; font-size: 14px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.levels .level { flex: 1 1 100%; padding: 0; }
 .levels .level .volume { border: none; background: transparent; }
 
 /* The count of unsaved changes on Save: a box of fixed width, always there. */

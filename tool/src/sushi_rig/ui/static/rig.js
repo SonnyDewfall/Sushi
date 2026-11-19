@@ -1502,12 +1502,15 @@ export function rigPicker(health, rigsAnswer, chosen, pending) {
 
 // The stage's rig dropdown (#182), in place of its list: the picker's rows
 // (`rigPicker`'s `view`) as a native select's options, the running rig
-// selected, else the one chosen to start, else a prompt (also what a rig
-// running from outside config/rigs/ shows). Off while locked, while a
-// command runs (this page's or another's), with no agent or with no rigs.
-// The actions shown under it are the picker's less "Switch to", which
-// choosing in the dropdown does (`rigSelected`).
-export function rigSelect(view, health, locked) {
+// selected, else the one chosen to start, else a prompt. It stands in the
+// stage's title, so the prompt is the screen's title (`rigStatus`'s,
+// `statusTitle`: "Rig down", "Agent not answering", a rig running from
+// outside config/rigs/); `title` is its tooltip, the whole name, since a
+// long one is cut short on a phone. Off while locked, while a command runs
+// (this page's or another's), with no agent or with no rigs. The actions
+// shown under it are the picker's less "Switch to", which choosing in the
+// dropdown does (`rigSelected`).
+export function rigSelect(view, health, locked, statusTitle = null) {
   const agentUp = !!(health && health.ok);
   const rig = agentUp ? health.body.rig || {} : {};
   const running = rig.running ? rig.config_name || null : null;
@@ -1515,11 +1518,14 @@ export function rigSelect(view, health, locked) {
   const chosen = view.rows.find((r) => r.chosen);
   const value = listed ? running : !running && chosen ? chosen.name : "";
   const why = locked ? lockRefusal(true, "stage_switch") : !agentUp ? view.problem : view.busy ? `${view.busy}: wait for it to finish.` : null;
+  const prompt = value ? null : running ? `${running} (not in config/rigs/)` : statusTitle || "Choose a rig…";
+  const shown = value || prompt;
   return {
     value,
     running,
-    prompt: value ? null : running ? `${running} (not in config/rigs/)` : "Choose a rig…",
-    options: view.rows.map((r) => ({ value: r.name, label: r.up ? `${r.name} · up now` : r.name })),
+    prompt,
+    title: why ? `${shown}. ${why}` : shown,
+    options: view.rows.map((r) => ({ value: r.name, label: r.name })),
     disabled: locked || !agentUp || !!view.busy || !view.rows.length,
     why,
     actions: view.actions.filter((a) => a.op !== "switch"),
@@ -2133,23 +2139,31 @@ export function parseVolume(text, max = VOLUME_MAX_DB) {
 
 // The stage's −0.5 dB and +0.5 dB buttons (#182), for a phone, where the
 // fader is hard to move by half a dB. One press is one step of exactly
-// VOLUME_STEP_DB, never held to whole dB as a wheel notch is; held, it
-// repeats every VOLUME_REPEAT_MS once held VOLUME_HOLD_MS. The ends are
-// `volumeStepped`'s: up from -∞ is -60, down from -60 is -∞, the top
-// (`max`) is never passed, and over it (#137) up does nothing and down goes
-// to the top (`hard`, the master) or a step toward it (a channel).
-// `{db, unchanged}`: with `unchanged`, nothing is to be sent.
+// VOLUME_STEP_DB from the level rounded to 0.1 dB, never held to whole dB
+// as a wheel notch is: Sushi holds a gain as a 32-bit float, so 0 dB reads
+// back as −0.0000029 dB, and steps taken from what it reads would drift
+// and, at the master's top, send a step to where it already is (review of
+// PR #184). Held VOLUME_HOLD_MS it repeats every VOLUME_REPEAT_MS, at most
+// VOLUME_REPEAT_MAX times a hold, so a release the page never hears cannot
+// run a volume to its end. The ends are `volumeStepped`'s: up from -∞ is
+// -60, down from -60 is -∞, the top (`max`) is never passed, and over it
+// (#137) up does nothing and down goes to the top (`hard`, the master) or
+// a step toward it (a channel). `{db, unchanged}`: with `unchanged`
+// (within VOLUME_SAME_DB of where it is), nothing is to be sent.
 export const VOLUME_HOLD_MS = 400;
 export const VOLUME_REPEAT_MS = 100;
+export const VOLUME_REPEAT_MAX = 12;
+export const VOLUME_SAME_DB = 1e-4;
 export function volumeNudged(db, direction, max = VOLUME_MAX_DB, hard = false) {
-  if (db === null || db === undefined) return { db: null, unchanged: true };
-  const edge = volumeStepped(db, direction, false, null, max, hard);
+  if (db === null || db === undefined || Number.isNaN(db)) return { db: null, unchanged: true };
+  const from = isNumber(db) ? Math.round(db * 10) / 10 : db;
+  const edge = volumeStepped(from, direction, false, null, max, hard);
   let out = edge.db;
-  if (!edge.unchanged && isNumber(db) && db >= VOLUME_MIN_DB && db <= max) {
-    const next = Number((db + Math.sign(direction) * VOLUME_STEP_DB).toFixed(6));
+  if (!edge.unchanged && isNumber(from) && from >= VOLUME_MIN_DB && from <= max) {
+    const next = Number((from + Math.sign(direction) * VOLUME_STEP_DB).toFixed(1));
     out = next < VOLUME_MIN_DB - 1e-9 ? -Infinity : Math.min(max, next);
   }
-  const same = out === db || (isNumber(out) && isNumber(db) && Math.abs(out - db) < 1e-9);
+  const same = out === db || (isNumber(out) && isNumber(db) && Math.abs(out - db) < VOLUME_SAME_DB);
   return { db: out, unchanged: !!edge.unchanged || same };
 }
 

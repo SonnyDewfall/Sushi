@@ -1199,10 +1199,11 @@ function armStop() {
 
 // The picker: config/rigs/ as a list, the running rig marked, one chosen, and
 // what can be done with it (`R.rigPicker`). The rack's left column, as the
-// mockups' S1 has it. On the stage (`dropdown`, #182), a native select in
-// its header instead of the list: shown locked but off, and choosing a rig
-// switches to it through the same `lifecycle` as the list's Switch to.
-function rigsRegion(el, { newRig = false, deletes = false, dropdown = false } = {}) {
+// mockups' S1 has it. On the stage (`dropdown`, the element to draw it in,
+// #182), a native select in its header instead of the list: shown locked
+// but off, and choosing a rig switches to it through the same `lifecycle`
+// as the list's Switch to.
+function rigsRegion(el, { newRig = false, deletes = false, dropdown = null, title = null } = {}) {
   const rig = state.health && state.health.ok ? state.health.body.rig || {} : {};
   const running = rig.running ? rig.config_name : null;
   const view = R.rigPicker(state.health, state.rigs, state.chosen ?? running, state.pending);
@@ -1219,30 +1220,30 @@ function rigsRegion(el, { newRig = false, deletes = false, dropdown = false } = 
       onclick: () => (a.op === "stop" ? armStop() : lifecycle(a.op, a.name)),
     }, a.label))));
   if (dropdown) {
-    const sel = R.rigSelect(view, state.health, state.locked);
+    // The select in the header's first row, beside the Lock button, in the
+    // rig's name's place: what it shows is the screen's title (the running
+    // rig, else the state's title, `title`). The rest under the master.
+    const sel = R.rigSelect(view, state.health, state.locked, title);
     const locked = state.locked;
-    patch(el, JSON.stringify(["dropdown", sel, view.problem, view.busy, confirming && !locked, locked]), () => [
-      h("div", { class: "rig-pick" },
-        h("label", { class: "k", for: "stage-rig" }, "RIG"),
-        h("select", {
-          id: "stage-rig", name: "stage-rig", "aria-label": "Rig", disabled: sel.disabled, title: sel.why,
-          onchange: (event) => {
-            const said = R.rigSelected(sel, event.target.value);
-            if (!said) return;
-            state.confirming = false;
-            if (said.op === "switch") lifecycle("switch", said.name);
-            else { state.chosen = said.name; render(); }
-          },
-        },
-        sel.prompt ? h("option", { value: "", disabled: true, selected: true }, sel.prompt) : null,
-        sel.options.map((o) => h("option", { value: o.value, selected: o.value === sel.value }, o.label))),
-        locked ? h("span", { class: "rig-lock", title: sel.why }, lockIcon()) : null),
+    patch(dropdown, JSON.stringify(["dropdown", sel]), () => h("select", {
+      id: "stage-rig", name: "stage-rig", class: "rig-select", "aria-label": "Rig", disabled: sel.disabled, title: sel.title,
+      onchange: (event) => {
+        const said = R.rigSelected(sel, event.target.value);
+        if (!said) return;
+        state.confirming = false;
+        if (said.op === "switch") lifecycle("switch", said.name);
+        else { state.chosen = said.name; render(); }
+      },
+    },
+    sel.prompt ? h("option", { value: "", disabled: true, selected: true }, sel.prompt) : null,
+    sel.options.map((o) => h("option", { value: o.value, selected: o.value === sel.value }, o.label))));
+    patch(el, JSON.stringify(["dropdown", sel.actions, view.problem, view.busy, confirming && !locked, locked]), () => [
       view.problem ? h("p", { class: "rig-problem" }, view.problem) : null,
       view.busy ? h("p", { class: "rig-busy", role: "status" }, view.busy) : null,
-      // Start and Stop only unlocked: on stage a Stop within reach of a
-      // thumb is the mistake the lock is there to prevent.
-      locked ? null : acts(sel.actions),
-      locked ? null : helpAnchor("stageRigs"),
+      // Start and Stop only unlocked, in one slim row with the guide's
+      // link: on stage a Stop within reach of a thumb is the mistake the
+      // lock is there to prevent.
+      locked ? null : h("div", { class: "rig-row-stage" }, acts(sel.actions), helpAnchor("stageRigs")),
     ]);
     return;
   }
@@ -1588,21 +1589,29 @@ function volumeFader({ where, processor, label, aria, control, updaters, blended
   }, `volume-${processor}-value`);
   const note = h("span", { class: "driven" });
   const steps = where === "stage" ? [stepButton(-1), stepButton(1)] : null;
+  // On the stage, one row a thumb high (review of PR #184: two rows pushed
+  // the channels off a small phone): the name over the value, the value
+  // field the whole cell so it is 44 px to tap, then −0.5, the fader, +0.5.
   const el = steps
     ? h("div", { class: `volume volume-${where}`, role: "group", "aria-label": aria, "data-control": key },
-      h("div", { class: "vol-top" }, name ? h("span", { class: "n" }, name) : null, h("span", { class: "k" }, label),
-        h("span", { class: "vol-lock" }, lockIcon()), note, field.input),
-      h("div", { class: "vol-row" }, steps[0], input, steps[1]))
+      h("span", { class: "vol-cell" },
+        h("span", { class: "vol-label", "aria-hidden": "true" }, name ? h("span", { class: "n" }, name) : h("span", { class: "k" }, label),
+          h("span", { class: "vol-lock" }, lockIcon())),
+        field.input),
+      steps[0], input, steps[1], note)
     : h("div", { class: `volume volume-${where}`, role: "group", "aria-label": aria, "data-control": key },
       h("span", { class: "k" }, label), input, field.input, note);
   // A step button: a tap is one step; held, the step repeats at a steady
-  // rate (R.VOLUME_REPEAT_MS) once held R.VOLUME_HOLD_MS, until it is let
-  // go, the press is taken for a scroll (pointercancel), or there is
-  // nothing further to go. A scroll that starts on it moves nothing.
+  // rate (R.VOLUME_REPEAT_MS) once held R.VOLUME_HOLD_MS, at most
+  // R.VOLUME_REPEAT_MAX steps a hold. It stops when the press ends however
+  // it ends: let go anywhere, slid off the button, taken for a scroll
+  // (pointercancel), the window losing the focus or the page hidden, and
+  // when a step would not be sent (the lock on, the button drawn again and
+  // gone, the end reached). A scroll that starts on it moves nothing.
   function stepButton(direction) {
     const btn = h("button", { type: "button", class: `vol-step ${direction > 0 ? "up" : "down"}`,
       "aria-label": `${aria} ${direction > 0 ? "up" : "down"} 0.5 dB` }, direction > 0 ? "+0.5" : "\u22120.5");
-    let hold = null, repeat = null, repeated = false;
+    let hold = null, repeat = null, repeated = false, count = 0;
     const nudge = () => {
       if (!settable() || !btn.isConnected) return false;
       const next = R.volumeNudged(dbNow(), direction, maxDb, maxDb < R.VOLUME_MAX_DB);
@@ -1610,21 +1619,38 @@ function volumeFader({ where, processor, label, aria, control, updaters, blended
       set(next.db);
       return true;
     };
-    const stop = () => { clearTimeout(hold); clearInterval(repeat); hold = repeat = null; };
+    // The window's own blur only (not a control's, which does not bubble
+    // but a capturing listener would see), and the page hidden.
+    const ends = [[window, "pointerup", true], [window, "pointercancel", true], [window, "blur", false], [document, "visibilitychange", false]];
+    const ended = (event) => {
+      if (event.type === "blur" && event.target !== window) return;
+      if (event.type === "visibilitychange" && document.visibilityState !== "hidden") return;
+      stop();
+    };
+    function stop() {
+      clearTimeout(hold);
+      clearInterval(repeat);
+      hold = repeat = null;
+      for (const [target, type, capture] of ends) target.removeEventListener(type, ended, capture);
+    }
+    const tick = () => { count += 1; if (count > R.VOLUME_REPEAT_MAX || !nudge()) { stop(); return false; } return true; };
     btn.addEventListener("pointerdown", (event) => {
       if (event.button !== undefined && event.button > 0) return;
       stop();
       repeated = false;
+      count = 0;
       field.release();
-      // Its release comes here wherever the finger slides to.
-      try { btn.setPointerCapture(event.pointerId); } catch { /* a pointer already gone */ }
+      // A touch is captured by the button it lands on; let go of it, so
+      // sliding off the button is seen (pointerleave) and ends the hold.
+      try { if (btn.hasPointerCapture(event.pointerId)) btn.releasePointerCapture(event.pointerId); } catch { /* gone */ }
+      for (const [target, type, capture] of ends) target.addEventListener(type, ended, capture);
       hold = setTimeout(() => {
+        hold = null;
         repeated = true;
-        if (!nudge()) return;
-        repeat = setInterval(() => { if (!nudge()) stop(); }, R.VOLUME_REPEAT_MS);
+        if (tick()) repeat = setInterval(tick, R.VOLUME_REPEAT_MS);
       }, R.VOLUME_HOLD_MS);
     });
-    for (const type of ["pointerup", "pointercancel", "lostpointercapture"]) btn.addEventListener(type, stop);
+    for (const type of ["pointerup", "pointercancel", "pointerleave"]) btn.addEventListener(type, stop);
     // A tap, Enter or Space: one step. After a hold its own steps were the
     // press, and the click its release makes is not one more.
     btn.addEventListener("click", (event) => {
@@ -3197,11 +3223,18 @@ function stageFrame() {
     cards: h("main", { class: "cards" }),
     tiles: h("div", { class: "tiles" }),
     rigs: h("section", { class: "rigs stage-rigs", "aria-label": "Rigs" }),
+    title: h("span", { class: "status-slot" }),
+    pick: h("span", { class: "pick-slot" }),
+    lock: h("span", { class: "lock-slot" }),
   };
+  // One row: the state's dot, the rig dropdown in the rig's name's place
+  // (the name itself kept for the screen readers' heading), and the Lock.
+  regions.row.append(regions.title, regions.pick, regions.lock);
   // Built once, its parts patched on their own, as the rack's is: the master
   // fader under the rig's state keeps a drag and its focus through a poll.
-  // The rig dropdown (#182) under the rig's state, where a thumb finds it.
-  regions.header = h("header", { class: "stage-head" }, regions.row, regions.detail, regions.rigs, masterFader("stage"), regions.tiles);
+  // Start, Stop and the busy line (#182) under the master and the tiles,
+  // so the header is no taller locked than it was before the dropdown.
+  regions.header = h("header", { class: "stage-head" }, regions.row, regions.detail, masterFader("stage"), regions.tiles, regions.rigs);
   const frame = h("div", { class: "screen stage-screen" }, regions.header, regions.problems, regions.record, regions.levels, regions.amp, regions.cards,
     h("nav", { class: "stage-nav" }, h("a", { href: "#stage", class: "here", "aria-current": "page" }, "Stage"), h("a", { href: "#rack" }, "Rack"),
       helpAnchor("stage", "help")));
@@ -3224,9 +3257,9 @@ function card(unit) {
 }
 
 function renderStage(regions, model, status) {
-  patch(regions.row, JSON.stringify([status.tone, status.title, state.locked, state.armed]), () => [
-    h("span", { class: `dot tone-${status.tone}`, "aria-hidden": "true" }), h("h1", { class: "rig-name" }, status.title),
-    h("span", { class: "spacer" }), lockButton()]);
+  patch(regions.title, JSON.stringify([status.tone, status.title]), () => [
+    h("span", { class: `dot tone-${status.tone}`, "aria-hidden": "true" }), h("h1", { class: "rig-name sr-only" }, status.title)]);
+  patch(regions.lock, JSON.stringify([state.locked, state.armed]), () => lockButton());
   regions.detail.className = `detail-line tone-${status.tone}`;
   regions.detail.title = status.tone === "up" ? SOUND_NOTE : "";
   patch(regions.detail, status.detail, () => status.detail);
@@ -3260,7 +3293,7 @@ function renderStage(regions, model, status) {
   });
   stageAmpRegion(regions.amp);
   // The dropdown is shown off while locked; Start and Stop are not there.
-  rigsRegion(regions.rigs, { dropdown: true });
+  rigsRegion(regions.rigs, { dropdown: regions.pick, title: status.title });
 }
 
 // ---------------------------------------------------------------- rig files

@@ -1689,7 +1689,7 @@ def test_on_stage_the_picker_is_usable_only_once_unlocked(browser, served):
     page = Watched(browser, served, "/", width=390, height=844)
     p = page.page
     p.wait_for_selector(".card")
-    rig = p.locator(".stage-rigs").get_by_role("combobox", name="Rig")
+    rig = p.locator(".stage-head").get_by_role("combobox", name="Rig")
     expect(rig).to_be_disabled()
     expect(p.get_by_role("button", name="Stop electric_board")).to_have_count(0)
     lock = p.locator("button.lock")
@@ -3478,7 +3478,7 @@ def test_the_stage_has_no_new_rig_and_no_channel_edits(browser, files_served):
     lock.click()
     lock.click()
     expect(lock).to_have_text("Lock off · editing")
-    expect(p.locator(".stage-rigs select")).to_be_enabled()
+    expect(p.locator(".stage-head select")).to_be_enabled()
     expect(p.get_by_role("link", name="New rig…")).to_have_count(0)
     expect(p.locator("section.wiring")).to_have_count(0)
     expect(p.get_by_role("button", name="Add channel")).to_have_count(0)

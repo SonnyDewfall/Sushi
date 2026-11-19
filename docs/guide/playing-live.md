@@ -11,15 +11,16 @@ phone this is not yet recorded as tried: see
 click **Stage** at the top of the rack; **Rack**, at the bottom of the stage
 screen, takes you back.
 
-<img src="img/stage-phone.png" alt="The stage screen at a phone's width, locked: the rig's name and the Locked button, the rig dropdown greyed out with a lock beside it, the master volume between its −0.5 and +0.5 buttons with a lock on it, the load, xruns and amp tiles, the Record bar with the next take's name, and the first channel's volume with its own buttons and lock; below them, out of the picture, the other channel's volume and a card for each plugin with a round bypass button" width="320">
+<img src="img/stage-phone.png" alt="The stage screen at a phone's width, locked: the rig's name as a dropdown beside the Locked button, the master volume on one row with its value, a lock, and its −0.5 and +0.5 buttons either side of the fader, the load, xruns and amp tiles, the Record bar with the next take's name, each channel's volume on one row the same way, and a card for each plugin with a round bypass button" width="320">
 
 ## What is on the stage screen
 
 From the top:
 
-- **The rig's name**, and under it whether it is up and for how long.
-- **RIG**: a dropdown of your rigs, the one playing selected. See
-  [Switch to another rig](#switch-to-another-rig).
+- **The rig's name**, beside the **Locked** button. It is also a dropdown of
+  your rigs, for switching: see [Switch to another rig](#switch-to-another-rig).
+  A name too long for the screen ends in **…**. Under it, whether the rig is up
+  and for how long. With no rig up it says **Rig down**.
 - **MASTER**: the overall volume. See [Mixing](mixing.md).
 - **LOAD**: how much of its time budget the rig is using. Near 100% the sound
   starts to break up, and the tile says **over budget**.
@@ -27,17 +28,19 @@ From the top:
   page. If it says **rising**, it is dropping out now.
 - **AMP**: the amp model that is playing, or **none**.
 - **Record**: see [Recording](recording.md).
-- **CHANNELS**: a **VOLUME** fader for each channel.
+- **CHANNELS**: a volume for each channel, under the channel's name.
+- **A card for each plugin** (each effect), grouped under its channel's name.
 
-Every volume shows its level in dB above its fader, and has a **−0.5** button
-to the left of the fader and a **+0.5** button to the right. A tap moves the
-volume by exactly half a dB, which is easier on a phone than nudging the fader.
-Hold a button and it keeps stepping, about ten steps a second, until you let go.
+Every volume is one row: its name with its level in dB under it, then a
+**−0.5** button, the fader and a **+0.5** button. Tap the level to type one.
+A tap on a button moves the volume by exactly half a dB, which is easier on a
+phone than nudging the fader. Hold a button and it keeps stepping, about ten
+steps a second, for up to 6 dB; let go and hold again to go further. It stops
+as soon as your finger slides off the button or you switch to another app.
 **MASTER** stops at 0 dB, as its fader does, and a channel's volume at +6 dB.
 If the master is above 0 dB because the rig was started before that limit,
 **+0.5** does nothing and **−0.5** brings it straight down to 0 dB. The volumes
 only move while the page is unlocked: see [The lock](#the-lock).
-- **A card for each plugin** (each effect), grouped under its channel's name.
 
 ## Turn an effect on or off
 
@@ -60,12 +63,12 @@ protect you there.
 While locked you can still turn knobs, bypass effects and record. What the lock
 takes away:
 
-- on the stage screen, every volume: **MASTER** and each channel's
-  **VOLUME** do not move by dragging, tapping, the mouse wheel, the keyboard,
-  a typed value or the **−0.5** and **+0.5** buttons. Each shows a small lock
-  and its fader and buttons are greyed out;
-- on the stage screen, the rig dropdown (shown, greyed out, with a lock beside
-  it), **Start** and **Stop**, and the amp;
+- on the stage screen, every volume: **MASTER** and each channel's volume do
+  not move by dragging, tapping, the mouse wheel, the keyboard, a typed value
+  or the **−0.5** and **+0.5** buttons. Each shows a small lock beside its
+  name, and its fader and buttons are greyed out;
+- on the stage screen, switching rigs (the rig's name shows no dropdown arrow
+  and does nothing when tapped), **Start** and **Stop**, and the amp;
 - on the rack, moving a plugin up or down its chain, and changing the amp's
   model.
 
@@ -84,15 +87,14 @@ pedal, or another device that is unlocked, from changing the rig.
 
 On the stage screen:
 
-1. Unlock. The **RIG** dropdown at the top, under the rig's name, is greyed out
-   while the page is locked.
-2. Tap the dropdown and choose the rig you want. The one playing is marked
-   **up now**. There is no second question: choosing a different rig switches
+1. Unlock. The rig's name at the top gets a dropdown arrow.
+2. Tap the rig's name and choose the rig you want; the one playing is already
+   selected. There is no second question: choosing a different rig switches
    to it at once.
 
-While the switch runs, the dropdown is greyed out and a line under it says
-what is happening. With no rig up, choosing a rig does not start it: tap
-**Start** and its name, under the dropdown. **Stop** is there too while a rig
+While the switch runs, the name cannot be tapped and a line under the tiles
+says what is happening. With no rig up, choosing a rig does not start it: tap
+**Start** and its name, under the tiles. **Stop** is there instead while a rig
 is up, and asks again before it stops the sound.
 
 On the rack the list of rigs is always there, under **RIGS** on the right: tap

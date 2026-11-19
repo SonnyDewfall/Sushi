@@ -113,6 +113,7 @@ import argparse
 import asyncio
 import copy
 import json
+import struct
 import threading
 import time
 from dataclasses import replace
@@ -223,6 +224,13 @@ def fixture_library():
     return read_library(checkout_root(), plugins_dir=FIXTURES / "lv2")
 
 
+def float32(x: float) -> float:
+    """`x` as Sushi holds a parameter's value: a 32-bit float, as the review
+    of PR #184 has it (not checked here against a running Sushi), so 0 dB,
+    a gain of 120/144, reads back as 0.83333331, the page's −0.0000029 dB."""
+    return struct.unpack("f", struct.pack("f", float(x)))[0]
+
+
 class UiRig:
     """The rig, as `agent.Live` sees Sushi. `refuse` maps a processor (or a
     `(processor, parameter)`) to a reason Sushi gives for refusing a change
@@ -250,6 +258,9 @@ class UiRig:
             LIMITER: {name: {"automatable": True, "value": value, "min_domain_value": 0.0, "max_domain_value": 1.0}
                       for name, value in LIMITER_SETTINGS["parameters"].items()},
         }
+        for params in self.info.values():
+            for p in params.values():
+                p["value"] = float32(p["value"])
         self.bypassed = {"overdrive": False, "octave": True, "delay": False, "vocal_delay": False,
                          "board_send": False, "vocal_send": False, "master_return": False, LIMITER: False}
         self.classes = {
@@ -330,7 +341,7 @@ class UiRig:
         with self.lock:
             self.calls.append(("set_parameter", processor, parameter, value))
             self._refused((processor, parameter), processor)
-            self.info[processor][parameter]["value"] = value
+            self.info[processor][parameter]["value"] = float32(value)
 
     def set_bypass(self, connection, processor, bypassed):
         with self.lock:

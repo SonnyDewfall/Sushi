@@ -323,24 +323,36 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   button's) and says why in its title. Knobs, bypass and Record are not held.
   *Decided:* the rack's volumes are not behind the lock, as before: the rack's
   lock already leaves Stop and Switch to usable, so it is not the stage's.
-  **−0.5 dB and +0.5 dB buttons** either side of each stage fader, the value
-  field above (`R.volumeNudged`): a tap is exactly `VOLUME_STEP_DB`, never
-  held to whole dB as a wheel notch is; held `VOLUME_HOLD_MS` (400 ms) it
-  repeats every `VOLUME_REPEAT_MS` (100 ms) until released, cancelled (a
-  press the browser takes for a scroll moves nothing) or at an end. The ends
-  are `volumeStepped`'s: the master stops at 0 dB, and over it + sends
-  nothing and − goes to 0 dB; a channel stops at +6. 52 by 44 px each.
+  **−0.5 dB and +0.5 dB buttons** either side of each stage fader, on one
+  row with a cell holding the name over the value field, which fills the
+  cell so it is 44 px to tap (`R.volumeNudged`): a tap is exactly
+  `VOLUME_STEP_DB` from the level rounded to 0.1 dB (Sushi's 32-bit float
+  reads 0 dB back as −0.0000029, and a step from that drifted and, at the
+  master's top, sent a redundant request; `VOLUME_SAME_DB` is the tolerance),
+  never held to whole dB as a wheel notch is. Held `VOLUME_HOLD_MS` (400 ms)
+  it repeats every `VOLUME_REPEAT_MS` (100 ms), at most `VOLUME_REPEAT_MAX`
+  (12, so 6 dB) a hold, and stops on a release anywhere, `pointercancel`
+  (a press the browser takes for a scroll moves nothing), `pointerleave`,
+  the window's blur, the page hidden (`visibilitychange`), the lock, the
+  button drawn again, or an end. The ends are `volumeStepped`'s: the master
+  stops at 0 dB, and over it + sends nothing and − goes to 0 dB; a channel
+  stops at +6. 46 by 44 px each.
   **The rig dropdown** (`rigsRegion` with `dropdown`, `R.rigSelect`,
-  `R.rigSelected`) replaces the stage's list of rigs, in the header under
-  the rig's state: a native select of `config/rigs/`, the running rig
-  selected (else the one chosen, else "Choose a rig…"). Choosing another
-  rig with one up switches to it through `lifecycle("switch")`, as the
-  list's Switch to did (live or by restart, the same notices, busy and
-  refusals); with none up it chooses the rig for Start. Shown but off while
-  locked, while a command runs, or with no agent. Start and Stop (with its
-  confirm) are under it only unlocked, as before. Tested in Chromium at 320,
-  390 and 1280 px (`test_ui_stage.py`); not on a real phone or a touch
-  screen.
+  `R.rigSelected`) replaces the stage's list of rigs, in the header's first
+  row in the rig's name's place, beside the Lock button: a native select of
+  `config/rigs/`, the running rig selected, else the one chosen, else the
+  screen's title ("Rig down", "Agent not answering"), styled as the title
+  and cut short with an ellipsis, its `title` the whole name (the `h1` is
+  kept for screen readers). Choosing another rig with one up switches to it
+  through `lifecycle("switch")`, as the list's Switch to did (live or by
+  restart, the same notices, busy and refusals); with none up it chooses
+  the rig for Start. Shown but off while locked (no border, no arrow), while
+  a command runs, or with no agent. Start and Stop (with its confirm) and
+  the guide's link are one row under the tiles, only unlocked; the busy line
+  and any problem there too. The locked header is no taller than before
+  #182 (238 px at 320 by 568, against 240). Tested in Chromium at 320 (and
+  320 by 568), 390 and 1280 px (`test_ui_stage.py`); not on a real phone or
+  a touch screen.
 - **Start, stop and switch (v0.1, #111).** The rigs of `config/rigs/` in a
   list (the rack's right column; on the stage screen a dropdown since #182, and
   Start and Stop there only while the lock is
