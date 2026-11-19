@@ -1,0 +1,252 @@
+# sushi-rig component profile (schema 1).
+# Machine-written and canonical: edit by hand if you like, but comments
+# do not survive the next rewrite. Facts are checked against `sushi-rig
+# probe`; judgements carry provenance (draft / reviewed / fact).
+# Check with:  sushi-rig profile validate <this file>
+schema_version: 1
+
+plugin:
+  uri: http://jpcima.sdf1.org/lv2/string-machine-chorus
+  version: '0.0'
+  name: String machine chorus
+kind: effect
+host: sushi-lv2
+
+ports:
+  audio_in: 1
+  audio_out: 2
+  config_drivable: true
+
+groups:
+  - id: ensemble
+    label: Ensemble
+    provenance: draft
+  - id: mix
+    label: Mix
+    provenance: draft
+  - id: motion
+    label: Motion
+    provenance: draft
+
+parameters:
+  - name: Enabled
+    symbol: lv2_enabled
+    facts:
+      min: 0.0
+      max: 1.0
+      default: 1.0
+      toggled: true
+      integer: true
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: hidden, provenance: draft}
+    label: {value: Enabled, provenance: fact}
+    description:
+      value: 'The plugin''s own on switch: left on, since the rack''s bypass is the one to use.'
+      provenance: draft
+    scale: {value: toggle, provenance: fact}
+    control: {value: toggle, provenance: draft}
+
+  - name: Chorus global depth
+    symbol: cho_depth
+    facts:
+      min: 0.0
+      max: 100.0
+      default: 100.0
+      unit: '%'
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: primary, provenance: draft}
+    group: {value: ensemble, provenance: draft}
+    order: {value: 1, provenance: draft}
+    label: {value: Depth, provenance: draft}
+    description:
+      value: 'How far the ensemble swirls: 100 %, its default, is the string machine.'
+      provenance: draft
+    scale: {value: linear, provenance: draft}
+    control: {value: knob, provenance: draft}
+    phone: {value: 2, provenance: draft}
+
+  - name: Chorus model
+    symbol: cho_model
+    facts:
+      min: 0.0
+      max: 1.0
+      default: 1.0
+      toggled: false
+      integer: true
+      enumeration: true
+      logarithmic: false
+      scale_points:
+        - {value: 0.0, label: Digital delay}
+        - {value: 1.0, label: Analog bucket-brigade delay}
+      settable: true
+    visibility: {value: advanced, provenance: draft}
+    group: {value: ensemble, provenance: draft}
+    order: {value: 2, provenance: draft}
+    label: {value: Model, provenance: draft}
+    description:
+      value: Bucket-brigade, its default, or a plain digital delay, at a fifth of the CPU (measured).
+      provenance: draft
+    scale: {value: enum, provenance: fact}
+    control: {value: selector, provenance: draft}
+
+  - name: Wet gain
+    symbol: wet_gain
+    facts:
+      min: -60.0
+      max: 20.0
+      default: -6.0
+      unit: dB
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: hidden, provenance: draft}
+    label: {value: Wet gain, provenance: fact}
+    description:
+      value: The ensemble's level, dB, up to +20 dB. Set by Level, -24 to 0.
+      provenance: draft
+    scale: {value: linear, provenance: draft}
+    control: {value: knob, provenance: draft}
+
+  - name: Dry gain
+    symbol: dry_gain
+    facts:
+      min: -60.0
+      max: 20.0
+      default: -60.0
+      unit: dB
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: hidden, provenance: draft}
+    label: {value: Dry gain, provenance: fact}
+    description:
+      value: The plain guitar beside the ensemble, dB; -60, its default, is none. Set by Mix.
+      provenance: draft
+    scale: {value: linear, provenance: draft}
+    control: {value: knob, provenance: draft}
+
+  - name: Chorus rate 1
+    symbol: cho_rate1
+    facts:
+      min: 3.0
+      max: 9.0
+      default: 5.83459997177124
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: advanced, provenance: draft}
+    group: {value: motion, provenance: draft}
+    order: {value: 1, provenance: draft}
+    label: {value: Fast rate, provenance: draft}
+    description:
+      value: The fast shimmer's speed; the range suggests Hz, but no unit is declared.
+      provenance: draft
+    scale: {value: linear, provenance: draft}
+    control: {value: knob, provenance: draft}
+
+  - name: Chorus depth 1
+    symbol: cho_depth1
+    facts:
+      min: 0.0
+      max: 100.0
+      default: 30.709999084472656
+      unit: '%'
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: advanced, provenance: draft}
+    group: {value: motion, provenance: draft}
+    order: {value: 2, provenance: draft}
+    label: {value: Fast depth, provenance: draft}
+    description:
+      value: How deep the fast shimmer goes.
+      provenance: draft
+    scale: {value: linear, provenance: draft}
+    control: {value: knob, provenance: draft}
+
+  - name: Chorus rate 2
+    symbol: cho_rate2
+    facts:
+      min: 0.30000001192092896
+      max: 0.8999999761581421
+      default: 0.5835000276565552
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: advanced, provenance: draft}
+    group: {value: motion, provenance: draft}
+    order: {value: 3, provenance: draft}
+    label: {value: Slow rate, provenance: draft}
+    description:
+      value: The slow sweep's speed; the range suggests Hz, but no unit is declared.
+      provenance: draft
+    scale: {value: linear, provenance: draft}
+    control: {value: knob, provenance: draft}
+
+  - name: Chorus depth 2
+    symbol: cho_depth2
+    facts:
+      min: 0.0
+      max: 100.0
+      default: 90.55000305175781
+      unit: '%'
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: advanced, provenance: draft}
+    group: {value: motion, provenance: draft}
+    order: {value: 4, provenance: draft}
+    label: {value: Slow depth, provenance: draft}
+    description:
+      value: How deep the slow sweep goes.
+      provenance: draft
+    scale: {value: linear, provenance: draft}
+    control: {value: knob, provenance: draft}
+
+controls:
+  - id: mix
+    drives:
+      value:
+        - {parameter: Dry gain, curve: cosine, at_0: -3.0, at_1: -60.0}
+      provenance: draft
+    visibility: {value: primary, provenance: draft}
+    group: {value: mix, provenance: draft}
+    order: {value: 1, provenance: draft}
+    label: {value: Mix, provenance: draft}
+    description:
+      value: 100 % is the ensemble alone; down to 0 % the plain guitar comes in, to -3 dB.
+      provenance: draft
+    control: {value: knob, provenance: draft}
+    phone: {value: 1, provenance: draft}
+
+  - id: level
+    drives:
+      value:
+        - {parameter: Wet gain, curve: linear, at_0: -24.0, at_1: 0.0}
+      provenance: draft
+    visibility: {value: advanced, provenance: draft}
+    group: {value: mix, provenance: draft}
+    order: {value: 2, provenance: draft}
+    label: {value: Level, provenance: draft}
+    description:
+      value: 'The ensemble''s level, -24 to 0 dB: -3 (88 %) in the string machine, -6 (75 %) its own.'
+      provenance: draft
+    control: {value: knob, provenance: draft}

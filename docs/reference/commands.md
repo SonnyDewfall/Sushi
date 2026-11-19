@@ -11,7 +11,7 @@ on the web UI instead ([user guides](../guide/README.md)).
 | `agent install-service` | write the agent's systemd user unit and enable it (`--phone` for the network) | [The agent](agent.md#as-a-service) |
 | `up`, `down`, `restart`, `status`, `top` | start, stop and watch the rig | below |
 | `doctor` | whether this machine will run the rig, and what to do if not | [Environment](environment.md#preflight) |
-| `plugins assemble`, `plugins check` | build `plugins/` from installed packages, and prove it is self-contained | [Plugins](plugins.md) |
+| `plugins assemble`, `plugins add`, `plugins check` | build `plugins/` from installed packages, add to it what the manifest gained, and prove it is self-contained | [Plugins](plugins.md) |
 | `probe` | what an LV2 plugin, or a `.nam` amp model, declares about itself | [Plugins](plugins.md#choosing-a-plugin) |
 | `profile` | component profiles: how one plugin is presented, checked against `probe` | the `plugin-profile` skill under `.claude/skills/` |
 | `verify` | check a config loads, names things that exist, and applies what it says | below |

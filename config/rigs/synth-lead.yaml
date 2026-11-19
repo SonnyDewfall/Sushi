@@ -1,0 +1,91 @@
+# A synth lead from a guitar (#177, from #166's research): single notes
+# through a compressor, a fuzz (GxBigMuffPi), an envelope filter that opens
+# with each pick (Calf's Envelope Filter) and a tape echo (GxEchoCat, #165).
+# Single notes only: the fuzz turns a chord into a buzz (#166, measured).
+# What to try is in docs/guide/string-machine.md.
+#
+# Settings are Sushi's normalised 0 to 1: the compressor at ratio 4 and
+# -30 dB; the fuzz at Sustain 0.8, Tone 0.4, Volume 0.4; the filter a 24 dB
+# low-pass swept from 300 Hz to 2.5 kHz, Activation 8, Resonance 4, all wet,
+# its Output Gain 0.4, which brings the lead to about the guitar's own level;
+# the echo on head 1 at 120 BPM, Mix 50 %, Repeats and Level 100 % (the
+# tape-echo preset's). Two changes from #166's chain: GxBigMuffPi where
+# Sushi's own fuzz was, since the profiles and the library know LV2 plugins
+# only; and a low-pass where its band-pass was, which left a low E 29 dB
+# quieter than a high E (measured: the low-pass, 6 dB). Not tuned by ear.
+
+kind: rig
+schema_version: 1
+name: synth-lead
+description: Electric guitar as a synth lead — compressor, fuzz, an envelope filter and a tape echo, for
+  single notes
+meta:
+  version: '1.0'
+  status: draft
+host:
+  samplerate: 48000
+amp:
+  plugin: nam
+  model: amp/models/Neve 2.nam
+  parameters:
+    Input Lvl: 0.0
+    Output Lvl: -0.4
+    Quality: 1.0
+channels:
+- name: lead
+  input: guitar-in
+  width: mono
+  strip:
+    gain: 0.833333
+    pan: 0.5
+    mute: 0.0
+  chain:
+  - name: compressor
+    uri: http://guitarix.sourceforge.net/plugins/gx_compressor#_compressor
+    bypassed: false
+    parameters:
+      RATIO: 0.157895
+      KNEE: 0.15
+      THRESHOLD: 0.622642
+      RELEASE: 0.03
+      ATTACK: 0.005
+      BYPASS: 1.0
+  - name: fuzz
+    uri: http://guitarix.sourceforge.net/plugins/gx_bmp_#_bmp_
+    bypassed: false
+    parameters:
+      SUSTAIN: 0.8
+      TONE: 0.4
+      VOLUME: 0.4
+  - name: filter
+    uri: http://calf.sourceforge.net/plugins/EnvelopeFilter
+    bypassed: false
+    parameters:
+      Bypass: 0.0
+      Input Gain: 0.015385
+      Output Gain: 0.006007
+      Mix: 1.0
+      Resonance: 0.105231
+      Mode: 0.083333
+      Attack: 0.038076
+      Release: 0.038076
+      Upper: 0.124562
+      Lower: 0.014507
+      Activation: 0.124786
+      Sidechain: 0.0
+      Response: 0.5
+  - name: echo
+    uri: http://guitarix.sourceforge.net/plugins/gxechocat#echocat
+    bypassed: false
+    parameters:
+      Input: 0.25
+      Swell: 0.35
+      Sustain: 0.3
+      Output: 0.2925
+      BPM: 0.285714
+      Head 1: 1.0
+      Head 2: 0.0
+      Head 3: 0.0
+master:
+  output: monitor-out
+  chain: []

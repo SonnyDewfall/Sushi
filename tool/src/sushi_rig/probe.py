@@ -23,7 +23,9 @@ then silently ignores the part you cared about.
 
 Three signals, all read from the plugin's own TTL, and all three must be clear:
 
-- **atom ports** — the usual transport for `patch:` messages
+- **atom ports** — the usual transport for `patch:` messages; one the plugin
+  declares `lv2:connectionOptional` does not count, since it runs with
+  nothing there (`is_config_drivable`, #177)
 - **`patch:writable`** — properties the plugin expects to be *set*, which for a
   model loader is the model path
 - **`state:interface`** in `lv2:extensionData` — the plugin implements LV2 state
@@ -58,6 +60,7 @@ from typing import Any
 
 # LV2 URIs that aren't exposed as lilv namespace shortcuts.
 _ATOM_PORT = "http://lv2plug.in/ns/ext/atom#AtomPort"
+_CONNECTION_OPTIONAL = "http://lv2plug.in/ns/lv2core#connectionOptional"
 _PORT_PROPS = "http://lv2plug.in/ns/ext/port-props#"
 _LOGARITHMIC = _PORT_PROPS + "logarithmic"
 _PATCH_WRITABLE = "http://lv2plug.in/ns/ext/patch#writable"
@@ -215,7 +218,8 @@ def _describe_port(world, plugin, port) -> dict[str, Any]:
 
 
 def is_config_drivable(
-    atom_ports: int, patch_writables: list[str], state_interface: bool
+    atom_ports: int, patch_writables: list[str], state_interface: bool,
+    optional_atom_ports: int = 0,
 ) -> bool:
     """Whether a Sushi JSON config can fully describe this plugin's state.
 
@@ -223,8 +227,17 @@ def is_config_drivable(
     install, and so the reasoning stays in one place rather than inline in a
     200-line extraction function. See the module docstring for why all three
     signals are needed — checking atom ports alone passes an IR convolver.
+
+    An atom port the plugin declares `lv2:connectionOptional` does not count
+    (`optional_atom_ports` of the `atom_ports`): the plugin runs with nothing
+    connected there, so whatever it carries cannot be state it needs, and a
+    plugin that takes state by `patch:` still declares a `patch:writable` or
+    `state:interface`, either of which still makes it not drivable. Calf's
+    Envelope Filter is the case (#177): its two atom ports, MIDI and Calf's
+    own messages, are both optional, and Sushi sets every control it has.
     """
-    return atom_ports == 0 and not patch_writables and not state_interface
+    required_atom_ports = atom_ports - optional_atom_ports
+    return required_atom_ports == 0 and not patch_writables and not state_interface
 
 
 def describe(plugin, world) -> dict[str, Any]:
@@ -233,7 +246,7 @@ def describe(plugin, world) -> dict[str, Any]:
     atom_port = world.new_uri(_ATOM_PORT)
 
     parameters: list[dict[str, Any]] = []
-    audio_in = audio_out = atom_ports = 0
+    audio_in = audio_out = atom_ports = optional_atom_ports = 0
 
     for i in range(plugin.get_num_ports()):
         port = plugin.get_port_by_index(i)
@@ -247,6 +260,8 @@ def describe(plugin, world) -> dict[str, Any]:
                 audio_out += 1
         if port.is_a(atom_port):
             atom_ports += 1
+            if port.has_property(world.new_uri(_CONNECTION_OPTIONAL)):
+                optional_atom_ports += 1
 
     try:
         plugin_class = str(plugin.get_class().get_label())
@@ -269,10 +284,11 @@ def describe(plugin, world) -> dict[str, Any]:
         "audio_in": audio_in,
         "audio_out": audio_out,
         "atom_ports": atom_ports,
+        "optional_atom_ports": optional_atom_ports,
         "patch_writables": patch_writables,
         "state_interface": state_interface,
         "config_drivable": is_config_drivable(
-            atom_ports, patch_writables, state_interface
+            atom_ports, patch_writables, state_interface, optional_atom_ports
         ),
         "parameters": parameters,
     }

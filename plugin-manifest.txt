@@ -3,6 +3,7 @@ http://breakfastquay.com/rdf/lv2-rubberband#mono
 http://breakfastquay.com/rdf/lv2-rubberband#r3mono
 http://breakfastquay.com/rdf/lv2-rubberband#r3stereo
 http://breakfastquay.com/rdf/lv2-rubberband#stereo
+http://calf.sourceforge.net/plugins/EnvelopeFilter
 http://distrho.sf.net/plugins/3BandEQ
 http://distrho.sf.net/plugins/MaGigaverb
 http://distrho.sf.net/plugins/MVerb
@@ -45,6 +46,7 @@ http://drobilla.net/plugins/mda/Vocoder
 http://gareus.org/oss/lv2/darc#mono
 http://gareus.org/oss/lv2/darc#stereo
 http://github.com/mikeoliphant/neural-amp-modeler-lv2
+http://guitarix.sourceforge.net/plugins/gx_bmp_#_bmp_
 http://guitarix.sourceforge.net/plugins/gx_chorus_stereo#_chorus_stereo
 http://guitarix.sourceforge.net/plugins/gx_compressor#_compressor
 http://guitarix.sourceforge.net/plugins/gx_detune_#_detune_
@@ -53,8 +55,11 @@ http://guitarix.sourceforge.net/plugins/gx_flanger#_flanger
 http://guitarix.sourceforge.net/plugins/gx_oc_2_#_oc_2_
 http://guitarix.sourceforge.net/plugins/gx_shimmizita_#_shimmizita_
 http://guitarix.sourceforge.net/plugins/gx_tremolo#_tremolo
+http://guitarix.sourceforge.net/plugins/gx_zita_rev1_stereo#_zita_rev1_stereo
 http://guitarix.sourceforge.net/plugins/gxechocat#echocat
 http://guitarix.sourceforge.net/plugins/gxts9#ts9sim
+http://hippie.lt/lv2/gate
+http://jpcima.sdf1.org/lv2/string-machine-chorus
 http://plugin.org.uk/swh-plugins/lcrDelay
 http://zynaddsubfx.sourceforge.net/fx#Chorus
 urn:ardour:a-reverb

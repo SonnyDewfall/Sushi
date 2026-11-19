@@ -1,0 +1,41 @@
+schema_version: 2
+config: synth-lead
+stimulus: log_sweep 20-20000Hz 5s -20dBFS 2ch
+sample_rate: 48000
+frames: 240000
+measured:
+  peak_dbfs: -16.4306
+  rms_dbfs: -30.4599
+  channel_rms_dbfs:
+  - -30.4599
+  - -30.4599
+  delay_samples: 138
+  bands:
+  - low_hz: 20.0
+    high_hz: 80.0
+    level_dbfs: -49.2558
+  - low_hz: 80.0
+    high_hz: 250.0
+    level_dbfs: -34.7716
+  - low_hz: 250.0
+    high_hz: 800.0
+    level_dbfs: -30.2377
+  - low_hz: 800.0
+    high_hz: 2500.0
+    level_dbfs: -33.8888
+  - low_hz: 2500.0
+    high_hz: 8000.0
+    level_dbfs: -66.4363
+  - low_hz: 8000.0
+    high_hz: 20000.0
+    level_dbfs: -90.346
+tolerance:
+  band_db: 0.0001
+  level_db: 0.0001
+  delay_samples: 0
+  note: 'measured: two renders of this config were identical to the 0.0001 dB this
+    file is written at'
+made_from:
+  rig: synth-lead.yaml
+  hash: c8032cef4d54ccb0a89fafbc9bbc7cfe1f8b57d3b3de158ac7e4caaa01e7935c
+  hash_rule: 2

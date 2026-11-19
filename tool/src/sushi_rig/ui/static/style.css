@@ -399,6 +399,19 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 
 @media (max-width: 640px) {
   .bar { padding: 10px 16px; }
+  /* The tiles a row of their own, each a third of it, their lines one line
+     each at a fixed height and cut short with an ellipsis (the title says it
+     all), as the stage's are (#184). Sized by their values, as on a wide
+     screen, they rewrapped the header whenever a reading came in: "LOAD —
+     reading" to "LOAD 26% of 21.3 ms" moved Stage, Help and Lock to another
+     row and the header 8 px, so everything under it moved while the rack
+     drew (CI on PR #186, with a wider fallback font). */
+  .bar .tile-row { display: flex; gap: 8px; flex: 1 1 100%; min-width: 0; }
+  .bar .tile { flex: 1 1 0; min-width: 0; flex-direction: column; align-items: stretch; gap: 2px; border-radius: 10px; padding: 8px 10px; }
+  .bar .tile .k, .bar .tile .v, .bar .tile .s { display: block; max-width: 100%; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+  .bar .tile .k { line-height: 15px; }
+  .bar .tile .v { line-height: 18px; }
+  .bar .tile .s { line-height: 14px; }
   .channels, .side { flex: 1 1 100%; border: none; }
   .rack-main { padding: 12px 16px; }
   .unit .who { width: auto; flex: 1 1 140px; }

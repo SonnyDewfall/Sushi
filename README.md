@@ -30,8 +30,9 @@ phone.
 - An audio interface, described in `machines/<hostname>.yaml`. The rig's own is
   an Audient iD14, which needs [a one-time volume fix](docs/guide/audio-interface.md).
 - Sushi 1.3.0, as `./sushi` at the root of this checkout, and the plugins in
-  `plugins/`. Neither is tracked here. One plugin, the octave's Rubber Band
-  4.0, is built from source by `scripts/build-rubberband4.sh`.
+  `plugins/`. Neither is tracked here. Two plugins are built from source:
+  the octave's Rubber Band 4.0, by `scripts/build-rubberband4.sh`, and the
+  string machine's ensemble, by `scripts/build-string-machine-chorus.sh`.
 - For the amp, Carla and the neural amp modeler's LV2 plugin; qpwgraph for the
   connections; fmit for the tuner.
 - Python 3.11 or later.
@@ -69,6 +70,7 @@ For playing the rig. Plain steps, a few minutes each.
 | [Building a rig](docs/guide/building-a-rig.md) | A new rig, channels and inputs, deleting a rig |
 | [Channel presets](docs/guide/channel-presets.md) | A channel's sound saved by name, loaded onto any input |
 | [Tremolo, flanger, tape echo and shimmer](docs/guide/effects.md) | Four effects, their knobs, and how to try one |
+| [String machine and synth lead](docs/guide/string-machine.md) | The string-machine and synth-lead rigs, and what to try on each |
 | [Recording](docs/guide/recording.md) | Takes, what is in a take's folder, names |
 | [The audio interface](docs/guide/audio-interface.md) | The iD14's volume fix, and one side going quiet |
 | [When something's wrong](docs/guide/troubleshooting.md) | No sound, restarting the agent after an update, `doctor` |

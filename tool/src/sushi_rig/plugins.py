@@ -48,6 +48,7 @@ module — and its pure half — imports without it.
 
 from __future__ import annotations
 
+import dataclasses
 import os
 import shutil
 from contextlib import contextmanager
@@ -244,16 +245,34 @@ def _lv2_path(value: str) -> Iterator[None]:
 
 def plugins_on(lv2_path: str) -> dict[str, Path]:
     """Every plugin URI visible with `LV2_PATH=lv2_path`, mapped to its bundle."""
+    return {uri: bundle for uri, (bundle, _) in _plugins_and_binaries(lv2_path).items()}
+
+
+def binaries_on(lv2_path: str) -> dict[str, Path | None]:
+    """Every plugin URI visible with `LV2_PATH=lv2_path`, mapped to the file
+    its `lv2:binary` names (None where it names none)."""
+    return {uri: binary for uri, (_, binary) in _plugins_and_binaries(lv2_path).items()}
+
+
+def _file_path(uri: str) -> Path:
+    from urllib.parse import unquote, urlparse
+
+    return Path(unquote(urlparse(uri).path))
+
+
+def _plugins_and_binaries(lv2_path: str) -> dict[str, tuple[Path, Path | None]]:
     # Private to probe, but it is the one place that turns a missing python3-lilv
     # into an actionable message, and duplicating that would let them drift.
     from .probe import _each, _world
 
     with _lv2_path(lv2_path):
         world = _world()
-    found: dict[str, Path] = {}
+    found: dict[str, tuple[Path, Path | None]] = {}
     for plugin in _each(world.get_all_plugins()):
         bundle = str(plugin.get_bundle_uri()).replace("file://", "").rstrip("/")
-        found[str(plugin.get_uri())] = Path(bundle)
+        library = plugin.get_library_uri()
+        binary = _file_path(str(library)) if library is not None and str(library) else None
+        found[str(plugin.get_uri())] = (Path(bundle), binary)
     return found
 
 
@@ -272,14 +291,79 @@ def copy_bundles(bundles: list[Path], to: Path) -> None:
     """Copy `bundles` into `to` and lay out `archive/`.
 
     Symlinks are kept as links: some bundles are made of them, and following
-    them would copy a shared library once per bundle that points at it.
+    them would copy a shared library once per bundle that points at it. Each
+    is then pointed where it led from the source (`_relinked`): into the
+    copy, when it led into one of the bundles copied; at its target by its
+    absolute path, when it led anywhere else by a relative path. Ubuntu's
+    calf-plugins ships `calf.lv2/calf.so` as `../../x86_64-linux-gnu/calf/calf.so`;
+    copied as it was, every Calf plugin's binary was missing from plugins/
+    (#177). A link that leads nowhere, or round in a loop, is refused, naming
+    the bundle and the link, since Sushi could not load what it stands for.
     """
     to.mkdir(parents=True, exist_ok=True)
+    roots = {bundle.resolve(): to / bundle.name for bundle in bundles}
     for bundle in bundles:
         shutil.copytree(bundle, to / bundle.name, symlinks=True)
+        _relinked(bundle, to / bundle.name, roots)
+    _check_copies([to / bundle.name for bundle in bundles])
     archive = to / ARCHIVE_DIR
     archive.mkdir(exist_ok=True)
     (archive / "manifest.ttl").write_text(ARCHIVE_MANIFEST)
+
+
+def _links(folder: Path) -> list[Path]:
+    """Every symlink under `folder`, files and folders alike, none followed."""
+    found = []
+    for here, dirs, files in os.walk(folder, followlinks=False):
+        for name in dirs + files:
+            path = Path(here) / name
+            if path.is_symlink():
+                found.append(path)
+    return sorted(found)
+
+
+def _target(link: Path, where: str) -> Path:
+    """Where `link` leads, resolved; `PluginsError` if it leads nowhere or loops.
+
+    `Path.resolve` raises RuntimeError on a loop on Python 3.12 and OSError on
+    3.13; a missing target is FileNotFoundError with `strict`."""
+    try:
+        return link.resolve(strict=True)
+    except (RuntimeError, OSError) as exc:
+        reason = "goes round in a loop" if isinstance(exc, RuntimeError) or "loop" in str(exc).lower() \
+            else "leads to nothing"
+        raise PluginsError(f"{where}: the link {link.name} ({link} -> {os.readlink(link)}) {reason}") from exc
+
+
+def _relinked(source: Path, copy: Path, roots: dict[Path, Path]) -> None:
+    """Each symlink in `copy`, a copy of bundle `source`, pointed where it led
+    from `source`: relative, into the copy of whichever copied bundle it led
+    into (`roots`, each source bundle's resolved path to its copy), or by its
+    absolute path to anything else. `PluginsError`, naming the bundle and the
+    link, for one that led nowhere or loops."""
+    for link in _links(copy):
+        original = source / link.relative_to(copy)
+        target = _target(original, f"bundle {source}")
+        inside = next(((root, dest) for root, dest in roots.items()
+                       if target == root or root in target.parents), None)
+        if inside is not None:
+            root, dest = inside
+            wanted = os.path.relpath(dest / target.relative_to(root), link.parent)
+        elif os.path.isabs(os.readlink(original)):
+            continue
+        else:
+            wanted = str(target)
+        if os.readlink(link) != wanted:
+            link.unlink()
+            link.symlink_to(wanted)
+
+
+def _check_copies(copies: list[Path]) -> None:
+    """Every link in `copies` leads to something, once all of them are in
+    place (a link may lead into a sibling copied after it)."""
+    for copy in copies:
+        for link in _links(copy):
+            _target(link, f"the copy {copy}")
 
 
 def assemble(
@@ -293,7 +377,14 @@ def assemble(
     """Build `to` from the bundles under `from_dirs` that the rig needs.
 
     Decides first and copies nothing if the plan is not ok: a half-built
-    `plugins/` that looks plausible is worse than none.
+    `plugins/` that looks plausible is worse than none. The copy is built
+    beside `to`, in a folder of its own, and only renamed into place once it
+    is whole, so a copy that fails (a link that leads nowhere, a full disk)
+    leaves `to` as it was, `--replace` or not. The swap is two renames, the
+    old `to` aside to `.<name>.previous`, then the new one into place; a
+    failure between them puts the old one back, and a run that died there
+    (power, kill -9) leaves it to the next run, which puts it back before
+    anything else and then goes on as for any `to` that is there.
 
     Refuses to write into a non-empty `to` unless `replace`, because the target
     is a folder someone may have put things in by hand, and deleting it on a
@@ -303,15 +394,104 @@ def assemble(
     if not plan.ok:
         raise PluginsError(describe_failure(plan, ", ".join(map(str, from_dirs))))
 
-    if to.exists() and any(to.iterdir()):
-        if not replace:
-            raise PluginsError(
-                f"{to} already exists and is not empty. Pass --replace to delete "
-                "it and rebuild, or choose another --to."
-            )
-        shutil.rmtree(to)
-    copy_bundles(plan.bundles, to)
+    staging = to.parent / f".{to.name}.assembling"
+    previous = to.parent / f".{to.name}.previous"
+    restored = ""
+    if previous.exists() and not to.exists():
+        # A run stopped between its two renames (power, kill -9): `previous`
+        # is the plugins/ it was replacing, and the only copy of it. Put it
+        # back before anything else, never delete it (review of PR #186).
+        previous.rename(to)
+        restored = (f" (it was {previous}, left by a run that stopped while swapping folders, "
+                    "and has been put back)")
+    full = to.exists() and any(to.iterdir())
+    if full and not replace:
+        raise PluginsError(
+            f"{to} already exists and is not empty{restored}. Pass --replace to delete "
+            "it and rebuild, or choose another --to."
+        )
+    if staging.exists():
+        shutil.rmtree(staging)  # a copy that never finished: never anyone's only copy
+    if previous.exists():
+        # `to` exists, so this is what a finished swap had left to delete.
+        shutil.rmtree(previous)
+    try:
+        copy_bundles(plan.bundles, staging)
+    except BaseException:
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    if to.exists():
+        to.rename(previous)
+    try:
+        staging.rename(to)
+    except BaseException:
+        if previous.exists() and not to.exists():
+            previous.rename(to)
+        shutil.rmtree(staging, ignore_errors=True)
+        raise
+    shutil.rmtree(previous, ignore_errors=True)
     return plan
+
+
+def add(
+    manifest: list[str],
+    used: set[str],
+    from_dirs: list[Path],
+    plugins_dir: Path,
+    waived: set[str] | frozenset[str] = frozenset(),
+) -> Plan:
+    """Copy into `plugins_dir`, as it is, the bundles from `from_dirs` that
+    provide what the rig needs and `plugins_dir` does not: what a rig machine
+    with a hand-carried amp and built bundles in its `plugins/` runs when
+    the manifest grows. Nothing already there is touched.
+
+    Refused, copying nothing, when a required URI resolves from neither
+    (unless waived), or when a bundle to add has the name of one already in
+    `plugins_dir`: that one provides something else, and replacing it is
+    `assemble --replace`'s decision, not this one's. Each bundle is copied
+    into a staging folder inside `plugins_dir` whose manifest declares
+    nothing, as the build scripts stage theirs, and all are renamed into
+    place only once every copy is whole."""
+    if not plugins_dir.is_dir():
+        raise PluginsError(
+            f"{plugins_dir} does not exist. Build it with `sushi-rig plugins assemble`."
+        )
+    present = plugins_on(str(plugins_dir))
+    found = discover(from_dirs)
+    providers = {**found, **present}
+    plan = decide(manifest, used, providers, waived)
+    if not plan.ok:
+        raise PluginsError(describe_failure(plan, f"{plugins_dir} and {', '.join(map(str, from_dirs))}"))
+    # By where `decide` took each from, not by resolving its path: a bundle in
+    # plugins/ may be a link to one elsewhere (the amp, say), and resolved it
+    # would look like one to add, and clash with itself (review of PR #186).
+    already = set(present.values())
+    new = [b for b in plan.bundles if b not in already]
+    taken = [b for b in new if (plugins_dir / b.name).exists()]
+    if taken:
+        raise PluginsError(
+            "these bundles provide what the rig needs, but plugins/ already holds a bundle of the same "
+            "name that does not provide it; nothing was copied:\n"
+            + "\n".join(f"  {b} (beside {plugins_dir / b.name})" for b in taken)
+        )
+    staging = plugins_dir / ".adding"
+    if staging.exists():
+        shutil.rmtree(staging)
+    staging.mkdir()
+    (staging / "manifest.ttl").write_text(ARCHIVE_MANIFEST)
+    try:
+        # Siblings in the staging folder, as they will be in plugins_dir, so a
+        # link from one new bundle into another means the same in both places.
+        roots = {b.resolve(): staging / b.name for b in new}
+        for bundle in new:
+            shutil.copytree(bundle, staging / bundle.name, symlinks=True)
+            _relinked(bundle, staging / bundle.name, roots)
+        _check_copies([staging / bundle.name for bundle in new])
+        for bundle in new:
+            (staging / bundle.name).rename(plugins_dir / bundle.name)
+    finally:
+        shutil.rmtree(staging, ignore_errors=True)
+    return dataclasses.replace(plan, bundles=sorted(new))
 
 
 def check(
@@ -330,7 +510,34 @@ def check(
         raise PluginsError(
             f"{plugins_dir} does not exist. Build it with `sushi-rig plugins assemble`."
         )
-    plan = decide(manifest, used, plugins_on(str(plugins_dir)), waived)
+    found = _plugins_and_binaries(str(plugins_dir))
+    plan = decide(manifest, used, {uri: bundle for uri, (bundle, _) in found.items()}, waived)
     if not plan.ok:
         raise PluginsError(describe_failure(plan, f"{plugins_dir} (LV2_PATH set to it alone)"))
+    problems = broken_files(plugins_dir, {uri: found[uri][1] for uri in set(manifest) | set(used) if uri in found})
+    if problems:
+        raise PluginsError(f"{plugins_dir}: every URI resolves, but Sushi could not load all of them:\n"
+                           + "\n".join(f"  {p}" for p in problems))
     return plan
+
+
+def broken_files(plugins_dir: Path, binaries: dict[str, Path | None]) -> list[str]:
+    """What the Turtle alone does not show (#177): each link under
+    `plugins_dir` that leads nowhere or loops, `archive/` aside, since it is
+    off the path; and each of `binaries` (a required URI's `lv2:binary`)
+    that names no file. Ubuntu's calf.lv2 copied with a plain `cp -r` passes
+    lilv and fails both."""
+    problems = []
+    for link in _links(plugins_dir):
+        if ARCHIVE_DIR in link.relative_to(plugins_dir).parts[:1]:
+            continue
+        try:
+            _target(link, f"{link.parent}")
+        except PluginsError as exc:
+            problems.append(str(exc))
+    for uri, binary in sorted(binaries.items()):
+        if binary is None:
+            problems.append(f"{uri} names no lv2:binary")
+        elif not binary.is_file():
+            problems.append(f"{uri}: its binary {binary} is not a file")
+    return problems

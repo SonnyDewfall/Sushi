@@ -1,0 +1,161 @@
+# A string machine from a guitar (#177, from #166's research): play chords,
+# picked, and each one comes out as an ensemble of strings. Two channels take
+# the guitar, as electric-octave's do: `strings`, the guitar itself, and
+# `octave`, Rubber Band 4.0 an octave up and fully wet, 3 dB under it and
+# about 67 ms behind the pick. Each runs a compressor, a swell, the
+# Solina-style ensemble (string-machine chorus) and a long hall (GxZita_rev1).
+#
+# The pick comes through: both swells (abGate) are bypassed. Switch on
+# `swell` and `octave_swell` for notes that fade in out of silence; they do
+# not swell a note played while the last still rings (#166, measured).
+# What to try is in docs/guide/string-machine.md.
+#
+# Settings are Sushi's normalised 0 to 1, #166's chain: the compressor at
+# ratio 4 and -30 dB; the ensemble wet at -3 dB with no dry (Mix 100 %); the
+# hall at 5 s (Size 57 %) and dry/wet -0.3 (Mix 35 %), 40 ms before it
+# answers; the swells at 500 ms, -45 dB, switched on inside the plugin so
+# that a bypass is all it takes. Not tuned by ear.
+
+kind: rig
+schema_version: 1
+name: string-machine
+description: Electric guitar as a string machine — an ensemble and a hall on the guitar and on an octave
+  up beside it
+meta:
+  version: '1.0'
+  status: draft
+host:
+  samplerate: 48000
+amp:
+  plugin: nam
+  model: amp/models/Neve 2.nam
+  parameters:
+    Input Lvl: 0.0
+    Output Lvl: -0.4
+    Quality: 1.0
+channels:
+- name: strings
+  input: guitar-in
+  width: mono
+  strip:
+    gain: 0.833333
+    pan: 0.5
+    mute: 0.0
+  chain:
+  - name: compressor
+    uri: http://guitarix.sourceforge.net/plugins/gx_compressor#_compressor
+    bypassed: false
+    parameters:
+      RATIO: 0.157895
+      KNEE: 0.15
+      THRESHOLD: 0.622642
+      RELEASE: 0.03
+      ATTACK: 0.005
+      BYPASS: 1.0
+  - name: swell
+    uri: http://hippie.lt/lv2/gate
+    bypassed: true
+    parameters:
+      Switch: 1.0
+      Threshold: 0.304878
+      Attack: 1.0
+      Hold: 0.015025
+      Decay: 0.098874
+      Range: 0.0
+  - name: ensemble
+    uri: http://jpcima.sdf1.org/lv2/string-machine-chorus
+    bypassed: false
+    parameters:
+      Enabled: 1.0
+      Chorus global depth: 1.0
+      Chorus rate 1: 0.472433
+      Chorus depth 1: 0.3071
+      Chorus rate 2: 0.4725
+      Chorus depth 2: 0.9055
+      Chorus model: 1.0
+      Wet gain: 0.7125
+      Dry gain: 0.0
+  - name: hall
+    uri: http://guitarix.sourceforge.net/plugins/gx_zita_rev1_stereo#_zita_rev1_stereo
+    bypassed: false
+    parameters:
+      LEVEL: 0.9375
+      EQ2_FREQ: 0.136179
+      EQ1_LEVEL: 0.5
+      EQ1_FREQ: 0.111789
+      IN_DELAY: 0.25
+      LOW_RT60: 0.571429
+      LF_X: 0.157895
+      HF_DAMPING: 0.20436
+      MID_RT60: 0.571429
+      DRY_WET_MIX: 0.35
+      EQ2_LEVEL: 0.5
+- name: octave
+  input: guitar-in
+  width: mono
+  strip:
+    gain: 0.833333
+    pan: 0.5
+    mute: 0.0
+  chain:
+  - name: octave_compressor
+    uri: http://guitarix.sourceforge.net/plugins/gx_compressor#_compressor
+    bypassed: false
+    parameters:
+      RATIO: 0.157895
+      KNEE: 0.15
+      THRESHOLD: 0.622642
+      RELEASE: 0.03
+      ATTACK: 0.005
+      BYPASS: 1.0
+  - name: octave_up
+    uri: http://breakfastquay.com/rdf/lv2-rubberband#livemono
+    bypassed: false
+    parameters:
+      Cents: 0.5
+      Semitones: 0.5
+      Octaves: 0.75
+      Formant Preserving: 0.0
+      Wet-Dry Mix: 0.0
+  - name: octave_swell
+    uri: http://hippie.lt/lv2/gate
+    bypassed: true
+    parameters:
+      Switch: 1.0
+      Threshold: 0.304878
+      Attack: 1.0
+      Hold: 0.015025
+      Decay: 0.098874
+      Range: 0.0
+  - name: octave_ensemble
+    uri: http://jpcima.sdf1.org/lv2/string-machine-chorus
+    bypassed: false
+    parameters:
+      Enabled: 1.0
+      Chorus global depth: 1.0
+      Chorus rate 1: 0.472433
+      Chorus depth 1: 0.3071
+      Chorus rate 2: 0.4725
+      Chorus depth 2: 0.9055
+      Chorus model: 1.0
+      Wet gain: 0.7125
+      Dry gain: 0.0
+  - name: octave_hall
+    uri: http://guitarix.sourceforge.net/plugins/gx_zita_rev1_stereo#_zita_rev1_stereo
+    bypassed: false
+    parameters:
+      LEVEL: 0.9375
+      EQ2_FREQ: 0.136179
+      EQ1_LEVEL: 0.5
+      EQ1_FREQ: 0.111789
+      IN_DELAY: 0.25
+      LOW_RT60: 0.571429
+      LF_X: 0.157895
+      HF_DAMPING: 0.20436
+      MID_RT60: 0.571429
+      DRY_WET_MIX: 0.35
+      EQ2_LEVEL: 0.5
+  level: -3.0
+master:
+  output: monitor-out
+  chain: []

@@ -1,0 +1,129 @@
+{
+  "uri": "http://jpcima.sdf1.org/lv2/string-machine-chorus",
+  "name": "String machine chorus",
+  "class": "Chorus Plugin",
+  "bundle": "plugins/string-machine-chorus.lv2",
+  "audio_in": 1,
+  "audio_out": 2,
+  "atom_ports": 0,
+  "patch_writables": [],
+  "state_interface": false,
+  "config_drivable": true,
+  "parameters": [
+    {
+      "symbol": "lv2_enabled",
+      "name": "Enabled",
+      "min": 0.0,
+      "max": 1.0,
+      "default": 1.0,
+      "toggled": true,
+      "integer": true,
+      "enumeration": false,
+      "logarithmic": false
+    },
+    {
+      "symbol": "cho_depth",
+      "name": "Chorus global depth",
+      "min": 0.0,
+      "max": 100.0,
+      "default": 100.0,
+      "toggled": false,
+      "integer": false,
+      "enumeration": false,
+      "logarithmic": false,
+      "unit": "%"
+    },
+    {
+      "symbol": "cho_rate1",
+      "name": "Chorus rate 1",
+      "min": 3.0,
+      "max": 9.0,
+      "default": 5.83459997177124,
+      "toggled": false,
+      "integer": false,
+      "enumeration": false,
+      "logarithmic": false
+    },
+    {
+      "symbol": "cho_depth1",
+      "name": "Chorus depth 1",
+      "min": 0.0,
+      "max": 100.0,
+      "default": 30.709999084472656,
+      "toggled": false,
+      "integer": false,
+      "enumeration": false,
+      "logarithmic": false,
+      "unit": "%"
+    },
+    {
+      "symbol": "cho_rate2",
+      "name": "Chorus rate 2",
+      "min": 0.30000001192092896,
+      "max": 0.8999999761581421,
+      "default": 0.5835000276565552,
+      "toggled": false,
+      "integer": false,
+      "enumeration": false,
+      "logarithmic": false
+    },
+    {
+      "symbol": "cho_depth2",
+      "name": "Chorus depth 2",
+      "min": 0.0,
+      "max": 100.0,
+      "default": 90.55000305175781,
+      "toggled": false,
+      "integer": false,
+      "enumeration": false,
+      "logarithmic": false,
+      "unit": "%"
+    },
+    {
+      "symbol": "cho_model",
+      "name": "Chorus model",
+      "min": 0.0,
+      "max": 1.0,
+      "default": 1.0,
+      "toggled": false,
+      "integer": true,
+      "enumeration": true,
+      "logarithmic": false,
+      "scale_points": [
+        {
+          "value": 0.0,
+          "label": "Digital delay"
+        },
+        {
+          "value": 1.0,
+          "label": "Analog bucket-brigade delay"
+        }
+      ]
+    },
+    {
+      "symbol": "wet_gain",
+      "name": "Wet gain",
+      "min": -60.0,
+      "max": 20.0,
+      "default": -6.0,
+      "toggled": false,
+      "integer": false,
+      "enumeration": false,
+      "logarithmic": false,
+      "unit": "dB"
+    },
+    {
+      "symbol": "dry_gain",
+      "name": "Dry gain",
+      "min": -60.0,
+      "max": 20.0,
+      "default": -60.0,
+      "toggled": false,
+      "integer": false,
+      "enumeration": false,
+      "logarithmic": false,
+      "unit": "dB"
+    }
+  ],
+  "version": "0.0"
+}

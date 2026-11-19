@@ -1,0 +1,58 @@
+# Channel preset synth-lead: config/rigs/synth-lead.yaml's one channel
+# (#177): a compressor, GxBigMuffPi, Calf's Envelope Filter and GxEchoCat.
+# For single notes: a fuzz turns a chord to mush. Settings are Sushi's
+# normalised 0 to 1, as in the rig; what to try is in
+# docs/guide/string-machine.md.
+
+kind: channel
+schema_version: 1
+name: synth-lead
+description: A synth lead — compressor, fuzz, an envelope filter and a tape echo, for single notes
+width: mono
+chain:
+- name: compressor
+  uri: http://guitarix.sourceforge.net/plugins/gx_compressor#_compressor
+  bypassed: false
+  parameters:
+    RATIO: 0.157895
+    KNEE: 0.15
+    THRESHOLD: 0.622642
+    RELEASE: 0.03
+    ATTACK: 0.005
+    BYPASS: 1.0
+- name: fuzz
+  uri: http://guitarix.sourceforge.net/plugins/gx_bmp_#_bmp_
+  bypassed: false
+  parameters:
+    SUSTAIN: 0.8
+    TONE: 0.4
+    VOLUME: 0.4
+- name: filter
+  uri: http://calf.sourceforge.net/plugins/EnvelopeFilter
+  bypassed: false
+  parameters:
+    Bypass: 0.0
+    Input Gain: 0.015385
+    Output Gain: 0.006007
+    Mix: 1.0
+    Resonance: 0.105231
+    Mode: 0.083333
+    Attack: 0.038076
+    Release: 0.038076
+    Upper: 0.124562
+    Lower: 0.014507
+    Activation: 0.124786
+    Sidechain: 0.0
+    Response: 0.5
+- name: echo
+  uri: http://guitarix.sourceforge.net/plugins/gxechocat#echocat
+  bypassed: false
+  parameters:
+    Input: 0.25
+    Swell: 0.35
+    Sustain: 0.3
+    Output: 0.2925
+    BPM: 0.285714
+    Head 1: 1.0
+    Head 2: 0.0
+    Head 3: 0.0

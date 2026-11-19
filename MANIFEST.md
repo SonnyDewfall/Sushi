@@ -6026,3 +6026,217 @@ the screensaver loaded (234 px locked at 320 by 568). `test_ui_stage.py`
 and `test_ui_visualiser.py` three times, 82 passed each; the stage tests
 with DejaVu Sans for Inter, 34 passed; the fast suite 5622 passed, 22
 skipped, 249 deselected. *(2026-11-19)*
+
+**The string machine and the synth lead, as rigs to play with (#177).** Asked
+for 2026-11-18, from #166's research: "something that lets me play
+polyphonic picked parts with a string like sound". Two rigs, their channels
+as presets, and a guide page (`docs/guide/string-machine.md`) of what to try
+on each.
+
+(1) **The build.** `scripts/build-string-machine-chorus.sh DIR` fetches
+jpcima/string-machine at commit `7050cb1516fb…` and DPF at `f24e5317cd7b…`,
+each by commit, refuses unless string-machine records that DPF for its
+submodule, compiles the chorus's DSP alone with g++ and #166's flags, writes
+the Turtle with DPF's own generator, and leaves `DIR/string-machine-chorus.lv2`
+with a `BUILT-FROM` note, staged and swapped as `build-rubberband4.sh` does
+(the old bundle put back on any failed exit). Seven seconds here; it links
+only the C++ runtime. `ci/Dockerfile` builds it in a stage of its own and
+assembles it into `plugins/`, installing `calf-plugins` and `abgate` beside
+the other packages. **Built here**: the chorus stage in a clean ubuntu:24.04
+(identical Turtle to the local build), and a copy of the image down to
+`plugins check`, in a local dockerd, through a copy of the Dockerfile that
+trusted this sandbox's proxy and left out Sushi and the browser: after #173
+merged, both build stages, `assemble`, `check` (64 URIs), the two
+`BUILT-FROM` greps, the two `ldd` checks and the Calf link check passed. The
+whole image was not built, and the suite was not run in it.
+
+(2) **The inventory**: string-machine chorus (`1 2`), Calf Envelope Filter
+(`4 2`: two sides and two optional side-chains; the track feeds the first
+two), abGate, GxBigMuffPi and GxZita_rev1-Stereo, in the manifest and the port
+table. The library tests count the manifest, as #173 does.
+
+(3) **Found: an assembled `plugins/` had no Calf binary.** Ubuntu's
+`calf.lv2/calf.so` is a relative link, `../../x86_64-linux-gnu/calf/calf.so`;
+`copy_bundles` keeps links as links, so the copy led nowhere, and `plugins
+check`, which reads only the Turtle, passed. Sushi then refused the rig
+("Failed to load tracks"). `copy_bundles` now makes a relative link that
+leads out of its bundle absolute, to what it led to (`_relink_outside`; a test
+with the package's own layout, failing without it); CI's image checks the link
+leads to a file; the rig's steps copy with `cp -rL`.
+
+(4) **Profiles**, from probes frozen in `tests/fixtures/` (every judgement
+`draft`, none with a `face`): string-machine chorus (Depth; Mix, the dry
+under the ensemble, -3 dB at 0 % to the plugin's own -60 at 100 %, cosine;
+Level, Model, the two rates and depths under More; its own Enabled hidden),
+GxZita_rev1 (Mix, dry/wet -1 to 1, the plugin's 0 at 50 %; Size, both decays
+1 to 8 s together; pre-delay, level, damping and EQ under More), abGate (Swell,
+its attack; Threshold; Close, Hold, Range and its own switch under More: the
+switch is off by default, and off it passes everything, measured, so hiding it
+would make an abGate from the library a gate that never closes), and
+GxBigMuffPi (Sustain, Tone, Volume). 0 errors; abGate's one warning is its
+unverifiable version (lilv reads none; the pin is the package's 1.2.0).
+**Calf's Envelope Filter has none**: probe counts its two atom ports (MIDI and
+property events, connection-optional) and calls it not drivable, and the
+validator then refuses any parameter or control. *Measured:* Sushi sets every
+control the synth lead uses (an Upper of 500 against 8,000 Hz changes the
+render by more than 6 dB; Mix 0 is the dry note), so probe is cautious here.
+*Left to the owner:* whether probe's rule should pass atom ports a plugin
+declares no `patch:writable` or state for; until then the rack shows the
+filter's 13 knobs as Sushi reports them. Sushi's brickworks fuzz, #166's,
+was not used: probe and the profiles know LV2 plugins only, and the agent's
+undo of a remove refuses a non-LV2 plugin; GxBigMuffPi is #166's second
+(junk -33.7 dB on notes, 0.6 % CPU).
+
+(5) **`string-machine`** (`config/rigs/string-machine.yaml`): two channels on
+`guitar-in`, as electric-octave's. `strings`: GxCompressor (ratio 4, -30 dB),
+abGate (bypassed; its own switch on, 500 ms, -45 dB), the chorus (wet -3 dB,
+no dry) and GxZita_rev1 (5 s, dry/wet -0.3, 40 ms pre-delay). `octave`: the
+same with Rubber Band 4.0 an octave up, fully wet, after the compressor, at
+-3 dB, #166's balance. Two halls and two ensembles where #166 had one of each
+after a send and return, which a rig file cannot say. *Measured* (Sushi 1.3.0
+offline, #153's synthetic guitar, each channel rendered through the master
+as `rigfile.heard` gives it): the rig 2.4 dB under the guitar, peak -13 dBFS,
+the sides within 0.2 dB; `strings` answers a burst 169 samples (3.5 ms) late
+and rises 11.5 ms from silence (the dry guitar 5), so the pick comes
+through; the octave 3,376 samples (70 ms), rising in 81. Swells on: 534 ms
+from silence, 20 ms legato, as #166 found. CPU, three runs each on this
+2.1 GHz Xeon: `strings` 2.4 to 3.2 % of a core, `octave` 6.0 to 6.4 %
+(Rubber Band 3.7 to 3.9 of it), about 8.5 to 9.5 % for the rig, against
+#166's 6 % for its one-track chain. Chords: the ensemble is linear (residual
+under -100 dB, tested); the octave up is Rubber Band's (#166: junk -27 dB on
+chords).
+
+(6) **`synth-lead`** (`config/rigs/synth-lead.yaml`): GxCompressor,
+GxBigMuffPi (Sustain 0.8, Tone 0.4, Volume 0.4), Calf's Envelope Filter and
+GxEchoCat at the tape-echo preset's settings. **Changed from #166:** its
+12 dB band-pass made the lead 29 dB quieter on a low E than a high E (G3
+-18 dB against the guitar); a 24 dB low-pass, Resonance 4, the sweep still
+300 Hz to 2.5 kHz, is within 6 dB across the neck, at Output Gain 0.4.
+*Measured:* +1.6 dB against the guitar, peak -14.9 dBFS, 46 samples late,
+rising in 8 ms; 3.1 to 4.9 % of a core (the echo about half).
+
+(7) **Presets** `config/channels/string-ensemble`, `string-octave` (level -3)
+and `synth-lead`, each a rig's channel. **References** `config/sound/
+string-machine.strings`, `.octave` and `synth-lead`, calibrated here and
+`made_from` the rigs (hash rule 2); `nulltest --all`: 44 of 44 sound the same.
+GxZita_rev1-Stereo joins `nulltest.STEREO_REVERBS` (#173's rule: every
+manifest reverb with two outputs), measured 2.0 dB apart on a note at its
+own dry/wet 0; the string machine's sweeps are within 0.25 dB.
+
+(8) **Tests**: `test_string_machine.py` (13 fast; 5 slow: plugins/ holds the
+pinned build, and under Sushi the ensemble's spread, lag and balance on a
+sweep, its linearity on an E major chord, abGate on and off, the hall's two
+ends) and `test_synth_lead.py` (4 fast; 3 slow: Sushi sets Calf's controls,
+the fuzz's Volume from silence, the whole lead's level, balance and echo);
+`synth_renders.py` compiles each one-channel chain as the compiler does. No
+test reads a rig or a preset by name (#133). *Found on the way:* a single
+plucked note through the chorus is 3.4 dB louder on the right, every note
+tried, since each render starts the slow LFO in one place; a sweep is
+balanced. The fast suite: 5629 passed, 5 skipped. The slow tests of the files touched
+passed; the whole slow suite passed here but for the twelve that need gRPC
+on loopback, run in a private network namespace with no loopback, which
+then passed outside it.
+
+**Not done:** nothing was heard, on the rig or anywhere; the guitar is
+synthetic and every setting a guess. Not installed on the rig: the rig needs
+the steps in `docs/reference/plugins.md` first. The whole CI image was not
+built (no Sushi AppImage context, no browser download); its plugins half
+was, as above. CPU is this container's, not the XPS 9320's. The
+rigs' amp (NAM) in front of the two channels was not run. *(2026-11-19)*
+
+**The string machine: the review of PR #186 (#177).** (1) **The rig's steps
+no longer delete a bundle before copying it**, nor run on past a failure.
+The hand-run `rm -rf … && cp -rL …` loop is gone: **`sushi-rig plugins add`**
+copies into `plugins/`, as it is, only the bundles the rig needs and it
+lacks, and never touches one already there (the amp, the built bundles,
+GxEchoCat from the pedals' steps). All or nothing: each is copied into a
+staging folder inside `plugins/` whose manifest declares nothing, its links
+checked, and then all are renamed into place; it refuses, copying nothing, a
+bundle whose name is already taken by one that provides something else. The
+steps in `docs/reference/plugins.md` are joined with `&&`, so the first that
+fails stops the rest. (2) **A link loop no longer escapes as RuntimeError**
+(Python 3.12's `Path.resolve`; 3.13's is OSError): every link is resolved
+strictly, and a loop or a link to nothing is a `PluginsError` naming the
+bundle and the link. **`assemble` builds beside `plugins/`** and renames the
+copy in only when it is whole, so a failed copy leaves `plugins/` as it was,
+`--replace` or not; it used to delete it first. (3) **A link into another
+bundle being copied now means the copy** (`a.lv2/lib.so -> ../b.lv2/lib.so`
+stays relative when b.lv2 is copied too; one into a bundle not copied points
+at the package's file). (4) **`plugins check` fails on a link in `plugins/`
+that leads nowhere** (`archive/` aside, being off the path) **and on a
+required plugin whose `lv2:binary` is not a file**, which is what a `cp -r` of
+Calf leaves and what lilv, reading only the Turtle, cannot see; CI's
+Calf-only `test -e` is gone. The synthetic bundles of `test_plugins.py` now
+have their binary and a non-empty Turtle (lilv logs "Error loading file" for
+an empty one once `check` reads the plugin's data). (5) **Calf's Envelope
+Filter has a profile.** Its two atom ports are both `lv2:connectionOptional`,
+so `probe.is_config_drivable` no longer counts them (`optional_atom_ports`,
+in probe's output); a `patch:writable` or `state:interface` still makes a
+plugin not drivable. Over the manifest, it is the only plugin that changes
+(mda's DX10, EPiano, JX10 and Piano have a required MIDI port and stay not
+drivable). The profile hides Input and Output Gain (linear, 1/64 to 64: the
+rig's 0.4 was 0.6 % of the knob, 10 % of it +24 dB) and shows Level (Output
+Gain 0.05 to the plugin's own 2, cosine; the rig's 0.4 at 39 %; 2 measured
++14.8 dB against the guitar, 0.4 +1.6), Sensitivity (Activation 0.5 to 32,
+the rig's 8 at 45 %) and Resonance (0.708 to 12, the rig's 4 at 50 %), with
+Lower, Upper and Mode; the guide says to raise the fuzz's Volume or the
+fader for more. No rig setting changed. The ensemble's Wet gain, to +20 dB,
+is hidden behind a Level of -24 to 0 dB. (6) **The rack's cards are tested**
+(`test_ui_synth.py`: the filter and the ensemble drawn by `unitPanel` with no
+note, no missing control and no page error, Mode a selector reading "24dB/oct
+Lowpass", each control on its curve at the rigs' settings), and the Sushi
+test of the filter covers Mode (low-pass against band-pass on a low E, more
+than 10 dB apart). (7) **The build script's pins are tested by running
+it**, with a `git` that answers as the sources would: a string-machine that
+is not the pin, one that records another DPF, and a DPF fetched as another
+commit each exit non-zero, saying so, and leave DIR's bundle as it was.
+Shown failing: the reviewer's script (`relink_t.py`) gave a sibling link
+pointed at the source, a dangling link and a loop kept, and under 3.12 the
+loop as RuntimeError; it now gives the copy, and the refusal for the other
+two. **Not run:** the rig; `plugins add` against the rig's own `plugins/`
+(rehearsed on a copy of this machine's, without five bundles: it added
+those five, `check` passed, and a second run added nothing). *(2026-11-19)*
+
+**The string machine: the re-review of PR #186 (#177).** (1) **The filter's
+Level tops out near the guitar's level**, as #173's echo does: Output Gain
+0.05 to 0.55, linear, the synth lead's 0.4 at 70 %. *Measured* in Sushi
+through the whole lead: 0.55 is +4.3 dB on #153's guitar and -0.5 dB on eight
+plucked notes from the low E to the top E (0.6 +0.2, 0.7 +1.5, the plugin's
+own 2 +9.7). A slow test renders Level's top, read from the profile's own
+curve, on those eight notes and fails above 0 dB, so a Level widened past
+about 0.6 fails it. The plugin's own 2 is now past the top, as the shimmer's
+Dry/Wet is past its Mix: a filter added from the library shows there and
+turns down onto the knob (the guide says so). (2) **`plugins add` no longer
+takes a bundle in `plugins/` that is a link to one elsewhere for one to
+add**: it judged by the resolved path's parent, so `plugins/nam.lv2 ->
+/opt/…/nam.lv2` clashed with itself and the rig's `add && …` step stopped.
+It now goes by where `decide` took each bundle from. A test with a linked
+bundle, shown failing on the old code. (3) **`assemble`'s swap cannot lose
+the old `plugins/`**: a failure between its two renames puts the old folder
+back, and a run that died there (no `plugins/`, `.plugins.previous` beside
+it) is recovered by the next, which renames `.plugins.previous` back before
+anything else and then goes on as for any `plugins/` that is there (refusing
+without `--replace`, saying it put it back). `.plugins.previous` is deleted
+only once a `plugins/` is in place. Two tests: a rename that fails, and the
+state a kill between the renames leaves. *(2026-11-19)*
+
+**The rack's header moved when a load reading came in (#177, CI on PR #186).**
+`test_at_phone_width_the_desk_stacks_strips_then_chains_then_files[a wider
+fallback font]` failed in the container job: the chains' bottom 7 px below the
+files' top. Reproduced here by sampling the layout every 20 ms after the
+strips appear: the header was 293 px tall, then 285, as the first pw-top
+reading replaced "LOAD — reading" with "LOAD 26% of 21.3 ms". The tiles are
+sized by their values and the header wraps, so a wider LOAD tile pushed XRUNS
+to the next row and pulled Lock up beside Stage and Help. The test measures
+the rack in three steps, so a header shrinking between them read as an
+overlap. A layout bug any rig can meet; this branch only changed the timing
+(its larger `/profiles` and library). *Fixed at the root*, as #184 fixed the
+stage's header: at phone width the tiles are a row of their own, a third of
+it each, every line of each one line at a fixed height and cut short with an
+ellipsis (the tile's title says it all). Sampled again, the header stays at
+268 px from the first frame, and nothing above the chains ever shrinks. New
+test `test_at_phone_width_the_header_is_as_tall_whatever_its_tiles_read`
+(both fonts) sets the tiles to the readings' shortest and longest and holds
+the header's height; it fails without the fix (294 against 334 px). Every
+`test_ui_*` file passed: 520, then the four with font cases again, 160.
+*(2026-11-19)*

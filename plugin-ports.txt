@@ -12,7 +12,9 @@
 #
 # Written from lilv 0.24.22 over Ubuntu 24.04's packages, the ones CI's image
 # installs, and Rubber Band 4.0.0's bundle, which it builds
-# (scripts/build-rubberband4.sh): the #livemono line, 2026-11-17. CI checks every line against lilv over plugins/ (tests/test_stereo.py
+# (scripts/build-rubberband4.sh): the #livemono line, 2026-11-17; and
+# string-machine chorus's, built by scripts/build-string-machine-chorus.sh,
+# 2026-11-18. CI checks every line against lilv over plugins/ (tests/test_stereo.py
 # `test_the_port_table_is_what_lilv_reads`), so a package update that changes a
 # plugin's ports fails the build rather than the right channel.
 #
@@ -27,6 +29,7 @@
 1 1 http://breakfastquay.com/rdf/lv2-rubberband#r3mono
 2 2 http://breakfastquay.com/rdf/lv2-rubberband#r3stereo
 2 2 http://breakfastquay.com/rdf/lv2-rubberband#stereo
+4 2 http://calf.sourceforge.net/plugins/EnvelopeFilter
 2 2 http://distrho.sf.net/plugins/3BandEQ
 2 2 http://distrho.sf.net/plugins/MaGigaverb
 2 2 http://distrho.sf.net/plugins/MVerb
@@ -68,6 +71,7 @@
 2 2 http://drobilla.net/plugins/mda/Vocoder
 1 1 http://gareus.org/oss/lv2/darc#mono
 2 2 http://gareus.org/oss/lv2/darc#stereo
+1 1 http://guitarix.sourceforge.net/plugins/gx_bmp_#_bmp_
 2 2 http://guitarix.sourceforge.net/plugins/gx_chorus_stereo#_chorus_stereo
 1 1 http://guitarix.sourceforge.net/plugins/gx_compressor#_compressor
 1 1 http://guitarix.sourceforge.net/plugins/gx_detune_#_detune_
@@ -76,8 +80,11 @@
 1 1 http://guitarix.sourceforge.net/plugins/gx_oc_2_#_oc_2_
 2 2 http://guitarix.sourceforge.net/plugins/gx_shimmizita_#_shimmizita_
 1 1 http://guitarix.sourceforge.net/plugins/gx_tremolo#_tremolo
+2 2 http://guitarix.sourceforge.net/plugins/gx_zita_rev1_stereo#_zita_rev1_stereo
 1 1 http://guitarix.sourceforge.net/plugins/gxechocat#echocat
 1 1 http://guitarix.sourceforge.net/plugins/gxts9#ts9sim
+1 1 http://hippie.lt/lv2/gate
+1 2 http://jpcima.sdf1.org/lv2/string-machine-chorus
 2 2 http://plugin.org.uk/swh-plugins/lcrDelay
 2 2 http://zynaddsubfx.sourceforge.net/fx#Chorus
 2 2 urn:ardour:a-reverb

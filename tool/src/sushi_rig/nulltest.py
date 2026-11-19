@@ -654,6 +654,9 @@ STEREO_REVERBS = frozenset({
     "http://distrho.sf.net/plugins/MVerb",
     "http://drobilla.net/plugins/mda/Ambience",
     "http://guitarix.sourceforge.net/plugins/gx_shimmizita_#_shimmizita_",
+    # GxZita_rev1-Stereo, the string machine's hall (#177): 2.0 dB apart on a
+    # 220 Hz note at its own dry/wet 0, measured 2026-11-18.
+    "http://guitarix.sourceforge.net/plugins/gx_zita_rev1_stereo#_zita_rev1_stereo",
     "urn:ardour:a-reverb",
 })
 

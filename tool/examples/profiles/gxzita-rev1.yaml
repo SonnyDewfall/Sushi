@@ -1,0 +1,287 @@
+# sushi-rig component profile (schema 1).
+# Machine-written and canonical: edit by hand if you like, but comments
+# do not survive the next rewrite. Facts are checked against `sushi-rig
+# probe`; judgements carry provenance (draft / reviewed / fact).
+# Check with:  sushi-rig profile validate <this file>
+schema_version: 1
+
+plugin:
+  uri: http://guitarix.sourceforge.net/plugins/gx_zita_rev1_stereo#_zita_rev1_stereo
+  version: '43.0'
+  name: GxZita_rev1-Stereo
+kind: effect
+host: sushi-lv2
+
+ports:
+  audio_in: 2
+  audio_out: 2
+  config_drivable: true
+
+groups:
+  - id: mix
+    label: Mix
+    provenance: draft
+  - id: space
+    label: Space
+    provenance: draft
+  - id: tone
+    label: Tone
+    provenance: draft
+
+parameters:
+  - name: DRY_WET_MIX
+    symbol: DRY_WET_MIX
+    facts:
+      min: -1.0
+      max: 1.0
+      default: 0.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: hidden, provenance: draft}
+    label: {value: Dry/wet, provenance: draft}
+    description:
+      value: -1 is the guitar alone, 1 the hall alone (measured). Set by Mix.
+      provenance: draft
+    scale: {value: linear, provenance: draft}
+    control: {value: knob, provenance: draft}
+
+  - name: MID_RT60
+    symbol: MID_RT60
+    facts:
+      min: 1.0
+      max: 8.0
+      default: 2.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: true
+      settable: true
+    visibility: {value: hidden, provenance: draft}
+    label: {value: Mid decay, provenance: draft}
+    description:
+      value: How long the mids ring; the range suggests seconds. Set by Size.
+      provenance: draft
+    scale: {value: log, provenance: draft}
+    control: {value: knob, provenance: draft}
+
+  - name: LOW_RT60
+    symbol: LOW_RT60
+    facts:
+      min: 1.0
+      max: 8.0
+      default: 3.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: true
+      settable: true
+    visibility: {value: hidden, provenance: draft}
+    label: {value: Low decay, provenance: draft}
+    description:
+      value: How long the lows ring; the range suggests seconds. Set by Size.
+      provenance: draft
+    scale: {value: log, provenance: draft}
+    control: {value: knob, provenance: draft}
+
+  - name: LEVEL
+    symbol: level
+    facts:
+      min: -60.0
+      max: 4.0
+      default: 0.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: advanced, provenance: draft}
+    group: {value: mix, provenance: draft}
+    order: {value: 2, provenance: draft}
+    label: {value: Level, provenance: draft}
+    description:
+      value: Its output level, guitar and hall together; the range suggests dB.
+      provenance: draft
+    scale: {value: linear, provenance: draft}
+    control: {value: knob, provenance: draft}
+
+  - name: IN_DELAY
+    symbol: IN_DELAY
+    facts:
+      min: 20.0
+      max: 100.0
+      default: 60.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: advanced, provenance: draft}
+    group: {value: space, provenance: draft}
+    order: {value: 2, provenance: draft}
+    label: {value: Pre-delay, provenance: draft}
+    description:
+      value: How long before the hall answers; the range suggests ms.
+      provenance: draft
+    scale: {value: linear, provenance: draft}
+    control: {value: knob, provenance: draft}
+
+  - name: HF_DAMPING
+    symbol: HF_DAMPING
+    facts:
+      min: 1500.0
+      max: 23520.0
+      default: 6000.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: true
+      settable: true
+    visibility: {value: advanced, provenance: draft}
+    group: {value: tone, provenance: draft}
+    order: {value: 1, provenance: draft}
+    label: {value: Damping, provenance: draft}
+    description:
+      value: Above this the tail dies away faster; the range suggests Hz.
+      provenance: draft
+    scale: {value: log, provenance: draft}
+    control: {value: knob, provenance: draft}
+
+  - name: LF_X
+    symbol: LF_X
+    facts:
+      min: 50.0
+      max: 1000.0
+      default: 200.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: true
+      settable: true
+    visibility: {value: advanced, provenance: draft}
+    group: {value: tone, provenance: draft}
+    order: {value: 2, provenance: draft}
+    label: {value: Low crossover, provenance: draft}
+    description:
+      value: Where the low decay hands over to the mid; the range suggests Hz.
+      provenance: draft
+    scale: {value: log, provenance: draft}
+    control: {value: knob, provenance: draft}
+
+  - name: EQ1_FREQ
+    symbol: EQ1_FREQ
+    facts:
+      min: 40.0
+      max: 2500.0
+      default: 315.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: true
+      settable: true
+    visibility: {value: advanced, provenance: draft}
+    group: {value: tone, provenance: draft}
+    order: {value: 3, provenance: draft}
+    label: {value: EQ 1 freq, provenance: draft}
+    description:
+      value: The first band of the hall's EQ; the range suggests Hz.
+      provenance: draft
+    scale: {value: log, provenance: draft}
+    control: {value: knob, provenance: draft}
+
+  - name: EQ1_LEVEL
+    symbol: EQ1_LEVEL
+    facts:
+      min: -15.0
+      max: 15.0
+      default: 0.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: advanced, provenance: draft}
+    group: {value: tone, provenance: draft}
+    order: {value: 4, provenance: draft}
+    label: {value: EQ 1 level, provenance: draft}
+    description:
+      value: Its cut or boost; the range suggests dB.
+      provenance: draft
+    scale: {value: linear, provenance: draft}
+    control: {value: knob, provenance: draft}
+
+  - name: EQ2_FREQ
+    symbol: EQ2_FREQ
+    facts:
+      min: 160.0
+      max: 10000.0
+      default: 1500.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: true
+      settable: true
+    visibility: {value: advanced, provenance: draft}
+    group: {value: tone, provenance: draft}
+    order: {value: 5, provenance: draft}
+    label: {value: EQ 2 freq, provenance: draft}
+    description:
+      value: The second band of the hall's EQ; the range suggests Hz.
+      provenance: draft
+    scale: {value: log, provenance: draft}
+    control: {value: knob, provenance: draft}
+
+  - name: EQ2_LEVEL
+    symbol: EQ2_LEVEL
+    facts:
+      min: -15.0
+      max: 15.0
+      default: 0.0
+      toggled: false
+      integer: false
+      enumeration: false
+      logarithmic: false
+      settable: true
+    visibility: {value: advanced, provenance: draft}
+    group: {value: tone, provenance: draft}
+    order: {value: 6, provenance: draft}
+    label: {value: EQ 2 level, provenance: draft}
+    description:
+      value: Its cut or boost; the range suggests dB.
+      provenance: draft
+    scale: {value: linear, provenance: draft}
+    control: {value: knob, provenance: draft}
+
+controls:
+  - id: mix
+    drives:
+      value:
+        - {parameter: DRY_WET_MIX, curve: linear, at_0: -1.0, at_1: 1.0}
+      provenance: draft
+    visibility: {value: primary, provenance: draft}
+    group: {value: mix, provenance: draft}
+    order: {value: 1, provenance: draft}
+    label: {value: Mix, provenance: draft}
+    description:
+      value: 0 % the guitar alone, 50 % the two equal, 100 % the hall alone.
+      provenance: draft
+    control: {value: knob, provenance: draft}
+    phone: {value: 1, provenance: draft}
+
+  - id: size
+    drives:
+      value:
+        - {parameter: MID_RT60, curve: linear, at_0: 1.0, at_1: 8.0}
+        - {parameter: LOW_RT60, curve: linear, at_0: 1.0, at_1: 8.0}
+      provenance: draft
+    visibility: {value: primary, provenance: draft}
+    group: {value: space, provenance: draft}
+    order: {value: 1, provenance: draft}
+    label: {value: Size, provenance: draft}
+    description:
+      value: How long the hall rings, 1 to 8 s, the lows and mids together.
+      provenance: draft
+    control: {value: knob, provenance: draft}
+    phone: {value: 2, provenance: draft}

@@ -39,6 +39,23 @@ def test_atom_ports_make_a_plugin_not_drivable():
     )
 
 
+def test_atom_ports_it_declares_optional_do_not_count():
+    """It runs with nothing connected there, so nothing it needs comes that
+    way: Calf's Envelope Filter, whose two atom ports (MIDI, and Calf's own
+    messages) are both lv2:connectionOptional, and whose every control Sushi
+    sets (#177, tests/test_synth_lead.py)."""
+    assert is_config_drivable(atom_ports=2, patch_writables=[], state_interface=False, optional_atom_ports=2)
+    assert not is_config_drivable(atom_ports=2, patch_writables=[], state_interface=False, optional_atom_ports=1)
+
+
+def test_optional_atom_ports_excuse_neither_a_patch_writable_nor_state():
+    """A plugin that takes its state by patch: messages says so with one of
+    these, and an optional port does not change that."""
+    assert not is_config_drivable(atom_ports=1, patch_writables=["urn:example:model"], state_interface=False,
+                                  optional_atom_ports=1)
+    assert not is_config_drivable(atom_ports=1, patch_writables=[], state_interface=True, optional_atom_ports=1)
+
+
 def test_patch_writables_make_a_plugin_not_drivable():
     """A patch:writable property is something the plugin expects to be *set* —
     for a model loader, the model path."""
