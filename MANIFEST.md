@@ -5792,9 +5792,11 @@ only the C++ runtime. `ci/Dockerfile` builds it in a stage of its own and
 assembles it into `plugins/`, installing `calf-plugins` and `abgate` beside
 the other packages. **Built here**: the chorus stage in a clean ubuntu:24.04
 (identical Turtle to the local build), and a copy of the image down to
-`plugins check` (59 URIs, before #171 merged), in a local dockerd, through a
-copy of the Dockerfile that trusted this sandbox's proxy; the whole image was
-not built.
+`plugins check`, in a local dockerd, through a copy of the Dockerfile that
+trusted this sandbox's proxy and left out Sushi and the browser: after #173
+merged, both build stages, `assemble`, `check` (64 URIs), the two
+`BUILT-FROM` greps, the two `ldd` checks and the Calf link check passed. The
+whole image was not built, and the suite was not run in it.
 
 (2) **The inventory**: string-machine chorus (`1 2`), Calf Envelope Filter
 (`4 2`: two sides and two optional side-chains; the track feeds the first
@@ -5886,6 +5888,6 @@ then passed outside it.
 **Not done:** nothing was heard, on the rig or anywhere; the guitar is
 synthetic and every setting a guess. Not installed on the rig: the rig needs
 the steps in `docs/reference/plugins.md` first. The whole CI image was not
-built (no Sushi AppImage context, no browser download); the two stages that
-are new were, as above. CPU is this container's, not the XPS 9320's. The
+built (no Sushi AppImage context, no browser download); its plugins half
+was, as above. CPU is this container's, not the XPS 9320's. The
 rigs' amp (NAM) in front of the two channels was not run. *(2026-11-19)*
