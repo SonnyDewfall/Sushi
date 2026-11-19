@@ -262,11 +262,35 @@ def test_a_process_this_user_cannot_see_is_said_so_with_how_to_find_it():
     message = reach.port_in_use_message("0.0.0.0", 8029, [Holder("0.0.0.0")])
     assert "A process this user cannot see" in message
     assert "sudo ss -ltnp 'sport = :8029'" in message
-    likely = reach.port_in_use_message("0.0.0.0", 8029, [Holder("127.0.0.1")], service_pid=900)
-    assert f"The {reach.UNIT_NAME} user service is running (pid 900), and most likely has it" in likely
-    assert f"\n  systemctl --user stop {reach.UNIT_NAME}" in likely
     nothing = reach.port_in_use_message("0.0.0.0", 8029, [])
-    assert "What has it could not be found." in nothing
+    assert "What has it could not be found." in nothing and "sudo ss -ltnp" in nothing
+
+
+def test_the_service_running_is_never_blamed_for_a_port_it_is_not_seen_to_hold():
+    """Review of PR #185: the user's own service is always visible in
+    /proc, so a holder that is not visible is someone else's. A root
+    docker-proxy on 8030, with the agent's service up on 8029, must not be
+    answered with "stop your service"."""
+    unseen = reach.port_in_use_message("0.0.0.0", 8030, [Holder("0.0.0.0")], service_pid=900)
+    assert "A process this user cannot see" in unseen
+    assert "sudo ss -ltnp 'sport = :8030'" in unseen
+    assert reach.UNIT_NAME not in unseen and "systemctl" not in unseen
+    other = reach.port_in_use_message("0.0.0.0", 8030, [Holder("0.0.0.0", 555, program="docker-proxy")],
+                                      service_pid=900)
+    assert "Another program, docker-proxy, has it (pid 555)" in other
+    assert reach.UNIT_NAME not in other
+    # Its MainPID holding this very port is the service, cgroup or not.
+    held = reach.port_in_use_message("0.0.0.0", 8029, [Holder("127.0.0.1", 900)], service_pid=900)
+    assert f"The {reach.UNIT_NAME} user service has it (pid 900)" in held
+
+
+def test_an_agent_already_on_one_address_is_offered_at_that_address_only():
+    message = reach.port_in_use_message("0.0.0.0", 8029, [Holder("192.168.1.147", 4242, agent=True)], found=FOUND)
+    assert "It already listens on the network, so a phone can use it as it is:" in message
+    assert "  http://192.168.1.147:8029/   ethernet, enx00e04c680001" in message
+    assert "192.168.1.150" not in message
+    both = reach.port_in_use_message("0.0.0.0", 8029, [Holder("0.0.0.0", 4242, agent=True)], found=FOUND)
+    assert "192.168.1.150:8029" in both and "192.168.1.147:8029" in both
 
 
 def test_other_bind_errors_are_said_plainly():
@@ -305,4 +329,70 @@ def test_a_port_held_on_localhost_alone_refuses_the_wildcard_and_names_this_proc
         assert reach.find_holders(port, agent_pid=os.getpid())[0].agent is True
         message = reach.bind_message("0.0.0.0", port, problem, service_pid=None, found=[])
         assert f"(pid {os.getpid()})" in message and f"kill {os.getpid()}" in message
-    assert reach.bind_problem("0.0.0.0", port) is None, "free again once it is closed"
+
+
+def test_port_0_is_bound_once_and_every_address_shares_the_port(monkeypatch):
+    """`--port 0` (review of PR #185): the port the kernel gave is the one
+    read back and recorded, and an address that resolves to two shares it."""
+    two = [(socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0)),
+           (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.2", 0))]
+    monkeypatch.setattr(reach.socket, "getaddrinfo", lambda *a, **k: two)
+    bound, problem = reach.bind_sockets("localhost", 0)
+    try:
+        assert problem is None
+        ports = {s.getsockname()[1] for s in bound}
+        assert len(bound) == 2 and len(ports) == 1 and 0 not in ports
+    finally:
+        for sock in bound:
+            sock.close()
+
+
+def test_a_family_this_kernel_lacks_is_skipped_and_alone_is_said_plainly(monkeypatch):
+    """`ipv6.disable=1`: `localhost` resolves to ::1 as well, and the IPv6
+    socket cannot even be made (EAFNOSUPPORT). As asyncio does, that address
+    is skipped; with nothing else, it is a message, not a traceback."""
+    real = socket.socket
+
+    def no_ipv6(family=socket.AF_INET, *args, **kwargs):
+        if family == socket.AF_INET6:
+            raise OSError(errno.EAFNOSUPPORT, "Address family not supported by protocol")
+        return real(family, *args, **kwargs)
+
+    v6 = (socket.AF_INET6, socket.SOCK_STREAM, 6, "", ("::1", 0, 0, 0))
+    v4 = (socket.AF_INET, socket.SOCK_STREAM, 6, "", ("127.0.0.1", 0))
+    monkeypatch.setattr(reach.socket, "socket", no_ipv6)
+    monkeypatch.setattr(reach.socket, "getaddrinfo", lambda *a, **k: [v6, v4])
+    bound, problem = reach.bind_sockets("localhost", 0)
+    try:
+        assert problem is None and [s.family for s in bound] == [socket.AF_INET]
+    finally:
+        for sock in bound:
+            sock.close()
+    monkeypatch.setattr(reach.socket, "getaddrinfo", lambda *a, **k: [v6])
+    bound, problem = reach.bind_sockets("::1", 8029)
+    assert bound == [] and problem.errno == errno.EAFNOSUPPORT
+    said = reach.bind_message("::1", 8029, problem)
+    assert said.startswith("sushi-rig: cannot listen on ::1:8029: this machine has no IPv6")
+
+
+def test_a_bridge_holding_the_lan_is_listed_and_dockers_is_not(tmp_path):
+    devices = tmp_path / "devices"
+    physical = devices / "pci0000:00/0000:00:1f.6/net/enp3s0"
+    for path in (physical, devices / "virtual/net/br0", devices / "virtual/net/docker0", devices / "virtual/net/veth7"):
+        path.mkdir(parents=True)
+        (path / "type").write_text("1\n")
+    net = tmp_path / "class" / "net"
+    net.mkdir(parents=True)
+    for name, target in [("enp3s0", physical), ("br0", devices / "virtual/net/br0"),
+                         ("docker0", devices / "virtual/net/docker0"), ("veth7", devices / "virtual/net/veth7")]:
+        (net / name).symlink_to(target)
+    (devices / "virtual/net/br0/brif").mkdir()
+    (devices / "virtual/net/br0/brif/enp3s0").symlink_to(physical)
+    (devices / "virtual/net/docker0/brif").mkdir()
+    (devices / "virtual/net/docker0/brif/veth7").symlink_to(devices / "virtual/net/veth7")
+    br0 = reach.link_from_sys("br0", "192.168.1.147", reach.IFF_UP, net)
+    docker = reach.link_from_sys("docker0", "172.17.0.1", reach.IFF_UP, net)
+    assert br0.bridge_physical is True and docker.bridge_physical is False
+    listed, left_out = reach.choose([br0, docker])
+    assert listed == [Interface("br0", "192.168.1.147", "bridge")]
+    assert left_out == [("docker0", "virtual")]

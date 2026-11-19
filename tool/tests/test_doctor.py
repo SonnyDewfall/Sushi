@@ -971,3 +971,27 @@ def test_wifi_is_found_by_sys_and_no_iw_is_not_said_as_power_saving_off(tmp_path
 def test_the_lid_and_wifi_checks_are_run_with_the_rest():
     names = [c.name for c in doctor.environment_checks(environment())]
     assert names[-2:] == ["lid", "wifi-power-save"]
+
+
+def test_a_desktop_holding_the_lid_switch_is_said_to_decide_instead_of_logind():
+    """Review of PR #185: KDE's PowerDevil (and GNOME's gsd-power under some
+    setups) takes a `handle-lid-switch` block inhibitor and applies its own
+    setting, so logind's HandleLidSwitch is not what happens."""
+    check = doctor.check_lid(environment(lid_actions=(("HandleLidSwitch", "ignore"),
+                                                      ("HandleLidSwitchExternalPower", "ignore")),
+                                         lid_inhibitors=("PowerDevil",)))
+    assert check.state == OK
+    assert check.message.startswith("PowerDevil holds the lid switch (a handle-lid-switch inhibitor), so the "
+                                    "desktop's own power settings decide")
+    assert "leaves the rig playing" not in check.message
+    assert "Power Management" in check.remedy and "GNOME" in check.remedy and "playing-out.md" in check.remedy
+
+
+def test_who_holds_the_lid_is_read_from_list_inhibitors_block_mode_only():
+    # As `busctl call ... ListInhibitors` prints it: written from busctl's
+    # documented format, not captured on a laptop.
+    listed = ('a(ssssuu) 3 "shutdown:sleep" "NetworkManager" "NetworkManager needs to turn off networks" '
+              '"delay" 0 812 "handle-power-key:handle-suspend-key:handle-hibernate-key:handle-lid-switch" '
+              '"PowerDevil" "KDE handles power events" "block" 1000 1650 "handle-lid-switch" "Odd" "x" "delay" 0 1')
+    assert doctor.lid_inhibitors_from(listed) == ("PowerDevil",)
+    assert doctor.lid_inhibitors_from("a(ssssuu) 0") == ()

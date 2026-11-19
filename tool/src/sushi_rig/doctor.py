@@ -48,6 +48,7 @@ from __future__ import annotations
 import ctypes
 import json
 import math
+import re
 import shutil
 import subprocess
 from dataclasses import asdict, dataclass
@@ -673,6 +674,11 @@ class Environment:
     # The defaults are a laptop set up for playing with the lid closed.
     lid_actions: tuple[tuple[str, str], ...] | None = (
         ("HandleLidSwitch", "ignore"), ("HandleLidSwitchExternalPower", "ignore"))
+    # Who holds a `handle-lid-switch` block inhibitor (KDE's PowerDevil,
+    # GNOME's gsd-power under some setups): while one is held, logind's
+    # HandleLidSwitch is not what happens, the desktop's own setting is.
+    # `()` for none; None when logind could not be asked.
+    lid_inhibitors: tuple[str, ...] | None = ()
     # Each Wi-Fi interface and whether power saving is on (None: `iw` could
     # not say); None for the whole when `iw` is not there to ask.
     wifi_power_save: tuple[tuple[str, bool | None], ...] | None = ()
@@ -887,6 +893,17 @@ def check_lid(environment: Environment) -> Check:
     first = actions[0][1] if actions else ""
     actions = tuple((name, value or first) for name, value in actions)
     said = ", ".join(f"{name}={value}" for name, value in actions)
+    holders = environment.lid_inhibitors
+    if holders:
+        # A desktop program has taken the lid from logind (review of PR
+        # #185): what HandleLidSwitch says does not happen; its setting does.
+        return Check(
+            "lid", OK,
+            f"{', '.join(holders)} holds the lid switch (a handle-lid-switch inhibitor), so the desktop's "
+            f"own power settings decide what closing the lid does, not logind's ({said})",
+            "set it in the desktop's power settings (KDE: System Settings, Power Management, "
+            f"\"When laptop lid closed\"; GNOME: Settings, Power); see {LID_GUIDE}",
+        )
     if any(value in LID_STOPS for _, value in actions):
         return Check(
             "lid", OK, f"closing the lid suspends this machine, which stops the rig ({said}): "
@@ -977,6 +994,41 @@ def _lid_actions() -> tuple[tuple[str, str], ...] | None:
             return None
         found.append((name, value))
     return tuple(found)
+
+
+def _lid_inhibitors() -> tuple[str, ...] | None:
+    """Who holds a `handle-lid-switch` block inhibitor: logind's
+    `BlockInhibited` says whether one is held, `ListInhibitors` who. Only
+    block mode matters: logind takes delay inhibitors for sleep and
+    shutdown alone, so `DelayInhibited` never names the lid. None when
+    logind cannot be asked."""
+    base = ["busctl", "org.freedesktop.login1", "/org/freedesktop/login1", "org.freedesktop.login1.Manager"]
+    try:
+        blocked = subprocess.run([base[0], "get-property", *base[1:], "BlockInhibited"],
+                                 capture_output=True, text=True, check=False, timeout=5.0)
+        if blocked.returncode != 0 or busctl_string(blocked.stdout) is None:
+            return None
+        if "handle-lid-switch" not in busctl_string(blocked.stdout).split(":"):
+            return ()
+        listed = subprocess.run([base[0], "call", *base[1:], "ListInhibitors"],
+                                capture_output=True, text=True, check=False, timeout=5.0)
+    except (OSError, subprocess.SubprocessError):
+        return None
+    return lid_inhibitors_from(listed.stdout if listed.returncode == 0 else "") or ("a desktop program",)
+
+
+_INHIBITOR = re.compile(r'"((?:[^"\\]|\\.)*)" "((?:[^"\\]|\\.)*)" "(?:[^"\\]|\\.)*" "((?:[^"\\]|\\.)*)" \d+ \d+')
+
+
+def lid_inhibitors_from(text: str) -> tuple[str, ...]:
+    """Who holds a block `handle-lid-switch` inhibitor, from `busctl call
+    ... ListInhibitors`, which prints `a(ssssuu) N "what" "who" "why"
+    "mode" uid pid ...`. Pure."""
+    who = []
+    for what, name, mode in _INHIBITOR.findall(text):
+        if mode == "block" and "handle-lid-switch" in what.split(":") and name not in who:
+            who.append(name)
+    return tuple(who)
 
 
 def busctl_string(text: str) -> str | None:
@@ -1155,6 +1207,7 @@ def gather_environment(root: Path) -> Environment:
         take_rig=rig,
         models=_models(root),
         lid_actions=_lid_actions(),
+        lid_inhibitors=_lid_inhibitors(),
         wifi_power_save=_wifi_power_save(),
     )
 

@@ -128,7 +128,9 @@ with this rig.
 ## On a hotspot the laptop makes
 
 The laptop can make a Wi-Fi network of its own for the phone to join, with no
-router or mobile signal at all. With NetworkManager (Ubuntu's own):
+router or mobile signal at all. **Starting it takes the laptop off the Wi-Fi
+network it is on**, so do it before the rig is the only thing that matters,
+not mid-set. With NetworkManager (Ubuntu's own):
 
 ```bash
 nmcli device wifi hotspot ifname wlp0s20f3 ssid sushi-rig password "choose-8-or-more"
@@ -139,8 +141,8 @@ agent --phone` labels **Wi-Fi**). Join the phone to `sushi-rig`, then open
 `http://10.42.0.1:8029/`: NetworkManager gives the laptop that address on a
 hotspot it makes.
 
-While it runs, the laptop's Wi-Fi is the hotspot, so the laptop has no
-internet over Wi-Fi. The phone may say the network has no internet; keep it
+While it runs, the laptop's Wi-Fi is the hotspot: it has left the network it
+was on, and has no internet over Wi-Fi. The phone may say the network has no internet; keep it
 connected anyway. To stop the hotspot: `nmcli connection down Hotspot`.
 
 Not yet tried with this rig.
@@ -232,6 +234,21 @@ can end the graphical session, and the rig with it.
 
 To undo it: `sudo rm /etc/systemd/logind.conf.d/lid.conf`, and reboot.
 
+### The desktop's own power settings
+
+A desktop can take the lid from the system and decide for itself, and then
+the file above is not what happens. `sushi-rig doctor` says so when it is the
+case (`lid`: "… holds the lid switch"). Set it in the desktop as well:
+
+- **KDE Plasma**: **System Settings**, **Power Management**, **When laptop lid
+  closed**: **Do nothing**, for each of the power profiles (on AC, on battery,
+  on low battery).
+- **GNOME** (Ubuntu's own): it normally leaves the lid to the file above. Where
+  GNOME Tweaks offers **Suspend when laptop lid is closed** (under **General**),
+  turn it off.
+
+Neither is yet tried with this rig.
+
 ### Automatic suspend off
 
 In **Settings**, **Power**, turn **Automatic Suspend** off, or the laptop
@@ -258,7 +275,9 @@ For good, with NetworkManager: make a file
 wifi.powersave = 2
 ```
 
-and restart NetworkManager, which drops the Wi-Fi for a few seconds:
+and restart NetworkManager. **This drops every network connection for a few
+seconds**, the phone's page with it (the rig keeps playing), so do it before
+you play, not during:
 
 ```bash
 sudo systemctl restart NetworkManager

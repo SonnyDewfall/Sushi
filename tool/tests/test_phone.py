@@ -30,6 +30,7 @@ import pytest
 aiohttp = pytest.importorskip("aiohttp")
 from aiohttp.test_utils import TestClient, TestServer  # noqa: E402
 
+from sushi_rig import agent as agent_module  # noqa: E402
 from sushi_rig import cli, reach, service  # noqa: E402
 from sushi_rig.agent import Agent, AgentError, cross_site_refusal, own_names, rebinding_refusal, serve  # noqa: E402
 from sushi_rig.paths import checkout_root  # noqa: E402
@@ -208,11 +209,62 @@ def test_serve_says_who_has_the_port_before_it_starts_or_writes_anything(tmp_pat
     assert not (tmp_path / "sushi-rig" / "agent.json").exists(), "a refused agent writes no address"
 
 
-def run_agent(env, *args):
-    return subprocess.Popen(
-        [sys.executable, "-c", "import sys; from sushi_rig.cli import main; sys.exit(main())", "agent", *args],
-        stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env,
-    )
+def test_serve_reports_an_error_of_the_agents_own_start_as_itself_not_as_the_port(tmp_path, monkeypatch):
+    """Review of PR #185: the start and stop hooks run inside `run_app`
+    (the address file, the pedals' MIDI), and an OSError of theirs -- an
+    unwritable XDG_RUNTIME_DIR -- was said as "a port under 1024 needs
+    root". Now the port is bound before `run_app`, and what `run_app`
+    raises is said as what it is. The sockets are closed either way."""
+    monkeypatch.setenv("XDG_RUNTIME_DIR", str(tmp_path))
+    given = []
+
+    def run_app(app, **kwargs):
+        given.append(kwargs)
+        raise PermissionError(13, "Permission denied", "/run/user/1000/sushi-rig/agent.json")
+
+    monkeypatch.setattr(agent_module.web, "run_app", run_app)
+    with pytest.raises(AgentError) as stopped:
+        serve("127.0.0.1", 0, root=tmp_path)
+    said = str(stopped.value)
+    assert said == ("sushi-rig: the agent stopped on an error of its own, not the port's: "
+                    "PermissionError: Permission denied (/run/user/1000/sushi-rig/agent.json)")
+    assert "port under 1024" not in said and "cannot listen" not in said
+    (kwargs,) = given
+    assert "host" not in kwargs and "port" not in kwargs, "aiohttp is handed the bound sockets, nothing to bind"
+    assert all(sock.fileno() == -1 for sock in kwargs["sock"]), "closed on the way out"
+
+
+@pytest.fixture
+def program(tmp_path):
+    """A `sushi-rig` on disk, as the venv's is: a Python script of that
+    name, so the agents started here have the command line
+    `reach.is_agent_argv` reads (`python3 …/sushi-rig agent …`)."""
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    made = bin_dir / "sushi-rig"
+    made.write_text(f"#!{sys.executable}\nimport sys\nfrom sushi_rig.cli import main\nsys.exit(main())\n")
+    made.chmod(0o755)
+    return made
+
+
+def run_agent(env, program, *args):
+    return subprocess.Popen([sys.executable, str(program), "agent", *args],
+                            stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True, env=env)
+
+
+def started_on(process, timeout=30.0):
+    """The port the agent says it listens on, from its first line: with
+    `--port 0` the kernel chooses, so no port is picked here to race over."""
+    import select
+
+    ready, _, _ = select.select([process.stdout], [], [], timeout)
+    if not ready:
+        pytest.fail("the agent printed nothing")
+    first = process.stdout.readline()
+    match = re.search(r" on http://[^ ]*:(\d+)  \(Ctrl\+C to stop\)$", first.rstrip("\n"))
+    if not match:
+        pytest.fail(f"the agent said {first!r}; stderr: {process.stderr.read() if process.poll() is not None else ''}")
+    return int(match.group(1)), first
 
 
 def wait_for(port, process, timeout=30.0):
@@ -240,31 +292,33 @@ def stop(process):
     return process.stdout.read(), process.stderr.read()
 
 
-def free_port():
-    with socket.socket() as sock:
-        sock.bind(("127.0.0.1", 0))
-        return sock.getsockname()[1]
+def environment_for(tmp_path, name):
+    runtime = tmp_path / name
+    runtime.mkdir()
+    return {**os.environ, "PYTHONPATH": str(SRC), "XDG_RUNTIME_DIR": str(runtime), "PYTHONUNBUFFERED": "1"}
 
 
 @pytest.fixture
 def env(tmp_path):
-    return {**os.environ, "PYTHONPATH": str(SRC), "XDG_RUNTIME_DIR": str(tmp_path), "PYTHONUNBUFFERED": "1"}
+    return environment_for(tmp_path, "runtime")
 
 
-def test_the_issue_replayed_a_localhost_agent_then_phone_is_told_who_and_how(env):
+def test_the_issue_replayed_a_localhost_agent_then_phone_is_told_who_and_how(tmp_path, program):
     """The issue's traceback, replayed with real agents: one on localhost
     holds the port, and `sushi-rig agent --phone` beside it says which pid,
-    that it listens on localhost only, and the command that stops it."""
-    port = free_port()
-    first = run_agent(env, "--port", str(port))
+    that it listens on localhost only, and the command that stops it.
+
+    Each with a runtime directory of its own, so the second cannot read the
+    first's agent.json: the first is known for an agent by its command line
+    alone (`reach.is_agent_argv`). Known by the recorded pid instead is
+    `test_reach`'s `find_holders(agent_pid=...)`."""
+    first = run_agent(environment_for(tmp_path, "one"), program, "--port", "0")
     try:
+        port, line = started_on(first)
         said = wait_for(port, first)
         assert said["agent"]["listen"] == {"host": "127.0.0.1", "port": port, "network": False, "urls": []}
-        second = subprocess.run(
-            [sys.executable, "-c", "import sys; from sushi_rig.cli import main; sys.exit(main())",
-             "agent", "--phone", "--port", str(port)],
-            capture_output=True, text=True, env=env, timeout=60,
-        )
+        second = subprocess.run([sys.executable, str(program), "agent", "--phone", "--port", str(port)],
+                                capture_output=True, text=True, env=environment_for(tmp_path, "two"), timeout=60)
     finally:
         out, err = stop(first)
     assert second.returncode == 1
@@ -277,32 +331,51 @@ def test_the_issue_replayed_a_localhost_agent_then_phone_is_told_who_and_how(env
     assert "Only this machine can open it. For a phone as well: sushi-rig agent --phone" in out
 
 
-def test_agent_phone_listens_on_the_network_and_prints_where_to_open_it(env):
-    port = free_port()
-    agent = run_agent(env, "--phone", "--port", str(port))
+def test_agent_phone_on_port_0_records_and_prints_the_port_it_was_given(env, program, tmp_path):
+    """Review of PR #185: `--phone --port 0` recorded the port asked for,
+    so every URL ended `:0`. The port is the bound socket's."""
+    agent = run_agent(env, program, "--phone", "--port", "0")
     try:
+        port, first = started_on(agent)
         said = wait_for(port, agent)
+        recorded = json.loads((Path(env["XDG_RUNTIME_DIR"]) / "sushi-rig" / "agent.json").read_text())
     finally:
         out, err = stop(agent)
+    assert port != 0
     listen = said["agent"]["listen"]
     assert (listen["host"], listen["port"], listen["network"]) == ("0.0.0.0", port, True)
-    lines = out.splitlines()
-    assert lines[0].startswith(f"sushi-rig agent ") and lines[0].endswith(f"on http://0.0.0.0:{port}  (Ctrl+C to stop)")
+    assert recorded["url"] == f"http://127.0.0.1:{port}" and recorded["pid"] == agent.pid
+    lines = [first.rstrip("\n"), *out.splitlines()]
+    assert lines[0].startswith("sushi-rig agent ") and lines[0].endswith(f"on http://0.0.0.0:{port}  (Ctrl+C to stop)")
     assert reach.NO_PASSWORD in lines
     found = reach.interfaces()[0]
     for interface in found:  # whatever this machine has, each is printed
         assert any(line.startswith(f"  http://{interface.address}:{port}/") for line in lines), out
     assert [u["url"] for u in listen["urls"]] == [f"http://{i.address}:{port}/" for i in found]
-    assert not any("127.0.0.1" in u["url"] for u in listen["urls"])
+    assert not any(u["url"].endswith(":0/") or "127.0.0.1" in u["url"] for u in listen["urls"])
 
 
-def test_each_printed_url_opens_the_page_on_a_real_agent_and_allow_host_names_too(env):
+def test_an_unwritable_runtime_directory_is_said_as_itself_by_the_real_cli(tmp_path, program):
+    """The first finding of the review, met for real: XDG_RUNTIME_DIR a file,
+    so the agent's address file cannot be written (as root too, which a
+    read-only directory would not stop)."""
+    env = environment_for(tmp_path, "runtime")
+    blocked = tmp_path / "not-a-directory"
+    blocked.write_text("")
+    env["XDG_RUNTIME_DIR"] = str(blocked)
+    done = subprocess.run([sys.executable, str(program), "agent", "--port", "0"],
+                          capture_output=True, text=True, env=env, timeout=60)
+    assert done.returncode == 1
+    assert "the agent stopped on an error of its own, not the port's: NotADirectoryError" in done.stderr, done.stderr
+    assert "Traceback" not in done.stderr and "cannot listen" not in done.stderr
+
+
+def test_each_printed_url_opens_the_page_on_a_real_agent_and_allow_host_names_too(env, program):
     """The URLs as printed, fetched for real from this machine's own
     addresses, past #161's guard: the page, and the page's POST (an empty
     `up`, refused by the route as 400, not by the guard as 403). A name
     given with `--allow-host` beside `--phone` passes; another does not."""
-    port = free_port()
-    agent = run_agent(env, "--phone", "--port", str(port), "--allow-host", "rig.test")
+    agent = run_agent(env, program, "--phone", "--port", "0", "--allow-host", "rig.test")
     opener = urllib.request.build_opener(urllib.request.ProxyHandler({}))
 
     def status(url, method="GET", headers=None):
@@ -315,6 +388,7 @@ def test_each_printed_url_opens_the_page_on_a_real_agent_and_allow_host_names_to
             return exc.code
 
     try:
+        port, _ = started_on(agent)
         said = wait_for(port, agent)
         urls = [u["url"] for u in said["agent"]["listen"]["urls"]]
         got = [(status(url), status(url + "rig/up", "POST", {"Origin": url.rstrip("/"), "Sec-Fetch-Site": "same-origin",
@@ -362,6 +436,14 @@ def test_install_service_phone_writes_the_unit_listening_on_the_network(checkout
         service.unit_text(TEMPLATE, checkout)
     assert f"  systemctl --user restart {service.UNIT_NAME}" in again
     assert "  sushi-rig agent install-service --phone" in again
+
+
+def test_a_localhost_install_suggests_the_phone_install_with_its_port_and_names_kept():
+    """Review of PR #185: the suggested reinstall dropped --port and
+    --allow-host, and would have moved the service off its port."""
+    lines = service.phone_lines(["--port", "8030", "--allow-host", "rig.ts.net"])
+    assert "  sushi-rig agent install-service --phone --port 8030 --allow-host rig.ts.net" in lines
+    assert "  sushi-rig agent install-service --phone" in service.phone_lines([])
 
 
 @pytest.mark.parametrize("given, args", [

@@ -6,7 +6,7 @@ answers:
 
 - `sushi-rig agent --host 0.0.0.0` stopped with a bare `OSError: [Errno 98]`
   traceback, because an agent bound to 127.0.0.1 alone already held 8029.
-  `bind_problem` tries the address before the agent starts anything, and
+  `bind_sockets` binds the address before the agent starts anything, and
   `port_in_use_message` says who holds it -- the `sushi-rig-agent` user
   service or which pid -- with the command that stops it, and, when what
   holds it listens on localhost alone, that this is why the phone could not
@@ -69,7 +69,7 @@ IFF_LOOPBACK = 0x8
 ARPHRD_ETHER = 1
 
 # The order the URLs are listed in: the phone is on Wi-Fi, so that first.
-KIND_ORDER = {"Wi-Fi": 0, "ethernet": 1, "network": 2}
+KIND_ORDER = {"Wi-Fi": 0, "ethernet": 1, "bridge": 2, "network": 3}
 
 
 @dataclass(frozen=True)
@@ -83,6 +83,10 @@ class Link:
     virtual: bool | None  # under /sys/devices/virtual; None when /sys said nothing
     wireless: bool  # /sys/class/net/<name>/wireless, or DEVTYPE=wlan
     arp_type: int | None  # /sys/class/net/<name>/type
+    # A bridge (/sys/class/net/<name>/brif) with a physical port in it: the
+    # LAN bridged onto it, as br0 on a machine that hosts VMs. Docker's and
+    # libvirt's bridges hold only virtual ports, and stay left out.
+    bridge_physical: bool = False
 
 
 @dataclass(frozen=True)
@@ -91,7 +95,7 @@ class Interface:
 
     name: str
     address: str
-    kind: str  # "Wi-Fi", "ethernet" or "network"
+    kind: str  # "Wi-Fi", "ethernet", "bridge" or "network"
 
     def as_dict(self) -> dict:
         return {"interface": self.name, "address": self.address, "kind": self.kind}
@@ -105,7 +109,11 @@ def classify(link: Link) -> tuple[str | None, str]:
         return None, ""
     if link.loopback or link.name == "lo" or link.address.startswith("127."):
         return None, "loopback"
-    if link.virtual or link.name.startswith(VIRTUAL_PREFIXES):
+    if link.name.startswith(VIRTUAL_PREFIXES):
+        return None, "virtual"
+    if link.bridge_physical:
+        return "bridge", ""
+    if link.virtual:
         return None, "virtual"
     if link.wireless:
         return "Wi-Fi", ""
@@ -243,29 +251,57 @@ def _proc_address(hexaddr: str, family: str) -> str:
     return str(ipaddress.IPv4Address(words))
 
 
-def bind_problem(host: str, port: int) -> OSError | None:
-    """The error listening on `host:port` would give, or None: a socket
-    bound and closed again, with SO_REUSEADDR as aiohttp's own has it, so a
-    port held only by a closing connection is not taken for one in use."""
+def bind_sockets(host: str, port: int) -> tuple[list[socket.socket], OSError | None]:
+    """The listening sockets for `host:port`, bound here and handed to
+    aiohttp (`web.run_app(sock=...)`), so the port checked is the port
+    served, with no moment between for another program to take it, and
+    port 0's real port is known before anything is printed. `([], error)`
+    when it cannot be had; each socket made so far is closed then.
+
+    As asyncio's `create_server` binds: one socket for each address `host`
+    resolves to, SO_REUSEADDR (so a port held only by a closing connection
+    is not taken for one in use), IPV6_V6ONLY on IPv6 (so `::` and
+    `0.0.0.0` are separate), and an address family this kernel does not
+    have (IPv6 under `ipv6.disable=1`) skipped rather than failed on. For
+    port 0, the first socket's port is the port of the rest."""
     try:
         infos = socket.getaddrinfo(host or None, port, type=socket.SOCK_STREAM, flags=socket.AI_PASSIVE)
     except socket.gaierror as exc:
-        return OSError(errno.EADDRNOTAVAIL, f"{host!r} is not an address of this machine ({exc})")
+        return [], OSError(errno.EADDRNOTAVAIL, f"{host!r} is not an address of this machine ({exc})")
+    bound: list[socket.socket] = []
+    skipped: OSError | None = None
     for family, kind, proto, _, address in infos:
-        sock = socket.socket(family, kind, proto)
+        try:
+            sock = socket.socket(family, kind, proto)
+        except OSError as exc:
+            skipped = exc  # a family this kernel lacks: the others may still serve
+            continue
         try:
             sock.setsockopt(socket.SOL_SOCKET, socket.SO_REUSEADDR, 1)
             if family == socket.AF_INET6:
-                # As asyncio's create_server has it, so `::` and `0.0.0.0`
-                # are asked about separately, as aiohttp would bind them.
                 with contextlib.suppress(OSError):
                     sock.setsockopt(socket.IPPROTO_IPV6, socket.IPV6_V6ONLY, 1)
+            if port == 0 and bound:
+                address = (address[0], bound[0].getsockname()[1], *address[2:])
             sock.bind(address)
         except OSError as exc:
-            return exc
-        finally:
             sock.close()
-    return None
+            for other in bound:
+                other.close()
+            return [], exc
+        bound.append(sock)
+    if not bound:
+        return [], skipped or OSError(errno.EADDRNOTAVAIL, f"{host!r} resolved to no address")
+    return bound, None
+
+
+def bind_problem(host: str, port: int) -> OSError | None:
+    """The error listening on `host:port` would give, or None, the sockets
+    closed again: `bind_sockets` asked and let go."""
+    bound, problem = bind_sockets(host, port)
+    for sock in bound:
+        sock.close()
+    return problem
 
 
 def port_in_use_message(host: str, port: int, holders: list[Holder], *,
@@ -280,18 +316,16 @@ def port_in_use_message(host: str, port: int, holders: list[Holder], *,
     where = sorted({h.address for h in holders})
     listens = " and ".join(where)
     local_only = bool(where) and not any(is_network(a) for a in where)
-    is_service = holder is not None and (holder.service or (service_pid is not None and holder.pid == service_pid))
-    # No process seen to say otherwise, and the service is running: most
-    # likely it, and said as most likely.
-    likely_service = not is_service and not seen and service_pid is not None
+    # The service only when a process seen to hold this port is it: by its
+    # cgroup, or by being the service's MainPID. Never guessed from the
+    # service merely running: the user's own service is always visible in
+    # /proc, so a holder that is not is someone else's (review of PR #185).
+    is_service = holder is not None and holder.pid is not None and (
+        holder.service or (service_pid is not None and holder.pid == service_pid))
 
     lines = [f"sushi-rig: cannot listen on {host}:{port}: the port is already taken."]
     if is_service:
         lines.append(f"The {UNIT_NAME} user service has it (pid {holder.pid}), listening on {listens}.")
-    elif likely_service:
-        lines.append(f"The {UNIT_NAME} user service is running (pid {service_pid}), and most likely has it"
-                     + (f", listening on {listens}." if listens else "."))
-        is_service = True
     elif holder is not None and holder.pid is not None:
         who = "another sushi-rig agent" if holder.agent else f"another program, {holder.program or 'unnamed'},"
         lines.append(f"{who[0].upper()}{who[1:]} has it (pid {holder.pid}), listening on {listens}.")
@@ -306,7 +340,13 @@ def port_in_use_message(host: str, port: int, holders: list[Holder], *,
         lines.append("It listens on this machine only (localhost), which is why a phone cannot reach it.")
     elif an_agent and where and not local_only and is_network(host):
         lines.append("It already listens on the network, so a phone can use it as it is:")
-        urls = phone_urls("0.0.0.0", port, found)
+        # Where it really listens: every interface for a wildcard, the one
+        # address it bound otherwise.
+        urls: list[dict] = []
+        for address in where:
+            for u in phone_urls(address, port, found) if is_network(address) else []:
+                if u["url"] not in [v["url"] for v in urls]:
+                    urls.append(u)
         lines += [f"  {u['url']}   {describe(u)}".rstrip() for u in urls] or \
             ["  (this machine has no network address yet: join Wi-Fi or the phone's hotspot)"]
     elif an_agent and not is_network(host):
@@ -376,6 +416,10 @@ def bind_message(host: str, port: int, error: OSError, **facts) -> str:
     if error.errno == errno.EADDRNOTAVAIL:
         return (f"sushi-rig: cannot listen on {host}:{port}: no interface of this machine has "
                 f"that address. For a phone, use --phone, which listens on every address.")
+    if error.errno == errno.EAFNOSUPPORT:
+        return (f"sushi-rig: cannot listen on {host}:{port}: this machine has no "
+                f"{'IPv6' if ':' in host or host == 'localhost' else 'such address family'} "
+                f"(is it turned off?). Use --host 127.0.0.1, or --phone.")
     if error.errno == errno.EACCES:
         return (f"sushi-rig: cannot listen on {host}:{port}: a port under 1024 needs root. "
                 f"Use the default, 8029, or another above 1024.")
@@ -429,7 +473,24 @@ def link_from_sys(name: str, address: str | None, flags: int, sys_net: Path) -> 
         arp_type = None
     wireless = (base / "wireless").exists() or (base / "phy80211").exists() or "DEVTYPE=wlan" in uevent
     return Link(name=name, address=address, up=bool(flags & IFF_UP), loopback=bool(flags & IFF_LOOPBACK),
-                virtual=virtual, wireless=wireless, arp_type=arp_type)
+                virtual=virtual, wireless=wireless, arp_type=arp_type,
+                bridge_physical=_bridges_a_physical_port(base, sys_net))
+
+
+def _bridges_a_physical_port(base: Path, sys_net: Path) -> bool:
+    """Whether /sys/class/net/<name> is a bridge with a port in it that is
+    not virtual (an ethernet or Wi-Fi device bridged in)."""
+    try:
+        ports = [p.name for p in (base / "brif").iterdir()]
+    except OSError:
+        return False
+    for port in ports:
+        try:
+            if "/devices/virtual/" not in os.path.realpath(sys_net / port):
+                return True
+        except OSError:
+            continue
+    return False
 
 
 def interfaces() -> tuple[list[Interface], list[tuple[str, str]]]:

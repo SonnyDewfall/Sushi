@@ -236,10 +236,14 @@ def phone_lines(listen: list[str], found: list | None = None) -> list[str]:
     host, port = where(listen)
     names = [listen[i + 1] for i, word in enumerate(listen) if word == "--allow-host"]
     if not reach.is_network(host):
+        # The same install with --phone: its port and allowed names kept
+        # (review of PR #185), only the localhost --host dropped.
+        keep = [f"--port {port}"] if "--port" in listen else []
+        keep += [f"--allow-host {name}" for name in names]
         return [
             "It listens on this machine only. For a phone as well, install it with:",
             "",
-            "  sushi-rig agent install-service --phone",
+            " ".join(["  sushi-rig agent install-service --phone", *keep]),
         ]
     if found is None:
         found = reach.interfaces()[0]

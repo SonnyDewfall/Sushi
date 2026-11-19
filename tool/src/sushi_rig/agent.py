@@ -7657,14 +7657,28 @@ def serve(host: str, port: int, root: Path | None = None, allow_hosts: Sequence[
     if web is None:
         raise AgentError("aiohttp is not installed; pip install -e tool[agent]")
 
-    # Before anything is started or written (#181): an agent that cannot
-    # listen says who has the port and how to stop it, not a traceback, and
-    # has adopted no rig's MIDI and written no address file on its way out.
+    # Bound before anything is started or written (#181), and these very
+    # sockets served: an agent that cannot listen says who has the port and
+    # how to stop it, not a traceback, and has adopted no rig's MIDI and
+    # written no address file on its way out. No moment between a check and
+    # the bind for another program to take the port, and `--port 0`'s real
+    # port is the one recorded and printed (review of PR #185).
     from . import reach
 
-    problem = reach.bind_problem(host, port)
+    sockets, problem = reach.bind_sockets(host, port)
     if problem is not None:
         raise AgentError(reach.bind_message(host, port, problem))
+    port = sockets[0].getsockname()[1]
+    try:
+        return _serve_on(host, port, sockets, root, allow_hosts)
+    finally:
+        for sock in sockets:
+            sock.close()
+
+
+def _serve_on(host: str, port: int, sockets: list, root: Path | None, allow_hosts: Sequence[str]) -> int:
+    """`serve`, on the sockets it bound: `port` is the port they hold."""
+    from . import reach
 
     import os
 
@@ -7693,10 +7707,12 @@ def serve(host: str, port: int, root: Path | None = None, allow_hosts: Sequence[
     for line in reach.listening_lines(host, port, reach.interfaces()[0] if reach.is_network(host) else []):
         print(line, flush=True)
     try:
-        web.run_app(app, host=host, port=port, print=None, handle_signals=True)
+        web.run_app(app, sock=sockets, print=None, handle_signals=True)
     except OSError as exc:
-        # Taken between the check above and the bind: said the same way.
-        if exc.errno is None:
-            raise
-        raise AgentError(reach.bind_message(host, port, exc)) from None
+        # Not the port: the sockets were bound above. Something of the
+        # agent's own start or stop (an address file it cannot write, a
+        # MIDI port), said as itself rather than as a port problem.
+        where = f" ({exc.filename})" if getattr(exc, "filename", None) else ""
+        raise AgentError(f"sushi-rig: the agent stopped on an error of its own, not the port's: "
+                         f"{type(exc).__name__}: {exc.strerror or exc}{where}") from exc
     return 0
