@@ -270,6 +270,131 @@ def test_silence_one_side_and_imbalance_are_each_found(left, right, check):
     assert found.check == check
 
 
+# Stereo reverbs may be 4 dB apart (#165, the owner's decision on PR #173).
+
+SHIMMER = "http://guitarix.sourceforge.net/plugins/gx_shimmizita_#_shimmizita_"
+
+
+def _compiled(uri, bypassed=False):
+    """A compiled one-plugin channel through the master, as nulltest renders one."""
+    from sushi_rig import rigfile
+
+    raw = {"kind": "rig", "schema_version": 1, "name": "r",
+           "channels": [{"name": "board", "input": "guitar-in", "width": "mono",
+                         "chain": [{"name": "fx", "uri": uri, "bypassed": bypassed}]}],
+           "master": {"output": "monitor-out", "chain": []}}
+    ((_, view),) = rigfile.heard(rigfile.emit_rig(rigfile.parse_rig(raw)))
+    return view
+
+
+def _apart(db):
+    return _a_fingerprint(1.0, 10 ** (-db / 20))
+
+
+def test_the_shimmer_playing_passes_3_db_apart_and_a_reverb_5_db_apart_fails():
+    limit = nulltest.balance_db_of(_compiled(SHIMMER))
+    assert limit == nulltest.REVERB_BALANCE_DB == 4.0
+    assert heard_findings(_apart(3.0), limit) == [], "the shimmer measured 3.0 to 3.5 dB apart"
+    (found,) = heard_findings(_apart(5.0), limit)
+    assert found.check == "unbalanced" and "more than 4.0 dB apart" in found.message
+
+
+@pytest.mark.parametrize("uri", sorted(nulltest.STEREO_REVERBS))
+def test_every_stereo_reverb_gets_4_db_and_still_fails_silent_or_one_sided(uri):
+    limit = nulltest.balance_db_of(_compiled(uri))
+    assert limit == 4.0
+    assert [f.check for f in heard_findings(_a_fingerprint(1.0, 0.0), limit)] == ["one-sided"]
+    assert [f.check for f in heard_findings(_a_fingerprint(0.0, 1.0), limit)] == ["one-sided"]
+    assert [f.check for f in heard_findings(_a_fingerprint(0.0, 0.0), limit)] == ["silent"]
+
+
+A_REVERB = "urn:ardour:a-reverb"
+CHORUS = "http://guitarix.sourceforge.net/plugins/gx_chorus_stereo#_chorus_stereo"
+
+RIG_REVERB_AND_CHORUS = """\
+kind: rig
+schema_version: 1
+name: {name}
+channels:
+- name: board
+  input: guitar-in
+  width: mono
+  level: 0.0
+  chain:
+  - {{name: chorus, uri: "%s"}}
+  - {{name: room, uri: "%s"}}
+master: {{output: monitor-out, chain: []}}
+""" % (CHORUS, A_REVERB)
+
+
+def _lopsided_sushi(monkeypatch, *, with_reverb_on: float, with_reverb_bypassed: float):
+    """A stand-in Sushi that turns the right side down by a number of dB,
+    one number when the config's room is playing and another when it is
+    bypassed: what a lopsided chorus, or the reverb alone, would sound like."""
+    def run(argv, **kwargs):
+        config = json.loads(Path(argv[argv.index("-c") + 1]).read_text())
+        bypassed = {e["processor"] for e in config.get("initial_state", []) if e.get("bypassed") is True}
+        room = next(p["name"] for t in config["tracks"] for p in t["plugins"] if p.get("uri") == A_REVERB)
+        db = with_reverb_bypassed if room in bypassed else with_reverb_on
+        fed = signals.read_wav(Path(argv[argv.index("-i") + 1]))
+        signals.write_wav(Path(argv[argv.index("-O") + 1]), fed.samples * np.array([1.0, 10 ** (-db / 20)]),
+                          fed.sample_rate, subtype="float32")
+        return SimpleNamespace(returncode=0, stdout="", stderr="")
+
+    monkeypatch.setattr(render.subprocess, "run", run)
+
+
+def test_a_chorus_3_db_lopsided_beside_a_reverb_still_fails(tmp_path, monkeypatch, capsys):
+    """The re-review of PR #173: a reverb's 4 dB is not the whole chain's. The
+    rig rendered as it is is 3 dB apart, inside a reverb's allowance; with the
+    reverb bypassed it is 3 dB apart still, which is the chorus, and fails."""
+    nulltest_, rig = _checkout(tmp_path, monkeypatch)
+    rig.write_text(RIG_REVERB_AND_CHORUS.format(name="clean"))
+    _lopsided_sushi(monkeypatch, with_reverb_on=3.0, with_reverb_bypassed=3.0)
+    assert nulltest_("--all") == 1
+    out = capsys.readouterr().out
+    assert "with its stereo reverbs bypassed, L" in out and "more than 1.0 dB apart" in out
+    assert nulltest_("--all", "--calibrate") == 1, "no reference is made of it either"
+    assert not _reference(tmp_path).exists()
+
+
+def test_a_reverb_3_db_apart_on_its_own_passes_and_the_rest_balanced_is_held_to_1_db(
+        tmp_path, monkeypatch, capsys):
+    nulltest_, rig = _checkout(tmp_path, monkeypatch)
+    rig.write_text(RIG_REVERB_AND_CHORUS.format(name="clean"))
+    _lopsided_sushi(monkeypatch, with_reverb_on=3.0, with_reverb_bypassed=0.0)
+    assert nulltest_("--all", "--calibrate") == 0
+    assert nulltest_("--all") == 0
+    assert "clean.yaml: sounds the same" in capsys.readouterr().out
+    _lopsided_sushi(monkeypatch, with_reverb_on=5.0, with_reverb_bypassed=0.0)
+    assert nulltest_("--all") == 1, "past the reverb's 4 dB"
+
+
+def test_a_rig_with_no_stereo_reverb_is_rendered_once(tmp_path, monkeypatch):
+    nulltest_, _ = _checkout(tmp_path, monkeypatch)
+    calls = []
+    passthrough = render.subprocess.run
+
+    def counted(argv, **kwargs):
+        calls.append(argv)
+        return passthrough(argv, **kwargs)
+
+    monkeypatch.setattr(render.subprocess, "run", counted)
+    assert nulltest_("--all") == 0  # no reference yet: STALE, a warning
+    assert len(calls) == 1
+    assert nulltest.reverbs_bypassed(_compiled(CHORUS)) is None
+
+
+def test_everything_else_keeps_1_db_and_a_bypassed_reverb_earns_nothing():
+    for view in (_compiled("http://guitarix.sourceforge.net/plugins/gx_chorus_stereo#_chorus_stereo"),
+                 _compiled("http://distrho.sf.net/plugins/3BandEQ"), _compiled(SHIMMER, bypassed=True)):
+        limit = nulltest.balance_db_of(view)
+        assert limit == BALANCE_DB == 1.0
+        (found,) = heard_findings(_apart(3.0), limit)
+        assert found.check == "unbalanced"
+    assert nulltest.balance_db_of(None) == nulltest.balance_db_of({}) == BALANCE_DB
+
+
 # --------------------------------------------------------------------------- #
 # The command, on a temporary checkout
 # --------------------------------------------------------------------------- #
@@ -456,7 +581,7 @@ def test_one_side_fails_a_rig_compared_exactly_too(tmp_path, monkeypatch, capsys
     checks are added to it, so it fails all the same."""
     nulltest_, _ = _checkout(tmp_path, monkeypatch, chain=_left_only)
     with monkeypatch.context() as allowed:
-        allowed.setattr(nulltest, "heard_findings", lambda fp: [])  # a reference --calibrate would refuse
+        allowed.setattr(nulltest, "heard_findings", lambda fp, balance_db=None: [])  # a reference --calibrate would refuse
         assert nulltest_("--all", "--calibrate") == 0
     capsys.readouterr()
     assert nulltest_("--all") == 1
@@ -605,13 +730,18 @@ def test_every_frozen_rigs_channel_has_a_reference_and_nothing_else_is_there():
 
     from sushi_rig import rigfile
 
-    channels = sorted(name for rig in frozen_names() for name, _ in rigfile.heard(compiled_to_render(frozen(rig))))
+    views = {name: view for rig in frozen_names() for name, view in rigfile.heard(compiled_to_render(frozen(rig)))}
+    channels = sorted(views)
     assert channels == sorted(path.stem for path in FROZEN_SOUND.glob("*.yaml"))
     for name in channels:
         raw = yaml.safe_load((FROZEN_SOUND / f"{name}.yaml").read_text())
         fingerprint, _ = from_dict(raw)
         assert fingerprint.config == name and made_from_of(raw) is None
-        assert heard_findings(fingerprint) == [], f"{name}: a frozen reference any rig would fail"
+        # The reference's own levels, at the allowance its channel gets; the
+        # reverbs-bypassed half of the rule needs a render, which
+        # test_convert.py's frozen test makes.
+        assert heard_findings(fingerprint, nulltest.balance_db_of(views[name])) == [], \
+            f"{name}: a frozen reference any rig would fail"
 
 
 # --------------------------------------------------------------------------- #

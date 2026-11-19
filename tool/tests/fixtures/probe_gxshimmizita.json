@@ -1,0 +1,147 @@
+{
+  "uri": "http://guitarix.sourceforge.net/plugins/gx_shimmizita_#_shimmizita_",
+  "name": "Gxshimmizita",
+  "class": "Reverb Plugin",
+  "bundle": "/usr/lib/lv2/gx_shimmizita.lv2",
+  "audio_in": 2,
+  "audio_out": 2,
+  "atom_ports": 0,
+  "patch_writables": [],
+  "state_interface": false,
+  "config_drivable": true,
+  "parameters": [
+    {
+      "symbol": "CONTROL",
+      "name": "CONTROL",
+      "min": 0.0,
+      "max": 1.0,
+      "default": 0.5,
+      "toggled": false,
+      "integer": false,
+      "enumeration": false,
+      "logarithmic": false
+    },
+    {
+      "symbol": "DEPTH",
+      "name": "DEPTH",
+      "min": 0.0,
+      "max": 1.0,
+      "default": 0.0,
+      "toggled": false,
+      "integer": false,
+      "enumeration": false,
+      "logarithmic": false
+    },
+    {
+      "symbol": "DRYWET",
+      "name": "DRYWET",
+      "min": 0.0,
+      "max": 1.0,
+      "default": 0.5,
+      "toggled": false,
+      "integer": false,
+      "enumeration": false,
+      "logarithmic": false
+    },
+    {
+      "symbol": "ENVELOPE",
+      "name": "ENVELOPE",
+      "min": 0.10000000149011612,
+      "max": 3.0,
+      "default": 1.0,
+      "toggled": false,
+      "integer": false,
+      "enumeration": false,
+      "logarithmic": false
+    },
+    {
+      "symbol": "F1",
+      "name": "F1",
+      "min": 50.0,
+      "max": 1000.0,
+      "default": 200.0,
+      "toggled": false,
+      "integer": false,
+      "enumeration": false,
+      "logarithmic": false
+    },
+    {
+      "symbol": "F2",
+      "name": "F2",
+      "min": 1500.0,
+      "max": 23520.0,
+      "default": 6000.0,
+      "toggled": false,
+      "integer": false,
+      "enumeration": false,
+      "logarithmic": false
+    },
+    {
+      "symbol": "MODE",
+      "name": "MODE",
+      "min": -3.0,
+      "max": 3.0,
+      "default": 0.0,
+      "toggled": false,
+      "integer": false,
+      "enumeration": false,
+      "logarithmic": false
+    },
+    {
+      "symbol": "PSDRYWET",
+      "name": "PSDRYWET",
+      "min": 0.0,
+      "max": 1.0,
+      "default": 0.5,
+      "toggled": false,
+      "integer": false,
+      "enumeration": false,
+      "logarithmic": false
+    },
+    {
+      "symbol": "SHIFT",
+      "name": "SHIFT",
+      "min": -6.0,
+      "max": 6.0,
+      "default": 0.0,
+      "toggled": false,
+      "integer": false,
+      "enumeration": false,
+      "logarithmic": false
+    },
+    {
+      "symbol": "SPEED",
+      "name": "SPEED",
+      "min": 0.10000000149011612,
+      "max": 10.0,
+      "default": 0.10000000149011612,
+      "toggled": false,
+      "integer": false,
+      "enumeration": false,
+      "logarithmic": false
+    },
+    {
+      "symbol": "T60DS",
+      "name": "T60DS",
+      "min": 1.0,
+      "max": 8.0,
+      "default": 3.0,
+      "toggled": false,
+      "integer": false,
+      "enumeration": false,
+      "logarithmic": false
+    },
+    {
+      "symbol": "T60M",
+      "name": "T60M",
+      "min": 1.0,
+      "max": 8.0,
+      "default": 2.0,
+      "toggled": false,
+      "integer": false,
+      "enumeration": false,
+      "logarithmic": false
+    }
+  ],
+  "version": "43.0"
+}

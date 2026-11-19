@@ -67,6 +67,7 @@ For playing the rig. Plain steps, a few minutes each.
 | [Saving and going back](docs/guide/saving.md) | Save, Save as, Revert |
 | [Building a rig](docs/guide/building-a-rig.md) | A new rig, channels and inputs, deleting a rig |
 | [Channel presets](docs/guide/channel-presets.md) | A channel's sound saved by name, loaded onto any input |
+| [Tremolo, flanger, tape echo and shimmer](docs/guide/effects.md) | Four effects, their knobs, and how to try one |
 | [Recording](docs/guide/recording.md) | Takes, what is in a take's folder, names |
 | [The audio interface](docs/guide/audio-interface.md) | The iD14's volume fix, and one side going quiet |
 | [When something's wrong](docs/guide/troubleshooting.md) | No sound, restarting the agent after an update, `doctor` |

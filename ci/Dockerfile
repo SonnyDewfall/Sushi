@@ -54,7 +54,7 @@ ENV DEBIAN_FRONTEND=noninteractive
 # --- system packages --------------------------------------------------------
 #
 # The first group is the plugin set: together these packages provide every URI
-# in plugin-manifest.txt (56) except the neural amp's, which is waived below,
+# in plugin-manifest.txt except the neural amp's, which is waived below,
 # and Rubber Band 4.0's Live shifter, which is built above. libfftw3-double3
 # and libsamplerate0 are what that build links at run time. swh-lv2 and ardour-lv2-plugins are there for
 # `lcrDelay` and `urn:ardour:a-reverb`, which the configs load. Checked with

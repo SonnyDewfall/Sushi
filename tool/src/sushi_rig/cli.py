@@ -481,7 +481,7 @@ def _nulltest(args: argparse.Namespace) -> int:
 
     from .nulltest import (
         ORPHAN_PREFIX, STALE_PREFIX, MadeFrom, compare, from_dict, keep_wider, made_from_of,
-        played_findings, staleness, to_dict,
+        played_findings, rig_findings, staleness, to_dict,
     )
     from .paths import checkout_root
     from .render import (
@@ -626,8 +626,24 @@ def _nulltest(args: argparse.Namespace) -> int:
                     # says, and what no reference is made of: two sides,
                     # neither silent, balanced, for a rig; the left side not
                     # silent for a v1 config, which plays that side alone.
-                    def played(fp, is_rig=is_rig):
-                        return played_findings(fp, is_rig)
+                    # A stereo reverb's 4 dB is its own: the channel is also
+                    # rendered with its stereo reverbs bypassed, once, and that
+                    # render held to 1 dB (re-review of PR #173).
+                    rendered_without: list = []  # once per channel, however often asked
+
+                    def render_without(without, work=work, rendered_without=rendered_without):
+                        if not rendered_without:
+                            work.mkdir(parents=True, exist_ok=True)
+                            bypassed = work / "reverbs-bypassed.json"
+                            bypassed.write_text(json.dumps(without, indent=2) + "\n")
+                            rendered_without.append(measure(bypassed, root, work / "reverbs-bypassed",
+                                                            sushi_bin=sushi, retried=retried))
+                        return rendered_without[0]
+
+                    def played(fp, is_rig=is_rig, config=channel.config, render_without=render_without):
+                        if not is_rig:
+                            return played_findings(fp, is_rig)
+                        return rig_findings(fp, config, render_without)
 
                     if args.calibrate:
                         try:
