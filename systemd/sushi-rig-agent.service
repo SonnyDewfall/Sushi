@@ -20,6 +20,8 @@ After=pipewire.service wireplumber.service graphical-session.target
 [Service]
 Type=simple
 WorkingDirectory=@CHECKOUT@
+# `install-service --phone` writes `agent --phone` here, and 0.0.0.0 in the
+# Description, so the service listens for a phone with no override (#181).
 ExecStart=@CHECKOUT@/tool/.venv/bin/sushi-rig agent
 # So the agent's own lines reach the journal as they are said, not when a
 # buffer fills.

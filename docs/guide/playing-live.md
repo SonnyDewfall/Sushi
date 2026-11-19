@@ -5,9 +5,10 @@ mid-song is big, and everything that could cut the sound by accident is put out
 of reach. This guide covers that screen, switching between rigs, the lock,
 pedals, and the visualiser.
 
-A screen as narrow as a phone's opens the stage screen by default (from a real
-phone this is not yet recorded as tried: see
-[Getting started](getting-started.md#use-your-phone-as-well)). On the laptop,
+A screen as narrow as a phone's opens the stage screen by default. To reach it
+from a phone, see
+[Getting started](getting-started.md#use-your-phone-as-well), and away from
+home [Playing out](playing-out.md). On the laptop,
 click **Stage** at the top of the rack; **Rack**, at the bottom of the stage
 screen, takes you back.
 

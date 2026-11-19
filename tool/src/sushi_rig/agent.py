@@ -337,7 +337,11 @@ real recorder process, with the engine stood in.
 The CLI binds it to 127.0.0.1:8029 unless told otherwise. `--host 0.0.0.0`
 opens it to the LAN, and until the permission split the issue describes exists
 (local: everything; remote: start, stop, load, parameters) that is the
-operator's call to make, not a default.
+operator's call to make, not a default. `--phone` (#181) is that call said
+as what it is for: it binds 0.0.0.0 and prints the URL a phone opens on each
+Wi-Fi or ethernet address (`reach.py`), which `/health`'s `agent.listen`
+gives the page too. A port already taken is said before anything starts, with
+who has it and the command that stops it (`reach.port_in_use_message`).
 
 ## The library and chain edits (#32)
 
@@ -2023,9 +2027,44 @@ class Agent:
                 # The rig this agent holds, and its children that exited with
                 # no `down` asking them to: what a phone reads after a crash.
                 "supervisor": self.supervisor.describe(rig),
+                # Where it listens, and the URLs a phone opens (#181): what
+                # the rack's "Agent on" line says.
+                "listen": self.listen_status(),
             },
             "rig": rig,
         })
+
+    # Where `serve` bound this agent (#181), set by it before the app starts:
+    # None for an Agent no `serve` started (the tests'), which `/health`
+    # says as `listen: null`. The interfaces are looked at again when
+    # `listen_status` is asked after LISTEN_REFRESH seconds, since joining
+    # the phone's hotspot changes the address while the agent runs.
+    listening: tuple[str, int] | None = None
+    LISTEN_REFRESH = 5.0
+    _listen_seen: tuple[float, list] | None = None
+    # What finds the interfaces (`reach.interfaces` when None); the tests'
+    # stand-in for a laptop's Wi-Fi and ethernet.
+    listen_interfaces: Callable[[], tuple[list, list]] | None = None
+
+    def listen_status(self) -> dict | None:
+        """`{host, port, network, urls}` for `/health`, or None when no
+        `serve` said where it listens. `urls` is `reach.phone_urls`: one
+        `{url, interface, address, kind}` for each address a phone may open,
+        empty when the agent listens on localhost alone."""
+        from . import reach
+
+        if self.listening is None:
+            return None
+        host, port = self.listening
+        network = reach.is_network(host)
+        found: list = []
+        if network:
+            now = self.clock()
+            if self._listen_seen is None or now - self._listen_seen[0] >= self.LISTEN_REFRESH:
+                self._listen_seen = (now, (self.listen_interfaces or reach.interfaces)()[0])
+            found = self._listen_seen[1]
+        return {"host": host, "port": port, "network": network,
+                "urls": reach.phone_urls(host, port, found)}
 
     async def rig(self, request):
         return web.json_response(await self._rig_answer())
@@ -7618,6 +7657,29 @@ def serve(host: str, port: int, root: Path | None = None, allow_hosts: Sequence[
     if web is None:
         raise AgentError("aiohttp is not installed; pip install -e tool[agent]")
 
+    # Bound before anything is started or written (#181), and these very
+    # sockets served: an agent that cannot listen says who has the port and
+    # how to stop it, not a traceback, and has adopted no rig's MIDI and
+    # written no address file on its way out. No moment between a check and
+    # the bind for another program to take the port, and `--port 0`'s real
+    # port is the one recorded and printed (review of PR #185).
+    from . import reach
+
+    sockets, problem = reach.bind_sockets(host, port)
+    if problem is not None:
+        raise AgentError(reach.bind_message(host, port, problem))
+    port = sockets[0].getsockname()[1]
+    try:
+        return _serve_on(host, port, sockets, root, allow_hosts)
+    finally:
+        for sock in sockets:
+            sock.close()
+
+
+def _serve_on(host: str, port: int, sockets: list, root: Path | None, allow_hosts: Sequence[str]) -> int:
+    """`serve`, on the sockets it bound: `port` is the port they hold."""
+    from . import reach
+
     import os
 
     from .agent_client import agent_url, remove_address, write_address
@@ -7640,6 +7702,17 @@ def serve(host: str, port: int, root: Path | None = None, allow_hosts: Sequence[
     app.on_cleanup.append(agent.supervisor.release)  # stop watching; the rig plays on
     app.on_cleanup.append(agent.release_workers)
     app.on_cleanup.append(unsay_where)
+    agent.listening = (host, port)
     print(f"sushi-rig agent {VERSION} on http://{host}:{port}  (Ctrl+C to stop)", flush=True)
-    web.run_app(app, host=host, port=port, print=None, handle_signals=True)
+    for line in reach.listening_lines(host, port, reach.interfaces()[0] if reach.is_network(host) else []):
+        print(line, flush=True)
+    try:
+        web.run_app(app, sock=sockets, print=None, handle_signals=True)
+    except OSError as exc:
+        # Not the port: the sockets were bound above. Something of the
+        # agent's own start or stop (an address file it cannot write, a
+        # MIDI port), said as itself rather than as a port problem.
+        where = f" ({exc.filename})" if getattr(exc, "filename", None) else ""
+        raise AgentError(f"sushi-rig: the agent stopped on an error of its own, not the port's: "
+                         f"{type(exc).__name__}: {exc.strerror or exc}{where}") from exc
     return 0

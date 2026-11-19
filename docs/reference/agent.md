@@ -9,6 +9,7 @@ read the [user guides](../guide/README.md); this page is the detail.
 
 ```bash
 sushi-rig agent                      # serve the rig over HTTP on 127.0.0.1:8029
+sushi-rig agent --phone              # on 0.0.0.0, printing the URL a phone opens on each Wi-Fi or ethernet address (#181)
 sushi-rig agent install-service      # or run it as a systemd user service (prints the systemctl commands)
 curl localhost:8029/health           # the agent and the rig in one answer, crashed children included
 curl localhost:8029/rig              # `status` as data
@@ -148,6 +149,33 @@ it. `curl localhost:8029/doctor` checks the machine as the service sees it.
 so). The agent itself, run from a terminal, has started, switched, saved and
 stopped rigs on the rig machine since 2026-11-02
 (`tool/spikes/live_rig/RESULTS-ui-2026-11-02.md`).
+
+`install-service --phone` (or `--host ADDR`, `--port N`) writes the unit with
+`sushi-rig agent --phone` in its `ExecStart`, and its `Description` saying
+`0.0.0.0`, so the service listens on the network without a `systemctl --user
+edit` override; with none of them the unit is the committed one as it is.
+
+## From a phone
+
+`--phone` is `--host 0.0.0.0` (with another `--host` beside it, refused), and
+once it listens it prints a `http://<address>:<port>/` for each interface a
+phone may be on, labelled `Wi-Fi` (`/sys/class/net/<if>/wireless`) or
+`ethernet`, Wi-Fi first; loopback, and Docker's, VMs' and tunnels'
+interfaces (under `/sys/devices/virtual`, or named `docker`, `virbr`, `veth`,
+`tun`, `wg`, …) are left out (`reach.py`: `socket.if_nameindex` and two
+unprivileged `ioctl`s; IPv4 only). `/health`'s `agent.listen` is `{host,
+port, network, urls}`, the interfaces looked at again every 5 s, and the
+rack's "Agent on …" line draws it.
+
+Before it starts anything, the agent tries the address (`reach.bind_problem`).
+When the port is taken it says, instead of a traceback, who has it: the
+`sushi-rig-agent` user service (its `/proc/<pid>/cgroup`, or `systemctl --user
+show`'s `MainPID`), another agent (its command line, or the pid in
+`agent.json`), another program (its pid and name), or a process this user
+cannot see; and whether what has it listens on localhost only, which is why
+a phone cannot reach it. It ends with the command that stops it. The
+[guide's Playing out](../guide/playing-out.md) is the player's side of this.
+**Not yet tried from a real phone with these commands**, nor as a service.
 
 ## What it needs, and what it refuses
 

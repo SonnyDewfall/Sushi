@@ -7,7 +7,8 @@ on the web UI instead ([user guides](../guide/README.md)).
 | Command | What it does | More |
 |---|---|---|
 | `agent` | serve the rig, and the web UI, over HTTP on 127.0.0.1:8029 | [The agent](agent.md) |
-| `agent install-service` | write the agent's systemd user unit and enable it | [The agent](agent.md#as-a-service) |
+| `agent --phone` | the same, on the network, printing the address a phone opens | [The agent](agent.md#from-a-phone) |
+| `agent install-service` | write the agent's systemd user unit and enable it (`--phone` for the network) | [The agent](agent.md#as-a-service) |
 | `up`, `down`, `restart`, `status`, `top` | start, stop and watch the rig | below |
 | `doctor` | whether this machine will run the rig, and what to do if not | [Environment](environment.md#preflight) |
 | `plugins assemble`, `plugins check` | build `plugins/` from installed packages, and prove it is self-contained | [Plugins](plugins.md) |

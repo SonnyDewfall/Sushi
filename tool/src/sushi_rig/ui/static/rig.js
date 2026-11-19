@@ -3011,3 +3011,28 @@ export function inputWords(pick) {
 export function pointerMoved(before, now) {
   return !before || before.x !== now.x || before.y !== now.y;
 }
+
+// ---------------------------------------------------------------- where a phone opens it (#181)
+
+// The rack's "Agent on …" line: where a phone opens the page when the agent
+// listens on the network, and that it is this machine's alone when it does
+// not. `listen` is /health's `agent.listen` ({host, port, network, urls});
+// null, from an agent older than #181 or none answering, keeps the line as
+// it was. `here` is the page's own location.host. Returns `{text, urls,
+// after}`: app.js draws `text`, each of `urls` ({url, label}) as a link with
+// its interface, then `after`.
+export function agentLine(listen, here) {
+  const same = "Phone and laptop see the same rig.";
+  if (!listen || typeof listen !== "object") return { text: `Agent on ${here}. ${same}`, urls: [], after: "" };
+  if (!listen.network) {
+    return { text: `Agent on ${here}, for this machine only: a phone cannot reach it. For one, start the agent with sushi-rig agent --phone.`,
+      urls: [], after: "" };
+  }
+  const urls = (Array.isArray(listen.urls) ? listen.urls : []).filter((u) => u && typeof u.url === "string")
+    .map((u) => ({ url: u.url, label: [u.kind, u.interface].filter(Boolean).join(", ") }));
+  if (!urls.length) {
+    return { text: `Agent on ${here}, open to the network, but this machine has no network address: join Wi-Fi or the phone's hotspot.`,
+      urls: [], after: "" };
+  }
+  return { text: `Agent on ${here}. On a phone on the same network, open`, urls, after: `${same} No password: anyone on the network can change it.` };
+}
