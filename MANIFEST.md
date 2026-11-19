@@ -5858,7 +5858,7 @@ by 3.5 s), and "never starts" is a condition (the timer was due and the gate
 said no), not a sleep. (7) The cross-site tests list the presets file and
 /machine/roles, and SOURCE.txt names `window.log10`. Each new test was shown
 failing with its fix taken out (the blur and hidden cases fail only with the
-ceiling taken out too, since the ceiling alone also ends it). COUNTS2
+ceiling taken out too, since the ceiling alone also ends it). The visualiser's tests: 48 (was 39). The fast suite, with #173 merged: 5488 passed, 22 skipped, 0 failed.
 **Not run:** the rig, its GPU, its PipeWire graph with Sushi, Firefox, a
 phone; whether pipewire-pulse runs realtime on the rig is for `doctor` to
 say there. *(2026-11-19)*
