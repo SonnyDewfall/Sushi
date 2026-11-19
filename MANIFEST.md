@@ -5825,3 +5825,52 @@ failed alone 2 runs in 3 on this loaded machine and touches nothing here.
 320 and 390 wide with a mouse, so a thumb's hold, a scroll starting on a
 step button, and the phone's own picker for the select are untested; nor on
 the rig. *(2026-11-18)*
+
+**The stage for a phone: the review of PR #184 (#182).** No way round the
+lock was found; six findings and one more, all fixed. (1) **The header pushed
+the channels off a small phone**: at 320 by 568 it was 348 px locked and 456
+unlocked against master's 240, the first channel's volume at 659 or 767
+against 551. The dropdown now stands in the rig's name's place, in the first
+row beside the Lock button, styled as the title (no border and no arrow
+while off); the `h1` stays for screen readers. Start, Stop with its confirm,
+the guide's link, the busy line and any problem are one row under the tiles,
+and only the busy line and a problem show locked. Each stage volume is one
+row: a cell with its name over its value, then −0.5, the fader and +0.5.
+Measured at 320 by 568: the header 234 px locked (340 unlocked, where Stop
+and the link take a row each), the first channel at 545. (2) **The typed
+values were 78 by 19 px**: the value field now fills its 44 px cell, the
+name drawn over its top; a knob's typed value on the stage is 44 px high as
+well. The 44 px test now takes every input, text fields included.
+(3) **A hold could outlive its press**: it also stops on `pointerleave`
+(the touch's implicit capture is let go, so sliding off is seen), the
+window's own blur, the page hidden, and after `VOLUME_REPEAT_MAX`, 12 steps
+(6 dB) a hold. (4) **Float32 at the master's top**: a step starts from the
+level rounded to 0.1 dB and anything within `VOLUME_SAME_DB` (1e-4 dB) of
+where it is sends nothing, so + at a master read back as −0.0000029 dB sends
+nothing and ten taps from −6.3 land on −1.3. The fake rig can hold its
+values as 32-bit floats (`UiRig.hold_as_float32`), and the stage's tests use
+it; the step tests fail with the old step and tolerance put back (shown).
+*Decided:* it is off by default: on for every test it failed eleven of them
+on the rounding alone (exact comparisons of what was sent with what is held,
+in `test_ui.py`, `test_ui_mix.py`, `test_ui_tabs.py` and `test_agent_save.py`).
+That 32-bit floats are what Sushi holds is the review's word, not checked
+here against Sushi. (5) **The hold test's fixed 0.3 s** is a wait until no
+new gain has come for 0.5 s (5 s ceiling), then a check that none follows.
+(6) **New safety tests**: a hold lost five ways (the window's blur, the page
+hidden, slid off, the lock engaged with the other hand, the region drawn
+again under it) each stops sending, shown failing with the new stops taken
+out (the lock is caught by `set` refusing as well); the lock engaged
+mid-drag stops the fader sending; a hold whose release is never heard stops
+at 6 dB. The forced clicks on disabled buttons and the keys pressed at a
+disabled fader are gone: a real click where a thumb lands, a check that the
+fader cannot take the focus, its key handler fed the keys directly, and a
+value forced into the read-only field and committed, refused with the
+lock's reason. (7) **The rig's name broke mid-word** (`electric_boar` / `d`
+at 390): as the select it is one line, cut short with an ellipsis, its
+title the whole name. Guide pictures remade: `stage-phone.png`,
+`recording.png`.
+`test_ui_stage.py` is 33 tests. The fast suite, with master merged at
+7a3b508 (#173): 5443 passed, 22 skipped, 249 deselected, none failed.
+**Not tried on a real phone or any touch screen**, as before: Chromium at
+320 and 390 with a mouse, so a thumb sliding off a held button, a scroll
+started on one and the phone's own picker are untested. *(2026-11-19)*

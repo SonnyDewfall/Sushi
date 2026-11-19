@@ -8,7 +8,7 @@ The page calls a take's sound files **stems**.
 
 Recording is on the **stage** screen, and works while the page is **Locked**.
 
-<img src="img/recording.png" alt="The stage screen while recording: the Record bar turned red, reading Recording with the time 0:47, the take name electric_board-2026-11-18-take-01 that the rig gave it, the five stems it is writing, and the Stop button" width="420">
+<img src="img/recording.png" alt="The stage screen while recording: the Record bar turned red, reading Recording with the time 0:47, the take name electric_board-2026-11-19-take-01 that the rig gave it, the five stems it is writing, and the Stop button" width="420">
 
 ## Record a take
 

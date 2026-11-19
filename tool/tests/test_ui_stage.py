@@ -19,7 +19,7 @@ import pytest
 
 pytest.importorskip("aiohttp")
 
-from test_ui import Page, blank, browser, expect, rigjs, served, until  # noqa: E402,F401
+from test_ui import Page, blank, browser, expect, rigjs, until  # noqa: E402,F401
 from test_ui_knobs import rest_on  # noqa: E402
 from ui_fake import Served, UiLifecycle  # noqa: E402
 
@@ -27,6 +27,15 @@ from sushi_rig.rigfile import level_to_gain  # noqa: E402
 
 WIDTHS = [320, 390, 1280]
 INF = float("-inf")
+
+
+@pytest.fixture
+def served():
+    """The fake rig holding its values as Sushi does, 32-bit floats, so 0 dB
+    reads back a hair under 0 as it does on the rig (review of PR #184)."""
+    with Served() as served:
+        served.rig.hold_as_float32()
+        yield served
 
 
 # --------------------------------------------------------------------------- #
@@ -287,6 +296,7 @@ def test_a_step_button_moves_exactly_half_a_db_and_the_master_stops_at_0(browser
 @pytest.mark.parametrize("width", WIDTHS)
 def test_on_a_master_over_its_top_plus_does_nothing_and_minus_goes_to_0(browser, width):
     with Served() as served:
+        served.rig.hold_as_float32()
         served.rig.info["master"]["gain"]["value"] = level_to_gain(6.0)  # a rig from before the cap
         page = stage_at(browser, served, width)
         p = page.page
