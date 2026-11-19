@@ -5874,3 +5874,18 @@ title the whole name. Guide pictures remade: `stage-phone.png`,
 **Not tried on a real phone or any touch screen**, as before: Chromium at
 320 and 390 with a mouse, so a thumb sliding off a held button, a scroll
 started on one and the phone's own picker are untested. *(2026-11-19)*
+
+**The stage for a phone: CI on PR #184 (#182).** The 320 by 568 test failed
+in both CI jobs: the rig dropdown had no box when measured. GET /rigs answers
+on its own, after the live answer the test waited for (`.card`), and the
+dropdown is drawn again when it comes, so the one measured had been taken
+off the page. Shown here with /rigs held 1.5 s in the browser: the select
+present at `.card` had one option and was gone from the page 2.5 s later.
+Every stage test now waits for the stage as it stays (`drawn`): the cards,
+config/rigs/ listed in the dropdown and the running rig selected, the load
+tile measured and the master's value shown; the down-rig test waits for
+the list, and the unlocked header for its Stop. No sleep added and nothing
+loosened. `test_ui_stage.py` ran 10 times in a row, 33 passed each time,
+with four CPU-bound processes beside it (load average about 8 on 4 cores).
+Master merged at e7fbed9 (#185, phone access) with no conflicts; the fast
+suite: 5543 passed, 22 skipped, 249 deselected. *(2026-11-19)*

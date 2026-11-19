@@ -134,9 +134,24 @@ def test_the_dropdown_shows_the_running_rig_and_choosing_another_switches(blank)
 # The stage
 # --------------------------------------------------------------------------- #
 
-def stage_at(browser, served, width):
-    page = Page(browser, served.url + "/#stage", width=width, height=844)
-    page.page.wait_for_selector(".card")
+def drawn(p, rig="electric_board"):
+    """Wait until the stage is as it stays, so nothing measured or pressed
+    is drawn again under it: the cards (the live answer), the rig dropdown
+    with config/rigs/ listed (GET /rigs answers on its own; until then the
+    dropdown has no rigs and is drawn again when they come, which CI caught
+    detached mid-measure), the running rig selected, and the load measured
+    (its tile says "—" until pw-top's first answer)."""
+    p.wait_for_selector(".card")
+    select = p.locator(".stage-head").get_by_role("combobox", name="Rig")
+    expect(select.locator('option[value="electric-delay"]')).to_have_count(1)
+    expect(select).to_have_value(rig or "")
+    expect(p.locator(".stage-head .tile").first).to_contain_text("%")
+    expect(volume(p, "Master volume").get_by_role("textbox", name="Master volume value")).not_to_have_value("—")
+
+
+def stage_at(browser, served, width, height=844):
+    page = Page(browser, served.url + "/#stage", width=width, height=height)
+    drawn(page.page)
     return page
 
 
@@ -512,9 +527,9 @@ def test_from_the_stage_a_down_rig_is_chosen_and_started_and_stop_still_asks(bro
     with Served(lifecycle=UiLifecycle(up=None)) as served:
         page = Page(browser, served.url + "/#stage", width=390, height=844)
         p = page.page
-        p.wait_for_selector(".stage-head select")
-        unlock(p)
         rig = p.get_by_role("combobox", name="Rig")
+        expect(rig.locator('option[value="electric_board"]')).to_have_count(1)  # config/rigs/ listed
+        unlock(p)
         expect(rig.locator("option:checked")).to_have_text("Rig down")
         expect(p.get_by_role("button", name="Choose a rig to start")).to_be_disabled()
         rig.select_option("electric_board")
@@ -566,11 +581,11 @@ def test_on_a_small_phone_the_header_is_no_taller_and_the_channels_are_on_the_fi
     """320 by 568, an iPhone SE: before #182 the header was 240 px and the
     first channel's volume began at 551. Two rows for the dropdown and the
     master pushed it to 659 locked (review of PR #184)."""
-    page = Page(browser, served.url + "/#stage", width=320, height=568)
+    page = stage_at(browser, served, 320, 568)
     p = page.page
-    p.wait_for_selector(".card")
     if not locked:
         unlock(p)
+        expect(p.get_by_role("button", name="Stop electric_board")).to_be_visible()
     head = p.locator("header.stage-head").bounding_box()["height"]
     first = p.locator(".levels .volume").first.bounding_box()["y"]
     if locked:
