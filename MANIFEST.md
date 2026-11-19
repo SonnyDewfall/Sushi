@@ -5862,3 +5862,19 @@ ceiling taken out too, since the ceiling alone also ends it). The visualiser's t
 **Not run:** the rig, its GPU, its PipeWire graph with Sushi, Firefox, a
 phone; whether pipewire-pulse runs realtime on the rig is for `doctor` to
 say there. *(2026-11-19)*
+
+**The visualiser's lost-context test failed in CI on Python 3.13 (#176, PR
+#183).** It read `phase` off, `lost` 1 and no `error`. The page set the
+error and went off together, but after a WebGL context loss it started again
+on its next half-second check, since the page had been left long before,
+and a start clears the error: the line's "context lost" lasted under half a
+second, and `off()` could read a state from after it. The state CI saw is
+reachable only if that restart then ended with no error of its own (as a
+start that cannot be made does: `broken` set, `error` cleared); this was not
+reproduced here, so whether CI's restart failed that way is not known. Fixed
+in the page: a lost context waits another idle spell before it starts again,
+as any failed start does, so what happened stays on the line meanwhile; and
+the test waits for the whole condition (off, `lost` 1, no session, "context
+lost" in the error and on the line), then for the next showing, whose wait
+reports the state if it does not come. The test, 20 runs with all four cores
+kept busy: 20 passed. *(2026-11-19)*

@@ -127,11 +127,15 @@ hint.textContent = "Touch, move or press a key to come back";
 overlay.append(canvas, hint);
 
 // The browser took the drawing away (WebGL context lost): the session has
-// disposed of itself. The next start makes another on a fresh canvas; a
+// disposed of itself. The next start makes another on a fresh canvas, after
+// another idle spell, as after any failure (so what happened stays on the
+// line meanwhile: it used to start again within half a second, the error
+// cleared before anyone could read it, and a test caught it so in CI); a
 // second loss in the page's life leaves it off until a reload.
 function lostContext() {
   state.session = null;
   state.lost += 1;
+  state.last = performance.now();
   const fresh = document.createElement("canvas");
   canvas.replaceWith(fresh);
   canvas = fresh;

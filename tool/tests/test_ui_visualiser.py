@@ -551,8 +551,11 @@ def test_a_lost_context_stops_it_and_it_starts_afresh_once(opened):
     lose = "() => document.querySelector('.visualiser canvas').getContext('webgl2').getExtension('WEBGL_lose_context').loseContext()"
     v.shown()
     p.evaluate(lose)
-    state = v.off()
-    assert state["lost"] == 1 and "context lost" in state["error"] and state["session"] is None
+    # The loss is an event the browser delivers when it will, and the session
+    # disposes of itself before the page hears of it: waited for, as a whole.
+    v.until("""() => { const v = sushiRigVisualiser();
+      return v.phase === 'off' && v.lost === 1 && v.session === null && (v.error || '').includes('context lost'); }""")
+    assert "context lost" in v.page.locator(".visualiser-note").inner_text()
     v.shown()
     p.evaluate(lose)
     v.until("() => sushiRigVisualiser().broken !== null && sushiRigVisualiser().phase === 'off'")
