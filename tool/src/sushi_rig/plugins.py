@@ -871,8 +871,12 @@ def preflight_refusal(
     heading = heading or f"{name} was not started"
     sources = default_sources()
     missing = pre.missing
-    packaged = locate(missing, sources)
-    notes, _ = advise([uri for uri in missing if uri not in packaged], sources, str(plugins_dir))
+    # What the fix must provide: the missing, and the broken once `rm -r`
+    # has taken their bundles away (review of PR #198: a broken bundle that
+    # no source provides was removed, then waived as not this rig's).
+    needed = [*missing, *(uri for uri in pre.broken if uri not in missing)]
+    packaged = locate(needed, sources)
+    notes, _ = advise([uri for uri in needed if uri not in packaged], sources, str(plugins_dir))
     count = len(missing) + len(pre.broken)
     what = "are missing from, or cannot be loaded from," if pre.broken else "are not in"
     lines = [
@@ -886,23 +890,25 @@ def preflight_refusal(
         else:
             lines.append(f"  {uri}: {notes[uri]}")
     for uri, (bundle, what) in pre.broken.items():
-        lines.append(f"  {uri}: in {bundle}, but {what}")
+        again_from = (f"`sushi-rig plugins add` copies it again from {packaged[uri]}" if uri in packaged
+                      else notes[uri])
+        lines.append(f"  {uri}: in {bundle}, but {what}; {again_from}")
     if not plugins_dir.is_dir():
         lines.append(f"{plugins_dir} does not exist. Build it as docs/reference/plugins.md says "
                      f"(`sushi-rig plugins assemble`, with the plugins built here), then {again}.")
         return "\n".join(lines)
     searched_at = {folder.resolve() for folder in sources}
     others = [d for d in standard_lv2_dirs() if d.resolve() not in searched_at]
-    elsewhere = locate([uri for uri in missing if uri not in packaged], others)
+    elsewhere = locate([uri for uri in needed if uri not in packaged], others)
     fix = [f"rm -r {bundle}" for bundle in dict.fromkeys(bundle for bundle, _ in pre.broken.values())]
-    scripts = list(dict.fromkeys(BUILT[uri] for uri in missing if uri in BUILT and uri not in packaged
+    scripts = list(dict.fromkeys(BUILT[uri] for uri in needed if uri in BUILT and uri not in packaged
                                  and uri not in elsewhere))
     fix += [f"{root / script} {plugins_dir}" for script in scripts]
-    uninstalled = [uri for uri in missing if uri not in packaged and uri not in elsewhere
+    uninstalled = [uri for uri in needed if uri not in packaged and uri not in elsewhere
                    and uri not in BUILT and uri not in AMP_PLUGIN_URIS.values()]
     extra = [d for d in others if d in set(elsewhere.values())]
     add = "sushi-rig plugins add" + (f" {_from_flags([*sources, *extra])}" if extra else "")
-    waived = _waivers_for_add(root, plugins_dir, pre, [*sources, *extra], scripts, set(missing))
+    waived = _waivers_for_add(root, plugins_dir, pre, [*sources, *extra], scripts, set(needed))
     add += "".join(f" --waive {uri}" for uri in waived)
     fix.append(add)
     lines.append(

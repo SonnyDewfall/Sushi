@@ -582,7 +582,11 @@ def manifest_plugins(folder: Path) -> tuple[dict[str, tuple[Path, Path | None]],
         if not bundle.is_dir() or not manifest.is_file():
             continue
         problems: list[str] = []
-        triples = _read_turtle(manifest.resolve(), problems, "f0.")
+        # The bundle resolved, not the manifest: a manifest.ttl that is a
+        # link elsewhere still names its binary relative to the bundle, as
+        # lilv reads it (review of PR #198: resolving the manifest put
+        # `<foo.so>` in the link target's folder, a false refusal).
+        triples = _read_turtle(bundle.resolve() / "manifest.ttl", problems, "f0.")
         if problems and not triples:
             unread.append(bundle)
             continue

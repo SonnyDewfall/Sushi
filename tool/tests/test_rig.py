@@ -1558,6 +1558,8 @@ def test_restart_whose_rig_up_would_refuse_refuses_before_down_and_the_rig_plays
     monkeypatch.setattr(rig, "plugins_folder", lambda root: partial)
     fake_lv2_system(tmp_path, monkeypatch)
     state_file.write_state(running_state())
+    monkeypatch.setattr(rig, "pid_alive", lambda pid: True)
+    monkeypatch.setattr(rig, "pgid_alive", lambda pgid: True)
     monkeypatch.setattr(rig, "down", lambda force=False: pytest.fail("stopped a rig the restart would not bring back"))
     monkeypatch.setattr(rig, "up", lambda *a, **k: pytest.fail("started"))
     with pytest.raises(rig.RigError) as refused:
@@ -1568,6 +1570,15 @@ def test_restart_whose_rig_up_would_refuse_refuses_before_down_and_the_rig_plays
     assert f"Nothing was stopped: {rig.DEFAULT_CONFIG_NAME} plays on." in said
     assert "then restart it again:" in said
     assert state_file.read_state() is not None, "the running rig is still recorded"
+
+    # A rig that crashed (its supervisor and group gone) does not play on,
+    # whatever a restart's refusal says (re-review of PR #198).
+    monkeypatch.setattr(rig, "pid_alive", lambda pid: False)
+    monkeypatch.setattr(rig, "pgid_alive", lambda pgid: False)
+    with pytest.raises(rig.RigError) as refused:
+        rig.restart()
+    said = str(refused.value)
+    assert "Nothing was stopped. To fix it" in said and "plays on" not in said
 
 
 def test_up_exits_nonzero_when_sushi_exits_during_startup(up_world):

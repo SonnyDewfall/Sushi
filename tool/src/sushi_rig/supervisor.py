@@ -398,7 +398,7 @@ class World:
 
     prepare: Callable[..., "rig_module.Launch"] = rig_module.prepare_launch
     # Why a restart must not stop the rig (`rig.restart_plugins_refusal`).
-    restart_refusal: Callable[[str, dict[str, Any]], "str | None"] = rig_module.restart_plugins_refusal
+    restart_refusal: Callable[..., "str | None"] = rig_module.restart_plugins_refusal
     spawn: Callable[..., subprocess.Popen] = _spawn
     start_qpwgraph: Callable[..., "subprocess.Popen | None"] = start_qpwgraph
     sushi_ready: Callable[["Callable[[], bool] | None"], bool] = rig_module.sushi_ready
@@ -861,7 +861,8 @@ class Supervisor:
             return Outcome(False, 1, "", rig_module.NOTHING_TO_RESTART)
         config_name, options = rig_module.restart_arguments(state)
         # Before `down`, so a rig `up` would refuse is never taken away for it.
-        refusal = await asyncio.to_thread(self.world.restart_refusal, config_name, options)
+        refusal = await asyncio.to_thread(
+            self.world.restart_refusal, config_name, options, running=rig_module.restart_is_playing(state))
         if refusal:
             return Outcome(False, 1, "", refusal)
         said = rig_module.restart_heading(config_name) + "\n"

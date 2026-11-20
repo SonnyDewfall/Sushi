@@ -1082,3 +1082,55 @@ def test_the_add_the_refusal_prescribes_works(lv2_system, tmp_path, capsys):
                           "--config-dir", str(root / "config")]
     assert main(args) == 0
     assert preflight({"tracks": [{"plugins": [{"uri": CALF}]}]}, plugins) == Preflight()
+
+
+def test_a_broken_bundle_no_source_provides_is_rebuilt_and_never_waived(lv2_system, tmp_path, monkeypatch):
+    """Re-review of PR #198: a broken string-machine chorus was `rm -r`'d,
+    then waived as "not loaded by this rig", with no build step. A broken
+    URI is the rig's own like a missing one: what provides it again is
+    said, here its build script, which the fix runs after the removal."""
+    chorus = "http://jpcima.sdf1.org/lv2/string-machine-chorus"
+    hand = "urn:t:handmade"
+    monkeypatch.setattr("sushi_rig.plugins._lilv_plugins", lambda folder: None)
+    root = tmp_path / "Sushi"
+    (root / "config").mkdir(parents=True)
+    (root / "plugin-manifest.txt").write_text(f"{chorus}\n{hand}\n")
+    plugins = root / "plugins"
+    for name, uri in (("chorus", chorus), ("hand", hand)):
+        bundle = plugins / f"{name}.lv2"
+        bundle.mkdir(parents=True)
+        (bundle / "manifest.ttl").write_text(
+            f"@prefix lv2: <http://lv2plug.in/ns/lv2core#> .\n<{uri}> a lv2:Plugin ; lv2:binary <{name}.so> .\n")
+        (bundle / f"{name}.so").symlink_to("nowhere.so")
+    pre = preflight({"tracks": [{"plugins": [{"uri": chorus}, {"uri": hand}]}]}, plugins)
+    assert pre.missing == [] and sorted(pre.broken) == sorted([chorus, hand])
+    lines = preflight_refusal("synth-lead", pre, plugins, root).splitlines()
+    assert any(line.startswith(f"  {chorus}: in {plugins / 'chorus.lv2'}, but its binary")
+               and line.endswith(f"; built here, not packaged: scripts/build-string-machine-chorus.sh {plugins} "
+                                 "builds it") for line in lines)
+    assert any(line.startswith(f"  {hand}: in ") and line.endswith("; in no standard LV2 folder: install the "
+                                                                     "package that provides it") for line in lines)
+    assert lines[-5:] == [
+        "Nothing was started. To fix it, install the package that provides each one in no standard LV2 folder, "
+        "then run these, in order, then start the rig again:",
+        f"  rm -r {plugins / 'chorus.lv2'}",
+        f"  rm -r {plugins / 'hand.lv2'}",
+        f"  {root / 'scripts/build-string-machine-chorus.sh'} {plugins}",
+        "  sushi-rig plugins add",
+    ], "nothing of the rig's own is waived"
+
+
+def test_a_bundle_whose_manifest_is_a_link_names_its_binary_in_the_bundle(tmp_path, monkeypatch):
+    """Re-review of PR #198: a `manifest.ttl` that is a link elsewhere was
+    read resolved, so `lv2:binary <foo.so>` was looked for beside the link's
+    target and the bundle refused as broken. lilv reads it in the bundle."""
+    monkeypatch.setattr("sushi_rig.plugins._lilv_plugins", lambda folder: None)
+    share = tmp_path / "share" / "foo"
+    share.mkdir(parents=True)
+    (share / "manifest.ttl").write_text(
+        f"@prefix lv2: <http://lv2plug.in/ns/lv2core#> .\n<{A}> a lv2:Plugin ; lv2:binary <foo.so> .\n")
+    bundle = tmp_path / "plugins" / "foo.lv2"
+    bundle.mkdir(parents=True)
+    (bundle / "manifest.ttl").symlink_to(share / "manifest.ttl")
+    (bundle / "foo.so").write_text("")
+    assert preflight({"tracks": [{"plugins": [{"uri": A}]}]}, tmp_path / "plugins") == Preflight()

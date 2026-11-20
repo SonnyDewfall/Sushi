@@ -6406,3 +6406,15 @@ neither raises nor refuses. (8) **The multiarch glob** is now
 machine's means no multiarch folder, not all of them. (9) The guides'
 "whatever was playing keeps playing" is now true of every refusal, and
 `switch_route`'s docstring lists `plugins_missing`. *(2026-11-20)*
+
+**The re-review of PR #198 (#188).** Three fixes, each with a test shown
+failing without it. (1) A broken bundle no source provides was `rm -r`'d by
+the prescribed fix and then waived as "not loaded by this rig": a broken URI
+is now the rig's own like a missing one, never waived, with what provides it
+again (its build script, its package) beside it and in the steps. (2) A
+`manifest.ttl` that is a link elsewhere was read resolved, so `lv2:binary
+<foo.so>` was looked for beside the link's target, a false refusal: the
+bundle is resolved and its manifest read there, as lilv does. (3) A restart's
+refusal said the rig "plays on" even when the agent was restarting a rig
+that had crashed: it says so only when the rig is running
+(`rig.restart_is_playing`), and otherwise "Nothing was stopped". *(2026-11-20)*

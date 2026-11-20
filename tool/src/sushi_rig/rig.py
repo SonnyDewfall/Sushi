@@ -176,13 +176,17 @@ def check_plugins(
         warn(warning)
 
 
-def restart_plugins_refusal(config_name: str, options: dict[str, Any], root: Path | None = None) -> str | None:
+def restart_plugins_refusal(
+    config_name: str, options: dict[str, Any], root: Path | None = None, *, running: bool = True,
+) -> str | None:
     """Why the rig `restart` would bring back (`restart_arguments`) must not
     be stopped for it, or None: `plugins_refusal` on its config, read or
     compiled now, before `down`. A restart that `up` would then refuse left
     no rig at all (review of PR #198); refused here, the running one plays
     on. A config that cannot be read or compiled now is not refused here:
-    `up` says why, as it always has."""
+    `up` says why, as it always has. `running` is whether the rig to be
+    stopped is playing (`restart_is_playing`): the agent restarts a rig that
+    crashed too, and only one that plays "plays on" (review of PR #198)."""
     root = root if root is not None else checkout_root()
     try:
         if options.get("rig"):
@@ -196,9 +200,16 @@ def restart_plugins_refusal(config_name: str, options: dict[str, Any], root: Pat
         return None
     refusal, _ = plugins_refusal(
         config, root, config_name, amp=False,
-        words=(f"{config_name} was not restarted", f"Nothing was stopped: {config_name} plays on.",
+        words=(f"{config_name} was not restarted",
+               f"Nothing was stopped: {config_name} plays on." if running else "Nothing was stopped.",
                "restart it again"))
     return refusal
+
+
+def restart_is_playing(state: dict[str, Any]) -> bool:
+    """Whether the rig a restart would stop, as `state` records it, is
+    running now (`liveness`), as against crashed or gone."""
+    return liveness(state, pid_alive, pgid_alive) == "running"
 
 
 # --- paths ------------------------------------------------------------------
@@ -1651,7 +1662,7 @@ def restart() -> int:
         raise RigError(NOTHING_TO_RESTART)
 
     config_name, options = restart_arguments(state)
-    refusal = restart_plugins_refusal(config_name, options)
+    refusal = restart_plugins_refusal(config_name, options, running=restart_is_playing(state))
     if refusal:
         raise RigError(refusal)
 
