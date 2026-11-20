@@ -39,7 +39,14 @@ A chain entry carries its settings (`bypassed`, `program`, `parameters`,
 its send's prefix, so it follows the naming rule takes and rigs share
 (lowercase letters, digits, `-` and `_`); `master`, `master_return` and
 `<channel>_send` belong to the compiler, and so does `master_limiter` (#137). The roles are the
-[machine file](machine-file.md)'s; the `midi:` section is in [MIDI](midi.md).
+[machine file](machine-file.md)'s; the `midi:` section is in [MIDI](midi.md):
+a `controller` the machine file describes, and its `controls`, each binding
+one control to a `bypass`, a `mute`, a channel's `volume` (#191: silent at
+the heel, the channel's `level` at the toe, never the master's), a
+`parameter` or a `blend`. A typed device's control may take only what its
+kind can (a switch an on or off, a pedal a sweep), and one with a job, such
+as the FBV's A and B that step rigs, nothing: both are refused when the rig
+compiles.
 
 ## Levels
 

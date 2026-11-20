@@ -23,6 +23,7 @@ curl -X POST localhost:8029/rig/down
 curl -X POST localhost:8029/rig/restart                             # refused (409 unsaved) if it would drop changes no save has written
 curl -X POST localhost:8029/rig/restart -d '{"discard": true}'      # ... so this drops them, as `sushi-rig restart --discard` does
 curl -X POST localhost:8029/rig/switch -d '{"config_name": "electric-delay"}'   # live where it can be (#93)
+curl localhost:8029/midi             # the machine's MIDI devices, what each control may take, the rig's assignments (#191)
 curl localhost:8029/live             # the running rig's parameters, bypass and chains, with ranges
 curl -X POST localhost:8029/live/parameter -d '{"processor": "reverb", "parameter": "Mix", "value": 0.4}'
 curl -X POST localhost:8029/live/parameters -d '{"processor": "hall", "parameters": {"dry": 0.7, "early": 0.57}}'   # all or none, one change (#154)
@@ -566,6 +567,7 @@ TCP listener).
 ## Switching rigs live
 
 `POST /rig/switch {"config_name"}` (and a
+rig-stepping footswitch (#191), or a
 Program Change, which takes the same path) turns the running rig into another
 rig of `config/rigs/` without restarting Sushi where the live operations can
 do it: the processors that differ are removed, moved and added, the

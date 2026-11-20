@@ -6241,6 +6241,72 @@ the header's height; it fails without the fix (294 against 334 px). Every
 `test_ui_*` file passed: 520, then the four with font cases again, 160.
 *(2026-11-19)*
 
+**The pedalboard, part 1: a MIDI device has a model (#191).** The board is a
+Line 6 FBV Express MkII, not yet arrived. A controller in the machine file can
+now have a `type` (`pedal`), and then each control a `kind` (`switch`,
+`expression`), a switch's `behaviour` (`momentary`, `latching`), a pedal's
+`range`, and a switch's `job` (`previous-rig`, `next-rig`); an untyped
+controller (the MPD218's) reads as it did. A rig's `midi:` gains `volume:
+<channel>`, a pedal on a channel's send gain from silence to the channel's
+`level`, never above it, and refused on the master (#172). The compile refuses
+a control the device lacks, one its kind cannot take (a switch on a volume, the
+pedal on a bypass) and one with a job. *Found:* Sushi's `cc_mappings` follow
+the value, a mute included, so a momentary footswitch read as "on at 64" is on
+while held; a momentary switch's press now toggles, through the agent for a
+bypass and for a mute alike, and its release does nothing. A and B step rigs
+on every rig, from the machine file and not a rig's map: the agent's listener,
+which used to start only for a config with `_midi_agent`, now runs a listener
+a port, so a rig mapped on the MPD218 on a machine with the FBV is two ports.
+A step goes through `POST /rig/switch`'s path, stops at either end without
+wrapping, and a press during a switch or a lifecycle command is refused, not
+queued. A pedal-driven volume counts as a blend's does: the page shows it as
+driven, SAVE does not write it as the level. `GET /midi` gives the devices,
+what each control may take and the running rig's assignments, for #192's
+page. The FBV's entry in `machines/example.yaml` and the rig machine's file is
+marked unverified line by line: the port name, channel, the switch CCs (20 to
+23 are placeholders), "momentary" and the pedal's CC 7 are guesses from Line
+6's guide read second-hand (line6.com, mcgrp.ru and scribd were not reachable
+from the session); the guide says the board takes no MIDI from the host over
+USB, so nothing sends to it. `docs/reference/midi.md` says how to check it with
+`aseqdump -l` and `aseqdump -p` when it arrives. Not run on the rig; until the
+pedal is plugged in, the agent reports its port missing on every rig.
+*(2026-11-19)*
+
+**The pedalboard, part 1, after review (PR #199).** Eight findings, each
+fixed with a test that fails without it. (1) A pedal not plugged in made
+every rig show a Pedals problem: each port is now `required` only for the
+controller the running rig's `midi:` names (read from the rig file, so a map
+of sweeps alone counts), `find_port` raises `PortAbsent` for a name not
+listed, and an absent port no rig needs is `absent`, "not connected", as is a
+machine with no alsa-midi or sequencer. (2) Hot-plug: `AlsaPort` stays open
+on ALSA's announcements, and a client or port that starts has the ports
+listed again; a pedal plugged in later or replugged mid-set is picked up with
+no `up` (shown against a stand-in for alsa-midi). (3) A momentary switch is
+pressed by its rise through 64, not by every value of 64 or more; `single`
+(FBV Control's Single) is pressed by every message; both have a 40 ms
+debounce, for bypass, mute and steps. (4) A volume pedal sweeps from 40 dB
+below the channel's level, not from -120 dB, so half the travel is about
+-20 dB; the agent silences the send at the heel and, if the pedal has left
+the heel meanwhile, puts back Sushi's value. Without the agent the heel is
+40 dB down. (5) The pedal's `range` stays informational but for the heel:
+scaling the mapping to it would rely on Sushi clamping, which no MIDI in the
+container could show. (6) A rig run from outside `config/rigs/`
+(`config/src/electric_board.yaml`) is not stepped from, whatever its name.
+(7) `/health`'s `last` says what became of a refused step or Program Change.
+*(2026-11-20)*
+
+**The pedalboard, part 1, re-review (PR #199).** A momentary switch's release
+that bounced (0, 127, 0 inside 10 ms after a long hold) toggled again: a rise
+within the debounce of the last release is now ignored too. The heel's
+silencing was keyed by port and control, which the next rig shares, so one
+still waiting on Sushi across a switch held up the next rig's: the key carries
+the generation. A silence that landed after Sushi had followed a rise the
+agent had not yet read left the channel silent with the pedal up: the first
+message above the heel after the agent silenced a pedal now has it set
+Sushi's value. A rig file that will not read behind a map of sweeps alone is
+said in `/health` (`agent.midi.rig_problem`) instead of swallowed; A and B
+still work. *(2026-11-20)*
+
 **Takes and rig deletion notices that never left (#189).** Found on the rig:
 the rack's TAKES list stayed for ever, and the × and Cancel on a rig
 deletion's notices "did not work". *Takes:* the list, its 10 s `GET /takes`
