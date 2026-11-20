@@ -12,9 +12,12 @@ What stands in for what. "A reload" is Playwright's, in the same browser
 context, so the page's storage is kept as a browser keeps it. "A file made
 since" and "a bin file gone" are made by the test on disk, which is all an
 agent can see of either. The 15 s a notice that worked stays (#189) is passed
-on Playwright's fake clock, installed before the page loads, so the page's
-timers and `Date.now` move only as a test moves them; the network does not
-wait for it, so what follows is waited for by condition. Nothing here is the
+on Playwright's fake clock, installed before the page loads and paused once
+it has (`pause_clock`): installed alone, the fake clock still moves with real
+time, so a slow step between a notice and the test moving the clock would
+eat into the 15 s. Paused, the page's timers, `Date.now` and
+`performance.now` move only as a test moves them (`run_for`); the network
+does not wait for it, so what follows is waited for by condition. Nothing here is the
 rig machine, a phone or a pedal: the Program Change numbers are shown as the
 agent counts them, and no Program Change is sent.
 """
@@ -62,6 +65,13 @@ def binned(served):
     return sorted(p.name for p in folder.iterdir() if p.name != ".gitignore") if folder.is_dir() else []
 
 
+def pause_clock(p):
+    """Hold the page's fake clock (installed before it loaded) where it is,
+    give or take the second it is moved on to pause: from now on it moves
+    only by `p.clock.run_for`, however long a step of the test takes."""
+    p.clock.pause_at(p.evaluate("() => Date.now()") / 1000 + 1)  # Playwright's Python clock takes seconds
+
+
 def rack(browser, served, width=1280, clock=False):
     if clock:
         page = Page.__new__(Page)
@@ -73,6 +83,8 @@ def rack(browser, served, width=1280, clock=False):
     else:
         page = Page(browser, served.url + "/#rack", width=width)
     page.page.wait_for_selector(".rig-row")
+    if clock:
+        pause_clock(page.page)
     return page
 
 
@@ -171,6 +183,8 @@ def test_a_notice_that_worked_goes_after_its_time_and_a_refusal_never(blank):
         refused: left({said: refused}, 1e12).said,
         restoring: left({offers: [o('a', 1000)], restoring: 'a-20261116T101501Z.yaml'}, 1e12).offers.map((x) => x.rig),
         unstamped: R.noticeDone({ok: true}, 1e12),
+        next: [R.nextNoticeIn([said, null, refused, {ok: true, at: 4000}], 2000),
+               R.nextNoticeIn([said], 1000 + R.NOTICE_MS + 50), R.nextNoticeIn([refused, null], 0)],
         five: offers.map((x) => x.rig),
         retired: R.RETIRED_KEYS,
       };""")
@@ -180,6 +194,7 @@ def test_a_notice_that_worked_goes_after_its_time_and_a_refusal_never(blank):
     assert out["refused"]["title"] == "Not put back: a", "a refusal stays until it is dismissed"
     assert out["restoring"] == ["a"], "the Undo in flight stays until its answer"
     assert out["unstamped"] is False
+    assert out["next"] == [14000, 0, None], "the soonest due, never below 0; none for a refusal"
     assert out["five"] == ["f", "e", "d", "c", "b"], "newest first, five at most"
     assert out["retired"] == ["sushi-rig.binned"]
 
@@ -465,4 +480,60 @@ def test_the_stage_picker_has_no_delete(browser, bin_served):
     p.locator("button.lock").click()
     expect(p.locator(".stage-head select")).to_be_enabled()
     expect(p.locator(".stage-rigs .rig-del")).to_have_count(0)
+    page.close()
+
+
+def test_a_wall_clock_stepped_back_does_not_hold_a_notice(browser, bin_served):
+    """#189 review: the notices are timed on the page's monotonic clock and
+    looked at again until due, so a wall clock stepped back (NTP) while one
+    is shown does not keep it for ever."""
+    page = rack(browser, bin_served, clock=True)
+    p = page.page
+    ask_delete(p, "clean").locator(".delete-go").click()
+    said = p.locator(".rig-deleted")
+    expect(said).to_contain_text("Deleted clean")
+    p.clock.set_system_time(p.evaluate("() => Date.now()") / 1000 - 10 * 60)  # seconds, as pause_clock's
+    p.clock.run_for((NOTICE_S + 1) * 1000)
+    expect(said).to_have_count(0)
+    expect(p.locator(".bin-offers")).to_have_count(0)
+    page.close()
+
+
+def test_the_focus_on_an_undo_that_leaves_goes_to_the_picker(browser, bin_served):
+    page = rack(browser, bin_served, clock=True)
+    p = page.page
+    ask_delete(p, "clean").locator(".delete-go").click()
+    expect(undo(p, "clean")).to_be_focused()
+    p.clock.run_for((NOTICE_S + 1) * 1000)
+    expect(p.locator(".bin-offers")).to_have_count(0)
+    expect(p.locator(".rig-list button.rig").first).to_be_focused()
+    page.close()
+
+
+def test_an_undo_kept_through_a_busy_refusal_is_offered_afresh(browser, bin_served):
+    """Tried at 14 s and refused busy, the Undo stays offered for its own
+    15 s from the refusal, not the 1 s left of the first."""
+    page = rack(browser, bin_served, clock=True)
+    p = page.page
+    calls = {"n": 0}
+
+    def busy_once(route):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            route.fulfill(status=409, content_type="application/json",
+                          body='{"ok": false, "status": 409, "reason": "busy: \'up\' is still running", "code": "busy"}')
+        else:
+            route.continue_()
+
+    p.route("**/rigs/clean/restore", busy_once)
+    ask_delete(p, "clean").locator(".delete-go").click()
+    expect(undo(p, "clean")).to_be_visible()
+    p.clock.run_for((NOTICE_S - 1) * 1000)
+    undo(p, "clean").click()
+    expect(p.locator(".rig-deleted")).to_contain_text("Not put back: clean")
+    p.clock.run_for(5000)
+    expect(undo(p, "clean")).to_be_visible(), "offered afresh by the refusal"
+    p.clock.run_for(NOTICE_S * 1000)
+    expect(p.locator(".bin-offers")).to_have_count(0)
+    expect(p.locator(".rig-deleted")).to_contain_text("Not put back: clean"), "the refusal itself stays"
     page.close()

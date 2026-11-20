@@ -5512,11 +5512,11 @@ class Agent:
         app.router.add_post("/rigs/{name}/restore", self.restore_rig_route)
 
     def _bin_agent(self) -> str:
-        """Which rig machine's bin this is, for the page to keep its Undo
-        under: two agents served at one origin (a tunnel, a port reused) are
-        two bins. This machine's name and the checkout's path, hashed: the
-        same across the agent's restarts, and nothing private in the page's
-        storage."""
+        """Which rig machine's bin this is: two agents served at one origin
+        (a tunnel, a port reused) are two bins. This machine's name and the
+        checkout's path, hashed: the same across the agent's restarts, and
+        nothing private. Until #189 the page kept its Undos under it across
+        reloads; it keeps none now, and this stays for curl and scripts."""
         import hashlib
         import socket
 
@@ -5528,9 +5528,10 @@ class Agent:
         each entry's `rig`, `entry` (the name a restore takes), `file`,
         `deleted_at` (from its stamp) and `back` (a rig of that name is in
         config/rigs/ again, so a restore would be refused `taken`); and
-        `agent`, which bin this is (`_bin_agent`). The page asks it before it
-        offers a kept Undo. A bin that is a symbolic link is listed as empty,
-        with `problem` saying why."""
+        `agent`, which bin this is (`_bin_agent`). The page asks it with
+        /rigs, and offers an Undo only while its entry is here and its rig is
+        not back. A bin that is a symbolic link is listed as empty, with
+        `problem` saying why."""
         from . import rigbin
 
         root = self._midi_root()
@@ -6362,6 +6363,9 @@ class Agent:
 
         self.recorder = recorder or RecorderLink()
         self.takes_dir = Path(takes_dir) if takes_dir is not None else default_takes_dir()
+        # The takes folder as /health and POST /takes/open name it, resolved
+        # once here: a filesystem call, never made on the loop per request.
+        self._takes_dir_shown = Path(self.takes_dir).resolve()
         # The player's clock, for the day in a take's default name; local
         # time, as the name is for the player to recognise. A test moves it.
         self.take_clock: Callable[[], datetime] = datetime.now
@@ -6642,7 +6646,7 @@ class Agent:
     def _takes_folder(self, request) -> dict[str, Any]:
         """`/health`'s `agent.takes`: `dir`, the takes folder, absolute, and
         `can_open`, whether POST /takes/open would serve this peer."""
-        return {"dir": str(Path(self.takes_dir).resolve()), "can_open": is_local(request.remote)}
+        return {"dir": str(self._takes_dir_shown), "can_open": is_local(request.remote)}
 
     async def takes_open_route(self, request):
         """`POST /takes/open {}` (#189): open the takes folder in this
@@ -6665,14 +6669,14 @@ class Agent:
         if not is_local(request.remote):
             refused = web.HTTPForbidden(reason=(
                 f"refused: only a page open on this machine can open its takes folder, and this came from "
-                f"{request.remote or 'an address not known'}. The takes are in {Path(self.takes_dir).resolve()}"))
+                f"{request.remote or 'an address not known'}. The takes are in {self._takes_dir_shown}"))
             refused.agent_code = "not_local"
             raise refused
         body = await self._json_body(request)
         if body not in (None, {}):
             raise web.HTTPBadRequest(reason=f"the body of an open must be empty, not {body!r}: "
                                             "the folder is always the takes folder")
-        folder = Path(self.takes_dir).resolve()
+        folder = self._takes_dir_shown
         if not await asyncio.to_thread(folder.is_dir):
             raise _conflict(f"there are no takes yet: {folder} is made by the first take", "no_folder")
         opener = await asyncio.to_thread(self.folder_opener)

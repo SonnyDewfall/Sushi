@@ -12,8 +12,9 @@ is "on this machine"; "a phone" is `Served(peer=...)`, every request handed
 to the agent as from a LAN address, which is all the agent can tell of one.
 The file manager's opener is a stand-in: a small Python program that writes
 down what it was given. Nothing here runs `xdg-open` or `gio open`, or opens
-a folder on a desktop. The 15 s an opened notice stays is passed on
-Playwright's fake clock.
+a folder on a desktop. The 15 s a notice that worked stays is passed on
+Playwright's fake clock, paused once the page has loaded
+(`test_ui_rigbin.pause_clock`), so it moves only as a test moves it.
 """
 
 from __future__ import annotations
@@ -30,6 +31,7 @@ from test_ui import (  # noqa: E402,F401
     FIRST, Watched, blank, browser, expect, no_sideways_scroll, record_served, rigjs, served,
     stage_page,
 )
+from test_ui_rigbin import pause_clock  # noqa: E402
 from ui_fake import Served  # noqa: E402
 
 PHONE = "192.168.1.23"
@@ -53,6 +55,8 @@ def rack(browser, served, width=1280, clock=False):
         page.page.clock.install()
     page.page.goto(served.url + "/#rack")
     page.page.wait_for_selector("section.takes h2")
+    if clock:
+        pause_clock(page.page)
     return page
 
 
@@ -97,12 +101,29 @@ def test_a_stop_names_the_take_its_folder_and_a_broken_take_is_not_ok(blank):
           problems: ["the recorder lost audio 1 time(s), 5.3 ms in all"]}}),
         R.recordOutcome("stop", {ok: false, status: 502, reason: "stop failed for cut: no engine", code: "failed",
           body: {name: "cut", folder: "/t/cut", seconds: null, stems: [], problems: []}}),
+        R.recordOutcome("stop", {ok: true, body: {name: "lossy", folder: "/t/lossy", seconds: 125, stems: [{}], lost_ms: 5.3,
+          problems: ["the recorder lost audio 1 time(s), 5.3 ms in all — the stems are still aligned"]}}),
+        R.recordOutcome("stop", {ok: true, body: {name: "cut2", folder: "/t/cut2", seconds: 48, stems: [{}], lost_ms: 0,
+          problems: ["this take was never finished — the rig stopped mid-take", "x"]}}),
+        R.recordOutcome("stop", {ok: false, status: 502, reason: "unread stopped, but could not be read back: OSError: gone",
+          code: "failed", body: {name: "unread", folder: "/t/unread", seconds: null, stems: [{}], summary_error: "OSError: gone",
+          problems: ["the take stopped, but could not be read back to check it: OSError: gone; `sushi-rig take check /t/unread` says more"]}}),
+        R.recordOutcome("stop", {ok: false, status: 502, reason: "stop failed for torn: engine died", code: "failed",
+          body: {name: "torn", folder: "/t/torn", seconds: 2, stems: [{}], problems: ["this take was never finished"]}}),
       ];""")
     assert out[0] == {"ok": True, "title": "Recorded riff", "text": "1:04 · Whole · 2 stems · nothing lost",
                       "reason": None, "folder": "/t/riff"}
     assert out[1]["ok"] is False and out[1]["folder"] == "/t/late"
     assert out[1]["text"] == "0:03 · 1 problem: the recorder lost audio 1 time(s), 5.3 ms in all"
     assert out[2]["ok"] is False and out[2]["reason"] == "stop failed for cut: no engine", "a failed stop says why"
+    assert out[2]["text"] is None, "a failed stop is never called whole, nor anything else take check did not find"
+    assert out[3]["text"] == ("2:05 · 1 problem · 5.3 ms of audio lost: the recorder lost audio 1 time(s), 5.3 ms in "
+                              "all — the stems are still aligned")
+    assert out[4]["text"] == "0:48 · 2 problems: this take was never finished — the rig stopped mid-take"
+    assert out[5]["text"].startswith("1 problem: the take stopped, but could not be read back to check it")
+    assert out[5]["reason"] is None, "the read-back failure is said once, by the problem"
+    assert (out[6]["text"], out[6]["reason"]) == ("0:02 · 1 problem: this take was never finished",
+                                                  "stop failed for torn: engine died"), "both, when they differ"
 
 
 # --------------------------------------------------------------------------- #
@@ -243,3 +264,35 @@ def test_a_broken_take_is_flagged_when_it_stops(browser, record_served):
     expect(result.locator(".take-folder")).to_have_text(str(record_served.recorder.takes.resolve() / FIRST))
     page.close()
 
+
+def test_a_whole_takes_result_goes_after_15_s_and_a_broken_ones_stays(browser, record_served):
+    page = stage_page(browser, record_served, clock=True)
+    p = page.page
+    p.wait_for_selector("input[name=take-name]")
+    pause_clock(p)
+    p.get_by_role("button", name="Record", exact=True).click()
+    expect(p.locator(".record-bar h2")).to_have_text("Recording")
+    p.get_by_role("button", name="Stop", exact=True).click()
+    result = p.locator(".record-result")
+    expect(result).to_contain_text("Whole · 5 stems · nothing lost")
+    p.clock.run_for(14_000)
+    expect(result).to_be_visible()
+    p.clock.run_for(1_500)
+    expect(result).to_have_count(0)
+    # A broken take: the same stop, a problem added on its way to the page.
+
+    def broken(route):
+        response = route.fetch()
+        body = response.json()
+        body["problems"] = ["this take was never finished"]
+        route.fulfill(response=response, json=body)
+
+    p.route("**/record/stop", broken)
+    p.get_by_role("button", name="Record", exact=True).click()
+    expect(p.locator(".record-bar h2")).to_have_text("Recording")
+    p.get_by_role("button", name="Stop", exact=True).click()
+    expect(result).to_contain_text("1 problem: this take was never finished")
+    p.clock.run_for(60_000)
+    expect(result).to_be_visible(), "a take with problems is never gone unread"
+    expect(result).to_have_attribute("role", "alert")
+    page.close()

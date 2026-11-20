@@ -1076,7 +1076,8 @@ async function recordStart() {
   const said = R.recordOutcome("start", answer);
   // A take that started is said by the bar itself; only one that replaced
   // an earlier take, or was refused, needs a line under it.
-  state.recordResult = said.ok && !said.text ? null : said;
+  state.recordResult = said.ok && !said.text ? null : { ...said, at: noticeClock() };
+  armNotices();
   if (answer.ok) { noteRecord(answer); state.takeName = ""; }
   render();
   kick();
@@ -1092,7 +1093,8 @@ async function recordStop() {
   } finally {
     state.recordPending = null;
   }
-  state.recordResult = R.recordOutcome("stop", answer);
+  state.recordResult = { ...R.recordOutcome("stop", answer), at: noticeClock() };
+  armNotices();
   if (answer.body && answer.body.name) noteRecord(null);
   render();
   kick();
@@ -1258,8 +1260,8 @@ function rigsRegion(el, { newRig = false, deletes = false, dropdown = null, titl
 // The rack's picker: Delete on a row asks the agent what it would do (a dry
 // run: refused for the running rig, the Program Change numbers that move,
 // what git holds of the file), and the confirm says it; the delete moves the
-// file into config/rigs/.deleted/, and Undo, kept in this browser across a
-// reload, moves it back.
+// file into config/rigs/.deleted/, and Undo, offered on this page for
+// R.NOTICE_MS (never across a reload, #189), moves it back.
 
 function binKey() {
   const b = state.bin;
@@ -1308,25 +1310,59 @@ function offersBox(b) {
     } }, "×"))));
 }
 
-// The rig picker's notices that worked, and the takes folder's, gone once
-// their R.NOTICE_MS is up (`R.noticesLeft`): looked at again that long after
-// each is shown, by a timer as the Stop confirm's is (`armStop`), and when an
-// Undo that was in flight has its answer.
-function expireNotices() {
+// The notices that worked, gone once their R.NOTICE_MS is up (#189): the rig
+// picker's outcome and Undos (`R.noticesLeft`), the takes folder's, and the
+// record bar's. Timed on the page's monotonic clock (`noticeClock`), not the
+// wall clock, which NTP can step back; one timer, set for the soonest due
+// (`armNotices`), as the Stop confirm's is (`armStop`), and set again after
+// each pass for what is left, so a timer that fires early only looks again.
+const noticeClock = () => performance.now();
+let noticeTimer = null;
+
+function armNotices() {
+  clearTimeout(noticeTimer);
+  noticeTimer = null;
   const b = state.bin;
-  const now = Date.now();
-  const left = R.noticesLeft(b, now);
-  const open = state.takesOpen;
-  const openDone = R.noticeDone(open.result, now);
-  if (left.said === b.said && left.offers.length === b.offers.length && !openDone) return;
-  b.said = left.said;
-  b.offers = left.offers;
-  if (openDone) open.result = null;
-  render();
+  const wait = R.nextNoticeIn([b.said, state.takesOpen.result, state.recordResult,
+    ...b.offers.filter((o) => o.entry !== b.restoring).map((o) => ({ ok: true, at: o.at }))], noticeClock());
+  if (wait !== null) noticeTimer = setTimeout(expireNotices, wait);
 }
 
-function noticeShown() {
-  setTimeout(expireNotices, R.NOTICE_MS);
+// Where the focus goes when what held it leaves with its notice: a rig
+// picker's notice gives it to its rig's row if the rig is listed (put back),
+// else to the picker's first rig; the record bar's to Record; the takes
+// folder's to Open folder. Never left on the page's body.
+function focusAfterNotice(where, rig) {
+  const tries = where === "rigs" ? [rig ? `.rig-row[data-rig="${CSS.escape(rig)}"] button.rig` : null, ".rig-list button.rig"]
+    : where === "record" ? ["button.record-act.rec", "button.record-act.stop"]
+      : where === "takes" ? ["button.open-takes"] : [];
+  for (const selector of tries.filter(Boolean)) {
+    const el = document.querySelector(selector);
+    if (el && !el.disabled) { el.focus(); if (document.activeElement === el) return; }
+  }
+}
+
+function expireNotices() {
+  const b = state.bin;
+  const now = noticeClock();
+  const left = R.noticesLeft(b, now);
+  const openDone = R.noticeDone(state.takesOpen.result, now);
+  const recordDone = R.noticeDone(state.recordResult, now);
+  if (left.said !== b.said || left.offers.length !== b.offers.length || openDone || recordDone) {
+    const active = document.activeElement;
+    const held = active && active !== document.body ? active : null;
+    const where = held && (held.closest("section.rigs") ? "rigs" : held.closest(".record-bar") ? "record"
+      : held.closest("section.takes") ? "takes" : null);
+    const entry = held && held.closest("li[data-entry]") ? held.closest("li[data-entry]").dataset.entry : null;
+    const offer = entry ? b.offers.find((o) => o.entry === entry) : null;
+    b.said = left.said;
+    b.offers = left.offers;
+    if (openDone) state.takesOpen.result = null;
+    if (recordDone) state.recordResult = null;
+    render();
+    if (held && !held.isConnected) focusAfterNotice(where, offer ? offer.rig : null);
+  }
+  armNotices();
 }
 
 async function askDelete(rig) {
@@ -1364,12 +1400,12 @@ async function deleteRig(rig) {
   } finally {
     b.pending = false;
   }
-  const said = { ...R.deletedOutcome(rig, answer), at: Date.now() };
+  const said = { ...R.deletedOutcome(rig, answer), at: noticeClock() };
   if (said.ok) {
     b.offers = R.addOffer(b.offers, { ...said.binned, at: said.at });
     Object.assign(b, { confirm: null, said, focus: `.undo-delete[data-entry="${CSS.escape(said.binned.entry)}"]` });
     if (state.chosen === rig) state.chosen = null;
-    noticeShown();
+    armNotices();
     await refreshRigs(true);
   } else if (b.confirm && b.confirm.rig === rig) {
     b.confirm.refused = said;
@@ -1389,12 +1425,13 @@ async function undoDelete(offer) {
   } finally {
     b.restoring = null;
   }
-  const said = { ...R.restoreOutcome(offer.rig, answer), at: Date.now() };
+  const said = { ...R.restoreOutcome(offer.rig, answer), at: noticeClock() };
   b.said = said;
   if (said.ok || !said.keep) b.offers = R.dropOffer(b.offers, offer.entry);
+  // An Undo kept through a refusal that may pass (busy, no answer) is offered
+  // afresh, for its own R.NOTICE_MS from now, to be tried again.
+  else b.offers = b.offers.map((o) => (o.entry === offer.entry ? { ...o, at: said.at } : o));
   if (said.ok) b.focus = `.rig-row[data-rig="${CSS.escape(offer.rig)}"] .rig`;
-  noticeShown();
-  // An Undo kept through a refusal that may pass may have had its time while in flight.
   expireNotices();
   await refreshRigs(true);
   render();
@@ -3247,8 +3284,8 @@ async function openTakesFolder() {
   } finally {
     open.pending = false;
   }
-  open.result = { ...R.openFolderOutcome(answer), at: Date.now() };
-  if (open.result.ok) noticeShown();
+  open.result = { ...R.openFolderOutcome(answer), at: noticeClock() };
+  armNotices();
   render();
 }
 

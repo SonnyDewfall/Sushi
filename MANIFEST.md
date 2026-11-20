@@ -6278,3 +6278,32 @@ box, no `/takes` request and timed notices (`test_ui_takes.py`,
 `test_ui_rigbin.py`, on Playwright's fake clock). **Not tried:** `xdg-open`
 or `gio open` on the rig's desktop, from a systemd user service.
 *(2026-11-19)*
+
+**#189's review (PR #197).**
+- **A stop that failed read "Whole · 0 stems · nothing lost"** beside its
+  reason. Now it shows `take check`'s problems only when there are some, and
+  drops its reason when that is the read-back failure a problem already
+  states (`summary_error`).
+- **The 15 s were measured on the wall clock by one timer**, so a clock
+  stepped back held a notice for ever. Now they run on `performance.now()`,
+  with one timer set for the soonest notice due (`nextNoticeIn`) and set
+  again after each pass.
+- **Playwright's `clock.install()` keeps real time flowing.** The reviewer
+  showed a 1.2 s step before `run_for(14000)` already lost the notice. The
+  timed tests now pause the clock once the page has loaded
+  (`pause_clock`). Playwright's Python clock takes seconds, not ms.
+- **A whole take's stop box** now leaves after 15 s, as does a start's
+  "replaced" note. A take with problems, a failed stop and a refusal stay.
+- **The focus on an Undo that leaves** goes to its rig's row if the rig is
+  listed, else to the picker's first rig, not to `<body>`.
+- **An Undo kept through a busy or no-answer refusal** is restamped, so it
+  gets 15 s afresh.
+- **Stale reload text** removed from `app.js`, `agent.py`, `rig.js`
+  (`deletedOutcome`'s unused `agent`) and `web-ui.md`.
+- **`takeVerdict`'s lost-audio clause and plural** are tested again.
+- **The takes folder is resolved once**, when the agent is made, not on
+  every `/health`.
+
+Each fix has a test that fails without it, apart from the clock pause:
+there, the reviewer's own scenario now keeps the notice.
+*(2026-11-20)*

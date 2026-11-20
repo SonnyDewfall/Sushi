@@ -166,8 +166,9 @@ running (whose record bar owns it), a v1 run, the recorder missing or
 crashed, or the recorder's own reason.
 
 A stop says the take's name, its folder and `take check`'s verdict
-(`recordOutcome`): whole, or the number of problems and the first, a take
-with problems in the refusal colour as an alert, until it is dismissed.
+(`recordOutcome`): whole, which goes after `NOTICE_MS`, or the number of
+problems and the first, a take with problems (or a stop that failed) in the
+refusal colour as an alert, until it is dismissed.
 
 The rack lists no takes (#189: the list stayed for ever, and the takes
 folder is where takes are looked at), and the page asks for no GET /takes.
@@ -182,8 +183,8 @@ meters are not built: nothing measures levels yet.
 ## Notices that go by themselves (#189)
 
 A notice that something worked leaves after `NOTICE_MS` (15 s,
-`noticesLeft`): a rig deleted or put back, its Undo, the takes folder
-opened. A refusal stays until its × is pressed, so an error is never gone
+`noticesLeft`, on the monotonic clock): a rig deleted or put back, its
+Undo, the takes folder opened, a whole take stopped. A refusal stays until its × is pressed, so an error is never gone
 unread. The Undos of deletes are this page's only, and no longer kept across
 a reload (#129 kept them in `sushi-rig.binned`, which the page now removes
 as it loads and never reads): the file stays in config/rigs/.deleted/, to

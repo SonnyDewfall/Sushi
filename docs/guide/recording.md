@@ -34,8 +34,10 @@ Recording is on the **stage** screen, and works while the page is **Locked**.
 A box headed **Recorded** and the take's name gives the verdict, and under it
 the take's folder. If all is well it reads like
 `0:47 · Whole · 5 stems · nothing lost`: the length, that the take is whole,
-how many stems, and that no sound was dropped. If not, the box is red, and it
-gives the number of problems and the first of them. Close it with **×**.
+how many stems, and that no sound was dropped. A box like that goes by itself
+after about 15 seconds. If not, the box is red, and it gives the number of
+problems and the first of them; a red box stays until you close it with **×**,
+so a take with problems is never missed. Any box closes with **×**.
 
 ## Find your takes
 

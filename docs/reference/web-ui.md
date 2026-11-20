@@ -488,9 +488,14 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   it each Undo offered, newest first: **Undo: put back** and the rig's name,
   the newest with the focus, and **×** to forget one. **They go by
   themselves (#189)**: a delete's or an Undo's outcome that worked, and each
-  Undo, leave 15 s after they are shown (`NOTICE_MS`, `noticesLeft`, by a
-  timer set as each is shown), except the Undo in flight, which waits for its
-  answer; a refusal stays until its × is pressed. **The Undos are this
+  Undo, leave 15 s after they are shown (`NOTICE_MS`, `noticesLeft`),
+  except the Undo in flight, which waits for its answer; a refusal stays
+  until its × is pressed. The 15 s are counted on the page's monotonic clock
+  (`performance.now`), not the wall clock an NTP step can move back, by one
+  timer set for the soonest notice due (`nextNoticeIn`) and set again after
+  each pass for the rest. A notice that leaves while it holds the focus (the
+  newest Undo has it after a delete) gives it to its rig's row if the rig is
+  listed, else to the picker's first rig, never to the page's body. **The Undos are this
   page's only** (at most five): until #189 they were kept in this browser's
   storage across reloads (`sushi-rig.binned`), and the page now removes that
   record as it loads and never reads it. One is offered only while `GET
@@ -498,8 +503,9 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   rig is not back in the picker. Deleting a second rig keeps the first's
   Undo. A refusal because a file of that name is there again is said and the
   Undo goes (the binned file stays in `config/rigs/.deleted/`, which the
-  guide says how to move back by hand); one that may pass keeps it. The
-  restored rig's row has the focus. **The × beside an Undo did nothing until
+  guide says how to move back by hand); one that may pass (busy, no answer)
+  keeps it, offered afresh for 15 s from that refusal. The restored rig's
+  row has the focus. **The × beside an Undo did nothing until
   #189**: its handler changed the copy of the picker's state that the
   region's key was made from (`binKey`), not the state, so nothing changed
   and the key, unchanged, redrew nothing.
@@ -577,7 +583,12 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   check`'s verdict: whole, or the number of problems and the first, a take
   with problems in the refusal colour and as an alert (until #189 a take
   with problems lost its verdict there: the box showed only a refusal's
-  reason). **The rack lists no takes, and nothing asks for `GET /takes`
+  reason). A stop that failed (502, the take stopped) is never called whole:
+  it shows `take check`'s problems if there are any, and its reason unless
+  that is the read-back failure a problem already says. A whole take's box,
+  like a start's note that an earlier take moved to the archive, goes after
+  15 s; a take with problems, a failed stop and a refusal stay until
+  dismissed. **The rack lists no takes, and nothing asks for `GET /takes`
   (#189)**: the list stayed for ever, and the takes folder is where takes are
   looked at. Beside Save, one line names the folder (`takesFolder`, from
   `/health`'s `agent.takes`), and **Open folder** asks the agent to open it
@@ -792,8 +803,9 @@ Chromium.
 Not run on the rig (2026-11-16): deleting a rig from the picker and its Undo
 (#129). Tested in headless Chromium against the agent's real routes moving
 real files in a temporary checkout; no Program Change has been sent from a
-pedal after a delete, and the Undo kept across a reload is Playwright's
-reload in one browser context.
+pedal after a delete. The 15 s an outcome and its Undo stay (#189) is passed
+on Playwright's fake clock, paused, and a reload, which offers no Undo, is
+Playwright's reload in one browser context.
 
 Not run on the rig (2026-11-17): channel presets (#127), the strip's
 Preset… panel and a preset as "Start from". Tested in headless Chromium

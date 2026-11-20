@@ -212,3 +212,23 @@ def test_the_opener_is_xdg_open_else_gio_open_else_none():
     assert folder_opener(on("gio")) == ["/usr/bin/gio", "open"]
     assert folder_opener(on()) is None
     assert agent_module.FOLDER_OPENERS == (("xdg-open",), ("gio", "open"))
+
+
+def test_the_takes_folder_is_resolved_once_not_on_every_health(tmp_path, monkeypatch):
+    """#189 review: /health is asked every second by every page, and
+    resolving a path is a filesystem call on the loop."""
+    import pathlib
+
+    agent = make_agent(tmp_path)
+    resolved = []
+    real = pathlib.Path.resolve
+
+    def counting(self, *args, **kwargs):
+        if self.name == "takes":
+            resolved.append(str(self))
+        return real(self, *args, **kwargs)
+
+    monkeypatch.setattr(pathlib.Path, "resolve", counting)
+    status, body = send(agent, "GET", "/health")
+    assert status == 200 and body["agent"]["takes"]["dir"] == str(real(tmp_path / "takes"))
+    assert resolved == [], "resolved when the agent was made, not per request"

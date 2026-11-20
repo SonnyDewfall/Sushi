@@ -1646,8 +1646,8 @@ export function deleteConfirm(rig, answer) {
   };
 }
 
-// What a delete said: `{ok, title, text, binned, agent}` with what Undo
-// needs, or `{ok: false, title, reason, code, retry}`.
+// What a delete said: `{ok, title, text, binned}` with what Undo needs, or
+// `{ok: false, title, reason, code, retry}`.
 export function deletedOutcome(rig, answer) {
   if (!answer.ok) return { ok: false, title: `Not deleted: ${rig}`, reason: answer.reason, code: answer.code || null, retry: passing(answer) };
   const b = answer.body || {};
@@ -1655,7 +1655,7 @@ export function deletedOutcome(rig, answer) {
   return {
     ok: true, title: `Deleted ${rig}`,
     text: `${b.file} is now ${b.binned.file}. ${binGitText(b.git, b.git_note)}${moves.length ? ` ${moves.join("; ")}.` : ""}`,
-    binned: { rig, entry: b.binned.entry, file: b.binned.file }, agent: b.agent || null,
+    binned: { rig, entry: b.binned.entry, file: b.binned.file },
   };
 }
 
@@ -2457,9 +2457,17 @@ export function recordOutcome(op, answer) {
   if (!answer.ok && !body.name) return { ok: false, title: "Not stopped", reason: answer.reason, code: answer.code || null };
   // The take's folder, where the takes are looked at now that the rack does
   // not list them (#189); a take with problems is not ok, so it is shown as
-  // the refusal colour, with `take check`'s first problem.
-  return { ok: answer.ok && !(body.problems || []).length, title: `Recorded ${body.name}`, text: takeVerdict(body),
-    reason: answer.ok ? null : answer.reason, folder: typeof body.folder === "string" && body.folder ? body.folder : null };
+  // the refusal colour, with `take check`'s first problem. A stop that
+  // failed (502, the take stopped) is never called whole: its verdict is
+  // said only when `take check` found problems, and its reason only when it
+  // is not the read-back failure a problem already says (`summary_error`).
+  const problems = (body.problems || []).length;
+  const folder = typeof body.folder === "string" && body.folder ? body.folder : null;
+  if (!answer.ok) {
+    return { ok: false, title: `Recorded ${body.name}`, text: problems ? takeVerdict(body) : null,
+      reason: problems && body.summary_error ? null : answer.reason, folder };
+  }
+  return { ok: !problems, title: `Recorded ${body.name}`, text: takeVerdict(body), reason: null, folder };
 }
 
 // A take's verdict in a line: `take check`'s first problem, or that it is
@@ -2505,16 +2513,26 @@ export function openFolderOutcome(answer) {
 
 // ---------------------------------------------------------------- notices that go by themselves (#189)
 // What says something worked leaves after NOTICE_MS: a rig deleted or put
-// back, its Undo offer, the takes folder opened. A refusal stays until it is
-// dismissed, so an error is never gone unread. Each notice carries `at`, this
-// page's clock when it was shown, and the page asks `noticesLeft` again
-// NOTICE_MS after it shows one.
+// back, its Undo offer, the takes folder opened, a whole take stopped. A
+// refusal stays until it is dismissed, so an error is never gone unread.
+// Each notice carries `at`, the page's monotonic clock (`performance.now`)
+// when it was shown, so a wall clock stepped back cannot hold one; the page
+// sets one timer for the soonest due (`nextNoticeIn`) and, when it fires,
+// drops what is done (`noticesLeft`) and sets it again for the rest.
 export const NOTICE_MS = 15000;
 
 // Whether notice `n` (`{ok, at}`) has had its time: only one that worked, and
 // only once it has been shown NOTICE_MS.
 export function noticeDone(n, now) {
   return !!n && n.ok === true && typeof n.at === "number" && now - n.at >= NOTICE_MS;
+}
+
+// How long until the soonest of `notices` (each `{ok, at}`, or null) has had
+// its time, in ms and never below 0; null when none of them will go.
+export function nextNoticeIn(notices, now) {
+  const due = notices.filter((n) => !!n && n.ok === true && typeof n.at === "number")
+    .map((n) => Math.max(0, NOTICE_MS - (now - n.at)));
+  return due.length ? Math.min(...due) : null;
 }
 
 // The rig picker's notices still to show: the delete's or Undo's outcome, and
