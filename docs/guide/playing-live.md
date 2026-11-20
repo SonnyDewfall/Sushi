@@ -70,8 +70,9 @@ takes away:
   name, and its fader and buttons are greyed out;
 - on the stage screen, switching rigs (the rig's name shows no dropdown arrow
   and does nothing when tapped), **Start** and **Stop**, and the amp;
-- on the rack, moving a plugin up or down its chain, and changing the amp's
-  model.
+- on the rack, moving a plugin up or down its chain, changing the amp's
+  model, and assigning a pedal (the pedal buttons still open, to show what is
+  assigned, but their choices are greyed out).
 
 To unlock:
 
@@ -120,9 +121,10 @@ tried on the rig).
 A rig can be set up to answer a MIDI pedal or pad controller: a footswitch or
 pad that switches one effect, or one channel, on and off, an expression pedal
 that sweeps a knob, rides a channel's volume or fades from one channel to
-another, and program changes that switch rigs. This is written into the rig's
-file and the machine's file by hand; the page has no screen for it yet. The how
-is in [MIDI](../reference/midi.md).
+another, and program changes that switch rigs. The pedal itself is described
+once, in the machine's file; what each of its controls does on a rig is the
+rig's own, and is assigned on the rack (below), or written into the rig's file
+by hand. The details are in [MIDI](../reference/midi.md).
 
 The pedalboard is a Line 6 FBV Express MkII, with four footswitches and a pedal:
 
@@ -131,13 +133,71 @@ The pedalboard is a Line 6 FBV Express MkII, with four footswitches and a pedal:
   A step may restart the rig, which is about five seconds of silence. A press
   while a switch is still running is ignored rather than saved up, so press
   again once the rig is playing.
-- **C and D** each turn an effect or a channel on and off, as each rig's file
-  says. One press turns it on, the next turns it off.
-- **The pedal** sweeps a knob, or rides a channel's volume, as each rig's file
-  says. On a volume, the heel is silent and the toe is the channel's own level,
+- **C and D** each turn an effect or a channel on and off, as assigned on each
+  rig. One press turns it on, the next turns it off.
+- **The pedal** sweeps a knob, or rides a channel's volume, as assigned on
+  each rig. On a volume, the heel is silent and the toe is the channel's own level,
   never louder; half way is about 20 dB quieter. The silence at the heel needs
   the agent running: without it the heel is quiet, not silent. It cannot ride
   the master volume.
+
+### Assign a pedal on the rack
+
+On the rack, beside each effect's on/off switch and beside each channel's
+name, is a small pedal button. It is dashed while nothing is assigned there,
+and shows the control's name (**C**, **pedal**) once something is. To assign:
+
+1. Unlock (see [The lock](#the-lock)).
+2. Tap the pedal button beside what you want the board to work. A small panel
+   opens under it, with a choice for each thing you can assign there:
+   - beside an effect: **On/off** (a footswitch turns the effect on and off)
+     and **pedal sweeps** (the pedal sweeps one of the effect's knobs, which
+     you pick from the list);
+   - beside a channel: **On/off** (a footswitch turns the whole channel on and
+     off) and **Volume** (the pedal rides its volume).
+
+   Only the controls that can do that are offered: footswitches for on/off,
+   the pedal for a volume or a knob. A and B are never offered: they step rigs.
+3. Pick the control. Pick **none** to take it off again.
+
+If the control you pick is already doing something else on this rig, the page
+asks first, naming what it is on now: **Move C** moves it, **Keep it** leaves
+everything as it was. A control does one thing on a rig, so moving it takes it
+off the other.
+
+What you assign is written into the running rig's file, keeping the file's
+comments, and not committed. A footswitch on an effect, or a momentary
+footswitch on a channel, works at once. The pedal on a volume or a knob, and a
+latching footswitch on a channel, need the rig to restart (about five seconds
+of silence) before they work: the page says so and offers **Restart**. If you
+have turned knobs since the last save, that restart would lose them, so the
+page asks you to save first. Undo does not take an assignment back: assign
+again, or pick **none**.
+
+The rig's file says which board its pedals are for. The first assignment on a
+rig fills that in for you when the machine's file describes one board; if it
+describes several, the **PEDALS** section asks which.
+
+### What each control does, and whether the board is heard
+
+Under the channel strips, **PEDALS** lists each control of the board and what
+it does on this rig: for example **C** board/drive on/off, **D** vocal on/off,
+**pedal** lead volume, with A and B as previous and next rig. Above the list is
+the board's state:
+
+- **listening**: the board is plugged in and the agent is reading it;
+- **not connected**: it is not plugged in, and this rig does not need it;
+- **waiting**: this rig has pedals assigned and the board is not plugged in.
+  Plug it in and it is picked up at once.
+
+Each control has a light that comes on briefly whenever a message from it
+arrives, and the pedal's row shows the last value it sent (0 at the heel, 127
+at the toe). The pedal button of whatever a control is assigned to lights up
+too. Press each switch and rock the pedal to check that the board is connected
+and sending: a control whose light never comes on is not sending what the
+machine's file says. This is only a check: pressing a control assigns nothing.
+
+### Playing with them
 
 If a pedal is riding or fading a channel, that channel's **VOLUME** says
 **driven by** and the pedal's name, and cannot be moved from the page. To change
@@ -152,7 +212,8 @@ mid-set) and it works at once, without restarting the rig.
 Not yet tried on the rig: the FBV has not arrived, so its settings in the
 machine file are a best guess, and none of the saved rigs has a pedal set up.
 Nothing has been played through a real pedal; only the pad controller's own
-messages have been checked.
+messages have been checked. Assigning on the rack, and the lights, have been
+tried only against a stand-in for the board and for Sushi.
 
 ## The visualiser
 

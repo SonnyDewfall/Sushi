@@ -6766,3 +6766,103 @@ so a pid reused between check and signal cannot be hit, and a recorded pid
 that is not a `pw-loopback` is never signalled (`procs.stop_recorded`,
 replacing `stop_pid`). Each with a test that fails without it.
 *(2026-11-20)*
+
+**The pedalboard, part 2: assigning pedal controls in the rack (#192).** The
+user's design: a device in the machine file has a type and assignable
+controls, and the rig's controls are assigned on the rack, not by touching
+the pedal. *Built:* a pedal badge beside each effect's on/off and each
+channel's name opens a panel of selects in its row (an effect's **On/off** and
+**pedal sweeps** one of its parameters; a channel's **On/off** and **Volume**),
+offering only the controls whose `takes` can take that target, never A or B.
+A control in use elsewhere moves only after a confirm naming where it is now.
+**PEDALS**, under the strips, says what each control does on this rig, the
+device's state (listening, not connected, waiting) and a light per control
+when a message from it is heard, with the pedal's value. The new route `POST
+/rig/midi/assign {"control", <binding>: <target>}` or `{"control", "none":
+true}` writes the running rig's file's `midi:` (`rigedit.with_assignment`),
+compiled first and refused with `compile_midi`'s words, under the same locks
+and refusals as a channel edit, filling in `controller` when the machine file
+has one typed device and asking (`which_controller`) when it has several.
+*Decided:* an assignment whose compile leaves Sushi's `cc_mappings` as they
+run (a footswitch on a bypass, a momentary one on a mute) is applied live:
+the running config's `_midi_agent` is replaced and the listener re-planned;
+anything Sushi maps (a sweep, a volume, a blend) plays after the restart the
+answer offers, and is refused while unsaved work would be lost by it. Not
+in `/live/log` and not undone by Undo, as a channel added is not. A target
+holds one control of a binding; the last control taken off takes `midi:` out
+unless it has `programs`. *Found:* `yamlmerge` matched the map's controls by
+position, so taking one out of the middle handed each later control the
+comment of the one before; lists whose items all have `control` are now
+matched by it, as chains are by `name`. `/health`'s `agent.midi.seen` gives
+each control's count, last value and age, bound or not (`Feed.controls`, from
+the machine file); the page lights a control when its count moves between two
+polls, so a phone's clock does not matter. Behind the page's lock. The fake
+gains pedals (`Served(save=True, pedals=True)`, `ui_fake.py --pedals`): the
+FBV in its machine file and the agent's real listener on a fake port.
+Tests: `test_agent_midi_assign.py` (29) and `test_ui_midi_assign.py` (16);
+the re-plan, the `control` matching, the heard counts, the lock, the move's
+confirm, the controller filled in, the live-or-restart decision, the unsaved
+refusal, the takes filter and the replaced control were each shown failing
+with their code taken out. Not run on the rig: no board has arrived, and the
+assignments and lights are tested only against fakes of the board and Sushi.
+*(2026-11-20)*
+
+**Pedalboard 2, after review (PR #202).** Each fix with a test that fails
+without it. (1) A write for the restart could turn MIDI off for the running
+rig, A and B included: the listener read the controller, and so which pedal
+is `required`, from the rig file as it now is, so a file that lost its
+`midi:` failed the next re-sync (a refused restart's, a failed switch's) and
+one that gained a map made the rig wait for a pedal it does not use. A
+compiled config with a map now records its controller (`_meta`'s
+`midi_controller`) and `plan_for` plans from it; a config with nothing of a
+map needs no pedal; an older one still reads the file. (2) "Live" checked
+only Sushi's `midi` section, so C could be bound live to a plugin taken out
+live, or D to a channel added to the file and not yet restarted, which also
+blocked SAVE: an assignment is live only when every binding names a
+processor the running rig has (`assignment_not_live`), else it waits for the
+restart, refused while unsaved work would be lost. (3) A live assignment
+stopped and restarted the listeners, so a queued press was dropped silently
+and a heel's silencing in flight landed for a listener that no longer
+counted it, leaving the channel silent with the pedal up: a plan on the same
+ports is now swapped in place (`_midi_swap`), keeping each unchanged
+binding's state; a press a stopped listener heard is said as dropped. (4)
+The move's confirm shows the control picked in its select. (5) The panel's
+lock words are `R.lockRefusal`'s. (6) `none` for a control the map lacks,
+and an assignment the map already says, answer `unchanged` and write
+nothing; an unknown control is `409 no_control`. (7) The badge has
+`aria-controls`, the focus goes back to it, and each light is said in words.
+(8) `plan_for` no longer rebinds its `described`. (9) The running config and
+the state file are written through a scratch file and a rename, and a write
+that outlasts the answer is followed by the listener once it is over. A
+fixture of `test_midi_listener.py` (a map of sweeps compiled with no
+cc_mappings, which no compile makes) was given its cc_mappings. *(2026-11-20)*
+
+**Pedalboard 2, re-review (PR #202).** Each fix with a test that fails
+without it. (1) A Save as recorded the new file's compile as the running
+config, so a file carrying a pedal assigned for the restart made the run
+claim cc_mappings, a MIDI input and a controller Sushi never loaded, and the
+listener then silenced the channel at the heel with no mapping to bring it
+back (older than #192, but against its premise). When `rigfile.diff` says
+the new file needs a restart, the running config is kept, renamed
+(`renamed_running`), and the answer's `restart` says why; a channel added to
+the file for the restart is the same case and is handled the same way. (2) A
+write that outlasted its 504 could land after a later restart or switch: it
+now re-reads the state file in its thread and writes nothing, and is not
+followed, when the run has changed. (3) Following a late write holds the
+lifecycle lock as `busy: "MIDI"`, not `None`. (4) `write_atomically` used one
+scratch name for every writer and did not flush: each write now has its own
+`mkstemp` file, fsynced, renamed over, the directory synced, and the file's
+mode kept (two threads writing at once tested). (5) A heel's silencing
+refused as busy was lost, likelier now an assignment holds the agent while
+the player is on the pedals: it waits until the lifecycle lock is free and
+goes again from the pedal's latest value, ended by a `down` or a switch.
+*(2026-11-20)*
+
+**Pedalboard 2, fourth review (PR #202).** Each fix with a test that fails
+without it. (1) The page did not show a Save as's `restart`: `saveOutcome`
+now says the rig plays as it was loaded until it restarts, with why, and
+offers the restart behind a confirm. (2) A late write could still point a
+run started since its check at its rig's config: the state file is compared
+again just before it is written (`run_changed`). (3) A heel's silencing
+waiting for a busy agent could resume on a binding a swapped plan had
+dropped: it stops when the plan no longer has that binding. *(2026-11-20)*

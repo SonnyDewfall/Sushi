@@ -96,6 +96,7 @@ const state = {
   saving: null,              // this page's save in flight: {name}, null for the running rig's own file
   saveAsOpen: false, saveAsName: "",  // the Save as… form, and what is typed in it
   saveResult: null,          // what the last save or revert from this page said (R.saveOutcome, R.revertOutcome)
+  saveRestartConfirm: false, // the restart a save-as offers (its file waits for one, #192), asked again before it runs
   revert: { open: false, rig: null, list: null, choice: null, pending: false },  // Revert…: GET /rigs/<rig>/saves, the point chosen
   confirming: false, confirmTimer: null,  // Stop's second tap
   record: null, recordBase: null,  // GET /record, with /live; and {elapsed, at} of the take running
@@ -108,6 +109,14 @@ const state = {
   rigChannels: {},           // GET /rigs/<rig>/channels, by rig: "start from", and the running rig's inputs
   newRig: { name: "", channels: [], touched: false, pending: false, result: null, addRefused: null },
   wiring: freshWiring(),     // the rack's channel edits: see freshWiring
+  // Pedals (#192): GET /midi, kept by run and read again after an assignment;
+  // and the rack's pedal menus: the one open (a target's key), the move it
+  // asks to confirm, the assignment in flight, what the last one said (and
+  // the restart it offers), the device chosen when the machine has several,
+  // and each control's light (`R.pedalLights`).
+  midi: null, midiAt: 0, midiFor: null,
+  pedalUi: { open: null, confirm: null, pending: null, result: null, restartConfirm: false, device: null,
+    lights: {}, refused: null, row: null },
   // Channel presets (#127): GET /presets, and a strip's Preset… panel.
   presets: null, presetsAt: 0,
   presetUi: { channel: null, name: "", choice: "", pending: null, result: null, rig: null },
@@ -351,6 +360,23 @@ async function refreshRigChannels(name, force = false) {
   return true;
 }
 
+// GET /midi (#192): the devices, what each control may take, and the
+// running rig's assignments. Read again when the run changes (a restart
+// brings in what an assignment wrote), at once after an assignment, and after
+// RETRY_MS while it fails; an answer for a run since replaced is dropped.
+async function refreshMidi(force = false) {
+  const run = runKey();
+  if (run !== state.midiFor) force = true;
+  if (!force && state.midi && state.midi.ok) return false;
+  if (!force && state.midiAt && Date.now() - state.midiAt < RETRY_MS) return false;
+  state.midiFor = run;
+  state.midiAt = Date.now();
+  const answer = await request("GET", "/midi");
+  if (state.midiFor !== run) return false;
+  state.midi = answer;
+  return true;
+}
+
 // config/channels/'s presets (#127), for "start from" and a strip's
 // Preset… panel: read when either opens, and again after a save.
 async function refreshPresets(force = false) {
@@ -439,6 +465,8 @@ async function poll() {
     const due = live && live.ok ? pluginsDue(live.body, rigIdentity(health, switches)) : null;
     const another = !!due && due.rig !== state.pluginsRig;
     state.health = health;
+    // Each control's light, from /health's counts (#192): a count that moved since the last poll lights it.
+    state.pedalUi.lights = R.pedalLights(state.pedalUi.lights, health, pedalBoard().controller, Date.now());
     state.live = live;
     state.amp = amp;
     noteRecord(record);
@@ -473,6 +501,7 @@ async function poll() {
     if (state.screen === "rack" && health.ok && (health.body.rig || {}).running && (health.body.rig || {}).rig) {
       inBackground("roles", refreshRoles);
       inBackground("running channels", refreshRunningChannels);
+      inBackground("midi", refreshMidi);
       // Every rig's channels only while Add channel is open: "start from".
       if (state.wiring.adding) inBackground("rig channels", refreshAllRigChannels);
     }
@@ -1048,6 +1077,7 @@ async function save(name = null) {
     state.saving = null;
   }
   state.saveResult = R.saveOutcome(name, answer);
+  state.saveRestartConfirm = false;
   if (answer.ok && name) { state.saveAsOpen = false; state.saveAsName = ""; }
   render();
   kick();
@@ -1801,6 +1831,7 @@ function rackFrame() {
     rigs: h("section", { class: "rigs", "aria-label": "Rigs" }),
     channels: h("div", { class: "channel-list" }),
     wiring: h("section", { class: "wiring strips", "aria-label": "Channels and their inputs" }),
+    pedals: h("section", { class: "pedals", "aria-label": "Pedals", hidden: true }),
     tabs: h("div", { class: "tabs", role: "tablist", "aria-label": "Chains", hidden: true }),
     panel: h("div", { class: "tab-panel", id: "rack-panel" }),
     amp: h("section", { class: "amp-card", "aria-label": "Amp" }),
@@ -1828,7 +1859,7 @@ function rackFrame() {
     // header. At phone width they stack in that order, the strips first:
     // volume is what is reached for. The problem boxes are above all three,
     // outside the tabs: nothing they say is behind a closed one.
-    h("div", { class: "rack-body" }, h("nav", { class: "channels", "aria-label": "Channel strips" }, regions.wiring),
+    h("div", { class: "rack-body" }, h("nav", { class: "channels", "aria-label": "Channel strips" }, regions.wiring, regions.pedals),
       h("div", { class: "rack-main" }, regions.tabs, regions.panel),
       h("div", { class: "side files", "aria-label": "Rigs and files" }, regions.rigs,
         h("aside", { class: "changes", "aria-label": "Undo, save and revert" }, regions.changes, regions.save),
@@ -1938,8 +1969,10 @@ function unitParts(slot, unit, expanded) {
       slot.sub),
     h("div", { class: "knobs" }, shown.map((c) => control(unit, c, "small")),
       !expanded && primary.length > shown.length ? h("span", { class: "more" }, `+${primary.length - shown.length} more`) : null),
+    slot.pedal = h("span", { class: "pedal-slot" }),
     bypassButton(unit, "small", (bypassed) => rowSeen(unit.name, slot, bypassed)),
     expanded ? detail(unit, "big", removeParts(slot, unit)) : null,
+    slot.pedalPanel = h("div", { class: "pedal-panel-slot" }),
   ];
 }
 
@@ -2113,6 +2146,7 @@ function settleEdits() {
 // goes, since the lock it was about is off (review of #130).
 function forgetLockRefusals() {
   for (const [name, held] of [...state.removing]) if (held.lock) state.removing.delete(name);
+  if (state.pedalUi.refused && state.pedalUi.refused.lock) state.pedalUi.refused = null;
   state.failures = state.failures.filter((f) => !f.lock);
 }
 
@@ -2160,6 +2194,7 @@ function unitSlot(slot, track, unit, index) {
   if (slot.sub.textContent !== sub) slot.sub.textContent = sub;
   slot.steps.up.disabled = !R.canMove(track, index, "up");
   slot.steps.down.disabled = !R.canMove(track, index, "down");
+  pedalSlots(slot.pedal, slot.pedalPanel, unitPedalTarget(track, unit));
 }
 
 // Put `els` in `container`, in that order, never moving a row in use: one
@@ -2834,6 +2869,7 @@ function renderRack(regions, model, unsaved, status) {
   ampRegion(regions.amp);
   rigsRegion(regions.rigs, { newRig: true, deletes: true });
   stripsRegion(regions.wiring, model, unsaved);
+  pedalsRegion(regions.pedals);
   agentRegion(regions.channels);
   renderChanges(regions.changes);
   saveRegion(regions.save, unsaved);
@@ -2880,7 +2916,9 @@ function saveRegion(el, unsaved) {
   const typing = document.activeElement && document.activeElement.name === "rig-name";
   const { dot, ...keyed } = view;
   const revert = state.revert.open ? revertKey(view) : null;
-  const rebuilt = patch(el, JSON.stringify([keyed, state.saveAsOpen, state.saveResult, last, revert]), () => {
+  const busyNow = state.health && state.health.ok ? (state.health.body.agent || {}).busy || null : null;
+  const rebuilt = patch(el, JSON.stringify([keyed, state.saveAsOpen, state.saveResult, last, revert, state.saveRestartConfirm,
+    busyNow, !!state.pending]), () => {
     const result = state.saveResult;
     return [
       h("div", { class: "save-acts" },
@@ -2900,7 +2938,13 @@ function saveRegion(el, unsaved) {
         h("span", {}, result.ok ? result.text : result.reason),
         result.ok ? h("span", { class: "commit" }, result.commit) : null,
         result.action ? h("button", { class: "rig-act danger", onclick: result.action.run }, result.action.label) : null,
-        h("button", { class: "dismiss", "aria-label": "Dismiss", onclick: () => { state.saveResult = null; render(); } }, "×")) : null,
+        result.ok && result.offer ? h("button", { class: "rig-act primary offer", disabled: !!state.pending,
+          onclick: () => { state.saveRestartConfirm = true; render(); } }, result.offer.label) : null,
+        h("button", { class: "dismiss", "aria-label": "Dismiss", onclick: () => { state.saveResult = null; state.saveRestartConfirm = false; render(); } }, "×")) : null,
+      result && result.ok && result.offer && state.saveRestartConfirm ? h("div", { class: "confirm", role: "group", "aria-label": "Confirm the restart" },
+        h("p", {}, `Restart ${result.offer.name}? The sound stops for a few seconds while it comes back from its file.`),
+        h("button", { class: "rig-act danger", disabled: !!state.pending || !!busyNow, onclick: restartForSave }, "Restart now"),
+        h("button", { class: "rig-act", onclick: () => { state.saveRestartConfirm = false; render(); } }, "Not now")) : null,
       last ? h("p", { class: "sub last-save" }, `Last saved ${last.time} to `, h("code", {}, last.file), `, ${last.then}.`) : null,
       helpAnchor("save"),
     ];
@@ -3376,6 +3420,261 @@ function renderStage(regions, model, status) {
   rigsRegion(regions.rigs, { dropdown: regions.pick, title: status.title });
 }
 
+// ---------------------------------------------------------------- pedals (#192)
+// A device control assigned to a target on the rack: beside an effect's on/off
+// a pedal badge, beside a channel's volume another, each opening a small
+// panel of selects in its row (as a strip's Preset… panel opens in its
+// strip); and the Pedals section under the strips, saying what each control
+// does on this rig with its "heard" light. The choices are R.pedalOptions',
+// from GET /midi's `takes`; what is written is the agent's (POST
+// /rig/midi/assign), which compiles first and refuses with the compiler's
+// words. Behind the lock, as a structural edit is. Only shown where the
+// machine file describes a device: a rig without one sees nothing new.
+
+function pedalBoard() {
+  return R.pedalBoard(state.midi, state.pedalUi.device);
+}
+
+// Whether the rack offers pedals at all: a device whose controls can take
+// something, or a map the rig file has.
+function pedalsShown(board) {
+  return board.ok && (board.controls.some((c) => !c.job && c.takes.length) || board.assignments.length > 0);
+}
+
+// What a unit's badge assigns: its on/off, and each expression control's
+// sweep of one of its parameters (R.pedalParameters: its panel's, settable).
+function unitPedalTarget(track, unit) {
+  const params = R.pedalParameters(unit.panel);
+  return { key: `u\u0000${track.name}\u0000${unit.name}`, what: unit.name, path: `${track.name}/${unit.name}`,
+    rows: [{ binding: "bypass", target: `${track.name}/${unit.name}`, label: "On/off" }], params };
+}
+
+function stripPedalTarget(channel) {
+  return { key: `c\u0000${channel}`, what: channel, path: channel, params: null,
+    rows: [{ binding: "mute", target: channel, label: "On/off" }, { binding: "volume", target: channel, label: "Volume" }] };
+}
+
+// The controls on a target's rows, for its badge: "C", "C · pedal".
+function pedalOnTarget(board, t) {
+  const on = t.rows.map((r) => R.pedalOn(board, r.binding, r.target)).filter(Boolean);
+  if (t.params) {
+    for (const a of board.assignments) if (a.binding === "parameter" && String(a.target).startsWith(`${t.path}/`)) on.push(a.control);
+  }
+  return [...new Set(on)];
+}
+
+// A target's badge and its panel, each on its own key, drawn in place: the
+// row they are in is never rebuilt for them, and the light is a class.
+function pedalSlots(badgeEl, panelEl, t) {
+  if (!badgeEl || !panelEl) return;
+  const board = pedalBoard();
+  const shown = pedalsShown(board);
+  const pu = state.pedalUi;
+  const on = shown ? pedalOnTarget(board, t) : [];
+  const open = shown && pu.open === t.key;
+  const panelId = pedalPanelId(t.key);
+  if (panelEl.id !== panelId) panelEl.id = panelId;
+  patch(badgeEl, JSON.stringify([shown, on, open, state.locked]), () => (!shown ? null : h("button", {
+    type: "button", class: `pedal-badge${on.length ? " assigned" : ""}`, "aria-expanded": String(open),
+    "aria-controls": panelId, "data-pedal": t.key,
+    "aria-label": `Pedal for ${t.what}: ${on.length ? on.map(R.pedalName).join(", ") : "none"}`,
+    title: on.length ? `${on.map(R.pedalName).join(", ")} on ${t.what}` : `Assign a pedal control to ${t.what}`,
+    onclick: () => { pu.open = open ? null : t.key; pu.confirm = null; pu.refused = null; render(); },
+  }, pedalIcon(), on.length ? h("span", { class: "on" }, on.map(R.pedalName).join(" ")) : null)));
+  const button = badgeEl.querySelector(".pedal-badge");
+  if (button) button.classList.toggle("lit", on.some((c) => (pu.lights[c] || {}).until > Date.now()));
+  const focus = focusedName(panelEl);
+  const rebuilt = patch(panelEl, JSON.stringify(open ? [board, t.rows, t.params, pu.confirm && pu.confirm.key === t.key ? [pu.confirm.what, pu.confirm.row, pu.confirm.value] : null,
+    pu.pending, pu.refused && pu.refused.key === t.key ? pu.refused.reason : null, state.locked] : null),
+  () => (open ? pedalPanel(board, t) : null));
+  if (rebuilt) refocus(panelEl, focus);
+}
+
+function pedalIcon() {
+  // A treadle on its hinge: the expression pedal, drawn small.
+  return h("svg", { width: 16, height: 16, viewBox: "0 0 16 16", "aria-hidden": "true", class: "icon" },
+    h("path", { d: "M2 13h12" }), h("path", { d: "M4 13 12 6" }), h("circle", { cx: 4, cy: 13, r: 1.2 }));
+}
+
+// The panel: a select a row (none, or each control that can take it), and
+// for an effect, each expression control's sweep of one of its parameters.
+// Locked, the selects are off and the lock's reason is said.
+function pedalPanel(board, t) {
+  const pu = state.pedalUi;
+  const locked = pedalLockRefusal();
+  const busy = !!pu.pending;
+  const rows = [];
+  const confirm = pu.confirm && pu.confirm.key === t.key ? pu.confirm : null;
+  const pick = (name, label, options, value, onChange) => {
+    const select = h("select", { name, "aria-label": label, disabled: busy || !!locked, title: locked || null },
+      options.map((o) => h("option", { value: o.value }, o.label)));
+    // While a move is asked about, its select shows the control picked.
+    select.value = confirm && confirm.row === name ? confirm.value : value;
+    select.addEventListener("change", () => { pu.row = { name, value: select.value }; onChange(select.value); });
+    return h("label", { class: "selector pedal-pick" }, h("span", { class: "label" }, label.replace(`${t.what} `, "")), select);
+  };
+  for (const r of t.rows) {
+    if (!R.pedalTakes(board, r.binding)) continue;
+    const current = R.pedalOn(board, r.binding, r.target) || "";
+    rows.push(pick(`pedal-${r.binding}-${t.path}`, `${t.what} ${r.label.toLowerCase()}`, R.pedalOptions(board, r.binding, r.target), current,
+      (value) => choosePedal(t, R.pedalChoice(board, r.binding, r.target, value, board.ask ? board.controller : null))));
+  }
+  if (t.params && t.params.length) {
+    for (const c of board.controls.filter((x) => !x.job && x.takes.includes("parameter"))) {
+      const use = R.pedalUse(board, c.name);
+      const here = use && use.binding === "parameter" && String(use.target).startsWith(`${t.path}/`) ? String(use.target).slice(t.path.length + 1) : "";
+      const options = [{ value: "", label: "none" }, ...t.params];
+      rows.push(pick(`pedal-sweep-${c.name}-${t.path}`, `${t.what} ${R.pedalName(c.name)} sweeps`, options, here, (value) => {
+        if (value) choosePedal(t, R.pedalChoice(board, "parameter", `${t.path}/${value}`, c.name, board.ask ? board.controller : null));
+        else choosePedal(t, { call: R.pedalCall(c.name, null, null), confirm: null, what: `${R.pedalName(c.name)} off ${t.what}` });
+      }));
+      if (use && !here) rows.push(h("p", { class: "sub" }, `${R.pedalName(c.name)} is on ${R.pedalSaid(use.binding, use.target)} now.`));
+    }
+  }
+  const refused = pu.refused && pu.refused.key === t.key ? pu.refused.reason : null;
+  return h("div", { class: "pedal-panel", role: "group", "aria-label": `Pedal for ${t.what}` },
+    h("p", { class: "sub" }, board.controller ? `${board.controller}'s controls${board.ask ? " (chosen in Pedals)" : ""}` : "No device to assign from"),
+    rows.length ? rows : h("p", { class: "sub" }, "None of the device's controls can take this."),
+    confirm ? h("div", { class: "confirm", role: "group", "aria-label": "Confirm the move" },
+      h("p", {}, confirm.choice.confirm),
+      h("button", { class: "rig-act danger small", disabled: busy, onclick: () => sendPedal(t, confirm.choice) }, confirm.choice.moveLabel),
+      h("button", { class: "rig-act small", onclick: () => { pu.confirm = null; render(); } }, "Keep it")) : null,
+    busy ? h("p", { class: "sub", role: "status" }, "Assigning…") : null,
+    locked ? h("p", { class: "sub lock-says" }, lockIcon(), locked) : null,
+    refused ? h("p", { class: "row-said refused", role: "alert" }, refused) : null);
+}
+
+function pedalLockRefusal() {
+  return R.lockRefusal(state.locked, "pedal");
+}
+
+// The id of a target's panel, for its badge's aria-controls: the key, with
+// every character an id should not hold written as its code.
+function pedalPanelId(key) {
+  return "pedal-panel-" + [...key].map((ch) => (/[A-Za-z0-9-]/.test(ch) ? ch : `_${ch.codePointAt(0)}_`)).join("");
+}
+
+// A choice made in a select: refused locked, asked to confirm when it moves
+// a control in use, else sent.
+function choosePedal(t, choice) {
+  const pu = state.pedalUi;
+  if (!choice) return;
+  const locked = pedalLockRefusal();
+  if (locked) { pu.refused = { key: t.key, reason: locked, lock: true }; render(); return; }
+  pu.refused = null;
+  if (choice.confirm) {
+    pu.confirm = { key: t.key, choice, what: choice.what, row: pu.row ? pu.row.name : null, value: pu.row ? pu.row.value : null };
+    render();
+    return;
+  }
+  sendPedal(t, choice);
+}
+
+async function sendPedal(t, choice) {
+  const pu = state.pedalUi;
+  if (pu.pending) return;
+  const fromPanel = !!(document.activeElement && document.activeElement.closest(".pedal-panel-slot"));
+  const locked = pedalLockRefusal();
+  if (locked) { pu.refused = { key: t.key, reason: locked, lock: true }; pu.confirm = null; render(); return; }
+  pu.pending = choice.what;
+  pu.confirm = null;
+  render();
+  let answer;
+  try {
+    answer = await request("POST", choice.call.path, choice.call.json);
+  } finally {
+    pu.pending = null;
+  }
+  pu.result = R.pedalOutcome(choice.what, answer);
+  pu.restartConfirm = false;
+  if (answer.ok) {
+    pu.open = null;
+    await refreshMidi(true);
+    const rig = state.health && state.health.ok ? state.health.body.rig || {} : {};
+    if (rig.config_name) refreshRigChannels(rig.config_name, true).then(render);
+  } else {
+    pu.refused = { key: t.key, reason: `Not assigned: ${answer.reason}` };
+  }
+  render();
+  if (answer.ok) {
+    // The panel has closed: the focus it held goes back to the badge that
+    // opened it, not to the page's body.
+    const active = document.activeElement;
+    // Found by its key, not by a selector: CSS.escape writes the key's NULs as U+FFFD.
+    const badgeButton = [...document.querySelectorAll(".pedal-badge")].find((b) => b.dataset.pedal === t.key);
+    if (badgeButton && (fromPanel || !active || active === document.body)) badgeButton.focus({ preventScroll: true });
+  }
+  kick();
+}
+
+async function restartForSave() {
+  const result = state.saveResult;
+  state.saveRestartConfirm = false;
+  if (!result || !result.offer) return;
+  const ok = await lifecycle("restart", result.offer.name);
+  if (ok) state.saveResult = null;
+  render();
+}
+
+async function restartForPedals() {
+  const rig = state.health && state.health.ok ? state.health.body.rig || {} : {};
+  state.pedalUi.restartConfirm = false;
+  const ok = await lifecycle("restart", rig.config_name);
+  if (ok) state.pedalUi.result = null;
+  render();
+}
+
+// The Pedals section: the device and its state, then each control and what
+// it does on this rig, with its light (and the pedal's value) drawn in place.
+function pedalsRegion(el) {
+  const board = pedalBoard();
+  const pu = state.pedalUi;
+  const shown = pedalsShown(board) || board.choose.length > 0;
+  el.hidden = !shown;
+  const device = board.controller ? R.pedalDeviceState(state.health, board.controller) : null;
+  const rows = shown ? R.pedalSummary(board, pu.lights, Date.now()) : [];
+  const busy = state.health && state.health.ok ? (state.health.body.agent || {}).busy || null : null;
+  patch(el, JSON.stringify([shown, board.controller, board.choose, board.problem, device, rows.map((r) => [r.control, r.name, r.does, r.assigned, r.job]),
+    pu.result, pu.restartConfirm, busy, !!state.pending]), () => (!shown ? [] : [
+    h("h2", {}, "PEDALS"),
+    board.choose.length ? h("label", { class: "selector pedal-pick" }, h("span", { class: "label" }, "Device for this rig's map"),
+      (() => {
+        const select = h("select", { name: "pedal-device", "aria-label": "Device for this rig's map" }, board.choose.map((n) => h("option", { value: n }, n)));
+        select.value = board.controller || board.choose[0];
+        select.addEventListener("change", () => { pu.device = select.value; render(); });
+        return select;
+      })()) : null,
+    device ? h("p", { class: `pedal-device state-${device.state}` }, h("span", { class: "dot", "aria-hidden": "true" }),
+      h("strong", {}, board.controller), ` · ${device.text}`) : null,
+    board.problem ? h("p", { class: "rig-problem" }, board.problem) : null,
+    h("ul", { class: "pedal-list" }, rows.map((r) => h("li", { class: `pedal-row${r.assigned ? " assigned" : ""}${r.job ? " job" : ""}`, "data-control": r.control },
+      h("span", { class: "heard", "aria-hidden": "true" }),
+      h("strong", { class: "pedal-name" }, r.name), h("span", { class: "does" }, r.does), h("span", { class: "value" }),
+      h("span", { class: "sr-only heard-said" })))),
+    h("p", { class: "sub" }, "Assign from the rack: the pedal button beside an effect's on/off, or by a channel's name. A light is a message heard from that control."),
+    pu.result ? rigFileResult(pu.result, () => { pu.result = null; render(); }, () => { pu.restartConfirm = true; render(); }) : null,
+    pu.restartConfirm ? h("div", { class: "confirm", role: "group", "aria-label": "Confirm the restart" },
+      h("p", {}, `Restart ${shownRigName()}? The sound stops for a few seconds while it comes back from its file.`),
+      h("button", { class: "rig-act danger", disabled: !!state.pending || !!busy, onclick: restartForPedals }, "Restart now"),
+      h("button", { class: "rig-act", onclick: () => { pu.restartConfirm = false; render(); } }, "Not now")) : null,
+  ]));
+  // The lights and the pedal's value, in place.
+  for (const r of rows) {
+    const li = el.querySelector(`.pedal-row[data-control="${CSS.escape(r.control)}"]`);
+    if (!li) continue;
+    li.classList.toggle("lit", r.lit);
+    li.classList.toggle("heard-once", r.heard);
+    li.title = r.lit ? `${r.name}: heard just now` : r.heard ? `${r.name}: heard since the agent started` : `${r.name}: nothing heard from it yet`;
+    // What the light says, for a screen reader: in the row's own text.
+    const heardSaid = li.querySelector(".heard-said");
+    const words = r.lit ? "heard just now" : r.heard ? "heard before" : "not heard yet";
+    if (heardSaid.textContent !== words) heardSaid.textContent = words;
+    const value = li.querySelector(".value");
+    const text = r.value === null || r.value === undefined ? "" : String(r.value);
+    if (value.textContent !== text) value.textContent = text;
+  }
+}
+
 // ---------------------------------------------------------------- rig files
 // The New rig screen (#new-rig, from the rack's picker) and, on the rack, the
 // running rig's inputs: "Add channel" and a channel's input change. Each
@@ -3702,13 +4001,14 @@ function stripsRegion(el, model, unsaved) {
     !!master]), () => {
     state.stripUpdaters = [];
     parts.slots = new Map();
+    parts.pedals = new Map();
     // A strip that plays opens its tab (#135): its name is the button, and
     // so is a tap on the strip that lands on nothing else (not its fader,
     // its value or its input, which are their own gestures). One the file
     // has gained since the rig came up has no chain to open yet.
     const opens = (el, name) => {
       el.addEventListener("click", (event) => {
-        if (!event.target.closest("button, a, input, select, label, form, .volume")) chooseTab(name, { reveal: true });
+        if (!event.target.closest("button, a, input, select, label, form, .volume, .pedal-panel")) chooseTab(name, { reveal: true });
       });
       return el;
     };
@@ -3717,8 +4017,13 @@ function stripsRegion(el, model, unsaved) {
     const strip = (name, volume, plays = true) => {
       const slot = h("div", { class: "strip-input-slot" });
       parts.slots.set(name, slot);
+      // A channel's pedal (#192): its on/off and its volume, beside the volume.
+      const pedal = plays ? h("span", { class: "pedal-slot" }) : null;
+      const panel = plays ? h("div", { class: "pedal-panel-slot" }) : null;
+      if (plays) parts.pedals.set(name, [pedal, panel]);
       const el = h("section", { class: "strip", "data-channel": name, "aria-label": `${name} channel` },
-        plays ? opener(name) : h("span", { class: "strip-name" }, name), slot, volume);
+        plays ? h("div", { class: "strip-top" }, opener(name), pedal) : h("span", { class: "strip-name" }, name),
+        slot, volume, panel);
       return plays ? opens(el, name) : el;
     };
     return [
@@ -3730,6 +4035,7 @@ function stripsRegion(el, model, unsaved) {
     ];
   });
   if (listRebuilt) giveBack(parts.list, typing);
+  for (const [name, [pedal, panel]] of parts.pedals || []) pedalSlots(pedal, panel, stripPedalTarget(name));
   // The open tab's strip is marked, in place: choosing a tab rebuilds no strip.
   const openTab = state.rackParts ? state.rackParts.open : null;
   for (const el of parts.list.querySelectorAll(".strip")) {

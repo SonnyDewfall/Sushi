@@ -725,6 +725,24 @@ class Feed:
     port: str
     bindings: Bindings
     required: bool = True
+    # Every control of the controller as the machine file describes it,
+    # `(name, "cc"|"note", number)`, and the channel it sends on (None for
+    # all): which control a message came from, bound or not, for the page's
+    # "heard" light (#192). Empty for a feed built without the machine file.
+    controls: tuple[tuple[str, str, int], ...] = ()
+    channel: int | None = None
+
+    def control_of(self, message: "Message") -> str | None:
+        """The control `message` came from, by what each control sends and
+        the controller's channel; None for any other message (a program
+        change, a CC no control sends, another channel)."""
+        if self.channel is not None and message.channel != self.channel:
+            return None
+        kind = "note" if message.kind in ("note_on", "note_off") else message.kind
+        for name, sends, number in self.controls:
+            if sends == kind and number == message.number:
+                return name
+        return None
 
 
 @dataclass(frozen=True)
@@ -771,23 +789,28 @@ def plan_for(described: dict[str, Any], root: Path) -> Plan | Off:
     - the rig's map: the bindings are the compiled config's, as `up` wrote
       them. The port is not in them -- `compile_midi` resolves each control to
       a note or CC and keeps no port name -- so it comes from the controller
-      the rig file's map names, as the machine file the run was compiled
+      the map was compiled for, as the machine file the run was compiled
       against describes it;
     - the machine's rig-stepping controls (#191), on every running rig, with
       or without a map, from that same machine file. A machine file that is
       not there has none; one that will not read or validate is a
       `MidiError`, since the pedals it describes would then be silently off.
 
-    A feed is `required` only for the controller the rig file's `midi:`
-    names, whether or not its map has anything for the agent (a map of
-    sweeps alone still needs its pedal). The rig file is read whenever the
-    run names one, for that; one that will not read is a `MidiError` only
-    where the compiled config has bindings that need it.
+    A feed is `required` only for the controller the running rig's map was
+    compiled for, whether or not its map has anything for the agent (a map
+    of sweeps alone still needs its pedal). That controller is the compiled
+    config's (`_meta`'s `rigfile.MIDI_CONTROLLER`), not the rig file's as it
+    is now, which may have been edited for the next restart (#192's
+    review). A config with nothing of a map in it (no bindings for the agent,
+    no cc_mappings) needs no pedal. A config compiled before the controller
+    was recorded there, with a map, has the rig file read for it, as before;
+    one that will not read is a `MidiError` only where the compiled config
+    has bindings that need it.
     """
     import json
 
     from .machine import MachineError, MachineSpec, machine_path
-    from .rigfile import AGENT_BINDINGS, load_rig
+    from .rigfile import AGENT_BINDINGS, MIDI_CONTROLLER, load_rig
 
     if not described.get("running"):
         return Off("no rig is running")
@@ -816,49 +839,80 @@ def plan_for(described: dict[str, Any], root: Path) -> Plan | Off:
         return machine
 
     feeds: dict[str, tuple[str, Bindings]] = {}
-    rig = None
+    by_controller: dict[str, dict[str, Any]] = {}  # each feed's controller, as the machine file describes it
     rig_problem = None
-    if isinstance(source, str) and source:
-        try:
-            rig = load_rig(Path(root) / source)
-        except Exception as exc:  # noqa: BLE001 -- a YAML typo too, which load_rig lets through
-            if raw:
-                raise MidiError(f"could not read {source} for its controller: {exc}") from exc
-            if isinstance(config, dict) and (config.get("midi") or {}).get("cc_mappings"):
+    meta = (config.get("_meta") if isinstance(config, dict) else None) or {}
+    if isinstance(meta, dict) and MIDI_CONTROLLER in meta:
+        # What the running rig was compiled with: the rig file may have been
+        # edited since (a pedal assigned for the next restart, #192), and the
+        # running rig still needs what it was started with.
+        required = meta[MIDI_CONTROLLER] if isinstance(meta[MIDI_CONTROLLER], str) else None
+        said = f"{name}'s compiled config"
+    elif not raw and not (isinstance(config, dict) and (config.get("midi") or {}).get("cc_mappings")):
+        # Nothing of a map was compiled into it: the rig needs no pedal,
+        # whatever its file has gained since it started.
+        required, said = None, None
+    else:
+        # A config compiled before the controller was recorded in it: the
+        # rig file says which, as it did.
+        required, said = None, source
+        rig = None
+        if isinstance(source, str) and source:
+            try:
+                rig = load_rig(Path(root) / source)
+            except Exception as exc:  # noqa: BLE001 -- a YAML typo too, which load_rig lets through
+                if raw:
+                    raise MidiError(f"could not read {source} for its controller: {exc}") from exc
                 # Sweeps alone are Sushi's and need nothing of the agent, but
                 # which pedal they need is the rig file's to say: unread, a
                 # missing pedal would show only as "not connected".
-                rig_problem = " ".join(
-                    f"could not read {source} to say which pedal its MIDI map needs, so a missing one "
-                    f"is not reported as a problem (the steps still work): {exc}".split())
-    required = rig.midi.controller if rig is not None and rig.midi is not None else None
+                if isinstance(config, dict) and (config.get("midi") or {}).get("cc_mappings"):
+                    rig_problem = " ".join(
+                        f"could not read {source} to say which pedal its MIDI map needs, so a missing one "
+                        f"is not reported as a problem (the steps still work): {exc}".split())
+        if raw and (not isinstance(source, str) or not source):
+            raise MidiError(f"{name} carries MIDI bindings but names no rig file to say which controller")
+        if raw and rig is not None and rig.midi is None:
+            raise MidiError(f"{source} has no midi: section now, though the running rig was compiled with one")
+        required = rig.midi.controller if rig is not None and rig.midi is not None else None
     if raw:
         bindings = parse_bindings(raw)
-        if not isinstance(source, str) or not source:
-            raise MidiError(f"{name} carries MIDI bindings but names no rig file to say which controller")
-        if rig.midi is None:
-            raise MidiError(f"{source} has no midi: section now, though the running rig was compiled with one")
+        if required is None:
+            raise MidiError(f"{said or name} names no controller for the MIDI bindings it carries")
         try:
-            controller = load_machine().controller_for(rig.midi.controller)
+            controller = load_machine().controller_for(required)
         except MachineError as exc:
             raise MidiError(str(exc)) from exc
         port = controller.get("port")
         if not port:
             raise MidiError(
-                f"{machine_file.name} gives controller {rig.midi.controller!r} no port, so the agent "
+                f"{machine_file.name} gives controller {required!r} no port, so the agent "
                 "cannot open it: add its ALSA name (`aseqdump -l`), e.g. port: \"MPD218:MPD218 Port A\""
             )
-        feeds[rig.midi.controller] = (port, bindings)
+        feeds[required] = (port, bindings)
+        by_controller[required] = controller
 
     steppers = load_machine().steppers() if machine_file.is_file() else {}
     for controller_name, controller in steppers.items():
         steps = step_bindings(controller)
         port, bindings = feeds.get(controller_name, (controller["port"], Bindings()))
         feeds[controller_name] = (port, Bindings(bindings.controls + steps, bindings.programs))
+        by_controller.setdefault(controller_name, controller)
     if not feeds:
         return Off(f"{name} has no MIDI bindings for the agent" + (f"; {rig_problem}" if rig_problem else ""))
-    return Plan(rig_name, feeds=tuple(Feed(c, port, b, c == required) for c, (port, b) in feeds.items()),
+    return Plan(rig_name, feeds=tuple(Feed(c, port, b, c == required, *_heard_by(by_controller.get(c)))
+                                      for c, (port, b) in feeds.items()),
                 running=rig_name or name, rig_problem=rig_problem)
+
+
+def _heard_by(controller: dict[str, Any] | None) -> tuple[tuple[tuple[str, str, int], ...], int | None]:
+    """A feed's `controls` and `channel`, from `MachineSpec.controller`'s
+    description of its controller (`Feed.control_of`)."""
+    if not controller:
+        return (), None
+    channel = controller.get("channel", "all")
+    controls = tuple((name, kind, number) for name, (kind, number) in sorted(controller.get("controls", {}).items()))
+    return controls, None if channel == "all" else channel
 
 
 def rig_in_order(source: Any, root: Path) -> str | None:

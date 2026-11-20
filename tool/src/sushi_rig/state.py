@@ -12,6 +12,19 @@ from typing import Any, Callable
 from .paths import state_path
 
 
+def _read_umask() -> int:
+    import os
+
+    mask = os.umask(0)
+    os.umask(mask)
+    return mask
+
+
+# Read once, as the module loads: setting it to read it is not safe while
+# other threads create files (`write_atomically`).
+_UMASK = _read_umask()
+
+
 def read_state() -> dict[str, Any] | None:
     """The recorded rig, or None for no file, an unreadable one or a corrupt one.
 
@@ -29,7 +42,48 @@ def read_state() -> dict[str, Any] | None:
 def write_state(state: dict[str, Any]) -> None:
     path = state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, indent=2) + "\n")
+    write_atomically(path, json.dumps(state, indent=2) + "\n")
+
+
+def write_atomically(path: Any, text: str) -> None:
+    """`text` into `path` whole or not at all: written to a scratch file of
+    its own beside it, flushed to the disk, and renamed over it, so a reader
+    (the agent's MIDI listener, `status`) never sees half a file, a write
+    that dies part way leaves the old one, and two writers at once (the
+    supervisor's threads and an assignment's, #192) each replace it whole
+    rather than sharing one scratch name. The file keeps its permissions."""
+    import os
+    import stat
+    import tempfile
+    from pathlib import Path
+
+    path = Path(path)
+    try:
+        mode = stat.S_IMODE(path.stat().st_mode)
+    except FileNotFoundError:
+        mode = None
+    handle, scratch = tempfile.mkstemp(dir=path.parent, prefix=path.name + ".", suffix=".tmp")
+    try:
+        with os.fdopen(handle, "w") as out:
+            out.write(text)
+            out.flush()
+            os.fsync(out.fileno())
+        os.chmod(scratch, mode if mode is not None else 0o666 & ~_UMASK)
+        os.replace(scratch, path)
+    except BaseException:
+        Path(scratch).unlink(missing_ok=True)
+        raise
+    try:
+        folder = os.open(path.parent, os.O_RDONLY)
+    except OSError:
+        return  # a directory that cannot be opened to sync: the rename stands
+    try:
+        os.fsync(folder)
+    except OSError:
+        pass
+    finally:
+        os.close(folder)
+
 
 
 def clear_state() -> None:

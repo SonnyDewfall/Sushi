@@ -15,6 +15,10 @@ and the two things worth reading about a rig, served over HTTP on localhost.
     POST /rig/down      {"force"}
     POST /rig/restart   {"discard"?} -- refused (409 unsaved) if it would drop changes no save wrote
     POST /rig/switch    {"config_name" (required)} -- to a rig of config/rigs, live where it can be (#93)
+    GET  /midi          the machine's MIDI devices, what each control may take, the running rig's assignments (#191)
+    POST /rig/midi/assign  {"control", <binding>: <target>} or {"control", "none": true}, "controller"? --
+                        a pedal control in the running rig's file's midi: (#192); live where only the agent's
+                        bindings change, else at the next restart; written, never committed
     GET  /live          the running rig's parameters, bypass and chains, with each parameter's range
     POST /live/parameter  {"processor", "parameter", "value"}   value is normalised, 0 to 1
     POST /live/parameters {"processor", "parameters": {name: value, ...}} -- several of one
@@ -575,6 +579,10 @@ CONFIG_NAME = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]*")
 MODEL_NAME = re.compile(r"[A-Za-z0-9_][A-Za-z0-9_ .,()'+-]*")
 
 LIFECYCLE = ("up", "down", "restart")
+# How often a heel's silencing refused as busy looks again for the agent
+# to be free (#192's re-review): a guess, short against a song, long against
+# the loop.
+MIDI_FREE_POLL = 0.05
 
 # How long GET /rig/load gives `pw-top -b -n 2`, which samples twice and is
 # read for the second (see `top.parse_pw_top`), at what should be pw-top's
@@ -3824,6 +3832,14 @@ class Agent:
         # landed after Sushi had already followed that rise.
         self._midi_silenced: set[tuple[int, int, str]] = set()
         self._midi_released = False  # set by `midi_release`: nothing starts a listener after it
+        # The last message from each control of each controller (#192), bound
+        # or not: `{controller: {control: (count, value, clock)}}`, for the
+        # page's "heard" light. Kept across listeners, so a light does not go
+        # out because an assignment re-planned the listener.
+        self._midi_seen: dict[str, dict[str, tuple[int, int, float]]] = {}
+        # Why each port's pedal is not plugged in, by feed, while it is not:
+        # said again if a swapped plan changes whether the rig needs it.
+        self._midi_absence: dict[int, str] = {}
         self._midi: dict[str, Any] = {
             "state": "off", "reason": "the agent has not looked for a rig yet",
             "rig": None, "controller": None, "port": None, "bindings": [], "programs": False,
@@ -3848,9 +3864,13 @@ class Agent:
         to look at when a pedal seems to do nothing. `feeds` is each port
         (#191): its controller, port, state and problem; `controller` and
         `port` are the first's, the rig's map's when it has one."""
+        now = self.clock() if self._midi_seen else 0.0  # the clock is read only when there is an age to give
+        seen = {controller: {control: {"count": count, "value": value, "ago": round(max(0.0, now - at), 1)}
+                             for control, (count, value, at) in controls.items()}
+                for controller, controls in self._midi_seen.items()}
         if self._listeners:
-            return {**self._midi, "heard": sum(listener.heard for listener in self._listeners)}
-        return dict(self._midi)
+            return {**self._midi, "heard": sum(listener.heard for listener in self._listeners), "seen": seen}
+        return {**self._midi, "seen": seen}
 
     async def _rig_answer(self) -> dict[str, Any]:
         """/rig: `describe_rig`, and when the running rig's map switches rigs by
@@ -3913,15 +3933,65 @@ class Agent:
             return
         if plan == self._midi_plan and self._midi["state"] in ("opening", "listening"):
             return
+        if self._midi_swappable(plan):
+            self._midi_swap(plan)
+            return
         await self._midi_stop("replaced")
         if not self._midi_released:  # released while the plan was being read
             self._midi_start(plan)
+
+    def _midi_swappable(self, plan: midi_listener.Plan) -> bool:
+        """Whether `plan` can take the running listeners' place without
+        them stopping (#192's review): the same ports for the same
+        controllers, in the same order, each listener still running. A pedal
+        assigned live changes bindings, not ports."""
+        old = self._midi_plan
+        if old is None or len(self._listeners) != len(old.feeds) or self._midi["state"] in ("off", "failed"):
+            return False
+        if any(not listener.thread.is_alive() for listener in self._listeners):
+            return False
+        ports = lambda p: [(f.controller, f.port) for f in p.feeds]  # noqa: E731
+        return ports(plan) == ports(old)
+
+    def _midi_swap(self, plan: midi_listener.Plan) -> None:
+        """Serve `plan` on the listeners already running, as the next message
+        reads its bindings (`_midi_heard`): nothing stops, the generation is
+        the same, so a press queued or a heel's silencing in flight goes on
+        as it was. What is kept of each control (a switch's last state, the
+        pedal's last value, a silencing) is kept only where its binding did
+        not change. `required` follows the plan, a pedal not plugged in going
+        from not connected to waiting, or back."""
+        old, self._midi_plan = self._midi_plan, plan
+        generation = self._midi_generation
+        for index, (was, now) in enumerate(zip(old.feeds, plan.feeds)):
+            before = {b.control: b for b in was.bindings.controls}
+            after = {b.control: b for b in now.bindings.controls}
+            changed = {c for c in before.keys() | after.keys() if before.get(c) != after.get(c)}
+            switches = self._midi_switches.get(index)
+            if switches:
+                self._midi_switches[index] = {c: v for c, v in switches.items() if c not in changed}
+            for control in changed:
+                self._midi_pedal.pop((index, control), None)
+                self._midi_silenced.discard((generation, index, control))
+            entry = self._midi["feeds"][index]
+            if entry["required"] != now.required:
+                entry["required"] = now.required
+                absence = self._midi_absence.get(index)
+                if absence is not None and entry["state"] in ("absent", "waiting"):
+                    self._midi_absent(generation, index, absence)
+        self._midi.update(
+            rig=plan.rig, controller=plan.controller, port=plan.port, programs=plan.programs,
+            bindings=[b.describe() for feed in plan.feeds for b in feed.bindings.controls],
+            rig_problem=plan.rig_problem,
+        )
+        self._midi_feed_state()
 
     def _midi_start(self, plan: midi_listener.Plan) -> None:
         loop = asyncio.get_running_loop()
         generation = self._midi_generation
         self._midi_plan = plan
         self._midi_switches = {}
+        self._midi_absence = {}
         self._midi.update(
             state="opening", reason=None, rig=plan.rig, controller=plan.controller, port=plan.port,
             bindings=[b.describe() for feed in plan.feeds for b in feed.bindings.controls],
@@ -3985,6 +4055,7 @@ class Agent:
 
     def _midi_opened(self, generation: int, feed: int = 0) -> None:
         if generation == self._midi_generation:
+            self._midi_absence.pop(feed, None)
             self._midi["feeds"][feed].update(state="listening", problem=None, reason=None)
             self._midi_feed_state()
 
@@ -4003,6 +4074,7 @@ class Agent:
         map does not use; `waiting`, a problem, for one it does."""
         if generation != self._midi_generation:
             return
+        self._midi_absence[feed] = reason  # what to say again if the plan's `required` changes
         entry = self._midi["feeds"][feed]
         if not entry["required"]:
             entry.update(state="absent", reason=f"not connected: {reason}", problem=None)
@@ -4044,6 +4116,7 @@ class Agent:
         if generation != self._midi_generation or plan is None:
             return
         bindings = plan.feeds[feed].bindings
+        self._midi_saw(plan.feeds[feed], message)
         try:
             if message.kind == "program":
                 if bindings.programs is None:
@@ -4096,9 +4169,20 @@ class Agent:
             return
         if switching:
             self._midi_switch_pending = True
-        task = asyncio.ensure_future(self._midi_act(generation, action, feed, switching))
+        said = self._midi["last"]
+        task = asyncio.ensure_future(self._midi_act(generation, action, feed, switching, said))
         self._midi_tasks.add(task)
         task.add_done_callback(self._midi_tasks.discard)
+
+    def _midi_saw(self, feed: midi_listener.Feed, message: midi_listener.Message) -> None:
+        """Count `message` against the control it came from (#192), bound or
+        not: a dict lookup and a tuple, on the loop, nothing near the audio."""
+        control = feed.control_of(message)
+        if control is None:
+            return
+        controls = self._midi_seen.setdefault(feed.controller, {})
+        count = controls.get(control, (0, 0, 0.0))[0]
+        controls[control] = (count + 1, message.value, self.clock())
 
     def _midi_decided(self, said: str, deciding: bool = False) -> None:
         """What became of the last message, once it is known (#191): a rig
@@ -4136,9 +4220,27 @@ class Agent:
             while generation == self._midi_generation:
                 value, count = self._midi_pedal.get(key, (binding.heel, 0))
                 gain = binding.gain_at(value)
-                async with self._connected_for_a_change(origin) as controller:
-                    await self._sushi(origin, self.live.set_parameter, controller, action.processor, "gain",
-                                      gain, reading=False)
+                try:
+                    async with self._connected_for_a_change(origin) as controller:
+                        await self._sushi(origin, self.live.set_parameter, controller, action.processor, "gain",
+                                          gain, reading=False)
+                except web.HTTPConflict as exc:
+                    # Refused while a lifecycle command or a rig file edit (a
+                    # pedal's assignment, #192) holds the agent: the pedal is
+                    # still where it is, so once it is free this goes again,
+                    # from its latest value. A down or a switch moves the
+                    # generation on, which ends it.
+                    if getattr(exc, "agent_code", None) != "busy" or generation != self._midi_generation:
+                        raise
+                    await self._midi_until_free(generation)
+                    if not self._midi_still_bound(feed, binding):
+                        # The plan swapped while it waited (an assignment
+                        # applied live): this pedal's heel is not this
+                        # binding's any longer, and the new plan's own
+                        # messages decide what it does.
+                        self._midi_silenced.discard(mine)
+                        return
+                    continue
                 if generation == self._midi_generation:
                     if gain == 0.0:
                         self._midi_silenced.add(mine)
@@ -4154,6 +4256,21 @@ class Agent:
             self._midi_error(action, f"{type(exc).__name__}: {exc}")
         finally:
             self._midi_snapping.discard(mine)
+
+    def _midi_still_bound(self, feed: int, binding: Any) -> bool:
+        """Whether the running plan still has `binding` for its control on
+        port `feed` (`_midi_swap` can change it within a generation)."""
+        plan = self._midi_plan
+        if plan is None or feed >= len(plan.feeds):
+            return False
+        return any(b == binding for b in plan.feeds[feed].bindings.controls if b.control == binding.control)
+
+    async def _midi_until_free(self, generation: int) -> None:
+        """Wait, without taking it, until the lifecycle lock is free, or the
+        listener of `generation` has been stopped. Polled: a heel's silencing
+        waits on it rarely, and briefly."""
+        while self._lock.locked() and generation == self._midi_generation:
+            await asyncio.sleep(MIDI_FREE_POLL)
 
     def _midi_switch_refusal(self) -> str | None:
         """Why a pedal's rig switch (a Program Change, or a step, #191) cannot
@@ -4189,17 +4306,25 @@ class Agent:
         self._midi["last_error"] = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "message": text}
         self._midi_say(text)
 
-    async def _midi_act(self, generation: int, action: Any, feed: int = 0, switching: bool = False) -> None:
+    async def _midi_act(self, generation: int, action: Any, feed: int = 0, switching: bool = False,
+                        said: dict[str, Any] | None = None) -> None:
         try:
-            await self._midi_act_locked(generation, action, feed)
+            await self._midi_act_locked(generation, action, feed, said)
         finally:
             if switching:
                 self._midi_switch_pending = False
 
-    async def _midi_act_locked(self, generation: int, action: Any, feed: int) -> None:
+    async def _midi_act_locked(self, generation: int, action: Any, feed: int,
+                               said: dict[str, Any] | None = None) -> None:
         async with self._midi_lock:
             if generation != self._midi_generation:
-                return  # the listener that heard it has been stopped since
+                # The listener that heard it has been stopped since (a rig
+                # coming down, or replaced): not done, and said so.
+                dropped = "dropped: the listener that heard it was stopped before it was done"
+                if said is not None:
+                    said["action"] = f"{said['action']}, {dropped}"
+                self._midi_error(action, dropped)
+                return
             if isinstance(action, (midi_listener.Message, midi_listener.StepRig)):  # a rig, to decide
                 plan = self._midi_plan
                 try:
@@ -4316,6 +4441,7 @@ class Agent:
 
     def _midi_routes(self, app) -> None:
         app.router.add_get("/midi", self.midi_route)
+        app.router.add_post("/rig/midi/assign", self.midi_assign_route)
 
     async def midi_route(self, request):
         """`GET /midi` (#191): the machine's MIDI devices as the rack's pedal
@@ -4380,6 +4506,219 @@ class Agent:
                         ],
                     }
         return answer
+
+    # ------------------------------------------------- assigning a pedal (#192)
+    #
+    # POST /rig/midi/assign writes one control of the running rig's file's
+    # `midi:` (rigedit.with_assignment), as the rack's channel edits write
+    # their file: under the lifecycle lock (`_rigfile_locked`, busy "rig file
+    # edit"), compiled first against the run's machine file and refused with
+    # the compiler's words, nothing written; then written in place with its
+    # comments (`rigfile.write_rig`), and never committed.
+    #
+    # Live or at the restart, as Sushi allows. Sushi loads its cc_mappings only
+    # with the config (rigfile.RESTART_REASONS' "midi"), so an assignment
+    # whose compile leaves the running config's `midi` section as it is (a
+    # switch on a bypass, a momentary switch on a mute: the agent's bindings
+    # alone) is applied now: the running config's `_midi_agent` is replaced
+    # with the edited file's and the listener re-planned (`_midi_sync`). Any
+    # other (a pedal on a volume or a parameter, a latching switch on a mute)
+    # changes what Sushi maps, and plays after the restart the answer offers,
+    # refused first while the rig holds unsaved work that restart would drop
+    # (`rigfile_refusal`), as the channel edits are. Not in the live log and
+    # not undone by Undo, as a channel added to the file is not: assign
+    # again to change it.
+
+    async def midi_assign_route(self, request):
+        """`POST /rig/midi/assign {"control", <binding>: <target>}` (a binding
+        of `rigfile.TARGET_SHAPES`: `bypass`, `mute`, `volume`, `parameter`,
+        `blend`), or `{"control", "none": true}`, with `"controller"` when
+        the rig's map names none and the machine has several devices.
+
+        200 with `how`: `live` (the listener serves it now), or `restart`
+        (`offer: "restart"`, `why`, as a channel edit's); `change` says what
+        was written (`was`, `moved`: the control's previous assignment,
+        `replaced`: another control taken off the same target,
+        `controller_set`), and `assignments`, the file's `midi:` after it.
+        409 with nothing written: `no_rig`, `machine`, `controller` or
+        `which_controller` (with `controllers` to choose from),
+        `rig_problem` (the compiler's refusal, `compile_midi`'s words for a
+        control that cannot take that target), and for a change that needs a
+        restart, `unsaved` and `panel` (`rigfile_refusal`). 400 for a body of
+        the wrong shape."""
+        from . import rigedit
+
+        try:
+            asked = rigedit.assign_request(await self._json_body(request))
+        except rigedit.EditRequestError as exc:
+            raise web.HTTPBadRequest(reason=str(exc))
+        answer = await self._rigfile_locked(request, lambda run: self._write_assignment(request, run, asked))
+        return web.json_response(await self._rigfile_answer(answer))
+
+    async def _write_assignment(self, request, run: dict[str, Any], asked: dict[str, Any]) -> dict[str, Any]:
+        """The assignment, compiled, written and applied (`midi_assign_route`)."""
+        import yaml
+
+        from . import rigedit
+        from .machine import MachineError, MachineSpec
+        from .rigfile import AGENT_BINDINGS, MIDI_CONTROLLER, RigFileError, write_rig
+
+        path = run["running"]
+        if path is None:
+            raise RigFileRefused("no rig of config/rigs/ is running: a pedal is assigned on the running rig",
+                                 "no_rig")
+        machine_file = run["machine"]
+        described, state = run["described"], run["state"]
+        loop = asyncio.get_running_loop()
+        finished = asyncio.Event()  # set when `work` is over, whatever became of the wait for it
+        outcome: dict[str, Any] = {}  # what `work` found, for `_midi_sync_when`
+        # Read under the live lock, so no live change lands between the check
+        # for unsaved work and the write, as `_write_edit` does.
+        async with self._live_lock:
+            refusal = rigfile_refusal(state, self.log)
+            edits = live_edits(self._chain_log, since=state.get("started_at"))
+
+            def work() -> dict[str, Any]:
+                try:
+                    return decide_and_write()
+                finally:
+                    loop.call_soon_threadsafe(finished.set)
+
+            def decide_and_write() -> dict[str, Any]:
+                try:
+                    machine = MachineSpec.load(machine_file)
+                except MachineError as exc:
+                    raise RigFileRefused(str(exc), "machine") from exc
+                problems = machine.validate()
+                if problems:
+                    raise RigFileRefused(f"{machine_file.name}: " + "; ".join(problems), "machine")
+                raw = yaml.safe_load(path.read_text())
+                if not isinstance(raw, dict):
+                    raise RigFileRefused(f"{path.name} is not a rig file", "rig_problem")
+                current = raw.get("midi", {}).get("controller") if isinstance(raw.get("midi"), dict) else None
+                if asked["binding"] is None:
+                    noop = rigedit.unassigned_noop(raw, current, asked["control"], machine.devices())
+                    if noop is not None:
+                        if noop[1] is not None:
+                            raise RigFileRefused(*noop[1])
+                        return {"change": noop[0], "unchanged": True, "assignments": rigedit.midi_of(raw)}
+                controller, refused = rigedit.pick_controller(current, asked["controller"], machine.devices())
+                if refused is not None:
+                    raise RigFileRefused(*refused)
+                edited, change = rigedit.with_assignment(raw, controller, asked)
+                if edited == raw:
+                    return {"change": change, "unchanged": True, "assignments": rigedit.midi_of(raw)}
+                compiled = self._rigfile_compile(edited, run)
+                try:
+                    running = self.switching.read_config(described.get("config"))
+                except Exception as exc:  # noqa: BLE001 -- said: unreadable is a restart, as a switch says it
+                    running, unread = None, f"{type(exc).__name__}: {exc}"
+                else:
+                    unread = None
+                not_live = assignment_not_live(running, compiled, edits)
+                if not_live and refusal is not None:
+                    raise RigFileRefused(*refusal)
+                # The run as it was read under the locks, still the one up:
+                # a write the route stopped waiting for (504) may get here
+                # after a restart or a switch, and must not write over that
+                # run's config or the rig file under it (#192's re-review).
+                now = self.switching.read_state() or {}
+                if run_changed(state, now):
+                    outcome["stale"] = True
+                    raise RigFileRefused(
+                        "nothing was written: the rig was restarted or switched while this waited; assign "
+                        "again on the rig that is up now", "changed")
+                try:
+                    problems = write_rig(path, edited)
+                except RigFileError as exc:
+                    raise RigFileRefused("nothing was written: " + "; ".join(exc.problems), "rig_problem") from exc
+                if problems:
+                    change["provenance_note"] = "; ".join(problems)
+                if not not_live:
+                    # Only the agent's bindings differ, and every one of them
+                    # names what the rig has: the running config keeps saying
+                    # what Sushi loaded, with the edited file's bindings and
+                    # the controller they are read from.
+                    updated = copy.deepcopy(running)
+                    updated.pop(AGENT_BINDINGS, None)
+                    if compiled.get(AGENT_BINDINGS):
+                        updated[AGENT_BINDINGS] = copy.deepcopy(compiled[AGENT_BINDINGS])
+                    meta = dict(updated.get("_meta") or {}) if isinstance(updated.get("_meta"), dict) else {}
+                    meta.pop(MIDI_CONTROLLER, None)
+                    if MIDI_CONTROLLER in (compiled.get("_meta") or {}):
+                        meta[MIDI_CONTROLLER] = compiled["_meta"][MIDI_CONTROLLER]
+                    updated["_meta"] = meta
+                    try:
+                        written = self.switching.write_config(path.stem, updated)
+                        now = self.switching.read_state() or state
+                        # Again, just before: a switch landing since the
+                        # check above must not have its run pointed at this
+                        # rig's config.
+                        if run_changed(state, now):
+                            outcome["stale"] = True
+                        elif str(written) != str(now.get("config")):
+                            self.switching.write_state({**now, "config": str(written)})
+                    except Exception as exc:  # noqa: BLE001 -- the file is written; the restart plays it
+                        not_live = [{"code": "unrecorded",
+                                     "detail": (f"the file is written, but recording the running rig's bindings "
+                                                f"failed: {type(exc).__name__}: {exc}")}]
+                return {"change": change, "compiled": compiled, "not_live": not_live, "unread": unread,
+                        "assignments": rigedit.midi_of(edited)}
+
+            try:
+                done = await self._rigfile_thread(request, path, work)
+            except web.HTTPGatewayTimeout:
+                # The thread cannot be stopped and may still write the running
+                # config: once it is over, the listener follows what it left.
+                self._midi_sync_when(finished, outcome)
+                raise
+        shown = self._save_shown(path)
+        change = done["change"]
+        what = f"{change['control']}: {rigedit.said_assignment(change['binding'], change['target'])}"
+        answer = {"ok": True, "rig": path.stem, "file": shown, "how": "updated", "committed": False,
+                  "change": change, "running": True, "path": path, "assignments": done["assignments"]}
+        if done.get("unchanged"):
+            answer.update(how="unchanged", takes_effect=None, offer=None, why=[],
+                          note=(f"nothing to change: {what} is what {shown} already says, so it was not "
+                                "written and the rig is as it was"))
+            return answer
+        if not done["not_live"]:
+            await self._midi_sync()
+            answer.update(how="live", takes_effect="now", offer=None, why=[],
+                          note=(f"{shown} was updated in place, with its comments; it is not committed. {what} "
+                                "plays now: only the agent's bindings changed, and the listener serves them"))
+            return answer
+        why = [r for r in done["not_live"] if r["code"] != "midi"]
+        why += await self._rigfile_restart_why(run, done["compiled"])
+        if done["unread"] and not why:
+            why = [{"code": "unreadable", "detail": done["unread"]}]
+        answer.update(
+            how="restart", takes_effect="restart", offer="restart", why=why,
+            note=" ".join((
+                f"{shown} was updated in place, with its comments; it is not committed. {what} plays when "
+                f"{path.stem} restarts ({'; '.join(r['code'] + ': ' + r['detail'] for r in why) or 'a restart reloads the file'}); "
+                "until then the pedals do what they did").split()))
+        return answer
+
+    def _midi_sync_when(self, finished: asyncio.Event, outcome: dict[str, Any]) -> None:
+        """Once `finished` is set, under the lifecycle lock, make the listener
+        follow the running config as it is then (a write the route stopped
+        waiting for), unless `outcome` says it found another run and wrote
+        nothing. A task of the MIDI block's, so `midi_release` ends it."""
+        async def follow() -> None:
+            await finished.wait()
+            if outcome.get("stale"):
+                return  # a later command has made another run: nothing of this one's to follow
+            async with self._lock:
+                self.busy = "MIDI"
+                try:
+                    await self._midi_sync()
+                finally:
+                    self.busy = None
+
+        task = asyncio.ensure_future(follow())
+        self._midi_tasks.add(task)
+        task.add_done_callback(self._midi_tasks.discard)
 
     # ======================================================================= #
     # Switching rigs live (#93): POST /rig/switch, and the Program Change path
@@ -5208,7 +5547,14 @@ class Agent:
                         **({"master": master_said} if master_said else {}),
                     }
                     if created:
-                        failure = await self._save_as_running(state, out.stem)
+                        failure, pending = await self._save_as_running(state, out.stem)
+                        if pending:
+                            # Sushi runs what it loaded: the new file's MIDI
+                            # map, channels or host take effect at a restart.
+                            answer["restart"] = {"why": pending, "note": " ".join((
+                                f"{out.stem} runs as {source.stem} was loaded until it restarts: "
+                                + "; ".join(r["code"] + ": " + r["detail"] for r in pending)).split())}
+                            answer["note"] += f"; {answer['restart']['note']}"
                         if failure is not None:
                             reason = " ".join((
                                 f"{shown} was written with the sound that was playing, but the rig could not "
@@ -5340,7 +5686,7 @@ class Agent:
             self._remember(where, reason, kind="live")
             raise web.HTTPInternalServerError(reason=reason)
 
-    async def _save_as_running(self, state: dict[str, Any], name: str) -> str | None:
+    async def _save_as_running(self, state: dict[str, Any], name: str) -> tuple[str | None, list[dict[str, str]]]:
         """After a save-as wrote rig `name`: make it the running rig, as a live
         switch records the rig it switched to (`saved_as_state`), from
         `state`, the state file as read under the locks; None when done, or
@@ -5349,17 +5695,36 @@ class Agent:
         diffs from it and `restart` brings it back. Called holding the amp's
         lock, so the amp's record moves to the renamed run in the same step:
         the run is renamed, not restarted, and what the agent sent Carla
-        carries over rather than being seeded again from the config."""
+        carries over rather than being seeded again from the config.
+
+        The second value is why the new file differs from what Sushi runs in
+        what only a restart loads (`rigfile.diff`'s reasons), [] when it does
+        not. Then the config recorded for the run is the running one, renamed
+        (`renamed_running`): a file carrying a pedal or a channel written for
+        the next restart (#192) must not have the running config claim
+        mappings, inputs or tracks Sushi never loaded, which the listener and
+        the next live switch read (PR #202's re-review)."""
         try:
             compiled = await asyncio.to_thread(self.switching.compile, name, self._midi_root(), state.get("machine"))
+            pending: list[dict[str, str]] = []
+            try:
+                running = await asyncio.to_thread(self.switching.read_config, state.get("config"))
+            except Exception:  # noqa: BLE001 -- no running config to keep: the new compile stands for it
+                running = None
+            if isinstance(running, dict):
+                decided = rigfile.diff(running, compiled, root=self._amp_root(),
+                                       amp_off=state.get("amp_requested") is False)
+                if isinstance(decided, rigfile.NeedsRestart):
+                    pending = [reason.as_dict() for reason in decided.reasons]
+                    compiled = renamed_running(running, compiled)
             path = await asyncio.to_thread(self.switching.write_config, name, compiled)
             after = saved_as_state(state, name, path)
             await asyncio.to_thread(self.switching.write_state, after)
         except Exception as exc:  # noqa: BLE001 -- said by the caller, with the file that was written
-            return f"{type(exc).__name__}: {exc}"
+            return f"{type(exc).__name__}: {exc}", []
         if self._amp is not None and self._amp.run == amp_live.run_of(state):
             self._amp.run = amp_live.run_of(after)
-        return None
+        return None, pending
 
     def _save_shown(self, path: Path) -> str:
         """A rig file as the player reads it: relative to the checkout."""
@@ -7739,6 +8104,22 @@ def rig_file_of(state: dict[str, Any], root: Path) -> Path:
     return path if path.is_absolute() else Path(root) / path
 
 
+def renamed_running(running: dict[str, Any], compiled: dict[str, Any]) -> dict[str, Any]:
+    """The running config, as the config of the run renamed by a save-as
+    whose file differs from it in what only a restart loads: everything Sushi
+    loaded (tracks, host, cc_mappings) and the agent serves from it
+    (`_midi_agent`, the controller in `_meta`) as it runs, under the new
+    file's name and source. Pure."""
+    from .rigfile import MIDI_CONTROLLER
+
+    out = copy.deepcopy(running)
+    meta = {k: v for k, v in (compiled.get("_meta") or {}).items() if k != MIDI_CONTROLLER}
+    if MIDI_CONTROLLER in (running.get("_meta") or {}):
+        meta[MIDI_CONTROLLER] = running["_meta"][MIDI_CONTROLLER]
+    out["_meta"] = meta
+    return out
+
+
 def saved_as_state(state: dict[str, Any], name: str, config: Any) -> dict[str, Any]:
     """The state file after a save-as to rig `name`, whose compiled config is
     at `config`: `switched_state`'s record (the same supervisor, children and
@@ -7966,6 +8347,60 @@ def rigfile_refusal(state: dict[str, Any], log: list[dict[str, Any]]) -> tuple[s
                 "and that restart would drop them: Save first (it writes what is playing into the file), "
                 "then make the edit", "unsaved")
     return None
+
+
+def run_changed(before: dict[str, Any], now: dict[str, Any]) -> bool:
+    """Whether the state file `now` is of another run than `before`: a
+    restart (`started_at`) or a switch (`config`, `rig`) since. Pure."""
+    return any(now.get(key) != before.get(key) for key in ("started_at", "config", "rig"))
+
+
+def assignment_not_live(running: dict[str, Any] | None, compiled: dict[str, Any],
+                        edits: dict[str, Any]) -> list[dict[str, str]]:
+    """Why a pedal assignment (#192) cannot be applied to the running rig
+    now, as `{code, detail}` reasons, or [] when it can. Pure.
+
+    Live only when the edited file's compile leaves Sushi's `midi` section
+    as the running config has it (Sushi loads cc_mappings only with the
+    config), and every binding the agent would serve names a processor the
+    running rig has: the running config's tracks and plugins, less those
+    removed and plus those added through the agent since the last save or
+    switch (`edits`, `live_edits`'). A channel added to the file and not yet
+    restarted, or a plugin taken out live, is not there to switch (#192's
+    review): those wait for the restart."""
+    from .rigfile import AGENT_BINDINGS, SEND_SUFFIX
+
+    if not isinstance(running, dict):
+        return [{"code": "unreadable", "detail": "the running rig's compiled config could not be read"}]
+    reasons = []
+    if (running.get("midi") or {}) != (compiled.get("midi") or {}):
+        reasons.append({"code": "midi", "detail": "the cc_mappings (Sushi's midi section) differ"})
+    on = set()
+    for track in running.get("tracks") or []:
+        if isinstance(track, dict):
+            on.add(track.get("name"))
+            on.update(p.get("name") for p in track.get("plugins") or [] if isinstance(p, dict))
+    on -= set((edits or {}).get("removed") or {})
+    on |= set((edits or {}).get("added") or {})
+    missing = []
+    for binding in compiled.get(AGENT_BINDINGS) or []:
+        if not isinstance(binding, dict):
+            continue
+        if isinstance(binding.get("bypass"), str):
+            name = binding["bypass"].split("/")[-1]
+        elif isinstance(binding.get("mute"), str):
+            name = binding["mute"]
+        elif isinstance(binding.get("snap"), str):
+            name = binding["snap"] + SEND_SUFFIX
+        else:
+            continue
+        if name not in on and name not in missing:
+            missing.append(name)
+    if missing:
+        reasons.append({"code": "not_running", "detail": (
+            f"{', '.join(missing)} {'is' if len(missing) == 1 else 'are'} in the file but not on the running rig "
+            "(added to the file since it started, or taken out live): the restart plays the file")})
+    return reasons
 
 
 def restart_refusal(

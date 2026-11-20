@@ -98,6 +98,16 @@ live switch a load makes does (`UiLifecycle.switch_held` says "live", and
 `UiSave.switched` then gives each track whose plugins the file changed the
 file's chain, as `rig_of` lays it out, at its captured defaults).
 
+Pedals (#192, `Served(save=True, pedals=True)`): `UiSave`'s checkout with the
+FBV Express MkII described in its machine file (`FBV_CONTROLLERS`, as
+machines/example.yaml has it, every line of which is unverified), the running
+config written where the state file says so the agent's real `plan_for` reads
+it, and the agent's real MIDI listener reading `UiPedals`' ports, into which a
+test sends what a footswitch or the pedal would (`press`, `sweep`). Invented:
+everything a pedal sends (the CCs are machines/example.yaml's placeholders),
+and that a port opens at once, plugged in unless `plugged` says not. Nothing
+here is ALSA or a board.
+
 A rig file's own rig (`rig_of`, #135): `UiRig` holding the tracks the real
 compiler lays out for a rig file (`rigfile.compile_rig`: each channel's
 plugins in order, each mono plugin's copy to stereo, the sends, the master
@@ -608,12 +618,14 @@ class UiSave:
     follows. `compiled` records each rig compiled; `refuse_compile`, when
     set, is the reason the next compile fails. Headless, with no amp."""
 
-    def __init__(self, lifecycle: "UiLifecycle", record: bool = False, rig_file: str | None = None):
+    def __init__(self, lifecycle: "UiLifecycle", record: bool = False, rig_file: str | None = None,
+                 pedals: bool = False):
         import socket
         import subprocess
         import tempfile
 
         self.lifecycle = lifecycle
+        self.pedals = pedals
         self._dir = tempfile.TemporaryDirectory(prefix="ui-save-")
         self.root = Path(self._dir.name)
         rigs = self.root / "config" / "rigs"
@@ -643,8 +655,12 @@ class UiSave:
         machines = self.root / "machines"
         machines.mkdir(exist_ok=True)
         self.machine = machines / f"{socket.gethostname()}.yaml"
-        self.machine.write_text(MACHINE_FILE)
+        self.machine.write_text(MACHINE_FILE + (FBV_CONTROLLERS if pedals else ""))
         self.state["machine"] = str(self.machine)
+        if pedals:
+            # The running config where the state file says, as `up` writes
+            # it: the agent's `plan_for` reads it from there.
+            self.state["config"] = str(self.root / "run" / f"{rig}.json")
         self.rig: "UiRig | None" = None  # `Served` hands over its rig, for a restart to add tracks to
         self.config = self.compile_running()
         lifecycle.on_restart = self.restarted
@@ -660,7 +676,21 @@ class UiSave:
         from sushi_rig.rig import compile_rig_draft
 
         path = self.root / self.state["rig"]
-        return compile_rig_draft(yaml.safe_load(path.read_text()), self.root, Path(self.state["machine"]))
+        config = compile_rig_draft(yaml.safe_load(path.read_text()), self.root, Path(self.state["machine"]))
+        if self.pedals:
+            self.write_config(self.state["config_name"], config)
+        return config
+
+    def write_config(self, name, compiled):
+        """Where a switch, or an assignment applied live, writes the running
+        config: in memory, and with pedals on disk too, for `plan_for`."""
+        self.config = copy.deepcopy(compiled)
+        if not self.pedals:
+            return f"/fake/rigs/{name}.json"
+        target = self.root / "run" / f"{name}.json"
+        target.parent.mkdir(exist_ok=True)
+        target.write_text(json.dumps(compiled))
+        return str(target)
 
     def restarted(self):
         """A restart: the run starts again from its file (module docstring)."""
@@ -727,14 +757,15 @@ class UiSave:
         # The rig's plugins, whole, as the rig machine's are: a revert or a
         # load checks them before it writes (`Agent._rigfile_plugins`).
         return Switching(read_state=lambda: copy.deepcopy(self.state), write_state=self.write_state,
-                         compile=self.compile, write_config=lambda name, compiled: f"/fake/rigs/{name}.json",
+                         compile=self.compile, write_config=self.write_config,
                          read_config=lambda path: copy.deepcopy(self.config), plugins=whole_plugins)
 
     def describe(self):
         if self.lifecycle.rig is None:
             return self.lifecycle.describe()
         return {**describe_up(self.lifecycle.started, self.state["config_name"])(),
-                "mode": self.state["mode"], "rig": self.state["rig"], "config": self.state["config"]}
+                "mode": self.state["mode"], "rig": self.state["rig"], "config": self.state["config"],
+                **({"machine": self.state["machine"]} if self.pedals else {})}
 
     def close(self):
         self._dir.cleanup()
@@ -755,6 +786,89 @@ roles:
   pair-in: ["iface:capture_AUX4", "iface:capture_AUX5"]
   monitor-out: ["iface:playback_FL", "iface:playback_FR"]
 """
+
+
+# The FBV Express MkII as machines/example.yaml describes it (#191): A and B
+# step rigs on every rig, C and D are footswitches, the pedal sweeps. Its
+# CCs and behaviours are that file's placeholders, not read off a board.
+FBV_PORT = "FBV Express Mk II:FBV Express Mk II MIDI 1"
+FBV_CONTROLLERS = f"""\
+controllers:
+  fbv:
+    type: pedal
+    port: "{FBV_PORT}"
+    channel: 0
+    controls:
+      a: {{cc: 20, kind: switch, behaviour: momentary, job: previous-rig}}
+      b: {{cc: 21, kind: switch, behaviour: momentary, job: next-rig}}
+      c: {{cc: 22, kind: switch, behaviour: momentary}}
+      d: {{cc: 23, kind: switch, behaviour: momentary}}
+      pedal: {{cc: 7, kind: expression, range: [0, 127]}}
+"""
+FBV_CC = {"a": 20, "b": 21, "c": 22, "d": 23, "pedal": 7}
+
+
+class PedalPort:
+    """One opened port, as `midi_listener.AlsaPort` is read: `read` waits for
+    what a test sent, and `attached` says whether the board is plugged in."""
+
+    def __init__(self, pedals: "UiPedals"):
+        import queue
+
+        self.pedals = pedals
+        self.inbox = queue.Queue()
+        self.closed = threading.Event()
+
+    @property
+    def attached(self):
+        return self.pedals.plugged
+
+    absence = "the fake board is unplugged"
+
+    def read(self, timeout):
+        import queue
+
+        try:
+            return self.inbox.get(timeout=timeout)
+        except queue.Empty:
+            return None
+
+    def close(self):
+        self.closed.set()
+
+
+class UiPedals:
+    """The agent's MIDI world for the fake: its real `plan_for`, and a
+    `PedalPort` for each port it opens. `send` puts bytes on the newest open
+    port; `press` and `sweep` are what the FBV would send for a footswitch or
+    the pedal (machines/example.yaml's CCs, channel 0)."""
+
+    def __init__(self):
+        self.ports: list[PedalPort] = []
+        self.plugged = True
+
+    def open_port(self, name):
+        if name != FBV_PORT:
+            raise midi_listener.PortAbsent(f"the fake has no port {name!r}")
+        port = PedalPort(self)
+        self.ports.append(port)
+        return port
+
+    def world(self) -> midi_listener.World:
+        return midi_listener.World(open_port=self.open_port)
+
+    def send(self, *data):
+        open_ports = [p for p in self.ports if not p.closed.is_set()]
+        if not open_ports:
+            raise AssertionError("no pedal port is open to send on")
+        open_ports[-1].inbox.put(bytes(data))
+
+    def press(self, control):
+        self.send(0xB0, FBV_CC[control], 127)
+        self.send(0xB0, FBV_CC[control], 0)
+
+    def sweep(self, value):
+        self.send(0xB0, FBV_CC["pedal"], value)
 
 
 class FakeClock:
@@ -931,8 +1045,11 @@ class Served:
 
     def __init__(self, rig: UiRig | None = None, port: int = 0, describe=None, root: Path | None = None,
                  lifecycle: UiLifecycle | None = None, amp: bool = False, save: bool = False,
-                 record: bool = False, library=None, rig_file: str | None = None, peer: str | None = None):
+                 record: bool = False, library=None, rig_file: str | None = None, peer: str | None = None,
+                 pedals: bool = False):
         self.peer = peer
+        if pedals and not save:
+            raise ValueError("the fake's pedals assign into a rig file: Served(save=True, pedals=True)")
         if amp and (save or record):
             raise ValueError("the fake has an amp or a rig file to save (and record), not both yet")
         self.rig = rig or UiRig()
@@ -944,7 +1061,9 @@ class Served:
         # A rig file to save into (`UiSave`), when asked for.
         # `rig_file`: the rig file a save writes into, when the test's rig is
         # not `UiRig`'s own (`RIG_FILE`).
-        self.save = UiSave(self.lifecycle, record=record, rig_file=rig_file) if save or record else None
+        self.save = UiSave(self.lifecycle, record=record, rig_file=rig_file, pedals=pedals) if save or record else None
+        # The pedals (`UiPedals`), when asked for: the agent's real listener on fake ports.
+        self.pedals = UiPedals() if pedals else None
         if self.save:
             self.save.rig = self.rig
         # The recorder (`UiRecorder`), when asked for, beside the checkout.
@@ -979,7 +1098,8 @@ class Served:
                            library=library or (lambda: {"plugins": [], "problems": []}), run=self.lifecycle.run,
                            # No pedals: the MIDI listener follows a rig after every
                            # lifecycle command, and this rig has no compiled config.
-                           midi=midi_listener.World(plan=lambda described, root: midi_listener.Off("the fake rig has no pedals")),
+                           midi=self.pedals.world() if self.pedals else
+                           midi_listener.World(plan=lambda described, root: midi_listener.Off("the fake rig has no pedals")),
                            pw_top=lambda timeout: self.pw_top_output, **extra)
         if self.amp:
             # The amp's models are the invented ones; the profiles stay the checkout's.
@@ -1018,6 +1138,9 @@ class Served:
             self.url = "http://127.0.0.1:%d" % site._server.sockets[0].getsockname()[1]
 
         self._loop.run_until_complete(start())
+        if self.pedals:
+            # As `serve` does: listen for the rig already up.
+            self._loop.run_until_complete(self.agent.midi_adopt())
         self._ready.set()
         self._loop.run_forever()
 
@@ -1026,6 +1149,8 @@ class Served:
             return
 
         async def stop():
+            if self.pedals:
+                await self.agent.midi_release()
             await self._runner.cleanup()
 
         asyncio.run_coroutine_threadsafe(stop(), self._loop).result(10)
@@ -1056,9 +1181,10 @@ def main() -> int:
     parser.add_argument("--amp", action="store_true", help="give the rig an amp, with invented models")
     parser.add_argument("--save", action="store_true", help="give the rig a rig file to save, in a temporary checkout")
     parser.add_argument("--record", action="store_true", help="and a recorder, whose takes go in that checkout")
+    parser.add_argument("--pedals", action="store_true", help="and the FBV in its machine file, on a fake port (#192)")
     args = parser.parse_args()
     with Served(port=args.port, lifecycle=UiLifecycle(up=None if args.down else "electric_board"), amp=args.amp,
-                save=args.save, record=args.record) as served:
+                save=args.save or args.pedals, record=args.record, pedals=args.pedals) as served:
         print(f"the web UI against a fake rig: {served.url}/  (Ctrl+C to stop)", flush=True)
         try:
             while True:

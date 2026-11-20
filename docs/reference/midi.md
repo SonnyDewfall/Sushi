@@ -193,7 +193,10 @@ same gain a channel's `level` sets, and a job for the agent:
   about -10 dB.
 - **Heel: silent, by the agent.** At or below the pedal's heel (the first of its
   `range`, 0 without one) the agent sets the send to silence, on the port it
-  already reads. Above the heel it leaves the send to Sushi's mapping. If the
+  already reads. Refused because the agent is busy (a lifecycle command, a
+  rig file edit such as a pedal's assignment), it waits until the agent is
+  free and goes again from where the pedal is then; a `down` or a switch ends
+  the wait. Above the heel it leaves the send to Sushi's mapping. If the
   pedal leaves the heel while the agent is still silencing it, the agent finishes
   on the value Sushi's mapping gives for where the pedal is, so the two do not
   fight; and the first message above the heel after the agent silenced it has
@@ -220,9 +223,9 @@ the pedal puts it back on the pedal's scale, whose top is still the compiled
 level. SAVE does not write the pedal's position into the file. To change the top,
 change `level:` in the rig file and bring the rig up again, or switch to it.
 
-## What the page will use (#192)
+## What the page uses (#192)
 
-`GET /midi` is what the rack's pedal assignments will read. It changes nothing.
+`GET /midi` is what the rack's pedal assignments read. It changes nothing.
 
 ```bash
 curl localhost:8029/midi
@@ -252,8 +255,46 @@ curl localhost:8029/midi
 - `listening` is `/health`'s `agent.midi.state`.
 - A machine file that will not read is `machine_problem`, with no controllers.
 
-Writing an assignment is #192's; whatever it writes is the rig file's `midi:`,
-compiled and refused as above.
+## Assigning from the rack (#192)
+
+The rack assigns a device's controls to targets on the running rig (see
+[Playing live](../guide/playing-live.md#assign-a-pedal-on-the-rack)), through
+`POST /rig/midi/assign` ([the agent](agent.md#assigning-a-pedal)). It writes
+the rig file's `midi:` as you would by hand, keeping the file's comments,
+compiled and refused as above, so a page cannot write a map a compile would
+refuse:
+
+- a control takes only what its kind may (`takes`), and one with a job none;
+- a target holds one control of a binding, and a control does one thing on a
+  rig: assigning one in use moves it, after the page asks;
+- the map's `controller` is filled in on the first assignment when the
+  machine file describes one device with a type; with several, the page asks
+  which;
+- the last control taken off takes the map out with it, unless it has
+  `programs`.
+
+A footswitch on a bypass, and a momentary or single one on a mute, are the
+agent's, and play at once, when what they switch is on the running rig: the
+running listeners take the edited file's bindings without stopping, so a
+press on its way or a heel's silencing goes on as it was. One whose effect
+or channel is in the file but not on the rig as it runs (a channel added to
+the file and not yet restarted, a plugin taken out live and not saved) plays
+after a restart, as does anything Sushi maps (a sweep, a volume, a blend, a
+latching footswitch's mute), as an edit of the file by hand would; the page
+offers it.
+
+**The running rig keeps the pedal it started with.** A compiled config with a
+map records its controller (`_meta`'s `midi_controller`), and the listener
+plans from that, not from the rig file as it is now: a file given a map, or
+having its map taken out, for the next restart does not change which pedal
+the running rig needs, or turn its A and B off. A config with nothing of a
+map in it needs no pedal. One compiled before the controller was recorded
+there has its rig file read, as before.
+
+`/health`'s `agent.midi.seen` is the last message from each control, bound or
+not (`{controller: {control: {count, value, ago}}}`), which the rack's
+**PEDALS** lights read: a check that the board sends what the machine file
+says, not a learn.
 
 ## When the FBV arrives
 
@@ -333,7 +374,9 @@ sends aftertouch. Still to verify on the rig:
   the heel lands after Sushi's floor, as it must;
 - that a pedal plugged in or unplugged is announced by ALSA as `AlsaPort`
   expects (shown against a stand-in for alsa-midi only);
-- how long a step that restarts takes.
+- how long a step that restarts takes;
+- an assignment made on the rack (#192) and heard: one applied live answering
+  the next press, and the **PEDALS** lights following a real board.
 
 ## What the agent does with a pedal
 

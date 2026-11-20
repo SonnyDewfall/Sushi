@@ -19,7 +19,8 @@ It knows nothing about rigs. rigfile.write_rig is the rig-shaped caller.
   the key that precedes it in `data`. Keys already in the file stay in the
   order the file has them, however `data` orders them.
 - A list of mappings that all have a `name` is matched by name, so removing one
-  plugin from a chain does not hand its neighbours the wrong comments. An entry
+  plugin from a chain does not hand its neighbours the wrong comments; a rig
+  file's MIDI controls, which have none, by `control` (`MATCH_KEYS`, #192). An entry
   whose name changed but whose `uri` (or `path`, `uid`) did not is the same
   plugin renamed, and is updated in place, comment and layout and all. A
   chain whose entries come in a different order is *moved*, not matched by
@@ -735,13 +736,33 @@ def _flow_near(seq: Any, pos: int) -> bool:
     return False
 
 
-def _names(items: Any) -> list[str] | None:
-    """The `name` of each item when every item has one and they differ, else None."""
+# The key a list of mappings is matched by, the first that every item has
+# and no two share: a chain's plugins and a rig's channels by `name`, a rig
+# file's MIDI controls by `control` (#192), so a control taken out of the
+# middle of the map takes its own comment and leaves the others theirs.
+MATCH_KEYS = ("name", "control")
+
+
+def _match_key(items: Any) -> str | None:
+    for key in MATCH_KEYS:
+        names = [item.get(key) if isinstance(item, dict) else None for item in items]
+        if all(isinstance(n, str) for n in names) and len(set(names)) == len(names):
+            return key
+    return None
+
+
+def _names(items: Any, key: str | None = None) -> list[str] | None:
+    """The `name` (or the other key of `MATCH_KEYS` every item has) of each
+    item when every item has one and they differ, else None. With `key`,
+    that key only."""
+    key = key or _match_key(items)
+    if key is None:
+        return None
     names = []
     for item in items:
-        if not isinstance(item, dict) or not isinstance(item.get("name"), str):
+        if not isinstance(item, dict) or not isinstance(item.get(key), str):
             return None
-        names.append(item["name"])
+        names.append(item[key])
     return names if len(set(names)) == len(names) else None
 
 
@@ -751,6 +772,7 @@ def _renamed(old: Any, new: Any) -> bool:
 
 def _pairing(old: list, new: list) -> list[int | None]:
     """For each entry of `new`, the index in `old` of the entry it is, else None (a new one).
+    By `name`, or by the other key of `MATCH_KEYS` the list is matched by.
 
     Same name, same entry, even when two plugins swap names and keep their uris:
     a name is what the player sees and calls a plugin by, a swap of names between
@@ -760,8 +782,9 @@ def _pairing(old: list, new: list) -> list[int | None]:
     both renamed, cannot be told apart, and guessing would hand one the other's
     comments, so they are a removal and an insertion (comments dropped, and said
     so by the count check, never misattached)."""
-    where = {item["name"]: i for i, item in enumerate(old)}
-    pairs: list[int | None] = [where.get(item["name"]) for item in new]
+    key = (_match_key(old) if len(old) else _match_key(new)) or "name"
+    where = {item[key]: i for i, item in enumerate(old)}
+    pairs: list[int | None] = [where.get(item[key]) for item in new]
     free_old = [i for i in range(len(old)) if i not in pairs]
     free_new = [j for j, p in enumerate(pairs) if p is None]
     for j in free_new:
@@ -1069,12 +1092,13 @@ class _Update:
     def seq(self, old: Any, new: list, parent: tuple[Any, Any] | None = None) -> None:
         import difflib
 
-        old_names, new_names = _names(old), _names(new)
+        key = _match_key(old) if len(old) else _match_key(new)
+        old_names, new_names = (_names(old, key), _names(new, key)) if key else (None, None)
         if old_names is not None and new_names is not None:
             pairs = _pairing(old, new)
             kept = [i for i in pairs if i is not None]
             in_place = pairs == list(range(len(old)))  # every entry the one at its own position
-            renamed = any(i is not None and old_names[i] != new[j]["name"] for j, i in enumerate(pairs))
+            renamed = any(i is not None and old_names[i] != new[j][key] for j, i in enumerate(pairs))
             # Out of order, or renamed beside an insertion or a removal: the diff below
             # works on names alone and would take a rename for a removal and an insertion.
             if kept != sorted(kept) or (renamed and not in_place):

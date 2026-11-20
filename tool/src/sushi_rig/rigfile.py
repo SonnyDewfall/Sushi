@@ -108,6 +108,11 @@ SEND_SUFFIX = "_send"
 # Where the compiled config carries the MIDI bindings Sushi cannot hold (bypass,
 # a note on a mute, Program Change rig switching), for the agent to serve.
 AGENT_BINDINGS = "_midi_agent"
+# The controller a rig's map was compiled for, kept in the compiled config's
+# `_meta` (#192's review): what the listener plans from, so a rig file edited
+# while it runs (a pedal assigned for the next restart) cannot change which
+# pedal the running rig needs, or which port its bindings are read from.
+MIDI_CONTROLLER = "midi_controller"
 # Where the compiled config records each track's machine roles, for `diff`.
 WIRING = "_wiring"
 SEND_UID = "sushi.testing.send"
@@ -1817,6 +1822,11 @@ def emit_compiled(
         # What the agent serves: Sushi ignores an underscored key, as it does
         # `_amp` and `_meta`, and `up` leaves nothing of the map unrecorded.
         config[AGENT_BINDINGS] = bindings
+    if rig.midi is not None:
+        # Only with a map: a config with none, nothing of it for Sushi or the
+        # agent, is a rig that needs no pedal (`midi_listener.plan_for`).
+        meta = config.get("_meta") if isinstance(config.get("_meta"), dict) else {}
+        config["_meta"] = {**meta, MIDI_CONTROLLER: rig.midi.controller}
     # Which machine roles each track is wired to (#93). Sushi never sees them
     # (`TrackSpec.to_sushi` leaves them out) and only the patchbay does, so
     # without this a live switch between two rigs that differ only in a

@@ -39,7 +39,7 @@ from __future__ import annotations
 import copy
 from typing import Any
 
-from .rigfile import KIND, SCHEMA_VERSION, Channel, Master, Rig, check_rig
+from .rigfile import KIND, SCHEMA_VERSION, TARGET_SHAPES, Channel, Master, Rig, check_rig
 
 _CHANNEL_KEYS = ("name", "input", "width", "from")
 _FROM_KEYS = ("rig", "channel")
@@ -208,6 +208,197 @@ def channels_of(raw: Any) -> list[dict[str, Any]]:
                     "level": entry.get("level", 0.0),
                     "plugins": [p.get("name") for p in chain if isinstance(p, dict)]})
     return out
+
+
+# --------------------------------------------------------------------------- #
+# A pedal's assignment (#192): the rig file's `midi:`, one control at a time
+# --------------------------------------------------------------------------- #
+#
+# The page assigns a device control to a target on the rack (an effect's
+# on/off, a channel's on/off or volume, an effect's parameter) and the agent
+# writes the running rig's `midi:` with it. Here, the request's shape and the
+# file's contents after it, over the dict `yaml.safe_load` reads; what a
+# control may take, and whether the target names anything the rig has, is
+# `compile_midi`'s and `check_rig`'s to say, through the compile the agent
+# runs before it writes (`rig.compile_rig_draft`).
+
+ASSIGN_BINDINGS = tuple(TARGET_SHAPES)  # blend, parameter, mute, bypass, volume
+_ASSIGN_KEYS = ("control", "controller", "none", *ASSIGN_BINDINGS)
+
+
+def assign_request(body: Any) -> dict[str, Any]:
+    """`{"control", "controller", "binding", "target"}` from `POST
+    /rig/midi/assign`'s body: `{"control", <binding>: <target>}` to assign,
+    `{"control", "none": true}` to take the control off whatever it does,
+    and `"controller"` to name the device when the rig's map names none and
+    the machine has several. `binding` and `target` are None for `none`.
+    Shape only: a target is text (a blend, two texts), and what it must name
+    is the compiler's."""
+    body = _only(body, _ASSIGN_KEYS, "the body of an assignment")
+    control = _text(body, "control", "the assignment")
+    controller = _text(body, "controller", "the assignment") if "controller" in body else None
+    bound = [key for key in ASSIGN_BINDINGS if key in body]
+    if "none" in body:
+        if body["none"] is not True or bound:
+            raise EditRequestError('the assignment: "none": true takes the control off what it does, alone '
+                                   f"(got {({k: body[k] for k in ('none', *bound)})!r})")
+        return {"control": control, "controller": controller, "binding": None, "target": None}
+    if len(bound) != 1:
+        raise EditRequestError(f"the assignment names exactly one of {', '.join(ASSIGN_BINDINGS)}, or "
+                               f'"none": true (got {", ".join(bound) or "none of them"})')
+    binding = bound[0]
+    target = body[binding]
+    if binding == "blend":
+        if not (isinstance(target, list) and len(target) == 2 and all(isinstance(t, str) and t for t in target)):
+            raise EditRequestError(f"the assignment: blend must be {TARGET_SHAPES['blend']}, not {target!r}")
+        target = list(target)
+    elif not isinstance(target, str) or not target.strip():
+        raise EditRequestError(f"the assignment: {binding} must be {TARGET_SHAPES[binding]}, not {target!r}")
+    return {"control": control, "controller": controller, "binding": binding, "target": target}
+
+
+def assignment_of(entry: Any) -> tuple[str, Any] | None:
+    """`(binding, target)` of one entry of a rig file's `midi: controls`, or
+    None for one that is not a mapping or binds nothing (the compiler says
+    what is wrong with it)."""
+    if not isinstance(entry, dict):
+        return None
+    bound = [key for key in ASSIGN_BINDINGS if key in entry]
+    return (bound[0], entry[bound[0]]) if len(bound) == 1 else None
+
+
+def said_assignment(binding: str | None, target: Any) -> str:
+    """An assignment in words, as the log and the answers say it: "bypass
+    lead/drive", "blend clean, lead", "nothing"."""
+    if binding is None:
+        return "nothing"
+    return f"{binding} {', '.join(target) if isinstance(target, list) else target}"
+
+
+def pick_controller(current: Any, asked: str | None, devices: list[dict[str, Any]]) -> tuple[str | None, Any]:
+    """`(name, None)`: the controller an assignment is written for, or
+    `(None, (reason, code, extra))` when it cannot be told.
+
+    The rig's map's own `controller` when it has one, and an `asked` one
+    must be it (`controller`): a rig's map is written for one device. With
+    none, `asked` if the machine file has it, else the one device with a
+    `type` (#191) when there is exactly one; several is a question for the
+    player (`which_controller`, with their names in `controllers`), and none
+    a refusal (`controller`), since an untyped controller's controls say
+    nothing of what they are. `devices` is `MachineSpec.devices()`."""
+    names = [d["name"] for d in devices]
+    if isinstance(current, str) and current:
+        if asked is not None and asked != current:
+            return None, (f"this rig's MIDI map is written for {current}, not {asked}: a rig's map is for one "
+                          f"controller", "controller", {})
+        return current, None
+    if asked is not None:
+        if asked not in names:
+            return None, (f"the machine file has no controller called {asked!r} (it has: "
+                          f"{', '.join(names) or 'none'})", "controller", {})
+        return asked, None
+    typed = [d["name"] for d in devices if d.get("type")]
+    if len(typed) == 1:
+        return typed[0], None
+    if typed:
+        return None, (f"the machine file has {len(typed)} devices ({', '.join(typed)}) and this rig's map names "
+                      "none: say which, as controller", "which_controller", {"controllers": typed})
+    return None, ("the machine file describes no device with a type (a pedal, #191), so which controller to "
+                  f"write the rig's map for is not known: name one, as controller (it has: "
+                  f"{', '.join(names) or 'none'})", "controller", {})
+
+
+def midi_of(raw: Any) -> dict[str, Any] | None:
+    """A rig file's `midi:` as the file has it, or None."""
+    midi = raw.get("midi") if isinstance(raw, dict) else None
+    return copy.deepcopy(midi) if isinstance(midi, dict) else None
+
+
+def unassigned_noop(raw: dict[str, Any], current: Any, control: str,
+                    devices: list[dict[str, Any]]) -> tuple[dict[str, Any], Any] | None:
+    """For `none` on a control the map does not have: `(change, None)`,
+    nothing to write, when the device has that control; `(None, (reason,
+    "no_control", {}))` when no device the map could be for has it. None when
+    the map has the control, and taking it off is a change. The device is
+    the map's controller, or with none any device of the machine file: a
+    no-op is never a question of which (#192's review)."""
+    midi = raw.get("midi") if isinstance(raw.get("midi"), dict) else {}
+    entries = midi.get("controls") if isinstance(midi.get("controls"), list) else []
+    if any(isinstance(e, dict) and e.get("control") == control for e in entries):
+        return None
+    pool = [d for d in devices if not current or d["name"] == current]
+    names = sorted({c["name"] for d in pool for c in d.get("controls") or []})
+    if control not in names:
+        where = f"controller {current}" if current else "the machine file's devices"
+        return None, (f"{where} {'has' if current else 'have'} no control called {control!r} (there are: "
+                      f"{', '.join(names) or 'none'}), so there is nothing to take off", "no_control", {})
+    return ({"op": "midi", "control": control, "controller": current or None, "binding": None, "target": None,
+             "was": None, "moved": None, "replaced": [], "controller_set": False}, None)
+
+
+def with_assignment(raw: dict[str, Any], controller: str, request: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
+    """`raw` with `request` (`assign_request`'s) written into its `midi:`,
+    and what changed; `raw` is left as it is.
+
+    - The control's own entry is changed in place, so its comment stays
+      with it; a control not in the map yet is added at the end.
+    - A target holds one control of a binding: another control with the
+      same binding and target is taken off it (`replaced`), as choosing C
+      for an effect that D switched means C instead of D.
+    - The control's previous assignment, when it had another, is in
+      `moved`: assigning a control that is in use moves it.
+    - `none` takes the control's entry out. A map left with no controls
+      and no `programs` is taken out whole, so a rig no longer waits for a
+      pedal it does not use.
+    - `controller` is written when the map has none (`controller_set`).
+
+    A `range` the entry had is kept only for the same parameter; nothing
+    here judges the target, which the compiler does."""
+    out = copy.deepcopy(raw)
+    midi = out.get("midi") if isinstance(out.get("midi"), dict) else None
+    entries = list(midi.get("controls") or []) if midi and isinstance(midi.get("controls"), list) else []
+    control, binding, target = request["control"], request["binding"], request["target"]
+    index = next((i for i, e in enumerate(entries) if isinstance(e, dict) and e.get("control") == control), None)
+    was = assignment_of(entries[index]) if index is not None else None
+    said: dict[str, Any] = {
+        "op": "midi", "control": control, "controller": controller, "binding": binding, "target": target,
+        "was": None if was is None else {was[0]: was[1]}, "moved": None, "replaced": [], "controller_set": False,
+    }
+    if binding is None:
+        if index is not None:
+            del entries[index]
+    else:
+        same = (binding, target)
+        if was is not None and was != same:
+            said["moved"] = {"control": control, "from": {was[0]: was[1]}, "said": said_assignment(*was)}
+        kept = []
+        for i, entry in enumerate(entries):
+            if i != index and assignment_of(entry) == same:
+                said["replaced"].append({"control": entry.get("control"), binding: target})
+                continue
+            kept.append(entry)
+        entries = kept
+        written: dict[str, Any] = {"control": control, binding: copy.deepcopy(target)}
+        if index is not None and was == same and "range" in raw["midi"]["controls"][index]:
+            written["range"] = copy.deepcopy(raw["midi"]["controls"][index]["range"])
+        at = next((i for i, e in enumerate(entries) if isinstance(e, dict) and e.get("control") == control), None)
+        if at is None:
+            entries.append(written)
+        else:
+            entries[at] = written
+    if not entries and not (midi or {}).get("programs"):
+        out.pop("midi", None)
+        return out, said
+    if midi is None:
+        midi = {}
+        out["midi"] = midi
+    if not midi.get("controller"):
+        midi["controller"] = controller
+        said["controller_set"] = True
+        # The controller first, as the files are written (docs/reference/midi.md).
+        out["midi"] = midi = {"controller": controller, **{k: v for k, v in midi.items() if k != "controller"}}
+    midi["controls"] = entries
+    return out, said
 
 
 # --------------------------------------------------------------------------- #

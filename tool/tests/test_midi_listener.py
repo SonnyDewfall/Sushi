@@ -796,7 +796,16 @@ def test_a_map_of_sweeps_alone_on_the_stepping_pedal_still_requires_it(tmp_path)
     written for the FBV: its being unplugged is the rig's problem."""
     rig = RIG.replace("controller: mpd218", "controller: fbv").replace(
         "  programs: rigs\n", "").replace("{control: pad1, bypass: lead/drive}", "{control: pedal, parameter: lead/drive/Drive}")
-    plan = plan_for(rig_files(tmp_path, bindings_=False, machine=FBV_MACHINE, rig=rig), tmp_path)
+    described = rig_files(tmp_path, bindings_=False, machine=FBV_MACHINE, rig=rig)
+    # A compiled map of sweeps is Sushi's cc_mappings (a config with nothing
+    # of a map in it needs no pedal, #192's review): as `up` would write it,
+    # from before the controller was recorded in `_meta`.
+    config = json.loads(Path(described["config"]).read_text())
+    config["midi"] = {"cc_mappings": [{"port": 0, "channel": 0, "cc_number": 7, "plugin_name": "drive",
+                                       "parameter_name": "Drive", "min_range": 0.0, "max_range": 1.0,
+                                       "mode": "absolute"}]}
+    Path(described["config"]).write_text(json.dumps(config))
+    plan = plan_for(described, tmp_path)
     assert [(f.controller, f.required) for f in plan.feeds] == [("fbv", True)]
 
 

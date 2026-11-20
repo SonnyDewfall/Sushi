@@ -392,7 +392,10 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   what was written, that it is **not committed** (the agent never commits) and
   the commit it sits on, or the agent's reason for refusing (another rig's
   name, a plugin on the rig the agent did not add, or one gone that it did
-  not remove). The count then
+  not remove). A Save as whose file waits for a restart (a pedal or a
+  channel written for it, #192: the answer's `restart`) says the rig plays
+  as it was loaded until then, with why, and offers **Restart … to play it**
+  behind a confirm, as an edit of the rig's file does. The count then
   starts from that save: a change after it, or an undo past it, is unsaved
   again. Allowed while locked, since it changes neither the sound nor the
   structure. Not on the stage screen: saving is not a stage action.
@@ -534,6 +537,56 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   `presetWidth`, `checkPresetName`, `presetSaveCall`, `presetLoadCall`,
   `presetOutcome`), tested on their own and through the page in
   `tool/tests/test_ui_presets.py`.
+- **Pedals: assigning a device's controls on the rack (#192).** Where the
+  machine file describes a device (`GET /midi`'s `controllers`), each unit
+  row has a pedal badge between its knobs and its on/off, and each playing
+  channel's strip one beside its name: a 44 px pill, dashed while nothing is
+  on that target, else naming the control (**C**, **pedal**), lit while a
+  control on it is heard. Tapping it opens a panel in the row (a group,
+  "Pedal for overdrive"), as a strip's Preset… panel opens in the strip: a
+  select a target, **none** then each control whose `takes` has that
+  binding and no `job` (A and B never), one in use elsewhere saying where
+  (**C (now vocal on/off)**). An effect's panel has **On/off** (`bypass`)
+  and, for each expression control, **pedal sweeps** with the unit's
+  parameters in its panel's order and labels (`R.pedalParameters`: not a
+  profile's control of several, not one it hides, not a read-only one); a
+  channel's has **On/off** (`mute`) and **Volume**. The master's strip has
+  none (its mute and its volume cannot be a pedal's), its units do. Choosing
+  sends POST /rig/midi/assign ([the agent](agent.md#assigning-a-pedal));
+  **none** takes the control off. A control in use elsewhere asks first in
+  the panel, naming what it is on (**C is on board/overdrive on/off. Move it
+  to vocal on/off?**, **Move C** or **Keep it**), its select showing the
+  control picked until then; a target losing another control does not ask,
+  since that is what choosing for it means. The badge names its panel
+  (`aria-controls`), and the focus goes back to it when an assignment closes
+  the panel. Behind the
+  lock (`lockRefusal(…, "pedal")`): locked, the badge opens to show what is
+  assigned and every select is disabled with the reason under it. A refusal
+  is said in the panel ("Not assigned: …", the compiler's words); what worked
+  is said under **PEDALS**, with **Restart … to play it** and its confirm when
+  the answer is `restart`. After an answer the page reads `GET /midi` again
+  (it is otherwise read once a run, kept by `runKey`) and the running rig's
+  channels, whose `blended` gives a pedalled volume its "driven by". **PEDALS**,
+  under the strips: the device, its state from `/health`'s
+  `agent.midi.feeds` (**listening**, **not connected** for `absent`,
+  **waiting: this rig needs it, and it is not plugged in**, or the problem),
+  then each control and what it does on this rig (A and B as previous and
+  next rig), with a light and, for an expression pedal, its last value. A
+  light comes on for 1.5 s when the control's count in `agent.midi.seen`
+  moves between two polls (`R.pedalLights`, counted rather than timed, so a
+  phone's clock does not matter), on the first sight of one only if it was
+  heard in the last 1.5 s; drawn in place, so a light rebuilds nothing, with
+  the same in words in the row for a screen reader ("heard just now",
+  "heard before", "not heard yet"). An assignment that changes nothing is
+  said as "Nothing to change", and nothing is written.
+  Where the machine file describes several typed devices and the rig's map
+  names none, **PEDALS** asks which ("Device for this rig's map"), and the
+  assignment carries it. A rig whose machine file describes no device sees
+  none of this. The decisions are rig.js's (`pedalBoard`, `pedalOptions`,
+  `pedalOn`, `pedalUse`, `pedalChoice`, `pedalCall`, `pedalSaid`,
+  `pedalSummary`, `pedalLights`, `pedalDeviceState`, `pedalOutcome`,
+  `pedalParameters`), tested on their own and through the page in
+  `tool/tests/test_ui_midi_assign.py`.
 - **Record (S7, S8).** A record bar on the stage screen, as the canvas's Record
   frame has it: a take name, a big Record and a big Stop, and while a take
   runs its name and elapsed time in red. Both work locked (recording is a stage
@@ -939,7 +992,8 @@ canvas's Save, the commit (with its message), "throw all away" and the rig
 file shown on screen are not built; of its history, Revert is the whole of
 it, by the player's choice (2026-11-06). Of its Record, the
 meters (nothing measures levels yet), the free space and hours of takes left,
-and opening one take are not built; the takes folder opens on the laptop. Broken and Pedals from the canvas are not built.
+and opening one take are not built; the takes folder opens on the laptop. Broken and Pedals from the canvas are not built
+(the rack's **PEDALS** section, #192, is the assignments and their lights, not that frame).
 Of its Library, the drawer (above) is the whole: there is no screen of its own,
 no drag and drop into a chain (#32), and a plugin's profile groups, which
 `/library` gives, are not shown in it.
@@ -983,6 +1037,15 @@ is the fake's own (`ui_fake.UiSave.switched`); the real switch is driven in
 `test_agent_presets.py` against a fake Sushi. No preset has been loaded and
 heard, nor the panel opened on a phone or the touch screen.
 
+Not run on the rig (2026-11-20): assigning pedal controls on the rack, the
+**PEDALS** section and its lights (#192). Tested in headless Chromium against
+the agent's real route writing the rig file in a temporary checkout through
+the real compiler, and its real MIDI listener reading a fake port
+(`ui_fake.UiPedals`) into which the tests put the CCs machines/example.yaml
+gives the FBV, which are placeholders. No board has been plugged in; no
+assignment has been heard; nor the badges tapped on a phone or the touch
+screen.
+
 Not run on the rig (2026-11-16): the master's dip around an add, a remove or
 a move, and the load check before an add (#137), tested against the fakes
 only; nothing of them has been heard.
@@ -1008,7 +1071,9 @@ serves the UI against the tests' fake rig on port 8029 (`--down` to start with n
 to give it a rig file to save into, in a temporary checkout with a machine
 file (which is also what the New rig screen and the rack's channel edits
 write into), `--record` to give
-that checkout a recorder, whose takes are real folders made by a stand-in engine).
+that checkout a recorder, whose takes are real folders made by a stand-in engine,
+`--pedals` to give that checkout the FBV in its machine file and the agent's real
+MIDI listener on a fake port, for the rack's pedal badges and **PEDALS**).
 `/ui/` and `/ui` redirect to the page. The page and its files are served
 with `Cache-Control: no-cache`, so a browser asks again on every load (an
 unchanged file is a 304 against its ETag): without it, a browser kept the
