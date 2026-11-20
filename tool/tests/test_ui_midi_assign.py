@@ -413,3 +413,35 @@ def test_the_panel_says_the_locks_own_words(browser, pedals_served):
     panel = open_panel(p, "overdrive")
     expect(panel.locator(".lock-says")).to_have_text(words)
     page.close()
+
+
+def test_a_save_as_whose_file_waits_for_a_restart_says_so_and_offers_it(browser, monkeypatch):
+    """The pedal assigned to a volume (for the restart), then Save as: the
+    page says the rig plays as it was loaded until it restarts, and offers
+    the restart, behind a confirm, as an edit of the file does."""
+    from pathlib import Path
+
+    import ui_fake
+    from sushi_rig import agent_client
+    from sushi_rig.rig import compile_named_rig
+
+    def compile_(self, name, root, machine):
+        self.compiled.append(name)
+        return compile_named_rig(name, Path(root), Path(machine) if machine else None)
+
+    monkeypatch.setattr(ui_fake.UiSave, "compile", compile_)
+    with Served(save=True, pedals=True) as s:
+        page = rack(browser, s)
+        p = page.page
+        status, answer = agent_client.ask(s.url, "POST", "/rig/midi/assign", {"control": "pedal", "volume": "board"})
+        assert status == 200 and answer["how"] == "restart", answer
+        p.get_by_role("button", name="Save as…").click()
+        p.get_by_label("New rig name").fill("foo")
+        p.get_by_role("button", name="Save as foo").click()
+        result = p.locator(".save-result.ok")
+        expect(result).to_contain_text("Saved as foo")
+        expect(result).to_contain_text("It plays as it was loaded until it restarts (")
+        result.get_by_role("button", name="Restart foo to play it").click()
+        p.locator("section.save").get_by_role("button", name="Restart now").click()
+        until(lambda: ["restart"] in s.lifecycle.calls)
+        page.close()

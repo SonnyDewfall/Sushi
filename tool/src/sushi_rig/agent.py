@@ -4156,6 +4156,13 @@ class Agent:
                     if getattr(exc, "agent_code", None) != "busy" or generation != self._midi_generation:
                         raise
                     await self._midi_until_free(generation)
+                    if not self._midi_still_bound(feed, binding):
+                        # The plan swapped while it waited (an assignment
+                        # applied live): this pedal's heel is not this
+                        # binding's any longer, and the new plan's own
+                        # messages decide what it does.
+                        self._midi_silenced.discard(mine)
+                        return
                     continue
                 if generation == self._midi_generation:
                     if gain == 0.0:
@@ -4172,6 +4179,14 @@ class Agent:
             self._midi_error(action, f"{type(exc).__name__}: {exc}")
         finally:
             self._midi_snapping.discard(mine)
+
+    def _midi_still_bound(self, feed: int, binding: Any) -> bool:
+        """Whether the running plan still has `binding` for its control on
+        port `feed` (`_midi_swap` can change it within a generation)."""
+        plan = self._midi_plan
+        if plan is None or feed >= len(plan.feeds):
+            return False
+        return any(b == binding for b in plan.feeds[feed].bindings.controls if b.control == binding.control)
 
     async def _midi_until_free(self, generation: int) -> None:
         """Wait, without taking it, until the lifecycle lock is free, or the
@@ -4531,7 +4546,7 @@ class Agent:
                 # after a restart or a switch, and must not write over that
                 # run's config or the rig file under it (#192's re-review).
                 now = self.switching.read_state() or {}
-                if any(now.get(k) != state.get(k) for k in ("started_at", "config", "rig")):
+                if run_changed(state, now):
                     outcome["stale"] = True
                     raise RigFileRefused(
                         "nothing was written: the rig was restarted or switched while this waited; assign "
@@ -4559,7 +4574,12 @@ class Agent:
                     try:
                         written = self.switching.write_config(path.stem, updated)
                         now = self.switching.read_state() or state
-                        if str(written) != str(now.get("config")):
+                        # Again, just before: a switch landing since the
+                        # check above must not have its run pointed at this
+                        # rig's config.
+                        if run_changed(state, now):
+                            outcome["stale"] = True
+                        elif str(written) != str(now.get("config")):
                             self.switching.write_state({**now, "config": str(written)})
                     except Exception as exc:  # noqa: BLE001 -- the file is written; the restart plays it
                         not_live = [{"code": "unrecorded",
@@ -8248,6 +8268,12 @@ def rigfile_refusal(state: dict[str, Any], log: list[dict[str, Any]]) -> tuple[s
                 "and that restart would drop them: Save first (it writes what is playing into the file), "
                 "then make the edit", "unsaved")
     return None
+
+
+def run_changed(before: dict[str, Any], now: dict[str, Any]) -> bool:
+    """Whether the state file `now` is of another run than `before`: a
+    restart (`started_at`) or a switch (`config`, `rig`) since. Pure."""
+    return any(now.get(key) != before.get(key) for key in ("started_at", "config", "rig"))
 
 
 def assignment_not_live(running: dict[str, Any] | None, compiled: dict[str, Any],

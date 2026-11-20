@@ -392,7 +392,10 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   what was written, that it is **not committed** (the agent never commits) and
   the commit it sits on, or the agent's reason for refusing (another rig's
   name, a plugin on the rig the agent did not add, or one gone that it did
-  not remove). The count then
+  not remove). A Save as whose file waits for a restart (a pedal or a
+  channel written for it, #192: the answer's `restart`) says the rig plays
+  as it was loaded until then, with why, and offers **Restart … to play it**
+  behind a confirm, as an edit of the rig's file does. The count then
   starts from that save: a change after it, or an undo past it, is unsaved
   again. Allowed while locked, since it changes neither the sound nor the
   structure. Not on the stage screen: saving is not a stage action.

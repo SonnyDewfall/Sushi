@@ -6729,3 +6729,12 @@ refused as busy was lost, likelier now an assignment holds the agent while
 the player is on the pedals: it waits until the lifecycle lock is free and
 goes again from the pedal's latest value, ended by a `down` or a switch.
 *(2026-11-20)*
+
+**Pedalboard 2, fourth review (PR #202).** Each fix with a test that fails
+without it. (1) The page did not show a Save as's `restart`: `saveOutcome`
+now says the rig plays as it was loaded until it restarts, with why, and
+offers the restart behind a confirm. (2) A late write could still point a
+run started since its check at its rig's config: the state file is compared
+again just before it is written (`run_changed`). (3) A heel's silencing
+waiting for a busy agent could resume on a binding a swapped plan had
+dropped: it stops when the plan no longer has that binding. *(2026-11-20)*

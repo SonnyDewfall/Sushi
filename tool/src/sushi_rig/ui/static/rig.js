@@ -1953,10 +1953,19 @@ export function saveOutcome(name, answer) {
   const ampText = amp.saved ? ` The amp is saved as the agent last sent it (${modelName(amp.model)}): Carla cannot be read back.`
     : amp.why ? ` The amp is not saved: ${amp.why}.` : "";
   const title = body.how === "new" ? `Saved as ${body.rig}` : `Saved ${body.rig}`;
-  const text = body.how === "new"
+  let text = body.how === "new"
     ? `Wrote ${body.file}, a new rig, which is now the running rig. It starts without the comments of ${body.previous}, which keeps them.${ampText}`
     : `Wrote ${body.file} in place, keeping its comments.${ampText}`;
-  return { ok: true, title, text, commit: commitText(body.library), file: body.file };
+  // A save-as whose file waits for a restart (a pedal or a channel written
+  // for it, #192): the rig plays as it was loaded until then, and the
+  // restart is offered, as an edit of the rig's file offers it.
+  let offer = null;
+  if (body.restart) {
+    const why = (body.restart.why || []).map((r) => r.detail).join("; ");
+    text += ` It plays as it was loaded until it restarts${why ? ` (${why})` : ""}.`;
+    offer = { op: "restart", name: body.rig, label: `Restart ${body.rig} to play it` };
+  }
+  return { ok: true, title, text, commit: commitText(body.library), file: body.file, offer };
 }
 
 // ---------------------------------------------------------------- volume: the master's and each channel's (2026-11-06)

@@ -776,3 +776,64 @@ def test_a_heel_silencing_refused_as_busy_lands_once_the_agent_is_free():
         assert answer["r"][0] == 200, answer
         until(lambda: s.rig.info["vocal_send"]["gain"]["value"] == 0.0, what="the silence, once free")
         assert "busy" not in ((midi_health(s)["last_error"] or {}).get("message") or "")
+
+
+# --------------------------------------------------------------------------- #
+# PR #202's fourth review
+# --------------------------------------------------------------------------- #
+
+def test_a_late_write_does_not_point_a_new_run_at_this_rigs_config(served, monkeypatch):
+    """The narrow gap: the run changes after the write's first check, while
+    the running config is being written. The state file of the run that is
+    up now is not pointed at that config."""
+    import threading
+
+    from sushi_rig import agent as agent_module
+
+    listening(served)
+    monkeypatch.setattr(agent_module, "SAVE_TIMEOUT", 0.5)
+    gate, entered = threading.Event(), threading.Event()
+    real = served.save.write_config
+    first = []
+
+    def slow(name, compiled):
+        if first:
+            return real(name, compiled)
+        first.append(1)
+        entered.set()
+        gate.wait(10)
+        real(name, compiled)
+        return "/elsewhere/electric_board.json"  # another path, which a repointing would write
+
+    served.save.write_config = slow
+    served.agent.switching = served.save.switching()
+    assert assign(served, control="c", bypass="board/overdrive")[0] == 504
+    until(entered.is_set, what="the write to be under way")
+    assert ask(served, "POST", "/rig/restart", {})[0] == 200
+    after = dict(served.save.state)
+    gate.set()
+    until(lambda: not served.agent._midi_tasks, what="the late write to be over")
+    assert served.save.state["config"] == after["config"] != "/elsewhere/electric_board.json"
+
+
+def test_a_heel_silencing_waiting_on_a_busy_agent_stops_if_its_binding_goes():
+    """The silencing waits for the agent; meanwhile the plan swaps to one
+    where the pedal no longer rides that volume. It does not land."""
+    mapped = RIG_FILE + "midi:\n  controller: fbv\n  controls:\n  - {control: pedal, volume: vocal}\n"
+    with Served(save=True, pedals=True, rig_file=mapped) as s:
+        listening(s)
+        on_loop(s, s.agent._lock.acquire())  # the agent held, as a lifecycle command holds it
+        s.pedals.sweep(0)
+        until(lambda: s.agent._midi_snapping, what="the silencing to wait")
+        config = json.loads(json.dumps(s.save.config))
+        config.pop(AGENT_BINDINGS)
+        s.save.write_config("electric_board", config)
+        on_loop(s, s.agent._midi_sync())
+        assert not any("silence" in b for b in midi_health(s)["bindings"])
+
+        async def release():
+            s.agent._lock.release()
+
+        on_loop(s, release())
+        until(lambda: not s.agent._midi_snapping, what="the silencing to end")
+        assert not any(c[:3] == ("set_parameter", "vocal_send", "gain") for c in s.rig.calls)

@@ -96,6 +96,7 @@ const state = {
   saving: null,              // this page's save in flight: {name}, null for the running rig's own file
   saveAsOpen: false, saveAsName: "",  // the Save as… form, and what is typed in it
   saveResult: null,          // what the last save or revert from this page said (R.saveOutcome, R.revertOutcome)
+  saveRestartConfirm: false, // the restart a save-as offers (its file waits for one, #192), asked again before it runs
   revert: { open: false, rig: null, list: null, choice: null, pending: false },  // Revert…: GET /rigs/<rig>/saves, the point chosen
   confirming: false, confirmTimer: null,  // Stop's second tap
   record: null, recordBase: null,  // GET /record, with /live; and {elapsed, at} of the take running
@@ -1076,6 +1077,7 @@ async function save(name = null) {
     state.saving = null;
   }
   state.saveResult = R.saveOutcome(name, answer);
+  state.saveRestartConfirm = false;
   if (answer.ok && name) { state.saveAsOpen = false; state.saveAsName = ""; }
   render();
   kick();
@@ -2914,7 +2916,9 @@ function saveRegion(el, unsaved) {
   const typing = document.activeElement && document.activeElement.name === "rig-name";
   const { dot, ...keyed } = view;
   const revert = state.revert.open ? revertKey(view) : null;
-  const rebuilt = patch(el, JSON.stringify([keyed, state.saveAsOpen, state.saveResult, last, revert]), () => {
+  const busyNow = state.health && state.health.ok ? (state.health.body.agent || {}).busy || null : null;
+  const rebuilt = patch(el, JSON.stringify([keyed, state.saveAsOpen, state.saveResult, last, revert, state.saveRestartConfirm,
+    busyNow, !!state.pending]), () => {
     const result = state.saveResult;
     return [
       h("div", { class: "save-acts" },
@@ -2934,7 +2938,13 @@ function saveRegion(el, unsaved) {
         h("span", {}, result.ok ? result.text : result.reason),
         result.ok ? h("span", { class: "commit" }, result.commit) : null,
         result.action ? h("button", { class: "rig-act danger", onclick: result.action.run }, result.action.label) : null,
-        h("button", { class: "dismiss", "aria-label": "Dismiss", onclick: () => { state.saveResult = null; render(); } }, "×")) : null,
+        result.ok && result.offer ? h("button", { class: "rig-act primary offer", disabled: !!state.pending,
+          onclick: () => { state.saveRestartConfirm = true; render(); } }, result.offer.label) : null,
+        h("button", { class: "dismiss", "aria-label": "Dismiss", onclick: () => { state.saveResult = null; state.saveRestartConfirm = false; render(); } }, "×")) : null,
+      result && result.ok && result.offer && state.saveRestartConfirm ? h("div", { class: "confirm", role: "group", "aria-label": "Confirm the restart" },
+        h("p", {}, `Restart ${result.offer.name}? The sound stops for a few seconds while it comes back from its file.`),
+        h("button", { class: "rig-act danger", disabled: !!state.pending || !!busyNow, onclick: restartForSave }, "Restart now"),
+        h("button", { class: "rig-act", onclick: () => { state.saveRestartConfirm = false; render(); } }, "Not now")) : null,
       last ? h("p", { class: "sub last-save" }, `Last saved ${last.time} to `, h("code", {}, last.file), `, ${last.then}.`) : null,
       helpAnchor("save"),
     ];
@@ -3595,6 +3605,15 @@ async function sendPedal(t, choice) {
     if (badgeButton && (fromPanel || !active || active === document.body)) badgeButton.focus({ preventScroll: true });
   }
   kick();
+}
+
+async function restartForSave() {
+  const result = state.saveResult;
+  state.saveRestartConfirm = false;
+  if (!result || !result.offer) return;
+  const ok = await lifecycle("restart", result.offer.name);
+  if (ok) state.saveResult = null;
+  render();
 }
 
 async function restartForPedals() {
