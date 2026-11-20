@@ -6448,3 +6448,82 @@ three on its own.
 real guitar through PipeWire (the looks were watched on a synthetic chord of
 saws plucked every 0.6 s), Firefox, and anybody watching for a while by eye,
 the photosensitivity of the flashes included. *(2026-11-20)*
+
+**The visualiser's looks, after PR #201's review (#196).**
+
+(1) **One flash limit for the whole visualiser.**
+- *Found:* during a 4 s blend, butterchurn runs both looks' frame equations in
+  each frame and draws both. Each look had its own gate, so the two schedules
+  added up: the review's simulation had Shutter into Tunnel, strummed every
+  0.3 s, flash at frames 63, 72, 81 and 90.
+- *Fixed:* one gate on `globalThis`, made afresh per session, which every
+  look's flash checks and sets. Both runners see the same clock in a frame,
+  so whichever flashes first shuts the other out. The review's script now
+  finds at most 2 in any 30 frames.
+
+(2) **The equaliser looks fall back over 0.5 s, not 0.2.**
+- *Found:* in the review's model, choked staccato at 3 Hz swung a level by
+  0.55 of the display.
+- *Fixed:* it now swings 0.29; at 4, 5 and 3.5 Hz the swings are 0.44, 0.41
+  and 0.25 before and 0.22, 0.20 and 0.12 after.
+- The rise is not limited, since a pick attack must show. The reference says
+  the equaliser looks are outside the flash helper and why.
+
+(3) **Every look is checked for light.** On a plucked chord fed in place of
+the capture, a screenshot decoded in the page must have a mean luminance of
+at least 0.5/255 and a spread of at least 4. The lowest seen was Shutter
+between flashes, at 1.2 and 11.1.
+
+(4) **Curve's cost.**
+- The equaliser canvas is half the buffer's size, scaled up by CSS. Curve is
+  two passes over 12 points an octave; without the 8 px pass it holds its
+  look.
+- In software, median and p95: Curve 5.0 and 7.8 ms at 640 by 400, was about
+  15 ms at full size. At 960 by 540 (half 1080p) it is 7.4 and 11.4 ms.
+- A look whose median frame is over 10 ms draws at 15 fps (`eqFps`).
+
+(5) **The guide's colours.** The high strings' open notes (G3, B3, E4) are in
+orange's octave, not yellow's. A test now holds each guide line to `rig.js`'s
+words, and the notes to the map.
+
+(6) **Hum stays dark.**
+- *Measured* in Chromium: 50 and 60 Hz hum at -60 dBFS peak, with its second
+  and third harmonics, reads -74 dB in the loudest band (-77 in Aurora's
+  bands, -80 in Curve's).
+- *Before:* the foot was 54 dB under a top floored at -50, so -104, and hum
+  lit half the display.
+- *Fixed:* the foot is never below -70 dB and the top's floor is -40. A test
+  plays real hum through each equaliser look and checks nothing is lit at
+  -60 dBFS while something is at -40.
+
+(7) **WebGL given back.** After a lost 2D context or a failed make, the
+visualiser loses butterchurn's WebGL context at once (`WEBGL_lose_context`)
+instead of leaving it for the garbage collector, and the next try gets a
+fresh canvas.
+
+(8) **The order test runs on a paused clock** (`pause_at`; in Playwright's
+Python a number is seconds). It keeps `fast_forward` for the long stretch:
+`run_for` over 45 s would draw some 1400 of butterchurn's frames a look in
+SwiftShader.
+
+(9) **A look shown again is re-timed on `run()`.** Its time had run on while
+it was away, so it switched on the first frame.
+
+**Each fix has a test that fails without it.** Checked one at a time:
+- a gate per look;
+- the release back at 0.2;
+- a comp that draws black;
+- a full-size canvas;
+- no 15 fps fallback;
+- orange's old words;
+- no absolute foot;
+- `dispose`, or the failed make, keeping the context;
+- no re-timing.
+
+**Counts.**
+- `test_ui_visualiser.py`: 87, was 80.
+- The fast suite, with every `test_ui` file, after merging master at 9622c45
+  (#199): 6027 passed, 22 skipped, 293 deselected, none failed.
+
+**Not tried:** a real GPU, the rig, a real guitar, Firefox, and eyes on the
+flashes. *(2026-11-20)*
