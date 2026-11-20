@@ -491,7 +491,7 @@ class Snap:
     binding: Binding
 
     def describe(self) -> str:
-        return f"{self.control}: at the heel, silence {self.binding.written}"
+        return f"{self.control}: set {self.binding.written}'s volume to the pedal's (silent at the heel)"
 
 
 @dataclass(frozen=True)
@@ -551,7 +551,8 @@ def dispatch(
       its value (FBV Control's Toggle).
 
     A momentary or single press within `DEBOUNCE_SECONDS` of the last one
-    accepted on that control is a bounce and does nothing; `now` is the
+    accepted on that control is a bounce and does nothing, and so is a
+    momentary rise within that of its last release (a release that bounces); `now` is the
     caller's clock (monotonic seconds), and None turns the debounce off. A
     press of a bypass or a mute toggles; a press of a step is `StepRig`, for
     the agent to decide against the order. A latching switch on a bypass, and
@@ -560,8 +561,9 @@ def dispatch(
     A pedal on a volume (`snap`) is `Snap` at or below its heel and None
     above it, where Sushi's own mapping has it.
 
-    `switches` holds each switch's last level under its control's name, and
-    the time of its last press under `("pressed", control)`.
+    `switches` holds each switch's last level under its control's name, the
+    time of its last press under `("pressed", control)` and of a momentary
+    switch's last release under `("released", control)`.
     """
     if message is None:
         return None, switches
@@ -594,11 +596,19 @@ def dispatch(
         on = message.value >= SWITCH_ON
         if binding.switch in PRESSED:
             level = {**switches, binding.control: on}
-            pressed = on and switches.get(binding.control) is not True if binding.switch == "momentary" else True
+            momentary = binding.switch == "momentary"
+            if momentary and not on and switches.get(binding.control) is True and now is not None:
+                level[("released", binding.control)] = now  # a falling edge, which a bounce follows
+            pressed = on and switches.get(binding.control) is not True if momentary else True
             if not pressed:
                 return None, level
             last = switches.get(("pressed", binding.control))
             if now is not None and last is not None and now - last < DEBOUNCE_SECONDS:
+                return None, level
+            # A rise straight after a release is the release bouncing (0, 127, 0
+            # inside a few ms as the foot comes off), not a press.
+            released = switches.get(("released", binding.control))
+            if now is not None and released is not None and now - released < DEBOUNCE_SECONDS:
                 return None, level
             if now is not None:
                 level[("pressed", binding.control)] = now
@@ -733,6 +743,9 @@ class Plan:
     bindings: Bindings = Bindings()
     feeds: tuple[Feed, ...] = ()
     running: str = ""
+    # The rig file could not be read to say which pedal its map of sweeps
+    # needs: said in /health (`agent.midi.rig_problem`), not swallowed.
+    rig_problem: str | None = None
 
     def __post_init__(self) -> None:
         if not self.running:
@@ -774,7 +787,7 @@ def plan_for(described: dict[str, Any], root: Path) -> Plan | Off:
     import json
 
     from .machine import MachineError, MachineSpec, machine_path
-    from .rigfile import AGENT_BINDINGS, RigFileError, load_rig
+    from .rigfile import AGENT_BINDINGS, load_rig
 
     if not described.get("running"):
         return Off("no rig is running")
@@ -804,12 +817,20 @@ def plan_for(described: dict[str, Any], root: Path) -> Plan | Off:
 
     feeds: dict[str, tuple[str, Bindings]] = {}
     rig = None
+    rig_problem = None
     if isinstance(source, str) and source:
         try:
             rig = load_rig(Path(root) / source)
-        except (OSError, RigFileError) as exc:
+        except Exception as exc:  # noqa: BLE001 -- a YAML typo too, which load_rig lets through
             if raw:
                 raise MidiError(f"could not read {source} for its controller: {exc}") from exc
+            if isinstance(config, dict) and (config.get("midi") or {}).get("cc_mappings"):
+                # Sweeps alone are Sushi's and need nothing of the agent, but
+                # which pedal they need is the rig file's to say: unread, a
+                # missing pedal would show only as "not connected".
+                rig_problem = " ".join(
+                    f"could not read {source} to say which pedal its MIDI map needs, so a missing one "
+                    f"is not reported as a problem (the steps still work): {exc}".split())
     required = rig.midi.controller if rig is not None and rig.midi is not None else None
     if raw:
         bindings = parse_bindings(raw)
@@ -835,9 +856,9 @@ def plan_for(described: dict[str, Any], root: Path) -> Plan | Off:
         port, bindings = feeds.get(controller_name, (controller["port"], Bindings()))
         feeds[controller_name] = (port, Bindings(bindings.controls + steps, bindings.programs))
     if not feeds:
-        return Off(f"{name} has no MIDI bindings for the agent")
+        return Off(f"{name} has no MIDI bindings for the agent" + (f"; {rig_problem}" if rig_problem else ""))
     return Plan(rig_name, feeds=tuple(Feed(c, port, b, c == required) for c, (port, b) in feeds.items()),
-                running=rig_name or name)
+                running=rig_name or name, rig_problem=rig_problem)
 
 
 def rig_in_order(source: Any, root: Path) -> str | None:

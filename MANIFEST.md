@@ -6294,3 +6294,15 @@ container could show. (6) A rig run from outside `config/rigs/`
 (`config/src/electric_board.yaml`) is not stepped from, whatever its name.
 (7) `/health`'s `last` says what became of a refused step or Program Change.
 *(2026-11-20)*
+
+**The pedalboard, part 1, re-review (PR #199).** A momentary switch's release
+that bounced (0, 127, 0 inside 10 ms after a long hold) toggled again: a rise
+within the debounce of the last release is now ignored too. The heel's
+silencing was keyed by port and control, which the next rig shares, so one
+still waiting on Sushi across a switch held up the next rig's: the key carries
+the generation. A silence that landed after Sushi had followed a rise the
+agent had not yet read left the channel silent with the pedal up: the first
+message above the heel after the agent silenced a pedal now has it set
+Sushi's value. A rig file that will not read behind a map of sweeps alone is
+said in `/health` (`agent.midi.rig_problem`) instead of swallowed; A and B
+still work. *(2026-11-20)*

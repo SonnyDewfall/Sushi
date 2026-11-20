@@ -3723,12 +3723,18 @@ class Agent:
         # messages, by (port, control), and the silencings running, so a
         # burst at the heel is one task that ends on the pedal's last value.
         self._midi_pedal: dict[tuple[int, str], tuple[int, int]] = {}
-        self._midi_snapping: set[tuple[int, str]] = set()
+        # Keyed by (generation, port, control), so a silencing still waiting
+        # on Sushi for the rig before a switch never holds up the next rig's.
+        self._midi_snapping: set[tuple[int, int, str]] = set()
+        # The pedals the agent last set silent: the next message above the
+        # heel for one has the agent set Sushi's value, in case its silence
+        # landed after Sushi had already followed that rise.
+        self._midi_silenced: set[tuple[int, int, str]] = set()
         self._midi_released = False  # set by `midi_release`: nothing starts a listener after it
         self._midi: dict[str, Any] = {
             "state": "off", "reason": "the agent has not looked for a rig yet",
             "rig": None, "controller": None, "port": None, "bindings": [], "programs": False,
-            "feeds": [], "heard": 0, "last": None, "problem": None, "last_error": None,
+            "feeds": [], "heard": 0, "last": None, "problem": None, "last_error": None, "rig_problem": None,
         }
 
     @property
@@ -3769,7 +3775,7 @@ class Agent:
 
     def _midi_off(self, reason: str) -> None:
         self._midi.update(state="off", reason=reason, rig=None, controller=None, port=None,
-                          bindings=[], programs=False, feeds=[], problem=None)
+                          bindings=[], programs=False, feeds=[], problem=None, rig_problem=None)
 
     def _midi_fail(self, problem: str) -> None:
         self._midi.update(state="failed", reason=None, problem=problem)
@@ -3829,8 +3835,10 @@ class Agent:
             programs=plan.programs,
             feeds=[{"controller": feed.controller, "port": feed.port, "required": feed.required,
                     "state": "opening", "problem": None, "reason": None} for feed in plan.feeds],
-            heard=0, last=None, problem=None, last_error=None,
+            heard=0, last=None, problem=None, last_error=None, rig_problem=plan.rig_problem,
         )
+        if plan.rig_problem:
+            self._midi_say(plan.rig_problem)
         for index, feed in enumerate(plan.feeds):
             self._listeners.append(midi_listener.Listener(
                 feed.port, self._midi_world.open_port,
@@ -3851,6 +3859,7 @@ class Agent:
         self._midi_generation += 1
         self._midi_switches = {}
         self._midi_pedal = {}
+        self._midi_silenced = set()
         listeners, self._listeners = self._listeners, []
         if not listeners:
             return
@@ -3959,6 +3968,10 @@ class Agent:
                 if pedal is not None:
                     key = (feed, pedal.control)
                     self._midi_pedal[key] = (message.value, self._midi_pedal.get(key, (0, 0))[1] + 1)
+                    if message.value > pedal.heel and (generation, *key) in self._midi_silenced:
+                        # Above the heel after the agent silenced it: Sushi has
+                        # set its value, unless the silence landed after that.
+                        action = midi_listener.Snap(pedal.control, pedal.target, pedal)
         except Exception as exc:  # noqa: BLE001 -- a loop callback's error would reach only the loop's log
             self._midi["last_error"] = {
                 "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -4007,7 +4020,7 @@ class Agent:
     def _midi_snap_start(self, generation: int, feed: int, action: Any) -> None:
         """Silence a pedalled volume at the heel (#191), in one task a pedal:
         a burst of messages at the heel is read by the task already running."""
-        key = (feed, action.control)
+        key = (generation, feed, action.control)
         if key in self._midi_snapping:
             return
         self._midi_snapping.add(key)
@@ -4024,13 +4037,20 @@ class Agent:
         it was setting. Not in the live log: a pedal's position is not a change
         to undo or to save."""
         key, binding = (feed, action.control), action.binding
+        mine = (generation, feed, action.control)
         origin = _MidiOrigin("MIDI", action.control)
         try:
             while generation == self._midi_generation:
                 value, count = self._midi_pedal.get(key, (binding.heel, 0))
+                gain = binding.gain_at(value)
                 async with self._connected_for_a_change(origin) as controller:
                     await self._sushi(origin, self.live.set_parameter, controller, action.processor, "gain",
-                                      binding.gain_at(value), reading=False)
+                                      gain, reading=False)
+                if generation == self._midi_generation:
+                    if gain == 0.0:
+                        self._midi_silenced.add(mine)
+                    else:
+                        self._midi_silenced.discard(mine)
                 if self._midi_pedal.get(key, (value, count))[1] == count:
                     break
         except web.HTTPException as exc:
@@ -4040,7 +4060,7 @@ class Agent:
         except Exception as exc:  # noqa: BLE001 -- said, with its type; the agent carries on
             self._midi_error(action, f"{type(exc).__name__}: {exc}")
         finally:
-            self._midi_snapping.discard(key)
+            self._midi_snapping.discard(mine)
 
     def _midi_switch_refusal(self) -> str | None:
         """Why a pedal's rig switch (a Program Change, or a step, #191) cannot

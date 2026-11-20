@@ -962,3 +962,37 @@ def test_a_run_from_a_file_that_is_not_a_rig_file_still_has_its_steps(tmp_path):
     described["rig"] = "config/src/electric_board.yaml"
     plan = plan_for(described, tmp_path)
     assert [(f.controller, f.required) for f in plan.feeds] == [("fbv", False)] and plan.rig is None
+
+
+# --------------------------------------------------------------------------- #
+# PR #199's re-review
+# --------------------------------------------------------------------------- #
+
+def test_a_release_that_bounces_is_not_a_press():
+    """Held half a second, then let go with a bounce (0, 127, 0 inside 10 ms):
+    one press. The debounce from the last press alone let the bounce's rise,
+    half a second on, toggle again."""
+    parsed = parse_bindings([MOMENTARY_BYPASS])
+    switches: dict = {}
+    seen = []
+    for at, value in ((0.0, 127), (0.5, 0), (0.505, 127), (0.51, 0)):
+        action, switches = dispatch(cc(value, 22), parsed, switches, now=at)
+        seen.append(action)
+    assert seen == [ToggleBypass("c", "drive"), None, None, None]
+    action, _ = dispatch(cc(127, 22), parsed, switches, now=0.8)
+    assert action == ToggleBypass("c", "drive"), "and the next real press is one"
+
+
+def test_an_unreadable_rig_file_behind_a_map_of_sweeps_is_said_not_swallowed(tmp_path):
+    """No bindings for the agent, so the rig file is needed only to say which
+    pedal the map is for; unread, the steps still work and the problem is
+    carried to /health rather than a missing pedal reading "not connected"."""
+    described = rig_files(tmp_path, bindings_=False, machine=FBV_MACHINE, rig=UNMAPPED_RIG)
+    config = Path(described["config"])
+    config.write_text(json.dumps({"tracks": [], "midi": {"cc_mappings": [{"cc_number": 7}]}}))
+    (tmp_path / "config" / "rigs" / "lead.yaml").write_text("kind: [rig\n")
+    plan = plan_for(described, tmp_path)
+    assert [b.control for b in plan.feeds[0].bindings.controls] == ["a", "b"]
+    assert plan.rig_problem and "could not read config/rigs/lead.yaml" in plan.rig_problem
+    config.write_text(json.dumps({"tracks": []}))
+    assert plan_for(described, tmp_path).rig_problem is None, "no map of sweeps, nothing it needs"

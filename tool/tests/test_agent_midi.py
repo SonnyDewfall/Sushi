@@ -1354,3 +1354,77 @@ def test_a_press_refused_during_a_switch_is_what_last_says():
         assert agent._midi["last"]["action"].startswith("refused, busy: 'restart'")
 
     served(agent, test)
+
+
+# PR #199's re-review: the snap across a switch, and a silence that landed late.
+
+def test_a_silencing_still_waiting_for_the_last_rig_does_not_hold_up_the_next_rigs():
+    """The snap's key is the same control on the next rig: a task still
+    waiting on Sushi for the rig before must not stop the next rig's heel
+    from being silenced."""
+    agent, fake, world = snap_agent()
+    fake.hang_on = "set_parameter"
+
+    async def test(client):
+        await agent.midi_adopt()
+        await until(lambda: agent._midi["state"] == "listening")
+        world.named[FBV_PORT].send(0xB0, 7, 0)
+        await asyncio.get_running_loop().run_in_executor(None, fake.reached.wait, 3)
+        await agent._midi_stop("a switch")   # as a switch does: the next rig, the same pedal
+        await agent._midi_sync()
+        await until(lambda: agent._midi["state"] == "listening")
+        world.named[FBV_PORT].send(0xB0, 7, 0)
+        await until(lambda: agent._midi_pedal.get((0, "pedal")) is not None)
+        await asyncio.sleep(0.05)
+        assert any(key[0] == agent._midi_generation for key in agent._midi_snapping), \
+            "the next rig's silencing is under way"
+        fake.release.set()
+        await until(lambda: len(gains(fake)) == 2)
+        await settle(agent)
+        assert gains(fake) == [0.0, 0.0]
+
+    served(agent, test)
+
+
+def test_a_rise_after_the_agent_silenced_the_pedal_sets_sushis_value_again():
+    """The silence can land after Sushi has followed a rise whose message the
+    agent had not yet read: the agent then believes the pedal is at the heel.
+    So the next message above the heel for a pedal it silenced has the agent
+    set Sushi's value, once."""
+    agent, fake, world = snap_agent()
+
+    async def test(client):
+        await agent.midi_adopt()
+        await until(lambda: agent._midi["state"] == "listening")
+        fbv = world.named[FBV_PORT]
+        fbv.send(0xB0, 7, 0)
+        await until(lambda: gains(fake) == [0.0])
+        await settle(agent)
+        fbv.send(0xB0, 7, 90)
+        await until(lambda: len(gains(fake)) == 2)
+        await settle(agent)
+        fbv.send(0xB0, 7, 100)
+        await asyncio.sleep(0.1)
+        await settle(agent)
+        assert gains(fake) == [0.0, pytest.approx(0.5 + 0.3 * 90 / 127)], "once, then Sushi's alone"
+
+    served(agent, test)
+
+
+def test_an_unreadable_rig_file_is_said_in_health():
+    class Unread(PedalboardWorld):
+        def plan(self, described, root):
+            plan = super().plan(described, root)
+            return dataclasses.replace(plan, rig_problem="could not read config/rigs/x.yaml to say which pedal")
+
+    import dataclasses
+
+    world = Unread(raw=[], absent_port=FBV_PORT)
+    agent, *_ = midi_agent(world)
+
+    async def test(client):
+        await agent.midi_adopt()
+        await until(lambda: agent._midi["state"] == "absent")
+        assert (await health(client))["rig_problem"].startswith("could not read config/rigs/x.yaml")
+
+    served(agent, test)

@@ -115,7 +115,8 @@ while held. So:
 
 A momentary or single press toggles its effect's bypass or its channel's mute,
 or steps the rig. A press within 40 ms of the last one accepted on the same
-switch is a bounce or a resend, and does nothing. A switch described as the
+switch is a bounce or a resend, and does nothing, and so is a momentary
+switch's rise within 40 ms of its release (a release that bounces). A switch described as the
 wrong one misbehaves in a way that says which it is: a Toggle switch read as
 momentary acts on every other press, and a Single switch read as momentary acts
 once and then not again until a release that never comes, unless it sends 0.
@@ -195,7 +196,9 @@ same gain a channel's `level` sets, and a job for the agent:
   already reads. Above the heel it leaves the send to Sushi's mapping. If the
   pedal leaves the heel while the agent is still silencing it, the agent finishes
   on the value Sushi's mapping gives for where the pedal is, so the two do not
-  fight. **With the agent not running, the heel is 40 dB down, not silent.**
+  fight; and the first message above the heel after the agent silenced it has
+  the agent set Sushi's value once more, in case its silence landed after
+  Sushi had followed that rise. **With the agent not running, the heel is 40 dB down, not silent.**
 - **The pedal's `range` is informational, but for the heel.** Sushi scales its
   own 0 to 127 whatever the range says: a mapping scaled to a range would need
   Sushi to clamp a value outside it, which could not be checked here (no MIDI
@@ -379,7 +382,9 @@ reason, `absent` (no pedal connected, and none the rig needs missing), or
 `failed` with the problem. `feeds` gives each port's controller, whether the rig
 needs it (`required`), its state (`opening`, `listening`, `absent`, `waiting` or
 `failed`), its reason and its problem; `controller` and `port` are the first's,
-the rig map's when it has one. A port that will not open is said once, naming the port, the
+the rig map's when it has one. `rig_problem` says when the running rig's file
+could not be read to say which pedal its map of sweeps needs: A and B still
+work, but a missing pedal that map needs is then only "not connected". A port that will not open is said once, naming the port, the
 controller and what ALSA does list, and not retried until the next `up` or
 `restart`; a pedal that is only unplugged is waited for instead (above).
 `heard` and `last` (the last message and what it did) are what to
