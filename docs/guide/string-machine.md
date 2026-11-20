@@ -28,7 +28,11 @@ sushi-rig plugins add
 
 The first line installs the plugins, the third builds the one no package has
 (the ensemble), and the last copies the installed ones into the rig's plugins
-folder, from wherever Ubuntu put them. The reference's
+folder, from wherever Ubuntu put them. It needs every plugin any rig uses: if
+it stops saying the neural amp has no provider, because the amp is carried
+into the folder by hand and is not there yet, run it as
+`sushi-rig plugins add --waive http://github.com/mikeoliphant/neural-amp-modeler-lv2`
+(and likewise `--waive` for anything else it names that you do not use). The reference's
 [Plugins](../reference/plugins.md#string-machine-chorus-built-for-the-string-machine)
 has the whole of it, with the checks to run after. Until they are there, a
 start or a switch to either rig is refused: the box says which plugin is

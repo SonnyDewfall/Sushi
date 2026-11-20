@@ -127,42 +127,78 @@ def plugins_folder(root: Path) -> Path:
 
 
 def plugins_refusal(
-    config: dict[str, Any], root: Path, name: str, *, amp: bool, switch_from: str | None = None,
-    folder: Path | None = None,
-) -> tuple[str | None, str | None]:
-    """`(why rig `name` must not start, the amp warning)` for the compiled
-    `config`, each None when there is nothing to say: whether every plugin
-    Sushi would load is in `folder`, `plugins_folder(root)` unless given
-    (`plugins.preflight`).
-    Shared by `up`, the agent's start (both through `prepare_launch`) and
-    its rig switch (`switch_from`, the rig playing, words it as one), so all
-    three refuse in the same words."""
-    from .plugins import PluginsError, preflight, preflight_amp_warning, preflight_refusal
+    config: dict[str, Any], root: Path, name: str, *, amp: bool, amp_model: str | None = None,
+    switch_from: str | None = None, folder: Path | None = None,
+    words: tuple[str, str, str] | None = None,
+) -> tuple[str | None, list[str]]:
+    """`(why rig `name` must not start, the warnings to give if it does)` for
+    the compiled `config`, the refusal None when there is nothing to refuse:
+    whether every plugin Sushi would load is in `folder`,
+    `plugins_folder(root)` unless given, as Sushi needs it
+    (`plugins.preflight`). Shared by `up`, the agent's start (both through
+    `prepare_launch`), `restart` before it stops anything, and the agent's
+    rig switch, revert and preset load, so all of them refuse in the same
+    words. `switch_from`, the rig playing, words it as a switch; `words`,
+    `(heading, nothing, again)`, as anything else.
+
+    Never raises for what it reads: a config section it cannot make sense of
+    (an `_amp` with no plugin) is the compile's or the amp's to refuse."""
+    from .plugins import preflight, preflight_refusal, preflight_warnings
 
     folder = folder if folder is not None else plugins_folder(root)
-    try:
-        missing, amp_missing = preflight(config, folder, amp=amp)
-    except PluginsError as exc:
-        said = f"Not switched to {name}" if switch_from is not None else f"{name} was not started"
-        return f"{said}: {exc}", None
-    refusal = preflight_refusal(name, missing, folder, root, switch_from=switch_from) if missing else None
-    return refusal, preflight_amp_warning(amp_missing, folder) if amp_missing else None
+    pre = preflight(config, folder, amp=amp, amp_model=amp_model)
+    if words is None and switch_from is not None:
+        words = (f"Not switched to {name}", f"Nothing was changed: {switch_from} plays on.",
+                 "switch to it again")
+    refusal = None
+    if pre.missing or pre.broken:
+        heading, nothing, again = words or (f"{name} was not started", "Nothing was started.",
+                                            "start the rig again")
+        refusal = preflight_refusal(name, pre, folder, root, heading=heading, nothing=nothing, again=again)
+    return refusal, preflight_warnings(pre, folder)
 
 
 def check_plugins(
     config_path: Path, root: Path, name: str, *, amp: bool, warn: Callable[[str], None],
+    amp_model: str | None = None,
 ) -> None:
     """`plugins_refusal` for the config file `up` would start: `RigError`
-    for a refusal, `warn` for the amp."""
+    for a refusal, `warn` for each warning."""
     try:
         config = json.loads(config_path.read_text())
     except (OSError, ValueError) as exc:
         raise RigError(f"{name} was not started: its config {config_path} cannot be read: {exc}") from exc
-    refusal, amp_warning = plugins_refusal(config if isinstance(config, dict) else {}, root, name, amp=amp)
+    refusal, warnings = plugins_refusal(config if isinstance(config, dict) else {}, root, name, amp=amp,
+                                        amp_model=amp_model)
     if refusal:
         raise RigError(refusal)
-    if amp_warning:
-        warn(amp_warning)
+    for warning in warnings:
+        warn(warning)
+
+
+def restart_plugins_refusal(config_name: str, options: dict[str, Any], root: Path | None = None) -> str | None:
+    """Why the rig `restart` would bring back (`restart_arguments`) must not
+    be stopped for it, or None: `plugins_refusal` on its config, read or
+    compiled now, before `down`. A restart that `up` would then refuse left
+    no rig at all (review of PR #198); refused here, the running one plays
+    on. A config that cannot be read or compiled now is not refused here:
+    `up` says why, as it always has."""
+    root = root if root is not None else checkout_root()
+    try:
+        if options.get("rig"):
+            machine = options.get("machine")
+            config = compile_named_rig(config_name, root, Path(machine) if machine else None)
+        else:
+            config = json.loads((root / "config" / f"{config_name}.json").read_text())
+    except Exception:  # noqa: BLE001 -- the restart's `up` refuses it in its own words
+        return None
+    if not isinstance(config, dict):
+        return None
+    refusal, _ = plugins_refusal(
+        config, root, config_name, amp=False,
+        words=(f"{config_name} was not restarted", f"Nothing was stopped: {config_name} plays on.",
+               "restart it again"))
+    return refusal
 
 
 # --- paths ------------------------------------------------------------------
@@ -1300,7 +1336,7 @@ def prepare_launch(
 
     # Before anything is started, and before the amp is prepared: a chain
     # whose plugins are not all in plugins/ is one Sushi cannot build.
-    check_plugins(config, root, config_name, amp=amp, warn=warn)
+    check_plugins(config, root, config_name, amp=amp, warn=warn, amp_model=amp_model)
 
     rig_yaml = resolve_rig_yaml(config, root)
     if not headless:
@@ -1615,6 +1651,9 @@ def restart() -> int:
         raise RigError(NOTHING_TO_RESTART)
 
     config_name, options = restart_arguments(state)
+    refusal = restart_plugins_refusal(config_name, options)
+    if refusal:
+        raise RigError(refusal)
 
     print(restart_heading(config_name))
     outcome = down()

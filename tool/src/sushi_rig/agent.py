@@ -4023,7 +4023,8 @@ class Agent:
         `config_name` of config/rigs, live where `rigfile.diff` says it can
         be and by restart where not (`_switch`). 200 with `how` ("live" or
         "restart") and, for a restart, `why`; 409 for a refusal that left the
-        running rig as it was (`code`: `busy`, `no_rig`, `rig_problem`), or a
+        running rig as it was (`code`: `busy`, `no_rig`, `rig_problem`,
+        `plugins_missing`), or a
         restart that failed (with `reason`, and the previous rig brought back
         if it could be); 504 if the agent gave up waiting on a command."""
         try:
@@ -5822,7 +5823,8 @@ class Agent:
                 except asyncio.TimeoutError:
                     raise web.HTTPGatewayTimeout(reason=f"{point} was not read within {SAVE_TIMEOUT:g}s")
                 try:
-                    await self._rigfile_thread(request, path, lambda: self._revert_compile(data, run))
+                    await self._rigfile_thread(
+                        request, path, lambda: self._revert_compile(data, run, name if running else None))
                     discarded: list[dict[str, Any]] = []
                     if running:
                         async with self._live_lock:
@@ -5873,8 +5875,11 @@ class Agent:
         return data, {"id": point, "kind": "save", "at": meta.get("at"),
                       "what": f"as the save of {meta.get('at') or point} wrote it"}
 
-    def _revert_compile(self, data: bytes, run: dict[str, Any]) -> dict[str, Any]:
-        """The point compiled as `up --rig` would compile it, or the refusal."""
+    def _revert_compile(self, data: bytes, run: dict[str, Any], playing: str | None = None) -> dict[str, Any]:
+        """The point compiled as `up --rig` would compile it, or the refusal.
+        `playing`, the running rig's name when the point is its file, is
+        checked for plugins too (`_rigfile_plugins`): the switch that follows
+        would refuse it, after the file was written."""
         import yaml
 
         try:
@@ -5884,7 +5889,26 @@ class Agent:
                                  "rig_problem") from exc
         if not isinstance(raw, dict):
             raise RigFileRefused("nothing was written: it is not a rig file", "rig_problem")
-        return self._rigfile_compile(raw, run)
+        compiled = self._rigfile_compile(raw, run)
+        if playing is not None:
+            self._rigfile_plugins(compiled, playing, run, "reverted", "revert it again")
+        return compiled
+
+    def _rigfile_plugins(self, compiled: dict[str, Any], name: str, run: dict[str, Any], done: str,
+                         again: str) -> None:
+        """`RigFileRefused` (`plugins_missing`) when the running rig `name`,
+        about to be switched into `compiled` from its edited file (a revert,
+        a preset load), loads a plugin plugins/ lacks: refused before the
+        file is written, in the words a switch is refused in, since the
+        switch after the write would refuse it and leave the file changed
+        and the rig not (review of PR #198). Off the loop."""
+        root = self._midi_root()
+        refusal, _ = plugins_refusal(
+            compiled, root, name, amp=False, folder=self.switching.plugins(root),
+            words=(f"nothing was written: {name} was not {done}",
+                   f"Nothing was changed: {name} plays on, and its file is as it was.", again))
+        if refusal:
+            raise RigFileRefused(" ".join(refusal.split()), "plugins_missing")
 
     async def _revert_switch(self, request, name: str, said: dict[str, Any], *,
                              mark: Callable[[dict[str, Any]], None] | None = None,
@@ -6162,7 +6186,8 @@ class Agent:
                     "midi", {"mappings": orphaned})
             edited["midi"] = presets.drop_orphaned(midi, orphaned)
             dropped = orphaned
-        self._rigfile_compile(edited, run)
+        compiled = self._rigfile_compile(edited, run)
+        self._rigfile_plugins(compiled, path.stem, run, f"given preset {name} on {channel}", "load it again")
         rig_amp = running_amp(run["state"], raw)
         width = None
         if preset.width != old.get("width"):

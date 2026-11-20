@@ -1367,9 +1367,10 @@ def test_restart_with_nothing_running_refuses_and_says_how_to_start(runtime):
         rig.restart()
 
 
-def test_restart_hands_up_what_the_state_says_was_asked_for(runtime, monkeypatch):
+def test_restart_hands_up_what_the_state_says_was_asked_for(runtime, monkeypatch, tmp_path):
     """The whole chain, end to end with `down` and `up` stubbed: an amp that
     failed to start and a model named on the command line both survive."""
+    whole_plugins(tmp_path, monkeypatch)
     state_file.write_state(running_state(
         mode="headless", amp_requested=True,
         amp_model="amp/models/Other.nam", amp_model_requested="amp/models/Other.nam",
@@ -1385,7 +1386,8 @@ def test_restart_hands_up_what_the_state_says_was_asked_for(runtime, monkeypatch
     })]
 
 
-def test_restart_does_not_start_again_if_the_rig_would_not_stop(runtime, monkeypatch):
+def test_restart_does_not_start_again_if_the_rig_would_not_stop(runtime, monkeypatch, tmp_path):
+    whole_plugins(tmp_path, monkeypatch)
     state_file.write_state(running_state())
     monkeypatch.setattr(rig, "down", lambda force=False: 1)
     monkeypatch.setattr(rig, "up", lambda *a, **k: pytest.fail("started over a live rig"))
@@ -1537,10 +1539,35 @@ def test_up_warns_of_an_amp_that_is_not_in_plugins_and_starts(tmp_path):
 
     config = {"tracks": [], "_amp": {"plugin": "nam", "model": "amp/models/x.nam"}}
     (tmp_path / "plugins").mkdir()
-    refusal, warning = rig.plugins_refusal(config, tmp_path, "x", amp=True)
+    refusal, (warning,) = rig.plugins_refusal(config, tmp_path, "x", amp=True)
     assert refusal is None
     assert NAM_URI in warning and "NO AMP" in warning and "--no-amp" in warning
-    assert rig.plugins_refusal(config, tmp_path, "x", amp=False) == (None, None)
+    assert rig.plugins_refusal(config, tmp_path, "x", amp=False) == (None, [])
+
+
+def test_restart_whose_rig_up_would_refuse_refuses_before_down_and_the_rig_plays_on(
+        runtime, monkeypatch, tmp_path):
+    """Review of PR #198: `restart` stopped the rig, then `up` refused it
+    for a plugin plugins/ lacked, and there was no rig. Now asked first:
+    nothing is stopped, and the message says so."""
+    from sushi_rig.plugins import config_uris
+
+    config = json.loads((ROOT / "config" / f"{rig.DEFAULT_CONFIG_NAME}.json").read_text())
+    missing = sorted(config_uris(config))[0]
+    partial = stand_in_plugins(tmp_path / "partial", leave_out=(missing,))
+    monkeypatch.setattr(rig, "plugins_folder", lambda root: partial)
+    fake_lv2_system(tmp_path, monkeypatch)
+    state_file.write_state(running_state())
+    monkeypatch.setattr(rig, "down", lambda force=False: pytest.fail("stopped a rig the restart would not bring back"))
+    monkeypatch.setattr(rig, "up", lambda *a, **k: pytest.fail("started"))
+    with pytest.raises(rig.RigError) as refused:
+        rig.restart()
+    said = str(refused.value)
+    assert said.startswith(f"{rig.DEFAULT_CONFIG_NAME} was not restarted: 1 plugin(s) it loads are not in {partial}")
+    assert missing in said
+    assert f"Nothing was stopped: {rig.DEFAULT_CONFIG_NAME} plays on." in said
+    assert "then restart it again:" in said
+    assert state_file.read_state() is not None, "the running rig is still recorded"
 
 
 def test_up_exits_nonzero_when_sushi_exits_during_startup(up_world):

@@ -543,7 +543,10 @@ class UiAmp:
         }
 
     def switching(self) -> Switching:
-        return Switching(read_state=self.state, read_config=lambda path: copy.deepcopy(self.config))
+        from rig_fixtures import whole_plugins
+
+        return Switching(read_state=self.state, read_config=lambda path: copy.deepcopy(self.config),
+                         plugins=whole_plugins)
 
     def describe(self):
         if self.lifecycle.rig is None:
@@ -719,9 +722,13 @@ class UiSave:
         return {"tracks": [], "_meta": {"source": f"config/rigs/{name}.yaml"}}
 
     def switching(self) -> Switching:
+        from rig_fixtures import whole_plugins
+
+        # The rig's plugins, whole, as the rig machine's are: a revert or a
+        # load checks them before it writes (`Agent._rigfile_plugins`).
         return Switching(read_state=lambda: copy.deepcopy(self.state), write_state=self.write_state,
                          compile=self.compile, write_config=lambda name, compiled: f"/fake/rigs/{name}.json",
-                         read_config=lambda path: copy.deepcopy(self.config))
+                         read_config=lambda path: copy.deepcopy(self.config), plugins=whole_plugins)
 
     def describe(self):
         if self.lifecycle.rig is None:

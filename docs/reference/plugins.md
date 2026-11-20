@@ -22,13 +22,18 @@ fact that the rig is not actually self-contained.
 **`sushi-rig up` checks first** (#188). Sushi given a chain it cannot build
 quits with only `Failed to load tracks from the Json config file`, naming no
 plugin. So before it starts anything, `up` reads which plugins the rig loads
-and whether a bundle in `plugins/` declares each (from the bundles'
-`manifest.ttl`, without lilv, in a fraction of a second; what that finds
-missing is asked of lilv too, where it is installed, so a manifest the
-reader cannot parse does not stop a rig Sushi would load). If any is missing it
-starts nothing, names every one, says where each is instead (installed in
-`/usr/lib/lv2` or the multiarch folder, in `~/.lv2`, built by a script here, or
-nowhere), gives the commands that fix it in the order to run them, and exits 1:
+and whether a bundle in `plugins/` declares each, and whether the binary each
+names (its `lv2:binary`) is a file: a bundle copied with `cp -r`, its binary a
+link to nothing, is a refusal too. It reads the bundles' `manifest.ttl`,
+without lilv, in a fraction of a second. What that leaves unseen is asked of
+lilv as well, where lilv can be loaded, so a manifest the reader cannot parse
+does not stop a rig Sushi would load; where lilv cannot be loaded and a bundle
+could not be read, what is unseen may be in it, so `up` warns of it and
+starts. If anything is missing or broken it starts nothing, names every one,
+says where each is instead (installed in `/usr/lib/lv2` or the multiarch
+folder, in `~/.lv2`, built by a script here, or nowhere) or what is wrong
+with its bundle, gives the commands that fix it in the order to run them, and
+exits 1:
 
 ```
 synth-lead was not started: 1 plugin(s) it loads are not in /home/you/Sushi/plugins, the only folder Sushi loads plugins from (LV2_PATH), so Sushi would quit at startup saying only "Failed to load tracks from the Json config file":
@@ -37,13 +42,25 @@ Nothing was started. To fix it, run this, then start the rig again:
   sushi-rig plugins add
 ```
 
-The agent says the same, for a start from the web UI and for a rig switch
-(the picker's **Switch to**, the stage's dropdown, a Program Change), which
-it refuses before touching the running rig (`409`, code `plugins_missing`).
-The amp is the exception: Carla loads it, not Sushi, so a missing amp is a
-warning (the rig plays dry, as when Carla exits), not a refusal. The check
-is that each URI is declared, not that its binary loads; `plugins check`
-is the whole check.
+The commands are the ones that work: a broken bundle is removed first
+(`rm -r`), since `plugins add` leaves a bundle that is there alone; a
+plugin built here is built next, since `add` copies nothing while anything
+it requires is missing. And `add` requires every plugin the manifest and
+the configs name, not only this rig's, so the refusal dry-runs it: what it
+would still miss and this rig does not load (the neural amp, carried by
+hand; a plugin built for another rig) is waived by name in the command, with
+a line saying why.
+
+The agent says the same, for a start from the web UI, and refuses before
+touching the running rig for a rig switch (the picker's **Switch to**, the
+stage's dropdown, a Program Change), a revert or a channel preset's load
+(`409`, code `plugins_missing`; a revert or a load writes nothing), and a
+restart (it stops nothing, the running rig plays on). The amp is the
+exception: Carla loads it, not Sushi, so a missing amp is a warning (the rig
+plays dry, as when Carla exits), asked for exactly when an amp will start
+(`amp.prepare`'s rule: an `_amp` with a model, or `--amp-model` with none),
+and never a refusal. `plugins check` is still the whole check: every URI
+the manifest lists, and every link in `plugins/`.
 
 `plugin-manifest.txt` means **every LV2 URI this rig can load**, one a line
 (`grep -c . plugin-manifest.txt` counts them), and it must include every

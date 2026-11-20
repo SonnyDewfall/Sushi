@@ -6297,3 +6297,45 @@ and the stage dropdown showing them. NOT tested: a real Ubuntu multiarch
 layout (this machine has no `/usr/lib/*-linux-gnu/lv2`), and Carla with
 the amp missing from `plugins/` (the warning says it cannot load it, which
 is inferred, not watched). *(2026-11-19)*
+
+**The review of PR #198 (#188).** Nine findings, each fixed with a test
+shown failing without it. (1) **A revert or a preset load wrote the rig
+file, then the switch's plugins check refused it** (409 `not_switched`,
+`written: true`): the check now runs on the compiled point or preset in
+`_revert_compile` and `_plan_load`, before the write (`_rigfile_plugins`,
+409 `plugins_missing`), and the file is left as it was. (2) **A restart was
+checked only by its `up`, after `down`**, so a refused restart left no rig:
+both `restart`s now compile or read the rig first
+(`rig.restart_plugins_refusal`; the agent's through `World.restart_refusal`)
+and refuse before stopping anything ("Nothing was stopped: … plays on").
+(3) **The lilv cross-check could end the process**: `find_spec("lilv")`
+finds python3-lilv while its `CDLL("liblilv-0.so")` raises OSError without
+liblilv-dev, and `probe._world` turns an ImportError into `sys.exit`, whose
+SystemExit passes the MIDI handler's `except Exception`. lilv is now
+imported and asked under `except (Exception, SystemExit)`, and any failure
+is "no lilv" (`plugins._lilv_plugins`); tested with stand-in lilvs raising
+OSError and ImportError, and a world that exits. (4) **The reader dropped
+three manifests lilv loads**: an `@base` with a relative plugin IRI
+(`urljoin` dropped the `#` of an absolute `lv2:` prefix under a base of the
+same scheme; absolute IRIs are now left alone), a UTF-8 BOM, and a Latin-1
+byte in a literal (decoded with replacement, and said). Without lilv each
+was a false refusal. `library.manifest_plugins` also returns the bundles it
+could not read; with no lilv and one unread, what is unseen is warned of,
+not refused. (5) **Binaries were never checked**: the manifest's
+`lv2:binary` (or lilv's, where the manifest names none) must be a file, so
+a `cp -r` Calf with `calf.so` a link to nothing is refused, naming the
+bundle, with `rm -r` of it first in the fix. (6) **The prescribed `plugins
+add` could itself refuse**, since `add` requires the whole manifest and
+every config: the refusal now dry-runs `decide` over that and waives by name
+what `add` would still miss and the rig does not load (NAM carried by hand,
+a plugin built for another rig); a test runs the command it gives through
+the CLI and it exits 0. The pedals and string-machine guides say when to
+`--waive` the amp. (7) **The amp followed `amp.prepare`'s rule** only
+loosely: it is now asked for exactly when an amp will start (`_amp` with a
+model, or `--amp-model` with no `_amp`), and an `_amp` without `plugin`
+neither raises nor refuses. (8) **The multiarch glob** is now
+`*-linux-gnu*/lv2` (arm's `-gnueabihf`), filtered by Debian's name for
+`platform.machine()` (i686, armv7l, aarch64, x86_64), and none of this
+machine's means no multiarch folder, not all of them. (9) The guides'
+"whatever was playing keeps playing" is now true of every refusal, and
+`switch_route`'s docstring lists `plugins_missing`. *(2026-11-20)*

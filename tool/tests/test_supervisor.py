@@ -548,6 +548,41 @@ def test_restart_brings_back_what_was_asked_for_in_a_new_group(world):
         config_name="t", headless=True, tuner=False, amp=False, amp_model=None, rig=False)
 
 
+def test_a_restart_whose_up_would_refuse_is_refused_before_down_and_the_rig_plays_on(world, monkeypatch, tmp_path):
+    """Review of PR #198: the agent's restart took the rig down, then `up`
+    refused it for a plugin plugins/ lacked, and left no rig. Now the
+    restart's rig is checked first (`rig.restart_plugins_refusal`) and the
+    one running is left as it was."""
+    import json
+    import shutil
+
+    from rig_fixtures import declaring, fake_lv2_system
+
+    calf = "http://calf.sourceforge.net/plugins/EnvelopeFilter"
+    (world.root / "config" / "t.json").write_text(json.dumps(
+        {"tracks": [{"name": "lead", "plugins": [{"name": "filter", "uri": calf}]}]}))
+    bundle = declaring(world.root / "plugins", "calf", calf)
+    fake_lv2_system(tmp_path, monkeypatch)
+    monkeypatch.setattr(rig, "checkout_root", lambda: world.root)
+    supervisor = Supervisor(world.world, say=lambda m: None)
+
+    async def go():
+        assert (await supervisor.up("t", headless=True, tuner=False, amp=False)).ok
+        held = supervisor.held
+        shutil.rmtree(bundle)
+        outcome = await supervisor.restart()
+        still = supervisor.held is held and held.holder.poll() is None
+        await supervisor.down()
+        return outcome, still
+
+    outcome, still = run(go())
+    assert not outcome.ok
+    assert outcome.reason.startswith(f"t was not restarted: 1 plugin(s) it loads are not in {world.root / 'plugins'}")
+    assert "Nothing was stopped: t plays on." in outcome.reason
+    assert still, "the running rig was left as it was"
+    assert len(world.asked) == 1, "no second up"
+
+
 def test_restart_with_nothing_running_refuses_and_says_how_to_start(world):
     outcome = run(Supervisor(world.world, say=lambda m: None).restart())
     assert not outcome.ok and "nothing to restart" in outcome.reason

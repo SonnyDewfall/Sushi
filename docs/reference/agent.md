@@ -597,9 +597,11 @@ and will again, so no count of them is kept here or pinned by a test. One `op: "
 refused (`409 rig_problem`) with the running one left playing, and so is one
 that loads a plugin `plugins/` lacks (`409 plugins_missing`, #188), with the
 words `sushi-rig up` refuses it in: each plugin, where it is instead, and the
-command that puts it there ([Plugins](plugins.md)). `POST /rig/up` and
-`/rig/restart` refuse such a rig the same way (`409`), through `up`'s own
-check, before anything is started. Run on the rig on
+command that puts it there ([Plugins](plugins.md)). A revert or a channel
+preset's load that would switch the running rig into such a file is refused
+the same way before the file is written. `POST /rig/up` refuses such a rig
+(`409`), through `up`'s own check, before anything is started, and
+`POST /rig/restart` before the running rig is stopped, so it plays on. Run on the rig on
 2026-11-02 between electric-chorus-2 and electric-delay: both switches were
 live, in about 0.4 to 1.2 seconds, with no pops or clicks heard
 (`tool/spikes/live_rig/RESULTS-ui-2026-11-02.md`, step 7); switches by restart
