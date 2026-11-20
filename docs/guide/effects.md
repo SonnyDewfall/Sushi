@@ -11,6 +11,28 @@ None of the four has been heard on the rig yet. Everything below about how they
 sound comes from renders on a computer, through the same engine the rig runs,
 with a made-up guitar signal.
 
+## Before the first time
+
+The four come from Ubuntu's `guitarix-lv2` package, and the rig plays only
+the plugins in its own plugins folder. If that folder was made before the
+pedals arrived, copy them in once, in a terminal on the rig machine:
+
+```bash
+sudo apt install guitarix-lv2
+cd ~/Sushi
+sushi-rig plugins add
+```
+
+`plugins add` copies whatever the rigs need and the folder lacks, from
+wherever Ubuntu installed it, and leaves the rest alone. It needs every
+plugin any rig uses, so if it stops saying the neural amp
+(`http://github.com/mikeoliphant/neural-amp-modeler-lv2`) has no provider,
+because the amp is carried into the folder by hand and is not there yet, run
+it as `sushi-rig plugins add --waive http://github.com/mikeoliphant/neural-amp-modeler-lv2`. Until then, starting
+or switching to a rig with a pedal in it is refused: the box says which
+plugin is missing and what to run, and whatever was playing keeps playing. (The
+detail is in [Plugins and portability](../reference/plugins.md).)
+
 ## Try one
 
 The quickest way to hear all four: under **RIGS**, pick the rig **pedals**

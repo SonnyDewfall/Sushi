@@ -338,6 +338,9 @@ def test_up_plans_a_recorder_for_a_headless_rig_of_channels_only(monkeypatch, tm
     seen = []
     monkeypatch.setattr(rig, "plan_children", lambda *a, **k: seen.append(k.get("recorder_socket")) or [])
     monkeypatch.setattr(rig, "port_is_open", lambda *a, **k: False)
+    # The compiled config, as `prepare_rig` leaves one: read before a start
+    # for the plugins it loads (`rig.check_plugins`), here none.
+    (tmp_path / "c.json").write_text('{"tracks": []}')
     monkeypatch.setattr(rig, "prepare_rig", lambda *a, **k: {
         "config": tmp_path / "c.json", "patchbay": None, "source": "config/rigs/x.yaml", "warnings": [],
         "machine": None})

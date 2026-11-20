@@ -1658,6 +1658,36 @@ def test_a_refused_start_shows_the_agents_reason_and_nothing_starts(browser):
         page.close()
 
 
+def test_a_start_refused_for_plugins_missing_from_plugins_says_which_and_the_fix(browser, tmp_path, monkeypatch):
+    """#188: the agent's refusal of a rig whose plugins are not all in
+    plugins/ (`rig.plugins_refusal`, as the real start says it) is what the
+    page shows, not a generic failure: the plugin and the command."""
+    from rig_fixtures import declaring, fake_lv2_system
+    from sushi_rig.rig import plugins_refusal
+    from ui_fake import UiLifecycle
+
+    calf = "http://calf.sourceforge.net/plugins/EnvelopeFilter"
+    declaring(fake_lv2_system(tmp_path, monkeypatch), "calf", calf)
+    (tmp_path / "plugins").mkdir()
+    refusal, _ = plugins_refusal({"tracks": [{"name": "lead", "plugins": [{"name": "filter", "uri": calf}]}]},
+                                 tmp_path, "electric-delay", amp=False)
+    world = UiLifecycle(up=None)
+    world.refuse_up = refusal
+    with Served(lifecycle=world) as served:
+        page = rack_page(browser, served)
+        p = page.page
+        p.locator(".rig", has_text="electric-delay").click()
+        p.get_by_role("button", name="Start electric-delay").click()
+        alert = p.locator(".problem.refused")
+        expect(alert).to_contain_text("Not started: electric-delay")
+        expect(alert).to_be_visible()
+        expect(alert).to_contain_text(f"{calf}: installed in ")
+        expect(alert).to_contain_text("Nothing was started. To fix it, run this, then start the rig again: "
+                                      "sushi-rig plugins add")
+        expect(p.locator(".rig-name")).to_have_text("Rig down")
+        page.close()
+
+
 def test_stop_takes_a_confirm_because_it_cuts_the_sound(browser, served):
     page = rack_page(browser, served)
     p = page.page

@@ -169,7 +169,7 @@ def test_the_listener_is_started_without_a_rig_when_there_is_none(plan_args):
 # --- v2 rigs: up --rig (#30's last slice) ------------------------------------
 
 
-from rig_fixtures import FROZEN_MACHINE  # noqa: E402
+from rig_fixtures import FROZEN_MACHINE, declaring, fake_lv2_system, stand_in_plugins  # noqa: E402
 
 ROOT = checkout_root()
 CAPTURED_DUMP = (Path(__file__).parent / "fixtures" / "pw-dump-rig.json").read_text()
@@ -1367,9 +1367,10 @@ def test_restart_with_nothing_running_refuses_and_says_how_to_start(runtime):
         rig.restart()
 
 
-def test_restart_hands_up_what_the_state_says_was_asked_for(runtime, monkeypatch):
+def test_restart_hands_up_what_the_state_says_was_asked_for(runtime, monkeypatch, tmp_path):
     """The whole chain, end to end with `down` and `up` stubbed: an amp that
     failed to start and a model named on the command line both survive."""
+    whole_plugins(tmp_path, monkeypatch)
     state_file.write_state(running_state(
         mode="headless", amp_requested=True,
         amp_model="amp/models/Other.nam", amp_model_requested="amp/models/Other.nam",
@@ -1385,7 +1386,8 @@ def test_restart_hands_up_what_the_state_says_was_asked_for(runtime, monkeypatch
     })]
 
 
-def test_restart_does_not_start_again_if_the_rig_would_not_stop(runtime, monkeypatch):
+def test_restart_does_not_start_again_if_the_rig_would_not_stop(runtime, monkeypatch, tmp_path):
+    whole_plugins(tmp_path, monkeypatch)
     state_file.write_state(running_state())
     monkeypatch.setattr(rig, "down", lambda force=False: 1)
     monkeypatch.setattr(rig, "up", lambda *a, **k: pytest.fail("started over a live rig"))
@@ -1396,11 +1398,23 @@ def test_restart_does_not_start_again_if_the_rig_would_not_stop(runtime, monkeyp
 # up
 
 
+def whole_plugins(tmp_path, monkeypatch):
+    """The rig's plugins/ as a stand-in holding every plugin
+    (`stand_in_plugins`), as the rig machine's does, so the check before a
+    start lets the rig through: for a test of `up` that is not about that
+    check."""
+    folder = stand_in_plugins(tmp_path / "plugins")
+    monkeypatch.setattr(rig, "plugins_folder", lambda root: folder)
+
+
 @pytest.fixture
-def up_world(runtime, monkeypatch):
+def up_world(runtime, monkeypatch, tmp_path):
     """`up` with the fork stood in for: a pipe pre-loaded with what a
-    supervisor would have said, and a record of what was done about it."""
-    seen = SimpleNamespace(killed=[], forked=0, supervise_kwargs=[])
+    supervisor would have said, and a record of what was done about it. Its
+    plugins/ holds every plugin (`whole_plugins`); a test of the check
+    before a start sets `.plugins` to one with a plugin left out."""
+    seen = SimpleNamespace(killed=[], forked=0, supervise_kwargs=[], plugins=stand_in_plugins(tmp_path / "plugins"))
+    monkeypatch.setattr(rig, "plugins_folder", lambda root: seen.plugins)
     monkeypatch.setattr(rig, "pid_alive", lambda pid: False)
     monkeypatch.setattr(rig, "pgid_alive", lambda pgid: False)
     monkeypatch.setattr(rig, "port_is_open", lambda host, port, *a, **k: False)
@@ -1489,6 +1503,98 @@ def test_up_refuses_an_unknown_config(up_world):
     assert up_world.forked == 0
 
 
+def test_up_refuses_a_rig_whose_plugins_are_not_all_in_plugins_naming_them_and_the_fix(
+        up_world, monkeypatch, tmp_path):
+    """synth-lead on the laptop (#188): a plugin the chain loads was in the
+    multiarch folder and not in plugins/, and Sushi quit saying only "Failed
+    to load tracks from the Json config file". `up` now refuses before it
+    starts anything, names the URI and where it is, says the command that
+    fixes it, and exits non-zero."""
+    from sushi_rig.cli import main
+    from sushi_rig.plugins import config_uris
+
+    config = json.loads((ROOT / "config" / f"{rig.DEFAULT_CONFIG_NAME}.json").read_text())
+    missing = sorted(config_uris(config))[0]
+    up_world.plugins = stand_in_plugins(tmp_path / "partial", leave_out=(missing,))
+    multiarch = fake_lv2_system(tmp_path, monkeypatch)
+    declaring(multiarch, "pedal", missing)
+    up_world.say("READY", then_write=running_state())
+    with pytest.raises(SystemExit) as exit_info:
+        main(["up", "--direct", "--headless", "--no-tuner", "--no-amp"])
+    said = exit_info.value.code
+    assert isinstance(said, str), "sys.exit with a message: exit status 1"
+    assert said.startswith(f"{rig.DEFAULT_CONFIG_NAME} was not started: 1 plugin(s) it loads are not in "
+                           f"{up_world.plugins}")
+    assert f"  {missing}: installed in {multiarch}, which `sushi-rig plugins add` copies from" in said
+    assert said.splitlines()[-1] == "  sushi-rig plugins add"
+    assert "Nothing was started" in said
+    assert up_world.forked == 0, "nothing was started"
+    assert state_file.read_state() is None
+
+
+def test_up_warns_of_an_amp_that_is_not_in_plugins_and_starts(tmp_path):
+    """The amp runs in Carla, not Sushi: without it the rig plays, dry, as it
+    does when Carla exits at startup, so its absence is said, not refused."""
+    from sushi_rig.amp import NAM_URI
+
+    config = {"tracks": [], "_amp": {"plugin": "nam", "model": "amp/models/x.nam"}}
+    (tmp_path / "plugins").mkdir()
+    refusal, (warning,) = rig.plugins_refusal(config, tmp_path, "x", amp=True)
+    assert refusal is None
+    assert NAM_URI in warning and "NO AMP" in warning and "--no-amp" in warning
+    assert rig.plugins_refusal(config, tmp_path, "x", amp=False) == (None, [])
+
+
+def test_restart_whose_rig_up_would_refuse_refuses_before_down_and_the_rig_plays_on(
+        runtime, monkeypatch, tmp_path):
+    """Review of PR #198: `restart` stopped the rig, then `up` refused it
+    for a plugin plugins/ lacked, and there was no rig. Now asked first:
+    nothing is stopped, and the message says so."""
+    from sushi_rig.plugins import config_uris
+
+    config = json.loads((ROOT / "config" / f"{rig.DEFAULT_CONFIG_NAME}.json").read_text())
+    missing = sorted(config_uris(config))[0]
+    partial = stand_in_plugins(tmp_path / "partial", leave_out=(missing,))
+    monkeypatch.setattr(rig, "plugins_folder", lambda root: partial)
+    fake_lv2_system(tmp_path, monkeypatch)
+    state_file.write_state(running_state())
+    monkeypatch.setattr(rig, "pid_alive", lambda pid: True)
+    monkeypatch.setattr(rig, "pgid_alive", lambda pgid: True)
+    monkeypatch.setattr(rig, "down", lambda force=False: pytest.fail("stopped a rig the restart would not bring back"))
+    monkeypatch.setattr(rig, "up", lambda *a, **k: pytest.fail("started"))
+    with pytest.raises(rig.RigError) as refused:
+        rig.restart()
+    said = str(refused.value)
+    assert said.startswith(f"{rig.DEFAULT_CONFIG_NAME} was not restarted: 1 plugin(s) it loads are not in {partial}")
+    assert missing in said
+    assert f"Nothing was stopped: {rig.DEFAULT_CONFIG_NAME} plays on." in said
+    assert "then restart it again:" in said
+    assert state_file.read_state() is not None, "the running rig is still recorded"
+
+    # A rig that crashed (its supervisor and group gone) does not play on,
+    # whatever a restart's refusal says (re-review of PR #198).
+    monkeypatch.setattr(rig, "pid_alive", lambda pid: False)
+    monkeypatch.setattr(rig, "pgid_alive", lambda pgid: False)
+    with pytest.raises(rig.RigError) as refused:
+        rig.restart()
+    said = str(refused.value)
+    assert "Nothing was stopped. To fix it" in said and "plays on" not in said
+
+
+def test_up_exits_nonzero_when_sushi_exits_during_startup(up_world):
+    """What the laptop's start printed (#188): the CLI's exit status after it,
+    which the write-up could not capture, since the start ran through the
+    agent. Directly, a message on stderr and status 1; through the agent, the
+    agent answers 409 and `lifecycle_result` makes that 1 (test_agent_client)."""
+    from sushi_rig.cli import main
+
+    up_world.say("FAIL Sushi exited during startup — see /x/sushi.log")
+    with pytest.raises(SystemExit) as exit_info:
+        main(["up", "--direct", "--headless", "--no-tuner", "--no-amp"])
+    assert exit_info.value.code == "Sushi exited during startup — see /x/sushi.log"
+    assert up_world.killed == [4242]
+
+
 def test_up_reports_a_fail_line_as_an_error_and_kills_the_group(up_world):
     # The supervisor got as far as recording itself before it gave up, so the
     # state file `up` must remove is the one written during the start.
@@ -1529,9 +1635,10 @@ def test_up_does_not_wait_for_lines_after_ready(up_world):
     assert rig.up(headless=True, tuner=False, amp=False) == 0
 
 
-def test_up_tells_the_supervisor_what_was_asked_for(runtime, monkeypatch):
+def test_up_tells_the_supervisor_what_was_asked_for(runtime, monkeypatch, tmp_path):
     """What `restart` later restores is recorded from these, so they must be
     the caller's request and not a guess."""
+    whole_plugins(tmp_path, monkeypatch)
     monkeypatch.setattr(rig, "pid_alive", lambda pid: False)
     monkeypatch.setattr(rig, "port_is_open", lambda *a, **k: False)
     got = {}
@@ -1559,7 +1666,7 @@ def test_up_tells_the_supervisor_what_was_asked_for(runtime, monkeypatch):
 
 
 @pytest.fixture
-def real_supervisor(runtime, monkeypatch):
+def real_supervisor(runtime, monkeypatch, tmp_path):
     """Let `up` really fork, with the *children* replaced.
 
     The pipe protocol and the supervisor's `try` block are where a mock would
@@ -1582,6 +1689,7 @@ def real_supervisor(runtime, monkeypatch):
     monkeypatch.setattr(rig, "pid_alive", lambda pid: False)
     monkeypatch.setattr(rig, "port_is_open", lambda *a, **k: False)
     monkeypatch.setattr(rig, "wait_for_grpc", lambda *a, **k: True)
+    whole_plugins(tmp_path, monkeypatch)
     yield spawned
     for pid in spawned:
         try:

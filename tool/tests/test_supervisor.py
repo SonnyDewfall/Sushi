@@ -299,6 +299,57 @@ def test_a_second_up_is_refused_by_the_state_file_the_agent_wrote(world, monkeyp
     assert not second.ok and "a rig is already running" in second.reason
 
 
+def test_an_up_through_the_agent_whose_plugins_are_not_all_in_plugins_is_refused_in_ups_words(
+        world, monkeypatch, tmp_path):
+    """#188, through the agent's own route with the real supervisor and the
+    real `prepare_launch`: the page's Start and `sushi-rig up` with an agent
+    running both come this way. Refused before anything starts (409), the
+    reason the one `up --direct` prints, and the CLI exits 1 with it."""
+    pytest.importorskip("aiohttp")
+    import json
+
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from rig_fixtures import declaring, fake_lv2_system
+    from sushi_rig import agent_client
+    from sushi_rig.agent import Agent
+
+    calf = "http://calf.sourceforge.net/plugins/EnvelopeFilter"
+    gate = "http://hippie.lt/lv2/gate"
+    (world.root / "config" / "t.json").write_text(json.dumps(
+        {"tracks": [{"name": "lead", "plugins": [{"name": "gate", "uri": gate}, {"name": "filter", "uri": calf}]}]}))
+    declaring(world.root / "plugins", "abGate", gate)
+    multiarch = fake_lv2_system(tmp_path, monkeypatch)
+    declaring(multiarch, "calf", calf)
+    world.world = dataclasses.replace(world.world, prepare=rig.prepare_launch)
+    monkeypatch.setattr(rig, "checkout_root", lambda: world.root)
+    agent = Agent(supervisor=Supervisor(world.world, say=lambda m: None))
+
+    async def go():
+        async with TestClient(TestServer(agent.app())) as client:
+            up = await client.post("/rig/up", json={"config_name": "t", "headless": True, "tuner": False,
+                                                    "amp": False})
+            answer = up.status, await up.json()
+            agent._executor.shutdown(wait=True)
+            return answer
+
+    status, body = run(go())
+    assert status == 409 and body["ok"] is False, body
+    plugins = world.root / "plugins"
+    assert body["reason"].splitlines() == [
+        f"t was not started: 1 plugin(s) it loads are not in {plugins}, the only folder Sushi loads plugins "
+        "from (LV2_PATH), so Sushi would quit at startup saying only \"Failed to load tracks from the Json "
+        "config file\":",
+        f"  {calf}: installed in {multiarch}, which `sushi-rig plugins add` copies from",
+        "Nothing was started. To fix it, run this, then start the rig again:",
+        "  sushi-rig plugins add",
+    ]
+    assert world.spawner.asked == [], "nothing was started, not even the holder"
+    assert state_file.read_state() is None
+    code, _, said = agent_client.lifecycle_result(status, body)
+    assert code == 1 and calf in said
+
+
 # --------------------------------------------------------------------------- #
 # A crash is noticed and said, and nothing is restarted
 # --------------------------------------------------------------------------- #
@@ -495,6 +546,41 @@ def test_restart_brings_back_what_was_asked_for_in_a_new_group(world):
     assert "Rig up: t (headless mode)" in outcome.stdout
     assert world.asked[0] == world.asked[1] == dict(
         config_name="t", headless=True, tuner=False, amp=False, amp_model=None, rig=False)
+
+
+def test_a_restart_whose_up_would_refuse_is_refused_before_down_and_the_rig_plays_on(world, monkeypatch, tmp_path):
+    """Review of PR #198: the agent's restart took the rig down, then `up`
+    refused it for a plugin plugins/ lacked, and left no rig. Now the
+    restart's rig is checked first (`rig.restart_plugins_refusal`) and the
+    one running is left as it was."""
+    import json
+    import shutil
+
+    from rig_fixtures import declaring, fake_lv2_system
+
+    calf = "http://calf.sourceforge.net/plugins/EnvelopeFilter"
+    (world.root / "config" / "t.json").write_text(json.dumps(
+        {"tracks": [{"name": "lead", "plugins": [{"name": "filter", "uri": calf}]}]}))
+    bundle = declaring(world.root / "plugins", "calf", calf)
+    fake_lv2_system(tmp_path, monkeypatch)
+    monkeypatch.setattr(rig, "checkout_root", lambda: world.root)
+    supervisor = Supervisor(world.world, say=lambda m: None)
+
+    async def go():
+        assert (await supervisor.up("t", headless=True, tuner=False, amp=False)).ok
+        held = supervisor.held
+        shutil.rmtree(bundle)
+        outcome = await supervisor.restart()
+        still = supervisor.held is held and held.holder.poll() is None
+        await supervisor.down()
+        return outcome, still
+
+    outcome, still = run(go())
+    assert not outcome.ok
+    assert outcome.reason.startswith(f"t was not restarted: 1 plugin(s) it loads are not in {world.root / 'plugins'}")
+    assert "Nothing was stopped: t plays on." in outcome.reason
+    assert still, "the running rig was left as it was"
+    assert len(world.asked) == 1, "no second up"
 
 
 def test_restart_with_nothing_running_refuses_and_says_how_to_start(world):
