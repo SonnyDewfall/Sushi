@@ -147,6 +147,13 @@ LIMITER_SETTINGS: dict[str, Any] = {
 # master at +6 dB would put its ceiling at +5 dBFS.
 MASTER_LEVEL_MAX = 0.0
 
+# A pedal on a channel's volume (#191) sweeps from this far below the channel's
+# level to the level, and the agent silences it at the heel. The send's gain is
+# linear in dB from -120, so a sweep from -120 put half the travel at -60 dB
+# and left only its last third audible; from 40 dB down, half is about -20 dB
+# and three quarters about -10.
+VOLUME_FLOOR_DB = 40.0
+
 _KEYS = ("kind", "schema_version", "name", "description", "meta", "host", "amp",
          "channels", "master", "midi")
 _MIDI_KEYS = ("controller", "port", "programs", "controls")
@@ -1103,20 +1110,25 @@ def compile_midi(rig: Rig, controller: dict[str, Any]) -> tuple[dict[str, Any], 
     - **programs**: a Program Change reaches a plugin's program in Sushi,
       not a rig, so rig switching is the agent's too (#93).
     - **volume** (#191): one mapping on the channel's send, parameter
-      `gain`, from silence at the heel (0) to the channel's own level at the
-      toe, never above it. Sushi scales 0 to 127 and a pedal whose toe stops
-      short of 127 (its `range`) stops short of the level by as much: never
-      above it is the promise kept. The level is the rig file's, as compiled:
-      a level moved live is not the pedal's top until the rig is saved and
-      brought up again.
+      `gain`, from `VOLUME_FLOOR_DB` below the channel's own level at 0 to
+      that level at 127, never above it, so half the travel is about 20 dB
+      down rather than 60 (the send's gain is linear in dB over -120 to +24).
+      Silence at the heel is the agent's: a `snap` binding, with the heel
+      from the pedal's `range` (0 without one) and the mapping's two ends, so
+      the agent can silence the send at or below the heel and put Sushi's value
+      back above it. Sushi scales 0 to 127 whatever the `range` says: a pedal
+      whose toe stops short of 127 stops short of the level, never above it.
+      The level is the rig file's, as compiled: a level moved live is not the
+      pedal's top until the rig is saved and brought up again.
 
     A controller with a type (#191) describes each control (`model`): a
     control with a job (stepping rigs) is the device's on every rig and is
     refused here; a switch takes a bypass or a mute, an expression pedal a
-    volume, a parameter or a blend (`TAKES`). A momentary switch toggles on
-    each press, which Sushi's mappings cannot do (they follow the value), so
-    a momentary switch's mute goes to the agent too, and its bypass is marked
-    `switch: momentary`; a latching switch's mute stays Sushi's own mapping.
+    volume, a parameter or a blend (`TAKES`). A momentary or single switch
+    toggles on each press, which Sushi's mappings cannot do (they follow the
+    value), so its mute goes to the agent too, and its bypass is marked with
+    its behaviour (`switch`); a latching switch's mute stays Sushi's own
+    mapping.
 
     A note cannot sweep, so a control that sends a note may only bypass, or
     mute as a switch through the agent. `RigFileError` for a control the
@@ -1165,10 +1177,10 @@ def compile_midi(rig: Rig, controller: dict[str, Any]) -> tuple[dict[str, Any], 
                           "bypass": control.target,
                           **({"switch": behaviour} if behaviour and kind == "cc" else {})})
             continue
-        if control.binding == "mute" and kind == "cc" and behaviour == "momentary":
+        if control.binding == "mute" and kind == "cc" and behaviour in ("momentary", "single"):
             # Sushi's mapping would mute while held: a press toggles instead.
             agent.append({"control": control.control, kind: number, "channel": channel,
-                          "mute": control.target, "switch": "momentary"})
+                          "mute": control.target, "switch": behaviour})
             continue
         if kind == "note":
             if control.binding != "mute":
@@ -1183,8 +1195,13 @@ def compile_midi(rig: Rig, controller: dict[str, Any]) -> tuple[dict[str, Any], 
         elif control.binding == "mute":
             mappings.append(mapping(control.target, "mute", 0.0, 1.0, number))
         elif control.binding == "volume":
-            mappings.append(mapping(control.target + SEND_SUFFIX, "gain", 0.0,
-                                    level_to_gain(levels[control.target]), number))
+            level = levels[control.target]
+            low, high = max(0.0, level_to_gain(level - VOLUME_FLOOR_DB)), level_to_gain(level)
+            mappings.append(mapping(control.target + SEND_SUFFIX, "gain", low, high, number))
+            heel = (typed.get("range") or [0])[0] if typed else 0
+            agent.append({"control": control.control, "cc": number, "channel": channel,
+                          "snap": control.target, "heel": heel,
+                          "low": round(low, 6), "high": round(high, 6)})
         else:
             first, second = control.target
             mappings.append(mapping(first + SEND_SUFFIX, "gain", level_to_gain(levels[first]), 0.0, number))

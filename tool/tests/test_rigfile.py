@@ -830,16 +830,21 @@ def _fbv_rig(controls, level=-6.0):
     return parse_rig(_midi_rig(controls, level=level, controller="fbv"))
 
 
-def test_a_pedal_on_a_channels_volume_runs_from_silence_to_the_channels_own_level():
-    """Heel silent, toe the rig file's level for that channel and never above
-    it: one mapping on the channel's send, as a blend's half is."""
+def test_a_pedal_on_a_channels_volume_runs_from_40_db_down_to_the_channels_own_level():
+    """The toe is the rig file's level for that channel and never above it;
+    the floor is 40 dB below it (half the travel about 20 dB down, not 60), and
+    the heel's silence is the agent's, told the heel and the mapping's ends."""
     section, agent = compile_midi(_fbv_rig([{"control": "pedal", "volume": "lead"}]), FBV)
-    assert agent == []
     assert section["cc_mappings"] == [
         {"port": 0, "channel": 0, "cc_number": 7, "plugin_name": "lead_send", "parameter_name": "gain",
-         "min_range": 0.0, "max_range": round(level_to_gain(-6.0), 6), "mode": "absolute"}]
+         "min_range": round(level_to_gain(-46.0), 6), "max_range": round(level_to_gain(-6.0), 6),
+         "mode": "absolute"}]
+    assert agent == [{"control": "pedal", "cc": 7, "channel": 0, "snap": "lead", "heel": 0,
+                      "low": round(level_to_gain(-46.0), 6), "high": round(level_to_gain(-6.0), 6)}]
     (unity,) = compile_midi(_fbv_rig([{"control": "pedal", "volume": "clean"}]), FBV)[0]["cc_mappings"]
     assert unity["max_range"] == round(level_to_gain(0.0), 6)
+    half = rigfile.gain_to_level(unity["min_range"] + (unity["max_range"] - unity["min_range"]) * 64 / 127)
+    assert -21 < half < -19, half
 
 
 def test_a_momentary_switch_toggles_through_the_agent_and_a_latching_one_is_followed():
@@ -929,3 +934,35 @@ def test_what_each_control_may_take():
     assert rigfile.takes("cc", FBV["model"]["pedal"]) == ("volume", "parameter", "blend")
     assert rigfile.takes("note", None) == ("bypass", "mute")
     assert set(rigfile.takes("cc", None)) == {"blend", "parameter", "mute", "bypass", "volume"}
+
+
+def test_a_single_switch_toggles_through_the_agent_as_a_momentary_one_does():
+    single = dict(FBV, model={**FBV["model"], "d": dict(FBV["model"]["d"], behaviour="single"),
+                              "c": dict(FBV["model"]["c"], behaviour="single")})
+    section, agent = compile_midi(_fbv_rig([{"control": "d", "mute": "lead"},
+                                            {"control": "c", "bypass": "lead/drive"}]), single)
+    assert section == {}
+    assert agent == [
+        {"control": "d", "cc": 23, "channel": 0, "mute": "lead", "switch": "single"},
+        {"control": "c", "cc": 22, "channel": 0, "bypass": "lead/drive", "switch": "single"},
+    ]
+
+
+def test_the_volume_pedals_heel_is_the_devices_and_its_floor_never_below_silence():
+    heeled = dict(FBV, model={**FBV["model"], "pedal": dict(FBV["model"]["pedal"], range=[5, 120])})
+    section, agent = compile_midi(_fbv_rig([{"control": "pedal", "volume": "lead"}], level=-100.0), heeled)
+    assert agent[0]["heel"] == 5, "the agent silences at the pedal's own heel"
+    (mapping,) = section["cc_mappings"]
+    assert mapping["min_range"] == 0.0, "40 dB under -100 dB is below the send's range: silence"
+    assert mapping["max_range"] == round(level_to_gain(-100.0), 6)
+    _, untyped = compile_midi(parse_rig(_midi_rig([{"control": "knob1", "volume": "lead"}])), MPD218)
+    assert untyped[0]["heel"] == 0 and untyped[0]["snap"] == "lead"
+
+
+def test_the_agent_reads_what_the_compiler_writes_for_a_volume_pedal():
+    from sushi_rig.midi_listener import parse_bindings
+
+    _, agent = compile_midi(_fbv_rig([{"control": "pedal", "volume": "lead"}]), FBV)
+    (snap,) = parse_bindings(agent).controls
+    assert (snap.action, snap.target, snap.heel) == ("snap", "lead_send", 0)
+    assert snap.gain_at(127) == round(level_to_gain(-6.0), 6) and snap.gain_at(0) == 0.0

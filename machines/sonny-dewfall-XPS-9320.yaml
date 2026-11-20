@@ -64,8 +64,8 @@ controllers:
   # 0 here; the switch CCs are placeholders (20 to 23 are undefined in the
   # MIDI spec and clash with nothing), since the factory ones were not found;
   # "momentary" is a guess, as FBV Control sets each switch to Single, Toggle
-  # or Momentary and the factory setting was not found (a Toggle switch is
-  # `behaviour: latching`); CC 7 for the pedal is from Line 6's Shortboard
+  # or Momentary and the factory setting was not found (Single is `behaviour:
+  # single`, Toggle `behaviour: latching`); CC 7 for the pedal is from Line 6's Shortboard
   # examples. Check it with `aseqdump -l` (the port's name) and
   # `aseqdump -p "<that name>"` (each switch pressed once slowly, then
   # twice; the pedal heel to toe): docs/reference/midi.md says how.

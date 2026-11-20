@@ -6271,3 +6271,26 @@ USB, so nothing sends to it. `docs/reference/midi.md` says how to check it with
 `aseqdump -l` and `aseqdump -p` when it arrives. Not run on the rig; until the
 pedal is plugged in, the agent reports its port missing on every rig.
 *(2026-11-19)*
+
+**The pedalboard, part 1, after review (PR #199).** Eight findings, each
+fixed with a test that fails without it. (1) A pedal not plugged in made
+every rig show a Pedals problem: each port is now `required` only for the
+controller the running rig's `midi:` names (read from the rig file, so a map
+of sweeps alone counts), `find_port` raises `PortAbsent` for a name not
+listed, and an absent port no rig needs is `absent`, "not connected", as is a
+machine with no alsa-midi or sequencer. (2) Hot-plug: `AlsaPort` stays open
+on ALSA's announcements, and a client or port that starts has the ports
+listed again; a pedal plugged in later or replugged mid-set is picked up with
+no `up` (shown against a stand-in for alsa-midi). (3) A momentary switch is
+pressed by its rise through 64, not by every value of 64 or more; `single`
+(FBV Control's Single) is pressed by every message; both have a 40 ms
+debounce, for bypass, mute and steps. (4) A volume pedal sweeps from 40 dB
+below the channel's level, not from -120 dB, so half the travel is about
+-20 dB; the agent silences the send at the heel and, if the pedal has left
+the heel meanwhile, puts back Sushi's value. Without the agent the heel is
+40 dB down. (5) The pedal's `range` stays informational but for the heel:
+scaling the mapping to it would rely on Sushi clamping, which no MIDI in the
+container could show. (6) A rig run from outside `config/rigs/`
+(`config/src/electric_board.yaml`) is not stepped from, whatever its name.
+(7) `/health`'s `last` says what became of a refused step or Program Change.
+*(2026-11-20)*

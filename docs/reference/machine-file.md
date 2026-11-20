@@ -53,8 +53,11 @@ lists it (client, `:`, port), its `channel` (0 to 15, or `all`), and its
 `type` (`pedal`, #191) describes each control as well:
 
 - `kind`: `switch` or `expression`;
-- a switch's `behaviour`: `momentary` (a press toggles) or `latching` (followed);
-- an expression pedal's `range`: `[heel, toe]`, `[0, 127]` if left out;
+- a switch's `behaviour`: `momentary` (the press, a rise through 64, toggles),
+  `single` (every message is a press) or `latching` (followed);
+- an expression pedal's `range`: `[heel, toe]`, what it sends, `[0, 127]` if left
+  out. Informational, except that the agent silences a pedalled volume at or
+  below the heel;
 - a switch's `job`: `previous-rig` or `next-rig`, which steps through
   `config/rigs/` on every rig, whatever the rig's own map says. A controller
   with a job needs its `port`, since the agent reads it.
@@ -64,8 +67,9 @@ behaviour it does not know, a note on a pedal or on a latching switch, a range
 that is not a heel below a toe, a job given twice, and a model on a controller
 without a type. What a rig may assign each control, and how the FBV Express
 MkII's entry (written before it arrived, every line marked unverified) is
-checked with `aseqdump`, is in [MIDI](midi.md#the-device-model-191). Until the
-pedal is plugged in, the agent says its port is missing on every rig.
+checked with `aseqdump`, is in [MIDI](midi.md#the-device-model-191). A pedal
+that is not plugged in is "not connected", not a fault, unless the running rig's
+map is written for it; it is picked up when it is plugged in.
 
 ## Ports by role, not by device name
 

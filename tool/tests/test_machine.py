@@ -435,8 +435,8 @@ def test_the_controllers_that_step_rigs_and_every_device_for_the_page():
      "type must be one of pedal"),
     (_fbv(c={"cc": 22}), "kind must be switch or expression"),
     (_fbv(c={"cc": 22, "kind": "knob"}), "kind must be switch or expression"),
-    (_fbv(c={"cc": 22, "kind": "switch"}), "behaviour must be momentary or latching"),
-    (_fbv(c={"cc": 22, "kind": "switch", "behaviour": "sticky"}), "behaviour must be momentary or latching"),
+    (_fbv(c={"cc": 22, "kind": "switch"}), "behaviour must be momentary, single, latching"),
+    (_fbv(c={"cc": 22, "kind": "switch", "behaviour": "sticky"}), "behaviour must be momentary, single, latching"),
     (_fbv(c={"note": 40, "kind": "switch", "behaviour": "latching"}), "a note is a press"),
     (_fbv(c={"cc": 22, "kind": "switch", "behaviour": "momentary", "range": [0, 127]}), "a switch has none"),
     (_fbv(c={"cc": 22, "kind": "switch", "behaviour": "momentary", "job": "tuner"}), "job must be previous-rig or next-rig"),
@@ -482,3 +482,10 @@ def test_the_rig_machines_mpd218_is_unchanged_beside_the_fbv():
         "controls": {"knob1": ("cc", 3), "pad1": ("note", 36), "pad2": ("note", 38),
                      "pad3": ("note", 40), "pad4": ("note", 41)},
     }
+
+
+def test_a_single_switch_is_a_switch_and_a_note_may_be_one():
+    machine = _with_controllers(_fbv(c={"cc": 22, "kind": "switch", "behaviour": "single"},
+                                     d={"note": 40, "kind": "switch", "behaviour": "single"}))
+    assert machine.validate() == []
+    assert machine.controller("fbv")["model"]["c"]["behaviour"] == "single"

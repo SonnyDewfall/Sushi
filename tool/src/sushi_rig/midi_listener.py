@@ -12,8 +12,12 @@ controller's port itself:
 - a CC on a bypass: a switch, on (the effect engaged) at 64 and above, off
   (bypassed) below, acting only when it crosses;
 - a note on a mute: each press toggles the track's `mute` parameter;
-- a momentary footswitch's CC (#191) on a bypass or a mute: each press (64 and
-  above) toggles it, since the release that follows must not undo it;
+- a momentary or single footswitch's CC (#191) on a bypass or a mute: each
+  press toggles it (a momentary switch's rise through 64, a single one's every
+  message), its release does nothing, and a bounce within `DEBOUNCE_SECONDS`
+  is ignored;
+- a pedal on a channel's volume (#191): at or below its heel the agent
+  silences the send, which Sushi's own mapping leaves 40 dB down;
 - a Program Change: program n selects the nth rig in config/rigs/, sorted by
   file name, brought up by the agent's lifecycle;
 - a footswitch whose job is `previous-rig` or `next-rig` (#191), from the
@@ -22,6 +26,9 @@ controller's port itself:
 
 A rig whose map names one controller, on a machine with another that steps
 rigs (the MPD218 and the FBV), is two ports: a `Plan` is a `Feed` per port.
+A port whose pedal is not plugged in is waited for (`AlsaPort`, `Listener`),
+and is a problem only for the controller the rig's own map is written for
+(`Feed.required`).
 
 ## Shape
 
@@ -78,6 +85,11 @@ SWITCH_ON = 64
 # to stop. The bound on how long `down` waits for the listener to let go.
 POLL_SECONDS = 0.25
 
+# A footswitch press within this long of the last one on the same control is
+# a bounce or a resend, not a second press (#191): 40 ms is shorter than any
+# two presses a foot makes, and longer than a contact's bounce.
+DEBOUNCE_SECONDS = 0.04
+
 # The agent's name in the ALSA sequencer, as `aseqdump -l` will list it.
 CLIENT_NAME = "sushi-rig agent"
 
@@ -99,6 +111,8 @@ ALSA_NAMES = (
     "PortType.APPLICATION",
     "SYSTEM_ANNOUNCE",
     "MidiBytesEvent",
+    "ClientStartEvent",
+    "PortStartEvent",
     "ClientExitEvent",
     "PortExitEvent",
     "ALSAError",
@@ -119,6 +133,18 @@ class BindingError(MidiError):
 
 class PortError(MidiError):
     """The controller's port could not be opened, or stopped working."""
+
+
+class PortAbsent(PortError):
+    """No port of that name is listed: the pedal is not plugged in (#191). Not
+    a fault for a controller the running rig's map does not use, and one the
+    listener waits for, in case it is plugged in later."""
+
+
+class MidiUnavailable(PortError):
+    """The machine cannot read MIDI at all: alsa-midi is not installed, or
+    the ALSA sequencer (/dev/snd/seq) will not open. Said as a problem only
+    where the running rig's own map needs a pedal."""
 
 
 # --------------------------------------------------------------------------- #
@@ -191,15 +217,32 @@ class Binding:
     action: str  # "bypass" | "mute" | "step"
     target: str  # for a step, "previous" or "next"
     written: str
-    # A CC's switch behaviour (#191): "momentary" toggles on each press;
+    # A CC's switch behaviour (#191): "momentary" is pressed when its value
+    # rises through 64, "single" by every message, and either toggles;
     # "latching", and None (a binding written before the device model), follow
     # the value. A note is a press either way.
     switch: str | None = None
+    # A pedal on a channel's volume (#191, action "snap"): `heel` is the value
+    # at or below which the agent silences the send, and `low`, `high` the
+    # send gain Sushi's own mapping gives at 0 and at 127, which the agent
+    # puts back once the pedal has left the heel.
+    heel: int = 0
+    low: float = 0.0
+    high: float = 0.0
 
     def describe(self) -> str:
         on = "all channels" if self.channel is None else f"channel {self.channel}"
         how = f" ({self.switch})" if self.switch else ""
+        if self.action == "snap":
+            return f"{self.control}: {self.kind} {self.number} on {on}, silence {self.written} at the heel ({self.heel})"
         return f"{self.control}: {self.kind} {self.number} on {on}{how}, {self.action} {self.written}"
+
+    def gain_at(self, value: int) -> float:
+        """The send gain a snap binding's pedal at `value` should have: silent
+        at or below the heel, otherwise what Sushi's mapping gives."""
+        if value <= self.heel:
+            return 0.0
+        return self.low + (self.high - self.low) * value / MIDI_MAX
 
 
 @dataclass(frozen=True)
@@ -219,7 +262,9 @@ class Bindings:
 
 
 _CONTROL_KEYS = ("control", "note", "cc", "channel", "bypass", "mute", "switch")
-SWITCH_BEHAVIOURS = ("momentary", "latching")  # machine.BEHAVIOURS, which this must not import
+_SNAP_KEYS = ("control", "cc", "channel", "snap", "heel", "low", "high")
+SWITCH_BEHAVIOURS = ("momentary", "single", "latching")  # machine.BEHAVIOURS, which this must not import
+PRESSED = ("momentary", "single")  # the behaviours whose press toggles
 _PROGRAM_KEYS = ("programs", "port", "channel")
 
 
@@ -264,6 +309,11 @@ def parse_bindings(raw: Any) -> Bindings:
             continue
         name = entry.get("control")
         at = f"{at} ({name})" if isinstance(name, str) else at
+        if "snap" in entry:
+            snap = _snap(entry, at, problems)
+            if snap is not None:
+                controls.append(snap)
+            continue
         problems += [f"{at}: unknown key {k!r}" for k in entry if k not in _CONTROL_KEYS]
         sends = [k for k in ("note", "cc") if k in entry]
         does = [k for k in ("bypass", "mute") if k in entry]
@@ -283,7 +333,8 @@ def parse_bindings(raw: Any) -> Bindings:
             continue
         switch = entry.get("switch")
         if switch is not None and (switch not in SWITCH_BEHAVIOURS or kind != "cc"):
-            problems.append(f"{at}: switch must be momentary or latching, on a cc (got {switch!r} on a {kind})")
+            problems.append(f"{at}: switch must be momentary, single or latching, on a cc "
+                            f"(got {switch!r} on a {kind})")
             continue
         channel = _channel(entry.get("channel", "all"), at, problems)
         if action == "bypass":
@@ -292,12 +343,12 @@ def parse_bindings(raw: Any) -> Bindings:
                 continue
             target = written.split("/")[1]
         else:
-            if kind == "cc" and switch != "momentary":
+            if kind == "cc" and switch not in PRESSED:
                 # compile_midi gives a latching CC on a mute to Sushi, which
                 # does it natively; one here is a config this listener did not
                 # come from. A momentary one toggles, which Sushi cannot.
                 problems.append(f"{at}: a CC on a mute is Sushi's own cc_mappings, not the agent's, "
-                                "unless it is a momentary switch")
+                                "unless it is a momentary or single switch")
                 continue
             if not isinstance(written, str) or not written:
                 problems.append(f"{at}: mute must be a channel name (got {written!r})")
@@ -310,9 +361,41 @@ def parse_bindings(raw: Any) -> Bindings:
             continue
         claimed.setdefault((kind, number), []).append((channel, name))
         controls.append(Binding(name, kind, number, channel, action, target, written, switch))
+    for snap in (b for b in controls if b.action == "snap"):
+        clash = next((b.control for b in controls if b is not snap and b.kind == "cc" and b.number == snap.number
+                      and (b.channel is None or snap.channel is None or b.channel == snap.channel)), None)
+        if clash is not None:
+            problems.append(f"{snap.control!r} and {clash!r} both send cc {snap.number} on overlapping channels")
     if problems:
         raise BindingError(problems)
     return Bindings(tuple(controls), programs)
+
+
+def _snap(entry: dict[str, Any], at: str, problems: list[str]) -> Binding | None:
+    """A pedal on a channel's volume (#191): `compile_midi`'s
+    `{"control", "cc", "channel", "snap": <channel>, "heel", "low", "high"}`."""
+    problems += [f"{at}: unknown key {k!r}" for k in entry if k not in _SNAP_KEYS]
+    name, number, channel_name = entry.get("control"), entry.get("cc"), entry.get("snap")
+    heel, low, high = entry.get("heel"), entry.get("low"), entry.get("high")
+    if not isinstance(name, str) or not name:
+        problems.append(f"{at}: control must name the control")
+        return None
+    if type(number) is not int or not 0 <= number <= MIDI_MAX:
+        problems.append(f"{at}: a pedal on a volume sends a cc, 0 to 127 (got {entry.get('cc')!r})")
+        return None
+    if not isinstance(channel_name, str) or not channel_name:
+        problems.append(f"{at}: snap must name the channel (got {channel_name!r})")
+        return None
+    if type(heel) is not int or not 0 <= heel < MIDI_MAX:
+        problems.append(f"{at}: heel must be 0 to 126 (got {heel!r})")
+        return None
+    gains = [v for v in (low, high) if isinstance(v, (int, float)) and not isinstance(v, bool) and 0 <= v <= 1]
+    if len(gains) != 2 or low > high:
+        problems.append(f"{at}: low and high must be the send's gain, 0 to 1, low at most high (got {low!r}, {high!r})")
+        return None
+    channel = _channel(entry.get("channel", "all"), at, problems)
+    return Binding(name, "cc", number, channel, "snap", channel_name + "_send", channel_name,
+                   heel=heel, low=float(low), high=float(high))
 
 
 def step_bindings(controller: dict[str, Any]) -> tuple[Binding, ...]:
@@ -399,6 +482,19 @@ class StepTo:
 
 
 @dataclass(frozen=True)
+class Snap:
+    """A pedal on a channel's volume has reached its heel (#191): the agent
+    silences the send, which Sushi's mapping leaves at its floor."""
+
+    control: str
+    processor: str  # the channel's send
+    binding: Binding
+
+    def describe(self) -> str:
+        return f"{self.control}: at the heel, silence {self.binding.written}"
+
+
+@dataclass(frozen=True)
 class Refused:
     """A message that was bound and cannot be acted on, and why: said, not dropped."""
 
@@ -410,7 +506,7 @@ class Refused:
 
 
 # What `dispatch` decides: one of these, or None for nothing to do.
-Action = Union[ToggleBypass, SetBypass, ToggleMute, SelectRig, StepRig, StepTo, Refused]
+Action = Union[ToggleBypass, SetBypass, ToggleMute, SelectRig, StepRig, StepTo, Snap, Refused]
 
 
 def _on(channel: int | None, message: Message) -> bool:
@@ -420,10 +516,11 @@ def _on(channel: int | None, message: Message) -> bool:
 def dispatch(
     message: Message | None,
     bindings: Bindings,
-    switches: dict[str, bool],
+    switches: dict[Any, Any],
     rigs: Sequence[str] = (),
     current: str | None = None,
-) -> tuple[Optional[Action], dict[str, bool]]:
+    now: float | None = None,
+) -> tuple[Optional[Action], dict[Any, Any]]:
     """What `message` does under `bindings`: `(action or None, switches)`.
 
     `switches` is each CC switch's last state (True for on, at 64 and above),
@@ -444,14 +541,27 @@ def dispatch(
     last rig is `Refused`, because the player pressed something and should
     find out why nothing happened.
 
-    A CC switch's press (#191) depends on its behaviour. Momentary: every
-    value of 64 and above is a press and anything below a release, with no
-    state kept, so a switch that sends one value per press (FBV Control's
-    Single) works as one that sends press and release. Latching: each
-    crossing of 64 is a press, since the switch alternates its value.
-    A press of a bypass or a mute toggles; a press of a step is `StepRig`,
-    for the agent to decide against the order. A latching switch on a bypass,
-    and a CC bypass written before the device model, still follow the value.
+    A CC switch's press (#191) depends on its behaviour:
+
+    - momentary: a rising edge, a value of 64 or more after one below 64 (or
+      the first heard), so a resend while held is not a second press;
+    - single: every message is a press, whatever its value (FBV Control's
+      Single, one message a press);
+    - latching: each crossing of 64 is a press, since the switch alternates
+      its value (FBV Control's Toggle).
+
+    A momentary or single press within `DEBOUNCE_SECONDS` of the last one
+    accepted on that control is a bounce and does nothing; `now` is the
+    caller's clock (monotonic seconds), and None turns the debounce off. A
+    press of a bypass or a mute toggles; a press of a step is `StepRig`, for
+    the agent to decide against the order. A latching switch on a bypass, and
+    a CC bypass written before the device model, still follow the value.
+
+    A pedal on a volume (`snap`) is `Snap` at or below its heel and None
+    above it, where Sushi's own mapping has it.
+
+    `switches` holds each switch's last level under its control's name, and
+    the time of its last press under `("pressed", control)`.
     """
     if message is None:
         return None, switches
@@ -477,9 +587,22 @@ def dispatch(
             if message.kind != "note_on":
                 return None, switches
             return _press(binding), switches
+        if binding.action == "snap":
+            if message.value <= binding.heel:
+                return Snap(binding.control, binding.target, binding), switches
+            return None, switches
         on = message.value >= SWITCH_ON
-        if binding.switch == "momentary":
-            return (_press(binding) if on else None), switches
+        if binding.switch in PRESSED:
+            level = {**switches, binding.control: on}
+            pressed = on and switches.get(binding.control) is not True if binding.switch == "momentary" else True
+            if not pressed:
+                return None, level
+            last = switches.get(("pressed", binding.control))
+            if now is not None and last is not None and now - last < DEBOUNCE_SECONDS:
+                return None, level
+            if now is not None:
+                level[("pressed", binding.control)] = now
+            return _press(binding), level
         if switches.get(binding.control) == on:
             return None, switches
         crossed = {**switches, binding.control: on}
@@ -487,6 +610,16 @@ def dispatch(
             return _press(binding), crossed
         return SetBypass(binding.control, binding.target, bypassed=not on), crossed
     return None, switches
+
+
+def snap_binding(message: Message | None, bindings: Bindings) -> Binding | None:
+    """The pedal-on-a-volume binding `message` moves, if any: the agent keeps
+    each one's latest value, so a silencing that lands after the pedal has
+    left the heel puts Sushi's value back rather than leaving it silent."""
+    if message is None or message.kind != "cc":
+        return None
+    return next((b for b in bindings.controls if b.action == "snap" and b.number == message.number
+                 and _on(b.channel, message)), None)
 
 
 def _press(binding: Binding) -> Action:
@@ -500,14 +633,17 @@ def _press(binding: Binding) -> Action:
     return ToggleBypass(binding.control, binding.target)
 
 
-def step_to(step: StepRig, rigs: Sequence[str], current: str | None) -> StepTo | Refused:
+def step_to(step: StepRig, rigs: Sequence[str], current: str | None,
+            running: str | None = None) -> StepTo | Refused:
     """Where a step press goes, in the program order (`program_order`):
     the rig before or after `current`, or `Refused` at either end -- it does
     not wrap round, so a stray press on the last rig cannot jump to the first
-    -- and for a running rig the order does not hold."""
-    if current not in rigs:
-        return Refused(step.control, f"the running rig {current or '(unnamed)'} is not one of config/rigs/, "
-                                     "so it has no previous or next")
+    -- and for a running rig the order does not hold. `current` is the
+    running rig's name in config/rigs/, None when it runs from anywhere else
+    (`Plan.rig`), and `running` what to call it then."""
+    if current is None or current not in rigs:
+        return Refused(step.control, f"the running rig {current or running or '(unnamed)'} is not a file of "
+                                     "config/rigs/, so it has no previous or next")
     index = rigs.index(current) + (-1 if step.direction == "previous" else 1)
     if index < 0:
         return Refused(step.control, f"{current} is the first rig in config/rigs/; there is none before it")
@@ -570,26 +706,37 @@ class Off:
 @dataclass(frozen=True)
 class Feed:
     """One port to listen to: the controller, its port as the machine file
-    names it, and what its messages do."""
+    names it, and what its messages do. `required` when the running rig's
+    own map is written for this controller (#191): a required pedal that is
+    not plugged in is a problem; any other (a machine's rig-stepping pedal on
+    a rig mapped elsewhere, or with no map) is only "not connected"."""
 
     controller: str
     port: str
     bindings: Bindings
+    required: bool = True
 
 
 @dataclass(frozen=True)
 class Plan:
     """The listeners to start for rig `rig`: a `Feed` per port, the rig's
     own map's controller first. Built with one feed's `controller`, `port`
-    and `bindings`, as before the device model, or with `feeds`."""
+    and `bindings`, as before the device model, or with `feeds`. `rig` is the
+    running rig's name in config/rigs/, and None for a run from any other
+    file (a v1 config, `config/src/`), which a step cannot count from even
+    where a rig of config/rigs/ has the same name; `running` is what to call
+    it either way."""
 
-    rig: str
+    rig: str | None
     controller: str = ""
     port: str = ""
     bindings: Bindings = Bindings()
     feeds: tuple[Feed, ...] = ()
+    running: str = ""
 
     def __post_init__(self) -> None:
+        if not self.running:
+            object.__setattr__(self, "running", self.rig or "the running rig")
         if not self.feeds:
             object.__setattr__(self, "feeds", (Feed(self.controller, self.port, self.bindings),))
         first = self.feeds[0]
@@ -617,6 +764,12 @@ def plan_for(described: dict[str, Any], root: Path) -> Plan | Off:
       or without a map, from that same machine file. A machine file that is
       not there has none; one that will not read or validate is a
       `MidiError`, since the pedals it describes would then be silently off.
+
+    A feed is `required` only for the controller the rig file's `midi:`
+    names, whether or not its map has anything for the agent (a map of
+    sweeps alone still needs its pedal). The rig file is read whenever the
+    run names one, for that; one that will not read is a `MidiError` only
+    where the compiled config has bindings that need it.
     """
     import json
 
@@ -633,7 +786,7 @@ def plan_for(described: dict[str, Any], root: Path) -> Plan | Off:
     raw = config.get(AGENT_BINDINGS) if isinstance(config, dict) else None
     machine_file = Path(described["machine"]) if described.get("machine") else machine_path(Path(root))
     source = described.get("rig") or ((config.get("_meta") or {}).get("source") if isinstance(config, dict) else None)
-    rig_name = Path(source).stem if isinstance(source, str) and source else name
+    rig_name = rig_in_order(source, Path(root))
 
     machine: MachineSpec | None = None
 
@@ -650,14 +803,18 @@ def plan_for(described: dict[str, Any], root: Path) -> Plan | Off:
         return machine
 
     feeds: dict[str, tuple[str, Bindings]] = {}
+    rig = None
+    if isinstance(source, str) and source:
+        try:
+            rig = load_rig(Path(root) / source)
+        except (OSError, RigFileError) as exc:
+            if raw:
+                raise MidiError(f"could not read {source} for its controller: {exc}") from exc
+    required = rig.midi.controller if rig is not None and rig.midi is not None else None
     if raw:
         bindings = parse_bindings(raw)
         if not isinstance(source, str) or not source:
             raise MidiError(f"{name} carries MIDI bindings but names no rig file to say which controller")
-        try:
-            rig = load_rig(Path(root) / source)
-        except (OSError, RigFileError) as exc:
-            raise MidiError(f"could not read {source} for its controller: {exc}") from exc
         if rig.midi is None:
             raise MidiError(f"{source} has no midi: section now, though the running rig was compiled with one")
         try:
@@ -679,7 +836,23 @@ def plan_for(described: dict[str, Any], root: Path) -> Plan | Off:
         feeds[controller_name] = (port, Bindings(bindings.controls + steps, bindings.programs))
     if not feeds:
         return Off(f"{name} has no MIDI bindings for the agent")
-    return Plan(rig_name, feeds=tuple(Feed(c, port, b) for c, (port, b) in feeds.items()))
+    return Plan(rig_name, feeds=tuple(Feed(c, port, b, c == required) for c, (port, b) in feeds.items()),
+                running=rig_name or name)
+
+
+def rig_in_order(source: Any, root: Path) -> str | None:
+    """The name of the running rig in config/rigs/, from the file it runs
+    from (`config/rigs/<name>.yaml`), or None for any other file: a rig of
+    `config/src/` or a v1 config is not in the order a step counts through,
+    whatever its name."""
+    if not isinstance(source, str) or not source:
+        return None
+    path = Path(source)
+    folder = (Path(root) / "config" / "rigs").resolve()
+    resolved = (path if path.is_absolute() else Path(root) / path).resolve()
+    if resolved.suffix != ".yaml" or resolved.parent != folder:
+        return None
+    return resolved.stem
 
 
 # --------------------------------------------------------------------------- #
@@ -688,7 +861,13 @@ def plan_for(described: dict[str, Any], root: Path) -> Plan | Off:
 
 class Port(Protocol):
     """What the listener needs of a port. Used from one thread only: the
-    listener's, which opens it, reads it and closes it."""
+    listener's, which opens it, reads it and closes it.
+
+    A port may be open with its pedal not there (#191): `attached` False,
+    and `absence` saying why. Reading it then waits for the pedal to be
+    plugged in, and a pedal that goes away mid-set leaves it unattached
+    again; the listener watches `attached` and says each change. A port
+    without the attribute is taken to be attached throughout."""
 
     def read(self, timeout: float) -> bytes | None:
         """One complete MIDI message, or None if none came within `timeout`.
@@ -702,16 +881,17 @@ def find_port(name: str, available: Sequence[tuple[str, Any]]) -> Any:
     `PortError` saying what there is. Exact: the machine file's name is
     `client:port`, as `aseqdump -l` shows the two columns, and a near match
     would be a guess about which device is the pedal. Two ports of one name
-    (two of the same controller plugged in) are refused for the same reason."""
+    (two of the same controller plugged in) are refused for the same reason.
+    A name that is not listed is `PortAbsent`: the pedal is not plugged in."""
     matches = [address for listed, address in available if listed == name]
     if len(matches) == 1:
         return matches[0]
     if matches:
         raise PortError(f"two ports are called {name!r}, so which is the pedal is not known: unplug one")
     if not available:
-        raise PortError(f"no MIDI port called {name!r}: ALSA lists no MIDI ports at all. Is it plugged in?")
+        raise PortAbsent(f"no MIDI port called {name!r}: ALSA lists no MIDI ports at all. Is it plugged in?")
     listed = ", ".join(sorted(n for n, _ in available))
-    raise PortError(f"no MIDI port called {name!r}; ALSA lists: {listed}. Is it plugged in?")
+    raise PortAbsent(f"no MIDI port called {name!r}; ALSA lists: {listed}. Is it plugged in?")
 
 
 class AlsaPort:
@@ -721,34 +901,39 @@ class AlsaPort:
     one input port, and subscribes it to the controller's port: ALSA delivers
     a port's events to every subscriber, so this takes nothing from Sushi's
     own MIDI input or anything else listening. It also subscribes to the
-    system announcements, so a controller unplugged mid-set is a `PortError`
-    rather than a listener that has silently stopped hearing anything.
+    system announcements (#191): a controller that is not plugged in yet, or
+    is unplugged mid-set, leaves the port open and unattached (`attached`),
+    and each client or port that starts afterwards has the ports listed again,
+    so the pedal is subscribed to as soon as it appears, with no polling.
 
     Events are read as bytes through libasound's decoder, with running status
     off (alsa-midi sets that), so each read is one whole message for `decode`.
 
-    NOT VERIFIED against a sequencer: nothing here has run with /dev/snd/seq.
+    `MidiUnavailable` when there is no MIDI to read at all (no alsa-midi, no
+    sequencer). NOT VERIFIED against a sequencer: nothing here has run with
+    /dev/snd/seq, and the hot-plug is shown against a stand-in for alsa-midi.
     """
 
     def __init__(self, name: str):
         try:
             import alsa_midi
         except (ImportError, OSError) as exc:
-            raise PortError(f"alsa-midi is not installed, so the agent cannot read pedals: pip install -e tool[midi] ({exc})") from exc
+            raise MidiUnavailable(f"alsa-midi is not installed, so the agent cannot read pedals: "
+                                  f"pip install -e tool[midi] ({exc})") from exc
         self._alsa = alsa_midi
+        self.name = name
+        self._source: Any = None
+        self.absence: str | None = None
         try:
             self._client = alsa_midi.SequencerClient(CLIENT_NAME)
         except alsa_midi.ALSAError as exc:
-            raise PortError(f"cannot open the ALSA sequencer (/dev/snd/seq): {exc}") from exc
+            raise MidiUnavailable(f"cannot open the ALSA sequencer (/dev/snd/seq): {exc}") from exc
         try:
-            listed = [(f"{p.client_name}:{p.name}", (p.client_id, p.port_id))
-                      for p in self._client.list_ports(input=True)]
-            self._source = find_port(name, listed)
             self._port = self._client.create_port(
                 "pedals in", caps=alsa_midi.WRITE_PORT,
                 type=alsa_midi.PortType.MIDI_GENERIC | alsa_midi.PortType.APPLICATION)
-            self._port.connect_from(self._source)
             self._port.connect_from(alsa_midi.SYSTEM_ANNOUNCE)
+            self._attach()
         except alsa_midi.ALSAError as exc:
             self._client.close()
             raise PortError(f"cannot subscribe to {name!r}: {exc}") from exc
@@ -756,19 +941,44 @@ class AlsaPort:
             self._client.close()
             raise
 
+    @property
+    def attached(self) -> bool:
+        return self._source is not None
+
+    def _attach(self) -> None:
+        """Subscribe to the pedal if it is listed now; else say why not."""
+        listed = [(f"{p.client_name}:{p.name}", (p.client_id, p.port_id))
+                  for p in self._client.list_ports(input=True)]
+        try:
+            source = find_port(self.name, listed)
+        except PortAbsent as exc:
+            self.absence = str(exc)
+            return
+        self._port.connect_from(source)
+        self._source, self.absence = source, None
+
     def read(self, timeout: float) -> bytes | None:
         a = self._alsa
         try:
             event = self._client.event_input(prefer_bytes=True, timeout=timeout)
         except a.ALSAError as exc:
             raise PortError(f"reading the controller failed: {exc}") from exc
+        if self._source is None:
+            if isinstance(event, (a.ClientStartEvent, a.PortStartEvent)):
+                try:
+                    self._attach()
+                except a.ALSAError as exc:
+                    raise PortError(f"cannot subscribe to {self.name!r}: {exc}") from exc
+            return None
         if isinstance(event, a.MidiBytesEvent):
             return bytes(event.midi_bytes)
         client, port = self._source
         if isinstance(event, a.ClientExitEvent) and event.addr.client_id == client:
-            raise PortError("the controller went away (its ALSA client exited): was it unplugged?")
-        if isinstance(event, a.PortExitEvent) and tuple(event.addr) == (client, port):
-            raise PortError("the controller's port went away: was it unplugged?")
+            self._source = None
+            self.absence = "the controller went away (its ALSA client exited): was it unplugged?"
+        elif isinstance(event, a.PortExitEvent) and tuple(event.addr) == (client, port):
+            self._source = None
+            self.absence = "the controller's port went away: was it unplugged?"
         return None
 
     def close(self) -> None:
@@ -790,10 +1000,13 @@ class Listener:
     Messages `decode` drops, aftertouch above all, are counted (`heard`) and
     go no further, so a held pad does not flood the loop.
 
-    A port that cannot be opened, or fails once open, is reported once
-    (`on_failure(exc, opened)`) and the thread ends: it does not retry. A pedal
-    that is not there now is not there in a quarter of a second either, and a
-    loop of attempts is a hot thread on the machine running the audio; the
+    A pedal that is not plugged in, or is unplugged mid-set, is not a
+    failure (#191): the port stays open, unattached, and the listener says so
+    (`on_absent(reason)`) and goes on reading, which waits for the pedal to
+    appear; `on_open` says it is attached, each time it is. A port that cannot
+    be opened at all, or fails to read once open, is reported once
+    (`on_failure(exc, opened)`) and the thread ends: it does not retry, since
+    a loop of attempts is a hot thread on the machine running the audio; the
     next `up` or `restart` tries again.
     """
 
@@ -806,6 +1019,7 @@ class Listener:
         on_open: Callable[[], None],
         on_message: Callable[[Message], None],
         on_failure: Callable[[BaseException, bool], None],
+        on_absent: Callable[[str], None] | None = None,
         poll: float = POLL_SECONDS,
     ) -> None:
         self.port_name = port_name
@@ -814,6 +1028,7 @@ class Listener:
         self.on_open = on_open
         self.on_message = on_message
         self.on_failure = on_failure
+        self.on_absent = on_absent
         self.poll = poll
         self.heard = 0
         self._stop = threading.Event()
@@ -838,6 +1053,16 @@ class Listener:
             self._stop.set()
             return False
 
+    def _said(self, port: Any, was: bool | None) -> bool:
+        """Say whether the pedal is there, when that has changed."""
+        attached = getattr(port, "attached", True)
+        if attached != was:
+            if attached:
+                self._hand(self.on_open)
+            elif self.on_absent is not None:
+                self._hand(self.on_absent, getattr(port, "absence", None) or "the pedal is not plugged in")
+        return attached
+
     def _run(self) -> None:
         try:
             port = self.open_port(self.port_name)
@@ -847,9 +1072,10 @@ class Listener:
         try:
             if self._stop.is_set():
                 return
-            self._hand(self.on_open)
+            attached = self._said(port, None)
             while not self._stop.is_set():
                 data = port.read(self.poll)
+                attached = self._said(port, attached)
                 if data is None:
                     continue
                 self.heard += 1

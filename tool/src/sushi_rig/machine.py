@@ -38,12 +38,12 @@ MIDI_MAX = 127
 # that can take a note or a CC.
 CONTROLLER_TYPES = ("pedal",)
 KINDS = ("switch", "expression")
-# A momentary switch sends 64 or more on press and less on release (or one
-# value per press, which FBV Control calls Single); a latching one alternates
-# its value on each press (FBV Control's Toggle). Which a footswitch is
-# decides whether a press toggles (momentary) or the value is followed
-# (latching): a latching bypass reads "on at 64 and above".
-BEHAVIOURS = ("momentary", "latching")
+# How a footswitch sends (#191), which decides what a press is. Momentary: 64
+# or more when pressed and less when let go, a press being the rise. Single:
+# one message a press, whatever its value. Latching: the value alternates on
+# each press (FBV Control's Toggle). A momentary or single press toggles an
+# effect or a channel; a latching switch is followed, on at 64 and above.
+BEHAVIOURS = ("momentary", "single", "latching")
 # A control's fixed job, the device's own on every rig, whatever the rig's map
 # says: step through config/rigs/ by file name, as Program Change counts.
 JOBS = ("previous-rig", "next-rig")
@@ -396,7 +396,10 @@ def _sends(sends: dict[str, Any]) -> tuple[str, int]:
 def control_model(sends: dict[str, Any]) -> dict[str, Any]:
     """A typed control's model as the compiler and the agent read it:
     `{"kind", "behaviour", "range", "job"}`, each None where it does not
-    apply; an expression pedal's range defaults to the full 0 to 127."""
+    apply; an expression pedal's range defaults to the full 0 to 127. The
+    range is what the pedal sends; the compiler's mappings scale Sushi's 0 to
+    127 regardless, and only its heel is used, by the agent, which silences
+    a pedalled volume at or below it (#191)."""
     kind = sends.get("kind")
     return {
         "kind": kind,
@@ -415,10 +418,10 @@ def _control_model_problems(at: str, sends_kind: str, sends: dict[str, Any]) -> 
     if kind == "switch":
         behaviour = sends.get("behaviour")
         if behaviour not in BEHAVIOURS:
-            problems.append(f"{at}: a switch's behaviour must be {' or '.join(BEHAVIOURS)} (got {behaviour!r}): "
-                            "momentary toggles on each press, latching is followed")
+            problems.append(f"{at}: a switch's behaviour must be {', '.join(BEHAVIOURS)} (got {behaviour!r}): "
+                            "momentary and single toggle on each press, latching is followed")
         elif sends_kind == "note" and behaviour == "latching":
-            problems.append(f"{at}: a note is a press, so a switch that sends one is momentary")
+            problems.append(f"{at}: a note is a press, so a switch that sends one is momentary or single")
         if "range" in sends:
             problems.append(f"{at}: range is an expression pedal's travel; a switch has none")
         if "job" in sends and sends["job"] not in JOBS:
@@ -433,7 +436,8 @@ def _control_model_problems(at: str, sends_kind: str, sends: dict[str, Any]) -> 
             value = sends["range"]
             if not (isinstance(value, list) and len(value) == 2
                     and all(type(v) is int and 0 <= v <= MIDI_MAX for v in value) and value[0] < value[1]):
-                problems.append(f"{at}: range must be [heel, toe], whole numbers from 0 to {MIDI_MAX}, "
+                problems.append(f"{at}: range must be [heel, toe], what the pedal sends at either end, "
+                                f"whole numbers from 0 to {MIDI_MAX}, "
                                 f"heel below toe (got {value!r})")
     return problems
 

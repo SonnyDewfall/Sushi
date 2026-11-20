@@ -135,19 +135,24 @@ The pedalboard is a Line 6 FBV Express MkII, with four footswitches and a pedal:
   says. One press turns it on, the next turns it off.
 - **The pedal** sweeps a knob, or rides a channel's volume, as each rig's file
   says. On a volume, the heel is silent and the toe is the channel's own level,
-  never louder. Most of the change is in the last third of the travel. It
-  cannot ride the master volume.
+  never louder; half way is about 20 dB quieter. The silence at the heel needs
+  the agent running: without it the heel is quiet, not silent. It cannot ride
+  the master volume.
 
 If a pedal is riding or fading a channel, that channel's **VOLUME** says
 **driven by** and the pedal's name, and cannot be moved from the page. To change
 how loud the toe is, change the channel's level in the rig's file and start the
 rig again.
 
+If the pedal is not plugged in, A and B do nothing and nothing is shown as
+wrong, unless the rig's own pedal settings are for it: then the page says the
+rig is waiting for its pedal. Plug it in (or back in, if it was knocked out
+mid-set) and it works at once, without restarting the rig.
+
 Not yet tried on the rig: the FBV has not arrived, so its settings in the
 machine file are a best guess, and none of the saved rigs has a pedal set up.
-Until it is plugged in, the page shows the pedals as not found. Nothing has been
-played through a real pedal; only the pad controller's own messages have been
-checked.
+Nothing has been played through a real pedal; only the pad controller's own
+messages have been checked.
 
 ## The visualiser
 

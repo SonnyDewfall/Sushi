@@ -163,8 +163,10 @@ the controller's port itself and serves it: a pad toggles a plugin's bypass
 a mute toggles a track's `mute` parameter, and a Program Change switches
 rigs by the path `POST /rig/switch` takes: live where it can be, otherwise
 `down` and then `up --rig` with the options `restart` would bring back. Each
-change is in the live log with `source: "midi"`. A momentary footswitch
-(#191) toggles its bypass or mute on each press. A machine file's switch whose
+change is in the live log with `source: "midi"`. A momentary or single
+footswitch (#191) toggles its bypass or mute on each press, and a pedal on a
+channel's volume is silenced at its heel. A pedal that is not plugged in is
+waited for, and is a problem only where the rig's own map needs it. A machine file's switch whose
 job is `previous-rig` or `next-rig` steps through config/rigs/ by that same
 switch path on every rig, map or no map, stopping at either end; a press
 while a switch or a lifecycle command runs is refused, not queued. Each
@@ -3717,6 +3719,11 @@ class Agent:
         # A rig switch a pedal asked for that has not finished (#191): a second
         # press meanwhile is refused, not queued.
         self._midi_switch_pending = False
+        # A pedal on a volume (#191): its latest value and a count of its
+        # messages, by (port, control), and the silencings running, so a
+        # burst at the heel is one task that ends on the pedal's last value.
+        self._midi_pedal: dict[tuple[int, str], tuple[int, int]] = {}
+        self._midi_snapping: set[tuple[int, str]] = set()
         self._midi_released = False  # set by `midi_release`: nothing starts a listener after it
         self._midi: dict[str, Any] = {
             "state": "off", "reason": "the agent has not looked for a rig yet",
@@ -3820,8 +3827,8 @@ class Agent:
             state="opening", reason=None, rig=plan.rig, controller=plan.controller, port=plan.port,
             bindings=[b.describe() for feed in plan.feeds for b in feed.bindings.controls],
             programs=plan.programs,
-            feeds=[{"controller": feed.controller, "port": feed.port, "state": "opening", "problem": None}
-                   for feed in plan.feeds],
+            feeds=[{"controller": feed.controller, "port": feed.port, "required": feed.required,
+                    "state": "opening", "problem": None, "reason": None} for feed in plan.feeds],
             heard=0, last=None, problem=None, last_error=None,
         )
         for index, feed in enumerate(plan.feeds):
@@ -3831,6 +3838,7 @@ class Agent:
                 on_open=functools.partial(self._midi_opened, generation, index),
                 on_message=functools.partial(self._midi_heard, generation, feed=index),
                 on_failure=functools.partial(self._midi_failed, generation, index),
+                on_absent=functools.partial(self._midi_absent, generation, index),
             ))
         for listener in self._listeners:
             listener.start()
@@ -3842,6 +3850,7 @@ class Agent:
         as a daemon, rather than holding up a `down`."""
         self._midi_generation += 1
         self._midi_switches = {}
+        self._midi_pedal = {}
         listeners, self._listeners = self._listeners, []
         if not listeners:
             return
@@ -3853,34 +3862,71 @@ class Agent:
         self._midi_off(reason)
 
     def _midi_feed_state(self) -> None:
-        """The listener's state from its ports': failed if any port failed
-        (the others still serve), opening while any is, listening once all are."""
+        """The listener's state from its ports' (#191): failed if any port
+        failed, or a port the rig's own map needs is not plugged in (the
+        others still serve); opening while any is; listening once one is and
+        the rest are listening or not connected; absent when no pedal at all
+        is plugged in and none the rig needs is missing. A port no rig map
+        needs that is not plugged in is `absent`, "not connected", and not a
+        problem: the machine's rig-stepping pedal on a laptop without it."""
         feeds = self._midi["feeds"]
-        failed = [f["problem"] for f in feeds if f["state"] == "failed"]
-        if failed:
-            self._midi.update(state="failed", reason=None, problem="; ".join(failed))
+        problems = [f["problem"] for f in feeds if f["state"] in ("failed", "waiting")]
+        if problems:
+            self._midi.update(state="failed", reason=None, problem="; ".join(problems))
         elif any(f["state"] == "opening" for f in feeds):
-            self._midi.update(state="opening")
+            self._midi.update(state="opening", problem=None)
+        elif any(f["state"] == "listening" for f in feeds):
+            self._midi.update(state="listening", reason=None, problem=None)
         else:
-            self._midi.update(state="listening")
+            absent = "; ".join(f"{f['controller']} ({f['port']}): {f['reason']}" for f in feeds)
+            self._midi.update(state="absent", reason=f"no pedal is connected: {absent}", problem=None)
 
     def _midi_opened(self, generation: int, feed: int = 0) -> None:
         if generation == self._midi_generation:
-            self._midi["feeds"][feed]["state"] = "listening"
+            self._midi["feeds"][feed].update(state="listening", problem=None, reason=None)
             self._midi_feed_state()
+
+    def _midi_who(self, feed: int) -> tuple[str, str]:
+        plan = self._midi_plan
+        port = plan.feeds[feed].port if plan else self._midi["port"]
+        controller = plan.feeds[feed].controller if plan else None
+        rig = plan.running if plan else "the running rig"
+        who = (f"the port of controller {controller!r}, which {rig}'s MIDI map or the machine file's "
+               "rig stepping is written for" if plan else "the port")
+        return port, who
+
+    def _midi_absent(self, generation: int, feed: int, reason: str) -> None:
+        """Port `feed`'s pedal is not plugged in, or was unplugged (#191): its
+        listener waits for it. Not connected (`absent`) for a pedal the rig's
+        map does not use; `waiting`, a problem, for one it does."""
+        if generation != self._midi_generation:
+            return
+        entry = self._midi["feeds"][feed]
+        if not entry["required"]:
+            entry.update(state="absent", reason=f"not connected: {reason}", problem=None)
+        else:
+            port, who = self._midi_who(feed)
+            problem = (f"MIDI port {port!r}, {who}, is not connected: {reason}. Waiting for it: "
+                       "plug it in and it is picked up")
+            entry.update(state="waiting", reason=reason, problem=problem)
+            self._midi_say(problem)
+        self._midi_feed_state()
 
     def _midi_failed(self, generation: int, feed: int, exc: BaseException, opened: bool) -> None:
         if generation != self._midi_generation:
             return
-        plan = self._midi_plan
+        entry = self._midi["feeds"][feed]
+        if not entry["required"] and isinstance(exc, (midi_listener.PortAbsent, midi_listener.MidiUnavailable)):
+            # Nothing the rig's map needs: a machine that cannot read MIDI at
+            # all, or a pedal not there, is quiet for a pedal it does not use.
+            entry.update(state="absent", reason=f"not connected: {exc}", problem=None)
+            self._midi_feed_state()
+            return
+        port, who = self._midi_who(feed)
         doing = "stopped reading" if opened else "could not open"
-        port = plan.feeds[feed].port if plan else self._midi["port"]
-        controller = plan.feeds[feed].controller if plan else None
-        who = (f"the port of controller {controller!r}, which {plan.rig}'s MIDI map or the machine file's "
-               "rig stepping is written for" if plan else "the port")
         problem = (f"{doing} MIDI port {port!r}, {who}: {exc}. Bypass and rig switching "
                    "from the pedals on it are off until the rig is next brought up or restarted")
-        self._midi["feeds"][feed].update(state="failed", problem=problem)
+        entry.update(state="failed", problem=problem)
         self._midi_say(problem)
         self._midi_feed_state()
 
@@ -3908,7 +3954,11 @@ class Agent:
                 # crossings too; `_midi_forget` takes it back if the action is
                 # dropped or fails, so the next value plays it again.
                 action, self._midi_switches[feed] = midi_listener.dispatch(
-                    message, bindings, self._midi_switches.get(feed, {}))
+                    message, bindings, self._midi_switches.get(feed, {}), now=time.monotonic())
+                pedal = midi_listener.snap_binding(message, bindings)
+                if pedal is not None:
+                    key = (feed, pedal.control)
+                    self._midi_pedal[key] = (message.value, self._midi_pedal.get(key, (0, 0))[1] + 1)
         except Exception as exc:  # noqa: BLE001 -- a loop callback's error would reach only the loop's log
             self._midi["last_error"] = {
                 "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
@@ -3919,17 +3969,23 @@ class Agent:
         self._midi_last(message, action)
         if action is None:
             return
+        if isinstance(action, midi_listener.Snap):
+            self._midi_snap_start(generation, feed, action)
+            return
         switching = action is message or isinstance(action, midi_listener.StepRig)
         if switching:
             refusal = self._midi_switch_refusal()
             if refusal is not None:
                 self._midi_error(action, refusal)
+                self._midi_decided(f"refused, {refusal}")
                 return
         if len(self._midi_tasks) >= MIDI_PENDING:
             # Sushi is not keeping up (a stuck call holds each action up to
             # LIVE_TIMEOUT): a pedal's presses queued behind it would all land
             # at once, long after they were played.
-            self._midi_error(action, f"{len(self._midi_tasks)} MIDI actions are still waiting on Sushi, so this one was dropped")
+            dropped = f"{len(self._midi_tasks)} MIDI actions are still waiting on Sushi, so this one was dropped"
+            self._midi_error(action, dropped)
+            self._midi_decided(f"dropped, {dropped}")
             self._midi_forget(action, feed=feed)
             return
         if switching:
@@ -3937,6 +3993,54 @@ class Agent:
         task = asyncio.ensure_future(self._midi_act(generation, action, feed, switching))
         self._midi_tasks.add(task)
         task.add_done_callback(self._midi_tasks.discard)
+
+    def _midi_decided(self, said: str, deciding: bool = False) -> None:
+        """What became of the last message, once it is known (#191): a rig
+        switch refused or dropped, a step or a Program Change decided, so
+        `/health`'s `last` does not stay at "deciding which rig". `deciding`
+        for a decision made later, in its task: only while `last` is still
+        the message waiting on it, not a newer one."""
+        last = self._midi["last"]
+        if last is not None and (not deciding or last["action"].endswith("deciding which rig")):
+            last["action"] = said
+
+    def _midi_snap_start(self, generation: int, feed: int, action: Any) -> None:
+        """Silence a pedalled volume at the heel (#191), in one task a pedal:
+        a burst of messages at the heel is read by the task already running."""
+        key = (feed, action.control)
+        if key in self._midi_snapping:
+            return
+        self._midi_snapping.add(key)
+        task = asyncio.ensure_future(self._midi_snap(generation, feed, action))
+        self._midi_tasks.add(task)
+        task.add_done_callback(self._midi_tasks.discard)
+
+    async def _midi_snap(self, generation: int, feed: int, action: Any) -> None:
+        """Set the send's gain to what the pedal's latest value says: silent at
+        or below the heel, which Sushi's mapping cannot be (it stops at its
+        floor), and otherwise exactly what Sushi's mapping gives, so that a
+        silencing that lands after the pedal has left the heel is put right
+        rather than fighting the mapping. Again until no message came while
+        it was setting. Not in the live log: a pedal's position is not a change
+        to undo or to save."""
+        key, binding = (feed, action.control), action.binding
+        origin = _MidiOrigin("MIDI", action.control)
+        try:
+            while generation == self._midi_generation:
+                value, count = self._midi_pedal.get(key, (binding.heel, 0))
+                async with self._connected_for_a_change(origin) as controller:
+                    await self._sushi(origin, self.live.set_parameter, controller, action.processor, "gain",
+                                      binding.gain_at(value), reading=False)
+                if self._midi_pedal.get(key, (value, count))[1] == count:
+                    break
+        except web.HTTPException as exc:
+            self._midi_error(action, exc.reason)
+        except (AgentError, MidiError) as exc:
+            self._midi_error(action, str(exc))
+        except Exception as exc:  # noqa: BLE001 -- said, with its type; the agent carries on
+            self._midi_error(action, f"{type(exc).__name__}: {exc}")
+        finally:
+            self._midi_snapping.discard(key)
 
     def _midi_switch_refusal(self) -> str | None:
         """Why a pedal's rig switch (a Program Change, or a step, #191) cannot
@@ -3993,19 +4097,18 @@ class Agent:
                         "at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
                         "message": f"{said}: reading config/rigs/ failed: {type(exc).__name__}: {exc}"}
                     self._midi_say(self._midi["last_error"]["message"])
+                    self._midi_decided(f"{said}: reading config/rigs/ failed", deciding=True)
                     return
                 if generation != self._midi_generation or plan is None:
                     return
                 if isinstance(action, midi_listener.StepRig):
-                    step = action
-                    action = midi_listener.step_to(step, rigs, plan.rig)
-                    if self._midi["last"] and self._midi["last"]["action"].endswith("deciding which rig"):
-                        self._midi["last"]["action"] = action.describe()
+                    action = midi_listener.step_to(action, rigs, plan.rig, plan.running)
+                    self._midi_decided(action.describe(), deciding=True)
                 else:
                     message = action
                     action, _ = midi_listener.dispatch(message, plan.feeds[feed].bindings, {}, rigs, plan.rig)
-                    if self._midi["last"] and self._midi["last"]["action"] == "deciding which rig":
-                        self._midi_last(message, action)
+                    self._midi_decided("nothing (the rig already playing)" if action is None
+                                       else action.describe(), deciding=True)
                 if action is None:
                     return
             # What `_sushi` and the live lock read off a request, for a press.

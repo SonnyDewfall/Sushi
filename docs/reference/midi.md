@@ -53,8 +53,9 @@ midi:
 Blend, parameter, volume and a latching switch's mute compile into Sushi's own
 `cc_mappings` and run in the engine with no Python in the path; a blend is two
 mappings on the two channels' sends with their ranges reversed, each channel's
-own level being its loudest. Bypass, a pad on a mute, a momentary footswitch on
-a mute, rig stepping and rig switching by Program Change go through the agent,
+own level being its loudest. Bypass, a pad on a mute, a momentary or single
+footswitch on a mute, a volume pedal's silence at the heel, rig stepping and rig
+switching by Program Change go through the agent,
 which reads them from the compiled config's `_midi_agent` (rig stepping from the
 machine file) and opens the controller's port itself while the rig is up
 (`sushi-rig agent`, with the `midi` extra; see
@@ -80,8 +81,8 @@ controller without one (the MPD218's entry) is read as it always was.
 | Key | On | What |
 |---|---|---|
 | `kind` | every control | `switch` (a footswitch) or `expression` (a pedal that sweeps) |
-| `behaviour` | a switch | `momentary`: it sends 64 or more when pressed, and less when let go, or one value per press. `latching`: it alternates its value on each press |
-| `range` | an expression pedal | `[heel, toe]`, what it sends at either end, whole numbers 0 to 127; `[0, 127]` if left out |
+| `behaviour` | a switch | `momentary`: 64 or more when pressed and less when let go. `single`: one message a press, whatever its value. `latching`: its value alternates on each press |
+| `range` | an expression pedal | `[heel, toe]`, what it sends at either end, whole numbers 0 to 127; `[0, 127]` if left out. Informational, but for the heel: see [the volume](#a-pedal-on-a-channels-volume) |
 | `job` | a switch | `previous-rig` or `next-rig`: the device's own job, on every rig (below) |
 
 What a control may be given in a rig's `midi:`:
@@ -99,21 +100,31 @@ volume or a parameter, gives the pedal a bypass or a mute, or names a control
 with a job, is refused when it compiles (`up`, a switch, the new-rig screen),
 naming the control and what it can take.
 
-**A momentary switch toggles on each press.** A switch that sends 127 when
-pressed and 0 when let go, read as "on at 64 and above", would be on only while
-held. So a momentary switch's press (any value of 64 or more) toggles its
-effect's bypass, or its channel's mute, and its release does nothing. Because no
-state is kept between presses, this also serves a switch that sends one value
-per press (FBV Control's "Single"), as long as that value is 64 or more. A
-latching switch is followed: its effect is on at 64 and above and bypassed
-below, acting only when the value crosses 64. A latching switch's mute stays
-Sushi's own mapping, muted from about half way up.
+**A footswitch's press depends on how it sends.** Read as "on at 64 and
+above", a switch that sends 127 when pressed and 0 when let go would be on only
+while held. So:
+
+- **momentary**: a press is the rise, a value of 64 or more after one below 64.
+  A value resent while the switch is held is not a second press.
+- **single**: every message is a press, whatever its value (FBV Control's
+  "Single", which sends one message a press).
+- **latching**: the switch is followed. Its effect is on at 64 and above and
+  bypassed below, acting only when the value crosses 64; its mute stays Sushi's
+  own mapping, muted from about half way up; a step goes on each crossing (FBV
+  Control's "Toggle", which alternates 127 and 0).
+
+A momentary or single press toggles its effect's bypass or its channel's mute,
+or steps the rig. A press within 40 ms of the last one accepted on the same
+switch is a bounce or a resend, and does nothing. A switch described as the
+wrong one misbehaves in a way that says which it is: a Toggle switch read as
+momentary acts on every other press, and a Single switch read as momentary acts
+once and then not again until a release that never comes, unless it sends 0.
 
 **Sushi's own CC mute follows the value.** A mute in `cc_mappings` is the
 track's `mute` parameter driven as `min + (max - min) * value / 127` in absolute
 mode, as for any parameter (from 1.3.0's `midi_dispatcher.cpp` and
 `json_configurator.cpp`, read on 2026-11-01 for #34). It has no toggle. So a
-momentary footswitch on a mute is compiled for the agent instead, which reads
+momentary or single footswitch on a mute is compiled for the agent instead, which reads
 the track's `mute` and sets the other value. Neither has been heard on the
 rig.
 
@@ -127,9 +138,12 @@ all. On the FBV that is A and B.
   (`GET /midi` lists it as `rigs`).
 - **It stops at the first and last rig.** It does not wrap round, so a stray
   press on the last rig cannot jump to the first. A press past either end is
-  refused, in `/health` (`agent.midi.last_error`) and on the agent's stderr.
-  A press on a rig outside that order, such as a v1 config, is refused the same
-  way.
+  refused, in `/health` (`agent.midi.last_error`, and `last` says so) and on the
+  agent's stderr.
+- **It counts only from a rig of `config/rigs/`.** A rig running from any other
+  file (a v1 config, or `config/src/electric_board.yaml`) is not in the order,
+  even where a file of `config/rigs/` has the same name, and a step from it is
+  refused and said the same way.
 - **It switches by `POST /rig/switch`'s path**: live where it can be, otherwise a
   restart, about five seconds of silence. The log entry is `op: "rig"`,
   `source: "midi"`, with the switch's `control`.
@@ -142,27 +156,51 @@ all. On the FBV that is A and B.
 
 The agent listens to every controller with a job on its port, on every rig it
 runs. A rig whose map is on another controller is two ports: the MPD218's map,
-and the FBV's A and B. A port that will not open is `failed` in `/health`,
-naming it, while the others still serve. **So a machine file describing a pedal
-that is not plugged in shows the pedals as failed on every rig.**
+and the FBV's A and B.
+
+**A pedal that is not plugged in is not a fault unless the rig needs it.** Each
+port in `/health`'s `agent.midi.feeds` is `required` when the running rig's
+`midi:` is written for that controller, whether or not its map has anything for
+the agent (a map of sweeps alone still needs its pedal), and not otherwise.
+
+- A pedal that is not plugged in, or is unplugged mid-set, leaves its listener
+  open and waiting, subscribed to ALSA's announcements. It is picked up as soon
+  as it is plugged in again, with no `up`, restart or switch.
+- Not required, and not plugged in: the port is `absent`, "not connected", and
+  `agent.midi` is not `failed`. With no pedal connected at all it is `absent`.
+  So the laptop without its FBV shows no Pedals problem.
+- Required, and not plugged in: the port is `waiting`, and `agent.midi` is
+  `failed`, saying which pedal the rig is waiting for, until it is plugged in.
+- No alsa-midi, or no ALSA sequencer (`/dev/snd/seq`), is the same: `absent`
+  for a pedal no rig map needs, and a fault for one it does. The listener ends
+  there, since there is nothing to wait on; the next `up` or restart looks
+  again.
+- Any other port that will not open, or will not read, is `failed`, naming it,
+  while the other ports still serve.
 
 ## A pedal on a channel's volume
 
 `volume: <channel>` is one mapping on the channel's send, parameter `gain`, the
-same gain a channel's `level` sets:
+same gain a channel's `level` sets, and a job for the agent:
 
-- **Heel**: silent, the send at its bottom, -120 dB.
 - **Toe**: the channel's own `level` from the rig file, as compiled. Never above
   it.
-- **The travel is linear in dB**, as Sushi's mapping is linear in the send's
-  normalised gain, which spans -120 to +24 dB. With a channel at 0 dB, half way
-  is about -60 dB, three quarters -30 dB and nine tenths -12 dB, so the audible
-  part of the sweep is the last third. That is a known limit. A curve would need
-  the agent in the path, or a gain plugin with a taper.
-- **The pedal's `range`** is what it sends; Sushi scales 0 to 127. A pedal whose
-  toe stops short of 127 stops short of the level by as much, and never goes
-  above it. A pedal whose heel sends more than 0 is not quite silent at the heel:
-  at 5, about -115 dB.
+- **The sweep starts 40 dB below the level.** Sushi's mapping is linear in the
+  send's normalised gain, which is linear in dB over -120 to +24 dB, so a sweep
+  from -120 put half the travel at -60 dB and left only its last third audible.
+  From 40 dB down, half way is about -20 dB below the level and three quarters
+  about -10 dB.
+- **Heel: silent, by the agent.** At or below the pedal's heel (the first of its
+  `range`, 0 without one) the agent sets the send to silence, on the port it
+  already reads. Above the heel it leaves the send to Sushi's mapping. If the
+  pedal leaves the heel while the agent is still silencing it, the agent finishes
+  on the value Sushi's mapping gives for where the pedal is, so the two do not
+  fight. **With the agent not running, the heel is 40 dB down, not silent.**
+- **The pedal's `range` is informational, but for the heel.** Sushi scales its
+  own 0 to 127 whatever the range says: a mapping scaled to a range would need
+  Sushi to clamp a value outside it, which could not be checked here (no MIDI
+  reaches Sushi in the container). A pedal whose toe stops short of 127 stops
+  short of the level, never above it: a toe at 120 is about 2 dB short.
 - **On the master: refused.** The master ends in its limiter, and its own gain
   comes after that and stops at 0 dB (#172, #137). A pedal riding it would be a
   second master volume beside the page's capped one. A pedal on a parameter of
@@ -240,11 +278,16 @@ has been seen on the rig. Check it before relying on it:
    aseqdump -p "FBV Express Mk II:FBV Express Mk II MIDI 1"   # or the client:port numbers aseqdump -l shows
    ```
 
-   - Press each of A, B, C and D once slowly, then twice quickly.
-     - 127 on the press and 0 on the release is **momentary**.
-     - One message a press is FBV Control's **Single**: momentary here, if the
-       value is 64 or more.
-     - 127 and 0 on alternate presses is **Toggle**: `behaviour: latching`.
+   - Press each of A, B, C and D once, holding it a second, then twice
+     quickly. Count the lines each press prints:
+     - two lines a press, 127 when it goes down and 0 when it comes up, is
+       `behaviour: momentary`;
+     - one line a press, the same value each time, is FBV Control's Single:
+       `behaviour: single`;
+     - one line a press, 127 and 0 on alternate presses, is FBV Control's
+       Toggle: `behaviour: latching`.
+
+     The entry's `momentary` is a guess. The factory setting was not found.
    - Note each switch's CC. 20 to 23 in the file are placeholders, since the
      factory numbers were not found.
    - Sweep the pedal from heel to toe. Note its CC (7 is a guess, from Line 6's
@@ -256,6 +299,10 @@ has been seen on the rig. Check it before relying on it:
    - Note what the Tap/Tuner switch sends. It is not described yet.
 3. Write what you saw into the machine file and take the `unverified` marks
    off. Check it with `sushi-rig machine check`.
+
+Once the entry is right, `GET /health` shows `agent.midi.feeds` with the FBV
+`listening`; unplug it and it goes to `absent` (or `waiting`, on a rig mapped
+on it), and plugging it back in brings it back without restarting anything.
 
 The board does not take MIDI from the host over USB (Line 6's guide), so its
 LEDs show only what it sends, never the rig's state. Nothing here sends to it.
@@ -279,8 +326,11 @@ sends aftertouch. Still to verify on the rig:
     is;
   - that the agent hears the pedal while PipeWire and Sushi are also subscribed
     to it;
-- that a pedal on a volume sounds as described, and how long a step that
-  restarts takes.
+- that a pedal on a volume sounds as described, and that the agent's silence at
+  the heel lands after Sushi's floor, as it must;
+- that a pedal plugged in or unplugged is announced by ALSA as `AlsaPort`
+  expects (shown against a stand-in for alsa-midi only);
+- how long a step that restarts takes.
 
 ## What the agent does with a pedal
 
@@ -293,8 +343,9 @@ mutes itself.
 
 - A pad press (note on) toggles its plugin's bypass, exactly as
   `POST /live/bypass` would; a pad on a mute toggles the channel's `mute`.
-- A momentary footswitch's press toggles its bypass or mute; its release does
-  nothing.
+- A momentary or single footswitch's press toggles its bypass or mute; a
+  momentary one's release does nothing, and a bounce within 40 ms is ignored.
+- A pedal on a volume at or below its heel has its channel's send silenced.
 - A latching CC bound to a bypass, and an untyped controller's CC (the
   MPD218's), is a switch: the effect on at 64 and above and bypassed below,
   acting only when it crosses 64, so an expression pedal or a chattering
@@ -324,11 +375,14 @@ included, now that it asks the agent), or is already up when the agent starts,
 and stops before `down`, `restart` or a switch, and starts again after; a rig
 brought up with `up --direct` while the agent runs is not heard until the agent
 is restarted. `/health` shows it under `agent.midi`: `listening`, `off` with the
-reason, or `failed` with the problem. `feeds` gives each port's controller,
-state and problem; `controller` and `port` are the first's, the rig map's when
-it has one. A port that will not open is said once, naming the port, the
+reason, `absent` (no pedal connected, and none the rig needs missing), or
+`failed` with the problem. `feeds` gives each port's controller, whether the rig
+needs it (`required`), its state (`opening`, `listening`, `absent`, `waiting` or
+`failed`), its reason and its problem; `controller` and `port` are the first's,
+the rig map's when it has one. A port that will not open is said once, naming the port, the
 controller and what ALSA does list, and not retried until the next `up` or
-`restart`. `heard` and `last` (the last message and what it did) are what to
+`restart`; a pedal that is only unplugged is waited for instead (above).
+`heard` and `last` (the last message and what it did) are what to
 read when a pedal seems to do nothing. Channels are counted from 0 there, as
 `aseqdump` prints them. **Not yet heard from a real pedal**: see
 [the list above](#not-yet-verified-on-the-rig).

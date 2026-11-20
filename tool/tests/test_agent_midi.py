@@ -877,10 +877,14 @@ class PedalboardWorld(FakeWorld):
     own map's bindings) on another: two feeds, as `plan_for` makes them for
     a rig mapped on the MPD218 on a machine with the FBV."""
 
-    def __init__(self, raw=None, fbv_raw=(), refuse_port=None):
+    def __init__(self, raw=None, fbv_raw=(), refuse_port=None, absent_port=None, unavailable=None,
+                 fbv_required=False):
         super().__init__(raw=raw)
         self.fbv_raw = list(fbv_raw)
         self.refuse_port = refuse_port
+        self.absent_port = absent_port  # opens with its pedal not plugged in, as AlsaPort does
+        self.unavailable = unavailable  # MidiUnavailable from opening it: no alsa-midi
+        self.fbv_required = fbv_required
         self.named: dict[str, FakePort] = {}
         self.compiling = threading.Event()
         self.hold = None  # a threading.Event a compile waits on
@@ -890,13 +894,20 @@ class PedalboardWorld(FakeWorld):
             return Off("no rig is running")
         fbv = Bindings(parse_bindings(self.fbv_raw).controls + midi_listener.step_bindings(FBV))
         feeds = (Feed("mpd218", PORT_NAME, parse_bindings(self.raw)),) if self.raw else ()
-        return midi_listener.Plan(described.get("config_name"), feeds=feeds + (Feed("fbv", FBV_PORT, fbv),))
+        return midi_listener.Plan(described.get("config_name"),
+                                  feeds=feeds + (Feed("fbv", FBV_PORT, fbv, self.fbv_required),))
 
     def open_port(self, name):
         if name == self.refuse_port:
             self.opened.append(name)
-            raise PortError(f"no MIDI port called {name!r}")
+            raise PortError(f"cannot subscribe to {name!r}: Operation not permitted")
+        if name == self.unavailable:
+            self.opened.append(name)
+            raise midi_listener.MidiUnavailable("alsa-midi is not installed, so the agent cannot read pedals")
         port = super().open_port(name)
+        if name == self.absent_port:
+            port.attached = False
+            port.absence = f"no MIDI port called {name!r}; ALSA lists: MPD218:MPD218 Port A. Is it plugged in?"
         self.named[name] = port
         return port
 
@@ -962,6 +973,7 @@ def test_a_press_while_a_switch_is_running_is_refused_not_queued():
         fbv = world.named[FBV_PORT]
         press(fbv, 21)
         await until(world.compiling.is_set)
+        await asyncio.sleep(midi_listener.DEBOUNCE_SECONDS * 2)  # a second press, not a bounce
         press(fbv, 21)
         await until(lambda: agent._midi["last_error"])
         assert "still running" in agent._midi["last_error"]["message"]
@@ -995,6 +1007,8 @@ def test_a_press_while_a_lifecycle_command_holds_the_rig_is_refused():
 
 
 def test_each_port_is_served_and_one_that_will_not_open_leaves_the_other():
+    """A port that will not open, for a reason other than its pedal being
+    absent, is a fault and named; the other port still serves."""
     world = PedalboardWorld(refuse_port=FBV_PORT)
     agent, fake, _, runner, rig = midi_agent(world)
 
@@ -1003,13 +1017,94 @@ def test_each_port_is_served_and_one_that_will_not_open_leaves_the_other():
         await until(lambda: agent._midi["state"] == "failed" and PORT_NAME in world.named)
         status = await health(client)
         assert FBV_PORT in status["problem"] and "'fbv'" in status["problem"]
-        assert [(f["controller"], f["state"]) for f in status["feeds"]] in (
-            [("mpd218", "listening"), ("fbv", "failed")], [("mpd218", "opening"), ("fbv", "failed")])
         await until(lambda: agent._midi["feeds"][0]["state"] == "listening")
         world.named[PORT_NAME].send(0x90, 36, 100)  # the MPD218's pad still works
         await until(lambda: fake.writes())
         await settle(agent)
         assert fake.writes() == [("set_bypass", "drive", False)]
+
+    served(agent, test)
+
+
+def test_a_stepping_pedal_that_is_not_plugged_in_is_not_connected_not_a_problem():
+    """Review of PR #199: the laptop has no FBV yet, and every rig showed a
+    Pedals problem. A pedal no rig map uses that is not there is `absent`,
+    and the rig's own pedal is listening, with no problem to show."""
+    world = PedalboardWorld(absent_port=FBV_PORT)
+    agent, fake, _, runner, rig = midi_agent(world)
+
+    async def test(client):
+        await agent.midi_adopt()
+        await until(lambda: [f["state"] for f in agent._midi["feeds"]] == ["listening", "absent"])
+        status = await health(client)
+        assert status["state"] == "listening" and status["problem"] is None
+        fbv = status["feeds"][1]
+        assert fbv["controller"] == "fbv" and fbv["required"] is False
+        assert fbv["reason"].startswith("not connected: no MIDI port called")
+        world.named[PORT_NAME].send(0x90, 36, 100)
+        await until(lambda: fake.writes())
+        await settle(agent)
+        assert fake.writes() == [("set_bypass", "drive", False)]
+
+    served(agent, test)
+
+
+def test_a_stepping_pedal_alone_and_absent_is_absent_and_said_nowhere_as_a_fault():
+    world = PedalboardWorld(raw=[], absent_port=FBV_PORT)
+    agent, *_ = midi_agent(world)
+
+    async def test(client):
+        await agent.midi_adopt()
+        await until(lambda: agent._midi["state"] == "absent")
+        status = await health(client)
+        assert status["problem"] is None and "no pedal is connected" in status["reason"]
+        assert (await (await client.get("/health")).json())["agent"]["last_error"] is None
+
+    served(agent, test)
+
+
+def test_no_alsa_midi_is_quiet_for_a_pedal_no_rig_map_needs_and_a_fault_for_one_it_does():
+    world = PedalboardWorld(raw=[], unavailable=FBV_PORT)
+    agent, *_ = midi_agent(world)
+
+    async def test(client):
+        await agent.midi_adopt()
+        await until(lambda: agent._midi["state"] == "absent")
+        assert "alsa-midi is not installed" in agent._midi["feeds"][0]["reason"]
+        assert agent._midi["problem"] is None
+
+    served(agent, test)
+    world = PedalboardWorld(raw=[], unavailable=FBV_PORT, fbv_required=True)
+    agent, *_ = midi_agent(world)
+
+    async def needed(client):
+        await agent.midi_adopt()
+        await until(lambda: agent._midi["state"] == "failed")
+        assert "alsa-midi is not installed" in agent._midi["problem"]
+
+    served(agent, needed)
+
+
+def test_a_required_pedal_unplugged_is_a_problem_until_it_is_plugged_in_again():
+    """Hot-plug (review of PR #199): the listener waits on the port, and the
+    agent follows it: waiting, a problem, for the pedal the rig's map is on;
+    listening once it is back, with no up or restart."""
+    world = PedalboardWorld(raw=[], absent_port=FBV_PORT, fbv_required=True)
+    agent, *_ = midi_agent(world)
+
+    async def test(client):
+        await agent.midi_adopt()
+        await until(lambda: agent._midi["state"] == "failed")
+        assert agent._midi["feeds"][0]["state"] == "waiting"
+        assert "is not connected" in agent._midi["problem"] and "Waiting for it" in agent._midi["problem"]
+        port = world.named[FBV_PORT]
+        port.attached = True
+        await until(lambda: agent._midi["state"] == "listening")
+        assert agent._midi["problem"] is None
+        port.absence, port.attached = "the controller's port went away: was it unplugged?", False
+        await until(lambda: agent._midi["state"] == "failed")
+        assert "went away" in agent._midi["problem"]
+        assert world.opened == [FBV_PORT], "the one port, never reopened"
 
     served(agent, test)
 
@@ -1160,5 +1255,102 @@ def test_get_midi_with_no_rig_up_and_a_machine_file_that_will_not_read(tmp_path)
         body = await (await client.get("/midi")).json()
         assert body["controllers"] == [] and "kind must be switch or expression" in body["machine_problem"]
         assert body["rig"] is None and body["assignments"] is None
+
+    served(agent, test)
+
+
+# A pedal on a volume (review of PR #199): silent at the heel, by the agent.
+
+SNAP = {"control": "pedal", "cc": 7, "channel": 0, "snap": "main", "heel": 2, "low": 0.5, "high": 0.8}
+
+
+def snap_agent():
+    world = PedalboardWorld(raw=[], fbv_raw=[SNAP], fbv_required=True)
+    agent, fake, _, runner, rig = midi_agent(world)
+    fake.info["main_send"] = {"gain": {"automatable": True, "value": 0.8,
+                                       "min_domain_value": 0.0, "max_domain_value": 1.0}}
+    return agent, fake, world
+
+
+def gains(fake):
+    return [c[3] for c in fake.writes() if c[:3] == ("set_parameter", "main_send", "gain")]
+
+
+def test_a_volume_pedal_at_its_heel_is_silenced_and_above_it_left_to_sushi():
+    agent, fake, world = snap_agent()
+
+    async def test(client):
+        await agent.midi_adopt()
+        await until(lambda: agent._midi["state"] == "listening")
+        fbv = world.named[FBV_PORT]
+        fbv.send(0xB0, 7, 90)        # above the heel: Sushi's mapping alone
+        fbv.send(0xB0, 7, 2)         # at the heel: silent
+        await until(lambda: gains(fake))
+        await settle(agent)
+        assert gains(fake) == [0.0]
+        assert await log(client) == [], "a pedal's position is not a change to undo or save"
+
+    served(agent, test)
+
+
+def test_a_silencing_that_lands_after_the_pedal_left_the_heel_puts_sushis_value_back():
+    """The agent and Sushi's mapping must not fight: the pedal comes up off the
+    heel while the agent is still silencing it, and the agent finishes on the
+    value the mapping gives for where the pedal is now, not on silence."""
+    agent, fake, world = snap_agent()
+    fake.hang_on = "set_parameter"
+
+    async def test(client):
+        await agent.midi_adopt()
+        await until(lambda: agent._midi["state"] == "listening")
+        fbv = world.named[FBV_PORT]
+        fbv.send(0xB0, 7, 0)
+        await asyncio.get_running_loop().run_in_executor(None, fake.reached.wait, 3)
+        fbv.send(0xB0, 7, 100)
+        await until(lambda: agent._midi_pedal.get((0, "pedal"), (None,))[0] == 100)
+        fake.release.set()
+        await until(lambda: len(gains(fake)) == 2)
+        await settle(agent)
+        assert gains(fake) == [0.0, pytest.approx(0.5 + 0.3 * 100 / 127)]
+
+    served(agent, test)
+
+
+# `last` says what became of a press (review of PR #199).
+
+def test_a_refused_step_and_a_refused_program_change_are_what_last_says():
+    world = PedalboardWorld()
+    agent, fake, _, runner, rig = midi_agent(world, described=dict(RIG_UP, config_name="lead"))
+
+    async def test(client):
+        await agent.midi_adopt()
+        await until(lambda: FBV_PORT in world.named and agent._midi["state"] == "listening")
+        world.named[FBV_PORT].send(0xB0, 21, 127)  # b pressed and held: no release after it
+        await until(lambda: agent._midi["last_error"])
+        await settle(agent)
+        last = (await health(client))["last"]
+        assert "refused" in last["action"] and "lead is the last rig" in last["action"], last
+        world.named[PORT_NAME].send(0xC0, 7)
+        await until(lambda: "program 7" in (agent._midi["last_error"] or {}).get("message", ""))
+        await settle(agent)
+        last = (await health(client))["last"]
+        assert last["message"] == "program change 7 on channel 0"
+        assert "refused" in last["action"] and "has no rig" in last["action"], last
+
+    served(agent, test)
+
+
+def test_a_press_refused_during_a_switch_is_what_last_says():
+    world = PedalboardWorld()
+    agent, fake, _, runner, rig = midi_agent(world)
+
+    async def test(client):
+        await agent.midi_adopt()
+        await until(lambda: FBV_PORT in world.named and agent._midi["state"] == "listening")
+        async with agent._lock:
+            agent.busy = "restart"
+            agent._midi_heard(agent._midi_generation, midi_listener.Message("cc", 0, 21, 127), feed=1)
+            agent.busy = None
+        assert agent._midi["last"]["action"].startswith("refused, busy: 'restart'")
 
     served(agent, test)
