@@ -6374,6 +6374,160 @@ Each fix has a test that fails without it, apart from the clock pause:
 there, the reviewer's own scenario now keeps the notice.
 *(2026-11-20)*
 
+**The visualiser's looks: random, stark, and three that read like an
+equaliser (#196).** Asked for 2026-11-19: "more monochrome and dramatic
+looking visualisers … let's go more crazy with it. Also let's have a couple
+that look more like a display from an equaliser", a few random selections,
+and a display where "when you know what to look for, you can tell what
+frequency you're looking at", with no numbers. Thirteen looks now, named in
+`rig.js` (`VISUALISER_LOOKS`): Embers, Tide and Bloom as they were; six
+butterchurn looks written for the rig, black and white or one colour
+(Tunnel, Shutter, Smoke, Mirror, Storm, Eclipse), some with a short `warp` or
+`comp` GLSL body; and four drawn by the page on a 2D canvas from two
+AnalyserNodes on the same capture (`visualiser-eq.js`: Bars, Curve, Aurora,
+Mono bars), on a log axis of eight equal octaves from 46.875 Hz to 12 kHz,
+each octave a fixed colour from deep red to violet (`EQ_COLOURS`), the same
+in all three coloured looks, with no number or label. One session owns both
+canvases, so `screensaver.js` starts, stops, resizes and loses it the same
+way whichever kind is up. At random each look is on for 30 to 60 s, never
+the same twice running, varied in colour and motion within bounds each look
+declares, from a seeded generator; a **Look** choice on the settings line
+(after the other controls) offers random, random monochrome, random
+equalisers, or a look by name, which holds it, kept with the other settings.
+The guide says how to read the colours (`playing-live.md`, "Reading the
+equaliser looks").
+
+Found on the way, each by measuring rather than reading. (1) In butterchurn's
+JavaScript equations a q variable is `a.q1`; bare `q1` is GLSL only, and three
+looks threw on every frame (0 frames drawn). (2) Butterchurn draws a custom
+wave's y as (-2y + 1) times the inverse aspect, so on a landscape screen only
+about y = 1/6 to 5/6 is seen: a line at y = 0.1 was off the screen; and wave
+mode 6 ignores `wave_y`. The looks that want the foot set q4 from
+`a.aspecty`. (3) Mirror's first comp folded the picture into one octant and
+went black within five seconds once the trail drifted out of it (with no comp
+the frame stayed lit, 25 to 40 of 255): it now takes the brightest of four
+mirrored samples. (4) No flash fired at all on plucked chords: the level was
+never over 1.2 times butterchurn's `_att` levels, which follow it closely; an
+attack is now the level over 1.6 times its own one-second average. (5) A gap
+of 14 frames let three flashes into one second (frames 0, 14, 28); it is 16
+frames and 0.55 s, so no second has more than two (WCAG 2.3.1 allows three),
+by both counts since butterchurn's clock is its estimate of the frame rate.
+(6) Curve took 27 ms a frame at 1280 by 800 in software (Chromium with no
+GPU), the wide glow strokes over 192 points costing most; at twelve points an
+octave and three passes, 15 ms (Aurora 11, the bars 1; Curve's first form 37
+at 1920 by 1080). (7) Playwright's installed fake clock runs on with the wall between calls, so
+the order test reads each switch from the frame clock's record, not from
+margins of a few hundred milliseconds.
+
+Tests (`test_ui_visualiser.py`, 80, was 48): the catalogue against both
+files; the choices and pools; 3000 seeded picks per selection with no repeat
+and every look shown; times within 30 to 60 s; variations within bounds; every
+look's equations driven with a loud attack on every frame, at the wall's clock
+and at twice it, never three flashes in a second and each gone in four
+frames; the axis, the bands (every FFT bin's power shared out once, at 48 and
+44.1 kHz), a band's level, the ballistics, peaks and glow; the help naming the
+colours in order; and in the page, every look held by name drawing with no
+page error, no shader that fails to compile or link (checked by wrapping
+`compileShader` and `linkProgram`, and a broken shader shown to be caught),
+the random order on the fake clock, a held look staying, a random selection
+keeping to its looks, the chooser kept across a reload and taken up by a
+session already made, and a lost 2D context on an equaliser look doing what a
+lost WebGL one does (a `contextlost` sent by hand: Chromium has no way to
+lose a 2D context from a page). Each key test shown failing with its feature
+taken out (never-repeat, the time bounds, the flash gaps, the frame gap
+alone, hold, the kept look, the 2D lost-context handler, the bins' shares,
+the variation, a selection's pool, peak hold, a broken shader); with
+never-repeat taken out, the page's order test still passed (seed 7 did not
+happen to repeat in 8), and the pure test failed. All the `test_ui`
+files, before #197 was merged: 553 passed and 1 failed: the plain-files guard, which did not know the new
+file yet, and now does. The fast suite after merging master at e64b58a
+(#197): 5920 passed, 22 skipped, 293 deselected, 1 failed. That one is
+`test_live_close`, the known flake (#170), which passed three times out of
+three on its own.
+**Not tried:** a real GPU (all of it ran on SwiftShader, renamed), the rig,
+real guitar through PipeWire (the looks were watched on a synthetic chord of
+saws plucked every 0.6 s), Firefox, and anybody watching for a while by eye,
+the photosensitivity of the flashes included. *(2026-11-20)*
+
+**The visualiser's looks, after PR #201's review (#196).**
+
+(1) **One flash limit for the whole visualiser.**
+- *Found:* during a 4 s blend, butterchurn runs both looks' frame equations in
+  each frame and draws both. Each look had its own gate, so the two schedules
+  added up: the review's simulation had Shutter into Tunnel, strummed every
+  0.3 s, flash at frames 63, 72, 81 and 90.
+- *Fixed:* one gate on `globalThis`, made afresh per session, which every
+  look's flash checks and sets. Both runners see the same clock in a frame,
+  so whichever flashes first shuts the other out. The review's script now
+  finds at most 2 in any 30 frames.
+
+(2) **The equaliser looks fall back over 0.5 s, not 0.2.**
+- *Found:* in the review's model, choked staccato at 3 Hz swung a level by
+  0.55 of the display.
+- *Fixed:* it now swings 0.29; at 4, 5 and 3.5 Hz the swings are 0.44, 0.41
+  and 0.25 before and 0.22, 0.20 and 0.12 after.
+- The rise is not limited, since a pick attack must show. The reference says
+  the equaliser looks are outside the flash helper and why.
+
+(3) **Every look is checked for light.** On a plucked chord fed in place of
+the capture, a screenshot decoded in the page must have a mean luminance of
+at least 0.5/255 and a spread of at least 4. The lowest seen was Shutter
+between flashes, at 1.2 and 11.1.
+
+(4) **Curve's cost.**
+- The equaliser canvas is half the buffer's size, scaled up by CSS. Curve is
+  two passes over 12 points an octave; without the 8 px pass it holds its
+  look.
+- In software, median and p95: Curve 5.0 and 7.8 ms at 640 by 400, was about
+  15 ms at full size. At 960 by 540 (half 1080p) it is 7.4 and 11.4 ms.
+- A look whose median frame is over 10 ms draws at 15 fps (`eqFps`).
+
+(5) **The guide's colours.** The high strings' open notes (G3, B3, E4) are in
+orange's octave, not yellow's. A test now holds each guide line to `rig.js`'s
+words, and the notes to the map.
+
+(6) **Hum stays dark.**
+- *Measured* in Chromium: 50 and 60 Hz hum at -60 dBFS peak, with its second
+  and third harmonics, reads -74 dB in the loudest band (-77 in Aurora's
+  bands, -80 in Curve's).
+- *Before:* the foot was 54 dB under a top floored at -50, so -104, and hum
+  lit half the display.
+- *Fixed:* the foot is never below -70 dB and the top's floor is -40. A test
+  plays real hum through each equaliser look and checks nothing is lit at
+  -60 dBFS while something is at -40.
+
+(7) **WebGL given back.** After a lost 2D context or a failed make, the
+visualiser loses butterchurn's WebGL context at once (`WEBGL_lose_context`)
+instead of leaving it for the garbage collector, and the next try gets a
+fresh canvas.
+
+(8) **The order test runs on a paused clock** (`pause_at`; in Playwright's
+Python a number is seconds). It keeps `fast_forward` for the long stretch:
+`run_for` over 45 s would draw some 1400 of butterchurn's frames a look in
+SwiftShader.
+
+(9) **A look shown again is re-timed on `run()`.** Its time had run on while
+it was away, so it switched on the first frame.
+
+**Each fix has a test that fails without it.** Checked one at a time:
+- a gate per look;
+- the release back at 0.2;
+- a comp that draws black;
+- a full-size canvas;
+- no 15 fps fallback;
+- orange's old words;
+- no absolute foot;
+- `dispose`, or the failed make, keeping the context;
+- no re-timing.
+
+**Counts.**
+- `test_ui_visualiser.py`: 87, was 80.
+- The fast suite, with every `test_ui` file, after merging master at 9622c45
+  (#199): 6027 passed, 22 skipped, 293 deselected, none failed.
+
+**Not tried:** a real GPU, the rig, a real guitar, Firefox, and eyes on the
+flashes. *(2026-11-20)*
+
 **The pedalboard, part 2: assigning pedal controls in the rack (#192).** The
 user's design: a device in the machine file has a type and assignable
 controls, and the rig's controls are assigned on the rack, not by touching

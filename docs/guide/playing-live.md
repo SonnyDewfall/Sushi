@@ -243,6 +243,12 @@ The line at the very bottom of the page holds its settings:
 - **listening to**: **automatic** (the guitar's input) or another input, and
   which channel of it.
 - **Show now**: try it straight away.
+- **look**: **random** to begin with: the looks come in a random order, each
+  for half a minute to a minute, never the same one twice running, and each a
+  little different in colour and movement every time it comes on. **random,
+  monochrome** keeps to the black-and-white and one-colour ones; **random,
+  equalisers** to the four that show the spectrum. Pick one by name to keep it
+  on, say while you work on a sound.
 
 If it does not start, the same line says why: no rig running, the window too
 narrow, the browser told not to use the microphone (allow it again in the
@@ -262,6 +268,44 @@ says pipewire-pulse runs no thread at realtime priority, either keep the
 visualiser off while you play or do what the line under it says. You can
 check by hand too: `ps -L -o tid,cls,rtprio,comm -p "$(pgrep -x pipewire-pulse)"`
 should show a thread (`pw-data-loop`) with `FF` in the `CLS` column.
+
+### The looks
+
+Thirteen, all made for the rig. **Embers**, **Tide** and **Bloom** are the
+soft, colourful ones. **Tunnel**, **Shutter**, **Smoke**, **Mirror**, **Storm**
+and **Eclipse** are stark: black and white or a single colour, with hard
+edges, deep zooms and smoke. Some of them flash on a loud attack, never more
+than twice in any second. **Bars**, **Curve**, **Aurora** and **Mono bars**
+are like an equaliser's display, and show what frequencies you are playing.
+
+### Reading the equaliser looks
+
+Bars, Curve and Aurora all use the same frequency scale and the same colours,
+so once you learn them, they read the same in all three. Low notes are on the left and
+high ones on the right, and each octave takes the same width: there are eight,
+from almost an octave below the low E on the left to 12 kHz on the right. There are no
+numbers on screen. Where a colour is lit, and how bright, tells you what is sounding:
+
+- **deep red**: the lowest notes: the low E and drop tunings, boom and thump.
+- **red**: the low strings' fundamentals.
+- **orange**: low-mids, mud, and the high strings' open notes.
+- **yellow**: boxiness, and notes high up the neck.
+- **green**: the mids: honk and nasal tones.
+- **cyan**: upper mids: bite, where a guitar cuts through a band.
+- **blue**: presence: pick attack and edge, where fizz starts.
+- **violet**: fizz, hiss and air.
+
+In **Bars**, each colour is a block of six bars with a wider gap between
+blocks. A small cap above each bar holds its peak for a moment, then falls
+back slowly. **Curve** is a single glowing line, with faint lines at each
+octave's edge. In **Aurora** a note you hold builds up a haze in its colour
+that stays a few seconds after it stops, so a build-up you keep hitting, such
+as mud in orange, shows as a glow that will not go. A picked note flickers
+and is gone. Faint marks along the bottom show where each octave starts.
+**Mono bars** is Bars in one colour, without the colour map.
+
+The display rescales to the loudest part, so it reads the same whatever your
+level is. It shows which parts are louder than the others, not how loud you are.
 
 ## If something goes wrong
 

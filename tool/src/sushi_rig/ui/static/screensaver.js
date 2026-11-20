@@ -116,6 +116,14 @@ async function guitar() {
 
 // ---------------------------------------------------------------- the visualiser
 
+// The seed of the looks' order and variations, for the browser tests only,
+// which set `window.sushiRigVisualiserSeed` before the page loads; otherwise
+// none, and the session picks its own.
+function testSeed() {
+  const seed = window.sushiRigVisualiserSeed;
+  return Number.isInteger(seed) ? seed : undefined;
+}
+
 const overlay = document.createElement("div");
 overlay.className = "visualiser";
 overlay.hidden = true;
@@ -126,23 +134,31 @@ hint.className = "visualiser-hint";
 hint.textContent = "Touch, move or press a key to come back";
 overlay.append(canvas, hint);
 
-// The browser took the drawing away (WebGL context lost): the session has
-// disposed of itself. The next start makes another on a fresh canvas, after
-// another idle spell, as after any failure (so what happened stays on the
-// line meanwhile: it used to start again within half a second, the error
-// cleared before anyone could read it, and a test caught it so in CI); a
-// second loss in the page's life leaves it off until a reload.
-function lostContext() {
-  state.session = null;
-  state.lost += 1;
-  state.last = performance.now();
+// A new canvas for butterchurn in place of the one it had, whose WebGL
+// context is lost or given back.
+function freshCanvas() {
   const fresh = document.createElement("canvas");
   canvas.replaceWith(fresh);
   canvas = fresh;
+}
+
+// The browser took the drawing away (the WebGL context of butterchurn's
+// canvas, or the 2D one of the equaliser looks', lost: `kind` says which):
+// the session has disposed of itself, whichever look was showing. The
+// next start makes another on a fresh canvas, after another idle spell, as
+// after any failure (so what happened stays on the line meanwhile: it used
+// to start again within half a second, the error cleared before anyone
+// could read it, and a test caught it so in CI); a second loss in the
+// page's life leaves it off until a reload.
+function lostContext(kind = "WebGL") {
+  state.session = null;
+  state.lost += 1;
+  state.last = performance.now();
+  freshCanvas();
   if (state.lost >= 2) {
-    state.broken = "Off: the browser took the visualiser's graphics away twice (WebGL context lost). Reload the page to try again.";
+    state.broken = `Off: the browser took the visualiser's graphics away twice (${kind} context lost). Reload the page to try again.`;
   } else {
-    state.error = "The browser took the visualiser's graphics away (WebGL context lost): it starts afresh next time.";
+    state.error = `The browser took the visualiser's graphics away (${kind} context lost): it starts afresh next time.`;
   }
   close(true);
   refreshWhy();
@@ -184,9 +200,10 @@ async function start(now = false) {
     const V = await import("./visualiser.js");
     state.loaded = true;
     if (generation !== state.generation) return;
-    if (!state.session) state.session = await V.create(canvas, lostContext);
+    if (!state.session) state.session = await V.create(canvas, lostContext, { seed: testSeed() });
     if (generation !== state.generation) return;
     state.session.resize(window.innerWidth, window.innerHeight);
+    state.session.choose(state.settings.look);
     state.phase = "shown";
     if (!document.hidden && !(await listenAndRun(V, generation))) return;
     requestAnimationFrame(() => { if (generation === state.generation) overlay.classList.add("in"); });
@@ -197,7 +214,13 @@ async function start(now = false) {
     // until a reload or the box is ticked again.
     state.error = `The visualiser could not start: ${error && error.name ? `${error.name}: ` : ""}${error && error.message || error}`;
     if (error && error.name === "NotAllowedError") state.permission = "denied";
-    if (error && error.hard) { state.broken = `Off: ${error.message}. Reload the page, or tick the box again, to try again.`; state.error = null; }
+    if (error && error.hard) {
+      state.broken = `Off: ${error.message}. Reload the page, or tick the box again, to try again.`;
+      state.error = null;
+      // Its WebGL context, if it got one, was given back: the next try needs
+      // a canvas that can have another.
+      freshCanvas();
+    }
     state.last = performance.now();
     await close(true);
     refreshWhy();
@@ -379,6 +402,8 @@ const idleBox = Object.assign(document.createElement("input"), {
 const inputPick = Object.assign(document.createElement("select"), { id: "visualiser-input" });
 const channelPick = Object.assign(document.createElement("select"), { id: "visualiser-channel" });
 const showNow = Object.assign(document.createElement("button"), { type: "button", className: "visualiser-now", textContent: "Show now" });
+const lookPick = Object.assign(document.createElement("select"), { id: "visualiser-look" });
+for (const { value, text } of R.lookChoices()) lookPick.append(Object.assign(document.createElement("option"), { value, textContent: text }));
 const note = Object.assign(document.createElement("span"), { className: "note visualiser-note" });
 note.setAttribute("aria-live", "polite");
 
@@ -391,7 +416,7 @@ for (const [value, text] of [["", "both channels"], ["0", "left channel"], ["1",
   channelPick.append(Object.assign(document.createElement("option"), { value, textContent: text }));
 }
 footer.append(label("", onBox, "Visualiser"), label("after", idleBox, "s without a touch"),
-  label("listening to", inputPick), channelPick, showNow, note);
+  label("listening to", inputPick), channelPick, showNow, label("look", lookPick), note);
 
 let devices = [];
 
@@ -424,6 +449,7 @@ function drawSettings() {
   inputPick.value = s.input ? s.input.deviceId : "";
   channelPick.value = s.channel == null ? "" : String(s.channel);
   channelPick.disabled = !s.input;
+  lookPick.value = s.look;
   const words = [];
   if (state.error) words.push(state.error);
   else if (state.why) words.push(state.why);
@@ -458,6 +484,9 @@ inputPick.addEventListener("change", () => {
   changed(inputPick.value ? { input: { deviceId: inputPick.value, label: d ? d.label : "" } } : { input: null, channel: null });
 });
 channelPick.addEventListener("change", () => changed({ channel: channelPick.value === "" ? null : Number(channelPick.value) }));
+// Random, a random selection, or one look by name, which holds it: taken up
+// the next time it starts.
+lookPick.addEventListener("change", () => changed({ look: R.lookChoice(lookPick.value) }));
 // After the click is over, so its own release does not put the page back.
 showNow.addEventListener("click", () => setTimeout(() => start(true), QUIET_MS));
 
@@ -467,7 +496,7 @@ refreshWhy();
 // For the browser tests: what it is doing. Read-only, and nothing else.
 window.sushiRigVisualiser = () => ({
   phase: state.phase, why: state.why, error: state.error, loaded: state.loaded, running: state.running,
-  idle: state.settings.idle, on: state.settings.on, pick: state.pick, held: [...state.held],
+  idle: state.settings.idle, on: state.settings.on, look: state.settings.look, pick: state.pick, held: [...state.held],
   due: state.due, attempts: state.attempts, tripped: state.tripped, broken: state.broken, lost: state.lost,
   session: state.session ? state.session.stats() : null,
 });
