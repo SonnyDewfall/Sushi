@@ -6373,3 +6373,43 @@ or `gio open` on the rig's desktop, from a systemd user service.
 Each fix has a test that fails without it, apart from the clock pause:
 there, the reviewer's own scenario now keeps the notice.
 *(2026-11-20)*
+
+**The pedalboard, part 2: assigning pedal controls in the rack (#192).** The
+user's design: a device in the machine file has a type and assignable
+controls, and the rig's controls are assigned on the rack, not by touching
+the pedal. *Built:* a pedal badge beside each effect's on/off and each
+channel's name opens a panel of selects in its row (an effect's **On/off** and
+**pedal sweeps** one of its parameters; a channel's **On/off** and **Volume**),
+offering only the controls whose `takes` can take that target, never A or B.
+A control in use elsewhere moves only after a confirm naming where it is now.
+**PEDALS**, under the strips, says what each control does on this rig, the
+device's state (listening, not connected, waiting) and a light per control
+when a message from it is heard, with the pedal's value. The new route `POST
+/rig/midi/assign {"control", <binding>: <target>}` or `{"control", "none":
+true}` writes the running rig's file's `midi:` (`rigedit.with_assignment`),
+compiled first and refused with `compile_midi`'s words, under the same locks
+and refusals as a channel edit, filling in `controller` when the machine file
+has one typed device and asking (`which_controller`) when it has several.
+*Decided:* an assignment whose compile leaves Sushi's `cc_mappings` as they
+run (a footswitch on a bypass, a momentary one on a mute) is applied live:
+the running config's `_midi_agent` is replaced and the listener re-planned;
+anything Sushi maps (a sweep, a volume, a blend) plays after the restart the
+answer offers, and is refused while unsaved work would be lost by it. Not
+in `/live/log` and not undone by Undo, as a channel added is not. A target
+holds one control of a binding; the last control taken off takes `midi:` out
+unless it has `programs`. *Found:* `yamlmerge` matched the map's controls by
+position, so taking one out of the middle handed each later control the
+comment of the one before; lists whose items all have `control` are now
+matched by it, as chains are by `name`. `/health`'s `agent.midi.seen` gives
+each control's count, last value and age, bound or not (`Feed.controls`, from
+the machine file); the page lights a control when its count moves between two
+polls, so a phone's clock does not matter. Behind the page's lock. The fake
+gains pedals (`Served(save=True, pedals=True)`, `ui_fake.py --pedals`): the
+FBV in its machine file and the agent's real listener on a fake port.
+Tests: `test_agent_midi_assign.py` (29) and `test_ui_midi_assign.py` (16);
+the re-plan, the `control` matching, the heard counts, the lock, the move's
+confirm, the controller filled in, the live-or-restart decision, the unsaved
+refusal, the takes filter and the replaced control were each shown failing
+with their code taken out. Not run on the rig: no board has arrived, and the
+assignments and lights are tested only against fakes of the board and Sushi.
+*(2026-11-20)*

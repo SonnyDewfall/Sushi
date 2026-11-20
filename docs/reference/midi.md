@@ -220,9 +220,9 @@ the pedal puts it back on the pedal's scale, whose top is still the compiled
 level. SAVE does not write the pedal's position into the file. To change the top,
 change `level:` in the rig file and bring the rig up again, or switch to it.
 
-## What the page will use (#192)
+## What the page uses (#192)
 
-`GET /midi` is what the rack's pedal assignments will read. It changes nothing.
+`GET /midi` is what the rack's pedal assignments read. It changes nothing.
 
 ```bash
 curl localhost:8029/midi
@@ -252,8 +252,34 @@ curl localhost:8029/midi
 - `listening` is `/health`'s `agent.midi.state`.
 - A machine file that will not read is `machine_problem`, with no controllers.
 
-Writing an assignment is #192's; whatever it writes is the rig file's `midi:`,
-compiled and refused as above.
+## Assigning from the rack (#192)
+
+The rack assigns a device's controls to targets on the running rig (see
+[Playing live](../guide/playing-live.md#assign-a-pedal-on-the-rack)), through
+`POST /rig/midi/assign` ([the agent](agent.md#assigning-a-pedal)). It writes
+the rig file's `midi:` as you would by hand, keeping the file's comments,
+compiled and refused as above, so a page cannot write a map a compile would
+refuse:
+
+- a control takes only what its kind may (`takes`), and one with a job none;
+- a target holds one control of a binding, and a control does one thing on a
+  rig: assigning one in use moves it, after the page asks;
+- the map's `controller` is filled in on the first assignment when the
+  machine file describes one device with a type; with several, the page asks
+  which;
+- the last control taken off takes the map out with it, unless it has
+  `programs`.
+
+A footswitch on a bypass, and a momentary or single one on a mute, are the
+agent's, and play at once: the listener is re-planned with the edited file's
+bindings. Anything Sushi maps (a sweep, a volume, a blend, a latching
+footswitch's mute) plays after a restart, as an edit of the file by hand
+would; the page offers it.
+
+`/health`'s `agent.midi.seen` is the last message from each control, bound or
+not (`{controller: {control: {count, value, ago}}}`), which the rack's
+**PEDALS** lights read: a check that the board sends what the machine file
+says, not a learn.
 
 ## When the FBV arrives
 
@@ -333,7 +359,9 @@ sends aftertouch. Still to verify on the rig:
   the heel lands after Sushi's floor, as it must;
 - that a pedal plugged in or unplugged is announced by ALSA as `AlsaPort`
   expects (shown against a stand-in for alsa-midi only);
-- how long a step that restarts takes.
+- how long a step that restarts takes;
+- an assignment made on the rack (#192) and heard: one applied live answering
+  the next press, and the **PEDALS** lights following a real board.
 
 ## What the agent does with a pedal
 

@@ -412,7 +412,8 @@ def test_every_registered_route_is_behind_the_guard():
     paths = {path for _, path in writes}
     # Not vacuous: the routes #160 and #162 guarded by hand, and others.
     assert {"/rigs/x/delete", "/rigs/x/restore", "/rig/channels/x/save-as", "/rig/channels/x/load",
-            "/rig/up", "/rig/down", "/live/parameter", "/rig/save", "/record/start", "/takes/open"} <= paths, paths
+            "/rig/up", "/rig/down", "/live/parameter", "/rig/save", "/record/start", "/takes/open",
+            "/rig/midi/assign"} <= paths, paths  # and #192's pedal assignment
     assert len(writes) >= 24, writes  # as of #161
     assert {("GET", "/health"), ("HEAD", "/health"), ("GET", "/"), ("GET", "/ui/app.js")} <= set(routes)
 

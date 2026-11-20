@@ -2146,7 +2146,7 @@ export function volumeNudged(db, direction, max = VOLUME_MAX_DB, hard = false) {
 // lock: the agent has no performance lock yet (#29), so another client is
 // not held by it.
 const STRUCTURAL = { move: "reordering", add: "adding a plugin", remove: "removing a plugin",
-  load_preset: "loading a channel preset" };
+  load_preset: "loading a channel preset", pedal: "assigning a pedal" };
 
 export function lockRefusal(locked, op) {
   if (locked && op === "amp_model") {
@@ -3121,4 +3121,202 @@ export function agentLine(listen, here) {
       urls: [], after: "" };
   }
   return { text: `Agent on ${here}. On a phone on the same network, open`, urls, after: `${same} No password: anyone on the network can change it.` };
+}
+
+// ---------------------------------------------------------------- pedals (#192)
+// Assigning a device control (a footswitch, the expression pedal) to a target
+// on the rack: an effect's on/off (`bypass`), a channel's on/off (`mute`) or
+// volume, an effect's parameter. What a control may take is GET /midi's
+// `takes` (rigfile.takes on the agent); whether the target names anything the
+// rig has is the compiler's, said when POST /rig/midi/assign refuses. Nothing
+// here is a learn: the board is never asked what it sends.
+
+// How long a control's light stays on after a message from it is seen, and
+// how recent a message must be to light it on the first sight of it.
+export const PEDAL_LIT_MS = 1500;
+const PEDAL_LIT_AGO = 1.5;
+
+// A control's name as the board's own label: "c" is C, "pedal" stays.
+export function pedalName(control) {
+  return typeof control === "string" && control.length === 1 ? control.toUpperCase() : String(control);
+}
+
+// A target as the summary says it.
+export function pedalSaid(binding, target) {
+  if (binding === "bypass") return `${target} on/off`;
+  if (binding === "mute") return `${target} on/off`;
+  if (binding === "volume") return `${target} volume`;
+  if (binding === "parameter") return String(target);
+  if (binding === "blend") return Array.isArray(target) ? `blend ${target[0]} → ${target[1]}` : "a blend";
+  return "nothing";
+}
+
+function sameTarget(a, b) {
+  return JSON.stringify(a) === JSON.stringify(b);
+}
+
+// GET /midi's answer as the rack uses it: the device the running rig's map is
+// for (its `controller`, else the machine's one device with a type), its
+// controls, and the assignments as `{control, binding, target}`. `choose`
+// lists the typed devices when the map names none and there are several:
+// the page asks which (`chosen`, the player's pick, else the first) and
+// sends it with the assignment (`ask`), as the agent would otherwise ask.
+export function pedalBoard(answer, chosen = null) {
+  if (!answer || !answer.ok) return { ok: false, problem: answer ? answer.reason : null, controller: null, choose: [], ask: false, controls: [], assignments: [] };
+  const body = answer.body || {};
+  const controllers = Array.isArray(body.controllers) ? body.controllers : [];
+  const map = body.assignments || null;
+  const typed = controllers.filter((c) => c.type);
+  const ask = !(map && map.controller) && typed.length > 1;
+  const named = map && map.controller ? map.controller : typed.length === 1 ? typed[0].name
+    : ask ? (typed.some((c) => c.name === chosen) ? chosen : typed[0].name) : null;
+  const device = controllers.find((c) => c.name === named) || null;
+  const assignments = [];
+  for (const entry of (map && map.controls) || []) {
+    const binding = Object.keys(PEDAL_WORDS).find((k) => k in entry);
+    if (binding) assignments.push({ control: entry.control, binding, target: entry[binding] });
+  }
+  return {
+    ok: true, rig: body.rig || null, problem: body.machine_problem || body.rig_problem || null,
+    controller: device ? device.name : null, mapController: map ? map.controller || null : null,
+    choose: ask ? typed.map((c) => c.name) : [], ask,
+    controls: device ? device.controls.map((c) => ({ name: c.name, kind: c.kind, takes: c.takes || [], job: c.job || null })) : [],
+    assignments,
+  };
+}
+
+const PEDAL_WORDS = { bypass: true, mute: true, volume: true, parameter: true, blend: true };
+
+// The control on a target, or null.
+export function pedalOn(board, binding, target) {
+  const found = board.assignments.find((a) => a.binding === binding && sameTarget(a.target, target));
+  return found ? found.control : null;
+}
+
+// What a control does on this rig, or null.
+export function pedalUse(board, control) {
+  return board.assignments.find((a) => a.control === control) || null;
+}
+
+// The choices for a target: none, then each control that can take its
+// binding (never one with a job: A and B step rigs on every rig), each saying
+// what it does now when it does something else.
+export function pedalOptions(board, binding, target) {
+  const options = [{ value: "", label: "none" }];
+  for (const c of board.controls) {
+    if (c.job || !c.takes.includes(binding)) continue;
+    const use = pedalUse(board, c.name);
+    const elsewhere = use && !(use.binding === binding && sameTarget(use.target, target));
+    options.push({ value: c.name, label: elsewhere ? `${pedalName(c.name)} (now ${pedalSaid(use.binding, use.target)})` : pedalName(c.name) });
+  }
+  return options;
+}
+
+// The parameters of a unit a pedal may sweep, in its panel's order and by
+// its labels: every control of one parameter that Sushi lets be set, the
+// advanced ones after. Not a profile's control of several parameters (a
+// pedal drives one), nor one the profile hides (a plugin's own BYPASS).
+export function pedalParameters(panel) {
+  if (!panel) return [];
+  return [...primaryControls(panel), ...(panel.advanced || [])]
+    .filter((c) => c.kind !== "mix" && !c.readOnly && !c.missing && typeof c.name === "string")
+    .map((c) => ({ value: c.name, label: c.label && c.label !== c.name ? `${c.label} (${c.name})` : c.name }));
+}
+
+// Whether a binding can be offered at all on this board.
+export function pedalTakes(board, binding) {
+  return board.controls.some((c) => !c.job && c.takes.includes(binding));
+}
+
+// The request for an assignment, or for taking a control off (`control`
+// with no binding). `controller` only when the page had to ask which.
+export function pedalCall(control, binding, target, controller = null) {
+  const json = binding ? { control, [binding]: target } : { control, none: true };
+  if (controller) json.controller = controller;
+  return { path: "/rig/midi/assign", json };
+}
+
+// What choosing `control` (or "" for none) for a target does: the call to
+// make, and the confirm to ask first when the control is in use elsewhere
+// (it moves) or the target loses another control. Null when nothing changes.
+export function pedalChoice(board, binding, target, control, controller = null) {
+  const now = pedalOn(board, binding, target);
+  if ((control || null) === now) return null;
+  if (!control) return { call: pedalCall(now, null, null), confirm: null, what: `${pedalName(now)} off ${pedalSaid(binding, target)}` };
+  const use = pedalUse(board, control);
+  const said = pedalSaid(binding, target);
+  const confirm = use ? `${pedalName(control)} is on ${pedalSaid(use.binding, use.target)}. Move it to ${said}?` : null;
+  return { call: pedalCall(control, binding, target, controller), confirm, what: `${pedalName(control)}: ${said}`,
+    moveLabel: use ? `Move ${pedalName(control)}` : null };
+}
+
+// The device's state as the page says it, from /health's `agent.midi.feeds`
+// for its controller: listening, not connected (absent), waiting (the rig's
+// map needs it and it is not plugged in), or what else the agent says.
+export function pedalDeviceState(health, controller) {
+  const midi = health && health.ok ? ((health.body.agent || {}).midi || null) : null;
+  if (!midi) return { state: "unknown", text: "not known: the agent did not answer" };
+  const feed = (midi.feeds || []).find((f) => f.controller === controller);
+  if (!feed) {
+    if (midi.state === "off") return { state: "off", text: `not listened to: ${midi.reason || "no rig is up"}` };
+    return { state: midi.state || "unknown", text: midi.problem || "not listened to on this rig" };
+  }
+  if (feed.state === "listening") return { state: "listening", text: "listening" };
+  if (feed.state === "absent") return { state: "absent", text: "not connected" };
+  if (feed.state === "waiting") return { state: "waiting", text: "waiting: this rig needs it, and it is not plugged in" };
+  if (feed.state === "opening") return { state: "opening", text: "opening its port" };
+  return { state: feed.state || "unknown", text: feed.problem || feed.state || "not known" };
+}
+
+// The lights: a control is lit for PEDAL_LIT_MS after its count is seen to
+// change, or on the first sight of one heard within PEDAL_LIT_AGO seconds.
+// `held` is the last call's answer ({control: {count, until}}), `now` ms.
+// Counted, not timed by the agent's clock, so a phone's clock does not matter.
+export function pedalLights(held, health, controller, now) {
+  const midi = health && health.ok ? ((health.body.agent || {}).midi || null) : null;
+  const seen = midi && midi.seen && controller ? midi.seen[controller] || {} : {};
+  const out = {};
+  for (const [control, s] of Object.entries(seen)) {
+    const before = held ? held[control] : undefined;
+    let until = before ? before.until : 0;
+    if (before ? s.count !== before.count : s.ago <= PEDAL_LIT_AGO) until = now + PEDAL_LIT_MS;
+    out[control] = { count: s.count, value: s.value, until };
+  }
+  return out;
+}
+
+// The summary: each control of the device in its order, what it does on this
+// rig (a job is said as such), and its light and, for the pedal, its value.
+export function pedalSummary(board, lights, now) {
+  return board.controls.map((c) => {
+    const use = pedalUse(board, c.name);
+    const light = lights ? lights[c.name] : null;
+    const does = c.job ? (c.job === "previous-rig" ? "previous rig" : c.job === "next-rig" ? "next rig" : c.job)
+      : use ? pedalSaid(use.binding, use.target) : "nothing on this rig";
+    return { control: c.name, name: pedalName(c.name), does, assigned: !!use, job: !!c.job,
+      lit: !!light && light.until > now, value: c.kind === "expression" && light ? light.value : null,
+      heard: !!light };
+  });
+}
+
+// What an assignment said, for the box under the summary.
+export function pedalOutcome(what, answer) {
+  const body = answer.body || {};
+  if (!answer.ok) {
+    return { ok: false, title: `Not assigned: ${what}`, reason: answer.reason, code: answer.code || null,
+      controllers: Array.isArray(body.controllers) ? body.controllers : null };
+  }
+  const change = body.change || {};
+  let text = `Wrote ${body.file} in place, keeping its comments.`;
+  if (change.moved) text += ` ${pedalName(change.control)} came off ${change.moved.said}.`;
+  for (const r of change.replaced || []) text += ` ${pedalName(r.control)} came off it.`;
+  if (change.controller_set) text += ` The rig's map is now written for ${change.controller}.`;
+  let offer = null;
+  if (body.how === "live") text += " It plays now.";
+  else {
+    const why = (body.why || []).map((r) => r.detail).join("; ");
+    text += ` It plays when ${body.rig} restarts${why ? ` (${why})` : ""}; until then the pedals do what they did.`;
+    offer = { op: "restart", name: body.rig, label: `Restart ${body.rig} to play it` };
+  }
+  return { ok: true, title: `Assigned ${what}`, text, commit: commitText(body.library), offer, file: body.file };
 }

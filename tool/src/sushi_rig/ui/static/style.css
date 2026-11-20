@@ -759,3 +759,49 @@ button.strip-name:focus-visible { outline: 2px solid var(--accent); outline-offs
 /* Phones and narrow windows never get it (rig.js VISUALISER.minWidth), so
    they get no line about it either. */
 @media (max-width: 899px) { .visualiser-settings { display: none; } }
+
+/* ---------------------------------------------------------------- pedals (#192)
+   A device control assigned from the rack: a badge beside an effect's on/off
+   and by a channel's name, a thumb high, dashed while nothing is on it; its
+   panel a row of its own under the row it belongs to, as a strip's Preset…
+   panel is; and the Pedals section under the strips, each control with its
+   light. */
+.pedal-slot { display: contents; }
+.pedal-badge { flex: none; min-width: 44px; height: 44px; padding: 0 8px; border-radius: 22px; border: 1px dashed #3A3C46;
+  background: transparent; color: var(--muted); display: inline-flex; align-items: center; justify-content: center; gap: 4px;
+  cursor: pointer; font-family: var(--mono); font-size: 12px; }
+.pedal-badge.assigned { border-style: solid; border-color: var(--edge); color: var(--accent-soft); background: var(--accent-ground); }
+.pedal-badge[aria-expanded="true"] { border-color: var(--accent); }
+.pedal-badge.lit { box-shadow: 0 0 0 2px var(--accent), 0 0 10px var(--accent); }
+.pedal-badge:focus-visible { outline: 2px solid var(--accent); outline-offset: 2px; }
+.pedal-panel-slot { flex: 1 0 100%; min-width: 0; }
+.pedal-panel-slot:empty { display: none; }
+.pedal-panel { display: flex; flex-wrap: wrap; align-items: flex-end; gap: 8px 12px; margin: 0 0 10px 58px; padding: 10px;
+  border-radius: 10px; border: 1px solid var(--accent); min-width: 0; }
+.pedal-panel > .sub, .pedal-panel > .confirm, .pedal-panel > .row-said, .pedal-panel > .lock-says { flex: 1 0 100%; margin: 0; }
+.pedal-panel .sub { font-size: 12px; color: var(--muted); line-height: 1.5; }
+.pedal-panel .confirm p { flex: 1 0 100%; margin: 0; font-size: 13px; }
+.pedal-pick { min-width: 0; max-width: 100%; }
+.pedal-pick select { min-width: 9em; max-width: 100%; }
+.lock-says { display: flex; align-items: center; gap: 6px; }
+.strip-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; min-width: 0; }
+.strip .pedal-panel { margin: 0; }
+.pedals { display: flex; flex-direction: column; gap: 8px; margin-top: 10px; padding-top: 12px; border-top: 1px solid var(--line); min-width: 0; }
+.pedals[hidden] { display: none; }
+.pedals .sub { margin: 0; font-size: 12px; color: var(--muted); line-height: 1.5; }
+.pedal-device { display: flex; align-items: center; gap: 8px; margin: 0; font-size: 13px; overflow-wrap: anywhere; }
+.pedal-device.state-listening .dot { background: var(--accent); }
+.pedal-device.state-absent .dot, .pedal-device.state-off .dot { background: #4A4C57; }
+.pedal-device.state-waiting, .pedal-device.state-failed { color: var(--refused); }
+.pedal-device.state-waiting .dot, .pedal-device.state-failed .dot { background: var(--refused); }
+.pedal-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 2px; }
+.pedal-row { display: grid; grid-template-columns: 10px 3.2em minmax(0, 1fr) auto; align-items: center; gap: 8px; min-height: 30px; font-size: 13px; }
+.pedal-row .heard { width: 10px; height: 10px; border-radius: 50%; background: #3A3C46; }
+.pedal-row.lit .heard { background: var(--accent); box-shadow: 0 0 8px var(--accent); }
+.pedal-row .pedal-name { font-family: var(--mono); font-weight: 600; }
+.pedal-row .does { color: var(--muted); overflow-wrap: anywhere; min-width: 0; }
+.pedal-row.assigned .does { color: var(--text); }
+.pedal-row .value { font-family: var(--mono); font-size: 12px; color: var(--accent-soft); }
+@media (max-width: 640px) {
+  .pedal-panel { margin-left: 12px; }
+}

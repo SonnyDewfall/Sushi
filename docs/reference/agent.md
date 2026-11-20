@@ -24,6 +24,8 @@ curl -X POST localhost:8029/rig/restart                             # refused (4
 curl -X POST localhost:8029/rig/restart -d '{"discard": true}'      # ... so this drops them, as `sushi-rig restart --discard` does
 curl -X POST localhost:8029/rig/switch -d '{"config_name": "electric-delay"}'   # live where it can be (#93)
 curl localhost:8029/midi             # the machine's MIDI devices, what each control may take, the rig's assignments (#191)
+curl -X POST localhost:8029/rig/midi/assign -d '{"control": "c", "bypass": "board/drive"}'   # a pedal control in the running rig's file (#192)
+curl -X POST localhost:8029/rig/midi/assign -d '{"control": "c", "none": true}'               # ... and off again
 curl localhost:8029/live             # the running rig's parameters, bypass and chains, with ranges
 curl -X POST localhost:8029/live/parameter -d '{"processor": "reverb", "parameter": "Mix", "value": 0.4}'
 curl -X POST localhost:8029/live/parameters -d '{"processor": "hall", "parameters": {"dry": 0.7, "early": 0.57}}'   # all or none, one change (#154)
@@ -762,6 +764,82 @@ page and played after the restart it offers has been done (a vocal channel on
 electric-chorus-2, at Sonny's word; MANIFEST, 2026-11-14). `POST /rigs/new` and
 a channel's input change are not recorded as run against a live Sushi: the
 rigs they write are shown to compile and wire as `up --rig` would.
+
+## Assigning a pedal
+
+What the rack's pedal badges call (#192). `POST /rig/midi/assign` writes one
+control of the device the running rig's map is for into that rig's file's
+`midi:` (the shape is [MIDI](midi.md#the-device-model-191)'s):
+
+```bash
+curl -X POST localhost:8029/rig/midi/assign -d '{"control": "c", "bypass": "board/drive"}'   # C turns the drive on and off
+curl -X POST localhost:8029/rig/midi/assign -d '{"control": "d", "mute": "vocal"}'           # D, the vocal channel
+curl -X POST localhost:8029/rig/midi/assign -d '{"control": "pedal", "volume": "lead"}'      # the pedal rides lead's volume
+curl -X POST localhost:8029/rig/midi/assign -d '{"control": "pedal", "parameter": "lead/hall/Mix"}'
+curl -X POST localhost:8029/rig/midi/assign -d '{"control": "pedal", "blend": ["clean", "lead"]}'
+curl -X POST localhost:8029/rig/midi/assign -d '{"control": "c", "none": true}'              # C does nothing on this rig
+```
+
+- **One control, one thing.** The control's own entry is changed in place,
+  keeping its comment; a control not in the map yet is added at its end. A
+  control that did something else is moved (the answer's `change.moved` says
+  from what), and another control with the same binding on the same target
+  is taken off it (`change.replaced`): choosing C for an effect D switched
+  means C instead of D. `none` takes the control's entry out; a map left with
+  no controls and no `programs` is taken out whole, so the rig no longer
+  waits for a pedal it does not use. The map's list is matched by `control`
+  when the file is written, so a control taken out of the middle takes its
+  own comment and leaves the others theirs.
+- **Which device.** The map's own `controller`, which an assignment's
+  `controller` must match (`409 controller`). With none, the one device in
+  the machine file with a `type` is written in (`change.controller_set`);
+  several is `409 which_controller` with their names in `controllers`, and
+  the assignment again with `controller` writes it.
+- **The compiler decides.** The edited file goes through
+  `rig.compile_rig_draft` against the run's machine file, as a channel edit
+  does, and nothing is written unless it passes: `409 rig_problem` with
+  `compile_midi`'s and `check_rig`'s own words for a switch given a volume, a
+  pedal given a bypass, A or B (a job on every rig), a control the device
+  does not have, a target the rig file does not have (a plugin added live
+  and not saved is one), the master's volume, or two drivers of one volume.
+  `400` for a body of the wrong shape: not exactly one binding or `none`, a
+  target that is not text (a blend, two), a key nobody reads.
+- **Live where only the agent's bindings change.** Sushi loads its
+  `cc_mappings` only with the config. An assignment whose compile leaves the
+  running config's `midi` section as it is (a footswitch on a bypass, a
+  momentary or single one on a mute: [the agent's own](midi.md#what-the-agent-does-with-a-pedal))
+  is applied at once: the running config's `_midi_agent` is replaced by the
+  edited file's and the listener re-planned (`_midi_sync`), so the next press
+  does it. The answer is `how: "live"`. Any other (the pedal on a volume, a
+  parameter or a blend; a latching footswitch on a mute) changes what Sushi
+  maps: `how: "restart"`, `offer: "restart"` and `why`, `rigfile.diff`'s
+  reasons as a channel edit gives them (`midi`, and `host` when the rig had
+  no MIDI input before), and until that restart the pedals do what they did.
+  That restart reloads the file, so an assignment that needs it is refused
+  while the rig holds unsaved changes (`409 unsaved`) or runs with its panel
+  (`409 panel`), as a channel edit is ([above](#new-rigs-and-channel-edits));
+  one that plays at once loses nothing and is not.
+- **Only the running rig**, from `config/rigs/` (`409 no_rig` otherwise).
+  Under the lifecycle lock (`busy: "rig file edit"`) and the live lock, as
+  the channel edits are; behind [the one guard](#another-sites-page-and-dns-rebinding).
+  Never committed: the answer gives what git says of the file. Not in
+  `/live/log` and not undone by Undo, as a channel added is not: assign
+  again. `assignments` in the answer is the file's `midi:` after it.
+
+**Heard.** `/health`'s `agent.midi.seen` is the last message from each
+control of each device the listener reads, bound to anything or not:
+`{controller: {control: {count, value, ago}}}`, `ago` in seconds on the
+agent's clock. Which control a message is from is the machine file's word
+(its CC or note and the controller's channel); a message no control sends is
+not counted there (`last` still says it). Kept across re-plans and restarts
+of the listener, while the agent runs. A dictionary lookup on the agent's
+loop per message: nothing near the audio. It is what the rack's lights read,
+and is a check that the board sends, not a learn.
+
+**Not run on the rig**: no board has been plugged in. Tested against the
+agent's real route, the real compiler and `write_rig` on copies of a rig file
+in a temporary checkout, and the agent's real listener on a fake port
+(`tool/tests/test_agent_midi_assign.py`).
 
 ## Deleting a rig file
 

@@ -725,6 +725,24 @@ class Feed:
     port: str
     bindings: Bindings
     required: bool = True
+    # Every control of the controller as the machine file describes it,
+    # `(name, "cc"|"note", number)`, and the channel it sends on (None for
+    # all): which control a message came from, bound or not, for the page's
+    # "heard" light (#192). Empty for a feed built without the machine file.
+    controls: tuple[tuple[str, str, int], ...] = ()
+    channel: int | None = None
+
+    def control_of(self, message: "Message") -> str | None:
+        """The control `message` came from, by what each control sends and
+        the controller's channel; None for any other message (a program
+        change, a CC no control sends, another channel)."""
+        if self.channel is not None and message.channel != self.channel:
+            return None
+        kind = "note" if message.kind in ("note_on", "note_off") else message.kind
+        for name, sends, number in self.controls:
+            if sends == kind and number == message.number:
+                return name
+        return None
 
 
 @dataclass(frozen=True)
@@ -816,6 +834,7 @@ def plan_for(described: dict[str, Any], root: Path) -> Plan | Off:
         return machine
 
     feeds: dict[str, tuple[str, Bindings]] = {}
+    described: dict[str, dict[str, Any]] = {}  # each feed's controller, as the machine file describes it
     rig = None
     rig_problem = None
     if isinstance(source, str) and source:
@@ -849,16 +868,29 @@ def plan_for(described: dict[str, Any], root: Path) -> Plan | Off:
                 "cannot open it: add its ALSA name (`aseqdump -l`), e.g. port: \"MPD218:MPD218 Port A\""
             )
         feeds[rig.midi.controller] = (port, bindings)
+        described[rig.midi.controller] = controller
 
     steppers = load_machine().steppers() if machine_file.is_file() else {}
     for controller_name, controller in steppers.items():
         steps = step_bindings(controller)
         port, bindings = feeds.get(controller_name, (controller["port"], Bindings()))
         feeds[controller_name] = (port, Bindings(bindings.controls + steps, bindings.programs))
+        described.setdefault(controller_name, controller)
     if not feeds:
         return Off(f"{name} has no MIDI bindings for the agent" + (f"; {rig_problem}" if rig_problem else ""))
-    return Plan(rig_name, feeds=tuple(Feed(c, port, b, c == required) for c, (port, b) in feeds.items()),
+    return Plan(rig_name, feeds=tuple(Feed(c, port, b, c == required, *_heard_by(described.get(c)))
+                                      for c, (port, b) in feeds.items()),
                 running=rig_name or name, rig_problem=rig_problem)
+
+
+def _heard_by(controller: dict[str, Any] | None) -> tuple[tuple[tuple[str, str, int], ...], int | None]:
+    """A feed's `controls` and `channel`, from `MachineSpec.controller`'s
+    description of its controller (`Feed.control_of`)."""
+    if not controller:
+        return (), None
+    channel = controller.get("channel", "all")
+    controls = tuple((name, kind, number) for name, (kind, number) in sorted(controller.get("controls", {}).items()))
+    return controls, None if channel == "all" else channel
 
 
 def rig_in_order(source: Any, root: Path) -> str | None:
