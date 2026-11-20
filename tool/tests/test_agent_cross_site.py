@@ -232,7 +232,7 @@ GETS = {
 READS = ["/health", "/rigs", "/doctor", "/live/log", "/takes", "/presets", "/rig", "/", "/ui/app.js",
          "/help/", "/help/recording", "/help/img/rack.png",
          # The visualiser's files (#176): the static route's, as app.js is.
-         "/ui/screensaver.js", "/ui/visualiser.js", "/ui/visualiser-presets.js",
+         "/ui/screensaver.js", "/ui/visualiser.js", "/ui/visualiser-presets.js", "/ui/visualiser-tap.js",
          "/ui/vendor/butterchurn-2.6.7/butterchurn.min.js", "/machine/roles"]
 
 
@@ -412,7 +412,8 @@ def test_every_registered_route_is_behind_the_guard():
     paths = {path for _, path in writes}
     # Not vacuous: the routes #160 and #162 guarded by hand, and others.
     assert {"/rigs/x/delete", "/rigs/x/restore", "/rig/channels/x/save-as", "/rig/channels/x/load",
-            "/rig/up", "/rig/down", "/live/parameter", "/rig/save", "/record/start", "/takes/open"} <= paths, paths
+            "/rig/up", "/rig/down", "/live/parameter", "/rig/save", "/record/start", "/takes/open",
+            "/visualiser/tap", "/visualiser/tap/release"} <= paths, paths
     assert len(writes) >= 24, writes  # as of #161
     assert {("GET", "/health"), ("HEAD", "/health"), ("GET", "/"), ("GET", "/ui/app.js")} <= set(routes)
 

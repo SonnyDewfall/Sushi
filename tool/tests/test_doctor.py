@@ -941,7 +941,7 @@ def test_pipewire_pulses_threads_are_read_from_proc(monkeypatch, tmp_path):
         (task / str(tid)).mkdir(parents=True)
         (task / str(tid) / "stat").write_text(f"{tid} ({name}) {rest}\n")
     real = Path
-    monkeypatch.setattr(doctor, "Path", lambda p: real(str(p).replace("/proc", str(tmp_path / "proc"), 1)))
+    monkeypatch.setattr("sushi_rig.procs.Path", lambda p: real(str(p).replace("/proc", str(tmp_path / "proc"), 1)))
     monkeypatch.setattr(doctor.subprocess, "run", lambda *a, **k: sp.CompletedProcess(a, 0, "99\n", ""))
     assert doctor._pulse_threads() == {99: (("pipewire-pulse", 1, 20), ("data (loop) 0", 1, 20))}
 
@@ -1036,3 +1036,109 @@ def test_who_holds_the_lid_is_read_from_list_inhibitors_block_mode_only():
               '"PowerDevil" "KDE handles power events" "block" 1000 1650 "handle-lid-switch" "Odd" "x" "delay" 0 1')
     assert doctor.lid_inhibitors_from(listed) == ("PowerDevil",)
     assert doctor.lid_inhibitors_from("a(ssssuu) 0") == ()
+
+
+# --------------------------------------------------------------------------- #
+# The visualiser's tap (#195): the agent's, on demand, and realtime or
+# nothing; a fault when it would not be realtime.
+# --------------------------------------------------------------------------- #
+
+TAP_RIG = {"running": True, "children": {"sushi": {"pid": 10, "alive": True}}}
+TAP_STATE = {"visualiser_tap_requested": True}
+
+
+def tap_report(**over):
+    report = {"offered": True, "running": False, "pid": None, "pages": 0, "stops_in": None,
+              "refused": None, "stopped": None, "agent_pid": 99}
+    report.update(over)
+    return report
+
+
+def test_a_running_tap_with_a_realtime_thread_is_ok_and_one_without_is_a_fault():
+    running = tap_report(running=True, pid=11, pages=1)
+    ok = doctor.tap_check(TAP_RIG, TAP_STATE, running, (("pw-loopback", 0, 0), ("pw-data-loop", 1, 83)))
+    assert (ok.name, ok.state) == ("visualiser-tap", OK)
+    assert "pid 11" in ok.message and "pw-data-loop (SCHED_FIFO 83)" in ok.message and "1 page(s)" in ok.message
+    bad = doctor.tap_check(TAP_RIG, TAP_STATE, running, (("pw-loopback", 0, 0),))
+    assert bad.state == FAULT and "a cycle the graph did not finish" in bad.message and "rtkit" in bad.remedy
+
+
+def test_a_tap_refused_for_want_of_realtime_or_one_that_would_be_is_a_fault_with_the_fix():
+    refused = tap_report(refused={"code": "not_realtime", "reason": "...", "at": "t"})
+    check = doctor.tap_check(TAP_RIG, TAP_STATE, refused, None, (True, "x"))
+    assert check.state == FAULT and "for want of a realtime thread" in check.message
+    assert "rtkit" in check.remedy and "limit" in check.remedy
+    would = doctor.tap_check(TAP_RIG, TAP_STATE, tap_report(), None,
+                             (False, "pid 99's realtime limit is 0 and rtkit-daemon is not running"))
+    assert would.state == FAULT and "a tap would be refused" in would.message and "rtkit" in would.remedy
+
+
+def test_no_tap_running_is_ok_when_realtime_can_be_had_and_said_either_way():
+    idle = doctor.tap_check(TAP_RIG, TAP_STATE, tap_report(), None, (True, "rtkit-daemon is running"))
+    assert idle.state == OK and "starts one while the page's visualiser listens" in idle.message
+    assert "rtkit-daemon is running" in idle.message
+    unknown = doctor.tap_check(TAP_RIG, TAP_STATE, tap_report(), None, (None, "could not be read"))
+    assert unknown.state == OK and "not known" in unknown.message
+    no_agent = doctor.tap_check(TAP_RIG, TAP_STATE, None, None, (True, "x"))
+    assert no_agent.state == UNCHECKED and "no agent" in no_agent.message
+    linked = doctor.tap_check(TAP_RIG, TAP_STATE, tap_report(refused={"code": "not_linked", "reason": "r"}), None,
+                              (True, "x"))
+    assert linked.state == OK and "the last was refused (r)" in linked.message
+
+
+def test_a_rig_that_never_offers_its_output_or_none_running_is_not_a_fault():
+    off = doctor.tap_check(TAP_RIG, {"visualiser_tap_requested": False}, tap_report(offered=False), None,
+                           (False, "x"))
+    assert off.state == OK and "--no-visualiser-tap" in off.message
+    down = doctor.tap_check({"running": False}, None, None, None)
+    assert down.state == UNCHECKED and "no rig is running" in down.message
+    unread = doctor.tap_check(TAP_RIG, TAP_STATE, tap_report(running=True, pid=11), None)
+    assert unread.state == UNCHECKED and "ps -L" in unread.remedy
+
+
+def test_whether_realtime_can_be_had_is_read_from_the_agents_limit_and_rtkit(monkeypatch, tmp_path):
+    import subprocess as sp
+
+    limits = tmp_path / "limits"
+    real = Path
+    monkeypatch.setattr(doctor, "Path", lambda p: limits if str(p).endswith("/limits") else real(p))
+    rtkit = {"code": 1}
+    monkeypatch.setattr(doctor.subprocess, "run", lambda *a, **k: sp.CompletedProcess(a, rtkit["code"], "", ""))
+    limits.write_text("Limit                     Soft Limit           Hard Limit           Units\n"
+                      "Max realtime priority     95                   95\n")
+    assert doctor._realtime_grant(99) == (True, "pid 99's realtime limit is 95")
+    limits.write_text("Max realtime priority     0                    0\n")
+    assert doctor._realtime_grant(99)[0] is False
+    rtkit["code"] = 0
+    assert doctor._realtime_grant(99) == (True, "rtkit-daemon is running")
+
+
+def test_the_examination_reads_the_agents_tap_and_its_threads_by_pid(tmp_path, monkeypatch):
+    from sushi_rig import patchbay, rig as rig_module, state as state_module
+
+    state = {"supervisor_pid": 5, "pgid": 5, "children": {}, "visualiser_tap_requested": True}
+    monkeypatch.setattr(patchbay, "read_pw_dump", lambda *a, **k: CAPTURED)
+    monkeypatch.setattr(state_module, "read_state", lambda: state)
+    monkeypatch.setattr(rig_module, "describe_rig", lambda recorded=None: TAP_RIG)
+    asked = []
+    monkeypatch.setattr(doctor, "threads_of", lambda pid: asked.append(pid) or (("pw-data-loop", 1, 83),))
+    monkeypatch.setattr(doctor, "record_check", lambda *a, **k: Check("record-ports", UNCHECKED, "stood in"))
+    checks = doctor.run(ROOT, machine_file=THIS_MACHINE, tap=tap_report(running=True, pid=11, pages=2))
+    tap = next(c for c in checks if c.name == "visualiser-tap")
+    assert asked == [11] and tap.state == OK and "2 page(s)" in tap.message
+
+
+def test_a_tap_left_running_with_no_agent_holding_it_is_a_fault():
+    """Its agent died uncleanly: in Sushi's cycle with no lease and no watch."""
+    rig = {**TAP_RIG, "visualiser_tap": {"pid": 12, "alive": True}}
+    left = doctor.tap_check(rig, TAP_STATE, None, None)
+    assert left.state == FAULT and "pid 12" in left.message and "no agent holding it" in left.message
+    assert "kill 12" in left.remedy
+    held = doctor.tap_check(rig, TAP_STATE, tap_report(running=True, pid=12, pages=1), (("pw-data-loop", 1, 83),))
+    assert held.state == OK, "the agent's own, running: no orphan"
+    dead = doctor.tap_check({**TAP_RIG, "visualiser_tap": {"pid": 12, "alive": False}}, TAP_STATE, None, None,
+                            (True, "x"))
+    assert dead.state != FAULT
+    owned = doctor.tap_check({**TAP_RIG, "visualiser_tap": {"pid": 12, "alive": True, "owner_alive": True}},
+                             TAP_STATE, None, None, (True, "x"))
+    assert owned.state != FAULT, "another agent's, which still runs: not left behind"

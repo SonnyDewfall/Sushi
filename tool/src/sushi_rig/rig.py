@@ -518,6 +518,10 @@ def plan_children(
 ) -> list[dict[str, Any]]:
     """The children to start, in order, as data.
 
+    Never the visualiser's tap (`vistap`): the agent starts that on demand,
+    while the page's visualiser listens, and `up` from the command line
+    never does.
+
     `recorder_socket`, for a headless run of a rig of channels, plans the
     recorder (`sushi-rig recorder`, recorder_process.py) in the listener's
     place, answering on that socket: what records a take from the web UI,
@@ -713,6 +717,10 @@ def state_record(
         # child has failed to start. `restart` reads these.
         "tuner_requested": launch.tuner_requested,
         "amp_requested": launch.amp_requested,
+        # Whether the visualiser's tap may be offered (`--no-visualiser-tap`
+        # says never). The agent starts it on demand (`vistap`), so it is
+        # never among `children`; `restart` and a switch keep the choice.
+        "visualiser_tap_requested": launch.visualiser_tap_requested,
         # The override as the caller gave it, None when there was none. Not
         # `amp_model`, which is what *ran* and so includes the config's own
         # choice: restoring that would pin today's model for good, and a
@@ -1252,6 +1260,9 @@ class Launch:
     amp_model_requested: str | None
     rig_source: str | None
     machine_file: Path | None
+    # Whether the agent may offer the visualiser's tap (`vistap`). False
+    # unless said, so a Launch built by hand offers none.
+    visualiser_tap_requested: bool = False
 
 
 def prepare_launch(
@@ -1264,6 +1275,7 @@ def prepare_launch(
     rig: bool = False,
     warn: Callable[[str], None] | None = None,
     machine: str | None = None,
+    visualiser_tap: bool = True,
 ) -> Launch:
     """Everything `up` does before it starts a process: refuse a second rig,
     compile a rig of channels, prepare the amp, plan the children.
@@ -1398,7 +1410,7 @@ def prepare_launch(
         root=root, config_name=config_name, config=config, children=children_plan,
         headless=headless, amp_model=amp_model_stored, amp_values=amp_values,
         tuner_requested=tuner, amp_requested=amp, amp_model_requested=amp_model,
-        rig_source=rig_source, machine_file=rig_machine,
+        rig_source=rig_source, machine_file=rig_machine, visualiser_tap_requested=visualiser_tap,
     )
 
 
@@ -1411,6 +1423,7 @@ def up(
     amp_model: str | None = None,
     rig: bool = False,
     machine: str | None = None,
+    visualiser_tap: bool = True,
 ) -> int:
     """Start the rig and return to the prompt.
 
@@ -1429,10 +1442,14 @@ def up(
     `machine` is the machine file a rig of channels is compiled and wired
     against, this host's (`machine_path`) unless given: `restart` and a
     switch pass the one the run was started against, from the state file.
+
+    `visualiser_tap` False is `--no-visualiser-tap`: the agent never offers
+    this rig's output to the page (`vistap`). `up` itself starts no tap
+    either way; the agent starts one while the visualiser listens.
     """
     launch = prepare_launch(
         config_name, headless=headless, tuner=tuner, amp=amp, amp_model=amp_model, rig=rig,
-        machine=machine,
+        machine=machine, visualiser_tap=visualiser_tap,
     )
     pid, ready_r = _fork_supervisor(lambda ready_w: _supervise(launch, ready_w=ready_w))
     outcome = ""
@@ -1585,6 +1602,10 @@ def down(
         return 1
 
     _clear_state_of(pgid)
+    # The visualiser's tap, if one ran, went with the group: its record too.
+    from .vistap import clear_record_of_group
+
+    clear_record_of_group(pgid)
     print("Rig offline.", file=out)
     return 0
 
@@ -1629,12 +1650,17 @@ def restart_arguments(state: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     children = state.get("children") or {}
     tuner = state.get("tuner_requested")
     amp = state.get("amp_requested")
+    tap = state.get("visualiser_tap_requested")
     rig = isinstance(state.get("rig"), str) and bool(state.get("rig"))
     machine = state.get("machine")
     return state.get("config_name", DEFAULT_CONFIG_NAME), {
         "headless": not runs_panel(state),
         "tuner": tuner if isinstance(tuner, bool) else "fmit" in children,
         "amp": amp if isinstance(amp, bool) else "amp" in children,
+        # Not read from `children`, as the tuner falls back to: a state file
+        # from before the tap was recorded is from before there was a tap,
+        # so it never declined one, and gets `up`'s default, on.
+        "visualiser_tap": tap if isinstance(tap, bool) else True,
         "amp_model": state.get("amp_model_requested") or None,
         "rig": rig,
         # The machine file the run was compiled and wired against, so the
@@ -1691,6 +1717,7 @@ def describe_rig(
     alive: Callable[[int], bool] | None = None,
     group_alive: Callable[[int], bool] | None = None,
     now: datetime | None = None,
+    tap_record: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """What is running, if anything, as data: the one answer `status` prints
     and the agent serves (#29).
@@ -1759,6 +1786,15 @@ def describe_rig(
     if isinstance(state.get("machine"), str):
         # Which machine file a rig run was compiled against; a v1 run has none.
         described["machine"] = state["machine"]
+    # The visualiser's tap (#195), by the record beside the state file
+    # (`vistap.write_record`), when it is of this rig's group: the agent's
+    # while it runs one, or one an agent that died left running.
+    from . import vistap
+
+    record = tap_record if tap_record is not None else vistap.read_record()
+    if isinstance(record, dict) and record.get("pgid") == state.get("pgid") and is_real_id(record.get("pid")):
+        described["visualiser_tap"] = {"pid": record["pid"], "alive": vistap.recorded_alive(record),
+                                       "owner_alive": vistap.owner_alive(record)}
     age = format_uptime(uptime) if uptime is not None else "unknown"
     described["message"] = f"{described['config_name']} ({described['mode']} mode), up {age}"
     return described
@@ -1784,6 +1820,12 @@ def status_lines(described: dict[str, Any]) -> list[str]:
             lines.append(f"  {name:10} pid {child['pid']!r} (INVALID)")
             continue
         lines.append(f"  {name:10} pid {child['pid']} {'' if child['alive'] else '(DEAD)'}")
+    tap = described.get("visualiser_tap")
+    if isinstance(tap, dict):
+        # The agent's, while a page's visualiser listens; one with no agent
+        # running is left over, still in Sushi's cycle.
+        lines.append(f"  vistap     pid {tap.get('pid')} {'' if tap.get('alive') else '(DEAD)'}".rstrip()
+                     + ("  (the visualiser's tap on the rig's output)" if tap.get("alive") else ""))
     if described.get("amp_model"):
         lines.append(f"  amp model  {described['amp_model']}")
     lines.append(f"  logs       {described['log_dir']}")

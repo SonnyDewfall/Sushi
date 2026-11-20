@@ -58,6 +58,7 @@ from typing import Any, NamedTuple
 from . import patchbay
 from .machine import MachineError, MachineSpec, machine_path
 from .patchbay import PatchbayError
+from .procs import threads_of  # noqa: F401 -- read by the checks below, and doctor.threads_of to callers
 
 # The graph rate everything here assumes. Sushi's configs declare 48000, the
 # `.nam` models are trained at it, and a mismatch degrades tone without saying
@@ -910,6 +911,98 @@ def check_pulse_realtime(environment: Environment) -> Check:
     )
 
 
+def tap_check(rig: dict, state: dict | None, tap: dict | None, threads: tuple | None,
+              grant: tuple[bool | None, str] = (None, "not asked")) -> Check:
+    """The visualiser's tap (#195, `vistap`): the agent's, started while the
+    page's visualiser listens and stopped when it lets go, and refused
+    unless realtime, since in Sushi's cycle a late one is a cycle the graph
+    did not finish. A fault when it runs without a realtime thread, when the
+    agent refused one for want of it, or when nothing on this machine would
+    give it one; never for a rig started with --no-visualiser-tap.
+
+    `rig` is `describe_rig`'s answer, `state` the state file, `tap` the
+    agent's report (`Supervisor.tap_report`; None: no agent was asked),
+    `threads` the running tap's (`threads_of`; None: none to look at), and
+    `grant` whether realtime can be had (`_realtime_grant`: True, False or
+    None, and why). Pure."""
+    from .supervisor import child_label
+    from .vistap import CHILD, REALTIME_FIX, realtime
+
+    name = "visualiser-tap"
+    label = child_label(CHILD)
+    if not rig.get("running") or not state:
+        return Check(name, UNCHECKED, "no rig is running, so there is no output to tap",
+                     "run the rig through the agent and check again")
+    left = rig.get("visualiser_tap") if isinstance(rig.get("visualiser_tap"), dict) else None
+    if (left and left.get("alive") and not left.get("owner_alive")
+            and not (tap and tap.get("running") and tap.get("pid") == left.get("pid"))):
+        # Its agent died without stopping it (SIGKILL, the OOM killer), and
+        # no agent holds a lease on it: in Sushi's cycle, unseen by the page.
+        return Check(name, FAULT, f"{label} (pid {left.get('pid')}) is running with no agent holding it, in "
+                     "Sushi's cycle, where each time it is late is a cycle the graph did not finish",
+                     f"start the agent (it stops a tap it finds left behind), or kill {left.get('pid')}")
+    if state.get("visualiser_tap_requested") is False:
+        return Check(name, OK, "the rig was started with --no-visualiser-tap, so its output is never offered: "
+                     "the visualiser listens to the guitar's input")
+    can, why = grant
+    if tap and tap.get("running") and isinstance(tap.get("pid"), int):
+        pid = tap["pid"]
+        if threads is None:
+            return Check(name, UNCHECKED, f"could not read the threads of {label} (pid {pid})",
+                         f"check by hand: ps -L -o tid,cls,rtprio,comm -p {pid}")
+        found = realtime(threads)
+        if found:
+            shown = ", ".join(f"{n} ({policy} {prio})" for n, policy, prio in found)
+            return Check(name, OK, f"{label} (pid {pid}) is running for {tap.get('pages', 0)} page(s), realtime: "
+                         f"{shown}")
+        return Check(name, FAULT, f"{label} (pid {pid}) runs no thread at realtime priority, in Sushi's cycle, "
+                     "where each time it is late is a cycle the graph did not finish", REALTIME_FIX)
+    refused = (tap or {}).get("refused") or {}
+    if refused.get("code") == "not_realtime":
+        return Check(name, FAULT, f"the agent refused a tap at {refused.get('at')} for want of a realtime thread, "
+                     "so the visualiser listens to the guitar's input", REALTIME_FIX)
+    if can is False:
+        return Check(name, FAULT, f"a tap would be refused: nothing here would give it a realtime thread ({why}), "
+                     "so the visualiser listens to the guitar's input", REALTIME_FIX)
+    if tap is None:
+        return Check(name, UNCHECKED, "the tap is the agent's, started while the page's visualiser listens, and "
+                     f"no agent holding this rig was asked{'' if can is None else f'; realtime can be had ({why})'}",
+                     "run doctor with the agent running the rig")
+    said = f"; realtime can be had ({why})" if can else f"; whether realtime can be had is not known ({why})"
+    if refused:
+        return Check(name, OK, f"no tap is running; the last was refused ({refused.get('reason')})" + said)
+    return Check(name, OK, "no tap is running: the agent starts one while the page's visualiser listens and "
+                 "stops it when it lets go" + said)
+
+
+def _realtime_grant(pid: int | None) -> tuple[bool | None, str]:
+    """Whether a child of process `pid` (the agent) could have a realtime
+    thread: its `Max realtime priority` limit above 0, or rtkit running to
+    grant one. `(True | False | None, why)`, None when neither could be
+    read. A reading, not a promise: rtkit grants up to its own ceiling."""
+    limit = None
+    try:
+        for line in Path(f"/proc/{pid if pid else 'self'}/limits").read_text().splitlines():
+            if line.startswith("Max realtime priority"):
+                soft = line.split()[3]
+                limit = 0 if soft == "0" else (int(soft) if soft.isdigit() else 99)
+    except OSError:
+        pass
+    try:
+        rtkit = subprocess.run(["pgrep", "-x", "rtkit-daemon"], capture_output=True, text=True,
+                               check=False, timeout=5.0).returncode == 0
+    except (OSError, subprocess.SubprocessError):
+        rtkit = None
+    who = f"pid {pid}" if pid else "this process"
+    if limit:
+        return True, f"{who}'s realtime limit is {limit}"
+    if rtkit:
+        return True, "rtkit-daemon is running"
+    if limit == 0 and rtkit is False:
+        return False, f"{who}'s realtime limit is 0 and rtkit-daemon is not running"
+    return None, "the realtime limit or rtkit could not be read"
+
+
 # What logind may do on the lid closing that stops the rig (logind.conf(5)'s
 # HandleLidSwitch= values); `ignore`, `lock` and `factory-reset` leave it
 # playing.
@@ -1020,29 +1113,15 @@ def _jackd_pids() -> tuple[int, ...] | None:
 
 
 def _pulse_threads() -> dict[int, tuple[tuple[str, int, int], ...]] | None:
-    """pipewire-pulse's threads, by pid, as `(name, policy, rt_priority)`:
-    fields 2, 41 and 40 of each /proc/<pid>/task/<tid>/stat. `pgrep -x`, for
-    the reason `_jackd_pids` gives. None when pgrep could not be run."""
+    """pipewire-pulse's threads, by pid, as `(name, policy, rt_priority)`
+    (`threads_of`). `pgrep -x`, for the reason `_jackd_pids` gives. None when
+    pgrep could not be run."""
     try:
         result = subprocess.run(["pgrep", "-x", "pipewire-pulse"], capture_output=True, text=True,
                                 check=False, timeout=5.0)
     except (OSError, subprocess.SubprocessError):
         return None
-    found: dict[int, tuple[tuple[str, int, int], ...]] = {}
-    for pid in (int(line) for line in result.stdout.split() if line.strip().isdigit()):
-        threads = []
-        for stat in sorted(Path(f"/proc/{pid}/task").glob("*/stat"), key=lambda p: (len(p.parent.name), p.parent.name)):
-            try:
-                text = stat.read_text()
-            except OSError:
-                continue
-            name = text[text.find("(") + 1:text.rfind(")")]
-            fields = text[text.rfind(")") + 2:].split()
-            # After the name, field 3 is first: policy is field 41, rt_priority 40.
-            if len(fields) > 38:
-                threads.append((name, int(fields[38]), int(fields[37])))
-        found[pid] = tuple(threads)
-    return found
+    return {pid: threads_of(pid) for pid in (int(line) for line in result.stdout.split() if line.strip().isdigit())}
 
 
 def _lid_actions() -> tuple[tuple[str, str], ...] | None:
@@ -1288,7 +1367,7 @@ def gather_environment(root: Path) -> Environment:
 
 def run(root: Path, machine_file: Path | None = None,
         patchbay_file: Path | None = None, crashed: list[dict] | None = None,
-        list_ports: Any = None) -> list[Check]:
+        list_ports: Any = None, tap: dict | None = None) -> list[Check]:
     """Every check, in the order the command prints them.
 
     This was the body of the CLI command until the agent (#29) needed the same
@@ -1301,7 +1380,9 @@ def run(root: Path, machine_file: Path | None = None,
     running agent for it, and None is "no agent was asked". The state file,
     read once here, says whether a rig is up and which children it started.
     `list_ports` lists JACK's ports for the record check
-    (`capture.list_jack_ports` by default).
+    (`capture.list_jack_ports` by default). `tap` is the agent's report of
+    the visualiser's tap (`Supervisor.tap_report`), None when no agent was
+    asked.
     """
     from .rig import QUANTUM, describe_rig
     from .state import read_state
@@ -1376,5 +1457,8 @@ def run(root: Path, machine_file: Path | None = None,
             )
 
     checks.append(record_check(root, rig, state, list_ports=list_ports))
+    pid = (tap or {}).get("pid") if (tap or {}).get("running") else None
+    checks.append(tap_check(rig, state, tap, (threads_of(pid) or None) if isinstance(pid, int) else None,
+                            _realtime_grant((tap or {}).get("agent_pid"))))
     checks += environment_checks(gather_environment(root))
     return checks

@@ -184,6 +184,9 @@ def lifecycle_request(command: str, args: Any) -> tuple[str, dict[str, Any]]:
         }
         if args.amp_model is not None:
             body["amp_model"] = model_for_agent(args.amp_model)
+        if not getattr(args, "visualiser_tap", True):
+            # Sent only when off: the agent's default is on, as the CLI's is.
+            body["visualiser_tap"] = False
         return "/rig/up", body
     if command == "down":
         return "/rig/down", {"force": args.force}

@@ -98,6 +98,25 @@ def test_children_that_do_no_dsp_contribute_nothing():
         assert child not in CHILD_NODES
 
 
+def test_the_visualiser_taps_nodes_are_the_rigs_so_its_load_and_xruns_are_counted():
+    """Both are followers in Sushi's cycle (vistap.py): shown, in the total
+    and in the XRUNS count the page's xrun safeguard reads."""
+    from sushi_rig import vistap
+    from sushi_rig.top import load_report
+
+    assert CHILD_NODES[vistap.CHILD] == vistap.NODES
+    sample = PW_TOP + "".join(
+        f"R   {140 + i}      0      0   2.0us   5.0us  0.00  0.00    {3 + i}         F32P 2 0  + {name}\n"
+        for i, name in enumerate(vistap.NODES))
+    report = load_report(parse_pw_top(sample), {"sushi": 1, vistap.CHILD: 2})
+    shown = {n["name"]: n for n in report["nodes"]}
+    assert {name: shown[name]["xruns"] for name in vistap.NODES} == {"sushi_rig_output_tap": 3, "sushi_rig_output": 4}
+    assert shown["sushi_rig_output"]["child"] == vistap.CHILD
+    assert [n["name"] for n in report["nodes"]][-2:] == list(vistap.NODES), "after Sushi"
+    without = load_report(parse_pw_top(sample), {"sushi": 1})
+    assert not any(n["name"] in vistap.NODES for n in without["nodes"]), "only a rig with a tap shows one"
+
+
 def test_a_rig_with_no_amp_shows_no_amp():
     names = [n["name"] for n in rig_nodes(parse_pw_top(PW_TOP), {"sushi": 1, "fmit": 2})]
     assert "NAM" not in names and "Carla" not in names

@@ -6374,6 +6374,120 @@ Each fix has a test that fails without it, apart from the clock pause:
 there, the reviewer's own scenario now keeps the notice.
 *(2026-11-20)*
 
+**The visualiser hears the rig's output (#195).** The user wanted the
+visualiser on what the rig plays, which is what they EQ, not the guitar's
+input. Chromium lists no monitor sources, so the tap is a real
+`Audio/Source`: `up` and the agent start a child `vistap`, a `pw-loopback`
+(`tool/src/sushi_rig/vistap.py`) whose playback side is `sushi_rig_output`,
+"Sushi rig output", and whose capture side is linked from Sushi's master
+outputs (the master track's, engine bus 0, after the limiter; bus 0 for a v1
+config) with `pw-link` once Sushi answers, read back from `pw-link -l`.
+Chosen over a `support.null-audio-sink` adapter made by `pw-cli`: its nodes
+die with its process (any signal), so it is a child like the tuner, in the
+group, stopped by `down`, watched by the agent ("the visualiser tap stopped:
+the sound is unaffected"), and kept by `restart` and switches through the
+state file's `visualiser_tap_requested`; a stream never drives the graph;
+both sides are `node.autoconnect = false`, so it is never linked to the
+interface. A tap that cannot be linked is stopped by its pid and the start
+warns, so the page is never offered a silent source. `--no-visualiser-tap`
+(`"visualiser_tap": false` on POST /rig/up) leaves it out. `GET
+/machine/roles` names it to the page, and `pickInput` takes it after a hand
+choice and before the guitar. Its nodes are in `top.CHILD_NODES`, so LOAD,
+XRUNS and the visualiser's xrun safeguard count them; doctor has
+`visualiser-tap` (its data thread's scheduling, by the state file's pid).
+**Two things found by running it**, against the spike's PipeWire 1.0.5
+session (`tool/spikes/visualiser_audio/README.md`, "The rig's output"):
+`pw-loopback` refuses `--channel-map` though its help lists it, and exits
+(the first run linked nothing and said so; short options now, pinned by a
+test); and `pw-loopback` reads `client.conf`, which loads no `module-rt`, so
+its data thread ran at normal priority inside Sushi's cycle and was "too
+slow" about once a second: it is started with
+`PIPEWIRE_CONFIG_NAME=client-rt.conf` (SCHED_FIFO 83 seen). Measured there:
+both nodes followers of the driver every cycle, listening or not, BUSY 5 to
+13 µs and 2 to 3 µs against a 5333 µs cycle, "too slow" once in 20 s
+(each an unfinished cycle; see the next entry); Chromium listed "Sushi rig output" and captured the stand-in Sushi's
+output; `kill -9` left no node. With no other source WirePlumber made it the
+default source; on the rig every ALSA input has a higher `priority.session`
+(1680 to 2109 in the captured graph), so it should not be there. Every key
+test was shown failing with its fix taken out (18 mutations). **Not run:**
+the rig: the iD14 as driver, the real Sushi, rtkit granting realtime,
+Firefox. The CI container runs no PipeWire, so there is no slow test of the
+real source appearing and going. *(2026-11-20)*
+
+**The visualiser's tap on demand (#195, review of PR #200).** The review
+found the tap's "too slow" to be a cycle the graph did not finish (the
+driver waits for its followers; PipeWire 1.0 logs `client too slow!` in
+`check_states` beside `graph not finished`), not a lateness of its own:
+once in 20 s is some 360 unfinished cycles in a two-hour set, visualiser
+open or not. The README's "the driver's ERR stayed at 0" said nothing,
+since ERR is charged to the late node and the driver there was a null
+sink's timer. So: (1) **on demand.** `up` never starts a tap. The page asks
+the agent (`POST /visualiser/tap {"page"}`, loopback peers only, behind
+#174's guard) when the visualiser is about to listen; the agent starts the
+`pw-loopback` in the group it holds (as `restart_amp` starts Carla), links
+it, reads its threads, and answers with the source once it is linked and
+realtime, else 409 and why, and the page hears the guitar's input. Each page
+renews a 30 s lease every 10 s; two pages share one tap; released (`POST
+/visualiser/tap/release`: a close, a hidden tab, the page going) it lingers
+3 minutes, then the watch stops it by its pid. The agent's stop, `down`,
+`restart` and a switch by restart tidy it; `--no-visualiser-tap` means never
+offered. (2) **Realtime or nothing**: no SCHED_FIFO or SCHED_RR thread, and
+it is stopped by pid and refused, saying what to install. Doctor's
+`visualiser-tap` is a fault for a running tap without one, a refusal for
+want of one, or a machine where nothing would give one (the agent's
+realtime limit 0 and no rtkit-daemon). `LimitRTPRIO` is not added to the
+unit: a user service asking above the account's hard limit fails to start;
+the unit says why and the reference how. (3) **A trip lets the tap go at
+once** (`"now": true`), and the trip message says so; the tap's nodes count
+in LOAD and XRUNS only while it runs (`Agent._load_children`). (4) **An
+input that ends** (the tap stopped, the interface gone) is chosen again and
+heard, on the track's `ended`. (5) The docs' overstatements dropped ("never
+in its way", "no new xruns in 15 s", the driver's ERR). (6) `link`'s settle
+is read when it runs, so an override is one. (7) The start-routine test
+with a 0.5 s sleep went with the start routine; the new tests wait on
+conditions. (8) **A stop on purpose is never a crash**: `Child.on_purpose`,
+set before the signal, which `_sweep` reads; the old `forget` popped the
+child from another thread while a sweep could hold it. (9) The tap's label
+comes with the tap's answer, not from `/machine/roles`, whose 409 lost it;
+`VISUALISER.tapLabel` in rig.js is held to `vistap.SOURCE_LABEL`. **CI on
+01b0e71**: `test_a_child_that_crashes_is_reported_and_not_restarted` read a
+crash 0.3 s after start as the start's on the 3.11 runner. Not from the
+tap (the test's plan had none; under eight busy loops the start took 12 to
+65 ms on master and the branch alike); the test assumed a start under
+0.3 s, and on master too fails with a start 0.35 s slower. The crasher now
+waits for a file the test writes once the rig is up. Re-run live through
+the real Supervisor (`tool/spikes/visualiser_audio/README.md`, "On
+demand"): answered in 0.32 s, realtime, linked; the lease ran out and the
+watch stopped it by pid, no node left; released at once, gone at once.
+Realtime, it was "too slow" five times in 15 s on that busy container (the
+stand-in Sushi three). **Not run:** the rig, rtkit granting realtime, the
+page against a real agent's tap, Firefox. *(2026-11-20)*
+
+**The tap on demand, re-review (#195, PR #200).** (1) "Sushi rig output"
+chosen by hand gave its lease back at once (`pickInput` said `chosen`): a
+kept input named as the tap (by `tapLabel` or the name the agent last
+gave) is the rig's output, and keeps its lease. (2) An agent that died
+uncleanly (SIGKILL, OOM; `KillMode=process` keeps the rig) left the tap in
+Sushi's cycle unseen: it is recorded beside the state file (`vistap.json`,
+pid, group and start time; not in rig.json, which a live switch rewrites
+under the lifecycle lock the tap does not take), `status` shows it,
+`/rig/load` counts it, doctor faults it while no agent holds it, `down`
+clears it with the group, and the next agent stops it by pid at start once
+its start time matches. (3) An answer later than the page's 9 s left a
+lease nobody held: the page gives it back then (`asked`, not only
+`holding`). (4) A tab hidden while the agent answered listened and renewed:
+`listenAndRun` checks `document.hidden` after each wait. (5) The linger
+started at the first lease to lapse, not the last. (6) Two more tests had
+the timed crasher's race: `crash_when`. (7) The trip message no longer
+claims the tap left Sushi's cycle (another page may hold it). (8) A tap
+that exits between its links and the thread check is refused as
+`did_not_start`, not `not_realtime`, and is the start's until accepted
+(`on_purpose`), never a crash. (9) A lease from a tap that crashed held up
+the next: cleared when a tap starts, and given back with no tap running.
+(10) The state file is read in the worker as the tap starts and stops; a
+release takes the tap's lock first. Each with a test that fails without
+it. *(2026-11-20)*
+
 **The visualiser's looks: random, stark, and three that read like an
 equaliser (#196).** Asked for 2026-11-19: "more monochrome and dramatic
 looking visualisers … let's go more crazy with it. Also let's have a couple
@@ -6638,3 +6752,17 @@ bundle is resolved and its manifest read there, as lilv does. (3) A restart's
 refusal said the rig "plays on" even when the agent was restarting a rig
 that had crashed: it says so only when the rig is running
 (`rig.restart_is_playing`), and otherwise "Nothing was stopped". *(2026-11-20)*
+
+**The tap, round 3 of PR #200's review (#195).** (1) A close while the agent
+started the tap left the late answer holding and renewing for ever: each
+acquire has a ticket, which a release (and a newer acquire) moves on, and an
+answer for a stale ticket holds nothing; a timeout releases only its own.
+(2) A second agent (another port, a dev run) stopped the first's live tap
+at its start: the record names its owner by pid and start time, and a tap
+whose owner still runs is left to it. (3) `vistap.json` is written beside
+itself and renamed over (`os.replace`); a left tap is stopped through a
+pidfd opened before its start time and name (`pw-loopback`) are checked,
+so a pid reused between check and signal cannot be hit, and a recorded pid
+that is not a `pw-loopback` is never signalled (`procs.stop_recorded`,
+replacing `stop_pid`). Each with a test that fails without it.
+*(2026-11-20)*

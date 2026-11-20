@@ -33,6 +33,14 @@ Environment=PYTHONUNBUFFERED=1
 # holder keeps the rig's process group, the state file still describes it,
 # and the next agent (or `sushi-rig down`) stops it as `down` always has.
 KillMode=process
+# No LimitRTPRIO here, though the visualiser's tap (#195), a child the agent
+# starts, is refused without a realtime thread: a user service asking for
+# more than the account's hard limit fails to start, and a rig that will not
+# start is worse than a visualiser that hears the guitar's input. rtkit gives
+# PipeWire's clients realtime without it; where the account's hard limit
+# allows one (PipeWire's limits.d file, for the `pipewire` group), a drop-in
+# can set it: docs/reference/web-ui.md, "The visualiser". Reasoned, not tried.
+#
 # The agent restarting is not the rig healing (principle 9): the agent
 # restarts no child, and a rig still playing is adopted, not restarted.
 Restart=on-failure

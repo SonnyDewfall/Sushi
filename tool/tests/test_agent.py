@@ -13,6 +13,7 @@ from __future__ import annotations
 
 import asyncio
 import dataclasses
+import os
 import sys
 import threading
 from dataclasses import replace
@@ -2348,7 +2349,11 @@ def test_the_agent_runs_the_lifecycle_itself_through_its_supervisor():
     agent = Agent(describe=lambda: dict(DOWN))
     assert agent.run == agent.supervisor.run
     _, health = call(agent, "GET", "/health")
-    assert health["agent"]["supervisor"] == {"holds": None, "crashed": [], "problems": [], "note": None}
+    assert health["agent"]["supervisor"] == {
+        "holds": None, "crashed": [], "problems": [], "note": None,
+        # The visualiser's tap (#195): none, with no rig held.
+        "visualiser_tap": {"offered": None, "running": False, "pid": None, "pages": 0, "stops_in": None,
+                           "refused": None, "stopped": None, "agent_pid": os.getpid(), "orphan": None}}
 
 
 def test_a_successful_command_carries_its_warnings_for_a_phone_to_read():

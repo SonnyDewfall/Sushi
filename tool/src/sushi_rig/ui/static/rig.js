@@ -2935,11 +2935,14 @@ export function helpLink(which, screen) {
 // ---------------------------------------------------------------- the visualiser (#176)
 // A screensaver on the laptop: after a while with no pointer, touch or key
 // on the page, a MilkDrop visualisation (butterchurn, vendored) fills the
-// window and moves with the guitar. The browser hears the guitar itself,
-// through PipeWire's PulseAudio server (getUserMedia): nothing is added to
-// the signal's path, though the server's capture stream does a little work
-// in Sushi's cycle (visualiser.js says what that risks, and what watches
-// it). screensaver.js is the DOM, visualiser.js the drawing; these are its
+// window and moves with the music. The browser captures an input itself,
+// through PipeWire's PulseAudio server (getUserMedia): first the rig's own
+// output, "Sushi rig output" (the visualiser tap, vistap.py: Sushi's master
+// after its limiter, which the agent starts while the visualiser listens,
+// visualiser-tap.js), then the guitar's input. Nothing is added to the
+// signal's path, though the capture and the tap do a little work in Sushi's
+// cycle (visualiser.js says what that risks, and what watches it).
+// screensaver.js is the DOM, visualiser.js the drawing; these are its
 // decisions.
 
 export const VISUALISER = {
@@ -2952,6 +2955,9 @@ export const VISUALISER = {
   // The machine file's role the guitar comes in on: patchbay.GUITAR_ROLE,
   // held to it by test_ui_visualiser.py.
   guitarRole: "guitar-in",
+  // What the browser names the visualiser tap's source: vistap.SOURCE_LABEL,
+  // held to it by test_ui_visualiser.py.
+  tapLabel: "Sushi rig output",
   // Each look's time when they come in a random order (#196): somewhere in
   // these seconds, never the same twice running.
   lookMin: 30,
@@ -3032,12 +3038,24 @@ export function visualiserGate(s) {
 // cannot be compared (none yet, or another run); null when nothing rose.
 // Any rise counts, whatever its cause: the capture stream is in Sushi's
 // cycle, and a glitch while it is there is not worth a second.
-export function visualiserTripped(base, seen) {
+// `tapped`: it was listening to the rig's output, whose tap is let go with
+// the capture. The agent stops it then unless another page holds it, which
+// this page cannot know when it says so.
+export function visualiserTripped(base, seen, tapped = false) {
   if (!seen || typeof seen.count !== "number") return null;
   if (!base || typeof base.count !== "number" || base.run !== seen.run) return "rebase";
   if (seen.count <= base.count) return null;
   return `Stopped: the rig glitched while the visualiser was listening (xruns went from ${base.count} to ${seen.count}). `
+    + (tapped ? "Its tap on the rig's output was let go with it: the agent stops that now, unless another page is listening to it. " : "")
     + "It stays off until this page is reloaded or the Visualiser box is ticked again.";
+}
+
+// Whether to ask the agent for the rig's output before choosing an input:
+// unless an input was chosen here by hand, and it is not that one (by its
+// name, or the name the agent last gave it, `offered`).
+export function visualiserWantsTap(settings, offered = null) {
+  const input = settings && settings.input;
+  return !input || input.label === VISUALISER.tapLabel || (!!offered && input.label === offered);
 }
 
 // Whether `idle` seconds have passed since the last input at `last` (ms).
@@ -3078,16 +3096,28 @@ export function guitarInput(roles) {
 
 // Which input to listen to, from the browser's inputs (enumerateDevices'
 // `audioinput`s: `{deviceId, label}`), the one chosen here before
-// (`settings.input`, `settings.channel`) and the guitar's (`guitarInput`):
-// `{deviceId, label, channel, how}`. A choice made here wins while that
-// input is there; then the guitar's device by name (its label, or its label
+// (`settings.input`, `settings.channel`), the guitar's (`guitarInput`) and
+// the rig's output (`output`, POST /visualiser/tap's `source`: `{node,
+// label}`, null when the agent did not start one): `{deviceId, label,
+// channel, how}`. A choice made here wins while that input is there; then
+// the rig's output, by the name the browser lists it under, both channels;
+// then the guitar's device by name (its label, or its label
 // with more after a space, as PipeWire's "Audient iD14 Multichannel" is the
 // JACK client "Audient iD14"; never a "Monitor of"); then the browser's
 // default, both channels. `how` says which, for the settings line.
-export function pickInput(devices, settings, guitar) {
+export function pickInput(devices, settings, guitar, output = null) {
   const inputs = (devices || []).filter((d) => d && typeof d.deviceId === "string" && d.deviceId);
   const kept = settings && settings.input ? inputs.find((d) => d.deviceId === settings.input.deviceId) : null;
-  if (kept) return { deviceId: kept.deviceId, label: kept.label || settings.input.label, channel: settings.channel ?? null, how: "chosen" };
+  if (kept) {
+    // The rig's output chosen by hand is still the rig's output: said as
+    // that, and its lease kept (review of PR #200: it was given back at once).
+    const tapped = kept.label === VISUALISER.tapLabel || (output && output.label && kept.label === output.label);
+    return { deviceId: kept.deviceId, label: kept.label || settings.input.label, channel: settings.channel ?? null, how: tapped ? "output" : "chosen" };
+  }
+  if (output && typeof output.label === "string" && output.label) {
+    const tap = inputs.find((d) => d.label === output.label);
+    if (tap) return { deviceId: tap.deviceId, label: tap.label, channel: null, how: "output" };
+  }
   if (guitar && guitar.device) {
     const named = inputs.find((d) => typeof d.label === "string" && !/^monitor of /i.test(d.label)
       && (d.label === guitar.device || d.label.startsWith(`${guitar.device} `)));
@@ -3102,7 +3132,8 @@ export function inputWords(pick) {
   if (!pick || !pick.deviceId) return "no input yet";
   const label = pick.label || (pick.deviceId === "default" ? "the browser's default input" : "an input");
   const side = pick.channel === 0 ? ", left channel" : pick.channel === 1 ? ", right channel" : "";
-  const how = pick.how === "guitar" ? ` (the machine file's ${VISUALISER.guitarRole})` : pick.how === "default" ? " (the browser's choice)" : "";
+  const how = pick.how === "output" ? " (the rig's output: the master, after its limiter)"
+    : pick.how === "guitar" ? ` (the machine file's ${VISUALISER.guitarRole})` : pick.how === "default" ? " (the browser's choice)" : "";
   return `${label}${side}${how}`;
 }
 
