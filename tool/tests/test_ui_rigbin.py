@@ -11,9 +11,15 @@ nothing to these tests.
 What stands in for what. "A reload" is Playwright's, in the same browser
 context, so the page's storage is kept as a browser keeps it. "A file made
 since" and "a bin file gone" are made by the test on disk, which is all an
-agent can see of either. Nothing here is the rig machine, a phone or a pedal:
-the Program Change numbers are shown as the agent counts them, and no
-Program Change is sent.
+agent can see of either. The 15 s a notice that worked stays (#189) is passed
+on Playwright's fake clock, installed before the page loads and paused once
+it has (`pause_clock`): installed alone, the fake clock still moves with real
+time, so a slow step between a notice and the test moving the clock would
+eat into the 15 s. Paused, the page's timers, `Date.now` and
+`performance.now` move only as a test moves them (`run_for`); the network
+does not wait for it, so what follows is waited for by condition. Nothing here is the
+rig machine, a phone or a pedal: the Program Change numbers are shown as the
+agent counts them, and no Program Change is sent.
 """
 
 from __future__ import annotations
@@ -59,10 +65,30 @@ def binned(served):
     return sorted(p.name for p in folder.iterdir() if p.name != ".gitignore") if folder.is_dir() else []
 
 
-def rack(browser, served, width=1280):
-    page = Page(browser, served.url + "/#rack", width=width)
+def pause_clock(p):
+    """Hold the page's fake clock (installed before it loaded) where it is,
+    give or take the second it is moved on to pause: from now on it moves
+    only by `p.clock.run_for`, however long a step of the test takes."""
+    p.clock.pause_at(p.evaluate("() => Date.now()") / 1000 + 1)  # Playwright's Python clock takes seconds
+
+
+def rack(browser, served, width=1280, clock=False):
+    if clock:
+        page = Page.__new__(Page)
+        page.errors = []
+        page.page = browser.new_page(viewport={"width": width, "height": 900})
+        page.page.on("pageerror", lambda error: page.errors.append(str(error)))
+        page.page.clock.install()
+        page.page.goto(served.url + "/#rack")
+    else:
+        page = Page(browser, served.url + "/#rack", width=width)
     page.page.wait_for_selector(".rig-row")
+    if clock:
+        pause_clock(page.page)
     return page
+
+
+NOTICE_S = 15
 
 
 def row(p, name):
@@ -142,29 +168,35 @@ def test_undo_stays_offered_only_after_a_refusal_that_may_pass(blank):
     assert out == [False, False, False, False, False, True, True], "a clash is said once, not kept"
 
 
-def test_the_undos_kept_are_a_few_per_agent_and_only_well_formed_ones(blank):
+def test_a_notice_that_worked_goes_after_its_time_and_a_refusal_never(blank):
     out = rigjs(blank, """
-      const o = (rig, s) => ({rig, entry: `${rig}-20261116T1015${s}Z.yaml`, file: `config/rigs/.deleted/${rig}-20261116T1015${s}Z.yaml`});
+      const o = (rig, at) => ({rig, entry: `${rig}-20261116T101501Z.yaml`, file: 'f', at});
+      const said = {ok: true, title: 'Deleted a', at: 1000};
+      const refused = {ok: false, title: 'Not put back: a', at: 1000};
+      const left = (bin, now) => R.noticesLeft(bin, now);
       let offers = [];
-      for (const [rig, s] of [['a', '01'], ['b', '02'], ['c', '03'], ['d', '04'], ['e', '05'], ['f', '06']]) offers = R.addOffer(offers, o(rig, s));
-      let text = R.offersToRemember(null, 'agent-one', offers);
-      text = R.offersToRemember(text, 'agent-two', [o('z', '09')]);
-      const bad = JSON.stringify({'agent-one': [{rig: '../x', entry: '../x-20261116T101501Z.yaml', file: 'x'},
-        {rig: 'a', entry: 'b-20261116T101501Z.yaml', file: 'x'}, {rig: 'a', entry: 'a.yaml', file: 'x'}, o('ok', '07')]});
+      for (const rig of ['a', 'b', 'c', 'd', 'e', 'f']) offers = R.addOffer(offers, o(rig, 1000));
       return {
-        one: R.rememberedOffers(text, 'agent-one').map((x) => x.rig),
-        two: R.rememberedOffers(text, 'agent-two').map((x) => x.rig),
-        other: R.rememberedOffers(text, 'agent-three'), noAgent: R.rememberedOffers(text, null),
-        junk: [R.rememberedOffers('not json', 'agent-one'), R.rememberedOffers('[1]', 'agent-one')],
-        bad: R.rememberedOffers(bad, 'agent-one').map((x) => x.rig),
-        dropped: R.rememberedOffers(R.offersToRemember(text, 'agent-two', []), 'agent-two'),
-        kept: R.rememberedOffers(R.offersToRemember(text, 'agent-two', []), 'agent-one').length,
+        ms: R.NOTICE_MS,
+        before: left({said, offers: [o('a', 1000)]}, 1000 + R.NOTICE_MS - 1),
+        after: left({said, offers: [o('a', 1000), o('b', 9000)]}, 1000 + R.NOTICE_MS),
+        refused: left({said: refused}, 1e12).said,
+        restoring: left({offers: [o('a', 1000)], restoring: 'a-20261116T101501Z.yaml'}, 1e12).offers.map((x) => x.rig),
+        unstamped: R.noticeDone({ok: true}, 1e12),
+        next: [R.nextNoticeIn([said, null, refused, {ok: true, at: 4000}], 2000),
+               R.nextNoticeIn([said], 1000 + R.NOTICE_MS + 50), R.nextNoticeIn([refused, null], 0)],
+        five: offers.map((x) => x.rig),
+        retired: R.RETIRED_KEYS,
       };""")
-    assert out["one"] == ["f", "e", "d", "c", "b"], "newest first, five at most: deleting B does not strand A"
-    assert out["two"] == ["z"] and out["other"] == [] and out["noAgent"] == [], "another rig's agent sees none"
-    assert out["junk"] == [[], []]
-    assert out["bad"] == ["ok"]
-    assert out["dropped"] == [] and out["kept"] == 5
+    assert out["ms"] == 15000, "about 15 s"
+    assert out["before"]["said"]["title"] == "Deleted a" and len(out["before"]["offers"]) == 1, "not before"
+    assert out["after"]["said"] is None and [x["rig"] for x in out["after"]["offers"]] == ["b"], "each by its own time"
+    assert out["refused"]["title"] == "Not put back: a", "a refusal stays until it is dismissed"
+    assert out["restoring"] == ["a"], "the Undo in flight stays until its answer"
+    assert out["unstamped"] is False
+    assert out["next"] == [14000, 0, None], "the soonest due, never below 0; none for a refusal"
+    assert out["five"] == ["f", "e", "d", "c", "b"], "newest first, five at most"
+    assert out["retired"] == ["sushi-rig.binned"]
 
 
 def test_an_undo_is_offered_only_while_the_agent_still_has_it_in_its_bin(blank):
@@ -277,39 +309,104 @@ def test_deleting_another_rig_keeps_the_first_ones_undo(browser, bin_served):
     page.close()
 
 
-def test_undo_is_still_offered_after_a_reload_while_its_file_is_in_the_bin(browser, bin_served):
+def test_the_x_beside_an_undo_forgets_it(browser, bin_served):
+    """#189: the × on an Undo changed a copy of the picker's state made for
+    its key (`binKey`), so nothing changed and nothing was redrawn."""
     page = rack(browser, bin_served)
     p = page.page
     ask_delete(p, "clean").locator(".delete-go").click()
-    ask_delete(p, LOOSE).locator(".delete-go").click()
+    ask_delete(p, "accustomed").locator(".delete-go").click()
     expect(p.locator(".bin-offers li")).to_have_count(2)
-    # Meanwhile, by hand on the rig: one bin file removed.
-    [gone] = [e for e in binned(bin_served) if e.startswith(LOOSE)]
-    (rigs_dir(bin_served) / ".deleted" / gone).unlink()
-    p.reload()
-    p.wait_for_selector(".rig-row")
+    p.get_by_role("button", name="Forget the Undo for clean").click()
     expect(p.locator(".bin-offers li")).to_have_count(1)
-    expect(undo(p, "clean")).to_be_visible()
-    stored = p.evaluate("() => JSON.parse(localStorage.getItem('sushi-rig.binned'))")
-    assert [[o["rig"] for o in kept] for kept in stored.values()] == [["clean"]], "the gone one let go in storage too"
-    undo(p, "clean").click()
-    expect(row(p, "clean")).to_have_count(1)
-    assert (rigs_dir(bin_served) / "clean.yaml").is_file()
-    p.reload()
-    p.wait_for_selector(".rig-row")
-    expect(p.locator(".bin-offers")).to_have_count(0), "a done Undo is not offered again"
+    expect(undo(p, "accustomed")).to_be_visible()
+    p.get_by_role("button", name="Forget the Undo for accustomed").click()
+    expect(p.locator(".bin-offers")).to_have_count(0)
+    # Polls and a bin listing later, it stays forgotten.
+    polls = p.evaluate("() => performance.getEntriesByType('resource').filter((r) => r.name.endsWith('/health')).length")
+    p.wait_for_function(f"() => performance.getEntriesByType('resource').filter((r) => r.name.endsWith('/health')).length > {polls + 2}")
+    expect(p.locator(".bin-offers")).to_have_count(0)
+    assert len(binned(bin_served)) == 2, "forgetting an Undo moves nothing: the files stay in the bin"
     page.close()
 
 
-def test_an_undo_kept_by_another_agent_at_this_address_is_not_offered(browser, bin_served):
+def test_the_outcomes_x_and_the_confirms_cancel_close_them(browser, bin_served):
     page = rack(browser, bin_served)
     p = page.page
-    p.evaluate("""() => localStorage.setItem('sushi-rig.binned', JSON.stringify({'another-rig-machine': [
-      {rig: 'clean', entry: 'clean-20261116T101501Z.yaml', file: 'config/rigs/.deleted/clean-20261116T101501Z.yaml'}]}))""")
+    ask_delete(p, "clean").locator(".delete-go").click()
+    said = p.locator(".rig-deleted")
+    expect(said).to_contain_text("Deleted clean")
+    said.get_by_role("button", name="Dismiss").click()
+    expect(said).to_have_count(0)
+    expect(undo(p, "clean")).to_be_visible()  # the Undo is its own, with its own ×
+    ask_delete(p, "accustomed").get_by_role("button", name="Cancel").click()
+    expect(p.locator(".delete-confirm")).to_have_count(0)
+    page.close()
+
+
+def test_a_delete_that_worked_and_its_undo_go_after_about_15_s(browser, bin_served):
+    page = rack(browser, bin_served, clock=True)
+    p = page.page
+    ask_delete(p, "clean").locator(".delete-go").click()
+    said = p.locator(".rig-deleted")
+    expect(said).to_contain_text("Deleted clean")
+    expect(undo(p, "clean")).to_be_visible()
+    p.clock.run_for((NOTICE_S - 1) * 1000)
+    expect(said).to_contain_text("Deleted clean")
+    expect(undo(p, "clean")).to_be_visible()
+    p.clock.run_for(1500)
+    expect(said).to_have_count(0)
+    expect(p.locator(".bin-offers")).to_have_count(0)
+    [entry] = binned(bin_served)
+    assert entry.startswith("clean-"), "the file stays in config/rigs/.deleted/, to move back by hand"
+    page.close()
+
+
+def test_a_put_back_that_worked_goes_too_and_a_refusal_stays(browser, bin_served):
+    page = rack(browser, bin_served, clock=True)
+    p = page.page
+    ask_delete(p, "clean").locator(".delete-go").click()
+    ask_delete(p, "accustomed").locator(".delete-go").click()
+    undo(p, "clean").click()
+    said = p.locator(".rig-deleted")
+    expect(said).to_contain_text("Put back clean")
+    expect(row(p, "clean")).to_have_count(1)
+    p.clock.run_for((NOTICE_S + 1) * 1000)
+    expect(said).to_have_count(0)
+    expect(p.locator(".bin-offers")).to_have_count(0)
+    # A refusal: a delete, a file of that name made since by hand, and its Undo.
+    ask_delete(p, LOOSE).locator(".delete-go").click()
+    expect(undo(p, LOOSE)).to_be_visible()
+    (rigs_dir(bin_served) / f"{LOOSE}.yaml").write_text("made since\n")
+    undo(p, LOOSE).click()
+    expect(said).to_contain_text(f"Not put back: {LOOSE}")
+    p.clock.run_for(5 * NOTICE_S * 1000)
+    expect(said).to_contain_text(f"Not put back: {LOOSE}"), "an error is not gone unread"
+    said.get_by_role("button", name="Dismiss").click()
+    expect(said).to_have_count(0)
+    page.close()
+
+
+def test_an_undo_is_not_kept_across_a_reload_and_the_old_record_is_let_go(browser, bin_served):
+    """Until #189 the Undos were kept in this browser (`sushi-rig.binned`).
+    Now a reload offers none, and an old record left in storage is removed
+    as the page loads and never offered, even of a file still in the bin."""
+    page = rack(browser, bin_served)
+    p = page.page
+    ask_delete(p, "clean").locator(".delete-go").click()
+    expect(undo(p, "clean")).to_be_visible()
+    [entry] = binned(bin_served)
+    agent = p.evaluate("() => fetch('/rigs/bin').then((r) => r.json()).then((b) => b.agent)")
+    assert p.evaluate("() => localStorage.getItem('sushi-rig.binned')") is None, "nothing is written"
+    old = {agent: [{"rig": "clean", "entry": entry, "file": f"config/rigs/.deleted/{entry}"}]}
+    p.evaluate("(old) => localStorage.setItem('sushi-rig.binned', JSON.stringify(old))", old)
     p.reload()
     p.wait_for_selector(".rig-row")
     p.wait_for_function("() => performance.getEntriesByType('resource').some((r) => r.name.endsWith('/rigs/bin'))")
     expect(p.locator(".bin-offers")).to_have_count(0)
+    expect(p.locator(".rig-deleted")).to_have_count(0)
+    assert p.evaluate("() => localStorage.getItem('sushi-rig.binned')") is None, "the old record is removed"
+    assert binned(bin_served) == [entry]
     page.close()
 
 
@@ -383,4 +480,60 @@ def test_the_stage_picker_has_no_delete(browser, bin_served):
     p.locator("button.lock").click()
     expect(p.locator(".stage-head select")).to_be_enabled()
     expect(p.locator(".stage-rigs .rig-del")).to_have_count(0)
+    page.close()
+
+
+def test_a_wall_clock_stepped_back_does_not_hold_a_notice(browser, bin_served):
+    """#189 review: the notices are timed on the page's monotonic clock and
+    looked at again until due, so a wall clock stepped back (NTP) while one
+    is shown does not keep it for ever."""
+    page = rack(browser, bin_served, clock=True)
+    p = page.page
+    ask_delete(p, "clean").locator(".delete-go").click()
+    said = p.locator(".rig-deleted")
+    expect(said).to_contain_text("Deleted clean")
+    p.clock.set_system_time(p.evaluate("() => Date.now()") / 1000 - 10 * 60)  # seconds, as pause_clock's
+    p.clock.run_for((NOTICE_S + 1) * 1000)
+    expect(said).to_have_count(0)
+    expect(p.locator(".bin-offers")).to_have_count(0)
+    page.close()
+
+
+def test_the_focus_on_an_undo_that_leaves_goes_to_the_picker(browser, bin_served):
+    page = rack(browser, bin_served, clock=True)
+    p = page.page
+    ask_delete(p, "clean").locator(".delete-go").click()
+    expect(undo(p, "clean")).to_be_focused()
+    p.clock.run_for((NOTICE_S + 1) * 1000)
+    expect(p.locator(".bin-offers")).to_have_count(0)
+    expect(p.locator(".rig-list button.rig").first).to_be_focused()
+    page.close()
+
+
+def test_an_undo_kept_through_a_busy_refusal_is_offered_afresh(browser, bin_served):
+    """Tried at 14 s and refused busy, the Undo stays offered for its own
+    15 s from the refusal, not the 1 s left of the first."""
+    page = rack(browser, bin_served, clock=True)
+    p = page.page
+    calls = {"n": 0}
+
+    def busy_once(route):
+        calls["n"] += 1
+        if calls["n"] == 1:
+            route.fulfill(status=409, content_type="application/json",
+                          body='{"ok": false, "status": 409, "reason": "busy: \'up\' is still running", "code": "busy"}')
+        else:
+            route.continue_()
+
+    p.route("**/rigs/clean/restore", busy_once)
+    ask_delete(p, "clean").locator(".delete-go").click()
+    expect(undo(p, "clean")).to_be_visible()
+    p.clock.run_for((NOTICE_S - 1) * 1000)
+    undo(p, "clean").click()
+    expect(p.locator(".rig-deleted")).to_contain_text("Not put back: clean")
+    p.clock.run_for(5000)
+    expect(undo(p, "clean")).to_be_visible()  # offered afresh by the refusal
+    p.clock.run_for(NOTICE_S * 1000)
+    expect(p.locator(".bin-offers")).to_have_count(0)
+    expect(p.locator(".rig-deleted")).to_contain_text("Not put back: clean"), "the refusal itself stays"
     page.close()
