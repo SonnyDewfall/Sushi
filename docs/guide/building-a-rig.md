@@ -73,13 +73,30 @@ rig is. **Back to the rack**, at the top right, leaves the screen.
 3. Click **Delete** and the rig's name, or **Cancel**.
 
 A box headed **Deleted** says where the file went, and under it **Undo: put
-back** and the rig's name. Undo is still there after you reload the page, for
-each of the last few rigs you deleted, until you use it or forget it with
-**×** beside it.
+back** and the rig's name. Both go by themselves after about 15 seconds, or
+straight away with their **×**. Undo is not offered again after that, nor
+after you reload the page.
 
 The file is not gone: it is moved into `config/rigs/.deleted/`, a folder the
 page, the pedal numbers and git all leave alone. If the rig was committed to
 git, `git checkout` brings it back too; the box gives you the exact command.
+
+### Put a deleted rig back by hand
+
+Each deleted rig is one file in `config/rigs/.deleted/`, named after the rig
+and the moment it was deleted, in UTC: `clean` deleted at 10:15:02 on 16
+November 2026 is `clean-20261116T101502Z.yaml`. A rig deleted twice in the same
+second gets `-2`, `-3` before `.yaml`. To put one back, in the checkout on the
+rig's laptop:
+
+```sh
+ls config/rigs/.deleted/
+mv config/rigs/.deleted/clean-20261116T101502Z.yaml config/rigs/clean.yaml
+```
+
+Check first that there is no `config/rigs/clean.yaml` already: `mv` would
+replace it. Reload the page to see the rig in the picker again. Leave the
+folder's `.gitignore` where it is.
 
 ## Things that may surprise you
 
@@ -111,13 +128,16 @@ git, `git checkout` brings it back too; the box gives you the exact command.
 - **Deleting a rig moves the pedal numbers of the rigs after it** down by one,
   as a new rig moves them up. The box before you delete lists which.
 - **Undo is refused if a rig of that name has been made since**, so a new file
-  is never replaced; the box says so once. The deleted file stays in
-  `config/rigs/.deleted/`, to move back by hand if you want it. Undo is not
-  offered at all once the deleted file has been removed from there.
+  is never replaced; the box says so, and stays until you close it. The
+  deleted file stays in `config/rigs/.deleted/`, to move back by hand if you
+  want it ([Put a deleted rig back by hand](#put-a-deleted-rig-back-by-hand)).
+  Undo is not offered at all once the deleted file has been removed from
+  there.
 - **`git clean -x` empties `config/rigs/.deleted/`**, because git is told to
   ignore it. A deleted rig that was never committed is then gone for good.
-- **Undo is kept in this browser only.** Another phone or laptop does not offer
-  it, but the file is in `config/rigs/.deleted/` for anyone to move back.
+- **Undo is on this page only, and for about 15 seconds.** Another phone or
+  laptop does not offer it, nor this one after a reload, but the file is in
+  `config/rigs/.deleted/` for anyone to move back.
 - The page has no way to rename a rig. A rig is one file in the project's
   `config/rigs/` folder.
 - Adding a channel from the page and restarting to play it has been done on the
