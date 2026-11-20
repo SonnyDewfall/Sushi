@@ -64,7 +64,22 @@ function turnWave(m) {
 // second (butterchurn's `_att` levels follow too closely: on plucked chords
 // the level was never more than 1.2 times them, so nothing flashed). Its
 // state is set in init, so butterchurn keeps it from frame to frame.
-const FLASH_INIT = "a.flash = 0; a.last_flash = -100; a.last_flash_frame = -1000; a.slow = 1;";
+//
+// When the last flash came is not a preset's but the page's: one gate,
+// `globalThis.sushiRigFlashGate`, made afresh by visualiser.js for each
+// session (resetFlashGate). During a blend butterchurn runs both presets'
+// frame equations every frame and draws both, so a gate of each preset's own
+// let two schedules add up: Shutter into Tunnel, strummed every 0.3 s,
+// flashed at frames 63, 72, 81 and 90, four in a second (PR #201's review).
+// Both runners see the same `a.time` and `a.frame` in a frame, so whichever
+// flashes first shuts the other out. A clock that goes back (another
+// butterchurn, or the tests running looks one after another) starts the
+// gate again.
+const FLASH_INIT = "a.flash = 0; a.slow = 1;";
+export const FLASH_GATE = "sushiRigFlashGate";
+export function resetFlashGate() {
+  globalThis[FLASH_GATE] = { time: -1e9, frame: -1e9 };
+}
 
 // Where the screen's foot and head are for a custom wave's y. Butterchurn
 // draws a custom wave's point at (-2y + 1) times the inverse aspect, so on a
@@ -76,11 +91,13 @@ const ASPECT = "a.q4 = a.aspecty > 0 ? a.aspecty : 1;";
 const FOOT = "var foot = 0.5 - 0.5/a.q4; var head = 0.5 + 0.5/a.q4;";
 function flash(threshold = 1.35) {
   return [
+    `var gate = globalThis.${FLASH_GATE} || (globalThis.${FLASH_GATE} = {time: -1e9, frame: -1e9});`,
+    "if (a.time < gate.time || a.frame < gate.frame) { gate.time = -1e9; gate.frame = -1e9; }",
     "a.flash = a.flash*0.5;",
     "a.loud = (a.bass + a.mid + a.treb)/3;",
     `if (a.loud > ${threshold} && a.loud > 1.6*a.slow`,
-    `  && a.time - a.last_flash >= ${VISUALISER.flashGap} && a.frame - a.last_flash_frame >= ${VISUALISER.flashFrames}) {`,
-    "  a.flash = 1; a.last_flash = a.time; a.last_flash_frame = a.frame; }",
+    `  && a.time - gate.time >= ${VISUALISER.flashGap} && a.frame - gate.frame >= ${VISUALISER.flashFrames}) {`,
+    "  a.flash = 1; gate.time = a.time; gate.frame = a.frame; }",
     "a.slow = 0.96*a.slow + 0.04*a.loud;",
     "a.q1 = a.flash;",
   ].join(" ");

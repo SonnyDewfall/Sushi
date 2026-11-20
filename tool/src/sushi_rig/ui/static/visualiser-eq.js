@@ -138,15 +138,16 @@ function drawCurve(g, w, h, bands, s, look) {
   g.fillStyle = s.shade;
   g.fill();
 
-  // The line, glowing: wide and faint, then narrower, then sharp. Three
-  // passes and twelve points an octave: four passes over 24 took 27 ms a
-  // frame at 1280 by 800 in software (Chromium with no GPU), these 15.
+  // The line, glowing: a faint halo, then sharp. Two passes, twelve points
+  // an octave, on a canvas half the buffer's size: four passes over 24
+  // points at full size took 27 ms a frame at 1280 by 800 in software
+  // (Chromium with no GPU); PR #201's review asked for less.
   g.globalCompositeOperation = "lighter";
   g.strokeStyle = s.gradient;
   g.lineJoin = "round";
   g.lineCap = "round";
   const glow = s.variation.glow || 1;
-  for (const [width, alpha] of [[8, 0.14], [3.2, 0.5], [1.6, 1]]) {
+  for (const [width, alpha] of [[3.2, 0.5], [1.6, 1]]) {
     g.lineWidth = Math.max(1, width * fr.scale * (width > 2 ? glow : 1));
     g.globalAlpha = alpha;
     trace(level);

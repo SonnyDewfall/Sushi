@@ -787,7 +787,23 @@ limits are needed because butterchurn's clock is its own estimate of the frame
 rate, not wall time. A flash fades within four frames. It counts as an attack
 when the level is loud and at least 1.6 times its own average over about the
 last second. Butterchurn's own `_att` levels follow the signal too closely: on
-plucked chords the level never went past 1.2 times them.
+plucked chords the level never went past 1.2 times them. The limit is the
+whole visualiser's, not each look's: one gate (`sushiRigFlashGate` on
+`globalThis`, made afresh with each session) that every look's flash checks
+and sets. During a blend butterchurn runs both looks' frame equations every
+frame, with the same clock, and draws both, so with a gate of each look's own
+the two schedules added up: Shutter into Tunnel, strummed every 0.3 s,
+flashed four times in a second (PR #201's review). Now whichever flashes first
+in a frame shuts the other out.
+
+The equaliser looks are not in that limit: they never flash the screen. What
+keeps them under it is how slowly a level falls. A level rises at once (a pick
+attack shows), and falls back over about half a second, so the display falls
+by at most about 6% of its height a frame. Choked staccato at 3 to 5 notes a
+second swings a level by about a quarter of the display; with the 0.2 s
+release it first had, it was about half, bright to near black (in the model
+of PR #201's review, held by a test). The rise is not limited: that would hide
+the attack the looks are there to show.
 
 **The equaliser looks.** Two AnalyserNodes on the capture: 8192 points for the
 bands under 750 Hz, for resolution, and 4096 from there up, so an attack shows
@@ -798,16 +814,27 @@ same width, from 46.875 Hz (12 kHz / 256) to 12 kHz, each in a fixed colour
 mapping from FFT bins to bands is `eqBands`. Each bin's power is shared out
 between the bands it overlaps, so the bands together carry it once, and a
 band's level is its bins' power summed (`eqBandDb`). A level rises at once and
-falls back over about 0.2 s (`eqSmooth`). Peak caps hold for 0.8 s, then fall
+falls back over about 0.5 s (`eqSmooth`). Peak caps hold for 0.8 s, then fall
 (`eqPeak`). The display's top follows the loudest band and falls back 3 dB a
-second, never below -50 dB (`eqTop`), so a quiet input still reads and silence
-stays dark. Aurora's lingering glow is a slow average of each band (`eqGlow`),
+second, never below -40 dB (`eqTop`), so a quiet input still reads. The foot
+is 54 dB under the top but never under -70 dB (`eqLevel`), so hum stays
+dark: mains hum at -60 dBFS peak, with its second and third harmonics, reads
+-74 dB in the loudest band (measured in Chromium at 50 and 60 Hz), and with the
+foot under the top's floor it lit half the display in silence. Hum at
+-50 dBFS peak shows. Aurora's lingering glow is a slow average of each band (`eqGlow`),
 not a fade on the canvas: a slow fade in 8-bit pixels leaves a haze that never
-clears. What a frame costs, measured in a container's Chromium with no GPU (so
-Skia in software, the worst case), at the 1280 by 800 the buffer is capped
-to: Bars and Mono bars about 1 ms, Aurora about 11, Curve about 15 (median),
-under the 33 ms a frame of the 30 fps cap; at 1920 by 1080, Curve's first
-form took 37 ms. Not measured with a GPU.
+clears.
+
+**What a frame costs.** The equaliser canvas is drawn at half the drawing
+buffer's width and height and scaled up by CSS (`eqDrawSize`), and Curve's
+line is two passes over twelve points an octave. Measured in a container's
+Chromium with no GPU (Skia in software, the worst case), median and 95th
+percentile a frame: at 640 by 400 (a 1280 by 800 buffer), Bars and Mono bars
+0.5 and 1.1 ms, Aurora 2.3 and 3.8, Curve 5.0 and 7.8; at 960 by 540 (half of
+1080p), Curve 7.4 and 11.4, Aurora 4.7 and 9.5. Curve at full size with four
+passes over 24 points took 15 ms at 1280 by 800 and 37 at 1920 by 1080. If the
+median of an equaliser look's last frames is over 10 ms, it draws at 15
+frames a second instead of 30 (`eqFps`). Not measured with a GPU.
 
 ## Not built yet
 

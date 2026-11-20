@@ -201,10 +201,10 @@ high ones on the right, and each octave takes the same width: there are eight,
 from almost an octave below the low E on the left to 12 kHz on the right. There are no
 numbers on screen. Where a colour is lit, and how bright, tells you what is sounding:
 
-- **deep red**: the lowest notes, the low E and drop tunings: boom and thump.
+- **deep red**: the lowest notes: the low E and drop tunings, boom and thump.
 - **red**: the low strings' fundamentals.
-- **orange**: low-mids, where mud lives: body and warmth.
-- **yellow**: boxiness, and the high strings' fundamentals.
+- **orange**: low-mids, mud, and the high strings' open notes.
+- **yellow**: boxiness, and notes high up the neck.
 - **green**: the mids: honk and nasal tones.
 - **cyan**: upper mids: bite, where a guitar cuts through a band.
 - **blue**: presence: pick attack and edge, where fizz starts.

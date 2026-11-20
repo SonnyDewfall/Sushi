@@ -24,7 +24,7 @@
 // for both.
 
 import * as R from "./rig.js";
-import { LOOKS as MILKDROP, BLEND_SECONDS } from "./visualiser-presets.js";
+import { LOOKS as MILKDROP, BLEND_SECONDS, resetFlashGate } from "./visualiser-presets.js";
 import { EQ_LOOKS, createEq } from "./visualiser-eq.js";
 
 export const BUTTERCHURN = "/ui/vendor/butterchurn-2.6.7/butterchurn.min.js";
@@ -102,6 +102,16 @@ export async function listen(settings, guitar) {
 
 export { audioInputs };
 
+// Give back `canvas`'s WebGL context now (WEBGL_lose_context): asked of a
+// canvas that has one, getContext returns it and makes none.
+function loseWebGL(canvas) {
+  try {
+    const gl = canvas.getContext("webgl2");
+    const lose = gl && !gl.isContextLost() && gl.getExtension("WEBGL_lose_context");
+    if (lose) lose.loseContext();
+  } catch { /* nothing to give back */ }
+}
+
 // One visualiser for the page's life, drawing on `canvas` (butterchurn's,
 // WebGL 2) and on a 2D canvas of its own put beside it (the equaliser
 // looks'): its contexts and its AudioContext are made once and kept (made
@@ -114,14 +124,18 @@ export { audioInputs };
 // the order and the variations (rig.js seededRandom); otherwise a random one.
 export async function create(canvas, onLost = () => {}, options = {}) {
   const B = await butterchurn();
+  // One flash limit for the whole visualiser, whichever looks are blending
+  // (visualiser-presets.js says why), afresh with each session's clock.
+  resetFlashGate();
   const context = silentContext();
   const size = R.drawSize(window.innerWidth, window.innerHeight);
   canvas.width = size.width;
   canvas.height = size.height;
   const flat = document.createElement("canvas");
   flat.className = "visualiser-flat off";
-  flat.width = size.width;
-  flat.height = size.height;
+  const half = R.eqDrawSize(size.width, size.height);
+  flat.width = half.width;
+  flat.height = half.height;
   canvas.after(flat);
   let viz, eq;
   try {
@@ -131,6 +145,7 @@ export async function create(canvas, onLost = () => {}, options = {}) {
     eq = createEq(flat, context);
   } catch (error) {
     flat.remove();
+    if (viz) loseWebGL(canvas);
     try { await context.close(); } catch { /* closed already */ }
     const hard = new Error(`${viz ? "the equaliser looks" : "butterchurn"} could not draw here: ${error && error.message || error}`);
     hard.name = "VisualiserError";
@@ -148,6 +163,9 @@ export async function create(canvas, onLost = () => {}, options = {}) {
   const history = [];
   let source = null, mixer = null, splitter = null, stream = null;
   let raf = null, last = null, frames = 0;
+  // How long the equaliser looks' last frames took to draw (ms), for R.eqFps;
+  // begun again with each look.
+  const eqTimes = [];
   // Moved on by every stop: a run whose resume finishes after a stop does
   // not start drawing (found in review: it drew on, unseen, at 30 fps).
   let runs = 0;
@@ -163,6 +181,7 @@ export async function create(canvas, onLost = () => {}, options = {}) {
     const seconds = pool.length > 1 ? R.lookSeconds(rng) : null;
     if (kind === "milkdrop") viz.loadPreset(presets.get(name).make(variation), look && look.kind === "milkdrop" ? BLEND_SECONDS : 0);
     else eq.show(name, variation);
+    eqTimes.length = 0;
     canvas.classList.toggle("off", kind !== "milkdrop");
     flat.classList.toggle("off", kind !== "eq");
     look = { name, kind, seconds, at: now, variation };
@@ -176,12 +195,18 @@ export async function create(canvas, onLost = () => {}, options = {}) {
 
   function frame(now) {
     raf = requestAnimationFrame(frame);
-    if (!R.frameDue(last, now)) return;
+    if (!R.frameDue(last, now, look && look.kind === "eq" ? R.eqFps(eqTimes) : R.VISUALISER.fps)) return;
     last = now;
     if (!look) next(now);
     else if (look.at == null) look.at = now;
     else if (look.seconds != null && now - look.at >= look.seconds * 1000) next(now);
-    if (look.kind === "milkdrop") viz.render(); else eq.render(now);
+    if (look.kind === "milkdrop") viz.render();
+    else {
+      const began = performance.now();
+      eq.render(now);
+      eqTimes.push(performance.now() - began);
+      if (eqTimes.length > 31) eqTimes.shift();
+    }
     frames += 1;
   }
 
@@ -200,17 +225,22 @@ export async function create(canvas, onLost = () => {}, options = {}) {
     if (context.state === "running") await context.suspend();
   }
 
+  // Done with: the input let go, the AudioContext closed, the 2D canvas
+  // gone, and butterchurn's WebGL context given back at once unless it is
+  // the one that was lost (else it waits for the garbage collector, and a
+  // browser holds only so many: PR #201's review).
   async function dispose() {
     await stop();
     disposed = true;
     flat.remove();
+    if (lost !== "WebGL") loseWebGL(canvas);
     try { await context.close(); } catch { /* closed already */ }
   }
 
   function loseTo(kind) {
     return (event) => {
       event.preventDefault();
-      if (lost) return;
+      if (lost || disposed) return;
       lost = kind;
       dispose().finally(() => onLost(kind));
     };
@@ -254,8 +284,11 @@ export async function create(canvas, onLost = () => {}, options = {}) {
     resize(width, height) {
       if (disposed) return;
       const s = R.drawSize(width, height);
-      canvas.width = flat.width = s.width;
-      canvas.height = flat.height = s.height;
+      canvas.width = s.width;
+      canvas.height = s.height;
+      const half = R.eqDrawSize(s.width, s.height);
+      flat.width = half.width;
+      flat.height = half.height;
       viz.setRendererSize(s.width, s.height);
       eq.resize(s.width, s.height);
     },
@@ -270,7 +303,14 @@ export async function create(canvas, onLost = () => {}, options = {}) {
         if (!disposed && call === calls && raf == null && context.state === "running") await context.suspend();
         return;
       }
-      if (raf == null) { last = null; raf = requestAnimationFrame(frame); }
+      if (raf == null) {
+        last = null;
+        // Shown again: the look on comes back for its time afresh, from the
+        // next frame (its time ran on while it was put away, so it used to
+        // go on the first frame: PR #201's review).
+        if (look && look.seconds != null) look.at = null;
+        raf = requestAnimationFrame(frame);
+      }
     },
     // Stopped and the input let go: the browser's capture leaves the graph.
     // A hidden tab is the same: nothing is heard while nothing is drawn.
@@ -280,7 +320,8 @@ export async function create(canvas, onLost = () => {}, options = {}) {
       return { frames, drawing: raf != null, context: context.state, look: look ? look.name : null,
         kind: look ? look.kind : null, seconds: look ? look.seconds : null, at: look ? look.at : null,
         variation: look ? look.variation : null, choice, seed, history: history.map((h) => ({ ...h })),
-        eq: eq.stats(), width: canvas.width, height: canvas.height, listening: !!stream, lost, disposed };
+        eq: { ...eq.stats(), width: flat.width, height: flat.height, fps: R.eqFps(eqTimes) },
+        width: canvas.width, height: canvas.height, listening: !!stream, lost, disposed };
     },
   };
 }

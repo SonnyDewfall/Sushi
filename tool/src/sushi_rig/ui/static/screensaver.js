@@ -134,6 +134,14 @@ hint.className = "visualiser-hint";
 hint.textContent = "Touch, move or press a key to come back";
 overlay.append(canvas, hint);
 
+// A new canvas for butterchurn in place of the one it had, whose WebGL
+// context is lost or given back.
+function freshCanvas() {
+  const fresh = document.createElement("canvas");
+  canvas.replaceWith(fresh);
+  canvas = fresh;
+}
+
 // The browser took the drawing away (the WebGL context of butterchurn's
 // canvas, or the 2D one of the equaliser looks', lost: `kind` says which):
 // the session has disposed of itself, whichever look was showing. The
@@ -146,9 +154,7 @@ function lostContext(kind = "WebGL") {
   state.session = null;
   state.lost += 1;
   state.last = performance.now();
-  const fresh = document.createElement("canvas");
-  canvas.replaceWith(fresh);
-  canvas = fresh;
+  freshCanvas();
   if (state.lost >= 2) {
     state.broken = `Off: the browser took the visualiser's graphics away twice (${kind} context lost). Reload the page to try again.`;
   } else {
@@ -208,7 +214,13 @@ async function start(now = false) {
     // until a reload or the box is ticked again.
     state.error = `The visualiser could not start: ${error && error.name ? `${error.name}: ` : ""}${error && error.message || error}`;
     if (error && error.name === "NotAllowedError") state.permission = "denied";
-    if (error && error.hard) { state.broken = `Off: ${error.message}. Reload the page, or tick the box again, to try again.`; state.error = null; }
+    if (error && error.hard) {
+      state.broken = `Off: ${error.message}. Reload the page, or tick the box again, to try again.`;
+      state.error = null;
+      // Its WebGL context, if it got one, was given back: the next try needs
+      // a canvas that can have another.
+      freshCanvas();
+    }
     state.last = performance.now();
     await close(true);
     refreshWhy();

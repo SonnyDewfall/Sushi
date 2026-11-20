@@ -22,6 +22,7 @@ GPU, a real PipeWire or anybody's eyes on what is drawn.
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import json
 import re
@@ -449,10 +450,10 @@ def test_the_equaliser_reads_quickly_up_slowly_down_and_holds_its_peaks(blank):
       return {top, level, up, afterAFrame: falls[0], afterASecond: falls[29], peak, shortNote, held, fadedASecond: h};""")
     assert out["top"][0] == -10, "the top rises to the loudest band at once"
     assert abs(out["top"][1] - (-13)) < 1e-9, "and falls back 3 dB a second"
-    assert out["top"][2] == -50 and out["top"][3] == -50, "never under the floor: silence stays dark"
+    assert out["top"][2] == -40 and out["top"][3] == -40, "never under the floor: a quiet input reads over 30 dB at least"
     assert out["level"] == [1, 0, 0.5, 1, 0]
     assert out["up"] > 0.85, "a pick attack shows within a frame"
-    assert 0.75 < out["afterAFrame"] < 0.9 and out["afterASecond"] < 0.01, "it falls back over about a fifth of a second"
+    assert 0.9 < out["afterAFrame"] < 0.96 and 0.1 < out["afterASecond"] < 0.2, "it falls back over about half a second"
     assert out["peak"][0] == 0.9 and out["peak"][1] == 0.9, "held"
     assert 0.1 < out["peak"][2] < 0.9 and out["peak"][3] == 0.1 and out["peak"][4] == 0.95, "then falls slowly, never under the bar"
     assert out["shortNote"] < 0.1 and out["held"] > 0.85, "the glow builds only on what stays"
@@ -470,6 +471,126 @@ def test_the_help_says_what_each_colour_is_in_the_order_of_the_map(blank):
         assert words in section, words
     reference = (checkout_root() / "docs" / "reference" / "web-ui.md").read_text(encoding="utf-8")
     assert "Look" in reference and "46.875" in reference
+
+
+def test_a_blend_of_two_flashing_looks_never_flashes_three_times_a_second(blank):
+    """During a blend butterchurn runs both presets' frame equations in one
+    frame, with the same `time` and `frame`, and draws both (PR #201's
+    review: with a gate of each preset's own, Shutter into Tunnel strummed
+    every 0.3 s flashed four times in a second). Every pair of flashing looks,
+    each runner keeping its own variables from frame to frame as butterchurn
+    does, on strums at several rates and phases: no second holds three
+    onsets, counting both."""
+    out = blank.evaluate("""async () => { const P = await import('/ui/visualiser-presets.js');
+      const mid = (look) => Object.fromEntries(Object.entries(look.vary).map(([k, r]) => [k, (r[0] + r[1]) / 2]));
+      const runner = (look, g) => {
+        const p = look.make(mid(look));
+        const init = new Function('a', `${p.init_eqs_str} return a;`), frame = new Function('a', `${p.frame_eqs_str} return a;`);
+        const after = init({...p.baseVals, ...g});
+        const user = Object.keys(after).filter((k) => !(k in p.baseVals) && !(k in g));
+        let map = Object.fromEntries(user.map((k) => [k, after[k]]));
+        return (g2) => { const a = frame({...p.baseVals, ...map, ...g2}); map = Object.fromEntries(user.map((k) => [k, a[k]])); return a.q1 || 0; };
+      };
+      const flashing = ['Tunnel', 'Shutter', 'Smoke', 'Mirror', 'Storm', 'Eclipse'];
+      const by = Object.fromEntries(P.LOOKS.map((l) => [l.name, l]));
+      const lv = (v) => ({bass: v, mid: v, treb: v, bass_att: 1, mid_att: 1, treb_att: 1});
+      const strum = (i, period) => ((i / 30) % period < 2 / 30 ? 3 : 0.6);
+      let worst = 0, total = 0; const where = [];
+      for (const from of flashing) for (const to of flashing) { if (from === to) continue;
+        for (const [period, offset] of [[0.3, 0], [0.3, 4], [0.28, 5], [0.45, 2], [2 / 30, 3]]) {
+          P.resetFlashGate();
+          const A = runner(by[from], {time: 0, frame: 0, fps: 30, ...lv(1)}); let B = null; const onsets = [];
+          for (let i = 0; i < 180; i++) {
+            const g = {time: i / 30, frame: i, fps: 30, aspectx: 1, aspecty: 1.5, ...lv(strum(i + offset, period))};
+            const qa = A(g); if (i === 60) B = runner(by[to], g); const qb = B ? B(g) : 0;
+            if (i >= 60) { if (qa >= 0.999) onsets.push(i); if (qb >= 0.999) onsets.push(i); }
+          }
+          const w = Math.max(0, ...onsets.map((s) => onsets.filter((t) => t >= s && t < s + 30).length));
+          total += onsets.length; if (w > worst) { worst = w; where.push([from, to, period, offset, onsets.slice(0, 6)]); }
+        } }
+      return {worst, total, where: where.slice(-1)}; }""")
+    assert out["worst"] <= 2, out["where"]
+    assert out["total"] > 100, "the looks do flash as often as allowed"
+
+
+# Choked staccato at `hz` with a choke of `decay` dB a second, its power
+# averaged over about 60 ms as the short FFT sees it (PR #201's review's
+# model, scratchpad rv201/swing.mjs): the level's swing between the notes,
+# once settled.
+SWING = """const swing = (hz, decay) => { let level = 0, top = -50; const levels = [];
+  for (let i = 0; i < 300; i++) { const since = (i / 30) % (1 / hz); let p = 0;
+    for (let k = 0; k < 12; k++) { const s = since - k * 0.005; const db = s < 0 ? -90 : Math.max(-90, -20 - decay * s); p += 10 ** (db / 10); }
+    const db = 10 * Math.log10(p / 12); top = R.eqTop(top, db, 1 / 30); level = R.eqSmooth(level, R.eqLevel(db, top), 1 / 30); levels.push(level); }
+  const tail = levels.slice(150); return Math.max(...tail) - Math.min(...tail); };"""
+
+
+def test_choked_staccato_does_not_swing_the_equaliser_bright_to_dark(blank):
+    """At 3 to 5 notes a second the bars swung by about half the display,
+    bright to near black, with a release of 0.2 s (PR #201's review; 0.55,
+    0.44, 0.41 and 0.25 of it in this model): with 0.5 s, half that (0.29,
+    0.22, 0.20, 0.12). The equaliser looks are not in the flash limit (they
+    never flash the screen): this is what keeps them under it."""
+    out = rigjs(blank, SWING + "return [swing(3, 200), swing(4, 300), swing(5, 400), swing(3.5, 120)];")
+    assert out[0] < 0.3 and max(out[1:]) < 0.23, out
+
+
+def test_hum_in_silence_stays_dark_and_the_equaliser_draws_at_half_size(blank):
+    """Mains hum at -60 dBFS peak, harmonics and all, read -74 dB in the
+    loudest band; the foot never goes under -70 dB, so it is dark however
+    long the input has been quiet, and hum ten times as strong shows. The
+    canvas is half the buffer; a look slow to draw drops to 15 fps."""
+    out = rigjs(blank, """const E = R.VISUALISER_EQ;
+      return {bottom: E.bottom, dark: [-40, -30, -10, 0].map((top) => R.eqLevel(-74, top)),
+        shows: R.eqLevel(-64, R.eqTop(E.floor, -64, 1 / 30)), quiet: R.eqLevel(-50, -40),
+        size: [R.eqDrawSize(1280, 800), R.eqDrawSize(1, 1)],
+        fps: [R.eqFps([]), R.eqFps(Array(9).fill(50)), R.eqFps(Array(31).fill(4)), R.eqFps([...Array(16).fill(12), ...Array(15).fill(2)]),
+              R.eqFps([...Array(15).fill(12), ...Array(16).fill(2)])]};""")
+    assert out["bottom"] == -70 and out["dark"] == [0, 0, 0, 0]
+    assert out["shows"] > 0.1 and 0.6 < out["quiet"] < 0.7
+    assert out["size"] == [{"width": 640, "height": 400}, {"width": 1, "height": 1}]
+    assert out["fps"] == [30, 30, 30, 15, 30]
+
+
+def test_real_hum_through_the_equaliser_draws_nothing(blank):
+    """The same through the page's own drawing: 50 and 60 Hz hum with its
+    second and third harmonics, at -60 dBFS peak, into each equaliser look's
+    analysers (an AudioContext of the page's, no capture): nothing lit. At
+    -40 dBFS peak it is."""
+    out = blank.evaluate("""async () => { const Q = await import('/ui/visualiser-eq.js');
+      const run = async (freq, peak, name) => {
+        const ctx = new AudioContext(); await ctx.resume(); const sum = ctx.createGain();
+        for (const [k, a] of [[1, 1], [2, 0.5], [3, 0.3]]) { const o = ctx.createOscillator(); o.frequency.value = freq * k;
+          const g = ctx.createGain(); g.gain.value = peak * a; o.connect(g); g.connect(sum); o.start(); }
+        const c = document.createElement('canvas'); c.width = 320; c.height = 200;
+        const eq = Q.createEq(c, ctx); eq.listen(sum); eq.show(name, {});
+        await new Promise((r) => setTimeout(r, 500));
+        for (let i = 0; i < 40; i++) eq.render(i * 33.3);
+        const loudest = eq.stats().loudest; await ctx.close(); return loudest; };
+      const out = {};
+      for (const name of Object.keys(Q.EQ_LOOKS)) out[name] = [await run(50, 0.001, name), await run(60, 0.001, name), await run(50, 0.01, name)];
+      return out; }""")
+    for name, (fifty, sixty, loud) in out.items():
+        assert fifty == 0 and sixty == 0, (name, fifty, sixty)
+        assert loud > 0.2, (name, loud)
+
+
+def test_the_guide_says_each_colour_as_rig_js_does_and_each_is_right(blank):
+    """Each colour's line in the guide is rig.js's words for it; and where
+    the strings' notes fall is checked against the map: the high strings'
+    open notes (G3, B3, E4) are orange, not yellow (PR #201's review)."""
+    out = rigjs(blank, """return {colours: R.EQ_COLOURS.map((c) => [c.name, c.range]),
+      notes: {E2: R.eqOctave(82.4), A2: R.eqOctave(110), D3: R.eqOctave(146.8), G3: R.eqOctave(196), B3: R.eqOctave(246.9),
+              E4: R.eqOctave(329.6), E5: R.eqOctave(659.3), E6: R.eqOctave(1318.5)}};""")
+    guide = (checkout_root() / "docs" / "guide" / "playing-live.md").read_text(encoding="utf-8")
+    for name, words in out["colours"]:
+        assert f"- **{name}**: {words}." in guide, name
+    names = [n for n, _ in out["colours"]]
+    by = dict(out["colours"])
+    n = out["notes"]
+    assert names[n["E2"]] == "deep red" and "low E" in by["deep red"]
+    assert names[n["A2"]] == names[n["D3"]] == "red" and "low strings" in by["red"]
+    assert names[n["G3"]] == names[n["B3"]] == names[n["E4"]] == "orange" and "high strings' open notes" in by["orange"]
+    assert names[n["E5"]] == "yellow" and "high up the neck" in by["yellow"]
 
 
 # --------------------------------------------------------------------------- #
@@ -931,16 +1052,52 @@ CAPTURES = """(() => { window.captures = []; const real = MediaDevices.prototype
   MediaDevices.prototype.getUserMedia = async function (...a) { const s = await real.apply(this, a); window.captures.push(s); return s; }; })();"""
 
 
+# A test's stand-in for the guitar: getUserMedia answers with a chord of
+# saws (an open E minor) through a lowpass, plucked every 0.6 s with a burst
+# of noise, from an AudioContext of its own. Test-only, as Chromium's fake
+# capture device (a beep a second) is otherwise all the page hears.
+CHORD = """(() => {
+  navigator.mediaDevices.getUserMedia = async () => {
+    const c = new AudioContext(); const out = c.createMediaStreamDestination();
+    const lp = c.createBiquadFilter(); lp.type = 'lowpass'; lp.frequency.value = 3500; lp.Q.value = 2;
+    const amp = c.createGain(); amp.gain.value = 0; lp.connect(amp); amp.connect(out);
+    for (const f of [82.4, 123.5, 164.8, 196, 246.9, 329.6]) { const o = c.createOscillator(); o.type = 'sawtooth'; o.frequency.value = f;
+      const g = c.createGain(); g.gain.value = 0.12; o.connect(g); g.connect(lp); o.start(); }
+    const n = c.createBufferSource(); const b = c.createBuffer(1, c.sampleRate, c.sampleRate); const d = b.getChannelData(0);
+    for (let i = 0; i < d.length; i++) d[i] = Math.random() * 2 - 1; n.buffer = b; n.loop = true;
+    const ng = c.createGain(); ng.gain.value = 0; n.connect(ng); ng.connect(out); n.start();
+    const pluck = () => { const t = c.currentTime; amp.gain.cancelScheduledValues(t); amp.gain.setValueAtTime(1, t);
+      amp.gain.exponentialRampToValueAtTime(0.15, t + 0.5); ng.gain.setValueAtTime(0.25, t); ng.gain.exponentialRampToValueAtTime(0.001, t + 0.06); };
+    pluck(); setInterval(pluck, 600); await c.resume(); return out.stream; };
+})();"""
+
+
+def luminance(v):
+    """The screen's luminance, 0 to 255, as {mean, sd}, from a screenshot
+    decoded in the page (no image library here), with the hint hidden so
+    only the drawing counts."""
+    v.page.evaluate("() => { const h = document.querySelector('.visualiser-hint'); if (h) h.style.visibility = 'hidden'; }")
+    png = base64.b64encode(v.page.screenshot()).decode()
+    return v.page.evaluate("""async (png) => { const img = new Image(); img.src = 'data:image/png;base64,' + png; await img.decode();
+      const c = document.createElement('canvas'); c.width = 320; c.height = 200; const g = c.getContext('2d');
+      g.drawImage(img, 0, 0, 320, 200); const d = g.getImageData(0, 0, 320, 200).data; let s = 0, s2 = 0; const n = d.length / 4;
+      for (let i = 0; i < d.length; i += 4) { const y = 0.2126 * d[i] + 0.7152 * d[i + 1] + 0.0722 * d[i + 2]; s += y; s2 += y * y; }
+      const mean = s / n; return {mean, sd: Math.sqrt(Math.max(0, s2 / n - mean * mean))}; }""", png)
+
+
 def seeded(seed):
     return f"window.sushiRigVisualiserSeed = {seed};"
 
 
 @pytest.mark.parametrize("look", LOOKS)
 def test_every_look_loads_and_draws_without_an_error(opened, look):
-    """Held by name: it comes on, draws, and nothing failed: no page error,
-    no shader that did not compile or link, no WebGL error on the console.
-    The equaliser looks draw on their own canvas, butterchurn's hidden."""
-    v = opened(settings={"look": look}, init=[GL_CHECK])
+    """Held by name, on a plucked chord: it comes on, draws, and nothing
+    failed: no page error, no shader that did not compile or link, no WebGL
+    error on the console; and the screen is not black: some light, and not
+    all one shade (PR #201's review: Mirror once went black within seconds
+    and only eyes on a screenshot saw it). The equaliser looks draw on their
+    own canvas, half the buffer's size, butterchurn's hidden."""
+    v = opened(settings={"look": look}, init=[GL_CHECK, CHORD])
     state = v.shown()
     session = state["session"]
     assert session["look"] == look and session["choice"] == look and session["seconds"] is None
@@ -948,7 +1105,11 @@ def test_every_look_loads_and_draws_without_an_error(opened, look):
     assert session["kind"] == kind
     if kind == "eq":
         v.until("() => sushiRigVisualiser().session.eq.drawn > 2")
-        assert v.state()["session"]["eq"]["look"] == look
+        eq = v.state()["session"]["eq"]
+        assert eq["look"] == look and (eq["width"], eq["height"]) == (600, 400), "half the 1200 by 800 buffer"
+    v.page.wait_for_timeout(1500)
+    seen = luminance(v)
+    assert seen["mean"] >= 0.5 and seen["sd"] >= 4, seen
     assert v.page.evaluate("window.glErrors") == []
     assert v.page.evaluate("""() => [...document.querySelectorAll('.visualiser canvas')].map((c) => c.classList.contains('off'))""") \
         == ([True, False] if kind == "eq" else [False, True])
@@ -970,13 +1131,17 @@ def test_a_broken_shader_is_caught(opened):
 
 
 def test_the_random_order_on_the_clock_never_repeats_and_keeps_its_times(opened):
-    """On the fake clock, seeded: each look's time is between 30 and 60 s;
-    3 s before it is up the look is still on, and the next comes on at its
-    end (by the frame clock: the fake clock also runs on with the wall
-    between calls, so the switch is read from when each came on), never the
-    same one."""
+    """On the fake clock, paused once the page is up so that only the test
+    moves it (an installed clock runs on with the wall between calls: PR
+    #201's review), seeded: each look's time is between 30 and 60 s; 400 ms
+    before it is up the look is still on, and within a frame or two of it
+    the next is, never the same one. The long stretch is jumped
+    (fast_forward, paused still): run_for over it would draw some 1400 of
+    butterchurn's frames a look in software."""
     v = opened(clock=True, init=[seeded(7)])
     v.shown()
+    v.page.clock.pause_at((v.page.evaluate("Date.now()") + 1000) / 1000)  # seconds, in Playwright's Python
+    v.advance(100)
     shown = []
     for _ in range(8):
         v.until("() => sushiRigVisualiser().session.at !== null")
@@ -984,18 +1149,37 @@ def test_the_random_order_on_the_clock_never_repeats_and_keeps_its_times(opened)
         assert session["choice"] == "random" and 30 <= session["seconds"] <= 60, session
         name, at, seconds = session["look"], session["at"], session["seconds"]
         left = at + seconds * 1000 - v.page.evaluate("performance.now()")
-        assert left > 5000
-        v.page.clock.fast_forward(int(left - 3000))
-        v.advance(50)
+        v.page.clock.fast_forward(int(left - 400))
+        v.advance(300)
         assert v.state()["session"]["look"] == name, "not before its time"
-        v.until(f"() => sushiRigVisualiser().session.look !== {json.dumps(name)} && sushiRigVisualiser().session.at !== null", timeout=8000)
-        came = v.state()["session"]["at"]
-        assert seconds * 1000 <= came - at <= seconds * 1000 + 1000, (name, seconds, came - at)
+        v.advance(200)
+        session = v.state()["session"]
+        assert session["look"] != name, "on time"
+        assert seconds * 1000 <= session["at"] - at <= seconds * 1000 + 100, (name, seconds, session["at"] - at)
         shown.append(name)
     history = [h["name"] for h in v.state()["session"]["history"]]
     assert history[:8] == shown and all(a != b for a, b in zip(history, history[1:])), history
     assert len(set(history)) >= 5, history
     assert v.state()["phase"] == "shown"
+
+
+def test_a_look_shown_again_is_not_switched_on_its_first_frame(opened):
+    """Put away for longer than its time and shown again, the look on comes
+    back for a full time of its own, not for one frame (PR #201's review:
+    its time had run on while it was away)."""
+    v = opened(clock=True, init=[seeded(4)])
+    v.shown()
+    first = v.state()["session"]
+    v.page.mouse.move(5, 5)
+    v.off()
+    v.page.clock.fast_forward(int(first["seconds"] * 1000) + 30000)
+    state = v.shown()
+    session = state["session"]
+    assert session["look"] == first["look"] and len(session["history"]) == len(first["history"]), session["history"]
+    v.until("() => sushiRigVisualiser().session.at !== null")
+    session = v.state()["session"]
+    left = session["at"] + session["seconds"] * 1000 - v.page.evaluate("performance.now()")
+    assert left > session["seconds"] * 1000 - 2000, "timed afresh"
 
 
 def test_a_look_held_by_name_stays(opened):
@@ -1053,10 +1237,15 @@ def test_a_lost_context_on_an_equaliser_look_is_as_on_butterchurn(opened):
     p = v.page
     lose = "() => document.querySelector('.visualiser canvas.visualiser-flat').dispatchEvent(new Event('contextlost', {cancelable: true}))"
     v.shown()
+    p.evaluate("() => { window.oldGl = document.querySelector('.visualiser canvas:not(.visualiser-flat)'); }")
+    assert p.evaluate("window.oldGl.getContext('webgl2').isContextLost()") is False
     p.evaluate(lose)
     v.until("""() => { const v = sushiRigVisualiser();
       return v.phase === 'off' && v.lost === 1 && v.session === null && (v.error || '').includes('context lost'); }""")
     assert "canvas context lost" in p.locator(".visualiser-note").inner_text()
+    v.until("() => window.oldGl.getContext('webgl2').isContextLost()", timeout=5000)
+    assert p.evaluate("!document.body.contains(window.oldGl)"), \
+        "butterchurn's WebGL context is given back at once, not left for the garbage collector (PR #201's review)"
     assert p.evaluate("document.querySelectorAll('.visualiser canvas').length") == 1, "its canvas went with it"
     assert p.evaluate("window.captures.length > 0 && window.captures.every((s) => s.getTracks().every((t) => t.readyState === 'ended'))"), \
         "the input is let go"
@@ -1065,3 +1254,28 @@ def test_a_lost_context_on_an_equaliser_look_is_as_on_butterchurn(opened):
     p.evaluate(lose)
     v.until("() => sushiRigVisualiser().broken !== null && sushiRigVisualiser().phase === 'off'")
     assert "twice" in v.refused(after=v.state()["attempts"])["why"]
+
+
+# The equaliser canvas gets no 2D context: the equaliser looks cannot be
+# made. Each visualiser canvas asked for WebGL is kept, in `window.glCanvases`.
+NO_2D = """(() => { const real = HTMLCanvasElement.prototype.getContext; window.glCanvases = [];
+  HTMLCanvasElement.prototype.getContext = function (kind, ...rest) {
+    if (kind === 'webgl2' && this.closest('.visualiser') && !window.glCanvases.includes(this)) window.glCanvases.push(this);
+    return kind === '2d' && this.classList.contains('visualiser-flat') ? null : real.call(this, kind, ...rest); }; })();"""
+
+
+def test_equaliser_looks_that_cannot_be_made_give_back_butterchurns_context(opened):
+    """butterchurn was made and the equaliser looks could not be: it is off
+    and says so, butterchurn's WebGL context is given back at once (PR #201's
+    review), and ticked again it is tried afresh on a new canvas."""
+    v = opened(init=[NO_2D])
+    p = v.page
+    v.until("() => sushiRigVisualiser().broken !== null && sushiRigVisualiser().phase === 'off'")
+    p.evaluate("() => { window.firstGl = window.glCanvases[0]; }")
+    assert "the equaliser looks could not draw here" in v.state()["broken"]
+    assert p.evaluate("window.firstGl.getContext('webgl2').isContextLost()") is True
+    assert p.evaluate("!document.body.contains(window.firstGl) && document.querySelectorAll('.visualiser canvas').length === 1")
+    p.locator("#visualiser-on").uncheck()
+    p.locator("#visualiser-on").check()
+    v.until("() => sushiRigVisualiser().attempts > 1 && sushiRigVisualiser().broken !== null && sushiRigVisualiser().phase === 'off'")
+    assert "the equaliser looks could not draw here" in v.state()["broken"], "tried again, and failed for the same reason, not a lost canvas"

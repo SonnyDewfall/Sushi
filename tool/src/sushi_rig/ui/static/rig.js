@@ -3221,23 +3221,54 @@ export const VISUALISER_EQ = {
   longFft: 8192,
   shortFft: 4096,
   span: 54,      // dB from the top of the display to its foot
-  floor: -50,    // the top never falls below this (dB): silence stays dark
+  // The foot never below this (dB, a band's power), however low the top:
+  // mains hum at -60 dBFS peak, with its second and third harmonics, read at
+  // most -74 dB in a band (measured in Chromium at 50 and 60 Hz), and with
+  // the foot at the top's floor less the span (-104) it lit half the
+  // display in silence (PR #201's review). Hum at -50 dBFS peak (-64) shows.
+  bottom: -70,
+  floor: -40,    // the top never falls below this (dB): a quiet input reads over at least 30 dB
   topFall: 3,    // dB a second the top falls back after the loudest band
   attack: 0.015, // seconds: a level rises at once
-  release: 0.2,  // and falls back over about this
+  release: 0.5,  // and falls back over about this (PR #201: 0.2 swung choked staccato bright to dark)
   hold: 0.8,     // seconds a peak cap waits
   capFall: 0.4,  // then falls, display heights a second
   glowRise: 1.2, // Aurora's lingering glow: seconds to build on a sustained level
   glowFall: 2.5, // and to fade
+  // The equaliser canvas is drawn at this fraction of the drawing buffer's
+  // width and height, and scaled up by CSS: its lines and bars lose little,
+  // and it is drawn in a quarter of the time (PR #201: Curve took 15 ms a
+  // frame in software at full size).
+  scale: 0.5,
+  // If the median of its last frames took longer than this (ms), the
+  // equaliser looks draw at `slowFps`, not VISUALISER.fps.
+  slowFrameMs: 10,
+  slowFps: 15,
 };
+
+// The equaliser canvas's size for a drawing buffer of `width` by `height`.
+export function eqDrawSize(width, height) {
+  const s = VISUALISER_EQ.scale;
+  return { width: Math.max(1, Math.round(width * s)), height: Math.max(1, Math.round(height * s)) };
+}
+
+// The frame rate the equaliser looks draw at, from how long their recent
+// frames took (ms): the usual, or half of it if the median is over
+// VISUALISER_EQ.slowFrameMs. Fewer than ten frames: the usual.
+export function eqFps(times) {
+  const E = VISUALISER_EQ;
+  const t = (Array.isArray(times) ? times : []).filter(Number.isFinite).slice().sort((a, b) => a - b);
+  if (t.length < 10) return VISUALISER.fps;
+  return t[Math.floor(t.length / 2)] > E.slowFrameMs ? E.slowFps : VISUALISER.fps;
+}
 
 // Each octave's colour, from the bottom: what it is called on the help page,
 // and what sounds there on a guitar. The same in Bars, Curve and Aurora.
 export const EQ_COLOURS = [
   { name: "deep red", rgb: [178, 0, 46], range: "the lowest notes: the low E and drop tunings, boom and thump" },
   { name: "red", rgb: [255, 48, 24], range: "the low strings' fundamentals" },
-  { name: "orange", rgb: [255, 134, 0], range: "low-mids, where mud lives: body and warmth" },
-  { name: "yellow", rgb: [246, 220, 0], range: "boxiness, and the high strings' fundamentals" },
+  { name: "orange", rgb: [255, 134, 0], range: "low-mids, mud, and the high strings' open notes" },
+  { name: "yellow", rgb: [246, 220, 0], range: "boxiness, and notes high up the neck" },
   { name: "green", rgb: [56, 214, 74], range: "the mids: honk and nasal tones" },
   { name: "cyan", rgb: [0, 206, 224], range: "upper mids: bite, where a guitar cuts through a band" },
   { name: "blue", rgb: [46, 104, 255], range: "presence: pick attack and edge, where fizz starts" },
@@ -3292,18 +3323,20 @@ export function eqBandDb(db, band) {
 }
 
 // The top of the display (dB): up at once to the loudest band, back down
-// slowly, never under VISUALISER_EQ.floor, so a quiet input still reads and
-// silence stays dark.
+// slowly, never under VISUALISER_EQ.floor, so a quiet input still reads.
 export function eqTop(top, loudest, dt) {
   const E = VISUALISER_EQ;
   const fallen = (Number.isFinite(top) ? top : E.floor) - E.topFall * Math.max(0, dt);
   return Math.max(E.floor, Number.isFinite(loudest) ? Math.max(loudest, fallen) : fallen);
 }
 
-// A band's height on the display, 0 to 1, from its dB and the top.
+// A band's height on the display, 0 to 1, from its dB and the top: the
+// foot is the span below the top, but never under VISUALISER_EQ.bottom, so
+// hum and the input's own noise stay dark.
 export function eqLevel(db, top) {
-  const span = VISUALISER_EQ.span;
-  return Math.min(1, Math.max(0, (db - (top - span)) / span));
+  const E = VISUALISER_EQ;
+  const foot = Math.max(top - E.span, E.bottom);
+  return Math.min(1, Math.max(0, (db - foot) / Math.max(1, top - foot)));
 }
 
 // A level after `dt` seconds moving to `target`: quickly up, slower down.
