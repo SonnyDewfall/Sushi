@@ -41,6 +41,7 @@ from sushi_rig.supervisor import AmpRestart, Outcome  # noqa: E402
 from sushi_rig.take import check_name, check_take, list_takes, load_take, start_take, take_summary  # noqa: E402
 
 from carla_fake import FakeCarla  # noqa: E402
+from rig_fixtures import whole_plugins  # noqa: E402
 from test_agent_amp import nam  # noqa: E402
 from test_record_session import MACHINE, TWO_CHANNELS, config_of  # noqa: E402
 from ui_fake import CoreLink, FakeClock, Pushing, UiRig  # noqa: E402
@@ -121,7 +122,8 @@ class World:
         return Switching(read_state=lambda: copy.deepcopy(self.state),
                          read_config=lambda path: json.loads(Path(path).read_text()),
                          write_state=lambda state: self.state.update(state), compile=compile,
-                         write_config=lambda name, compiled: str(self.root / "run" / "rigs" / f"{name}.json"))
+                         write_config=lambda name, compiled: str(self.root / "run" / "rigs" / f"{name}.json"),
+                         plugins=whole_plugins)
 
     async def run(self, args):
         self.ran.append(list(args))

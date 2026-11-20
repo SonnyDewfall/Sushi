@@ -26,8 +26,12 @@ from sushi_rig.plugins import (
     config_uris,
     copy_bundles,
     decide,
+    default_sources,
     describe_failure,
     discover,
+    Preflight,
+    preflight,
+    preflight_refusal,
     read_manifest,
 )
 
@@ -35,6 +39,25 @@ needs_lilv = pytest.mark.skipif(
     importlib.util.find_spec("lilv") is None,
     reason="lilv is a system package (python3-lilv)",
 )
+
+
+@pytest.fixture(autouse=True)
+def lv2_system(tmp_path_factory, monkeypatch):
+    """The system's LV2 folders, as this file's tests see them: empty folders
+    of their own for /usr/lib, /usr/local/lib and the home folder, and the
+    triplet x86_64-linux-gnu, so no test reads or depends on what this
+    machine has installed. A test lays bundles out under them as it needs."""
+    from sushi_rig import plugins
+
+    # Not under `tmp_path`, which some tests list.
+    system = tmp_path_factory.mktemp("lv2-system")
+    for folder in ("usr/lib", "usr/local/lib", "home"):
+        (system / folder).mkdir(parents=True)
+    monkeypatch.setattr(plugins, "USR_LIB", system / "usr" / "lib")
+    monkeypatch.setattr(plugins, "USR_LOCAL_LIB", system / "usr" / "local" / "lib")
+    monkeypatch.setattr(plugins, "_multiarch", lambda: "x86_64-linux-gnu")
+    monkeypatch.setenv("HOME", str(system / "home"))
+    return system
 
 SYS = Path("/usr/lib/lv2")
 A, B, C = "urn:t:a", "urn:t:b", "urn:t:c"
@@ -616,3 +639,498 @@ def test_cli_add_adds_what_is_missing_and_says_which(system, tmp_path, capsys):
     assert main(["plugins", "add", "--from", str(system), str(to), *common]) == 0
     assert "c.lv2" in capsys.readouterr().out
     assert main(["plugins", "check", str(to), *common]) == 0
+
+
+
+# --- the default sources (#188) ----------------------------------------------
+#
+# Ubuntu's calf-plugins puts calf.lv2 in /usr/lib/x86_64-linux-gnu/lv2 (the
+# owner's laptop, 2026-11-19), and `add` searched /usr/lib/lv2 alone: the rig
+# then failed inside Sushi. `lv2_system` stands a folder in for /usr/lib.
+
+CALF = "http://calf.sourceforge.net/plugins/EnvelopeFilter"
+MULTIARCH = Path("x86_64-linux-gnu") / "lv2"
+
+
+def test_the_default_sources_are_usr_lib_lv2_then_the_multiarch_folder(lv2_system):
+    usr_lib = lv2_system / "usr" / "lib"
+    assert default_sources() == [usr_lib / "lv2"], "neither there: /usr/lib/lv2, for discover to refuse"
+    (usr_lib / MULTIARCH).mkdir(parents=True)
+    assert default_sources() == [usr_lib / MULTIARCH], "only what exists"
+    (usr_lib / "lv2").mkdir()
+    assert default_sources() == [usr_lib / "lv2", usr_lib / MULTIARCH]
+
+
+def test_a_multiarch_folder_that_is_a_link_to_usr_lib_lv2_is_searched_once(lv2_system):
+    usr_lib = lv2_system / "usr" / "lib"
+    (usr_lib / "lv2").mkdir()
+    (usr_lib / "x86_64-linux-gnu").mkdir()
+    (usr_lib / MULTIARCH).symlink_to(usr_lib / "lv2", target_is_directory=True)
+    assert default_sources() == [usr_lib / "lv2"]
+
+
+def test_without_a_triplet_from_python_the_multiarch_folder_is_globbed(lv2_system, monkeypatch):
+    """A Python built without MULTIARCH: the /usr/lib/*-linux-gnu*/lv2 there
+    of this machine's architecture, and none when it has none, since an i386
+    folder beside it holds binaries Sushi cannot load (review of PR #198:
+    every one there was taken when none matched)."""
+    import platform
+
+    from sushi_rig import plugins
+
+    usr_lib = lv2_system / "usr" / "lib"
+    monkeypatch.setattr(plugins, "_multiarch", lambda: None)
+    monkeypatch.setattr(platform, "machine", lambda: "x86_64")
+    (usr_lib / "i386-linux-gnu" / "lv2").mkdir(parents=True)
+    assert default_sources() == [usr_lib / "lv2"], "another architecture's alone: no multiarch folder"
+    (usr_lib / MULTIARCH).mkdir(parents=True)
+    assert default_sources() == [usr_lib / MULTIARCH]
+
+
+@pytest.mark.parametrize("machine, triplet", [
+    ("x86_64", "x86_64-linux-gnu"), ("i686", "i386-linux-gnu"), ("aarch64", "aarch64-linux-gnu"),
+    ("armv7l", "arm-linux-gnueabihf"),
+])
+def test_the_globbed_multiarch_folder_is_the_machines_own_by_its_debian_name(
+        lv2_system, monkeypatch, machine, triplet):
+    """`platform.machine()` is not the triplet's first word on i686 or
+    armv7l, and arm's triplet ends `-gnueabihf`, which `*-linux-gnu/lv2`
+    missed (review of PR #198)."""
+    import platform
+
+    from sushi_rig import plugins
+
+    usr_lib = lv2_system / "usr" / "lib"
+    monkeypatch.setattr(plugins, "_multiarch", lambda: None)
+    monkeypatch.setattr(platform, "machine", lambda: machine)
+    for other in ("x86_64-linux-gnu", "i386-linux-gnu", "aarch64-linux-gnu", "arm-linux-gnueabihf"):
+        (usr_lib / other / "lv2").mkdir(parents=True)
+    assert default_sources() == [usr_lib / triplet / "lv2"]
+
+
+def _requirement(tmp_path, *uris):
+    """`--manifest` and `--config-dir` arguments requiring `uris`."""
+    manifest = tmp_path / "manifest.txt"
+    manifest.write_text("".join(f"{u}\n" for u in uris))
+    configs = tmp_path / "no-configs"
+    configs.mkdir(exist_ok=True)
+    return ["--manifest", str(manifest), "--config-dir", str(configs)]
+
+
+@needs_lilv
+def test_add_with_no_from_finds_a_bundle_only_in_the_multiarch_folder(lv2_system, tmp_path, capsys):
+    """The laptop's case: abGate in /usr/lib/lv2, Calf only in the multiarch
+    folder, and `sushi-rig plugins add` with no --from."""
+    from sushi_rig.cli import main
+
+    usr_lib = lv2_system / "usr" / "lib"
+    _bundle(usr_lib / "lv2", "abGate", A)
+    _bundle(usr_lib / MULTIARCH, "calf", CALF)
+    to = tmp_path / "plugins"
+    to.mkdir()
+    assert main(["plugins", "add", str(to), *_requirement(tmp_path, A, CALF)]) == 0
+    assert "abGate.lv2, calf.lv2" in capsys.readouterr().out
+    check([A, CALF], set(), to)
+
+
+@needs_lilv
+def test_the_same_bundle_in_both_default_sources_is_copied_once_from_usr_lib_lv2(lv2_system, tmp_path):
+    usr_lib = lv2_system / "usr" / "lib"
+    _bundle(usr_lib / "lv2", "calf", CALF)
+    _bundle(usr_lib / MULTIARCH, "calf", CALF)
+    (usr_lib / MULTIARCH / "calf.lv2" / "from-multiarch").write_text("")
+    to = tmp_path / "plugins"
+    to.mkdir()
+    plan = add([CALF], set(), default_sources(), to)
+    assert plan.bundles == [usr_lib / "lv2" / "calf.lv2"]
+    assert not (to / "calf.lv2" / "from-multiarch").exists()
+
+
+@needs_lilv
+def test_two_bundles_of_one_name_split_between_the_sources_are_refused_naming_both(lv2_system, tmp_path):
+    """An old calf.lv2 left in /usr/lib/lv2 beside a newer one in the
+    multiarch folder that declares one more plugin: the rig needs a URI from
+    each, plugins/ can hold one calf.lv2, and nothing is copied."""
+    usr_lib = lv2_system / "usr" / "lib"
+    _bundle(usr_lib / "lv2", "calf", CALF)
+    _bundle(usr_lib / MULTIARCH, "calf", CALF, B)
+    to = tmp_path / "plugins"
+    to.mkdir()
+    with pytest.raises(PluginsError) as err:
+        add([CALF, B], set(), default_sources(), to)
+    said = str(err.value)
+    assert str(usr_lib / "lv2" / "calf.lv2") in said and str(usr_lib / MULTIARCH / "calf.lv2") in said
+    assert "--from" in said
+    assert list(to.iterdir()) == []
+
+
+# --- what a missing URI is said with (#188) ----------------------------------
+
+
+@needs_lilv
+def test_a_missing_uri_installed_in_another_lv2_folder_names_it_and_the_from_to_add(lv2_system, tmp_path):
+    usr_lib = lv2_system / "usr" / "lib"
+    _bundle(usr_lib / "lv2", "ab", A)
+    home_lv2 = lv2_system / "home" / ".lv2"
+    _bundle(home_lv2, "c", C)
+    to = tmp_path / "plugins"
+    to.mkdir()
+    with pytest.raises(PluginsError) as err:
+        add([A, C], set(), default_sources(), to)
+    said = str(err.value)
+    assert f"{C}: installed in {home_lv2}, which was not searched" in said
+    assert f"--from {usr_lib / 'lv2'} --from {home_lv2}" in said
+
+
+@needs_lilv
+def test_the_multiarch_folder_left_out_by_from_is_named_for_a_uri_it_holds(lv2_system, tmp_path):
+    """The workaround the laptop needed, said by the refusal itself: --from
+    /usr/lib/lv2 alone, and Calf in the multiarch folder."""
+    usr_lib = lv2_system / "usr" / "lib"
+    _bundle(usr_lib / "lv2", "ab", A)
+    _bundle(usr_lib / MULTIARCH, "calf", CALF)
+    to = tmp_path / "plugins"
+    with pytest.raises(PluginsError) as err:
+        assemble([A, CALF], set(), [usr_lib / "lv2"], to)
+    said = str(err.value)
+    assert f"{CALF}: installed in {usr_lib / MULTIARCH}" in said
+    assert f"--from {usr_lib / 'lv2'} --from {usr_lib / MULTIARCH}" in said
+
+
+@needs_lilv
+def test_a_missing_built_plugin_names_its_build_script_and_one_nowhere_says_install(lv2_system, tmp_path):
+    usr_lib = lv2_system / "usr" / "lib"
+    _bundle(usr_lib / "lv2", "ab", A)
+    chorus = "http://jpcima.sdf1.org/lv2/string-machine-chorus"
+    octave = "http://breakfastquay.com/rdf/lv2-rubberband#livemono"
+    to = tmp_path / "plugins"
+    to.mkdir()
+    with pytest.raises(PluginsError) as err:
+        add([A, chorus, octave, C], set(), default_sources(), to)
+    said = str(err.value)
+    assert f"{chorus}: built here, not packaged: scripts/build-string-machine-chorus.sh {to} builds it" in said
+    assert f"{octave}: built here, not packaged: scripts/build-rubberband4.sh {to} builds it" in said
+    assert f"{C}: in no standard LV2 folder: install the package that provides it" in said
+
+
+# --- before a start (#188) ---------------------------------------------------
+
+
+def _declaring(folder: Path, name: str, *uris: str) -> Path:
+    """A bundle `preflight` reads: a manifest declaring `uris`. No lilv."""
+    bundle = folder / f"{name}.lv2"
+    bundle.mkdir(parents=True)
+    (bundle / "manifest.ttl").write_text(
+        "@prefix lv2: <http://lv2plug.in/ns/lv2core#> .\n"
+        + "".join(f"<{u}> a lv2:Plugin .\n" for u in uris))
+    return bundle
+
+
+def test_preflight_names_what_the_chain_lacks_and_keeps_the_amp_apart(tmp_path):
+    plugins = tmp_path / "plugins"
+    _declaring(plugins, "ab", A, B)
+    config = {"tracks": [{"plugins": [{"uri": A}, {"uri": C}]}],
+              "_amp": {"plugin": "nam", "model": "amp/models/x.nam"}}
+    assert (preflight(config, plugins).missing, preflight(config, plugins).amp) == ([C], [NAM_URI])
+    off = preflight(config, plugins, amp=False)
+    assert (off.missing, off.amp) == ([C], []), "no amp is started, so none is needed"
+    _declaring(plugins, "c", C)
+    _declaring(plugins, "nam", NAM_URI)
+    assert preflight(config, plugins) == Preflight()
+
+
+@pytest.mark.parametrize("section, amp_model, asked", [
+    ({"plugin": "nam", "model": "amp/models/x.nam"}, None, True),
+    ({"model": "amp/models/x.nam"}, None, True),  # no "plugin": amp.prepare starts NAM all the same
+    ({"plugin": "nam"}, None, False),  # no model: amp.prepare starts none
+    ({"parameters": {"Input Lvl": 0.0}}, "Other.nam", False),  # an _amp, so the override is not one
+    (None, "Other.nam", True),  # --amp-model with no _amp gets an amp
+    (None, None, False),
+    ({"plugin": "some-future-amp"}, None, False),
+])
+def test_the_amp_is_asked_for_exactly_when_amp_prepare_starts_one(tmp_path, section, amp_model, asked):
+    """`amp.prepare`'s rule (review of PR #198): an `_amp` section never
+    raises here, and never refuses; it is a warning when an amp will start."""
+    from sushi_rig import rig
+
+    config = {"tracks": [], **({"_amp": section} if section is not None else {})}
+    (tmp_path / "plugins").mkdir()
+    pre = preflight(config, tmp_path / "plugins", amp_model=amp_model)
+    assert pre.amp == ([NAM_URI] if asked else []) and not pre.missing
+    refusal, warnings = rig.plugins_refusal(config, tmp_path, "x", amp=True, amp_model=amp_model)
+    assert refusal is None and len(warnings) == (1 if asked else 0)
+
+
+@needs_lilv
+def test_preflight_asks_lilv_before_it_calls_a_plugin_missing(tmp_path, monkeypatch):
+    """A manifest the Turtle reader could not read declares nothing to it;
+    lilv, which Sushi loads plugins through, still finds the plugin, and a
+    rig that would play is not refused for it."""
+    from sushi_rig import library
+
+    plugins = tmp_path / "plugins"
+    _bundle(plugins, "ab", A)
+    monkeypatch.setattr(library, "manifest_plugins", lambda folder: ({}, []))
+    config = {"tracks": [{"plugins": [{"uri": A}, {"uri": B}]}]}
+    assert preflight(config, plugins).missing == [B]
+
+
+def test_preflight_of_a_plugins_folder_that_is_not_there_lacks_everything(tmp_path):
+    config = {"tracks": [{"plugins": [{"uri": A}]}]}
+    assert preflight(config, tmp_path / "plugins").missing == [A]
+
+
+def test_the_refusal_says_each_uri_and_the_commands_in_the_order_to_run_them(lv2_system, tmp_path):
+    """synth-lead on the laptop: Calf packaged but in the multiarch folder,
+    the chorus built, abGate in ~/.lv2. The script first, since `plugins add`
+    copies nothing while anything is still missing."""
+    usr_lib = lv2_system / "usr" / "lib"
+    _declaring(usr_lib / "lv2", "gx", A)
+    _declaring(usr_lib / MULTIARCH, "calf", CALF)
+    home_lv2 = lv2_system / "home" / ".lv2"
+    _declaring(home_lv2, "abGate", "http://hippie.lt/lv2/gate")
+    chorus = "http://jpcima.sdf1.org/lv2/string-machine-chorus"
+    plugins = tmp_path / "Sushi" / "plugins"
+    plugins.mkdir(parents=True)
+    root = tmp_path / "Sushi"
+    said = preflight_refusal("synth-lead", Preflight(missing=sorted([A, CALF, chorus, "http://hippie.lt/lv2/gate"])),
+                             plugins, root)
+    lines = said.splitlines()
+    assert lines[0].startswith(f"synth-lead was not started: 4 plugin(s) it loads are not in {plugins}")
+    assert f"  {CALF}: installed in {usr_lib / MULTIARCH}, which `sushi-rig plugins add` copies from" in lines
+    assert f"  {A}: installed in {usr_lib / 'lv2'}, which `sushi-rig plugins add` copies from" in lines
+    assert f"  http://hippie.lt/lv2/gate: installed in {home_lv2}, which was not searched" in lines
+    assert any(line.startswith(f"  {chorus}: built here") for line in lines)
+    assert lines[-3].startswith("Nothing was started. To fix it, run these, in order")
+    assert lines[-2:] == [
+        f"  {root / 'scripts/build-string-machine-chorus.sh'} {plugins}",
+        f"  sushi-rig plugins add --from {usr_lib / 'lv2'} --from {usr_lib / MULTIARCH} --from {home_lv2}",
+    ]
+
+
+def test_the_refusal_for_packaged_plugins_alone_is_plugins_add(lv2_system, tmp_path):
+    usr_lib = lv2_system / "usr" / "lib"
+    _declaring(usr_lib / MULTIARCH, "calf", CALF)
+    plugins = tmp_path / "plugins"
+    plugins.mkdir()
+    said = preflight_refusal("synth-lead", Preflight(missing=[CALF]), plugins, tmp_path)
+    assert said.splitlines()[-2:] == [
+        "Nothing was started. To fix it, run this, then start the rig again:",
+        "  sushi-rig plugins add",
+    ]
+
+
+# --- the review of PR #198 -----------------------------------------------------
+
+
+@pytest.mark.parametrize("failure", [
+    "raise OSError('liblilv-0.so: cannot open shared object file: No such file or directory')",
+    "raise ImportError('No module named _lilv')",
+])
+def test_a_lilv_that_cannot_load_is_no_lilv_and_ends_nothing(tmp_path, monkeypatch, failure):
+    """python3-lilv without liblilv-dev: `find_spec` finds it and importing
+    it raises OSError from its CDLL; an ImportError made `probe._world` call
+    `sys.exit`, whose SystemExit passed the MIDI handler's `except
+    Exception`. Either is "no lilv", and the manifests' answer stands."""
+    import sys
+
+    from sushi_rig import rig
+
+    stand_in = tmp_path / "stand-in"
+    stand_in.mkdir()
+    (stand_in / "lilv.py").write_text(failure + "\n")
+    monkeypatch.syspath_prepend(str(stand_in))
+    monkeypatch.delitem(sys.modules, "lilv", raising=False)
+    plugins = tmp_path / "plugins"
+    _declaring(plugins, "ab", A)
+    config = {"tracks": [{"plugins": [{"uri": A}, {"uri": B}]}]}
+    assert preflight(config, plugins).missing == [B]
+    refusal, _ = rig.plugins_refusal(config, tmp_path, "x", amp=False)
+    assert refusal is not None and B in refusal
+
+
+def test_a_lilv_world_that_exits_is_no_lilv(tmp_path, monkeypatch):
+    """`probe._world` ends the process when lilv will not import; the check
+    asks lilv through it, and a SystemExit must not come out of a check."""
+    from sushi_rig import plugins as plugins_module
+
+    def exits(lv2_path):
+        raise SystemExit("lilv not found")
+
+    monkeypatch.setattr(plugins_module, "_plugins_and_binaries", exits)
+    plugins = tmp_path / "plugins"
+    _declaring(plugins, "ab", A)
+    assert preflight({"tracks": [{"plugins": [{"uri": B}]}]}, plugins).missing == [B]
+
+
+@pytest.mark.parametrize("name, manifest", [
+    ("base", b"@base <http://example.invalid/p/> .\n@prefix lv2: <http://lv2plug.in/ns/lv2core#> .\n"
+             b"<a> a lv2:Plugin .\n"),
+    ("bom", "﻿@prefix lv2: <http://lv2plug.in/ns/lv2core#> .\n<http://example.invalid/p/a> a lv2:Plugin "
+            ".\n".encode("utf-8")),
+    ("latin1", '@prefix lv2: <http://lv2plug.in/ns/lv2core#> .\n<http://example.invalid/p/a> a lv2:Plugin ; '
+               '<urn:t:name> "caf\xe9" .\n'.encode("latin-1")),
+])
+def test_manifests_lilv_loads_are_read_as_lilv_reads_them(tmp_path, monkeypatch, name, manifest):
+    """Three a review found the reader dropped whole while lilv 0.24.22
+    loads them: an `@base` with a relative plugin IRI (urljoin dropped the
+    `#` of the absolute lv2: prefix under a base of the same scheme), a
+    UTF-8 byte-order mark, a Latin-1 byte in a literal. With no lilv to ask,
+    each was a false refusal."""
+    from sushi_rig.library import declared_plugins
+
+    plugins = tmp_path / "plugins"
+    (plugins / f"{name}.lv2").mkdir(parents=True)
+    (plugins / f"{name}.lv2" / "manifest.ttl").write_bytes(manifest)
+    unread: list = []
+    assert declared_plugins(plugins, unread) == {"http://example.invalid/p/a": plugins / f"{name}.lv2"}
+    assert unread == []
+    monkeypatch.setattr("sushi_rig.plugins._lilv_plugins", lambda folder: None)
+    assert preflight({"tracks": [{"plugins": [{"uri": "http://example.invalid/p/a"}]}]}, plugins) == Preflight()
+
+
+def test_with_a_bundle_unread_and_no_lilv_what_is_unseen_is_warned_of_not_refused(tmp_path, monkeypatch):
+    """The reader cannot see into a bundle it could not parse, so what it
+    does not see may be there: without lilv to ask, that is said, and the
+    rig starts."""
+    from sushi_rig import rig
+
+    plugins = tmp_path / "plugins"
+    _declaring(plugins, "ab", A)
+    (plugins / "odd.lv2").mkdir()
+    (plugins / "odd.lv2" / "manifest.ttl").write_text("@prefix lv2: <http://lv2plug.in/ns/lv2core#> .\n<x> a {\n")
+    monkeypatch.setattr("sushi_rig.plugins._lilv_plugins", lambda folder: None)
+    config = {"tracks": [{"plugins": [{"uri": A}, {"uri": B}]}]}
+    pre = preflight(config, plugins)
+    assert (pre.missing, pre.unsure, pre.unread) == ([], [B], [plugins / "odd.lv2"])
+    refusal, warnings = rig.plugins_refusal(config, tmp_path, "x", amp=False)
+    assert refusal is None
+    assert len(warnings) == 1 and B in warnings[0] and "odd.lv2 could not be read" in warnings[0]
+
+
+def test_a_bundle_whose_binary_is_a_link_to_nothing_is_refused_naming_it(lv2_system, tmp_path):
+    """Calf copied with `cp -r`: its manifest declares the URI and its
+    `calf.so` leads nowhere, so Sushi quits with the bare "Failed to load
+    tracks". Refused, naming the bundle; the fix removes it first, since
+    `plugins add` leaves a bundle that is there alone."""
+    from sushi_rig import rig
+
+    _declaring(lv2_system / "usr" / "lib" / MULTIARCH, "calf", CALF)
+    plugins = tmp_path / "plugins"
+    bundle = plugins / "calf.lv2"
+    bundle.mkdir(parents=True)
+    (bundle / "manifest.ttl").write_text(
+        f"@prefix lv2: <http://lv2plug.in/ns/lv2core#> .\n<{CALF}> a lv2:Plugin ; lv2:binary <calf.so> .\n")
+    (bundle / "calf.so").symlink_to("../../x86_64-linux-gnu/calf/calf.so")
+    config = {"tracks": [{"plugins": [{"uri": CALF}]}]}
+    pre = preflight(config, plugins)
+    assert pre.missing == [] and list(pre.broken) == [CALF]
+    refusal, _ = rig.plugins_refusal(config, tmp_path, "synth-lead", amp=False)
+    lines = refusal.splitlines()
+    assert f"  {CALF}: in {bundle}, but its binary calf.so is a link that leads nowhere" in "\n".join(lines)
+    assert lines[-2:] == [f"  rm -r {bundle}", "  sushi-rig plugins add"]
+    (bundle / "calf.so").unlink()
+    (bundle / "calf.so").write_text("")
+    assert preflight(config, plugins) == Preflight()
+
+
+def test_the_add_the_refusal_prescribes_waives_what_add_would_still_miss(lv2_system, tmp_path):
+    """`plugins add` requires the whole manifest and every config, not one
+    rig: on a machine whose plugins/ lacks the amp and a plugin built for
+    another rig, the bare `sushi-rig plugins add` the refusal gave exits 1.
+    Dry-run, the command waives each by name and says why; this rig's own
+    are never waived."""
+    from sushi_rig.amp import NAM_URI as NAM
+
+    chorus = "http://jpcima.sdf1.org/lv2/string-machine-chorus"
+    _declaring(lv2_system / "usr" / "lib" / MULTIARCH, "calf", CALF)
+    root = tmp_path / "Sushi"
+    (root / "config").mkdir(parents=True)
+    (root / "plugin-manifest.txt").write_text(f"{A}\n{CALF}\n{NAM}\n{chorus}\n")
+    plugins = root / "plugins"
+    _declaring(plugins, "ab", A)
+    said = preflight_refusal("synth-lead", Preflight(missing=[CALF]), plugins, root)
+    lines = said.splitlines()
+    assert lines[-3:-1] == [
+        "Nothing was started. To fix it, run this, then start the rig again:",
+        f"  sushi-rig plugins add --waive {NAM} --waive {chorus}",
+    ]
+    assert f"{chorus} (built here, not loaded by this rig: scripts/build-string-machine-chorus.sh" in lines[-1]
+    assert NAM in lines[-1] and "by hand" in lines[-1]
+
+
+@needs_lilv
+def test_the_add_the_refusal_prescribes_works(lv2_system, tmp_path, capsys):
+    """And run as given, it exits 0 and leaves the rig with what it needs.
+    Run through the CLI, with lilv, as the player would."""
+    import shlex
+
+    from sushi_rig.amp import NAM_URI as NAM
+    from sushi_rig.cli import main
+
+    chorus = "http://jpcima.sdf1.org/lv2/string-machine-chorus"
+    _bundle(lv2_system / "usr" / "lib" / MULTIARCH, "calf", CALF)
+    root = tmp_path / "Sushi"
+    (root / "config").mkdir(parents=True)
+    (root / "plugin-manifest.txt").write_text(f"{A}\n{CALF}\n{NAM}\n{chorus}\n")
+    plugins = root / "plugins"
+    _bundle(plugins, "ab", A)
+    said = preflight_refusal("synth-lead", Preflight(missing=[CALF]), plugins, root)
+    command = shlex.split(said.splitlines()[-2])
+    assert command[:3] == ["sushi-rig", "plugins", "add"]
+    args = command[1:] + [str(plugins), "--manifest", str(root / "plugin-manifest.txt"),
+                          "--config-dir", str(root / "config")]
+    assert main(args) == 0
+    assert preflight({"tracks": [{"plugins": [{"uri": CALF}]}]}, plugins) == Preflight()
+
+
+def test_a_broken_bundle_no_source_provides_is_rebuilt_and_never_waived(lv2_system, tmp_path, monkeypatch):
+    """Re-review of PR #198: a broken string-machine chorus was `rm -r`'d,
+    then waived as "not loaded by this rig", with no build step. A broken
+    URI is the rig's own like a missing one: what provides it again is
+    said, here its build script, which the fix runs after the removal."""
+    chorus = "http://jpcima.sdf1.org/lv2/string-machine-chorus"
+    hand = "urn:t:handmade"
+    monkeypatch.setattr("sushi_rig.plugins._lilv_plugins", lambda folder: None)
+    root = tmp_path / "Sushi"
+    (root / "config").mkdir(parents=True)
+    (root / "plugin-manifest.txt").write_text(f"{chorus}\n{hand}\n")
+    plugins = root / "plugins"
+    for name, uri in (("chorus", chorus), ("hand", hand)):
+        bundle = plugins / f"{name}.lv2"
+        bundle.mkdir(parents=True)
+        (bundle / "manifest.ttl").write_text(
+            f"@prefix lv2: <http://lv2plug.in/ns/lv2core#> .\n<{uri}> a lv2:Plugin ; lv2:binary <{name}.so> .\n")
+        (bundle / f"{name}.so").symlink_to("nowhere.so")
+    pre = preflight({"tracks": [{"plugins": [{"uri": chorus}, {"uri": hand}]}]}, plugins)
+    assert pre.missing == [] and sorted(pre.broken) == sorted([chorus, hand])
+    lines = preflight_refusal("synth-lead", pre, plugins, root).splitlines()
+    assert any(line.startswith(f"  {chorus}: in {plugins / 'chorus.lv2'}, but its binary")
+               and line.endswith(f"; built here, not packaged: scripts/build-string-machine-chorus.sh {plugins} "
+                                 "builds it") for line in lines)
+    assert any(line.startswith(f"  {hand}: in ") and line.endswith("; in no standard LV2 folder: install the "
+                                                                     "package that provides it") for line in lines)
+    assert lines[-5:] == [
+        "Nothing was started. To fix it, install the package that provides each one in no standard LV2 folder, "
+        "then run these, in order, then start the rig again:",
+        f"  rm -r {plugins / 'chorus.lv2'}",
+        f"  rm -r {plugins / 'hand.lv2'}",
+        f"  {root / 'scripts/build-string-machine-chorus.sh'} {plugins}",
+        "  sushi-rig plugins add",
+    ], "nothing of the rig's own is waived"
+
+
+def test_a_bundle_whose_manifest_is_a_link_names_its_binary_in_the_bundle(tmp_path, monkeypatch):
+    """Re-review of PR #198: a `manifest.ttl` that is a link elsewhere was
+    read resolved, so `lv2:binary <foo.so>` was looked for beside the link's
+    target and the bundle refused as broken. lilv reads it in the bundle."""
+    monkeypatch.setattr("sushi_rig.plugins._lilv_plugins", lambda folder: None)
+    share = tmp_path / "share" / "foo"
+    share.mkdir(parents=True)
+    (share / "manifest.ttl").write_text(
+        f"@prefix lv2: <http://lv2plug.in/ns/lv2core#> .\n<{A}> a lv2:Plugin ; lv2:binary <foo.so> .\n")
+    bundle = tmp_path / "plugins" / "foo.lv2"
+    bundle.mkdir(parents=True)
+    (bundle / "manifest.ttl").symlink_to(share / "manifest.ttl")
+    (bundle / "foo.so").write_text("")
+    assert preflight({"tracks": [{"plugins": [{"uri": A}]}]}, tmp_path / "plugins") == Preflight()

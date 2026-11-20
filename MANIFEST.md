@@ -6528,6 +6528,117 @@ it was away, so it switched on the first frame.
 **Not tried:** a real GPU, the rig, a real guitar, Firefox, and eyes on the
 flashes. *(2026-11-20)*
 
+**`plugins add` missed Calf in the multiarch folder, and `up` said only that
+Sushi exited (#188).** On the owner's laptop (Ubuntu, XPS 9320, 2026-11-19)
+`sushi-rig up --rig synth-lead` printed "Sushi exited during startup", and
+`sushi.log` "Failed to load tracks from the Json config file". Ubuntu's
+`calf-plugins` there installs `calf.lv2` into `/usr/lib/x86_64-linux-gnu/lv2`;
+`plugins add` searched `/usr/lib/lv2` alone, so it found no Calf, and being
+all or nothing it copied none of the eight bundles the rig lacked, guitarix's
+and abGate's included. `--from /usr/lib/lv2 --from /usr/lib/x86_64-linux-gnu/lv2`
+fixed it there. Now: (1) **`add` and `assemble` search `/usr/lib/lv2`, then
+the multiarch folder `/usr/lib/<triplet>/lv2`, each where it exists**
+(`plugins.default_sources`; the triplet is `sysconfig`'s `MULTIARCH`, else a
+glob of `/usr/lib/*-linux-gnu/lv2`, this machine's architecture's first). In
+`LV2_PATH` order: of two bundles declaring one URI lilv takes the higher
+version and, between equal ones, the earlier folder (checked with lilv
+0.24.22: a duplicate URI warns and keeps the first), so the same bundle in
+both is copied once, from `/usr/lib/lv2`, and a split between two bundles of
+one name is refused naming both, as before, now saying to leave one folder
+out with `--from`. A multiarch folder that is a link to `/usr/lib/lv2` is
+searched once. `--from` still replaces them. `add`'s choice of what is new
+(by where `decide` took it from, #186) and its name-clash refusal see one
+bundle per name either way. (2) **A URI with no provider says where it is
+instead**: in another standard folder (`~/.lv2`, `/usr/local/lib/lv2`, the
+multiarch folder when `--from` left it out), with the `--from`s that would
+take it; built here, with its script (string-machine chorus, Rubber Band 4's
+Live shifter); or nowhere, to install it. (3) **`up` checks first**
+(`rig.check_plugins`, in `prepare_launch`, so the agent's start and
+`restart` check too): each plugin the chain loads must be declared by a
+bundle in `plugins/`, read from the manifests without lilv
+(`library.declared_plugins`, which agreed with lilv on all 693 URIs of this
+machine's 274-bundle `/usr/lib/lv2`, in 0.2 s against 4.5 s; what it
+finds missing is asked of lilv too where lilv is installed, so a manifest it
+cannot parse refuses nothing). Otherwise
+nothing starts, the message names each URI, where it is and the commands in
+order (the build scripts before `plugins add`, which copies nothing while
+anything is missing), and `up` exits 1. The amp is a warning, not a refusal:
+Carla loads it, and a rig with no amp plays. `up` already exited 1 after
+"Sushi exited during startup", directly (`RigError` to `sys.exit`) and
+through the agent (409, `lifecycle_result`'s 1); a test now pins it. (4) **A
+rig switch is refused the same way** (`409 plugins_missing`), after the
+compile and before anything is touched, live or by restart, for `POST
+/rig/switch` (the picker and the stage's dropdown, #184), a Program Change,
+and a revert or preset load; the page shows the reason as it does any
+refusal, so app.js is unchanged. The plugins folder is `rig.plugins_folder`
+for the check and `LV2_PATH` alike, and `Switching.plugins` for a switch.
+Tests supply one: a stand-in bundle declaring every URI the manifest and the
+frozen rigs name (`rig_fixtures.stand_in_plugins`), in `frozen_checkout`,
+`up_world` and the switch worlds, so the check runs for real everywhere and
+nothing skips it. New tests: the defaults and their order, the link, the
+glob; Calf only in a fake multiarch folder found by `add` with no `--from`;
+the same bundle in both; a split; each kind of "no provider" note; the
+preflight and its refusal; `up` refusing through the CLI, exit 1, nothing
+forked; the agent's `/rig/up` and `/rig/switch` refusals; the page's Start
+and the stage dropdown showing them. NOT tested: a real Ubuntu multiarch
+layout (this machine has no `/usr/lib/*-linux-gnu/lv2`), and Carla with
+the amp missing from `plugins/` (the warning says it cannot load it, which
+is inferred, not watched). *(2026-11-19)*
+
+**The review of PR #198 (#188).** Nine findings, each fixed with a test
+shown failing without it. (1) **A revert or a preset load wrote the rig
+file, then the switch's plugins check refused it** (409 `not_switched`,
+`written: true`): the check now runs on the compiled point or preset in
+`_revert_compile` and `_plan_load`, before the write (`_rigfile_plugins`,
+409 `plugins_missing`), and the file is left as it was. (2) **A restart was
+checked only by its `up`, after `down`**, so a refused restart left no rig:
+both `restart`s now compile or read the rig first
+(`rig.restart_plugins_refusal`; the agent's through `World.restart_refusal`)
+and refuse before stopping anything ("Nothing was stopped: … plays on").
+(3) **The lilv cross-check could end the process**: `find_spec("lilv")`
+finds python3-lilv while its `CDLL("liblilv-0.so")` raises OSError without
+liblilv-dev, and `probe._world` turns an ImportError into `sys.exit`, whose
+SystemExit passes the MIDI handler's `except Exception`. lilv is now
+imported and asked under `except (Exception, SystemExit)`, and any failure
+is "no lilv" (`plugins._lilv_plugins`); tested with stand-in lilvs raising
+OSError and ImportError, and a world that exits. (4) **The reader dropped
+three manifests lilv loads**: an `@base` with a relative plugin IRI
+(`urljoin` dropped the `#` of an absolute `lv2:` prefix under a base of the
+same scheme; absolute IRIs are now left alone), a UTF-8 BOM, and a Latin-1
+byte in a literal (decoded with replacement, and said). Without lilv each
+was a false refusal. `library.manifest_plugins` also returns the bundles it
+could not read; with no lilv and one unread, what is unseen is warned of,
+not refused. (5) **Binaries were never checked**: the manifest's
+`lv2:binary` (or lilv's, where the manifest names none) must be a file, so
+a `cp -r` Calf with `calf.so` a link to nothing is refused, naming the
+bundle, with `rm -r` of it first in the fix. (6) **The prescribed `plugins
+add` could itself refuse**, since `add` requires the whole manifest and
+every config: the refusal now dry-runs `decide` over that and waives by name
+what `add` would still miss and the rig does not load (NAM carried by hand,
+a plugin built for another rig); a test runs the command it gives through
+the CLI and it exits 0. The pedals and string-machine guides say when to
+`--waive` the amp. (7) **The amp followed `amp.prepare`'s rule** only
+loosely: it is now asked for exactly when an amp will start (`_amp` with a
+model, or `--amp-model` with no `_amp`), and an `_amp` without `plugin`
+neither raises nor refuses. (8) **The multiarch glob** is now
+`*-linux-gnu*/lv2` (arm's `-gnueabihf`), filtered by Debian's name for
+`platform.machine()` (i686, armv7l, aarch64, x86_64), and none of this
+machine's means no multiarch folder, not all of them. (9) The guides'
+"whatever was playing keeps playing" is now true of every refusal, and
+`switch_route`'s docstring lists `plugins_missing`. *(2026-11-20)*
+
+**The re-review of PR #198 (#188).** Three fixes, each with a test shown
+failing without it. (1) A broken bundle no source provides was `rm -r`'d by
+the prescribed fix and then waived as "not loaded by this rig": a broken URI
+is now the rig's own like a missing one, never waived, with what provides it
+again (its build script, its package) beside it and in the steps. (2) A
+`manifest.ttl` that is a link elsewhere was read resolved, so `lv2:binary
+<foo.so>` was looked for beside the link's target, a false refusal: the
+bundle is resolved and its manifest read there, as lilv does. (3) A restart's
+refusal said the rig "plays on" even when the agent was restarting a rig
+that had crashed: it says so only when the rig is running
+(`rig.restart_is_playing`), and otherwise "Nothing was stopped". *(2026-11-20)*
+
 **The pedalboard, part 2: assigning pedal controls in the rack (#192).** The
 user's design: a device in the machine file has a type and assignable
 controls, and the rig's controls are assigned on the rack, not by touching

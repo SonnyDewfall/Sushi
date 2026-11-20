@@ -19,6 +19,49 @@ fallback. That is the whole point: a missing or renamed plugin now fails loudly
 at startup instead of silently resolving against the system copy and hiding the
 fact that the rig is not actually self-contained.
 
+**`sushi-rig up` checks first** (#188). Sushi given a chain it cannot build
+quits with only `Failed to load tracks from the Json config file`, naming no
+plugin. So before it starts anything, `up` reads which plugins the rig loads
+and whether a bundle in `plugins/` declares each, and whether the binary each
+names (its `lv2:binary`) is a file: a bundle copied with `cp -r`, its binary a
+link to nothing, is a refusal too. It reads the bundles' `manifest.ttl`,
+without lilv, in a fraction of a second. What that leaves unseen is asked of
+lilv as well, where lilv can be loaded, so a manifest the reader cannot parse
+does not stop a rig Sushi would load; where lilv cannot be loaded and a bundle
+could not be read, what is unseen may be in it, so `up` warns of it and
+starts. If anything is missing or broken it starts nothing, names every one,
+says where each is instead (installed in `/usr/lib/lv2` or the multiarch
+folder, in `~/.lv2`, built by a script here, or nowhere) or what is wrong
+with its bundle, gives the commands that fix it in the order to run them, and
+exits 1:
+
+```
+synth-lead was not started: 1 plugin(s) it loads are not in /home/you/Sushi/plugins, the only folder Sushi loads plugins from (LV2_PATH), so Sushi would quit at startup saying only "Failed to load tracks from the Json config file":
+  http://calf.sourceforge.net/plugins/EnvelopeFilter: installed in /usr/lib/x86_64-linux-gnu/lv2, which `sushi-rig plugins add` copies from
+Nothing was started. To fix it, run this, then start the rig again:
+  sushi-rig plugins add
+```
+
+The commands are the ones that work: a broken bundle is removed first
+(`rm -r`), since `plugins add` leaves a bundle that is there alone; a
+plugin built here is built next, since `add` copies nothing while anything
+it requires is missing. And `add` requires every plugin the manifest and
+the configs name, not only this rig's, so the refusal dry-runs it: what it
+would still miss and this rig does not load (the neural amp, carried by
+hand; a plugin built for another rig) is waived by name in the command, with
+a line saying why.
+
+The agent says the same, for a start from the web UI, and refuses before
+touching the running rig for a rig switch (the picker's **Switch to**, the
+stage's dropdown, a Program Change), a revert or a channel preset's load
+(`409`, code `plugins_missing`; a revert or a load writes nothing), and a
+restart (it stops nothing, the running rig plays on). The amp is the
+exception: Carla loads it, not Sushi, so a missing amp is a warning (the rig
+plays dry, as when Carla exits), asked for exactly when an amp will start
+(`amp.prepare`'s rule: an `_amp` with a model, or `--amp-model` with none),
+and never a refusal. `plugins check` is still the whole check: every URI
+the manifest lists, and every link in `plugins/`.
+
 `plugin-manifest.txt` means **every LV2 URI this rig can load**, one a line
 (`grep -c . plugin-manifest.txt` counts them), and it must include every
 plugin a config in `config/` uses; `sushi-rig plugins check` fails if one is
@@ -44,11 +87,15 @@ and to prove it is self-contained:
 scripts/build-rubberband4.sh ~/rubberband-4.0.0/lv2
 scripts/build-string-machine-chorus.sh ~/string-machine-chorus/lv2
 sushi-rig plugins assemble --from ~/rubberband-4.0.0/lv2 --from ~/string-machine-chorus/lv2 \
-    --from /usr/lib/lv2 --to plugins \
+    --from /usr/lib/lv2 --from /usr/lib/x86_64-linux-gnu/lv2 --to plugins \
     --waive http://github.com/mikeoliphant/neural-amp-modeler-lv2
 sushi-rig plugins check --waive http://github.com/mikeoliphant/neural-amp-modeler-lv2
                                    # every other URI resolves with LV2_PATH = plugins/ alone
 ```
+
+`--from` replaces the default folders, so the system's are named too: drop
+`--from /usr/lib/x86_64-linux-gnu/lv2` where that folder does not exist
+(`assemble` refuses a `--from` that is not there), as in CI's image.
 
 The waiver is the right answer, not a workaround. The neural amp's URI is
 required, and no distro packages it, so `/usr/lib/lv2` has no provider and a bare
@@ -56,6 +103,27 @@ required, and no distro packages it, so `/usr/lib/lv2` has no provider and a bar
 (build it from `mikeoliphant/neural-amp-modeler-lv2`). Waiving it by name makes
 `assemble` and `check` report it on every run, so that fact is something the tool
 says out loud rather than something you have to remember.
+
+**Where bundles are taken from.** Without `--from`, `assemble` and `add` search
+`/usr/lib/lv2` and then the multiarch folder `/usr/lib/<triplet>/lv2`
+(`/usr/lib/x86_64-linux-gnu/lv2` on a 64-bit PC), each where it exists. Debian
+and Ubuntu install some LV2 packages into the second: on the owner's laptop
+(Ubuntu, 2026-11-19) `calf-plugins` put `calf.lv2` there, and `add`, which
+then searched `/usr/lib/lv2` alone, found no Calf, copied nothing, and
+synth-lead failed inside Sushi (#188). The triplet is the one Python was built
+for (`sysconfig`'s `MULTIARCH`); without one, the `/usr/lib/*-linux-gnu/lv2`
+that exist are searched, this machine's architecture's only when it has one.
+The folders are searched as an `LV2_PATH` is: for a URI two bundles declare,
+lilv takes the higher `lv2:minorVersion`, and between equal versions the
+earlier folder, so the same bundle in both is copied once, from
+`/usr/lib/lv2`. Two bundles of one name that each provide something the rig
+needs (an old copy left beside a new one) are refused, naming both, since
+`plugins/` is flat. `--from` replaces the defaults: name every folder to
+search. When a required URI is missing, the refusal says where it is instead:
+in another standard LV2 folder (`~/.lv2`, `/usr/local/lib/lv2`, the multiarch
+folder when `--from` left it out), with the `--from`s that would take it from
+there; built by a script here, with the script; or in no folder at all, to
+install its package.
 
 `assemble` copies exactly the bundles the rig needs and nothing else, and fails
 without copying if any required URI has no provider, listing all of them. "Needed"
@@ -215,7 +283,9 @@ In order:
 - The script builds in a temporary folder (seconds, with network to
   github.com) and replaces `plugins/string-machine-chorus.lv2`, putting the
   old one back if it fails. Nothing else in `plugins/` is touched.
-- `plugins add` copies from `/usr/lib/lv2` only the bundles the manifest
+- `plugins add` copies from `/usr/lib/lv2` and the multiarch folder
+  `/usr/lib/x86_64-linux-gnu/lv2` (where Ubuntu may put `calf.lv2`, as on
+  the owner's laptop, #188) only the bundles the manifest
   needs and `plugins/` lacks (here Calf's, abGate's, GxBigMuffPi's and
   GxZita_rev1's, and GxEchoCat's if the pedals' steps have not put it there);
   a bundle already in `plugins/`, the amp and the built ones among them, is
@@ -224,9 +294,12 @@ In order:
   then are they renamed into place. It refuses, copying nothing, if a bundle
   it would add has the name of one already there that provides something
   else, or if a link in one leads nowhere. Links are what make the copy
-  matter: Ubuntu's `calf.lv2/calf.so` is a relative link out of its bundle
+  matter: Ubuntu 24.04's `calf.lv2/calf.so` is a relative link out of its bundle
   (`../../x86_64-linux-gnu/calf/calf.so`), which a plain `cp -r` copies as a
-  link to nothing; `add` and `assemble` point it at the file (#177).
+  link to nothing; `add` and `assemble` point it at the file (#177). When
+  a plugin the rig needs is in none of the folders `add` searched, it says
+  where that plugin is instead; `up` says the same before it starts a rig
+  that needs one `plugins/` lacks.
 - `plugins check` fails if any URI the manifest lists does not resolve from
   `plugins/`, if any link in `plugins/` (but `archive/`) leads nowhere, or if
   a required plugin's binary is not a file, which is what a `cp -r` of Calf

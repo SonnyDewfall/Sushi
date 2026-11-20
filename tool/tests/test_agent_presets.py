@@ -855,3 +855,29 @@ def test_restored_values_come_before_the_plans_bypass_offs():
     ops = [(s.op, s.args.get("processor"), s.args.get("bypassed", s.args.get("value"))) for s in out.steps]
     assert ops == [("bypass", "drive", True), ("parameter", "room", 0.2), ("parameter", "drive", 0.3),
                    ("bypass", "drive", False), ("bypass", "room", False)]
+
+
+def test_a_load_whose_plugins_are_not_all_there_writes_nothing(root, tmp_path, monkeypatch):
+    """Review of PR #198: a load wrote the rig file, then the switch into it
+    refused it for a plugin plugins/ lacked, and answered 409 `not_switched`
+    with `written: true`. Now refused before the write, with the file as it
+    was and nothing played."""
+    import shutil
+
+    from rig_fixtures import declaring, fake_lv2_system, stand_in_plugins
+
+    gxts9 = "http://guitarix.sourceforge.net/plugins/gxts9#ts9sim"
+    declaring(fake_lv2_system(tmp_path, monkeypatch), "gxts9", gxts9)
+    agent, world, fake, runner = make_agent(root)
+    save_as(agent, "guitar", "gv-guitar")
+    shutil.rmtree(root / "plugins")
+    stand_in_plugins(root / "plugins", leave_out=(gxts9,))
+    before = rig_file(root, "guitar_vocal").read_bytes()
+    status, body = load(agent, "vocal", "gv-guitar")
+    assert status == 409 and body["code"] == "plugins_missing", body
+    assert body["reason"].startswith(
+        "nothing was written: guitar_vocal was not given preset gv-guitar on vocal: 1 plugin(s)")
+    assert gxts9 in body["reason"] and "then load it again: sushi-rig plugins add" in body["reason"]
+    assert "written" not in body
+    assert rig_file(root, "guitar_vocal").read_bytes() == before, "the file is untouched"
+    assert fake.writes() == [] and runner.calls == []
