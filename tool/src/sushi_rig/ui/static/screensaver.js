@@ -12,6 +12,7 @@
 // time it starts. The decisions are rig.js's.
 
 import * as R from "./rig.js";
+import * as T from "./visualiser-tap.js";
 
 const KEY = "sushi-rig.visualiser";
 // Checked this often whether the page has been left long enough.
@@ -47,7 +48,6 @@ const state = {
   probe: null,             // {webgl, renderer}, once asked
   permission: null,        // the microphone's permission state, once asked
   roles: null,             // GET /machine/roles's roles, once answered
-  output: null,            // and its visualiser_tap: the rig's output, as the browser names it
   session: null,           // visualiser.js's, once made
   loaded: false,
   why: null,
@@ -61,6 +61,7 @@ const state = {
   tripped: null,           // why it stopped itself, until reloaded or switched on again
   broken: null,            // why it cannot be made here, the same
   lost: 0,                 // WebGL contexts the browser took away
+  reopened: 0,             // inputs heard again after one ended: for the tests
 };
 
 // ---------------------------------------------------------------- what the page is
@@ -110,7 +111,6 @@ async function guitar() {
       const response = await fetch("/machine/roles");
       const body = await response.json();
       if (response.ok && body && Array.isArray(body.roles)) state.roles = body.roles;
-      if (response.ok && body && body.visualiser_tap) state.output = body.visualiser_tap;
     } catch { /* no machine file to read: the browser's choice, said on the line */ }
   }
   return R.guitarInput(state.roles);
@@ -150,20 +150,37 @@ function lostContext() {
   refreshWhy();
 }
 
-// Hear the input and draw, for start and for a tab shown again. False if
-// the visualiser went meanwhile (the stream is let go then).
+// Hear the input and draw, for start, for a tab shown again and for an input
+// that ended. The rig's output is asked of the agent first (visualiser-tap.js),
+// and given back if it is not what was chosen. False if the visualiser went
+// meanwhile (the stream and the tap are let go then).
 async function listenAndRun(V, generation) {
-  const opened = await V.listen(state.settings, await guitar(), state.output);
+  const output = R.visualiserWantsTap(state.settings) ? await T.acquire() : null;
+  const opened = await V.listen(state.settings, await guitar(), output);
+  if (opened.pick.how !== "output") T.release();
   if (generation !== state.generation || !state.session) {
     for (const t of opened.stream.getTracks()) t.stop();
+    T.release();
     return false;
   }
+  // An input that goes while it is heard (the tap stopped, the interface
+  // unplugged) ends its track: choose again and hear that, not silence.
+  for (const t of opened.stream.getAudioTracks()) t.addEventListener("ended", () => reheard(generation), { once: true });
   state.pick = opened.pick;
   state.permission = "granted";
   state.session.attach(opened);
   state.base = state.xruns;
   await state.session.run();
   return generation === state.generation;
+}
+
+function reheard(generation) {
+  if (generation !== state.generation || state.phase !== "shown" || document.hidden || !state.session) return;
+  state.reopened += 1;
+  import("./visualiser.js").then((V) => listenAndRun(V, generation)).catch((error) => {
+    state.error = `The visualiser lost its input and could not hear another: ${error && error.message || error}`;
+    close(true);
+  });
 }
 
 async function start(now = false) {
@@ -216,6 +233,7 @@ async function close(atOnce = false) {
   overlay.classList.remove("in", "showing");
   overlay.classList.add("closing");
   if (atOnce) finish(); else quiet();
+  T.release();
   if (state.session) await state.session.stop();
 }
 
@@ -327,7 +345,7 @@ setInterval(() => {
 document.addEventListener("visibilitychange", () => {
   if (document.hidden) letGo();
   if (!state.session || state.phase !== "shown") return;
-  if (document.hidden) { state.session.stop(); return; }
+  if (document.hidden) { T.release(); state.session.stop(); return; }
   const generation = state.generation;
   import("./visualiser.js").then((V) => listenAndRun(V, generation)).catch((error) => {
     state.error = `The visualiser could not hear the input again: ${error && error.message || error}`;
@@ -360,9 +378,10 @@ document.addEventListener("sushi-rig:xruns", (event) => {
   const seen = event.detail && typeof event.detail.count === "number" ? { count: event.detail.count, run: event.detail.run } : null;
   state.xruns = seen;
   if (!seen || !(state.phase === "shown" || state.phase === "starting") || !state.session || !state.session.stats().listening) return;
-  const why = R.visualiserTripped(state.base, seen);
+  const why = R.visualiserTripped(state.base, seen, T.isHolding());
   if (why === "rebase") { state.base = seen; return; }
   if (why) {
+    T.release(true);  // the tap too, at once: the cause the safeguard can remove
     state.tripped = why;
     close(true);
     refreshWhy();
@@ -471,5 +490,6 @@ window.sushiRigVisualiser = () => ({
   phase: state.phase, why: state.why, error: state.error, loaded: state.loaded, running: state.running,
   idle: state.settings.idle, on: state.settings.on, pick: state.pick, held: [...state.held],
   due: state.due, attempts: state.attempts, tripped: state.tripped, broken: state.broken, lost: state.lost,
+  reopened: state.reopened, tap: { holding: T.isHolding(), reason: T.reason(), page: T.page },
   session: state.session ? state.session.stats() : null,
 });

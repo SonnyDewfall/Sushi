@@ -88,7 +88,8 @@ Chromium switch here); Firefox at all.
 
 The user asked for the rig's processed output, not the guitar's input. Since
 Chromium lists no monitor sources, the tap is a real `Audio/Source`: a
-`pw-loopback` started with the rig (`tool/src/sushi_rig/vistap.py`). Run with
+`pw-loopback` (`tool/src/sushi_rig/vistap.py`), started with the rig in this
+first run and on demand since (below). Run with
 the tool's own code against this session (`session.sh`; the stand-in Sushi
 drives AUX0 through `tanh` to both outputs): `vistap.child()` started as the
 rig starts a child, `vistap.link()` with a compiled-shaped config whose master
@@ -110,17 +111,20 @@ the same four cores. What was seen:
 - Its threads: `pw-loopback` (normal) and `pw-data-loop` SCHED_FIFO 83, with
   `PIPEWIRE_CONFIG_NAME=client-rt.conf`. Without it (by hand, 2026-11-19),
   the data thread was at normal priority and the tap's ERR rose about once a
-  second (0.3 to 1 a second, with and without a capture), while the driver's
-  stayed at 0; with it, one in twenty seconds. `client.conf`, what
-  `pw-loopback` reads otherwise, loads no `module-rt`.
+  second (0.3 to 1 a second, with and without a capture); with it, once in
+  20 s in that run. `client.conf`, what `pw-loopback` reads otherwise, loads
+  no `module-rt`. **What ERR on the tap means** (review of PR #200): it is
+  charged to the node that was late, and the driver waits for its followers,
+  so each is a cycle the graph did not finish in time (PipeWire logs `client
+  too slow!` for the node in `check_states`, beside `graph not finished`),
+  not a lateness private to the tap. The driver here is a null sink's timer,
+  so its own count says nothing about that.
 - `pw-top`, 14 samples a second apart, both nodes followers of the driver
   (`+`), quantum 256 at 48 kHz (a 5333 µs cycle): BUSY 5.1 to 13.0 µs (mostly
   6 to 8) for `sushi_rig_output_tap`, 1.7 to 2.8 µs for `sushi_rig_output`;
-  WAIT, the wake-up latency, 32 to 123 µs for the capture side. New ERR over
-  those 15 s: 0 for both tap nodes and the fake interface, 3 for the stand-in
-  Sushi against 8 in the 30 s before the tap existed. This costs the cycle
-  whether or not a browser listens; a capture adds pipewire-pulse's stream
-  as before.
+  WAIT, the wake-up latency, 32 to 123 µs for the capture side. This costs
+  the cycle for as long as the tap is linked, whether or not a browser
+  listens; a capture adds pipewire-pulse's stream as before.
 - **The default source.** With no other source of priority, WirePlumber
   0.4.17 made the tap the default source, even at `priority.session = 0`; a
   source at 1600 took it back at once. On the rig every ALSA source has
@@ -132,6 +136,33 @@ the same four cores. What was seen:
 Not seen: any of it on the rig (the iD14 as driver, the real Sushi, rtkit
 rather than root granting realtime), or in Firefox.
 
+### On demand (review of PR #200), 2026-11-20
+
+The tap is now the agent's, started when the page's visualiser is about to
+listen and stopped when it lets go (`tool/src/sushi_rig/vistap.py`). Run
+through the real `Supervisor` (`ondemand_check.py`) against this session,
+started with `PIPEWIRE_DEBUG=pw.node:4` so that each `client too slow!` is in
+`pipewire.log`: a held rig whose `sushi` is a sleeper (the session's stand-in
+Sushi has the ports), the lease shortened to 4 s and the linger to 5 s.
+
+- `Supervisor.tap` answered in 0.32 s: started in the rig's group, linked
+  (its only links from `sushi:audio_output_0/1`), `pw-data-loop` SCHED_FIFO
+  83, "Sushi rig output" listed by `pactl`.
+- 15 s with the rig up and no tap: `client too slow` for `sushi` 2,
+  `test_signal` 1, `fake_id14_in` 1. The next 15 s with the tap linked and
+  no capture: `sushi_rig_output_tap` 5 (its ERR rose by 5), `sushi` 3,
+  `test_signal` 11. Realtime, in a container whose four cores another job's
+  test suite was using: five unfinished cycles in 15 s, where the first run
+  had one in 20 s. BUSY as before: 4.9 to 13.4 µs and 2.3 to 3.8 µs.
+- No renewal: the lease ran out and, 5 s later, the watch stopped the tap by
+  its pid, 7.0 s after the last renewal, "no page held its lease for 5s";
+  no crash recorded, the pid gone, no node left.
+- Asked for again, then released with `now`: stopped at once ("its page's
+  xrun safeguard tripped"), no node left. `down` then stopped the rig.
+- Not seen: the capture in this run (`parec` killed before it flushed
+  anything; the first run's Chromium capture stands), the page itself
+  against this agent, and any of it on the rig.
+
 ## Run it again
 
 ```bash
@@ -141,6 +172,7 @@ python3 tool/spikes/visualiser_audio/chromium_devices.py http://localhost:8765/d
 python3 tool/spikes/visualiser_audio/measure.py /tmp/vis capture http://localhost:8765/viz.html 1280 720
 python3 tool/spikes/visualiser_audio/measure.py /tmp/vis render  http://localhost:8765/viz.html 640 360 --enable-unsafe-swiftshader
 python3 tool/spikes/visualiser_audio/tap_check.py /tmp/vis      # the rig's output (#195)
+python3 tool/spikes/visualiser_audio/ondemand_check.py /tmp/vis # ... on demand, through the Supervisor
 tool/spikes/visualiser_audio/session.sh stop /tmp/vis
 ```
 

@@ -6338,8 +6338,8 @@ its data thread ran at normal priority inside Sushi's cycle and was "too
 slow" about once a second: it is started with
 `PIPEWIRE_CONFIG_NAME=client-rt.conf` (SCHED_FIFO 83 seen). Measured there:
 both nodes followers of the driver every cycle, listening or not, BUSY 5 to
-13 µs and 2 to 3 µs against a 5333 µs cycle, no new xruns of their own in
-15 s; Chromium listed "Sushi rig output" and captured the stand-in Sushi's
+13 µs and 2 to 3 µs against a 5333 µs cycle, "too slow" once in 20 s
+(each an unfinished cycle; see the next entry); Chromium listed "Sushi rig output" and captured the stand-in Sushi's
 output; `kill -9` left no node. With no other source WirePlumber made it the
 default source; on the rig every ALSA input has a higher `priority.session`
 (1680 to 2109 in the captured graph), so it should not be there. Every key
@@ -6347,3 +6347,52 @@ test was shown failing with its fix taken out (18 mutations). **Not run:**
 the rig: the iD14 as driver, the real Sushi, rtkit granting realtime,
 Firefox. The CI container runs no PipeWire, so there is no slow test of the
 real source appearing and going. *(2026-11-20)*
+
+**The visualiser's tap on demand (#195, review of PR #200).** The review
+found the tap's "too slow" to be a cycle the graph did not finish (the
+driver waits for its followers; PipeWire 1.0 logs `client too slow!` in
+`check_states` beside `graph not finished`), not a lateness of its own:
+once in 20 s is some 360 unfinished cycles in a two-hour set, visualiser
+open or not. The README's "the driver's ERR stayed at 0" said nothing,
+since ERR is charged to the late node and the driver there was a null
+sink's timer. So: (1) **on demand.** `up` never starts a tap. The page asks
+the agent (`POST /visualiser/tap {"page"}`, loopback peers only, behind
+#174's guard) when the visualiser is about to listen; the agent starts the
+`pw-loopback` in the group it holds (as `restart_amp` starts Carla), links
+it, reads its threads, and answers with the source once it is linked and
+realtime, else 409 and why, and the page hears the guitar's input. Each page
+renews a 30 s lease every 10 s; two pages share one tap; released (`POST
+/visualiser/tap/release`: a close, a hidden tab, the page going) it lingers
+3 minutes, then the watch stops it by its pid. The agent's stop, `down`,
+`restart` and a switch by restart tidy it; `--no-visualiser-tap` means never
+offered. (2) **Realtime or nothing**: no SCHED_FIFO or SCHED_RR thread, and
+it is stopped by pid and refused, saying what to install. Doctor's
+`visualiser-tap` is a fault for a running tap without one, a refusal for
+want of one, or a machine where nothing would give one (the agent's
+realtime limit 0 and no rtkit-daemon). `LimitRTPRIO` is not added to the
+unit: a user service asking above the account's hard limit fails to start;
+the unit says why and the reference how. (3) **A trip lets the tap go at
+once** (`"now": true`), and the trip message says so; the tap's nodes count
+in LOAD and XRUNS only while it runs (`Agent._load_children`). (4) **An
+input that ends** (the tap stopped, the interface gone) is chosen again and
+heard, on the track's `ended`. (5) The docs' overstatements dropped ("never
+in its way", "no new xruns in 15 s", the driver's ERR). (6) `link`'s settle
+is read when it runs, so an override is one. (7) The start-routine test
+with a 0.5 s sleep went with the start routine; the new tests wait on
+conditions. (8) **A stop on purpose is never a crash**: `Child.on_purpose`,
+set before the signal, which `_sweep` reads; the old `forget` popped the
+child from another thread while a sweep could hold it. (9) The tap's label
+comes with the tap's answer, not from `/machine/roles`, whose 409 lost it;
+`VISUALISER.tapLabel` in rig.js is held to `vistap.SOURCE_LABEL`. **CI on
+01b0e71**: `test_a_child_that_crashes_is_reported_and_not_restarted` read a
+crash 0.3 s after start as the start's on the 3.11 runner. Not from the
+tap (the test's plan had none; under eight busy loops the start took 12 to
+65 ms on master and the branch alike); the test assumed a start under
+0.3 s, and on master too fails with a start 0.35 s slower. The crasher now
+waits for a file the test writes once the rig is up. Re-run live through
+the real Supervisor (`tool/spikes/visualiser_audio/README.md`, "On
+demand"): answered in 0.32 s, realtime, linked; the lease ran out and the
+watch stopped it by pid, no node left; released at once, gone at once.
+Realtime, it was "too slow" five times in 15 s on that busy container (the
+stand-in Sushi three). **Not run:** the rig, rtkit granting realtime, the
+page against a real agent's tap, Firefox. *(2026-11-20)*

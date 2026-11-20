@@ -1,5 +1,5 @@
 """The visualiser's tap (#195): the rig's output, offered to the browser as
-an input.
+an input while the page's visualiser listens, and only then.
 
 The page's visualiser hears what the browser can capture (`getUserMedia`,
 through pipewire-pulse), and Chromium lists no monitor sources, so what Sushi
@@ -14,59 +14,67 @@ sends, the master chain, the limiter and the master volume. For a v1 config,
 which has no master track and no limiter, it is engine bus 0, where every v1
 config mixes for the monitors. Never a stem, never an input.
 
-**The mechanism: `pw-loopback`, a child of the rig.** One process makes two
-nodes: a capture stream (`sushi_rig_output_tap`, `Stream/Input/Audio`) that
-Sushi's master outputs are linked to with `pw-link`, and a playback stream
-given `media.class = Audio/Source` (`sushi_rig_output`, "Sushi rig output"),
-which is the source the browser lists. Chosen over a
-`support.null-audio-sink` adapter made with `pw-cli`, for four reasons:
+**The mechanism: `pw-loopback`, a child of the rig the agent holds.** One
+process makes two nodes: a capture stream (`sushi_rig_output_tap`,
+`Stream/Input/Audio`) that Sushi's master outputs are linked to with
+`pw-link`, and a playback stream given `media.class = Audio/Source`
+(`sushi_rig_output`, "Sushi rig output"), which is the source the browser
+lists. Chosen over a `support.null-audio-sink` adapter made with `pw-cli`:
 
 - **Its nodes live and die with a process.** They are the client's, so when
   the process goes, by any signal, SIGKILL included, PipeWire removes them:
   there is no node to leave behind. An adapter made by `pw-cli` either goes
   with that `pw-cli` (which would then have to be kept running) or lingers
-  in the daemon (`object.linger`) until something remembers to destroy it,
-  which is the stray node this must never leave.
-- **So it is a child like any other.** Planned by `rig.plan_children`,
-  started into the rig's process group, recorded in the state file, stopped
-  by `down` with the group, watched by the agent's supervisor, and kept or
-  left out by `restart` and a switch through the state file
-  (`visualiser_tap_requested`). Nothing new to clean up and no second way to
-  stop things.
+  in the daemon (`object.linger`) until something remembers to destroy it.
+- **So it is the agent's child, in the rig's group.** Started into the group
+  the agent holds, as the amp is restarted (`Supervisor.restart_amp`),
+  stopped by its pid, and taken by `down` with the group. Nothing new to
+  clean up and no second way to stop things.
 - **It cannot drive the graph.** Both nodes are streams, and a stream never
   becomes a driver, so it cannot take the clock away from the interface (the
-  webcam story in `plan_children`). A null-audio-sink adapter is a driver
-  candidate unless told otherwise.
+  webcam story in `rig.plan_children`).
 - **It is never linked to the interface.** Both nodes are made with
   `node.autoconnect = false`, so the session manager links neither; the only
-  links are the two made here, Sushi's master outputs into the tap's inputs,
-  and whatever capture the browser opens on the source. The tap is a branch
-  off Sushi's outputs: Sushi's links to the interface are untouched, and
-  nothing is added to the audio path or its latency.
+  links are the two made here and whatever capture the browser opens on the
+  source.
 
-**Its cost is in Sushi's cycle.** Both nodes are in one node group
-(`node.group`), linked to Sushi, so they are followers of Sushi's driver, the
-interface, every cycle the rig runs, whether or not a browser is listening;
-and the cycle is finished only when they are. Measured in a container with
-PipeWire 1.0.5 at the rig's 256 frames (`tool/spikes/visualiser_audio/README.md`,
-"The rig's output"): BUSY 5 to 13 µs (mostly 6 to 8) for the capture side and
-about 2 to 3 µs for the source, against a 5333 µs cycle. What makes that safe is the data
-thread being realtime, and `pw-loopback` reads `client.conf`, which loads no
-`module-rt`: its data thread ran at normal priority, and the tap was "too
-slow" about once a second. So it is started with
-`PIPEWIRE_CONFIG_NAME=client-rt.conf` (the config PipeWire ships for
-realtime clients), which gave its data thread SCHED_FIFO and took that to one
-in twenty seconds, against the stand-in Sushi's own. `sushi-rig doctor`'s
-`visualiser-tap` says whether it got realtime on this machine, and its nodes
-are among the rig's in `top.CHILD_NODES`, so the page's XRUNS count, and so
-the visualiser's xrun safeguard, counts the tap's xruns too.
+**Why only while the visualiser listens (review of PR #200).** Linked to
+Sushi, both nodes are followers of Sushi's driver, the interface, every
+cycle, and the driver waits for them: a cycle is finished only when they
+are. When one is late PipeWire 1.0 logs `client too slow!` beside `graph
+not finished`: that cycle was not finished in time, which is a glitch of the
+rig's, not a lateness private to the tap. Measured in a container
+(`tool/spikes/visualiser_audio/README.md`, "The rig's output"): BUSY 5 to 13
+µs for the capture side and about 2 to 3 µs for the source, against a 5333 µs
+cycle at 256 frames; and "too slow" about once a second with a normal-priority
+data thread, and with a realtime one once in 20 s in one run and five times in
+15 s in another (on a busy machine, the stand-in Sushi itself three times in
+those 15 s). Once in 20 s is about 360 unfinished cycles in a two-hour set, so
+a tap is never there for a set's
+length because a rig is: the page asks the agent for it when the visualiser
+is about to listen (POST /visualiser/tap), renews a lease while it listens,
+and gives it back when it stops. `up` from the command line never starts one.
 
-**Links.** Made once Sushi answers (`link`, from `rig.start_children`), with
-`pw-link`, and read back from `pw-link -l`. A live switch keeps Sushi and its
-ports and the master stays on bus 0, so the links stand; a switch by restart,
-and `restart`, start a new tap and link it again. If they cannot be made the
-tap is stopped, by its pid, rather than left offering a silent source the
-page would choose first. Kill by pid only, here as everywhere.
+**The lease** (`Leases`). Each page holds one, for `LEASE` seconds from its
+last renewal (the page renews every `RENEW`); two pages share one tap. When
+no page holds one, the tap is kept `LINGER` seconds more, so an idle spell
+does not change the graph every time, and then stopped by its pid. A page
+whose xrun safeguard trips gives its lease back at once, and with no other
+page holding one the tap is stopped then, not after the linger: the
+safeguard removes the cause it can.
+
+**Realtime or nothing.** `pw-loopback` reads `client.conf`, which loads no
+`module-rt`, so it is started with `PIPEWIRE_CONFIG_NAME=client-rt.conf` (the
+config PipeWire ships for realtime clients). Once linked, a tap with no
+thread at SCHED_FIFO or SCHED_RR is stopped, by its pid, and the page told
+why (`realtime_refusal`): it would be late far more often.
+
+**Links.** Made once the tap starts (`link`), with `pw-link`, and read back
+from `pw-link -l`. A live switch keeps Sushi and its ports and the master
+stays on bus 0, so the links stand; a switch by restart and `restart` take
+the tap with the group, and the next request starts one for the new rig.
+If the links cannot be made the tap is stopped, by its pid, rather than left
+offering a silent source. Kill by pid only, here as everywhere.
 """
 
 from __future__ import annotations
@@ -79,7 +87,7 @@ from typing import Any, Callable
 
 from .qpwgraph import PATCHBAY_TIMEOUT, listed_links
 
-# The state file's name for the child, and what its log is called.
+# The child's name in the agent's record of the rig, and its log's.
 CHILD = "vistap"
 
 # The source the browser lists, and how it names it: Chromium and Firefox show
@@ -109,6 +117,21 @@ LINK_POLL = 0.25
 # one `pw-loopback` reads otherwise, does not (see the module docstring).
 ENV = {"PIPEWIRE_CONFIG_NAME": "client-rt.conf"}
 
+# The lease (`Leases`), in seconds. A page renews every RENEW and its lease
+# lasts LEASE from then, so two renewals can be lost before it runs out; with
+# no lease held the tap is kept LINGER more. Chosen, not measured.
+LEASE = 30.0
+RENEW = 10.0
+LINGER = 180.0
+
+# How long, once the tap is linked, its threads are looked at for a realtime
+# one: module-rt raises the data thread as it starts, which is before the
+# links can be made, so this normally answers at the first look.
+REALTIME_WAIT = 1.0
+
+# The scheduling policies /proc reports that are realtime: SCHED_FIFO, SCHED_RR.
+REALTIME_POLICIES = {1: "SCHED_FIFO", 2: "SCHED_RR"}
+
 
 def command() -> list[str]:
     """`pw-loopback` as the rig starts it: two channels, left and right, in one
@@ -136,8 +159,8 @@ def command() -> list[str]:
 
 
 def child() -> dict[str, Any]:
-    """The tap as `rig.plan_children` plans it. Optional: the rig plays the
-    same without it."""
+    """The tap as the agent starts it (`rig.start_child`). Optional: the rig
+    plays the same without it."""
     return {"name": CHILD, "command": command(), "optional": True, "env_set": dict(ENV)}
 
 
@@ -185,20 +208,108 @@ def _problem(why: str) -> str:
             "The sound is unaffected; the visualiser listens to the guitar's input instead")
 
 
+def realtime(threads: Any) -> list[tuple[str, str, int]]:
+    """`(name, policy, priority)` of each realtime thread among `threads`, as
+    `doctor.threads_of` gives them (`(name, policy, rt_priority)`). Pure."""
+    return [(name, REALTIME_POLICIES[policy], prio) for name, policy, prio in threads or ()
+            if policy in REALTIME_POLICIES]
+
+
+REALTIME_FIX = (
+    "give PipeWire's clients realtime priority: on Ubuntu, sudo apt install rtkit (it runs with the session), "
+    "or a realtime limit for the agent's service where your account's hard limit allows one "
+    "(docs/reference/web-ui.md, \"The visualiser\")"
+)
+
+
+def realtime_refusal(threads: Any, pid: int) -> str | None:
+    """Why a tap whose threads are `threads` is refused, or None when one of
+    them is realtime. Pure."""
+    if realtime(threads):
+        return None
+    names = ", ".join(name for name, _, _ in threads or ()) or "none could be read"
+    return (f"the visualiser tap (pid {pid}) got no realtime thread ({names}), so it was stopped: in Sushi's "
+            "cycle a normal-priority thread is late far more often, and each time it is a cycle the graph did "
+            f"not finish. The sound is unaffected; the visualiser listens to the guitar's input instead. To have "
+            f"the tap, {REALTIME_FIX}")
+
+
+class Leases:
+    """Who holds the tap, and when it is to stop. Pure: every method is
+    given the time (`now`, monotonic seconds).
+
+    A page's lease lasts `lease` from its last `take`. While none is held
+    the tap is due to stop `linger` after the last one ended (`due`); a
+    `give_back(..., at_once=True)` with no other lease held makes it due at
+    once."""
+
+    def __init__(self, lease: float = LEASE, linger: float = LINGER) -> None:
+        self.lease, self.linger = lease, linger
+        self.held: dict[str, float] = {}
+        self.idle_since: float | None = None
+        self.now_due = False
+
+    def _expire(self, now: float) -> None:
+        for page, until in list(self.held.items()):
+            if until <= now:
+                del self.held[page]
+                self.idle_since = until if self.idle_since is None else self.idle_since
+        if not self.held and self.idle_since is None:
+            self.idle_since = now
+
+    def take(self, page: str, now: float) -> None:
+        self.held[page] = now + self.lease
+        self.idle_since = None
+        self.now_due = False
+
+    def give_back(self, page: str, now: float, *, at_once: bool = False) -> None:
+        self.held.pop(page, None)
+        self._expire(now)
+        if not self.held:
+            self.idle_since = min(self.idle_since, now) if self.idle_since is not None else now
+            self.now_due = self.now_due or at_once
+
+    def pages(self, now: float) -> list[str]:
+        self._expire(now)
+        return sorted(self.held)
+
+    def due(self, now: float) -> bool:
+        """Whether the tap is to be stopped now."""
+        if self.pages(now):
+            return False
+        return self.now_due or (self.idle_since is not None and now - self.idle_since >= self.linger)
+
+    def stops_in(self, now: float) -> float | None:
+        """Seconds until it is due, None while a page holds it."""
+        if self.pages(now):
+            return None
+        if self.now_due or self.idle_since is None:
+            return 0.0
+        return max(0.0, self.linger - (now - self.idle_since))
+
+    def clear(self) -> None:
+        self.held.clear()
+        self.idle_since = None
+        self.now_due = False
+
+
 def link(
-    config: Path, *, run: Callable[..., Any] = subprocess.run, settle: float = LINK_SETTLE,
+    config: Path, *, run: Callable[..., Any] = subprocess.run, settle: float | None = None,
     sleep: Callable[[float], None] = time.sleep, clock: Callable[[], float] = time.monotonic,
 ) -> list[str]:
     """Link the master outputs of the running config (`config`, the compiled
     file Sushi loaded) into the tap, and read the links back: `[]` once
-    every link is in `pw-link -l`, else one problem, worded for the start's
-    warnings, after which the caller stops the tap. Idempotent: a link
+    every link is in `pw-link -l`, else one problem, worded for the page and
+    the agent's log, after which the caller stops the tap. Idempotent: a link
     already there is left as it is, so this is also the relink.
 
     `pw-link a b` for each link not yet made, then `pw-link -l` again, until
     `settle` has passed: the tap's ports appear a beat after `pw-loopback`
     starts, and a `pw-link` before then fails and is tried again. `run`,
-    `sleep` and `clock` are the effects, for the tests."""
+    `sleep` and `clock` are the effects, for the tests. `settle` is
+    `LINK_SETTLE` when not given, read now rather than when this was defined,
+    so a test that shortens it shortens it."""
+    settle = LINK_SETTLE if settle is None else settle
     try:
         wanted = tap_links(master_ports(json.loads(Path(config).read_text())))
     except (OSError, ValueError) as exc:

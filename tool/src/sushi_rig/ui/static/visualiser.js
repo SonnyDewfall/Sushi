@@ -5,7 +5,7 @@
 //
 // The sound is the browser's own capture of an input, through PipeWire's
 // PulseAudio server (pipewire-pulse): the rig's output ("Sushi rig output",
-// the tap in vistap.py, itself in Sushi's cycle) or the guitar's input, beside Sushi,
+// the agent's tap in vistap.py, in Sushi's cycle while it listens) or the guitar's input, beside Sushi,
 // adding nothing to the signal's path. What that does and does not keep apart from
 // Sushi: the browser reads from a buffer the server keeps, so a browser that
 // stalls only loses its own samples. But the server's capture stream is a

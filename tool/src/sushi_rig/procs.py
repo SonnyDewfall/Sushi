@@ -17,6 +17,7 @@ import os
 import signal
 import socket
 import time
+from pathlib import Path
 from typing import Callable
 
 
@@ -152,3 +153,21 @@ def wait_for_grpc(
             return True
         time.sleep(0.25)
     return False
+
+
+def threads_of(pid: int) -> tuple[tuple[str, int, int], ...]:
+    """One process's threads as `(name, policy, rt_priority)`: fields 2, 41
+    and 40 of each /proc/<pid>/task/<tid>/stat. Empty when there are none to
+    read (the process has gone)."""
+    threads = []
+    for stat in sorted(Path(f"/proc/{pid}/task").glob("*/stat"), key=lambda p: (len(p.parent.name), p.parent.name)):
+        try:
+            text = stat.read_text()
+        except OSError:
+            continue
+        name = text[text.find("(") + 1:text.rfind(")")]
+        fields = text[text.rfind(")") + 2:].split()
+        # After the name, field 3 is first: policy is field 41, rt_priority 40.
+        if len(fields) > 38:
+            threads.append((name, int(fields[38]), int(fields[37])))
+    return tuple(threads)

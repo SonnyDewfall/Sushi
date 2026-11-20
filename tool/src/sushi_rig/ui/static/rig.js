@@ -2938,11 +2938,12 @@ export function helpLink(which, screen) {
 // window and moves with the music. The browser captures an input itself,
 // through PipeWire's PulseAudio server (getUserMedia): first the rig's own
 // output, "Sushi rig output" (the visualiser tap, vistap.py: Sushi's master
-// after its limiter, offered as a source while a rig runs with it), then the
-// guitar's input. Nothing is added to the signal's path, though the capture
-// and the tap do a little work in Sushi's cycle (visualiser.js says what that
-// risks, and what watches it). screensaver.js is the DOM, visualiser.js the
-// drawing; these are its decisions.
+// after its limiter, which the agent starts while the visualiser listens,
+// visualiser-tap.js), then the guitar's input. Nothing is added to the
+// signal's path, though the capture and the tap do a little work in Sushi's
+// cycle (visualiser.js says what that risks, and what watches it).
+// screensaver.js is the DOM, visualiser.js the drawing; these are its
+// decisions.
 
 export const VISUALISER = {
   idleDefault: 10,     // seconds without input before it starts
@@ -2954,6 +2955,9 @@ export const VISUALISER = {
   // The machine file's role the guitar comes in on: patchbay.GUITAR_ROLE,
   // held to it by test_ui_visualiser.py.
   guitarRole: "guitar-in",
+  // What the browser names the visualiser tap's source: vistap.SOURCE_LABEL,
+  // held to it by test_ui_visualiser.py.
+  tapLabel: "Sushi rig output",
 };
 
 // The idle time a field was given, in whole seconds within the bounds, or
@@ -3019,12 +3023,22 @@ export function visualiserGate(s) {
 // cannot be compared (none yet, or another run); null when nothing rose.
 // Any rise counts, whatever its cause: the capture stream is in Sushi's
 // cycle, and a glitch while it is there is not worth a second.
-export function visualiserTripped(base, seen) {
+// `tapped`: it was listening to the rig's output, whose tap is let go with
+// the capture (the agent stops it unless another page holds it).
+export function visualiserTripped(base, seen, tapped = false) {
   if (!seen || typeof seen.count !== "number") return null;
   if (!base || typeof base.count !== "number" || base.run !== seen.run) return "rebase";
   if (seen.count <= base.count) return null;
   return `Stopped: the rig glitched while the visualiser was listening (xruns went from ${base.count} to ${seen.count}). `
+    + (tapped ? "The tap on the rig's output was let go with it, so it is out of Sushi's cycle. " : "")
     + "It stays off until this page is reloaded or the Visualiser box is ticked again.";
+}
+
+// Whether to ask the agent for the rig's output before choosing an input:
+// unless an input was chosen here by hand, and it is not that one.
+export function visualiserWantsTap(settings) {
+  const input = settings && settings.input;
+  return !input || input.label === VISUALISER.tapLabel;
 }
 
 // Whether `idle` seconds have passed since the last input at `last` (ms).
@@ -3066,11 +3080,11 @@ export function guitarInput(roles) {
 // Which input to listen to, from the browser's inputs (enumerateDevices'
 // `audioinput`s: `{deviceId, label}`), the one chosen here before
 // (`settings.input`, `settings.channel`), the guitar's (`guitarInput`) and
-// the rig's output (`output`, GET /machine/roles's `visualiser_tap`:
-// `{node, label}`): `{deviceId, label, channel, how}`. A choice made here
-// wins while that input is there; then the rig's output, by the name the
-// browser lists it under, both channels (it is there only while a rig runs
-// with its tap); then the guitar's device by name (its label, or its label
+// the rig's output (`output`, POST /visualiser/tap's `source`: `{node,
+// label}`, null when the agent did not start one): `{deviceId, label,
+// channel, how}`. A choice made here wins while that input is there; then
+// the rig's output, by the name the browser lists it under, both channels;
+// then the guitar's device by name (its label, or its label
 // with more after a space, as PipeWire's "Audient iD14 Multichannel" is the
 // JACK client "Audient iD14"; never a "Monitor of"); then the browser's
 // default, both channels. `how` says which, for the settings line.

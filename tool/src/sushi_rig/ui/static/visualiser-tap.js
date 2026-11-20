@@ -1,0 +1,81 @@
+// The visualiser's tap on the rig's output (#195): asked of the agent when
+// the visualiser is about to listen, and only then. The agent starts it
+// (vistap.py: a pw-loopback in Sushi's cycle, "Sushi rig output") and
+// answers once it is linked and realtime; this page then renews its lease
+// while it listens and gives it back when it stops (a close, a hidden tab,
+// a trip, the page going). Refused, or not answered, the visualiser
+// listens to the guitar's input instead. Loaded by screensaver.js; the
+// decisions are the agent's.
+
+// This page's id for its lease: two pages share one tap, each holding its own.
+const PAGE = ((globalThis.crypto && crypto.randomUUID) ? crypto.randomUUID()
+  : `${Date.now()}-${Math.random().toString(36).slice(2)}`).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64);
+// How long a request may take before the page gives up and falls back: the
+// agent links the tap (up to 5 s) and looks at its threads (up to 1 s).
+const ASK_MS = 9000;
+
+let holding = false;
+let timer = null;
+let why = null;
+
+function post(path, body, extra = {}) {
+  return fetch(path, { method: "POST", headers: { "Content-Type": "application/json" }, body: JSON.stringify(body), ...extra });
+}
+
+function stopRenewing() {
+  if (timer) clearInterval(timer);
+  timer = null;
+}
+
+// Ask for the tap: its source (`{node, label}`) once the agent has it
+// linked and realtime, else null, and `reason()` says why not.
+export async function acquire() {
+  const ask = new AbortController();
+  const late = setTimeout(() => ask.abort(), ASK_MS);
+  try {
+    const response = await post("/visualiser/tap", { page: PAGE }, { signal: ask.signal });
+    const body = await response.json().catch(() => null);
+    if (!response.ok || !body || !body.ok || !body.source) {
+      why = (body && body.reason) || `the agent answered ${response.status}`;
+      holding = false;
+      stopRenewing();
+      return null;
+    }
+    holding = true;
+    why = null;
+    if (!timer) timer = setInterval(renew, 1000 * (body.renew_s || 10));
+    return body.source;
+  } catch (error) {
+    why = ask.signal.aborted ? `the agent did not answer within ${ASK_MS / 1000} s` : `${error && error.message || error}`;
+    holding = false;
+    stopRenewing();
+    return null;
+  } finally {
+    clearTimeout(late);
+  }
+}
+
+// The lease, again, while this page listens. A renewal refused means the
+// tap is gone: the capture's track ends, and screensaver.js chooses again.
+async function renew() {
+  if (!holding) { stopRenewing(); return; }
+  try {
+    const response = await post("/visualiser/tap", { page: PAGE });
+    if (!response.ok) { holding = false; stopRenewing(); }
+  } catch { /* the next one, or the lease running out, says */ }
+}
+
+// Give the lease back. `now`: the xrun safeguard tripped, so the agent stops
+// the tap at once unless another page holds it.
+export function release(now = false) {
+  if (!holding) return;
+  holding = false;
+  stopRenewing();
+  post("/visualiser/tap/release", { page: PAGE, now }, { keepalive: true }).catch(() => {});
+}
+
+export function isHolding() { return holding; }
+export function reason() { return why; }
+export { PAGE as page };
+
+window.addEventListener("pagehide", () => release());

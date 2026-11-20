@@ -2,26 +2,24 @@
 input, by a `pw-loopback` child linked to Sushi's master outputs.
 
 What stands in for what. `pw-link` is a fake graph (`Graph`) for the pure
-linking, and a fake `pw-link` program on PATH for the real start routine;
-`pw-loopback` is a Python that sleeps. Nothing here is PipeWire: that the
-nodes appear as the browser's "Sushi rig output", are followers of Sushi's
-driver and vanish with the process was seen in a container
-(tool/spikes/visualiser_audio/README.md, "The rig's output"), not here.
+linking. The agent's on-demand tap, its lease and its stops are
+test_supervisor.py's, with fake `pw-loopback` and `pw-link` programs.
+Nothing here is PipeWire: that the nodes appear as the browser's "Sushi rig
+output", are followers of Sushi's driver and vanish with the process was
+seen in a container (tool/spikes/visualiser_audio/README.md, "The rig's
+output"), not here.
 """
 
 from __future__ import annotations
 
 import json
-import os
-import stat
 import subprocess
-import sys
 from pathlib import Path
 
 import pytest
 
 from sushi_rig import rig, vistap
-from sushi_rig.rig import Launch, plan_children
+from sushi_rig.rig import plan_children
 
 ROOT = Path(__file__).resolve().parents[2]
 MASTER_L, MASTER_R = "sushi:audio_output_0", "sushi:audio_output_1"
@@ -58,17 +56,19 @@ def test_the_tap_is_a_pw_loopback_whose_source_the_browser_lists_and_nothing_aut
     assert "--channel-map" not in command, "PipeWire 1.0.5's pw-loopback refuses it, and exits"
 
 
-def test_the_tap_is_planned_last_optional_and_realtime_and_only_when_asked_for(tmp_path):
+def test_the_tap_starts_realtime_and_up_never_plans_one(tmp_path):
+    """The agent starts it on demand (review of PR #200): `up` from the
+    command line plans no tap, whatever it was told."""
     config = tmp_path / "c.json"
-    plain = plan_children(ROOT, config, None, headless=True, tuner=True)
-    tapped = plan_children(ROOT, config, None, headless=True, tuner=True, visualiser_tap=True)
-    assert vistap.CHILD not in [c["name"] for c in plain]
-    assert tapped[:-1] == plain, "nothing else in the plan changes"
-    assert tapped[-1] == vistap.child()
-    assert tapped[-1]["optional"] is True
-    assert tapped[-1]["env_set"] == {"PIPEWIRE_CONFIG_NAME": "client-rt.conf"}, \
+    for headless in (True, False):
+        plan = plan_children(ROOT, config, None, headless=headless, tuner=True)
+        assert vistap.CHILD not in [c["name"] for c in plan]
+        assert "pw-loopback" not in [c["command"][0] for c in plan]
+    child = vistap.child()
+    assert child["name"] == vistap.CHILD and child["optional"] is True and child["command"] == vistap.command()
+    assert child["env_set"] == {"PIPEWIRE_CONFIG_NAME": "client-rt.conf"}, \
         "client.conf loads no module-rt: its data thread ran at normal priority in Sushi's cycle"
-    assert "PIPEWIRE_QUANTUM" not in tapped[-1]["env_set"], "it asks the graph for nothing"
+    assert "PIPEWIRE_QUANTUM" not in child["env_set"], "it asks the graph for nothing"
 
 
 def test_the_master_is_the_master_tracks_outputs_and_a_v1_configs_monitor_bus():
@@ -212,120 +212,60 @@ def test_no_pw_link_and_no_master_and_no_config_are_each_said(tmp_path):
     assert "could not be read" in problem
 
 
+def test_the_settle_is_read_when_linking_not_when_link_was_defined(tmp_path, monkeypatch):
+    """A test (or a caller) that shortens LINK_SETTLE shortens the wait: it
+    was a default bound when `link` was defined, so the override did
+    nothing (review of PR #200)."""
+    monkeypatch.setattr(vistap, "LINK_SETTLE", 0.5)
+    clock = Clock()
+    (problem,) = vistap.link(write(tmp_path, v2_config()), run=Graph(appear=10 ** 6), sleep=clock.sleep, clock=clock)
+    assert "not made" in problem
+    assert clock.now < 1.0, f"waited {clock.now} s, not the 0.5 s set"
+
+
 # --------------------------------------------------------------------------- #
-# The start routine, with fake pw-loopback and pw-link programs
+# Realtime or nothing, and the lease: pure
 # --------------------------------------------------------------------------- #
 
-FAKE_LINK = """#!{python}
-import json, os, sys
-db = os.environ["FAKE_GRAPH"]
-links = json.load(open(db)) if os.path.exists(db) else []
-if sys.argv[1:] == ["-l"]:
-    for a, b in links:
-        print(a); print("  |-> " + b)
-    sys.exit(0)
-if os.environ.get("FAKE_REFUSE"):
-    print("failed to link ports: No such file or directory", file=sys.stderr); sys.exit(1)
-links.append(sys.argv[1:3]); json.dump(links, open(db, "w")); sys.exit(0)
-"""
-FAKE_LOOPBACK = """#!{python}
-import os, signal, time
-open(os.environ["FAKE_TAP_PID"], "w").write(str(os.getpid()))
-signal.signal(signal.SIGTERM, signal.SIG_DFL)
-time.sleep(60)
-"""
+def test_a_tap_with_a_realtime_thread_passes_and_one_without_is_refused_with_the_fix():
+    assert vistap.realtime_refusal((("pw-loopback", 0, 0), ("pw-data-loop", 1, 83)), 7) is None
+    assert vistap.realtime_refusal((("pw-data-loop", 2, 50),), 7) is None, "SCHED_RR counts"
+    refusal = vistap.realtime_refusal((("pw-loopback", 0, 0), ("pw-data-loop", 0, 0)), 7)
+    assert "pid 7" in refusal and "pw-loopback, pw-data-loop" in refusal and "so it was stopped" in refusal
+    assert "a cycle the graph did not finish" in refusal and "rtkit" in refusal
+    assert "none could be read" in vistap.realtime_refusal((), 7)
 
 
-@pytest.fixture
-def fake_tools(tmp_path, monkeypatch):
-    bin_dir = tmp_path / "bin"
-    bin_dir.mkdir()
-    for name, text in (("pw-link", FAKE_LINK), ("pw-loopback", FAKE_LOOPBACK)):
-        path = bin_dir / name
-        path.write_text(text.format(python=sys.executable))
-        path.chmod(path.stat().st_mode | stat.S_IEXEC)
-    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
-    monkeypatch.setenv("FAKE_GRAPH", str(tmp_path / "graph.json"))
-    monkeypatch.setenv("FAKE_TAP_PID", str(tmp_path / "tap.pid"))
-    monkeypatch.setattr(vistap, "LINK_SETTLE", 1.0)
-    return tmp_path
+def test_a_lease_lasts_from_its_last_renewal_and_the_tap_lingers_after_the_last_one():
+    leases = vistap.Leases(lease=30, linger=180)
+    leases.take("a", 0)
+    assert not leases.due(29) and leases.pages(29) == ["a"]
+    leases.take("a", 20)  # renewed
+    assert not leases.due(49) and leases.stops_in(49) is None
+    assert leases.pages(51) == [] and not leases.due(51), "out at 50: lingers from then"
+    assert leases.stops_in(51) == pytest.approx(179) and not leases.due(229)
+    assert leases.due(230)
+    leases.take("a", 231)
+    assert not leases.due(232), "taken again: not due"
 
 
-def start(tmp_path, link_tap=None, sushi_ready=lambda alive: True):
-    config = write(tmp_path, v2_config())
-    launch = Launch(
-        root=tmp_path, config_name="t", config=config,
-        children=[{"name": "sushi", "command": [sys.executable, "-c", "import time; time.sleep(60)"],
-                   "optional": False}, vistap.child()],
-        headless=True, amp_model=None, amp_values={}, tuner_requested=False, amp_requested=False,
-        amp_model_requested=None, rig_source=None, machine_file=None, visualiser_tap_requested=True,
-    )
-    logs = tmp_path / "logs"
-    logs.mkdir(exist_ok=True)
-    stopped: list[str] = []
-    procs, problems, failure = rig.start_children(
-        launch, env=dict(os.environ), logs=logs, spawn=rig.spawn_child,
-        start_qpwgraph=lambda *a, **k: None, sushi_ready=sushi_ready,
-        generate_panel=lambda *a: (0, ""), link_problems=lambda *a: [], replay_amp=lambda v: None,
-        on_stop=stopped.append, **({"link_tap": link_tap} if link_tap else {}),
-    )
-    return procs, problems, failure, stopped
+def test_two_pages_share_one_tap_and_it_lingers_once_both_have_given_it_back():
+    leases = vistap.Leases(lease=30, linger=180)
+    leases.take("a", 0)
+    leases.take("b", 1)
+    leases.give_back("a", 5)
+    assert leases.pages(5) == ["b"] and not leases.due(5)
+    leases.give_back("b", 6)
+    assert not leases.due(185) and leases.due(186)
 
 
-def kill_all(procs):
-    for proc in procs.values():
-        if proc.poll() is None:
-            proc.kill()
-        proc.wait(timeout=5)
-
-
-def test_a_start_links_the_tap_with_pw_link_and_keeps_it(fake_tools):
-    procs, problems, failure, stopped = start(fake_tools)
-    try:
-        assert failure is None and problems == [] and stopped == []
-        assert vistap.CHILD in procs and procs[vistap.CHILD].poll() is None
-        assert json.loads((fake_tools / "graph.json").read_text()) == [
-            [MASTER_L, vistap.TAP_PORTS[0]], [MASTER_R, vistap.TAP_PORTS[1]]]
-        environ = Path(f"/proc/{procs[vistap.CHILD].pid}/environ").read_bytes().split(b"\0")
-        assert b"PIPEWIRE_CONFIG_NAME=client-rt.conf" in environ
-    finally:
-        kill_all(procs)
-
-
-def test_a_tap_that_cannot_be_linked_is_stopped_by_its_pid_and_left_out(fake_tools, monkeypatch):
-    """A source carrying nothing would be the page's first choice, and a
-    silent visualiser: it is stopped, by the pid it was started with, said,
-    and not one of the children the state file records."""
-    monkeypatch.setenv("FAKE_REFUSE", "1")
-    procs, problems, failure, stopped = start(fake_tools)
-    try:
-        assert failure is None, "the rig plays on"
-        assert vistap.CHILD not in procs and "sushi" in procs and procs["sushi"].poll() is None
-        assert stopped == [vistap.CHILD], "said to the agent before it was signalled"
-        (problem,) = problems
-        assert "so it was stopped" in problem and "The sound is unaffected" in problem
-        pid = int((fake_tools / "tap.pid").read_text())
-        with pytest.raises(ProcessLookupError):
-            os.kill(pid, 0)
-    finally:
-        kill_all(procs)
-
-
-def test_a_tap_that_exits_at_start_is_not_linked_and_is_said(fake_tools, monkeypatch):
-    import time
-
-    asked: list = []
-    monkeypatch.setattr(vistap, "command", lambda: [sys.executable, "-c", "import sys; sys.exit(3)"])
-
-    def link_tap(config):
-        asked.append(config)
-        return []
-
-    procs, problems, failure, stopped = start(fake_tools, link_tap=link_tap,
-                                              sushi_ready=lambda alive: time.sleep(0.5) or True)
-    try:
-        assert failure is None
-        assert asked == [], "nothing to link"
-        assert f"{vistap.CHILD} exited during startup (status 3)" in " ".join(problems)
-    finally:
-        kill_all(procs)
+def test_a_trip_gives_it_back_at_once_unless_another_page_holds_it():
+    leases = vistap.Leases(lease=30, linger=180)
+    leases.take("a", 0)
+    leases.take("b", 0)
+    leases.give_back("a", 1, at_once=True)
+    assert not leases.due(1), "b still listens"
+    leases.give_back("b", 2, at_once=True)
+    assert leases.due(2) and leases.stops_in(2) == 0.0
+    leases.give_back("never-held", 3)
+    assert leases.due(3)

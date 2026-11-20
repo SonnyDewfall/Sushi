@@ -21,6 +21,7 @@ never by pattern.
 from __future__ import annotations
 
 import asyncio
+import json
 import dataclasses
 import os
 import signal
@@ -46,6 +47,16 @@ QUICK_STEPS = ((signal.SIGINT, 1.0), (signal.SIGKILL, 1.0))
 
 def crasher(code: int, after: float = 0.3) -> list[str]:
     return [sys.executable, "-c", f"import sys, time; time.sleep({after}); sys.exit({code})"]
+
+
+def crash_when(go: Path, code: int) -> list[str]:
+    """A child that exits with `code` once `go` exists, so a test makes it
+    crash while the rig is up whatever the start took. A timed crasher
+    raced the start: `crasher(3, after=0.3)` read as a start's exit on a
+    slow CI runner (PR #200), and does on master too with a start 0.35 s
+    slower."""
+    return [sys.executable, "-c",
+            f"import os, sys, time\nwhile not os.path.exists({str(go)!r}): time.sleep(0.02)\nsys.exit({code})"]
 
 
 class Spawner:
@@ -313,12 +324,13 @@ def test_a_second_up_is_refused_by_the_state_file_the_agent_wrote(world, monkeyp
 # --------------------------------------------------------------------------- #
 
 def test_a_child_that_crashes_is_reported_and_not_restarted(world):
-    world.spawner.scripts["fmit"] = crasher(3, after=0.3)
+    world.spawner.scripts["fmit"] = crash_when(world.root / "go", 3)
     lines: list[str] = []
     supervisor = Supervisor(world.world, say=lines.append)
 
     async def go():
         assert (await supervisor.up("t", headless=True)).ok
+        (world.root / "go").touch()  # the crash, once the rig is up
         await settle_until(lambda: supervisor.crashed)
         await asyncio.sleep(0.3)  # long enough for a restart, if there were one
         described = supervisor.describe()
@@ -1180,86 +1192,411 @@ def test_the_restart_reads_and_writes_its_files_off_the_event_loop(amp_world, mo
 
 
 # --------------------------------------------------------------------------- #
-# The visualiser's tap (#195): a child like the tuner, linked at start
+# The visualiser's tap (#195): started on demand, held by leases, realtime or
+# nothing. `pw-loopback` is a sleeper unless a test says otherwise; links and
+# threads are stood in, but for the tests that run fake programs.
 # --------------------------------------------------------------------------- #
 
-def tapped(world, **over):
-    """The fixture's plan with the visualiser's tap in it, as `up` plans it."""
-    plan = plan_children(world.root, world.root / "config" / "t.json", None, headless=True, tuner=False,
-                         visualiser_tap=True)
-    world.state["launch"] = lambda name="t", **kw: Launch(
-        root=world.root, config_name=name, config=world.root / "config" / "t.json", children=plan,
-        headless=True, amp_model=None, amp_values={}, tuner_requested=False, amp_requested=False,
-        amp_model_requested=None, rig_source=None, machine_file=None,
-        visualiser_tap_requested=kw.get("visualiser_tap_requested", True))
-    world.world = dataclasses.replace(world.world, **over)
+FIFO = (("pw-loopback", 0, 0), ("pw-data-loop", 1, 83))
+NORMAL = (("pw-loopback", 0, 0), ("pw-data-loop", 0, 0))
 
 
-def test_the_tap_is_held_linked_and_stopped_with_the_group(world):
+class Ticks:
+    """A clock a test moves on (`World.clock`)."""
+
+    def __init__(self):
+        self.now = 1000.0
+
+    def __call__(self):
+        return self.now
+
+
+def tap_world(world, **over):
+    """The fixture's world with the tap's effects stood in: links made, a
+    realtime thread, a clock the test moves, a short linger."""
+    ticks = Ticks()
     linked: list = []
-    tapped(world, link_tap=lambda config: linked.append(config) or [])
+    fields = dict(link_tap=lambda config: linked.append(config) or [], tap_threads=lambda pid: FIFO,
+                  clock=ticks, tap_lease=30.0, tap_linger=60.0)
+    fields.update(over)
+    world.world = dataclasses.replace(world.world, **fields)
+    return ticks, linked
+
+
+def taps_started(world) -> list[subprocess.Popen]:
+    return [p for p, (command, _) in zip(world.spawner.started, world.spawner.asked) if command[0] == "pw-loopback"]
+
+
+def test_up_never_starts_a_tap(world):
+    tap_world(world)
     supervisor = Supervisor(world.world, say=lambda m: None)
 
     async def go():
-        outcome = await supervisor.up("t", headless=True, tuner=False)
-        assert outcome.ok, outcome
+        assert (await supervisor.up("t", headless=True, tuner=False)).ok
+        await asyncio.sleep(0.2)
+        report = supervisor.tap_report()
+        await supervisor.down()
+        return report
+
+    report = run(go())
+    assert "pw-loopback" not in world.spawner.commands()
+    assert report["running"] is False and report["offered"] is True
+
+
+def test_a_tap_is_started_for_a_page_linked_checked_and_held_in_the_rigs_group(world):
+    ticks, linked = tap_world(world)
+    supervisor = Supervisor(world.world, say=lambda m: None)
+
+    async def go():
+        assert (await supervisor.up("t", headless=True, tuner=False)).ok
+        answer = await supervisor.tap("page-a")
         tap = supervisor.held.children["vistap"].proc
-        assert os.getpgid(tap.pid) == supervisor.held.pgid, "in the rig's group"
-        recorded = state_file.read_state()
-        stopped = await supervisor.down()
-        return outcome, tap, recorded, stopped
+        group = os.getpgid(tap.pid) == supervisor.held.pgid
+        report = supervisor.tap_report()
+        again = await supervisor.tap("page-a")
+        await supervisor.down()
+        return answer, tap, group, report, again
 
-    outcome, tap, recorded, stopped = run(go())
-    assert "pw-loopback" in world.spawner.commands()
-    assert linked == [world.root / "config" / "t.json"], "linked once, from the config Sushi loaded"
-    assert recorded["children"]["vistap"] == tap.pid and recorded["visualiser_tap_requested"] is True
-    assert stopped.ok and tap.poll() is not None, "down took it with the group"
-    assert supervisor.crashed == [], "a down is not a crash"
+    answer, tap, group, report, again = run(go())
+    assert answer.ok and answer.source == {"node": "sushi_rig_output", "label": "Sushi rig output"}
+    assert (answer.lease, answer.renew) == (30.0, 10.0)
+    assert group, "in the rig's group, so down takes it"
+    assert linked == [world.root / "config" / "t.json"], "linked, from the config Sushi runs"
+    assert report["running"] and report["pid"] == tap.pid and report["pages"] == 1
+    assert again.ok and len(taps_started(world)) == 1, "a renewal starts nothing"
+    assert tap.poll() is not None, "down took it with the group"
 
 
-def test_a_tap_that_stops_while_the_rig_plays_is_reported_as_the_sound_unaffected(world):
-    tapped(world)
-    world.spawner.scripts["pw-loopback"] = crasher(1, after=0.3)
+def test_two_pages_share_one_tap_and_it_stops_by_pid_after_the_linger_with_no_crash(world):
+    ticks, _ = tap_world(world)
     lines: list[str] = []
     supervisor = Supervisor(world.world, say=lines.append)
 
     async def go():
         assert (await supervisor.up("t", headless=True, tuner=False)).ok
-        await settle_until(lambda: supervisor.crashed)
+        assert (await supervisor.tap("a")).ok and (await supervisor.tap("b")).ok
+        tap = supervisor.held.children["vistap"].proc
+        await supervisor.tap_release("a")
+        await asyncio.sleep(0.2)
+        still = tap.poll() is None
+        await supervisor.tap_release("b")
+        ticks.now += 59
+        await asyncio.sleep(0.2)
+        lingering = tap.poll() is None
+        ticks.now += 2
+        await settle_until(lambda: supervisor.tap_report()["stopped"] is not None)
+        report = supervisor.tap_report()
         crashed = list(supervisor.crashed)
-        sushi = supervisor.held.children["sushi"].exit
+        children = set(supervisor.held.children)
         await supervisor.down()
-        return crashed, sushi
+        return still, lingering, report, crashed, children, tap
 
-    (crash,), sushi = run(go())
-    assert crash["name"] == "vistap" and crash["returncode"] == 1 and crash["phase"] == "running"
-    assert crash["label"] == "the visualiser tap (pw-loopback)"
-    assert crash["means"].startswith("the visualiser tap stopped: the sound is unaffected")
-    assert sushi is None, "the rest plays on"
-    assert world.spawner.commands().count("pw-loopback") == 1, "nothing restarted it"
-    assert any("vistap" in line and "Not restarted" in line for line in lines)
+    still, lingering, report, crashed, children, tap = run(go())
+    assert still, "b still held it"
+    assert lingering, "kept for the linger after the last page let go"
+    assert len(taps_started(world)) == 1
+    assert tap.poll() is not None and report["stopped"]["why"] == "no page held its lease for 60s"
+    assert crashed == [] and "vistap" not in children, "stopped on purpose: no crash, not held"
 
 
-def test_a_tap_that_could_not_be_linked_is_stopped_said_and_neither_a_crash_nor_a_child(world):
-    tapped(world, link_tap=lambda config: ["the visualiser tap could not be linked ..., so it was stopped"])
+def test_a_lease_not_renewed_runs_out_and_the_tap_is_stopped(world):
+    ticks, _ = tap_world(world)
     supervisor = Supervisor(world.world, say=lambda m: None)
 
     async def go():
-        outcome = await supervisor.up("t", headless=True, tuner=False)
+        assert (await supervisor.up("t", headless=True, tuner=False)).ok
+        assert (await supervisor.tap("a")).ok
+        tap = supervisor.held.children["vistap"].proc
+        ticks.now += 29
+        await asyncio.sleep(0.2)
+        held = tap.poll() is None
+        ticks.now += 62  # the lease out at 30, then the 60 s linger
+        await settle_until(lambda: supervisor.tap_stopped is not None)
+        await supervisor.down()
+        return held, list(supervisor.crashed)
+
+    held, crashed = run(go())
+    assert held and crashed == []
+
+
+def test_a_trip_stops_the_tap_at_once_unless_another_page_holds_it(world):
+    tap_world(world)
+    supervisor = Supervisor(world.world, say=lambda m: None)
+
+    async def go():
+        assert (await supervisor.up("t", headless=True, tuner=False)).ok
+        assert (await supervisor.tap("a")).ok and (await supervisor.tap("b")).ok
+        tap = supervisor.held.children["vistap"].proc
+        first = await supervisor.tap_release("a", at_once=True)
+        alive = tap.poll() is None
+        second = await supervisor.tap_release("b", at_once=True)
+        report = supervisor.tap_report()
+        await supervisor.down()
+        return first, alive, second, tap, report
+
+    first, alive, second, tap, report = run(go())
+    assert first["stopped"] is False and alive, "b still listens"
+    assert second == {"running": False, "stopped": True} and tap.poll() is not None
+    assert "xrun safeguard tripped" in report["stopped"]["why"]
+
+
+def test_a_tap_that_cannot_be_linked_is_refused_stopped_and_no_crash(world):
+    tap_world(world, link_tap=lambda config: ["the visualiser tap could not be linked ..., so it was stopped"])
+    supervisor = Supervisor(world.world, say=lambda m: None)
+
+    async def go():
+        assert (await supervisor.up("t", headless=True, tuner=False)).ok
+        answer = await supervisor.tap("a")
         await asyncio.sleep(0.3)  # several watches, to see an exit if one were taken for a crash
-        held = set(supervisor.held.children)
-        recorded = state_file.read_state()
+        children, crashed, report = set(supervisor.held.children), list(supervisor.crashed), supervisor.tap_report()
+        await supervisor.down()
+        return answer, children, crashed, report
+
+    answer, children, crashed, report = run(go())
+    assert not answer.ok and answer.code == "not_linked" and "could not be linked" in answer.reason
+    [tap] = taps_started(world)
+    assert tap.poll() is not None and "vistap" not in children and crashed == []
+    assert report["refused"]["code"] == "not_linked"
+
+
+def test_a_tap_with_no_realtime_thread_is_refused_and_stopped_by_its_pid(world):
+    """The threads of the stand-in itself, a Python sleeper at normal
+    priority, read from /proc as the agent reads a real tap's."""
+    tap_world(world, tap_threads=supervisor_module.threads_of, tap_realtime_wait=0.2)
+    supervisor = Supervisor(world.world, say=lambda m: None)
+
+    async def go():
+        assert (await supervisor.up("t", headless=True, tuner=False)).ok
+        answer = await supervisor.tap("a")
+        report = supervisor.tap_report()
+        await supervisor.down()
+        return answer, report
+
+    answer, report = run(go())
+    [tap] = taps_started(world)
+    assert not answer.ok and answer.code == "not_realtime"
+    assert f"pid {tap.pid}" in answer.reason and "rtkit" in answer.reason
+    assert tap.poll() is not None, "stopped"
+    assert report["refused"]["code"] == "not_realtime" and report["running"] is False
+
+
+def test_no_visualiser_tap_and_no_rig_held_are_refusals_that_start_nothing(world):
+    tap_world(world)
+    supervisor = Supervisor(world.world, say=lambda m: None)
+
+    async def go():
+        nothing = await supervisor.tap("a")
+        assert (await supervisor.up("t", headless=True, tuner=False, visualiser_tap=False)).ok
+        off = await supervisor.tap("a")
+        await supervisor.down()
+        return nothing, off
+
+    nothing, off = run(go())
+    assert (nothing.ok, nothing.code) == (False, "not_held")
+    assert (off.ok, off.code) == (False, "off") and "--no-visualiser-tap" in off.reason
+    assert "pw-loopback" not in world.spawner.commands()
+
+
+def test_a_tap_that_stops_while_held_is_a_crash_with_the_sound_unaffected_and_is_started_again_when_asked(world):
+    tap_world(world)
+    go_file = world.root / "go"
+    world.spawner.scripts["pw-loopback"] = crash_when(go_file, 1)
+    lines: list[str] = []
+    supervisor = Supervisor(world.world, say=lines.append)
+
+    async def go():
+        assert (await supervisor.up("t", headless=True, tuner=False)).ok
+        assert (await supervisor.tap("a")).ok
+        go_file.touch()
+        await settle_until(lambda: supervisor.crashed)
+        crashed = list(supervisor.crashed)
+        go_file.unlink()
+        again = await supervisor.tap("a")
+        await supervisor.down()
+        return crashed, again
+
+    (crash,), again = run(go())
+    assert crash["name"] == "vistap" and crash["returncode"] == 1 and crash["phase"] == "running"
+    assert crash["label"] == "the visualiser tap (pw-loopback)"
+    assert crash["means"].startswith("the visualiser tap stopped: the sound is unaffected")
+    assert any("vistap" in line and "Not restarted" in line for line in lines)
+    assert again.ok and len(taps_started(world)) == 2, "started again because a page asked"
+
+
+def test_an_exit_on_purpose_is_never_a_crash_whenever_the_sweep_sees_it(world):
+    """The race of PR #200's review: a child stopped on purpose that a sweep
+    sees go while it is still held is not a crash."""
+    supervisor = Supervisor(world.world, say=lambda m: None)
+
+    async def go():
+        assert (await supervisor.up("t", headless=True)).ok
+        child = supervisor.held.children["fmit"]
+        child.on_purpose = True
+        child.proc.kill()
+        child.proc.wait()
+        supervisor._sweep(supervisor.held)
         crashed = list(supervisor.crashed)
         await supervisor.down()
-        return outcome, held, recorded, crashed
+        return crashed
 
-    outcome, held, recorded, crashed = run(go())
-    assert outcome.ok and "warning: the visualiser tap could not be linked" in outcome.stderr
-    tap = next(p for p, (command, _) in zip(world.spawner.started, world.spawner.asked) if command[0] == "pw-loopback")
-    assert tap.poll() is not None, "stopped"
-    assert "vistap" not in held and "vistap" not in recorded["children"]
-    assert recorded["visualiser_tap_requested"] is True, "still asked for, so restart tries again"
-    assert crashed == []
+    assert run(go()) == []
+
+
+def test_the_agents_end_stops_the_tap_by_its_pid_and_leaves_the_rig_playing(world):
+    tap_world(world)
+    supervisor = Supervisor(world.world, say=lambda m: None)
+
+    async def go():
+        assert (await supervisor.up("t", headless=True, tuner=False)).ok
+        assert (await supervisor.tap("a")).ok
+        tap = supervisor.held.children["vistap"].proc
+        sushi = supervisor.held.children["sushi"].proc
+        pgid = supervisor.held.pgid
+        await supervisor.release()
+        return tap, sushi, pgid
+
+    tap, sushi, pgid = run(go())
+    try:
+        assert tap.poll() is not None, "the tap went with the agent"
+        assert sushi.poll() is None and pgid_alive(pgid), "the rig outlives the agent"
+    finally:
+        os.killpg(pgid, signal.SIGKILL)
+
+
+def test_restart_takes_the_tap_and_starts_none(world):
+    tap_world(world)
+    supervisor = Supervisor(world.world, say=lambda m: None)
+
+    async def go():
+        assert (await supervisor.up("t", headless=True, tuner=False)).ok
+        assert (await supervisor.tap("a")).ok
+        tap = supervisor.held.children["vistap"].proc
+        assert (await supervisor.restart()).ok
+        await asyncio.sleep(0.2)
+        report = supervisor.tap_report()
+        await supervisor.down()
+        return tap, report
+
+    tap, report = run(go())
+    assert tap.poll() is not None and report["running"] is False and len(taps_started(world)) == 1
+
+
+FAKE_LINK = """import json, os, sys
+db = os.environ["FAKE_GRAPH"]
+links = json.load(open(db)) if os.path.exists(db) else []
+if sys.argv[1:] == ["-l"]:
+    for a, b in links:
+        print(a); print("  |-> " + b)
+    sys.exit(0)
+links.append(sys.argv[1:3]); json.dump(links, open(db, "w")); sys.exit(0)
+"""
+FAKE_LOOPBACK = """import os, sys, time
+open(os.environ["FAKE_TAP_ENV"], "w").write(os.environ.get("PIPEWIRE_CONFIG_NAME", ""))
+time.sleep(60)
+"""
+
+
+def test_a_tap_is_linked_by_pw_link_from_the_master_and_started_realtime(world, tmp_path, monkeypatch):
+    """With fake `pw-loopback` and `pw-link` programs, through the real
+    `vistap.link`: the master's two ports into the tap's two, and the tap
+    started with the realtime client config."""
+    from sushi_rig import vistap
+
+    bin_dir = tmp_path / "bin"
+    bin_dir.mkdir()
+    for name, text in (("pw-link", FAKE_LINK), ("pw-loopback", FAKE_LOOPBACK)):
+        (bin_dir / name).write_text(f"#!{sys.executable}\n{text}")
+        (bin_dir / name).chmod(0o755)
+    monkeypatch.setenv("PATH", f"{bin_dir}{os.pathsep}{os.environ['PATH']}")
+    monkeypatch.setenv("FAKE_GRAPH", str(tmp_path / "graph.json"))
+    monkeypatch.setenv("FAKE_TAP_ENV", str(tmp_path / "tap.env"))
+    (world.root / "config" / "t.json").write_text(json.dumps(
+        {"tracks": [{"name": "master", "outputs": [{"engine_bus": 0, "track_bus": 0}]}]}))
+    tap_world(world, link_tap=vistap.link)
+    world.spawner.scripts["pw-loopback"] = [str(bin_dir / "pw-loopback")]
+    supervisor = Supervisor(world.world, say=lambda m: None)
+
+    async def go():
+        assert (await supervisor.up("t", headless=True, tuner=False)).ok
+        answer = await supervisor.tap("a")
+        await supervisor.down()
+        return answer
+
+    answer = run(go())
+    assert answer.ok, answer
+    assert json.loads((tmp_path / "graph.json").read_text()) == [
+        ["sushi:audio_output_0", "sushi_rig_output_tap:input_FL"],
+        ["sushi:audio_output_1", "sushi_rig_output_tap:input_FR"]]
+    assert (tmp_path / "tap.env").read_text() == "client-rt.conf"
+
+
+def test_the_tap_routes_answer_as_the_supervisor_does_and_only_this_machine(world, monkeypatch):
+    pytest.importorskip("aiohttp")
+    from aiohttp.test_utils import TestClient, TestServer
+
+    from sushi_rig import agent as agent_module
+    from sushi_rig.agent import Agent
+
+    tap_world(world)
+    supervisor = Supervisor(world.world, say=lambda m: None)
+    agent = Agent(supervisor=supervisor)
+
+    async def go():
+        async with TestClient(TestServer(agent.app())) as client:
+            refused = await client.post("/visualiser/tap", json={"page": "a"})
+            refused = (refused.status, await refused.json())
+            up = await client.post("/rig/up", json={"config_name": "t", "headless": True, "tuner": False})
+            assert up.status == 200, await up.text()
+            ok = await client.post("/visualiser/tap", json={"page": "a"})
+            ok = (ok.status, await ok.json())
+            bad = (await client.post("/visualiser/tap", json={"page": "a b"})).status
+            extra = (await client.post("/visualiser/tap", json={"page": "a", "x": 1})).status
+            health = await (await client.get("/health")).json()
+            released = await client.post("/visualiser/tap/release", json={"page": "a", "now": True})
+            released = (released.status, await released.json())
+            monkeypatch.setattr(agent_module, "is_local", lambda remote: False)
+            far = await client.post("/visualiser/tap", json={"page": "a"})
+            far = (far.status, await far.json())
+            await client.post("/rig/down")
+            agent._executor.shutdown(wait=True)
+            return refused, ok, bad, extra, health, released, far
+
+    refused, ok, bad, extra, health, released, far = run(go())
+    assert refused[0] == 409 and refused[1]["code"] == "not_held"
+    assert ok == (200, {"ok": True, "source": {"node": "sushi_rig_output", "label": "Sushi rig output"},
+                        "lease_s": 30.0, "renew_s": 10.0})
+    assert bad == extra == 400
+    tap = health["agent"]["supervisor"]["visualiser_tap"]
+    assert tap["running"] is True and tap["pages"] == 1 and health["agent"]["supervisor"]["holds"]["children"]["vistap"]
+    assert released == (200, {"ok": True, "running": False, "stopped": True})
+    assert far[0] == 403 and far[1]["code"] == "not_local"
+
+
+def test_the_load_counts_the_taps_nodes_only_while_it_runs(world):
+    """XRUNS and LOAD count the tap while the agent runs one, and not once it
+    has stopped (review of PR #200: the tile must not keep rising for a tap
+    no page holds)."""
+    pytest.importorskip("aiohttp")
+    from sushi_rig.agent import Agent
+
+    tap_world(world)
+    supervisor = Supervisor(world.world, say=lambda m: None)
+    agent = Agent(supervisor=supervisor)
+    described = {"running": True, "children": {"sushi": {"pid": 1, "alive": True}}}
+
+    async def go():
+        assert (await supervisor.up("t", headless=True, tuner=False)).ok
+        before = agent._load_children(described)
+        assert (await supervisor.tap("a")).ok
+        during = agent._load_children(described)
+        await supervisor.tap_release("a", at_once=True)
+        after = agent._load_children(described)
+        await supervisor.down()
+        agent._executor.shutdown(wait=True)
+        return before, during, after
+
+    before, during, after = run(go())
+    assert set(before) == {"sushi"} and set(during) == {"sushi", "vistap"} and set(after) == {"sushi"}
 
 
 def test_no_visualiser_tap_reaches_prepare_and_restart_keeps_it(world):

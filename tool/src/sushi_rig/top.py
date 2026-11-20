@@ -131,9 +131,11 @@ def parse_pw_top(output: str) -> list[dict[str, Any]]:
 # Carla's is near zero but shown so a dead amp is visible rather than absent.
 #
 # The visualiser's tap (vistap.py) is two nodes as well, both followers in
-# Sushi's cycle: they do a copy each cycle, so they are shown, their load is in
-# the total and their xruns are in the count the page's XRUNS tile and the
-# visualiser's xrun safeguard read.
+# Sushi's cycle while the agent runs it: they do a copy each cycle, so they are
+# shown, their load is in the total and their xruns are in the count the page's
+# XRUNS tile and the visualiser's xrun safeguard read. The agent adds it to the
+# children it reads for (`Agent._load_children`), since the state file never
+# lists it.
 CHILD_NODES: dict[str, tuple[str, ...]] = {
     "sushi": ("sushi",),
     "amp": ("NAM", "Carla"),

@@ -39,23 +39,25 @@ sushi-rig down              # stop everything, and verify it stopped
 `up` also takes `--no-amp`, `--no-tuner`, and `--amp-model "Some Model.nam"` to
 audition a different amp capture without editing the config.
 
-`up --no-visualiser-tap` leaves out the visualiser's tap (#195). Without it,
-`up` starts a `pw-loopback` with the rig (the child `vistap`) that offers the
-rig's output to the browser as the input **Sushi rig output** (node
-`sushi_rig_output`), for the web page's visualiser. "The rig's output" is
-Sushi's master: the master track's outputs, engine bus 0, after the master
+`up --no-visualiser-tap` means the rig's output is never offered to the web
+page's visualiser (#195). `up` itself never starts the visualiser's tap: the
+agent starts it on demand, a `pw-loopback` in the rig's group (the child
+`vistap`) offering the rig's output to the browser as the input **Sushi rig
+output**, when the page's visualiser is about to listen (`POST
+/visualiser/tap`), holds it while the page renews its lease, and stops it by
+its pid a few minutes after the last page let it go (at once on an xrun
+trip), when the agent stops, or with the group on `down`. "The rig's output"
+is Sushi's master: the master track's outputs, engine bus 0, after the master
 chain, the master limiter (#137) and the master volume, which is what the
 monitors are sent; for a v1 config, which has no master track or limiter, it
-is engine bus 0, where every v1 config mixes for the monitors. The tap is a
-branch: Sushi's master outputs are linked to it with `pw-link` once Sushi
-answers, besides their links to the interface, and it is never linked to the
-interface itself. It changes nothing in the audio path or its latency, but
-its two nodes are followers in Sushi's cycle every cycle the rig runs (a few
-µs each, measured in a container; `sushi-rig doctor`'s `visualiser-tap` says
-whether it runs realtime here). If its links cannot be made it is stopped,
-by its pid, and `up` warns; it goes with the group on `down`. `restart` and a
-switch keep the choice, from the state file's `visualiser_tap_requested`.
-Through the agent it is `"visualiser_tap": false` on `POST /rig/up`.
+is engine bus 0. Its two nodes are followers in Sushi's cycle while it runs,
+and the cycle waits for them; even with a realtime thread it was "too slow",
+a cycle not finished in time, from once in 20 s to five times in 15 s when
+measured in a container, which is why it runs only while a visualiser
+listens. One with no
+realtime thread is refused. `restart` and a switch keep the choice, from the
+state file's `visualiser_tap_requested`; through the agent it is
+`"visualiser_tap": false` on `POST /rig/up`.
 
 `up --rig <name>` runs a rig of channels, `config/rigs/<name>.yaml` (#30): the
 rig is compiled at start into the runtime directory, never into `config/`, and

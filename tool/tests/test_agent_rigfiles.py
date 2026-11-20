@@ -248,17 +248,6 @@ def test_the_roles_are_the_machine_files_with_what_the_patchbay_says_each_can_fe
     assert answer["machine"] == f"machines/{socket.gethostname()}.yaml"
 
 
-def test_the_roles_name_the_visualiser_taps_source_as_the_browser_lists_it(root):
-    """The page's visualiser listens to the rig's output first (#195), found
-    among the browser's inputs by this name, as the guitar by `guitar-in`."""
-    from sushi_rig import vistap
-
-    agent, _ = rig_agent(root)
-    _, answer = call(agent, "GET", "/machine/roles")
-    assert answer["visualiser_tap"] == {"node": "sushi_rig_output", "label": "Sushi rig output"}
-    assert answer["visualiser_tap"] == {"node": vistap.SOURCE_NODE, "label": vistap.SOURCE_LABEL}
-
-
 def test_the_roles_say_which_tracks_of_the_running_rig_use_each(root):
     agent, _ = rig_agent(root)
     _, answer = call(agent, "GET", "/machine/roles")

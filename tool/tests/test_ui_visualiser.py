@@ -187,6 +187,23 @@ def test_a_rise_in_xruns_while_it_listens_is_a_reason_to_stop(blank):
     assert out[0] is None and out[4] is None and out[5] is None
     assert out[1].startswith("Stopped: the rig glitched") and "from 2 to 3" in out[1] and "ticked again" in out[1]
     assert out[2] == out[3] == "rebase", "none yet, or another run: the count is taken again, not compared"
+    assert "tap" not in out[1]
+    tapped = rigjs(blank, "return R.visualiserTripped({count: 2, run: 'a'}, {count: 3, run: 'a'}, true);")
+    assert "The tap on the rig's output was let go with it, so it is out of Sushi's cycle." in tapped
+
+
+def test_the_rigs_output_is_asked_for_unless_another_input_was_chosen_by_hand(blank):
+    out = rigjs(blank, """const w = R.visualiserWantsTap;
+      return [w({input: null}), w(null), w({input: {deviceId: 'x', label: 'Sushi rig output'}}),
+              w({input: {deviceId: 'y', label: 'Audient iD14 Multichannel'}})];""")
+    assert out == [True, True, True, False]
+
+
+def test_the_taps_name_the_page_knows_is_the_agents():
+    from sushi_rig import vistap
+
+    text = (UI_DIR / "rig.js").read_text(encoding="utf-8")
+    assert re.search(r'tapLabel: "([^"]+)"', text).group(1) == vistap.SOURCE_LABEL
 
 
 def test_idle_and_frames_are_timed_as_said(blank):
@@ -719,21 +736,117 @@ def test_what_it_heard_is_said_on_the_line(opened):
     assert v.state()["pick"]["how"] == "chosen" and v.state()["pick"]["channel"] == 1
 
 
-def test_the_rigs_output_is_heard_first_when_the_roles_name_it(opened):
-    """The page as built, end to end: /machine/roles names the tap's source
-    (stood in here by one of Chromium's fake inputs, renamed by the answer),
-    and the visualiser opens that input and says so."""
-    v = opened()
-    p = v.page
-    labels = p.evaluate("""async () => (await navigator.mediaDevices.getUserMedia({audio: true})
+# The visualiser's tap (#195), driven in the page: the agent's answers to
+# POST /visualiser/tap and its release are stood in by Playwright's routing,
+# one of Chromium's fake inputs renamed as the tap's source. The fake agent
+# has no machine file, so /machine/roles answers 409 throughout (review of
+# PR #200: that must not lose the tap).
+
+# Every getUserMedia stream, for a test to end one of its tracks.
+STREAMS = """(() => { const real = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+  window.__streams = [];
+  navigator.mediaDevices.getUserMedia = async (c) => { const s = await real(c); window.__streams.push(s); return s; }; })();"""
+
+
+def fake_labels(p):
+    return p.evaluate("""async () => (await navigator.mediaDevices.getUserMedia({audio: true})
       .then((s) => { s.getTracks().forEach((t) => t.stop()); return navigator.mediaDevices.enumerateDevices(); }))
       .filter((d) => d.kind === 'audioinput' && d.deviceId !== 'default').map((d) => d.label)""")
-    assert labels, "Chromium's fake inputs"
-    answer = json.dumps({"ok": True, "roles": [], "visualiser_tap": {"node": "sushi_rig_output", "label": labels[-1]}})
-    p.route("**/machine/roles", lambda route: route.fulfill(status=200, content_type="application/json", body=answer))
+
+
+class TapAgent:
+    """The agent's tap routes, stood in: answers with `label` (or refuses
+    with `refuse`), and records each request's path and body."""
+
+    def __init__(self, page, label, refuse=None, renew=0.3):
+        self.label, self.refuse, self.renew, self.asked = label, refuse, renew, []
+        page.route("**/visualiser/tap", self.tap)
+        page.route("**/visualiser/tap/release", self.release)
+
+    def tap(self, route):
+        self.asked.append(("tap", json.loads(route.request.post_data or "{}")))
+        if self.refuse:
+            route.fulfill(status=409, content_type="application/json",
+                          body=json.dumps({"ok": False, "code": "not_realtime", "reason": self.refuse}))
+            return
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(
+            {"ok": True, "source": {"node": "sushi_rig_output", "label": self.label},
+             "lease_s": 30, "renew_s": self.renew}))
+
+    def release(self, route):
+        self.asked.append(("release", json.loads(route.request.post_data or "{}")))
+        route.fulfill(status=200, content_type="application/json", body='{"ok": true}')
+
+    def count(self, kind):
+        return sum(1 for k, _ in self.asked if k == kind)
+
+    def wait(self, page, test, seconds=5):
+        deadline = time.monotonic() + seconds
+        while not test() and time.monotonic() < deadline:
+            page.wait_for_timeout(100)
+        return test()
+
+
+def test_the_rigs_output_is_asked_for_heard_renewed_and_given_back(opened):
+    v = opened()
+    p = v.page
+    labels = fake_labels(p)
+    agent = TapAgent(p, labels[-1])
     v.shown()
     pick = v.state()["pick"]
-    assert (pick["how"], pick["label"], pick["channel"]) == ("output", labels[-1], None)
+    assert (pick["how"], pick["label"], pick["channel"]) == ("output", labels[-1], None), \
+        "the tap's source, though /machine/roles answered 409"
+    page_id = agent.asked[0][1]["page"]
+    assert agent.wait(p, lambda: agent.count("tap") >= 3), "renewed while it listens"
+    assert {body["page"] for _, body in agent.asked} == {page_id}, "one page, one lease"
     p.mouse.move(1, 1)
     v.off()
+    assert agent.wait(p, lambda: ("release", {"page": page_id, "now": False}) in agent.asked), \
+        "given back, to linger"
+    renewals = agent.count("tap")
+    p.wait_for_timeout(1000)
+    assert agent.count("tap") == renewals, "and no longer renewed"
     assert "(the rig's output: the master, after its limiter)" in p.locator(".visualiser-note").inner_text()
+
+
+def test_a_tap_refused_falls_back_and_says_why(opened):
+    v = opened()
+    p = v.page
+    agent = TapAgent(p, "unused", refuse="the visualiser tap (pid 7) got no realtime thread ...")
+    v.shown()
+    state = v.state()
+    assert state["pick"]["how"] == "default", "no machine file here: the browser's choice"
+    assert state["tap"]["holding"] is False and "no realtime thread" in state["tap"]["reason"]
+    assert agent.count("tap") == 1 and agent.count("release") == 0
+
+
+def test_a_trip_while_on_the_rigs_output_lets_the_tap_go_at_once_and_says_so(opened, served):
+    v = opened()
+    p = v.page
+    agent = TapAgent(p, fake_labels(p)[-1])
+    v.shown()
+    v.until("() => sushiRigVisualiser().session.listening")
+    assert v.state()["pick"]["how"] == "output"
+    page_id = agent.asked[0][1]["page"]
+    served.pw_top_output = re.sub(r"^(R\s+130(?:\s+\S+){6}\s+)0(\s+\+ sushi)$", r"\g<1>5\2", served.pw_top_output, flags=re.M)
+    state = v.off()
+    assert "The tap on the rig's output was let go" in state["tripped"]
+    assert agent.wait(p, lambda: ("release", {"page": page_id, "now": True}) in agent.asked), \
+        "at once, not after the linger"
+
+
+def test_an_input_that_ends_while_heard_is_chosen_again_and_heard(opened):
+    """The tap stopped (or the interface went): the track ends, and the page
+    chooses again and hears that, rather than drawing silence."""
+    v = opened(init=(STREAMS,))
+    p = v.page
+    agent = TapAgent(p, fake_labels(p)[-1])
+    v.shown()
+    before = p.evaluate("window.__streams.length")
+    asked = agent.count("tap")
+    p.evaluate("""(() => { const s = window.__streams[window.__streams.length - 1];
+      s.getAudioTracks()[0].dispatchEvent(new Event('ended')); })()""")
+    v.until(f"() => sushiRigVisualiser().reopened === 1 && window.__streams.length > {before}")
+    v.until("() => sushiRigVisualiser().session.listening")
+    assert agent.count("tap") > asked, "the tap asked for again"
+    assert v.state()["phase"] == "shown" and v.state()["pick"]["how"] == "output"

@@ -677,24 +677,44 @@ output are as they were, and no delay is added.
 after the master chain, the master limiter (#137) and the master volume, so
 what the monitors are sent; for a v1 config, engine bus 0, with no limiter.
 Chromium lists no monitor sources, so it cannot be captured from the
-interface's sink: `up` (and the agent) start a `pw-loopback` with the rig,
-the child `vistap` (`vistap.py`), whose playback side is an `Audio/Source`
-named `sushi_rig_output`, described **Sushi rig output**, which is what the
-browser lists. Its capture side, `sushi_rig_output_tap`, is linked from
-Sushi's two master outputs with `pw-link` once Sushi answers, beside their
-links to the interface; both sides are made with `node.autoconnect = false`,
-so the session manager links neither, and the source is never linked to the
-interface. It lives and dies with its process: it is in the rig's process
-group, stopped with it by `down` (CLI or agent), and when it goes, by any
-signal, PipeWire removes its nodes. A tap whose links cannot be made is
-stopped by its pid and the start warns, so the page is never offered a silent
-source. If it stops while the rig plays, the agent reports it like any child
-("the visualiser tap stopped: the sound is unaffected"). A live switch keeps
-Sushi, its ports and the links (every rig's master is on bus 0); a switch by
-restart and `restart` start and link a new one. `up --no-visualiser-tap` (or
-`"visualiser_tap": false` on `POST /rig/up`) leaves it out, and restart and
-switches keep that. `GET /machine/roles` names it to the page
-(`visualiser_tap: {node, label}`), as it names the guitar's port.
+interface's sink. The agent offers it **on demand** (`vistap.py`, review of
+PR #200), only while a visualiser listens:
+
+- **Asked for.** When the visualiser is about to listen, the page
+  (`visualiser-tap.js`) sends `POST /visualiser/tap {"page"}` (from this
+  machine only: 403 `not_local` otherwise). The agent starts a `pw-loopback`
+  in the rig's group, the child `vistap`, whose playback side is an
+  `Audio/Source` named `sushi_rig_output`, described **Sushi rig output**,
+  which is what the browser lists. Its capture side, `sushi_rig_output_tap`,
+  is linked from Sushi's two master outputs with `pw-link` and read back with
+  `pw-link -l`; both sides have `node.autoconnect = false`, so the session
+  manager links neither, and the source is never linked to the interface.
+  Then its threads are read from `/proc`: one with no SCHED_FIFO or SCHED_RR
+  thread is stopped by its pid and refused. The answer, once it is linked and
+  realtime, is 200 with the `source` (`node`, `label`), `lease_s` and
+  `renew_s`; otherwise 409 with `code` (`not_held`: this agent holds no
+  running rig; `off`: started with `--no-visualiser-tap`; `did_not_start`,
+  `not_linked`, `not_realtime`) and why, and the page listens to the guitar's
+  input instead, as it does if the agent does not answer within 9 s.
+- **Leased.** The page asks again every `renew_s` (10 s) while it listens;
+  a lease lasts `lease_s` (30 s) from then. Two pages share one tap, each with
+  its own lease. When the page stops listening (the visualiser goes, the tab
+  is hidden, the page closes) it sends `POST /visualiser/tap/release`. With no
+  lease held, the tap is kept 3 minutes more, so an idle spell does not change
+  the graph every time, then stopped by its pid. On an xrun trip the page
+  releases with `"now": true` and, with no other page holding it, the tap is
+  stopped at once.
+- **Tidied.** It is stopped by its pid when the agent stops (the rig plays
+  on), and goes with the group on `down`, a `restart` and a switch by
+  restart; the next request starts one for the new rig. A live switch keeps
+  Sushi, its ports and the links (every rig's master is on bus 0). `up` from
+  the command line never starts one. A tap stopped on purpose is never
+  reported as a crash; one that stops by itself is, as any child ("the
+  visualiser tap stopped: the sound is unaffected"), the page's capture of it
+  ends, and the page chooses an input again and hears that (the track's
+  `ended`), rather than drawing silence. `up --no-visualiser-tap` (or
+  `"visualiser_tap": false` on `POST /rig/up`) means it is never offered, and
+  `restart` and switches keep that.
 
 What is and is not kept apart from Sushi (review of PR #183):
 
@@ -710,36 +730,49 @@ What is and is not kept apart from Sushi (review of PR #183):
   `pw-record` or JACK tap would be a node in the cycle in the same way, with
   its own process doing the work (and `pw-record` writing a file from it),
   so it would not be safer, only not via pipewire-pulse.
-- **Not kept apart: the tap.** Its two nodes are one node group linked to
-  Sushi, so followers of Sushi's driver every cycle the rig runs, whether or
-  not the page listens; the cycle finishes only when they have. Measured in
-  a container (PipeWire 1.0.5, 256 frames, a JACK stand-in for Sushi;
-  `tool/spikes/visualiser_audio/README.md`, "The rig's output"): BUSY 5 to 13
-  µs for the capture side and 2 to 3 µs for the source, against a 5333 µs
-  cycle, and no new xruns of its own in 15 s. `pw-loopback` reads `client.conf`,
-  which loads no `module-rt`, and its data thread then ran at normal
-  priority and was "too slow" about once a second; it is started with
-  `PIPEWIRE_CONFIG_NAME=client-rt.conf`, which gave it SCHED_FIFO. A stream
-  never drives the graph, so it cannot take the clock from the interface.
+- **Not kept apart: the tap, while it runs.** Its two nodes are one node
+  group linked to Sushi, so followers of Sushi's driver every cycle while it
+  runs, and the driver waits for them: when one is late PipeWire 1.0 logs
+  `client too slow!` beside `graph not finished`, a cycle the rig did not
+  finish in time. Measured in a container (PipeWire 1.0.5, 256 frames, a JACK
+  stand-in for Sushi; `tool/spikes/visualiser_audio/README.md`, "The rig's
+  output"): BUSY 5 to 13 µs for the capture side and 2 to 3 µs for the source,
+  against a 5333 µs cycle; "too slow" about once a second with a
+  normal-priority data thread, and with a realtime one once in 20 s in one
+  run and five times in 15 s in another (the stand-in Sushi itself three
+  times in those 15 s): at once in 20 s, some 360 unfinished cycles over a
+  two-hour set. That is why
+  it runs only while a visualiser listens, and is refused without realtime.
+  `pw-loopback` reads `client.conf`, which loads no `module-rt`, so it is
+  started with `PIPEWIRE_CONFIG_NAME=client-rt.conf`. A stream never drives
+  the graph, so it cannot take the clock from the interface.
   It is not the default source on the rig: WirePlumber prefers a higher
   `priority.session`, and the tap's is 0 against the ALSA inputs' 1680 to
   2109 (the rig's captured graph); on a machine with no other input it is.
 
-So two safeguards. `sushi-rig doctor`'s `pulse-realtime` says whether
-pipewire-pulse runs a thread at realtime priority, and `visualiser-tap`
-whether the tap does, by the pid the state file recorded (both from
-`/proc/<pid>/task/*/stat`; never a fault, since the rig plays without
-either). The tap's nodes are among the rig's in `/rig/load`
-(`top.CHILD_NODES`), so its load is in LOAD and its xruns in XRUNS. And while the visualiser listens, the page watches the XRUNS
+So three safeguards. `sushi-rig doctor`'s `pulse-realtime` says whether
+pipewire-pulse runs a thread at realtime priority (from
+`/proc/<pid>/task/*/stat`; never a fault, since the rig plays without it).
+`visualiser-tap` is a fault when a running tap has no realtime thread, when
+the agent refused one for want of it, or when nothing here would give one
+(the agent's `Max realtime priority` limit is 0 and `rtkit-daemon` is not
+running); the fix is rtkit (`sudo apt install rtkit`), or a realtime limit
+for the agent's service: `systemctl --user edit sushi-rig-agent.service`,
+`[Service]` and `LimitRTPRIO=95`, only where your account's hard limit allows
+it (PipeWire's `limits.d` file gives it to the `pipewire` group): a user
+service asking for more than that fails to start, which is why the shipped
+unit does not set it. While the tap runs, its nodes are among the rig's in
+`/rig/load` (`top.CHILD_NODES`), so its load is in LOAD and its xruns in
+XRUNS; once it is stopped they are not there to count. And while the visualiser listens, the page watches the XRUNS
 count (pw-top's, as the tile reads it, sent to `screensaver.js` as a
 "sushi-rig:xruns" event after each sample, about every 2 s): if it rises, the
 capture and the visualiser stop and the line says why ("Stopped: the rig
 glitched while the visualiser was listening"), and it stays off until the
 page is reloaded or **Visualiser** is ticked again. Any rise counts, whatever
-caused it: the tap's own included. Stopping the visualiser lets go of the
-browser's capture, not of the tap, which only `--no-visualiser-tap` and a
-restart remove. Which input: one chosen on the line; otherwise **Sushi rig
-output**, by the label `/machine/roles` gives, both channels (said on the
+caused it: the tap's own included. The trip lets the tap go at once (above),
+and the line says so. Which input: one chosen on the line; otherwise **Sushi
+rig output**, by the label the tap's answer gives (so a 409 from
+`/machine/roles` loses nothing), both channels (said on the
 line as "the rig's output: the master, after its limiter"); otherwise
 the machine file's `guitar-in` port, by name (the browser lists
 `Audient iD14 Multichannel` for the JACK client `Audient iD14`), on the

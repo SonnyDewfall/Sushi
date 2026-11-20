@@ -36,8 +36,11 @@ and the two things worth reading about a rig, served over HTTP on localhost.
     POST /record/stop   {} -- finish it; the answer says `take check`'s verdict
     GET  /takes         the takes, newest first: name, when, length, stems, `take check`'s verdict
     POST /takes/open    {} -- open the takes folder in this machine's file manager; loopback peers only (#189)
-    GET  /machine/roles the machine file's roles: ports, widths each can feed, which tracks use each;
-                        and the visualiser tap's source, as the browser names it
+    GET  /machine/roles the machine file's roles: ports, widths each can feed, which tracks use each
+    POST /visualiser/tap  {"page"} -- start, or renew this page's lease on, the visualiser's tap on the
+                        rig's output (#195); 200 once linked and realtime, else 409 and the page falls back.
+                        Loopback peers only
+    POST /visualiser/tap/release  {"page", "now"?} -- give the lease back; `now` stops it at once
     GET  /rigs/{name}/channels   a rig file's channels: name, input, width, level, plugins
     POST /rigs/new      {"name", "channels": [{"name", "input", "width", "from"?}]} -- a new rig file
     POST /rigs/{name}/channels/add              {"name", "input", "width", "from"?}
@@ -1318,6 +1321,10 @@ def place_undo_remove(entry: dict[str, Any], reading: dict[str, Any]) -> "Additi
     return addition
 
 
+# A page's id for the visualiser tap's lease (#195): the page makes one up.
+TAP_PAGE = re.compile(r"[A-Za-z0-9_-]{1,64}")
+
+
 def _conflict(reason: str, code: str):
     """A 409 that carries a `code` beside its `reason`, so a client tells busy,
     nothing to undo and stale apart without reading prose."""
@@ -1992,7 +1999,8 @@ class Agent:
 
         # The crashes this agent saw, so a node of the rig's own that is
         # absent is said as the crash it is, not as a rig that is down.
-        return run(self.root or checkout_root(), crashed=list(self.supervisor.crashed))
+        return run(self.root or checkout_root(), crashed=list(self.supervisor.crashed),
+                   tap=self.supervisor.tap_report())
 
     # ----------------------------------------------------------------- routes
 
@@ -2000,6 +2008,8 @@ class Agent:
         # The guard inside `_json_errors`, so its 403 is JSON as every refusal is.
         app = web.Application(middlewares=[self._json_errors, self._same_site_only])
         app.router.add_get("/health", self.health)
+        app.router.add_post("/visualiser/tap", self.visualiser_tap_route)
+        app.router.add_post("/visualiser/tap/release", self.visualiser_tap_release_route)
         app.router.add_get("/rig", self.rig)
         app.router.add_get("/doctor", self.doctor_route)
         for command in LIFECYCLE:
@@ -2102,6 +2112,51 @@ class Agent:
             "unchecked": sum(c.state == UNCHECKED for c in checks),
             "checks": [c.as_dict() for c in checks],
         })
+
+    def _tap_page(self, request: Any, body: Any, keys: set) -> str:
+        """The page a tap request is for, after the checks both tap routes
+        make: a loopback peer (403 `not_local`: the visualiser runs only on
+        the rig's own laptop), and a body of `keys` with a `page` that is a
+        short id (400)."""
+        if not is_local(request.remote):
+            refused = web.HTTPForbidden(reason=(
+                "refused: the visualiser's tap is for a page open on this machine, and this came from "
+                f"{request.remote or 'an address not known'}"))
+            refused.agent_code = "not_local"
+            raise refused
+        if not isinstance(body, dict) or not set(body) <= keys or not isinstance(body.get("page"), str) \
+                or not TAP_PAGE.fullmatch(body["page"]):
+            raise web.HTTPBadRequest(reason=(
+                f"the body must be {{\"page\": \"<id>\"}} (letters, digits, '-' and '_', at most 64), with "
+                f"nothing else but {', '.join(sorted(keys - {'page'})) or 'nothing'}, not {body!r}"))
+        return body["page"]
+
+    async def visualiser_tap_route(self, request):
+        """`POST /visualiser/tap {"page"}` (#195): start the visualiser's tap
+        on the rig's output (`vistap`), or renew this page's lease on the one
+        running, which lasts `lease_s` from now; the page asks again every
+        `renew_s` while it listens. 200 with the `source` the browser lists
+        once it is linked and realtime; 409 with `code` (`not_held`, `off`,
+        `did_not_start`, `not_linked`, `not_realtime`) and why, and the page
+        listens to the guitar's input instead."""
+        page = self._tap_page(request, await self._json_body(request), {"page"})
+        answer = await self.supervisor.tap(page)
+        if not answer.ok:
+            raise _conflict(answer.reason or "the visualiser tap was refused", answer.code or "refused")
+        return web.json_response({"ok": True, "source": answer.source, "lease_s": answer.lease,
+                                  "renew_s": answer.renew})
+
+    async def visualiser_tap_release_route(self, request):
+        """`POST /visualiser/tap/release {"page", "now"?}` (#195): the page
+        gives its lease back (it stopped listening). The tap is kept a while
+        for the next idle spell (`vistap.LINGER`), unless `now` (its xrun
+        safeguard tripped) and no other page holds it: then it is stopped."""
+        body = await self._json_body(request)
+        page = self._tap_page(request, body, {"page", "now"})
+        now = body.get("now", False)
+        if not isinstance(now, bool):
+            raise web.HTTPBadRequest(reason=f"'now' must be true or false, not {now!r}")
+        return web.json_response({"ok": True, **(await self.supervisor.tap_release(page, at_once=now))})
 
     async def lifecycle(self, request):
         command = request.path.rsplit("/", 1)[-1]
@@ -3587,10 +3642,21 @@ class Agent:
             error.agent_code = exc.code
             raise error
         self._said_load = None
-        report = top_module.load_report(top_module.parse_pw_top(output), described.get("children"))
+        report = top_module.load_report(top_module.parse_pw_top(output), self._load_children(described))
         self._know_block(report)
         return web.json_response({
             "ok": True, "at": datetime.now(timezone.utc).isoformat(timespec="seconds"), **report})
+
+    def _load_children(self, described: dict[str, Any]) -> dict[str, Any] | None:
+        """The rig's children for a load reading: the state file's, and the
+        visualiser's tap while the agent runs one (#195), which the state
+        file never lists, so its nodes, which are in Sushi's cycle, count in
+        LOAD and XRUNS for as long as it runs and no longer."""
+        children = described.get("children")
+        tap = self.supervisor.tap_children() if hasattr(self.supervisor, "tap_children") else {}
+        if not tap:
+            return children
+        return {**(children if isinstance(children, dict) else {}), **tap}
 
     def _know_block(self, report: dict[str, Any]) -> None:
         """Keep the block pw-top measured, for the dip's wait (`ramp.settle`)."""
@@ -3620,7 +3686,7 @@ class Agent:
             if not described.get("running"):
                 return top_module.add_budget(None, "the state file says no rig is running")
             output = await self._pw_top_sample()
-            report = top_module.load_report(top_module.parse_pw_top(output), described.get("children"))
+            report = top_module.load_report(top_module.parse_pw_top(output), self._load_children(described))
         except asyncio.CancelledError:
             raise
         except Exception as exc:  # noqa: BLE001 -- whatever stops the reading, the add goes ahead, said
@@ -5073,13 +5139,10 @@ class Agent:
         the widths each can feed and whether it can take the master, as the
         patchbay answers), which tracks of the running rig use each (from the
         running config's `_wiring`), the role a new rig's master goes to,
-        and the channel ceiling with the compiler's reason; and the
-        visualiser tap's source (`visualiser_tap`: its node and the name the
-        browser lists it under), for the page's visualiser as the
-        `guitar-in` role is. Read only: the machine file is never written
-        here. 409 `machine` when it cannot be read or does not validate, with
-        why."""
-        from . import rigedit, vistap
+        and the channel ceiling with the compiler's reason. Read only: the
+        machine file is never written here. 409 `machine` when it cannot be
+        read or does not validate, with why."""
+        from . import rigedit
         from .machine import MachineError, MachineSpec
         from .patchbay import MONITOR_ROLE
 
@@ -5111,10 +5174,7 @@ class Agent:
         return web.json_response({
             "ok": True, "machine": self._save_shown(machine_file), **found,
             "output": MONITOR_ROLE, "ceiling": rigedit.ceiling(),
-            # The visualiser's tap (#195, vistap.py): the source the browser
-            # lists while a rig runs with it, by node and by the name the
-            # browser gives it, which the page's visualiser listens to first.
-            "visualiser_tap": {"node": vistap.SOURCE_NODE, "label": vistap.SOURCE_LABEL},
+
             "running": None if running is None else {"rig": running.stem, "file": self._save_shown(running)},
             "note": ("which roles are inputs and which outputs is read from their names (-in, -out): the "
                      "machine file does not say. Whether a channel can use a role is the compiler's answer, "
