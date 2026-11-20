@@ -1793,7 +1793,8 @@ def describe_rig(
 
     record = tap_record if tap_record is not None else vistap.read_record()
     if isinstance(record, dict) and record.get("pgid") == state.get("pgid") and is_real_id(record.get("pid")):
-        described["visualiser_tap"] = {"pid": record["pid"], "alive": vistap.recorded_alive(record)}
+        described["visualiser_tap"] = {"pid": record["pid"], "alive": vistap.recorded_alive(record),
+                                       "owner_alive": vistap.owner_alive(record)}
     age = format_uptime(uptime) if uptime is not None else "unknown"
     described["message"] = f"{described['config_name']} ({described['mode']} mode), up {age}"
     return described

@@ -310,3 +310,37 @@ def test_a_record_names_one_process_by_its_start_time(tmp_path):
         proc.kill()
         proc.wait()
     assert not vistap.recorded_alive(record), "gone"
+
+
+def test_a_record_is_written_whole_by_a_rename_and_names_its_owner(tmp_path, monkeypatch):
+    """Never half a record: written beside it and renamed over it. The owner
+    is the agent that wrote it, by pid and start time."""
+    import os
+
+    path = tmp_path / "vistap.json"
+    path.write_text('{"pid": 1, "old": true}\n')
+    renames = []
+    real = os.replace
+    monkeypatch.setattr(vistap.os, "replace", lambda a, b: renames.append((Path(a).name, Path(b).name)) or real(a, b))
+    vistap.write_record(os.getpid(), os.getpgrp(), path=path)
+    record = vistap.read_record(path)
+    assert renames == [(f".vistap.json.{os.getpid()}.tmp", "vistap.json")]
+    assert record["owner"] == {"pid": os.getpid(), "starttime": vistap.starttime(os.getpid())}
+    assert vistap.owner_alive(record) and not vistap.owner_alive({"pid": 5}), "no owner recorded: none alive"
+    assert list(tmp_path.iterdir()) == [path], "nothing left beside it"
+
+
+def test_a_record_left_half_written_never_replaces_the_one_there(tmp_path, monkeypatch):
+    import os
+
+    path = tmp_path / "vistap.json"
+    vistap.write_record(os.getpid(), os.getpgrp(), path=path)
+    before = path.read_text()
+
+    def dies(*a, **k):
+        raise OSError("killed mid-write")
+
+    monkeypatch.setattr(vistap.os, "replace", dies)
+    with pytest.raises(OSError):
+        vistap.write_record(os.getpid(), 12345, path=path)
+    assert path.read_text() == before and list(tmp_path.iterdir()) == [path]

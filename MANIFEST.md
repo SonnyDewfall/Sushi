@@ -6752,3 +6752,17 @@ bundle is resolved and its manifest read there, as lilv does. (3) A restart's
 refusal said the rig "plays on" even when the agent was restarting a rig
 that had crashed: it says so only when the rig is running
 (`rig.restart_is_playing`), and otherwise "Nothing was stopped". *(2026-11-20)*
+
+**The tap, round 3 of PR #200's review (#195).** (1) A close while the agent
+started the tap left the late answer holding and renewing for ever: each
+acquire has a ticket, which a release (and a newer acquire) moves on, and an
+answer for a stale ticket holds nothing; a timeout releases only its own.
+(2) A second agent (another port, a dev run) stopped the first's live tap
+at its start: the record names its owner by pid and start time, and a tap
+whose owner still runs is left to it. (3) `vistap.json` is written beside
+itself and renamed over (`os.replace`); a left tap is stopped through a
+pidfd opened before its start time and name (`pw-loopback`) are checked,
+so a pid reused between check and signal cannot be hit, and a recorded pid
+that is not a `pw-loopback` is never signalled (`procs.stop_recorded`,
+replacing `stop_pid`). Each with a test that fails without it.
+*(2026-11-20)*

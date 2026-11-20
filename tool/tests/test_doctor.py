@@ -1139,3 +1139,6 @@ def test_a_tap_left_running_with_no_agent_holding_it_is_a_fault():
     dead = doctor.tap_check({**TAP_RIG, "visualiser_tap": {"pid": 12, "alive": False}}, TAP_STATE, None, None,
                             (True, "x"))
     assert dead.state != FAULT
+    owned = doctor.tap_check({**TAP_RIG, "visualiser_tap": {"pid": 12, "alive": True, "owner_alive": True}},
+                             TAP_STATE, None, None, (True, "x"))
+    assert owned.state != FAULT, "another agent's, which still runs: not left behind"

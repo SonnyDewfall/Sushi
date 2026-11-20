@@ -173,30 +173,49 @@ def threads_of(pid: int) -> tuple[tuple[str, int, int], ...]:
     return tuple(threads)
 
 
-def stop_pid(pid: int, steps: tuple[tuple[signal.Signals, float], ...] = SHUTDOWN_STEPS,
-             interval: float = 0.05) -> list[int]:
-    """Stop one process that is not our child, by its pid, through the
-    shutdown escalation: `[pid]` if it is still there afterwards, else `[]`.
-    For a process this one cannot wait for (an earlier agent's child), so
-    gone means no longer in /proc, or a zombie. Pids of 1 or below are
-    refused, as `pid_alive` refuses them."""
+def stop_recorded(pid: int, started: int | None, comm: str,
+                  steps: tuple[tuple[signal.Signals, float], ...] = SHUTDOWN_STEPS) -> list[int]:
+    """Stop a process this one did not start, named by a record: pid `pid`,
+    started at `started` (clock ticks since boot, `/proc/<pid>/stat` field
+    22), whose name (`comm`) is `comm`. `[pid]` if it is still there
+    afterwards, else `[]`; `ValueError` when the process at `pid` is not that
+    one, and then nothing is signalled.
+
+    A pidfd is opened first and every signal goes through it: once it is
+    open the pid cannot come to name another process, so the identity read
+    after it holds for the signals that follow (review of PR #200: by pid
+    alone, a pid reused between the check and the kill would be another
+    process's death)."""
+    import select
+
     if pid <= 1:
         raise ValueError(f"refusing to signal pid {pid}")
-
-    def gone() -> bool:
+    try:
+        fd = os.pidfd_open(pid)
+    except ProcessLookupError:
+        return []
+    try:
         try:
-            return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] == "Z"
-        except (OSError, IndexError):
-            return not pid_alive(pid)
-
-    for sig, wait in steps:
-        try:
-            os.kill(pid, sig)
-        except ProcessLookupError:
+            text = Path(f"/proc/{pid}/stat").read_text()
+            name = text[text.find("(") + 1:text.rfind(")")]
+            fields = text[text.rfind(")") + 2:].split()
+            state, now_started = fields[0], int(fields[19])
+        except (OSError, IndexError, ValueError):
             return []
-        deadline = time.monotonic() + wait
-        while time.monotonic() < deadline:
-            if gone():
+        if state == "Z":
+            return []
+        if now_started != started or name != comm:
+            raise ValueError(f"pid {pid} is {name!r}, started at {now_started}, not the {comm!r} started at "
+                             f"{started} that was recorded: not signalled")
+        poller = select.poll()
+        poller.register(fd, select.POLLIN)
+        for sig, wait in steps:
+            try:
+                signal.pidfd_send_signal(fd, sig)
+            except ProcessLookupError:
                 return []
-            time.sleep(interval)
-    return [] if gone() else [pid]
+            if poller.poll(int(wait * 1000)):
+                return []  # readable: it has exited
+        return [pid]
+    finally:
+        os.close(fd)

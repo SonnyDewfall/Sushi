@@ -1804,21 +1804,32 @@ def test_a_tap_is_recorded_beside_the_state_file_while_it_runs(world):
 
     pid, pgid, during, described, after, downed = run(go())
     assert (during["pid"], during["pgid"]) == (pid, pgid) and during["starttime"]
-    assert described["visualiser_tap"] == {"pid": pid, "alive": True}
+    assert described["visualiser_tap"] == {"pid": pid, "alive": True, "owner_alive": True}
     assert after is None, "removed when it stopped"
     assert downed is None, "and when down stopped the group"
 
 
-def test_a_tap_an_earlier_agent_left_is_stopped_by_its_pid_at_the_next_agents_start(world):
+def left_tap(tmp_path, name="pw-loopback"):
+    """A process standing in for a tap an agent left: a Python run by a link
+    named `name`, so its comm, as /proc says it, is that name."""
+    link = tmp_path / name
+    if not link.exists():
+        link.symlink_to(sys.executable)
+    return subprocess.Popen([str(link), "-c", "import time; time.sleep(60)"], start_new_session=True)
+
+
+def test_a_tap_an_earlier_agent_left_is_stopped_by_its_pid_at_the_next_agents_start(world, tmp_path):
     """The agent died by SIGKILL with a tap running: its leases and watch
     went with it, KillMode=process kept the tap. The next agent finds it by
     its record, checks it is that process, and stops it by pid."""
     from sushi_rig import vistap
 
-    left = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
-    other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
+    gone = subprocess.Popen([sys.executable, "-c", "pass"])
+    gone.wait()
+    left = left_tap(tmp_path)
+    other = left_tap(tmp_path)
     try:
-        vistap.write_record(left.pid, left.pid)
+        vistap.write_record(left.pid, left.pid, owner=gone.pid)  # its agent is gone
         described = rig.describe_rig(
             {"supervisor_pid": left.pid, "pgid": left.pid, "children": {}, "started_at": "x",
              "config_name": "t", "mode": "headless"},
@@ -1828,11 +1839,11 @@ def test_a_tap_an_earlier_agent_left_is_stopped_by_its_pid_at_the_next_agents_st
         assert left.wait(timeout=10) is not None, "stopped"
         assert vistap.read_record() is None and supervisor.tap_orphan["pid"] == left.pid
         assert supervisor.tap_orphan["stopped"] is True
-        assert described["visualiser_tap"] == {"pid": left.pid, "alive": True}
+        assert described["visualiser_tap"] == {"pid": left.pid, "alive": True, "owner_alive": False}
         assert "  vistap     pid %d  (the visualiser's tap on the rig's output)" % left.pid in rig.status_lines(described)
 
         # A record whose pid is now another process (a reused pid): not touched.
-        vistap.write_record(other.pid, other.pid)
+        vistap.write_record(other.pid, other.pid, owner=gone.pid)
         record = vistap.read_record()
         vistap.record_path().write_text(json.dumps({**record, "starttime": record["starttime"] + 1}))
         run(Supervisor(world.world, say=lambda m: None).tidy_orphan_tap())
@@ -1844,6 +1855,48 @@ def test_a_tap_an_earlier_agent_left_is_stopped_by_its_pid_at_the_next_agents_st
                 proc.kill()
             proc.wait()
 
+
+def test_a_tap_whose_agent_still_runs_is_left_to_it(world, tmp_path):
+    """A second agent (another port, a dev run) must not stop the tap the
+    first holds for its pages: the record names its owner, which still runs."""
+    from sushi_rig import vistap
+
+    owner = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"])
+    tap = left_tap(tmp_path)
+    try:
+        vistap.write_record(tap.pid, tap.pid, owner=owner.pid)
+        supervisor = Supervisor(world.world, say=lambda m: None)
+        run(supervisor.tidy_orphan_tap())
+        assert tap.poll() is None and supervisor.tap_orphan is None, "left to the agent that holds it"
+        assert vistap.read_record()["pid"] == tap.pid
+        owner.kill()
+        owner.wait()
+        run(supervisor.tidy_orphan_tap())
+        assert tap.wait(timeout=10) is not None, "its agent gone: stopped"
+    finally:
+        for proc in (owner, tap):
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait()
+
+
+def test_a_recorded_pid_that_is_not_a_pw_loopback_is_never_signalled(world, tmp_path):
+    """The start time matches, the name does not: refused, nothing signalled."""
+    from sushi_rig import vistap
+
+    gone = subprocess.Popen([sys.executable, "-c", "pass"])
+    gone.wait()
+    impostor = left_tap(tmp_path, name="not-a-tap")
+    try:
+        vistap.write_record(impostor.pid, impostor.pid, owner=gone.pid)
+        supervisor = Supervisor(world.world, say=lambda m: None)
+        run(supervisor.tidy_orphan_tap())
+        time.sleep(0.3)
+        assert impostor.poll() is None, "not signalled"
+        assert supervisor.tap_orphan["stopped"] is False and "not-a-tap" in supervisor.tap_orphan["refused"]
+    finally:
+        impostor.kill()
+        impostor.wait()
 
 def test_a_tap_no_agent_holds_still_counts_in_the_load():
     pytest.importorskip("aiohttp")

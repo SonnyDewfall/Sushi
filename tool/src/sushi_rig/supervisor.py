@@ -92,7 +92,7 @@ from typing import Any, Callable, Sequence
 from . import rig as rig_module
 from . import vistap
 from .paths import log_dir
-from .procs import SHUTDOWN_STEPS, pgid_alive, stop_group, stop_pid, threads_of
+from .procs import SHUTDOWN_STEPS, pgid_alive, stop_group, stop_recorded, threads_of
 from .qpwgraph import start_qpwgraph
 from .state import read_state, write_state
 
@@ -402,6 +402,12 @@ class AmpRestart:
     code: str | None = None
 
 
+def _stop_left_tap(pid: int, started: int | None, steps: tuple) -> list[int]:
+    """A tap an earlier agent left, stopped by its record: through a pidfd,
+    and only if the process there is that `pw-loopback`, started then."""
+    return stop_recorded(pid, started, "pw-loopback", steps)
+
+
 @dataclass(frozen=True)
 class TapAnswer:
     """How a request for the visualiser's tap went (`Supervisor.tap`). `ok`
@@ -444,6 +450,9 @@ class World:
     tap_record: Callable[[int, int], None] = vistap.write_record
     tap_read: Callable[[], "dict[str, Any] | None"] = vistap.read_record
     tap_unrecord: Callable[["int | None"], None] = vistap.clear_record
+    # Stops a tap an earlier agent left, by its recorded pid, start time and
+    # name, through a pidfd (`procs.stop_recorded`).
+    tap_stop: Callable[..., list] = _stop_left_tap
     stop_group: Callable[..., bool] = stop_group
     log_dir: Callable[[], Path] = log_dir
     holder: tuple[str, ...] = HOLDER
@@ -1285,7 +1294,14 @@ class Supervisor:
             if not vistap.recorded_alive(record):
                 world.tap_unrecord(None)
                 return None
-            left = stop_pid(record["pid"], world.shutdown_steps)
+            if vistap.owner_alive(record):
+                # Another agent's, still running (one on another port, a
+                # dev run): its pages hold it, and it stops it. Left be.
+                return None
+            try:
+                left = world.tap_stop(record["pid"], record.get("starttime"), world.shutdown_steps)
+            except ValueError as exc:
+                return {**record, "at": _now(), "stopped": False, "refused": str(exc)}
             if not left:
                 world.tap_unrecord(record["pid"])
             return {**record, "at": _now(), "stopped": not left}
@@ -1296,6 +1312,8 @@ class Supervisor:
             self._say(
                 f"stopped the visualiser tap (pid {found['pid']}) an earlier agent left running in Sushi's "
                 "cycle with no page holding it" if found["stopped"] else
+                f"did not stop the visualiser tap an earlier agent recorded (pid {found['pid']}): "
+                f"{found['refused']}" if found.get("refused") else
                 f"the visualiser tap (pid {found['pid']}) an earlier agent left running would not stop: "
                 f"kill {found['pid']}; the sound is unaffected")
 

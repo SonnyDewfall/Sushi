@@ -710,12 +710,16 @@ PR #200), only while a visualiser listens:
 - **Tidied.** It is stopped by its pid when the agent stops (the rig plays
   on), and goes with the group on `down`, a `restart` and a switch by
   restart; the next request starts one for the new rig. While it runs it is
-  recorded beside the state file (`vistap.json`: its pid, group and start
-  time), so an agent that dies without stopping it (SIGKILL, the OOM killer;
+  recorded beside the state file (`vistap.json`, written whole by a rename:
+  its pid, group and start time, and its agent's pid and start time), so an
+  agent that dies without stopping it (SIGKILL, the OOM killer;
   `KillMode=process` keeps the rig and the tap) leaves it findable: `status`
   shows it (`vistap`), `/rig/load` counts it, doctor's `visualiser-tap` is a
-  fault while no agent holds it, and the next agent stops it by its pid as
-  it starts, once its start time says it is the same process. A live switch keeps
+  fault while no agent holds it, and the next agent stops it as it starts.
+  Only when its owner is gone (a second agent, on another port, leaves the
+  first's tap be), and only that process: a pidfd is opened, then its start
+  time and its name (`pw-loopback`) are checked, and the signals go through
+  the pidfd. A live switch keeps
   Sushi, its ports and the links (every rig's master is on bus 0). `up` from
   the command line never starts one. A tap stopped on purpose is never
   reported as a crash; one that stops by itself is, as any child ("the

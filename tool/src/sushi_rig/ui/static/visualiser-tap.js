@@ -18,6 +18,10 @@ const ASK_MS = Number(globalThis.sushiRigTapAskMs) > 0 ? Number(globalThis.sushi
 let holding = false;
 let offered = null;  // the source's name, as the agent last gave it
 let asked = false;  // a request may be in flight, or have won a lease this page gave up waiting for
+// Each acquire's ticket: `release` moves it on, and a newer acquire does, so
+// an answer that comes after either is not this page's to act on (review of
+// PR #200: a close during acquire left the late answer renewing for ever).
+let ticket = 0;
 let timer = null;
 let why = null;
 
@@ -33,12 +37,17 @@ function stopRenewing() {
 // Ask for the tap: its source (`{node, label}`) once the agent has it
 // linked and realtime, else null, and `reason()` says why not.
 export async function acquire() {
+  const mine = ++ticket;
   const ask = new AbortController();
   const late = setTimeout(() => ask.abort(), ASK_MS);
   asked = true;
   try {
     const response = await post("/visualiser/tap", { page: PAGE }, { signal: ask.signal });
     const body = await response.json().catch(() => null);
+    // Released, or asked again, while this waited: the release already gave
+    // back what this answer took (the agent takes it behind the start), and a
+    // newer request owns the flags now. Nothing is held for it, or renewed.
+    if (mine !== ticket) return null;
     if (!response.ok || !body || !body.ok || !body.source) {
       why = (body && body.reason) || `the agent answered ${response.status}`;
       holding = false;
@@ -52,6 +61,7 @@ export async function acquire() {
     if (!timer) timer = setInterval(renew, 1000 * (body.renew_s || 10));
     return body.source;
   } catch (error) {
+    if (mine !== ticket) return null;  // a newer request's flags are not this one's to drop
     why = ask.signal.aborted ? `the agent did not answer within ${ASK_MS / 1000} s` : `${error && error.message || error}`;
     holding = false;
     stopRenewing();
@@ -78,6 +88,7 @@ async function renew() {
 // Give the lease back. `now`: the xrun safeguard tripped, so the agent stops
 // the tap at once unless another page holds it.
 export function release(now = false) {
+  ticket += 1;
   if (!holding && !asked) return;
   holding = false;
   asked = false;

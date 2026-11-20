@@ -1513,3 +1513,22 @@ def test_equaliser_looks_that_cannot_be_made_give_back_butterchurns_context(open
     p.locator("#visualiser-on").check()
     v.until("() => sushiRigVisualiser().attempts > 1 && sushiRigVisualiser().broken !== null && sushiRigVisualiser().phase === 'off'")
     assert "the equaliser looks could not draw here" in v.state()["broken"], "tried again, and failed for the same reason, not a lost canvas"
+
+
+def test_a_close_while_the_agent_answers_leaves_nothing_renewing(opened):
+    """Closed while the agent started the tap: the answer, late, is not this
+    page's to hold. Before the ticket it set `holding` and renewed for ever
+    (round 3 of PR #200's review)."""
+    v = opened()
+    p = v.page
+    agent = TapAgent(p, fake_labels(p)[-1], hold=True)
+    v.until("() => sushiRigVisualiser().phase === 'shown'")
+    assert agent.wait(p, lambda: agent.held), "the page asked"
+    page_id = agent.asked[0][1]["page"]
+    p.mouse.move(1, 1)
+    v.off()
+    assert agent.wait(p, lambda: ("release", {"page": page_id, "now": False}) in agent.asked), "given back"
+    agent.answer(agent.held.pop())
+    p.wait_for_timeout(1500)
+    assert agent.count("tap") == 1, "never renewed"
+    assert v.state()["tap"]["holding"] is False

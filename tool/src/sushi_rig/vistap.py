@@ -64,8 +64,9 @@ page holding one the tap is stopped then, not after the linger: the
 safeguard removes the cause it can.
 
 **A record beside the state file** (`write_record`): the running tap's pid,
-group and start time, so an agent that dies without stopping it leaves it
-findable, and the next one stops it (`Supervisor.tidy_orphan_tap`).
+group and start time, and its owning agent's, so an agent that dies without
+stopping it leaves it findable, and the next one stops it once that owner
+is gone (`Supervisor.tidy_orphan_tap`, through a pidfd: `procs.stop_recorded`).
 
 **Realtime or nothing.** `pw-loopback` reads `client.conf`, which loads no
 `module-rt`, so it is started with `PIPEWIRE_CONFIG_NAME=client-rt.conf` (the
@@ -84,6 +85,7 @@ offering a silent source. Kill by pid only, here as everywhere.
 from __future__ import annotations
 
 import json
+import os
 import subprocess
 import time
 from pathlib import Path
@@ -331,11 +333,28 @@ def starttime(pid: int) -> int | None:
         return None
 
 
-def write_record(pid: int, pgid: int, *, path: Path | None = None) -> None:
-    """Record a tap as started: its pid, its group and its start time."""
+def write_record(pid: int, pgid: int, *, path: Path | None = None, owner: int | None = None) -> None:
+    """Record a tap as started: its pid, its group, its start time, and the
+    agent that owns it (`owner`, this process unless given), by its pid and
+    start time, so another agent leaves it be while its owner lives.
+
+    Written whole or not at all: to a file beside it, then renamed over it
+    (`os.replace` is atomic on one filesystem), so a reader never sees half a
+    record and an agent killed mid-write leaves the old one or the new."""
     path = path or record_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps({"pid": pid, "pgid": pgid, "starttime": starttime(pid)}) + "\n")
+    owner = os.getpid() if owner is None else owner
+    text = json.dumps({"pid": pid, "pgid": pgid, "starttime": starttime(pid),
+                       "owner": {"pid": owner, "starttime": starttime(owner)}}) + "\n"
+    temporary = path.with_name(f".{path.name}.{os.getpid()}.tmp")
+    try:
+        temporary.write_text(text)
+        os.replace(temporary, path)
+    finally:
+        try:
+            temporary.unlink()
+        except FileNotFoundError:
+            pass
 
 
 def read_record(path: Path | None = None) -> dict[str, Any] | None:
@@ -366,18 +385,30 @@ def clear_record_of_group(pgid: Any, *, path: Path | None = None) -> None:
         clear_record(record.get("pid"), path=path)
 
 
-def recorded_alive(record: dict[str, Any] | None) -> bool:
-    """Whether the recorded tap is still the process running at its pid:
-    alive, not a zombie, and started when the record says. A pid of 1 or
-    below is never a tap."""
-    if not record or not isinstance(record.get("pid"), int) or record["pid"] <= 1:
+def same_process(pid: Any, started: Any) -> bool:
+    """Whether `pid` is still the process that started at `started`: alive,
+    not a zombie, and that start time. A pid of 1 or below is never one."""
+    if type(pid) is not int or pid <= 1 or started is None:
         return False
-    pid = record["pid"]
     try:
         state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
     except (OSError, IndexError):
         return False
-    return state != "Z" and record.get("starttime") is not None and starttime(pid) == record.get("starttime")
+    return state != "Z" and starttime(pid) == started
+
+
+def recorded_alive(record: dict[str, Any] | None) -> bool:
+    """Whether the recorded tap is still the process running at its pid:
+    alive, not a zombie, and started when the record says."""
+    return bool(record) and same_process(record.get("pid"), record.get("starttime"))
+
+
+def owner_alive(record: dict[str, Any] | None) -> bool:
+    """Whether the agent that recorded the tap still runs (its pid and start
+    time): then the tap is that agent's, leased to its pages, and no other
+    agent's to stop. A record from before owners were recorded has none."""
+    owner = (record or {}).get("owner")
+    return isinstance(owner, dict) and same_process(owner.get("pid"), owner.get("starttime"))
 
 
 def link(
