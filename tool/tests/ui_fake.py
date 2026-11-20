@@ -924,11 +924,15 @@ class Served:
     """A real agent over `rig` on 127.0.0.1, in a thread of its own, until
     `close`. `url` is where it answers. `lifecycle` is what its lifecycle and
     switch routes run (`UiLifecycle`, a rig up by default); `describe`, when
-    given, answers for the state file instead of it."""
+    given, answers for the state file instead of it. `peer`, when given, is
+    the address every request is handed to the agent as coming from (a
+    middleware in front of the agent's own): a page served to a phone on the
+    LAN, which is all the agent can tell of one (#189's Open folder)."""
 
     def __init__(self, rig: UiRig | None = None, port: int = 0, describe=None, root: Path | None = None,
                  lifecycle: UiLifecycle | None = None, amp: bool = False, save: bool = False,
-                 record: bool = False, library=None, rig_file: str | None = None):
+                 record: bool = False, library=None, rig_file: str | None = None, peer: str | None = None):
+        self.peer = peer
         if amp and (save or record):
             raise ValueError("the fake has an amp or a rig file to save (and record), not both yet")
         self.rig = rig or UiRig()
@@ -999,8 +1003,15 @@ class Served:
 
         asyncio.set_event_loop(self._loop)
 
+        @web.middleware
+        async def from_peer(request, handler):
+            return await handler(request.clone(remote=self.peer))
+
         async def start():
-            self._runner = web.AppRunner(self.agent.app())
+            app = self.agent.app()
+            if self.peer is not None:
+                app.middlewares.insert(0, from_peer)
+            self._runner = web.AppRunner(app)
             await self._runner.setup()
             site = web.TCPSite(self._runner, "127.0.0.1", self._port)
             await site.start()

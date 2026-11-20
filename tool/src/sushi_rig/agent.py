@@ -34,6 +34,7 @@ and the two things worth reading about a rig, served over HTTP on localhost.
     POST /record/start  {"name"?} -- a take of the running rig (S7); no name is <rig>-<date>-take-<nn>
     POST /record/stop   {} -- finish it; the answer says `take check`'s verdict
     GET  /takes         the takes, newest first: name, when, length, stems, `take check`'s verdict
+    POST /takes/open    {} -- open the takes folder in this machine's file manager; loopback peers only (#189)
     GET  /machine/roles the machine file's roles: ports, widths each can feed, which tracks use each
     GET  /rigs/{name}/channels   a rig file's channels: name, input, width, level, plugins
     POST /rigs/new      {"name", "channels": [{"name", "input", "width", "from"?}]} -- a new rig file
@@ -330,7 +331,18 @@ change asked for meanwhile waits, and the take names the amp that played. A reco
 take's length, stems, whether it was finished, audio lost, and `take
 check`'s problems. **Not run against a live PipeWire: no take has been
 captured through this path.** Shown against the recorder's real core and a
-real recorder process, with the engine stood in.
+real recorder process, with the engine stood in. The page no longer reads
+it (#189: the rack names the folder instead, and a stop's answer carries
+the take's folder and verdict); it stays for curl and anything else that
+lists the takes.
+
+`POST /takes/open` (#189) opens the takes folder in this machine's file
+manager, for the rack's Open folder on the laptop: for a loopback peer only
+(a phone is refused, `not_local`, and is shown the path), with the folder
+the agent's own and never one from the request, by `xdg-open` or else `gio
+open` with no shell, in a thread. `/health`'s `agent.takes` gives the
+folder and whether this peer may ask (`can_open`). **Not run on a desktop**:
+only against stand-in openers.
 
 ## Local-first, so localhost first
 
@@ -2030,6 +2042,10 @@ class Agent:
                 # Where it listens, and the URLs a phone opens (#181): what
                 # the rack's "Agent on" line says.
                 "listen": self.listen_status(),
+                # The takes folder, for the rack's line naming it (#189), and
+                # whether this request came from this machine, the one peer
+                # POST /takes/open serves: only then is Open folder offered.
+                "takes": self._takes_folder(request),
             },
             "rig": rig,
         })
@@ -5511,11 +5527,11 @@ class Agent:
         app.router.add_post("/rigs/{name}/restore", self.restore_rig_route)
 
     def _bin_agent(self) -> str:
-        """Which rig machine's bin this is, for the page to keep its Undo
-        under: two agents served at one origin (a tunnel, a port reused) are
-        two bins. This machine's name and the checkout's path, hashed: the
-        same across the agent's restarts, and nothing private in the page's
-        storage."""
+        """Which rig machine's bin this is: two agents served at one origin
+        (a tunnel, a port reused) are two bins. This machine's name and the
+        checkout's path, hashed: the same across the agent's restarts, and
+        nothing private. Until #189 the page kept its Undos under it across
+        reloads; it keeps none now, and this stays for curl and scripts."""
         import hashlib
         import socket
 
@@ -5527,9 +5543,10 @@ class Agent:
         each entry's `rig`, `entry` (the name a restore takes), `file`,
         `deleted_at` (from its stamp) and `back` (a rig of that name is in
         config/rigs/ again, so a restore would be refused `taken`); and
-        `agent`, which bin this is (`_bin_agent`). The page asks it before it
-        offers a kept Undo. A bin that is a symbolic link is listed as empty,
-        with `problem` saying why."""
+        `agent`, which bin this is (`_bin_agent`). The page asks it with
+        /rigs, and offers an Undo only while its entry is here and its rig is
+        not back. A bin that is a symbolic link is listed as empty, with
+        `problem` saying why."""
         from . import rigbin
 
         root = self._midi_root()
@@ -6385,18 +6402,24 @@ class Agent:
 
         self.recorder = recorder or RecorderLink()
         self.takes_dir = Path(takes_dir) if takes_dir is not None else default_takes_dir()
+        # The takes folder as /health and POST /takes/open name it, resolved
+        # once here: a filesystem call, never made on the loop per request.
+        self._takes_dir_shown = Path(self.takes_dir).resolve()
         # The player's clock, for the day in a take's default name; local
         # time, as the name is for the player to recognise. A test moves it.
         self.take_clock: Callable[[], datetime] = datetime.now
         self._record_lock = asyncio.Lock()
         self._takes_cache: dict[str, Any] = {}  # GET /takes: each take's summary, by what is in its folder
         self._takes_lock = threading.Lock()  # the cache is read and written in worker threads
+        # What POST /takes/open runs, before the folder (`folder_opener`); a test stands one in.
+        self.folder_opener: Callable[[], list[str] | None] = folder_opener
 
     def _record_routes(self, app) -> None:
         app.router.add_get("/record", self.record_route)
         app.router.add_post("/record/start", self.record_start_route)
         app.router.add_post("/record/stop", self.record_stop_route)
         app.router.add_get("/takes", self.takes_route)
+        app.router.add_post("/takes/open", self.takes_open_route)
 
     async def _record_state(self) -> tuple[dict[str, Any], dict[str, Any], "tuple[str, str] | None"]:
         """`(state, described, refusal)`: the state file, `describe_rig`'s
@@ -6658,6 +6681,59 @@ class Agent:
 
         listed = await asyncio.to_thread(listing)
         return web.json_response({"ok": True, **listed})
+
+    def _takes_folder(self, request) -> dict[str, Any]:
+        """`/health`'s `agent.takes`: `dir`, the takes folder, absolute, and
+        `can_open`, whether POST /takes/open would serve this peer."""
+        return {"dir": str(self._takes_dir_shown), "can_open": is_local(request.remote)}
+
+    async def takes_open_route(self, request):
+        """`POST /takes/open {}` (#189): open the takes folder in this
+        machine's file manager, for the rack's Open folder on the laptop.
+
+        Only for a loopback peer (`is_local`): the folder opens on this
+        machine's desktop, so a phone on the LAN is refused (403
+        `not_local`) and shown the path instead. Behind the guard in front
+        of every write, as any route is (`_same_site_only`). The folder is
+        always `takes_dir`, never a path from the request, whose body must
+        be empty. It runs the first of `FOLDER_OPENERS` installed
+        (`folder_opener`) with no shell, in a thread (`open_folder`), so the
+        loop never waits on it.
+
+        200 with `folder`, `opener` and `said`; 409 `no_folder` before the
+        first take makes it, 409 `no_opener` when neither xdg-open nor gio
+        is installed, 502 `open_failed` when the opener exits non-zero, with
+        what it said. **Not run on a desktop**: only against stand-in
+        openers."""
+        if not is_local(request.remote):
+            refused = web.HTTPForbidden(reason=(
+                f"refused: only a page open on this machine can open its takes folder, and this came from "
+                f"{request.remote or 'an address not known'}. The takes are in {self._takes_dir_shown}"))
+            refused.agent_code = "not_local"
+            raise refused
+        body = await self._json_body(request)
+        if body not in (None, {}):
+            raise web.HTTPBadRequest(reason=f"the body of an open must be empty, not {body!r}: "
+                                            "the folder is always the takes folder")
+        folder = self._takes_dir_shown
+        if not await asyncio.to_thread(folder.is_dir):
+            raise _conflict(f"there are no takes yet: {folder} is made by the first take", "no_folder")
+        opener = await asyncio.to_thread(self.folder_opener)
+        if opener is None:
+            names = " nor ".join(" ".join(o) for o in FOLDER_OPENERS)
+            raise _conflict(f"nothing here opens a folder: neither {names} is installed. "
+                            f"The takes are in {folder}", "no_opener")
+        name = " ".join([Path(opener[0]).name, *opener[1:]])
+        done = await asyncio.to_thread(open_folder, opener, folder)
+        if done["exited"] not in (None, 0):
+            said = done.get("said") or "it said nothing"
+            error = web.HTTPBadGateway(reason=" ".join(
+                f"{name} could not open {folder}: it exited {done['exited']}: {said}".split()))
+            error.agent_code = "open_failed"
+            raise error
+        said = (f"asked {name} to open {folder}" if done["exited"] is None
+                else f"{name} opened {folder}")
+        return web.json_response({"ok": True, "folder": str(folder), "opener": name, "said": said})
 
     # ======================================================================= #
     # (end of recording from the web UI)
@@ -7404,6 +7480,60 @@ def recorder_run(state: dict[str, Any], root: Path, takes_dir: Path) -> dict[str
         "machine": absolute(state.get("machine")),
         "takes_dir": str(Path(takes_dir).resolve()),
     }
+
+
+# What opens a folder in the desktop's file manager (#189), tried in this
+# order: each a program and the arguments before the folder. `xdg-open` is
+# the freedesktop one every desktop provides; `gio open` is GNOME's, there
+# when xdg-utils is not.
+FOLDER_OPENERS: tuple[tuple[str, ...], ...] = (("xdg-open",), ("gio", "open"))
+# How long a POST /takes/open waits for the opener to say how it went. Both
+# hand the folder to the file manager and return at once; one that does not
+# (an opener that runs the file manager itself) is left running, reaped by a
+# thread of its own, and the answer says it was asked.
+OPEN_WAIT = 5.0
+
+
+def folder_opener(which: Callable[[str], str | None] | None = None) -> list[str] | None:
+    """The first of `FOLDER_OPENERS` installed here, as the argument list
+    before the folder (the program by its full path), or None. `which` is
+    `shutil.which`, which a test replaces."""
+    import shutil
+
+    which = which or shutil.which
+    for program, *args in FOLDER_OPENERS:
+        found = which(program)
+        if found:
+            return [found, *args]
+    return None
+
+
+def open_folder(opener: Sequence[str], folder: Path, wait: float = OPEN_WAIT) -> dict[str, Any]:
+    """Run `opener` on `folder` and say how it went: `{"exited": code,
+    "said": its stderr, last part}`, or `{"exited": None}` if it was still
+    running after `wait` seconds. Blocking: the agent calls it in a thread.
+
+    No shell: the arguments are a list, and the folder is the agent's own
+    (`Agent.takes_dir`), absolute, so it cannot be read as an option. Its
+    own session, so it is not in the agent's process group and outlives the
+    agent; nothing of it is read but what it writes to stderr, kept in a
+    file, so an opener that runs on never blocks on a full pipe. One still
+    running after `wait` is waited for by a daemon thread, so it never
+    lingers as a zombie."""
+    import subprocess
+    import tempfile
+
+    with tempfile.TemporaryFile() as err:
+        child = subprocess.Popen([*opener, str(folder)], stdin=subprocess.DEVNULL, stdout=subprocess.DEVNULL,
+                                 stderr=err, start_new_session=True, close_fds=True)
+        try:
+            code = child.wait(timeout=wait)
+        except subprocess.TimeoutExpired:
+            threading.Thread(target=child.wait, name="takes-folder-opener", daemon=True).start()
+            return {"exited": None}
+        err.seek(0)
+        said = " ".join(err.read()[-2000:].decode("utf-8", "replace").split())
+    return {"exited": code, "said": said}
 
 
 # =========================================================================== #

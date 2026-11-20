@@ -2385,29 +2385,6 @@ def test_the_record_bar_follows_what_the_recorder_says(blank):
     assert views[9]["record"] == {"label": "Starting…", "disabled": True}
 
 
-def test_a_takes_verdict_is_take_checks_and_the_one_recording_is_said_as_that(blank):
-    rows = rigjs(blank, """
-      return R.takeRows({ok: true, body: {takes_dir: "/home/p/sushi-rig-takes", more: 2, archived: 1, exists: true, takes: [
-        {name: "riff", take: true, complete: true, seconds: 192.4, stems: ["a.wav", "b.wav"], lost_ms: 0, problems: []},
-        {name: "late", take: true, complete: true, seconds: 125, stems: ["a.wav"], lost_ms: 5.3,
-         problems: ["the recorder lost audio 1 time(s), 5.3 ms in all — the stems are still aligned"]},
-        {name: "cut", take: true, complete: false, seconds: 48, stems: ["a.wav"], lost_ms: 0,
-         problems: ["this take was never finished — the rig stopped mid-take", "x"]},
-        {name: "now", take: true, complete: false, seconds: 1, stems: [], problems: ["this take was never finished"]},
-        {name: "odd", take: false, problems: ["/t/odd is not a take: cannot read take.yaml"]},
-      ]}}, "now");
-    """)
-    assert rows["dir"] == "/home/p/sushi-rig-takes" and (rows["more"], rows["archived"]) == (2, 1)
-    by = {r["name"]: r for r in rows["rows"]}
-    assert (by["riff"]["len"], by["riff"]["note"], by["riff"]["tone"]) == ("3:12", "Whole · 2 stems · nothing lost", "ok")
-    assert by["late"]["note"] == ("1 problem · 5.3 ms of audio lost: the recorder lost audio 1 time(s), 5.3 ms in all "
-                                  "— the stems are still aligned")
-    assert by["cut"]["note"] == "2 problems: this take was never finished — the rig stopped mid-take"
-    assert by["cut"]["tone"] == "warn", "a cut-off take says so rather than looking fine"
-    assert (by["now"]["note"], by["now"]["tone"]) == ("Recording now", "live")
-    assert by["odd"]["note"] == "Not a take: /t/odd is not a take: cannot read take.yaml"
-
-
 def test_what_a_start_or_stop_said_is_shown_as_it_was_said(blank):
     said = rigjs(blank, """
       return [
@@ -2422,7 +2399,8 @@ def test_what_a_start_or_stop_said_is_shown_as_it_was_said(blank):
     """)
     assert said[0] == {"ok": False, "title": "Not recording", "reason": "already recording riff: stop it first", "code": "recording"}
     assert said[1] == {"ok": True, "title": "Recording riff", "text": "recording riff — the earlier riff is in _archive/riff/"}
-    assert said[2] == {"ok": True, "title": "Recorded riff", "text": "1:04 · Whole · 2 stems · nothing lost"}
+    assert said[2] == {"ok": True, "title": "Recorded riff", "text": "1:04 · Whole · 2 stems · nothing lost",
+                       "reason": None, "folder": None}  # the folder, when the stop names one: test_ui_takes.py
     assert said[3]["title"] == "Not stopped"
     assert said[4:7] == [{"path": "/record/start", "json": {"name": "riff"}}, {"path": "/record/start", "json": {}},
                          {"path": "/record/stop", "json": {}}]
@@ -3101,20 +3079,6 @@ def test_text_the_browser_enlarges_past_its_computed_size_is_measured_as_it_is_d
     assert errors == []
 
 
-def test_the_racks_takes_list_shows_a_long_name_whole(browser, record_served):
-    """The rack has no name field; its takes list is where a take's name is
-    read there, in the files column, and it wraps."""
-    switch_to(record_served, LONGEST_RIG)
-    assert a_take_from_elsewhere(record_served) == LONGEST
-    page = Page(browser, record_served.url + "/#rack")
-    p = page.page
-    expect(p.locator("section.takes .take .n")).to_have_text(LONGEST)
-    assert p.locator('input[name="take-name"]').count() == 0
-    assert seen_in(p, "section.takes .take .n", ".side.files") == {"text": LONGEST, "shown": True}
-    no_sideways_scroll(p)
-    page.close()
-
-
 @pytest.mark.parametrize("change, said", [
     (lambda s: s.save.state.update(mode="panel"), "whose record bar owns recording"),
     (lambda s: s.save.state.update(rig=None), "is a v1 config, not a rig of channels"),
@@ -3157,104 +3121,6 @@ def test_the_stage_with_the_record_bar_still_fits_a_phone(browser, record_served
     assert all(w >= 44 and hgt >= 44 for _, w, hgt in sizes), sizes
     assert [s for s in sizes if s[0] in ("Record", "Stop")] and all(hgt >= 64 for t, _, hgt in sizes if t in ("Record", "Stop"))
     p.get_by_role("button", name="Stop", exact=True).click()
-    page.close()
-
-
-def test_the_rack_lists_the_takes_with_each_ones_check(browser, record_served):
-    import json as json_module
-
-    from sushi_rig.take import DRY, Stem, start_take
-
-    stage = stage_page(browser, record_served)
-    stage.page.get_by_label("Take name").fill("riff-idea")
-    stage.page.get_by_role("button", name="Record", exact=True).click()
-    stage.page.get_by_role("button", name="Stop", exact=True).click()
-    expect(stage.page.locator(".record-result")).to_contain_text("Recorded riff-idea")
-    config = json_module.loads(Path(record_served.save.state["config"]).read_text())
-    start_take(record_served.recorder.takes, "cut-off", config, [Stem("board", DRY, "iface:capture_AUX0")],
-               sample_rate=48000, subtype="float32", quantum=256, config_source="test")
-    stage.page.get_by_label("Take name").fill("now-playing")
-    stage.page.get_by_role("button", name="Record", exact=True).click()
-    expect(stage.page.locator(".record-bar h2")).to_have_text("Recording")
-    rack = Page(browser, record_served.url + "/#rack")
-    p = rack.page
-    takes = p.locator("section.takes")
-    expect(takes.locator("h2")).to_have_text("TAKES")
-    expect(takes.locator("code")).to_have_text(str(record_served.recorder.takes.resolve()))
-    riff = takes.locator(".take", has_text="riff-idea")
-    expect(riff.locator(".note")).to_have_text("Whole · 5 stems · nothing lost")
-    expect(riff.locator(".len")).to_have_text("0:00")
-    cut = takes.locator(".take", has_text="cut-off")
-    expect(cut).to_have_class(re.compile(r"\bwarn\b"))
-    expect(cut.locator(".note")).to_contain_text("this take was never finished")
-    expect(takes.locator(".take", has_text="now-playing").locator(".note")).to_have_text("Recording now")
-    stage.page.get_by_role("button", name="Stop", exact=True).click()
-    expect(takes.locator(".take", has_text="now-playing").locator(".note")).to_have_text(
-        "Whole · 5 stems · nothing lost")
-    rack.close()
-    stage.close()
-
-
-
-def test_an_answer_older_than_one_shown_is_dropped(blank):
-    said = rigjs(blank, """
-      const order = new R.Latest();
-      const first = order.issue(), second = order.issue();
-      return [order.accept(second), order.accept(first), order.accept(order.issue())];
-    """)
-    assert said == [True, False, True]
-
-
-def test_the_stage_never_asks_for_the_takes_and_the_rack_does(browser, record_served):
-    page = Watched(browser, record_served, "/#stage", width=390, height=844)
-    p = page.page
-    p.get_by_role("button", name="Record", exact=True).click()
-    p.get_by_role("button", name="Stop", exact=True).click()
-    expect(p.locator(".record-result")).to_contain_text("Recorded")
-    p.wait_for_timeout(1500)
-    assert "/takes" not in page.asked, "the stage lists no takes, so it asks for none"
-    p.evaluate("location.hash = '#rack'")
-    expect(p.locator("section.takes .take")).to_have_count(1)
-    assert "/takes" in page.asked
-    page.close()
-
-
-def test_an_older_takes_answer_never_replaces_a_newer_one(browser, record_served):
-    """A periodic /takes still out when a take stops, and answering last:
-    what the page shows is the newer list, not the older one."""
-    import json as json_module
-
-    page = Page.__new__(Page)
-    page.page = browser.new_page()
-    page.errors = []
-    p = page.page
-    p.on("pageerror", lambda error: page.errors.append(str(error)))
-    held = []
-    stale = {"ok": True, "takes_dir": "/stale", "exists": True, "more": 0, "archived": 0,
-             "takes": [{"name": "stale-take", "take": True, "complete": True, "seconds": 1, "stems": [],
-                        "lost_ms": 0, "problems": []}]}
-
-    def takes(route):
-        if not held:
-            held.append(route)  # the first answer is held back, and sent last
-        else:
-            route.continue_()
-
-    p.route("**/takes", takes)
-    p.goto(record_served.url + "/#rack")
-    expect(p.locator(".unit").first).to_be_visible()
-    stage = stage_page(browser, record_served)
-    stage.page.get_by_role("button", name="Record", exact=True).click()
-    # The rack sees the take start (its /record poll) and asks for the list
-    # again at once, while its first request is still held.
-    expect(p.locator("section.takes .take .note")).to_have_text("Recording now", timeout=8000)
-    stage.page.get_by_role("button", name="Stop", exact=True).click()
-    expect(p.locator("section.takes .take .note")).to_have_text("Whole · 5 stems · nothing lost", timeout=8000)
-    held[0].fulfill(status=200, content_type="application/json", body=json_module.dumps(stale))
-    p.wait_for_timeout(500)
-    expect(p.locator("section.takes .take .n")).to_have_text(FIRST)
-    expect(p.locator("section.takes")).not_to_contain_text("stale-take")
-    stage.close()
     page.close()
 
 

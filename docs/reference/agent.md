@@ -45,6 +45,7 @@ curl localhost:8029/record           # recording, idle, or why recording is off 
 curl -X POST localhost:8029/record/start -d '{"name": "riff-idea"}'   # a take; no name is <rig>-<date>-take-<nn>
 curl -X POST localhost:8029/record/stop                              # finish it: take check's verdict in the answer
 curl localhost:8029/takes            # the takes, newest first, each with take check's verdict
+curl -X POST localhost:8029/takes/open   # open the takes folder in this machine's file manager; loopback only (#189)
 curl localhost:8029/machine/roles    # the machine file's roles: ports, the widths each can feed, who uses each
 curl localhost:8029/rigs/guitar_vocal/channels                      # a rig file's channels, as the file has them
 curl -X POST localhost:8029/rigs/new -d '{"name": "two-guitars", "channels": [{"name": "clean", "input": "guitar-in", "width": "mono"}, {"name": "dirty", "input": "guitar-in", "width": "stereo", "from": {"rig": "electric_board", "channel": "board"}}]}'
@@ -840,12 +841,12 @@ numbers move back, and `note`.
 `entry`, `file`, `deleted_at` and `back` (a rig of that name is in
 `config/rigs/` again, so a restore would be `taken`), and `agent`, a hash of
 this machine's name and the checkout's path, the same across the agent's
-restarts. **Undo survives a reload** because it needs nothing of the agent's
-memory: the page keeps the entries its deletes answered with in its own
-storage (`sushi-rig.binned`, at most five, newest first, under the `agent`
-they came from, so another rig machine served at the same address sees
-none), and offers one only once `GET /rigs/bin` says its file is still there
-and its rig is not back. A revert's saves (`.sushi-rig/saves/<name>/`) are
+restarts. The page offers each Undo for 15 s after its delete, and only
+while `GET /rigs/bin` says its file is still there and its rig is not back
+(#189; until then it kept the entries in its own storage, `sushi-rig.binned`,
+across reloads, which it now removes and never reads). After that the file
+is moved back by hand: `config/rigs/.deleted/<name>-<stamp>.yaml` to
+`config/rigs/<name>.yaml`, or `POST /rigs/<name>/restore` with its entry. A revert's saves (`.sushi-rig/saves/<name>/`) are
 not touched by a delete, so a rig made later with the same name lists them.
 Nothing of this is recorded as run on the rig machine.
 
@@ -972,7 +973,29 @@ a running rig, leaves the take alone). The amp a take names is the one playing
 when it starts: a fader or model change asked for during a start waits for it.
 `GET /takes` lists the takes folder: each take's length, stems, whether it is
 complete, audio lost, and `take check`'s problems, a take checked again only
-when a file in its folder changes; only the rack asks for it.
+when a file in its folder changes. The page no longer asks for it (#189: the
+rack names the folder instead, and a stop's answer has the take's `folder`
+and verdict); it stays for curl and scripts.
+
+`POST /takes/open {}` (#189) opens the takes folder in this machine's file
+manager: the rack's **Open folder** on the laptop. **Only for a loopback
+peer**, since the folder opens on this machine's desktop: anyone else is
+`403 not_local`, with the path in the reason. `/health`'s `agent.takes` is
+`{dir, can_open}`, the folder and whether this request's peer may ask, which
+is what the page offers the button by. Behind the guard in front of every
+write, as all of them are. The folder is always the agent's own takes
+folder, never one from the request, whose body must be empty (`400`
+otherwise). It runs `xdg-open`, or else `gio open`, on the folder with no
+shell, in its own session, off the loop: `409 no_opener` when neither is
+installed, `409 no_folder` before the first take makes the folder, `502
+open_failed` with what the opener said when it exits non-zero, and `200`
+with `said` otherwise (an opener still running after 5 s is left to run, and
+reaped when it ends). Behind a reverse proxy on this machine every request
+looks local, as `is_local` says of the amp's model by path, so a phone
+through such a proxy would get the button and open the folder on the
+laptop's screen; nothing else. **Not run on a desktop**: the tests run
+stand-in openers, and whether a systemd user service's agent can reach the
+desktop session (its `DISPLAY` or `WAYLAND_DISPLAY`) is not known.
 
 The machine file names the guitar's port by its PipeWire alias
 (`Audient iD14:capture_AUX0`, what the patchbay matches), and a JACK client
