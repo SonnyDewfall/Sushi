@@ -193,7 +193,10 @@ same gain a channel's `level` sets, and a job for the agent:
   about -10 dB.
 - **Heel: silent, by the agent.** At or below the pedal's heel (the first of its
   `range`, 0 without one) the agent sets the send to silence, on the port it
-  already reads. Above the heel it leaves the send to Sushi's mapping. If the
+  already reads. Refused because the agent is busy (a lifecycle command, a
+  rig file edit such as a pedal's assignment), it waits until the agent is
+  free and goes again from where the pedal is then; a `down` or a switch ends
+  the wait. Above the heel it leaves the send to Sushi's mapping. If the
   pedal leaves the heel while the agent is still silencing it, the agent finishes
   on the value Sushi's mapping gives for where the pedal is, so the two do not
   fight; and the first message above the heel after the agent silenced it has

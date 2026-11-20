@@ -556,8 +556,9 @@ def test_a_write_that_outlasts_the_answer_is_still_followed_by_the_listener(serv
 
 @pytest.mark.parametrize("which", ["state", "compiled"])
 def test_the_running_config_and_the_state_file_are_written_whole_or_not_at_all(tmp_path, monkeypatch, which):
-    """A write that dies part way leaves the file as it was, never half of it."""
-    from pathlib import Path
+    """A write that dies part way (the disk full as it is flushed) leaves the
+    file as it was, never half of it, and no scratch file beside it."""
+    import os
 
     from sushi_rig import rig, state
 
@@ -565,18 +566,213 @@ def test_the_running_config_and_the_state_file_are_written_whole_or_not_at_all(t
     target = tmp_path / "rig.json" if which == "state" else tmp_path / "rigs" / "lead.json"
     target.parent.mkdir(exist_ok=True)
     target.write_text('{"old": true}\n')
-    real = Path.write_text
 
-    def dies(self, text, *args, **kwargs):
-        real(self, text[: len(text) // 2], *args, **kwargs)
+    def dies(fd):
         raise OSError("the disk filled")
 
-    monkeypatch.setattr(Path, "write_text", dies)
+    monkeypatch.setattr(os, "fsync", dies)
     with pytest.raises(OSError):
         if which == "state":
             state.write_state({"new": True, "and": "more"})
         else:
             rig.write_compiled("lead", {"new": True, "and": "more"}, tmp_path)
-    monkeypatch.setattr(Path, "write_text", real)
+    monkeypatch.undo()
     assert json.loads(target.read_text()) == {"old": True}
     assert [p.name for p in target.parent.iterdir()] == [target.name]
+
+
+def test_two_writers_at_once_each_replace_the_file_whole(tmp_path):
+    """The supervisor's threads and an assignment's write the state file
+    and the running config: two at once each land whole, with no scratch
+    file shared between them, and the file keeps its permissions."""
+    import os
+    import threading
+
+    from sushi_rig.state import write_atomically
+
+    target = tmp_path / "rig.json"
+    target.write_text("{}\n")
+    os.chmod(target, 0o640)
+    failures = []
+
+    def writer(tag):
+        try:
+            for i in range(300):
+                write_atomically(target, json.dumps({"writer": tag, "i": i, "pad": "x" * 2000}) + "\n")
+        except Exception as exc:  # noqa: BLE001 -- collected, then asserted
+            failures.append(exc)
+
+    threads = [threading.Thread(target=writer, args=(tag,)) for tag in ("a", "b")]
+    for t in threads:
+        t.start()
+    for t in threads:
+        t.join(30)
+    assert failures == []
+    assert json.loads(target.read_text())["i"] == 299
+    assert [p.name for p in tmp_path.iterdir()] == ["rig.json"]
+    assert target.stat().st_mode & 0o777 == 0o640
+
+
+# --------------------------------------------------------------------------- #
+# PR #202's re-review
+# --------------------------------------------------------------------------- #
+
+@pytest.fixture
+def real_compile(monkeypatch):
+    """A save-as's compile the real one, as `up --rig` compiles (the fake's
+    stands in a config of no tracks)."""
+    from pathlib import Path
+
+    import ui_fake
+    from sushi_rig.rig import compile_named_rig
+
+    def compile_(self, name, root, machine):
+        self.compiled.append(name)
+        return compile_named_rig(name, Path(root), Path(machine) if machine else None)
+
+    monkeypatch.setattr(ui_fake.UiSave, "compile", compile_)
+
+
+def test_a_save_as_keeps_the_running_config_when_its_file_waits_for_a_restart(real_compile):
+    """The pedal assigned to a volume for the restart, then Save as: the
+    run, renamed, still says what Sushi loaded (no cc_mappings, no MIDI
+    input, no controller) and the listener does not silence the channel at
+    the heel with no mapping to bring it back; the answer says a restart is
+    needed."""
+    with Served(save=True, pedals=True) as s:
+        listening(s)
+        before = json.loads(json.dumps(s.save.config))
+        assert assign(s, control="pedal", volume="board")[1]["how"] == "restart"
+        status, answer = ask(s, "POST", "/rig/save", {"name": "foo"})
+        assert status == 200 and answer["ok"], answer
+        assert "midi" in [r["code"] for r in answer["restart"]["why"]], answer
+        config = s.save.config
+        assert config.get("midi") == before.get("midi") and config["host_config"] == before["host_config"]
+        assert "midi_controller" not in config["_meta"] and config["_meta"]["source"] == "config/rigs/foo.yaml"
+        listening(s)
+        assert midi_health(s)["rig"] == "foo"
+        assert not any("silence" in b for b in midi_health(s)["bindings"]), midi_health(s)["bindings"]
+
+
+def test_a_save_as_keeps_the_running_tracks_when_a_channel_waits_for_a_restart(real_compile):
+    with Served(save=True, pedals=True) as s:
+        listening(s)
+        tracks = [t["name"] for t in s.save.config["tracks"]]
+        status, answer = ask(s, "POST", "/rigs/electric_board/channels/add",
+                             {"name": "lead", "input": "guitar-in", "width": "mono"})
+        assert status == 200, answer
+        status, answer = ask(s, "POST", "/rig/save", {"name": "foo"})
+        assert status == 200 and answer["ok"], answer
+        assert "track_added" in [r["code"] for r in answer["restart"]["why"]], answer
+        assert [t["name"] for t in s.save.config["tracks"]] == tracks
+
+
+def test_a_save_as_with_nothing_waiting_records_the_new_compile(real_compile):
+    """And with nothing for a restart, the run is the new file's compile, as
+    before: no restart said."""
+    with Served(save=True, pedals=True) as s:
+        listening(s)
+        status, answer = ask(s, "POST", "/rig/save", {"name": "foo"})
+        assert status == 200 and answer["ok"] and "restart" not in answer, answer
+        assert s.save.config["_meta"]["source"] == "config/rigs/foo.yaml"
+
+
+def test_a_late_write_after_another_command_writes_nothing(served, monkeypatch):
+    """The assignment's write outlasts its answer (504); a restart then makes
+    another run. When the write gets going again it finds the run changed,
+    writes nothing (the file, the running config), and the listener does
+    not follow it."""
+    import threading
+
+    from sushi_rig import agent as agent_module
+
+    listening(served)
+    monkeypatch.setattr(agent_module, "SAVE_TIMEOUT", 0.5)
+    gate = threading.Event()
+    real = served.agent._rigfile_compile
+
+    def slow(raw, run):
+        gate.wait(10)
+        return real(raw, run)
+
+    served.agent._rigfile_compile = slow
+    before = rig_text(served)
+    status, answer = assign(served, control="c", bypass="board/overdrive")
+    assert status == 504, answer
+    assert ask(served, "POST", "/rig/restart", {})[0] == 200
+    listening(served)
+    started = served.save.state["started_at"]
+    gate.set()
+    until(lambda: not served.agent._midi_tasks, what="the late write to be over")
+    assert rig_text(served) == before
+    assert AGENT_BINDINGS not in served.save.config and served.save.state["started_at"] == started
+    assert not any("bypass" in b for b in midi_health(served)["bindings"])
+
+
+def test_following_a_late_write_says_what_holds_the_agent(served, monkeypatch):
+    """While the listener follows a late write it holds the lifecycle lock,
+    and a refusal meanwhile names it rather than "None"."""
+    import threading
+
+    from sushi_rig import agent as agent_module
+
+    listening(served)
+    monkeypatch.setattr(agent_module, "SAVE_TIMEOUT", 0.5)
+    gate, syncing, release = threading.Event(), threading.Event(), threading.Event()
+    real_write = served.save.write_config
+
+    def slow_write(name, compiled):
+        gate.wait(10)
+        return real_write(name, compiled)
+
+    served.save.write_config = slow_write
+    served.agent.switching = served.save.switching()
+    real_sync = served.agent._midi_sync
+
+    async def slow_sync():
+        import asyncio
+
+        syncing.set()
+        while not release.is_set():
+            await asyncio.sleep(0.01)
+        await real_sync()
+
+    served.agent._midi_sync = slow_sync
+    assert assign(served, control="c", bypass="board/overdrive")[0] == 504
+    gate.set()
+    until(syncing.is_set, what="the listener to follow")
+    status, answer = ask(served, "POST", "/rig/restart", {})
+    release.set()
+    assert status == 409 and answer["reason"] == "busy: 'MIDI' is still running", answer
+
+
+def test_a_heel_silencing_refused_as_busy_lands_once_the_agent_is_free():
+    """The pedal reaches its heel while an assignment holds the agent: the
+    silencing is refused as busy, waits, and lands when the assignment is
+    done, from where the pedal is then."""
+    import threading
+
+    mapped = RIG_FILE + "midi:\n  controller: fbv\n  controls:\n  - {control: pedal, volume: vocal}\n"
+    with Served(save=True, pedals=True, rig_file=mapped) as s:
+        listening(s)
+        gate, compiling = threading.Event(), threading.Event()
+        real = s.agent._rigfile_compile
+
+        def slow(raw, run):
+            compiling.set()
+            gate.wait(10)
+            return real(raw, run)
+
+        s.agent._rigfile_compile = slow
+        answer = {}
+        t = threading.Thread(target=lambda: answer.update(r=assign(s, control="c", bypass="board/overdrive")))
+        t.start()
+        until(compiling.is_set, what="the assignment to hold the agent")
+        s.pedals.sweep(0)
+        until(lambda: s.agent._midi_snapping, what="the silencing to start")
+        assert s.rig.info["vocal_send"]["gain"]["value"] != 0.0
+        gate.set()
+        t.join(10)
+        assert answer["r"][0] == 200, answer
+        until(lambda: s.rig.info["vocal_send"]["gain"]["value"] == 0.0, what="the silence, once free")
+        assert "busy" not in ((midi_health(s)["last_error"] or {}).get("message") or "")

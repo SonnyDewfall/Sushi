@@ -673,7 +673,13 @@ v1`: `sushi-rig save` saves a config), and while a lifecycle command runs
 (`409 busy`). **The file is written, never committed**: committing in your
 checkout is your call, and the answer gives the commit it sits on, what git
 says of the file itself (untracked, changed, unchanged) and whether other
-tracked files are changed (`take.library_state`, `save.file_git_state`). A
+tracked files are changed (`take.library_state`, `save.file_git_state`). **A Save as whose file waits for a restart** (a pedal assigned to a volume,
+or a channel added to the file, #192) makes the running rig the new file's
+by name only: the config recorded for the run stays the one Sushi loaded,
+renamed (`renamed_running`), since a compile of the new file would claim
+cc_mappings, MIDI inputs or tracks Sushi never loaded, which the pedals'
+listener and the next live switch read. The answer's `restart` says why,
+as `rigfile.diff` gives it, and the note says it plays at the restart. A
 save is `op: "save"` in `/live/log`, logged only once it has wholly happened,
 with the file and that state; undo passes over it to the change before, which
 leaves the rig unsaved again. Save and Save as were run on the rig on
@@ -833,7 +839,12 @@ curl -X POST localhost:8029/rig/midi/assign -d '{"control": "c", "none": true}' 
   planning from the running config, not the edited file
   ([MIDI](midi.md#assigning-from-the-rack-192)). If the write outlasts the
   answer's deadline (`504`), the listener follows what it left once it is
-  over.
+  over (holding the lifecycle lock as `busy: "MIDI"`); a write that finds the
+  run changed by then (a restart or a switch since: the state file's
+  `started_at`, `config` or `rig` not as read under the lock) writes nothing
+  and is not followed. The running config and the state file are written
+  whole: to a scratch file of their own, flushed, and renamed over, keeping
+  the file's permissions.
 - **Nothing to change is not a write.** `none` for a control the map does
   not have, and an assignment the map already says, answer `how:
   "unchanged"` with nothing written (and never `which_controller`); `none`

@@ -6708,3 +6708,24 @@ the state file are written through a scratch file and a rename, and a write
 that outlasts the answer is followed by the listener once it is over. A
 fixture of `test_midi_listener.py` (a map of sweeps compiled with no
 cc_mappings, which no compile makes) was given its cc_mappings. *(2026-11-20)*
+
+**Pedalboard 2, re-review (PR #202).** Each fix with a test that fails
+without it. (1) A Save as recorded the new file's compile as the running
+config, so a file carrying a pedal assigned for the restart made the run
+claim cc_mappings, a MIDI input and a controller Sushi never loaded, and the
+listener then silenced the channel at the heel with no mapping to bring it
+back (older than #192, but against its premise). When `rigfile.diff` says
+the new file needs a restart, the running config is kept, renamed
+(`renamed_running`), and the answer's `restart` says why; a channel added to
+the file for the restart is the same case and is handled the same way. (2) A
+write that outlasted its 504 could land after a later restart or switch: it
+now re-reads the state file in its thread and writes nothing, and is not
+followed, when the run has changed. (3) Following a late write holds the
+lifecycle lock as `busy: "MIDI"`, not `None`. (4) `write_atomically` used one
+scratch name for every writer and did not flush: each write now has its own
+`mkstemp` file, fsynced, renamed over, the directory synced, and the file's
+mode kept (two threads writing at once tested). (5) A heel's silencing
+refused as busy was lost, likelier now an assignment holds the agent while
+the player is on the pedals: it waits until the lifecycle lock is free and
+goes again from the pedal's latest value, ended by a `down` or a switch.
+*(2026-11-20)*
