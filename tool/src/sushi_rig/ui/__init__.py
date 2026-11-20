@@ -1,5 +1,5 @@
-"""The web UI (#31, v0.1 #111): the rack (S1), with Save (S4) and the takes (S8), and
-the stage screen (S5), with the record bar (S7).
+"""The web UI (#31, v0.1 #111): the rack (S1), with Save (S4) and the takes folder (S8),
+and the stage screen (S5), with the record bar (S7).
 
 The agent serves the page at `/` and its files under `/ui/` (`/ui/` itself
 redirects to `/`), and the page reads and changes the rig through the
@@ -31,7 +31,8 @@ Decisions are pure and tested (principle 1), in two places:
 
 ## What the page reads
 
-    GET /health        once a second: up or down, which rig since when, the last error, MIDI
+    GET /health        once a second: up or down, which rig since when, the last error, MIDI,
+                       the takes folder and whether this page may ask to open it
     GET /live          once a second, and only while /health says a rig is up and no
                        lifecycle command is running (`readsLive` in rig.js): tracks,
                        chains, values, ranges, bypass
@@ -56,16 +57,15 @@ Decisions are pure and tested (principle 1), in two places:
                        a model change
     GET /record        with /live, and only when /live is asked: whether a take is
                        recording, its name and elapsed time, or why recording is off
-    GET /takes         every 10 s, and at once when a take starts or stops: the takes
-                       and `take check`'s verdict on each
     GET /machine/roles also when the visualiser first starts (screensaver.js): which
                        input is the guitar's
 
 and sends POST /live/parameter, /live/bypass, /live/move and /live/undo as
 they happen, POST /amp/parameter from the amp's faders, POST /amp/model from
 its picker, POST /rig/up, /rig/down and /rig/switch from the rig picker, and
-POST /rig/save from the rack's Save and Save as…, and POST /record/start and
-/record/stop from the record bar. A
+POST /rig/save from the rack's Save and Save as…, POST /record/start and
+/record/stop from the record bar, and POST /takes/open from the rack's Open
+folder. A
 refusal's `reason` is shown on screen; nothing is reverted without saying
 why.
 
@@ -159,19 +159,38 @@ its caret are left as they are. The line is of the name Record would use,
 so with the field emptied it holds the default, and leaving the field (as a
 press on Record does) moves nothing in the bar. A name is checked
 before sending (`checkTakeName`, the rule take.check_name keeps); a
-name already in the takes list says the earlier take will move to the
-archive. The elapsed time is the recorder's (`elapsed`, by its clock),
+name a take already has (GET /record's `names`) says the earlier take will
+move to the archive. The elapsed time is the recorder's (`elapsed`, by its clock),
 counted on by this page's clock between answers (`elapsedNow`), so it keeps
 moving if a poll is slow and a phone with a wrong clock still shows the
 take's length. Why recording is off is said on the bar: no rig, the panel
 running (whose record bar owns it), a v1 run, the recorder missing or
 crashed, or the recorder's own reason.
 
-The rack lists the takes beside Save (`takeRows`): each one's name, length
-and `take check`'s verdict, a take with problems marked and its first problem
-said, one cut off saying so, and the one being recorded as "Recording now"
-rather than as unfinished. The mockup's meters and its Open button are not
-built: nothing measures levels yet, and a take is a folder on the rig.
+A stop says the take's name, its folder and `take check`'s verdict
+(`recordOutcome`): whole, which goes after `NOTICE_MS`, or the number of
+problems and the first, a take with problems (or a stop that failed) in the
+refusal colour as an alert, until it is dismissed.
+
+The rack lists no takes (#189: the list stayed for ever, and the takes
+folder is where takes are looked at), and the page asks for no GET /takes.
+Beside Save, one line names the takes folder (`takesFolder`, from /health's
+`agent.takes`), and on the laptop itself, where /health says this request
+came from a loopback peer (`can_open`), Open folder asks the agent to open it
+in the desktop's file manager (POST /takes/open, which refuses anyone else).
+A phone sees the path and no button. What the open said goes after
+`NOTICE_MS` if it worked, and stays until dismissed if not. The mockup's
+meters are not built: nothing measures levels yet.
+
+## Notices that go by themselves (#189)
+
+A notice that something worked leaves after `NOTICE_MS` (15 s,
+`noticesLeft`, on the monotonic clock): a rig deleted or put back, its
+Undo, the takes folder opened, a whole take stopped. A refusal stays until its × is pressed, so an error is never gone
+unread. The Undos of deletes are this page's only, and no longer kept across
+a reload (#129 kept them in `sushi-rig.binned`, which the page now removes
+as it loads and never reads): the file stays in config/rigs/.deleted/, to
+move back by hand.
 """
 
 from __future__ import annotations

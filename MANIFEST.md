@@ -6240,3 +6240,70 @@ test `test_at_phone_width_the_header_is_as_tall_whatever_its_tiles_read`
 the header's height; it fails without the fix (294 against 334 px). Every
 `test_ui_*` file passed: 520, then the four with font cases again, 160.
 *(2026-11-19)*
+
+**Takes and rig deletion notices that never left (#189).** Found on the rig:
+the rack's TAKES list stayed for ever, and the × and Cancel on a rig
+deletion's notices "did not work". *Takes:* the list, its 10 s `GET /takes`
+poll and the reads on each take start and stop are gone from the page
+(`takeRows`, `refreshTakes`, `Latest` with them). One line beside Save names
+the takes folder, from a new `/health` field, `agent.takes: {dir,
+can_open}`; `can_open` is whether the request came from a loopback peer, and
+only then does the page offer **Open folder**, which calls the new `POST
+/takes/open`. That route refuses any other peer (`403 not_local`), is behind
+the #174 guard as every write is, takes no path (its body must be empty),
+and runs `xdg-open`, else `gio open`, on `takes_dir` with no shell, in its
+own session, in a thread (`open_folder`; one still running after 5 s is
+reaped by a daemon thread). `no_opener`, `no_folder` and `open_failed` say
+what went wrong. `GET /takes` stays: docs/reference/agent.md gives it as a
+curl route, though nothing in the tool calls it now. A stop's box now shows
+the take's folder (the recorder's answer already had `folder`), and a take
+with problems shows its verdict. **That was a second bug**: the box drew
+`reason` whenever `ok` was false, and a take `take check` faults is `ok:
+false` with no `reason`, so its verdict was never shown. *Notices:*
+reproduced in Playwright. The outcome's × and the confirm's Cancel worked,
+but the × beside each **Undo** did nothing. `offersBox(b)` was handed
+`binKey()`, a copy of `state.bin` made for the region's `patch` key, and
+the × changed the copy (and wrote storage under `b.agent`, which the copy
+lacks), so the state and the key stayed the same and nothing was redrawn.
+The handler now changes `state.bin`. A delete's or Undo's outcome that
+worked, and each Undo, now leave after 15 s (`NOTICE_MS`, `noticesLeft`,
+one timer per notice as `armStop`'s), as an opened folder's notice does. A
+refusal stays until dismissed. The Undos are no longer kept across a reload:
+`sushi-rig.binned` is removed as the page loads (`RETIRED_KEYS`) and never
+read, and `rememberedOffers`/`offersToRemember` are gone. The guide says how
+to move a file back from `config/rigs/.deleted/` by hand. Tests: the
+endpoint's refusals and the opener's arguments (`test_agent_takes_folder.py`),
+the guard over `/takes/open`, and the page's line, button, phone view, stop
+box, no `/takes` request and timed notices (`test_ui_takes.py`,
+`test_ui_rigbin.py`, on Playwright's fake clock). **Not tried:** `xdg-open`
+or `gio open` on the rig's desktop, from a systemd user service.
+*(2026-11-19)*
+
+**#189's review (PR #197).**
+- **A stop that failed read "Whole · 0 stems · nothing lost"** beside its
+  reason. Now it shows `take check`'s problems only when there are some, and
+  drops its reason when that is the read-back failure a problem already
+  states (`summary_error`).
+- **The 15 s were measured on the wall clock by one timer**, so a clock
+  stepped back held a notice for ever. Now they run on `performance.now()`,
+  with one timer set for the soonest notice due (`nextNoticeIn`) and set
+  again after each pass.
+- **Playwright's `clock.install()` keeps real time flowing.** The reviewer
+  showed a 1.2 s step before `run_for(14000)` already lost the notice. The
+  timed tests now pause the clock once the page has loaded
+  (`pause_clock`). Playwright's Python clock takes seconds, not ms.
+- **A whole take's stop box** now leaves after 15 s, as does a start's
+  "replaced" note. A take with problems, a failed stop and a refusal stay.
+- **The focus on an Undo that leaves** goes to its rig's row if the rig is
+  listed, else to the picker's first rig, not to `<body>`.
+- **An Undo kept through a busy or no-answer refusal** is restamped, so it
+  gets 15 s afresh.
+- **Stale reload text** removed from `app.js`, `agent.py`, `rig.js`
+  (`deletedOutcome`'s unused `agent`) and `web-ui.md`.
+- **`takeVerdict`'s lost-audio clause and plural** are tested again.
+- **The takes folder is resolved once**, when the agent is made, not on
+  every `/health`.
+
+Each fix has a test that fails without it, apart from the clock pause:
+there, the reviewer's own scenario now keeps the notice.
+*(2026-11-20)*

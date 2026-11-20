@@ -1646,8 +1646,8 @@ export function deleteConfirm(rig, answer) {
   };
 }
 
-// What a delete said: `{ok, title, text, binned, agent}` with what Undo
-// needs, or `{ok: false, title, reason, code, retry}`.
+// What a delete said: `{ok, title, text, binned}` with what Undo needs, or
+// `{ok: false, title, reason, code, retry}`.
 export function deletedOutcome(rig, answer) {
   if (!answer.ok) return { ok: false, title: `Not deleted: ${rig}`, reason: answer.reason, code: answer.code || null, retry: passing(answer) };
   const b = answer.body || {};
@@ -1655,7 +1655,7 @@ export function deletedOutcome(rig, answer) {
   return {
     ok: true, title: `Deleted ${rig}`,
     text: `${b.file} is now ${b.binned.file}. ${binGitText(b.git, b.git_note)}${moves.length ? ` ${moves.join("; ")}.` : ""}`,
-    binned: { rig, entry: b.binned.entry, file: b.binned.file }, agent: b.agent || null,
+    binned: { rig, entry: b.binned.entry, file: b.binned.file },
   };
 }
 
@@ -1672,40 +1672,13 @@ export function restoreOutcome(rig, answer) {
   return { ok: true, title: `Put back ${rig}`, text: `${b.file} is back from ${b.from}.${moves.length ? ` ${moves.join("; ")}.` : ""}` };
 }
 
-// The Undos offered, kept in this browser so a reload still offers them (as
-// the lock and the open tab are kept): a few, newest first, by the agent
-// they came from (GET /rigs/bin's `agent`), so another rig machine served at
-// the same address never sees them. What comes back is checked: a rig and a
-// bin entry of that rig's, else it is left out.
+// The Undos offered: a few, newest first, held by this page only, for
+// NOTICE_MS each (`noticesLeft`). Until #189 they were kept in this browser
+// across reloads (`sushi-rig.binned`), and never left; that record is
+// removed when the page loads and never read. A deleted rig is still in
+// config/rigs/.deleted/ after its Undo has gone, to move back by hand.
 export const KEEP_UNDOS = 5;
-const ENTRY_RE = /^.+-\d{8}T\d{6}Z(?:-\d+)?\.yaml$/;
-
-function offerOk(o) {
-  return !!o && typeof o.rig === "string" && typeof o.entry === "string" && typeof o.file === "string"
-    && !!o.rig && !o.rig.startsWith(".") && !o.rig.includes("/")
-    && ENTRY_RE.test(o.entry) && o.entry.startsWith(`${o.rig}-`);
-}
-
-function keptMap(text) {
-  let kept;
-  try { kept = JSON.parse(text); } catch { return {}; }
-  return kept && typeof kept === "object" && !Array.isArray(kept) ? kept : {};
-}
-
-export function rememberedOffers(text, agent) {
-  if (typeof agent !== "string" || !agent) return [];
-  const list = keptMap(text)[agent];
-  return Array.isArray(list) ? list.filter(offerOk).slice(0, KEEP_UNDOS).map((o) => ({ rig: o.rig, entry: o.entry, file: o.file })) : [];
-}
-
-export function offersToRemember(text, agent, offers) {
-  const kept = keptMap(text);
-  if (typeof agent !== "string" || !agent) return JSON.stringify(kept);
-  const list = offers.filter(offerOk).slice(0, KEEP_UNDOS).map((o) => ({ rig: o.rig, entry: o.entry, file: o.file }));
-  if (list.length) kept[agent] = list;
-  else delete kept[agent];
-  return JSON.stringify(kept);
-}
+export const RETIRED_KEYS = ["sushi-rig.binned"];
 
 export function addOffer(offers, binned) {
   return [binned, ...offers.filter((o) => o.entry !== binned.entry)].slice(0, KEEP_UNDOS);
@@ -2482,7 +2455,19 @@ export function recordOutcome(op, answer) {
     return { ok: true, title: `Recording ${body.name}`, text: body.replaced ? body.said : null };
   }
   if (!answer.ok && !body.name) return { ok: false, title: "Not stopped", reason: answer.reason, code: answer.code || null };
-  return { ok: answer.ok && !(body.problems || []).length, title: `Recorded ${body.name}`, text: takeVerdict(body) };
+  // The take's folder, where the takes are looked at now that the rack does
+  // not list them (#189); a take with problems is not ok, so it is shown as
+  // the refusal colour, with `take check`'s first problem. A stop that
+  // failed (502, the take stopped) is never called whole: its verdict is
+  // said only when `take check` found problems, and its reason only when it
+  // is not the read-back failure a problem already says (`summary_error`).
+  const problems = (body.problems || []).length;
+  const folder = typeof body.folder === "string" && body.folder ? body.folder : null;
+  if (!answer.ok) {
+    return { ok: false, title: `Recorded ${body.name}`, text: problems ? takeVerdict(body) : null,
+      reason: problems && body.summary_error ? null : answer.reason, folder };
+  }
+  return { ok: !problems, title: `Recorded ${body.name}`, text: takeVerdict(body), reason: null, folder };
 }
 
 // A take's verdict in a line: `take check`'s first problem, or that it is
@@ -2499,40 +2484,66 @@ export function takeVerdict(take) {
   return `${len ? `${len} · ` : ""}${problems.length === 1 ? "1 problem" : `${problems.length} problems`}${lost}: ${problems[0]}`;
 }
 
-// GET /takes as the rack lists it: each take's name, length and verdict,
-// the one being recorded said as that rather than as unfinished (it is,
-// until it stops).
-export function takeRows(answer, recording = null) {
-  if (!answer) return { dir: null, rows: [], problem: null, more: 0, archived: 0 };
-  if (!answer.ok) return { dir: null, rows: [], problem: `The takes could not be listed: ${answer.reason}`, more: 0, archived: 0 };
-  const body = answer.body;
-  const rows = (body.takes || []).map((t) => {
-    if (t.name === recording) return { name: t.name, len: "", note: "Recording now", tone: "live", title: t.folder };
-    if (t.take === false) return { name: t.name, len: "", note: `Not a take: ${(t.problems || [])[0] || "unreadable"}`, tone: "warn", title: t.folder };
-    const problems = t.problems || [];
-    return {
-      name: t.name, len: clockText(t.seconds) || "length unknown",
-      note: problems.length ? takeVerdict({ ...t, seconds: null }) : `Whole · ${(t.stems || []).length} stems · nothing lost`,
-      tone: problems.length ? "warn" : "ok", title: t.folder,
-    };
-  });
+// The rack's line naming the takes folder (#189), from /health's
+// `agent.takes`: the folder, and Open folder only when the agent says this
+// page is on its own machine (`can_open`: the request came from a loopback
+// peer, the one POST /takes/open serves), so a phone sees the path and no
+// button. `open` is this page's open in flight (`pending`) and what the last
+// one said (`result`, `openFolderOutcome`).
+export function takesFolder(health, open = {}) {
+  const takes = health && health.ok ? (health.body.agent || {}).takes : null;
+  const result = open.result || null;
+  if (!takes || typeof takes.dir !== "string" || !takes.dir) return { dir: null, button: null, result };
   return {
-    dir: body.takes_dir, rows, more: body.more || 0, archived: body.archived || 0,
-    problem: body.exists === false ? "No takes yet: the folder is made by the first take." : null,
+    dir: takes.dir,
+    button: takes.can_open === true ? { label: open.pending ? "Opening…" : "Open folder", disabled: !!open.pending } : null,
+    result,
   };
 }
 
-// Answers to requests that may overlap, in order: `issue` numbers a request
-// as it is sent, and `accept` says whether its answer is still news, false
-// once an answer to a later request has been taken.
-export class Latest {
-  constructor() { this.issued = 0; this.applied = 0; }
-  issue() { this.issued += 1; return this.issued; }
-  accept(ticket) {
-    if (ticket <= this.applied) return false;
-    this.applied = ticket;
-    return true;
-  }
+export const OPEN_FOLDER_CALL = { path: "/takes/open", json: {} };
+
+// What an open said: the agent's own sentence, or its reason for refusing
+// (no opener installed, no folder yet, the opener's failure), said as it is.
+export function openFolderOutcome(answer) {
+  const body = answer.body || {};
+  if (!answer.ok) return { ok: false, title: "Not opened", reason: answer.reason, code: answer.code || null };
+  return { ok: true, title: "Opened the takes folder", text: body.said || null };
+}
+
+// ---------------------------------------------------------------- notices that go by themselves (#189)
+// What says something worked leaves after NOTICE_MS: a rig deleted or put
+// back, its Undo offer, the takes folder opened, a whole take stopped. A
+// refusal stays until it is dismissed, so an error is never gone unread.
+// Each notice carries `at`, the page's monotonic clock (`performance.now`)
+// when it was shown, so a wall clock stepped back cannot hold one; the page
+// sets one timer for the soonest due (`nextNoticeIn`) and, when it fires,
+// drops what is done (`noticesLeft`) and sets it again for the rest.
+export const NOTICE_MS = 15000;
+
+// Whether notice `n` (`{ok, at}`) has had its time: only one that worked, and
+// only once it has been shown NOTICE_MS.
+export function noticeDone(n, now) {
+  return !!n && n.ok === true && typeof n.at === "number" && now - n.at >= NOTICE_MS;
+}
+
+// How long until the soonest of `notices` (each `{ok, at}`, or null) has had
+// its time, in ms and never below 0; null when none of them will go.
+export function nextNoticeIn(notices, now) {
+  const due = notices.filter((n) => !!n && n.ok === true && typeof n.at === "number")
+    .map((n) => Math.max(0, NOTICE_MS - (now - n.at)));
+  return due.length ? Math.min(...due) : null;
+}
+
+// The rig picker's notices still to show: the delete's or Undo's outcome, and
+// the Undos offered, each gone once its time is up (an offer is one that
+// worked, so it goes as an outcome that worked does), except the Undo in
+// flight (`restoring`), which stays until its answer says what happened.
+export function noticesLeft({ said = null, offers = [], restoring = null }, now) {
+  return {
+    said: noticeDone(said, now) ? null : said,
+    offers: offers.filter((o) => o.entry === restoring || !noticeDone({ ok: true, at: o.at }, now)),
+  };
 }
 
 // ---------------------------------------------------------------- rig files (the New rig screen)

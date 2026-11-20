@@ -135,6 +135,23 @@ def test_a_write_a_browser_sent_from_elsewhere_is_refused_before_the_route(heade
     assert runner.calls == [], "nothing ran"
 
 
+@pytest.mark.parametrize("headers", REFUSED.values(), ids=REFUSED.keys())
+def test_opening_the_takes_folder_is_refused_from_elsewhere_and_runs_nothing(headers, tmp_path):
+    """POST /takes/open (#189) runs a program on this machine's desktop: the
+    guard refuses it before the route, so its opener is never asked for,
+    even from the loopback peer the route itself allows."""
+    (tmp_path / "takes").mkdir()
+    served, runner = agent(takes_dir=tmp_path / "takes")
+    asked = []
+    served.folder_opener = lambda: asked.append("opener") or None
+    status, body = send(served, "POST", "/takes/open", headers)
+    assert (status, body["code"]) == (403, "cross_site"), body
+    assert asked == [] and runner.calls == []
+    status, body = send(served, "POST", "/takes/open", own_origin="127.0.0.1")
+    assert (status, body["code"]) == (409, "no_opener"), "the agent's own page reaches the route"
+    assert asked == ["opener"]
+
+
 @pytest.mark.parametrize("method", ["PUT", "PATCH", "DELETE"])
 def test_every_state_changing_method_is_guarded_even_where_no_route_takes_it(method):
     """403, not the 405 the router would give: the guard is in front of it,
@@ -395,7 +412,7 @@ def test_every_registered_route_is_behind_the_guard():
     paths = {path for _, path in writes}
     # Not vacuous: the routes #160 and #162 guarded by hand, and others.
     assert {"/rigs/x/delete", "/rigs/x/restore", "/rig/channels/x/save-as", "/rig/channels/x/load",
-            "/rig/up", "/rig/down", "/live/parameter", "/rig/save", "/record/start"} <= paths, paths
+            "/rig/up", "/rig/down", "/live/parameter", "/rig/save", "/record/start", "/takes/open"} <= paths, paths
     assert len(writes) >= 24, writes  # as of #161
     assert {("GET", "/health"), ("HEAD", "/health"), ("GET", "/"), ("GET", "/ui/app.js")} <= set(routes)
 

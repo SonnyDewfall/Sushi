@@ -31,19 +31,27 @@ Recording is on the **stage** screen, and works while the page is **Locked**.
 6. Play.
 7. Tap **Stop**. There is no second question, because stopping loses nothing.
 
-A line headed **Recorded** and the take's name gives the verdict. If all is
-well it reads like `0:47 · Whole · 5 stems · nothing lost`: the length, that
-the take is whole, how many stems, and that no sound was dropped. If not, it
-gives the number of problems and the first of them.
+A box headed **Recorded** and the take's name gives the verdict, and under it
+the take's folder. If all is well it reads like
+`0:47 · Whole · 5 stems · nothing lost`: the length, that the take is whole,
+how many stems, and that no sound was dropped. A box like that goes by itself
+after about 15 seconds. If not, the box is red, and it gives the number of
+problems and the first of them; a red box stays until you close it with **×**,
+so a take with problems is never missed. Any box closes with **×**.
 
 ## Find your takes
 
 Takes go in a folder called `sushi-rig-takes` in your home folder on the rig's
-laptop, one folder for each take. The rack lists them on the right, under
-**TAKES**, newest first, each with its length and its verdict.
+laptop, one folder for each take. The rack names the folder on the right,
+under **TAKES**. The page does not list the takes: look at them in the folder.
 
-The page cannot play a take or open its folder. Use a file manager, or your
-recording software.
+On the laptop itself, **Open folder** under it opens the folder in the
+laptop's file manager. It is there only when the page is open on the laptop
+at `localhost` (or `127.0.0.1`), not on a phone, nor on the laptop by its
+network address. If the laptop has nothing that opens folders (`xdg-open` or
+`gio`), the page says so and gives the folder's path.
+
+The page cannot play a take. Use a file manager, or your recording software.
 
 ## What is in a take's folder
 
@@ -118,6 +126,8 @@ Things worth knowing about these files:
   **Recording is off**, the line under it says why.
 - There are no level meters, and the page does not show how much disk space is
   left.
+- **Open folder has not been tried on the rig's desktop yet.** If it says the
+  opener failed, open the folder named on the rack by hand.
 - Takes have been recorded from the page on the rig with a one-channel rig and
   with a two-channel one, guitar and vocal, whose `master.wav` was listened
   back.
