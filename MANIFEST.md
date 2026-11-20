@@ -6307,3 +6307,78 @@ or `gio open` on the rig's desktop, from a systemd user service.
 Each fix has a test that fails without it, apart from the clock pause:
 there, the reviewer's own scenario now keeps the notice.
 *(2026-11-20)*
+
+**The visualiser's looks: random, stark, and three that read like an
+equaliser (#196).** Asked for 2026-11-19: "more monochrome and dramatic
+looking visualisers … let's go more crazy with it. Also let's have a couple
+that look more like a display from an equaliser", a few random selections,
+and a display where "when you know what to look for, you can tell what
+frequency you're looking at", with no numbers. Thirteen looks now, named in
+`rig.js` (`VISUALISER_LOOKS`): Embers, Tide and Bloom as they were; six
+butterchurn looks written for the rig, black and white or one colour
+(Tunnel, Shutter, Smoke, Mirror, Storm, Eclipse), some with a short `warp` or
+`comp` GLSL body; and four drawn by the page on a 2D canvas from two
+AnalyserNodes on the same capture (`visualiser-eq.js`: Bars, Curve, Aurora,
+Mono bars), on a log axis of eight equal octaves from 46.875 Hz to 12 kHz,
+each octave a fixed colour from deep red to violet (`EQ_COLOURS`), the same
+in all three coloured looks, with no number or label. One session owns both
+canvases, so `screensaver.js` starts, stops, resizes and loses it the same
+way whichever kind is up. At random each look is on for 30 to 60 s, never
+the same twice running, varied in colour and motion within bounds each look
+declares, from a seeded generator; a **Look** choice on the settings line
+(after the other controls) offers random, random monochrome, random
+equalisers, or a look by name, which holds it, kept with the other settings.
+The guide says how to read the colours (`playing-live.md`, "Reading the
+equaliser looks").
+
+Found on the way, each by measuring rather than reading. (1) In butterchurn's
+JavaScript equations a q variable is `a.q1`; bare `q1` is GLSL only, and three
+looks threw on every frame (0 frames drawn). (2) Butterchurn draws a custom
+wave's y as (-2y + 1) times the inverse aspect, so on a landscape screen only
+about y = 1/6 to 5/6 is seen: a line at y = 0.1 was off the screen; and wave
+mode 6 ignores `wave_y`. The looks that want the foot set q4 from
+`a.aspecty`. (3) Mirror's first comp folded the picture into one octant and
+went black within five seconds once the trail drifted out of it (with no comp
+the frame stayed lit, 25 to 40 of 255): it now takes the brightest of four
+mirrored samples. (4) No flash fired at all on plucked chords: the level was
+never over 1.2 times butterchurn's `_att` levels, which follow it closely; an
+attack is now the level over 1.6 times its own one-second average. (5) A gap
+of 14 frames let three flashes into one second (frames 0, 14, 28); it is 16
+frames and 0.55 s, so no second has more than two (WCAG 2.3.1 allows three),
+by both counts since butterchurn's clock is its estimate of the frame rate.
+(6) Curve took 27 ms a frame at 1280 by 800 in software (Chromium with no
+GPU), the wide glow strokes over 192 points costing most; at twelve points an
+octave and three passes, 15 ms (Aurora 11, the bars 1; Curve's first form 37
+at 1920 by 1080). (7) Playwright's installed fake clock runs on with the wall between calls, so
+the order test reads each switch from the frame clock's record, not from
+margins of a few hundred milliseconds.
+
+Tests (`test_ui_visualiser.py`, 80, was 48): the catalogue against both
+files; the choices and pools; 3000 seeded picks per selection with no repeat
+and every look shown; times within 30 to 60 s; variations within bounds; every
+look's equations driven with a loud attack on every frame, at the wall's clock
+and at twice it, never three flashes in a second and each gone in four
+frames; the axis, the bands (every FFT bin's power shared out once, at 48 and
+44.1 kHz), a band's level, the ballistics, peaks and glow; the help naming the
+colours in order; and in the page, every look held by name drawing with no
+page error, no shader that fails to compile or link (checked by wrapping
+`compileShader` and `linkProgram`, and a broken shader shown to be caught),
+the random order on the fake clock, a held look staying, a random selection
+keeping to its looks, the chooser kept across a reload and taken up by a
+session already made, and a lost 2D context on an equaliser look doing what a
+lost WebGL one does (a `contextlost` sent by hand: Chromium has no way to
+lose a 2D context from a page). Each key test shown failing with its feature
+taken out (never-repeat, the time bounds, the flash gaps, the frame gap
+alone, hold, the kept look, the 2D lost-context handler, the bins' shares,
+the variation, a selection's pool, peak hold, a broken shader); with
+never-repeat taken out, the page's order test still passed (seed 7 did not
+happen to repeat in 8), and the pure test failed. All the `test_ui`
+files, before #197 was merged: 553 passed and 1 failed: the plain-files guard, which did not know the new
+file yet, and now does. The fast suite after merging master at e64b58a
+(#197): 5920 passed, 22 skipped, 293 deselected, 1 failed. That one is
+`test_live_close`, the known flake (#170), which passed three times out of
+three on its own.
+**Not tried:** a real GPU (all of it ran on SwiftShader, renamed), the rig,
+real guitar through PipeWire (the looks were watched on a synthetic chord of
+saws plucked every 0.6 s), Firefox, and anybody watching for a while by eye,
+the photosensitivity of the flashes included. *(2026-11-20)*
