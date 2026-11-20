@@ -749,8 +749,11 @@ button.strip-name:focus-visible { outline: 2px solid var(--accent); outline-offs
 .visualiser { position: fixed; inset: 0; z-index: 2147483000; background: #000; opacity: 0; transition: opacity 600ms ease; cursor: none; touch-action: none; user-select: none; }
 .visualiser.showing, .visualiser.in { opacity: 1; }
 .visualiser.closing { opacity: 0; transition-duration: 150ms; }
-.visualiser canvas { display: block; width: 100%; height: 100%; opacity: 0; transition: opacity 600ms ease; }
+.visualiser canvas { position: absolute; inset: 0; display: block; width: 100%; height: 100%; opacity: 0; transition: opacity 600ms ease; }
 .visualiser.in canvas { opacity: 1; }
+/* Two canvases, one over the other (#196): butterchurn's and the equaliser
+   looks'. The one not showing a look fades out and is not drawn. */
+.visualiser.in canvas.off { opacity: 0; }
 .visualiser-hint { position: absolute; left: 0; right: 0; bottom: 28px; margin: 0; text-align: center; font-size: 14px; color: rgba(236, 236, 239, 0.55); animation: visualiser-hint 5s ease forwards; }
 @keyframes visualiser-hint { 0%, 60% { opacity: 1; } 100% { opacity: 0; } }
 @media (prefers-reduced-motion: reduce) { .visualiser, .visualiser canvas { transition: none; } .visualiser-hint { animation: none; } }

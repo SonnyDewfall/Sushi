@@ -627,12 +627,12 @@ page saying so and where it looked (`guide.py` says why they are not hidden).
 ## The visualiser
 
 A screensaver for the laptop (#176): after a spell with no pointer, touch or
-key on the page (10 s unless set otherwise), a MilkDrop visualisation fills
+key on the page (10 s unless set otherwise), a visualisation fills
 the window and moves with the guitar. Any input puts the page back at once,
 and that input reaches nothing under it. Its settings are a line at the foot
 of the page, kept in this browser (`sushi-rig.visualiser` in localStorage):
-on or off, the idle time (3 to 600 s), the input and its channel, and **Show
-now**. The line says why it will not start when it will not, and what it
+on or off, the idle time (3 to 600 s), the input and its channel, **Show
+now**, and the **Look** (below). The line says why it will not start when it will not, and what it
 heard last.
 
 **Where the sound comes from.** The browser's own capture of the guitar's
@@ -724,8 +724,58 @@ it adds to `window` and `Math`). Chosen over audioMotion-analyzer (AGPL-3.0)
 and Wave.js (MIT, but a set of 2D canvas bars, lines and circles rather than a
 visualisation to leave running).
 No preset pack: butterchurn-presets is labelled MIT, but its presets are
-MilkDrop authors' work with no licence from them. The three presets shown,
+MilkDrop authors' work with no licence from them. Its looks,
 `visualiser-presets.js`, were written for the rig.
+
+**The looks (#196).** Thirteen, named in `rig.js` (`VISUALISER_LOOKS`), since
+the settings line offers them before the drawing is loaded. Nine are
+butterchurn presets (`visualiser-presets.js`): Embers, Tide and Bloom, and
+six stark ones, each black and white or one colour (Tunnel, Shutter, Smoke,
+Mirror, Storm, Eclipse). Some of the six use butterchurn's `warp` or `comp`
+GLSL body, kept short. Four are equaliser looks drawn by the page itself on a
+2D canvas beside butterchurn's (`visualiser-eq.js`): Bars, Curve, Aurora and
+Mono bars. One session (`visualiser.js`) owns both canvases, the capture and
+the timing, so `screensaver.js` starts, stops, resizes and loses it the same
+way whichever kind is showing. A lost context on either canvas (`webglcontextlost`,
+or the 2D canvas's `contextlost`) disposes of the whole session, as before.
+
+The **Look** choice on the settings line is kept with the other settings:
+`random` (the default), `random-mono`, `random-eq`, or a look's name, which
+holds that look. At random, each look is shown for 30 to 60 s, never the same
+one twice running (`nextLook`), and each time a look comes on, its colour and
+movement are varied within bounds it declares itself (`lookVariation`, from a
+seeded generator, `seededRandom`, so the tests can repeat it). The equaliser
+looks' colours do not vary: they are the map.
+
+**Flashes.** A look that flashes on a loud attack does it at most once every
+0.55 s and once every 16 frames (`VISUALISER.flashGap`, `flashFrames`), so
+no second ever holds more than two, which is under WCAG 2.3.1's three (with
+14 frames, frames 0, 14 and 28 put three in one second). Both
+limits are needed because butterchurn's clock is its own estimate of the frame
+rate, not wall time. A flash fades within four frames. It counts as an attack
+when the level is loud and at least 1.6 times its own average over about the
+last second. Butterchurn's own `_att` levels follow the signal too closely: on
+plucked chords the level never went past 1.2 times them.
+
+**The equaliser looks.** Two AnalyserNodes on the capture: 8192 points for the
+bands under 750 Hz, for resolution, and 4096 from there up, so an attack shows
+within a frame or two. Each does its FFT only when asked, so they cost nothing
+while a butterchurn look is up. The axis is logarithmic: eight octaves of the
+same width, from 46.875 Hz (12 kHz / 256) to 12 kHz, each in a fixed colour
+(`EQ_COLOURS`, deep red to violet), with no number or label on screen. The
+mapping from FFT bins to bands is `eqBands`. Each bin's power is shared out
+between the bands it overlaps, so the bands together carry it once, and a
+band's level is its bins' power summed (`eqBandDb`). A level rises at once and
+falls back over about 0.2 s (`eqSmooth`). Peak caps hold for 0.8 s, then fall
+(`eqPeak`). The display's top follows the loudest band and falls back 3 dB a
+second, never below -50 dB (`eqTop`), so a quiet input still reads and silence
+stays dark. Aurora's lingering glow is a slow average of each band (`eqGlow`),
+not a fade on the canvas: a slow fade in 8-bit pixels leaves a haze that never
+clears. What a frame costs, measured in a container's Chromium with no GPU (so
+Skia in software, the worst case), at the 1280 by 800 the buffer is capped
+to: Bars and Mono bars about 1 ms, Aurora about 11, Curve about 15 (median),
+under the 33 ms a frame of the 30 fps cap; at 1920 by 1080, Curve's first
+form took 37 ms. Not measured with a GPU.
 
 ## Not built yet
 

@@ -44,7 +44,10 @@ SHA256 = {
     "butterchurn.min.js": "4e67421bc18d48fac4a6ff4e69e2778f770737fbdd4e323438da154085b4818d",
     "LICENSE": "e5c204814d7119c939d9f111691e0c2008607d09c2f4679691e6dc5a10f24b98",
 }
-LAZY = ("visualiser.js", "visualiser-presets.js", "butterchurn.min.js")
+LAZY = ("visualiser.js", "visualiser-presets.js", "visualiser-eq.js", "butterchurn.min.js")
+MILKDROP = ["Embers", "Tide", "Bloom", "Tunnel", "Shutter", "Smoke", "Mirror", "Storm", "Eclipse"]
+EQ = ["Bars", "Curve", "Aurora", "Mono bars"]
+LOOKS = MILKDROP + EQ
 
 
 # --------------------------------------------------------------------------- #
@@ -80,7 +83,7 @@ def test_the_presets_are_the_rigs_own():
     """No preset pack is shipped (SOURCE.txt): the presets file is the only
     one, and it names no MilkDrop preset author's work."""
     text = (UI_DIR / "visualiser-presets.js").read_text(encoding="utf-8")
-    assert re.findall(r'name: "([^"]+)"', text) == ["Embers", "Tide", "Bloom"]
+    assert re.findall(r'name: "([^"]+)"', text) == MILKDROP
     assert not list(UI_DIR.rglob("*presets*.json")) and not list(UI_DIR.rglob("butterchurnPresets*"))
 
 
@@ -103,7 +106,7 @@ def get(path):
 
 
 @pytest.mark.parametrize("path", ["/ui/screensaver.js", "/ui/visualiser.js", "/ui/visualiser-presets.js",
-                                  "/ui/vendor/butterchurn-2.6.7/butterchurn.min.js"])
+                                  "/ui/visualiser-eq.js", "/ui/vendor/butterchurn-2.6.7/butterchurn.min.js"])
 def test_the_visualisers_files_are_served_as_scripts_and_asked_again(path):
     status, kind, cache, body = get(path)
     assert status == 200 and "javascript" in kind and cache == "no-cache" and body
@@ -140,7 +143,7 @@ def test_the_settings_kept_are_read_without_trusting_them(blank):
     out = rigjs(blank, """const r = (t) => R.visualiserSettings(t);
       return [r(null), r('not json'), r('[1]'), r('{"on": false, "idle": 30}'), r('{"on": "no", "idle": "x"}'),
               r('{"input": {"deviceId": "abc", "label": "iD14"}, "channel": 1}'), r('{"input": {"deviceId": ""}, "channel": 2}')];""")
-    default = {"on": True, "idle": 10, "input": None, "channel": None}
+    default = {"on": True, "idle": 10, "input": None, "channel": None, "look": "random"}
     assert out[:3] == [default] * 3
     assert out[3] == {**default, "on": False, "idle": 30}
     assert out[4] == default, "only false turns it off"
@@ -250,9 +253,223 @@ def test_an_input_is_said_with_its_channel_and_how_it_was_chosen(blank):
 
 
 def test_each_preset_has_the_four_shapes_and_waves_butterchurn_draws(blank):
+    """At either end of its variation's bounds: the form butterchurn 2.6.7
+    takes, as the first three presets had it, a shader a body or nothing."""
+    out = blank.evaluate(r"""async () => { const P = await import('/ui/visualiser-presets.js');
+      const at = (look, end) => Object.fromEntries(Object.entries(look.vary).map(([k, r]) => [k, r[end]]));
+      return P.LOOKS.flatMap((look) => [0, 1].map((end) => { const p = look.make(at(look, end));
+        return [look.name, p.shapes.length, p.waves.length, typeof p.frame_eqs_str, typeof p.pixel_eqs_str, typeof p.baseVals,
+                [p.warp, p.comp].every((g) => g === '' || /^shader_body \{[\s\S]*ret = [\s\S]*\}$/.test(g))]; })); }""")
+    assert out == [[name, 4, 4, "string", "string", "object", True] for name in MILKDROP for _ in range(2)]
+
+
+# --------------------------------------------------------------------------- #
+# The looks (#196): their order, their variations, the equaliser's mapping
+# --------------------------------------------------------------------------- #
+
+def test_the_looks_named_on_the_line_are_the_looks_the_files_draw(blank):
+    """rig.js names them (the settings line offers them before either file is
+    loaded); visualiser-presets.js and visualiser-eq.js draw them."""
+    out = blank.evaluate("""async () => { const R = await import('/ui/rig.js');
+      const P = await import('/ui/visualiser-presets.js'); const Q = await import('/ui/visualiser-eq.js');
+      return {looks: R.VISUALISER_LOOKS, milkdrop: P.LOOKS.map((l) => l.name), eq: Object.keys(Q.EQ_LOOKS),
+              eqMono: Object.entries(Q.EQ_LOOKS).filter(([, l]) => l.mono).map(([n]) => n)}; }""")
+    assert [l["name"] for l in out["looks"]] == LOOKS
+    assert out["milkdrop"] == [l["name"] for l in out["looks"] if l["kind"] == "milkdrop"] == MILKDROP
+    assert out["eq"] == [l["name"] for l in out["looks"] if l["kind"] == "eq"] == EQ
+    assert out["eqMono"] == ["Mono bars"]
+    mono = [l["name"] for l in out["looks"] if l["mono"]]
+    assert len([n for n in mono if n in MILKDROP]) == 6, "most of the new butterchurn looks are monochrome"
+
+
+def test_the_look_choices_are_random_three_ways_then_each_look(blank):
+    out = rigjs(blank, """return {choices: R.lookChoices().map((c) => c.value),
+      kept: [R.lookChoice('Curve'), R.lookChoice('random-eq'), R.lookChoice('curve'), R.lookChoice(null), R.lookChoice(3)],
+      pools: ['random', 'random-mono', 'random-eq', 'Aurora', 'nonsense'].map((c) => R.lookPool(c)),
+      settings: [R.visualiserSettings('{"look": "Mono bars"}').look, R.visualiserSettings('{"look": "Glitter"}').look,
+                 R.visualiserSettings('{"look": ["Bars"]}').look]};""")
+    assert out["choices"] == ["random", "random-mono", "random-eq", *LOOKS]
+    assert out["kept"] == ["Curve", "random-eq", "random", "random", "random"]
+    assert out["pools"][0] == LOOKS
+    assert out["pools"][1] == ["Tunnel", "Shutter", "Smoke", "Mirror", "Storm", "Eclipse", "Mono bars"]
+    assert out["pools"][2] == EQ
+    assert out["pools"][3] == ["Aurora"] and out["pools"][4] == LOOKS
+    assert out["settings"] == ["Mono bars", "random", "random"]
+
+
+def test_the_random_order_never_shows_a_look_twice_running_and_shows_them_all(blank):
+    out = rigjs(blank, """const runs = {};
+      for (const choice of ['random', 'random-mono', 'random-eq']) {
+        const rng = R.seededRandom(11); const pool = R.lookPool(choice); let last = null; const seen = []; let repeats = 0;
+        for (let i = 0; i < 3000; i++) { const next = R.nextLook(pool, last, rng); if (next === last) repeats++; seen.push(next); last = next; }
+        runs[choice] = {repeats, every: pool.every((n) => seen.includes(n)), only: seen.every((n) => pool.includes(n)),
+          least: Math.min(...pool.map((n) => seen.filter((x) => x === n).length))};
+      }
+      const a = R.seededRandom(5), b = R.seededRandom(5), c = R.seededRandom(6);
+      const draw = (r) => Array.from({length: 5}, r);
+      return {runs, same: JSON.stringify(draw(a)) === JSON.stringify(draw(b)), other: JSON.stringify(draw(R.seededRandom(5))) !== JSON.stringify(draw(c)),
+              held: [R.nextLook(['Bars'], 'Bars', Math.random), R.nextLook([], null, Math.random)]};""")
+    for choice, run in out["runs"].items():
+        assert run["repeats"] == 0 and run["every"] and run["only"], (choice, run)
+        assert run["least"] > 3000 / 13 / 2, (choice, run)
+    assert out["same"] and out["other"], "a seed gives the same numbers, another seed others"
+    assert out["held"] == ["Bars", None]
+
+
+def test_each_look_is_shown_for_a_jittered_time_within_bounds(blank):
+    out = rigjs(blank, """const rng = R.seededRandom(3); const s = Array.from({length: 2000}, () => R.lookSeconds(rng));
+      return {min: Math.min(...s), max: Math.max(...s), distinct: new Set(s).size, bounds: [R.VISUALISER.lookMin, R.VISUALISER.lookMax],
+              ends: [R.lookSeconds(() => 0), R.lookSeconds(() => 0.9999999)]};""")
+    assert out["bounds"] == [30, 60]
+    assert 30 <= out["min"] < 31 and 59 < out["max"] <= 60 and out["distinct"] > 250
+    assert out["ends"] == [30, 60]
+
+
+def test_each_look_is_varied_within_its_own_bounds(blank):
+    """Every look's colour and motion, as it declares their bounds, drawn 300
+    times: always within them, and not the same each time."""
+    out = blank.evaluate("""async () => { const R = await import('/ui/rig.js');
+      const P = await import('/ui/visualiser-presets.js'); const Q = await import('/ui/visualiser-eq.js');
+      const looks = [...P.LOOKS.map((l) => [l.name, l.vary]), ...Object.entries(Q.EQ_LOOKS).map(([n, l]) => [n, l.vary])];
+      const rng = R.seededRandom(9);
+      return looks.map(([name, vary]) => { const drawn = Array.from({length: 300}, () => R.lookVariation(vary, rng));
+        return [name, Object.keys(vary), Object.entries(vary).map(([k, [lo, hi]]) =>
+          [k, drawn.every((v) => v[k] >= lo && v[k] <= hi), new Set(drawn.map((v) => v[k])).size > 100])]; }); }""")
+    assert [name for name, _, _ in out] == LOOKS
+    for name, keys, checks in out:
+        assert all(ok and varied for _, ok, varied in checks), (name, checks)
+        if name in MILKDROP:
+            assert "speed" in keys and ({"hue"} & set(keys)), (name, keys)
+    assert dict((n, k) for n, k, _ in out)["Bars"] == [], "the coloured equaliser looks keep their colour map"
+
+
+def test_a_flash_on_a_loud_attack_comes_under_three_times_a_second(blank):
+    """Every look's equations, as butterchurn runs them (each a `new
+    Function` over `a`, kept from frame to frame), driven with the loudest
+    possible attack on every frame at 30 frames a second for 20 s, and again
+    with butterchurn's clock running at twice the wall's (its clock is its
+    estimate of the frame rate): no second has three flashes, and a flash is
+    gone within four frames. The looks that flash do flash."""
     out = blank.evaluate("""async () => { const P = await import('/ui/visualiser-presets.js');
-      return P.PRESETS.map((p) => [p.name, p.shapes.length, p.waves.length, typeof p.frame_eqs_str, typeof p.baseVals]); }""")
-    assert out == [[name, 4, 4, "string", "object"] for name in ("Embers", "Tide", "Bloom")]
+      const run = (look, clock) => {
+        const p = look.make(Object.fromEntries(Object.entries(look.vary).map(([k, r]) => [k, (r[0] + r[1]) / 2])));
+        const init = new Function('a', `${p.init_eqs_str} return a;`), frame = new Function('a', `${p.frame_eqs_str} return a;`);
+        const level = (v) => ({bass: v, mid: v, treb: v, bass_att: 1, mid_att: 1, treb_att: 1});
+        let a = init({...p.baseVals, time: 0, frame: 0, fps: 30, aspectx: 1, aspecty: 1.5, ...level(1)});
+        const onsets = []; let longest = 0, lit = 0;
+        for (let i = 0; i < 600; i++) {
+          Object.assign(a, {time: i / 30 * clock, frame: i, ...level(i % 2 ? 0.2 : 6)});
+          for (let q = 1; q <= 32; q++) a[`q${q}`] = 0;
+          a = frame(a);
+          const f = a.q1 || 0;
+          if (f >= 0.999) { onsets.push(i); lit = 0; }
+          if (f > 0.1) { lit++; longest = Math.max(longest, lit); } else lit = 0;
+        }
+        const worst = Math.max(0, ...onsets.map((s) => onsets.filter((t) => t >= s && t < s + 30).length));
+        return {onsets: onsets.length, worst, longest};
+      };
+      return P.LOOKS.map((look) => [look.name, run(look, 1), run(look, 2)]); }""")
+    flashing = {"Tunnel", "Shutter", "Smoke", "Mirror", "Storm", "Eclipse"}
+    for name, wall, fast in out:
+        for r in (wall, fast):
+            assert r["worst"] <= 2, (name, r)
+            assert r["longest"] <= 4, (name, r)
+        assert (wall["onsets"] > 0) == (name in flashing), (name, wall)
+        if name in flashing:
+            assert wall["onsets"] >= 20, ("as often as allowed: once every 16 frames or 0.55 s", name, wall)
+
+
+def test_the_equaliser_axis_is_eight_octaves_of_the_same_width(blank):
+    out = rigjs(blank, """const E = R.VISUALISER_EQ;
+      return {low: E.low, high: E.high, x: [R.eqX(E.low), R.eqX(750), R.eqX(12000), R.eqX(20), R.eqX(20000), R.eqX(0), R.eqX(-5)],
+        octave: [R.eqX(200) - R.eqX(100), R.eqX(3000) - R.eqX(1500)],
+        which: [R.eqOctave(20), R.eqOctave(46.875), R.eqOctave(82.4), R.eqOctave(93.7), R.eqOctave(110), R.eqOctave(300),
+                R.eqOctave(500), R.eqOctave(1000), R.eqOctave(2000), R.eqOctave(4000), R.eqOctave(8000), R.eqOctave(12000), R.eqOctave(16000)],
+        colours: R.EQ_COLOURS.map((c) => c.name)};""")
+    assert out["low"] == 46.875 and out["high"] == 12000
+    assert out["x"] == [0, 0.5, 1, 0, 1, 0, 0]
+    assert all(abs(d - 1 / 8) < 1e-12 for d in out["octave"]), "an octave is an eighth of the width wherever it is"
+    assert out["which"] == [0, 0, 0, 0, 1, 2, 3, 4, 5, 6, 7, 7, 7], "the low E in the first, 12 kHz in the last"
+    assert out["colours"] == ["deep red", "red", "orange", "yellow", "green", "cyan", "blue", "violet"]
+
+
+@pytest.mark.parametrize("rate", [48000, 44100])
+def test_the_equaliser_bands_share_out_every_bin_once(blank, rate):
+    """Bars' bands (6 an octave: two to a third-octave): contiguous, equal in
+    width across the display, each in its octave, the long FFT under 750 Hz
+    and the short over it, and each FFT bin's power given out exactly once
+    between the bands it touches."""
+    out = rigjs(blank, """const b = R.eqBands(arg, 6), c = R.eqBands(arg, 24);
+      const share = (fft) => { const w = {}; for (const band of b.filter((x) => x.fft === fft)) for (const [k, v] of band.bins) w[k] = (w[k] || 0) + v; return w; };
+      return {n: b.length, n24: c.length, first: b[0], last: b[b.length - 1], contiguous: b.every((x, i) => i === 0 || Math.abs(x.lo - b[i - 1].hi) < 1e-9),
+        widths: [...new Set(b.map((x) => (x.x1 - x.x0).toFixed(12)))], octaves: b.map((x) => x.octave),
+        ffts: b.map((x) => x.fft), long: share('long'), short: share('short'), centres: b.slice(0, 3).map((x) => x.centre)};""", rate)
+    assert out["n"] == 48 and out["n24"] == 192
+    assert out["first"]["lo"] == 46.875 and abs(out["last"]["hi"] - 12000) < 1e-6 and out["contiguous"]
+    assert out["widths"] == [f"{1 / 48:.12f}"]
+    assert out["octaves"] == [i // 6 for i in range(48)]
+    assert out["ffts"] == ["long"] * 24 + ["short"] * 24, "the split falls on an octave's edge, 750 Hz"
+    for fft, size in (("long", 8192), ("short", 4096)):
+        weights = {int(k): v for k, v in out[fft].items()}
+        df = rate / size
+        lo, hi = (46.875, 750) if fft == "long" else (750, 12000)
+        inside = [k for k in weights if (k - 0.5) * df >= lo and (k + 0.5) * df <= hi]
+        assert inside and all(abs(weights[k] - 1) < 1e-9 for k in inside), fft
+        assert all(0 < w <= 1 + 1e-9 for w in weights.values())
+    assert out["centres"][0] < 50, "the lowest band is narrower than a bin of the long FFT: it takes a share of one"
+
+
+def test_a_bands_level_is_its_bins_power_summed(blank):
+    out = rigjs(blank, """const band = {bins: [[3, 1], [4, 1], [5, 0.5]]};
+      const db = new Float32Array(8).fill(-Infinity);
+      const one = R.eqBandDb(Object.assign(db.slice(), {3: 0}), band);
+      const two = R.eqBandDb(Object.assign(db.slice(), {3: -3.0103, 4: -3.0103}), band);
+      const half = R.eqBandDb(Object.assign(db.slice(), {5: 0}), band);
+      return [one, two, half, R.eqBandDb(db, band), R.eqBandDb(Object.assign(db.slice(), {6: 0}), band)];""")
+    assert abs(out[0]) < 1e-6 and abs(out[1]) < 1e-3, "two bins at half the power make the power of one"
+    assert abs(out[2] - (-3.0103)) < 1e-3, "a bin half in the band gives it half its power"
+    assert out[3] == -200 and out[4] == -200, "silence, and a bin outside the band, are nothing"
+
+
+def test_the_equaliser_reads_quickly_up_slowly_down_and_holds_its_peaks(blank):
+    out = rigjs(blank, """const E = R.VISUALISER_EQ; const f = 1 / 30;
+      const top = [R.eqTop(-50, -10, f), R.eqTop(-10, -40, 1), R.eqTop(-45, -90, 10), R.eqTop(NaN, -Infinity, f)];
+      const level = [R.eqLevel(-10, -10), R.eqLevel(-64, -10), R.eqLevel(-37, -10), R.eqLevel(0, -10), R.eqLevel(-100, -10)];
+      let v = 0; const up = R.eqSmooth(v, 1, f); let down = 1; const falls = [];
+      for (let i = 0; i < 30; i++) { down = R.eqSmooth(down, 0, f); falls.push(down); }
+      let p = {value: 0, held: 0}; const peak = [];
+      p = R.eqPeak(p, 0.9, f); peak.push(p.value);
+      for (let t = 0; t < 0.7; t += f) p = R.eqPeak(p, 0.1, f); peak.push(p.value);
+      for (let t = 0; t < 0.5; t += f) p = R.eqPeak(p, 0.1, f); peak.push(p.value);
+      for (let t = 0; t < 5; t += f) p = R.eqPeak(p, 0.1, f); peak.push(p.value);
+      p = R.eqPeak(p, 0.95, f); peak.push(p.value);
+      let g = 0; for (let i = 0; i < 3; i++) g = R.eqGlow(g, 1, f); const shortNote = g;
+      for (let i = 0; i < 90; i++) g = R.eqGlow(g, 1, f); const held = g;
+      let h = held; for (let i = 0; i < 30; i++) h = R.eqGlow(h, 0, f);
+      return {top, level, up, afterAFrame: falls[0], afterASecond: falls[29], peak, shortNote, held, fadedASecond: h};""")
+    assert out["top"][0] == -10, "the top rises to the loudest band at once"
+    assert abs(out["top"][1] - (-13)) < 1e-9, "and falls back 3 dB a second"
+    assert out["top"][2] == -50 and out["top"][3] == -50, "never under the floor: silence stays dark"
+    assert out["level"] == [1, 0, 0.5, 1, 0]
+    assert out["up"] > 0.85, "a pick attack shows within a frame"
+    assert 0.75 < out["afterAFrame"] < 0.9 and out["afterASecond"] < 0.01, "it falls back over about a fifth of a second"
+    assert out["peak"][0] == 0.9 and out["peak"][1] == 0.9, "held"
+    assert 0.1 < out["peak"][2] < 0.9 and out["peak"][3] == 0.1 and out["peak"][4] == 0.95, "then falls slowly, never under the bar"
+    assert out["shortNote"] < 0.1 and out["held"] > 0.85, "the glow builds only on what stays"
+    assert out["fadedASecond"] > 0.5, "and lingers"
+
+
+def test_the_help_says_what_each_colour_is_in_the_order_of_the_map(blank):
+    colours = rigjs(blank, "return R.EQ_COLOURS.map((c) => c.name);")
+    guide = (checkout_root() / "docs" / "guide" / "playing-live.md").read_text(encoding="utf-8")
+    section = guide[guide.index("### Reading the equaliser looks"):]
+    section = section[:section.index("\n## ")] if "\n## " in section else section
+    at = [section.find(f"**{name}**") for name in colours]
+    assert all(i >= 0 for i in at) and at == sorted(at), (colours, at)
+    for words in ("mud", "low strings", "pick attack", "fizz"):
+        assert words in section, words
+    reference = (checkout_root() / "docs" / "reference" / "web-ui.md").read_text(encoding="utf-8")
+    assert "Look" in reference and "46.875" in reference
 
 
 # --------------------------------------------------------------------------- #
@@ -301,7 +518,9 @@ class VPage:
         self.page = self.context.new_page()
         self.errors = []
         self.requested = []
+        self.console = []
         self.page.on("pageerror", lambda error: self.errors.append(str(error)))
+        self.page.on("console", lambda message: self.console.append((message.type, message.text)))
         self.page.on("request", lambda request: self.requested.append(request.url))
         self.page.goto(served.url + url)
         self.until("() => window.sushiRigVisualiser && window.sushiRigVisualiser().running")
@@ -691,3 +910,158 @@ def test_what_it_heard_is_said_on_the_line(opened):
     assert kept["input"]["deviceId"] == value and kept["channel"] == 1
     v.shown()
     assert v.state()["pick"]["how"] == "chosen" and v.state()["pick"]["channel"] == 1
+
+
+# --------------------------------------------------------------------------- #
+# The looks in the page (#196)
+# --------------------------------------------------------------------------- #
+
+# Every shader the page compiles and links, checked: a GLSL error is not a
+# JavaScript one, and butterchurn does not ask, so without this a look whose
+# shader failed would draw nothing and raise nothing.
+GL_CHECK = """(() => { window.glErrors = []; const P = WebGL2RenderingContext.prototype;
+  const compile = P.compileShader; P.compileShader = function (s) { compile.call(this, s);
+    if (!this.getShaderParameter(s, this.COMPILE_STATUS)) window.glErrors.push(this.getShaderInfoLog(s)); };
+  const link = P.linkProgram; P.linkProgram = function (p) { link.call(this, p);
+    if (!this.getProgramParameter(p, this.LINK_STATUS)) window.glErrors.push('link: ' + this.getProgramInfoLog(p)); }; })();"""
+
+
+# Every stream the page's captures open, kept, to see that each is let go.
+CAPTURES = """(() => { window.captures = []; const real = MediaDevices.prototype.getUserMedia;
+  MediaDevices.prototype.getUserMedia = async function (...a) { const s = await real.apply(this, a); window.captures.push(s); return s; }; })();"""
+
+
+def seeded(seed):
+    return f"window.sushiRigVisualiserSeed = {seed};"
+
+
+@pytest.mark.parametrize("look", LOOKS)
+def test_every_look_loads_and_draws_without_an_error(opened, look):
+    """Held by name: it comes on, draws, and nothing failed: no page error,
+    no shader that did not compile or link, no WebGL error on the console.
+    The equaliser looks draw on their own canvas, butterchurn's hidden."""
+    v = opened(settings={"look": look}, init=[GL_CHECK])
+    state = v.shown()
+    session = state["session"]
+    assert session["look"] == look and session["choice"] == look and session["seconds"] is None
+    kind = "eq" if look in EQ else "milkdrop"
+    assert session["kind"] == kind
+    if kind == "eq":
+        v.until("() => sushiRigVisualiser().session.eq.drawn > 2")
+        assert v.state()["session"]["eq"]["look"] == look
+    assert v.page.evaluate("window.glErrors") == []
+    assert v.page.evaluate("""() => [...document.querySelectorAll('.visualiser canvas')].map((c) => c.classList.contains('off'))""") \
+        == ([True, False] if kind == "eq" else [False, True])
+    assert [m for m in v.console if m[0] == "error" and "GL" in m[1]] == []
+    assert [m for m in v.console if "GL_INVALID" in m[1] or "WebGL: " in m[1]] == []
+
+
+def test_a_broken_shader_is_caught(opened):
+    """The check above, shown to work: a look whose shader does not compile
+    is seen (a comp with an undeclared name, loaded by hand)."""
+    v = opened(settings={"look": "Tunnel"}, init=[GL_CHECK])
+    v.shown()
+    v.page.evaluate("""async () => { const P = await import('/ui/visualiser-presets.js');
+      const B = window.butterchurn.default || window.butterchurn; const c = document.createElement('canvas');
+      const viz = B.createVisualizer(new AudioContext(), c, {width: 64, height: 64});
+      const p = P.LOOKS[3].make({hue: 0, sat: 0, speed: 1, twist: 0});
+      viz.loadPreset({...p, comp: 'shader_body { ret = nothing_here; }'}, 0); }""")
+    assert any("nothing_here" in e for e in v.page.evaluate("window.glErrors"))
+
+
+def test_the_random_order_on_the_clock_never_repeats_and_keeps_its_times(opened):
+    """On the fake clock, seeded: each look's time is between 30 and 60 s;
+    3 s before it is up the look is still on, and the next comes on at its
+    end (by the frame clock: the fake clock also runs on with the wall
+    between calls, so the switch is read from when each came on), never the
+    same one."""
+    v = opened(clock=True, init=[seeded(7)])
+    v.shown()
+    shown = []
+    for _ in range(8):
+        v.until("() => sushiRigVisualiser().session.at !== null")
+        session = v.state()["session"]
+        assert session["choice"] == "random" and 30 <= session["seconds"] <= 60, session
+        name, at, seconds = session["look"], session["at"], session["seconds"]
+        left = at + seconds * 1000 - v.page.evaluate("performance.now()")
+        assert left > 5000
+        v.page.clock.fast_forward(int(left - 3000))
+        v.advance(50)
+        assert v.state()["session"]["look"] == name, "not before its time"
+        v.until(f"() => sushiRigVisualiser().session.look !== {json.dumps(name)} && sushiRigVisualiser().session.at !== null", timeout=8000)
+        came = v.state()["session"]["at"]
+        assert seconds * 1000 <= came - at <= seconds * 1000 + 1000, (name, seconds, came - at)
+        shown.append(name)
+    history = [h["name"] for h in v.state()["session"]["history"]]
+    assert history[:8] == shown and all(a != b for a, b in zip(history, history[1:])), history
+    assert len(set(history)) >= 5, history
+    assert v.state()["phase"] == "shown"
+
+
+def test_a_look_held_by_name_stays(opened):
+    v = opened(clock=True, settings={"look": "Aurora"})
+    v.shown()
+    for _ in range(3):
+        v.page.clock.fast_forward(50000)
+        v.advance(200)
+    session = v.state()["session"]
+    assert session["look"] == "Aurora" and session["seconds"] is None
+    assert [h["name"] for h in session["history"]] == ["Aurora"]
+    assert v.state()["phase"] == "shown"
+
+
+def test_a_random_selection_draws_only_from_its_looks(opened):
+    v = opened(clock=True, settings={"look": "random-eq"}, init=[seeded(3)])
+    v.shown()
+    for _ in range(5):
+        session = v.state()["session"]
+        v.page.clock.fast_forward(int(session["seconds"] * 1000) + 100)
+        v.advance(200)
+    history = [h["name"] for h in v.state()["session"]["history"]]
+    assert len(history) >= 5 and set(history) <= set(EQ) and all(a != b for a, b in zip(history, history[1:])), history
+
+
+def test_the_look_is_chosen_on_the_line_and_kept_in_this_browser(opened):
+    """After the line's other controls; random until one is picked; the pick
+    is kept, comes back on a reload, and is what is shown."""
+    v = opened()
+    p = v.page
+    order = p.evaluate("() => [...document.querySelectorAll('.visualiser-settings input, .visualiser-settings select, .visualiser-settings button')].map((e) => e.id || e.className)")
+    assert order == ["visualiser-on", "visualiser-idle", "visualiser-input", "visualiser-channel", "visualiser-now", "visualiser-look"]
+    pick = p.locator("#visualiser-look")
+    assert pick.input_value() == "random"
+    assert p.evaluate("[...document.querySelectorAll('#visualiser-look option')].map((o) => o.value)") == \
+        ["random", "random-mono", "random-eq", *LOOKS]
+    pick.select_option("Curve")
+    assert json.loads(p.evaluate("localStorage.getItem('sushi-rig.visualiser')"))["look"] == "Curve"
+    p.reload()
+    v.until("() => window.sushiRigVisualiser && window.sushiRigVisualiser().running")
+    assert p.locator("#visualiser-look").input_value() == "Curve" and v.state()["look"] == "Curve"
+    assert v.shown()["session"]["look"] == "Curve"
+    p.mouse.move(3, 3)
+    v.off()
+    p.locator("#visualiser-look").select_option("Bars")
+    assert v.shown()["session"]["look"] == "Bars", "a session already made takes up the new choice"
+
+
+def test_a_lost_context_on_an_equaliser_look_is_as_on_butterchurn(opened):
+    """The 2D canvas's context taken away (its `contextlost`, sent by hand:
+    Chromium gives no way to lose a 2D context from a page): it stops, says
+    so, lets go of the input and its canvas, starts afresh once, and a
+    second loss leaves it off until a reload."""
+    v = opened(settings={"look": "Bars"}, init=[CAPTURES])
+    p = v.page
+    lose = "() => document.querySelector('.visualiser canvas.visualiser-flat').dispatchEvent(new Event('contextlost', {cancelable: true}))"
+    v.shown()
+    p.evaluate(lose)
+    v.until("""() => { const v = sushiRigVisualiser();
+      return v.phase === 'off' && v.lost === 1 && v.session === null && (v.error || '').includes('context lost'); }""")
+    assert "canvas context lost" in p.locator(".visualiser-note").inner_text()
+    assert p.evaluate("document.querySelectorAll('.visualiser canvas').length") == 1, "its canvas went with it"
+    assert p.evaluate("window.captures.length > 0 && window.captures.every((s) => s.getTracks().every((t) => t.readyState === 'ended'))"), \
+        "the input is let go"
+    state = v.shown()
+    assert state["session"]["look"] == "Bars" and p.evaluate("document.querySelectorAll('.visualiser canvas').length") == 2
+    p.evaluate(lose)
+    v.until("() => sushiRigVisualiser().broken !== null && sushiRigVisualiser().phase === 'off'")
+    assert "twice" in v.refused(after=v.state()["attempts"])["why"]

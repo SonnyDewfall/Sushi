@@ -2941,6 +2941,19 @@ export const VISUALISER = {
   // The machine file's role the guitar comes in on: patchbay.GUITAR_ROLE,
   // held to it by test_ui_visualiser.py.
   guitarRole: "guitar-in",
+  // Each look's time when they come in a random order (#196): somewhere in
+  // these seconds, never the same twice running.
+  lookMin: 30,
+  lookMax: 60,
+  // A flash or strobe on a loud attack comes at most this often: never
+  // closer than this many seconds, nor this many frames (frames are at least
+  // 31.3 ms apart at the 30 fps cap, so 16 are at least 0.5 s), so no second
+  // ever holds more than two, under the photosensitivity guidance of three
+  // (WCAG 2.3.1). At 14 frames a second could hold three (frames 0, 14, 28).
+  // Both, since butterchurn's own clock is its estimate of the frame rate,
+  // not the wall.
+  flashGap: 0.55,
+  flashFrames: 16,
 };
 
 // The idle time a field was given, in whole seconds within the bounds, or
@@ -2952,10 +2965,11 @@ export function visualiserIdle(value) {
 }
 
 // The settings kept in this browser (localStorage), from what was kept:
-// `{on, idle, input: {deviceId, label} | null, channel: 0 | 1 | null}`.
+// `{on, idle, input: {deviceId, label} | null, channel: 0 | 1 | null, look}`,
+// `look` one of `lookChoices()`'s values (random unless one was picked).
 // On unless turned off; anything unreadable is the default, never a throw.
 export function visualiserSettings(text) {
-  const out = { on: true, idle: VISUALISER.idleDefault, input: null, channel: null };
+  const out = { on: true, idle: VISUALISER.idleDefault, input: null, channel: null, look: "random" };
   let kept = null;
   try { kept = JSON.parse(text); } catch { return out; }
   if (!kept || typeof kept !== "object" || Array.isArray(kept)) return out;
@@ -2964,6 +2978,7 @@ export function visualiserSettings(text) {
   if (kept.input && typeof kept.input.deviceId === "string" && kept.input.deviceId)
     out.input = { deviceId: kept.input.deviceId, label: typeof kept.input.label === "string" ? kept.input.label : "" };
   if (kept.channel === 0 || kept.channel === 1) out.channel = kept.channel;
+  out.look = lookChoice(kept.look);
   return out;
 }
 
@@ -3085,6 +3100,227 @@ export function inputWords(pick) {
 // visualiser appearing does).
 export function pointerMoved(before, now) {
   return !before || before.x !== now.x || before.y !== now.y;
+}
+
+// ---------------------------------------------------------------- the visualiser's looks (#196)
+// What the visualiser shows: butterchurn's looks (visualiser-presets.js, all
+// written for the rig) and the page's own equaliser looks (visualiser-eq.js,
+// drawn from the capture's spectrum). Named here, not there, since the
+// settings line offers them before either file is loaded; the tests hold
+// the two files to these names. `mono`: black and white, or one colour.
+
+export const VISUALISER_LOOKS = [
+  { name: "Embers", kind: "milkdrop", mono: false },
+  { name: "Tide", kind: "milkdrop", mono: false },
+  { name: "Bloom", kind: "milkdrop", mono: false },
+  { name: "Tunnel", kind: "milkdrop", mono: true },
+  { name: "Shutter", kind: "milkdrop", mono: true },
+  { name: "Smoke", kind: "milkdrop", mono: true },
+  { name: "Mirror", kind: "milkdrop", mono: true },
+  { name: "Storm", kind: "milkdrop", mono: true },
+  { name: "Eclipse", kind: "milkdrop", mono: true },
+  { name: "Bars", kind: "eq", mono: false },
+  { name: "Curve", kind: "eq", mono: false },
+  { name: "Aurora", kind: "eq", mono: false },
+  { name: "Mono bars", kind: "eq", mono: true },
+];
+
+// The Look choice on the settings line: three random selections, then each
+// look by name, which holds it. `{value, text}`.
+export function lookChoices() {
+  return [
+    { value: "random", text: "random" },
+    { value: "random-mono", text: "random, monochrome" },
+    { value: "random-eq", text: "random, equalisers" },
+    ...VISUALISER_LOOKS.map((l) => ({ value: l.name, text: l.name })),
+  ];
+}
+
+// A kept choice, or "random" for anything that is not one.
+export function lookChoice(value) {
+  return lookChoices().some((c) => c.value === value) ? value : "random";
+}
+
+// The looks a choice draws from, by name: one, for a look held by name.
+export function lookPool(choice) {
+  const c = lookChoice(choice);
+  if (c === "random") return VISUALISER_LOOKS.map((l) => l.name);
+  if (c === "random-mono") return VISUALISER_LOOKS.filter((l) => l.mono).map((l) => l.name);
+  if (c === "random-eq") return VISUALISER_LOOKS.filter((l) => l.kind === "eq").map((l) => l.name);
+  return [c];
+}
+
+// A random number generator from a seed (mulberry32): the same seed, the
+// same numbers, so the order and the variations can be tested. Each call
+// gives a number in [0, 1).
+export function seededRandom(seed) {
+  let s = (Math.floor(Number(seed)) >>> 0) || 0x9e3779b9;
+  return () => {
+    s = (s + 0x6d2b79f5) >>> 0;
+    let t = s;
+    t = Math.imul(t ^ (t >>> 15), t | 1);
+    t ^= t + Math.imul(t ^ (t >>> 7), t | 61);
+    return ((t ^ (t >>> 14)) >>> 0) / 4294967296;
+  };
+}
+
+// The next look from `pool`, never `current` while there is another.
+export function nextLook(pool, current, rng) {
+  const names = Array.isArray(pool) ? pool : [];
+  const others = names.filter((n) => n !== current);
+  const from = others.length ? others : names;
+  if (!from.length) return null;
+  return from[Math.min(from.length - 1, Math.floor(rng() * from.length))];
+}
+
+// How long a look is shown, in seconds, a tenth at most: between
+// VISUALISER.lookMin and lookMax.
+export function lookSeconds(rng) {
+  const s = VISUALISER.lookMin + rng() * (VISUALISER.lookMax - VISUALISER.lookMin);
+  return Math.min(VISUALISER.lookMax, Math.round(s * 10) / 10);
+}
+
+// A look's variation each time it comes on: for each `[low, high]` of its
+// `bounds` (its colour and motion, as each look declares them), a value
+// within them. `{}` for none.
+export function lookVariation(bounds, rng) {
+  const out = {};
+  for (const [key, range] of Object.entries(bounds || {})) {
+    const [lo, hi] = range;
+    out[key] = Math.min(hi, Math.max(lo, Math.round((lo + rng() * (hi - lo)) * 1e4) / 1e4));
+  }
+  return out;
+}
+
+// ---------------------------------------------------------------- the equaliser looks (#196)
+// Bars, Curve, Aurora and Mono bars, drawn from the capture's spectrum
+// (two AnalyserNodes on it). Read on a log frequency axis with a fixed width
+// per octave: eight octaves, from 46.875 Hz (12 kHz / 256) to 12 kHz, each
+// with a colour of its own, the same in every look, so where a colour is and
+// how bright it is says what range is sounding. No number or label is drawn.
+
+export const VISUALISER_EQ = {
+  low: 12000 / 256,  // 46.875 Hz: below the low E (82 Hz) and drop tunings
+  high: 12000,
+  octaves: 8,
+  // Below `split` the long FFT (8192 points: 5.9 Hz a bin at 48 kHz, 171 ms
+  // a window), for the low bands' resolution; from it up the short one (4096
+  // points: 85 ms), so a pick attack shows in a frame or two.
+  split: 750,
+  longFft: 8192,
+  shortFft: 4096,
+  span: 54,      // dB from the top of the display to its foot
+  floor: -50,    // the top never falls below this (dB): silence stays dark
+  topFall: 3,    // dB a second the top falls back after the loudest band
+  attack: 0.015, // seconds: a level rises at once
+  release: 0.2,  // and falls back over about this
+  hold: 0.8,     // seconds a peak cap waits
+  capFall: 0.4,  // then falls, display heights a second
+  glowRise: 1.2, // Aurora's lingering glow: seconds to build on a sustained level
+  glowFall: 2.5, // and to fade
+};
+
+// Each octave's colour, from the bottom: what it is called on the help page,
+// and what sounds there on a guitar. The same in Bars, Curve and Aurora.
+export const EQ_COLOURS = [
+  { name: "deep red", rgb: [178, 0, 46], range: "the lowest notes: the low E and drop tunings, boom and thump" },
+  { name: "red", rgb: [255, 48, 24], range: "the low strings' fundamentals" },
+  { name: "orange", rgb: [255, 134, 0], range: "low-mids, where mud lives: body and warmth" },
+  { name: "yellow", rgb: [246, 220, 0], range: "boxiness, and the high strings' fundamentals" },
+  { name: "green", rgb: [56, 214, 74], range: "the mids: honk and nasal tones" },
+  { name: "cyan", rgb: [0, 206, 224], range: "upper mids: bite, where a guitar cuts through a band" },
+  { name: "blue", rgb: [46, 104, 255], range: "presence: pick attack and edge, where fizz starts" },
+  { name: "violet", rgb: [168, 72, 255], range: "fizz, hiss and air" },
+];
+
+// Where `freq` (Hz) sits across the display, 0 at its left to 1 at its
+// right, each octave the same width; held to the ends.
+export function eqX(freq) {
+  const E = VISUALISER_EQ;
+  if (!(freq > 0)) return 0;
+  return Math.min(1, Math.max(0, Math.log2(freq / E.low) / E.octaves));
+}
+
+// Which octave `freq` is in, 0 (deep red) to 7 (violet); held to the ends.
+export function eqOctave(freq) {
+  return Math.min(VISUALISER_EQ.octaves - 1, Math.floor(eqX(freq) * VISUALISER_EQ.octaves));
+}
+
+// The display's bands for a context at `sampleRate`, `perOctave` to an
+// octave (6 for Bars: two to a third-octave), from the bottom: each
+// `{lo, hi, centre, octave, x0, x1, fft, bins}`, `fft` "long" or "short",
+// and `bins` its FFT's bins as `[index, weight]`: the share of that bin's
+// width inside the band, so the bands share out every bin's power once.
+export function eqBands(sampleRate, perOctave) {
+  const E = VISUALISER_EQ;
+  const n = E.octaves * perOctave;
+  const bands = [];
+  for (let i = 0; i < n; i += 1) {
+    const lo = E.low * 2 ** (i / perOctave), hi = E.low * 2 ** ((i + 1) / perOctave);
+    const fft = hi <= E.split * (1 + 1e-9) ? "long" : "short";
+    const df = sampleRate / (fft === "long" ? E.longFft : E.shortFft);
+    const bins = [];
+    for (let k = Math.floor(lo / df + 0.5); k <= Math.floor(hi / df + 0.5); k += 1) {
+      const overlap = Math.min(hi, (k + 0.5) * df) - Math.max(lo, (k - 0.5) * df);
+      if (overlap > 0) bins.push([k, overlap / df]);
+    }
+    bands.push({ lo, hi, centre: Math.sqrt(lo * hi), octave: Math.floor(i / perOctave), x0: i / n, x1: (i + 1) / n, fft, bins });
+  }
+  return bands;
+}
+
+// A band's level in dB from its FFT's (AnalyserNode.getFloatFrequencyData,
+// dB a bin): the power of its bins, weighted, summed. -200 for none.
+export function eqBandDb(db, band) {
+  let power = 0;
+  for (const [k, w] of band.bins) {
+    const v = db[k];
+    if (Number.isFinite(v)) power += w * 10 ** (v / 10);
+  }
+  return power > 0 ? Math.max(-200, 10 * Math.log10(power)) : -200;
+}
+
+// The top of the display (dB): up at once to the loudest band, back down
+// slowly, never under VISUALISER_EQ.floor, so a quiet input still reads and
+// silence stays dark.
+export function eqTop(top, loudest, dt) {
+  const E = VISUALISER_EQ;
+  const fallen = (Number.isFinite(top) ? top : E.floor) - E.topFall * Math.max(0, dt);
+  return Math.max(E.floor, Number.isFinite(loudest) ? Math.max(loudest, fallen) : fallen);
+}
+
+// A band's height on the display, 0 to 1, from its dB and the top.
+export function eqLevel(db, top) {
+  const span = VISUALISER_EQ.span;
+  return Math.min(1, Math.max(0, (db - (top - span)) / span));
+}
+
+// A level after `dt` seconds moving to `target`: quickly up, slower down.
+export function eqSmooth(prev, target, dt, attack = VISUALISER_EQ.attack, release = VISUALISER_EQ.release) {
+  const p = Number.isFinite(prev) ? prev : 0;
+  const tau = target > p ? attack : release;
+  return target + (p - target) * Math.exp(-Math.max(0, dt) / tau);
+}
+
+// A peak cap `{value, held}` after `dt` seconds with the bar at `level`: up
+// with it at once, held a while, then falling back slowly, never under it.
+export function eqPeak(peak, level, dt) {
+  const E = VISUALISER_EQ;
+  const p = peak && Number.isFinite(peak.value) ? peak : { value: 0, held: 0 };
+  if (level >= p.value) return { value: level, held: 0 };
+  const held = p.held + Math.max(0, dt);
+  const value = held > E.hold ? Math.max(level, p.value - E.capFall * Math.max(0, dt)) : p.value;
+  return { value, held };
+}
+
+// Aurora's lingering glow after `dt` seconds with the band at `level`: it
+// builds only on a level that stays, and fades slowly, so a short note
+// barely shows in it and a build-up (mud) does.
+export function eqGlow(prev, level, dt) {
+  const E = VISUALISER_EQ;
+  const p = Number.isFinite(prev) ? prev : 0;
+  const tau = level > p ? E.glowRise : E.glowFall;
+  return level + (p - level) * Math.exp(-Math.max(0, dt) / tau);
 }
 
 // ---------------------------------------------------------------- where a phone opens it (#181)
