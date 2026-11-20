@@ -12,6 +12,7 @@ fake would be the mock agreeing with itself.
 from __future__ import annotations
 
 import asyncio
+import dataclasses
 import os
 import sys
 import threading
@@ -2384,7 +2385,7 @@ from sushi_rig.agent import Switching, place_switch_add, state_blockers, switche
 from sushi_rig.rig import RigError  # noqa: E402
 from sushi_rig.verify import diff_state  # noqa: E402
 
-from rig_fixtures import FROZEN as _FROZEN  # noqa: E402
+from rig_fixtures import FROZEN as _FROZEN, whole_plugins  # noqa: E402
 
 _COMPILED = {path.stem: _rigfile.emit_rig(_rigfile.load_rig(path))
              for path in sorted(_FROZEN.glob("*.yaml"))}
@@ -2584,7 +2585,7 @@ class SwitchWorld:
     def switching(self):
         return Switching(compile=self.compile, read_config=lambda path: _copy.deepcopy(self.configs[path]),
                          write_config=self.write_config, read_state=lambda: dict(self.state),
-                         write_state=self.write_state)
+                         write_state=self.write_state, plugins=whole_plugins)
 
     def described(self):
         return {"verdict": "running", "running": True, "config_name": self.state["config_name"],
@@ -2802,6 +2803,34 @@ def test_a_rig_run_with_its_panel_or_an_amp_override_restarts():
     assert runner.calls[1] == ["up", "electric-octave-up", "--rig", "--machine", "/m/box.yaml"]
     assert [r.code for r in state_blockers(dict(HEADLESS, amp_model_requested="X.nam"))] == ["amp_override"]
     assert state_blockers(dict(HEADLESS, amp_model_requested="X.nam", amp_requested=False)) == []
+
+
+def test_a_switch_to_a_rig_whose_plugins_are_not_all_in_plugins_is_refused_with_the_rig_left_playing(
+        tmp_path, monkeypatch):
+    """#188: the next rig loads a plugin plugins/ lacks. A live switch would
+    fail at it and a restart would take the rig down for an `up` that
+    refuses it, so the switch is refused first, in `up`'s words: the URI,
+    where it is, and the command that fixes it. The picker's Switch to and
+    the stage's dropdown (#184) both send this route; a Program Change
+    takes the same `_switch`."""
+    from rig_fixtures import declaring, fake_lv2_system, stand_in_plugins
+
+    detune = "http://guitarix.sourceforge.net/plugins/gx_detune_#_detune_"
+    declaring(fake_lv2_system(tmp_path, monkeypatch), "gx_detune", detune)
+    partial = stand_in_plugins(tmp_path / "plugins", leave_out=(detune,))
+    agent, fake, world, runner = switch_agent()
+    agent.switching = dataclasses.replace(agent.switching, plugins=lambda root: partial)
+    status, body = call(agent, "POST", "/rig/switch", json={"config_name": "electric-octave-up"})
+    assert status == 409 and body["code"] == "plugins_missing", body
+    reason = body["reason"]
+    assert reason.startswith(f"Not switched to electric-octave-up: 1 plugin(s) it loads are not in {partial}")
+    assert f"{detune}: installed in {tmp_path / 'lv2-system' / 'usr' / 'lib' / 'x86_64-linux-gnu' / 'lv2'}" in reason
+    assert "Nothing was changed: electric-delay plays on." in reason
+    assert reason.endswith("then switch to it again: sushi-rig plugins add")
+    assert runner.calls == [] and fake.calls == [] and world.written_states == []
+    assert call(agent, "GET", "/live/log")[1]["log"] == []
+    error = call(agent, "GET", "/health")[1]["agent"]["last_error"]
+    assert error["kind"] == "lifecycle" and detune in error["message"]
 
 
 def test_a_switch_to_a_rig_that_does_not_compile_is_refused_with_the_rig_left_playing():

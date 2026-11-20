@@ -508,6 +508,38 @@ def test_the_dropdown_is_off_while_locked_and_switches_rigs_once_unlocked(browse
     page.close()
 
 
+def test_a_switch_from_the_dropdown_refused_for_plugins_missing_says_which_and_the_fix(
+        browser, served, tmp_path, monkeypatch):
+    """#188: the agent refuses a switch to a rig whose plugins are not all
+    in plugins/ (409 `plugins_missing`, `rig.plugins_refusal`'s words, one
+    line as an HTTP reason must be). Chosen in the stage's dropdown (#184),
+    the page says it and the rig, and the dropdown, stay where they were."""
+    from rig_fixtures import declaring, fake_lv2_system
+    from sushi_rig.rig import plugins_refusal
+
+    detune = "http://guitarix.sourceforge.net/plugins/gx_detune_#_detune_"
+    declaring(fake_lv2_system(tmp_path, monkeypatch), "gx_detune", detune)
+    (tmp_path / "plugins").mkdir()
+    refusal, _ = plugins_refusal({"tracks": [{"name": "board", "plugins": [{"name": "octave", "uri": detune}]}]},
+                                 tmp_path, "electric-delay", amp=False, switch_from="electric_board")
+    served.lifecycle.refuse_switch = (" ".join(refusal.split()), "plugins_missing")
+    page = stage_at(browser, served, 390)
+    p = page.page
+    unlock(p)
+    rig = p.get_by_role("combobox", name="Rig")
+    rig.select_option("electric-delay")
+    alert = p.locator(".problem.refused")
+    expect(alert).to_contain_text("Not switched to electric-delay", timeout=8000)
+    expect(alert).to_be_visible()
+    expect(alert).to_contain_text(f"{detune}: installed in ")
+    expect(alert).to_contain_text("Nothing was changed: electric_board plays on.")
+    expect(alert).to_contain_text("then switch to it again: sushi-rig plugins add")
+    expect(rig).to_have_value("electric_board")
+    expect(p.locator(".stage-head .rig-name")).to_have_text("electric_board")
+    assert served.lifecycle.calls == [["switch", "electric-delay"]]
+    page.close()
+
+
 def test_while_a_switch_runs_the_dropdown_is_off_and_says_what_is_running(browser, served):
     served.lifecycle.delay = 1.5
     page = stage_at(browser, served, 390)

@@ -183,6 +183,24 @@ def _tokens(text: str) -> list[tuple[str, Any, int]]:
     return out
 
 
+_SCHEME = re.compile(r"^[A-Za-z][A-Za-z0-9+.-]*:")
+
+
+def _resolved(base: str, raw: str) -> str:
+    """IRI `raw` against `base`, as serd resolves it. An absolute one is
+    itself: `urljoin` drops an empty fragment, and under an `@base` of the
+    same scheme it made `<http://lv2plug.in/ns/lv2core#>` the prefix
+    `...lv2core`, so `lv2:Plugin` read as `...lv2corePlugin` and a bundle's
+    whole manifest declared nothing (review of PR #198). A relative one
+    ending in `#` keeps it for the same reason."""
+    if _SCHEME.match(raw):
+        return raw
+    joined = urljoin(base, raw)
+    if raw.endswith("#") and not joined.endswith("#"):
+        joined += "#"
+    return joined
+
+
 class _Parser:
     """Recursive descent over the token list, appending triples as it goes."""
 
@@ -218,7 +236,7 @@ class _Parser:
 
     # -- terms
     def iri(self, raw: str) -> IRI:
-        return IRI(urljoin(self.base, raw))
+        return IRI(_resolved(self.base, raw))
 
     def pname(self, prefix: str, local: str, line: int) -> IRI:
         if prefix not in self.prefixes:
@@ -439,9 +457,22 @@ def _read_turtle(path: Path, problems: list[str], blank_prefix: str = "") -> lis
     # `path` must be absolute (`read_bundle` resolves its bundle): `as_uri`
     # raises ValueError for a relative one, which escaped as a 500.
     try:
-        return parse_turtle(path.read_text(encoding="utf-8"), path.as_uri(), blank_prefix)
-    except (OSError, UnicodeDecodeError) as exc:
+        data = path.read_bytes()
+    except OSError as exc:
         problems.append(f"{path.parent.name}/{path.name} cannot be read: {exc}")
+        return []
+    # A byte-order mark is dropped, as serd drops it; a byte that is not
+    # UTF-8 (a Latin-1 "é" in a literal) is replaced rather than losing the
+    # whole file, since serd says so and lilv still loads the bundle (both
+    # found by review of PR #198, against lilv 0.24.22).
+    try:
+        text = data.decode("utf-8-sig")
+    except UnicodeDecodeError as exc:
+        text = data.decode("utf-8-sig", errors="replace")
+        problems.append(f"{path.parent.name}/{path.name} is not UTF-8 throughout ({exc.reason} at byte "
+                        f"{exc.start}): read with what could not be decoded replaced")
+    try:
+        return parse_turtle(text, path.as_uri(), blank_prefix)
     except TurtleError as exc:
         problems.append(f"{path.parent.name}/{path.name} is not Turtle this reader can read: {exc}")
     return []
@@ -523,6 +554,58 @@ def scan_plugins(plugins_dir: Path) -> tuple[dict[str, dict[str, Any]], list[str
                 continue
             found[uri] = meta
     return found, problems
+
+
+LV2_BINARY = LV2 + "binary"
+
+
+def manifest_plugins(folder: Path) -> tuple[dict[str, tuple[Path, Path | None]], list[Path]]:
+    """`({uri: (bundle, binary)}, unread)` for every plugin a bundle directly
+    under `folder` declares in its `manifest.ttl`, without lilv: how lilv
+    finds which URIs an LV2 directory provides. `binary` is the file its
+    `lv2:binary` names there (the LV2 spec puts it in the manifest), None
+    where the manifest names none. `unread` is each bundle whose manifest
+    could not be read or parsed, which may provide what this does not see.
+    Only the manifests are read, not the plugins' data, so it is quick
+    enough to run before every start (`plugins.preflight`). A URI two
+    bundles declare is the first's, in name order. A folder that is not
+    there declares nothing.
+
+    Agreed with lilv 0.24.22 on all 693 URIs of a 274-bundle /usr/lib/lv2
+    (2026-11-19), in 0.2 s against lilv's 4.5 s."""
+    found: dict[str, tuple[Path, Path | None]] = {}
+    unread: list[Path] = []
+    if not folder.is_dir():
+        return found, unread
+    for bundle in sorted(folder.iterdir()):
+        manifest = bundle / "manifest.ttl"
+        if not bundle.is_dir() or not manifest.is_file():
+            continue
+        problems: list[str] = []
+        # The bundle resolved, not the manifest: a manifest.ttl that is a
+        # link elsewhere still names its binary relative to the bundle, as
+        # lilv reads it (review of PR #198: resolving the manifest put
+        # `<foo.so>` in the link target's folder, a false refusal).
+        triples = _read_turtle(bundle.resolve() / "manifest.ttl", problems, "f0.")
+        if problems and not triples:
+            unread.append(bundle)
+            continue
+        binaries = {str(s): o for s, p, o in triples if p == LV2_BINARY and isinstance(o, IRI)}
+        for uri in plugins_described(triples):
+            binary = binaries.get(uri)
+            path = (Path(unquote(urlparse(binary).path)) if binary and urlparse(binary).scheme == "file"
+                    else None)
+            found.setdefault(uri, (bundle, path))
+    return found, unread
+
+
+def declared_plugins(folder: Path, unread: list[Path] | None = None) -> dict[str, Path]:
+    """`{uri: bundle}` of `manifest_plugins`; each bundle it could not read
+    is appended to `unread` when given."""
+    found, missed = manifest_plugins(folder)
+    if unread is not None:
+        unread.extend(missed)
+    return {uri: bundle for uri, (bundle, _) in found.items()}
 
 
 # --------------------------------------------------------------------------- #

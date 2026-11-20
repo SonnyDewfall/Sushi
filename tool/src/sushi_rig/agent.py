@@ -519,7 +519,7 @@ from . import rigfile  # the live switch (#93)
 from .rigfile import (  # the limiter, the top and the centred pan (#137)
     limiter_problem, master_gain, master_gain_problem, master_pan_problem,
 )
-from .rig import RigError, compile_named_rig
+from .rig import RigError, compile_named_rig, plugins_folder, plugins_refusal
 from .state import read_state, write_state
 from .verify import diff_state
 from .recorder_process import (  # recording from the web UI (S7)
@@ -4397,7 +4397,8 @@ class Agent:
         `config_name` of config/rigs, live where `rigfile.diff` says it can
         be and by restart where not (`_switch`). 200 with `how` ("live" or
         "restart") and, for a restart, `why`; 409 for a refusal that left the
-        running rig as it was (`code`: `busy`, `no_rig`, `rig_problem`), or a
+        running rig as it was (`code`: `busy`, `no_rig`, `rig_problem`,
+        `plugins_missing`), or a
         restart that failed (with `reason`, and the previous rig brought back
         if it could be); 504 if the agent gave up waiting on a command."""
         try:
@@ -4478,6 +4479,20 @@ class Agent:
             self._remember(["switch", name], reason, kind="lifecycle")
             raise SwitchRefused(reason, "rig_problem") from exc
         previous = switching_from(state, described)
+        # Every plugin the next rig loads must be in plugins/, live or by
+        # restart: a live switch would fail at the first it lacks, and a
+        # restart would take the rig down for an `up` that refuses it. Asked
+        # here, before anything is touched, in the words `up` uses. The amp
+        # is the restart's `up` to warn of, as it is for any start.
+        root = self._midi_root()
+        refusal, _ = await asyncio.to_thread(
+            plugins_refusal, upcoming, root, name, amp=False, switch_from=previous or "the rig",
+            folder=world.plugins(root))
+        if refusal:
+            # One line: an HTTP reason cannot carry a newline.
+            reason = " ".join(refusal.split())
+            self._remember(["switch", name], reason, kind="lifecycle")
+            raise SwitchRefused(reason, "plugins_missing")
         try:
             running = await asyncio.to_thread(world.read_config, described.get("config"))
             # As the live attempt will see the amp: none at all for a run
@@ -6184,7 +6199,8 @@ class Agent:
                 except asyncio.TimeoutError:
                     raise web.HTTPGatewayTimeout(reason=f"{point} was not read within {SAVE_TIMEOUT:g}s")
                 try:
-                    await self._rigfile_thread(request, path, lambda: self._revert_compile(data, run))
+                    await self._rigfile_thread(
+                        request, path, lambda: self._revert_compile(data, run, name if running else None))
                     discarded: list[dict[str, Any]] = []
                     if running:
                         async with self._live_lock:
@@ -6235,8 +6251,11 @@ class Agent:
         return data, {"id": point, "kind": "save", "at": meta.get("at"),
                       "what": f"as the save of {meta.get('at') or point} wrote it"}
 
-    def _revert_compile(self, data: bytes, run: dict[str, Any]) -> dict[str, Any]:
-        """The point compiled as `up --rig` would compile it, or the refusal."""
+    def _revert_compile(self, data: bytes, run: dict[str, Any], playing: str | None = None) -> dict[str, Any]:
+        """The point compiled as `up --rig` would compile it, or the refusal.
+        `playing`, the running rig's name when the point is its file, is
+        checked for plugins too (`_rigfile_plugins`): the switch that follows
+        would refuse it, after the file was written."""
         import yaml
 
         try:
@@ -6246,7 +6265,26 @@ class Agent:
                                  "rig_problem") from exc
         if not isinstance(raw, dict):
             raise RigFileRefused("nothing was written: it is not a rig file", "rig_problem")
-        return self._rigfile_compile(raw, run)
+        compiled = self._rigfile_compile(raw, run)
+        if playing is not None:
+            self._rigfile_plugins(compiled, playing, run, "reverted", "revert it again")
+        return compiled
+
+    def _rigfile_plugins(self, compiled: dict[str, Any], name: str, run: dict[str, Any], done: str,
+                         again: str) -> None:
+        """`RigFileRefused` (`plugins_missing`) when the running rig `name`,
+        about to be switched into `compiled` from its edited file (a revert,
+        a preset load), loads a plugin plugins/ lacks: refused before the
+        file is written, in the words a switch is refused in, since the
+        switch after the write would refuse it and leave the file changed
+        and the rig not (review of PR #198). Off the loop."""
+        root = self._midi_root()
+        refusal, _ = plugins_refusal(
+            compiled, root, name, amp=False, folder=self.switching.plugins(root),
+            words=(f"nothing was written: {name} was not {done}",
+                   f"Nothing was changed: {name} plays on, and its file is as it was.", again))
+        if refusal:
+            raise RigFileRefused(" ".join(refusal.split()), "plugins_missing")
 
     async def _revert_switch(self, request, name: str, said: dict[str, Any], *,
                              mark: Callable[[dict[str, Any]], None] | None = None,
@@ -6524,7 +6562,8 @@ class Agent:
                     "midi", {"mappings": orphaned})
             edited["midi"] = presets.drop_orphaned(midi, orphaned)
             dropped = orphaned
-        self._rigfile_compile(edited, run)
+        compiled = self._rigfile_compile(edited, run)
+        self._rigfile_plugins(compiled, path.stem, run, f"given preset {name} on {channel}", "load it again")
         rig_amp = running_amp(run["state"], raw)
         width = None
         if preset.width != old.get("width"):
@@ -7201,8 +7240,8 @@ def _absolute_machine(machine: Any) -> str | None:
 
 class SwitchRefused(AgentError):
     """A switch not made, with the running rig left as it was: answered 409
-    with `code` (`no_rig`, `rig_problem`) by the route, and said in /health
-    by the Program Change path."""
+    with `code` (`no_rig`, `rig_problem`, `plugins_missing`) by the route,
+    and said in /health by the Program Change path."""
 
     def __init__(self, reason: str, code: str):
         super().__init__(reason)
@@ -7347,7 +7386,9 @@ class Switching:
     """What a switch reaches outside the agent and Sushi, so its tests can
     stand each in: compiling the next rig (`RigError` with the reason),
     reading the running rig's compiled config by the path the state file
-    gives, writing the next one's where `up` would, and the state file. The
+    gives, writing the next one's where `up` would, the state file, and
+    where the rig's plugins are, which the next rig's must all be in
+    (`rig.plugins_refusal`): the folder `up` gives Sushi, under the root. The
     one seam for the state file and for compiling a rig to switch to, for the
     route and the Program Change alike: `midi_listener.World` no longer has
     its own (found by review: a test's `World(read_state=...)` had stopped
@@ -7359,6 +7400,7 @@ class Switching:
     write_config: Callable[[str, dict[str, Any]], Any] = _write_compiled
     read_state: Callable[[], "dict[str, Any] | None"] = read_state
     write_state: Callable[[dict[str, Any]], None] = write_state
+    plugins: Callable[[Path], Path] = plugins_folder
 
 # =========================================================================== #
 # Saving the running rig (S4): the decisions, pure

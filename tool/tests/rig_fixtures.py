@@ -141,8 +141,9 @@ def frozen_files() -> list[Path]:
 def frozen_checkout(folder: Path) -> Path:
     """The frozen set laid out as a checkout at `folder`, for code that is
     given a root and a name (`prepare_rig`, `compile_named_rig`,
-    `resolve_rig_yaml`, the agent): config/rigs/, config/*.json, config/src/
-    and machines/. With them the real port table, and an empty stand-in for
+    `resolve_rig_yaml`, the agent): config/rigs/, config/*.json, config/src/,
+    machines/ and a stand-in plugins/ holding every plugin
+    (`stand_in_plugins`). With them the real port table, and an empty stand-in for
     each amp model a frozen rig names, so that a model is found as `up` finds
     one without this depending on what amp/models/ holds."""
     import yaml
@@ -165,6 +166,46 @@ def frozen_checkout(folder: Path) -> Path:
         shutil.copy(path, src / path.name)
     shutil.copy(FROZEN_MACHINE, machines / FROZEN_MACHINE.name)
     shutil.copy(checkout_root() / PORTS_FILE, folder / PORTS_FILE)
+    # plugins/, whole, as the rig machine's is: a start or a switch checks
+    # the rig's plugins are all there first (`rig.plugins_refusal`).
+    stand_in_plugins(folder / "plugins")
+    return folder
+
+
+def _uris_in(data) -> set[str]:
+    """Every string under a `uri` key, anywhere in `data`."""
+    if isinstance(data, dict):
+        return {v for k, v in data.items() if k == "uri" and isinstance(v, str)} | {
+            u for v in data.values() for u in _uris_in(v)}
+    if isinstance(data, list):
+        return {u for v in data for u in _uris_in(v)}
+    return set()
+
+
+def stand_in_plugins(folder: Path, leave_out: tuple[str, ...] = ()) -> Path:
+    """A plugins/ at `folder` whose one bundle declares every plugin a rig
+    here can load, but `leave_out`: each URI in plugin-manifest.txt and each
+    a frozen rig or v1 config names. A manifest and nothing else, which is
+    what the check before a start or a switch reads (`plugins.preflight`,
+    `rig.plugins_refusal`), not a bundle Sushi could load: for a test that
+    starts or switches a rig of fakes, which that check must let through as
+    it would on the rig machine, whose plugins/ is whole."""
+    import json
+
+    import yaml
+
+    from sushi_rig.plugins import read_manifest
+
+    uris = set(read_manifest((checkout_root() / "plugin-manifest.txt").read_text()))
+    for path in sorted(FROZEN.glob("*.yaml")):
+        uris |= _uris_in(yaml.safe_load(path.read_text()))
+    for path in sorted(FROZEN_V1.glob("*.json")):
+        uris |= _uris_in(json.loads(path.read_text()))
+    bundle = folder / "stand-in.lv2"
+    bundle.mkdir(parents=True, exist_ok=True)
+    (bundle / "manifest.ttl").write_text(
+        "@prefix lv2: <http://lv2plug.in/ns/lv2core#> .\n"
+        + "".join(f"<{uri}> a lv2:Plugin .\n" for uri in sorted(uris - set(leave_out))))
     return folder
 
 
@@ -407,3 +448,48 @@ def said(stray: list[tuple[str, str, str]]) -> str:
             "They are the owner's and change with every Save channel as…: read frozen presets "
             f"(tests/fixtures/channels/), or take every committed one and mark the test `{PRESETS_MARKER}`.")
     return " ".join(out) + "\n" + "\n".join(lines)
+
+
+_whole: "tempfile.TemporaryDirectory | None" = None
+
+
+def whole_plugins(root: Path | None = None) -> Path:
+    """A `stand_in_plugins` folder, made once for the test process, whatever
+    `root`: where a switch's test world says the rig's plugins are
+    (`Switching(plugins=whole_plugins)`), as it says what the state file
+    holds, so the check before a switch reads a whole plugins/ for real."""
+    import tempfile
+
+    global _whole
+    if _whole is None:
+        _whole = tempfile.TemporaryDirectory(prefix="whole-plugins-")
+        stand_in_plugins(Path(_whole.name) / "plugins")
+    return Path(_whole.name) / "plugins"
+
+
+def declaring(folder: Path, name: str, *uris: str) -> Path:
+    """A bundle `name`.lv2 in `folder` whose manifest declares `uris`, and
+    nothing else: what the check before a start reads."""
+    bundle = folder / f"{name}.lv2"
+    bundle.mkdir(parents=True)
+    (bundle / "manifest.ttl").write_text(
+        "@prefix lv2: <http://lv2plug.in/ns/lv2core#> .\n" + "".join(f"<{u}> a lv2:Plugin .\n" for u in uris))
+    return bundle
+
+
+def fake_lv2_system(tmp_path: Path, monkeypatch) -> Path:
+    """Empty stand-ins for /usr/lib (with its multiarch folder,
+    x86_64-linux-gnu), /usr/local/lib and the home folder, for the account
+    of where a plugin missing from plugins/ is (`plugins.advise`), so a test
+    of it does not depend on what this machine has installed. Returns the
+    multiarch folder, /usr/lib/x86_64-linux-gnu/lv2's stand-in."""
+    from sushi_rig import plugins
+
+    system = tmp_path / "lv2-system"
+    for folder in ("usr/lib/lv2", "usr/lib/x86_64-linux-gnu/lv2", "usr/local/lib", "home"):
+        (system / folder).mkdir(parents=True)
+    monkeypatch.setattr(plugins, "USR_LIB", system / "usr" / "lib")
+    monkeypatch.setattr(plugins, "USR_LOCAL_LIB", system / "usr" / "local" / "lib")
+    monkeypatch.setattr(plugins, "_multiarch", lambda: "x86_64-linux-gnu")
+    monkeypatch.setenv("HOME", str(system / "home"))
+    return system / "usr" / "lib" / "x86_64-linux-gnu" / "lv2"

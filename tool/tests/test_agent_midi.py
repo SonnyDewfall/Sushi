@@ -29,6 +29,7 @@ from sushi_rig.agent import Agent, AgentError, Switching, switch_steps  # noqa: 
 from sushi_rig.rig import RigError  # noqa: E402
 from sushi_rig.midi_listener import Off, Plan, PortError, World, parse_bindings  # noqa: E402
 from test_agent import UP, FakeLive, FakeRunner  # noqa: E402
+from rig_fixtures import whole_plugins  # noqa: E402
 
 PAD_BYPASS = {"control": "pad1", "note": 36, "channel": "all", "bypass": "main/drive"}
 PAD_MUTE = {"control": "pad2", "note": 38, "channel": "all", "mute": "main"}
@@ -111,7 +112,8 @@ class FakeWorld:
         Program Change path, and test_agent.py's about switching live."""
         return Switching(compile=self.compile, read_config=lambda path: {"tracks": []},
                          write_config=lambda name, config: f"/run/rigs/{name}.json",
-                         read_state=lambda: dict(self.state), write_state=self.state.update)
+                         read_state=lambda: dict(self.state), write_state=self.state.update,
+                         plugins=whole_plugins)
 
 
 class Rig:

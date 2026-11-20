@@ -31,6 +31,8 @@ from sushi_rig import midi_listener, rigfile, saves  # noqa: E402
 from sushi_rig.agent import Agent, AgentError, Switching, revert_refusal, revert_request  # noqa: E402
 from sushi_rig.rig import compile_named_rig  # noqa: E402
 
+from rig_fixtures import whole_plugins  # noqa: E402
+
 from test_agent import FakeRunner, RigLive  # noqa: E402
 from ui_fake import MACHINE_FILE, RIG_FILE  # noqa: E402
 
@@ -90,7 +92,7 @@ class World:
     def switching(self):
         return Switching(read_state=lambda: copy.deepcopy(self.state), write_state=self.write_state,
                          read_config=lambda path: copy.deepcopy(self.configs[path]),
-                         write_config=self.write_config)
+                         write_config=self.write_config, plugins=whole_plugins)
 
 
 @pytest.fixture
@@ -444,3 +446,30 @@ def test_a_switch_that_fails_after_the_write_says_the_file_was_written(root, mon
     assert "RuntimeError: the switch fell over (test)" in body["reason"] and "was reverted" in body["reason"]
     _, health = call(agent, "GET", "/health")
     assert "the switch fell over" in health["agent"]["last_error"]["message"]
+
+
+def test_a_revert_of_the_running_rig_to_a_point_whose_plugins_are_not_all_there_writes_nothing(
+        root, tmp_path, monkeypatch):
+    """Review of PR #198: the revert wrote the file, then the switch into it
+    refused it for a plugin plugins/ lacked, and answered 409 `not_switched`
+    with `written: true`: the file changed and the rig not. Now refused
+    before the write, in the switch's words, with the file as it was."""
+    import dataclasses
+
+    from rig_fixtures import declaring, fake_lv2_system, stand_in_plugins
+    from ui_fake import GXTS9
+
+    declaring(fake_lv2_system(tmp_path, monkeypatch), "gxts9", GXTS9)
+    agent, world, fake, runner = make_agent(root)
+    partial = stand_in_plugins(tmp_path / "partial", leave_out=(GXTS9,))
+    agent.switching = dataclasses.replace(agent.switching, plugins=lambda root: partial)
+    point = saves.keep(root, "electric_board", RIG_FILE.replace("level: -6.0", "level: -9.0").encode(), {})
+    before = rig_bytes(root)
+    status, body = call(agent, "POST", "/rigs/electric_board/revert", json={"save": point["id"]})
+    assert status == 409 and body["code"] == "plugins_missing", body
+    assert body["reason"].startswith("nothing was written: electric_board was not reverted: 1 plugin(s)")
+    assert GXTS9 in body["reason"] and "sushi-rig plugins add" in body["reason"]
+    assert "Nothing was changed: electric_board plays on, and its file is as it was." in body["reason"]
+    assert "written" not in body
+    assert rig_bytes(root) == before, "the file is untouched"
+    assert fake.writes() == [] and runner.calls == []
