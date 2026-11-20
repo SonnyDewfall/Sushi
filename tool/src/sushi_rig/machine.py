@@ -28,8 +28,26 @@ SCHEMA_VERSION = 1
 
 _KNOWN_KEYS = ("schema_version", "interface", "roles", "controllers")
 _ROLE_KEYS = ("ports", "mono_to_stereo")
-_CONTROLLER_KEYS = ("port", "channel", "controls")
+_CONTROLLER_KEYS = ("type", "port", "channel", "controls")
 MIDI_MAX = 127
+
+# The device model (#191). A controller with a `type` describes each of its
+# controls: its kind, how a switch behaves, a pedal's travel, and a job the
+# device itself does on every rig. One without (the MPD218's entry) is read as
+# it always was: a control is what it sends, and a rig may bind it to anything
+# that can take a note or a CC.
+CONTROLLER_TYPES = ("pedal",)
+KINDS = ("switch", "expression")
+# How a footswitch sends (#191), which decides what a press is. Momentary: 64
+# or more when pressed and less when let go, a press being the rise. Single:
+# one message a press, whatever its value. Latching: the value alternates on
+# each press (FBV Control's Toggle). A momentary or single press toggles an
+# effect or a channel; a latching switch is followed, on at 64 and above.
+BEHAVIOURS = ("momentary", "single", "latching")
+# A control's fixed job, the device's own on every rig, whatever the rig's map
+# says: step through config/rigs/ by file name, as Program Change counts.
+JOBS = ("previous-rig", "next-rig")
+_MODEL_KEYS = ("kind", "behaviour", "range", "job")
 
 
 class MachineError(Exception):
@@ -262,13 +280,23 @@ class MachineSpec:
             # number would, once a rig bound both, fire two mappings from one
             # pedal with nothing to say so; a cc and a note of the same number
             # are different messages and are not a clash.
+            typed = "type" in spec
+            if typed and spec["type"] not in CONTROLLER_TYPES:
+                problems.append(f"{where}: type must be one of {', '.join(CONTROLLER_TYPES)} (got {spec['type']!r})")
             claimed: dict[tuple[str, int], str] = {}
+            jobs: dict[str, str] = {}
             for control, sends in controls.items():
                 at = f"{where}: control {control!r}"
-                if not isinstance(sends, dict) or len(sends) != 1 or next(iter(sends)) not in ("cc", "note"):
+                said = [k for k in sends if k in ("cc", "note")] if isinstance(sends, dict) else []
+                if not isinstance(sends, dict) or len(said) != 1:
                     problems.append(f"{at}: must be exactly one of cc: <0-127> or note: <0-127>")
                     continue
-                kind, number = next(iter(sends.items()))
+                unknown = [k for k in sends if k not in ("cc", "note", *_MODEL_KEYS)]
+                if unknown:
+                    problems.append(f"{at}: unknown key {unknown[0]!r} (expected cc or note, and "
+                                    f"{', '.join(_MODEL_KEYS)} on a controller with a type)")
+                    continue
+                kind, number = said[0], sends[said[0]]
                 if type(number) is not int or not 0 <= number <= MIDI_MAX:
                     problems.append(f"{at}: {kind} must be 0 to {MIDI_MAX} (got {number!r})")
                     continue
@@ -279,6 +307,23 @@ class MachineSpec:
                     )
                 else:
                     claimed[(kind, number)] = control
+                model = [k for k in sends if k in _MODEL_KEYS]
+                if not typed:
+                    if model:
+                        problems.append(f"{at}: {model[0]} describes a control of a controller with a type; "
+                                        f"give {name!r} one (type: pedal) or leave it out")
+                    continue
+                problems += _control_model_problems(at, kind, sends)
+                job = sends.get("job")
+                if job in JOBS:
+                    if job in jobs:
+                        problems.append(f"{where}: controls {jobs[job]!r} and {control!r} are both {job}")
+                    jobs[job] = control
+            if jobs and not isinstance(spec.get("port"), str):
+                problems.append(
+                    f"{where}: {', '.join(sorted(jobs.values()))} step through the rigs, which the agent "
+                    "does by reading the controller itself, so it needs the port: add its ALSA name "
+                    "(`aseqdump -l`)")
         return problems
 
     def controller(self, name: str) -> dict[str, Any]:
@@ -286,13 +331,50 @@ class MachineSpec:
         {control: ("cc"|"note", number)}}`, for the MIDI-map compiler.
         Only valid after `validate()` returned nothing about controllers."""
         spec = self.controllers[name]
-        return {
+        described: dict[str, Any] = {
             "port": spec.get("port"),
             "channel": spec.get("channel", "all"),
-            "controls": {
-                control: next(iter(sends.items())) for control, sends in spec["controls"].items()
-            },
+            "controls": {control: _sends(sends) for control, sends in spec["controls"].items()},
         }
+        if "type" in spec:
+            # Only for a controller with a type, so an untyped one's
+            # description is exactly what it was before the device model.
+            described["type"] = spec["type"]
+            described["model"] = {control: control_model(sends) for control, sends in spec["controls"].items()}
+        return described
+
+    def steppers(self) -> dict[str, dict[str, Any]]:
+        """Every controller with controls that step through the rigs, as
+        `controller(name)` describes it, by name: what the agent listens to on
+        every rig, whatever the rig's own map. Only valid after `validate()`
+        returned nothing about controllers."""
+        found = {}
+        for name in sorted(self.controllers or {}):
+            described = self.controller(name)
+            if any(m.get("job") for m in (described.get("model") or {}).values()):
+                found[name] = described
+        return found
+
+    def devices(self) -> list[dict[str, Any]]:
+        """Every controller and its controls, for a page that assigns them
+        (#192): `{name, type, port, channel, controls: [{name, sends: {"cc"|
+        "note": n}, kind, behaviour, range, job}]}`, a model's fields None
+        where the controller has no type. What each control may take is the
+        rig file's vocabulary, `rigfile.takes`."""
+        out = []
+        for name in sorted(self.controllers or {}):
+            described = self.controller(name)
+            model = described.get("model") or {}
+            controls = []
+            for control, (kind, number) in described["controls"].items():
+                m = model.get(control) or {}
+                controls.append({
+                    "name": control, "sends": {kind: number}, "kind": m.get("kind"),
+                    "behaviour": m.get("behaviour"), "range": m.get("range"), "job": m.get("job"),
+                })
+            out.append({"name": name, "type": described.get("type"), "port": described["port"],
+                        "channel": described["channel"], "controls": controls})
+        return out
 
     def controller_for(self, name: str) -> dict[str, Any]:
         """`controller(name)` for a machine already loaded and validated, or
@@ -304,6 +386,60 @@ class MachineSpec:
                 f"does not describe; its controllers: {', '.join(sorted(self.controllers or {})) or 'none'}"
             )
         return self.controller(name)
+
+
+def _sends(sends: dict[str, Any]) -> tuple[str, int]:
+    kind = "cc" if "cc" in sends else "note"
+    return kind, sends[kind]
+
+
+def control_model(sends: dict[str, Any]) -> dict[str, Any]:
+    """A typed control's model as the compiler and the agent read it:
+    `{"kind", "behaviour", "range", "job"}`, each None where it does not
+    apply; an expression pedal's range defaults to the full 0 to 127. The
+    range is what the pedal sends; the compiler's mappings scale Sushi's 0 to
+    127 regardless, and only its heel is used, by the agent, which silences
+    a pedalled volume at or below it (#191)."""
+    kind = sends.get("kind")
+    return {
+        "kind": kind,
+        "behaviour": sends.get("behaviour") if kind == "switch" else None,
+        "range": list(sends.get("range", [0, MIDI_MAX])) if kind == "expression" else None,
+        "job": sends.get("job") if kind == "switch" else None,
+    }
+
+
+def _control_model_problems(at: str, sends_kind: str, sends: dict[str, Any]) -> list[str]:
+    """What is wrong with one typed control's kind, behaviour, range and job."""
+    kind = sends.get("kind")
+    if kind not in KINDS:
+        return [f"{at}: kind must be {' or '.join(KINDS)} (got {kind!r})"]
+    problems = []
+    if kind == "switch":
+        behaviour = sends.get("behaviour")
+        if behaviour not in BEHAVIOURS:
+            problems.append(f"{at}: a switch's behaviour must be {', '.join(BEHAVIOURS)} (got {behaviour!r}): "
+                            "momentary and single toggle on each press, latching is followed")
+        elif sends_kind == "note" and behaviour == "latching":
+            problems.append(f"{at}: a note is a press, so a switch that sends one is momentary or single")
+        if "range" in sends:
+            problems.append(f"{at}: range is an expression pedal's travel; a switch has none")
+        if "job" in sends and sends["job"] not in JOBS:
+            problems.append(f"{at}: job must be {' or '.join(JOBS)} (got {sends['job']!r})")
+    else:
+        if sends_kind == "note":
+            problems.append(f"{at}: an expression pedal sweeps, so it sends a cc, not a note")
+        for key in ("behaviour", "job"):
+            if key in sends:
+                problems.append(f"{at}: {key} is a switch's; an expression pedal has none")
+        if "range" in sends:
+            value = sends["range"]
+            if not (isinstance(value, list) and len(value) == 2
+                    and all(type(v) is int and 0 <= v <= MIDI_MAX for v in value) and value[0] < value[1]):
+                problems.append(f"{at}: range must be [heel, toe], what the pedal sends at either end, "
+                                f"whole numbers from 0 to {MIDI_MAX}, "
+                                f"heel below toe (got {value!r})")
+    return problems
 
 
 def controller_for(controller_name: str, machine_file: Path) -> dict[str, Any]:

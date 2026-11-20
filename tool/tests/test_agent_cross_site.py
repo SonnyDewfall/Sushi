@@ -455,6 +455,7 @@ GET_ROUTES = {
     "/profiles", "/live/plugins", "/rigs", "/rig/load", "/amp", "/amp/models", "/record", "/takes",
     "/machine/roles", "/rigs/x/channels", "/rigs/x/saves", "/rigs/bin", "/presets",
     "/help", "/help/", "/help/x", "/help/img/x",  # the user guide (#167)
+    "/midi",  # the pedals and the running rig's assignments (#191): reads two files and lists config/rigs/
 }
 
 
