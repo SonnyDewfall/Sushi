@@ -1108,8 +1108,20 @@ def test_every_look_loads_and_draws_without_an_error(opened, look):
         eq = v.state()["session"]["eq"]
         assert eq["look"] == look and (eq["width"], eq["height"]) == (600, 400), "half the 1200 by 800 buffer"
     v.page.wait_for_timeout(1500)
-    seen = luminance(v)
-    assert seen["mean"] >= 0.5 and seen["sd"] >= 4, seen
+    # A look that strobes (Shutter, Tunnel) is one shade across the whole
+    # screen for the frames of a flash, which is what a flash is: a single
+    # screenshot that lands on one failed CI on PR #202 (mean 127, sd 0.03).
+    # So up to five, 0.3 s apart (a flash lasts 4 frames and the gate keeps
+    # flashes 0.55 s apart, so five cannot all land on one): the look passes
+    # on the first that shows light and shape. A look that is black, or one
+    # shade, on every one of them still fails.
+    seen = []
+    for _ in range(5):
+        seen.append(luminance(v))
+        if seen[-1]["mean"] >= 0.5 and seen[-1]["sd"] >= 4:
+            break
+        v.page.wait_for_timeout(300)
+    assert seen[-1]["mean"] >= 0.5 and seen[-1]["sd"] >= 4, seen
     assert v.page.evaluate("window.glErrors") == []
     assert v.page.evaluate("""() => [...document.querySelectorAll('.visualiser canvas')].map((c) => c.classList.contains('off'))""") \
         == ([True, False] if kind == "eq" else [False, True])
