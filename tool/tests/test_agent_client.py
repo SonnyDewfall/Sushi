@@ -58,6 +58,26 @@ def test_each_command_becomes_the_route_and_body_the_cli_would_have_run():
     assert agent_client.lifecycle_request("restart", namespace()) == ("/rig/restart", {})
 
 
+def test_no_visualiser_tap_reaches_the_agent_as_up_takes_it_and_comes_back_as_the_flag():
+    """Off is said in the body; on, the default on both sides, is left out."""
+    from sushi_rig.agent import lifecycle_arguments
+
+    _, body = agent_client.lifecycle_request("up", namespace(visualiser_tap=False))
+    assert body["visualiser_tap"] is False
+    assert "visualiser_tap" not in agent_client.lifecycle_request("up", namespace(visualiser_tap=True))[1]
+    assert lifecycle_arguments("up", body) == ["up", "guitar_vocal", "--no-visualiser-tap"]
+    assert lifecycle_arguments("up", {"config_name": "x"}) == ["up", "x"]
+    with pytest.raises(Exception, match="true or false"):
+        lifecycle_arguments("up", {"config_name": "x", "visualiser_tap": "no"})
+
+
+def test_up_no_visualiser_tap_on_the_command_line_reaches_up(direct, monkeypatch):
+    monkeypatch.setattr(agent_client, "probe", nothing_listening)
+    assert cli._main(["up", "board", "--rig", "--no-visualiser-tap"]) == 0
+    assert cli._main(["up", "board", "--rig"]) == 0
+    assert [call[2]["visualiser_tap"] for call in direct] == [False, True]
+
+
 def test_the_answer_is_printed_as_the_cli_would_have_printed_it():
     ok = {"ok": True, "output": "Rig up: x (panel mode)\n", "warnings": ["the tuner is deaf"]}
     assert agent_client.lifecycle_result(200, ok) == (
@@ -127,7 +147,7 @@ def test_with_no_agent_running_each_command_acts_directly_and_says_so(direct, mo
     assert cli._main(["status"]) == 0
     assert direct == [
         ("up", "guitar_vocal", {"headless": True, "tuner": True, "amp": False, "amp_model": None, "rig": False,
-                                "machine": None}),
+                                "machine": None, "visualiser_tap": True}),
         ("down", True), ("restart",), ("status",),
     ]
     said = capsys.readouterr().err.splitlines()
@@ -397,4 +417,4 @@ def test_up_takes_a_machine_file_directly_and_never_through_the_agent(direct, mo
     monkeypatch.chdir(tmp_path)
     assert cli._main(["up", "board", "--rig", "--machine", "m.yaml", "--direct"]) == 0
     assert direct == [("up", "board", {"headless": False, "tuner": True, "amp": True, "amp_model": None,
-                                       "rig": True, "machine": str(tmp_path / "m.yaml")})]
+                                       "rig": True, "machine": str(tmp_path / "m.yaml"), "visualiser_tap": True})]

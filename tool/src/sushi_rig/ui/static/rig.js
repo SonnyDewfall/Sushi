@@ -2924,12 +2924,14 @@ export function helpLink(which, screen) {
 // ---------------------------------------------------------------- the visualiser (#176)
 // A screensaver on the laptop: after a while with no pointer, touch or key
 // on the page, a MilkDrop visualisation (butterchurn, vendored) fills the
-// window and moves with the guitar. The browser hears the guitar itself,
-// through PipeWire's PulseAudio server (getUserMedia): nothing is added to
-// the signal's path, though the server's capture stream does a little work
-// in Sushi's cycle (visualiser.js says what that risks, and what watches
-// it). screensaver.js is the DOM, visualiser.js the drawing; these are its
-// decisions.
+// window and moves with the music. The browser captures an input itself,
+// through PipeWire's PulseAudio server (getUserMedia): first the rig's own
+// output, "Sushi rig output" (the visualiser tap, vistap.py: Sushi's master
+// after its limiter, offered as a source while a rig runs with it), then the
+// guitar's input. Nothing is added to the signal's path, though the capture
+// and the tap do a little work in Sushi's cycle (visualiser.js says what that
+// risks, and what watches it). screensaver.js is the DOM, visualiser.js the
+// drawing; these are its decisions.
 
 export const VISUALISER = {
   idleDefault: 10,     // seconds without input before it starts
@@ -3052,16 +3054,23 @@ export function guitarInput(roles) {
 
 // Which input to listen to, from the browser's inputs (enumerateDevices'
 // `audioinput`s: `{deviceId, label}`), the one chosen here before
-// (`settings.input`, `settings.channel`) and the guitar's (`guitarInput`):
-// `{deviceId, label, channel, how}`. A choice made here wins while that
-// input is there; then the guitar's device by name (its label, or its label
+// (`settings.input`, `settings.channel`), the guitar's (`guitarInput`) and
+// the rig's output (`output`, GET /machine/roles's `visualiser_tap`:
+// `{node, label}`): `{deviceId, label, channel, how}`. A choice made here
+// wins while that input is there; then the rig's output, by the name the
+// browser lists it under, both channels (it is there only while a rig runs
+// with its tap); then the guitar's device by name (its label, or its label
 // with more after a space, as PipeWire's "Audient iD14 Multichannel" is the
 // JACK client "Audient iD14"; never a "Monitor of"); then the browser's
 // default, both channels. `how` says which, for the settings line.
-export function pickInput(devices, settings, guitar) {
+export function pickInput(devices, settings, guitar, output = null) {
   const inputs = (devices || []).filter((d) => d && typeof d.deviceId === "string" && d.deviceId);
   const kept = settings && settings.input ? inputs.find((d) => d.deviceId === settings.input.deviceId) : null;
   if (kept) return { deviceId: kept.deviceId, label: kept.label || settings.input.label, channel: settings.channel ?? null, how: "chosen" };
+  if (output && typeof output.label === "string" && output.label) {
+    const tap = inputs.find((d) => d.label === output.label);
+    if (tap) return { deviceId: tap.deviceId, label: tap.label, channel: null, how: "output" };
+  }
   if (guitar && guitar.device) {
     const named = inputs.find((d) => typeof d.label === "string" && !/^monitor of /i.test(d.label)
       && (d.label === guitar.device || d.label.startsWith(`${guitar.device} `)));
@@ -3076,7 +3085,8 @@ export function inputWords(pick) {
   if (!pick || !pick.deviceId) return "no input yet";
   const label = pick.label || (pick.deviceId === "default" ? "the browser's default input" : "an input");
   const side = pick.channel === 0 ? ", left channel" : pick.channel === 1 ? ", right channel" : "";
-  const how = pick.how === "guitar" ? ` (the machine file's ${VISUALISER.guitarRole})` : pick.how === "default" ? " (the browser's choice)" : "";
+  const how = pick.how === "output" ? " (the rig's output: the master, after its limiter)"
+    : pick.how === "guitar" ? ` (the machine file's ${VISUALISER.guitarRole})` : pick.how === "default" ? " (the browser's choice)" : "";
   return `${label}${side}${how}`;
 }
 

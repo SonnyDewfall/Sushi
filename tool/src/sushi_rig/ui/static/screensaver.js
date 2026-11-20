@@ -47,6 +47,7 @@ const state = {
   probe: null,             // {webgl, renderer}, once asked
   permission: null,        // the microphone's permission state, once asked
   roles: null,             // GET /machine/roles's roles, once answered
+  output: null,            // and its visualiser_tap: the rig's output, as the browser names it
   session: null,           // visualiser.js's, once made
   loaded: false,
   why: null,
@@ -109,6 +110,7 @@ async function guitar() {
       const response = await fetch("/machine/roles");
       const body = await response.json();
       if (response.ok && body && Array.isArray(body.roles)) state.roles = body.roles;
+      if (response.ok && body && body.visualiser_tap) state.output = body.visualiser_tap;
     } catch { /* no machine file to read: the browser's choice, said on the line */ }
   }
   return R.guitarInput(state.roles);
@@ -151,7 +153,7 @@ function lostContext() {
 // Hear the input and draw, for start and for a tab shown again. False if
 // the visualiser went meanwhile (the stream is let go then).
 async function listenAndRun(V, generation) {
-  const opened = await V.listen(state.settings, await guitar());
+  const opened = await V.listen(state.settings, await guitar(), state.output);
   if (generation !== state.generation || !state.session) {
     for (const t of opened.stream.getTracks()) t.stop();
     return false;

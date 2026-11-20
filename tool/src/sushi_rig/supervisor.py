@@ -82,6 +82,7 @@ from pathlib import Path
 from typing import Any, Callable, Sequence
 
 from . import rig as rig_module
+from . import vistap
 from .paths import log_dir
 from .procs import SHUTDOWN_STEPS, pgid_alive, stop_group
 from .qpwgraph import start_qpwgraph
@@ -154,10 +155,12 @@ def parse_lifecycle(args: Sequence[str]) -> tuple[str, dict[str, Any]]:
         options: dict[str, Any] = {
             "config_name": rest[0], "rig": False, "headless": False,
             "tuner": True, "amp": True, "amp_model": None, "machine": None,
+            "visualiser_tap": True,
         }
         flags = {
             "--rig": ("rig", True), "--headless": ("headless", True),
             "--no-tuner": ("tuner", False), "--no-amp": ("amp", False),
+            "--no-visualiser-tap": ("visualiser_tap", False),
         }
         i = 1
         while i < len(rest):
@@ -193,6 +196,9 @@ CHILD_ROLES: dict[str, tuple[str, str]] = {
                  "recording is cut off"),
     "group holder": ("the rig's group holder",
                      "the children play on, but `status` reads the rig as orphaned"),
+    vistap.CHILD: ("the visualiser tap (pw-loopback)",
+                   "the visualiser tap stopped: the sound is unaffected, but the page's visualiser no "
+                   "longer hears the rig's output, and listens to the guitar's input when it next starts"),
 }
 
 
@@ -402,6 +408,7 @@ class World:
     generate_panel: Callable[[list[str], Path, dict[str, str]], tuple[int, str]] = rig_module.generate_panel
     link_problems: Callable[[list, Path, set, bool], list[str]] = rig_module.link_problems
     replay_amp: Callable[[dict[str, float]], None] = rig_module._replay_amp
+    link_tap: Callable[[Path], list[str]] = vistap.link
     stop_group: Callable[..., bool] = stop_group
     log_dir: Callable[[], Path] = log_dir
     holder: tuple[str, ...] = HOLDER
@@ -455,6 +462,14 @@ class Held:
         # Called from the start's worker thread; a dict assignment, which the
         # loop's snapshots (`list(...)`) never see half-done.
         self.children[name] = Child(name, proc, log)
+
+    def forget(self, name: str) -> None:
+        """Stop watching a child the start is about to stop on purpose (the
+        visualiser's tap, unlinked): its exit is the start's decision, not a
+        crash, and it is not one of the rig's children in the state file.
+        Called from the start's worker thread, before the child is signalled;
+        the start reaps it."""
+        self.children.pop(name, None)
 
     def provisional(self) -> dict[str, Any]:
         """A state record for what is running now: written as the state file
@@ -553,11 +568,12 @@ class Supervisor:
     async def up(
         self, config_name: str, *, rig: bool = False, headless: bool = False,
         tuner: bool = True, amp: bool = True, amp_model: str | None = None,
-        machine: str | None = None,
+        machine: str | None = None, visualiser_tap: bool = True,
     ) -> Outcome:
         """Start a rig and hold it. Refused, compiled and planned by
         `rig.prepare_launch`, which refuses a second rig (the agent's own
-        included, through the state file it wrote) before anything starts."""
+        included, through the state file it wrote) before anything starts.
+        `visualiser_tap` False is `--no-visualiser-tap`."""
         warnings: list[str] = []
         # Python 3.11 is the package's floor because of `process_group`: without
         # it a child cannot be put into the holder's group except by running
@@ -568,7 +584,7 @@ class Supervisor:
             launch = await asyncio.to_thread(
                 self.world.prepare, config_name, headless=headless, tuner=tuner, amp=amp,
                 amp_model=amp_model, rig=rig, warn=warnings.append,
-                **({"machine": machine} if machine else {}),
+                visualiser_tap=visualiser_tap, **({"machine": machine} if machine else {}),
             )
         except Exception as exc:
             if not _plain(exc):
@@ -599,6 +615,7 @@ class Supervisor:
                 sushi_ready=world.sushi_ready, generate_panel=world.generate_panel,
                 link_problems=world.link_problems, replay_amp=world.replay_amp,
                 on_start=held.add, step=step, abandoned=abandoned.is_set,
+                link_tap=world.link_tap, on_stop=held.forget,
             )
             if failure is None:
                 record = held.provisional()

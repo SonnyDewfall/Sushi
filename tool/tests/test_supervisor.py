@@ -99,10 +99,13 @@ def world(runtime, tmp_path, monkeypatch):
 
     state = {"launch": launch}
 
-    def prepare(config_name, *, headless, tuner, amp, amp_model, rig, warn):
+    def prepare(config_name, *, headless, tuner, amp, amp_model, rig, warn, visualiser_tap):
+        # The tap asked for is recorded as asked for; whether it is planned is
+        # the test's (a plan of its own, through `launch(children=...)`).
         asked.append(dict(config_name=config_name, headless=headless, tuner=tuner, amp=amp,
-                          amp_model=amp_model, rig=rig))
-        return state["launch"](config_name, headless=headless, tuner=tuner)
+                          amp_model=amp_model, rig=rig, visualiser_tap=visualiser_tap))
+        return state["launch"](config_name, headless=headless, tuner=tuner,
+                               visualiser_tap_requested=visualiser_tap)
 
     def start_qpwgraph(child, root, env, logs, process_group=None):
         return spawner(child["command"], cwd=root, env=env, log=logs / "qpwgraph.log",
@@ -113,6 +116,7 @@ def world(runtime, tmp_path, monkeypatch):
         sushi_ready=lambda alive: True, generate_panel=lambda command, root, env: (0, ""),
         link_problems=lambda plan, root, running, rig_run: [],
         replay_amp=lambda values: None, shutdown_steps=QUICK_STEPS, watch_interval=0.05,
+        link_tap=lambda config: [],
     )
     made_ns = type("W", (), {})()
     made_ns.world, made_ns.spawner, made_ns.asked, made_ns.state, made_ns.root = (
@@ -149,6 +153,7 @@ async def settle_until(condition, seconds: float = 5.0) -> None:
     ({"config_name": "guitar_vocal"}, "up"),
     ({"config_name": "x", "rig": True, "headless": True, "tuner": False, "amp": False,
       "amp_model": "Some Amp.nam"}, "up"),
+    ({"config_name": "x", "visualiser_tap": False}, "up"),
     (None, "down"),
     ({"force": True}, "down"),
     ({}, "restart"),
@@ -166,6 +171,7 @@ def test_the_steps_the_agent_plans_are_read_back_as_they_were_meant(body, comman
             "config_name": body["config_name"], "rig": body.get("rig", False),
             "headless": body.get("headless", False), "tuner": body.get("tuner", True),
             "amp": body.get("amp", True), "amp_model": body.get("amp_model"), "machine": None,
+            "visualiser_tap": body.get("visualiser_tap", True),
         }
     elif command == "down":
         assert options == {"force": bool((body or {}).get("force"))}
@@ -180,7 +186,8 @@ def test_a_machine_file_the_agent_carries_is_read_back_as_up_s_machine():
     args = agent.lifecycle_arguments("up", {"config_name": "x", "rig": True}, machine="/m/stage.yaml")
     assert args == ["up", "x", "--rig", "--machine", "/m/stage.yaml"]
     assert parse_lifecycle(args) == ("up", {"config_name": "x", "rig": True, "headless": False, "tuner": True,
-                                            "amp": True, "amp_model": None, "machine": "/m/stage.yaml"})
+                                            "amp": True, "amp_model": None, "machine": "/m/stage.yaml",
+                                            "visualiser_tap": True})
     with pytest.raises(agent.AgentError, match="an absolute path"):
         agent.lifecycle_arguments("up", {"config_name": "x"}, machine="m/stage.yaml")
     assert "--machine" not in agent.lifecycle_arguments("up", {"config_name": "x", "machine": "/etc/x"}), \
@@ -232,7 +239,7 @@ def test_up_starts_what_plan_children_plans_in_one_group_the_agent_holds(world, 
     assert world.spawner.commands() == [sys.executable, *planned], "the holder, then the plan, in order"
     assert "Rig up: t (headless mode)" in outcome.stdout
     assert world.asked == [dict(config_name="t", headless=True, tuner=True, amp=True,
-                                amp_model=None, rig=False)]
+                                amp_model=None, rig=False, visualiser_tap=True)]
 
 
 def test_the_state_file_the_agent_writes_round_trips_through_status(world, capsys):
@@ -261,8 +268,10 @@ def test_the_state_file_the_agent_writes_round_trips_through_status(world, capsy
     assert printed.startswith("t (headless mode), up ")
     assert f"  group      {recorded['pgid']}" in printed
     assert "(DEAD)" not in printed
+    assert recorded["visualiser_tap_requested"] is True, "what was asked for, as the tuner's is"
     assert rig.restart_arguments(recorded) == ("t", {
-        "headless": True, "tuner": False, "amp": False, "amp_model": None, "rig": False, "machine": None})
+        "headless": True, "tuner": False, "amp": False, "amp_model": None, "rig": False, "machine": None,
+        "visualiser_tap": True})
 
 
 def test_panel_mode_generates_the_panel_and_holds_open_stage_control_too(world):
@@ -494,7 +503,7 @@ def test_restart_brings_back_what_was_asked_for_in_a_new_group(world):
     assert outcome.stdout.startswith("Restarting t...\nStopping t (headless mode)...\nRig offline.\n")
     assert "Rig up: t (headless mode)" in outcome.stdout
     assert world.asked[0] == world.asked[1] == dict(
-        config_name="t", headless=True, tuner=False, amp=False, amp_model=None, rig=False)
+        config_name="t", headless=True, tuner=False, amp=False, amp_model=None, rig=False, visualiser_tap=True)
 
 
 def test_restart_with_nothing_running_refuses_and_says_how_to_start(world):
@@ -1168,3 +1177,98 @@ def test_the_restart_reads_and_writes_its_files_off_the_event_loop(amp_world, mo
     restart_io = [c for c in calls if c[0] in ("read_state", "write_state")]
     assert ("write_state", False) in restart_io
     assert all(not on_loop for _, on_loop in restart_io), restart_io
+
+
+# --------------------------------------------------------------------------- #
+# The visualiser's tap (#195): a child like the tuner, linked at start
+# --------------------------------------------------------------------------- #
+
+def tapped(world, **over):
+    """The fixture's plan with the visualiser's tap in it, as `up` plans it."""
+    plan = plan_children(world.root, world.root / "config" / "t.json", None, headless=True, tuner=False,
+                         visualiser_tap=True)
+    world.state["launch"] = lambda name="t", **kw: Launch(
+        root=world.root, config_name=name, config=world.root / "config" / "t.json", children=plan,
+        headless=True, amp_model=None, amp_values={}, tuner_requested=False, amp_requested=False,
+        amp_model_requested=None, rig_source=None, machine_file=None,
+        visualiser_tap_requested=kw.get("visualiser_tap_requested", True))
+    world.world = dataclasses.replace(world.world, **over)
+
+
+def test_the_tap_is_held_linked_and_stopped_with_the_group(world):
+    linked: list = []
+    tapped(world, link_tap=lambda config: linked.append(config) or [])
+    supervisor = Supervisor(world.world, say=lambda m: None)
+
+    async def go():
+        outcome = await supervisor.up("t", headless=True, tuner=False)
+        assert outcome.ok, outcome
+        tap = supervisor.held.children["vistap"].proc
+        assert os.getpgid(tap.pid) == supervisor.held.pgid, "in the rig's group"
+        recorded = state_file.read_state()
+        stopped = await supervisor.down()
+        return outcome, tap, recorded, stopped
+
+    outcome, tap, recorded, stopped = run(go())
+    assert "pw-loopback" in world.spawner.commands()
+    assert linked == [world.root / "config" / "t.json"], "linked once, from the config Sushi loaded"
+    assert recorded["children"]["vistap"] == tap.pid and recorded["visualiser_tap_requested"] is True
+    assert stopped.ok and tap.poll() is not None, "down took it with the group"
+    assert supervisor.crashed == [], "a down is not a crash"
+
+
+def test_a_tap_that_stops_while_the_rig_plays_is_reported_as_the_sound_unaffected(world):
+    tapped(world)
+    world.spawner.scripts["pw-loopback"] = crasher(1, after=0.3)
+    lines: list[str] = []
+    supervisor = Supervisor(world.world, say=lines.append)
+
+    async def go():
+        assert (await supervisor.up("t", headless=True, tuner=False)).ok
+        await settle_until(lambda: supervisor.crashed)
+        crashed = list(supervisor.crashed)
+        sushi = supervisor.held.children["sushi"].exit
+        await supervisor.down()
+        return crashed, sushi
+
+    (crash,), sushi = run(go())
+    assert crash["name"] == "vistap" and crash["returncode"] == 1 and crash["phase"] == "running"
+    assert crash["label"] == "the visualiser tap (pw-loopback)"
+    assert crash["means"].startswith("the visualiser tap stopped: the sound is unaffected")
+    assert sushi is None, "the rest plays on"
+    assert world.spawner.commands().count("pw-loopback") == 1, "nothing restarted it"
+    assert any("vistap" in line and "Not restarted" in line for line in lines)
+
+
+def test_a_tap_that_could_not_be_linked_is_stopped_said_and_neither_a_crash_nor_a_child(world):
+    tapped(world, link_tap=lambda config: ["the visualiser tap could not be linked ..., so it was stopped"])
+    supervisor = Supervisor(world.world, say=lambda m: None)
+
+    async def go():
+        outcome = await supervisor.up("t", headless=True, tuner=False)
+        await asyncio.sleep(0.3)  # several watches, to see an exit if one were taken for a crash
+        held = set(supervisor.held.children)
+        recorded = state_file.read_state()
+        crashed = list(supervisor.crashed)
+        await supervisor.down()
+        return outcome, held, recorded, crashed
+
+    outcome, held, recorded, crashed = run(go())
+    assert outcome.ok and "warning: the visualiser tap could not be linked" in outcome.stderr
+    tap = next(p for p, (command, _) in zip(world.spawner.started, world.spawner.asked) if command[0] == "pw-loopback")
+    assert tap.poll() is not None, "stopped"
+    assert "vistap" not in held and "vistap" not in recorded["children"]
+    assert recorded["visualiser_tap_requested"] is True, "still asked for, so restart tries again"
+    assert crashed == []
+
+
+def test_no_visualiser_tap_reaches_prepare_and_restart_keeps_it(world):
+    supervisor = Supervisor(world.world, say=lambda m: None)
+
+    async def go():
+        assert (await supervisor.up("t", headless=True, visualiser_tap=False)).ok
+        assert (await supervisor.restart()).ok
+        await supervisor.down()
+
+    run(go())
+    assert [a["visualiser_tap"] for a in world.asked] == [False, False]

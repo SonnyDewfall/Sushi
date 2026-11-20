@@ -48,6 +48,7 @@ from .paths import checkout_root, log_dir, recorder_socket, runtime_dir, state_p
 from .procs import (
     SHUTDOWN_STEPS, pgid_alive, pid_alive, port_is_open, stop_group, wait_for_grpc,
 )
+from . import vistap
 from .qpwgraph import QPWGRAPH_ATTEMPTS, start_qpwgraph
 from .state import clear_state, is_real_id, liveness, read_state, write_state
 
@@ -422,8 +423,14 @@ def plan_children(
     patchbay: Path | None = None,
     machine_file: Path | None = None,
     recorder_socket: Path | None = None,
+    visualiser_tap: bool = False,
 ) -> list[dict[str, Any]]:
     """The children to start, in order, as data.
+
+    `visualiser_tap` plans the visualiser's tap last (`vistap.child`,
+    `pw-loopback`): the rig's output offered to the browser as an input. Off
+    unless asked for here; `prepare_launch` asks for it unless `up` was told
+    `--no-visualiser-tap`.
 
     `recorder_socket`, for a headless run of a rig of channels, plans the
     recorder (`sushi-rig recorder`, recorder_process.py) in the listener's
@@ -567,6 +574,13 @@ def plan_children(
             "env_set": {"PIPEWIRE_QUANTUM": f"{QUANTUM}/{RATE}"},
         })
 
+    if visualiser_tap:
+        # After Sushi and the amp, though nothing waits on the order: its
+        # links are made once Sushi answers (`start_children`). Optional, as
+        # the tuner is: it is not in the audio path, and a rig without it
+        # plays the same.
+        children.append(vistap.child())
+
     return children
 
 
@@ -620,6 +634,10 @@ def state_record(
         # child has failed to start. `restart` reads these.
         "tuner_requested": launch.tuner_requested,
         "amp_requested": launch.amp_requested,
+        # Whether the visualiser's tap was asked for (`--no-visualiser-tap`
+        # says not), which `children` cannot say once it has failed to start
+        # or been stopped for want of its links.
+        "visualiser_tap_requested": launch.visualiser_tap_requested,
         # The override as the caller gave it, None when there was none. Not
         # `amp_model`, which is what *ran* and so includes the config's own
         # choice: restoring that would pin today's model for good, and a
@@ -787,6 +805,8 @@ def start_children(
     on_start: Callable[[str, subprocess.Popen, Path], None] = lambda name, proc, log: None,
     step: Callable[[str], None] = lambda doing: None,
     abandoned: Callable[[], bool] = lambda: False,
+    link_tap: Callable[[Path], list[str]] = vistap.link,
+    on_stop: Callable[[str], None] = lambda name: None,
 ) -> tuple[dict[str, subprocess.Popen], list[str], str | None]:
     """Start the planned children, in order, with every check a start makes:
     `(the children started, the problems to warn of, the failure that stopped
@@ -802,6 +822,13 @@ def start_children(
     was still running if it gives up waiting; `abandoned` is asked after each
     process starts, and once it says yes nothing more is started, and what was
     started last is stopped (the agent has torn the rest down by then).
+
+    `link_tap` links the visualiser's tap to Sushi's master outputs once Sushi
+    answers (`vistap.link`): its problems are warnings, and a tap it could not
+    link is stopped, by its pid, and left out of what was started, so no
+    silent "Sushi rig output" is offered to the page. `on_stop` hears the
+    name of a child stopped on purpose that way before it is signalled, so
+    the agent stops watching it and its exit is not a crash.
     """
     root = launch.root
     procs: dict[str, subprocess.Popen] = {}
@@ -890,6 +917,17 @@ def start_children(
     # neighbours, and guarded: a `pw-dump` or `pw-link` that cannot run
     # must not cost a rig that is playing.
     running = {name for name, proc in procs.items() if proc.poll() is None}
+    if vistap.CHILD in running:
+        step("linking the visualiser tap to Sushi's master outputs (pw-link)")
+        tap_problems = link_tap(launch.config)
+        if tap_problems:
+            problems += tap_problems
+            proc = procs.pop(vistap.CHILD)
+            running.discard(vistap.CHILD)
+            on_stop(vistap.CHILD)
+            if not _stop_by_pid(proc):
+                problems.append(f"the visualiser tap (pid {proc.pid}) would not stop: "
+                                f"stop it with kill {proc.pid}; the sound is unaffected")
     if "qpwgraph" in running:
         step("checking the patchbay's links were made")
         problems += link_problems(launch.children, root, running, launch.rig_source is not None)
@@ -908,6 +946,24 @@ def start_children(
 
 
 # --- process helpers --------------------------------------------------------
+
+
+def _stop_by_pid(proc: subprocess.Popen, steps: tuple = SHUTDOWN_STEPS) -> bool:
+    """Stop one child by its own pid, never its group (the group is the whole
+    rig), through the shutdown escalation, reaping it: whether it is gone."""
+    for sig, wait in steps:
+        if proc.poll() is not None:
+            return True
+        try:
+            proc.send_signal(sig)
+        except ProcessLookupError:
+            pass
+        try:
+            proc.wait(timeout=wait)
+            return True
+        except subprocess.TimeoutExpired:
+            continue
+    return proc.poll() is not None
 
 
 def _supervise(launch: "Launch", *, ready_w: int) -> None:
@@ -964,7 +1020,7 @@ def _supervise(launch: "Launch", *, ready_w: int) -> None:
         procs, problems, failure = start_children(
             launch, env=env, logs=logs, spawn=spawn_child, start_qpwgraph=start_qpwgraph,
             sushi_ready=sushi_ready, generate_panel=generate_panel,
-            link_problems=link_problems, replay_amp=_replay_amp,
+            link_problems=link_problems, replay_amp=_replay_amp, link_tap=vistap.link,
         )
         if failure is not None:
             report(f"FAIL {failure}")
@@ -1159,6 +1215,9 @@ class Launch:
     amp_model_requested: str | None
     rig_source: str | None
     machine_file: Path | None
+    # Whether the visualiser's tap was asked for. False unless said, so a
+    # Launch built by hand plans and records none.
+    visualiser_tap_requested: bool = False
 
 
 def prepare_launch(
@@ -1171,6 +1230,7 @@ def prepare_launch(
     rig: bool = False,
     warn: Callable[[str], None] | None = None,
     machine: str | None = None,
+    visualiser_tap: bool = True,
 ) -> Launch:
     """Everything `up` does before it starts a process: refuse a second rig,
     compile a rig of channels, prepare the amp, plan the children.
@@ -1295,13 +1355,14 @@ def prepare_launch(
         # A take is planned only for a rig of channels (transport.plan_for_run),
         # so a v1 run gets no recorder, and the agent says why (GET /record).
         recorder_socket=recorder_socket() if headless and rig else None,
+        visualiser_tap=visualiser_tap,
     )
 
     return Launch(
         root=root, config_name=config_name, config=config, children=children_plan,
         headless=headless, amp_model=amp_model_stored, amp_values=amp_values,
         tuner_requested=tuner, amp_requested=amp, amp_model_requested=amp_model,
-        rig_source=rig_source, machine_file=rig_machine,
+        rig_source=rig_source, machine_file=rig_machine, visualiser_tap_requested=visualiser_tap,
     )
 
 
@@ -1314,6 +1375,7 @@ def up(
     amp_model: str | None = None,
     rig: bool = False,
     machine: str | None = None,
+    visualiser_tap: bool = True,
 ) -> int:
     """Start the rig and return to the prompt.
 
@@ -1332,10 +1394,13 @@ def up(
     `machine` is the machine file a rig of channels is compiled and wired
     against, this host's (`machine_path`) unless given: `restart` and a
     switch pass the one the run was started against, from the state file.
+
+    `visualiser_tap` starts the visualiser's tap (`vistap`) with the rig;
+    `--no-visualiser-tap` turns it off, and `restart` keeps the choice.
     """
     launch = prepare_launch(
         config_name, headless=headless, tuner=tuner, amp=amp, amp_model=amp_model, rig=rig,
-        machine=machine,
+        machine=machine, visualiser_tap=visualiser_tap,
     )
     pid, ready_r = _fork_supervisor(lambda ready_w: _supervise(launch, ready_w=ready_w))
     outcome = ""
@@ -1532,12 +1597,17 @@ def restart_arguments(state: dict[str, Any]) -> tuple[str, dict[str, Any]]:
     children = state.get("children") or {}
     tuner = state.get("tuner_requested")
     amp = state.get("amp_requested")
+    tap = state.get("visualiser_tap_requested")
     rig = isinstance(state.get("rig"), str) and bool(state.get("rig"))
     machine = state.get("machine")
     return state.get("config_name", DEFAULT_CONFIG_NAME), {
         "headless": not runs_panel(state),
         "tuner": tuner if isinstance(tuner, bool) else "fmit" in children,
         "amp": amp if isinstance(amp, bool) else "amp" in children,
+        # Not read from `children`, as the tuner falls back to: a state file
+        # from before the tap was recorded is from before there was a tap,
+        # so it never declined one, and gets `up`'s default, on.
+        "visualiser_tap": tap if isinstance(tap, bool) else True,
         "amp_model": state.get("amp_model_requested") or None,
         "rig": rig,
         # The machine file the run was compiled and wired against, so the

@@ -39,6 +39,24 @@ sushi-rig down              # stop everything, and verify it stopped
 `up` also takes `--no-amp`, `--no-tuner`, and `--amp-model "Some Model.nam"` to
 audition a different amp capture without editing the config.
 
+`up --no-visualiser-tap` leaves out the visualiser's tap (#195). Without it,
+`up` starts a `pw-loopback` with the rig (the child `vistap`) that offers the
+rig's output to the browser as the input **Sushi rig output** (node
+`sushi_rig_output`), for the web page's visualiser. "The rig's output" is
+Sushi's master: the master track's outputs, engine bus 0, after the master
+chain, the master limiter (#137) and the master volume, which is what the
+monitors are sent; for a v1 config, which has no master track or limiter, it
+is engine bus 0, where every v1 config mixes for the monitors. The tap is a
+branch: Sushi's master outputs are linked to it with `pw-link` once Sushi
+answers, besides their links to the interface, and it is never linked to the
+interface itself. It changes nothing in the audio path or its latency, but
+its two nodes are followers in Sushi's cycle every cycle the rig runs (a few
+µs each, measured in a container; `sushi-rig doctor`'s `visualiser-tap` says
+whether it runs realtime here). If its links cannot be made it is stopped,
+by its pid, and `up` warns; it goes with the group on `down`. `restart` and a
+switch keep the choice, from the state file's `visualiser_tap_requested`.
+Through the agent it is `"visualiser_tap": false` on `POST /rig/up`.
+
 `up --rig <name>` runs a rig of channels, `config/rigs/<name>.yaml` (#30): the
 rig is compiled at start into the runtime directory, never into `config/`, and
 its patchbay is generated from the rig and the machine file rather than loaded
@@ -68,7 +86,7 @@ through it, and say so in one line; see
 **Recovery is the answer to failure, not self-healing**
 ([principle 9](../design/principles.md)). `restart` stops the rig and brings
 back the same one — same config, same mode, and the same `--no-amp` /
-`--no-tuner` choices, read from the state file rather than from you, since
+`--no-tuner` / `--no-visualiser-tap` choices, read from the state file rather than from you, since
 after a crash you may not remember them, and for a rig of channels the machine
 file it was started against. Measured end to end at around five seconds.
 Through the agent, a restart that would drop changes it saw and no save has

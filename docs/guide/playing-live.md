@@ -142,21 +142,32 @@ It only runs on the rig's own laptop, in a browser open at
 `http://localhost:8029/` (or `http://127.0.0.1:8029/`), in a window at least
 900 pixels wide. Phones do not get it: they are for working the rig.
 
+**What it listens to: the rig's output.** While a rig is up, the rig offers
+what it sends to your monitors to the browser as an input called **Sushi rig
+output**: the whole mix after the amp, the effects, the master chain, the
+master limiter and the master volume, which is what you EQ. The visualiser
+listens to that first. If it is not there (the rig was started with
+`--no-visualiser-tap`, or the tap could not be set up and the start said
+so), it listens to the guitar's input on the audio interface, and failing
+that to the browser's default input. Either way it is a branch off the rig's
+sound, never in its way: nothing is added to the path to the monitors and no
+delay. It is not quite nothing to the rig, though: PipeWire does a little
+work for it in the same moment as the rig's own (see below).
+
 **The first time it starts, the browser asks to use the microphone.** That is
-how the page hears your guitar: it listens to the guitar's input on the audio
-interface beside the rig, so it adds no delay to your sound. It is not quite
-nothing to the rig, though: while it listens, PipeWire does a little work for
-it in the same moment as the rig's own (see below). Choose **Allow**: if the browser offers to allow it only
+how the page hears the rig. Choose **Allow**: if the browser offers to allow it only
 this time, choose the one that keeps it for this site instead, and in Firefox
 tick **Remember this decision** first. Then it will not ask again. Whatever input the question offers, the page then
-picks the guitar's own, from the rig's machine file.
+picks **Sushi rig output**, or the guitar's own input from the rig's machine file.
 
 The line at the very bottom of the page holds its settings:
 
 - **Visualiser**: untick it to turn it off. This browser remembers.
 - **after … s without a touch**: how long to wait, 3 to 600 seconds. 10 to start with.
-- **listening to**: **automatic** (the guitar's input) or another input, and
-  which channel of it.
+- **listening to**: **automatic** (the rig's output, else the guitar's input)
+  or another input, and which channel of it. An input you choose here wins
+  whenever it is there. The line says which one it heard, for example
+  "Sushi rig output (the rig's output: the master, after its limiter)".
 - **Show now**: try it straight away.
 
 If it does not start, the same line says why: no rig running, the window too
@@ -172,9 +183,14 @@ the page or tick **Visualiser** again. The glitch may not have been its
 doing, but it is not worth finding out on stage.
 
 **Check once that PipeWire can keep up with it.** Run `sushi-rig doctor` and
-look for `pulse-realtime`. "pipewire-pulse runs realtime" is what you want. If it
-says pipewire-pulse runs no thread at realtime priority, either keep the
-visualiser off while you play or do what the line under it says. You can
+look for `pulse-realtime` and `visualiser-tap`. "pipewire-pulse runs realtime"
+and "the visualiser tap ... runs realtime" are what you want. The tap works in
+every one of the rig's cycles while the rig is up, whether or not the page is
+listening, so if either says it runs no thread at realtime priority, either
+start the rig with `sushi-rig up --no-visualiser-tap` (and keep the visualiser
+off) while you play, or do what the line under it says. Turning the
+visualiser off on the page does not remove the tap; `--no-visualiser-tap`
+does, and `restart` and switching rigs keep that choice. You can
 check by hand too: `ps -L -o tid,cls,rtprio,comm -p "$(pgrep -x pipewire-pulse)"`
 should show a thread (`pw-data-loop`) with `FF` in the `CLS` column.
 

@@ -10,7 +10,8 @@ and the two things worth reading about a rig, served over HTTP on localhost.
     GET  /rig           what is running, if anything (`describe_rig`), and which
                         Program Change selects which rig when the rig's map switches rigs
     GET  /doctor        `doctor`'s checks, as data
-    POST /rig/up        {"config_name" (required), "rig", "headless", "tuner", "amp", "amp_model"}
+    POST /rig/up        {"config_name" (required), "rig", "headless", "tuner", "amp", "amp_model",
+                        "visualiser_tap"}
     POST /rig/down      {"force"}
     POST /rig/restart   {"discard"?} -- refused (409 unsaved) if it would drop changes no save wrote
     POST /rig/switch    {"config_name" (required)} -- to a rig of config/rigs, live where it can be (#93)
@@ -34,7 +35,8 @@ and the two things worth reading about a rig, served over HTTP on localhost.
     POST /record/start  {"name"?} -- a take of the running rig (S7); no name is <rig>-<date>-take-<nn>
     POST /record/stop   {} -- finish it; the answer says `take check`'s verdict
     GET  /takes         the takes, newest first: name, when, length, stems, `take check`'s verdict
-    GET  /machine/roles the machine file's roles: ports, widths each can feed, which tracks use each
+    GET  /machine/roles the machine file's roles: ports, widths each can feed, which tracks use each;
+                        and the visualiser tap's source, as the browser names it
     GET  /rigs/{name}/channels   a rig file's channels: name, input, width, level, plugins
     POST /rigs/new      {"name", "channels": [{"name", "input", "width", "from"?}]} -- a new rig file
     POST /rigs/{name}/channels/add              {"name", "input", "width", "from"?}
@@ -822,6 +824,10 @@ def lifecycle_arguments(
             args.append("--no-tuner")
         if not flag("amp", True):
             args.append("--no-amp")
+        if not flag("visualiser_tap", True):
+            # The rig's output offered to the browser (#195, vistap.py): on
+            # unless asked not to be, as on the CLI.
+            args.append("--no-visualiser-tap")
         model = body.get("amp_model")
         if model is not None:
             if local and isinstance(model, str) and "/" in model:
@@ -5051,10 +5057,13 @@ class Agent:
         the widths each can feed and whether it can take the master, as the
         patchbay answers), which tracks of the running rig use each (from the
         running config's `_wiring`), the role a new rig's master goes to,
-        and the channel ceiling with the compiler's reason. Read only: the
-        machine file is never written here. 409 `machine` when it cannot be
-        read or does not validate, with why."""
-        from . import rigedit
+        and the channel ceiling with the compiler's reason; and the
+        visualiser tap's source (`visualiser_tap`: its node and the name the
+        browser lists it under), for the page's visualiser as the
+        `guitar-in` role is. Read only: the machine file is never written
+        here. 409 `machine` when it cannot be read or does not validate, with
+        why."""
+        from . import rigedit, vistap
         from .machine import MachineError, MachineSpec
         from .patchbay import MONITOR_ROLE
 
@@ -5086,6 +5095,10 @@ class Agent:
         return web.json_response({
             "ok": True, "machine": self._save_shown(machine_file), **found,
             "output": MONITOR_ROLE, "ceiling": rigedit.ceiling(),
+            # The visualiser's tap (#195, vistap.py): the source the browser
+            # lists while a rig runs with it, by node and by the name the
+            # browser gives it, which the page's visualiser listens to first.
+            "visualiser_tap": {"node": vistap.SOURCE_NODE, "label": vistap.SOURCE_LABEL},
             "running": None if running is None else {"rig": running.stem, "file": self._save_shown(running)},
             "note": ("which roles are inputs and which outputs is read from their names (-in, -out): the "
                      "machine file does not say. Whether a channel can use a role is the compiler's answer, "
@@ -6731,7 +6744,7 @@ def plugin_width(plugin: dict[str, Any], ports: dict[str, Any]) -> str | None:
 def switch_steps(state: dict[str, Any], rig: str) -> list[list[str]]:
     """The lifecycle commands that switch the running rig (`state`, the state
     file) to rig `rig` of config/rigs: `down`, then `up --rig` with the
-    headless, tuner and amp choices `restart` would bring back
+    headless, tuner, amp and visualiser tap choices `restart` would bring back
     (`rig.restart_arguments`), so a switch keeps how the rig is being run.
     Not the amp model override: that was chosen for the rig being left, and
     the next one's own `_amp` says its model. `AgentError` for a rig name that
@@ -6747,6 +6760,7 @@ def switch_steps(state: dict[str, Any], rig: str) -> list[list[str]]:
     up = lifecycle_arguments("up", {
         "config_name": rig, "rig": True,
         "headless": options["headless"], "tuner": options["tuner"], "amp": options["amp"],
+        "visualiser_tap": options["visualiser_tap"],
     }, machine=_absolute_machine(machine))
     return [["down"], up]
 

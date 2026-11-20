@@ -910,6 +910,58 @@ def check_pulse_realtime(environment: Environment) -> Check:
     )
 
 
+def tap_check(rig: dict, state: dict | None, threads: tuple | None,
+              nodes: dict[int, dict] | None = None) -> Check:
+    """The visualiser's tap (#195, `vistap`): whether the running rig has one,
+    and whether its data thread runs at realtime priority. It is a follower
+    in Sushi's cycle every cycle the rig runs, whether or not a browser is
+    listening, and the cycle finishes only when it has: a late tap is a late
+    cycle. Never a fault, as `pulse-realtime` is not: the rig plays without
+    it, and `--no-visualiser-tap` leaves it out.
+
+    `rig` is `describe_rig`'s answer, `state` the state file, `threads` the
+    tap's `threads_of` (None: not looked at), `nodes` the live graph's
+    (`patchbay.nodes_by_id`; None: not read). Pure."""
+    from .supervisor import child_label
+    from .vistap import CHILD, SOURCE_LABEL, SOURCE_NODE
+
+    name = "visualiser-tap"
+    off = "restart the rig (`sushi-rig restart`) to start it again; the sound is unaffected either way"
+    if not rig.get("running") or not state:
+        return Check(name, UNCHECKED, "no rig is running, so there is no tap to look at",
+                     "run `sushi-rig up` and check again")
+    children = rig.get("children") if isinstance(rig.get("children"), dict) else {}
+    entry = children.get(CHILD)
+    if entry is None:
+        if state.get("visualiser_tap_requested") is True:
+            return Check(name, OK, f"the rig asked for {child_label(CHILD)} and is running without it "
+                         "(it did not start, or could not be linked: the start's warnings said which), so the "
+                         "visualiser listens to the guitar's input", off)
+        return Check(name, OK, "the rig was started without the visualiser tap (--no-visualiser-tap, or from "
+                     "before there was one): the visualiser listens to the guitar's input")
+    if entry.get("alive") is False:
+        return Check(name, OK, f"{child_label(CHILD)} (pid {entry.get('pid')}) has exited since the rig started, "
+                     "so the visualiser no longer hears the rig's output", off)
+    if nodes is not None and not any(props.get("node.name") == SOURCE_NODE for props in nodes.values()):
+        return Check(name, OK, f"{child_label(CHILD)} (pid {entry.get('pid')}) is running but its source "
+                     f"{SOURCE_NODE!r} is not in the graph, so no browser can choose it", off)
+    if threads is None:
+        return Check(name, UNCHECKED, f"could not read the threads of {child_label(CHILD)} (pid {entry.get('pid')})",
+                     f"check by hand: ps -L -o tid,cls,rtprio,comm -p {entry.get('pid')}")
+    realtime = [(n, REALTIME_POLICIES[policy], prio) for n, policy, prio in threads if policy in REALTIME_POLICIES]
+    if realtime:
+        shown = ", ".join(f"{n} ({policy} {prio})" for n, policy, prio in realtime)
+        return Check(name, OK, f"{child_label(CHILD)} (pid {entry.get('pid')}) offers {SOURCE_LABEL!r} to the "
+                     f"browser and runs realtime: {shown}")
+    return Check(
+        name, OK,
+        f"{child_label(CHILD)} (pid {entry.get('pid')}) runs no thread at realtime priority. It is in Sushi's "
+        "cycle every cycle the rig runs, where a late thread makes the cycle late",
+        "start the rig with --no-visualiser-tap while playing, or give PipeWire realtime priority (on Ubuntu "
+        "through rtkit: sudo apt install rtkit), then restart the rig",
+    )
+
+
 # What logind may do on the lid closing that stops the rig (logind.conf(5)'s
 # HandleLidSwitch= values); `ignore`, `lock` and `factory-reset` leave it
 # playing.
@@ -1020,29 +1072,33 @@ def _jackd_pids() -> tuple[int, ...] | None:
 
 
 def _pulse_threads() -> dict[int, tuple[tuple[str, int, int], ...]] | None:
-    """pipewire-pulse's threads, by pid, as `(name, policy, rt_priority)`:
-    fields 2, 41 and 40 of each /proc/<pid>/task/<tid>/stat. `pgrep -x`, for
-    the reason `_jackd_pids` gives. None when pgrep could not be run."""
+    """pipewire-pulse's threads, by pid, as `(name, policy, rt_priority)`
+    (`threads_of`). `pgrep -x`, for the reason `_jackd_pids` gives. None when
+    pgrep could not be run."""
     try:
         result = subprocess.run(["pgrep", "-x", "pipewire-pulse"], capture_output=True, text=True,
                                 check=False, timeout=5.0)
     except (OSError, subprocess.SubprocessError):
         return None
-    found: dict[int, tuple[tuple[str, int, int], ...]] = {}
-    for pid in (int(line) for line in result.stdout.split() if line.strip().isdigit()):
-        threads = []
-        for stat in sorted(Path(f"/proc/{pid}/task").glob("*/stat"), key=lambda p: (len(p.parent.name), p.parent.name)):
-            try:
-                text = stat.read_text()
-            except OSError:
-                continue
-            name = text[text.find("(") + 1:text.rfind(")")]
-            fields = text[text.rfind(")") + 2:].split()
-            # After the name, field 3 is first: policy is field 41, rt_priority 40.
-            if len(fields) > 38:
-                threads.append((name, int(fields[38]), int(fields[37])))
-        found[pid] = tuple(threads)
-    return found
+    return {pid: threads_of(pid) for pid in (int(line) for line in result.stdout.split() if line.strip().isdigit())}
+
+
+def threads_of(pid: int) -> tuple[tuple[str, int, int], ...]:
+    """One process's threads as `(name, policy, rt_priority)`: fields 2, 41
+    and 40 of each /proc/<pid>/task/<tid>/stat. Empty when there are none to
+    read (the process has gone)."""
+    threads = []
+    for stat in sorted(Path(f"/proc/{pid}/task").glob("*/stat"), key=lambda p: (len(p.parent.name), p.parent.name)):
+        try:
+            text = stat.read_text()
+        except OSError:
+            continue
+        name = text[text.find("(") + 1:text.rfind(")")]
+        fields = text[text.rfind(")") + 2:].split()
+        # After the name, field 3 is first: policy is field 41, rt_priority 40.
+        if len(fields) > 38:
+            threads.append((name, int(fields[38]), int(fields[37])))
+    return tuple(threads)
 
 
 def _lid_actions() -> tuple[tuple[str, str], ...] | None:
@@ -1376,5 +1432,19 @@ def run(root: Path, machine_file: Path | None = None,
             )
 
     checks.append(record_check(root, rig, state, list_ports=list_ports))
+    checks.append(tap_check(rig, state, _tap_threads(rig), nodes))
     checks += environment_checks(gather_environment(root))
     return checks
+
+
+def _tap_threads(rig: dict) -> tuple | None:
+    """The running tap's threads (`threads_of`), by the pid the state file
+    recorded; None when there is no live pid to look at."""
+    from .state import is_real_id
+    from .vistap import CHILD
+
+    entry = (rig.get("children") or {}).get(CHILD) if isinstance(rig.get("children"), dict) else None
+    pid = entry.get("pid") if isinstance(entry, dict) else None
+    if not entry or not entry.get("alive") or not is_real_id(pid):
+        return None
+    return threads_of(pid) or None

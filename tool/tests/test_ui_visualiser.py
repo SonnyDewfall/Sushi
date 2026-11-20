@@ -239,6 +239,30 @@ def test_the_input_is_the_one_chosen_then_the_guitars_then_the_browsers(blank):
     assert out[5] == out[6] == {"deviceId": None, "label": "", "channel": None, "how": "default"}
 
 
+def test_the_rigs_output_comes_before_the_guitar_and_a_choice_made_here_before_both(blank):
+    """#195: the visualiser tap's source, by the name /machine/roles gives
+    it, both channels; then the guitar; then the browser's default."""
+    out = rigjs(blank, """
+      const tap = {deviceId: 'tap', label: 'Sushi rig output'};
+      const devices = [{deviceId: 'default', label: 'Default'}, {deviceId: 'id14', label: 'Audient iD14 Multichannel'},
+        {deviceId: 'cam', label: 'BRIO Ultra HD Webcam Analog Stereo'}, tap, {deviceId: 'x', label: 'Sushi rig output (old)'}];
+      const guitar = {device: 'Audient iD14', channel: 0};
+      const output = {node: 'sushi_rig_output', label: 'Sushi rig output'};
+      const settings = (input, channel = null) => ({input, channel});
+      return [R.pickInput(devices, settings(null), guitar, output),
+              R.pickInput(devices, settings({deviceId: 'cam', label: 'c'}, 1), guitar, output),
+              R.pickInput(devices.filter((d) => d.deviceId !== 'tap'), settings(null), guitar, output),
+              R.pickInput(devices, settings(null), guitar),
+              R.pickInput(devices.filter((d) => d.deviceId !== 'tap'), settings(null), null, output),
+              R.pickInput(devices, settings(null), guitar, {label: ''})];""")
+    assert out[0] == {"deviceId": "tap", "label": "Sushi rig output", "channel": None, "how": "output"}
+    assert out[1]["deviceId"] == "cam" and out[1]["how"] == "chosen", "a choice made by hand still wins"
+    assert out[2]["deviceId"] == "id14" and out[2]["how"] == "guitar", "a rig without its tap: the guitar"
+    assert out[3]["how"] == "guitar", "with nothing said of the tap, as before"
+    assert out[4]["deviceId"] == "default" and out[4]["how"] == "default", "never a name that only starts the same"
+    assert out[5]["how"] == "guitar"
+
+
 def test_an_input_is_said_with_its_channel_and_how_it_was_chosen(blank):
     out = rigjs(blank, """return [R.inputWords({deviceId: 'a', label: 'Audient iD14 Multichannel', channel: 0, how: 'guitar'}),
       R.inputWords({deviceId: 'default', label: '', channel: null, how: 'default'}), R.inputWords({deviceId: 'b', label: 'Cam', channel: 1, how: 'chosen'}),
@@ -247,6 +271,8 @@ def test_an_input_is_said_with_its_channel_and_how_it_was_chosen(blank):
     assert out == ["Audient iD14 Multichannel, left channel (the machine file's guitar-in)",
                    "the browser's default input (the browser's choice)", "Cam, right channel", "no input yet",
                    False, False, True, False, True]
+    said = rigjs(blank, "return R.inputWords({deviceId: 't', label: 'Sushi rig output', channel: null, how: 'output'});")
+    assert said == "Sushi rig output (the rig's output: the master, after its limiter)"
 
 
 def test_each_preset_has_the_four_shapes_and_waves_butterchurn_draws(blank):
@@ -691,3 +717,23 @@ def test_what_it_heard_is_said_on_the_line(opened):
     assert kept["input"]["deviceId"] == value and kept["channel"] == 1
     v.shown()
     assert v.state()["pick"]["how"] == "chosen" and v.state()["pick"]["channel"] == 1
+
+
+def test_the_rigs_output_is_heard_first_when_the_roles_name_it(opened):
+    """The page as built, end to end: /machine/roles names the tap's source
+    (stood in here by one of Chromium's fake inputs, renamed by the answer),
+    and the visualiser opens that input and says so."""
+    v = opened()
+    p = v.page
+    labels = p.evaluate("""async () => (await navigator.mediaDevices.getUserMedia({audio: true})
+      .then((s) => { s.getTracks().forEach((t) => t.stop()); return navigator.mediaDevices.enumerateDevices(); }))
+      .filter((d) => d.kind === 'audioinput' && d.deviceId !== 'default').map((d) => d.label)""")
+    assert labels, "Chromium's fake inputs"
+    answer = json.dumps({"ok": True, "roles": [], "visualiser_tap": {"node": "sushi_rig_output", "label": labels[-1]}})
+    p.route("**/machine/roles", lambda route: route.fulfill(status=200, content_type="application/json", body=answer))
+    v.shown()
+    pick = v.state()["pick"]
+    assert (pick["how"], pick["label"], pick["channel"]) == ("output", labels[-1], None)
+    p.mouse.move(1, 1)
+    v.off()
+    assert "(the rig's output: the master, after its limiter)" in p.locator(".visualiser-note").inner_text()

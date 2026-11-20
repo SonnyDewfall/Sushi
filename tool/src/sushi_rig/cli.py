@@ -1071,6 +1071,12 @@ def _main(argv: list[str] | None = None) -> int:
         help="skip the neural amp even if the config describes one",
     )
     p.add_argument(
+        "--no-visualiser-tap", dest="visualiser_tap", action="store_false",
+        help="do not offer the rig's output (the master, after its limiter) to the browser as "
+        "the input 'Sushi rig output', which the web page's visualiser listens to; the tap is a "
+        "pw-loopback in Sushi's cycle, off the audio path. restart and a switch keep this choice",
+    )
+    p.add_argument(
         "--amp-model",
         metavar="NAME",
         help="use this model instead of the one in the config — a filename in "
@@ -1368,7 +1374,7 @@ def _main(argv: list[str] | None = None) -> int:
     )
     p = sub.add_parser(
         "restart",
-        help="stop the running rig and bring the same one back — same config, same mode, same amp and tuner choices",
+        help="stop the running rig and bring the same one back — same config, same mode, same amp, tuner and visualiser tap choices",
     )
     p.add_argument(
         "--discard", action="store_true",
@@ -1730,7 +1736,7 @@ def _main(argv: list[str] | None = None) -> int:
                 return up(
                     args.config_name, headless=args.headless,
                     tuner=args.tuner, amp=args.amp,
-                    amp_model=args.amp_model, rig=args.rig,
+                    amp_model=args.amp_model, rig=args.rig, visualiser_tap=args.visualiser_tap,
                     machine=str(args.machine.resolve()) if args.machine is not None else None,
                 )
             if args.command == "down":
