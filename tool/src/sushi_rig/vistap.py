@@ -49,8 +49,8 @@ which is the source the browser lists. Chosen over a
 interface, every cycle the rig runs, whether or not a browser is listening;
 and the cycle is finished only when they are. Measured in a container with
 PipeWire 1.0.5 at the rig's 256 frames (`tool/spikes/visualiser_audio/README.md`,
-"The rig's output"): BUSY about 4 to 8 µs for the capture side and 2 to 4 µs
-for the source, against a 5333 µs cycle. What makes that safe is the data
+"The rig's output"): BUSY 5 to 13 µs (mostly 6 to 8) for the capture side and
+about 2 to 3 µs for the source, against a 5333 µs cycle. What makes that safe is the data
 thread being realtime, and `pw-loopback` reads `client.conf`, which loads no
 `module-rt`: its data thread ran at normal priority, and the tap was "too
 slow" about once a second. So it is started with
@@ -113,10 +113,15 @@ ENV = {"PIPEWIRE_CONFIG_NAME": "client-rt.conf"}
 def command() -> list[str]:
     """`pw-loopback` as the rig starts it: two channels, left and right, in one
     node group, the capture side linked by hand and the source never linked
-    to anything by the session manager. Pure."""
+    to anything by the session manager. Pure.
+
+    The short options, as PipeWire 1.0.5's `pw-loopback` takes them: its help
+    lists `-m, --channel-map`, but it refuses `--channel-map` ("unrecognized
+    option") and exits, which a first run of this against a real PipeWire
+    found (2026-11-20)."""
     return [
-        "pw-loopback", "--name", SOURCE_NODE, "--group", SOURCE_NODE,
-        "--channels", "2", "--channel-map", "[ FL FR ]",
+        "pw-loopback", "-n", SOURCE_NODE, "-g", SOURCE_NODE,
+        "-c", "2", "-m", "[ FL FR ]",
         "--capture-props", (
             f"node.name={TAP_NODE} node.description=\"{SOURCE_LABEL} (tap)\" "
             "media.class=Stream/Input/Audio node.autoconnect=false"

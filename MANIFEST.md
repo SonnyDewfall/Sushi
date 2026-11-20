@@ -6240,3 +6240,43 @@ test `test_at_phone_width_the_header_is_as_tall_whatever_its_tiles_read`
 the header's height; it fails without the fix (294 against 334 px). Every
 `test_ui_*` file passed: 520, then the four with font cases again, 160.
 *(2026-11-19)*
+
+**The visualiser hears the rig's output (#195).** The user wanted the
+visualiser on what the rig plays, which is what they EQ, not the guitar's
+input. Chromium lists no monitor sources, so the tap is a real
+`Audio/Source`: `up` and the agent start a child `vistap`, a `pw-loopback`
+(`tool/src/sushi_rig/vistap.py`) whose playback side is `sushi_rig_output`,
+"Sushi rig output", and whose capture side is linked from Sushi's master
+outputs (the master track's, engine bus 0, after the limiter; bus 0 for a v1
+config) with `pw-link` once Sushi answers, read back from `pw-link -l`.
+Chosen over a `support.null-audio-sink` adapter made by `pw-cli`: its nodes
+die with its process (any signal), so it is a child like the tuner, in the
+group, stopped by `down`, watched by the agent ("the visualiser tap stopped:
+the sound is unaffected"), and kept by `restart` and switches through the
+state file's `visualiser_tap_requested`; a stream never drives the graph;
+both sides are `node.autoconnect = false`, so it is never linked to the
+interface. A tap that cannot be linked is stopped by its pid and the start
+warns, so the page is never offered a silent source. `--no-visualiser-tap`
+(`"visualiser_tap": false` on POST /rig/up) leaves it out. `GET
+/machine/roles` names it to the page, and `pickInput` takes it after a hand
+choice and before the guitar. Its nodes are in `top.CHILD_NODES`, so LOAD,
+XRUNS and the visualiser's xrun safeguard count them; doctor has
+`visualiser-tap` (its data thread's scheduling, by the state file's pid).
+**Two things found by running it**, against the spike's PipeWire 1.0.5
+session (`tool/spikes/visualiser_audio/README.md`, "The rig's output"):
+`pw-loopback` refuses `--channel-map` though its help lists it, and exits
+(the first run linked nothing and said so; short options now, pinned by a
+test); and `pw-loopback` reads `client.conf`, which loads no `module-rt`, so
+its data thread ran at normal priority inside Sushi's cycle and was "too
+slow" about once a second: it is started with
+`PIPEWIRE_CONFIG_NAME=client-rt.conf` (SCHED_FIFO 83 seen). Measured there:
+both nodes followers of the driver every cycle, listening or not, BUSY 5 to
+13 µs and 2 to 3 µs against a 5333 µs cycle, no new xruns of their own in
+15 s; Chromium listed "Sushi rig output" and captured the stand-in Sushi's
+output; `kill -9` left no node. With no other source WirePlumber made it the
+default source; on the rig every ALSA input has a higher `priority.session`
+(1680 to 2109 in the captured graph), so it should not be there. Every key
+test was shown failing with its fix taken out (18 mutations). **Not run:**
+the rig: the iD14 as driver, the real Sushi, rtkit granting realtime,
+Firefox. The CI container runs no PipeWire, so there is no slow test of the
+real source appearing and going. *(2026-11-20)*

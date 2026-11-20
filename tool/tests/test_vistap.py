@@ -53,8 +53,9 @@ def test_the_tap_is_a_pw_loopback_whose_source_the_browser_lists_and_nothing_aut
     assert vistap.SOURCE_LABEL == "Sushi rig output"
     for props in (capture, playback):
         assert "node.autoconnect=false" in props, "never linked by the session manager: not to the interface"
-    assert command[command.index("--group") + 1] == vistap.SOURCE_NODE, "both sides in one node group"
-    assert command[command.index("--channels") + 1] == "2"
+    assert command[command.index("-g") + 1] == vistap.SOURCE_NODE, "both sides in one node group"
+    assert command[command.index("-c") + 1] == "2" and command[command.index("-m") + 1] == "[ FL FR ]"
+    assert "--channel-map" not in command, "PipeWire 1.0.5's pw-loopback refuses it, and exits"
 
 
 def test_the_tap_is_planned_last_optional_and_realtime_and_only_when_asked_for(tmp_path):

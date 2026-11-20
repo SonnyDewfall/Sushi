@@ -682,12 +682,16 @@ What is and is not kept apart from Sushi (review of PR #183):
   Sushi, so followers of Sushi's driver every cycle the rig runs, whether or
   not the page listens; the cycle finishes only when they have. Measured in
   a container (PipeWire 1.0.5, 256 frames, a JACK stand-in for Sushi;
-  `tool/spikes/visualiser_audio/README.md`, "The rig's output"): BUSY a few
-  µs a node against a 5333 µs cycle. `pw-loopback` reads `client.conf`,
+  `tool/spikes/visualiser_audio/README.md`, "The rig's output"): BUSY 5 to 13
+  µs for the capture side and 2 to 3 µs for the source, against a 5333 µs
+  cycle, and no new xruns of its own in 15 s. `pw-loopback` reads `client.conf`,
   which loads no `module-rt`, and its data thread then ran at normal
   priority and was "too slow" about once a second; it is started with
   `PIPEWIRE_CONFIG_NAME=client-rt.conf`, which gave it SCHED_FIFO. A stream
   never drives the graph, so it cannot take the clock from the interface.
+  It is not the default source on the rig: WirePlumber prefers a higher
+  `priority.session`, and the tap's is 0 against the ALSA inputs' 1680 to
+  2109 (the rig's captured graph); on a machine with no other input it is.
 
 So two safeguards. `sushi-rig doctor`'s `pulse-realtime` says whether
 pipewire-pulse runs a thread at realtime priority, and `visualiser-tap`
