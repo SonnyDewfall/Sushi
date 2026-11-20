@@ -370,7 +370,7 @@ def test_a_crash_shows_in_health(world):
 
     from sushi_rig.agent import Agent
 
-    world.spawner.scripts["fmit"] = crasher(255, after=0.2)
+    world.spawner.scripts["fmit"] = crash_when(world.root / "go", 255)
     supervisor = Supervisor(world.world, say=lambda m: None)
     agent = Agent(supervisor=supervisor)
 
@@ -378,6 +378,7 @@ def test_a_crash_shows_in_health(world):
         async with TestClient(TestServer(agent.app())) as client:
             up = await client.post("/rig/up", json={"config_name": "t", "headless": True})
             assert up.status == 200, await up.text()
+            (world.root / "go").touch()  # the crash, once the rig is up
             await settle_until(lambda: supervisor.crashed)
             health = await (await client.get("/health")).json()
             down = await client.post("/rig/down")
@@ -454,7 +455,7 @@ def test_a_down_abandoned_at_the_time_limit_leaves_the_rig_watched(world, monkey
         release.wait(30)
         return 1
 
-    world.spawner.scripts["fmit"] = crasher(3, after=1.5)
+    world.spawner.scripts["fmit"] = crash_when(world.root / "go", 3)
     supervisor = Supervisor(world.world, say=lambda m: None)
 
     async def go():
@@ -465,6 +466,7 @@ def test_a_down_abandoned_at_the_time_limit_leaves_the_rig_watched(world, monkey
             outcome = await supervisor.run(["down"])
             assert outcome.abandoned, outcome
             assert supervisor.held is not None and not supervisor.held.stopping
+            (world.root / "go").touch()  # the crash, after the abandoned down
             await settle_until(lambda: supervisor.crashed)  # fmit's, after the abandoned down
             return supervisor.crashed
         finally:
@@ -1609,3 +1611,163 @@ def test_no_visualiser_tap_reaches_prepare_and_restart_keeps_it(world):
 
     run(go())
     assert [a["visualiser_tap"] for a in world.asked] == [False, False]
+
+
+def test_a_lease_left_from_a_tap_that_crashed_does_not_hold_up_the_next(world):
+    """Page a's tap crashed; page b's started anew. a's lease was on the
+    dead tap: left, it held the new one up after b let go (review of PR #200)."""
+    tap_world(world)
+    go_file = world.root / "go"
+    world.spawner.scripts["pw-loopback"] = crash_when(go_file, 1)
+    supervisor = Supervisor(world.world, say=lambda m: None)
+
+    async def go():
+        assert (await supervisor.up("t", headless=True, tuner=False)).ok
+        assert (await supervisor.tap("a")).ok
+        go_file.touch()
+        await settle_until(lambda: supervisor.crashed)
+        go_file.unlink()
+        assert (await supervisor.tap("b")).ok
+        released = await supervisor.tap_release("b", at_once=True)
+        await supervisor.down()
+        return released
+
+    assert run(go()) == {"running": False, "stopped": True}
+
+
+def test_a_release_from_a_page_whose_tap_has_gone_is_still_taken():
+    """give_back when no tap runs: the lease goes too (`Leases` is per rig)."""
+    from sushi_rig import vistap
+
+    leases = vistap.Leases(30, 60)
+    leases.take("a", 0)
+    leases.give_back("a", 1)
+    assert leases.pages(1) == []
+
+
+def test_a_tap_that_exits_once_linked_is_refused_as_not_started_and_is_no_crash(world):
+    """It exited between the links and the thread check: refused as an exit
+    (`did_not_start`), not as `not_realtime`, and no crash recorded."""
+    def link_then_die(config):
+        tap = supervisor.held.children["vistap"].proc
+        tap.kill()
+        time.sleep(0.3)  # several watches see it gone, before the start does
+        return []
+
+    tap_world(world, link_tap=link_then_die)
+    supervisor = Supervisor(world.world, say=lambda m: None)
+
+    async def go():
+        assert (await supervisor.up("t", headless=True, tuner=False)).ok
+        answer = await supervisor.tap("a")
+        await asyncio.sleep(0.3)  # watches, which would take the exit for a crash
+        crashed = list(supervisor.crashed)
+        await supervisor.down()
+        return answer, crashed
+
+    answer, crashed = run(go())
+    assert not answer.ok and answer.code == "did_not_start" and "exited as it started" in answer.reason
+    assert crashed == []
+
+
+def test_the_tap_reads_no_file_on_the_loop(world, monkeypatch):
+    """The state file (the running config, the rig's name) is read in the
+    worker, not on the event loop, as the tap starts and stops."""
+    import threading as threads
+
+    tap_world(world)
+    on_loop: list[str] = []
+    real = supervisor_module.read_state
+
+    def watched():
+        if threads.current_thread() is threads.main_thread():
+            on_loop.append("read_state")
+        return real()
+
+    supervisor = Supervisor(world.world, say=lambda m: None)
+
+    async def go():
+        assert (await supervisor.up("t", headless=True, tuner=False)).ok
+        monkeypatch.setattr(supervisor_module, "read_state", watched)
+        assert (await supervisor.tap("a")).ok
+        await supervisor.tap_release("a", at_once=True)
+        monkeypatch.setattr(supervisor_module, "read_state", real)
+        await supervisor.down()
+
+    run(go())
+    assert on_loop == []
+
+
+def test_a_tap_is_recorded_beside_the_state_file_while_it_runs(world):
+    from sushi_rig import vistap
+
+    tap_world(world)
+    supervisor = Supervisor(world.world, say=lambda m: None)
+
+    async def go():
+        assert (await supervisor.up("t", headless=True, tuner=False)).ok
+        assert (await supervisor.tap("a")).ok
+        pid, pgid = supervisor.held.children["vistap"].proc.pid, supervisor.held.pgid
+        during = vistap.read_record()
+        described = rig.describe_rig()
+        await supervisor.tap_release("a", at_once=True)
+        after = vistap.read_record()
+        assert (await supervisor.tap("a")).ok
+        await supervisor.down()
+        return pid, pgid, during, described, after, vistap.read_record()
+
+    pid, pgid, during, described, after, downed = run(go())
+    assert (during["pid"], during["pgid"]) == (pid, pgid) and during["starttime"]
+    assert described["visualiser_tap"] == {"pid": pid, "alive": True}
+    assert after is None, "removed when it stopped"
+    assert downed is None, "and when down stopped the group"
+
+
+def test_a_tap_an_earlier_agent_left_is_stopped_by_its_pid_at_the_next_agents_start(world):
+    """The agent died by SIGKILL with a tap running: its leases and watch
+    went with it, KillMode=process kept the tap. The next agent finds it by
+    its record, checks it is that process, and stops it by pid."""
+    from sushi_rig import vistap
+
+    left = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
+    other = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(60)"], start_new_session=True)
+    try:
+        vistap.write_record(left.pid, left.pid)
+        described = rig.describe_rig(
+            {"supervisor_pid": left.pid, "pgid": left.pid, "children": {}, "started_at": "x",
+             "config_name": "t", "mode": "headless"},
+            alive=lambda pid: True, group_alive=lambda pgid: True)
+        supervisor = Supervisor(world.world, say=lambda m: None)
+        run(supervisor.tidy_orphan_tap())
+        assert left.wait(timeout=10) is not None, "stopped"
+        assert vistap.read_record() is None and supervisor.tap_orphan["pid"] == left.pid
+        assert supervisor.tap_orphan["stopped"] is True
+        assert described["visualiser_tap"] == {"pid": left.pid, "alive": True}
+        assert "  vistap     pid %d  (the visualiser's tap on the rig's output)" % left.pid in rig.status_lines(described)
+
+        # A record whose pid is now another process (a reused pid): not touched.
+        vistap.write_record(other.pid, other.pid)
+        record = vistap.read_record()
+        vistap.record_path().write_text(json.dumps({**record, "starttime": record["starttime"] + 1}))
+        run(Supervisor(world.world, say=lambda m: None).tidy_orphan_tap())
+        assert other.poll() is None, "not the tap it recorded: left alone"
+        assert vistap.read_record() is None, "and the stale record cleared"
+    finally:
+        for proc in (left, other):
+            if proc.poll() is None:
+                proc.kill()
+            proc.wait()
+
+
+def test_a_tap_no_agent_holds_still_counts_in_the_load():
+    pytest.importorskip("aiohttp")
+    from sushi_rig.agent import Agent
+
+    agent = Agent()
+    described = {"running": True, "children": {"sushi": {"pid": 1, "alive": True}},
+                 "visualiser_tap": {"pid": 12, "alive": True}}
+    try:
+        assert set(agent._load_children(described)) == {"sushi", "vistap"}
+        assert set(agent._load_children({**described, "visualiser_tap": {"pid": 12, "alive": False}})) == {"sushi"}
+    finally:
+        agent._executor.shutdown(wait=True)

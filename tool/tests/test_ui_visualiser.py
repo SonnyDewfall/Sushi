@@ -189,14 +189,16 @@ def test_a_rise_in_xruns_while_it_listens_is_a_reason_to_stop(blank):
     assert out[2] == out[3] == "rebase", "none yet, or another run: the count is taken again, not compared"
     assert "tap" not in out[1]
     tapped = rigjs(blank, "return R.visualiserTripped({count: 2, run: 'a'}, {count: 3, run: 'a'}, true);")
-    assert "The tap on the rig's output was let go with it, so it is out of Sushi's cycle." in tapped
+    assert ("Its tap on the rig's output was let go with it: the agent stops that now, unless another page "
+            "is listening to it.") in tapped
 
 
 def test_the_rigs_output_is_asked_for_unless_another_input_was_chosen_by_hand(blank):
     out = rigjs(blank, """const w = R.visualiserWantsTap;
       return [w({input: null}), w(null), w({input: {deviceId: 'x', label: 'Sushi rig output'}}),
-              w({input: {deviceId: 'y', label: 'Audient iD14 Multichannel'}})];""")
-    assert out == [True, True, True, False]
+              w({input: {deviceId: 'y', label: 'Audient iD14 Multichannel'}}),
+              w({input: {deviceId: 'z', label: 'Renamed'}}, 'Renamed')];""")
+    assert out == [True, True, True, False, True]
 
 
 def test_the_taps_name_the_page_knows_is_the_agents():
@@ -758,13 +760,22 @@ class TapAgent:
     """The agent's tap routes, stood in: answers with `label` (or refuses
     with `refuse`), and records each request's path and body."""
 
-    def __init__(self, page, label, refuse=None, renew=0.3):
+    def __init__(self, page, label, refuse=None, renew=0.3, hold=False):
         self.label, self.refuse, self.renew, self.asked = label, refuse, renew, []
+        self.hold, self.held = hold, []
         page.route("**/visualiser/tap", self.tap)
         page.route("**/visualiser/tap/release", self.release)
 
+    def answer(self, route):
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(
+            {"ok": True, "source": {"node": "sushi_rig_output", "label": self.label},
+             "lease_s": 30, "renew_s": self.renew}))
+
     def tap(self, route):
         self.asked.append(("tap", json.loads(route.request.post_data or "{}")))
+        if self.hold:
+            self.held.append(route)  # answered by the test, late
+            return
         if self.refuse:
             route.fulfill(status=409, content_type="application/json",
                           body=json.dumps({"ok": False, "code": "not_realtime", "reason": self.refuse}))
@@ -830,7 +841,7 @@ def test_a_trip_while_on_the_rigs_output_lets_the_tap_go_at_once_and_says_so(ope
     page_id = agent.asked[0][1]["page"]
     served.pw_top_output = re.sub(r"^(R\s+130(?:\s+\S+){6}\s+)0(\s+\+ sushi)$", r"\g<1>5\2", served.pw_top_output, flags=re.M)
     state = v.off()
-    assert "The tap on the rig's output was let go" in state["tripped"]
+    assert "Its tap on the rig's output was let go" in state["tripped"]
     assert agent.wait(p, lambda: ("release", {"page": page_id, "now": True}) in agent.asked), \
         "at once, not after the linger"
 
@@ -850,3 +861,68 @@ def test_an_input_that_ends_while_heard_is_chosen_again_and_heard(opened):
     v.until("() => sushiRigVisualiser().session.listening")
     assert agent.count("tap") > asked, "the tap asked for again"
     assert v.state()["phase"] == "shown" and v.state()["pick"]["how"] == "output"
+
+
+def test_the_rigs_output_chosen_by_hand_keeps_its_lease(opened):
+    """Chosen on the line, "Sushi rig output" is still the tap: its lease is
+    kept and renewed, not given back at once (review of PR #200)."""
+    v = opened()
+    p = v.page
+    label = fake_labels(p)[-1]
+    agent = TapAgent(p, label)
+    v.shown()
+    p.mouse.move(1, 1)
+    v.off()
+    pick = p.locator("#visualiser-input")
+    pick.focus()
+    p.wait_for_function("document.querySelectorAll('#visualiser-input option').length > 1")
+    value = p.evaluate(f"""[...document.querySelectorAll('#visualiser-input option')]
+      .find((o) => o.textContent === {json.dumps(label)}).value""")
+    pick.select_option(value)
+    asked = agent.count("tap")
+    released = agent.count("release")
+    v.shown()
+    state = v.state()
+    assert (state["pick"]["deviceId"], state["pick"]["how"]) == (value, "output")
+    assert agent.wait(p, lambda: agent.count("tap") >= asked + 3), "renewed while it listens"
+    assert agent.count("release") == released, "not given back"
+
+
+def test_an_answer_too_late_for_the_page_is_given_back(opened):
+    """The page stopped waiting (9 s, here 0.3) and fell back; the agent may
+    still start the tap and give this page the lease, so it is given back
+    then and there (review of PR #200)."""
+    v = opened(init=("window.sushiRigTapAskMs = 300;",))
+    p = v.page
+    agent = TapAgent(p, fake_labels(p)[-1], hold=True)
+    v.shown()
+    assert v.state()["pick"]["how"] == "default" and "did not answer within 0.3 s" in v.state()["tap"]["reason"]
+    page_id = agent.asked[0][1]["page"]
+    assert agent.wait(p, lambda: ("release", {"page": page_id, "now": False}) in agent.asked), \
+        "given back once it gave up waiting"
+    for route in agent.held:
+        try:
+            agent.answer(route)
+        except Exception:  # noqa: BLE001 -- the page's request was aborted: nothing to answer
+            pass
+
+
+HIDE = """(hidden) => { Object.defineProperty(document, 'hidden', {configurable: true, get: () => hidden});
+  Object.defineProperty(document, 'visibilityState', {configurable: true, get: () => hidden ? 'hidden' : 'visible'});
+  document.dispatchEvent(new Event('visibilitychange')); }"""
+
+
+def test_a_tab_hidden_while_the_agent_answers_neither_listens_nor_renews(opened):
+    v = opened()
+    p = v.page
+    agent = TapAgent(p, fake_labels(p)[-1], hold=True)
+    v.until("() => sushiRigVisualiser().phase === 'shown'")
+    assert agent.wait(p, lambda: agent.held), "the page asked"
+    page_id = agent.asked[0][1]["page"]
+    p.evaluate(HIDE, True)
+    agent.answer(agent.held.pop())
+    assert agent.wait(p, lambda: ("release", {"page": page_id, "now": False}) in agent.asked), "given back"
+    p.wait_for_timeout(1000)
+    assert agent.count("tap") == 1, "and never renewed"
+    state = v.state()
+    assert state["session"]["listening"] is False and state["tap"]["holding"] is False

@@ -3024,21 +3024,23 @@ export function visualiserGate(s) {
 // Any rise counts, whatever its cause: the capture stream is in Sushi's
 // cycle, and a glitch while it is there is not worth a second.
 // `tapped`: it was listening to the rig's output, whose tap is let go with
-// the capture (the agent stops it unless another page holds it).
+// the capture. The agent stops it then unless another page holds it, which
+// this page cannot know when it says so.
 export function visualiserTripped(base, seen, tapped = false) {
   if (!seen || typeof seen.count !== "number") return null;
   if (!base || typeof base.count !== "number" || base.run !== seen.run) return "rebase";
   if (seen.count <= base.count) return null;
   return `Stopped: the rig glitched while the visualiser was listening (xruns went from ${base.count} to ${seen.count}). `
-    + (tapped ? "The tap on the rig's output was let go with it, so it is out of Sushi's cycle. " : "")
+    + (tapped ? "Its tap on the rig's output was let go with it: the agent stops that now, unless another page is listening to it. " : "")
     + "It stays off until this page is reloaded or the Visualiser box is ticked again.";
 }
 
 // Whether to ask the agent for the rig's output before choosing an input:
-// unless an input was chosen here by hand, and it is not that one.
-export function visualiserWantsTap(settings) {
+// unless an input was chosen here by hand, and it is not that one (by its
+// name, or the name the agent last gave it, `offered`).
+export function visualiserWantsTap(settings, offered = null) {
   const input = settings && settings.input;
-  return !input || input.label === VISUALISER.tapLabel;
+  return !input || input.label === VISUALISER.tapLabel || (!!offered && input.label === offered);
 }
 
 // Whether `idle` seconds have passed since the last input at `last` (ms).
@@ -3091,7 +3093,12 @@ export function guitarInput(roles) {
 export function pickInput(devices, settings, guitar, output = null) {
   const inputs = (devices || []).filter((d) => d && typeof d.deviceId === "string" && d.deviceId);
   const kept = settings && settings.input ? inputs.find((d) => d.deviceId === settings.input.deviceId) : null;
-  if (kept) return { deviceId: kept.deviceId, label: kept.label || settings.input.label, channel: settings.channel ?? null, how: "chosen" };
+  if (kept) {
+    // The rig's output chosen by hand is still the rig's output: said as
+    // that, and its lease kept (review of PR #200: it was given back at once).
+    const tapped = kept.label === VISUALISER.tapLabel || (output && output.label && kept.label === output.label);
+    return { deviceId: kept.deviceId, label: kept.label || settings.input.label, channel: settings.channel ?? null, how: tapped ? "output" : "chosen" };
+  }
   if (output && typeof output.label === "string" && output.label) {
     const tap = inputs.find((d) => d.label === output.label);
     if (tap) return { deviceId: tap.deviceId, label: tap.label, channel: null, how: "output" };

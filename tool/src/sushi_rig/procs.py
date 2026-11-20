@@ -171,3 +171,32 @@ def threads_of(pid: int) -> tuple[tuple[str, int, int], ...]:
         if len(fields) > 38:
             threads.append((name, int(fields[38]), int(fields[37])))
     return tuple(threads)
+
+
+def stop_pid(pid: int, steps: tuple[tuple[signal.Signals, float], ...] = SHUTDOWN_STEPS,
+             interval: float = 0.05) -> list[int]:
+    """Stop one process that is not our child, by its pid, through the
+    shutdown escalation: `[pid]` if it is still there afterwards, else `[]`.
+    For a process this one cannot wait for (an earlier agent's child), so
+    gone means no longer in /proc, or a zombie. Pids of 1 or below are
+    refused, as `pid_alive` refuses them."""
+    if pid <= 1:
+        raise ValueError(f"refusing to signal pid {pid}")
+
+    def gone() -> bool:
+        try:
+            return Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0] == "Z"
+        except (OSError, IndexError):
+            return not pid_alive(pid)
+
+    for sig, wait in steps:
+        try:
+            os.kill(pid, sig)
+        except ProcessLookupError:
+            return []
+        deadline = time.monotonic() + wait
+        while time.monotonic() < deadline:
+            if gone():
+                return []
+            time.sleep(interval)
+    return [] if gone() else [pid]

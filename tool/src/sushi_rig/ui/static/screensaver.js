@@ -155,12 +155,17 @@ function lostContext() {
 // and given back if it is not what was chosen. False if the visualiser went
 // meanwhile (the stream and the tap are let go then).
 async function listenAndRun(V, generation) {
-  const output = R.visualiserWantsTap(state.settings) ? await T.acquire() : null;
+  const output = R.visualiserWantsTap(state.settings, T.offeredLabel()) ? await T.acquire() : null;
+  // Gone while the agent answered: the close that moved the generation on
+  // gave the tap back (a later start may hold it now). Hidden: a hidden tab
+  // hears nothing, so the tap is given back here (shown again, it asks again).
+  if (generation !== state.generation) return false;
+  if (document.hidden) { T.release(); return false; }
   const opened = await V.listen(state.settings, await guitar(), output);
   if (opened.pick.how !== "output") T.release();
-  if (generation !== state.generation || !state.session) {
+  if (generation !== state.generation || !state.session || document.hidden) {
     for (const t of opened.stream.getTracks()) t.stop();
-    T.release();
+    if (generation === state.generation) T.release();
     return false;
   }
   // An input that goes while it is heard (the tap stopped, the interface

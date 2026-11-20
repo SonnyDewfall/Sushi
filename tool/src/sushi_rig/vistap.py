@@ -63,6 +63,10 @@ whose xrun safeguard trips gives its lease back at once, and with no other
 page holding one the tap is stopped then, not after the linger: the
 safeguard removes the cause it can.
 
+**A record beside the state file** (`write_record`): the running tap's pid,
+group and start time, so an agent that dies without stopping it leaves it
+findable, and the next one stops it (`Supervisor.tidy_orphan_tap`).
+
 **Realtime or nothing.** `pw-loopback` reads `client.conf`, which loads no
 `module-rt`, so it is started with `PIPEWIRE_CONFIG_NAME=client-rt.conf` (the
 config PipeWire ships for realtime clients). Once linked, a tap with no
@@ -250,12 +254,16 @@ class Leases:
         self.now_due = False
 
     def _expire(self, now: float) -> None:
-        for page, until in list(self.held.items()):
-            if until <= now:
-                del self.held[page]
-                self.idle_since = until if self.idle_since is None else self.idle_since
+        """Drop the leases that have lapsed. The linger starts when the last
+        one held lapses, at the latest end among them, not the first: a page
+        that went while another listened does not shorten the linger (review
+        of PR #200)."""
+        lapsed = [until for until in self.held.values() if until <= now]
+        if not lapsed:
+            return
+        self.held = {page: until for page, until in self.held.items() if until > now}
         if not self.held and self.idle_since is None:
-            self.idle_since = now
+            self.idle_since = max(lapsed)
 
     def take(self, page: str, now: float) -> None:
         self.held[page] = now + self.lease
@@ -263,10 +271,11 @@ class Leases:
         self.now_due = False
 
     def give_back(self, page: str, now: float, *, at_once: bool = False) -> None:
-        self.held.pop(page, None)
         self._expire(now)
+        had = self.held.pop(page, None) is not None
         if not self.held:
-            self.idle_since = min(self.idle_since, now) if self.idle_since is not None else now
+            if had or self.idle_since is None:
+                self.idle_since = now
             self.now_due = self.now_due or at_once
 
     def pages(self, now: float) -> list[str]:
@@ -291,6 +300,84 @@ class Leases:
         self.held.clear()
         self.idle_since = None
         self.now_due = False
+
+
+# --------------------------------------------------------------------------- #
+# The record of a running tap, for an agent that died without stopping it
+# --------------------------------------------------------------------------- #
+#
+# Beside the state file, not in it: the state file is rewritten by `up`, a
+# live switch and an amp restart, each under the agent's lifecycle lock, and a
+# tap starts and stops outside it, at a page's asking. A read-modify-write of
+# rig.json from here could lose a switch's rewrite, and `restart` would then
+# bring back the rig switched from. A file of its own has one writer at a time
+# (`Supervisor._tap_lock`).
+
+
+def record_path() -> Path:
+    from .paths import runtime_dir
+
+    return runtime_dir() / "vistap.json"
+
+
+def starttime(pid: int) -> int | None:
+    """The process's start time, in clock ticks since boot (field 22 of
+    /proc/<pid>/stat), or None when it is gone: with the pid, what names one
+    process for good, since a pid is reused and a start time is not."""
+    try:
+        text = Path(f"/proc/{pid}/stat").read_text()
+        return int(text[text.rfind(")") + 2:].split()[19])
+    except (OSError, ValueError, IndexError):
+        return None
+
+
+def write_record(pid: int, pgid: int, *, path: Path | None = None) -> None:
+    """Record a tap as started: its pid, its group and its start time."""
+    path = path or record_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(json.dumps({"pid": pid, "pgid": pgid, "starttime": starttime(pid)}) + "\n")
+
+
+def read_record(path: Path | None = None) -> dict[str, Any] | None:
+    try:
+        record = json.loads((path or record_path()).read_text())
+    except (OSError, ValueError):
+        return None
+    return record if isinstance(record, dict) else None
+
+
+def clear_record(pid: int | None = None, *, path: Path | None = None) -> None:
+    """Remove the record, only if it is of `pid` when one is given."""
+    path = path or record_path()
+    record = read_record(path)
+    if record is not None and pid is not None and record.get("pid") != pid:
+        return
+    try:
+        path.unlink()
+    except FileNotFoundError:
+        pass
+
+
+def clear_record_of_group(pgid: Any, *, path: Path | None = None) -> None:
+    """Remove the record if its tap was in group `pgid`: what `down` does
+    once it has stopped that group, the tap with it."""
+    record = read_record(path)
+    if record is not None and record.get("pgid") == pgid:
+        clear_record(record.get("pid"), path=path)
+
+
+def recorded_alive(record: dict[str, Any] | None) -> bool:
+    """Whether the recorded tap is still the process running at its pid:
+    alive, not a zombie, and started when the record says. A pid of 1 or
+    below is never a tap."""
+    if not record or not isinstance(record.get("pid"), int) or record["pid"] <= 1:
+        return False
+    pid = record["pid"]
+    try:
+        state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
+    except (OSError, IndexError):
+        return False
+    return state != "Z" and record.get("starttime") is not None and starttime(pid) == record.get("starttime")
 
 
 def link(

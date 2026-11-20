@@ -1126,3 +1126,16 @@ def test_the_examination_reads_the_agents_tap_and_its_threads_by_pid(tmp_path, m
     checks = doctor.run(ROOT, machine_file=THIS_MACHINE, tap=tap_report(running=True, pid=11, pages=2))
     tap = next(c for c in checks if c.name == "visualiser-tap")
     assert asked == [11] and tap.state == OK and "2 page(s)" in tap.message
+
+
+def test_a_tap_left_running_with_no_agent_holding_it_is_a_fault():
+    """Its agent died uncleanly: in Sushi's cycle with no lease and no watch."""
+    rig = {**TAP_RIG, "visualiser_tap": {"pid": 12, "alive": True}}
+    left = doctor.tap_check(rig, TAP_STATE, None, None)
+    assert left.state == FAULT and "pid 12" in left.message and "no agent holding it" in left.message
+    assert "kill 12" in left.remedy
+    held = doctor.tap_check(rig, TAP_STATE, tap_report(running=True, pid=12, pages=1), (("pw-data-loop", 1, 83),))
+    assert held.state == OK, "the agent's own, running: no orphan"
+    dead = doctor.tap_check({**TAP_RIG, "visualiser_tap": {"pid": 12, "alive": False}}, TAP_STATE, None, None,
+                            (True, "x"))
+    assert dead.state != FAULT

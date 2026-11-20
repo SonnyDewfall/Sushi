@@ -92,7 +92,7 @@ from typing import Any, Callable, Sequence
 from . import rig as rig_module
 from . import vistap
 from .paths import log_dir
-from .procs import SHUTDOWN_STEPS, pgid_alive, stop_group, threads_of
+from .procs import SHUTDOWN_STEPS, pgid_alive, stop_group, stop_pid, threads_of
 from .qpwgraph import start_qpwgraph
 from .state import read_state, write_state
 
@@ -437,6 +437,10 @@ class World:
     tap_lease: float = vistap.LEASE
     tap_linger: float = vistap.LINGER
     tap_realtime_wait: float = vistap.REALTIME_WAIT
+    # The tap's record, beside the state file (`vistap.write_record`).
+    tap_record: Callable[[int, int], None] = vistap.write_record
+    tap_read: Callable[[], "dict[str, Any] | None"] = vistap.read_record
+    tap_unrecord: Callable[["int | None"], None] = vistap.clear_record
     stop_group: Callable[..., bool] = stop_group
     log_dir: Callable[[], Path] = log_dir
     holder: tuple[str, ...] = HOLDER
@@ -535,6 +539,7 @@ class Supervisor:
         self._tap_task: "asyncio.Task | None" = None
         self.tap_refused: dict[str, Any] | None = None
         self.tap_stopped: dict[str, Any] | None = None
+        self.tap_orphan: dict[str, Any] | None = None  # one an earlier agent left, stopped at start
         self._torn: str | None = None  # what a cancelled start's teardown said
         self._say = say or (lambda message: print(f"sushi-rig agent: {message}", file=sys.stderr, flush=True))
 
@@ -926,12 +931,20 @@ class Supervisor:
         for child in list(held.children.values()):
             if child.exit is not None or child.proc.poll() is None:
                 continue
+            if child.on_purpose:
+                # Stopped, or refused, on purpose: never a crash. Its exit is
+                # kept for the watch's count, named by the launch rather than
+                # by reading the state file on the loop.
+                child.exit = exit_record(
+                    child.name, child.proc.pid, child.proc.returncode, at=_now(), phase="running",
+                    config_name=held.launch.config_name, log=child.log, **self._run_of(held))
+                continue
             child.exit = exit_record(
                 child.name, child.proc.pid, child.proc.returncode, at=_now(),
                 phase="running" if held.ready else "startup",
                 config_name=self._running_name(held), log=child.log, **self._run_of(held),
             )
-            if held.stopping or child.name in held.restarting or child.on_purpose:
+            if held.stopping or child.name in held.restarting:
                 continue
             if held.ready:
                 self.crashed.append(child.exit)
@@ -1054,8 +1067,8 @@ class Supervisor:
             return
         # The visualiser's tap is the agent's, leased to its pages, which no
         # agent is left to renew: stopped by its pid. The rig plays on.
-        if not held.stopping and self._tap_running(held):
-            async with self._tap_lock:
+        async with self._tap_lock:
+            if not held.stopping and self._tap_running(held):
                 await self._stop_tap(held, "the agent stopped")
         if held.task is not None:
             held.task.cancel()
@@ -1112,9 +1125,13 @@ class Supervisor:
         now, not after the linger: the safeguard removes the cause it can."""
         async with self._tap_lock:
             held = self.held
-            if held is None or not self._tap_running(held):
+            if held is None:
                 return {"running": False, "stopped": False}
+            # Given back whether or not a tap runs now, so a lease left from a
+            # tap that stopped by itself cannot hold up the next one.
             held.tap_leases.give_back(page, self.world.clock(), at_once=at_once)
+            if not self._tap_running(held):
+                return {"running": False, "stopped": False}
             if at_once and held.tap_leases.due(self.world.clock()):
                 await self._stop_tap(held, "its page's xrun safeguard tripped, and no other page held it")
                 return {"running": False, "stopped": True}
@@ -1123,14 +1140,29 @@ class Supervisor:
 
     async def _start_tap(self, held: Held) -> "TapAnswer | None":
         """Start, link and check the tap; None once it is up, else the
-        refusal, with whatever started stopped by its pid."""
+        refusal, with whatever started stopped by its pid.
+
+        Leases left from a tap that stopped by itself are dropped first: they
+        were on that one, and would hold this one up. Until it is accepted
+        the child is marked `on_purpose`, so a sweep that sees it exit during
+        the start does not call it a crash: the start says what happened, as
+        the refusal. It is recorded (`vistap.write_record`) as soon as it is
+        started, so an agent that dies without stopping it leaves its pid for
+        the next one to stop (`tidy_orphan_tap`)."""
         world = self.world
         env = _rig_env(held.launch)
+        held.tap_leases.clear()
 
         def start() -> tuple[subprocess.Popen, Path]:
-            return rig_module.start_child(
+            proc, log = rig_module.start_child(
                 vistap.child(), root=held.launch.root, env=env, logs=held.logs,
                 spawn=functools.partial(world.spawn, process_group=held.pgid))
+            try:
+                world.tap_record(proc.pid, held.pgid)
+            except OSError as exc:
+                self._say(f"the visualiser tap's record could not be written ({exc}): an agent that died "
+                          "now would leave it running unseen")
+            return proc, log
 
         try:
             proc, log = await asyncio.to_thread(start)
@@ -1139,15 +1171,24 @@ class Supervisor:
                 f"the visualiser tap (pw-loopback) did not start ({exc}): the visualiser listens to the "
                 "guitar's input"))
         held.add(vistap.CHILD, proc, log)
-        problems = await asyncio.to_thread(world.link_tap, self._running_config(held))
-        if problems:
+        child = held.children[vistap.CHILD]
+        child.on_purpose = True  # the start's until accepted: see above
+        problems = await asyncio.to_thread(lambda: world.link_tap(self._running_config(held)))
+        if proc.poll() is None and problems:
             await self._stop_tap(held, "its links could not be made")
             return self._tap_refuse("not_linked", " ".join(problems))
-        threads = await asyncio.to_thread(self._tap_realtime, proc.pid)
+        threads = await asyncio.to_thread(self._tap_realtime, proc.pid) if proc.poll() is None else ()
+        if proc.poll() is not None:
+            await self._stop_tap(held, "it exited as it started")
+            return self._tap_refuse("did_not_start", (
+                f"the visualiser tap (pw-loopback, pid {proc.pid}) exited as it started (status "
+                f"{proc.returncode}): see {log}. The sound is unaffected; the visualiser listens to the "
+                "guitar's input"))
         refusal = vistap.realtime_refusal(threads, proc.pid)
         if refusal is not None:
             await self._stop_tap(held, "it got no realtime thread")
             return self._tap_refuse("not_realtime", refusal)
+        child.on_purpose = False  # accepted: an exit from now on is a crash
         self.tap_refused = None
         return None
 
@@ -1178,9 +1219,20 @@ class Supervisor:
         if child is None:
             return []
         child.on_purpose = True
-        left = [] if child.proc.poll() is not None else await asyncio.to_thread(
-            stop_child, child.proc, self.world.shutdown_steps)
-        self._sweep(held)
+        world = self.world
+
+        def stop() -> tuple[list[int], str]:
+            # Off the loop, with what reads files: the stop's wait, the
+            # record, and the rig's name for the exit record.
+            left = [] if child.proc.poll() is not None else stop_child(child.proc, world.shutdown_steps)
+            if not left:
+                world.tap_unrecord(child.proc.pid)
+            return left, self._running_name(held)
+
+        left, name = await asyncio.to_thread(stop)
+        if child.exit is None and child.proc.returncode is not None:
+            child.exit = exit_record(child.name, child.proc.pid, child.proc.returncode, at=_now(),
+                                     phase="running", config_name=name, log=child.log, **self._run_of(held))
         if held.children.get(vistap.CHILD) is child:
             del held.children[vistap.CHILD]
         held.tap_leases.clear()
@@ -1208,6 +1260,37 @@ class Supervisor:
                 return
             await self._stop_tap(held, f"no page held its lease for {self.world.tap_linger:g}s")
 
+    async def tidy_orphan_tap(self, app: Any = None) -> None:
+        """At the agent's start: a tap an earlier agent left running (it died
+        by SIGKILL or the OOM killer, so its leases and watch went with it,
+        and `KillMode=process` kept the rig and the tap) is in Sushi's cycle
+        with nobody to stop it. Found by the record its agent wrote, checked
+        to be the same process (its start time), and stopped by its pid.
+        Said, and kept for /health (`tap_orphan`). Never a group: the group
+        is the rig."""
+        world = self.world
+
+        def tidy() -> dict[str, Any] | None:
+            record = world.tap_read()
+            if record is None:
+                return None
+            if not vistap.recorded_alive(record):
+                world.tap_unrecord(None)
+                return None
+            left = stop_pid(record["pid"], world.shutdown_steps)
+            if not left:
+                world.tap_unrecord(record["pid"])
+            return {**record, "at": _now(), "stopped": not left}
+
+        found = await asyncio.to_thread(tidy)
+        if found is not None:
+            self.tap_orphan = found
+            self._say(
+                f"stopped the visualiser tap (pid {found['pid']}) an earlier agent left running in Sushi's "
+                "cycle with no page holding it" if found["stopped"] else
+                f"the visualiser tap (pid {found['pid']}) an earlier agent left running would not stop: "
+                f"kill {found['pid']}; the sound is unaffected")
+
     def tap_children(self) -> dict[str, Any]:
         """The tap as one of the rig's children, `{"vistap": {"pid", "alive"}}`
         while it runs, else `{}`: for GET /rig/load, whose children are the
@@ -1232,6 +1315,7 @@ class Supervisor:
             "pages": len(held.tap_leases.pages(now)) if running else 0,
             "stops_in": held.tap_leases.stops_in(now) if running else None,
             "refused": self.tap_refused, "stopped": self.tap_stopped, "agent_pid": os.getpid(),
+            "orphan": self.tap_orphan,
         }
 
     # ---------------------------------------------------------------- health

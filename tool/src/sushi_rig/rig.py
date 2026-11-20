@@ -1505,6 +1505,10 @@ def down(
         return 1
 
     _clear_state_of(pgid)
+    # The visualiser's tap, if one ran, went with the group: its record too.
+    from .vistap import clear_record_of_group
+
+    clear_record_of_group(pgid)
     print("Rig offline.", file=out)
     return 0
 
@@ -1613,6 +1617,7 @@ def describe_rig(
     alive: Callable[[int], bool] | None = None,
     group_alive: Callable[[int], bool] | None = None,
     now: datetime | None = None,
+    tap_record: dict[str, Any] | None = None,
 ) -> dict[str, Any]:
     """What is running, if anything, as data: the one answer `status` prints
     and the agent serves (#29).
@@ -1681,6 +1686,14 @@ def describe_rig(
     if isinstance(state.get("machine"), str):
         # Which machine file a rig run was compiled against; a v1 run has none.
         described["machine"] = state["machine"]
+    # The visualiser's tap (#195), by the record beside the state file
+    # (`vistap.write_record`), when it is of this rig's group: the agent's
+    # while it runs one, or one an agent that died left running.
+    from . import vistap
+
+    record = tap_record if tap_record is not None else vistap.read_record()
+    if isinstance(record, dict) and record.get("pgid") == state.get("pgid") and is_real_id(record.get("pid")):
+        described["visualiser_tap"] = {"pid": record["pid"], "alive": vistap.recorded_alive(record)}
     age = format_uptime(uptime) if uptime is not None else "unknown"
     described["message"] = f"{described['config_name']} ({described['mode']} mode), up {age}"
     return described
@@ -1706,6 +1719,12 @@ def status_lines(described: dict[str, Any]) -> list[str]:
             lines.append(f"  {name:10} pid {child['pid']!r} (INVALID)")
             continue
         lines.append(f"  {name:10} pid {child['pid']} {'' if child['alive'] else '(DEAD)'}")
+    tap = described.get("visualiser_tap")
+    if isinstance(tap, dict):
+        # The agent's, while a page's visualiser listens; one with no agent
+        # running is left over, still in Sushi's cycle.
+        lines.append(f"  vistap     pid {tap.get('pid')} {'' if tap.get('alive') else '(DEAD)'}".rstrip()
+                     + ("  (the visualiser's tap on the rig's output)" if tap.get("alive") else ""))
     if described.get("amp_model"):
         lines.append(f"  amp model  {described['amp_model']}")
     lines.append(f"  logs       {described['log_dir']}")

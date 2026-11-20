@@ -11,10 +11,13 @@
 const PAGE = ((globalThis.crypto && crypto.randomUUID) ? crypto.randomUUID()
   : `${Date.now()}-${Math.random().toString(36).slice(2)}`).replace(/[^A-Za-z0-9_-]/g, "").slice(0, 64);
 // How long a request may take before the page gives up and falls back: the
-// agent links the tap (up to 5 s) and looks at its threads (up to 1 s).
-const ASK_MS = 9000;
+// agent links the tap (up to 5 s) and looks at its threads (up to 1 s). A
+// test sets `sushiRigTapAskMs` to shorten it.
+const ASK_MS = Number(globalThis.sushiRigTapAskMs) > 0 ? Number(globalThis.sushiRigTapAskMs) : 9000;
 
 let holding = false;
+let offered = null;  // the source's name, as the agent last gave it
+let asked = false;  // a request may be in flight, or have won a lease this page gave up waiting for
 let timer = null;
 let why = null;
 
@@ -32,23 +35,30 @@ function stopRenewing() {
 export async function acquire() {
   const ask = new AbortController();
   const late = setTimeout(() => ask.abort(), ASK_MS);
+  asked = true;
   try {
     const response = await post("/visualiser/tap", { page: PAGE }, { signal: ask.signal });
     const body = await response.json().catch(() => null);
     if (!response.ok || !body || !body.ok || !body.source) {
       why = (body && body.reason) || `the agent answered ${response.status}`;
       holding = false;
+      asked = false;  // answered: refused, so nothing is held
       stopRenewing();
       return null;
     }
     holding = true;
     why = null;
+    offered = body.source.label || null;
     if (!timer) timer = setInterval(renew, 1000 * (body.renew_s || 10));
     return body.source;
   } catch (error) {
     why = ask.signal.aborted ? `the agent did not answer within ${ASK_MS / 1000} s` : `${error && error.message || error}`;
     holding = false;
     stopRenewing();
+    // Not answered is not refused: the agent may yet start the tap and give
+    // this page the lease. Given back now, it waits on the agent behind that
+    // start, so nothing is left held (review of PR #200).
+    release();
     return null;
   } finally {
     clearTimeout(late);
@@ -68,13 +78,15 @@ async function renew() {
 // Give the lease back. `now`: the xrun safeguard tripped, so the agent stops
 // the tap at once unless another page holds it.
 export function release(now = false) {
-  if (!holding) return;
+  if (!holding && !asked) return;
   holding = false;
+  asked = false;
   stopRenewing();
   post("/visualiser/tap/release", { page: PAGE, now }, { keepalive: true }).catch(() => {});
 }
 
 export function isHolding() { return holding; }
+export function offeredLabel() { return offered; }
 export function reason() { return why; }
 export { PAGE as page };
 

@@ -269,3 +269,44 @@ def test_a_trip_gives_it_back_at_once_unless_another_page_holds_it():
     assert leases.due(2) and leases.stops_in(2) == 0.0
     leases.give_back("never-held", 3)
     assert leases.due(3)
+
+
+def test_the_linger_starts_when_the_last_lease_lapses_not_the_first():
+    """Review of PR #200 (rr200/leases.py): a's lease lapsed while b held
+    one; that set the linger's start, so it ended 180 s after a, not b."""
+    leases = vistap.Leases(lease=30, linger=180)
+    leases.take("a", 0)   # until 30, and its page goes without a word
+    leases.take("b", 25)  # until 55
+    assert leases.pages(31) == ["b"] and leases.idle_since is None
+    leases.give_back("b", 33)
+    assert leases.stops_in(33) == pytest.approx(180)
+    both = vistap.Leases(lease=30, linger=180)
+    both.take("a", 0)
+    both.take("b", 25)
+    both.pages(31)
+    assert not both.due(210) and not both.due(234) and both.due(235), "from b's end at 55"
+
+
+def test_a_record_names_one_process_by_its_start_time(tmp_path):
+    import os
+    import sys
+
+    path = tmp_path / "vistap.json"
+    proc = subprocess.Popen([sys.executable, "-c", "import time; time.sleep(30)"])
+    try:
+        vistap.write_record(proc.pid, os.getpgrp(), path=path)
+        record = vistap.read_record(path)
+        assert record["pid"] == proc.pid and record["starttime"] == vistap.starttime(proc.pid)
+        assert vistap.recorded_alive(record)
+        assert not vistap.recorded_alive({**record, "starttime": record["starttime"] + 1}), "a reused pid"
+        assert not vistap.recorded_alive({**record, "pid": 1}) and not vistap.recorded_alive(None)
+        vistap.clear_record(proc.pid + 1, path=path)
+        assert vistap.read_record(path) is not None, "another pid's clear leaves it"
+        vistap.clear_record_of_group(os.getpgrp() + 1, path=path)
+        assert vistap.read_record(path) is not None, "another group's down leaves it"
+        vistap.clear_record_of_group(os.getpgrp(), path=path)
+        assert vistap.read_record(path) is None
+    finally:
+        proc.kill()
+        proc.wait()
+    assert not vistap.recorded_alive(record), "gone"

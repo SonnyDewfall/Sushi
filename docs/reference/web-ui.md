@@ -695,10 +695,13 @@ PR #200), only while a visualiser listens:
   `renew_s`; otherwise 409 with `code` (`not_held`: this agent holds no
   running rig; `off`: started with `--no-visualiser-tap`; `did_not_start`,
   `not_linked`, `not_realtime`) and why, and the page listens to the guitar's
-  input instead, as it does if the agent does not answer within 9 s.
+  input instead, as it does if the agent does not answer within 9 s (and
+  then gives back a lease the agent may still grant it). A tab hidden while
+  the agent answers gives the lease back and hears nothing.
 - **Leased.** The page asks again every `renew_s` (10 s) while it listens;
   a lease lasts `lease_s` (30 s) from then. Two pages share one tap, each with
-  its own lease. When the page stops listening (the visualiser goes, the tab
+  its own lease, and "Sushi rig output" chosen on the line by hand holds one
+  as the automatic choice does. The linger starts when the last lease ends. When the page stops listening (the visualiser goes, the tab
   is hidden, the page closes) it sends `POST /visualiser/tap/release`. With no
   lease held, the tap is kept 3 minutes more, so an idle spell does not change
   the graph every time, then stopped by its pid. On an xrun trip the page
@@ -706,7 +709,13 @@ PR #200), only while a visualiser listens:
   stopped at once.
 - **Tidied.** It is stopped by its pid when the agent stops (the rig plays
   on), and goes with the group on `down`, a `restart` and a switch by
-  restart; the next request starts one for the new rig. A live switch keeps
+  restart; the next request starts one for the new rig. While it runs it is
+  recorded beside the state file (`vistap.json`: its pid, group and start
+  time), so an agent that dies without stopping it (SIGKILL, the OOM killer;
+  `KillMode=process` keeps the rig and the tap) leaves it findable: `status`
+  shows it (`vistap`), `/rig/load` counts it, doctor's `visualiser-tap` is a
+  fault while no agent holds it, and the next agent stops it by its pid as
+  it starts, once its start time says it is the same process. A live switch keeps
   Sushi, its ports and the links (every rig's master is on bus 0). `up` from
   the command line never starts one. A tap stopped on purpose is never
   reported as a crash; one that stops by itself is, as any child ("the

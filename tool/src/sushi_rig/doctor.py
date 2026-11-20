@@ -933,6 +933,13 @@ def tap_check(rig: dict, state: dict | None, tap: dict | None, threads: tuple | 
     if not rig.get("running") or not state:
         return Check(name, UNCHECKED, "no rig is running, so there is no output to tap",
                      "run the rig through the agent and check again")
+    left = rig.get("visualiser_tap") if isinstance(rig.get("visualiser_tap"), dict) else None
+    if left and left.get("alive") and not (tap and tap.get("running") and tap.get("pid") == left.get("pid")):
+        # Its agent died without stopping it (SIGKILL, the OOM killer), and
+        # no agent holds a lease on it: in Sushi's cycle, unseen by the page.
+        return Check(name, FAULT, f"{label} (pid {left.get('pid')}) is running with no agent holding it, in "
+                     "Sushi's cycle, where each time it is late is a cycle the graph did not finish",
+                     f"start the agent (it stops a tap it finds left behind), or kill {left.get('pid')}")
     if state.get("visualiser_tap_requested") is False:
         return Check(name, OK, "the rig was started with --no-visualiser-tap, so its output is never offered: "
                      "the visualiser listens to the guitar's input")

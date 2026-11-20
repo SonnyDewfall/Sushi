@@ -6462,3 +6462,28 @@ watch stopped it by pid, no node left; released at once, gone at once.
 Realtime, it was "too slow" five times in 15 s on that busy container (the
 stand-in Sushi three). **Not run:** the rig, rtkit granting realtime, the
 page against a real agent's tap, Firefox. *(2026-11-20)*
+
+**The tap on demand, re-review (#195, PR #200).** (1) "Sushi rig output"
+chosen by hand gave its lease back at once (`pickInput` said `chosen`): a
+kept input named as the tap (by `tapLabel` or the name the agent last
+gave) is the rig's output, and keeps its lease. (2) An agent that died
+uncleanly (SIGKILL, OOM; `KillMode=process` keeps the rig) left the tap in
+Sushi's cycle unseen: it is recorded beside the state file (`vistap.json`,
+pid, group and start time; not in rig.json, which a live switch rewrites
+under the lifecycle lock the tap does not take), `status` shows it,
+`/rig/load` counts it, doctor faults it while no agent holds it, `down`
+clears it with the group, and the next agent stops it by pid at start once
+its start time matches. (3) An answer later than the page's 9 s left a
+lease nobody held: the page gives it back then (`asked`, not only
+`holding`). (4) A tab hidden while the agent answered listened and renewed:
+`listenAndRun` checks `document.hidden` after each wait. (5) The linger
+started at the first lease to lapse, not the last. (6) Two more tests had
+the timed crasher's race: `crash_when`. (7) The trip message no longer
+claims the tap left Sushi's cycle (another page may hold it). (8) A tap
+that exits between its links and the thread check is refused as
+`did_not_start`, not `not_realtime`, and is the start's until accepted
+(`on_purpose`), never a crash. (9) A lease from a tap that crashed held up
+the next: cleared when a tap starts, and given back with no tap running.
+(10) The state file is read in the worker as the tap starts and stops; a
+release takes the tap's lock first. Each with a test that fails without
+it. *(2026-11-20)*

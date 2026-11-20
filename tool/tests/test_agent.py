@@ -2352,7 +2352,7 @@ def test_the_agent_runs_the_lifecycle_itself_through_its_supervisor():
         "holds": None, "crashed": [], "problems": [], "note": None,
         # The visualiser's tap (#195): none, with no rig held.
         "visualiser_tap": {"offered": None, "running": False, "pid": None, "pages": 0, "stops_in": None,
-                           "refused": None, "stopped": None, "agent_pid": os.getpid()}}
+                           "refused": None, "stopped": None, "agent_pid": os.getpid(), "orphan": None}}
 
 
 def test_a_successful_command_carries_its_warnings_for_a_phone_to_read():

@@ -3664,6 +3664,11 @@ class Agent:
         LOAD and XRUNS for as long as it runs and no longer."""
         children = described.get("children")
         tap = self.supervisor.tap_children() if hasattr(self.supervisor, "tap_children") else {}
+        left = described.get("visualiser_tap")
+        if not tap and isinstance(left, dict) and left.get("alive"):
+            # One no agent holds (an earlier agent's, left running): still in
+            # Sushi's cycle, so still counted.
+            tap = {"vistap": {"pid": left.get("pid"), "alive": True}}
         if not tap:
             return children
         return {**(children if isinstance(children, dict) else {}), **tap}
@@ -8184,6 +8189,9 @@ def _serve_on(host: str, port: int, sockets: list, root: Path | None, allow_host
     app.on_startup.append(agent.midi_adopt)  # MIDI: a rig already up has its pedals served
     app.on_shutdown.append(agent.announce_stopping)
     app.on_cleanup.append(agent.midi_release)  # MIDI: before the pool its actions use
+    # A visualiser tap an earlier agent left running (it died uncleanly):
+    # stopped by its recorded pid before this one serves (#195).
+    app.on_startup.append(agent.supervisor.tidy_orphan_tap)
     app.on_cleanup.append(agent.supervisor.release)  # stop watching; the rig plays on
     app.on_cleanup.append(agent.release_workers)
     app.on_cleanup.append(unsay_where)
