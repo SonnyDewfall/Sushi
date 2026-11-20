@@ -117,18 +117,42 @@ tried on the rig).
 
 ## Pedals
 
-A rig can be set up to answer a MIDI pedal or pad controller: a pad that switches
-one effect on and off, an expression pedal that sweeps a knob or fades from one
-channel to another, and program changes that switch rigs. This is written into
-the rig's file and the machine's file by hand; the page has no screen for it.
-The how is in [MIDI](../reference/midi.md).
+A rig can be set up to answer a MIDI pedal or pad controller: a footswitch or
+pad that switches one effect, or one channel, on and off, an expression pedal
+that sweeps a knob, rides a channel's volume or fades from one channel to
+another, and program changes that switch rigs. This is written into the rig's
+file and the machine's file by hand; the page has no screen for it yet. The how
+is in [MIDI](../reference/midi.md).
 
-If a pedal is fading a channel, that channel's **VOLUME** says
-**driven by** and the pedal's name, and cannot be moved from the page.
+The pedalboard is a Line 6 FBV Express MkII, with four footswitches and a pedal:
 
-Not yet tried on the rig: none of the saved rigs has a pedal set up, and nothing
-has been played through a real pedal. Only the pad controller's own messages
-have been checked.
+- **A and B** step to the previous and next rig, in the order of the rig list,
+  on every rig. They stop at the first and last rig rather than wrapping round.
+  A step may restart the rig, which is about five seconds of silence. A press
+  while a switch is still running is ignored rather than saved up, so press
+  again once the rig is playing.
+- **C and D** each turn an effect or a channel on and off, as each rig's file
+  says. One press turns it on, the next turns it off.
+- **The pedal** sweeps a knob, or rides a channel's volume, as each rig's file
+  says. On a volume, the heel is silent and the toe is the channel's own level,
+  never louder; half way is about 20 dB quieter. The silence at the heel needs
+  the agent running: without it the heel is quiet, not silent. It cannot ride
+  the master volume.
+
+If a pedal is riding or fading a channel, that channel's **VOLUME** says
+**driven by** and the pedal's name, and cannot be moved from the page. To change
+how loud the toe is, change the channel's level in the rig's file and start the
+rig again.
+
+If the pedal is not plugged in, A and B do nothing and nothing is shown as
+wrong, unless the rig's own pedal settings are for it: then the page says the
+rig is waiting for its pedal. Plug it in (or back in, if it was knocked out
+mid-set) and it works at once, without restarting the rig.
+
+Not yet tried on the rig: the FBV has not arrived, so its settings in the
+machine file are a best guess, and none of the saved rigs has a pedal set up.
+Nothing has been played through a real pedal; only the pad controller's own
+messages have been checked.
 
 ## The visualiser
 

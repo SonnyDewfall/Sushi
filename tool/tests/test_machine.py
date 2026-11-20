@@ -388,3 +388,104 @@ def test_the_rig_machines_file_describes_the_mpd218():
     machine = MachineSpec.load(FROZEN_MACHINE)
     assert machine.validate() == []
     assert machine.controller("mpd218")["controls"]["knob1"] == ("cc", 3)
+
+
+# --- the device model (#191) ------------------------------------------------
+
+def _fbv(**controls):
+    base = {
+        "a": {"cc": 20, "kind": "switch", "behaviour": "momentary", "job": "previous-rig"},
+        "b": {"cc": 21, "kind": "switch", "behaviour": "momentary", "job": "next-rig"},
+        "c": {"cc": 22, "kind": "switch", "behaviour": "latching"},
+        "pedal": {"cc": 7, "kind": "expression", "range": [3, 125]},
+    }
+    base.update(controls)
+    return {"fbv": {"type": "pedal", "port": "FBV:FBV MIDI 1", "channel": 0,
+                    "controls": {k: v for k, v in base.items() if v is not None}}}
+
+
+def test_a_controller_with_a_type_describes_each_controls_kind_behaviour_range_and_job():
+    machine = _with_controllers(_fbv())
+    assert machine.validate() == []
+    described = machine.controller("fbv")
+    assert described["type"] == "pedal"
+    assert described["controls"]["pedal"] == ("cc", 7), "what it sends, as for any controller"
+    assert described["model"] == {
+        "a": {"kind": "switch", "behaviour": "momentary", "range": None, "job": "previous-rig"},
+        "b": {"kind": "switch", "behaviour": "momentary", "range": None, "job": "next-rig"},
+        "c": {"kind": "switch", "behaviour": "latching", "range": None, "job": None},
+        "pedal": {"kind": "expression", "behaviour": None, "range": [3, 125], "job": None},
+    }
+    assert _with_controllers(_fbv(pedal={"cc": 7, "kind": "expression"})).controller("fbv")["model"]["pedal"][
+        "range"] == [0, 127], "a pedal's travel is the full 0 to 127 unless said"
+
+
+def test_the_controllers_that_step_rigs_and_every_device_for_the_page():
+    machine = _with_controllers({**_fbv(), "mpd218": {"controls": {"knob1": {"cc": 3}}}})
+    assert list(machine.steppers()) == ["fbv"]
+    devices = {d["name"]: d for d in machine.devices()}
+    assert devices["mpd218"] == {"name": "mpd218", "type": None, "port": None, "channel": "all", "controls": [
+        {"name": "knob1", "sends": {"cc": 3}, "kind": None, "behaviour": None, "range": None, "job": None}]}
+    assert devices["fbv"]["controls"][0] == {"name": "a", "sends": {"cc": 20}, "kind": "switch",
+                                             "behaviour": "momentary", "range": None, "job": "previous-rig"}
+
+
+@pytest.mark.parametrize("controllers, said", [
+    ({"x": {"type": "keyboard", "controls": {"k": {"cc": 1, "kind": "switch", "behaviour": "momentary"}}}},
+     "type must be one of pedal"),
+    (_fbv(c={"cc": 22}), "kind must be switch or expression"),
+    (_fbv(c={"cc": 22, "kind": "knob"}), "kind must be switch or expression"),
+    (_fbv(c={"cc": 22, "kind": "switch"}), "behaviour must be momentary, single, latching"),
+    (_fbv(c={"cc": 22, "kind": "switch", "behaviour": "sticky"}), "behaviour must be momentary, single, latching"),
+    (_fbv(c={"note": 40, "kind": "switch", "behaviour": "latching"}), "a note is a press"),
+    (_fbv(c={"cc": 22, "kind": "switch", "behaviour": "momentary", "range": [0, 127]}), "a switch has none"),
+    (_fbv(c={"cc": 22, "kind": "switch", "behaviour": "momentary", "job": "tuner"}), "job must be previous-rig or next-rig"),
+    (_fbv(c={"cc": 22, "kind": "switch", "behaviour": "momentary", "job": "next-rig"}), "are both next-rig"),
+    (_fbv(pedal={"note": 7, "kind": "expression"}), "sends a cc, not a note"),
+    (_fbv(pedal={"cc": 7, "kind": "expression", "behaviour": "momentary"}), "an expression pedal has none"),
+    (_fbv(pedal={"cc": 7, "kind": "expression", "range": [100, 20]}), "heel below toe"),
+    (_fbv(pedal={"cc": 7, "kind": "expression", "range": [0, 128]}), "range must be [heel, toe]"),
+    (_fbv(pedal={"cc": 7, "kind": "expression", "colour": "red"}), "unknown key 'colour'"),
+    ({"x": {"controls": {"k": {"cc": 3, "kind": "switch"}}}}, "give 'x' one (type: pedal)"),
+    ({"x": {"type": "pedal", "controls": {"a": {"cc": 1, "kind": "switch", "behaviour": "momentary",
+                                                "job": "next-rig"}}}}, "needs the port"),
+])
+def test_a_device_model_that_is_not_one_is_named(controllers, said):
+    problems = _with_controllers(controllers).validate()
+    assert any(said in p for p in problems), problems
+
+
+@pytest.mark.parametrize("name", ["example.yaml", "sonny-dewfall-XPS-9320.yaml"])
+def test_the_committed_machine_files_describe_the_fbv_marked_unverified(name):
+    """The FBV Express MkII has not arrived (#191): its entry is a guess from
+    Line 6's documents, every line of it marked so, with A and B stepping rigs."""
+    path = checkout_root() / "machines" / name
+    machine = MachineSpec.load(path)
+    assert machine.validate() == []
+    fbv = machine.controller("fbv")
+    assert fbv["type"] == "pedal" and fbv["channel"] == 0
+    assert {c: m["job"] for c, m in fbv["model"].items() if m["job"]} == {"a": "previous-rig", "b": "next-rig"}
+    assert {c: m["kind"] for c, m in fbv["model"].items()} == {
+        "a": "switch", "b": "switch", "c": "switch", "d": "switch", "pedal": "expression"}
+    text = path.read_text()
+    block = text[text.index("  fbv:"):]
+    marked = "# unverified: check with aseqdump when the pedal arrives"
+    for line in block.splitlines():
+        if line.strip() and not line.strip().startswith("#") and line.strip() not in ("controls:", "type: pedal"):
+            assert marked in line, line
+
+
+def test_the_rig_machines_mpd218_is_unchanged_beside_the_fbv():
+    machine = MachineSpec.load(checkout_root() / "machines" / "sonny-dewfall-XPS-9320.yaml")
+    assert machine.controller("mpd218") == {
+        "port": "MPD218:MPD218 Port A", "channel": "all",
+        "controls": {"knob1": ("cc", 3), "pad1": ("note", 36), "pad2": ("note", 38),
+                     "pad3": ("note", 40), "pad4": ("note", 41)},
+    }
+
+
+def test_a_single_switch_is_a_switch_and_a_note_may_be_one():
+    machine = _with_controllers(_fbv(c={"cc": 22, "kind": "switch", "behaviour": "single"},
+                                     d={"note": 40, "kind": "switch", "behaviour": "single"}))
+    assert machine.validate() == []
+    assert machine.controller("fbv")["model"]["c"]["behaviour"] == "single"
