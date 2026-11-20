@@ -227,21 +227,39 @@ It only runs on the rig's own laptop, in a browser open at
 `http://localhost:8029/` (or `http://127.0.0.1:8029/`), in a window at least
 900 pixels wide. Phones do not get it: they are for working the rig.
 
+**What it listens to: the rig's output.** When the visualiser is about to
+start, the page asks the agent to offer what the rig sends to your monitors
+to the browser, as an input called **Sushi rig output**: the whole mix after
+the amp, the effects, the master chain, the master limiter and the master
+volume, which is what you EQ. The visualiser listens to that first. While it
+listens the page keeps asking for it; when it stops (you touch the page, the
+tab is hidden, the page closes), it lets go, and a few minutes later the
+agent takes the input away again. If the agent cannot offer it (the rig was
+started with `--no-visualiser-tap`, the agent is not the one running the rig,
+or PipeWire would not give it realtime priority), the visualiser listens to
+the guitar's input on the audio interface, and failing that to the browser's
+default input.
+
+Nothing is added to the path to the monitors, and no delay. It is not
+nothing to the rig, though: while the rig's output is offered, PipeWire does
+a little work for it in each of the rig's cycles, and now and then that work
+can be late, which is a cycle the rig did not finish in time (see below).
+That is why it is only there while the visualiser is listening.
+
 **The first time it starts, the browser asks to use the microphone.** That is
-how the page hears your guitar: it listens to the guitar's input on the audio
-interface beside the rig, so it adds no delay to your sound. It is not quite
-nothing to the rig, though: while it listens, PipeWire does a little work for
-it in the same moment as the rig's own (see below). Choose **Allow**: if the browser offers to allow it only
+how the page hears the rig. Choose **Allow**: if the browser offers to allow it only
 this time, choose the one that keeps it for this site instead, and in Firefox
 tick **Remember this decision** first. Then it will not ask again. Whatever input the question offers, the page then
-picks the guitar's own, from the rig's machine file.
+picks **Sushi rig output**, or the guitar's own input from the rig's machine file.
 
 The line at the very bottom of the page holds its settings:
 
 - **Visualiser**: untick it to turn it off. This browser remembers.
 - **after … s without a touch**: how long to wait, 3 to 600 seconds. 10 to start with.
-- **listening to**: **automatic** (the guitar's input) or another input, and
-  which channel of it.
+- **listening to**: **automatic** (the rig's output, else the guitar's input)
+  or another input, and which channel of it. An input you choose here wins
+  whenever it is there. The line says which one it heard, for example
+  "Sushi rig output (the rig's output: the master, after its limiter)".
 - **Show now**: try it straight away.
 - **look**: **random** to begin with: the looks come in a random order, each
   for half a minute to a minute, never the same one twice running, and each a
@@ -258,14 +276,22 @@ would take the processor the rig needs, so it stays off.
 
 **If the rig glitches while it is up, it stops.** If XRUNS rises while the
 visualiser is listening, it goes, and the line says "Stopped: the rig
-glitched while the visualiser was listening". It stays off until you reload
-the page or tick **Visualiser** again. The glitch may not have been its
-doing, but it is not worth finding out on stage.
+glitched while the visualiser was listening". If it was listening to the
+rig's output, that is taken away at once too, and the line says so. It stays
+off until you reload the page or tick **Visualiser** again. The glitch may
+not have been its doing, but it is not worth finding out on stage.
 
 **Check once that PipeWire can keep up with it.** Run `sushi-rig doctor` and
-look for `pulse-realtime`. "pipewire-pulse runs realtime" is what you want. If it
-says pipewire-pulse runs no thread at realtime priority, either keep the
-visualiser off while you play or do what the line under it says. You can
+look for `pulse-realtime` and `visualiser-tap`. "pipewire-pulse runs realtime"
+is what you want for the first; the second fails if PipeWire would not give
+the rig's output realtime priority (the agent then never offers it, and the
+visualiser hears the guitar's input), and says what to install. Even
+realtime, the rig's output was late between once in 20 seconds and five
+times in 15 seconds when measured (on a busy test machine, not on the rig),
+and each time is a cycle the rig did not finish: if you
+would rather not have that at all, start the rig with
+`sushi-rig up --no-visualiser-tap`, and `restart` and switching rigs keep
+that choice; or turn the visualiser off. You can
 check by hand too: `ps -L -o tid,cls,rtprio,comm -p "$(pgrep -x pipewire-pulse)"`
 should show a thread (`pw-data-loop`) with `FF` in the `CLS` column.
 

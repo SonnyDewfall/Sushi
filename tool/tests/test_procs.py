@@ -261,3 +261,34 @@ def test_stop_group_gives_each_step_its_grace_before_the_next(monkeypatch):
     assert procs.stop_group(pgid, ((signal.SIGINT, 3.0), (signal.SIGKILL, 2.0))) is False
     (_, first), (_, second) = sent
     assert second - first >= 3.0
+
+
+def test_a_recorded_process_is_stopped_through_a_pidfd_only_if_it_is_the_one_recorded(tmp_path):
+    """`stop_recorded`: by pid, start time and name, checked after the pidfd
+    is open, so the signals reach the process checked (PR #200)."""
+    import signal as signals
+    import subprocess
+    import sys
+
+    from sushi_rig import vistap
+    from sushi_rig.procs import stop_recorded
+
+    link = tmp_path / "pw-loopback"
+    link.symlink_to(sys.executable)
+    steps = ((signals.SIGTERM, 2.0), (signals.SIGKILL, 2.0))
+    proc = subprocess.Popen([str(link), "-c", "import time; time.sleep(60)"])
+    try:
+        started = vistap.starttime(proc.pid)
+        with pytest.raises(ValueError, match="not signalled"):
+            stop_recorded(proc.pid, started, "other-name", steps)
+        with pytest.raises(ValueError, match="not signalled"):
+            stop_recorded(proc.pid, started + 1, "pw-loopback", steps)
+        assert proc.poll() is None, "refused: nothing sent"
+        assert stop_recorded(proc.pid, started, "pw-loopback", steps) == []
+        assert proc.wait(timeout=5) == -signals.SIGTERM
+        with pytest.raises(ValueError):
+            stop_recorded(1, 0, "init", steps)
+    finally:
+        if proc.poll() is None:
+            proc.kill()
+        proc.wait()

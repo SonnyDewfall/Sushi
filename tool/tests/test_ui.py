@@ -247,7 +247,8 @@ def test_the_ui_files_are_in_the_package_data_a_wheel_carries():
                             "ui/static/screensaver.js", "ui/static/style.css",
                             "ui/static/vendor/butterchurn-2.6.7/LICENSE", "ui/static/vendor/butterchurn-2.6.7/SOURCE.txt",
                             "ui/static/vendor/butterchurn-2.6.7/butterchurn.min.js",
-                            "ui/static/visualiser-eq.js", "ui/static/visualiser-presets.js", "ui/static/visualiser.js"]
+                            "ui/static/visualiser-eq.js", "ui/static/visualiser-presets.js", "ui/static/visualiser-tap.js",
+                            "ui/static/visualiser.js"]
     assert [f for f in files if not any(fnmatch.fnmatch(f, g) for g in globs)] == []
 
 
@@ -338,7 +339,7 @@ def test_the_ui_files_are_plain_and_need_no_build():
     # test_ui_visualiser.py's to check. Its line about where it runs names
     # http://localhost in words, which fetches nothing.
     own = ("index.html", "app.js", "rig.js", "style.css", "screensaver.js", "visualiser.js", "visualiser-presets.js",
-           "visualiser-eq.js")
+           "visualiser-tap.js", "visualiser-eq.js")
     for name in own:
         text = (UI_DIR / name).read_text(encoding="utf-8").replace("at http://localhost:", "")
         assert "http://" not in text.replace("http://www.w3.org/2000/svg", "") and "https://" not in text, name
@@ -347,7 +348,8 @@ def test_the_ui_files_are_plain_and_need_no_build():
             continue
         for line in (UI_DIR / name).read_text(encoding="utf-8").splitlines():
             if line.startswith("import "):
-                assert line.endswith(('from "./rig.js";', 'from "./visualiser-presets.js";', 'from "./visualiser-eq.js";')), line
+                assert line.endswith(('from "./rig.js";', 'from "./visualiser-presets.js";',
+                                      'from "./visualiser-tap.js";', 'from "./visualiser-eq.js";')), line
 
 
 # --------------------------------------------------------------------------- #

@@ -474,6 +474,15 @@ def test_switch_steps_are_down_then_up_with_what_restart_would_bring_back():
         switch_steps(STATE, "../etc")
 
 
+def test_a_switch_by_restart_keeps_the_visualiser_tap_declined():
+    """`--no-visualiser-tap` is kept in the state file, as `--no-tuner` is,
+    and the next rig comes up without the tap too."""
+    off = {"config_name": "x", "mode": "headless", "tuner_requested": True, "amp_requested": True,
+           "visualiser_tap_requested": False}
+    assert switch_steps(off, "clean") == [["down"], ["up", "clean", "--rig", "--headless", "--no-visualiser-tap"]]
+    assert "--no-visualiser-tap" not in switch_steps({**off, "visualiser_tap_requested": True}, "clean")[1]
+
+
 # --------------------------------------------------------------------------- #
 # The listener follows the lifecycle, and never takes the agent down
 # --------------------------------------------------------------------------- #

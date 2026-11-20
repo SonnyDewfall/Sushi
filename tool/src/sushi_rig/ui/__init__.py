@@ -59,6 +59,9 @@ Decisions are pure and tested (principle 1), in two places:
                        recording, its name and elapsed time, or why recording is off
     GET /machine/roles also when the visualiser first starts (screensaver.js): which
                        input is the guitar's
+    POST /visualiser/tap  when the visualiser is about to listen, and every 10 s while it
+                       does (visualiser-tap.js): the rig's output, for as long as the lease
+                       is renewed; POST /visualiser/tap/release when it stops listening
 
 and sends POST /live/parameter, /live/bypass, /live/move and /live/undo as
 they happen, POST /amp/parameter from the amp's faders, POST /amp/model from

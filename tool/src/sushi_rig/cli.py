@@ -864,6 +864,19 @@ def _nulltest(args: argparse.Namespace) -> int:
     return 1 if failed else 0
 
 
+def _agent_tap() -> dict | None:
+    """A running agent's report of the visualiser's tap
+    (`agent.supervisor.visualiser_tap`), or None when no agent answers."""
+    from .agent_client import Absent, Unusable, find_agent, probe
+
+    try:
+        health = probe(find_agent()[0])
+    except (Absent, Unusable):
+        return None
+    tap = ((health.get("agent") or {}).get("supervisor") or {}).get("visualiser_tap")
+    return tap if isinstance(tap, dict) else None
+
+
 def _agent_crashes() -> list[dict] | None:
     """The rig's children a running agent saw exit (`agent.supervisor.crashed`),
     or None when no agent answers. Only the agent that started a rig can read
@@ -887,7 +900,7 @@ def _doctor(args: argparse.Namespace) -> int:
     from .paths import checkout_root
 
     checks = run(checkout_root(), machine_file=args.machine, patchbay_file=args.patchbay,
-                 crashed=_agent_crashes())
+                 crashed=_agent_crashes(), tap=_agent_tap())
     for check in checks:
         print(check)
     broken, skipped = faults(checks), unchecked(checks)
@@ -1078,6 +1091,13 @@ def _main(argv: list[str] | None = None) -> int:
         dest="amp",
         action="store_false",
         help="skip the neural amp even if the config describes one",
+    )
+    p.add_argument(
+        "--no-visualiser-tap", dest="visualiser_tap", action="store_false",
+        help="never offer the rig's output (the master, after its limiter) to the web page's "
+        "visualiser as the input 'Sushi rig output': the agent otherwise starts that tap, a "
+        "pw-loopback in Sushi's cycle, while the visualiser listens. up itself never starts one. "
+        "restart and a switch keep this choice",
     )
     p.add_argument(
         "--amp-model",
@@ -1375,7 +1395,7 @@ def _main(argv: list[str] | None = None) -> int:
     )
     p = sub.add_parser(
         "restart",
-        help="stop the running rig and bring the same one back — same config, same mode, same amp and tuner choices",
+        help="stop the running rig and bring the same one back — same config, same mode, same amp, tuner and visualiser tap choices",
     )
     p.add_argument(
         "--discard", action="store_true",
@@ -1737,7 +1757,7 @@ def _main(argv: list[str] | None = None) -> int:
                 return up(
                     args.config_name, headless=args.headless,
                     tuner=args.tuner, amp=args.amp,
-                    amp_model=args.amp_model, rig=args.rig,
+                    amp_model=args.amp_model, rig=args.rig, visualiser_tap=args.visualiser_tap,
                     machine=str(args.machine.resolve()) if args.machine is not None else None,
                 )
             if args.command == "down":

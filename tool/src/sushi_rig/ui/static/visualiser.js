@@ -4,7 +4,8 @@
 // What to listen to and when to draw are rig.js's decisions.
 //
 // The sound is the browser's own capture of an input, through PipeWire's
-// PulseAudio server (pipewire-pulse): the guitar's input, beside Sushi,
+// PulseAudio server (pipewire-pulse): the rig's output ("Sushi rig output",
+// the agent's tap in vistap.py, in Sushi's cycle while it listens) or the guitar's input, beside Sushi,
 // adding nothing to the signal's path. What that does and does not keep apart from
 // Sushi: the browser reads from a buffer the server keeps, so a browser that
 // stalls only loses its own samples. But the server's capture stream is a
@@ -83,15 +84,16 @@ function stopStream(stream) {
 
 // Choose the input and open it: `{stream, pick}`. With no permission yet,
 // the default is opened first (that is when the browser asks), and then,
-// once the inputs have names, the one `R.pickInput` chooses, if another.
-export async function listen(settings, guitar) {
+// once the inputs have names, the one `R.pickInput` chooses, if another:
+// the rig's output (`output`) before the guitar's input.
+export async function listen(settings, guitar, output = null) {
   let stream = null;
   let devices = await audioInputs();
   if (!devices.some((d) => d.label)) {
     stream = await capture(null);
     devices = await audioInputs();
   }
-  const pick = R.pickInput(devices, settings, guitar);
+  const pick = R.pickInput(devices, settings, guitar, output);
   const opened = stream && stream.getAudioTracks()[0] ? stream.getAudioTracks()[0].getSettings().deviceId : null;
   if (!stream || (pick.deviceId && pick.deviceId !== "default" && pick.deviceId !== opened)) {
     stopStream(stream);

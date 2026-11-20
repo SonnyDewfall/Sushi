@@ -191,6 +191,25 @@ def test_a_rise_in_xruns_while_it_listens_is_a_reason_to_stop(blank):
     assert out[0] is None and out[4] is None and out[5] is None
     assert out[1].startswith("Stopped: the rig glitched") and "from 2 to 3" in out[1] and "ticked again" in out[1]
     assert out[2] == out[3] == "rebase", "none yet, or another run: the count is taken again, not compared"
+    assert "tap" not in out[1]
+    tapped = rigjs(blank, "return R.visualiserTripped({count: 2, run: 'a'}, {count: 3, run: 'a'}, true);")
+    assert ("Its tap on the rig's output was let go with it: the agent stops that now, unless another page "
+            "is listening to it.") in tapped
+
+
+def test_the_rigs_output_is_asked_for_unless_another_input_was_chosen_by_hand(blank):
+    out = rigjs(blank, """const w = R.visualiserWantsTap;
+      return [w({input: null}), w(null), w({input: {deviceId: 'x', label: 'Sushi rig output'}}),
+              w({input: {deviceId: 'y', label: 'Audient iD14 Multichannel'}}),
+              w({input: {deviceId: 'z', label: 'Renamed'}}, 'Renamed')];""")
+    assert out == [True, True, True, False, True]
+
+
+def test_the_taps_name_the_page_knows_is_the_agents():
+    from sushi_rig import vistap
+
+    text = (UI_DIR / "rig.js").read_text(encoding="utf-8")
+    assert re.search(r'tapLabel: "([^"]+)"', text).group(1) == vistap.SOURCE_LABEL
 
 
 def test_idle_and_frames_are_timed_as_said(blank):
@@ -243,6 +262,30 @@ def test_the_input_is_the_one_chosen_then_the_guitars_then_the_browsers(blank):
     assert out[5] == out[6] == {"deviceId": None, "label": "", "channel": None, "how": "default"}
 
 
+def test_the_rigs_output_comes_before_the_guitar_and_a_choice_made_here_before_both(blank):
+    """#195: the visualiser tap's source, by the name /machine/roles gives
+    it, both channels; then the guitar; then the browser's default."""
+    out = rigjs(blank, """
+      const tap = {deviceId: 'tap', label: 'Sushi rig output'};
+      const devices = [{deviceId: 'default', label: 'Default'}, {deviceId: 'id14', label: 'Audient iD14 Multichannel'},
+        {deviceId: 'cam', label: 'BRIO Ultra HD Webcam Analog Stereo'}, tap, {deviceId: 'x', label: 'Sushi rig output (old)'}];
+      const guitar = {device: 'Audient iD14', channel: 0};
+      const output = {node: 'sushi_rig_output', label: 'Sushi rig output'};
+      const settings = (input, channel = null) => ({input, channel});
+      return [R.pickInput(devices, settings(null), guitar, output),
+              R.pickInput(devices, settings({deviceId: 'cam', label: 'c'}, 1), guitar, output),
+              R.pickInput(devices.filter((d) => d.deviceId !== 'tap'), settings(null), guitar, output),
+              R.pickInput(devices, settings(null), guitar),
+              R.pickInput(devices.filter((d) => d.deviceId !== 'tap'), settings(null), null, output),
+              R.pickInput(devices, settings(null), guitar, {label: ''})];""")
+    assert out[0] == {"deviceId": "tap", "label": "Sushi rig output", "channel": None, "how": "output"}
+    assert out[1]["deviceId"] == "cam" and out[1]["how"] == "chosen", "a choice made by hand still wins"
+    assert out[2]["deviceId"] == "id14" and out[2]["how"] == "guitar", "a rig without its tap: the guitar"
+    assert out[3]["how"] == "guitar", "with nothing said of the tap, as before"
+    assert out[4]["deviceId"] == "default" and out[4]["how"] == "default", "never a name that only starts the same"
+    assert out[5]["how"] == "guitar"
+
+
 def test_an_input_is_said_with_its_channel_and_how_it_was_chosen(blank):
     out = rigjs(blank, """return [R.inputWords({deviceId: 'a', label: 'Audient iD14 Multichannel', channel: 0, how: 'guitar'}),
       R.inputWords({deviceId: 'default', label: '', channel: null, how: 'default'}), R.inputWords({deviceId: 'b', label: 'Cam', channel: 1, how: 'chosen'}),
@@ -251,6 +294,8 @@ def test_an_input_is_said_with_its_channel_and_how_it_was_chosen(blank):
     assert out == ["Audient iD14 Multichannel, left channel (the machine file's guitar-in)",
                    "the browser's default input (the browser's choice)", "Cam, right channel", "no input yet",
                    False, False, True, False, True]
+    said = rigjs(blank, "return R.inputWords({deviceId: 't', label: 'Sushi rig output', channel: null, how: 'output'});")
+    assert said == "Sushi rig output (the rig's output: the master, after its limiter)"
 
 
 def test_each_preset_has_the_four_shapes_and_waves_butterchurn_draws(blank):
@@ -1033,6 +1078,195 @@ def test_what_it_heard_is_said_on_the_line(opened):
     assert v.state()["pick"]["how"] == "chosen" and v.state()["pick"]["channel"] == 1
 
 
+# The visualiser's tap (#195), driven in the page: the agent's answers to
+# POST /visualiser/tap and its release are stood in by Playwright's routing,
+# one of Chromium's fake inputs renamed as the tap's source. The fake agent
+# has no machine file, so /machine/roles answers 409 throughout (review of
+# PR #200: that must not lose the tap).
+
+# Every getUserMedia stream, for a test to end one of its tracks.
+STREAMS = """(() => { const real = navigator.mediaDevices.getUserMedia.bind(navigator.mediaDevices);
+  window.__streams = [];
+  navigator.mediaDevices.getUserMedia = async (c) => { const s = await real(c); window.__streams.push(s); return s; }; })();"""
+
+
+def fake_labels(p):
+    return p.evaluate("""async () => (await navigator.mediaDevices.getUserMedia({audio: true})
+      .then((s) => { s.getTracks().forEach((t) => t.stop()); return navigator.mediaDevices.enumerateDevices(); }))
+      .filter((d) => d.kind === 'audioinput' && d.deviceId !== 'default').map((d) => d.label)""")
+
+
+class TapAgent:
+    """The agent's tap routes, stood in: answers with `label` (or refuses
+    with `refuse`), and records each request's path and body."""
+
+    def __init__(self, page, label, refuse=None, renew=0.3, hold=False):
+        self.label, self.refuse, self.renew, self.asked = label, refuse, renew, []
+        self.hold, self.held = hold, []
+        page.route("**/visualiser/tap", self.tap)
+        page.route("**/visualiser/tap/release", self.release)
+
+    def answer(self, route):
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(
+            {"ok": True, "source": {"node": "sushi_rig_output", "label": self.label},
+             "lease_s": 30, "renew_s": self.renew}))
+
+    def tap(self, route):
+        self.asked.append(("tap", json.loads(route.request.post_data or "{}")))
+        if self.hold:
+            self.held.append(route)  # answered by the test, late
+            return
+        if self.refuse:
+            route.fulfill(status=409, content_type="application/json",
+                          body=json.dumps({"ok": False, "code": "not_realtime", "reason": self.refuse}))
+            return
+        route.fulfill(status=200, content_type="application/json", body=json.dumps(
+            {"ok": True, "source": {"node": "sushi_rig_output", "label": self.label},
+             "lease_s": 30, "renew_s": self.renew}))
+
+    def release(self, route):
+        self.asked.append(("release", json.loads(route.request.post_data or "{}")))
+        route.fulfill(status=200, content_type="application/json", body='{"ok": true}')
+
+    def count(self, kind):
+        return sum(1 for k, _ in self.asked if k == kind)
+
+    def wait(self, page, test, seconds=5):
+        deadline = time.monotonic() + seconds
+        while not test() and time.monotonic() < deadline:
+            page.wait_for_timeout(100)
+        return test()
+
+
+def test_the_rigs_output_is_asked_for_heard_renewed_and_given_back(opened):
+    v = opened()
+    p = v.page
+    labels = fake_labels(p)
+    agent = TapAgent(p, labels[-1])
+    v.shown()
+    pick = v.state()["pick"]
+    assert (pick["how"], pick["label"], pick["channel"]) == ("output", labels[-1], None), \
+        "the tap's source, though /machine/roles answered 409"
+    page_id = agent.asked[0][1]["page"]
+    assert agent.wait(p, lambda: agent.count("tap") >= 3), "renewed while it listens"
+    assert {body["page"] for _, body in agent.asked} == {page_id}, "one page, one lease"
+    p.mouse.move(1, 1)
+    v.off()
+    assert agent.wait(p, lambda: ("release", {"page": page_id, "now": False}) in agent.asked), \
+        "given back, to linger"
+    renewals = agent.count("tap")
+    p.wait_for_timeout(1000)
+    assert agent.count("tap") == renewals, "and no longer renewed"
+    assert "(the rig's output: the master, after its limiter)" in p.locator(".visualiser-note").inner_text()
+
+
+def test_a_tap_refused_falls_back_and_says_why(opened):
+    v = opened()
+    p = v.page
+    agent = TapAgent(p, "unused", refuse="the visualiser tap (pid 7) got no realtime thread ...")
+    v.shown()
+    state = v.state()
+    assert state["pick"]["how"] == "default", "no machine file here: the browser's choice"
+    assert state["tap"]["holding"] is False and "no realtime thread" in state["tap"]["reason"]
+    assert agent.count("tap") == 1 and agent.count("release") == 0
+
+
+def test_a_trip_while_on_the_rigs_output_lets_the_tap_go_at_once_and_says_so(opened, served):
+    v = opened()
+    p = v.page
+    agent = TapAgent(p, fake_labels(p)[-1])
+    v.shown()
+    v.until("() => sushiRigVisualiser().session.listening")
+    assert v.state()["pick"]["how"] == "output"
+    page_id = agent.asked[0][1]["page"]
+    served.pw_top_output = re.sub(r"^(R\s+130(?:\s+\S+){6}\s+)0(\s+\+ sushi)$", r"\g<1>5\2", served.pw_top_output, flags=re.M)
+    state = v.off()
+    assert "Its tap on the rig's output was let go" in state["tripped"]
+    assert agent.wait(p, lambda: ("release", {"page": page_id, "now": True}) in agent.asked), \
+        "at once, not after the linger"
+
+
+def test_an_input_that_ends_while_heard_is_chosen_again_and_heard(opened):
+    """The tap stopped (or the interface went): the track ends, and the page
+    chooses again and hears that, rather than drawing silence."""
+    v = opened(init=(STREAMS,))
+    p = v.page
+    agent = TapAgent(p, fake_labels(p)[-1])
+    v.shown()
+    before = p.evaluate("window.__streams.length")
+    asked = agent.count("tap")
+    p.evaluate("""(() => { const s = window.__streams[window.__streams.length - 1];
+      s.getAudioTracks()[0].dispatchEvent(new Event('ended')); })()""")
+    v.until(f"() => sushiRigVisualiser().reopened === 1 && window.__streams.length > {before}")
+    v.until("() => sushiRigVisualiser().session.listening")
+    assert agent.count("tap") > asked, "the tap asked for again"
+    assert v.state()["phase"] == "shown" and v.state()["pick"]["how"] == "output"
+
+
+def test_the_rigs_output_chosen_by_hand_keeps_its_lease(opened):
+    """Chosen on the line, "Sushi rig output" is still the tap: its lease is
+    kept and renewed, not given back at once (review of PR #200)."""
+    v = opened()
+    p = v.page
+    label = fake_labels(p)[-1]
+    agent = TapAgent(p, label)
+    v.shown()
+    p.mouse.move(1, 1)
+    v.off()
+    pick = p.locator("#visualiser-input")
+    pick.focus()
+    p.wait_for_function("document.querySelectorAll('#visualiser-input option').length > 1")
+    value = p.evaluate(f"""[...document.querySelectorAll('#visualiser-input option')]
+      .find((o) => o.textContent === {json.dumps(label)}).value""")
+    pick.select_option(value)
+    asked = agent.count("tap")
+    released = agent.count("release")
+    v.shown()
+    state = v.state()
+    assert (state["pick"]["deviceId"], state["pick"]["how"]) == (value, "output")
+    assert agent.wait(p, lambda: agent.count("tap") >= asked + 3), "renewed while it listens"
+    assert agent.count("release") == released, "not given back"
+
+
+def test_an_answer_too_late_for_the_page_is_given_back(opened):
+    """The page stopped waiting (9 s, here 0.3) and fell back; the agent may
+    still start the tap and give this page the lease, so it is given back
+    then and there (review of PR #200)."""
+    v = opened(init=("window.sushiRigTapAskMs = 300;",))
+    p = v.page
+    agent = TapAgent(p, fake_labels(p)[-1], hold=True)
+    v.shown()
+    assert v.state()["pick"]["how"] == "default" and "did not answer within 0.3 s" in v.state()["tap"]["reason"]
+    page_id = agent.asked[0][1]["page"]
+    assert agent.wait(p, lambda: ("release", {"page": page_id, "now": False}) in agent.asked), \
+        "given back once it gave up waiting"
+    for route in agent.held:
+        try:
+            agent.answer(route)
+        except Exception:  # noqa: BLE001 -- the page's request was aborted: nothing to answer
+            pass
+
+
+HIDE = """(hidden) => { Object.defineProperty(document, 'hidden', {configurable: true, get: () => hidden});
+  Object.defineProperty(document, 'visibilityState', {configurable: true, get: () => hidden ? 'hidden' : 'visible'});
+  document.dispatchEvent(new Event('visibilitychange')); }"""
+
+
+def test_a_tab_hidden_while_the_agent_answers_neither_listens_nor_renews(opened):
+    v = opened()
+    p = v.page
+    agent = TapAgent(p, fake_labels(p)[-1], hold=True)
+    v.until("() => sushiRigVisualiser().phase === 'shown'")
+    assert agent.wait(p, lambda: agent.held), "the page asked"
+    page_id = agent.asked[0][1]["page"]
+    p.evaluate(HIDE, True)
+    agent.answer(agent.held.pop())
+    assert agent.wait(p, lambda: ("release", {"page": page_id, "now": False}) in agent.asked), "given back"
+    p.wait_for_timeout(1000)
+    assert agent.count("tap") == 1, "and never renewed"
+    state = v.state()
+    assert state["session"]["listening"] is False and state["tap"]["holding"] is False
+
 # --------------------------------------------------------------------------- #
 # The looks in the page (#196)
 # --------------------------------------------------------------------------- #
@@ -1289,3 +1523,22 @@ def test_equaliser_looks_that_cannot_be_made_give_back_butterchurns_context(open
     p.locator("#visualiser-on").check()
     v.until("() => sushiRigVisualiser().attempts > 1 && sushiRigVisualiser().broken !== null && sushiRigVisualiser().phase === 'off'")
     assert "the equaliser looks could not draw here" in v.state()["broken"], "tried again, and failed for the same reason, not a lost canvas"
+
+
+def test_a_close_while_the_agent_answers_leaves_nothing_renewing(opened):
+    """Closed while the agent started the tap: the answer, late, is not this
+    page's to hold. Before the ticket it set `holding` and renewed for ever
+    (round 3 of PR #200's review)."""
+    v = opened()
+    p = v.page
+    agent = TapAgent(p, fake_labels(p)[-1], hold=True)
+    v.until("() => sushiRigVisualiser().phase === 'shown'")
+    assert agent.wait(p, lambda: agent.held), "the page asked"
+    page_id = agent.asked[0][1]["page"]
+    p.mouse.move(1, 1)
+    v.off()
+    assert agent.wait(p, lambda: ("release", {"page": page_id, "now": False}) in agent.asked), "given back"
+    agent.answer(agent.held.pop())
+    p.wait_for_timeout(1500)
+    assert agent.count("tap") == 1, "never renewed"
+    assert v.state()["tap"]["holding"] is False

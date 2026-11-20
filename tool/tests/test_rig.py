@@ -834,28 +834,47 @@ def test_restart_brings_back_the_same_rig():
 
     name, options = restart_arguments({
         "config_name": "electric-chorus-2", "mode": "panel",
-        "tuner_requested": True, "amp_requested": True,
-        "children": {"fmit": 1, "sushi": 2, "amp": 3, "open-stage-control": 4},
+        "tuner_requested": True, "amp_requested": True, "visualiser_tap_requested": True,
+        "children": {"fmit": 1, "sushi": 2, "amp": 3, "open-stage-control": 4, "vistap": 5},
     })
     assert name == "electric-chorus-2"
     assert options == {
         "headless": False, "tuner": True, "amp": True, "amp_model": None, "rig": False, "machine": None,
+        "visualiser_tap": True,
     }
 
 
 def test_restart_preserves_the_choices_the_rig_was_started_with():
-    """A rig started --headless --no-amp --no-tuner must not quietly gain a
-    panel, an amp and a tuner on the way back."""
+    """A rig started --headless --no-amp --no-tuner --no-visualiser-tap must
+    not quietly gain a panel, an amp, a tuner and a tap on the way back."""
     from sushi_rig.rig import restart_arguments
 
     _, options = restart_arguments({
         "config_name": "x", "mode": "headless",
-        "tuner_requested": False, "amp_requested": False,
+        "tuner_requested": False, "amp_requested": False, "visualiser_tap_requested": False,
         "children": {"sushi": 1},
     })
     assert options == {
         "headless": True, "tuner": False, "amp": False, "amp_model": None, "rig": False, "machine": None,
+        "visualiser_tap": False,
     }
+
+
+def test_the_tap_comes_back_as_it_was_asked_for_whatever_children_say():
+    """The tap is optional, so one that could not be linked (and was stopped)
+    is absent from `children`, and one declined is absent too: restart reads
+    what was asked for. A state file from before the tap was recorded is
+    from before there was one to decline, so it gets `up`'s default, on."""
+    from sushi_rig.rig import restart_arguments
+
+    asked = restart_arguments({"config_name": "x", "visualiser_tap_requested": True, "children": {"sushi": 1}})
+    declined = restart_arguments({"config_name": "x", "visualiser_tap_requested": False,
+                                  "children": {"sushi": 1, "vistap": 2}})
+    older = restart_arguments({"config_name": "x", "children": {"sushi": 1}})
+    odd = restart_arguments({"config_name": "x", "visualiser_tap_requested": "no", "children": {"sushi": 1}})
+    assert asked[1]["visualiser_tap"] is True
+    assert declined[1]["visualiser_tap"] is False
+    assert older[1]["visualiser_tap"] is True and odd[1]["visualiser_tap"] is True
 
 
 def test_restart_brings_a_rig_of_channels_back_on_the_machine_file_it_was_started_against():
@@ -1369,11 +1388,13 @@ def test_restart_with_nothing_running_refuses_and_says_how_to_start(runtime):
 
 def test_restart_hands_up_what_the_state_says_was_asked_for(runtime, monkeypatch, tmp_path):
     """The whole chain, end to end with `down` and `up` stubbed: an amp that
-    failed to start and a model named on the command line both survive."""
+    failed to start, a model named on the command line and a declined
+    visualiser tap all survive."""
     whole_plugins(tmp_path, monkeypatch)
     state_file.write_state(running_state(
         mode="headless", amp_requested=True,
         amp_model="amp/models/Other.nam", amp_model_requested="amp/models/Other.nam",
+        visualiser_tap_requested=False,
         children={"sushi": 4002},  # the amp is not here: it failed to start
     ))
     calls = []
@@ -1382,7 +1403,7 @@ def test_restart_hands_up_what_the_state_says_was_asked_for(runtime, monkeypatch
     assert rig.restart() == 0
     assert calls == [("electric_board", {
         "headless": True, "tuner": True, "amp": True,
-        "amp_model": "amp/models/Other.nam", "rig": False, "machine": None,
+        "amp_model": "amp/models/Other.nam", "rig": False, "machine": None, "visualiser_tap": False,
     })]
 
 

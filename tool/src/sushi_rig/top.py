@@ -129,17 +129,26 @@ def parse_pw_top(output: str) -> list[dict[str, Any]]:
 # The amp is two nodes — Carla's own client and the plugin's, which Carla names
 # after the project's plugin entry. The plugin node is where the work happens;
 # Carla's is near zero but shown so a dead amp is visible rather than absent.
+#
+# The visualiser's tap (vistap.py) is two nodes as well, both followers in
+# Sushi's cycle while the agent runs it: they do a copy each cycle, so they are
+# shown, their load is in the total and their xruns are in the count the page's
+# XRUNS tile and the visualiser's xrun safeguard read. The agent adds it to the
+# children it reads for (`Agent._load_children`), since the state file never
+# lists it.
 CHILD_NODES: dict[str, tuple[str, ...]] = {
     "sushi": ("sushi",),
     "amp": ("NAM", "Carla"),
     "fmit": ("fmit",),
+    "vistap": ("sushi_rig_output_tap", "sushi_rig_output"),
 }
 
 
 # Signal order, not the order the supervisor happens to start things in. The
 # amp is in front of Sushi, and the tuner only taps the input — reading the
-# display top to bottom should follow the guitar.
-DISPLAY_ORDER = ("amp", "sushi", "fmit")
+# display top to bottom should follow the guitar. The visualiser's tap hangs
+# off the output, so it is last.
+DISPLAY_ORDER = ("amp", "sushi", "fmit", "vistap")
 
 
 def rig_nodes(
