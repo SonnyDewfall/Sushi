@@ -344,3 +344,16 @@ def test_a_record_left_half_written_never_replaces_the_one_there(tmp_path, monke
     with pytest.raises(OSError):
         vistap.write_record(os.getpid(), 12345, path=path)
     assert path.read_text() == before and list(tmp_path.iterdir()) == [path]
+
+
+def test_an_owner_that_is_pid_1_is_alive_and_a_tap_that_is_pid_1_never_is(monkeypatch):
+    """In a container the agent can be pid 1 (CI runs pytest so): read as
+    gone, a second agent would stop the tap it holds. The tap is the one
+    signalled, so pid 1 is never a tap."""
+    started = vistap.starttime(1)
+    monkeypatch.setattr(vistap, "starttime", lambda pid: started if pid == 1 else None)
+    record = {"pid": 1, "pgid": 1, "starttime": started, "owner": {"pid": 1, "starttime": started}}
+    assert vistap.owner_alive(record), "pid 1 as the owner, its start time matching: alive"
+    assert not vistap.owner_alive({**record, "owner": {"pid": 1, "starttime": started + 1}})
+    assert not vistap.owner_alive({**record, "owner": {"pid": 0, "starttime": started}})
+    assert not vistap.recorded_alive(record), "pid 1 is never a tap"

@@ -385,10 +385,15 @@ def clear_record_of_group(pgid: Any, *, path: Path | None = None) -> None:
         clear_record(record.get("pid"), path=path)
 
 
-def same_process(pid: Any, started: Any) -> bool:
+def same_process(pid: Any, started: Any, *, may_be_init: bool = False) -> bool:
     """Whether `pid` is still the process that started at `started`: alive,
-    not a zombie, and that start time. A pid of 1 or below is never one."""
-    if type(pid) is not int or pid <= 1 or started is None:
+    not a zombie, and that start time. A pid of 1 or below is never one,
+    unless `may_be_init`: the owner's check, which signals nothing, and in a
+    container the agent can be pid 1 (CI's rig-container job runs pytest as
+    pid 1, and the owner, alive, read as gone, which is just when another
+    agent would stop a tap still in use). The tap, which is signalled, is
+    never pid 1."""
+    if type(pid) is not int or pid < (1 if may_be_init else 2) or started is None:
         return False
     try:
         state = Path(f"/proc/{pid}/stat").read_text().rsplit(")", 1)[1].split()[0]
@@ -408,7 +413,7 @@ def owner_alive(record: dict[str, Any] | None) -> bool:
     time): then the tap is that agent's, leased to its pages, and no other
     agent's to stop. A record from before owners were recorded has none."""
     owner = (record or {}).get("owner")
-    return isinstance(owner, dict) and same_process(owner.get("pid"), owner.get("starttime"))
+    return isinstance(owner, dict) and same_process(owner.get("pid"), owner.get("starttime"), may_be_init=True)
 
 
 def link(
