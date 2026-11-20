@@ -360,3 +360,223 @@ def test_the_device_states_are_the_feeds(served):
     assert midi_health(served)["state"] == "failed" and midi_health(served)["feeds"][0]["required"] is True
     served.pedals.plugged = True
     listening(served)
+
+
+# --------------------------------------------------------------------------- #
+# PR #202's review
+# --------------------------------------------------------------------------- #
+
+BOTH = RIG_FILE + """\
+midi:
+  controller: fbv
+  controls:
+  - {control: c, bypass: board/overdrive}
+  - {control: pedal, volume: board}
+"""
+
+
+def on_loop(s, coroutine):
+    """Run `coroutine` on the served agent's loop and wait for it."""
+    import asyncio
+
+    return asyncio.run_coroutine_threadsafe(coroutine, s._loop).result(10)
+
+
+def refused_restart(s):
+    """A live change, then a restart the agent refuses for it: the lifecycle's
+    `finally` re-syncs the listener with the rig still up."""
+    assert ask(s, "POST", "/live/bypass", {"processor": "delay", "bypassed": True})[0] == 200
+    status, answer = ask(s, "POST", "/rig/restart", {})
+    assert status == 409 and answer["code"] == "unsaved", answer
+
+
+def test_a_map_written_for_the_restart_does_not_turn_the_running_rigs_pedals_off():
+    """The file loses its midi: (both controls taken off, for the restart):
+    a re-sync before that restart still plans from what runs, so C still
+    switches the drive and A and B still step (the reviewer's scenario)."""
+    with Served(save=True, pedals=True, rig_file=BOTH) as s:
+        listening(s)
+        assert assign(s, control="pedal", none=True)[1]["how"] == "restart"
+        assert assign(s, control="c", none=True)[1]["how"] == "restart"
+        assert rig_midi(s) is None
+        refused_restart(s)
+        listening(s)
+        health = midi_health(s)
+        assert health["problem"] is None and health["feeds"][0]["required"] is True
+        assert any("bypass board/overdrive" in b for b in health["bindings"]), health["bindings"]
+        before = s.rig.bypassed["overdrive"]
+        s.pedals.press("c")
+        until(lambda: s.rig.bypassed["overdrive"] is (not before), what="C, as the running rig was compiled")
+
+
+def test_a_map_gained_for_the_restart_does_not_make_the_running_rig_wait_for_its_pedal(served):
+    """No map runs; one is written for the restart. Unplugged, the board is
+    still only not connected after a re-sync: the running rig needs no pedal."""
+    listening(served)
+    assert assign(served, control="pedal", volume="vocal")[1]["how"] == "restart"
+    assert rig_midi(served)["controller"] == "fbv"
+    served.pedals.plugged = False
+    until(lambda: midi_health(served)["feeds"][0]["state"] == "absent", what="absent")
+    refused_restart(served)
+    assert midi_health(served)["feeds"][0] == {**midi_health(served)["feeds"][0], "state": "absent", "required": False}
+    assert midi_health(served)["state"] == "absent"
+
+
+def test_a_switch_on_a_channel_the_file_has_and_the_rig_does_not_waits_for_the_restart(served):
+    """A channel added to the file is not on the rig until it restarts: D on
+    its mute is written for that restart, not served on nothing."""
+    listening(served)
+    status, answer = ask(served, "POST", "/rigs/electric_board/channels/add",
+                         {"name": "lead", "input": "guitar-in", "width": "mono"})
+    assert status == 200, answer
+    status, answer = assign(served, control="d", mute="lead")
+    assert status == 200, answer
+    assert answer["how"] == "restart" and "not_running" in [r["code"] for r in answer["why"]], answer
+    assert AGENT_BINDINGS not in served.save.config
+    assert not any("mute lead" in b for b in midi_health(served)["bindings"])
+
+
+def test_a_switch_on_a_plugin_taken_out_live_is_not_served_live(served):
+    """Taken out through the agent and not saved: the file still has it, the
+    rig does not. Not live; and the restart that would play it would drop the
+    unsaved remove, so it waits for a Save, with nothing written."""
+    listening(served)
+    assert ask(served, "POST", "/live/remove", {"processor": "overdrive"})[0] == 200
+    before = rig_text(served)
+    status, answer = assign(served, control="c", bypass="board/overdrive")
+    assert status == 409 and answer["code"] == "unsaved", answer
+    assert rig_text(served) == before
+    assert ask(served, "POST", "/rig/save", {})[0] == 200, "SAVE is not blocked by a map naming nothing"
+
+
+def test_a_re_plan_while_the_heel_is_being_silenced_keeps_the_silence_it_lands():
+    """The pedal at its heel: the agent's silencing is in flight (Sushi slow
+    to answer) when the plan changes under it. The listener takes the new
+    plan in place, so the silencing lands for the plan that runs, and the
+    pedal's next rise has the agent put Sushi's value back."""
+    import threading
+
+    mapped = RIG_FILE + "midi:\n  controller: fbv\n  controls:\n  - {control: pedal, volume: vocal}\n"
+    with Served(save=True, pedals=True, rig_file=mapped) as s:
+        listening(s)
+        gate, entered = threading.Event(), threading.Event()
+        real = s.rig.set_parameter
+
+        def slow(connection, processor, parameter, value):
+            if processor == "vocal_send" and value == 0.0 and not gate.is_set():
+                entered.set()
+                gate.wait(10)
+            return real(connection, processor, parameter, value)
+
+        s.rig.set_parameter = slow
+        s.pedals.sweep(0)
+        until(entered.is_set, what="the silencing to reach Sushi")
+        # The plan changes (C given the drive, as an assignment applied live
+        # leaves the running config) while that call is out.
+        config = json.loads(json.dumps(s.save.config))
+        config[AGENT_BINDINGS] = config[AGENT_BINDINGS] + [
+            {"control": "c", "cc": 22, "channel": 0, "bypass": "board/overdrive", "switch": "momentary"}]
+        s.save.write_config("electric_board", config)
+        on_loop(s, s.agent._midi_sync())
+        assert any("bypass board/overdrive" in b for b in midi_health(s)["bindings"])
+        gate.set()
+        until(lambda: s.rig.info["vocal_send"]["gain"]["value"] == 0.0, what="the silence")
+        s.pedals.sweep(100)
+        until(lambda: any(c[:3] == ("set_parameter", "vocal_send", "gain") and c[3] > 0 for c in s.rig.calls),
+              what="the agent to put Sushi's value back as the pedal rises")
+
+
+def test_a_press_a_stopped_listener_heard_is_said_as_dropped():
+    """A press waiting its turn when the listener is replaced is not acted on,
+    and /health says so rather than naming it as done."""
+    mapped = RIG_FILE + "midi:\n  controller: fbv\n  controls:\n  - {control: c, bypass: board/overdrive}\n"
+    with Served(save=True, pedals=True, rig_file=mapped) as s:
+        listening(s)
+        on_loop(s, s.agent._midi_lock.acquire())
+        s.pedals.press("c")
+        until(lambda: (midi_health(s)["last"] or {}).get("message", "").startswith("cc 22"), what="the press")
+        on_loop(s, s.agent._midi_stop("a test replacing it"))
+
+        async def release():
+            s.agent._midi_lock.release()
+
+        on_loop(s, release())
+        until(lambda: "dropped" in ((midi_health(s)["last_error"] or {}).get("message") or ""), what="said")
+        assert s.rig.bypassed["overdrive"] is False
+
+
+def test_nothing_to_change_is_not_written_and_not_a_question(served):
+    """`none` for a control the map does not have, or the same assignment
+    again, writes nothing and says so; a control no device has is refused.
+    With two devices and no map, a no-op is not answered with `which`."""
+    listening(served)
+    path = served.save.root / "config" / "rigs" / f"{RIG}.yaml"
+    stamp = path.stat().st_mtime_ns
+    status, answer = assign(served, control="d", none=True)
+    assert status == 200 and answer["how"] == "unchanged", answer
+    assert path.stat().st_mtime_ns == stamp and rig_midi(served) is None
+    status, answer = assign(served, control="zz", none=True)
+    assert status == 409 and answer["code"] == "no_control", answer
+    assert assign(served, control="c", bypass="board/overdrive")[1]["how"] == "live"
+    stamp = path.stat().st_mtime_ns
+    status, answer = assign(served, control="c", bypass="board/overdrive")
+    assert status == 200 and answer["how"] == "unchanged" and path.stat().st_mtime_ns == stamp, answer
+    assert assign(served, control="c", none=True)[1]["how"] == "live"
+    served.save.machine.write_text(MACHINE_FILE + FBV_CONTROLLERS + FBV_CONTROLLERS.split("\n", 1)[1]
+                                   .replace("  fbv:", "  fbv2:").replace("FBV Express Mk II MIDI 1", "MIDI 2"))
+    status, answer = assign(served, control="c", none=True)
+    assert status == 200 and answer["how"] == "unchanged", answer
+
+
+def test_a_write_that_outlasts_the_answer_is_still_followed_by_the_listener(served, monkeypatch):
+    """The running config's write is slow past the deadline: the answer is a
+    504, and once the write is over the listener serves what it wrote."""
+    import threading
+
+    from sushi_rig import agent as agent_module
+
+    listening(served)
+    monkeypatch.setattr(agent_module, "SAVE_TIMEOUT", 0.5)
+    gate = threading.Event()
+    real = served.save.write_config
+
+    def slow(name, compiled):
+        gate.wait(10)
+        return real(name, compiled)
+
+    served.save.write_config = slow
+    served.agent.switching = served.save.switching()
+    status, answer = assign(served, control="c", bypass="board/overdrive")
+    assert status == 504, answer
+    assert not any("bypass" in b for b in midi_health(served)["bindings"])
+    gate.set()
+    until(lambda: any("bypass board/overdrive" in b for b in midi_health(served)["bindings"]),
+          what="the listener to follow the late write")
+
+
+@pytest.mark.parametrize("which", ["state", "compiled"])
+def test_the_running_config_and_the_state_file_are_written_whole_or_not_at_all(tmp_path, monkeypatch, which):
+    """A write that dies part way leaves the file as it was, never half of it."""
+    from pathlib import Path
+
+    from sushi_rig import rig, state
+
+    monkeypatch.setattr(state, "state_path", lambda: tmp_path / "rig.json")
+    target = tmp_path / "rig.json" if which == "state" else tmp_path / "rigs" / "lead.json"
+    target.parent.mkdir(exist_ok=True)
+    target.write_text('{"old": true}\n')
+    real = Path.write_text
+
+    def dies(self, text, *args, **kwargs):
+        real(self, text[: len(text) // 2], *args, **kwargs)
+        raise OSError("the disk filled")
+
+    monkeypatch.setattr(Path, "write_text", dies)
+    with pytest.raises(OSError):
+        if which == "state":
+            state.write_state({"new": True, "and": "more"})
+        else:
+            rig.write_compiled("lead", {"new": True, "and": "more"}, tmp_path)
+    monkeypatch.setattr(Path, "write_text", real)
+    assert json.loads(target.read_text()) == {"old": True}
+    assert [p.name for p in target.parent.iterdir()] == [target.name]

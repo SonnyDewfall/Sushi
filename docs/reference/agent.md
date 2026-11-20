@@ -807,14 +807,30 @@ curl -X POST localhost:8029/rig/midi/assign -d '{"control": "c", "none": true}' 
 - **Live where only the agent's bindings change.** Sushi loads its
   `cc_mappings` only with the config. An assignment whose compile leaves the
   running config's `midi` section as it is (a footswitch on a bypass, a
-  momentary or single one on a mute: [the agent's own](midi.md#what-the-agent-does-with-a-pedal))
-  is applied at once: the running config's `_midi_agent` is replaced by the
-  edited file's and the listener re-planned (`_midi_sync`), so the next press
-  does it. The answer is `how: "live"`. Any other (the pedal on a volume, a
-  parameter or a blend; a latching footswitch on a mute) changes what Sushi
-  maps: `how: "restart"`, `offer: "restart"` and `why`, `rigfile.diff`'s
-  reasons as a channel edit gives them (`midi`, and `host` when the rig had
-  no MIDI input before), and until that restart the pedals do what they did.
+  momentary or single one on a mute: [the agent's own](midi.md#what-the-agent-does-with-a-pedal)),
+  and every one of whose bindings names a processor the running rig has
+  (its config's tracks and plugins, less those removed and plus those added
+  through the agent since the last save or switch: `assignment_not_live`),
+  is applied at once: the running config's `_midi_agent`, and the controller
+  in its `_meta`, are replaced by the edited file's (written whole, through a
+  scratch file and a rename), and the running listeners take the new plan in
+  place (`_midi_swap`): nothing stops, so a press queued or a heel's
+  silencing in flight goes on, and a switch's state is kept where its
+  binding did not change. The answer is `how: "live"`. Any other (the pedal
+  on a volume, a parameter or a blend; a latching footswitch on a mute; a
+  target in the file but not on the running rig, `not_running`) changes what
+  Sushi maps or names what it does not run: `how: "restart"`,
+  `offer: "restart"` and `why`, `rigfile.diff`'s reasons as a channel edit
+  gives them (`midi`, and `host` when the rig had no MIDI input before), and
+  until that restart the pedals do what they did. The listener keeps
+  planning from the running config, not the edited file
+  ([MIDI](midi.md#assigning-from-the-rack-192)). If the write outlasts the
+  answer's deadline (`504`), the listener follows what it left once it is
+  over.
+- **Nothing to change is not a write.** `none` for a control the map does
+  not have, and an assignment the map already says, answer `how:
+  "unchanged"` with nothing written (and never `which_controller`); `none`
+  for a control no device the map could be for has is `409 no_control`.
   That restart reloads the file, so an assignment that needs it is refused
   while the rig holds unsaved changes (`409 unsaved`) or runs with its panel
   (`409 panel`), as a channel edit is ([above](#new-rigs-and-channel-edits));

@@ -2146,7 +2146,7 @@ export function volumeNudged(db, direction, max = VOLUME_MAX_DB, hard = false) {
 // lock: the agent has no performance lock yet (#29), so another client is
 // not held by it.
 const STRUCTURAL = { move: "reordering", add: "adding a plugin", remove: "removing a plugin",
-  load_preset: "loading a channel preset", pedal: "assigning a pedal" };
+  load_preset: "loading a channel preset" };
 
 export function lockRefusal(locked, op) {
   if (locked && op === "amp_model") {
@@ -2156,6 +2156,9 @@ export function lockRefusal(locked, op) {
   // knocks mid-song. The rack's volumes and picker are not behind the lock.
   if (locked && op === "stage_volume") return "Locked: the stage's volumes do not move while locked, so a stray thumb cannot change them. Unlock to set them.";
   if (locked && op === "stage_switch") return "Locked: switching rigs is off while locked. Unlock to switch.";
+  // A pedal's assignment (#192): not the rig's structure, but what the board
+  // does on it, which a stray tap mid-song must not change.
+  if (locked && op === "pedal") return "Locked: assigning a pedal changes what the board does on this rig, which the lock refuses. Unlock to assign it.";
   if (!locked || !(op in STRUCTURAL)) return null;
   return `Locked: ${STRUCTURAL[op]} changes the rig's structure, which the lock refuses. Unlock to edit it.`;
 }
@@ -3507,7 +3510,9 @@ export function pedalCall(control, binding, target, controller = null) {
 
 // What choosing `control` (or "" for none) for a target does: the call to
 // make, and the confirm to ask first when the control is in use elsewhere
-// (it moves) or the target loses another control. Null when nothing changes.
+// (it moves, and the confirm names where from). A target losing another
+// control is not asked about: choosing for it is choosing instead of that
+// one. Null when nothing changes.
 export function pedalChoice(board, binding, target, control, controller = null) {
   const now = pedalOn(board, binding, target);
   if ((control || null) === now) return null;
@@ -3576,6 +3581,10 @@ export function pedalOutcome(what, answer) {
       controllers: Array.isArray(body.controllers) ? body.controllers : null };
   }
   const change = body.change || {};
+  if (body.how === "unchanged") {
+    return { ok: true, title: `Nothing to change: ${what}`, text: `${body.file} already says so: nothing was written.`,
+      commit: commitText(body.library), offer: null, file: body.file };
+  }
   let text = `Wrote ${body.file} in place, keeping its comments.`;
   if (change.moved) text += ` ${pedalName(change.control)} came off ${change.moved.said}.`;
   for (const r of change.replaced || []) text += ` ${pedalName(r.control)} came off it.`;

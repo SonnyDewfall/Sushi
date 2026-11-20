@@ -6567,3 +6567,33 @@ refusal, the takes filter and the replaced control were each shown failing
 with their code taken out. Not run on the rig: no board has arrived, and the
 assignments and lights are tested only against fakes of the board and Sushi.
 *(2026-11-20)*
+
+**Pedalboard 2, after review (PR #202).** Each fix with a test that fails
+without it. (1) A write for the restart could turn MIDI off for the running
+rig, A and B included: the listener read the controller, and so which pedal
+is `required`, from the rig file as it now is, so a file that lost its
+`midi:` failed the next re-sync (a refused restart's, a failed switch's) and
+one that gained a map made the rig wait for a pedal it does not use. A
+compiled config with a map now records its controller (`_meta`'s
+`midi_controller`) and `plan_for` plans from it; a config with nothing of a
+map needs no pedal; an older one still reads the file. (2) "Live" checked
+only Sushi's `midi` section, so C could be bound live to a plugin taken out
+live, or D to a channel added to the file and not yet restarted, which also
+blocked SAVE: an assignment is live only when every binding names a
+processor the running rig has (`assignment_not_live`), else it waits for the
+restart, refused while unsaved work would be lost. (3) A live assignment
+stopped and restarted the listeners, so a queued press was dropped silently
+and a heel's silencing in flight landed for a listener that no longer
+counted it, leaving the channel silent with the pedal up: a plan on the same
+ports is now swapped in place (`_midi_swap`), keeping each unchanged
+binding's state; a press a stopped listener heard is said as dropped. (4)
+The move's confirm shows the control picked in its select. (5) The panel's
+lock words are `R.lockRefusal`'s. (6) `none` for a control the map lacks,
+and an assignment the map already says, answer `unchanged` and write
+nothing; an unknown control is `409 no_control`. (7) The badge has
+`aria-controls`, the focus goes back to it, and each light is said in words.
+(8) `plan_for` no longer rebinds its `described`. (9) The running config and
+the state file are written through a scratch file and a rename, and a write
+that outlasts the answer is followed by the listener once it is over. A
+fixture of `test_midi_listener.py` (a map of sweeps compiled with no
+cc_mappings, which no compile makes) was given its cc_mappings. *(2026-11-20)*

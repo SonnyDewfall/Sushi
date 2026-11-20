@@ -308,6 +308,34 @@ def pick_controller(current: Any, asked: str | None, devices: list[dict[str, Any
                   f"{', '.join(names) or 'none'})", "controller", {})
 
 
+def midi_of(raw: Any) -> dict[str, Any] | None:
+    """A rig file's `midi:` as the file has it, or None."""
+    midi = raw.get("midi") if isinstance(raw, dict) else None
+    return copy.deepcopy(midi) if isinstance(midi, dict) else None
+
+
+def unassigned_noop(raw: dict[str, Any], current: Any, control: str,
+                    devices: list[dict[str, Any]]) -> tuple[dict[str, Any], Any] | None:
+    """For `none` on a control the map does not have: `(change, None)`,
+    nothing to write, when the device has that control; `(None, (reason,
+    "no_control", {}))` when no device the map could be for has it. None when
+    the map has the control, and taking it off is a change. The device is
+    the map's controller, or with none any device of the machine file: a
+    no-op is never a question of which (#192's review)."""
+    midi = raw.get("midi") if isinstance(raw.get("midi"), dict) else {}
+    entries = midi.get("controls") if isinstance(midi.get("controls"), list) else []
+    if any(isinstance(e, dict) and e.get("control") == control for e in entries):
+        return None
+    pool = [d for d in devices if not current or d["name"] == current]
+    names = sorted({c["name"] for d in pool for c in d.get("controls") or []})
+    if control not in names:
+        where = f"controller {current}" if current else "the machine file's devices"
+        return None, (f"{where} {'has' if current else 'have'} no control called {control!r} (there are: "
+                      f"{', '.join(names) or 'none'}), so there is nothing to take off", "no_control", {})
+    return ({"op": "midi", "control": control, "controller": current or None, "binding": None, "target": None,
+             "was": None, "moved": None, "replaced": [], "controller_set": False}, None)
+
+
 def with_assignment(raw: dict[str, Any], controller: str, request: dict[str, Any]) -> tuple[dict[str, Any], dict[str, Any]]:
     """`raw` with `request` (`assign_request`'s) written into its `midi:`,
     and what changed; `raw` is left as it is.

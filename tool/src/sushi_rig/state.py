@@ -29,7 +29,25 @@ def read_state() -> dict[str, Any] | None:
 def write_state(state: dict[str, Any]) -> None:
     path = state_path()
     path.parent.mkdir(parents=True, exist_ok=True)
-    path.write_text(json.dumps(state, indent=2) + "\n")
+    write_atomically(path, json.dumps(state, indent=2) + "\n")
+
+
+def write_atomically(path: Any, text: str) -> None:
+    """`text` into `path` whole or not at all: written beside it and renamed
+    over it, so a reader (the agent's MIDI listener, `status`) never sees
+    half a file, and a write that dies part way leaves the old one (#192's
+    review: the running config is rewritten while the rig plays)."""
+    import os
+    from pathlib import Path
+
+    path = Path(path)
+    scratch = path.with_name(path.name + ".tmp")
+    try:
+        scratch.write_text(text)
+        os.replace(scratch, path)
+    except BaseException:
+        scratch.unlink(missing_ok=True)
+        raise
 
 
 def clear_state() -> None:

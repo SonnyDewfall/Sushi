@@ -202,8 +202,10 @@ def test_a_control_in_use_is_moved_only_after_a_confirm_naming_where_it_was(brow
     mute.select_option("c")
     confirm = panel.get_by_role("group", name="Confirm the move")
     expect(confirm).to_contain_text("C is on board/overdrive on/off. Move it to vocal on/off?")
+    expect(mute).to_have_value("c")  # the control picked, while it is asked about
     confirm.get_by_role("button", name="Keep it").click()
     expect(confirm).to_have_count(0)
+    expect(mute).to_have_value("")  # kept: none, as it was
     assert midi_of(s)["controls"] == [{"control": "c", "bypass": "board/overdrive"}], "kept: nothing written"
     mute.select_option("c")
     panel.get_by_role("button", name="Move C").click()
@@ -367,4 +369,47 @@ def test_at_phone_width_the_badges_and_panels_fit(browser, pedals_served, font):
     wide = p.evaluate("() => [...document.querySelectorAll('#app *')].filter((e) => e.getBoundingClientRect().right > innerWidth + 0.5).map((e) => e.className)")
     assert wide == [], wide
     assert p.evaluate("() => document.documentElement.scrollWidth <= innerWidth")
+    page.close()
+
+
+def test_the_badge_names_its_panel_and_has_the_focus_back_after_an_assignment(browser, pedals_served):
+    s = pedals_served
+    page = rack(browser, s)
+    p = page.page
+    unlock(p)
+    button = badge(p, "overdrive")
+    button.click()
+    panel = p.get_by_role("group", name="Pedal for overdrive")
+    expect(panel).to_be_visible()
+    controls = button.get_attribute("aria-controls")
+    assert controls and p.locator(f"#{controls}").locator(".pedal-panel").count() == 1
+    onoff = panel.get_by_label("overdrive on/off")
+    onoff.focus()
+    onoff.select_option("c")
+    expect(summary(p, "c")).to_have_text("board/overdrive on/off")
+    expect(panel).to_have_count(0)
+    expect(badge(p, "overdrive")).to_be_focused()
+    page.close()
+
+
+def test_a_light_is_said_in_words_too(browser, pedals_served):
+    s = pedals_served
+    page = rack(browser, s)
+    p = page.page
+    said = p.locator('section.pedals .pedal-row[data-control="d"] .heard-said')
+    expect(said).to_have_text("not heard yet")
+    s.pedals.press("d")
+    expect(said).to_have_text("heard just now")
+    expect(said).to_have_text("heard before", timeout=6000)
+    page.close()
+
+
+def test_the_panel_says_the_locks_own_words(browser, pedals_served):
+    s = pedals_served
+    page = rack(browser, s)
+    p = page.page
+    words = rigjs(p, "return R.lockRefusal(true, 'pedal');")
+    assert "assigning a pedal" in words
+    panel = open_panel(p, "overdrive")
+    expect(panel.locator(".lock-says")).to_have_text(words)
     page.close()

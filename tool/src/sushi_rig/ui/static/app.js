@@ -115,7 +115,7 @@ const state = {
   // and each control's light (`R.pedalLights`).
   midi: null, midiAt: 0, midiFor: null,
   pedalUi: { open: null, confirm: null, pending: null, result: null, restartConfirm: false, device: null,
-    lights: {}, refused: null },
+    lights: {}, refused: null, row: null },
   // Channel presets (#127): GET /presets, and a strip's Preset… panel.
   presets: null, presetsAt: 0,
   presetUi: { channel: null, name: "", choice: "", pending: null, result: null, rig: null },
@@ -3462,8 +3462,11 @@ function pedalSlots(badgeEl, panelEl, t) {
   const pu = state.pedalUi;
   const on = shown ? pedalOnTarget(board, t) : [];
   const open = shown && pu.open === t.key;
+  const panelId = pedalPanelId(t.key);
+  if (panelEl.id !== panelId) panelEl.id = panelId;
   patch(badgeEl, JSON.stringify([shown, on, open, state.locked]), () => (!shown ? null : h("button", {
     type: "button", class: `pedal-badge${on.length ? " assigned" : ""}`, "aria-expanded": String(open),
+    "aria-controls": panelId, "data-pedal": t.key,
     "aria-label": `Pedal for ${t.what}: ${on.length ? on.map(R.pedalName).join(", ") : "none"}`,
     title: on.length ? `${on.map(R.pedalName).join(", ")} on ${t.what}` : `Assign a pedal control to ${t.what}`,
     onclick: () => { pu.open = open ? null : t.key; pu.confirm = null; pu.refused = null; render(); },
@@ -3471,7 +3474,7 @@ function pedalSlots(badgeEl, panelEl, t) {
   const button = badgeEl.querySelector(".pedal-badge");
   if (button) button.classList.toggle("lit", on.some((c) => (pu.lights[c] || {}).until > Date.now()));
   const focus = focusedName(panelEl);
-  const rebuilt = patch(panelEl, JSON.stringify(open ? [board, t.rows, t.params, pu.confirm && pu.confirm.key === t.key ? pu.confirm.what : null,
+  const rebuilt = patch(panelEl, JSON.stringify(open ? [board, t.rows, t.params, pu.confirm && pu.confirm.key === t.key ? [pu.confirm.what, pu.confirm.row, pu.confirm.value] : null,
     pu.pending, pu.refused && pu.refused.key === t.key ? pu.refused.reason : null, state.locked] : null),
   () => (open ? pedalPanel(board, t) : null));
   if (rebuilt) refocus(panelEl, focus);
@@ -3491,11 +3494,13 @@ function pedalPanel(board, t) {
   const locked = pedalLockRefusal();
   const busy = !!pu.pending;
   const rows = [];
+  const confirm = pu.confirm && pu.confirm.key === t.key ? pu.confirm : null;
   const pick = (name, label, options, value, onChange) => {
     const select = h("select", { name, "aria-label": label, disabled: busy || !!locked, title: locked || null },
       options.map((o) => h("option", { value: o.value }, o.label)));
-    select.value = value;
-    select.addEventListener("change", () => onChange(select.value));
+    // While a move is asked about, its select shows the control picked.
+    select.value = confirm && confirm.row === name ? confirm.value : value;
+    select.addEventListener("change", () => { pu.row = { name, value: select.value }; onChange(select.value); });
     return h("label", { class: "selector pedal-pick" }, h("span", { class: "label" }, label.replace(`${t.what} `, "")), select);
   };
   for (const r of t.rows) {
@@ -3516,7 +3521,6 @@ function pedalPanel(board, t) {
       if (use && !here) rows.push(h("p", { class: "sub" }, `${R.pedalName(c.name)} is on ${R.pedalSaid(use.binding, use.target)} now.`));
     }
   }
-  const confirm = pu.confirm && pu.confirm.key === t.key ? pu.confirm : null;
   const refused = pu.refused && pu.refused.key === t.key ? pu.refused.reason : null;
   return h("div", { class: "pedal-panel", role: "group", "aria-label": `Pedal for ${t.what}` },
     h("p", { class: "sub" }, board.controller ? `${board.controller}'s controls${board.ask ? " (chosen in Pedals)" : ""}` : "No device to assign from"),
@@ -3531,7 +3535,13 @@ function pedalPanel(board, t) {
 }
 
 function pedalLockRefusal() {
-  return state.locked ? "Locked: assigning a pedal changes what the board does on this rig, which the lock refuses. Unlock to assign it." : null;
+  return R.lockRefusal(state.locked, "pedal");
+}
+
+// The id of a target's panel, for its badge's aria-controls: the key, with
+// every character an id should not hold written as its code.
+function pedalPanelId(key) {
+  return "pedal-panel-" + [...key].map((ch) => (/[A-Za-z0-9-]/.test(ch) ? ch : `_${ch.codePointAt(0)}_`)).join("");
 }
 
 // A choice made in a select: refused locked, asked to confirm when it moves
@@ -3542,13 +3552,18 @@ function choosePedal(t, choice) {
   const locked = pedalLockRefusal();
   if (locked) { pu.refused = { key: t.key, reason: locked, lock: true }; render(); return; }
   pu.refused = null;
-  if (choice.confirm) { pu.confirm = { key: t.key, choice, what: choice.what }; render(); return; }
+  if (choice.confirm) {
+    pu.confirm = { key: t.key, choice, what: choice.what, row: pu.row ? pu.row.name : null, value: pu.row ? pu.row.value : null };
+    render();
+    return;
+  }
   sendPedal(t, choice);
 }
 
 async function sendPedal(t, choice) {
   const pu = state.pedalUi;
   if (pu.pending) return;
+  const fromPanel = !!(document.activeElement && document.activeElement.closest(".pedal-panel-slot"));
   const locked = pedalLockRefusal();
   if (locked) { pu.refused = { key: t.key, reason: locked, lock: true }; pu.confirm = null; render(); return; }
   pu.pending = choice.what;
@@ -3571,6 +3586,14 @@ async function sendPedal(t, choice) {
     pu.refused = { key: t.key, reason: `Not assigned: ${answer.reason}` };
   }
   render();
+  if (answer.ok) {
+    // The panel has closed: the focus it held goes back to the badge that
+    // opened it, not to the page's body.
+    const active = document.activeElement;
+    // Found by its key, not by a selector: CSS.escape writes the key's NULs as U+FFFD.
+    const badgeButton = [...document.querySelectorAll(".pedal-badge")].find((b) => b.dataset.pedal === t.key);
+    if (badgeButton && (fromPanel || !active || active === document.body)) badgeButton.focus({ preventScroll: true });
+  }
   kick();
 }
 
@@ -3607,7 +3630,8 @@ function pedalsRegion(el) {
     board.problem ? h("p", { class: "rig-problem" }, board.problem) : null,
     h("ul", { class: "pedal-list" }, rows.map((r) => h("li", { class: `pedal-row${r.assigned ? " assigned" : ""}${r.job ? " job" : ""}`, "data-control": r.control },
       h("span", { class: "heard", "aria-hidden": "true" }),
-      h("strong", { class: "pedal-name" }, r.name), h("span", { class: "does" }, r.does), h("span", { class: "value" })))),
+      h("strong", { class: "pedal-name" }, r.name), h("span", { class: "does" }, r.does), h("span", { class: "value" }),
+      h("span", { class: "sr-only heard-said" })))),
     h("p", { class: "sub" }, "Assign from the rack: the pedal button beside an effect's on/off, or by a channel's name. A light is a message heard from that control."),
     pu.result ? rigFileResult(pu.result, () => { pu.result = null; render(); }, () => { pu.restartConfirm = true; render(); }) : null,
     pu.restartConfirm ? h("div", { class: "confirm", role: "group", "aria-label": "Confirm the restart" },
@@ -3622,6 +3646,10 @@ function pedalsRegion(el) {
     li.classList.toggle("lit", r.lit);
     li.classList.toggle("heard-once", r.heard);
     li.title = r.lit ? `${r.name}: heard just now` : r.heard ? `${r.name}: heard since the agent started` : `${r.name}: nothing heard from it yet`;
+    // What the light says, for a screen reader: in the row's own text.
+    const heardSaid = li.querySelector(".heard-said");
+    const words = r.lit ? "heard just now" : r.heard ? "heard before" : "not heard yet";
+    if (heardSaid.textContent !== words) heardSaid.textContent = words;
     const value = li.querySelector(".value");
     const text = r.value === null || r.value === undefined ? "" : String(r.value);
     if (value.textContent !== text) value.textContent = text;

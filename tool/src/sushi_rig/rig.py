@@ -405,7 +405,11 @@ def write_compiled(name: str, compiled: dict[str, Any], runtime: Path) -> Path:
     out = runtime / "rigs"
     out.mkdir(parents=True, exist_ok=True)
     config = out / f"{name}.json"
-    config.write_text(json.dumps(compiled, indent=2) + "\n")
+    from .state import write_atomically
+
+    # Whole or not at all: a running rig's config is rewritten while it plays
+    # (a pedal assigned live, #192), and the listener reads it.
+    write_atomically(config, json.dumps(compiled, indent=2) + "\n")
     return config
 
 

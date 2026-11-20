@@ -552,8 +552,11 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   sends POST /rig/midi/assign ([the agent](agent.md#assigning-a-pedal));
   **none** takes the control off. A control in use elsewhere asks first in
   the panel, naming what it is on (**C is on board/overdrive on/off. Move it
-  to vocal on/off?**, **Move C** or **Keep it**); a target losing another
-  control does not ask, since that is what choosing for it means. Behind the
+  to vocal on/off?**, **Move C** or **Keep it**), its select showing the
+  control picked until then; a target losing another control does not ask,
+  since that is what choosing for it means. The badge names its panel
+  (`aria-controls`), and the focus goes back to it when an assignment closes
+  the panel. Behind the
   lock (`lockRefusal(…, "pedal")`): locked, the badge opens to show what is
   assigned and every select is disabled with the reason under it. A refusal
   is said in the panel ("Not assigned: …", the compiler's words); what worked
@@ -569,7 +572,10 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   light comes on for 1.5 s when the control's count in `agent.midi.seen`
   moves between two polls (`R.pedalLights`, counted rather than timed, so a
   phone's clock does not matter), on the first sight of one only if it was
-  heard in the last 1.5 s; drawn in place, so a light rebuilds nothing.
+  heard in the last 1.5 s; drawn in place, so a light rebuilds nothing, with
+  the same in words in the row for a screen reader ("heard just now",
+  "heard before", "not heard yet"). An assignment that changes nothing is
+  said as "Nothing to change", and nothing is written.
   Where the machine file describes several typed devices and the rig's map
   names none, **PEDALS** asks which ("Device for this rig's map"), and the
   assignment carries it. A rig whose machine file describes no device sees

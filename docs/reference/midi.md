@@ -271,10 +271,22 @@ refuse:
   `programs`.
 
 A footswitch on a bypass, and a momentary or single one on a mute, are the
-agent's, and play at once: the listener is re-planned with the edited file's
-bindings. Anything Sushi maps (a sweep, a volume, a blend, a latching
-footswitch's mute) plays after a restart, as an edit of the file by hand
-would; the page offers it.
+agent's, and play at once, when what they switch is on the running rig: the
+running listeners take the edited file's bindings without stopping, so a
+press on its way or a heel's silencing goes on as it was. One whose effect
+or channel is in the file but not on the rig as it runs (a channel added to
+the file and not yet restarted, a plugin taken out live and not saved) plays
+after a restart, as does anything Sushi maps (a sweep, a volume, a blend, a
+latching footswitch's mute), as an edit of the file by hand would; the page
+offers it.
+
+**The running rig keeps the pedal it started with.** A compiled config with a
+map records its controller (`_meta`'s `midi_controller`), and the listener
+plans from that, not from the rig file as it is now: a file given a map, or
+having its map taken out, for the next restart does not change which pedal
+the running rig needs, or turn its A and B off. A config with nothing of a
+map in it needs no pedal. One compiled before the controller was recorded
+there has its rig file read, as before.
 
 `/health`'s `agent.midi.seen` is the last message from each control, bound or
 not (`{controller: {control: {count, value, ago}}}`), which the rack's
