@@ -297,7 +297,7 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 .missing { margin: 0; font-size: 13px; color: var(--refused); }
 
 
-/* The right column: the unsaved changes and Save, then the takes (S8). */
+/* The right column: the unsaved changes and Save, then the takes folder (S8). */
 .side { flex: 0 1 320px; border-left: 1px solid var(--line); background: var(--panel); padding: 18px 16px; display: flex; flex-direction: column; gap: 12px; }
 .changes { display: flex; flex-direction: column; gap: 12px; }
 .changes h2 { font-family: var(--display); font-size: 14px; font-weight: 500; letter-spacing: .1em; color: var(--muted); }
@@ -472,19 +472,13 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 .record-result.refused { background: var(--refused-ground); border-color: var(--refused-edge); color: var(--refused); }
 .record-result strong { color: var(--text); }
 .record-result .dismiss { position: absolute; top: 4px; right: 4px; }
+.record-result .take-folder { font-family: var(--mono); font-size: 12px; overflow-wrap: anywhere; }
 
 .takes { display: flex; flex-direction: column; gap: 8px; padding-top: 12px; border-top: 1px solid var(--line); }
 .takes h2 { font-family: var(--display); font-size: 14px; font-weight: 500; letter-spacing: .1em; color: var(--muted); }
-.take-list { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; gap: 6px; }
-.take { display: flex; flex-direction: column; gap: 3px; padding: 8px 12px; border-radius: 12px; background: var(--card); border: 1px solid var(--edge); }
-.take.warn { border-color: #5A4A1E; }
-.take.live { border-color: var(--recording); }
-.take-top { display: flex; align-items: baseline; gap: 8px; }
-.take .n { font-size: 15px; font-weight: 600; overflow-wrap: anywhere; }
-.take .len { font-family: var(--mono); font-size: 12px; color: var(--muted); }
-.take .note { font-size: 12px; color: var(--muted); line-height: 1.45; overflow-wrap: anywhere; }
-.take.warn .note { color: var(--accent-soft); }
-.take.live .note { color: var(--recording-soft); }
+/* No list (#189): the line naming the folder, Open folder on the laptop, and what an open said. */
+.takes-dir { margin: 0; font-size: 13px; color: var(--muted); line-height: 1.5; }
+.takes .open-takes { align-self: flex-start; }
 
 /* ---------------------------------------------------------------- rig files (the New rig screen) */
 /* The New rig screen (#new-rig) and the rack's inputs: forms in the Save
