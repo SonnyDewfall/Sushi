@@ -181,7 +181,7 @@ def test_open_folder_opens_the_takes_folder_on_this_machine(browser, record_serv
     p.clock.run_for(14_000)
     expect(said).to_be_visible()
     p.clock.run_for(1_500)
-    expect(said).to_have_count(0), "it goes by itself, as the rig picker's notices that worked do"
+    expect(said).to_have_count(0)  # it goes by itself, as the rig picker's notices that worked do
     rack_page.close()
 
 
@@ -197,7 +197,7 @@ def test_open_folder_with_no_opener_installed_says_so_and_stays(browser, record_
     expect(said).to_contain_text(f"The takes are in {takes_dir(record_served)}")
     expect(said).to_have_attribute("role", "alert")
     p.clock.run_for(60_000)
-    expect(said).to_be_visible(), "a refusal stays until it is dismissed"
+    expect(said).to_be_visible()  # a refusal stays until it is dismissed
     said.get_by_role("button", name="Dismiss").click()
     expect(said).to_have_count(0)
     rack_page.close()
@@ -293,6 +293,6 @@ def test_a_whole_takes_result_goes_after_15_s_and_a_broken_ones_stays(browser, r
     p.get_by_role("button", name="Stop", exact=True).click()
     expect(result).to_contain_text("1 problem: this take was never finished")
     p.clock.run_for(60_000)
-    expect(result).to_be_visible(), "a take with problems is never gone unread"
+    expect(result).to_be_visible()  # a take with problems is never gone unread
     expect(result).to_have_attribute("role", "alert")
     page.close()

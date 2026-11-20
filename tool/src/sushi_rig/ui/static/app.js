@@ -1360,7 +1360,8 @@ function expireNotices() {
     if (openDone) state.takesOpen.result = null;
     if (recordDone) state.recordResult = null;
     render();
-    if (held && !held.isConnected) focusAfterNotice(where, offer ? offer.rig : null);
+    const row = held && held.closest(".rig-row[data-rig]");
+    if (held && !held.isConnected) focusAfterNotice(where, offer ? offer.rig : row ? row.dataset.rig : null);
   }
   armNotices();
 }

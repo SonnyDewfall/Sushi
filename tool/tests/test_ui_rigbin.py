@@ -338,7 +338,7 @@ def test_the_outcomes_x_and_the_confirms_cancel_close_them(browser, bin_served):
     expect(said).to_contain_text("Deleted clean")
     said.get_by_role("button", name="Dismiss").click()
     expect(said).to_have_count(0)
-    expect(undo(p, "clean")).to_be_visible(), "the Undo is its own, with its own ×"
+    expect(undo(p, "clean")).to_be_visible()  # the Undo is its own, with its own ×
     ask_delete(p, "accustomed").get_by_role("button", name="Cancel").click()
     expect(p.locator(".delete-confirm")).to_have_count(0)
     page.close()
@@ -532,7 +532,7 @@ def test_an_undo_kept_through_a_busy_refusal_is_offered_afresh(browser, bin_serv
     undo(p, "clean").click()
     expect(p.locator(".rig-deleted")).to_contain_text("Not put back: clean")
     p.clock.run_for(5000)
-    expect(undo(p, "clean")).to_be_visible(), "offered afresh by the refusal"
+    expect(undo(p, "clean")).to_be_visible()  # offered afresh by the refusal
     p.clock.run_for(NOTICE_S * 1000)
     expect(p.locator(".bin-offers")).to_have_count(0)
     expect(p.locator(".rig-deleted")).to_contain_text("Not put back: clean"), "the refusal itself stays"
