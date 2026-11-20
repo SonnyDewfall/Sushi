@@ -805,3 +805,164 @@ def test_fold_state_does_not_save_a_blended_channels_gain_as_its_level():
     assert "level" not in folded["channels"][0]
     assert folded["channels"][1]["level"] == -6.0
     assert folded["channels"][2]["level"] == -9.0
+
+
+# --------------------------------------------------------------------------- #
+# The pedalboard (#191): a typed device's controls, and a pedal on a volume
+# --------------------------------------------------------------------------- #
+
+# `MachineSpec.controller("fbv")` for the machine files' FBV entry, with C
+# latching to show both behaviours.
+FBV = {
+    "port": "FBV Express Mk II:FBV Express Mk II MIDI 1", "channel": 0, "type": "pedal",
+    "controls": {"a": ("cc", 20), "b": ("cc", 21), "c": ("cc", 22), "d": ("cc", 23), "pedal": ("cc", 7)},
+    "model": {
+        "a": {"kind": "switch", "behaviour": "momentary", "range": None, "job": "previous-rig"},
+        "b": {"kind": "switch", "behaviour": "momentary", "range": None, "job": "next-rig"},
+        "c": {"kind": "switch", "behaviour": "latching", "range": None, "job": None},
+        "d": {"kind": "switch", "behaviour": "momentary", "range": None, "job": None},
+        "pedal": {"kind": "expression", "behaviour": None, "range": [0, 127], "job": None},
+    },
+}
+
+
+def _fbv_rig(controls, level=-6.0):
+    return parse_rig(_midi_rig(controls, level=level, controller="fbv"))
+
+
+def test_a_pedal_on_a_channels_volume_runs_from_40_db_down_to_the_channels_own_level():
+    """The toe is the rig file's level for that channel and never above it;
+    the floor is 40 dB below it (half the travel about 20 dB down, not 60), and
+    the heel's silence is the agent's, told the heel and the mapping's ends."""
+    section, agent = compile_midi(_fbv_rig([{"control": "pedal", "volume": "lead"}]), FBV)
+    assert section["cc_mappings"] == [
+        {"port": 0, "channel": 0, "cc_number": 7, "plugin_name": "lead_send", "parameter_name": "gain",
+         "min_range": round(level_to_gain(-46.0), 6), "max_range": round(level_to_gain(-6.0), 6),
+         "mode": "absolute"}]
+    assert agent == [{"control": "pedal", "cc": 7, "channel": 0, "snap": "lead", "heel": 0,
+                      "low": round(level_to_gain(-46.0), 6), "high": round(level_to_gain(-6.0), 6)}]
+    (unity,) = compile_midi(_fbv_rig([{"control": "pedal", "volume": "clean"}]), FBV)[0]["cc_mappings"]
+    assert unity["max_range"] == round(level_to_gain(0.0), 6)
+    half = rigfile.gain_to_level(unity["min_range"] + (unity["max_range"] - unity["min_range"]) * 64 / 127)
+    assert -21 < half < -19, half
+
+
+def test_a_momentary_switch_toggles_through_the_agent_and_a_latching_one_is_followed():
+    """Sushi's own mapping follows the value: on a momentary footswitch that
+    is "muted while held". So a momentary switch's mute goes to the agent,
+    marked to toggle, and a latching one's stays Sushi's."""
+    section, agent = compile_midi(_fbv_rig([
+        {"control": "d", "mute": "lead"},
+        {"control": "c", "bypass": "lead/drive"},
+    ]), FBV)
+    assert agent == [
+        {"control": "d", "cc": 23, "channel": 0, "mute": "lead", "switch": "momentary"},
+        {"control": "c", "cc": 22, "channel": 0, "bypass": "lead/drive", "switch": "latching"},
+    ]
+    assert section == {}
+    latching = dict(FBV, model={**FBV["model"], "d": dict(FBV["model"]["d"], behaviour="latching")})
+    section, agent = compile_midi(_fbv_rig([{"control": "d", "mute": "lead"}]), latching)
+    assert agent == []
+    assert section["cc_mappings"][0]["parameter_name"] == "mute"
+
+
+def test_the_agent_reads_what_the_compiler_writes_for_a_footswitch():
+    from sushi_rig.midi_listener import parse_bindings
+
+    _, agent = compile_midi(_fbv_rig([{"control": "d", "mute": "lead"},
+                                      {"control": "c", "bypass": "lead/drive"}]), FBV)
+    parsed = parse_bindings(agent)
+    assert [(b.control, b.action, b.switch) for b in parsed.controls] == [
+        ("d", "mute", "momentary"), ("c", "bypass", "latching")]
+
+
+@pytest.mark.parametrize("controls, said", [
+    ([{"control": "a", "bypass": "lead/drive"}], "'a' is fbv's previous-rig on every rig"),
+    ([{"control": "b", "mute": "lead"}], "'b' is fbv's next-rig on every rig"),
+    ([{"control": "c", "volume": "lead"}], "'c' is a switch, which can take bypass or mute, not a volume"),
+    ([{"control": "d", "parameter": "lead/hall/Mix"}], "is a switch, which can take bypass or mute, not a parameter"),
+    ([{"control": "pedal", "bypass": "lead/drive"}],
+     "'pedal' is an expression pedal, which can take volume or parameter or blend, not a bypass"),
+    ([{"control": "pedal", "mute": "lead"}], "is an expression pedal, which can take"),
+    ([{"control": "e", "mute": "lead"}], "'e' is not a control of controller 'fbv'; it has: a, b, c, d, pedal"),
+])
+def test_a_control_given_what_its_kind_cannot_take_or_reserved_for_stepping_is_refused(controls, said):
+    with pytest.raises(RigFileError, match=said):
+        compile_midi(_fbv_rig(controls), FBV)
+
+
+def test_a_pedal_on_the_masters_volume_is_refused_naming_the_cap():
+    with pytest.raises(RigFileError, match=r"cannot drive the master's volume.*#172"):
+        _fbv_rig([{"control": "pedal", "volume": "master"}])
+    with pytest.raises(RigFileError, match="volume names channel 'bass'"):
+        _fbv_rig([{"control": "pedal", "volume": "bass"}])
+
+
+def test_an_expression_pedal_may_sweep_any_effects_parameter_the_masters_included():
+    section, _ = compile_midi(_fbv_rig([{"control": "pedal", "parameter": "master/lim/Output"}]), FBV)
+    assert section["cc_mappings"][0]["plugin_name"] == "lim"
+
+
+def test_two_controls_on_one_channels_volume_are_refused():
+    with pytest.raises(RigFileError, match="knob1 and knob2 both drive lead's volume"):
+        parse_rig(_midi_rig([{"control": "knob1", "blend": ["clean", "lead"]},
+                             {"control": "knob2", "volume": "lead"}]))
+
+
+def test_an_untyped_controllers_cc_may_take_a_volume_too():
+    section, _ = compile_midi(parse_rig(_midi_rig([{"control": "knob1", "volume": "lead"}])), MPD218)
+    assert section["cc_mappings"][0]["plugin_name"] == "lead_send"
+    with pytest.raises(RigFileError, match="sends a note, which cannot sweep a volume"):
+        compile_midi(parse_rig(_midi_rig([{"control": "pad1", "volume": "lead"}])), MPD218)
+
+
+def test_a_channel_a_pedal_drives_the_volume_of_is_not_saved_from_its_position():
+    """As for a blend: the send's gain is the pedal's position, so SAVE must
+    not fold it into the level (the pedal's top), and the page says the
+    volume is the pedal's."""
+    raw = _midi_rig([{"control": "pedal", "volume": "lead"}], controller="fbv")
+    rig = parse_rig(raw)
+    assert rigfile.blended_channels(rig) == {"lead"}
+    assert rigfile.blend_controls(rig) == {"lead": "pedal"}
+    folded = fold_state(raw, {"processors": {"lead_send": {"parameters": {"gain": level_to_gain(-40.0)}}}})
+    assert folded["channels"][1]["level"] == -6.0
+
+
+def test_what_each_control_may_take():
+    assert rigfile.takes("cc", FBV["model"]["a"]) == ()
+    assert rigfile.takes("cc", FBV["model"]["c"]) == ("bypass", "mute")
+    assert rigfile.takes("cc", FBV["model"]["pedal"]) == ("volume", "parameter", "blend")
+    assert rigfile.takes("note", None) == ("bypass", "mute")
+    assert set(rigfile.takes("cc", None)) == {"blend", "parameter", "mute", "bypass", "volume"}
+
+
+def test_a_single_switch_toggles_through_the_agent_as_a_momentary_one_does():
+    single = dict(FBV, model={**FBV["model"], "d": dict(FBV["model"]["d"], behaviour="single"),
+                              "c": dict(FBV["model"]["c"], behaviour="single")})
+    section, agent = compile_midi(_fbv_rig([{"control": "d", "mute": "lead"},
+                                            {"control": "c", "bypass": "lead/drive"}]), single)
+    assert section == {}
+    assert agent == [
+        {"control": "d", "cc": 23, "channel": 0, "mute": "lead", "switch": "single"},
+        {"control": "c", "cc": 22, "channel": 0, "bypass": "lead/drive", "switch": "single"},
+    ]
+
+
+def test_the_volume_pedals_heel_is_the_devices_and_its_floor_never_below_silence():
+    heeled = dict(FBV, model={**FBV["model"], "pedal": dict(FBV["model"]["pedal"], range=[5, 120])})
+    section, agent = compile_midi(_fbv_rig([{"control": "pedal", "volume": "lead"}], level=-100.0), heeled)
+    assert agent[0]["heel"] == 5, "the agent silences at the pedal's own heel"
+    (mapping,) = section["cc_mappings"]
+    assert mapping["min_range"] == 0.0, "40 dB under -100 dB is below the send's range: silence"
+    assert mapping["max_range"] == round(level_to_gain(-100.0), 6)
+    _, untyped = compile_midi(parse_rig(_midi_rig([{"control": "knob1", "volume": "lead"}])), MPD218)
+    assert untyped[0]["heel"] == 0 and untyped[0]["snap"] == "lead"
+
+
+def test_the_agent_reads_what_the_compiler_writes_for_a_volume_pedal():
+    from sushi_rig.midi_listener import parse_bindings
+
+    _, agent = compile_midi(_fbv_rig([{"control": "pedal", "volume": "lead"}]), FBV)
+    (snap,) = parse_bindings(agent).controls
+    assert (snap.action, snap.target, snap.heel) == ("snap", "lead_send", 0)
+    assert snap.gain_at(127) == round(level_to_gain(-6.0), 6) and snap.gain_at(0) == 0.0
