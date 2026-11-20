@@ -1108,8 +1108,18 @@ def test_every_look_loads_and_draws_without_an_error(opened, look):
         eq = v.state()["session"]["eq"]
         assert eq["look"] == look and (eq["width"], eq["height"]) == (600, 400), "half the 1200 by 800 buffer"
     v.page.wait_for_timeout(1500)
-    seen = luminance(v)
-    assert seen["mean"] >= 0.5 and seen["sd"] >= 4, seen
+    # A strobe fades back through a frame that is one shade: Shutter's comp
+    # is mix(l, 1 - l, q1) and its flash halves each frame, so at q1 = 0.5
+    # every pixel is mid-grey (mean 127, sd 0.03: CI on PR #202), and Tunnel
+    # has a low-contrast frame of the same kind. About one frame in twenty
+    # on a plucked chord. Only that, a bright frame of one shade, is
+    # forgiven, and looked at again up to four times; a dark frame fails at
+    # once, so a look that goes black is caught as before.
+    seen = [luminance(v)]
+    while seen[-1]["mean"] >= 0.5 and seen[-1]["sd"] < 4 and len(seen) < 5:
+        v.page.wait_for_timeout(300)
+        seen.append(luminance(v))
+    assert seen[-1]["mean"] >= 0.5 and seen[-1]["sd"] >= 4, seen
     assert v.page.evaluate("window.glErrors") == []
     assert v.page.evaluate("""() => [...document.querySelectorAll('.visualiser canvas')].map((c) => c.classList.contains('off'))""") \
         == ([True, False] if kind == "eq" else [False, True])
