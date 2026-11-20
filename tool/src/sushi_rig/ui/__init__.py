@@ -77,10 +77,12 @@ why.
 A screensaver on the laptop, `static/screensaver.js`, loaded beside app.js
 and apart from it: after a spell with no input on the page, while a rig runs
 (app.js says so after each poll, as a "sushi-rig:health" event) and the
-window is wide enough, butterchurn fills the window, hearing the guitar
-through the browser's own capture. Only it, the presets and butterchurn
-(`static/vendor/`, the one file here not written for the rig) are loaded on
-its first start, never with the page. Its decisions are rig.js's; the
+window is wide enough, a visualisation fills the window, hearing the guitar
+through the browser's own capture: butterchurn's looks, or the page's own
+equaliser looks (#196). Only it, the presets, the equaliser looks
+(`static/visualiser-eq.js`) and butterchurn (`static/vendor/`, the one file
+here not written for the rig) are loaded on its first start, never with the
+page. Its decisions are rig.js's; the
 reference (docs/reference/web-ui.md) says why each is what it is.
 
 ## The amp
