@@ -456,23 +456,31 @@ def test_a_device_model_that_is_not_one_is_named(controllers, said):
 
 
 @pytest.mark.parametrize("name", ["example.yaml", "sonny-dewfall-XPS-9320.yaml"])
-def test_the_committed_machine_files_describe_the_fbv_marked_unverified(name):
-    """The FBV Express MkII has not arrived (#191): its entry is a guess from
-    Line 6's documents, every line of it marked so, with A and B stepping rigs."""
+def test_the_committed_machine_files_describe_the_fbv_as_aseqdump_heard_it(name):
+    """The FBV Express MkII as captured on the laptop on 2026-11-22, after
+    FBV Control set it up (machines/fbv/sushi-rig-line-6.fbv): A to D on CC
+    20 to 23, each a single message a press (CC n = 0, then CC 0 = 0 on
+    release); the pedal CC 7 in Vol and CC 11 in Wah, its heel 8 to 12; the
+    toe switch CC 43 toggling 127 / 0. No guess is left marked unverified."""
     path = checkout_root() / "machines" / name
     machine = MachineSpec.load(path)
     assert machine.validate() == []
     fbv = machine.controller("fbv")
     assert fbv["type"] == "pedal" and fbv["channel"] == 0
+    assert fbv["port"] == "FBV Express Mk II:FBV Express Mk II MIDI 1"
+    assert fbv["controls"] == {"a": ("cc", 20), "b": ("cc", 21), "c": ("cc", 22), "d": ("cc", 23),
+                               "pedal": ("cc", 7), "wah": ("cc", 11), "toe": ("cc", 43)}
     assert {c: m["job"] for c, m in fbv["model"].items() if m["job"]} == {"a": "previous-rig", "b": "next-rig"}
-    assert {c: m["kind"] for c, m in fbv["model"].items()} == {
-        "a": "switch", "b": "switch", "c": "switch", "d": "switch", "pedal": "expression"}
+    assert {c: (m["kind"], m["behaviour"]) for c, m in fbv["model"].items()} == {
+        "a": ("switch", "single"), "b": ("switch", "single"), "c": ("switch", "single"),
+        "d": ("switch", "single"), "pedal": ("expression", None), "wah": ("expression", None),
+        "toe": ("switch", "latching")}
+    # The heel is where the agent silences a volume: the pedal never reads
+    # below 8 and rests up to 12 there, so a heel of 0 would never be reached.
+    assert fbv["model"]["pedal"]["range"] == [12, 127] and fbv["model"]["wah"]["range"] == [12, 127]
     text = path.read_text()
-    block = text[text.index("  fbv:"):]
-    marked = "# unverified: check with aseqdump when the pedal arrives"
-    for line in block.splitlines():
-        if line.strip() and not line.strip().startswith("#") and line.strip() not in ("controls:", "type: pedal"):
-            assert marked in line, line
+    assert "unverified" not in text[text.index("  fbv:"):]
+    assert (checkout_root() / "machines" / "fbv" / "sushi-rig-line-6.fbv").read_bytes().startswith(b"FBVP")
 
 
 def test_the_rig_machines_mpd218_is_unchanged_beside_the_fbv():

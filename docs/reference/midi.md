@@ -299,9 +299,24 @@ says, not a learn.
 ## When the FBV arrives
 
 The FBV Express MkII's entry in `machines/example.yaml` and
-`machines/sonny-dewfall-XPS-9320.yaml` is unverified: every line of it is marked
-`# unverified: check with aseqdump when the pedal arrives`. Nothing of the board
-has been seen on the rig. Check it before relying on it:
+`machines/sonny-dewfall-XPS-9320.yaml` was checked with `aseqdump` on the
+laptop on 2026-11-22. Out of the box the board's switches sent MMC transport
+SysEx (Record, Stop, Play, Rewind) and its pedal nothing at all, so it was set
+up in Line 6's FBV Control, which runs on Windows or Mac only. That setup is
+`machines/fbv/sushi-rig-line-6.fbv`, to load back into FBV Control if the board
+is ever reset. With it:
+
+- A to D send CC 20 to 23 on channel 1 (0 here), on the first port. FBV
+  Control's "Momentary" made each press CC *n* = 0 and each release CC 0 = 0,
+  never a 127, so they are `behaviour: single`: any message on the switch's
+  own CC is a press, and the release, on CC 0, is bound to nothing.
+- The pedal is two, by the toe switch: CC 7 in Vol (`pedal`) and CC 11 in Wah
+  (`wah`). Its heel reads 8 to 12 at rest, never 0, so the range is `[12, 127]`
+  and a volume is silenced at 12 or below.
+- The toe switch sends CC 43, 127 on one press and 0 on the next, as it flips
+  Vol and Wah: `toe`, `behaviour: latching`.
+
+For another board, or this one set up afresh, check it the same way:
 
 1. Plug it in by USB and list the sequencer's ports:
 

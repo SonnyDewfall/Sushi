@@ -6866,3 +6866,20 @@ run started since its check at its rig's config: the state file is compared
 again just before it is written (`run_changed`). (3) A heel's silencing
 waiting for a busy agent could resume on a binding a swapped plan had
 dropped: it stops when the plan no longer has that binding. *(2026-11-20)*
+
+**The FBV Express MkII's machine entry, as the board sends it (#191).** It
+arrived on 2026-11-22. `aseqdump` on the laptop: out of the box its switches
+send MMC transport SysEx (Record, Stop, Play, Rewind) and its pedal nothing,
+on any of its four ports. The owner set it up in Line 6's FBV Control
+(Windows), kept as `machines/fbv/sushi-rig-line-6.fbv`, and a second capture
+heard: A to D on CC 20 to 23, channel 1, first port, CC *n* = 0 on a press
+and CC 0 = 0 on release (FBV Control's "Momentary", with no 127 at all), so
+`behaviour: single`; the pedal on CC 7 in Vol and CC 11 in Wah, its heel 8
+to 12 at rest, so `range: [12, 127]` for the agent's silence; the toe switch
+CC 43 toggling 127 / 0 as it flips Vol and Wah, `latching`. Both machine
+files and the docs say so, and `test_machine.py` holds the entry to it in
+place of the old "every line marked unverified". Replayed through the real
+compile and `dispatch` on the synth-lead rig with every control assigned:
+A and B step, C toggles a bypass, D a mute, CC 0 does nothing, the heel at 8
+to 12 silences the volume and 13 does not, and the toe sets its effect on and
+off. Not yet run with the board through the agent and Sushi. *(2026-11-22)*

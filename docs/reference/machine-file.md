@@ -23,16 +23,18 @@ controllers:            # MIDI controllers: see the MIDI page
     controls:
       knob1: {cc: 3}
       pad1: {note: 36}
-  fbv:                  # unverified: check with aseqdump when the pedal arrives
+  fbv:                  # checked with aseqdump, 2026-11-22
     type: pedal
     port: "FBV Express Mk II:FBV Express Mk II MIDI 1"
     channel: 0
     controls:
-      a: {cc: 20, kind: switch, behaviour: momentary, job: previous-rig}
-      b: {cc: 21, kind: switch, behaviour: momentary, job: next-rig}
-      c: {cc: 22, kind: switch, behaviour: momentary}
-      d: {cc: 23, kind: switch, behaviour: momentary}
-      pedal: {cc: 7, kind: expression, range: [0, 127]}
+      a: {cc: 20, kind: switch, behaviour: single, job: previous-rig}
+      b: {cc: 21, kind: switch, behaviour: single, job: next-rig}
+      c: {cc: 22, kind: switch, behaviour: single}
+      d: {cc: 23, kind: switch, behaviour: single}
+      pedal: {cc: 7, kind: expression, range: [12, 127]}
+      wah: {cc: 11, kind: expression, range: [12, 127]}
+      toe: {cc: 43, kind: switch, behaviour: latching}
 ```
 
 Ports are written as qpwgraph shows them, `<client>:<port>`; the device's ALSA
@@ -66,8 +68,7 @@ lists it (client, `:`, port), its `channel` (0 to 15, or `all`), and its
 behaviour it does not know, a note on a pedal or on a latching switch, a range
 that is not a heel below a toe, a job given twice, and a model on a controller
 without a type. What a rig may assign each control, and how the FBV Express
-MkII's entry (written before it arrived, every line marked unverified) is
-checked with `aseqdump`, is in [MIDI](midi.md#the-device-model-191). A pedal
+MkII's entry was checked with `aseqdump`, and how another board is, is in [MIDI](midi.md#the-device-model-191). A pedal
 that is not plugged in is "not connected", not a fault, unless the running rig's
 map is written for it; it is picked up when it is plugged in.
 

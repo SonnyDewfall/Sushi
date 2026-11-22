@@ -55,29 +55,33 @@ controllers:
       pad2: {note: 38}
       pad3: {note: 40}
       pad4: {note: 41}
-  # The Line 6 FBV Express MkII (#191). Every value in this entry is
-  # unverified: check with aseqdump when the pedal arrives. Nothing of the
-  # board has been seen on the rig: the port name is the Linux USB-MIDI
-  # driver's usual "<device> MIDI 1" form for its first USB Out port (Line 6:
-  # controls send on Out Port 1; FBV Control talks on Port 4, which is not
-  # this one); the channel is Line 6's default, MIDI channel 1, counted from
-  # 0 here; the switch CCs are placeholders (20 to 23 are undefined in the
-  # MIDI spec and clash with nothing), since the factory ones were not found;
-  # "momentary" is a guess, as FBV Control sets each switch to Single, Toggle
-  # or Momentary and the factory setting was not found (Single is `behaviour:
-  # single`, Toggle `behaviour: latching`); CC 7 for the pedal is from Line 6's Shortboard
-  # examples. Check it with `aseqdump -l` (the port's name) and
-  # `aseqdump -p "<that name>"` (each switch pressed once slowly, then
-  # twice; the pedal heel to toe): docs/reference/midi.md says how.
-  # A and B step to the previous and next rig on every rig (their job);
-  # C, D and the pedal are what a rig's midi: assigns.
-  fbv:                                                 # unverified: check with aseqdump when the pedal arrives
+  # The Line 6 FBV Express MkII (#191), as aseqdump heard it on the laptop on
+  # 2026-11-22. Out of the box its switches send MMC transport SysEx and its
+  # pedal nothing, so it was set up in Line 6's FBV Control (Windows):
+  # machines/fbv/sushi-rig-line-6.fbv is that setup, to load into FBV Control
+  # if the board is ever reset. Everything arrives on its first port, channel
+  # 1 (0 here); ports 2 to 4 are silent. A and B step to the previous and next
+  # rig on every rig (their job); C, D, the pedal, the wah and the toe switch
+  # are what a rig's midi: assigns.
+  fbv:   # checked with aseqdump on the laptop, 2026-11-22; set up in FBV Control as machines/fbv/sushi-rig-line-6.fbv
     type: pedal
-    port: "FBV Express Mk II:FBV Express Mk II MIDI 1" # unverified: check with aseqdump when the pedal arrives
-    channel: 0                                         # unverified: check with aseqdump when the pedal arrives
+    port: "FBV Express Mk II:FBV Express Mk II MIDI 1"
+    channel: 0
     controls:
-      a: {cc: 20, kind: switch, behaviour: momentary, job: previous-rig}  # unverified: check with aseqdump when the pedal arrives
-      b: {cc: 21, kind: switch, behaviour: momentary, job: next-rig}      # unverified: check with aseqdump when the pedal arrives
-      c: {cc: 22, kind: switch, behaviour: momentary}                     # unverified: check with aseqdump when the pedal arrives
-      d: {cc: 23, kind: switch, behaviour: momentary}                     # unverified: check with aseqdump when the pedal arrives
-      pedal: {cc: 7, kind: expression, range: [0, 127]}                   # unverified: check with aseqdump when the pedal arrives
+      # A to D, as FBV Control's "Momentary" sets them, send CC n = 0 on a
+      # press and CC 0 = 0 on release (no 127 at all), so a press is any
+      # message on the switch's own CC: single. Setting the press value to
+      # 127 and the release to the same CC in FBV Control would make them
+      # momentary proper.
+      a: {cc: 20, kind: switch, behaviour: single, job: previous-rig}
+      b: {cc: 21, kind: switch, behaviour: single, job: next-rig}
+      c: {cc: 22, kind: switch, behaviour: single}
+      d: {cc: 23, kind: switch, behaviour: single}
+      # The pedal is two, by the toe switch's mode: Vol sends CC 7, Wah CC 11.
+      # The heel reads 8 to 12 at rest, never 0: the agent silences a volume
+      # at or below 12.
+      pedal: {cc: 7, kind: expression, range: [12, 127]}
+      wah: {cc: 11, kind: expression, range: [12, 127]}
+      # The toe switch toggles 127 / 0, one message a press, and flips the
+      # pedal between Vol and Wah as it does.
+      toe: {cc: 43, kind: switch, behaviour: latching}

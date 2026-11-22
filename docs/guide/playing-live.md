@@ -209,8 +209,10 @@ wrong, unless the rig's own pedal settings are for it: then the page says the
 rig is waiting for its pedal. Plug it in (or back in, if it was knocked out
 mid-set) and it works at once, without restarting the rig.
 
-Not yet tried on the rig: the FBV has not arrived, so its settings in the
-machine file are a best guess, and none of the saved rigs has a pedal set up.
+The FBV's settings in the machine file are what the board was heard to send
+on the laptop (2026-11-22), after setting it up in Line 6's FBV Control:
+[MIDI](../reference/midi.md#when-the-fbv-arrives) says how. None of the saved
+rigs has a pedal set up yet.
 Nothing has been played through a real pedal; only the pad controller's own
 messages have been checked. Assigning on the rack, and the lights, have been
 tried only against a stand-in for the board and for Sushi.
