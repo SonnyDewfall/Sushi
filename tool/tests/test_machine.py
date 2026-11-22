@@ -460,7 +460,7 @@ def test_the_committed_machine_files_describe_the_fbv_as_aseqdump_heard_it(name)
     """The FBV Express MkII as captured on the laptop on 2026-11-22, after
     FBV Control set it up (machines/fbv/sushi-rig-line-6.fbv): A to D on CC
     20 to 23, each a single message a press (CC n = 0, then CC 0 = 0 on
-    release); the pedal CC 7 in Vol and CC 11 in Wah, its heel 8 to 12; the
+    release); the pedal CC 7 in Vol and CC 11 in Wah, its heel 8 to 13 at rest; the
     toe switch CC 43 toggling 127 / 0. No guess is left marked unverified."""
     path = checkout_root() / "machines" / name
     machine = MachineSpec.load(path)
@@ -476,8 +476,8 @@ def test_the_committed_machine_files_describe_the_fbv_as_aseqdump_heard_it(name)
         "d": ("switch", "single"), "pedal": ("expression", None), "wah": ("expression", None),
         "toe": ("switch", "latching")}
     # The heel is where the agent silences a volume: the pedal never reads
-    # below 8 and rests up to 12 there, so a heel of 0 would never be reached.
-    assert fbv["model"]["pedal"]["range"] == [12, 127] and fbv["model"]["wah"]["range"] == [12, 127]
+    # below 8 and rests up to 13 there, so a heel of 0 would never be reached.
+    assert fbv["model"]["pedal"]["range"] == [15, 127] and fbv["model"]["wah"]["range"] == [15, 127]
     text = path.read_text()
     assert "unverified" not in text[text.index("  fbv:"):]
     assert (checkout_root() / "machines" / "fbv" / "sushi-rig-line-6.fbv").read_bytes().startswith(b"FBVP")

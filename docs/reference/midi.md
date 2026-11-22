@@ -26,11 +26,13 @@ controllers:
     port: "FBV Express Mk II:FBV Express Mk II MIDI 1"
     channel: 0
     controls:
-      a: {cc: 20, kind: switch, behaviour: momentary, job: previous-rig}
-      b: {cc: 21, kind: switch, behaviour: momentary, job: next-rig}
-      c: {cc: 22, kind: switch, behaviour: momentary}
-      d: {cc: 23, kind: switch, behaviour: momentary}
-      pedal: {cc: 7, kind: expression, range: [0, 127]}
+      a: {cc: 20, kind: switch, behaviour: single, job: previous-rig}
+      b: {cc: 21, kind: switch, behaviour: single, job: next-rig}
+      c: {cc: 22, kind: switch, behaviour: single}
+      d: {cc: 23, kind: switch, behaviour: single}
+      pedal: {cc: 7, kind: expression, range: [15, 127]}   # Vol mode
+      wah: {cc: 11, kind: expression, range: [15, 127]}     # Wah mode, by the toe switch
+      toe: {cc: 43, kind: switch, behaviour: latching}
 
 # config/rigs/<name>.yaml, on the MPD218
 midi:
@@ -107,7 +109,9 @@ while held. So:
 - **momentary**: a press is the rise, a value of 64 or more after one below 64.
   A value resent while the switch is held is not a second press.
 - **single**: every message is a press, whatever its value (FBV Control's
-  "Single", which sends one message a press).
+  "Single", which sends one message a press). FBV Control's names are what it
+  calls them, not what comes out: on the FBV Express MkII its "Momentary" sent
+  CC *n* = 0 on a press and CC 0 = 0 on release, which is `single` here.
 - **latching**: the switch is followed. Its effect is on at 64 and above and
   bypassed below, acting only when the value crosses 64; its mute stays Sushi's
   own mapping, muted from about half way up; a step goes on each crossing (FBV
@@ -311,8 +315,8 @@ is ever reset. With it:
   never a 127, so they are `behaviour: single`: any message on the switch's
   own CC is a press, and the release, on CC 0, is bound to nothing.
 - The pedal is two, by the toe switch: CC 7 in Vol (`pedal`) and CC 11 in Wah
-  (`wah`). Its heel reads 8 to 12 at rest, never 0, so the range is `[12, 127]`
-  and a volume is silenced at 12 or below.
+  (`wah`). Its heel rests at 8 to 13, never 0, so the range is `[15, 127]`, with a
+  little margin, and a volume is silenced at 15 or below.
 - The toe switch sends CC 43, 127 on one press and 0 on the next, as it flips
   Vol and Wah: `toe`, `behaviour: latching`.
 
@@ -328,9 +332,8 @@ For another board, or this one set up afresh, check it the same way:
    Out ports, by Line 6's guide. Its controls send on **Out port 1**. FBV
    Control talks to the board on port 4, which is not the one to read. The
    machine file's `port` is the client name, `:`, and the first port's name,
-   from the two name columns, for example `FBV Express Mk II:FBV Express Mk II
-   MIDI 1`. That example is the Linux USB-MIDI driver's usual naming, and is a
-   guess.
+   from the two name columns: `FBV Express Mk II:FBV Express Mk II MIDI 1` for
+   this board.
 2. Watch that port:
 
    ```bash
@@ -346,18 +349,18 @@ For another board, or this one set up afresh, check it the same way:
      - one line a press, 127 and 0 on alternate presses, is FBV Control's
        Toggle: `behaviour: latching`.
 
-     The entry's `momentary` is a guess. The factory setting was not found.
-   - Note each switch's CC. 20 to 23 in the file are placeholders, since the
-     factory numbers were not found.
-   - Sweep the pedal from heel to toe. Note its CC (7 is a guess, from Line 6's
-     Shortboard examples) and the values at either end: they are its `range`.
-   - If the pedal has a toe switch or a wah mode, click it and sweep again:
-     a second CC (Line 6's examples use 11 for wah) means two modes. Describe
-     the one you play.
+     A press that prints CC *n* and a release that prints another CC (this
+     board's CC 0) is `single` too: the release is bound to nothing.
+   - Note each switch's CC.
+   - Sweep the pedal from heel to toe. Note its CC and the values at either
+     end, and where the heel rests: that resting value, with a little margin,
+     is the heel of its `range`, where the agent silences a volume.
+   - Click the toe switch and sweep again: a second CC means two modes, each
+     its own expression control (this board's `pedal` and `wah`). The toe
+     switch's own message makes it a switch too.
    - Note the channel, which aseqdump counts from 0, as the machine file does.
-   - Note what the Tap/Tuner switch sends. It is not described yet.
-3. Write what you saw into the machine file and take the `unverified` marks
-   off. Check it with `sushi-rig machine check`.
+3. Write what you saw into the machine file and check it with
+   `sushi-rig machine check`.
 
 Once the entry is right, `GET /health` shows `agent.midi.feeds` with the FBV
 `listening`; unplug it and it goes to `absent` (or `waiting`, on a rig mapped
@@ -369,8 +372,8 @@ LEDs show only what it sends, never the rig's state. Nothing here sends to it.
 ## Not yet verified on the rig
 
 No committed rig carries a map yet, and nothing has been heard from a real
-pedal through the agent. The FBV entry is from Line 6's documentation, read
-second-hand, and placeholders: [above](#when-the-fbv-arrives). The machine
+pedal through the agent. The FBV entry is from `aseqdump` on the laptop
+(2026-11-22): [above](#when-the-fbv-arrives). The machine
 file's MPD218 entry is from `aseqdump` on the rig (2026-11-01): its pads send
 notes on channel 0, a knob sends CC 3 over its full travel, and a held pad also
 sends aftertouch. Still to verify on the rig:

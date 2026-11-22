@@ -126,7 +126,8 @@ once, in the machine's file; what each of its controls does on a rig is the
 rig's own, and is assigned on the rack (below), or written into the rig's file
 by hand. The details are in [MIDI](../reference/midi.md).
 
-The pedalboard is a Line 6 FBV Express MkII, with four footswitches and a pedal:
+The pedalboard is a Line 6 FBV Express MkII, with four footswitches, a pedal
+and a toe switch under the pedal:
 
 - **A and B** step to the previous and next rig, in the order of the rig list,
   on every rig. They stop at the first and last rig rather than wrapping round.
@@ -140,6 +141,12 @@ The pedalboard is a Line 6 FBV Express MkII, with four footswitches and a pedal:
   never louder; half way is about 20 dB quieter. The silence at the heel needs
   the agent running: without it the heel is quiet, not silent. It cannot ride
   the master volume.
+- **The toe switch** (press hard at the toe; it is stiff) flips the pedal
+  between its Vol and Wah lights, and the two are separate pedals to the rig:
+  `pedal` in Vol and `wah` in Wah, each assigned on its own. So the pedal can
+  ride a volume in one mode and sweep a filter in the other. The toe switch is
+  a switch too (`toe`): an effect assigned to it is on in Wah and off in Vol,
+  so one click can bring in a wah and hand the pedal to it.
 
 ### Assign a pedal on the rack
 
