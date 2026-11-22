@@ -6866,3 +6866,35 @@ run started since its check at its rig's config: the state file is compared
 again just before it is written (`run_changed`). (3) A heel's silencing
 waiting for a busy agent could resume on a binding a swapped plan had
 dropped: it stops when the plan no longer has that binding. *(2026-11-20)*
+
+**The FBV Express MkII's machine entry, as the board sends it (#191).** It
+arrived on 2026-11-22. `aseqdump` on the laptop: out of the box its switches
+send MMC transport SysEx (Record, Stop, Play, Rewind) and its pedal nothing,
+on any of its four ports. The owner set it up in Line 6's FBV Control
+(Windows), kept as `machines/fbv/sushi-rig-line-6.fbv`, and a second capture
+heard: A to D on CC 20 to 23, channel 1, first port, CC *n* = 0 on a press
+and CC 0 = 0 on release (FBV Control's "Momentary", with no 127 at all), so
+`behaviour: single`; the pedal on CC 7 in Vol and CC 11 in Wah, its heel 8
+to 13 at rest, so `range: [15, 127]` for the agent's silence, with margin; the toe switch
+CC 43 toggling 127 / 0 as it flips Vol and Wah, `latching`. Both machine
+files and the docs say so, and `test_machine.py` holds the entry to it in
+place of the old "every line marked unverified". Replayed through the real
+compile and `dispatch` on the synth-lead rig with every control assigned:
+A and B step, C toggles a bypass, D a mute, CC 0 does nothing, the heel at 8
+to 12 silences the volume and 13 does not, and the toe sets its effect on and
+off. Not yet run with the board through the agent and Sushi. *(2026-11-22)*
+
+**The FBV entry, after a quick review (#191).** The heel moves from 12 to 15:
+the capture has it resting at up to 13, and 14 to 17 just after a move, and a
+foot resting at 13 would have left the volume 36 dB down, not silent.
+`docs/reference/midi.md` still had the guessed entry and the "is a guess"
+steps; it now has the captured one, says FBV Control's "Momentary" came out as
+`single` on this board, and the steps describe what to note for another board.
+The pedals guide names the toe switch and the wah. The machine files mark
+"set the press to 127 for momentary proper" as not tried. A new listener test
+replays the board's own messages (CC *n* = 0 then CC 0 = 0, the heel at 8 to
+16, the toe's 127 / 0) through the committed machine file and the real compile
+on a rig using every control; with the old guessed `momentary` or a heel of 0
+it fails. `tests/ui_fake.py`'s stand-in FBV is still the old guess, which the
+UI tests exercise; bringing it to the captured board is a follow-up.
+*(2026-11-22)*

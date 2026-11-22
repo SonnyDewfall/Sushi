@@ -126,7 +126,8 @@ once, in the machine's file; what each of its controls does on a rig is the
 rig's own, and is assigned on the rack (below), or written into the rig's file
 by hand. The details are in [MIDI](../reference/midi.md).
 
-The pedalboard is a Line 6 FBV Express MkII, with four footswitches and a pedal:
+The pedalboard is a Line 6 FBV Express MkII, with four footswitches, a pedal
+and a toe switch under the pedal:
 
 - **A and B** step to the previous and next rig, in the order of the rig list,
   on every rig. They stop at the first and last rig rather than wrapping round.
@@ -140,6 +141,12 @@ The pedalboard is a Line 6 FBV Express MkII, with four footswitches and a pedal:
   never louder; half way is about 20 dB quieter. The silence at the heel needs
   the agent running: without it the heel is quiet, not silent. It cannot ride
   the master volume.
+- **The toe switch** (press hard at the toe; it is stiff) flips the pedal
+  between its Vol and Wah lights, and the two are separate pedals to the rig:
+  `pedal` in Vol and `wah` in Wah, each assigned on its own. So the pedal can
+  ride a volume in one mode and sweep a filter in the other. The toe switch is
+  a switch too (`toe`): an effect assigned to it is on in Wah and off in Vol,
+  so one click can bring in a wah and hand the pedal to it.
 
 ### Assign a pedal on the rack
 
@@ -209,8 +216,10 @@ wrong, unless the rig's own pedal settings are for it: then the page says the
 rig is waiting for its pedal. Plug it in (or back in, if it was knocked out
 mid-set) and it works at once, without restarting the rig.
 
-Not yet tried on the rig: the FBV has not arrived, so its settings in the
-machine file are a best guess, and none of the saved rigs has a pedal set up.
+The FBV's settings in the machine file are what the board was heard to send
+on the laptop (2026-11-22), after setting it up in Line 6's FBV Control:
+[MIDI](../reference/midi.md#when-the-fbv-arrives) says how. None of the saved
+rigs has a pedal set up yet.
 Nothing has been played through a real pedal; only the pad controller's own
 messages have been checked. Assigning on the rack, and the lights, have been
 tried only against a stand-in for the board and for Sushi.

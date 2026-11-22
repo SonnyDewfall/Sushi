@@ -1005,3 +1005,59 @@ def test_an_unreadable_rig_file_behind_a_map_of_sweeps_is_said_not_swallowed(tmp
     assert plan.rig_problem and "could not read config/rigs/lead.yaml" in plan.rig_problem
     config.write_text(json.dumps({"tracks": []}))
     assert plan_for(described, tmp_path).rig_problem is None, "no map of sweeps, nothing it needs"
+
+
+def test_the_real_fbvs_messages_through_the_committed_machine_file_and_a_rig_using_every_control():
+    """What the FBV Express MkII was heard to send on the laptop (2026-11-22,
+    after FBV Control): each switch CC n = 0 on a press and CC 0 = 0 on
+    release, the pedal CC 7 in Vol and CC 11 in Wah with the heel resting at 8
+    to 13, the toe switch CC 43 toggling 127 / 0. Replayed through the
+    committed machine file and the real compile, every control assigned: a
+    press is one action and its release none, the heel silences the volume
+    and the travel above it does not, the toe follows its mode."""
+    from sushi_rig.machine import MachineSpec
+    from sushi_rig.paths import checkout_root
+    from sushi_rig.rigfile import compile_midi, parse_rig
+
+    fbv = MachineSpec.load(checkout_root() / "machines" / "sonny-dewfall-XPS-9320.yaml").controller("fbv")
+    rig = parse_rig({
+        "kind": "rig", "schema_version": 1, "name": "fbv-all",
+        "channels": [
+            {"name": "clean", "input": "guitar-in", "width": "mono",
+             "chain": [{"name": "comp", "uri": "http://drobilla.net/plugins/mda/Dynamics"}]},
+            {"name": "lead", "input": "guitar-in", "width": "mono", "level": -6.0,
+             "chain": [{"name": "drive", "uri": "http://drobilla.net/plugins/mda/Overdrive"},
+                       {"name": "hall", "uri": "http://distrho.sf.net/plugins/MaGigaverb"}]},
+        ],
+        "master": {"output": "monitor-out", "chain": [{"name": "lim", "uri": "http://drobilla.net/plugins/mda/Loudness"}]},
+        "midi": {"controller": "fbv", "controls": [
+            {"control": "c", "bypass": "lead/drive"},
+            {"control": "d", "mute": "clean"},
+            {"control": "pedal", "volume": "lead"},
+            {"control": "wah", "parameter": "lead/hall/Mix"},
+            {"control": "toe", "bypass": "lead/hall"},
+        ]},
+    })
+    section, agent = compile_midi(rig, fbv)
+    # The pedal's volume and the wah's sweep are Sushi's; nothing is on CC 0.
+    assert sorted(m["cc_number"] for m in section["cc_mappings"]) == [7, 11]
+    parsed = parse_bindings(agent)
+    parsed = ml.Bindings(parsed.controls + ml.step_bindings(fbv), parsed.programs)
+    heard = [  # (cc, value, seconds), as aseqdump printed them
+        (20, 0, 0.0), (0, 0, 0.3), (21, 0, 1.0), (0, 0, 1.3),
+        (22, 0, 2.0), (0, 0, 2.3), (22, 0, 3.0), (0, 0, 3.3), (23, 0, 4.0), (0, 0, 4.3),
+        (7, 8, 5.0), (7, 13, 5.1), (7, 15, 5.2), (7, 16, 5.3), (7, 127, 5.4),
+        (43, 127, 6.0), (11, 9, 6.5), (43, 0, 7.0),
+    ]
+    switches: dict = {}
+    seen = []
+    for number, value, at in heard:
+        action, switches = dispatch(cc(value, number), parsed, switches,
+                                    rigs=["a", "fbv-all", "z"], current="fbv-all", now=at)
+        seen.append(type(action).__name__ if action is not None else None)
+    assert seen == [
+        "StepRig", None, "StepRig", None,
+        "ToggleBypass", None, "ToggleBypass", None, "ToggleMute", None,
+        "Snap", "Snap", "Snap", None, None,
+        "SetBypass", None, "SetBypass",
+    ]
