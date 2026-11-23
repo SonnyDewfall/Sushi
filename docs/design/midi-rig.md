@@ -67,6 +67,45 @@ the order to find out. Written 2026-11-23. Nothing here is built yet.
 
 **Buy it somewhere with a return policy,** in case step 1 fails.
 
+### If it needs setting up from Linux: our own control app
+
+Fishman's setup app runs on Windows, macOS and iOS only. Whether we would
+ever need our own depends on two things: whether the settings are kept in the
+pickup, and how the app talks to it. In order:
+
+1. **Do the settings survive an unplug?**
+   - Set Mono mode (or a preset) once on Windows, then unplug and replug it
+     on Linux and check with `aseqdump`.
+   - If they survive, as FBV Control's did in the FBV, an app is only needed
+     to change settings from the rig mid-set, which may never matter.
+2. **Does Fishman's app run under Wine?** If it talks plain MIDI, Wine can
+   pass that through, and the official app may just work on the laptop.
+3. **How does it talk?** `lsusb -v` shows the device's interfaces. There are
+   three possibilities, from most to least likely:
+
+   | Interface | Effort |
+   |---|---|
+   | Only a MIDI one: the app uses System Exclusive messages over USB MIDI | Very doable: about a day or two to decode, and a day to build |
+   | A separate vendor-specific one | Doable with Wireshark captures and `pyusb`, but slower and riskier |
+   | Encrypted or signed messages | Not practical: keep setting it up on Windows |
+4. **Capture, read-only.** On Windows, record what the app sends while one
+   setting at a time is changed: Mono to Poly, the bend range, one string's
+   sensitivity. Use a MIDI monitor, or USBPcap with Wireshark. Work out which
+   bytes mean what, and look for a checksum.
+5. **Only then send.** Replay a known message from Linux with `amidi -S`, and
+   check the change in Fishman's app on Windows. Then wrap the settings in a
+   small command (for example `sushi-rig pickup mode mono`) and a few
+   controls on the page.
+
+Limits:
+
+- **Never firmware:** updates stay with Fishman's own tools.
+- **Nothing is sent to the pickup until steps 1 to 4 say what it means.** As
+  with the FBV, everything starts listen-only.
+- **Fishman's licence:** in the UK and EU, working out a protocol so your own
+  software can work with a device you own is generally allowed. That isn't
+  legal advice, and the app's licence is worth a glance first.
+
 ## Synths in Sushi: what is already known
 
 Measured in Sushi 1.3.0 for the synth research (#166, PR #175,
@@ -211,7 +250,8 @@ This is unmeasured on this rig until the pickup arrives.
      drive?
 
    Measure CPU and keyboard-to-sound latency.
-2. **The pickup's day-one check,** above.
+2. **The pickup's day-one check,** above. If its settings are needed from
+   Linux, add the control-app steps after it.
 3. **Build:**
    - the `instrument` device;
    - `input: midi` channels with channel filters;
