@@ -6899,7 +6899,7 @@ it fails. `tests/ui_fake.py`'s stand-in FBV is still the old guess, which the
 UI tests exercise; bringing it to the captured board is a follow-up.
 *(2026-11-22)*
 
-**A MIDI rig: the write-up (2026-11-23).** The owner plans a Fishman
+**A MIDI rig: the write-up (PR #206).** The owner plans a Fishman
 TriplePlay Express (USB-C) and a rig whose channels can be synths played by
 it, beside dry-guitar channels; pads and a plucked double bass first;
 chords needed, per-string bends nice to have. `docs/design/midi-rig.md`
@@ -6908,4 +6908,12 @@ default, Mono mode a channel a string, Linux class compliance likely but not
 stated), what #166's spike already measured of synths in Sushi 1.3.0, the
 rig design (an `instrument` device, `input: midi` channels with channel
 filters, a Sushi MIDI port per device), candidate synths, and a spike to run
-before the pickup arrives. Nothing is built. *(2026-11-23)*
+before the pickup arrives. A review against the repo's own records corrected
+it: the probe marks every synth not drivable today (its MIDI input is an atom
+port it needs), so a synth can have no profile until the probe takes a MIDI
+input; the rig has string-machine's chorus, not its synth; the spike's synth
+runs were offline with nothing heard and never used Sushi's MIDI input; sfizz
+may take its samples through `patch:`, which Sushi cannot set; the FBV sends
+only CCs, so the spike plays from a keyboard or the MPD218. A section says how
+we would write our own Linux control app for the pickup if one were needed.
+Nothing is built. *(2026-11-23)*
