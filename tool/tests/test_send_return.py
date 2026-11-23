@@ -149,3 +149,48 @@ def test_a_channel_that_sends_keeps_its_own_output(tmp_path, direct):
     on bus 0 here, sum to the channel exactly twice over."""
     rendered = render(tmp_path, "both", through_master(master_first=False, channel_output=True))
     assert np.max(np.abs(rendered - 2 * direct)) < EXACT
+
+
+# --------------------------------------------------------------------------- #
+# A channel's mute (#210): which of Sushi's switches reaches the monitors
+# --------------------------------------------------------------------------- #
+
+# Sushi 1.3.0 starts every processor running and ramps a saved bypass in over
+# 7 chunks, 448 frames (`BypassManager`, processor.h; MANIFEST, the octave
+# pair's re-recording): what comes before that is a fade, not the state.
+SETTLED = 1024
+
+
+def with_state(config: dict, *entries: dict) -> dict:
+    config = json.loads(json.dumps(config))
+    config["initial_state"] = config["initial_state"] + list(entries)
+    return config
+
+
+@needs_sushi
+@pytest.mark.slow
+def test_a_tracks_mute_does_not_reach_the_master(tmp_path, direct):
+    """The bug #210 found on the laptop: the track's `mute`, which a
+    footswitch used to toggle, acts after the track's plugins, so after its
+    send, and the master's copy is the channel as if nothing were muted."""
+    config = with_state(through_master(master_first=False, channel_output=False),
+                        {"processor": "channel", "parameters": {"mute": 1.0}})
+    rendered = render(tmp_path, "track-muted", config)
+    assert np.max(np.abs(rendered[SETTLED:] - direct[SETTLED:])) < EXACT
+
+
+@needs_sushi
+@pytest.mark.slow
+def test_a_bypassed_send_sends_nothing_and_its_channel_still_plays(tmp_path, direct):
+    """The mute the agent now plays (#210): the channel's send bypassed. The
+    master's return gets nothing of the channel, and the channel's own
+    output (its stem) is untouched. NOT YET RUN: there is no Sushi where this
+    was written; this job is where it first runs, and if a bypassed send
+    still sends, the mute is wrong and this says so."""
+    bypassed = {"processor": "channel_send", "bypassed": True}
+    master_only = render(tmp_path, "send-bypassed",
+                         with_state(through_master(master_first=False, channel_output=False), bypassed))
+    assert np.max(np.abs(master_only[SETTLED:])) < EXACT, "the master heard a bypassed send"
+    both = render(tmp_path, "send-bypassed-both",
+                  with_state(through_master(master_first=False, channel_output=True), bypassed))
+    assert np.max(np.abs(both[SETTLED:] - direct[SETTLED:])) < EXACT, "the channel's own output changed"

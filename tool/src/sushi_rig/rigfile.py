@@ -1102,8 +1102,16 @@ def compile_midi(rig: Rig, controller: dict[str, Any]) -> tuple[dict[str, Any], 
     not verified yet and is on the rig session's list.
 
     - **parameter**: one mapping, the control's range.
-    - **mute**: one mapping on the channel's track, parameter `mute`, 0 to 1;
-      a track's `mute` is a parameter, so a whole channel mutes natively.
+    - **mute** (#210): the agent's, whatever the control. A channel is muted
+      by bypassing its send (`<channel>_send`), so the master's return, which
+      is what the monitors hear, gets nothing of it, and a volume pedal on
+      the same channel (the send's `gain`) is left where it is. The track's
+      own `mute` parameter, which this used to map, acts after the track's
+      plugins and so after the send (`_strip_problems`): it silenced only the
+      channel's stem, and on the laptop (2026-11-23) a mute toggled by a
+      footswitch was not heard at all. Sushi has no CC-to-bypass, so a
+      latching switch's mute, and an untyped CC's (a knob), go to the agent
+      too, following the value: muted at 64 and above.
     - **blend**: two mappings on the two channels' sends, parameter `gain`,
       one from the channel's own level down to silence and the other the
       reverse, so a single pedal fades one channel out as the other comes
@@ -1131,9 +1139,8 @@ def compile_midi(rig: Rig, controller: dict[str, Any]) -> tuple[dict[str, Any], 
     refused here; a switch takes a bypass or a mute, an expression pedal a
     volume, a parameter or a blend (`TAKES`). A momentary or single switch
     toggles on each press, which Sushi's mappings cannot do (they follow the
-    value), so its mute goes to the agent too, and its bypass is marked with
-    its behaviour (`switch`); a latching switch's mute stays Sushi's own
-    mapping.
+    value): its bypass or mute is marked with its behaviour (`switch`), as a
+    latching one's is, which follows the value.
 
     A note cannot sweep, so a control that sends a note may only bypass, or
     mute as a switch through the agent. `RigFileError` for a control the
@@ -1182,23 +1189,20 @@ def compile_midi(rig: Rig, controller: dict[str, Any]) -> tuple[dict[str, Any], 
                           "bypass": control.target,
                           **({"switch": behaviour} if behaviour and kind == "cc" else {})})
             continue
-        if control.binding == "mute" and kind == "cc" and behaviour in ("momentary", "single"):
-            # Sushi's mapping would mute while held: a press toggles instead.
+        if control.binding == "mute":
+            # The send bypassed, by the agent (#210): Sushi maps no CC to a
+            # bypass. A note, and a momentary or single switch, toggle it; a
+            # latching switch and an untyped CC follow the value.
             agent.append({"control": control.control, kind: number, "channel": channel,
-                          "mute": control.target, "switch": behaviour})
+                          "mute": control.target,
+                          **({"switch": behaviour} if behaviour and kind == "cc" else {})})
             continue
         if kind == "note":
-            if control.binding != "mute":
-                problems.append(f"midi: {control.control!r} sends a note, which cannot sweep a {control.binding}")
-                continue
-            agent.append({"control": control.control, kind: number, "channel": channel,
-                          "mute": control.target})
+            problems.append(f"midi: {control.control!r} sends a note, which cannot sweep a {control.binding}")
             continue
         if control.binding == "parameter":
             _, plugin, parameter = control.target.split("/")
             mappings.append(mapping(plugin, parameter, *control.range, number))
-        elif control.binding == "mute":
-            mappings.append(mapping(control.target, "mute", 0.0, 1.0, number))
         elif control.binding == "volume":
             level = levels[control.target]
             low, high = max(0.0, level_to_gain(level - VOLUME_FLOOR_DB)), level_to_gain(level)

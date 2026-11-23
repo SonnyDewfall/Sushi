@@ -812,16 +812,35 @@ class PedalPort:
     """One opened port, as `midi_listener.AlsaPort` is read: `read` waits for
     what a test sent, and `attached` says whether the board is plugged in."""
 
-    def __init__(self, pedals: "UiPedals"):
+    def __init__(self, pedals: "UiPedals", link: int | None = None):
         import queue
 
         self.pedals = pedals
         self.inbox = queue.Queue()
         self.closed = threading.Event()
+        self.link = link  # Sushi's MIDI input the agent asked this port to link to (#210)
 
     @property
     def attached(self):
         return self.pedals.plugged
+
+    @property
+    def linked(self):
+        """Linked to Sushi as `AlsaPort` would be, when asked to, while the
+        board is plugged in and `UiPedals.sushi` says Sushi's input is there."""
+        if self.link is None:
+            return None
+        return self.pedals.plugged and self.pedals.sushi
+
+    @property
+    def link_reason(self):
+        if self.link is None:
+            return None
+        if not self.pedals.plugged:
+            return "not linked: the pedal is not plugged in"
+        if not self.pedals.sushi:
+            return "not linked: no ALSA MIDI input called 'Sushi' is listed"
+        return f"linked by the agent: the fake board to Sushi's MIDI input {self.link}"
 
     absence = "the fake board is unplugged"
 
@@ -846,11 +865,12 @@ class UiPedals:
     def __init__(self):
         self.ports: list[PedalPort] = []
         self.plugged = True
+        self.sushi = True  # Sushi's MIDI input is listed, for a link (#210)
 
-    def open_port(self, name):
+    def open_port(self, name, link=None):
         if name != FBV_PORT:
             raise midi_listener.PortAbsent(f"the fake has no port {name!r}")
-        port = PedalPort(self)
+        port = PedalPort(self, link)
         self.ports.append(port)
         return port
 

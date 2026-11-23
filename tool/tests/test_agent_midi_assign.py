@@ -837,3 +837,42 @@ def test_a_heel_silencing_waiting_on_a_busy_agent_stops_if_its_binding_goes():
         on_loop(s, release())
         until(lambda: not s.agent._midi_snapping, what="the silencing to end")
         assert not any(c[:3] == ("set_parameter", "vocal_send", "gain") for c in s.rig.calls)
+
+
+# --------------------------------------------------------------------------- #
+# #210: each pedal linked to Sushi's MIDI input, said in /health
+# --------------------------------------------------------------------------- #
+
+def opened_links(s):
+    return [port.link for port in s.pedals.ports]
+
+
+def test_the_pedal_is_linked_to_sushi_at_the_start_and_after_a_restart(served):
+    """Every listener the agent starts asks its port to link the pedal to
+    Sushi's input 0 (the rig has no map: where an assignment would go), and
+    /health says it is linked, per feed, with why."""
+    listening(served)
+    until(lambda: midi_health(served)["feeds"][0]["linked_to_sushi"] is True, what="the link")
+    feed = midi_health(served)["feeds"][0]
+    assert feed["link"].startswith("linked by the agent"), feed
+    assert opened_links(served) == [0]
+    assert ask(served, "POST", "/rig/restart", {})[0] == 200  # a new Sushi
+    listening(served)
+    assert opened_links(served) == [0, 0], "the restarted rig's listener links again"
+    until(lambda: midi_health(served)["feeds"][0]["linked_to_sushi"] is True, what="the link")
+    # A switch's own stop and start of the listener: test_agent_midi.py.
+
+
+def test_a_pedal_that_cannot_be_linked_says_not_linked_and_why(served):
+    listening(served)
+    served.pedals.sushi = False  # Sushi's input gone from the sequencer's list
+    until(lambda: midi_health(served)["feeds"][0]["linked_to_sushi"] is False, what="unlinked")
+    feed = midi_health(served)["feeds"][0]
+    assert feed["linked_to_sushi"] is False and "no ALSA MIDI input called 'Sushi'" in feed["link"], feed
+    served.pedals.sushi = True  # Sushi's input appears: the port says so on its next read
+    until(lambda: midi_health(served)["feeds"][0]["linked_to_sushi"] is True, what="the link")
+    served.pedals.plugged = False  # hot-unplugged: the link goes with the board
+    until(lambda: midi_health(served)["feeds"][0]["linked_to_sushi"] is False, what="unlinked")
+    assert "not plugged in" in midi_health(served)["feeds"][0]["link"]
+    served.pedals.plugged = True  # hot-plugged: linked again
+    until(lambda: midi_health(served)["feeds"][0]["linked_to_sushi"] is True, what="relinked")

@@ -19,6 +19,7 @@ import threading
 from pathlib import Path
 
 import pytest
+from types import SimpleNamespace
 
 from sushi_rig import midi_listener as ml
 from sushi_rig.midi_listener import (
@@ -31,13 +32,13 @@ from sushi_rig.midi_listener import (
     Refused,
     SelectRig,
     SetBypass,
+    SetMute,
     ToggleBypass,
     ToggleMute,
     decode,
     dispatch,
     find_port,
     next_bypass,
-    next_mute,
     parse_bindings,
     plan_for,
     program_order,
@@ -134,9 +135,6 @@ def test_a_numbered_channel_is_kept_as_the_machine_file_gives_it():
     ([dict(PAD_BYPASS, channel="1")], "0 to 15 or \"all\""),
     ([dict(PAD_BYPASS, bypass="drive")], "channel/plugin"),
     ([dict(PAD_MUTE, mute="")], "a channel name"),
-    # A CC on a mute is Sushi's own mapping (compile_midi), never the agent's:
-    # one here means a config this listener does not understand.
-    ([{"control": "knob3", "cc": 9, "channel": "all", "mute": "lead"}], "Sushi's own cc_mappings"),
     ([PAD_BYPASS, dict(PAD_MUTE, note=36)], "both send note 36"),
     # "all" overlaps every channel: one of the two would never be served.
     ([PAD_BYPASS, dict(PAD_MUTE, note=36, channel=1)], "both send note 36"),
@@ -273,14 +271,20 @@ def test_a_toggle_refuses_when_sushi_would_not_say_which_way():
         next_bypass(None, None)
 
 
-@pytest.mark.parametrize("previous, expected", [(0.0, 1.0), (1.0, 0.0), (0.2, 1.0), (0.7, 0.0)])
-def test_a_mute_toggle_flips_the_parameter_about_half_way(previous, expected):
-    assert next_mute(previous) == expected
-
-
-def test_a_mute_toggle_refuses_an_unknown_value():
-    with pytest.raises(MidiError):
-        next_mute(None)
+def test_a_cc_on_a_mute_is_the_agents_and_follows_its_value():
+    """#210: every mute is the agent's, a CC's too (an untyped knob, a
+    latching switch): Sushi maps no CC to the send's bypass, and the track's
+    own mute, which it can map, acts after the send. Muted at 64 and above,
+    acting only on a crossing, as a CC on a bypass does."""
+    knob = {"control": "knob3", "cc": 9, "channel": "all", "mute": "lead"}
+    parsed = parse_bindings([knob, dict(knob, control="toe", cc=43, switch="latching")])
+    switches: dict = {}
+    seen = []
+    for number, value in [(9, 0), (9, 100), (9, 120), (9, 10), (43, 127), (43, 0)]:
+        action, switches = dispatch(Message("cc", 0, number, value), parsed, switches)
+        seen.append(action)
+    assert seen == [SetMute("knob3", "lead", False), SetMute("knob3", "lead", True), None,
+                    SetMute("knob3", "lead", False), SetMute("toe", "lead", True), SetMute("toe", "lead", False)]
 
 
 # --------------------------------------------------------------------------- #
@@ -586,8 +590,6 @@ def test_a_latching_switch_on_a_bypass_follows_its_value():
 @pytest.mark.parametrize("raw, said", [
     ([dict(MOMENTARY_BYPASS, switch="sticky")], "switch must be momentary, single or latching"),
     ([dict(PAD_BYPASS, switch="momentary")], "on a cc"),
-    # A latching switch's mute is Sushi's own mapping; only a momentary one toggles.
-    ([dict(MOMENTARY_MUTE, switch="latching")], "Sushi's own cc_mappings"),
 ])
 def test_a_switch_binding_in_a_shape_compile_midi_does_not_write_is_refused(raw, said):
     with pytest.raises(BindingError, match=said):
@@ -889,15 +891,32 @@ class FakeAlsa:
         def __init__(self, client, port):
             self.addr = (client, port)
 
+    class PortUnsubscribedEvent:
+        def __init__(self, sender, dest):
+            self.connect_sender, self.connect_dest = sender, dest
+
     WRITE_PORT = 1
     SYSTEM_ANNOUNCE = (0, 1)
 
     class PortType:
+        ANY = 0
         MIDI_GENERIC = 1
         APPLICATION = 2
 
+    class SubscriptionQueryType:
+        READ = 0
+        WRITE = 1
+
     def __init__(self):
         self.ports = []
+        # Sushi's and anything else's writable ports, as list_ports(output=True)
+        # lists them: (client name, port name, client, port).
+        self.inputs = []
+        # Links between two other clients' ports, (sender, dest), as ALSA
+        # holds them: `aconnect` by hand, or the agent's subscribe_port.
+        self.links: list = []
+        self.subscribe_calls: list = []
+        self.subscribe_error = None
         self.events: queue.Queue = queue.Queue()
         self.subscribed = []
         alsa = self
@@ -910,9 +929,19 @@ class FakeAlsa:
             def __init__(self, name):
                 pass
 
-            def list_ports(self, input=True):
-                return [type("Info", (), {"client_name": c, "name": n, "client_id": i, "port_id": j})()
-                        for c, n, i, j in alsa.ports]
+            def list_ports(self, input=None, output=None, type=1):
+                listed = alsa.inputs if output else alsa.ports
+                return [SimpleNamespace(client_name=c, name=n, client_id=i, port_id=j) for c, n, i, j in listed]
+
+            def list_port_subscribers(self, port, type=None):
+                assert type == FakeAlsa.SubscriptionQueryType.READ, "who the pedal sends to"
+                return [SimpleNamespace(addr=dest) for sender, dest in alsa.links if tuple(sender) == tuple(port)]
+
+            def subscribe_port(self, sender, dest):
+                alsa.subscribe_calls.append((tuple(sender), tuple(dest)))
+                if alsa.subscribe_error is not None:
+                    raise alsa.subscribe_error
+                alsa.links.append((tuple(sender), tuple(dest)))
 
             def create_port(self, name, caps, type):
                 return Port()
@@ -1064,3 +1093,236 @@ def test_the_real_fbvs_messages_through_the_committed_machine_file_and_a_rig_usi
         "Snap", "Snap", "Snap", "Snap", "Snap", "Snap", None, None,
         "SetBypass", None, "SetBypass",
     ]
+
+
+# --------------------------------------------------------------------------- #
+# #210: the pedal linked to Sushi's MIDI input, by name
+# --------------------------------------------------------------------------- #
+
+# As `aconnect -l` showed them on the laptop (2026-11-23): the FBV is client
+# 20, Sushi client 129 with `listen:in` at port 0. The numbers are ALSA's to
+# give; a test moves them to show nothing here holds on to them.
+FBV_NAME = "FBV Express Mk II:FBV Express Mk II MIDI 1"
+FBV_ALSA = ("FBV Express Mk II", "FBV Express Mk II MIDI 1", 20, 0)
+SUSHI_IN = ("Sushi", "listen:in", 129, 0)
+
+
+def fake_alsa(monkeypatch, pedal=True, sushi=True):
+    import sys
+
+    alsa = FakeAlsa()
+    alsa.ALSAError = type("ALSAError", (Exception,), {"__init__": lambda self, message, errnum: (
+        Exception.__init__(self, message), setattr(self, "errnum", errnum))[0]})
+    monkeypatch.setitem(sys.modules, "alsa_midi", alsa)
+    if pedal:
+        alsa.ports.append(FBV_ALSA)
+    alsa.inputs.append(("sushi-rig agent", "pedals in", 130, 0))
+    if sushi:
+        alsa.inputs.append(SUSHI_IN)
+    return alsa
+
+
+def test_sushis_input_is_found_by_its_clients_name_never_its_number():
+    listed = [("sushi-rig agent", 130, 0), ("Sushi", 129, 0), ("Midi Through", 14, 0)]
+    assert ml.sushi_input(listed, 0) == (129, 0)
+    assert ml.sushi_input([("Sushi", 140, 0), ("Sushi", 140, 2)], 1) == (140, 2), "inputs in port order"
+    with pytest.raises(ml.LinkProblem, match="no ALSA MIDI input called 'Sushi'"):
+        ml.sushi_input([("sushi-rig agent", 130, 0)], 0)
+    with pytest.raises(ml.LinkProblem, match="Sushi's MIDI input 1, and Sushi lists 1"):
+        ml.sushi_input(listed, 1)
+    with pytest.raises(ml.LinkProblem, match="2 ALSA clients are called 'Sushi'"):
+        ml.sushi_input([("Sushi", 129, 0), ("Sushi", 131, 0)], 0)
+
+
+def test_the_pedal_is_linked_to_sushi_by_name_as_the_port_opens(monkeypatch):
+    alsa = fake_alsa(monkeypatch)
+    port = ml.AlsaPort(FBV_NAME, sushi_port=0)
+    assert port.attached
+    assert alsa.links == [((20, 0), (129, 0))], "aconnect \"FBV Express Mk II:0\" \"Sushi:0\", by names"
+    assert port.linked is True and port.link_reason.startswith("linked by the agent"), port.link_reason
+    assert alsa.subscribed[-1] == (20, 0), "and the agent still reads the pedal itself"
+
+
+def test_a_port_not_asked_to_link_links_nothing(monkeypatch):
+    alsa = fake_alsa(monkeypatch)
+    port = ml.AlsaPort(FBV_NAME)
+    assert alsa.subscribe_calls == [] and port.linked is None and port.link_reason is None
+
+
+def test_a_link_made_by_hand_is_left_alone_and_not_made_twice(monkeypatch):
+    alsa = fake_alsa(monkeypatch)
+    alsa.links.append(((20, 0), (129, 0)))  # the owner's `aconnect 20:0 129:0`, kept
+    port = ml.AlsaPort(FBV_NAME, sushi_port=0)
+    assert alsa.subscribe_calls == [], "not subscribed a second time"
+    assert alsa.links == [((20, 0), (129, 0))]
+    assert port.linked is True and "linked already" in port.link_reason
+
+
+def test_a_link_alsa_says_is_already_there_is_linked(monkeypatch):
+    import errno
+
+    alsa = fake_alsa(monkeypatch)
+    alsa.subscribe_error = alsa.ALSAError("Device or resource busy", -errno.EBUSY)
+    port = ml.AlsaPort(FBV_NAME, sushi_port=0)
+    assert port.linked is True and "linked already" in port.link_reason
+
+
+def test_a_link_alsa_refuses_is_said_and_the_pedal_is_still_read(monkeypatch):
+    import errno
+
+    alsa = fake_alsa(monkeypatch)
+    alsa.subscribe_error = alsa.ALSAError("Operation not permitted", -errno.EPERM)
+    port = ml.AlsaPort(FBV_NAME, sushi_port=0)
+    assert port.attached and port.linked is False
+    assert "Operation not permitted" in port.link_reason
+    alsa.events.put(FakeAlsa.MidiBytesEvent(b"\xb0\x07\x40"))
+    assert port.read(0.01) == b"\xb0\x07\x40"
+
+
+def test_a_sushi_that_starts_after_the_pedal_is_linked_when_it_appears(monkeypatch):
+    """A restart: the old Sushi goes (its link with it), a new one comes
+    with another client number, and is linked from the announcements."""
+    alsa = fake_alsa(monkeypatch, sushi=False)
+    port = ml.AlsaPort(FBV_NAME, sushi_port=0)
+    assert port.linked is False and "no ALSA MIDI input called 'Sushi'" in port.link_reason
+    alsa.inputs.append(SUSHI_IN)
+    alsa.events.put(FakeAlsa.PortStartEvent())
+    assert port.read(0.01) is None
+    assert port.linked is True and alsa.links == [((20, 0), (129, 0))]
+    # Sushi restarts under the listener: its exit, then a new client.
+    alsa.inputs.remove(SUSHI_IN)
+    alsa.links.clear()
+    alsa.events.put(FakeAlsa.ClientExitEvent(129))
+    port.read(0.01)
+    assert port.linked is False and "went away" in port.link_reason
+    alsa.inputs.append(("Sushi", "listen:in", 131, 0))
+    alsa.events.put(FakeAlsa.ClientStartEvent())
+    port.read(0.01)
+    assert port.linked is True and alsa.links == [((20, 0), (131, 0))], "the new Sushi, by name"
+
+
+def test_a_pedal_plugged_in_after_the_rig_is_up_is_linked_as_it_is_attached(monkeypatch):
+    alsa = fake_alsa(monkeypatch, pedal=False)
+    port = ml.AlsaPort(FBV_NAME, sushi_port=0)
+    assert not port.attached and port.linked is False and "not plugged in" in port.link_reason
+    assert alsa.subscribe_calls == []
+    alsa.ports.append(("FBV Express Mk II", "FBV Express Mk II MIDI 1", 24, 0))
+    alsa.events.put(FakeAlsa.ClientStartEvent())
+    port.read(0.01)
+    assert port.attached and port.linked is True and alsa.links == [((24, 0), (129, 0))]
+    alsa.events.put(FakeAlsa.ClientExitEvent(24))  # unplugged: the link goes with it
+    alsa.ports.clear()
+    port.read(0.01)
+    assert port.linked is False and "not plugged in" in port.link_reason
+
+
+def test_a_link_taken_down_by_hand_is_not_made_again_by_this_listener(monkeypatch):
+    alsa = fake_alsa(monkeypatch)
+    port = ml.AlsaPort(FBV_NAME, sushi_port=0)
+    alsa.links.clear()
+    alsa.events.put(FakeAlsa.PortUnsubscribedEvent((20, 0), (129, 0)))  # aconnect -d
+    port.read(0.01)
+    assert port.linked is False and "taken down" in port.link_reason
+    alsa.events.put(FakeAlsa.PortStartEvent())  # anything else appearing does not undo it
+    port.read(0.01)
+    assert port.linked is False and len(alsa.subscribe_calls) == 1
+
+
+def test_the_listener_says_each_change_of_the_link():
+    class LinkingPort(FakePort):
+        def __init__(self):
+            super().__init__()
+            self.linked, self.link_reason = False, "not linked: no Sushi"
+
+    port = LinkingPort()
+    opened_with = []
+    said: queue.Queue = queue.Queue()
+
+    def open_port(name, link):
+        opened_with.append((name, link))
+        return port
+
+    listener = ml.Listener(FBV_NAME, open_port, post=lambda fn, *a: fn(*a), on_open=lambda: None,
+                           on_message=lambda m: None, on_failure=lambda e, o: said.put(("failed", e)),
+                           link=0, on_link=lambda linked, reason: said.put((linked, reason)), poll=0.01)
+    listener.start()
+    try:
+        assert said.get(timeout=2) == (False, "not linked: no Sushi")
+        port.linked, port.link_reason = True, "linked by the agent: here"
+        assert said.get(timeout=2) == (True, "linked by the agent: here")
+    finally:
+        assert listener.stop(2)
+    assert opened_with == [(FBV_NAME, 0)]
+
+
+
+def test_each_feed_is_planned_onto_sushis_input_its_mappings_use(tmp_path):
+    """The map's controller to its cc_mappings' port; another controller to
+    port 0, unless it sends a CC those mappings use there, when it is not
+    linked and says why (Sushi maps by CC, not by device)."""
+    rig = RIG.replace("controller: mpd218", "controller: fbv").replace("  programs: rigs\n", "").replace(
+        "{control: pad1, bypass: lead/drive}", "{control: pedal, parameter: lead/drive/Drive}")
+    described = rig_files(tmp_path / "a", bindings_=False, machine=FBV_MACHINE, rig=rig)
+    config = json.loads(Path(described["config"]).read_text())
+    config["midi"] = {"cc_mappings": [{"port": 1, "channel": 0, "cc_number": 7, "plugin_name": "drive",
+                                       "parameter_name": "Drive", "min_range": 0.0, "max_range": 1.0,
+                                       "mode": "absolute"}]}
+    config["_meta"] = {"midi_controller": "fbv"}
+    Path(described["config"]).write_text(json.dumps(config))
+    (feed,) = plan_for(described, tmp_path / "a").feeds
+    assert (feed.controller, feed.required, feed.sushi_port) == ("fbv", True, 1)
+    # A map of sweeps on the MPD218 with the FBV stepping beside it: the FBV
+    # is linked to port 0, unless its CCs are the map's there.
+    described = rig_files(tmp_path / "b", machine=FBV_MACHINE)
+    config = json.loads(Path(described["config"]).read_text())
+    mapping = {"port": 0, "channel": "all", "cc_number": 3, "plugin_name": "drive", "parameter_name": "Drive",
+               "min_range": 0.0, "max_range": 1.0, "mode": "absolute"}
+    config["midi"] = {"cc_mappings": [mapping]}
+    Path(described["config"]).write_text(json.dumps(config))
+    mpd, fbv = plan_for(described, tmp_path / "b").feeds
+    assert (mpd.controller, mpd.sushi_port, fbv.controller, fbv.sushi_port) == ("mpd218", 0, "fbv", 0)
+    config["midi"] = {"cc_mappings": [dict(mapping, cc_number=20)]}  # the FBV's A sends cc 20
+    Path(described["config"]).write_text(json.dumps(config))
+    mpd, fbv = plan_for(described, tmp_path / "b").feeds
+    assert fbv.sushi_port is None and "its a sends cc 20" in fbv.link_reason, fbv.link_reason
+
+
+def test_a_map_of_sweeps_on_a_pedal_with_no_steps_is_a_feed_so_it_is_linked(tmp_path):
+    """Before #210 a map of Sushi's sweeps alone, on a controller with no
+    job, made no feed: nothing opened the port, so nothing linked it."""
+    rig = RIG.replace("  programs: rigs\n", "").replace("{control: pad1, bypass: lead/drive}",
+                                                        "{control: pad1, mute: lead}")
+    described = rig_files(tmp_path, bindings_=False, rig=rig)
+    config = json.loads(Path(described["config"]).read_text())
+    config["midi"] = {"cc_mappings": [{"port": 0, "channel": "all", "cc_number": 3, "plugin_name": "drive",
+                                       "parameter_name": "Drive", "min_range": 0.0, "max_range": 1.0,
+                                       "mode": "absolute"}]}
+    config["_meta"] = {"midi_controller": "mpd218"}
+    Path(described["config"]).write_text(json.dumps(config))
+    (feed,) = plan_for(described, tmp_path).feeds
+    assert (feed.controller, feed.required, feed.sushi_port, feed.bindings.controls) == ("mpd218", True, 0, ())
+
+
+def test_up_with_no_agent_links_the_rigs_own_pedal_once_and_says_so(tmp_path, monkeypatch):
+    """`up --direct` (no agent): one look, linking the controller the rig's
+    map is written for when Sushi maps something of it; nothing for a rig
+    whose map Sushi has nothing of, and never an exception."""
+    alsa = fake_alsa(monkeypatch)
+    alsa.ports.append(("MPD218", "MPD218 Port A", 24, 0))
+    rig = RIG.replace("  programs: rigs\n", "").replace("{control: pad1, bypass: lead/drive}",
+                                                        "{control: pad1, mute: lead}")
+    described = rig_files(tmp_path, bindings_=False, rig=rig)
+    assert ml.link_once(described, tmp_path) == [], "nothing of the map is Sushi's: nothing to link"
+    config = json.loads(Path(described["config"]).read_text())
+    config["midi"] = {"cc_mappings": [{"port": 0, "channel": "all", "cc_number": 3, "plugin_name": "drive",
+                                       "parameter_name": "Drive", "min_range": 0.0, "max_range": 1.0,
+                                       "mode": "absolute"}]}
+    config["_meta"] = {"midi_controller": "mpd218"}
+    Path(described["config"]).write_text(json.dumps(config))
+    (said,) = ml.link_once(described, tmp_path)
+    assert said.startswith("mpd218: linked by the agent") and alsa.links == [((24, 0), (129, 0))], said
+    alsa.inputs.remove(SUSHI_IN)
+    alsa.links.clear()
+    (said,) = ml.link_once(described, tmp_path, wait=0.05)
+    assert "not linked" in said and alsa.links == [], said
+    assert "could not say" in ml.link_once({"running": True, "config": "/nowhere"}, tmp_path)[0]

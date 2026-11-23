@@ -3950,7 +3950,9 @@ class Agent:
             return False
         if any(not listener.thread.is_alive() for listener in self._listeners):
             return False
-        ports = lambda p: [(f.controller, f.port) for f in p.feeds]  # noqa: E731
+        # The same Sushi input to link to, too (#210): a feed whose link
+        # changes is a new listener, which links as it opens.
+        ports = lambda p: [(f.controller, f.port, f.sushi_port) for f in p.feeds]  # noqa: E731
         return ports(plan) == ports(old)
 
     def _midi_swap(self, plan: midi_listener.Plan) -> None:
@@ -3997,7 +3999,10 @@ class Agent:
             bindings=[b.describe() for feed in plan.feeds for b in feed.bindings.controls],
             programs=plan.programs,
             feeds=[{"controller": feed.controller, "port": feed.port, "required": feed.required,
-                    "state": "opening", "problem": None, "reason": None} for feed in plan.feeds],
+                    "state": "opening", "problem": None, "reason": None,
+                    "linked_to_sushi": False,
+                    "link": feed.link_reason if feed.sushi_port is None else "not linked yet: opening the port"}
+                   for feed in plan.feeds],
             heard=0, last=None, problem=None, last_error=None, rig_problem=plan.rig_problem,
         )
         if plan.rig_problem:
@@ -4010,6 +4015,8 @@ class Agent:
                 on_message=functools.partial(self._midi_heard, generation, feed=index),
                 on_failure=functools.partial(self._midi_failed, generation, index),
                 on_absent=functools.partial(self._midi_absent, generation, index),
+                link=feed.sushi_port,
+                on_link=functools.partial(self._midi_linked, generation, index),
             ))
         for listener in self._listeners:
             listener.start()
@@ -4058,6 +4065,17 @@ class Agent:
             self._midi_absence.pop(feed, None)
             self._midi["feeds"][feed].update(state="listening", problem=None, reason=None)
             self._midi_feed_state()
+
+    def _midi_linked(self, generation: int, feed: int, linked: bool, reason: str) -> None:
+        """Port `feed`'s pedal is linked to Sushi's MIDI input, or not (#210):
+        `/health`'s `linked_to_sushi` and `link`, and a line on stderr for
+        each change, the log to read when a sweep does nothing."""
+        if generation != self._midi_generation:
+            return
+        entry = self._midi["feeds"][feed]
+        if (entry.get("linked_to_sushi"), entry.get("link")) != (linked, reason):
+            entry.update(linked_to_sushi=linked, link=reason)
+            self._midi_say(f"{entry['controller']}: {reason}")
 
     def _midi_who(self, feed: int) -> tuple[str, str]:
         plan = self._midi_plan
@@ -4356,7 +4374,7 @@ class Agent:
                     raise MidiError(action.reason)
                 if isinstance(action, (midi_listener.ToggleBypass, midi_listener.SetBypass)):
                     await self._midi_bypass(origin, action)
-                elif isinstance(action, midi_listener.ToggleMute):
+                elif isinstance(action, (midi_listener.ToggleMute, midi_listener.SetMute)):
                     await self._midi_mute(origin, action)
                 elif isinstance(action, (midi_listener.SelectRig, midi_listener.StepTo)):
                     await self._midi_switch(action)
@@ -4375,12 +4393,13 @@ class Agent:
         recorded, so the next value on that side plays it again. Only while
         the switch still holds this action's state (a later crossing stands)
         and the listener that heard it is still the one listening."""
-        if not isinstance(action, midi_listener.SetBypass):
+        if not isinstance(action, (midi_listener.SetBypass, midi_listener.SetMute)):
             return
         if generation is not None and generation != self._midi_generation:
             return
         switches = self._midi_switches.get(feed, {})
-        if switches.get(action.control) == (not action.bypassed):
+        level = action.muted if isinstance(action, midi_listener.SetMute) else not action.bypassed
+        if switches.get(action.control) == level:
             self._midi_switches[feed] = {k: v for k, v in switches.items() if k != action.control}
 
     def _midi_logged(self, entry: dict[str, Any], control: str | None) -> None:
@@ -4409,16 +4428,18 @@ class Agent:
                 self._record("bypass", {"processor": processor, "bypassed": bypassed}, previous), action.control)
 
     async def _midi_mute(self, origin: "_MidiOrigin", action: Any) -> None:
-        """`POST /live/parameter`'s path, on the track's `mute`."""
-        track = action.track
-        async with self._connected_for_a_change(origin) as controller:
-            reading = await self._sushi(origin, self.live.parameter, controller, track, "mute", reading=True)
-            previous = check_parameter(reading, track, "mute")
-            value = midi_listener.next_mute(previous)
-            await self._sushi(origin, self.live.set_parameter, controller, track, "mute", value, reading=False)
-            self._midi_logged(
-                self._record("parameter", {"processor": track, "parameter": "mute", "value": value}, previous),
-                action.control)
+        """A channel's mute (#210): its send bypassed, by the bypass path
+        (`_midi_bypass`), so what the monitors hear loses the channel. Not the
+        track's own `mute`: Sushi applies that after the track's plugins, so
+        after the send, and it silenced only the channel's stem (heard on the
+        laptop, 2026-11-23). The send's `gain`, which a volume pedal drives,
+        is not touched, so the two do not fight. The channel's stem, its own
+        output after the send, still plays."""
+        send = action.track + rigfile.SEND_SUFFIX
+        if isinstance(action, midi_listener.SetMute):
+            await self._midi_bypass(origin, midi_listener.SetBypass(action.control, send, action.muted))
+        else:
+            await self._midi_bypass(origin, midi_listener.ToggleBypass(action.control, send))
 
     async def _midi_switch(self, action: Any) -> None:
         """Switch to rig `action.rig` by the path `POST /rig/switch` takes
@@ -8389,7 +8410,7 @@ def assignment_not_live(running: dict[str, Any] | None, compiled: dict[str, Any]
         if isinstance(binding.get("bypass"), str):
             name = binding["bypass"].split("/")[-1]
         elif isinstance(binding.get("mute"), str):
-            name = binding["mute"]
+            name = binding["mute"] + SEND_SUFFIX  # a mute bypasses the send (#210)
         elif isinstance(binding.get("snap"), str):
             name = binding["snap"] + SEND_SUFFIX
         else:

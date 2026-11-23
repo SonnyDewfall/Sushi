@@ -603,7 +603,10 @@ def test_a_blend_is_two_send_mappings_on_one_cc_in_opposite_directions():
                  "mode": "absolute"}
 
 
-def test_a_parameter_and_a_mute_compile_natively_and_a_bypass_goes_to_the_agent():
+def test_a_parameter_compiles_natively_and_a_mute_and_a_bypass_go_to_the_agent():
+    """#210: a mute is the agent's, a knob's CC too. Sushi's own mapping of
+    one drove the track's `mute`, which acts after the send and was not
+    heard; the agent bypasses the send instead, which no CC mapping can."""
     rig = parse_rig(_midi_rig([
         {"control": "knob1", "parameter": "lead/hall/Mix", "range": [0.1, 0.9]},
         {"control": "knob2", "mute": "lead"},
@@ -613,10 +616,10 @@ def test_a_parameter_and_a_mute_compile_natively_and_a_bypass_goes_to_the_agent(
     assert section["cc_mappings"] == [
         {"port": 1, "channel": "all", "cc_number": 3, "plugin_name": "hall", "parameter_name": "Mix",
          "min_range": 0.1, "max_range": 0.9, "mode": "absolute"},
-        {"port": 1, "channel": "all", "cc_number": 9, "plugin_name": "lead", "parameter_name": "mute",
-         "min_range": 0.0, "max_range": 1.0, "mode": "absolute"},
     ]
+    assert not any(m["parameter_name"] == "mute" for m in section["cc_mappings"])
     assert agent == [
+        {"control": "knob2", "cc": 9, "channel": "all", "mute": "lead"},
         {"control": "pad1", "note": 36, "channel": "all", "bypass": "lead/drive"},
         {"programs": "rigs", "port": 1, "channel": "all"},
     ]
@@ -670,7 +673,8 @@ def test_a_rig_without_a_map_compiles_as_before():
 def test_a_rig_with_a_midi_map_loads_in_sushi_with_its_mappings(tmp_path):
     """The one thing the pure tests cannot settle: that Sushi 1.3.0 accepts
     what `compile_midi` writes (port 0, channel "all", two mappings on the
-    sends' gain, one on a track's mute, `midi_inputs` in the host config)
+    sends' gain, `midi_inputs` in the host config, and a mute, now the
+    agent's, beside them)
     and still loads the rig. Headless, through `verify`, which also reads
     every send's destination back. Every chain is emptied first, the
     master's included: a made-up LV2 URI fails to load with "Failed to load
@@ -850,7 +854,8 @@ def test_a_pedal_on_a_channels_volume_runs_from_40_db_down_to_the_channels_own_l
 def test_a_momentary_switch_toggles_through_the_agent_and_a_latching_one_is_followed():
     """Sushi's own mapping follows the value: on a momentary footswitch that
     is "muted while held". So a momentary switch's mute goes to the agent,
-    marked to toggle, and a latching one's stays Sushi's."""
+    marked to toggle; a latching one's goes to the agent too (#210), marked
+    to follow its value, since the mute is the send's bypass."""
     section, agent = compile_midi(_fbv_rig([
         {"control": "d", "mute": "lead"},
         {"control": "c", "bypass": "lead/drive"},
@@ -862,8 +867,8 @@ def test_a_momentary_switch_toggles_through_the_agent_and_a_latching_one_is_foll
     assert section == {}
     latching = dict(FBV, model={**FBV["model"], "d": dict(FBV["model"]["d"], behaviour="latching")})
     section, agent = compile_midi(_fbv_rig([{"control": "d", "mute": "lead"}]), latching)
-    assert agent == []
-    assert section["cc_mappings"][0]["parameter_name"] == "mute"
+    assert agent == [{"control": "d", "cc": 23, "channel": 0, "mute": "lead", "switch": "latching"}]
+    assert section == {}
 
 
 def test_the_agent_reads_what_the_compiler_writes_for_a_footswitch():
