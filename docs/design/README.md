@@ -10,6 +10,7 @@ Why the rig is built the way it is. None of this is needed to play it (the
 | [Quality principles](principles.md) | What "good" means here: the nine principles a change is argued against, and where they disagree |
 | [Where this is going: v2](v2.md) | The direction: a live-first rig that writes its own readable files |
 | [What this project owns](ownership.md) | What other Sushi tools do, and why this one keeps a file as the source of truth |
+| [A MIDI rig](midi-rig.md) | The guitar as a MIDI instrument through a Fishman TriplePlay Express: what is known, what is not, and the plan |
 | [The implementation brief](IMPLEMENTATION_BRIEF.md) | The brief the project started from |
 
 ## About the brief

@@ -6898,3 +6898,14 @@ on a rig using every control; with the old guessed `momentary` or a heel of 0
 it fails. `tests/ui_fake.py`'s stand-in FBV is still the old guess, which the
 UI tests exercise; bringing it to the captured board is a follow-up.
 *(2026-11-22)*
+
+**A MIDI rig: the write-up (2026-11-23).** The owner plans a Fishman
+TriplePlay Express (USB-C) and a rig whose channels can be synths played by
+it, beside dry-guitar channels; pads and a plucked double bass first;
+chords needed, per-string bends nice to have. `docs/design/midi-rig.md`
+gathers what Fishman and others say of the pickup (Poly mode on channel 1 by
+default, Mono mode a channel a string, Linux class compliance likely but not
+stated), what #166's spike already measured of synths in Sushi 1.3.0, the
+rig design (an `instrument` device, `input: midi` channels with channel
+filters, a Sushi MIDI port per device), candidate synths, and a spike to run
+before the pickup arrives. Nothing is built. *(2026-11-23)*
