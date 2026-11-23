@@ -1011,7 +1011,8 @@ def test_the_real_fbvs_messages_through_the_committed_machine_file_and_a_rig_usi
     """What the FBV Express MkII was heard to send on the laptop (2026-11-22,
     after FBV Control): each switch CC n = 0 on a press and CC 0 = 0 on
     release, the pedal CC 7 in Vol and CC 11 in Wah with the heel resting at 8
-    to 13, the toe switch CC 43 toggling 127 / 0. Replayed through the
+    to 13 (and 14 to 17 just after a move, the laptop, 2026-11-23), the toe
+    switch CC 43 toggling 127 / 0. Replayed through the
     committed machine file and the real compile, every control assigned: a
     press is one action and its release none, the heel silences the volume
     and the travel above it does not, the toe follows its mode."""
@@ -1046,7 +1047,8 @@ def test_the_real_fbvs_messages_through_the_committed_machine_file_and_a_rig_usi
     heard = [  # (cc, value, seconds), as aseqdump printed them
         (20, 0, 0.0), (0, 0, 0.3), (21, 0, 1.0), (0, 0, 1.3),
         (22, 0, 2.0), (0, 0, 2.3), (22, 0, 3.0), (0, 0, 3.3), (23, 0, 4.0), (0, 0, 4.3),
-        (7, 8, 5.0), (7, 13, 5.1), (7, 15, 5.2), (7, 16, 5.3), (7, 127, 5.4),
+        (7, 8, 5.0), (7, 13, 5.1), (7, 15, 5.2), (7, 16, 5.3), (7, 17, 5.31), (7, 20, 5.32),
+        (7, 21, 5.33), (7, 127, 5.4),
         (43, 127, 6.0), (11, 9, 6.5), (43, 0, 7.0),
     ]
     switches: dict = {}
@@ -1058,6 +1060,7 @@ def test_the_real_fbvs_messages_through_the_committed_machine_file_and_a_rig_usi
     assert seen == [
         "StepRig", None, "StepRig", None,
         "ToggleBypass", None, "ToggleBypass", None, "ToggleMute", None,
-        "Snap", "Snap", "Snap", None, None,
+        # Resting at 16 or 17 just after a move is the heel too (#210).
+        "Snap", "Snap", "Snap", "Snap", "Snap", "Snap", None, None,
         "SetBypass", None, "SetBypass",
     ]

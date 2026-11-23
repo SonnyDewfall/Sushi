@@ -30,8 +30,8 @@ controllers:
       b: {cc: 21, kind: switch, behaviour: single, job: next-rig}
       c: {cc: 22, kind: switch, behaviour: single}
       d: {cc: 23, kind: switch, behaviour: single}
-      pedal: {cc: 7, kind: expression, range: [15, 127]}   # Vol mode
-      wah: {cc: 11, kind: expression, range: [15, 127]}     # Wah mode, by the toe switch
+      pedal: {cc: 7, kind: expression, range: [20, 127]}   # Vol mode
+      wah: {cc: 11, kind: expression, range: [20, 127]}     # Wah mode, by the toe switch
       toe: {cc: 43, kind: switch, behaviour: latching}
 
 # config/rigs/<name>.yaml, on the MPD218
@@ -315,8 +315,11 @@ is ever reset. With it:
   never a 127, so they are `behaviour: single`: any message on the switch's
   own CC is a press, and the release, on CC 0, is bound to nothing.
 - The pedal is two, by the toe switch: CC 7 in Vol (`pedal`) and CC 11 in Wah
-  (`wah`). Its heel rests at 8 to 13, never 0, so the range is `[15, 127]`, with a
-  little margin, and a volume is silenced at 15 or below.
+  (`wah`). Its heel rests at 8 to 13, never 0, and at 14 to 17 just after a
+  move, so the range is `[20, 127]`, with a little margin over that, and a
+  volume is silenced at 20 or below. A heel of 15 left a foot that had come
+  to rest at 16 or 17 about 35 dB down, not silent (the laptop, 2026-11-23,
+  #210).
 - The toe switch sends CC 43, 127 on one press and 0 on the next, as it flips
   Vol and Wah: `toe`, `behaviour: latching`.
 

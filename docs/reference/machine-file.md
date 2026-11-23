@@ -32,8 +32,8 @@ controllers:            # MIDI controllers: see the MIDI page
       b: {cc: 21, kind: switch, behaviour: single, job: next-rig}
       c: {cc: 22, kind: switch, behaviour: single}
       d: {cc: 23, kind: switch, behaviour: single}
-      pedal: {cc: 7, kind: expression, range: [15, 127]}
-      wah: {cc: 11, kind: expression, range: [15, 127]}
+      pedal: {cc: 7, kind: expression, range: [20, 127]}
+      wah: {cc: 11, kind: expression, range: [20, 127]}
       toe: {cc: 43, kind: switch, behaviour: latching}
 ```
 
