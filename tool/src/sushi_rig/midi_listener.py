@@ -48,9 +48,9 @@ HTTP routes.
 
 The agent's listener reads the ALSA sequencer, where a channel is 0 to 15, as
 `aseqdump` prints it and as the status byte carries it. A binding's channel
-is the machine file's number, compared with that directly. Whether Sushi
-counts from 0 or 1 for its own `cc_mappings` is not settled (the rig
-session's list); this listener does not depend on the answer.
+is the machine file's number, compared with that directly. Sushi counts
+its own `cc_mappings`' channels from 0 too: a mapping on channel 0 followed
+the FBV sending on the wire's channel 0 (the laptop, 2026-11-23, #210).
 
 ## Why alsa-midi
 

@@ -1081,6 +1081,8 @@ async function save(name = null) {
   if (answer.ok && name) { state.saveAsOpen = false; state.saveAsName = ""; }
   render();
   kick();
+  // What a save changed of the file's pedal map waiting for a restart (#210).
+  if (answer.ok) refreshMidi(true).then(render);
   // A save-as adds a rig to config/rigs/, which the picker lists.
   if (name) refreshRigs(true).then(render);
   if (state.revert.open) refreshSaves();
@@ -3541,7 +3543,9 @@ function pedalPanel(board, t) {
       h("button", { class: "rig-act small", onclick: () => { pu.confirm = null; render(); } }, "Keep it")) : null,
     busy ? h("p", { class: "sub", role: "status" }, "Assigning…") : null,
     locked ? h("p", { class: "sub lock-says" }, lockIcon(), locked) : null,
-    refused ? h("p", { class: "row-said refused", role: "alert" }, refused) : null);
+    refused ? h("p", { class: "row-said refused", role: "alert" }, refused) : null,
+    refused && pu.refused.saveThen ? h("button", { class: "rig-act primary small save-then", disabled: busy || !!locked,
+      onclick: () => saveThenAssign(t, pu.refused.saveThen) }, "Save, then assign") : null);
 }
 
 function pedalLockRefusal() {
@@ -3593,18 +3597,37 @@ async function sendPedal(t, choice) {
     const rig = state.health && state.health.ok ? state.health.body.rig || {} : {};
     if (rig.config_name) refreshRigChannels(rig.config_name, true).then(render);
   } else {
-    pu.refused = { key: t.key, reason: `Not assigned: ${answer.reason}` };
+    // Refused for unsaved work (#210): the assignment plays only after a
+    // restart, which would drop it. Offered as one step, save then assign,
+    // so the restart that plays it is offered after the save.
+    pu.refused = { key: t.key, reason: `Not assigned: ${answer.reason}`, saveThen: answer.code === "unsaved" ? choice : null };
   }
   render();
   if (answer.ok) {
-    // The panel has closed: the focus it held goes back to the badge that
-    // opened it, not to the page's body.
-    const active = document.activeElement;
-    // Found by its key, not by a selector: CSS.escape writes the key's NULs as U+FFFD.
-    const badgeButton = [...document.querySelectorAll(".pedal-badge")].find((b) => b.dataset.pedal === t.key);
-    if (badgeButton && (fromPanel || !active || active === document.body)) badgeButton.focus({ preventScroll: true });
+    const offer = document.querySelector("section.pedals .rigfile-result .offer");
+    if (pu.result.offer && offer) {
+      // A restart plays it: the offer, under the strips, is where the focus
+      // goes, so it is in view and not missed (#210).
+      offer.focus();
+    } else {
+      // The panel has closed: the focus it held goes back to the badge that
+      // opened it, not to the page's body.
+      const active = document.activeElement;
+      // Found by its key, not by a selector: CSS.escape writes the key's NULs as U+FFFD.
+      const badgeButton = [...document.querySelectorAll(".pedal-badge")].find((b) => b.dataset.pedal === t.key);
+      if (badgeButton && (fromPanel || !active || active === document.body)) badgeButton.focus({ preventScroll: true });
+    }
   }
   kick();
+}
+
+// The unsaved refusal's one step (#210): Save, then the same assignment
+// again, whose answer offers the restart that plays it.
+async function saveThenAssign(t, choice) {
+  state.pedalUi.refused = null;
+  await save();
+  if (state.saveResult && state.saveResult.ok) await sendPedal(t, choice);
+  else render();
 }
 
 async function restartForSave() {
@@ -3634,8 +3657,11 @@ function pedalsRegion(el) {
   const device = board.controller ? R.pedalDeviceState(state.health, board.controller) : null;
   const rows = shown ? R.pedalSummary(board, pu.lights, Date.now()) : [];
   const busy = state.health && state.health.ok ? (state.health.body.agent || {}).busy || null : null;
+  // The file's mappings waiting for a restart (#210), offered while nothing
+  // an assignment said is shown in its place.
+  const behind = pu.result ? null : R.pedalBehind(board);
   patch(el, JSON.stringify([shown, board.controller, board.choose, board.problem, device, rows.map((r) => [r.control, r.name, r.does, r.assigned, r.job]),
-    pu.result, pu.restartConfirm, busy, !!state.pending]), () => (!shown ? [] : [
+    pu.result, pu.restartConfirm, busy, !!state.pending, behind]), () => (!shown ? [] : [
     h("h2", {}, "PEDALS"),
     board.choose.length ? h("label", { class: "selector pedal-pick" }, h("span", { class: "label" }, "Device for this rig's map"),
       (() => {
@@ -3644,7 +3670,7 @@ function pedalsRegion(el) {
         select.addEventListener("change", () => { pu.device = select.value; render(); });
         return select;
       })()) : null,
-    device ? h("p", { class: `pedal-device state-${device.state}` }, h("span", { class: "dot", "aria-hidden": "true" }),
+    device ? h("p", { class: `pedal-device state-${device.state}`, title: device.link || null }, h("span", { class: "dot", "aria-hidden": "true" }),
       h("strong", {}, board.controller), ` · ${device.text}`) : null,
     board.problem ? h("p", { class: "rig-problem" }, board.problem) : null,
     h("ul", { class: "pedal-list" }, rows.map((r) => h("li", { class: `pedal-row${r.assigned ? " assigned" : ""}${r.job ? " job" : ""}`, "data-control": r.control },
@@ -3653,6 +3679,10 @@ function pedalsRegion(el) {
       h("span", { class: "sr-only heard-said" })))),
     h("p", { class: "sub" }, "Assign from the rack: the pedal button beside an effect's on/off, or by a channel's name. A light is a message heard from that control."),
     pu.result ? rigFileResult(pu.result, () => { pu.result = null; render(); }, () => { pu.restartConfirm = true; render(); }) : null,
+    behind ? h("div", { class: "rigfile-result pedal-behind", role: "status" },
+      h("span", { class: "said" }, behind.text),
+      h("button", { class: "rig-act primary offer", disabled: !!state.pending, onclick: () => { pu.restartConfirm = true; render(); } },
+        behind.offer.label)) : null,
     pu.restartConfirm ? h("div", { class: "confirm", role: "group", "aria-label": "Confirm the restart" },
       h("p", {}, `Restart ${shownRigName()}? The sound stops for a few seconds while it comes back from its file.`),
       h("button", { class: "rig-act danger", disabled: !!state.pending || !!busy, onclick: restartForPedals }, "Restart now"),

@@ -495,6 +495,7 @@ import contextlib
 import copy
 import dataclasses
 import functools
+import json
 import math
 import re
 import sys
@@ -1802,6 +1803,12 @@ class Live:
     values: Callable[[Any, str], dict[str, Any]]
     # -- the web UI (#31): which plugin each processor is; None where it cannot say --
     plugins: Callable[[Any], dict[str, Any]] | None = None
+    # -- a pedal's Sushi mapping applied live (#210), each a cc_mappings entry;
+    # None (or a stand-in without them) is "only at a restart". UNVERIFIED
+    # on a real Sushi: live.py's "A pedal's mapping, live".
+    connect_cc: Callable[[Any, dict[str, Any]], None] | None = None
+    disconnect_cc: Callable[[Any, dict[str, Any]], None] | None = None
+    cc_connections: Callable[[Any], list[dict[str, Any]]] | None = None
 
     @classmethod
     def at(cls, address: str = DEFAULT_GRPC_ADDRESS) -> "Live":
@@ -1824,6 +1831,9 @@ class Live:
             remove=functools.partial(_remove_with_copy, address),
             values=lambda c, proc: m.read_live_values(proc, address, c),
             plugins=lambda c: m.read_live_plugins(address, c),  # the web UI (#31)
+            connect_cc=lambda c, mapping: m.connect_live_cc(mapping, address, c),  # #210
+            disconnect_cc=lambda c, mapping: m.disconnect_live_cc(mapping, address, c),
+            cc_connections=lambda c: m.read_live_cc(address, c),
         )
 
 
@@ -4493,7 +4503,7 @@ class Agent:
         answer: dict[str, Any] = {
             "machine": machine_file.name, "machine_problem": None, "controllers": [],
             "targets": dict(rigfile.TARGET_SHAPES), "rig": None, "assignments": None, "rig_problem": None,
-            "rigs": midi_listener.program_order(root),
+            "rigs": midi_listener.program_order(root), "behind": None,
         }
         try:
             machine = MachineSpec.load(machine_file)
@@ -4517,6 +4527,7 @@ class Agent:
             except Exception as exc:  # noqa: BLE001 -- said; the devices are still worth answering
                 answer["rig_problem"] = " ".join(f"{source}: {type(exc).__name__}: {exc}".split())
             else:
+                answer["behind"] = self._midi_behind(described, root / source, machine_file)
                 if rig.midi is not None:
                     answer["assignments"] = {
                         "controller": rig.midi.controller, "port": rig.midi.port, "programs": rig.midi.programs,
@@ -4527,6 +4538,27 @@ class Agent:
                         ],
                     }
         return answer
+
+    def _midi_behind(self, described: dict[str, Any], path: Path, machine_file: Path) -> dict[str, Any] | None:
+        """Whether the running rig's pedal mappings are behind its file
+        (#210): `map_behind` of the running config and a compile of the file
+        as it is now, with `restart` true when Sushi's half is behind (only a
+        restart loads cc_mappings, where they could not be made live). None
+        where either cannot be read: a file that will not compile is
+        `rig_problem`'s, said beside it. Off the loop (`midi_route`)."""
+        import yaml
+
+        from .rig import compile_rig_draft
+
+        try:
+            compiled = compile_rig_draft(yaml.safe_load(path.read_text()), self._midi_root(), machine_file)
+            running = self.switching.read_config(described.get("config"))
+        except Exception:  # noqa: BLE001 -- not known, and said as not known
+            return None
+        behind = map_behind(running, compiled)
+        if behind is not None:
+            behind["restart"] = behind["midi"]
+        return behind
 
     # ------------------------------------------------- assigning a pedal (#192)
     #
@@ -4582,7 +4614,7 @@ class Agent:
 
         from . import rigedit
         from .machine import MachineError, MachineSpec
-        from .rigfile import AGENT_BINDINGS, MIDI_CONTROLLER, RigFileError, write_rig
+        from .rigfile import RigFileError, write_rig
 
         path = run["running"]
         if path is None:
@@ -4637,7 +4669,21 @@ class Agent:
                 else:
                     unread = None
                 not_live = assignment_not_live(running, compiled, edits)
-                if not_live and refusal is not None:
+                # Only Sushi's mappings differ (#210): tried live, after the
+                # write, through elkpy's ConnectCCToParameter, where this
+                # agent's Sushi connection can and the plan allows; a
+                # restart if that fails. Not refused for unsaved work first:
+                # if it is live there is no restart to lose it, and if it
+                # falls back, the restart offered is itself refused until
+                # the work is saved or dropped (`restart_refusal`).
+                cc_plan = None
+                if [r["code"] for r in not_live] == ["midi"] and self._midi_cc_livable():
+                    planned = live_cc_plan(running, compiled, edits)
+                    if isinstance(planned, tuple):
+                        cc_plan = planned
+                    else:
+                        not_live.append({"code": "midi_live", "detail": planned})
+                if not_live and cc_plan is None and refusal is not None:
                     raise RigFileRefused(*refusal)
                 # The run as it was read under the locks, still the one up:
                 # a write the route stopped waiting for (504) may get here
@@ -4660,31 +4706,29 @@ class Agent:
                     # names what the rig has: the running config keeps saying
                     # what Sushi loaded, with the edited file's bindings and
                     # the controller they are read from.
-                    updated = copy.deepcopy(running)
-                    updated.pop(AGENT_BINDINGS, None)
-                    if compiled.get(AGENT_BINDINGS):
-                        updated[AGENT_BINDINGS] = copy.deepcopy(compiled[AGENT_BINDINGS])
-                    meta = dict(updated.get("_meta") or {}) if isinstance(updated.get("_meta"), dict) else {}
-                    meta.pop(MIDI_CONTROLLER, None)
-                    if MIDI_CONTROLLER in (compiled.get("_meta") or {}):
-                        meta[MIDI_CONTROLLER] = compiled["_meta"][MIDI_CONTROLLER]
-                    updated["_meta"] = meta
-                    try:
-                        written = self.switching.write_config(path.stem, updated)
-                        now = self.switching.read_state() or state
-                        # Again, just before: a switch landing since the
-                        # check above must not have its run pointed at this
-                        # rig's config.
-                        if run_changed(state, now):
-                            outcome["stale"] = True
-                        elif str(written) != str(now.get("config")):
-                            self.switching.write_state({**now, "config": str(written)})
-                    except Exception as exc:  # noqa: BLE001 -- the file is written; the restart plays it
-                        not_live = [{"code": "unrecorded",
-                                     "detail": (f"the file is written, but recording the running rig's bindings "
-                                                f"failed: {type(exc).__name__}: {exc}")}]
+                    unrecorded = record(running_with_map(running, compiled, midi=False))
+                    if unrecorded:
+                        not_live = [unrecorded]
                 return {"change": change, "compiled": compiled, "not_live": not_live, "unread": unread,
-                        "assignments": rigedit.midi_of(edited)}
+                        "assignments": rigedit.midi_of(edited), "cc_plan": cc_plan, "running": running}
+
+            def record(updated: dict[str, Any]) -> dict[str, str] | None:
+                """Write `updated` as the running config, and point the
+                state file at it; a reason when that failed."""
+                try:
+                    written = self.switching.write_config(path.stem, updated)
+                    now = self.switching.read_state() or state
+                    # Again, just before: a switch landing since the check
+                    # above must not have its run pointed at this rig's config.
+                    if run_changed(state, now):
+                        outcome["stale"] = True
+                    elif str(written) != str(now.get("config")):
+                        self.switching.write_state({**now, "config": str(written)})
+                except Exception as exc:  # noqa: BLE001 -- the file is written; the restart plays it
+                    return {"code": "unrecorded",
+                            "detail": (f"the file is written, but recording the running rig's bindings "
+                                       f"failed: {type(exc).__name__}: {exc}")}
+                return None
 
             try:
                 done = await self._rigfile_thread(request, path, work)
@@ -4693,6 +4737,16 @@ class Agent:
                 # config: once it is over, the listener follows what it left.
                 self._midi_sync_when(finished, outcome)
                 raise
+        if done.get("cc_plan") is not None and not outcome.get("stale"):
+            # Sushi's mappings, live (#210), the file already written: the
+            # running config records them only once Sushi has taken them.
+            failure = await self._midi_cc_live(request, *done["cc_plan"])
+            if failure is None:
+                unrecorded = await asyncio.to_thread(
+                    record, running_with_map(done["running"], done["compiled"], midi=True))
+                done["not_live"] = [unrecorded] if unrecorded else []
+            else:
+                done["not_live"].append({"code": "midi_live", "detail": failure})
         shown = self._save_shown(path)
         change = done["change"]
         what = f"{change['control']}: {rigedit.said_assignment(change['binding'], change['target'])}"
@@ -4705,9 +4759,12 @@ class Agent:
             return answer
         if not done["not_live"]:
             await self._midi_sync()
+            how = ("Sushi took the pedal's mapping live (not yet heard on a real Sushi: if it does not answer, "
+                   "restart the rig)" if done.get("cc_plan") is not None
+                   else "only the agent's bindings changed, and the listener serves them")
             answer.update(how="live", takes_effect="now", offer=None, why=[],
                           note=(f"{shown} was updated in place, with its comments; it is not committed. {what} "
-                                "plays now: only the agent's bindings changed, and the listener serves them"))
+                                f"plays now: {how}"))
             return answer
         why = [r for r in done["not_live"] if r["code"] != "midi"]
         why += await self._rigfile_restart_why(run, done["compiled"])
@@ -4720,6 +4777,73 @@ class Agent:
                 f"{path.stem} restarts ({'; '.join(r['code'] + ': ' + r['detail'] for r in why) or 'a restart reloads the file'}); "
                 "until then the pedals do what they did").split()))
         return answer
+
+    def _midi_cc_livable(self) -> bool:
+        """Whether this agent's Sushi connection can map a CC live (#210):
+        `Live.connect_cc` and its siblings, which a stand-in may lack."""
+        return all(callable(getattr(self.live, name, None))
+                   for name in ("connect_cc", "disconnect_cc", "cc_connections"))
+
+    async def _midi_cc_live(self, origin, removes: list[dict[str, Any]],
+                            adds: list[dict[str, Any]]) -> str | None:
+        """Take the running Sushi's CC mappings from what the running config
+        says to what the edited file compiles to (#210), on one connection
+        under the live lock: each of `removes` disconnected, each of `adds`
+        connected, then Sushi's own list read back and checked. None when
+        it is done; otherwise why not, with what was done undone as far as
+        Sushi lets it, so the caller falls back to the restart.
+
+        UNVERIFIED on a real Sushi (live.py's "A pedal's mapping, live"):
+        the fake rig cannot show that Sushi 1.3.0 honours these calls. The
+        read-back is what keeps a call Sushi accepts and ignores from being
+        answered as live."""
+        done: list[tuple[str, dict[str, Any]]] = []
+
+        def said(mapping: dict[str, Any]) -> str:
+            return f"cc {mapping.get('cc_number')} to {mapping.get('plugin_name')}'s {mapping.get('parameter_name')}"
+
+        try:
+            async with self._connected(origin) as controller:
+                async with self._live_lock:
+                    try:
+                        for mapping in removes:
+                            await self._sushi(origin, self.live.disconnect_cc, controller, mapping, reading=False)
+                            done.append(("removed", mapping))
+                        for mapping in adds:
+                            await self._sushi(origin, self.live.connect_cc, controller, mapping, reading=False)
+                            done.append(("added", mapping))
+                        held = await self._sushi(origin, self.live.cc_connections, controller, reading=True)
+                        keys = {(h.get("plugin_name"), h.get("parameter_name"), h.get("cc_number"), h.get("port"),
+                                 h.get("channel")) for h in held or []}
+
+                        def key(m: dict[str, Any]) -> tuple:
+                            channel = m.get("channel")
+                            return (m.get("plugin_name"), m.get("parameter_name"), m.get("cc_number"),
+                                    m.get("port", 0), channel if isinstance(channel, int) else "all")
+
+                        absent = [said(m) for m in adds if key(m) not in keys]
+                        left = [said(m) for m in removes if key(m) in keys]
+                        if absent or left:
+                            raise MidiError("Sushi's own list of its CC mappings does not show the change ("
+                                            + "; ".join([f"{w} not there" for w in absent]
+                                                        + [f"{w} still there" for w in left]) + ")")
+                    except BaseException:
+                        for what, mapping in reversed(done):
+                            undo = self.live.connect_cc if what == "removed" else self.live.disconnect_cc
+                            try:
+                                await self._sushi(origin, undo, controller, mapping, reading=False)
+                            except Exception as again:  # noqa: BLE001 -- said; the restart puts it right
+                                self._midi_say(f"undoing a live CC mapping ({said(mapping)}) failed: {again}")
+                        raise
+        except web.HTTPException as exc:
+            failure = exc.reason
+        except Exception as exc:  # noqa: BLE001 -- the restart is the fallback, said with why
+            failure = str(exc) if isinstance(exc, (AgentError, MidiError, LiveError)) else f"{type(exc).__name__}: {exc}"
+        else:
+            return None
+        failure = " ".join(f"Sushi did not take the pedal's mapping live ({failure})".split())
+        self._midi_say(failure)
+        return failure
 
     def _midi_sync_when(self, finished: asyncio.Event, outcome: dict[str, Any]) -> None:
         """Once `finished` is set, under the lifecycle lock, make the listener
@@ -8396,13 +8520,7 @@ def assignment_not_live(running: dict[str, Any] | None, compiled: dict[str, Any]
     reasons = []
     if (running.get("midi") or {}) != (compiled.get("midi") or {}):
         reasons.append({"code": "midi", "detail": "the cc_mappings (Sushi's midi section) differ"})
-    on = set()
-    for track in running.get("tracks") or []:
-        if isinstance(track, dict):
-            on.add(track.get("name"))
-            on.update(p.get("name") for p in track.get("plugins") or [] if isinstance(p, dict))
-    on -= set((edits or {}).get("removed") or {})
-    on |= set((edits or {}).get("added") or {})
+    on = _on_the_running_rig(running, edits)
     missing = []
     for binding in compiled.get(AGENT_BINDINGS) or []:
         if not isinstance(binding, dict):
@@ -8422,6 +8540,95 @@ def assignment_not_live(running: dict[str, Any] | None, compiled: dict[str, Any]
             f"{', '.join(missing)} {'is' if len(missing) == 1 else 'are'} in the file but not on the running rig "
             "(added to the file since it started, or taken out live): the restart plays the file")})
     return reasons
+
+
+def _on_the_running_rig(running: dict[str, Any], edits: dict[str, Any] | None) -> set:
+    """The tracks and processors the running config has, less those removed
+    and plus those added live since (`live_edits`). Pure."""
+    on = set()
+    for track in running.get("tracks") or []:
+        if isinstance(track, dict):
+            on.add(track.get("name"))
+            on.update(p.get("name") for p in track.get("plugins") or [] if isinstance(p, dict))
+    on -= set((edits or {}).get("removed") or {})
+    on |= set((edits or {}).get("added") or {})
+    return on
+
+
+def live_cc_plan(running: dict[str, Any], compiled: dict[str, Any], edits: dict[str, Any] | None,
+                 ) -> tuple[list[dict[str, Any]], list[dict[str, Any]]] | str:
+    """How to take the running Sushi's cc_mappings to the edited file's live
+    (#210): `(removes, adds)`, each a list of cc_mappings entries, or why it
+    cannot be done live. Pure.
+
+    Not live where Sushi did not open the MIDI input a mapping is on (it
+    opens `midi_inputs` only at start, 1 without the key: Sushi's port 0
+    was there for a rig with none, the laptop, 2026-11-23), or where a
+    mapping's processor is not on the running rig."""
+    def key(mapping: dict[str, Any]) -> str:
+        return json.dumps(mapping, sort_keys=True)
+
+    was = [m for m in ((running.get("midi") or {}).get("cc_mappings") or []) if isinstance(m, dict)]
+    now = [m for m in ((compiled.get("midi") or {}).get("cc_mappings") or []) if isinstance(m, dict)]
+    removes = [m for m in was if key(m) not in {key(n) for n in now}]
+    adds = [m for m in now if key(m) not in {key(n) for n in was}]
+    opened = (running.get("host_config") or {}).get("midi_inputs") or 1
+    beyond = sorted({m.get("port", 0) for m in adds if not isinstance(m.get("port", 0), int)
+                     or m.get("port", 0) >= opened}, key=str)
+    if beyond:
+        return (f"the map is on Sushi's MIDI input {', '.join(map(str, beyond))}, and the running Sushi opened "
+                f"{opened} at its start")
+    on = _on_the_running_rig(running, edits)
+    missing = sorted({str(m.get("plugin_name")) for m in adds} - {str(n) for n in on})
+    if missing:
+        return f"{', '.join(missing)} is not on the running rig, so Sushi cannot map a CC to it until it restarts"
+    return removes, adds
+
+
+def running_with_map(running: dict[str, Any], compiled: dict[str, Any], *, midi: bool) -> dict[str, Any]:
+    """The running config as it is after an assignment applied live (#192,
+    #210): what Sushi loaded, with the edited file's bindings for the agent
+    and the controller they are read from, and, with `midi`, the cc_mappings
+    now made live as its `midi` section (the host stays what Sushi opened).
+    Pure."""
+    from .rigfile import AGENT_BINDINGS, MIDI_CONTROLLER
+
+    updated = copy.deepcopy(running)
+    updated.pop(AGENT_BINDINGS, None)
+    if compiled.get(AGENT_BINDINGS):
+        updated[AGENT_BINDINGS] = copy.deepcopy(compiled[AGENT_BINDINGS])
+    meta = dict(updated.get("_meta") or {}) if isinstance(updated.get("_meta"), dict) else {}
+    meta.pop(MIDI_CONTROLLER, None)
+    if MIDI_CONTROLLER in (compiled.get("_meta") or {}):
+        meta[MIDI_CONTROLLER] = compiled["_meta"][MIDI_CONTROLLER]
+    updated["_meta"] = meta
+    if midi:
+        updated.pop("midi", None)
+        if compiled.get("midi"):
+            updated["midi"] = copy.deepcopy(compiled["midi"])
+        # Sushi opens one MIDI input without `midi_inputs`; a file that now
+        # asks for no more than it opened is what runs, and says so, so the
+        # next switch does not read a host change that is not one.
+        host = updated.get("host_config") if isinstance(updated.get("host_config"), dict) else None
+        wanted = (compiled.get("host_config") or {}).get("midi_inputs")
+        if host is not None and isinstance(wanted, int) and wanted <= (host.get("midi_inputs") or 1):
+            updated["host_config"] = {**host, "midi_inputs": max(wanted, host.get("midi_inputs") or 1)}
+    return updated
+
+
+def map_behind(running: dict[str, Any] | None, compiled: dict[str, Any] | None) -> dict[str, Any] | None:
+    """Whether the running rig's pedal mappings are behind its file (#210):
+    `{"midi": bool, "agent": bool}` saying which half differs between the
+    running config and a compile of the file as it is now, or None where
+    either could not be read. Pure: Sushi's cc_mappings (`midi`), and the
+    agent's bindings (`agent`, which an assignment applies at once, so it
+    differs only after an edit by hand)."""
+    from .rigfile import AGENT_BINDINGS
+
+    if not isinstance(running, dict) or not isinstance(compiled, dict):
+        return None
+    return {"midi": (running.get("midi") or {}) != (compiled.get("midi") or {}),
+            "agent": (running.get(AGENT_BINDINGS) or []) != (compiled.get(AGENT_BINDINGS) or [])}
 
 
 def restart_refusal(

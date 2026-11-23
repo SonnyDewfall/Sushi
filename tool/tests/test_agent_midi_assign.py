@@ -876,3 +876,191 @@ def test_a_pedal_that_cannot_be_linked_says_not_linked_and_why(served):
     assert "not plugged in" in midi_health(served)["feeds"][0]["link"]
     served.pedals.plugged = True  # hot-plugged: linked again
     until(lambda: midi_health(served)["feeds"][0]["linked_to_sushi"] is True, what="relinked")
+
+
+# --------------------------------------------------------------------------- #
+# #210: Sushi's mappings applied live, where the connection can, else a restart
+# --------------------------------------------------------------------------- #
+
+class LiveCC:
+    """A Sushi connection that maps CCs live, as `Live.connect_cc` and its
+    siblings are meant to on a real Sushi (unverified there): `held` is
+    Sushi's own list, `fail` makes a connect fail, and `ignore` makes Sushi
+    accept a connect and not list it (the read-back's case)."""
+
+    def __init__(self, rig, start=()):
+        self.held = [dict(m) for m in start]
+        self.calls: list = []
+        self.fail = None
+        self.ignore = False
+        rig.connect_cc, rig.disconnect_cc, rig.cc_connections = self.connect, self.disconnect, self.read
+
+    @staticmethod
+    def key(m):
+        return (m["plugin_name"], m["parameter_name"], m["cc_number"], m.get("port", 0), m.get("channel"))
+
+    def connect(self, controller, mapping):
+        self.calls.append(("connect", mapping["plugin_name"], mapping["cc_number"]))
+        if self.fail:
+            raise RuntimeError(self.fail)
+        if not self.ignore:
+            self.held.append(dict(mapping))
+
+    def disconnect(self, controller, mapping):
+        self.calls.append(("disconnect", mapping["plugin_name"], mapping["cc_number"]))
+        self.held = [m for m in self.held if self.key(m) != self.key(mapping)]
+
+    def read(self, controller):
+        return [dict(m) for m in self.held]
+
+
+def midi_of_midi_route(s):
+    return ask(s, "GET", "/midi")[1]
+
+
+def test_a_pedal_on_a_volume_plays_now_where_sushi_takes_the_mapping_live(served):
+    """With a connection that maps CCs live, the volume's cc_mapping goes to
+    Sushi at once, the running config records it (and the agent's heel
+    binding beside it), the listener serves the heel now, and /midi says the
+    running map is not behind the file."""
+    sushi = LiveCC(served.rig)
+    listening(served)
+    status, body = assign(served, control="pedal", volume="vocal")
+    assert status == 200 and body["how"] == "live" and body["offer"] is None, body
+    assert "not yet heard on a real Sushi" in body["note"]
+    assert sushi.calls == [("connect", "vocal_send", 7)]
+    (mapping,) = served.save.config["midi"]["cc_mappings"]
+    assert (mapping["plugin_name"], mapping["parameter_name"], mapping["cc_number"]) == ("vocal_send", "gain", 7)
+    assert served.save.config["host_config"]["midi_inputs"] == 1
+    until(lambda: any("silence vocal" in b for b in midi_health(served)["bindings"]), what="the heel binding")
+    assert midi_of_midi_route(served)["behind"] == {"midi": False, "agent": False, "restart": False}
+    # Taken off again: disconnected live, and the config says so.
+    status, body = assign(served, control="pedal", none=True)
+    assert status == 200 and body["how"] == "live", body
+    assert sushi.calls[-1] == ("disconnect", "vocal_send", 7) and sushi.held == []
+    assert not (served.save.config.get("midi") or {}).get("cc_mappings")
+
+
+def test_a_mapping_sushi_will_not_take_live_falls_back_to_the_restart_offer(served):
+    sushi = LiveCC(served.rig)
+    sushi.fail = "Sushi refused: no such parameter"
+    listening(served)
+    running_before = json.loads(json.dumps(served.save.config))
+    status, body = assign(served, control="pedal", volume="vocal")
+    assert status == 200 and body["how"] == "restart" and body["offer"] == "restart", body
+    live = [r for r in body["why"] if r["code"] == "midi_live"]
+    assert live and "Sushi refused: no such parameter" in live[0]["detail"], body["why"]
+    assert served.save.config == running_before, "the running config still says what Sushi loaded"
+    assert rig_midi(served) == {"controller": "fbv", "controls": [{"control": "pedal", "volume": "vocal"}]}
+    assert midi_of_midi_route(served)["behind"] == {"midi": True, "agent": True, "restart": True}
+    assert ask(served, "POST", "/rig/restart")[0] == 200
+    assert midi_of_midi_route(served)["behind"] == {"midi": False, "agent": False, "restart": False}
+
+
+def test_a_mapping_sushi_accepts_and_does_not_list_is_undone_and_a_restart(served):
+    """The read-back is what tells a call Sushi took and ignored from one it
+    honoured: not there, so undone and answered as the restart."""
+    sushi = LiveCC(served.rig)
+    sushi.ignore = True
+    listening(served)
+    status, body = assign(served, control="pedal", volume="vocal")
+    assert status == 200 and body["how"] == "restart", body
+    assert any("does not show the change" in r["detail"] for r in body["why"] if r["code"] == "midi_live")
+    assert sushi.calls == [("connect", "vocal_send", 7), ("disconnect", "vocal_send", 7)]
+
+
+def test_without_a_live_mapping_the_volume_still_waits_for_unsaved_work(served):
+    """No live seam (the stand-in has none, as an agent whose connection
+    lacks it): the old answer, refused until the knob turns are saved."""
+    listening(served)
+    assert ask(served, "POST", "/live/parameter", {"processor": "overdrive", "parameter": "Drive", "value": 0.4})[0] == 200
+    status, answer = assign(served, control="pedal", volume="vocal")
+    assert status == 409 and answer["code"] == "unsaved", answer
+    LiveCC(served.rig)
+    status, answer = assign(served, control="pedal", volume="vocal")
+    assert status == 200 and answer["how"] == "live", "live, there is no restart to lose the work"
+
+
+def test_midi_says_the_running_map_is_behind_a_file_edited_for_the_restart(served):
+    """A map written into the file by hand (or by an assignment that could
+    not be live): /midi says the running rig's mappings are behind it, and
+    that a restart is what brings Sushi's half in."""
+    listening(served)
+    assert midi_of_midi_route(served)["behind"] == {"midi": False, "agent": False, "restart": False}
+    path = served.save.root / "config" / "rigs" / f"{RIG}.yaml"
+    path.write_text(path.read_text() + "midi:\n  controller: fbv\n  controls:\n  - {control: pedal, volume: vocal}\n")
+    assert midi_of_midi_route(served)["behind"] == {"midi": True, "agent": True, "restart": True}
+
+
+def test_a_mapping_is_planned_live_only_on_an_input_sushi_opened_and_a_processor_it_has():
+    from sushi_rig.agent import live_cc_plan, map_behind
+
+    on = {"name": "vocal_send"}
+    running = {"host_config": {"samplerate": 48000}, "tracks": [{"name": "vocal", "plugins": [on]}]}
+    mapping = {"port": 0, "channel": 0, "cc_number": 7, "plugin_name": "vocal_send", "parameter_name": "gain",
+               "min_range": 0.5, "max_range": 0.8, "mode": "absolute"}
+    assert live_cc_plan(running, {"midi": {"cc_mappings": [mapping]}}, {}) == ([], [mapping])
+    said = live_cc_plan(running, {"midi": {"cc_mappings": [dict(mapping, port=1)]}}, {})
+    assert said == "the map is on Sushi's MIDI input 1, and the running Sushi opened 1 at its start"
+    said = live_cc_plan(running, {"midi": {"cc_mappings": [dict(mapping, plugin_name="hall")]}}, {})
+    assert "hall is not on the running rig" in said
+    assert live_cc_plan(running, {"midi": {"cc_mappings": [dict(mapping, plugin_name="hall")]}},
+                        {"added": {"hall": {}}}) == ([], [dict(mapping, plugin_name="hall")]), "added live"
+    moved = dict(mapping, cc_number=11)
+    assert live_cc_plan({**running, "midi": {"cc_mappings": [mapping]}},
+                        {"midi": {"cc_mappings": [moved]}}, {}) == ([mapping], [moved])
+    assert map_behind(None, {}) is None
+    assert map_behind({"midi": {"cc_mappings": [mapping]}}, {}) == {"midi": True, "agent": False}
+
+
+# --------------------------------------------------------------------------- #
+# #210: a rig's midi: kept by Save, Save as and a switch
+# --------------------------------------------------------------------------- #
+
+def test_save_in_place_keeps_the_files_midi_and_its_comments(mapped):
+    listening(mapped)
+    before = rig_midi(mapped)
+    assert ask(mapped, "POST", "/live/parameter", {"processor": "overdrive", "parameter": "Drive", "value": 0.4})[0] == 200
+    status, answer = ask(mapped, "POST", "/rig/save", {})
+    assert status == 200 and answer["ok"], answer
+    assert rig_midi(mapped) == before
+    assert "controller: fbv   # the board on the floor" in rig_text(mapped)
+    assert re.search(r"- \{control: d, mute: vocal\} +# D: the vocal", rig_text(mapped)), rig_text(mapped)
+
+
+def test_save_as_writes_the_midi_into_the_new_file_and_leaves_the_old_ones(mapped, real_compile):
+    listening(mapped)
+    before = rig_midi(mapped)
+    status, answer = ask(mapped, "POST", "/rig/save", {"name": "foo"})
+    assert status == 200 and answer["ok"], answer
+    saved = yaml.safe_load((mapped.save.root / "config" / "rigs" / "foo.yaml").read_text())
+    assert saved["midi"] == before, "the new rig keeps the map"
+    assert rig_midi(mapped) == before, "and the rig saved from keeps its own"
+    # The run, renamed foo, still serves the map it was started with.
+    listening(mapped)
+    assert midi_health(mapped)["rig"] == "foo"
+    assert any(b.startswith("c: cc 22") for b in midi_health(mapped)["bindings"]), midi_health(mapped)["bindings"]
+
+
+def test_a_switch_compiles_the_next_rigs_map_into_what_it_runs_and_writes_no_rig_file(tmp_path):
+    """What a switch runs is `compile_named_rig` of the next rig (#93): its
+    map is in it (Sushi's cc_mappings, the agent's bindings, the controller
+    in `_meta`), and no rig file is written by it, so the next save starts
+    from the file's own midi:."""
+    import socket
+
+    from sushi_rig.rig import compile_named_rig
+    from ui_fake import MACHINE_FILE
+
+    rigs = tmp_path / "config" / "rigs"
+    rigs.mkdir(parents=True)
+    (rigs / "mapped.yaml").write_text(BOTH)
+    machine = tmp_path / "machines" / f"{socket.gethostname()}.yaml"
+    machine.parent.mkdir()
+    machine.write_text(MACHINE_FILE + FBV_CONTROLLERS)
+    before = (rigs / "mapped.yaml").read_text()
+    config = compile_named_rig("mapped", tmp_path, machine)
+    assert [m["plugin_name"] for m in config["midi"]["cc_mappings"]] == ["board_send"]
+    assert {b["control"] for b in config[AGENT_BINDINGS]} == {"c", "pedal"}
+    assert config["_meta"]["midi_controller"] == "fbv"
+    assert (rigs / "mapped.yaml").read_text() == before

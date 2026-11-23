@@ -52,12 +52,13 @@ midi:
   - {control: pedal, volume: lead}                 # the pedal is lead's volume: silent at the heel, its level at the toe
 ```
 
-Blend, parameter, volume and a latching switch's mute compile into Sushi's own
-`cc_mappings` and run in the engine with no Python in the path; a blend is two
-mappings on the two channels' sends with their ranges reversed, each channel's
-own level being its loudest. Bypass, a pad on a mute, a momentary or single
-footswitch on a mute, a volume pedal's silence at the heel, rig stepping and rig
-switching by Program Change go through the agent,
+Blend, parameter and volume compile into Sushi's own `cc_mappings` and run in
+the engine with no Python in the path, once the pedal is linked to Sushi's MIDI
+input ([below](#linking-the-pedals-to-sushi-210)); a blend is two mappings on
+the two channels' sends with their ranges reversed, each channel's own level
+being its loudest. Bypass, every mute ([a mute](#a-mute-is-the-channels-send-bypassed-210)),
+a volume pedal's silence at the heel, rig stepping and rig switching by Program
+Change go through the agent,
 which reads them from the compiled config's `_midi_agent` (rig stepping from the
 machine file) and opens the controller's port itself while the rig is up
 (`sushi-rig agent`, with the `midi` extra; see
@@ -113,9 +114,9 @@ while held. So:
   calls them, not what comes out: on the FBV Express MkII its "Momentary" sent
   CC *n* = 0 on a press and CC 0 = 0 on release, which is `single` here.
 - **latching**: the switch is followed. Its effect is on at 64 and above and
-  bypassed below, acting only when the value crosses 64; its mute stays Sushi's
-  own mapping, muted from about half way up; a step goes on each crossing (FBV
-  Control's "Toggle", which alternates 127 and 0).
+  bypassed below, acting only when the value crosses 64; its channel is
+  muted at 64 and above, by the agent, the same way; a step goes on each
+  crossing (FBV Control's "Toggle", which alternates 127 and 0).
 
 A momentary or single press toggles its effect's bypass or its channel's mute,
 or steps the rig. A press within 40 ms of the last one accepted on the same
@@ -125,13 +126,46 @@ wrong one misbehaves in a way that says which it is: a Toggle switch read as
 momentary acts on every other press, and a Single switch read as momentary acts
 once and then not again until a release that never comes, unless it sends 0.
 
-**Sushi's own CC mute follows the value.** A mute in `cc_mappings` is the
-track's `mute` parameter driven as `min + (max - min) * value / 127` in absolute
-mode, as for any parameter (from 1.3.0's `midi_dispatcher.cpp` and
-`json_configurator.cpp`, read on 2026-11-01 for #34). It has no toggle. So a
-momentary or single footswitch on a mute is compiled for the agent instead, which reads
-the track's `mute` and sets the other value. Neither has been heard on the
-rig.
+### A mute is the channel's send bypassed (#210)
+
+`mute: <channel>` bypasses the channel's send (`<channel>_send`, the last
+plugin of every channel, which copies it into the master's return). So the
+master, which is what the monitors hear, has nothing of the channel, and the
+channel's own output, its stem, still plays.
+
+It used to set the track's `mute` parameter, natively in `cc_mappings` for a
+latching switch and through the agent for a press. Sushi 1.3.0 applies a
+track's gain, pan and mute after the track's plugins (`track.cpp`), so after
+the send: only the stem went silent. On the laptop (2026-11-23) the live log
+showed D toggling the octave channel's `mute` 0, 1, 0, 1 and nothing was heard
+to change. The compiler had said so all along for a strip
+(`rigfile._strip_problems`: "acts after its send").
+
+Why the send's bypass, of the three ways Sushi 1.3.0 could do it:
+
+- **The send bypassed**: no new processor, every channel already has one, and
+  a volume pedal on the same channel drives the send's `gain`, which a bypass
+  leaves where it is, so the two never fight. Sushi has no CC-to-bypass
+  mapping, so every mute is the agent's now (a press toggles it, a latching
+  switch or an untyped CC follows its value, muted at 64 and above), and works
+  only with the agent running.
+- A gain processor of the compiler's before each send: it would be heard, but
+  it is a processor in every chain that the save, the live switch, the panel
+  and the page would each have to know is the compiler's, as the copies to
+  stereo are.
+- The master's return: it is the sum of every channel, so it cannot mute one.
+
+**Not yet confirmed on a real Sushi**: that a bypassed send stops sending
+(rather than only passing its input on, which it does either way). The repo's
+records of Sushi say how a bypass ramps (`BypassManager`, 448 frames) but not
+what the send does with it. `tests/test_send_return.py` renders both on Sushi
+1.3.0 offline in the rig container: the track's mute reaching the master as if
+nothing were muted, and the bypassed send sending nothing. If the second fails,
+the mute needs the gain processor instead.
+
+The page has no mute of its own to fix: a channel's volume at **-∞** is the
+send's gain at its floor, which is heard, and the volume of a channel a pedal
+drives is not movable from the page.
 
 ## Previous and next rig, on every rig
 
@@ -247,7 +281,8 @@ curl localhost:8029/midi
  "rig": "electric-clean", "rig_problem": null,
  "assignments": {"controller": "fbv", "port": 0, "programs": null,
    "controls": [{"control": "c", "bypass": "lead/drive"}, {"control": "pedal", "volume": "lead"}]},
- "rigs": ["accustomed", "clean", "..."], "listening": "listening"}
+ "rigs": ["accustomed", "clean", "..."], "listening": "listening",
+ "behind": {"midi": false, "agent": false, "restart": false}}
 ```
 
 - `controllers` lists every controller in the machine file the running rig was
@@ -257,6 +292,8 @@ curl localhost:8029/midi
   null when it has none.
 - `rigs` is the order a step counts through.
 - `listening` is `/health`'s `agent.midi.state`.
+- `behind` says whether the running rig's mappings are behind its file
+  (#210, [above](#assigning-from-the-rack-192)).
 - A machine file that will not read is `machine_problem`, with no controllers.
 
 ## Assigning from the rack (#192)
@@ -277,15 +314,39 @@ refuse:
 - the last control taken off takes the map out with it, unless it has
   `programs`.
 
-A footswitch on a bypass, and a momentary or single one on a mute, are the
-agent's, and play at once, when what they switch is on the running rig: the
-running listeners take the edited file's bindings without stopping, so a
-press on its way or a heel's silencing goes on as it was. One whose effect
-or channel is in the file but not on the rig as it runs (a channel added to
-the file and not yet restarted, a plugin taken out live and not saved) plays
-after a restart, as does anything Sushi maps (a sweep, a volume, a blend, a
-latching footswitch's mute), as an edit of the file by hand would; the page
-offers it.
+A footswitch on a bypass or a mute is the agent's, and plays at once, when
+what it switches is on the running rig: the running listeners take the edited
+file's bindings without stopping, so a press on its way or a heel's silencing
+goes on as it was. One whose effect or channel is in the file but not on the
+rig as it runs (a channel added to the file and not yet restarted, a plugin
+taken out live and not saved) plays after a restart, as an edit of the file by
+hand would; the page offers it.
+
+What Sushi maps (a sweep, a volume, a blend) is tried live (#210): elkpy's
+`MidiController.connect_cc_to_parameter` and `disconnect_cc` take the running
+Sushi's mappings to the edited file's, and Sushi's own list of them
+(`get_all_cc_input_connections`) is read back. Taken, the answer is `how:
+"live"` and the running config records the new `midi` section. Refused, not
+confirmed, or not in the list read back, what was done is undone and the answer
+is the restart it always was, `why` saying `midi_live` and what Sushi said. Not
+tried where the mapping is on a MIDI input Sushi did not open at its start, or
+names a processor the running rig does not have. **Unverified on a real Sushi**:
+whether 1.3.0 honours these calls on a running rig at all (`live.py`, "A
+pedal's mapping, live"); if it does not, every such assignment is the restart.
+
+A restart is refused while the rig holds unsaved changes, and so is an
+assignment that needs one, which the restart would drop: the page offers
+**Save, then assign**, which saves, assigns again and offers the restart. An
+assignment that is tried live is not refused for unsaved work: if it falls
+back, the restart it offers asks for the save itself.
+
+**The file ahead of the rig.** `GET /midi`'s `behind` compares the running
+config with a compile of the rig file as it is now: `{"midi": true, ...}`
+when Sushi's mappings differ, `"agent"` when the agent's bindings do, and
+`"restart": true` when only a restart brings the file's map in (null when
+either cannot be read). The **PEDALS** section offers that restart whenever
+it says so, however the file got ahead (a hand edit, a save, an assignment
+that could not be live).
 
 **The running rig keeps the pedal it started with.** A compiled config with a
 map records its controller (`_meta`'s `midi_controller`), and the listener
@@ -372,27 +433,78 @@ on it), and plugging it back in brings it back without restarting anything.
 The board does not take MIDI from the host over USB (Line 6's guide), so its
 LEDs show only what it sends, never the rig's state. Nothing here sends to it.
 
+## Linking the pedals to Sushi (#210)
+
+Sushi's mappings act only on what reaches Sushi's own MIDI input, and nothing
+linked the pedal to it: the patchbay links audio alone, and the agent reads the
+pedal on a sequencer client of its own. Found on the laptop (2026-11-23): Sushi
+1.3.0, started with `-j` as `up` starts it, is ALSA sequencer client **`Sushi`**,
+its MIDI input port 0 **`listen:in`** (port 1 `read:out` is its output). Its
+client number is given at run time (129 there), so it is linked by name. A
+manual `aconnect "FBV Express Mk II:0" "Sushi:0"` made the volume pedal follow,
+smoothly, from -35 dB to the top.
+
+The agent links it now. Each listener it starts (the rig coming up, a restart,
+a switch) subscribes Sushi's input to the pedal through alsa-midi, as
+`aconnect` does, as soon as both are listed, and again when the pedal is
+plugged in or a Sushi starts (from ALSA's announcements, as for a hot-plugged
+pedal):
+
+- **Which input.** The controller the running rig's map is written for goes to
+  the input its `cc_mappings` name (the map's `port`, 0 unless it says; the
+  host opens `port + 1` inputs, `compile_midi`). Any other controller the agent
+  listens to (the FBV stepping rigs on a rig mapped on the MPD218, or on a rig
+  with no map) goes to input 0, where an assignment made on the rack would be
+  mapped, unless one of its controls sends a CC the running rig's mappings use
+  there on an overlapping channel: Sushi would move that mapping from either
+  device, so it is not linked, and `/health` says which control and CC.
+- **A link already there** (made by hand, or by the agent before) is left as it
+  is and not made twice. One taken down by hand while both ends are still
+  there is left down until the next `up`, restart or switch. The agent never
+  takes a link down: it goes when the pedal or Sushi does.
+- **`/health`**: each of `agent.midi.feeds` has `linked_to_sushi` (true or
+  false) and `link`, why: "linked by the agent: ...", "linked already ...",
+  or "not linked: ..." (the pedal not plugged in, no `Sushi` listed yet, a
+  clash, what ALSA refused). The agent says each change on its stderr. The
+  page's **PEDALS** line says **listening, not linked** while it is not, with
+  the reason as its title.
+- **With the agent not running** nothing is linked by it, and nothing keeps a
+  link across a restart or a replug. `sushi-rig up` with no agent to ask, and
+  `up --direct`, link the rig's own pedal once, after Sushi answers, when
+  Sushi maps something of it (`midi_listener.link_once`, printed as
+  `pedals` under the rig's summary): without it the rig's sweeps and volumes
+  are silent, which is the failure #210 was. Once only, since there is no
+  agent to watch for a replug; the agent, started later, links as it starts
+  listening and leaves that one alone.
+
+Seen on the laptop: the names, and that a link made with `aconnect` works.
+**Not yet run with the agent making it**: `AlsaPort`'s link has been shown
+only against a stand-in for alsa-midi.
+
 ## Not yet verified on the rig
 
-No committed rig carries a map yet, and nothing has been heard from a real
-pedal through the agent. The FBV entry is from `aseqdump` on the laptop
-(2026-11-22): [above](#when-the-fbv-arrives). The machine
-file's MPD218 entry is from `aseqdump` on the rig (2026-11-01): its pads send
-notes on channel 0, a knob sends CC 3 over its full travel, and a held pad also
-sends aftertouch. Still to verify on the rig:
+No committed rig carries a map yet. The FBV entry is from `aseqdump` on the
+laptop (2026-11-22): [above](#when-the-fbv-arrives). The machine file's MPD218
+entry is from `aseqdump` on the rig (2026-11-01): its pads send notes on
+channel 0, a knob sends CC 3 over its full travel, and a held pad also sends
+aftertouch.
 
-- that Sushi counts MIDI channels from 0;
-- the name PipeWire gives Sushi's MIDI input, so the patchbay can link the pedal
-  to it;
-- for the agent's own listener, which counts channels from 0 as ALSA does:
-  - that the machine file's `port` is exactly how the sequencer names the pedal
-    (client, `:`, port, as `aseqdump -l`'s two name columns);
-  - that a footswitch sends what it is written to, and which way round its CC
-    is;
-  - that the agent hears the pedal while PipeWire and Sushi are also subscribed
-    to it;
-- that a pedal on a volume sounds as described, and that the agent's silence at
-  the heel lands after Sushi's floor, as it must;
+Seen on the laptop with the FBV on 2026-11-23 (#210): the agent hears the pedal
+while Sushi is also subscribed to it; the machine file's `port` names it; its
+footswitches and pedal send what the entry says; Sushi counts a mapping's
+channel from 0 (a mapping on channel 0 followed the pedal on the wire's
+channel 0); Sushi's MIDI input is ALSA client `Sushi`, port 0 `listen:in`; and
+a pedal on a volume, linked by hand, followed smoothly. Still to verify:
+
+- that the agent links the pedal itself, at the start, after a restart and a
+  switch, and when it is plugged in (above);
+- that the agent's silence at the heel lands after Sushi's floor, as it must,
+  and that a foot come to rest at 14 to 17 is now silent (the heel at 20);
+- that a mute is heard: the send bypassed silences the channel in the monitors
+  ([a mute](#a-mute-is-the-channels-send-bypassed-210));
+- that Sushi takes a pedal's mapping live (an assignment answered `how:
+  "live"` for a volume or a sweep, and the pedal following it with no
+  restart);
 - that a pedal plugged in or unplugged is announced by ALSA as `AlsaPort`
   expects (shown against a stand-in for alsa-midi only);
 - how long a step that restarts takes;
@@ -405,16 +517,19 @@ What a rig's MIDI map asks of the agent (#34, #93, #191) — a bypass, a pad or 
 momentary footswitch on a mute, Program Change rig switching — and the
 machine's rig-stepping switches, the agent serves while the rig is up, by
 opening each controller's port itself (the port the machine file names, through
-the ALSA sequencer). Sushi does the sweeps, blends, volumes and latching CC
-mutes itself.
+the ALSA sequencer), and links each to Sushi's MIDI input
+([above](#linking-the-pedals-to-sushi-210)). Sushi does the sweeps, blends and
+volumes itself.
 
 - A pad press (note on) toggles its plugin's bypass, exactly as
-  `POST /live/bypass` would; a pad on a mute toggles the channel's `mute`.
+  `POST /live/bypass` would; a pad on a mute toggles the bypass of the
+  channel's send ([a mute](#a-mute-is-the-channels-send-bypassed-210)).
 - A momentary or single footswitch's press toggles its bypass or mute; a
   momentary one's release does nothing, and a bounce within 40 ms is ignored.
 - A pedal on a volume at or below its heel has its channel's send silenced.
-- A latching CC bound to a bypass, and an untyped controller's CC (the
-  MPD218's), is a switch: the effect on at 64 and above and bypassed below,
+- A latching CC bound to a bypass or a mute, and an untyped controller's CC
+  (the MPD218's) on either, is a switch: the effect on, or the channel muted,
+  at 64 and above and the other way below,
   acting only when it crosses 64, so an expression pedal or a chattering
   switch does nothing between crossings.
 - Releases and aftertouch (an MPD218 pad sends it while held) do nothing.
@@ -445,7 +560,8 @@ is restarted. `/health` shows it under `agent.midi`: `listening`, `off` with the
 reason, `absent` (no pedal connected, and none the rig needs missing), or
 `failed` with the problem. `feeds` gives each port's controller, whether the rig
 needs it (`required`), its state (`opening`, `listening`, `absent`, `waiting` or
-`failed`), its reason and its problem; `controller` and `port` are the first's,
+`failed`), its reason and its problem, and whether it is linked to Sushi's
+MIDI input (`linked_to_sushi`, and why: `link`); `controller` and `port` are the first's,
 the rig map's when it has one. `rig_problem` says when the running rig's file
 could not be read to say which pedal its map of sweeps needs: A and B still
 work, but a missing pedal that map needs is then only "not connected". A port that will not open is said once, naming the port, the
@@ -453,5 +569,5 @@ controller and what ALSA does list, and not retried until the next `up` or
 `restart`; a pedal that is only unplugged is waited for instead (above).
 `heard` and `last` (the last message and what it did) are what to
 read when a pedal seems to do nothing. Channels are counted from 0 there, as
-`aseqdump` prints them. **Not yet heard from a real pedal**: see
-[the list above](#not-yet-verified-on-the-rig).
+`aseqdump` prints them. Heard from the FBV on the laptop (2026-11-23); what is
+still to hear is [the list above](#not-yet-verified-on-the-rig).

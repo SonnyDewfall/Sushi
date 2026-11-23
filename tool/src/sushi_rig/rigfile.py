@@ -1098,8 +1098,9 @@ def compile_midi(rig: Rig, controller: dict[str, Any]) -> tuple[dict[str, Any], 
     `min_range + (max_range - min_range) * value / 127`, in the parameter's
     normalised domain, in the engine with no Python in the path. The channel
     is written as the machine file gives it, as Sushi counts it, or "all"
-    (any string is omni to Sushi); whether Sushi counts channels from 0 is
-    not verified yet and is on the rig session's list.
+    (any string is omni to Sushi). Sushi counts them from 0, as ALSA does: a
+    mapping on channel 0 followed the FBV on the wire's channel 0 (the
+    laptop, 2026-11-23, #210).
 
     - **parameter**: one mapping, the control's range.
     - **mute** (#210): the agent's, whatever the control. A channel is muted

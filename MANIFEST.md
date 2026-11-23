@@ -6917,3 +6917,39 @@ may take its samples through `patch:`, which Sushi cannot set; the FBV sends
 only CCs, so the spike plays from a keyboard or the MPD218. A section says how
 we would write our own Linux control app for the pickup if one were needed.
 Nothing is built. *(2026-11-23)*
+
+**The FBV in the rig (#210).** The owner's diagnosis on the laptop with the
+board found four things. (1) Nothing linked a pedal to Sushi's own MIDI input:
+the patchbay links audio only, and the agent reads the pedal on a client of
+its own, so Sushi's `cc_mappings` never heard it; Sushi 1.3.0 with `-j` is
+ALSA client `Sushi`, input port 0 `listen:in`, and `aconnect "FBV Express Mk
+II:0" "Sushi:0"` made a volume pedal follow. Each listener's `AlsaPort` now
+makes that link through alsa-midi, by name, at its open, on a hot-plug and
+when a Sushi starts, leaving a link already there alone; `plan_for` gives
+each feed its Sushi input (the map's controller the port its cc_mappings
+use, any other 0 unless one of its CCs is mapped there already), a map of
+sweeps alone is a feed of its own so it is linked, `/health`'s feeds say
+`linked_to_sushi` and why, the PEDALS line says "listening, not linked", and
+`up` with no agent links the rig's pedal once (`link_once`). (2) An
+assignment of what Sushi maps needed a restart, and the owner was asked only
+to save: the `unsaved` refusal said "save first, then make the edit", and the
+assignment was then made again with its restart offer under the strips. The
+page now offers **Save, then assign**, focuses the restart offer, and
+PEDALS offers the restart whenever `GET /midi`'s new `behind` says the
+running map is behind the file; and an assignment of Sushi's mappings is
+tried live first, through elkpy's `connect_cc_to_parameter` and
+`disconnect_cc`, read back from Sushi's own list, with the restart as the
+fallback. **That live path is unverified on a real Sushi.** (3) A mute set the
+track's `mute`, which Sushi applies after the track's plugins, so after the
+send: only the stem went silent, and D's toggles were in the log and not
+heard. A mute is now the channel's send bypassed, by the agent, for every
+control (Sushi has no CC-to-bypass); the send's gain, a volume pedal's, is not
+touched. Chosen over a gain processor before every send (a compiler-owned
+processor that save, switch, panel and page would all have to know) and the
+master's return (every channel at once). What a bypassed send does is not in
+the repo's records of Sushi; two slow tests in `test_send_return.py` render
+it, and the track mute's failure, on Sushi 1.3.0 in the rig container.
+(4) The heel was 15, and the board comes to rest at 14 to 17 just after a
+move: 35 dB down instead of silent. It is 20 in both machine files. Save,
+Save as and a switch were checked to keep a rig's `midi:` section, and tests
+now hold them to it; nothing there needed fixing. *(2026-11-23)*
