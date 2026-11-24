@@ -218,47 +218,107 @@ def test_offline_a_bypassed_send_still_sends_so_a_render_cannot_show_a_mute(tmp_
 # The mute on a running Sushi: the send's bypass set over gRPC while it plays
 # --------------------------------------------------------------------------- #
 
-# A block of the recordings, for saying what the master did in it: 100 ms.
+# A block of the recording, for saying what the master did in it: 100 ms.
 BLOCK = SR // 10
+# How long each phase of the running test lasts, in wall-clock seconds. The
+# dummy frontend runs faster than real time (about 17 times, here), so each is
+# many seconds of audio; the un-muted one is the longest because it is the one
+# a short recording cut off (#243).
+PLAYING, MUTED, UNMUTED = 0.5, 0.5, 1.5
+# The send's channel parameters are integers from 0 to 16 (MAX_TRACK_CHANNELS,
+# send_plugin.cpp) and the config sets them normalised: 1 is 1/16.
+ONE_CHANNEL = 1 / 16
 
 
 def running_config(tmp_path, sine) -> dict:
     """A channel playing `sine` (Sushi's own wav_streamer, looping) into its
-    send, then a wav_writer recording the channel after the send (its stem);
+    send, as the rig makes it, then a second send, the tap, carrying the
+    channel's left after the first send (its stem) to the master's right;
     the master's return, then a wav_writer recording what the master hears.
-    Both recordings start with the engine, so their frames line up."""
+
+    One recording, so the stem and the master are on one timeline. With the
+    stem on a wav_writer of its own (as this was until #243), the two
+    recordings drift apart: in 402 runs here, 42 ended with the stem and the
+    master out of line, and in 6 of them that came early enough that the
+    master's last phase never compared as a copy (out by 272 to 576 frames,
+    as near as the sine's 1200-frame repeat lets it be said). Why, read in
+    Sushi 1.3.0's source and not isolated: the dummy frontend runs as fast
+    as it can, and a wav_writer pushes each chunk into a ring buffer that a
+    worker empties, losing a chunk that does not fit, so each writer loses
+    its own. `sine` plays on its left only: the master's left is then the
+    send's copy alone (its right carries nothing), and its right the stem
+    alone (the send adds zeros there)."""
     channel = {"name": "channel", "channels": 2, "inputs": [], "outputs": [], "plugins": [
         {"uid": "sushi.testing.wav_streamer", "name": "channel_src", "type": "internal"},
         {"uid": "sushi.testing.send", "name": "channel_send", "type": "internal"},
-        {"uid": "sushi.testing.wav_writer", "name": "stem_rec", "type": "internal"}]}
+        {"uid": "sushi.testing.send", "name": "channel_tap", "type": "internal"}]}
     master = {"name": "master", "channels": 2, "inputs": [], "outputs": [], "plugins": [
         {"uid": "sushi.testing.return", "name": "master_return", "type": "internal"},
         {"uid": "sushi.testing.wav_writer", "name": "master_rec", "type": "internal"}]}
-    record = lambda name: {"processor": name, "properties": {"destination_file": str(tmp_path / name)},  # noqa: E731
-                           "parameters": {"recording": 1.0}}
     return {"host_config": {"samplerate": SR}, "tracks": [channel, master], "initial_state": [
         {"processor": "channel_send", "properties": {"destination_name": "master_return"}},
+        {"processor": "channel_tap", "properties": {"destination_name": "master_return"},
+         "parameters": {"start_channel": 0.0, "channel_count": ONE_CHANNEL, "dest_channel": ONE_CHANNEL}},
         {"processor": "channel_src", "properties": {"file": str(sine)}, "parameters": {"loop": 1.0, "playing": 1.0}},
-        record("stem_rec"), record("master_rec")]}
+        {"processor": "master_rec", "properties": {"destination_file": str(tmp_path / "master_rec")},
+         "parameters": {"recording": 1.0}}]}
 
 
-def what_the_master_did(master, stem) -> list[str]:
-    """Each 100 ms block where the stem plays, as the master had it: "copy"
-    (the stem exactly), "muted" (nothing), or "between" (a bypass ramping),
-    with runs of one kind said once and the "between"s left out. A block
-    where the stem itself is silent says nothing: the streamer leaves a gap
-    after its first loop, and may fall behind a frontend running faster
-    than real time, which is the streamer's and not the mute's."""
+def master_blocks(master) -> list[str]:
+    """Each 100 ms block of the master's recording, on its own timeline: the
+    send's copy on the left, the stem on the right. "copy" (the left is the
+    stem exactly), "muted" (the left has nothing of it), "between" (a bypass
+    ramping), or "quiet" where the stem itself is silent, which says
+    nothing: the streamer leaves a gap after its first loop, and may fall
+    behind a frontend running faster than real time, which is the
+    streamer's and not the mute's."""
+    kinds = []
+    for start in range(0, len(master) - BLOCK + 1, BLOCK):
+        sent, stem = master[start:start + BLOCK, 0], master[start:start + BLOCK, 1]
+        kinds.append("quiet" if np.max(np.abs(stem)) < 0.25 else
+                     "copy" if np.max(np.abs(sent - stem)) < EXACT else
+                     "muted" if np.max(np.abs(sent)) < EXACT else "between")
+    return kinds
+
+
+def what_the_master_did(kinds: list[str]) -> list[str]:
+    """`master_blocks` with runs of one kind said once and the "quiet"s and
+    "between"s left out."""
     said: list[str] = []
-    for start in range(0, min(len(master), len(stem)) - BLOCK + 1, BLOCK):
-        m, s = master[start:start + BLOCK], stem[start:start + BLOCK]
-        if np.max(np.abs(s)) < 0.25:
-            continue
-        kind = ("copy" if np.max(np.abs(m - s)) < EXACT else
-                "muted" if np.max(np.abs(m)) < EXACT else "between")
-        if kind != "between" and (not said or said[-1] != kind):
+    for kind in kinds:
+        if kind in ("copy", "muted") and (not said or said[-1] != kind):
             said.append(kind)
     return said
+
+
+def runs(kinds: list[str]) -> str:
+    """The blocks as runs, for a failure to say how long each phase was."""
+    out: list[list] = []
+    for kind in kinds:
+        if out and out[-1][0] == kind:
+            out[-1][1] += 1
+        else:
+            out.append([kind, 1])
+    return ", ".join(f"{kind} {n}" for kind, n in out)
+
+
+def test_the_master_is_read_on_its_own_timeline():
+    """The classifier, on a made-up recording: the stem's gap and a ramp
+    say nothing, and a phase is a copy only where the left is the right."""
+    n = BLOCK
+    tone = 0.5 * np.sin(2 * np.pi * 440 * np.arange(10 * n) / SR)
+    stem = tone.copy()
+    stem[n:2 * n] = 0.0                      # the streamer's gap
+    sent = stem.copy()
+    sent[4 * n:7 * n] = 0.0                  # the mute
+    sent[7 * n:8 * n] *= np.linspace(0, 1, n)  # its ramp back
+    kinds = master_blocks(np.stack([sent, stem], axis=1))
+    assert kinds == ["copy", "quiet", "copy", "copy", "muted", "muted", "muted", "between", "copy", "copy"]
+    assert what_the_master_did(kinds) == ["copy", "muted", "copy"]
+    assert runs(kinds).startswith("copy 1, quiet 1, copy 2, muted 3")
+    # A left that is the stem a little late is not a copy.
+    late = np.concatenate([np.zeros(7), stem[:-7]])
+    assert "copy" not in master_blocks(np.stack([late, stem], axis=1))
 
 
 @needs_sushi
@@ -268,10 +328,17 @@ def test_on_a_running_sushi_a_bypassed_send_sends_nothing_and_the_stem_plays_on(
     running (its dummy frontend, which processes on its own thread, faster
     than real time), the send's bypass set and cleared over gRPC by
     `live.set_live_bypass`, the call the agent's mute makes, while a sine
-    plays. The master is the stem exactly until the bypass, nothing at all
-    while it holds, and the stem exactly again once it is cleared; the stem
-    plays throughout. Seen with the release AppImage by hand first
-    (2026-11-23): 23 s of audio silent on the master, then back."""
+    plays, and read back by `live.read_live_bypass` after each change. The
+    master is the stem exactly until the bypass, nothing at all while it
+    holds, and the stem exactly again once it is cleared; the stem plays
+    throughout. Seen with the release AppImage by hand first (2026-11-23):
+    23 s of audio silent on the master, then back.
+
+    #243: this failed once in CI with the master's last phase missing. Run
+    402 times here as it stood, Sushi took every bypass and un-bypass (read
+    back at once and 0.2 s later, and the master's own recording playing
+    again after the mute in all 402); the 6 failures were the stem's and the
+    master's recordings drifting apart, which `running_config` now avoids."""
     import glob
     import socket
     import subprocess
@@ -282,7 +349,8 @@ def test_on_a_running_sushi_a_bypassed_send_sends_nothing_and_the_stem_plays_on(
 
     seconds = np.arange(SR) / SR
     sine = tmp_path / "sine.wav"
-    signals.write_wav(sine, np.stack([0.5 * np.sin(2 * np.pi * 440 * seconds)] * 2, axis=1), SR)
+    tone = 0.5 * np.sin(2 * np.pi * 440 * seconds)
+    signals.write_wav(sine, np.stack([tone, np.zeros_like(tone)], axis=1), SR)
     config = tmp_path / "running.json"
     config.write_text(json.dumps(running_config(tmp_path, sine)))
     with socket.socket() as sock:
@@ -301,15 +369,16 @@ def test_on_a_running_sushi_a_bypassed_send_sends_nothing_and_the_stem_plays_on(
                 assert proc.poll() is None, f"Sushi exited {proc.returncode} before its gRPC answered"
                 assert time.monotonic() < deadline, "Sushi's gRPC never answered"
                 time.sleep(0.1)
-        time.sleep(0.5)  # playing, not muted: the control
+        time.sleep(PLAYING)  # playing, not muted: the control
         assert live.read_live_bypass("channel_send", address)["bypassed"] is False
         live.set_live_bypass("channel_send", True, address)
-        assert live.read_live_bypass("channel_send", address)["bypassed"] is True
-        time.sleep(0.5)  # muted
+        assert live.read_live_bypass("channel_send", address)["bypassed"] is True, "the bypass did not take"
+        time.sleep(MUTED)
         live.set_live_bypass("channel_send", False, address)
-        time.sleep(0.5)  # un-muted
-        for name in ("stem_rec", "master_rec"):
-            live.set_live_parameter(name, "recording", 0.0, address)
+        assert live.read_live_bypass("channel_send", address)["bypassed"] is False, "the un-bypass did not take"
+        time.sleep(UNMUTED)
+        assert live.read_live_bypass("channel_send", address)["bypassed"] is False, "the un-bypass did not hold"
+        live.set_live_parameter("master_rec", "recording", 0.0, address)
         time.sleep(0.3)
     finally:
         proc.terminate()
@@ -319,17 +388,15 @@ def test_on_a_running_sushi_a_bypassed_send_sends_nothing_and_the_stem_plays_on(
             proc.kill()
             proc.wait(5)
     (master_file,) = glob.glob(str(tmp_path / "master_rec*.wav"))
-    (stem_file,) = glob.glob(str(tmp_path / "stem_rec*.wav"))
     master = signals.read_wav(master_file).samples
-    stem = signals.read_wav(stem_file).samples
     assert len(master) > 4 * SR, f"too little was recorded to say anything ({len(master)} frames)"
-    said = what_the_master_did(master, stem)
-    assert said[:1] == ["copy"], f"the send did not reach the master before the mute: {said}"
-    assert "muted" in said, f"the master heard a bypassed send: {said}"
-    assert said == ["copy", "muted", "copy"], f"the send did not come back once un-bypassed: {said}"
+    kinds = master_blocks(master)
+    said = what_the_master_did(kinds)
+    phases = f"{said}, in 100 ms blocks of the master: {runs(kinds)}"
+    assert said[:1] == ["copy"], f"the send did not reach the master before the mute: {phases}"
+    assert "muted" in said, f"the master heard a bypassed send: {phases}"
+    assert said == ["copy", "muted", "copy"], f"the send did not come back once un-bypassed: {phases}"
     # A "muted" block is one where the stem plays and the master has none of
     # it: the stem going on through the mute is in the count.
-    muted = sum(1 for start in range(0, min(len(master), len(stem)) - BLOCK + 1, BLOCK)
-                if np.max(np.abs(stem[start:start + BLOCK])) >= 0.25
-                and np.max(np.abs(master[start:start + BLOCK])) < EXACT)
-    assert muted >= 5, f"only {muted} blocks of the stem playing with the master silent"
+    muted = kinds.count("muted")
+    assert muted >= 5, f"only {muted} blocks of the stem playing with the master silent: {phases}"

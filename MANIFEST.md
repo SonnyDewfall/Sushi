@@ -7202,3 +7202,43 @@ source of negative lags (it gave delayed copies, at 4163), and says an octave
 down fully wet peaks at +24083 plus the latency and reads as one (tested on a
 synthetic shift). After: `nulltest --all` passes all 44 here, and
 `--calibrate --all` in a copy wrote every delay as committed. *(2026-11-24)*
+
+**The running mute test's flake was its recordings, not Sushi (#243).**
+`test_send_return.py`'s running-Sushi mute test failed once in CI's slow job
+(PR #238): `['copy', 'muted']`, the master's last phase missing. The question
+behind it was whether Sushi 1.3.0 sometimes ignores a send's un-bypass, which
+would leave a player's mute stuck on stage. **It did not, here.** A probe of
+the test as it stood (Sushi 1.3.0's release AppImage, dummy frontend, gRPC,
+this container, not the rig) ran 402 times, 302 of them beside another
+running Sushi for load: every bypass read back true at once and 0.2 s later, every
+un-bypass read back false at once, 0.2 s later and before the recording
+stopped, every command was confirmed (none of #241's unconfirmed first
+commands, about 1600 of them), and the master's own recording played again
+after the mute in all 402, for 6.6 s of audio at the least. The test failed 6
+times in the 402 (and once more in 3 runs before), and in each the master
+played after the mute but its last phase did not line up with the stem's
+recording: the two wav_writers had drifted apart (by 272 to 576 frames, as
+near as the sine's 1200-frame repeat lets it be said; 42 of the 402 ended out
+of line, most too late to cost a phase). Why, read in Sushi's source and not
+isolated: the dummy frontend runs as fast as it can (about 17 times real
+time here), and a wav_writer pushes each chunk into a ring buffer a worker
+empties, losing what does not fit, so each writer loses its own chunks. So
+the agent's mute is unchanged: it sets the send's bypass and needs Sushi's
+confirmation, as before. **The test** now records one wav_writer: the send,
+as the rig makes it, carries the channel's left (the stimulus plays on the
+left only), and a second send, a tap after it, carries the stem to the
+master's right, so the master is read on its own timeline, block by block,
+left against right. The three-phase assertion is as it was; the un-muted
+phase is 1.5 s (was 0.5 s); `read_live_bypass` is asserted after each change
+and again before the recording stops; a failure says each phase's length in
+blocks. A fast test holds the classifier to a made-up recording (a stream
+gap, a ramp, a late copy). Measured after: 130 pytest runs passed of 130, 60 of
+them beside the old probe for load; 20 more, run to read the phases, had 11 to
+14 s of copy, 10 to 12 s muted and 28 to 35 s of copy again, in audio.
+Tried against faults: the un-bypass not sent fails at its read-back, and
+not applied but read back as asked fails the three phases; the bypass never
+set fails as a bypassed send heard. **Not covered:** the rig's JACK
+frontend, which runs in real time and is where a stuck mute would matter;
+a send's right channel through the running mute (the offline tests hold
+each channel of the send). *(2026-11-24)*
+
