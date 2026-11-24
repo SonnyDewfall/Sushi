@@ -7240,6 +7240,15 @@ to read the phases, had 11 to 14 s of copy, 10 to 12 s muted and 28 to 35 s
 of copy again, in audio. Tried against faults, on each side: the un-bypass
 not sent fails at its read-back, and not applied but read back as asked
 fails the three phases; the bypass never set fails as a bypassed send heard.
+PR #244's review: the master's other side, the classifier's reference, was
+never itself checked, so a bypassed send leaking into it during the mute
+would have passed. It is now held to the stem at its level in the copy
+blocks (`stem_side_extras`, within 1e-4 relative; measured, every block
+where the stem played throughout had the same level to the last bit), in
+every copy, mute and ramp block, and a block where the stem does not play
+in each 64-frame chunk is quiet, not judged. A real recording with the
+stem's copy 60 dB down added on the other side during the mute fails it, on
+each side; the fast test holds the same. 22 runs of each side passed of 22.
 **Not covered:** the rig's JACK frontend, which runs in real time and is
 where a stuck mute would matter. *(2026-11-24)*
 

@@ -274,21 +274,53 @@ def running_config(tmp_path, sine, side: int = LEFT) -> dict:
          "parameters": {"recording": 1.0}}]}
 
 
+# Sushi's internal chunk, AUDIO_CHUNK_SIZE: the stem plays through a block
+# when each chunk of it does. A 64-frame stretch of the 440 Hz sine always
+# holds a peak of the sine.
+CHUNK = 64
+# How far the stem's side may stray from its level in the copy blocks,
+# relative. Measured here: every block where the stem played throughout had
+# the same level to the last bit, copy, ramp or mute alike.
+STEM_LEVEL = 1e-4
+
+
+def plays_through(stem) -> bool:
+    return min(np.max(np.abs(stem[i:i + CHUNK])) for i in range(0, len(stem), CHUNK)) >= 0.25
+
+
 def master_blocks(master, side: int = LEFT) -> list[str]:
     """Each 100 ms block of the master's recording, on its own timeline: the
     send's copy on `side`, the stem on the other. "copy" (the send's side is
     the stem exactly), "muted" (it has nothing of it), "between" (a bypass
-    ramping), or "quiet" where the stem itself is silent, which says
-    nothing: the streamer leaves a gap after its first loop, and may fall
-    behind a frontend running faster than real time, which is the
+    ramping), or "quiet" where the stem itself does not play throughout,
+    which says nothing: the streamer leaves a gap after its first loop, and
+    may fall behind a frontend running faster than real time, which is the
     streamer's and not the mute's."""
     kinds = []
     for start in range(0, len(master) - BLOCK + 1, BLOCK):
         sent, stem = master[start:start + BLOCK, side], master[start:start + BLOCK, 1 - side]
-        kinds.append("quiet" if np.max(np.abs(stem)) < 0.25 else
+        kinds.append("quiet" if not plays_through(stem) else
                      "copy" if np.max(np.abs(sent - stem)) < EXACT else
                      "muted" if np.max(np.abs(sent)) < EXACT else "between")
     return kinds
+
+
+def stem_side_extras(master, side: int, kinds: list[str]) -> list[int]:
+    """The blocks where the master's other side, the stem's, is not the stem
+    at its level: its level in a copy, mute or ramp block strays from its
+    level in the copy blocks by more than `STEM_LEVEL`. The other side is
+    the classifier's reference, so this is what holds it: a bypassed send
+    sending its channel into the other side would add to the stem there,
+    and the mute would still read as one."""
+    def level(i: int) -> float:
+        block = master[i * BLOCK:(i + 1) * BLOCK, 1 - side].astype(np.float64)
+        return float(np.sqrt(np.mean(block ** 2)))
+    copies = [level(i) for i, kind in enumerate(kinds) if kind == "copy"]
+    if not copies:
+        return []
+    expected = float(np.median(copies))
+    return [i for i, kind in enumerate(kinds) if kind in ("copy", "muted", "between")
+            and abs(level(i) - expected) > STEM_LEVEL * expected]
 
 
 def what_the_master_did(kinds: list[str]) -> list[str]:
@@ -335,6 +367,17 @@ def test_the_master_is_read_on_its_own_timeline(side):
     # A send that is the stem a little late is not a copy.
     late = np.concatenate([np.zeros(7), stem[:-7]])
     assert "copy" not in master_blocks(pair(late, stem), side)
+    # The stem's side is the stem at its level throughout, and a send that
+    # leaks into it during the mute, even 60 dB down, is caught there.
+    assert stem_side_extras(pair(sent, stem), side, kinds) == []
+    leaked = stem.copy()
+    leaked[4 * n:7 * n] += 0.001 * tone[4 * n:7 * n]
+    assert master_blocks(pair(sent, leaked), side) == kinds
+    assert stem_side_extras(pair(sent, leaked), side, kinds) == [4, 5, 6]
+    # A stem playing for part of a block says nothing.
+    half = stem.copy()
+    half[2 * n + n // 2:3 * n] = 0.0
+    assert master_blocks(pair(half, half), side)[2] == "quiet"
 
 
 @needs_sushi
@@ -420,3 +463,6 @@ def test_on_a_running_sushi_a_bypassed_send_sends_nothing_and_the_stem_plays_on(
     # it: the stem going on through the mute is in the count.
     muted = kinds.count("muted")
     assert muted >= 5, f"only {muted} blocks of the stem playing with the master silent: {phases}"
+    extras = stem_side_extras(master, side, kinds)
+    assert not extras, (f"the master's other side was not the stem at its level in {len(extras)} blocks, "
+                        f"{extras[0]} to {extras[-1]}: {phases}" if extras else "")
