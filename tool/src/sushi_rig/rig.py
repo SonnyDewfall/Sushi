@@ -137,7 +137,7 @@ def plugins_refusal(
     `plugins_folder(root)` unless given, as Sushi needs it
     (`plugins.preflight`). Shared by `up`, the agent's start (both through
     `prepare_launch`), `restart` before it stops anything, and the agent's
-    rig switch, revert and preset load, so all of them refuse in the same
+    rig switch, revert and channel load, so all of them refuse in the same
     words. `switch_from`, the rig playing, words it as a switch; `words`,
     `(heading, nothing, again)`, as anything else.
 

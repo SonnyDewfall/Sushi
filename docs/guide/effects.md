@@ -3,8 +3,8 @@
 Four effects you can put on any channel, like stomp boxes on a board: a
 **tremolo**, a **flanger**, a **tape echo** and a **shimmer** reverb, whose
 tail climbs in pitch. Each is a plugin like the others on the rack, with its
-own knobs, and each has a channel preset of its own, so you can hear it on
-its own in a few clicks. (The foot pedals of a MIDI controller are another
+own knobs, and the rig **pedals** has all four set up, so you can hear them
+in a few clicks. (The foot pedals of a MIDI controller are another
 thing: see [Playing live](playing-live.md).)
 
 None of the four has been heard on the rig yet. Everything below about how they
@@ -40,32 +40,20 @@ and click **Start** or **Switch to**. It has the four in a row on the guitar,
 after the amp: the tape echo and the shimmer on, the tremolo and the flanger
 off. Click a pedal's round button to bring it in or take it out.
 
-To hear one on its own, make a rig of its own, started from the pedal's
-preset:
-
-1. On the rack, under **RIGS**, click **New rig…**.
-2. Type a name, such as `try-shimmer`.
-3. Under **Channel 1**, pick `guitar-in` as the **Input**, **mono** as the
-   **Width**, and under **Start from**, in **Channel presets**, pick
-   `preset shimmer`. The others are `tremolo`, `flanger` and `tape-echo`.
-4. Click **Create**, then **Start** or **Switch to** and its name.
-
-You now hear the guitar into that one pedal. A new rig has no amp, so it is
-the guitar as it comes in; to hear a pedal after the amp, add it to a rig
-that has one, from the Library (below). Click the pedal's round button to
-switch it off and on, and compare.
+To hear one on its own, switch the other three off with their round
+buttons.
 
 To put a pedal on the rig you are playing, beside what is already there,
 click one of the dashed **Add** buttons in the channel's chain and pick it
 from the **LIBRARY**: **GxTremolo** and **GxFlanger** under **Mod**,
 **GxEchoCat** under **Delay**, **Gxshimmizita** under **Reverb** (see [Add a
 plugin](shaping-a-sound.md#add-a-plugin)). It arrives at the plugin's own
-settings, not the preset's: for the echo that means no echo at all until
-you turn **Head 1** to 1 and raise **Mix**.
+settings, not the pedals rig's: for the echo that means no echo at all
+until you turn **Head 1** to 1 and raise **Mix**.
 
-You can also load a pedal's preset onto a channel ([Channel
-presets](channel-presets.md)), but that replaces the channel's whole chain
-with the one pedal.
+You can also load the pedals rig's `pedals / board` onto a channel ([Use a
+channel from another rig](channel-from-another-rig.md)), but that replaces
+the channel's whole chain with the four.
 
 ## What the knobs do
 
@@ -79,8 +67,8 @@ the plugin's own range.
 - **Depth**: how far each pulse dips: with Dry/Wet at 100, about 5 dB at
   0.5 and 11 dB at 0.7.
 - **Dry/Wet**: 0 is the plain guitar, 100 the tremolo alone. The plugin
-  starts at 50, which makes every pulse much shallower; the preset has it
-  at 100.
+  starts at 50, which makes every pulse much shallower; the pedals rig has
+  it at 100.
 - **More**: **Wave**, triangle or sine.
 
 **Flanger** (GxFlanger): a sweeping, whooshing comb.
@@ -115,7 +103,7 @@ most 12 dB higher (measured on a test sweep: +3.1 dB and +10.9 dB). The
 plugin's own **Output** and **Input** knobs are not shown, and nothing on
 the page goes past them: Output reaches about 78 dB louder at its top, and
 Input raises the guitar and the echoes together (about 12 dB at its top).
-Those limits are the page's only. A preset or rig file typed by hand can
+Those limits are the page's only. A rig file typed by hand can
 still set them to anything, and nothing stops it yet.
 
 **Shimmer** (Gxshimmizita): a reverb whose tail rises (or falls) in pitch.
@@ -125,7 +113,7 @@ still set them to anything, and nothing stops it yet.
   whole sound is at most 6 dB louder than the guitar alone, whatever the
   other knobs say (peaks at most 17 dB higher; measured on a test sweep,
   with both decays at their longest: +5.9 dB and +16.2 dB). At the plugin's
-  own decays, Mix 100 % is about 3.5 dB louder. The preset has Mix at
+  own decays, Mix 100 % is about 3.5 dB louder. The pedals rig has Mix at
   100 %. It does not run away: however long the decay or high the Pitch
   mix, the tail dies away once you stop playing.
 - **Shift**: which way the tail moves in pitch, and how fast. 0 is a plain
@@ -155,18 +143,16 @@ still set them to anything, and nothing stops it yet.
   At the plugin's own settings every head is off, Mix and Repeats are at
   0 % and Level at 62 %, about 5 dB under the guitar. Turn **Head 1** to 1,
   raise **Mix** and **Repeats**, and under **More** turn **Level** to 100 %.
-  Its preset already has Head 1 on, Mix at 50 %, Repeats and Level at 100 %.
+  The pedals rig already has Head 1 on, Mix at 50 %, Repeats and Level at 100 %.
 - **The shimmer, added from the Library, is loud.** It starts at the
   plugin's own settings, which are wetter than Mix's 100 %: about 11 dB
   louder than the guitar. Mix shows 100 % with a note that it is off its
   curve. Turn Mix down first: from there it comes down to the dry guitar,
-  and once it is back on its curve it stays inside the 6 dB. Or start from
-  its preset, which has Mix at 100 %. (The Library cannot yet set a plugin's
-  starting values; that is why.)
+  and once it is back on its curve it stays inside the 6 dB. Or use the
+  pedals rig's, which has Mix at 100 %. (The Library cannot yet set a
+  plugin's starting values; that is why.)
 
 For the files behind this: the rig is `config/rigs/pedals.yaml`, with its
-sound reference `config/sound/pedals.yaml`; the presets are
-`config/channels/tremolo.yaml`, `flanger.yaml`, `tape-echo.yaml` and
-`shimmer.yaml`; and the knob layouts are
+sound reference `config/sound/pedals.yaml`; and the knob layouts are
 the profiles under `tool/examples/profiles/` ([Plugins and
 portability](../reference/plugins.md)).

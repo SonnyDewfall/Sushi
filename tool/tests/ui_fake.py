@@ -91,9 +91,9 @@ config compiled again from the file, and a channel the file gained since
 coming up as an empty track with its send on `UiRig`, which is how the
 compiler builds one; plugins a copied chain brings are not put on it).
 
-Channel presets (#127, `Served(save=True)` again): the agent's real
-/presets, save-as and load routes over `UiSave`'s checkout, writing real
-presets to its config/channels/ and the real rig file. Invented: what the
+A channel from another rig (#208, `Served(save=True)` again): the agent's
+real load route over `UiSave`'s checkout, reading a rig file a test writes
+beside `RIG_FILE` and writing the real rig file. Invented: what the
 live switch a load makes does (`UiLifecycle.switch_held` says "live", and
 `UiSave.switched` then gives each track whose plugins the file changed the
 file's chain, as `rig_of` lays it out, at its captured defaults).
@@ -710,7 +710,7 @@ class UiSave:
 
     def switched(self, name):
         """A switch into the running rig's own file as it now stands (a
-        channel preset loaded, #127; a revert): each track whose chain the
+        channel of another rig loaded, #208; a revert): each track whose chain the
         file has changed takes the file's, as `rig_of` lays a rig file out
         (the compiler's names and copies to stereo, every plugin at its
         captured defaults or with no parameters), with each plugin's bypass

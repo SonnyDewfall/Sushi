@@ -49,10 +49,6 @@ lists a plugin's parameters, so that last one cannot be asked without Sushi.
 A rig `valid` refuses fails one test, by name, and is left out of every
 other test over the committed rigs (`valid_committed`, `committed_that`).
 
-**config/channels/ too** (#127, review of #162): the owner's channel presets
-are guarded the same way, with the marker `committed_presets`, since Save
-channel as… writes them as Save writes rigs.
-
 **The guard** (`watch`, conftest.py). Every `open`, `os.scandir` and
 `os.listdir` in the test process is audited (`sys.addaudithook`), and one that
 lands in the checkout's config/rigs/ while nothing here is reading it, and in
@@ -99,15 +95,11 @@ FROZEN_SRC = FROZEN_V1 / "src"
 FROZEN_MACHINE = FIXTURES / "machines" / "sonny-dewfall-XPS-9320.yaml"
 FROZEN_SOUND = FIXTURES / "sound"
 COMMITTED = checkout_root() / "config" / "rigs"
-# The owner's channel presets (#127): guarded as config/rigs/ is (review of #162).
-COMMITTED_PRESETS = checkout_root() / "config" / "channels"
 # The machine file the committed rigs are wired against: the rig machine's.
 COMMITTED_MACHINE = checkout_root() / "machines" / "sonny-dewfall-XPS-9320.yaml"
 
 # The marker of a test that reads the committed rigs on purpose (pyproject.toml).
 MARKER = "committed_rigs"
-# ... and of one that reads the committed channel presets on purpose.
-PRESETS_MARKER = "committed_presets"
 
 
 # --------------------------------------------------------------------------- #
@@ -214,7 +206,6 @@ def stand_in_plugins(folder: Path, leave_out: tuple[str, ...] = ()) -> Path:
 # --------------------------------------------------------------------------- #
 
 _reading = 0  # how many readers of this module are at work; the guard lets those through
-_reading_presets = 0  # likewise, of config/channels/
 
 
 @contextlib.contextmanager
@@ -228,18 +219,6 @@ def reading_committed():
         yield
     finally:
         _reading -= 1
-
-
-@contextlib.contextmanager
-def reading_presets():
-    """`reading_committed`, for config/channels/: a test marked
-    `committed_presets` reads the owner's presets inside it."""
-    global _reading_presets
-    _reading_presets += 1
-    try:
-        yield
-    finally:
-        _reading_presets -= 1
 
 
 def committed() -> list[Path]:
@@ -375,7 +354,6 @@ STRAY: list[tuple[str, str, str]] = []
 AT_COLLECTION: list[tuple[str, str, str]] = []
 _WATCHED = ("open", "os.scandir", "os.listdir")
 _LIVE = os.path.realpath(COMMITTED)
-_LIVE_PRESETS = os.path.realpath(COMMITTED_PRESETS)
 _TESTS = str(Path(__file__).parent)
 _watching = False
 
@@ -396,21 +374,20 @@ def _within(path: str, folder: str) -> bool:
 
 
 def _audit(event: str, args: tuple) -> None:
-    if event not in _WATCHED or (_reading and _reading_presets):
+    if event not in _WATCHED or _reading:
         return
     try:
         target = args[0] if args else None
         if not isinstance(target, (str, bytes, os.PathLike)):
             return  # a file descriptor, or the current directory
         text = os.fsdecode(target)
-        if ("rigs" not in text and "channels" not in text) and (
-                text.startswith(os.sep) or ("rigs" not in os.getcwd() and "channels" not in os.getcwd())):
+        if "rigs" not in text and (text.startswith(os.sep) or "rigs" not in os.getcwd()):
             # The cheap half, where nearly every open in a run ends: a path
-            # with neither "rigs" nor "channels" in it, nor in the working
-            # directory it is relative to (a relative path costs one getcwd).
+            # with no "rigs" in it, nor in the working directory it is
+            # relative to (a relative path costs one getcwd to find out).
             return
         resolved = os.path.realpath(text)
-        if (not _reading and _within(resolved, _LIVE)) or (not _reading_presets and _within(resolved, _LIVE_PRESETS)):
+        if _within(resolved, _LIVE):
             STRAY.append((event, resolved, _where()))
     except Exception:  # noqa: BLE001 -- an audit hook that raises breaks the call it watches
         return
@@ -436,18 +413,12 @@ def left_unreported() -> str | None:
 
 def said(stray: list[tuple[str, str, str]]) -> str:
     lines = sorted({f"  {where}: {event} {os.path.relpath(path, checkout_root())}" for event, path, where in stray})
-    out = []
-    if any(_within(path, _LIVE) for _, path, _ in stray):
-        out.append(
-            "config/rigs/ was read by a test that does not say it reads the committed rigs. They are the "
-            "owner's and change with every save: read a frozen rig (rig_fixtures.frozen, the frozen_root "
-            f"fixture), or take every committed rig through rig_fixtures and mark the test `{MARKER}`.")
-    if any(_within(path, _LIVE_PRESETS) for _, path, _ in stray):
-        out.append(
-            "config/channels/ was read by a test that does not say it reads the committed channel presets. "
-            "They are the owner's and change with every Save channel as…: read frozen presets "
-            f"(tests/fixtures/channels/), or take every committed one and mark the test `{PRESETS_MARKER}`.")
-    return " ".join(out) + "\n" + "\n".join(lines)
+    return (
+        "config/rigs/ was read by a test that does not say it reads the committed rigs. They are the "
+        "owner's and change with every save: read a frozen rig (rig_fixtures.frozen, the frozen_root "
+        f"fixture), or take every committed rig through rig_fixtures and mark the test `{MARKER}`.\n"
+        + "\n".join(lines)
+    )
 
 
 _whole: "tempfile.TemporaryDirectory | None" = None

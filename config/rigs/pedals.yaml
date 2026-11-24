@@ -1,9 +1,9 @@
 # The four pedals of #165 on one guitar channel, to try them side by side: the
 # tape echo and the shimmer are on, the tremolo and the flanger off. Click a
 # pedal's round button on the rack to bring it in (docs/guide/effects.md).
-# Settings are Sushi's normalised 0 to 1, the same as the channel presets in
-# config/channels/: the echo at Mix 50 %, Repeats and Level 100 %, head 1 at
-# 120 BPM; the shimmer at Mix 100 %, Shift 2, Pitch mix 0.7, Decay 4.
+# Settings are Sushi's normalised 0 to 1: the echo at Mix 50 %, Repeats and
+# Level 100 %, head 1 at 120 BPM; the shimmer at Mix 100 %, Shift 2, Pitch
+# mix 0.7, Decay 4.
 
 kind: rig
 schema_version: 1

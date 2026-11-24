@@ -16,9 +16,9 @@ plugin's own settings, which a library add gives it. Settings are worked out fro
 widened fails here. A level is the render's against the same channel with the
 pedal bypassed, on a -20 dBFS sweep: RMS, and peak against peak.
 
-The presets in config/channels/ are the owner's (#133's rule): the tests that
-read them are marked `committed_presets` and ask only what holds of any
-preset, whatever there is.
+The rigs in config/rigs/ are the owner's (#133's rule): the tests that read
+them are marked `committed_rigs` and ask only what holds of any rig's channel
+that has one of the four, whatever there is (the pedals rig, today).
 """
 
 from __future__ import annotations
@@ -215,31 +215,53 @@ def test_the_shimmers_mix_stops_at_0_15_and_its_own_setting_is_the_one_exception
     assert default == SHIMMER_OWN["DRYWET"] == 0.5 and default > drive["at_1"]
 
 
-# --- the committed presets ----------------------------------------------------
+# --- the committed rigs' channels ----------------------------------------------
+
+def committed_channels():
+    """`(rig / channel, chain)` for each channel of each valid committed rig
+    (rig_fixtures.valid_committed). Read inside the tests that are marked,
+    never at import."""
+    import yaml
+    from rig_fixtures import valid_committed
+
+    out = []
+    for path in valid_committed():
+        raw = yaml.safe_load(path.read_text(encoding="utf-8"))
+        for channel in raw.get("channels") or []:
+            out.append((f"{path.stem} / {channel['name']}", channel.get("chain") or []))
+    return out
+
+
+# What the channel presets of #165 and #166 held (#208 removed them; their
+# channels are in the pedals, string-machine and synth-lead rigs): the four
+# pedals, and the string machine's and the synth lead's plugins. The check
+# below was theirs, and stays over these plugins wherever a rig has them.
+PRESET_PLUGINS = set(PEDALS) | {
+    "http://hippie.lt/lv2/gate",
+    "http://jpcima.sdf1.org/lv2/string-machine-chorus",
+    "http://guitarix.sourceforge.net/plugins/gx_zita_rev1_stereo#_zita_rev1_stereo",
+    "http://breakfastquay.com/rdf/lv2-rubberband#livemono",
+    "http://guitarix.sourceforge.net/plugins/gx_bmp_#_bmp_",
+    "http://calf.sourceforge.net/plugins/EnvelopeFilter",
+}
+
 
 def _profiled_entries():
-    """(preset, plugin, profile) for each plugin of each committed preset
-    that one of tool/examples/profiles/ describes. Read inside the tests
-    that are marked, never at import."""
-    from sushi_rig import presets
+    """(channel, plugin, profile) for each plugin of `PRESET_PLUGINS` on a
+    committed rig's channel, with its profile from tool/examples/profiles/."""
     from sushi_rig.library import load_profiles
 
     profiles, problems = load_profiles(PROFILES)
     assert problems == []
-    out = []
-    for name in presets.preset_names(ROOT):
-        preset = presets.load_preset(presets.preset_path(ROOT, name))
-        for entry in preset.chain:
-            if entry.get("uri") in profiles:
-                out.append((name, entry, profiles[entry["uri"]]))
-    return out
+    return [(name, entry, profiles[entry["uri"]]) for name, chain in committed_channels()
+            for entry in chain if entry.get("uri") in PRESET_PLUGINS and entry.get("uri") in profiles]
 
 
-@pytest.mark.committed_presets
-def test_every_committed_preset_sits_on_its_profiles_controls():
-    """Whatever presets there are (none, the four of #165, the owner's): a
-    plugin whose profile has controls is saved where each of them is on its
-    curve, inside its travel, as the page would have put it. One off its
+@pytest.mark.committed_rigs
+def test_every_committed_channel_sits_on_its_profiles_controls():
+    """Whatever rigs there are (the pedals rig, the owner's): a plugin whose
+    profile has controls is saved where each of them is on its curve, inside
+    its travel, as the page would have put it. One off its
     curve would be shown at the nearest point, and one past a control's end
     is past what that control was bounded to (the echo's Output, its Sustain,
     the shimmer's Dry/Wet)."""
@@ -472,23 +494,21 @@ def test_the_shimmer_does_not_run_away_at_its_longest_and_most_shifted(shift, tm
 
 @needs_sushi
 @pytest.mark.slow
-@pytest.mark.committed_presets
-def test_every_committed_preset_of_these_pedals_renders(tmp_path):
-    """Each committed preset with one of the four in it (whatever there is),
-    its chain alone on a mono channel: finite, on both sides, and not silent.
-    Balance is not asked: the shimmer is a stereo reverb (docs/guide/effects.md)."""
-    from sushi_rig import presets
+@pytest.mark.committed_rigs
+def test_every_committed_channel_with_these_pedals_renders(tmp_path):
+    """Each committed rig's channel with one of the four in it (whatever
+    there is), its chain alone on a mono channel: finite, on both sides, and
+    not silent. Balance is not asked: the shimmer is a stereo reverb
+    (docs/guide/effects.md)."""
     from sushi_rig.analysis import channel_balance, check_finite
 
-    for name in presets.preset_names(ROOT):
-        preset = presets.load_preset(presets.preset_path(ROOT, name))
-        if not any(e.get("uri") in PEDALS for e in preset.chain):
+    for name, chain in committed_channels():
+        if not any(e.get("uri") in PEDALS for e in chain):
             continue
-        raw = {"kind": "rig", "schema_version": 1, "name": "preset",
-               "channels": [{"name": "board", "input": "guitar-in", "width": "mono",
-                             "chain": presets.loaded_chain(preset, "board")}],
+        raw = {"kind": "rig", "schema_version": 1, "name": "channel",
+               "channels": [{"name": "board", "input": "guitar-in", "width": "mono", "chain": chain}],
                "master": {"output": "monitor-out", "chain": []}}
-        out = _render(tmp_path, raw, name)
+        out = _render(tmp_path, raw, name.replace(" / ", "-"))
         assert out.shape[0] > 0 and check_finite(out) is None, name
         balance = channel_balance(out)
         assert balance.left_dbfs > -60 and balance.right_dbfs > -60, (name, balance)

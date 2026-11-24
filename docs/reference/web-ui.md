@@ -39,7 +39,7 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   (its Dry/Wet, 0 to 0.15, short of the plugin's own 0.5) and the tape echo's
   Mix (Swell, to 0.7), Repeats (Sustain, to 0.3) and Level (Output, 0.725 to
   1.17, where the plugin's own knob reaches +78 dB). These bound the page
-  only: a preset or rig file can still set the parameters to anything; see
+  only: a rig file can still set the parameters to anything; see
   [the effects guide](../guide/effects.md). Each step
   of it is one `POST /live/parameters` of the three: all or none (a level
   Sushi refuses part-way puts back the ones already set), one change in the
@@ -546,38 +546,41 @@ no Node and the UI has to run from a checkout. Two screens from the mockups
   words, the agent's reason on hover, until its × is pressed. The page
   removes the record its Undos once kept in this browser
   (`sushi-rig.binned`, `R.RETIRED_KEYS`) as it loads, and never reads it.
-- **Channel presets (#127).** Each strip's input line has **Preset…** beside
-  Change input, which opens a panel in the strip (a group, "Presets for
-  board"): **Save board as** a name, checked by the naming rule before it is
-  sent (a name a preset has already is said, and the agent's `taken` refusal
-  offers **Replace crunch**, which updates the file in place); and **Load
-  onto board**, a picker of `GET /presets` (one that cannot be loaded is
-  listed off, its reason as its title) and **Load crunch onto board**. Save
-  works locked, as Save does; Load is behind the lock, as an add or a remove
-  is (`lockRefusal(…, "load_preset")`), since it changes the rig's
-  structure. The answer is shown in the panel: live, or the restart and its
-  reasons; and as notes, the amp ("vocal has no amp: …"), another width, a
-  MIDI mapping that followed its plugin, one dropped, and that the file as it
-  was is kept for Revert…. A refusal a second tap answers offers it, keeping
-  any yes already given: **Load anyway, dropping the unsaved changes**
-  (`discard`), **Load, dropping N MIDI mappings** (`drop_midi`, each mapping
-  listed with what it did and why it would do nothing). After a load the
-  page reads the rig's file again; the chain itself follows `/live` as it
-  always does. "Start from" on Add channel and the New rig screen lists the
-  presets first, as "Channel presets", and choosing one sets the width to the
-  preset's preferred one (`presetWidth`), which the form refuses, with the
-  patchbay's reason, on an input that cannot give it. The decisions are
-  rig.js's (`presetChoices`, `sourceChoices`, `sourceValue`, `sourceFrom`,
-  `presetWidth`, `checkPresetName`, `presetSaveCall`, `presetLoadCall`,
-  `presetOutcome`), tested on their own and through the page in
-  `tool/tests/test_ui_presets.py`.
+- **A channel from another rig (#208).** Each strip's input line has
+  **Load…** beside Change input, which opens a panel in the strip (a group,
+  "Load onto board"): a picker, **From**, of every channel of every rig of config/rigs
+  (`GET /rigs`, then `GET /rigs/<rig>/channels` for each, read again as the
+  panel opens), grouped by rig and labelled `rig / channel`, the strip's own
+  channel left out; and **Load**. It is behind the lock, as an add or a
+  remove is (`lockRefusal(…, "load_channel")`), since it changes the rig's
+  structure. The answer is shown in the panel in a few words (#209): its
+  title ("Loaded accustomed / board onto vocal") and, refused, what is
+  wrong; the rest (live, or the restart and its reasons, that Revert… goes
+  back, and the notes: the amp, another width, a MIDI mapping that followed
+  its plugin, or one dropped) is the box's title. Locked, the panel says
+  "Locked", the lock's words its title. The one Undo puts a load back. A
+  refusal a second tap answers offers it, keeping any yes
+  already given: **Load anyway** (`discard`, dropping the unsaved changes),
+  **Drop N and load** (`drop_midi`, dropping N MIDI mappings, each mapping listed with
+  what it did and why it would do nothing). The call names the rig the
+  page drew (`rig`), which the agent refuses as `changed` if another is
+  running by then. An answer is its channel's: it is shown in that strip's
+  panel only and its second tap loads onto that channel, and while a load
+  waits its panel stays open: **Close** and every strip's **Load…** are
+  off until the answer is in, so it is seen. After a load the page reads the
+  rig's file again; the chain itself follows `/live` as it always does.
+  "Start from" on Add channel and the New rig screen offers the same
+  channels with the same labels. This replaced #127's channel presets and
+  its Save channel as…. The decisions are rig.js's (`sourceChoices`,
+  `sourceValue`, `sourceFrom`, `channelLoadCall`, `loadOutcome`), tested on
+  their own and through the page in `tool/tests/test_ui_channel_load.py`.
 - **Pedals: assigning a device's controls on the rack (#192).** Where the
   machine file describes a device (`GET /midi`'s `controllers`), each unit
   row has a pedal badge between its knobs and its on/off, and each playing
   channel's strip one beside its name: a 44 px pill, dashed while nothing is
   on that target, else naming the control (**C**, **pedal**), lit while a
   control on it is heard. Tapping it opens a panel in the row (a group,
-  "Pedal for overdrive"), as a strip's Preset… panel opens in the strip: a
+  "Pedal for overdrive"), as a strip's Load… panel opens in the strip: a
   select a target, **none** then each control whose `takes` has that
   binding and no `job` (A and B never), one in use elsewhere saying where
   (**C (now vocal on/off)**). An effect's panel has **On/off** (`bypass`)
@@ -725,7 +728,7 @@ reason on screen, beside the knob; nothing is put back without saying why.
 user guides of [docs/guide/](../guide/README.md), which the agent serves
 itself at `/help/` (`sushi_rig/guide.py`, #167): no network is needed, so they
 open at a venue and from a phone. A feature with a guide of its own has a
-quiet link to it: the record bar, takes, Save, a channel's presets, the rigs,
+quiet link to it: the record bar, takes, Save, a strip's Load…, the rigs,
 the amp card and the New rig screen (`HELP` in `rig.js`). Each is a full
 44 px to tap, and none changes the stage's layout: the record bar's sits in
 its head without making it taller, and the lock note has none (the stage's
@@ -1068,13 +1071,13 @@ through its routes (`test_agent_undo.py`); a revert's Undo switches through
 the fake's stand-in for the live switch. Not opened on a phone or the touch
 screen, and no step undone on a live Sushi.
 
-Not run on the rig (2026-11-17): channel presets (#127), the strip's
-Preset… panel and a preset as "Start from". Tested in headless Chromium
-against the agent's real routes writing real presets and rig files in a
-temporary checkout, over the fake rig, whose live switch into a loaded file
-is the fake's own (`ui_fake.UiSave.switched`); the real switch is driven in
-`test_agent_presets.py` against a fake Sushi. No preset has been loaded and
-heard, nor the panel opened on a phone or the touch screen.
+Not run on the rig (2026-11-23): a channel from another rig (#208), the
+strip's Load… panel. Tested in headless Chromium against the agent's real
+route writing the real rig file in a temporary checkout, over the fake rig,
+whose live switch into a loaded file is the fake's own
+(`ui_fake.UiSave.switched`); the real switch is driven in
+`test_agent_channel_load.py` against a fake Sushi. No channel has been loaded
+and heard, nor the panel opened on a phone or the touch screen.
 
 Not run on the rig (2026-11-20): assigning pedal controls on the rack, the
 **PEDALS** section and its lights (#192). Tested in headless Chromium against

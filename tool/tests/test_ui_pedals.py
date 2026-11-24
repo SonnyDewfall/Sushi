@@ -3,7 +3,7 @@ the agent, laid out by rig.js (`unitPanel`) over the parameter info Sushi
 would give the plugin (its ports from `fixtures/probe_gx*.json`). The values
 are worked out from each profile's own controls (`test_pedals.at`), or are
 the plugin's own defaults, which is what a pedal added from the library has;
-the committed presets are read only by the test marked `committed_presets`.
+the committed rigs are read only by the test marked `committed_rigs`.
 Nothing here is a real Sushi; that the plugins load and sound is
 test_pedals.py's.
 """
@@ -148,19 +148,16 @@ def test_the_shimmer_at_the_plugins_own_settings_is_past_its_mix_and_turns_down_
     assert 0.5 > out["down"][0] > out["down"][1] > out["down"][2] == pytest.approx(0, abs=1e-9)
 
 
-@pytest.mark.committed_presets
-def test_every_committed_preset_of_these_pedals_is_shown_on_its_controls_curves(blank):
-    """Each committed preset with one of the four in it (whatever there is):
-    the page shows each of its controls on its curve, inside its travel, with
-    no "off the curve" note (`MIX_OFF_CURVE`)."""
-    from sushi_rig import presets
-    from sushi_rig.paths import checkout_root
+@pytest.mark.committed_rigs
+def test_every_committed_channel_with_these_pedals_is_shown_on_its_controls_curves(blank):
+    """Each committed rig's channel with the echo or the shimmer in it
+    (whatever there is): the page shows each of its controls on its curve,
+    inside its travel, with no "off the curve" note (`MIX_OFF_CURVE`)."""
+    from test_pedals import committed_channels
 
-    root = checkout_root()
     limit = rigjs(blank, "return R.MIX_OFF_CURVE;")
-    for name in presets.preset_names(root):
-        preset = presets.load_preset(presets.preset_path(root, name))
-        for entry in preset.chain:
+    for name, chain in committed_channels():
+        for entry in chain:
             if entry.get("uri") not in (SHIMMER, ECHO):
                 continue
             real = real_values(entry["uri"], entry.get("parameters") or {})
