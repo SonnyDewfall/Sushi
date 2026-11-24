@@ -7254,7 +7254,12 @@ fresh connection was applied and never confirmed (elkpy subscribes to
 Sushi's command notices on a thread of its own, and a command sent before
 that is up is never confirmed: 10 first commands of 150 without a wait,
 none of 150 with half a second), which would fail the step and restart the
-rig unasked. So **`Live.at` gives no `remove_track`**: removing a playing
+rig unasked. Sushi's own `delete_track` takes a track's processors off
+itself (its `AudioGraphController::delete_track`, read from the source): sent
+alone, on a track still holding them, it did so 300 times in 300, none stuck
+or unconfirmed. That is the lead for making it live, not yet enough to (one
+stuck run in a hundred would pass 300 about one time in twenty). So
+**`Live.at` gives no `remove_track`**: removing a playing
 channel is a restart, asked first ("Restart?"), and the live path stays for
 the stand-ins of the tests and a Sushi shown to do it every time. The test
 waits a second after connecting; a failure of it is one of the faults above.
