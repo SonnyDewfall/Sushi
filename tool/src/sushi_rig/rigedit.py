@@ -43,7 +43,6 @@ from .rigfile import KIND, SCHEMA_VERSION, TARGET_SHAPES, Channel, Master, Rig, 
 
 _CHANNEL_KEYS = ("name", "input", "width", "from")
 _FROM_KEYS = ("rig", "channel")
-_PRESET_KEYS = ("preset",)
 _NEW_KEYS = ("name", "channels")
 _INPUT_KEYS = ("input", "width")
 _PROBE = "probe"
@@ -77,23 +76,15 @@ def _only(body: Any, keys: tuple[str, ...], where: str) -> dict[str, Any]:
 
 def channel_request(body: Any, where: str = "the channel") -> dict[str, Any]:
     """`{"name", "input", "width", "from"}` from one channel of a request,
-    `from` None, `{"rig", "channel"}` (a rig's channel) or `{"preset"}` (a
-    channel preset of config/channels/, #127); `EditRequestError` for a
-    shape that is wrong. Values are not judged: "wide" is text, and the
-    compiler says what a width may be. With a preset to start from, the
-    width may be left out (None here): the preset's preferred width is
-    taken, and the compiler still decides whether the input can give it."""
+    `from` None or `{"rig", "channel"}` (a rig's channel);
+    `EditRequestError` for a shape that is wrong. Values are not judged:
+    "wide" is text, and the compiler says what a width may be."""
     body = _only(body, _CHANNEL_KEYS, where)
     source = body.get("from")
-    if isinstance(source, dict) and "preset" in source:
-        source = _only(source, _PRESET_KEYS, f"{where}: from")
-        source = {"preset": _text(source, "preset", f"{where}: from")}
-    elif source is not None:
+    if source is not None:
         source = _only(source, _FROM_KEYS, f"{where}: from")
         source = {key: _text(source, key, f"{where}: from") for key in _FROM_KEYS}
-    keys = ("name", "input") if source and "preset" in source and "width" not in body else ("name", "input", "width")
-    out: dict[str, Any] = {key: _text(body, key, where) for key in keys}
-    out.setdefault("width", None)
+    out: dict[str, Any] = {key: _text(body, key, where) for key in ("name", "input", "width")}
     out["from"] = source
     return out
 
@@ -122,24 +113,6 @@ def input_request(body: Any) -> dict[str, str]:
 # --------------------------------------------------------------------------- #
 # The files, as dicts
 # --------------------------------------------------------------------------- #
-
-def source_channel(raw: Any, rig: str, channel: str) -> dict[str, Any]:
-    """What `from` copies of `channel` in rig file `raw`: its `chain` and,
-    if it has one, its `level`. `LookupError` saying why when there is no
-    such channel. The chain is copied as written, settings and all, so the
-    new channel starts with that channel's sound; its strip is not (a
-    channel's strip is held at unity, rigfile.py), and neither is a MIDI map
-    naming it, which belongs to the rig it came from."""
-    channels = raw.get("channels") if isinstance(raw, dict) else None
-    for entry in channels if isinstance(channels, list) else []:
-        if isinstance(entry, dict) and entry.get("name") == channel:
-            out: dict[str, Any] = {"chain": copy.deepcopy(entry.get("chain") or [])}
-            if "level" in entry:
-                out["level"] = entry["level"]
-            return out
-    names = [e.get("name") for e in channels or [] if isinstance(e, dict)]
-    raise LookupError(f"{rig} has no channel called {channel} (it has: {', '.join(map(str, names)) or 'none'})")
-
 
 def channel_entry(request: dict[str, Any], copied: dict[str, Any] | None = None) -> dict[str, Any]:
     """A channel as the rig files write one: name, input, width, its level

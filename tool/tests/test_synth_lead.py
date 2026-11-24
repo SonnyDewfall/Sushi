@@ -135,7 +135,7 @@ def _lead() -> list[dict]:
     """#166's synth lead with GxBigMuffPi for its fuzz, at the settings the
     guide describes: the compressor at ratio 4 and -30 dB, the fuzz at 0.8,
     0.4 and 0.4, the filter a 24 dB low-pass swept from 300 Hz to 2.5 kHz,
-    Activation 8, Resonance 4, Output Gain 0.4, and the tape-echo preset's
+    Activation 8, Resonance 4, Output Gain 0.4, and the pedals rig's tape
     echo (head 1 at 120 BPM, Mix 50 %, Repeats and Level 100 %)."""
     compressor = {"name": "compressor", "uri": COMPRESSOR, "parameters": {
         "RATIO": 0.157895, "KNEE": 0.15, "THRESHOLD": 0.622642, "RELEASE": 0.03, "ATTACK": 0.005, "BYPASS": 1.0}}

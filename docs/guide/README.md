@@ -37,7 +37,7 @@ The page's messages use a few names of their own:
 | [Mixing](mixing.md) | Each channel's volume, and the master |
 | [Saving and going back](saving.md) | Save, Save as, Revert |
 | [Building a rig](building-a-rig.md) | A new rig, adding a channel, changing an input, deleting a rig |
-| [Channel presets](channel-presets.md) | A channel's sound saved by name, and put on any input |
+| [Use a channel from another rig](channel-from-another-rig.md) | Any rig's channel, loaded onto a channel of yours |
 | [Tremolo, flanger, tape echo and shimmer](effects.md) | Four effects: what each knob does, and how to try one |
 | [String machine and synth lead](string-machine.md) | The string-machine and synth-lead rigs, and what to try on each |
 | [Recording](recording.md) | Takes, what is in a take's folder, names |

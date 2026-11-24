@@ -17,7 +17,7 @@ Terms used here:
 - **Synth channels:** a synth channel's first sound-making plugin is a synth,
   played by the pickup's notes. Only MIDI effects can sit before it. After the
   synth it is an ordinary channel: effects from the library, a volume, a send
-  into the master and its limiter, presets, save, the pedal.
+  into the master and its limiter, loading onto other rigs, save, the pedal.
 - **Mixing:** a rig can hold several synth channels and several guitar
   channels side by side, as it holds channels now.
 - **First sounds:** pads, and a plucked double bass.
@@ -200,7 +200,7 @@ The architecture extends the rig's existing parts:
    then its effects. The synth's card needs a **profile**, because a synth has
    hundreds of controls and a profile picks the ones worth a knob. That is how
    the synth gets **programmed**, on the page. Its settings save with the rig,
-   and as channel presets, like any other plugin's.
+   and can be loaded onto another rig's channel, like any other plugin's.
 7. **The pedal works as the device model allows**
    ([MIDI, the device model](../reference/midi.md#the-device-model-191)):
    - C, D and the toe can switch a synth channel, or one of its effects, on

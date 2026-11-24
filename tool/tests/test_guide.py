@@ -196,7 +196,7 @@ def test_code_is_never_read_as_markdown_or_html():
 def test_every_page_of_the_guide_renders_with_no_markdown_left_showing_and_nothing_missing():
     images = {p.name for p in (GUIDE / "img").iterdir()}
     pages = guide.page_names(GUIDE)
-    assert {"README", "recording", "channel-presets", "playing-live"} <= pages
+    assert {"README", "recording", "channel-from-another-rig", "playing-live"} <= pages
     for path in sorted(GUIDE.glob("*.md")):
         r = guide.Renderer(pages, images, "rack")
         html = r.render(path.read_text(encoding="utf-8"))
@@ -293,7 +293,7 @@ def test_help_and_a_pages_file_name_send_the_browser_to_the_page(small):
 @pytest.mark.parametrize("asked, sent", [
     ("/help/README.md", "/help/"), ("/help/README", "/help/"), ("/help/readme.md?from=stage", "/help/?from=stage"),
     ("/help/Readme.MD", "/help/"), ("/help/Recording.md", "/help/recording"), ("/help/RECORDING", "/help/recording"),
-    ("/help/Channel-Presets.Md?from=rack", "/help/channel-presets?from=rack"), ("/help/nothing.md", "/help/nothing"),
+    ("/help/Channel-From-Another-Rig.Md?from=rack", "/help/channel-from-another-rig?from=rack"), ("/help/nothing.md", "/help/nothing"),
 ])
 def test_a_page_asked_for_by_its_file_name_or_in_another_case_is_sent_to_the_page(small, asked, sent):
     [(status, headers, _)] = fetch(agent(small), asked)

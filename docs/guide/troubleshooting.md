@@ -151,7 +151,7 @@ itself: that is why the page always says **sound not measured**.
 - **A box saying plugins "are not in" a plugins folder, or "cannot be
   loaded from" it.** The rig loads a plugin the rig's own plugins folder
   does not have yet, or has a broken copy of, so it was not started,
-  switched to, restarted, reverted or given the preset: whatever was
+  switched to, restarted, reverted or given another rig's channel: whatever was
   playing keeps playing, and a rig file is left as it was. The box names
   each one and says what to run, usually `sushi-rig plugins add` in a
   terminal on the rig machine, or a script under `scripts/` for a plugin no

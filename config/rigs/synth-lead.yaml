@@ -9,7 +9,7 @@
 # low-pass swept from 300 Hz to 2.5 kHz, Activation 8, Resonance 4, all wet,
 # its Output Gain 0.4, which brings the lead to about the guitar's own level;
 # the echo on head 1 at 120 BPM, Mix 50 %, Repeats and Level 100 % (the
-# tape-echo preset's). Two changes from #166's chain: GxBigMuffPi where
+# pedals rig's). Two changes from #166's chain: GxBigMuffPi where
 # Sushi's own fuzz was, since the profiles and the library know LV2 plugins
 # only; and a low-pass where its band-pass was, which left a low E 29 dB
 # quieter than a high E (measured: the low-pass, 6 dB). Not tuned by ear.

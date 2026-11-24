@@ -53,7 +53,7 @@ a line saying why.
 
 The agent says the same, for a start from the web UI, and refuses before
 touching the running rig for a rig switch (the picker's **Switch to**, the
-stage's dropdown, a Program Change), a revert or a channel preset's load
+stage's dropdown, a Program Change), a revert or a channel's load from another rig
 (`409`, code `plugins_missing`; a revert or a load writes nothing), and a
 restart (it stops nothing, the running rig plays on). The amp is the
 exception: Carla loads it, not Sushi, so a missing amp is a warning (the rig

@@ -58,10 +58,7 @@ curl -X POST localhost:8029/rigs/electric-delay/delete -d '{"dry_run": true}'   
 curl -X POST localhost:8029/rigs/electric-delay/delete                           # into config/rigs/.deleted/ (#129); never the running rig
 curl -X POST localhost:8029/rigs/electric-delay/restore -d '{"entry": "electric-delay-20261116T101502Z.yaml"}'   # Undo; no entry: the newest
 curl localhost:8029/rigs/bin             # what is in the bin, newest first, and which agent's bin it is
-curl localhost:8029/presets              # the channel presets of config/channels/ (#127), and why one cannot load
-curl -X POST localhost:8029/rig/channels/board/save-as -d '{"name": "crunch"}'   # Save channel as…; "replace": true to update one
-curl -X POST localhost:8029/rig/channels/vocal/load -d '{"preset": "crunch"}'     # writes the rig file, then plays it live where it can
-curl -X POST localhost:8029/rigs/new -d '{"name": "duo", "channels": [{"name": "a", "input": "guitar-in", "from": {"preset": "crunch"}}, {"name": "b", "input": "vocal-in", "from": {"preset": "crunch"}}]}'
+curl -X POST localhost:8029/rig/channels/vocal/load -d '{"from": {"rig": "string-machine", "channel": "strings"}}'   # writes the rig file, then plays it live where it can
 
 curl localhost:8029/health | jq .agent.midi   # the pedals: listening, or why not, and what was last heard
 ```
@@ -603,7 +600,7 @@ refused (`409 rig_problem`) with the running one left playing, and so is one
 that loads a plugin `plugins/` lacks (`409 plugins_missing`, #188), with the
 words `sushi-rig up` refuses it in: each plugin, where it is instead, and the
 command that puts it there ([Plugins](plugins.md)). A revert or a channel
-preset's load that would switch the running rig into such a file is refused
+load that would switch the running rig into such a file is refused
 the same way before the file is written. `POST /rig/up` refuses such a rig
 (`409`), through `up`'s own check, before anything is started, and
 `POST /rig/restart` before the running rig is stopped, so it plays on. Run on the rig on
@@ -697,7 +694,10 @@ role and `mono` or `stereo`, and a master on `monitor-out` (as `convert`
 writes every rig's), with empty chains, unless a channel says `from: {rig,
 channel}`, which copies that channel's chain and `level:` from that rig's
 file as it stands now (not as git last committed it: a tone saved and not yet
-committed is the one you hear; the answer says what git says of that file).
+committed is the one you hear; the answer says what git says of that file,
+read just before the lifecycle lock is taken, so before anything is written). Each plugin is named for the new
+channel as a load names it (`<channel>_<base>`, below), so two channels may
+start from one channel, and a rig's channel from that rig's own.
 `POST /rigs/<rig>/channels/add` adds a channel to the end of a rig file, and
 `POST /rigs/<rig>/channels/<channel>/input` sets a channel's input, its
 width, or both. Both edit the file in place with `write_rig`, keeping its
@@ -990,93 +990,80 @@ is moved back by hand: `config/rigs/.deleted/<name>-<stamp>.yaml` to
 not touched by a delete, so a rig made later with the same name lists them.
 Nothing of this is recorded as run on the rig machine.
 
-## Channel presets
+## A channel from another rig
 
-A channel's sound saved by name, apart from any rig (#127): its chain, each
-plugin's settings and bypass, its `level` and a preferred width, and no
-input, in `config/channels/<name>.yaml` ([the rig file](rig-file.md#channel-presets)
-has the format). The file, its names and what a load does to a chain and to
-a MIDI map are `presets.py`'s; whether a rig with a preset in it is valid is,
-as always, the compiler's (`rig.compile_rig_draft`).
+Any channel of any rig in `config/rigs/` loaded onto a channel of the
+running rig (#208, which replaced #127's channel presets): its chain, each
+plugin's settings and bypass, and its `level`, read from that rig's file as
+it stands. What a load does to a chain and to a MIDI map is
+`channelcopy.py`'s; whether the result is a valid rig is, as always, the
+compiler's (`rig.compile_rig_draft`). The page lists the channels from
+`GET /rigs` and `GET /rigs/<rig>/channels`, as "start from" does.
 
-- **`GET /presets`** lists config/channels/ (that folder only, names the
-  naming rule allows): each preset's `width`, `level`, `plugins` (base
-  names), `heard_through_amp`, `saved_from`, and `ok`, or the `problem`
-  that keeps it from loading (its shape, then the compiler: a plugin
-  missing from `plugin-ports.txt`, the amp, a name that becomes the
-  compiler's own).
-- **`POST /rig/channels/<channel>/save-as {"name", "replace"?}`**, Save
-  channel as…: the running rig captured and folded exactly as `POST
-  /rig/save` folds it (under the live lock, with the log's adds and
-  removes), and that channel's entry of the fold written as the preset,
-  **never a `_to_stereo` copy**. Each plugin is stored under its base
-  name, the channel's prefix taken off (`guitar_compressor` on `guitar` is
-  `compressor`; none is taken off where that would make two names one).
-  `heard_through_amp` is the amp's model when the channel plays from
-  `guitar-in` with the amp running. Not logged, and the unsaved count is
-  untouched: the rig is unchanged. Refused as a save is (`no_rig`,
-  `panel`, `v1`, `changed`, `not_saved`), and `no_channel`,
-  `preset_problem`, and `taken` unless `"replace": true`, which updates the
-  file in place keeping its comments and its `description`. Not committed.
-- **`POST /rig/channels/<channel>/load {"preset", "discard"?,
-  "drop_midi"?}`**: the channel's chain and level replaced by the preset's,
-  each plugin named for the channel (`processor_name`: `lead_compressor` on
-  `lead`, always the channel's name and `_` in front, so two base names
-  never become one name), its input, width and strip its own. Like a
-  revert: **the rig file is written** (in place, comments kept, the old
-  chain and the comments inside it replaced whole,
+- **`POST /rig/channels/<channel>/load {"from": {"rig", "channel"},
+  "rig"?, "discard"?, "drop_midi"?}`**: the channel's chain and level replaced by
+  the source's, each plugin named for the channel (`processor_name`:
+  `lead_compressor` on `lead`, the source channel's prefix taken off and
+  this one's put on, always, so two base names never become one name), its
+  input, width and strip its own. **The source rig's MIDI map is not
+  copied.** Like a revert: **the rig file is written** (in place, comments
+  kept, the old chain and the comments inside it replaced whole,
   `write_rig(replace_chains=...)`, the comments directly above its `chain:`
-  kept, with [the provenance line](rig-file.md#channel-presets) above it),
-  the file as it was is kept as a revert point once the write has happened,
-  unless a save already keeps it (`kept_before`), and then **the running rig is switched to its file** by
-  the live switch: live where `rigfile.diff` can do it, by restart where
-  not, the answer saying `how` and `why`. Its `op: "rig"` entry carries
-  `args.preset` and is the baseline: nothing is unsaved after it and undo
-  stops there. Refused, each before anything is written: `no_rig`, `panel`,
-  `v1`, `no_preset`, `preset_problem`, `no_channel`, `name`, `rig_problem`
-  (the compiler's words, a name another channel has among them), `unsaved`
-  while the rig holds live work no save has written (unless `"discard":
-  true`), and **`midi`**. A mapping of the rig's `midi:` onto that channel's
-  plugins **follows its plugin**, known by its URI: kept where the new chain
-  has it under the same name, moved to its new name where it is the one
-  plugin of that URI (`followed`; so two plugins that trade names keep
-  their pedals), among several of one URI to the one of the same base name
-  or else the one in the same place, and otherwise orphaned: the load is
-  refused with each mapping and why, naming what the new chain holds there
-  (`mappings`), or with `"drop_midi": true` they are taken out of the file
-  and said (`dropped`). A knob's
-  mapping is Sushi's `cc_mappings`, loaded only with the config, so one
-  followed or dropped makes the load a restart; a pedal's bypass is the
-  agent's, and stays live. The answer's `amp` says whether the amp is in
-  front of the channel, and `width` when the preset was saved from another
-  width. **Discarded work is put back** (`discard_plan`, shared with a
-  revert with `discard`): the switch's diff sets only what the two configs
-  differ in, so each parameter and bypass the dropped entries set is also
-  set, to the file's value or, where the file states none, to the value it
-  had before them; a discarded add, remove or move leaves chains the
-  running config lacks, which the switch refuses as `drifted`, so that is a
-  restart, and the answer's `discard` says which, with what was put back.
-  A load whose switch fails is remembered in `/health` as the load
-  (`command: ["load", ...]`), and its answer's `midi_note` says the pedals
-  follow the rig as it runs (its compiled config), not the file. Both
-  writes refuse a request from another site's page (`403 cross_site`), as
-  every write does ([Another site's page, and DNS
-  rebinding](#another-sites-page-and-dns-rebinding)).
-- **A channel from a preset**: `from: {"preset": <name>}` in `POST
-  /rigs/new` and `POST /rigs/<rig>/channels/add`, beside #125's `{"rig",
-  "channel"}` (below). The chain is copied as a load copies it, named for
-  the new channel, so **two channels from one preset compile**, each with
-  processors of its own; with no `width` in the request the preset's
-  preferred one is taken, and the patchbay still refuses a width the input
-  cannot give (`rig_problem`). The answer's `from.amp` says when the channel
-  has no amp: **a second guitar on another input is told**.
+  kept, with [the provenance line](rig-file.md#a-channel-copied-from-another-rig)
+  above it), the file as it was is kept as a revert point once the write
+  has happened, unless a save already keeps it (`kept_before`), and then
+  **the running rig is switched to its file** by the live switch: live
+  where `rigfile.diff` can do it, by restart where not, the answer saying
+  `how` and `why`. Its `op: "rig"` entry carries `args.load` and is the
+  baseline: nothing is unsaved after it and undo stops there. Refused, each
+  before anything is written: `no_rig`, `panel`, `v1`, `changed` (`rig`
+  given, the rig the page drew, and another running by the time the lock
+  is won: a Program Change between), `no_source` (no such
+  rig in config/rigs/, which is looked up by name and never made a path; no
+  such channel in it; a file that will not read), `no_channel`, `name`,
+  `rig_problem` (the compiler's words, a name another channel has among
+  them), `plugins_missing` (a plugin plugins/ lacks, #188's check),
+  `unsaved` while the rig holds live work no save has written (unless
+  `"discard": true`), and **`midi`**. A mapping of the running rig's
+  `midi:` onto that channel's plugins **follows its plugin**, known by its
+  URI: kept where the new chain has it under the same name, moved to its
+  new name where it is the one plugin of that URI (`followed`; so two
+  plugins that trade names keep their pedals), among several of one URI to
+  the one of the same base name or else the one in the same place, and
+  otherwise orphaned: the load is refused with each mapping and why, naming
+  what the new chain holds there (`mappings`), or with `"drop_midi": true`
+  they are taken out of the file and said (`dropped`). A knob's mapping is
+  Sushi's `cc_mappings`, loaded only with the config, so one followed or
+  dropped makes the load a restart; a pedal's bypass is the agent's, and
+  stays live. The answer's `from` names the source file and what git says
+  of it (read just before the lifecycle lock is taken, so as it was copied
+  even from the running rig's own file; `null` if git does not answer
+  within the save's timeout), `amp` says whether the amp is in front of the channel (and when a
+  guitar channel heard through the amp in its own rig lands where none
+  is), and `width` when the source is the other width. **Discarded work is
+  put back** (`discard_plan`, shared with a revert with `discard`): the
+  switch's diff sets only what the two configs differ in, so each parameter
+  and bypass the dropped entries set is also set, to the file's value or,
+  where the file states none, to the value it had before them; a discarded
+  add, remove or move leaves chains the running config lacks, which the
+  switch refuses as `drifted`, so that is a restart, and the answer's
+  `discard` says which, with what was put back. A load whose switch fails is
+  remembered in `/health` as the load (`command: ["load", ...]`), and its
+  answer's `midi_note` says the pedals follow the rig as it runs (its
+  compiled config), not the file. It refuses a request from another site's
+  page (`403 cross_site`), as every write does ([Another site's page, and
+  DNS rebinding](#another-sites-page-and-dns-rebinding)).
+- **"Start from"** (`from: {"rig", "channel"}` in `POST /rigs/new` and
+  `POST /rigs/<rig>/channels/add`, #125, above) copies a channel's chain
+  as a load does, each plugin named for the new channel, so two copies of
+  one channel in one rig compile.
 
-**The amp is not part of a preset.** It is one Carla instance patched in
+**The amp is not part of a channel.** It is one Carla instance patched in
 front of `guitar-in` (`amp.amp_patchbay`), so it is in front of every
 channel on that input in a rig with an amp, and of nothing else; an amp per
 channel is not built. **Not run against a live Sushi**: shown against
 `test_agent.RigLive` loaded from the real compile, and the real live switch
-(`tests/test_agent_presets.py`).
+(`tests/test_agent_channel_load.py`).
 
 ## Recording from the web UI
 

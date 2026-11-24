@@ -6975,3 +6975,51 @@ now hold them to it; nothing there needed fixing. (5) From the laptop: a
 pedal could not be given SWH lcrDelay's `Dry/Wet level`, a parameter Sushi
 names with a slash; a parameter target is now split at its first two slashes,
 the parameter the rest. *(2026-11-23)*
+
+**Presets become channels from other rigs (#208).** The owner: "presets
+shouldn't be their own thing, they should just be the channels from the other
+configs." Channel presets (#127) are gone: `config/channels/` (all seven
+files: string-ensemble, string-octave and synth-lead are channels of the
+string-machine and synth-lead rigs; tremolo, flanger, shimmer and tape-echo
+are in the Library and the pedals rig), `GET /presets`, Save channel as…
+(`POST /rig/channels/<c>/save-as`), the preset as "start from", and the
+`committed_presets` test guard. `POST /rig/channels/<c>/load` now takes
+`{"from": {"rig", "channel"}}`: that channel of that rig's file as it stands,
+its chain, settings, bypass and level, onto a channel of the running rig,
+with everything a preset load had (the same live-or-restart switch, revert
+point, provenance line, `discard`, MIDI following or `drop_midi`, the amp
+and width notes, #188's plugins check before the write), the target's input,
+width and strip its own, and none of the source rig's MIDI map. A missing rig
+or channel is `no_source`. `presets.py` became `channelcopy.py`, keeping the
+names, the MIDI and the amp logic; the provenance line reads `# Chain copied
+from <rig> / <channel> (…)` and replaces an old preset line too. On the page,
+a strip's **Load…** (was Preset…) lists every rig's channels as `rig /
+channel`, grouped by rig, the strip's own left out, and "start from" labels
+them the same way. The
+guide `channel-presets.md` is now [Use a channel from another
+rig](docs/guide/channel-from-another-rig.md); the reference, effects,
+string-machine and building-a-rig pages follow. The #127 entries above
+describe what was removed. The panel's words are few: its picker is
+**From** (Choose…), the button **Load**, a refusal's second tap **Load
+anyway** or **Drop N and load**, and no line of explanation under it but the
+lock's. A MIDI parameter target with a slash in the parameter's name (#210)
+follows its plugin whole (tested). Not tried on the rig. *(2026-11-24)*
+
+**Presets become channels: the review of PR #234 (#208).** Four findings,
+each with a test. (1) "Start from" copied names as written, so two channels
+of a new rig from one channel, or a channel added from its own rig's
+channel, were the compiler's `duplicate name`; it now copies as a load does
+(`channelcopy.source_of`, `loaded_chain`, `name_problems`), each plugin named
+for the new channel, and `rigedit.source_channel` is gone. (2) A load's
+answer was the panel's, not its channel's: one waiting on a strip could be
+shown in another strip's panel, and its second tap sent there. The answer
+now names its channel and rig and shows only in that panel, its offer goes
+to that channel, and the other strips' Load… is off while a load waits
+(a browser test holds the request). (3) What git says of a source file was
+read under the lifecycle lock; it is read just before the lock is taken
+now, within `SAVE_TIMEOUT` (`_sources_git_before`), for a load and for
+"start from" alike, `null` past it. Read before the write, it says what
+was copied even from the rig being written (the re-review: read after it,
+a copy from the same rig always said `changed`). (4) A load takes `"rig"`, the rig the page drew, and
+is `409 changed` when another is running by the time the lock is won (a
+Program Change between). Not tried on the rig. *(2026-11-24)*

@@ -47,7 +47,7 @@ def test_each_help_link_names_a_page_and_heading_the_served_guide_has(blank):
     assert out["links"]["guide"] == {"href": "/help/?from=stage", "label": "Help", "aria": "Help: the user guide"}
     assert out["links"]["stage"] == {"href": "/help/playing-live?from=stage", "label": "Help", "aria": "Help: playing live"}
     assert out["links"]["record"]["href"] == "/help/recording?from=stage"
-    assert out["links"]["presets"]["href"] == "/help/channel-presets?from=stage"
+    assert out["links"]["loadChannel"]["href"] == "/help/channel-from-another-rig?from=stage"
     assert out["links"]["takes"] == {"href": "/help/recording?from=stage#find-your-takes", "label": "About takes",
                                      "aria": "About takes, in the user guide"}
     assert out["rack"]["href"] == "/help/recording?from=rack"
@@ -232,14 +232,15 @@ def test_every_guide_page_fits_a_phones_width(browser, served):
     page.close()
 
 
-def test_the_new_rig_screen_and_a_presets_panel_link_to_their_guides(browser):
+def test_the_new_rig_screen_and_a_load_panel_link_to_their_guides(browser):
     with Served(save=True) as served:
         page = Watched(browser, served, "/#rack")
         p = page.page
         p.wait_for_selector(".unit")
-        p.get_by_role("button", name="Presets for board").click()
-        group = p.get_by_role("group", name="Presets for board")
-        expect(group.locator('[data-help="presets"]')).to_have_attribute("href", "/help/channel-presets?from=rack")
+        p.get_by_role("button", name="Load a channel onto board").click()
+        group = p.get_by_role("group", name="Load onto board")
+        expect(group.locator('[data-help="loadChannel"]')).to_have_attribute(
+            "href", "/help/channel-from-another-rig?from=rack")
         p.get_by_role("link", name="New rig…").click()
         link = p.locator("header.bar").get_by_role("link", name="Help: building a rig")
         expect(link).to_have_attribute("href", "/help/building-a-rig?from=new-rig#make-a-new-rig")
