@@ -7,7 +7,28 @@ import * as R from "./rig.js";
 
 // GET /live once a second, as the brief asks: often enough that a pedal's
 // bypass shows on the card within a second, rare enough for a Pi's browser.
+// The agent also pushes each change it makes or sees (GET /events, #139), and
+// the page polls at once on it; the poll stays at its second for what the
+// agent cannot see (the OSC panel talks to Sushi itself) and while the stream
+// is down. See `listen`.
 const POLL_MS = 1000;
+// The pushed changes' stream (#139): an EventSource reconnects by itself
+// after a dropped connection, at the agent's `retry`; one the agent refused
+// (503 past its limit, 403) is closed for good, and opened again this long after.
+const EVENTS_PATH = "/events";
+// How long after its own last write the page reads a change pushed meanwhile
+// (`pushed`): long enough for it to have finished with the answer.
+const PUSH_HELD_MS = 300;
+// A push reads the whole rig (/live, a full read of Sushi) at most once this
+// often (`pushed`): a pedal swept or a knob dragged elsewhere is two reads a
+// second on each page, not one after another.
+const PUSH_LIVE_MS = 500;
+// The page's three fonts (#139, style.css, preloaded by index.html) are
+// asked for before its first draw, so it is not laid out in the system's
+// fonts and again a moment later in its own: they are the agent's files, a
+// few ms away. It draws after this long whatever has arrived.
+const FONTS_MS = 500;
+const FONTS = ["600 16px Newsreader", "400 16px 'Instrument Sans'", "400 16px 'Geist Mono'"];
 // GET /rig/load this long after the last answer, and only while a rig is up:
 // each is a pw-top run of about a second on the rig, so slower than /live,
 // and load and xruns move slowly enough to read at this rate (#111).
@@ -145,12 +166,20 @@ const state = {
   // asked again before it runs.
   undo: { answer: null, pending: false, said: null, restartConfirm: false, ask: null },
   pollSeq: 0, seq: 0, timer: null, polling: false,
+  pollAgain: false,          // a push or a kick came while a poll was in flight: poll again when it ends
+  stream: null, streamed: false,  // the EventSource (#139), and whether it has opened once
+  // This page's own writes in flight and when the last ended; a push waiting,
+  // its timer, and when a push last read the rig: see `pushed`.
+  writing: 0, lastWriteEnd: -Infinity, pushWaiting: false, pushTimer: null, pushedAt: -Infinity,
+  lightsReading: false, lightsAgain: false,  // a "midi" push's /health read in flight, and one more asked: see `readLights`
   screen: null, regions: null, updaters: [], keys: new WeakMap(),
 };
 
 // ---------------------------------------------------------------- network
 
 async function request(method, path, body) {
+  const writes = method !== "GET";
+  if (writes) state.writing += 1;
   try {
     const response = await fetch(path, {
       method, cache: "no-store",
@@ -166,6 +195,8 @@ async function request(method, path, body) {
     };
   } catch (error) {
     return { ok: false, status: 0, body: null, reason: `the agent did not answer (${error.message})` };
+  } finally {
+    if (writes) { state.writing -= 1; state.lastWriteEnd = Date.now(); }
   }
 }
 
@@ -493,6 +524,10 @@ async function poll() {
   } finally {
     state.polling = false;
     state.timer = setTimeout(poll, POLL_MS);
+    // A change pushed or kicked while this poll was reading may be newer than
+    // what it read: read again now, not in a second. A microtask, not a
+    // timer: the push alone brings it.
+    if (state.pollAgain) { state.pollAgain = false; queueMicrotask(poll); }
   }
 }
 
@@ -503,10 +538,109 @@ function noteRecord(record) {
   state.recordBase = body && body.state === "recording" ? { elapsed: body.elapsed, at: Date.now(), name: body.name } : null;
 }
 
-// After a gesture that changes the rig's structure: read it now, not in a second.
+// After a gesture that changes the rig's structure, or a change the agent
+// pushed (#139): read it now, not in a second. A poll already reading may
+// have read before the change, so one more follows it (`pollAgain`); kicks
+// while it reads are one poll, not one each.
 function kick() {
-  if (!state.polling) poll();
+  if (state.polling) state.pollAgain = true;
+  else poll();
 }
+
+// The agent's pushed changes (#139, GET /events): each `changed` event says
+// what changed, and the page polls at once, so a knob turned on another
+// device moves here without waiting for the second. The event carries no
+// state: the poll is the one place answers are put together. On a reconnect
+// (the agent restarted, the Wi-Fi came back) the page polls too, since
+// changes may have been missed meanwhile. Without EventSource, or with the
+// stream down, the poll carries on as before.
+//
+// Only while the page is shown: a stream holds one of the six connections a
+// browser keeps to the agent over HTTP/1.1, which every tab of the page
+// shares, so a tab in the background gives its stream up and polls alone.
+function listen() {
+  if (typeof EventSource === "undefined" || state.stream || document.visibilityState === "hidden") return;
+  const source = new EventSource(EVENTS_PATH);
+  state.stream = source;
+  source.addEventListener("open", () => {
+    if (state.streamed) kick();
+    state.streamed = true;
+  });
+  source.addEventListener("changed", pushed);
+  source.addEventListener("error", () => {
+    if (source.readyState !== EventSource.CLOSED || state.stream !== source) return;
+    state.stream = null;
+    setTimeout(listen, RETRY_MS);
+  });
+}
+
+// A push. One that names only "midi" reads /health alone (`readLights`): the
+// agent says "midi" for what /health says of MIDI (a control's count, its
+// light; the last message and what became of it), and adds "live" when the
+// message moved a parameter (a CC Sushi maps: a sweep, a volume, a blend; a
+// heel's snap), so a footswitch's light is /health alone and a pedal swept
+// is a read of the rig. Any other reads the whole rig, but not at once in
+// two cases:
+// - while this page's own write is in flight, or within PUSH_HELD_MS of its
+//   end: a poll landing between a write and what the page does with its
+//   answer (closing a panel, putting the focus back, a second write that
+//   follows the first) drew the rig half-way through and took the focus
+//   with it. The answer usually comes before the push does, so this is by
+//   time, not by the write still being in flight;
+// - within PUSH_LIVE_MS of the last push that read it: one more read, at
+//   the end of that, covers everything pushed meanwhile.
+function pushed(event) {
+  let what = null;
+  try { what = JSON.parse(event.data).what; } catch { /* no list: read everything */ }
+  if (Array.isArray(what) && what.length && what.every((w) => w === "midi")) { readLights(); return; }
+  state.pushWaiting = true;
+  settlePush();
+}
+function settlePush() {
+  clearTimeout(state.pushTimer);
+  state.pushTimer = null;
+  if (!state.pushWaiting) return;
+  const now = Date.now();
+  const wait = Math.max(state.writing ? PUSH_HELD_MS : 0, PUSH_HELD_MS - (now - state.lastWriteEnd),
+    PUSH_LIVE_MS - (now - state.pushedAt));
+  if (wait > 0) { state.pushTimer = setTimeout(settlePush, wait); return; }
+  state.pushWaiting = false;
+  state.pushedAt = now;
+  kick();
+}
+
+// The pedals' lights alone (#192, #139): /health's MIDI, without /live.
+// What it read is kept only if no poll began meanwhile (a poll's /health is
+// as new or newer, and is the page's to keep), and only if it shows the same
+// run and nothing running that the page drew; otherwise it is a whole poll
+// after all. A "midi" push while one is reading asks for one more after it.
+async function readLights() {
+  if (state.lightsReading) { state.lightsAgain = true; return; }
+  if (state.polling || !state.health || !state.health.ok) return;
+  state.lightsReading = true;
+  state.lightsAgain = false;
+  const seq = state.pollSeq;
+  try {
+    const health = await request("GET", "/health");
+    if (state.polling || state.pollSeq !== seq || !state.health || !state.health.ok) return;
+    const same = (h) => {
+      const rig = h.body.rig || {};
+      return JSON.stringify([rig.running ? rig.config_name : null, rig.started_at ?? null, (h.body.agent || {}).busy ?? null]);
+    };
+    if (!health.ok || same(health) !== same(state.health)) { kick(); return; }
+    state.health = health;
+    state.pedalUi.lights = R.pedalLights(state.pedalUi.lights, health, pedalBoard().controller, Date.now());
+    render();
+  } finally {
+    state.lightsReading = false;
+    if (state.lightsAgain) { state.lightsAgain = false; queueMicrotask(readLights); }
+  }
+}
+
+document.addEventListener("visibilitychange", () => {
+  if (document.visibilityState !== "hidden") { listen(); return; }
+  if (state.stream) { state.stream.close(); state.stream = null; }
+});
 
 // GET /rig/load beside the poll, at its own pace, and only while a rig is up
 // and still: with none, there is nothing to read and the tiles say so. The
@@ -4393,4 +4527,10 @@ setInterval(tickElapsed, TICK_MS);
 // the first chain waits for the profiles (`profilesDue`).
 inBackground("profiles", refreshProfiles);
 inBackground("names", refreshNames);
-poll().then(pollLoad);
+// The fonts first (FONTS_MS at most), then the stream and the first poll.
+function fontsIn() {
+  if (!document.fonts || !document.fonts.load) return Promise.resolve();
+  const loaded = Promise.all(FONTS.map((font) => document.fonts.load(font))).catch(() => { /* the system's own, then */ });
+  return Promise.race([loaded, new Promise((resolve) => setTimeout(resolve, FONTS_MS))]);
+}
+fontsIn().then(() => { listen(); return poll(); }).then(pollLoad);

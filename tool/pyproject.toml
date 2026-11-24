@@ -40,7 +40,8 @@ where = ["src"]
 
 # The web UI's files (#31) are served from the package, so a wheel must carry them.
 [tool.setuptools.package-data]
-sushi_rig = ["ui/static/*.html", "ui/static/*.css", "ui/static/*.js", "ui/static/vendor/*/*"]
+sushi_rig = ["ui/static/*.html", "ui/static/*.css", "ui/static/*.js", "ui/static/vendor/*/*",
+             "ui/static/*.webmanifest", "ui/static/icons/*", "ui/static/fonts/*.md", "ui/static/fonts/*/*"]
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -1,8 +1,23 @@
 /* The web UI (#31). Colours and type from the canvas "Rig UI mockups v2"
    (Main and Stage). Editorial type, as the UX doc holds: Newsreader for
-   display, Instrument Sans for body, Geist Mono for numbers. They are not
-   bundled yet, so each falls back to the system's own and nothing is fetched
-   (the doc's rule 6: no network needed). */
+   display, Instrument Sans for body, Geist Mono for numbers. Bundled in
+   fonts/ and served by the agent (#139), so nothing is fetched (the doc's
+   rule 6: no network needed); fonts/README.md says where each came from.
+   One variable file a family, upright only: nothing here sets italic.
+   `swap`: the system's own font until the file arrives, never blank text. */
+
+@font-face {
+  font-family: Newsreader; font-style: normal; font-weight: 200 800; font-display: swap;
+  src: url("fonts/newsreader/Newsreader.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Instrument Sans"; font-style: normal; font-weight: 400 700; font-stretch: 75% 100%; font-display: swap;
+  src: url("fonts/instrument-sans/InstrumentSans.woff2") format("woff2");
+}
+@font-face {
+  font-family: "Geist Mono"; font-style: normal; font-weight: 100 900; font-display: swap;
+  src: url("fonts/geist-mono/GeistMono.woff2") format("woff2");
+}
 
 :root {
   --ground: #0F1012;
@@ -69,6 +84,12 @@ h1, h2, h3 { margin: 0; font-weight: 600; }
 .tile.warn .v, .tile.warn .s { color: var(--accent-soft); }
 .tile.over .v, .tile.over .s, .tile.failed .s { color: var(--refused); }
 .tile.over, .tile.failed { border: 1px solid var(--refused-edge); }
+/* LOAD and XRUNS in the rack's header hold the width of a reading from the
+   start ("26% of 21.3 ms", "0 since opened"), so the reading's arrival does
+   not rewrap the header and move Stage, Help and Lock (#139: Instrument Sans,
+   narrower than the fallback, put a 1200 px header on that edge). Below
+   640 px they are a row of thirds instead (below). */
+@media (min-width: 641px) { .bar .tile-row .tile:not(:last-child) { min-width: 164px; } }
 
 /* The rig picker (#111): config/rigs/ as the mockups' S1 lists it, the rig
    that is up in the accent, and the start, switch and stop under it. */
@@ -730,8 +751,9 @@ button.strip-name:focus-visible { outline: 2px solid var(--accent); outline-offs
    44 px to tap, but no taller in the row than the heading beside it (the
    negative margins), so the head is the height it was without the link, and
    Record moves nothing below it more than the clock always did. One line,
-   so it never takes the heading's width. */
-.record-head .help-link { margin: -10px 0 -10px auto; white-space: nowrap; flex: none; }
+   so it never takes the heading's width. 20 px in the row: Newsreader's
+   line at 22 px is 22 (#139), where the system serif's was over 24. */
+.record-head .help-link { margin: -12px 0 -12px auto; white-space: nowrap; flex: none; }
 
 /* ---------------------------------------------------------------- the visualiser (#176) */
 

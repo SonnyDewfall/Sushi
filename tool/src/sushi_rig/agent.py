@@ -456,6 +456,7 @@ and a switch's step; and the dip never puts back more than 0 dB.
     GET  /live/plugins  {processor: {"track", "uri", "uid", "type", "role"}}, from Sushi's session
     GET  /rigs          the rigs of config/rigs/ a start or a switch can name
     GET  /rig/load      one pw-top sample of the running rig's nodes: load, xruns, the budget
+    GET  /events        the pushed changes (#139): a server-sent event stream; see below
 
 The page polls the routes above and sends the live changes itself; the agent
 adds only what the browser could not get: the files, the profiles (files, no
@@ -476,6 +477,28 @@ refused with a `code` and the reason, and said once on stderr when it starts
 or its reason changes; it is not `last_error`, which a figure polled every
 two seconds would keep displacing. No rig up is 409 `no_rig`. Nothing
 measures sound, so it is not here.
+
+## Pushed changes (#139): GET /events
+
+So a knob turned on one device moves on another without waiting for a poll,
+the agent pushes each change it makes or sees to every open page, as
+server-sent events: `text/event-stream`, a `hello`, then a `changed` event
+(`{"seq", "what"}`) whenever what /health, /live and the log answer may have
+changed. Server-sent events and not a WebSocket: the push is one way (the
+page's changes go as they did, over HTTP), it is aiohttp's plain streamed
+answer behind the same middlewares, the cross-site guard included, and it
+needs no new dependency. The event names the change and the page polls at
+once; why it carries no state, what publishes, and how a slow client and a
+flood of changes are kept from holding anything up, is `events.py`'s. The
+poll stays at its second for what the agent cannot see. The stream is the one
+read the cross-site check is asked of (`GUARDED_READS`). Every stream ends
+when the agent stops (on shutdown, before aiohttp waits for its handlers).
+
+Every answer that sets no `Cache-Control` of its own is `no-store`
+(`API_CACHE_CONTROL`), so nothing the agent says is kept by a browser, a
+proxy or a home-screen install; the page's files stay `no-cache`, asked again
+against their ETag. The page is installable (`ui/static/manifest.webmanifest`)
+with no service worker, so nothing stands between it and the agent.
 
 ## Quiet, except for what matters (#111)
 
@@ -518,6 +541,7 @@ from . import amp_live  # the amp: GET /amp, POST /amp/parameter and /amp/model
 from . import stereo  # the compiler's copy to stereo after a mono plugin
 from . import ramp  # the master's dip around a live structural edit (#137)
 from . import history as history_module  # One Undo (#209): the history POST /undo steps back through
+from . import events as events_module  # pushed changes (#139): GET /events
 from .live import DEFAULT_GRPC_ADDRESS, ElkpyMissing, LiveError, Move
 from .live import is_send, is_tail, protected_processor
 from .rig import describe_rig
@@ -700,6 +724,13 @@ def cross_site_refusal(headers: Any, host: str | None, trusted: Any = ()) -> str
 # CORS header; no GET route changes anything (test_agent_cross_site.py lists
 # them). Every request, a GET included, is held to `rebinding_refusal`.
 STATE_CHANGING = frozenset({"POST", "PUT", "PATCH", "DELETE"})
+
+# The reads `cross_site_refusal` is asked of too (#139): the pushed changes'
+# stream, which another site's page could otherwise hold open, one of
+# `events.MAX_STREAMS`, for as long as it liked. Its answer would be unreadable
+# to that page (no CORS header), but the stream is a connection kept, not a
+# reply sent once.
+GUARDED_READS = frozenset({"/events"})
 
 
 _HOST_NAME = re.compile(r"[a-z0-9_](?:[a-z0-9_-]*[a-z0-9_])?(?:\.[a-z0-9_](?:[a-z0-9_-]*[a-z0-9_])?)*")
@@ -1990,6 +2021,9 @@ class Agent:
         bound: str | None = None,
     ) -> None:
         self.root = root
+        # Pushed changes (#139): the open /events streams. First, since
+        # setting `busy` below already publishes.
+        self.events = events_module.Hub()
         # Names a browser may reach this agent by beside its own (#161,
         # `own_names`): each `--allow-host`, which is also an `Origin` the
         # agent trusts behind a proxy (`cross_site_refusal`), and the address
@@ -2004,6 +2038,8 @@ class Agent:
         self.describe = describe
         self.doctor = doctor or self._doctor
         self.supervisor = supervisor or Supervisor()
+        # A crash the supervisor sees is pushed to the open pages (#139).
+        self.supervisor.changed = lambda: self.events.publish("supervisor")
         # A lifecycle step is CLI arguments (`lifecycle_arguments`), run by the
         # supervisor in this process (#29); a test stands in a runner instead.
         self.run = run or self.supervisor.run
@@ -2012,7 +2048,7 @@ class Agent:
         self.started = clock()
         self.started_at = datetime.now(timezone.utc).isoformat(timespec="seconds")
         self.last_error: dict[str, Any] | None = None
-        self.busy: str | None = None  # the lifecycle command running, if one is
+        self.busy = None  # the lifecycle command running, if one is (a property: a change is pushed)
         self._lock = asyncio.Lock()  # lifecycle: one command at a time
         self._live_lock = asyncio.Lock()  # live: one change at a time; waits, not 409. Reads do not take it
         self.log: list[dict[str, Any]] = []  # operations made through /live, newest last
@@ -2036,6 +2072,9 @@ class Agent:
         self._build_library = library or self._read_library
         self._library: dict[str, Any] | None = None
         self._library_lock = asyncio.Lock()
+        # GET /live's read of Sushi in flight, shared (#139,
+        # `_live_shared_read`): (events.seq as it began, its task).
+        self._live_shared: tuple | None = None
         self._midi_init(midi)  # the MIDI listener's state: see the MIDI section
         self.switching = switching or Switching()  # the live switch (#93): see its section
         self._amp_init(carla)  # the amp: see its block
@@ -2095,8 +2134,10 @@ class Agent:
     # ----------------------------------------------------------------- routes
 
     def app(self):
-        # The guard inside `_json_errors`, so its 403 is JSON as every refusal is.
-        app = web.Application(middlewares=[self._json_errors, self._same_site_only])
+        # The guard inside `_json_errors`, so its 403 is JSON as every refusal
+        # is; `_push_changes` inside the guard, so a refused write pushes nothing.
+        app = web.Application(middlewares=[self._json_errors, self._same_site_only, self._push_changes])
+        self._events_routes(app)  # pushed changes (#139): GET /events, see its block
         app.router.add_get("/health", self.health)
         app.router.add_post("/visualiser/tap", self.visualiser_tap_route)
         app.router.add_post("/visualiser/tap/release", self.visualiser_tap_release_route)
@@ -2677,6 +2718,7 @@ class Agent:
         entry = log_entry(
             op, args, previous, datetime.now(timezone.utc).isoformat(timespec="seconds"), **marks)
         self.log.append(entry)
+        self.events.publish("log")  # a pedal's change too, which sends no request (#139)
         self._history_follows(entry, self._trimmed + len(self.log) - 1)
         if op in ("add", "remove", "rig", "save") or (op == "undo" and args.get("of") in ("add", "remove")):
             self._chain_log.append(entry)
@@ -2698,6 +2740,29 @@ class Agent:
         does.
         """
         self._refuse_while_busy()
+        return web.json_response(await self._live_shared_read(request))
+
+    async def _live_shared_read(self, request) -> dict[str, Any]:
+        """GET /live's answer, one read of Sushi shared by every request that
+        comes while it runs (#139): a push brings every open page's poll at
+        once, and a read on the rig is hundreds of Sushi calls, so N pages
+        would otherwise be N reads side by side. Only a read begun since the
+        latest change is joined (`events.seq`, which every write, log entry
+        and command's end moves), so a request after a change never gets a
+        reading from before it; and only while it runs, never once done, so
+        what the agent cannot see (Sushi gone or back, the panel's changes)
+        is read afresh by the next request, as before. A read that fails
+        fails each request sharing it, as it would have alone."""
+        shared = self._live_shared
+        if shared is not None and shared[0] == self.events.seq and not shared[1].done():
+            return await asyncio.shield(shared[1])
+        task = asyncio.ensure_future(self._live_read(request))
+        # Retrieved here: a failure is each sharer's to raise, not the loop's to log.
+        task.add_done_callback(lambda done: done.cancelled() or done.exception())
+        self._live_shared = (self.events.seq, task)
+        return await asyncio.shield(task)
+
+    async def _live_read(self, request) -> dict[str, Any]:
         # Whether a dip was under way as the read began, as it ended, or began
         # and ended while it ran (#137): a snapshot reads the gain somewhere
         # in between, so any of the three may have read the floor (review of
@@ -2706,12 +2771,12 @@ class Agent:
         async with self._connected(request) as controller:
             rig = await self._sushi(request, self.live.snapshot, controller, reading=True)
         processors = self._hide_dip(rig.get("processors", {}), before, dips_before)
-        return web.json_response({
+        return {
             "ok": True,
             "processors": processors,
             "tracks": rig.get("tracks", {}),
             "parameter_info": rig.get("parameter_info", {}),
-        })
+        }
 
     def _hide_dip(self, processors: Any, before: float | None, dips_before: int) -> Any:
         """`processors` with the master's gain as the level a dip puts back,
@@ -3418,7 +3483,7 @@ class Agent:
         # `socket.getfqdn()`), which is a name no browser sent.
         host = request.headers.get("Host")
         reason = None
-        if request.method in STATE_CHANGING:
+        if request.method in STATE_CHANGING or request.path in GUARDED_READS:
             reason = cross_site_refusal(request.headers, host, self.allow_hosts)
         if reason is None:
             names = own_names((*self.allow_hosts, self.bound) if self.bound else self.allow_hosts)
@@ -3428,6 +3493,131 @@ class Agent:
             refused.agent_code = "cross_site"
             raise refused
         return await handler(request)
+
+    # ======================================================================= #
+    # Pushed changes (#139): GET /events, and what publishes to it
+    # ======================================================================= #
+    #
+    # The decisions are `events.py`'s (what is pushed and why, the gap, the
+    # heartbeat, slow clients); this serves the stream and calls `publish`.
+    # Outside this block: `self.events` in `__init__`, `_push_changes` in the
+    # middlewares, one line in `_record`, one in `_midi_heard`, and the
+    # supervisor's `changed`.
+
+    def _events_routes(self, app) -> None:
+        app.router.add_get("/events", self.events_route)
+        app.on_startup.append(self._events_open)
+        # Before aiohttp waits for its handlers to finish: each stream ends.
+        app.on_shutdown.append(self._events_close)
+
+    async def _events_open(self, app=None) -> None:
+        # The loop a `publish` from a worker thread is handed to, known from
+        # the start; and an agent served again after a stop (the tests') opens.
+        self.events.bind()
+
+    async def _events_close(self, app=None) -> None:
+        self.events.close()
+
+    @property
+    def busy(self) -> str | None:
+        """The lifecycle command running, if one is: in /health, and pushed
+        to the open pages as it ends (#139), a pedal's switch included.
+
+        Not as it starts. While `busy` is set a page draws no chain (it does
+        not read /live then), and most commands are a rig file written in a
+        fraction of a second: pushing the start made every open page drop
+        its chain and draw it again for each (and the page that made the
+        change lose its focus with it). A long one (a start, a switch) shows
+        at the next poll, within the second, as before."""
+        return self._busy
+
+    @busy.setter
+    def busy(self, value: str | None) -> None:
+        ended = value is None and getattr(self, "_busy", None) is not None
+        self._busy = value
+        if ended:
+            self.events.publish("busy")
+
+    @web.middleware if web else (lambda f: f)
+    async def _push_changes(self, request, handler):
+        """Every POST, PUT, PATCH and DELETE, once answered, pushed to the open
+        pages (#139), whatever the answer: a refusal can change /health's
+        `last_error`. Not the visualiser's tap lease, renewed every few
+        seconds and shown on no page."""
+        try:
+            return await handler(request)
+        finally:
+            if request.method in STATE_CHANGING and not request.path.startswith("/visualiser/"):
+                self.events.publish(request.path)
+
+    async def events_route(self, request):
+        """`GET /events`: `text/event-stream`, a `hello` and then a `changed`
+        event (`{"seq", "what"}`) whenever what /health, /live and the log
+        answer may have changed (`events.py` says when, and why an event
+        names the change rather than carrying it). 503 `too_many_streams`
+        past `events.MAX_STREAMS`, or `events.MAX_PER_PEER` from one
+        address, or `stopping` while the agent stops. Behind the cross-site
+        check as a write is (`GUARDED_READS`). Its socket gives up on a peer
+        gone without closing within about 30 s (`events.hold_to_a_deadline`)."""
+        why = self.events.refusal(request.remote)
+        stream = self.events.open(request.remote) if why is None else None
+        if stream is None:
+            refused = web.HTTPServiceUnavailable(reason=(
+                "the agent is stopping" if why == "stopping" else
+                f"refused: {events_module.MAX_STREAMS} streams are open already, or "
+                f"{events_module.MAX_PER_PEER} from {request.remote}; the page polls instead"))
+            refused.agent_code = why or "too_many_streams"
+            raise refused
+        response = web.StreamResponse(headers={
+            "Content-Type": "text/event-stream", "Cache-Control": "no-store",
+            # A proxy in front (nginx) must pass each event on, not gather them.
+            "X-Accel-Buffering": "no",
+        })
+        try:
+            if request.transport is not None:
+                events_module.hold_to_a_deadline(request.transport.get_extra_info("socket"))
+            await response.prepare(request)
+            await self._events_send(response, events_module.opening(self.events.seq))
+            quiet = 0.0
+            while not stream.closing:
+                try:
+                    await asyncio.wait_for(stream.wake.wait(), events_module.LOOK)
+                except TimeoutError:
+                    if request.transport is None or request.transport.is_closing():
+                        break  # the page has gone
+                    quiet += events_module.LOOK
+                    if quiet >= events_module.HEARTBEAT:
+                        await self._events_send(response, events_module.HEARTBEAT_LINE)
+                        quiet = 0.0
+                    continue
+                if stream.closing:
+                    break
+                seq = self.events.seq
+                await self._events_send(response, events_module.event(
+                    "changed", {"seq": seq, "what": stream.take()}, seq))
+                quiet = 0.0
+                # What changes meanwhile waits, and goes in the next event.
+                await asyncio.sleep(events_module.GAP)
+        except ConnectionError:
+            pass  # the page went: its stream ends here
+        except TimeoutError:
+            # A page that stopped reading: its connection is dropped with what
+            # is still unsent, so finishing the answer cannot wait on it again.
+            if request.transport is not None:
+                request.transport.abort()
+        finally:
+            self.events.drop(stream)
+        return response
+
+    @staticmethod
+    async def _events_send(response, data: bytes) -> None:
+        """One write, given `events.WRITE_TIMEOUT`: a client that does not
+        read holds up its own stream for that long, and nothing else."""
+        await asyncio.wait_for(response.write(data), events_module.WRITE_TIMEOUT)
+
+    # ======================================================================= #
+    # (end of pushed changes)
+    # ======================================================================= #
 
     # ======================================================================= #
     # The library and chain edits (#32): GET /library, POST /live/add|remove
@@ -4281,7 +4471,16 @@ class Agent:
         if generation != self._midi_generation or plan is None:
             return
         bindings = plan.feeds[feed].bindings
-        self._midi_saw(plan.feeds[feed], message)
+        # What is pushed (#139): "midi" when /health's MIDI changes (a named
+        # control's count, its light; a Program Change, which is decided
+        # after), for which a page reads /health alone; and "live" too when
+        # the message moves a parameter (a CC Sushi maps: a sweep, a volume,
+        # a blend; or a heel's snap below), whose change is in /live, and
+        # which nothing else would push: Sushi moves it with no write here.
+        if self._midi_saw(plan.feeds[feed], message) or message.kind == "program":
+            self.events.publish("midi")
+        if plan.feeds[feed].moves_sushi(message):
+            self.events.publish("live")
         try:
             if message.kind == "program":
                 if bindings.programs is None:
@@ -4297,6 +4496,7 @@ class Agent:
                     message, bindings, self._midi_switches.get(feed, {}), now=time.monotonic())
                 pedal = midi_listener.snap_binding(message, bindings)
                 if pedal is not None:
+                    self.events.publish("live")  # a heel's snap writes the send's gain, logging nothing
                     key = (feed, pedal.control)
                     self._midi_pedal[key] = (message.value, self._midi_pedal.get(key, (0, 0))[1] + 1)
                     if message.value > pedal.heel and (generation, *key) in self._midi_silenced:
@@ -4309,6 +4509,7 @@ class Agent:
                 "message": f"{message.describe()}: {type(exc).__name__}: {exc}",
             }
             self._midi_say(self._midi["last_error"]["message"])
+            self.events.publish("midi")
             return
         self._midi_last(message, action)
         if action is None:
@@ -4339,15 +4540,18 @@ class Agent:
         self._midi_tasks.add(task)
         task.add_done_callback(self._midi_tasks.discard)
 
-    def _midi_saw(self, feed: midi_listener.Feed, message: midi_listener.Message) -> None:
+    def _midi_saw(self, feed: midi_listener.Feed, message: midi_listener.Message) -> bool:
         """Count `message` against the control it came from (#192), bound or
-        not: a dict lookup and a tuple, on the loop, nothing near the audio."""
+        not: a dict lookup and a tuple, on the loop, nothing near the audio.
+        Whether it was counted: a message of no control the machine file
+        names changes no light, and is not pushed (#139)."""
         control = feed.control_of(message)
         if control is None:
-            return
+            return False
         controls = self._midi_seen.setdefault(feed.controller, {})
         count = controls.get(control, (0, 0, 0.0))[0]
         controls[control] = (count + 1, message.value, self.clock())
+        return True
 
     def _midi_decided(self, said: str, deciding: bool = False) -> None:
         """What became of the last message, once it is known (#191): a rig
@@ -4357,6 +4561,8 @@ class Agent:
         the message waiting on it, not a newer one."""
         last = self._midi["last"]
         if last is not None and (not deciding or last["action"].endswith("deciding which rig")):
+            if last["action"] != said:
+                self.events.publish("midi")  # /health's `midi.last` (#139)
             last["action"] = said
 
     def _midi_snap_start(self, generation: int, feed: int, action: Any) -> None:
@@ -4470,6 +4676,7 @@ class Agent:
         text = f"{action.describe()}: {message}"
         self._midi["last_error"] = {"at": datetime.now(timezone.utc).isoformat(timespec="seconds"), "message": text}
         self._midi_say(text)
+        self.events.publish("midi")  # /health's `midi.last_error` (#139)
 
     async def _midi_act(self, generation: int, action: Any, feed: int = 0, switching: bool = False,
                         said: dict[str, Any] | None = None) -> None:
@@ -8519,12 +8726,30 @@ class _MidiOrigin:
 UI_CACHE_CONTROL = "no-cache"
 
 
+# The types of the UI's files Python's `mimetypes` may not know, whatever the
+# machine's /etc/mime.types says (#139): 3.11 has neither. A manifest served
+# as anything else is not read by a browser as one.
+UI_TYPES = {".webmanifest": "application/manifest+json", ".woff2": "font/woff2"}
+
+
+# Every other answer of the agent's (#139): never kept, by the browser, a
+# proxy or anything installed with the page. A route that says otherwise (the
+# guide's pages, a stream) keeps its own.
+API_CACHE_CONTROL = "no-store"
+
+
 async def _ui_cache_control(request, response) -> None:
     """`Cache-Control: no-cache` on the page (`/`) and its files (`/ui/...`),
     set as each response is prepared, so the static route's own answers,
-    304s included, carry it too."""
+    304s included, carry it too; and the type of a file `UI_TYPES` names.
+    Any other answer that sets none is `no-store` (`API_CACHE_CONTROL`)."""
     if request.path == "/" or request.path.startswith("/ui/"):
         response.headers["Cache-Control"] = UI_CACHE_CONTROL
+        suffix = request.path[request.path.rfind("."):] if "." in request.path.rsplit("/", 1)[-1] else ""
+        if suffix in UI_TYPES and 200 <= response.status < 300:
+            response.headers["Content-Type"] = UI_TYPES[suffix]
+    elif "Cache-Control" not in response.headers:
+        response.headers["Cache-Control"] = API_CACHE_CONTROL
 
 
 def plugin_width(plugin: dict[str, Any], ports: dict[str, Any]) -> str | None:

@@ -726,8 +726,9 @@ def test_the_page_and_its_files_are_revalidated_on_every_load(served):
         with urllib.request.urlopen(served.url + path) as response:
             assert response.headers["Cache-Control"] == "no-cache", path
             assert response.headers["ETag"], path
+    # Only the UI's files are revalidated; the agent's answers are never kept (#139).
     with urllib.request.urlopen(served.url + "/health") as response:
-        assert response.headers["Cache-Control"] is None, "only the UI's files"
+        assert response.headers["Cache-Control"] == "no-store", "the API is not the UI's files"
 
 
 # --------------------------------------------------------------------------- #

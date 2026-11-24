@@ -765,6 +765,17 @@ class Feed:
     # `link_reason` says why (two controllers on one of Sushi's CCs).
     sushi_port: int | None = None
     link_reason: str | None = None
+    # The CCs Sushi moves a parameter by on this feed (#139): the running
+    # config's cc_mappings, `(cc number, channel or None for all)`, for the
+    # feed linked to Sushi; empty for any other. A sweep, a volume or a
+    # blend: what a message of one changes is in /live, not only /health.
+    sushi_ccs: tuple[tuple[int, int | None], ...] = ()
+
+    def moves_sushi(self, message: "Message") -> bool:
+        """Whether `message` is a CC Sushi moves a parameter by (`sushi_ccs`)."""
+        return message.kind == "cc" and any(
+            number == message.number and (channel is None or channel == message.channel)
+            for number, channel in self.sushi_ccs)
 
     def control_of(self, message: "Message") -> str | None:
         """The control `message` came from, by what each control sends and
@@ -964,7 +975,10 @@ def plan_for(described: dict[str, Any], root: Path) -> Plan | Off:
             sushi_port = None
             reason = _clash(c, heard, mappings, name) or (
                 f"not linked to Sushi: {name}'s map is not written for it, so Sushi plays nothing of it")
-        out.append(Feed(c, port, b, c == required, *heard, sushi_port=sushi_port, link_reason=reason))
+        ccs = tuple((m["cc_number"], m.get("channel") if type(m.get("channel")) is int else None)
+                    for m in mappings if type(m.get("cc_number")) is int) if sushi_port is not None else ()
+        out.append(Feed(c, port, b, c == required, *heard, sushi_port=sushi_port, link_reason=reason,
+                        sushi_ccs=ccs))
     return Plan(rig_name, feeds=tuple(out), running=rig_name or name, rig_problem=rig_problem)
 
 

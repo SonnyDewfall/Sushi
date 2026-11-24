@@ -12,9 +12,11 @@ has no Node, and the UI must run from a checkout: a `git pull` and an agent
 restart are the whole deployment, with nothing to compile, install or keep in
 step. A framework would also be a moving part the size of the rest of the UI
 (principle 3), and the screens are small enough to do without: two screens, a
-poll, a few kinds of control. The fonts the mockups name are not bundled yet,
-so the page falls back to the system's serif, sans and mono, and needs no
-network (the UX doc's rule 6).
+poll, a few kinds of control. The fonts the mockups name are bundled
+(`static/fonts/`, #139, its README says from where), so the page is drawn in
+them and needs no network (the UX doc's rule 6). It installs to a phone's
+home screen (`static/manifest.webmanifest` and `static/icons/`), with no
+service worker.
 
 ## Where the decisions are
 
@@ -62,6 +64,10 @@ Decisions are pure and tested (principle 1), in two places:
     POST /visualiser/tap  when the visualiser is about to listen, and every 10 s while it
                        does (visualiser-tap.js): the rig's output, for as long as the lease
                        is renewed; POST /visualiser/tap/release when it stops listening
+    GET /events        held open while the page is shown (#139): each `changed` event
+                       makes the page poll at once, so a change made elsewhere shows
+                       here without waiting for the second; the poll stays for what
+                       the agent cannot see, and while the stream is down
 
 and sends POST /live/parameter, /live/bypass, /live/move and /live/undo as
 they happen, POST /amp/parameter from the amp's faders, POST /amp/model from
