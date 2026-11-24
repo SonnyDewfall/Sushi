@@ -113,6 +113,10 @@ AGENT_BINDINGS = "_midi_agent"
 # while it runs (a pedal assigned for the next restart) cannot change which
 # pedal the running rig needs, or which port its bindings are read from.
 MIDI_CONTROLLER = "midi_controller"
+# Set in a running config by the agent (#210's review) when a live change to
+# Sushi's CC mappings failed and Sushi's list could not be shown to be the
+# config's again: why, as text. Never compiled; `diff` restarts on it.
+MIDI_UNCONFIRMED = "_midi_unconfirmed"
 # Where the compiled config records each track's machine roles, for `diff`.
 WIRING = "_wiring"
 SEND_UID = "sushi.testing.send"
@@ -175,7 +179,7 @@ UNTYPED_TAKES = {"cc": _BINDINGS, "note": ("bypass", "mute")}
 # them (#192), and in the parser's refusals.
 TARGET_SHAPES = {
     "blend": "a list of two channel names",
-    "parameter": "channel/plugin/parameter",
+    "parameter": "channel/plugin/parameter (the parameter as Sushi names it, a slash and all)",
     "mute": "a channel name",
     "bypass": "channel/plugin",
     "volume": "a channel name, not the master",
@@ -804,7 +808,9 @@ def _parse_midi(raw: Any, problems: list[str]) -> MidiMap | None:
                 span = (float(value[0]), float(value[1]))
         shapes = {
             "blend": isinstance(target, list) and len(target) == 2 and all(isinstance(t, str) for t in target),
-            "parameter": isinstance(target, str) and target.count("/") == 2 and all(target.split("/")),
+            # The parameter is everything after the plugin: Sushi's own names
+            # may hold a slash (SWH lcrDelay's "Dry/Wet level", #210's review).
+            "parameter": isinstance(target, str) and target.count("/") >= 2 and all(target.split("/", 2)),
             "mute": isinstance(target, str) and bool(target),
             "volume": isinstance(target, str) and bool(target),
             "bypass": isinstance(target, str) and target.count("/") == 1 and all(target.split("/")),
@@ -1098,12 +1104,21 @@ def compile_midi(rig: Rig, controller: dict[str, Any]) -> tuple[dict[str, Any], 
     `min_range + (max_range - min_range) * value / 127`, in the parameter's
     normalised domain, in the engine with no Python in the path. The channel
     is written as the machine file gives it, as Sushi counts it, or "all"
-    (any string is omni to Sushi); whether Sushi counts channels from 0 is
-    not verified yet and is on the rig session's list.
+    (any string is omni to Sushi). Sushi counts them from 0, as ALSA does: a
+    mapping on channel 0 followed the FBV on the wire's channel 0 (the
+    laptop, 2026-11-23, #210).
 
     - **parameter**: one mapping, the control's range.
-    - **mute**: one mapping on the channel's track, parameter `mute`, 0 to 1;
-      a track's `mute` is a parameter, so a whole channel mutes natively.
+    - **mute** (#210): the agent's, whatever the control. A channel is muted
+      by bypassing its send (`<channel>_send`), so the master's return, which
+      is what the monitors hear, gets nothing of it, and a volume pedal on
+      the same channel (the send's `gain`) is left where it is. The track's
+      own `mute` parameter, which this used to map, acts after the track's
+      plugins and so after the send (`_strip_problems`): it silenced only the
+      channel's stem, and on the laptop (2026-11-23) a mute toggled by a
+      footswitch was not heard at all. Sushi has no CC-to-bypass, so a
+      latching switch's mute, and an untyped CC's (a knob), go to the agent
+      too, following the value: muted at 64 and above.
     - **blend**: two mappings on the two channels' sends, parameter `gain`,
       one from the channel's own level down to silence and the other the
       reverse, so a single pedal fades one channel out as the other comes
@@ -1131,9 +1146,8 @@ def compile_midi(rig: Rig, controller: dict[str, Any]) -> tuple[dict[str, Any], 
     refused here; a switch takes a bypass or a mute, an expression pedal a
     volume, a parameter or a blend (`TAKES`). A momentary or single switch
     toggles on each press, which Sushi's mappings cannot do (they follow the
-    value), so its mute goes to the agent too, and its bypass is marked with
-    its behaviour (`switch`); a latching switch's mute stays Sushi's own
-    mapping.
+    value): its bypass or mute is marked with its behaviour (`switch`), as a
+    latching one's is, which follows the value.
 
     A note cannot sweep, so a control that sends a note may only bypass, or
     mute as a switch through the agent. `RigFileError` for a control the
@@ -1182,23 +1196,20 @@ def compile_midi(rig: Rig, controller: dict[str, Any]) -> tuple[dict[str, Any], 
                           "bypass": control.target,
                           **({"switch": behaviour} if behaviour and kind == "cc" else {})})
             continue
-        if control.binding == "mute" and kind == "cc" and behaviour in ("momentary", "single"):
-            # Sushi's mapping would mute while held: a press toggles instead.
+        if control.binding == "mute":
+            # The send bypassed, by the agent (#210): Sushi maps no CC to a
+            # bypass. A note, and a momentary or single switch, toggle it; a
+            # latching switch and an untyped CC follow the value.
             agent.append({"control": control.control, kind: number, "channel": channel,
-                          "mute": control.target, "switch": behaviour})
+                          "mute": control.target,
+                          **({"switch": behaviour} if behaviour and kind == "cc" else {})})
             continue
         if kind == "note":
-            if control.binding != "mute":
-                problems.append(f"midi: {control.control!r} sends a note, which cannot sweep a {control.binding}")
-                continue
-            agent.append({"control": control.control, kind: number, "channel": channel,
-                          "mute": control.target})
+            problems.append(f"midi: {control.control!r} sends a note, which cannot sweep a {control.binding}")
             continue
         if control.binding == "parameter":
-            _, plugin, parameter = control.target.split("/")
+            _, plugin, parameter = control.target.split("/", 2)
             mappings.append(mapping(plugin, parameter, *control.range, number))
-        elif control.binding == "mute":
-            mappings.append(mapping(control.target, "mute", 0.0, 1.0, number))
         elif control.binding == "volume":
             level = levels[control.target]
             low, high = max(0.0, level_to_gain(level - VOLUME_FLOOR_DB)), level_to_gain(level)
@@ -1931,6 +1942,7 @@ RESTART_REASONS = {
     "host": "the host config (sample rate, MIDI inputs) is read only when Sushi starts",
     # elkpy's connect_cc_to_parameter may make this live; unverified, see above.
     "midi": "Sushi's midi section (cc_mappings) is loaded only with the config",
+    "midi_unconfirmed": "a live change to Sushi's CC mappings failed, and what Sushi holds now is not known",
     "config_section": "a section of the config the live operations do not reach differs",
     "amp": "the amp's model differs, or one rig has an amp and the other not: Carla loads a model "
            "only when it starts, and is started, with the patchbay wired through it, only with the rig",
@@ -2203,11 +2215,13 @@ def diff(
 
     # -- what Sushi takes only at load, and what the agent cannot reach -------
     handled = {"tracks", "initial_state", "host_config", "midi", "_amp", WIRING,
-               "_meta", AGENT_BINDINGS}
+               "_meta", AGENT_BINDINGS, MIDI_UNCONFIRMED}
     if running.get("host_config") != next_config.get("host_config"):
         need("host", f"host config {running.get('host_config')} is {next_config.get('host_config')} in the next rig")
     if (running.get("midi") or {}) != (next_config.get("midi") or {}):
         need("midi", "the cc_mappings (Sushi's midi section) differ, and Sushi loads them only with the config")
+    if running.get(MIDI_UNCONFIRMED):
+        need("midi_unconfirmed", f"the running rig's CC mappings are not known: {running[MIDI_UNCONFIRMED]}")
     for key in sorted((set(running) | set(next_config)) - handled):
         # `_meta` is provenance and `_midi_agent` is the agent's own listener,
         # which follows the next rig on its own; anything else unknown is

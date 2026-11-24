@@ -445,3 +445,158 @@ def test_a_save_as_whose_file_waits_for_a_restart_says_so_and_offers_it(browser,
         p.locator("section.save").get_by_role("button", name="Restart now").click()
         until(lambda: ["restart"] in s.lifecycle.calls)
         page.close()
+
+
+# --------------------------------------------------------------------------- #
+# #210: the link on the PEDALS line, and the restart that plays the file's map
+# --------------------------------------------------------------------------- #
+
+def test_the_link_and_the_maps_restart_as_rig_js_says_them(blank):
+    out = rigjs(blank, """
+      const feed = (extra) => ({ok: true, body: {agent: {midi: {state: 'listening',
+        feeds: [{controller: 'fbv', state: 'listening', required: true, ...extra}]}}}});
+      const board = (behind) => R.pedalBoard({ok: true, body: {...arg.body, behind}});
+      return {
+        linked: R.pedalDeviceState(feed({linked_to_sushi: true, link: 'linked by the agent'}), 'fbv'),
+        not: R.pedalDeviceState(feed({linked_to_sushi: false, link: 'not linked: no Sushi'}), 'fbv'),
+        unneeded: R.pedalDeviceState(feed({linked_to_sushi: false, link_wanted: false, link: 'not linked to Sushi: steps only'}), 'fbv'),
+        ranges: R.pedalBehind(board({midi: true, agent: true, ranges: true, unconfirmed: null, restart: true})),
+        older: R.pedalDeviceState(feed({}), 'fbv').text,
+        behind: R.pedalBehind(board({midi: true, agent: true, restart: true})),
+        level: R.pedalBehind(board({midi: false, agent: false, restart: false})),
+        unknown: R.pedalBehind(board(null)),
+      };""", MIDI)
+    assert out["linked"] == {"state": "listening", "text": "listening"}
+    assert out["not"] == {"state": "listening", "text": "listening, not linked", "link": "not linked: no Sushi"}
+    assert out["older"] == "listening", "an agent from before the link says nothing of it"
+    assert out["unneeded"] == {"state": "listening", "text": "listening"}, "a board Sushi maps nothing of needs no link"
+    assert out["ranges"]["text"] == "Pedal ranges changed. Restart to apply."
+    assert out["ranges"]["offer"]["label"] == "Restart electric_board"
+    assert out["behind"]["offer"] == {"op": "restart", "name": "electric_board",
+                                      "label": "Restart electric_board to play them"}
+    assert "not playing yet" in out["behind"]["text"]
+    assert out["level"] is None and out["unknown"] is None
+
+
+def test_the_pedals_line_says_not_linked_while_sushis_input_is_not_there(browser):
+    """A rig whose map has Sushi sweep the delay's mix: the board is to be
+    linked, and the line says when it is not."""
+    from ui_fake import RIG_FILE
+
+    mapped = RIG_FILE + "midi:\n  controller: fbv\n  controls:\n  - {control: pedal, parameter: board/delay/FX Mix}\n"
+    with Served(save=True, pedals=True, rig_file=mapped) as s:
+        _not_linked_line(browser, s)
+
+
+def _not_linked_line(browser, s):
+    page = rack(browser, s)
+    p = page.page
+    device = p.locator("section.pedals .pedal-device")
+    expect(device).to_have_text("fbv · listening")
+    s.pedals.sushi = False
+    expect(device).to_have_text("fbv · listening, not linked")
+    expect(device).to_have_attribute("title", "not linked: no ALSA MIDI input called 'Sushi' is listed")
+    s.pedals.sushi = True
+    expect(device).to_have_text("fbv · listening")
+    page.close()
+
+
+def test_a_sweep_refused_for_unsaved_work_is_saved_then_assigned_and_the_restart_offered(browser, pedals_served):
+    """The owner's run (#210): the pedal assigned to a volume while knobs were
+    turned and not saved. The agent refuses it (the restart that plays it
+    would drop them); the panel offers Save, then assign, and once both are
+    done the restart that plays it is offered, and has the focus."""
+    s = pedals_served
+    page = rack(browser, s)
+    p = page.page
+    unlock(p)
+    from sushi_rig import agent_client
+
+    assert agent_client.ask(s.url, "POST", "/live/parameter",
+                            {"processor": "overdrive", "parameter": "Drive", "value": 0.4})[0] == 200
+    panel = open_panel(p, "vocal")
+    panel.get_by_label("vocal volume").select_option("pedal")
+    expect(panel.locator(".refused")).to_contain_text("Save first")
+    assert midi_of(s) is None, "nothing written yet"
+    panel.get_by_role("button", name="Save, then assign").click()
+    offer = p.locator("section.pedals .rigfile-result").get_by_role("button", name="Restart electric_board to play it")
+    expect(offer).to_be_visible()
+    expect(offer).to_be_focused()
+    assert midi_of(s)["controls"] == [{"control": "pedal", "volume": "vocal"}]
+    offer.click()
+    p.locator("section.pedals").get_by_role("button", name="Restart now").click()
+    until(lambda: ["restart"] in s.lifecycle.calls)
+    page.close()
+
+
+def test_save_then_assign_waits_for_its_own_save_and_is_off_while_one_runs(browser, pedals_served):
+    """#210's review: with a save already under way, Save, then assign used
+    the last save's answer and assigned without saving. Now the button is
+    off while any save runs, and an assignment follows only the save it
+    made itself, once that save has answered ok."""
+    s = pedals_served
+    page = rack(browser, s)
+    p = page.page
+    unlock(p)
+    from sushi_rig import agent_client
+
+    assert agent_client.ask(s.url, "POST", "/live/parameter",
+                            {"processor": "overdrive", "parameter": "Drive", "value": 0.4})[0] == 200
+    panel = open_panel(p, "vocal")
+    panel.get_by_label("vocal volume").select_option("pedal")
+    then = panel.get_by_role("button", name="Save, then assign")
+    expect(then).to_be_enabled()
+    held = []
+    p.route("**/rig/save", lambda route: held.append(route))
+    p.get_by_role("button", name="Save to electric_board").click()
+    until(lambda: len(held) == 1)
+    expect(then).to_be_disabled()
+    held[0].continue_()
+    p.unroute("**/rig/save")
+    expect(p.locator(".save-result.ok")).to_be_visible()
+    expect(then).to_be_enabled()
+    assert midi_of(s) is None, "a save the button did not make assigns nothing"
+    then.click()
+    offer = p.locator("section.pedals .rigfile-result").get_by_role("button", name="Restart electric_board to play it")
+    expect(offer).to_be_visible()
+    assert midi_of(s)["controls"] == [{"control": "pedal", "volume": "vocal"}]
+    page.close()
+
+
+def test_save_then_assign_assigns_nothing_when_its_save_is_refused(browser, pedals_served):
+    s = pedals_served
+    page = rack(browser, s)
+    p = page.page
+    unlock(p)
+    from sushi_rig import agent_client
+
+    assert agent_client.ask(s.url, "POST", "/live/parameter",
+                            {"processor": "overdrive", "parameter": "Drive", "value": 0.4})[0] == 200
+    panel = open_panel(p, "vocal")
+    panel.get_by_label("vocal volume").select_option("pedal")
+    p.route("**/rig/save", lambda route: route.fulfill(
+        status=409, content_type="application/json",
+        body='{"ok": false, "code": "not_saved", "reason": "the fake refuses this save"}'))
+    panel.get_by_role("button", name="Save, then assign").click()
+    expect(p.locator(".save-result:not(.rigfile-result)")).to_contain_text("the fake refuses this save")
+    assert midi_of(s) is None, "nothing assigned after a save that did not happen"
+    expect(p.locator("section.pedals .rigfile-result .offer")).to_have_count(0)
+    page.close()
+
+
+def test_a_file_whose_map_waits_for_a_restart_offers_it_in_pedals(browser, pedals_served):
+    """However the map got into the file (by hand here), GET /midi says the
+    running rig's mappings are behind it, and Pedals offers the restart."""
+    s = pedals_served
+    path = s.save.root / "config" / "rigs" / "electric_board.yaml"
+    path.write_text(path.read_text() + "midi:\n  controller: fbv\n  controls:\n  - {control: pedal, volume: vocal}\n")
+    page = rack(browser, s)
+    p = page.page
+    behind = p.locator("section.pedals .pedal-behind")
+    expect(behind).to_contain_text("not playing yet: Sushi loads them when electric_board restarts")
+    unlock(p)
+    behind.get_by_role("button", name="Restart electric_board to play them").click()
+    p.locator("section.pedals").get_by_role("button", name="Restart now").click()
+    until(lambda: ["restart"] in s.lifecycle.calls)
+    expect(behind).to_have_count(0)
+    page.close()
